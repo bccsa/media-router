@@ -671,4 +671,379 @@ check("and after it every stamp is on the source's delivery cadence again",
                                                          RE_JUMP_AT + 200)])
 
 
+# --- the late-level tier of the net (the 2026-09-08 .103 freeze) -----------
+# A LEVEL step: not a PTS step (the watch sees a legal 40 ms per buffer), not a
+# slope (the slew sees none), not 5 s (the net's bound) and not inside the 3 s
+# latch window. From buffer 20 every buffer arrives 300 ms after the time its
+# stamp says it plays at — a path that got slower after the anchor, or an anchor
+# taken off a fast first PES — and every paced consumer whose D is under 300 ms
+# is late on every frame until something moves the anchor. The tier does, once
+# the level has HELD for the hold, on the buffer that completes the hold.
+LATE_LEVEL = 300_000_000
+LATE_AT = 20
+LATE_HOLD_BUFS = t.TimelineStamper._LATE_HOLD_NS // STEP_NS      # 250
+late = []
+latest = t.TimelineStamper(on_reanchor=late.append)
+def late_house(i):
+    return HOUSE + i * STEP_NS + (LATE_LEVEL if i >= LATE_AT else 0)
+lseen = [latest.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), late_house(i))
+         for i in range(400)]
+check("a sustained late level re-anchors exactly once", len(late) == 1)
+check("... on the buffer that completes the hold, not before",
+      late[0]['anchorNs'] == late_house(LATE_AT + LATE_HOLD_BUFS))
+check("... and reports the level it removed (negative: media behind house)",
+      abs(t.pts90k_to_ns(-late[0]['deltaTicks']) - LATE_LEVEL) <= STEP_NS)
+check("before it the stamps sat the level behind house",
+      all(late_house(i) - lseen[i] == LATE_LEVEL for i in range(LATE_AT, LATE_AT + LATE_HOLD_BUFS)))
+check("from it every buffer leaves stamped with its arrival",
+      all(lseen[i] == late_house(i) for i in range(LATE_AT + LATE_HOLD_BUFS, 400)))
+
+# What must NOT trip it: a level inside the bound, one straggler far outside
+# it, and a delivery LEAD of any size (negative margin — the HLS player's
+# healthy 2 s, here as the source stepping 2 s ahead, which the watch accepts).
+quiet = []
+qst = t.TimelineStamper(on_reanchor=quiet.append)
+for i in range(400):
+    h = HOUSE + i * STEP_NS
+    if i >= 20:
+        h += 80_000_000                       # an 80 ms level: inside the bound
+    if i == 100:
+        h += 900_000_000                      # one 900 ms straggler: a transient
+    ahead = 2 * 90000 if i >= 200 else 0      # then 2 s of lead
+    qst.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP + ahead), h)
+check("an in-bound level, a straggler and a delivery lead never trip the tier",
+      len(quiet) == 0)
+
+# Egress-wide MINIMUM: one late stream never moves the anchor its siblings
+# share. A muxer's audio PES arriving 300 ms behind its video for the same
+# house time is that leg's encoder latency, not a mapping error; the video leg
+# proves the mapping right on every buffer.
+mixed = []
+mst = t.TimelineStamper(on_reanchor=mixed.append)
+for i in range(400):
+    h = HOUSE + i * STEP_NS
+    mst.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), h, 0x100)
+    mst.stamp(pes_ts_packet(0x140, pts=FIRST + i * STEP - 27000), h, 0x140)
+check("one late stream among on-time siblings never trips the tier", len(mixed) == 0)
+
+# And a sparse PID cannot trip it by its cadence alone: a 1 Hz metadata stream
+# is 1 s "late" by the floor's reckoning at every PES, and exactly on time by
+# its own mapping — which is what the tier measures.
+sparse_late = []
+sst = t.TimelineStamper(on_reanchor=sparse_late.append)
+for i in range(400):
+    h = HOUSE + i * STEP_NS
+    sst.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), h, 0x100)
+    if i % 25 == 0:
+        sst.stamp(pes_ts_packet(0x1F0, pts=FIRST + i * STEP), h, 0x1F0)
+check("a 1 Hz metadata PID never trips the tier", len(sparse_late) == 0)
+
+# --- the EARLY side (the #737 rewind, the RIST-reconnect lead) ----------------
+# At 8 s — past the 3 s latch-repair window, which would otherwise absorb it
+# on the spot — the source steps 1.5 s AHEAD in PTS (the watch accepts up to
+# 5 s), so every buffer is stamped 1.5 s before it arrives — for ever, on a
+# stamper without this tier. With `repair_latch` (a live-cadence producer) the
+# tier re-anchors once the hold completes and reports the lead it removed.
+EARLY_LEVEL = 1_500_000_000
+EARLY_TICKS = 135000                                            # 1.5 s in 90 kHz
+EARLY_AT = 200                                                  # 8 s in
+EARLY_N = 700
+early = []
+est = t.TimelineStamper(on_reanchor=early.append, repair_latch=True)
+eseen = [est.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP + (EARLY_TICKS if i >= EARLY_AT else 0)),
+                   HOUSE + i * STEP_NS) for i in range(EARLY_N)]
+EARLY_HOLD_BUFS = t.TimelineStamper._EARLY_HOLD_NS // STEP_NS      # 250
+check("a sustained early lead re-anchors exactly once (live-cadence producer)", len(early) == 1)
+check("... on the buffer that completes the hold",
+      early[0]['anchorNs'] == HOUSE + (EARLY_AT + EARLY_HOLD_BUFS) * STEP_NS)
+check("... and reports the lead it removed (positive: media ahead of house)",
+      abs(t.pts90k_to_ns(early[0]['deltaTicks']) - EARLY_LEVEL) <= STEP_NS)
+check("before it the stamps ran the lead ahead of house",
+      all(eseen[i] - (HOUSE + i * STEP_NS) == EARLY_LEVEL
+          for i in range(EARLY_AT, EARLY_AT + EARLY_HOLD_BUFS)))
+check("from it every buffer leaves stamped with its arrival",
+      all(eseen[i] == HOUSE + i * STEP_NS for i in range(EARLY_AT + EARLY_HOLD_BUFS, EARLY_N)))
+
+# The same lead on a producer that runs ahead by design (repair_latch off —
+# the HLS fan-out) is its business and never moves the anchor; nor does a lead
+# inside the bound on a live-cadence producer.
+lead_off = []
+lst = t.TimelineStamper(on_reanchor=lead_off.append)
+for i in range(EARLY_N):
+    lst.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP + (EARLY_TICKS if i >= EARLY_AT else 0)),
+              HOUSE + i * STEP_NS)
+check("a delivery lead never moves an opt-out (HLS) producer's anchor", len(lead_off) == 0)
+small_lead = []
+sl = t.TimelineStamper(on_reanchor=small_lead.append, repair_latch=True)
+for i in range(EARLY_N):
+    sl.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP + (45000 if i >= EARLY_AT else 0)),
+             HOUSE + i * STEP_NS)
+check("a 500 ms lead is inside the early bound and never trips it", len(small_lead) == 0)
+
+
+# --- the timeline conditioner (the vMix CBR pacer reset, 2026-09-08) ---------
+# Captured shape: audio PES steps back 1.42 s (and gains a DTS sitting AFTER
+# its PTS), video steps back 1.19 s a second later, then audio and video leap
+# forward by the same amounts and the PCR leaps +1.19 s with them. Nothing is
+# lost; only the numbers moved. Conditioned, every written clock stays
+# continuous, the stamper sees no discontinuity at all, and the net offset is
+# zero once the pacer has finished its reset.
+def _pcr_pkt(pid, pcr27):
+    b = bytearray(188); b[0] = p.SYNC; b[1] = (pid >> 8) & 0x1F; b[2] = pid & 0xFF
+    b[3] = 0x20; b[4] = 183; b[5] = 0x10
+    base, ext = pcr27 // 300, pcr27 % 300
+    b[6] = (base >> 25) & 0xFF; b[7] = (base >> 17) & 0xFF; b[8] = (base >> 9) & 0xFF
+    b[9] = (base >> 1) & 0xFF; b[10] = ((base & 1) << 7) | 0x7E | ((ext >> 8) & 1); b[11] = ext & 0xFF
+    for i in range(12, 188): b[i] = 0xFF
+    return bytes(b)
+
+def _dts_of(pkt):
+    off = p.payload_offset(pkt)
+    if not pkt[off + 7] & 0x40: return None
+    q = pkt[off + 14:off + 19]
+    return (((q[0] >> 1) & 7) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) | (q[3] << 7) | (q[4] >> 1)
+
+V, A = 0x100, 0x140
+A_BACK, V_BACK = 127800, 107100          # 1.42 s and 1.19 s in 90 kHz
+cond_events = []; re_events = []
+cst = t.TimelineStamper(on_reanchor=re_events.append, repair_latch=True,
+                        on_conditioned=cond_events.append)
+w_v, w_a, w_pcr, w_dts_bad, stamps = [], [], [], 0, []
+for i in range(600):
+    h = HOUSE + i * STEP_NS
+    v_pts = FIRST + i * STEP - (V_BACK if 150 <= i < 250 else 0)
+    a_pts = FIRST + 900 + i * STEP - (A_BACK if 100 <= i < 249 else 0)
+    a_dts = (a_pts + A_BACK) if 100 <= i < 249 else None      # vMix's marker: DTS after PTS
+    pcr = (FIRST - 9000 + i * STEP + (V_BACK if i >= 250 else 0)) * 300
+    buf = bytearray(_pcr_pkt(V, pcr) + pes_ts_packet(V, pts=v_pts) + pes_ts_packet(A, pts=a_pts, dts=a_dts))
+    cst.condition(buf, h)
+    stamps.append(cst.stamp(bytes(buf), h))
+    pk = list(p.iter_packets(bytes(buf)))
+    w_pcr.append(p.read_pcr(pk[0])); w_v.append(p.read_pes_pts(pk[1])); w_a.append(p.read_pes_pts(pk[2]))
+    d = _dts_of(pk[2])
+    if d is not None and t.TimelineStamper._fold(d - w_a[-1], t.PTS_WRAP) > 0: w_dts_bad += 1
+def _cont(seq, unit): return all(0 < t.TimelineStamper._fold(seq[i + 1] - seq[i], t.PTS_WRAP) * unit <= 100_000_000 for i in range(len(seq) - 1))
+check("conditioned: written video PTS is continuous through the pacer reset", _cont(w_v, 100000 // 9))
+check("conditioned: written audio PTS is continuous through the pacer reset", _cont(w_a, 100000 // 9))
+check("conditioned: written PCR is continuous through the pacer reset (after the flagged switch to regeneration)",
+      all(0 < t.TimelineStamper._fold(w_pcr[i + 1] - w_pcr[i], t.PCR_MODULO) <= 27_000_000 for i in range(1, 599)))
+check("conditioned: no DTS is left after its own PTS", w_dts_bad == 0)
+check("conditioned: the stamper saw no discontinuity — no re-anchor", len(re_events) == 0)
+check("conditioned: the stamps themselves never step",
+      all(0 <= stamps[i + 1] - stamps[i] <= 100_000_000 for i in range(599)))
+pts_kinds = [(e['pid'], round(e['stepTicks'] / 90000, 2)) for e in cond_events if e['clock'] == 'pts']
+pcr_kinds = [round(e['stepTicks'] / 90000, 2) for e in cond_events if e['clock'] == 'pcr']
+check("conditioned: the four PES steps are each reported once",
+      pts_kinds == [(A, -1.42), (V, -1.19), (A, 1.42), (V, 1.19)])
+check("conditioned: the regenerated PCR reports its lead over the source's (once) and the source's leap (once)",
+      pcr_kinds == [-0.19, -1.19])
+check("conditioned: both PES offsets are back to zero once the reset is over",
+      {e['pid']: e['offsetTicks'] for e in cond_events if e['clock'] == 'pts'} == {A: 0, V: 0})
+check("conditioned: written PTS − PCR sits on the lead throughout",
+      all(abs(t.TimelineStamper._fold(w_v[i] - w_pcr[i] // 300, t.PTS_WRAP) / 90000 - 0.25) < 0.05 for i in range(1, 600)))
+
+# The correction is sized by cadence, not arrival: the step lands on a 94 KB
+# I-frame that took 350 ms to arrive (the .103 capture). Absorbing "delta minus
+# arrival" would over-correct by that 350 ms and leave a residual step; the
+# median cadence absorbs exactly the 1.05 s that moved.
+big = []
+bst = t.TimelineStamper(repair_latch=True, on_conditioned=big.append)
+bw = []
+for i in range(300):
+    h = HOUSE + i * STEP_NS + (350_000_000 if i >= 100 else 0)        # one slow big frame at 100
+    pts = FIRST + i * STEP - (94500 if 100 <= i < 200 else 0)          # −1.05 s stretch
+    buf = bytearray(pes_ts_packet(V, pts=pts)); bst.condition(buf, h); bw.append(p.read_pes_pts(buf))
+check("a step that lands on a big frame is absorbed by exactly the step, not the frame's wire time",
+      [round(e['stepTicks'] / 90000, 2) for e in big] == [-1.05, 1.05] and big[-1]['offsetTicks'] == 0)
+check("... so the written PTS has no residual step anywhere",
+      all(0 < t.TimelineStamper._fold(bw[i + 1] - bw[i], t.PTS_WRAP) <= STEP for i in range(299)))
+
+# PCR regeneration: a source whose PCR sits 12.6 s behind its PTS (the .103
+# 11:05 state) is on the lead from the first regenerated packet; a PCR that
+# then FREEZES 1.1 s while the PTS runs on (the pacer pausing, .103 11:20) does
+# not move the written clock at all — it runs with the pictures. One
+# discontinuity indicator, on the first regenerated value, and an event per
+# 300 ms the source's clock drifts from ours.
+gap_ev = []
+gst_ = t.TimelineStamper(repair_latch=True, on_conditioned=gap_ev.append)
+gaps = []; di_flags = 0; pcr_val = (FIRST - 12 * 90000 - 54000) * 300; wp = []
+for i in range(400):
+    frozen = 150 <= i < 177 or 300 <= i < 327
+    if not frozen:
+        pcr_val += STEP * 300
+    buf = bytearray(_pcr_pkt(V, pcr_val) + pes_ts_packet(V, pts=FIRST + i * STEP))
+    gst_.condition(buf, HOUSE + i * STEP_NS)
+    pk = list(p.iter_packets(bytes(buf)))
+    if pk[0][5] & 0x80: di_flags += 1
+    wp.append(p.read_pcr(pk[0]))
+    gaps.append(t.TimelineStamper._fold(p.read_pes_pts(pk[1]) - p.read_pcr(pk[0]) // 300, t.PTS_WRAP) / 90000)
+GAP0 = (12 * 90000 + 54000 - STEP) / 90000                      # 12.56 s at the first PES
+check("PCR regeneration: a 12.6 s PCR lag is gone from the first regenerated packet",
+      gap_ev and gap_ev[0]['clock'] == 'pcr' and abs(gap_ev[0]['stepTicks'] / 90000 - (GAP0 - 0.25)) < 0.05
+      and abs(gaps[1] - 0.25) < 0.05)
+check("... the written PTS − PCR holds the lead through the pacer's freezes",
+      all(abs(g - 0.25) <= 0.05 for g in gaps[1:]))
+check("... the written PCR is continuous and monotone throughout",
+      all(0 <= t.TimelineStamper._fold(wp[i + 1] - wp[i], t.PCR_MODULO) <= 27_000_000 // 10 for i in range(1, 399)))
+check("... one discontinuity indicator (the first regenerated value), and the freezes are reported",
+      di_flags == 1 and len(gap_ev) >= 3)
+
+# Sparse PCR (one cluster every 2.2 s of media, arrival on cadence) is cadence,
+# not a discontinuity, and a real 2 s gap in the pictures (PTS and arrival both
+# +2 s) is time passing — one indicator in total, the first regenerated value.
+# What IS signalled: a jump past the conditioner's bound (a source restart,
+# +20 s with arrival one frame), which reaches the wire as written.
+sp_ev = []; sp = t.TimelineStamper(repair_latch=True, on_conditioned=sp_ev.append); sp_di = []
+for i in range(400):
+    pts = FIRST + i * STEP + (2 * 90000 if i >= 300 else 0) + (20 * 90000 if i >= 350 else 0)
+    h = HOUSE + i * STEP_NS + (2_000_000_000 if i >= 300 else 0)
+    pk = pes_ts_packet(V, pts=pts)
+    if i % 55 == 0:
+        pk = _pcr_pkt(V, (pts - 27000) * 300) + pk
+    buf = bytearray(pk); sp.condition(buf, h)
+    if buf[3] & 0x20 and buf[5] & 0x80: sp_di.append(i)
+check("sparse PCR clusters and a real picture gap are cadence; only a jump past the bound is signalled",
+      sp_di == [55, 385])
+
+# The reference is the PID carrying the PCR, even when another PID's PES came
+# first and leads it: audio PES 1.4 s ahead of video, seen first, PCR on video
+# (the .103 11:41 freeze — a PCR derived from the audio put every video frame
+# 1.2 s late and the sink dropped the lot).
+ref_ev = []; rst_ = t.TimelineStamper(repair_latch=True, on_conditioned=ref_ev.append); vg = []
+for i in range(200):
+    a_pts = FIRST + 126000 + i * STEP; v_pts = FIRST + i * STEP
+    buf = bytearray(pes_ts_packet(A, pts=a_pts) + _pcr_pkt(V, (v_pts - 9000) * 300) + pes_ts_packet(V, pts=v_pts))
+    rst_.condition(buf, HOUSE + i * STEP_NS); pk = list(p.iter_packets(bytes(buf)))
+    vg.append(t.TimelineStamper._fold(p.read_pes_pts(pk[2]) - p.read_pcr(pk[1]) // 300, t.PTS_WRAP) / 90000)
+check("the regenerated PCR trails the PCR PID's own PTS, not a leading audio PID's",
+      all(abs(g - 0.25) <= 0.05 for g in vg[2:]))
+
+# … and when a stream LAGS the video (audio 400 ms behind), the PCR trails the
+# lagging one, so nothing is ever placed before it is delivered; a sparse
+# metadata PID seconds behind (a KLV carousel) cannot drag it more than 1 s.
+lag_st = t.TimelineStamper(repair_latch=True); vgap = []; agap = []
+for i in range(200):
+    v_pts = FIRST + i * STEP; a_pts = v_pts - 36000; k_pts = v_pts - 5 * 90000
+    pk = _pcr_pkt(V, (v_pts - 9000) * 300) + pes_ts_packet(V, pts=v_pts) + pes_ts_packet(A, pts=a_pts)
+    if i % 50 == 0:
+        pk += pes_ts_packet(0x1F0, pts=k_pts)
+    buf = bytearray(pk); lag_st.condition(buf, HOUSE + i * STEP_NS); pkl = list(p.iter_packets(bytes(buf)))
+    pcr = p.read_pcr(pkl[0]) // 300
+    vgap.append(t.TimelineStamper._fold(p.read_pes_pts(pkl[1]) - pcr, t.PTS_WRAP) / 90000)
+    agap.append(t.TimelineStamper._fold(p.read_pes_pts(pkl[2]) - pcr, t.PTS_WRAP) / 90000)
+check("the PCR trails the lagging audio (audio ≥ lead, video = lead + its lag), unmoved by a sparse PID seconds behind",
+      all(abs(a - 0.25) <= 0.05 for a in agap[3:]) and all(abs(v - 0.65) <= 0.05 for v in vgap[3:]))
+
+# TIMING PID: vMix with its audio PES 1.7 s AHEAD of its video (the .103 12:03
+# freeze), audio first in every buffer. The anchor must land on the video (the
+# PCR carrier), and neither the latch repair nor the tiers may let the audio's
+# lead pull the anchor: the video stays stamped on its arrival for the whole
+# run while the audio rides the same anchor 1.7 s early.
+tp_anchor = []; tp_re = []
+tp = t.TimelineStamper(on_anchor=tp_anchor.append, on_reanchor=tp_re.append, repair_latch=True)
+vm = []; am = []
+for i in range(600):
+    h = HOUSE + i * STEP_NS
+    v_pts = FIRST + i * STEP; a_pts = v_pts + 153000                     # +1.7 s
+    vbuf = bytearray(_pcr_pkt(V, (v_pts - 9000) * 300) + pes_ts_packet(V, pts=v_pts))
+    abuf = bytearray(pes_ts_packet(A, pts=a_pts))
+    tp.condition(abuf, h); am.append(tp.stamp(bytes(abuf), h, A) - h)           # audio arrives first
+    tp.condition(vbuf, h); vm.append(tp.stamp(bytes(vbuf), h, V) - h)
+check("timing PID: the anchor is re-based onto the PCR carrier (video) once it is known",
+      len(tp_re) == 1 and tp_re[0]['pid'] == V and tp_re[0]['deltaTicks'] == 0)
+check("timing PID: the video stays stamped on its arrival for the whole run (no repair/tier flip)",
+      all(abs(m) <= STEP_NS for m in vm[2:]))
+check("timing PID: the audio rides the same anchor, 1.7 s early, untouched",
+      all(abs(m - 1_700_000_000) <= STEP_NS for m in am[2:]))
+
+# What it must leave alone: a delivery stall (PTS one frame on, arrival 1.5 s
+# late), a genuine 3 s content gap (PTS and arrival move together), B-frame
+# reorder (±80 ms), and a source restart (PTS −2 h, past the bound — the
+# watch's job).
+quiet_c = []
+qst = t.TimelineStamper(repair_latch=True, on_conditioned=quiet_c.append)
+for i in range(400):
+    h = HOUSE + i * STEP_NS + (1_500_000_000 if i >= 100 else 0) + (3_000_000_000 if i >= 200 else 0)
+    pts = FIRST + i * STEP + (3 * 90000 if i >= 200 else 0) + ([0, 7200, -3600, 3600][i % 4])
+    buf = bytearray(pes_ts_packet(V, pts=pts))
+    qst.condition(buf, h)
+    if p.read_pes_pts(buf) != pts % t.PTS_WRAP: quiet_c.append(('rewrote', i))
+check("a stall, a real gap and reorder jitter are never conditioned (bytes untouched)", quiet_c == [])
+restart_c = []; restart_re = []
+rst = t.TimelineStamper(on_reanchor=restart_re.append, repair_latch=True, on_conditioned=restart_c.append)
+for i in range(400):
+    buf = bytearray(pes_ts_packet(V, pts=(FIRST + i * STEP - (2 * 3600 * 90000 if i >= 200 else 0)) % t.PTS_WRAP))
+    rst.condition(buf, HOUSE + i * STEP_NS); rst.stamp(bytes(buf), HOUSE + i * STEP_NS)
+check("a source restart is past the conditioner's bound and re-anchors as before",
+      restart_c == [] and len(restart_re) == 1)
+
+
+# --- the late tier re-anchors on the PES it stamped FROM (.103, 2026-09-08 13:02-13:15) ---
+# An audio PES ahead of the video's in every buffer, written 2 s ahead of it; the
+# PCR rides the video, so the video is the timing PID. From buffer 20 every buffer
+# arrives 300 ms late (a level). The tier must re-anchor once, referenced on the
+# VIDEO's own PES, and leave the video on its arrival — not the written A/V skew
+# behind it, which matured the hold again 10 s later, and again: one re-anchor
+# every 10 s with the level growing to -3 s, one dropped bus buffer each, live.
+SKEW = 2 * 90000
+lt_re = []
+lt = t.TimelineStamper(on_reanchor=lt_re.append, repair_latch=True)
+lvm = []
+for i in range(800):
+    v = FIRST + i * STEP
+    buf = bytearray(pes_ts_packet(A, pts=v + SKEW) + _pcr_pkt(V, (v - 9000) * 300) + pes_ts_packet(V, pts=v))
+    lt.condition(buf, late_house(i))
+    lvm.append(lt.stamp(bytes(buf), late_house(i)) - late_house(i))
+lt_tier = [r for r in lt_re if r['deltaTicks'] != 0]
+check("audio ahead of the timing PID in the buffer: the anchor is re-based onto the video first",
+      bool(lt_re) and lt_re[0]['pid'] == V and lt_re[0]['deltaTicks'] == 0)
+check("... the late level then re-anchors exactly once", len(lt_tier) == 1 and len(lt_re) == 2)
+check("... referenced on the timing PID's own PES, not the buffer's first",
+      len(lt_re) == 2 and lt_re[-1]['pid'] == V
+      and lt_re[-1]['refPts90k'] == FIRST + (LATE_AT + LATE_HOLD_BUFS) * STEP)
+check("... and from it the video leaves on its arrival for the rest of the run (no 10 s cycle)",
+      all(abs(m) <= STEP_NS for m in lvm[LATE_AT + LATE_HOLD_BUFS:]))
+
+# --- a foreign-timeline metadata PID never moves the shared anchor (.103, 2026-09-08 13:27) ---
+# The PCR rides the video (V), so the video is the timing PID. A sparse KLV-style
+# PID (0x1f0) carries its own clock ~24 h off the media and steps around on it. It
+# must NEVER trip the watch — re-anchoring the egress onto it blanks every consumer
+# (live: +77 s jumps on every reconnect). The video's own rewind still re-anchors.
+META = 7_900_000_000
+mw_re = []
+mw = t.TimelineStamper(on_reanchor=mw_re.append, repair_latch=True)
+for i in range(200):
+    v = FIRST + i * STEP
+    m = META + ((i * 37) % 500) * 90000
+    buf = bytearray(_pcr_pkt(V, (v - 9000) * 300) + pes_ts_packet(V, pts=v) + pes_ts_packet(0x1F0, pts=m))
+    mw.condition(buf, HOUSE + i * STEP_NS); mw.stamp(bytes(buf), HOUSE + i * STEP_NS)
+check("a foreign-timeline metadata PID never re-anchors the shared egress",
+      not any(r['pid'] == 0x1F0 for r in mw_re))
+vw_re = []
+vw = t.TimelineStamper(on_reanchor=vw_re.append, repair_latch=True)
+for i in range(60):
+    v = (FIRST + i * STEP - (30 * 90000 if i >= 30 else 0)) % t.PTS_WRAP   # 30 s restart, past the conditioner bound
+    buf = bytearray(_pcr_pkt(V, (v - 9000) * 300) + pes_ts_packet(V, pts=v) + pes_ts_packet(0x1F0, pts=META))
+    vw.condition(buf, HOUSE + i * STEP_NS); vw.stamp(bytes(buf), HOUSE + i * STEP_NS)
+check("the timing PID's own restart still re-anchors, with a metadata PID present",
+      any(r['pid'] == V for r in vw_re))
+
+# --- the conditioner rounds negative steps with FLOOR division (C++ floor_div parity) ---
+# A backward PTS step whose ns->tick conversion does NOT divide evenly: floor and
+# truncate-toward-zero differ by one tick. The twins write byte-for-byte identical
+# wire, so the reported step, the cumulative offset and the rewritten PTS are pinned
+# to the FLOOR result. A C++ plain `/` here (trunc) reports -89999 and writes
+# 8128800 (ts_timeline.cpp:671, the .103 conditioner) and fails this.
+cr_evs = []
+cr = t.TimelineStamper(repair_latch=True, on_conditioned=cr_evs.append)
+for i in range(8):                                   # fill the cadence memory with 40 ms deltas
+    cr.condition(bytearray(pes_ts_packet(V, pts=FIRST + i * STEP)), HOUSE + i * STEP_NS)
+cr_buf = bytearray(pes_ts_packet(V, pts=FIRST + 8 * STEP - 89999))   # ~1 s back, non-even
+cr.condition(cr_buf, HOUSE + 8 * STEP_NS)
+check("a non-even backward step is conditioned with floor division (reported step)",
+      len(cr_evs) == 1 and cr_evs[0]['stepTicks'] == -90000)
+check("... the cumulative offset is the floored step negated", cr_evs[0]['offsetTicks'] == 90000)
+check("... and the rewritten PTS carries the floored offset (byte parity with C++)",
+      p.read_pes_pts(cr_buf) == 8128801)
+
 print("\nALL ts_timeline TESTS PASSED")

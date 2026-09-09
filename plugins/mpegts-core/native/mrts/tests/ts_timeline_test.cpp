@@ -3,7 +3,9 @@
 // producer side. The stamper cases mirror gst_bus_stamper_test.py, which pins
 // the same semantics for the runner's gst producers: one contract, three
 // implementations, identical arithmetic.
+#include <cmath>
 #include <cstring>
+#include <map>
 #include <vector>
 
 #include "../ts_psi.h"
@@ -826,6 +828,531 @@ int main() {
               settled_event_json({998380000000LL, -1620000000LL, 3000000000LL})
                   == "{\"event\":\"timeline_settled\",\"anchorNs\":998380000000,"
                      "\"repairNs\":-1620000000,\"windowNs\":3000000000}");
+    }
+
+    // --- the late-level tier of the net (the 2026-09-08 .103 freeze) --------
+    // ts_timeline_test.py parity, number for number: a 300 ms LEVEL from buffer
+    // 20 (not a PTS step, not a slope, not 5 s) re-anchors once, on the buffer
+    // that completes the 10 s hold, and every buffer from it leaves stamped
+    // with its arrival.
+    {
+        constexpr int64_t LATE_LEVEL = 300'000'000LL;
+        constexpr int LATE_AT = 20;
+        constexpr int LATE_HOLD_BUFS = 10'000'000'000LL / STEP_NS;   // 250
+        auto late_house = [&](int i) {
+            return HOUSE + i * STEP_NS + (i >= LATE_AT ? LATE_LEVEL : 0);
+        };
+        std::vector<TimelineStamper::Reanchor> late;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor& r) { late.push_back(r); });
+        std::vector<int64_t> seen;
+        for (int i = 0; i < 400; i++)
+            seen.push_back(stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)}, late_house(i)));
+        CHECK("a sustained late level re-anchors exactly once", late.size() == 1);
+        CHECK("... on the buffer that completes the hold, not before",
+              late.size() == 1 && late[0].anchor_ns == late_house(LATE_AT + LATE_HOLD_BUFS));
+        CHECK("... and reports the level it removed (negative: media behind house)",
+              late.size() == 1
+              && std::llabs(pts90k_to_ns(-late[0].delta_ticks) - LATE_LEVEL) <= STEP_NS);
+        bool before = true, after = true;
+        for (int i = LATE_AT; i < LATE_AT + LATE_HOLD_BUFS; i++)
+            before &= late_house(i) - seen[i] == LATE_LEVEL;
+        for (int i = LATE_AT + LATE_HOLD_BUFS; i < 400; i++) after &= seen[i] == late_house(i);
+        CHECK("before it the stamps sat the level behind house", before);
+        CHECK("from it every buffer leaves stamped with its arrival", after);
+    }
+    {
+        // An in-bound level, one straggler and a delivery lead never trip it.
+        int quiet = 0;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor&) { quiet++; });
+        for (int i = 0; i < 400; i++) {
+            int64_t h = HOUSE + i * STEP_NS;
+            if (i >= 20) h += 80'000'000LL;
+            if (i == 100) h += 900'000'000LL;
+            int64_t ahead = i >= 200 ? 2 * 90000 : 0;
+            stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP + ahead)}, h);
+        }
+        CHECK("an in-bound level, a straggler and a delivery lead never trip the tier",
+              quiet == 0);
+    }
+    {
+        // Egress-wide MINIMUM: one late stream among on-time siblings.
+        int mixed = 0;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor&) { mixed++; });
+        for (int i = 0; i < 400; i++) {
+            int64_t h = HOUSE + i * STEP_NS;
+            stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)}, h, 0x100);
+            stamp_of(st, {pes_packet(0x140, FIRST_PES + i * STEP - 27000)}, h, 0x140);
+        }
+        CHECK("one late stream among on-time siblings never trips the tier", mixed == 0);
+    }
+    {
+        // A sparse (1 Hz) PID is on time by its own mapping, whatever its floor's age.
+        int sparse = 0;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor&) { sparse++; });
+        for (int i = 0; i < 400; i++) {
+            int64_t h = HOUSE + i * STEP_NS;
+            stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)}, h, 0x100);
+            if (i % 25 == 0) stamp_of(st, {pes_packet(0x1F0, FIRST_PES + i * STEP)}, h, 0x1F0);
+        }
+        CHECK("a 1 Hz metadata PID never trips the tier", sparse == 0);
+    }
+    // --- the EARLY side (the #737 rewind, the RIST-reconnect lead) ----------
+    // ts_timeline_test.py parity: at 8 s (past the 3 s latch-repair window,
+    // which would otherwise absorb it on the spot) the source steps 1.5 s AHEAD
+    // in PTS (coherent to the watch), so every buffer is stamped 1.5 s before
+    // it arrives. With repair_latch (a live-cadence producer) the tier
+    // re-anchors once the hold completes and reports the lead it removed; an
+    // opt-out (HLS) producer keeps its lead, and a 500 ms lead is in bound.
+    {
+        constexpr int64_t EARLY_LEVEL = 1'500'000'000LL;
+        constexpr int64_t EARLY_TICKS = 135000;
+        constexpr int EARLY_AT = 200, EARLY_N = 700;
+        constexpr int EARLY_HOLD_BUFS = 10'000'000'000LL / STEP_NS;
+        std::vector<TimelineStamper::Reanchor> early;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor& r) { early.push_back(r); },
+                           nullptr, true);
+        std::vector<int64_t> seen;
+        for (int i = 0; i < EARLY_N; i++)
+            seen.push_back(stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP + (i >= EARLY_AT ? EARLY_TICKS : 0))},
+                                    HOUSE + i * STEP_NS));
+        CHECK("a sustained early lead re-anchors exactly once (live-cadence producer)",
+              early.size() == 1);
+        CHECK("... on the buffer that completes the hold",
+              early.size() == 1 && early[0].anchor_ns == HOUSE + (EARLY_AT + EARLY_HOLD_BUFS) * STEP_NS);
+        CHECK("... and reports the lead it removed (positive: media ahead of house)",
+              early.size() == 1
+              && std::llabs(pts90k_to_ns(early[0].delta_ticks) - EARLY_LEVEL) <= STEP_NS);
+        bool before = true, after = true;
+        for (int i = EARLY_AT; i < EARLY_AT + EARLY_HOLD_BUFS; i++)
+            before &= seen[i] - (HOUSE + i * STEP_NS) == EARLY_LEVEL;
+        for (int i = EARLY_AT + EARLY_HOLD_BUFS; i < EARLY_N; i++) after &= seen[i] == HOUSE + i * STEP_NS;
+        CHECK("before it the stamps ran the lead ahead of house", before);
+        CHECK("from it every buffer leaves stamped with its arrival", after);
+
+        int lead_off = 0;
+        TimelineStamper off(nullptr, [&](const TimelineStamper::Reanchor&) { lead_off++; });
+        for (int i = 0; i < EARLY_N; i++)
+            stamp_of(off, {pes_packet(0x100, FIRST_PES + i * STEP + (i >= EARLY_AT ? EARLY_TICKS : 0))},
+                     HOUSE + i * STEP_NS);
+        CHECK("a delivery lead never moves an opt-out (HLS) producer's anchor", lead_off == 0);
+
+        int small = 0;
+        TimelineStamper sm(nullptr, [&](const TimelineStamper::Reanchor&) { small++; }, nullptr, true);
+        for (int i = 0; i < EARLY_N; i++)
+            stamp_of(sm, {pes_packet(0x100, FIRST_PES + i * STEP + (i >= EARLY_AT ? 45000 : 0))},
+                     HOUSE + i * STEP_NS);
+        CHECK("a 500 ms lead is inside the early bound and never trips it", small == 0);
+    }
+
+    // --- the timeline conditioner (the vMix CBR pacer reset, 2026-09-08) -----
+    // ts_timeline_test.py parity, number for number: audio steps back 1.42 s
+    // (gaining a DTS after its PTS), video 1.19 s a second later, then both
+    // leap forward and the PCR leaps +1.19 s. Conditioned, every written clock
+    // stays continuous, the stamper sees no discontinuity, the net offset is 0.
+    {
+        constexpr int V = 0x100, A = 0x140;
+        constexpr int64_t A_BACK = 127800, V_BACK = 107100;
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        auto pes_dts_pkt = [](int pid, int64_t pts, int64_t dts) {
+            TsPacket t = pes_packet(pid, pts);
+            t.b[4 + 7] = 0xC0; t.b[4 + 8] = 0x0A;                 // PTS+DTS, header length 10
+            t.b[4 + 9] = (uint8_t)((t.b[4 + 9] & 0x0F) | 0x30);   // '0011' prefix on the PTS
+            int64_t d = dts & (PTS_WRAP - 1);
+            t.b[4 + 14] = (uint8_t)(0x11 | (((d >> 30) & 0x07) << 1));
+            t.b[4 + 15] = (uint8_t)((d >> 22) & 0xFF);
+            t.b[4 + 16] = (uint8_t)(0x01 | (((d >> 15) & 0x7F) << 1));
+            t.b[4 + 17] = (uint8_t)((d >> 7) & 0xFF);
+            t.b[4 + 18] = (uint8_t)(0x01 | ((d & 0x7F) << 1));
+            return t;
+        };
+        auto fold = [](int64_t d, int64_t m) { d %= m; if (d < 0) d += m; return d > m / 2 ? d - m : d; };
+        auto read_dts = [](const uint8_t* pkt) -> int64_t {
+            int off = payload_offset(pkt); if (!(pkt[off + 7] & 0x40)) return -1;
+            const uint8_t* q = pkt + off + 14;
+            return ((int64_t)((q[0] >> 1) & 7) << 30) | ((int64_t)q[1] << 22) | ((int64_t)(q[2] >> 1) << 15) | ((int64_t)q[3] << 7) | (q[4] >> 1);
+        };
+        std::vector<TimelineStamper::Conditioned> cond; int reanchors = 0;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor&) { reanchors++; }, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { cond.push_back(c); });
+        std::vector<int64_t> wv, wa, wpcr, stamps; int dts_bad = 0;
+        for (int i = 0; i < 600; i++) {
+            int64_t h = HOUSE + i * STEP_NS;
+            int64_t v_pts = FIRST_PES + i * STEP - ((i >= 150 && i < 250) ? V_BACK : 0);
+            int64_t a_pts = FIRST_PES + 900 + i * STEP - ((i >= 100 && i < 249) ? A_BACK : 0);
+            int64_t pcr = (FIRST_PES - 9000 + i * STEP + (i >= 250 ? V_BACK : 0)) * 300;
+            std::vector<TsPacket> pk = {pcr_pkt(V, pcr), pes_packet(V, v_pts),
+                                        (i >= 100 && i < 249) ? pes_dts_pkt(A, a_pts, a_pts + A_BACK) : pes_packet(A, a_pts)};
+            auto data = bytes_of(pk);
+            st.condition(data.data(), data.size(), h);
+            stamps.push_back(st.stamp(data.data(), data.size(), h, 0));
+            wpcr.push_back(read_pcr(data.data())); wv.push_back(read_pes_pts(data.data() + PKT));
+            wa.push_back(read_pes_pts(data.data() + 2 * PKT));
+            int64_t d = read_dts(data.data() + 2 * PKT);
+            if (d >= 0 && fold(d - wa.back(), PTS_WRAP) > 0) dts_bad++;
+        }
+        auto cont = [&](const std::vector<int64_t>& s, int64_t m, int64_t unit_ns_num, int64_t unit_ns_den) {
+            for (size_t i = 0; i + 1 < s.size(); i++) {
+                int64_t d = fold(s[i + 1] - s[i], m) * unit_ns_num / unit_ns_den;
+                if (d <= 0 || d > 100'000'000LL) return false;
+            }
+            return true;
+        };
+        CHECK("conditioned: written video PTS is continuous through the pacer reset", cont(wv, PTS_WRAP, 100000, 9));
+        CHECK("conditioned: written audio PTS is continuous through the pacer reset", cont(wa, PTS_WRAP, 100000, 9));
+        CHECK("conditioned: written PCR is continuous through the pacer reset (after the flagged switch to regeneration)",
+              cont(std::vector<int64_t>(wpcr.begin() + 1, wpcr.end()), PCR_MODULO, 1000, 27));
+        CHECK("conditioned: no DTS is left after its own PTS", dts_bad == 0);
+        CHECK("conditioned: the stamper saw no discontinuity — no re-anchor", reanchors == 0);
+        bool steady = true;
+        for (size_t i = 0; i + 1 < stamps.size(); i++) steady &= stamps[i + 1] >= stamps[i] && stamps[i + 1] - stamps[i] <= 100'000'000LL;
+        CHECK("conditioned: the stamps themselves never step", steady);
+        std::vector<int64_t> pts_steps, pcr_steps;
+        std::map<int, int64_t> last_off;
+        for (auto& c : cond) {
+            if (c.pcr) pcr_steps.push_back(c.step_ticks);
+            else { pts_steps.push_back(c.step_ticks); last_off[c.pid] = c.offset_ticks; }
+        }
+        auto near = [](int64_t v, int64_t want) { return std::llabs(v - want) <= 2000; };
+        CHECK("conditioned: the four PES steps are each reported once",
+              pts_steps.size() == 4 && near(pts_steps[0], -A_BACK) && near(pts_steps[1], -V_BACK)
+              && near(pts_steps[2], A_BACK) && near(pts_steps[3], V_BACK));
+        if (!(pcr_steps.size() == 2 && near(pcr_steps[0], -17100) && near(pcr_steps[1], -V_BACK))) {
+            std::printf("  pcr events:");
+            for (auto v : pcr_steps) std::printf(" %lld", (long long)v);
+            std::printf("\n");
+        }
+        CHECK("conditioned: the regenerated PCR reports its lead over the source's (once) and the source's leap (once)",
+              pcr_steps.size() == 2 && near(pcr_steps[0], -17100) && near(pcr_steps[1], -V_BACK));
+        bool pes_zero = last_off.size() == 2;
+        for (auto& kv : last_off) pes_zero &= kv.second == 0;
+        CHECK("conditioned: both PES offsets are back to zero once the reset is over", pes_zero);
+        bool lead = true;
+        for (size_t i = 1; i < wv.size(); i++)
+            lead &= std::llabs(fold(wv[i] - wpcr[i] / 300, PTS_WRAP) - 22500) <= 4500;
+        CHECK("conditioned: written PTS − PCR sits on the lead throughout", lead);
+    }
+    {
+        // The correction is sized by cadence, not arrival: a step landing on a
+        // big frame (350 ms of wire time) is absorbed by exactly the step.
+        std::vector<TimelineStamper::Conditioned> big; std::vector<int64_t> bw;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { big.push_back(c); });
+        for (int i = 0; i < 300; i++) {
+            int64_t h = HOUSE + i * STEP_NS + (i >= 100 ? 350'000'000LL : 0);
+            int64_t pts = FIRST_PES + i * STEP - ((i >= 100 && i < 200) ? 94500 : 0);
+            auto data = bytes_of({pes_packet(0x100, pts)});
+            st.condition(data.data(), data.size(), h);
+            bw.push_back(read_pes_pts(data.data()));
+        }
+        bool exact = big.size() == 2 && big[0].step_ticks == -94500 && big[1].step_ticks == 94500
+                     && big[1].offset_ticks == 0;
+        CHECK("a step that lands on a big frame is absorbed by exactly the step, not the frame's wire time", exact);
+        bool smooth = true;
+        for (size_t i = 0; i + 1 < bw.size(); i++) { int64_t d = bw[i + 1] - bw[i]; smooth &= d > 0 && d <= STEP; }
+        CHECK("... so the written PTS has no residual step anywhere", smooth);
+    }
+    {
+        // PCR regeneration (ts_timeline_test.py parity): a 12.6 s PCR lag is
+        // gone from the first regenerated packet; a PCR that freezes 1.1 s
+        // while the PTS runs on does not move the written clock; one
+        // discontinuity indicator, and an event per 300 ms of source drift.
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        auto fold = [](int64_t d, int64_t m) { d %= m; if (d < 0) d += m; return d > m / 2 ? d - m : d; };
+        std::vector<TimelineStamper::Conditioned> ev; std::vector<double> gaps; std::vector<int64_t> wp; int di = 0;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { ev.push_back(c); });
+        int64_t pcr_val = (FIRST_PES - 12 * 90000 - 54000) * 300;
+        for (int i = 0; i < 400; i++) {
+            bool frozen = (i >= 150 && i < 177) || (i >= 300 && i < 327);
+            if (!frozen) pcr_val += STEP * 300;
+            auto data = bytes_of({pcr_pkt(0x100, pcr_val), pes_packet(0x100, FIRST_PES + i * STEP)});
+            st.condition(data.data(), data.size(), HOUSE + i * STEP_NS);
+            if (data[5] & 0x80) di++;
+            wp.push_back(read_pcr(data.data()));
+            gaps.push_back(fold(read_pes_pts(data.data() + PKT) - read_pcr(data.data()) / 300, PTS_WRAP) / 90000.0);
+        }
+        const double GAP0 = (12 * 90000 + 54000 - STEP) / 90000.0;
+        CHECK("PCR regeneration: a 12.6 s PCR lag is gone from the first regenerated packet",
+              !ev.empty() && ev[0].pcr && std::fabs(ev[0].step_ticks / 90000.0 - (GAP0 - 0.25)) < 0.05
+              && std::fabs(gaps[1] - 0.25) < 0.05);
+        bool onlead = true, mono = true;
+        for (size_t i = 1; i < gaps.size(); i++) onlead &= std::fabs(gaps[i] - 0.25) <= 0.05;
+        for (size_t i = 1; i + 1 < wp.size(); i++) { int64_t d = fold(wp[i + 1] - wp[i], PCR_MODULO); mono &= d >= 0 && d <= 27'000'000 / 10; }
+        CHECK("... the written PTS − PCR holds the lead through the pacer's freezes", onlead);
+        CHECK("... the written PCR is continuous and monotone throughout", mono);
+        CHECK("... one discontinuity indicator (the first regenerated value), and the freezes are reported",
+              di == 1 && ev.size() >= 3);
+    }
+    {
+        // The reference is the PID carrying the PCR, even when a leading audio
+        // PID's PES came first (the .103 11:41 freeze).
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        auto fold = [](int64_t d, int64_t m) { d %= m; if (d < 0) d += m; return d > m / 2 ? d - m : d; };
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        bool ok = true;
+        for (int i = 0; i < 200; i++) {
+            int64_t a_pts = FIRST_PES + 126000 + i * STEP, v_pts = FIRST_PES + i * STEP;
+            auto data = bytes_of({pes_packet(0x140, a_pts), pcr_pkt(0x100, (v_pts - 9000) * 300), pes_packet(0x100, v_pts)});
+            st.condition(data.data(), data.size(), HOUSE + i * STEP_NS);
+            double g = fold(read_pes_pts(data.data() + 2 * PKT) - read_pcr(data.data() + PKT) / 300, PTS_WRAP) / 90000.0;
+            if (i >= 2) ok &= std::fabs(g - 0.25) <= 0.05;
+        }
+        CHECK("the regenerated PCR trails the PCR PID's own PTS, not a leading audio PID's", ok);
+
+        // ... and when a stream LAGS the video (audio 400 ms behind) the PCR
+        // trails the lagging one; a sparse PID seconds behind cannot drag it.
+        TimelineStamper lag(nullptr, nullptr, nullptr, true);
+        bool lag_ok = true;
+        for (int i = 0; i < 200; i++) {
+            int64_t v_pts = FIRST_PES + i * STEP, a_pts = v_pts - 36000, k_pts = v_pts - 5 * 90000;
+            std::vector<TsPacket> pk = {pcr_pkt(0x100, (v_pts - 9000) * 300), pes_packet(0x100, v_pts), pes_packet(0x140, a_pts)};
+            if (i % 50 == 0) pk.push_back(pes_packet(0x1F0, k_pts));
+            auto data = bytes_of(pk);
+            lag.condition(data.data(), data.size(), HOUSE + i * STEP_NS);
+            int64_t pcr = read_pcr(data.data()) / 300;
+            double vg = fold(read_pes_pts(data.data() + PKT) - pcr, PTS_WRAP) / 90000.0;
+            double ag = fold(read_pes_pts(data.data() + 2 * PKT) - pcr, PTS_WRAP) / 90000.0;
+            if (i >= 3) lag_ok &= std::fabs(ag - 0.25) <= 0.05 && std::fabs(vg - 0.65) <= 0.05;
+        }
+        CHECK("the PCR trails the lagging audio (audio ≥ lead, video = lead + its lag), unmoved by a sparse PID seconds behind", lag_ok);
+    }
+    {
+        // Sparse PCR clusters are cadence (one indicator in total); a real 2 s
+        // picture gap (PTS +2 s, arrival one frame) is signalled.
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        std::vector<int> di;
+        for (int i = 0; i < 400; i++) {
+            int64_t pts = FIRST_PES + i * STEP + (i >= 300 ? 2 * 90000 : 0) + (i >= 350 ? 20 * 90000 : 0);
+            int64_t h = HOUSE + i * STEP_NS + (i >= 300 ? 2'000'000'000LL : 0);
+            std::vector<TsPacket> pk;
+            if (i % 55 == 0) pk.push_back(pcr_pkt(0x100, (pts - 27000) * 300));
+            pk.push_back(pes_packet(0x100, pts));
+            auto data = bytes_of(pk);
+            st.condition(data.data(), data.size(), h);
+            if ((data[3] & 0x20) && (data[5] & 0x80)) di.push_back(i);
+        }
+        CHECK("sparse PCR clusters and a real picture gap are cadence; only a jump past the bound is signalled",
+              di.size() == 2 && di[0] == 55 && di[1] == 385);
+    }
+    {
+        // TIMING PID (ts_timeline_test.py parity): audio PES 1.7 s ahead of the
+        // video and first in every buffer; the anchor lands on the video, the
+        // video stays on its arrival, the audio rides 1.7 s early.
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        int reanchors = 0, rebase_pid = -1; int64_t rebase_delta = -1;
+        TimelineStamper st(nullptr,
+                           [&](const TimelineStamper::Reanchor& r) { if (reanchors++ == 0) { rebase_pid = r.pid; rebase_delta = r.delta_ticks; } },
+                           nullptr, true);
+        bool video_ok = true, audio_ok = true;
+        for (int i = 0; i < 600; i++) {
+            int64_t h = HOUSE + i * STEP_NS;
+            int64_t v_pts = FIRST_PES + i * STEP, a_pts = v_pts + 153000;
+            auto ab = bytes_of({pes_packet(0x140, a_pts)});
+            st.condition(ab.data(), ab.size(), h);
+            int64_t am = st.stamp(ab.data(), ab.size(), h, 0x140) - h;
+            auto vb = bytes_of({pcr_pkt(0x100, (v_pts - 9000) * 300), pes_packet(0x100, v_pts)});
+            st.condition(vb.data(), vb.size(), h);
+            int64_t vm = st.stamp(vb.data(), vb.size(), h, 0x100) - h;
+            if (i >= 2) { video_ok &= std::llabs(vm) <= STEP_NS; audio_ok &= std::llabs(am - 1'700'000'000LL) <= STEP_NS; }
+        }
+        CHECK("timing PID: the anchor is re-based onto the PCR carrier (video) once it is known",
+              reanchors == 1 && rebase_pid == 0x100 && rebase_delta == 0);
+        CHECK("timing PID: the video stays stamped on its arrival for the whole run (no repair/tier flip)", video_ok);
+        CHECK("timing PID: the audio rides the same anchor, 1.7 s early, untouched", audio_ok);
+    }
+    {
+        // A stall, a real gap and reorder jitter leave the bytes untouched; a
+        // source restart is past the bound and re-anchors as before.
+        int quiet = 0; bool untouched = true;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned&) { quiet++; });
+        const int64_t jit[4] = {0, 7200, -3600, 3600};
+        for (int i = 0; i < 400; i++) {
+            int64_t h = HOUSE + i * STEP_NS + (i >= 100 ? 1'500'000'000LL : 0) + (i >= 200 ? 3'000'000'000LL : 0);
+            int64_t pts = FIRST_PES + i * STEP + (i >= 200 ? 3 * 90000 : 0) + jit[i % 4];
+            auto data = bytes_of({pes_packet(0x100, pts)});
+            st.condition(data.data(), data.size(), h);
+            untouched &= read_pes_pts(data.data()) == (pts & (PTS_WRAP - 1));
+        }
+        CHECK("a stall, a real gap and reorder jitter are never conditioned (bytes untouched)", quiet == 0 && untouched);
+        int rc = 0, rr = 0;
+        TimelineStamper rs(nullptr, [&](const TimelineStamper::Reanchor&) { rr++; }, nullptr, true);
+        rs.set_on_conditioned([&](const TimelineStamper::Conditioned&) { rc++; });
+        for (int i = 0; i < 400; i++) {
+            int64_t pts = (FIRST_PES + i * STEP - (i >= 200 ? 2LL * 3600 * 90000 : 0)) & (PTS_WRAP - 1);
+            auto data = bytes_of({pes_packet(0x100, pts)});
+            rs.condition(data.data(), data.size(), HOUSE + i * STEP_NS);
+            rs.stamp(data.data(), data.size(), HOUSE + i * STEP_NS, 0);
+        }
+        CHECK("a source restart is past the conditioner's bound and re-anchors as before", rc == 0 && rr == 1);
+    }
+
+    // --- the late tier re-anchors on the PES it stamped FROM (.103, 2026-09-08 13:02-13:15) ---
+    // ts_timeline_test.py parity. An audio PES ahead of the video's in every
+    // buffer, written 2 s ahead of it; the PCR rides the video, so the video is
+    // the timing PID. From buffer 20 every buffer arrives 300 ms late (a level).
+    // The tier must re-anchor once, referenced on the VIDEO's own PES, and leave
+    // the video on its arrival — not the written A/V skew behind it, which
+    // matured the hold again 10 s later, and again: one re-anchor every 10 s
+    // with the level growing to -3 s, one dropped bus buffer each, live.
+    {
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        constexpr int64_t SKEW = 2 * 90000;
+        constexpr int64_t LATE_LEVEL = 300'000'000LL;
+        constexpr int LATE_AT = 20;
+        constexpr int LATE_HOLD_BUFS = 10'000'000'000LL / STEP_NS;   // 250
+        auto late_house = [&](int i) {
+            return HOUSE + i * STEP_NS + (i >= LATE_AT ? LATE_LEVEL : 0);
+        };
+        std::vector<TimelineStamper::Reanchor> re;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor& r) { re.push_back(r); }, nullptr, true);
+        std::vector<int64_t> vm;
+        for (int i = 0; i < 800; i++) {
+            const int64_t v = FIRST_PES + i * STEP;
+            auto data = bytes_of({pes_packet(0x140, v + SKEW), pcr_pkt(0x100, (v - 9000) * 300),
+                                  pes_packet(0x100, v)});
+            st.condition(data.data(), data.size(), late_house(i));
+            vm.push_back(st.stamp(data.data(), data.size(), late_house(i), 0) - late_house(i));
+        }
+        size_t tier = 0;
+        for (const auto& r : re) if (r.delta_ticks != 0) tier++;
+        CHECK("audio ahead of the timing PID in the buffer: the anchor is re-based onto the video first",
+              !re.empty() && re[0].pid == 0x100 && re[0].delta_ticks == 0);
+        CHECK("... the late level then re-anchors exactly once", tier == 1 && re.size() == 2);
+        CHECK("... referenced on the timing PID's own PES, not the buffer's first",
+              re.size() == 2 && re.back().pid == 0x100
+              && re.back().pts == FIRST_PES + (LATE_AT + LATE_HOLD_BUFS) * STEP);
+        bool after = true;
+        for (int i = LATE_AT + LATE_HOLD_BUFS; i < 800; i++) after &= std::llabs(vm[i]) <= STEP_NS;
+        CHECK("... and from it the video leaves on its arrival for the rest of the run (no 10 s cycle)", after);
+    }
+
+    // --- a foreign-timeline metadata PID never moves the shared anchor (.103, 2026-09-08 13:27) ---
+    // ts_timeline_test.py parity. The PCR rides the video (0x100), so the video
+    // is the timing PID. A sparse KLV-style PID (0x1f0) carries its own clock
+    // ~24 h off the media and steps around on it. It must NEVER trip the watch:
+    // re-anchoring the egress onto it blanks every consumer (live: +77 s jumps
+    // on every reconnect). The video's own -1 s rewind still re-anchors.
+    {
+        auto pcr_pkt = [](int pid, int64_t pcr27) {
+            TsPacket t; std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = (pid >> 8) & 0x1F; t.b[2] = pid & 0xFF; t.b[3] = 0x20;
+            t.b[4] = 183; t.b[5] = 0x10;
+            int64_t base = pcr27 / 300; int ext = (int)(pcr27 % 300);
+            t.b[6] = (uint8_t)(base >> 25); t.b[7] = (uint8_t)(base >> 17); t.b[8] = (uint8_t)(base >> 9);
+            t.b[9] = (uint8_t)(base >> 1); t.b[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+            t.b[11] = (uint8_t)(ext & 0xFF);
+            return t;
+        };
+        constexpr int64_t META = 7'900'000'000LL;   // ~24 h off, its own timeline
+        std::vector<TimelineStamper::Reanchor> re;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor& r) { re.push_back(r); }, nullptr, true);
+        for (int i = 0; i < 200; i++) {
+            const int64_t v = FIRST_PES + i * STEP;
+            // The metadata PID jumps around wildly on its own clock every buffer.
+            const int64_t m = META + (int64_t)((i * 37) % 500) * 90000;
+            auto data = bytes_of({pcr_pkt(0x100, (v - 9000) * 300), pes_packet(0x100, v),
+                                  pes_packet(0x1f0, m)});
+            st.condition(data.data(), data.size(), HOUSE + i * STEP_NS);
+            st.stamp(data.data(), data.size(), HOUSE + i * STEP_NS, 0);
+        }
+        bool meta_drove = false;
+        for (const auto& r : re) if (r.pid == 0x1f0) meta_drove = true;
+        CHECK("a foreign-timeline metadata PID never re-anchors the shared egress", !meta_drove);
+        // The timing PID's own RESTART (past the conditioner's 10 s bound, so
+        // the watch — not the conditioner — owns it) still re-anchors, with the
+        // metadata PID present the whole time.
+        std::vector<TimelineStamper::Reanchor> re2;
+        TimelineStamper st2(nullptr, [&](const TimelineStamper::Reanchor& r) { re2.push_back(r); }, nullptr, true);
+        for (int i = 0; i < 60; i++) {
+            const int64_t v = (FIRST_PES + i * STEP - (i >= 30 ? 30LL * 90000 : 0)) & (PTS_WRAP - 1);
+            auto data = bytes_of({pcr_pkt(0x100, (v - 9000) * 300), pes_packet(0x100, v),
+                                  pes_packet(0x1f0, META)});
+            st2.condition(data.data(), data.size(), HOUSE + i * STEP_NS);
+            st2.stamp(data.data(), data.size(), HOUSE + i * STEP_NS, 0);
+        }
+        bool video_reanchored = false;
+        for (const auto& r : re2) if (r.pid == 0x100) video_reanchored = true;
+        CHECK("the timing PID's own restart still re-anchors, with a metadata PID present", video_reanchored);
+    }
+
+    // --- the conditioner rounds negative steps with FLOOR division (ts_timeline_test.py parity) ---
+    // A backward PTS step whose ns->tick conversion does NOT divide evenly: floor
+    // and C++ truncate-toward-zero differ by one tick. The wire must be byte-for-byte
+    // identical to python, so the reported step, the offset and the rewritten PTS are
+    // the FLOOR result. A plain `/` at ts_timeline.cpp:671 reports -89999 and writes
+    // 8128800 (the .103 conditioner) and this fails.
+    {
+        std::vector<TimelineStamper::Conditioned> cr;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { cr.push_back(c); });
+        for (int i = 0; i < 8; i++) {                 // fill the cadence memory with 40 ms deltas
+            auto d = bytes_of({pes_packet(0x100, FIRST_PES + i * STEP)});
+            st.condition(d.data(), d.size(), HOUSE + i * STEP_NS);
+        }
+        auto d = bytes_of({pes_packet(0x100, FIRST_PES + 8 * STEP - 89999)});   // ~1 s back, non-even
+        st.condition(d.data(), d.size(), HOUSE + 8 * STEP_NS);
+        CHECK("a non-even backward step is conditioned with floor division (reported step)",
+              cr.size() == 1 && cr[0].step_ticks == -90000);
+        CHECK("... the cumulative offset is the floored step negated",
+              cr.size() == 1 && cr[0].offset_ticks == 90000);
+        CHECK("... and the rewritten PTS carries the floored offset (byte parity with python)",
+              read_pes_pts(d.data()) == 8128801);
     }
 
     return test_summary("ts_timeline");

@@ -600,10 +600,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * Deliberately at WARN for a real shed: frames (or samples) were dropped on
      * purpose, and the retained/budget pair beside it is the evidence for WHY —
      * without it a shed is indistinguishable in the journal from the glitch it
-     * repaired. `implausible` and `awaiting_keyframe` are the two outcomes that
-     * shed nothing yet: the first says the reading was not a backlog at all,
-     * the second that the leg is caught up and waiting for an IRAP it must not
-     * skip.
+     * repaired. `implausible`, `timeline` and `awaiting_keyframe` are the
+     * outcomes that shed nothing: the first says the reading was not a backlog
+     * at all, the second that the leg is late but its queues are empty (a
+     * producer stamping behind real time — dropping would return nothing), the
+     * third that the leg is caught up and waiting for an IRAP it must not skip.
      */
     private logBacklogShed(payload: unknown): void {
         const p = (payload ?? {}) as { outcome?: string };
@@ -611,6 +612,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.log.warn(
                 { backlogShed: payload },
                 'Backlog shed: lateness past the sanity ceiling — treated as a timeline mismatch, nothing shed',
+            );
+            return;
+        }
+        if (p.outcome === 'timeline') {
+            this.log.warn(
+                { backlogShed: payload },
+                'Backlog shed: over budget but nothing queued upstream — the timeline is late, not backlogged; nothing shed',
             );
             return;
         }

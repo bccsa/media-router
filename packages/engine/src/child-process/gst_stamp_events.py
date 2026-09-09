@@ -91,6 +91,22 @@ def reanchor_event(tee, ev):
                         f"re-anchored egress {tee} in place")}
 
 
+def conditioned_event(tee, ev):
+    """The `timeline_conditioned` engine event: the stamper's conditioner took
+    one source clock step out of the wire (mrts::conditioned_event_json)."""
+    return {"event": "timeline_conditioned", "tee": tee, "pid": ev["pid"],
+            "clock": ev["clock"], "stepTicks": ev["stepTicks"],
+            "offsetTicks": ev["offsetTicks"], "houseNs": ev["houseNs"]}
+
+
+def conditioned_moment(tee, ev):
+    emit(conditioned_event(tee, ev))
+    log_line(tee, f"absorbed a {ev['stepTicks'] / 90000.0:+.2f}s {ev['clock'].upper()} step "
+                  f"on pid 0x{ev['pid']:x} (timeline offset now "
+                  f"{ev['offsetTicks'] / 90000.0:+.2f}s) — the source reset its clock, "
+                  f"the wire stayed continuous")
+
+
 def drift_event(tee, d):
     """The `timeline_drift` engine event — the drift loop's periodic report.
 
@@ -171,6 +187,18 @@ def handle_message(src_name, kind, structure):
         why = structure.get_value("why")
         emit(segment_warning_event(tee, why))
         log_line(tee, f"{why} — stamp written unmapped")
+        return
+    if kind == "mrtsstamp-conditioned":
+        conditioned_moment(tee, {"pid": structure.get_value("pid"),
+                                 "clock": structure.get_value("clock"),
+                                 "stepTicks": structure.get_value("stepTicks"),
+                                 "offsetTicks": structure.get_value("offsetTicks"),
+                                 "houseNs": structure.get_value("houseNs")})
+        return
+    if kind == "mrtsstamp-map-failed":
+        why = structure.get_value("why")
+        emit(segment_warning_event(tee, why))
+        log_line(tee, f"{why} — buffer passed through with source timing")
         return
     if kind == "mrtsstamp-settled":
         settled_moment(tee, {"anchorNs": structure.get_value("anchorNs"),

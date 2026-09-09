@@ -41,3 +41,20 @@ failure mode and the byte cap costs nothing on a healthy stream.
   queue, mpegts-ip-output / mpegts-ip-input back-pressure queues, the
   video-player's compressed pre-decode queue, and the literal queues in
   audio-transcoder, audio-decoder and n1-mixer-302m.
+
+## Exception: the per-consumer bus edge queue (time bound 5 s, byte cap 500 ms)
+
+The runner's per-consumer fan-out edge queue (`BUS_EDGE_QUEUE_MS` /
+`BUS_EDGE_QUEUE_MAX_BYTES` in `gst-pipeline-runner.py`) deliberately does NOT
+size its byte cap to its time bound. It carries a **5 s** time bound but a
+**500 ms** byte cap (4 MB at 64 Mbit/s). The time bound is generous ONLY so a
+producer re-anchor — which steps the stamp timeline forward by up to the
+conditioner's bound (ADR-0005 Stage 3f) — is not read as a full queue and
+leaked, one buffer per re-anchor, breaking continuity on every PID (measured
+.103, 2026-09-08). The byte cap stays at the shed granularity (500 ms) because
+here it is the real per-consumer memory backstop, not a companion to the time
+bound: a stalled consumer sheds at 500 ms of stream or 4 MB, whichever comes
+first, and a healthy re-anchor (which adds timeline, not bytes) never
+approaches the cap. So the two bounds are sized to two different jobs, and the
+formula above ("64 Mbit/s × the time bound") is the default for queues whose
+time bound IS the latency target — not for this one.

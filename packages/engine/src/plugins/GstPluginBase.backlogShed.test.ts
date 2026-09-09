@@ -66,12 +66,17 @@ describe('GstPluginBase backlog-shed logging', () => {
         );
     });
 
-    it('distinguishes the two outcomes that shed nothing', () => {
+    it('distinguishes the three outcomes that shed nothing', () => {
         const { module, log } = makeModule();
         module.deliver(BACKLOG_SHED_EVENT, { ...recovered, outcome: 'implausible' });
         expect(log.warn.mock.calls[0][1]).toContain('timeline mismatch');
         module.deliver(BACKLOG_SHED_EVENT, { ...recovered, outcome: 'awaiting_keyframe' });
         expect(log.warn.mock.calls[1][1]).toContain('holding for the next keyframe');
+        // A late TIMELINE with empty queues: over budget, nothing parked upstream,
+        // so dropping would return nothing (10.9.16.103, 2026-09-08).
+        module.deliver(BACKLOG_SHED_EVENT, { element: 'vpdec', outcome: 'timeline', budgetMs: 300, excessBeforeMs: 480 });
+        expect(log.warn.mock.calls[2][1]).toContain('nothing queued upstream');
+        expect(log.warn.mock.calls[2][1]).toContain('nothing shed');
     });
 
     it('still delivers the event to the subclass hook', () => {

@@ -96,6 +96,17 @@ class TimelineStamper {
         int64_t anchor_ns, repair_ns, window_ns;
     };
     using OnSettled = std::function<void(const Settled&)>;
+    // The timeline conditioner absorbed one clock step (python's
+    // `on_conditioned`): `pcr` names which clock, `step_ticks` the step it took
+    // out of the wire (90 kHz, signed: negative = the source stepped back),
+    // `offset_ticks` the cumulative correction now applied to that PID.
+    struct Conditioned {
+        int pid;
+        bool pcr;
+        int64_t step_ticks, offset_ticks;
+        int64_t house_ns;
+    };
+    using OnConditioned = std::function<void(const Conditioned&)>;
 
     // `repair_latch` is the OPT-IN for the latch-repair window (ts_timeline.py,
     // "latch repair"): only for a producer whose delivery cadence IS its media
@@ -112,6 +123,21 @@ class TimelineStamper {
     // timestampless buffer leaves the time-bounded leaky queues on the bus
     // unable to measure their own level.
     int64_t stamp(const uint8_t* data, size_t len, int64_t house_now, int stream = 0);
+
+    // TIMELINE CONDITIONER (python's `condition`) — rewrites the PES PTS/DTS and
+    // PCR fields IN `data` so that a clock step at the source (a muxer that
+    // resets its pacing timeline: vMix CBR, −1.1 s then +1.1 s every ~90 s)
+    // never reaches a consumer as a discontinuity. Per PID, a PES whose PTS
+    // moved by more than COND_STEP_NS while its arrival moved normally is a
+    // clock step, not content: the PID's offset absorbs the difference so the
+    // written cadence follows arrival. A delivery STALL (PTS normal, arrival
+    // late) and a genuine GAP (PTS and arrival moved together) are left alone;
+    // so is anything past COND_MAX_NS, which the watch re-anchors as before.
+    // Call BEFORE stamp() on the same bytes; live-cadence producers only (the
+    // same set that turns repair_latch on — an HLS fan-out's bursts are not a
+    // cadence). Returns the number of steps absorbed.
+    int condition(uint8_t* data, size_t len, int64_t house_now);
+    void set_on_conditioned(OnConditioned cb) { on_conditioned_ = std::move(cb); }
 
     // Close an open latch-repair window NOW and report it (python's
     // `close_latch`): for a disarm inside the window, so a short-lived
@@ -163,8 +189,18 @@ class TimelineStamper {
     // fallen and STAYED further behind house time than the sanity bound. See
     // ts_timeline.py for the constants' rationale.
     void scan_stale(int pid, int64_t pts, int64_t house_now, int stream);
+    // The level tier of that net (python's `_scan_late`): re-anchors when even
+    // the best-delivered buffer of the egress has arrived more than LATE_NS
+    // after its own mapped time for LATE_HOLD_NS straight, or (repair_on_
+    // producers only) when even the least-early buffer has arrived more than
+    // EARLY_NS before it for EARLY_HOLD_NS. True when it did, so the caller
+    // restamps the buffer on the fresh epoch.
+    bool scan_late(int pid, int64_t pts, int64_t house_now, int64_t stamp);
     // False when the buffer carries no PES header at all (`*out` untouched).
-    bool scan_stamp(const uint8_t* data, size_t len, int64_t house_now, int64_t* out);
+    // `*out_pid` is the PID whose PES the stamp came from (the timing PID's
+    // when the buffer carries one).
+    bool scan_stamp(const uint8_t* data, size_t len, int64_t house_now, int64_t* out,
+                    int* out_pid = nullptr, int64_t* out_pts = nullptr);
     // Latch repair (python's `_open_latch` / `_repair`): a fresh anchor opens
     // the window; inside it a stamp later than its own arrival pulls the anchor
     // back and leaves as the arrival; the first PES past it closes and reports.
@@ -180,6 +216,12 @@ class TimelineStamper {
     std::map<int, int64_t> pending_;      // pid -> the epoch its last anomaly proposed
     std::map<int, int64_t> floors_;       // stream -> last stamp emitted
     std::map<int, int64_t> stale_since_;  // stream -> house time its lag went out of bound
+    bool late_open_ = false;              // the egress-wide margin is past LATE_NS
+    int64_t late_since_ = 0;              // ... since this house time
+    int64_t late_min_ = 0;                // ... and the smallest margin since (the level)
+    bool early_open_ = false;             // the margin is below -EARLY_NS (repair_on_ only)
+    int64_t early_since_ = 0;             // ... since this house time
+    int64_t early_max_ = 0;               // ... and the largest margin since (the level)
     int anom_ = 0;
     long long reanchors_ = 0;
     // Drift servo (see ts_timeline.py for the design and every constant's
@@ -208,8 +250,54 @@ class TimelineStamper {
     OnAnchor on_anchor_;
     OnReanchor on_reanchor_;
     OnSettled on_settled_;
+    OnConditioned on_conditioned_;
     bool repair_on_ = false;
+    // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
+    struct CondClock {
+        int64_t last_raw;      // last raw value seen (90 kHz for PES, 27 MHz for PCR)
+        int64_t last_house;    // house time it arrived at
+        int64_t offset;        // correction applied (same unit as last_raw)
+        std::vector<int64_t> recent;   // recent in-cadence deltas (ns), the nominal's source
+    };
+    // The step to absorb: the raw delta less this clock's nominal interval (the
+    // median of its recent in-cadence deltas), so a step that lands on a large
+    // frame is not over-corrected by that frame's wire time.
+    static int64_t cond_step_ns(const CondClock& c, int64_t d_ns);
+    static void cond_remember(CondClock& c, int64_t d_ns);
+    // The PTS the regenerated PCR must trail: the LOWEST recent written PTS of
+    // any stream (an audio PID can lag the video's by hundreds of ms and must
+    // not be placed before it is delivered), bounded to at most COND_PCR_FLOOR_NS
+    // below the reference PID's so a sparse metadata PID cannot drag it.
+    int64_t cond_pcr_floor_pts(int64_t house_now) const;
+    std::map<int, CondClock> cond_pes_;
+    // PCR regeneration (python's `_cond_ref_*`): the reference PES PID (the
+    // first with a PTS), its last WRITTEN PTS and the house time it arrived at,
+    // the last written PCR (monotone guard), and the last reported raw→written
+    // PCR offset (an event marks each new deviation of the source's PCR).
+    int cond_ref_pid_ = -1;
+    int cond_pcr_pid_ = -1;              // the PID carrying the PCR: the reference, when it has PES
+    // TIMING PID (python's `_timing_pid`): under conditioning, the PID carrying
+    // the PCR is the egress's timing reference — the anchor is taken on ITS
+    // first PES, and the latch repair, the drift servo and the late/early
+    // tiers judge ITS buffers only. Every other PID rides the same anchor. A
+    // source whose audio PES run 1.7 s ahead of its video (vMix, .103
+    // 2026-09-08 12:03) otherwise has each mechanism "correcting" the anchor
+    // for one stream and breaking it for the other. −1 = any PID (legacy).
+    int timing_pid_ = -1;
+    int anchor_pid_ = -1;                // the PID the anchor was taken on
+    bool timing_rebase_pending_ = false; // the timing PID was learned after the anchor: re-base on its next PES
+    int64_t cond_ref_wpts_ = 0;
+    int64_t cond_ref_house_ = 0;
+    std::map<int, std::pair<int64_t, int64_t>> cond_seen_;   // pid -> (last wpts, house): the floor's candidates
+    bool cond_have_wpcr_ = false;
+    int64_t cond_last_wpcr_ = 0;
+    int64_t cond_last_wpcr_house_ = 0;   // arrival of the last written PCR
+    bool cond_pcr_regen_ = false;
+    bool cond_pcr_reported_ = false;
+    int64_t cond_pcr_reported_offset_ = 0;
 };
+
+std::string conditioned_event_json(const TimelineStamper::Conditioned& c);
 
 // The stamper's two engine events as JSON lines — ONE definition for every
 // native producer (mr-bus-fanout, mr-tssplit), field for field what

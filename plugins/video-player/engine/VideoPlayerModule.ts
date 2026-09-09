@@ -638,7 +638,6 @@ export class VideoPlayerModule extends GstPluginBase {
             available: VideoPlayerModule.decoders,
             demoted: VideoPlayerModule.activeDemotions(),
             threading: resolveCpuDecodeThreading(this.config?.cpuDecodeThreading),
-            parserBypass: this.config?.parserBypass === true,
         });
     }
 
@@ -1211,7 +1210,6 @@ export class VideoPlayerModule extends GstPluginBase {
             demoted: VideoPlayerModule.activeDemotions(),
             bufferMs: config.bufferMs,
             cpuDecodeThreading: config.cpuDecodeThreading,
-            clockSync: sink.clockSync,
             sinkPaced: sink.sinkPaced,
             // Read only for the time-sync contract gate on the backlog shedder.
             services: this.services,

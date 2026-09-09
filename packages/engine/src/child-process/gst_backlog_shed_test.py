@@ -69,6 +69,17 @@ def collect_plugin_events():
     return events
 
 
+# What the shed policy is told sits in the queues upstream of the shed point.
+# The fixture has no queue — it models retained latency by STAMPING — so the
+# queue walk is stood in for: None = walk the real pipeline (0 here), a number
+# = "this much is parked upstream". The default says the whole injected
+# backlog is queued, which is exactly what the ratchet reproduction means.
+QUEUED = {"ms": 10_000.0}
+_real_upstream_queued_ms = runner._upstream_queued_ms
+runner._upstream_queued_ms = (
+    lambda pad: _real_upstream_queued_ms(pad) if QUEUED["ms"] is None else QUEUED["ms"])
+
+
 def build(keyframe_aligned=True, budget_ms=BUDGET_MS, dec="identity name=vdec",
           **policy):
     """A contract-clocked leg: appsrc → `vdec` (the shed point) → sink.
@@ -263,6 +274,63 @@ check("the audio event carries the same before/after pair",
       near(ev.get("retainedBeforeMs"), BACKLOG_MS, 120)
       and ev.get("retainedAfterMs") <= BUDGET_MS + 20)
 teardown(pipe)
+
+# --- nothing queued: a late TIMELINE is reported, never shed -----------------
+# 10.9.16.103, 2026-09-08: a gateway mux rewound ~1 s; every buffer reached the
+# decoder ~500 ms over budget with the queues EMPTY, and the shedder dropped
+# 1072 frames over 21.9 s waiting for a keyframe that could not make the next
+# buffer arrive any earlier. Dropping returns nothing when nothing is queued.
+events = collect_plugin_events()
+QUEUED["ms"] = 0.0
+pipe, src, arrivals = build(keyframe_aligned=True)
+n = push_for(src, HOLD_MS + 400, backlog_ms=BACKLOG_MS)
+time.sleep(0.2)
+check("a late timeline with empty queues never opens an episode",
+      runner._backlog_shed["shedding"] is False and runner._backlog_shed["sheds"] == 0)
+check("every buffer is delivered — the picture keeps moving, late", len(arrivals) == n)
+timeline = [p for ch, p in events if ch == "backlog_shed"
+            and p.get("outcome") == "timeline"]
+check("and it is reported once as a late timeline, with the excess it saw",
+      len(timeline) == 1 and near(timeline[0].get("excessBeforeMs"), BACKLOG_MS - BUDGET_MS, 120)
+      and timeline[0].get("budgetMs") == BUDGET_MS)
+# Once a real backlog does park upstream the same excess is shed — the refusal
+# re-asks after every hold, it does not give up on the leg.
+QUEUED["ms"] = BACKLOG_MS
+push_for(src, HOLD_MS + 400, backlog_ms=BACKLOG_MS)
+time.sleep(0.2)
+check("the same excess is shed once the queues hold it",
+      runner._backlog_shed["shedding"] is True)
+teardown(pipe)
+QUEUED["ms"] = 10_000.0
+
+# The walk itself, on a real chain: queue → identity → queue → vdec, with the
+# chain blocked between the queues so data parks in the first one.
+QUEUED["ms"] = None
+walk_pipe = Gst.parse_launch(
+    "appsrc name=src is-live=true format=time do-timestamp=false "
+    "! queue name=q1 max-size-time=0 max-size-buffers=0 max-size-bytes=0 "
+    "! identity name=blocker ! queue name=q2 ! identity name=vdec "
+    "! fakesink sync=false async=false")
+runner._apply_contract_clock(walk_pipe)
+walk_pipe.set_state(Gst.State.PLAYING)
+walk_pipe.get_state(5 * Gst.SECOND)
+vdec_pad = walk_pipe.get_by_name("vdec").get_static_pad("sink")
+check("an empty chain measures 0 ms queued", runner._upstream_queued_ms(vdec_pad) == 0.0)
+walk_pipe.get_by_name("blocker").get_static_pad("src").add_probe(
+    Gst.PadProbeType.BLOCK_DOWNSTREAM, lambda _p, _i: Gst.PadProbeReturn.OK)
+walk_src = walk_pipe.get_by_name("src")
+t_walk = Gst.SystemClock.obtain().get_time()
+for i in range(21):
+    b = Gst.Buffer.new_allocate(None, 32, None)
+    b.pts = t_walk + i * 20 * Gst.MSECOND
+    b.duration = 20 * Gst.MSECOND
+    walk_src.emit("push-buffer", b)
+time.sleep(0.3)
+queued = runner._upstream_queued_ms(vdec_pad)
+check("data parked in a queue upstream of the shed point is measured through the chain",
+      near(queued, 400, 60))
+walk_pipe.set_state(Gst.State.NULL)
+QUEUED["ms"] = 10_000.0
 
 # --- the sanity ceiling: an implausible timeline is reported, never shed -----
 events = collect_plugin_events()

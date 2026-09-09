@@ -11,6 +11,7 @@
  */
 #include "ts_timeline.h"
 
+#include <cstdlib>
 #include <algorithm>
 
 #include "ts_psi.h"
@@ -37,6 +38,39 @@ constexpr int ANOM_CONFIRM = 2;
 // spike.
 constexpr int64_t STALE_NS = 5'000'000'000LL;
 constexpr int64_t STALE_HOLD_NS = 1'000'000'000LL;
+
+// The late-level tier of the same net (the 2026-09-08 .103 freeze) — rationale
+// in full in ts_timeline.py (`_LATE_NS`); in short: a POSITIVE margin held by
+// even the best-delivered buffer of the egress for the hold is the anchor's
+// error, not the producer's business (a negative one — a delivery lead — is,
+// which is why the slew stays slope-only). Measured per PES buffer against its
+// OWN mapped time (never the floor's age: a sparse PID must not trip it),
+// minimum across every stream of the egress, one-sided.
+constexpr int64_t LATE_NS = 100'000'000LL;
+constexpr int64_t LATE_HOLD_NS = 10'000'000'000LL;
+// The EARLY side of that tier (the #737 rewind, the RIST-reconnect lead) —
+// OPT-IN with repair_latch, because a delivery lead is legitimate for a
+// producer that runs ahead by design (the HLS fan-out) and the anchor's error
+// only for one whose delivery cadence is its media cadence. Measured as the
+// MAXIMUM margin over the hold (the least-early buffer). ts_timeline.py.
+constexpr int64_t EARLY_NS = 800'000'000LL;
+constexpr int64_t EARLY_HOLD_NS = 10'000'000'000LL;
+
+// Timeline conditioner (ts_timeline.py `condition`, rationale there): a PES
+// PTS (or PCR) delta beyond COND_STEP_NS that its arrival did not match is a
+// clock step and is absorbed; beyond COND_MAX_NS it is a real discontinuity
+// and is left to the watch.
+constexpr int64_t COND_STEP_NS = 300'000'000LL;
+constexpr int64_t COND_MAX_NS = 10'000'000'000LL;
+// PCR regeneration (ts_timeline.py `_COND_PCR_LEAD_NS`): a consumer's tsdemux
+// places every buffer at `stamp + (PTS − PCR)`, so the wire's PTS − PCR must be
+// constant for the producer's stamps to mean anything downstream. The source's
+// PCR is the pacer's clock — the one that stops, resets and lags — so it is not
+// patched but REPLACED: written PCR = the reference PID's conditioned PTS minus
+// this lead, interpolated by arrival between frames.
+constexpr int64_t COND_PCR_LEAD_NS = 250'000'000LL;
+constexpr int64_t COND_PCR_RECENT_NS = 500'000'000LL;   // a stream counts while it has a PES this recent
+constexpr int64_t COND_PCR_FLOOR_NS = 1'000'000'000LL;  // ... and may pull the PCR at most this far down
 
 // Drift slewing — the third mechanism, and the only continuous one. The design
 // and every constant below are documented in full in ts_timeline.py, including
@@ -356,6 +390,8 @@ void TimelineStamper::reanchor(int pid, int64_t last_pts, int64_t pts, int64_t d
     watch_last_.clear();
     pending_.clear();
     stale_since_.clear();
+    late_open_ = false;
+    early_open_ = false;
     // The drift estimate belongs to the old mapping too: its baseline was a
     // margin measured against an anchor that no longer exists, so carrying it
     // over would slew the fresh anchor by the dead epoch's error.
@@ -380,6 +416,16 @@ void TimelineStamper::scan_watch(const uint8_t* data, size_t len, int64_t house_
         int64_t pts = read_pes_pts(pkt);
         if (pts < 0) continue;
         int pid = ts_pid(pkt);
+        // Only the timing PID may move the shared anchor once the PCR carrier
+        // is known. A multiplexed egress carries PIDs on unrelated timelines —
+        // a KLV/metadata PID stamps its own clock hours off the media (PID
+        // 0x1f0, PTS ~87813 s, on the .103 vMix feed) — and letting one of
+        // those trip the discontinuity watch re-anchored the WHOLE egress onto
+        // it (+77 s), blanking every consumer for the seconds before the video
+        // PID pulled it back (.103, 2026-09-08 13:27, on every reconnect).
+        // Unknown timing PID (a single-PID SPTS egress with no PCR — mr-tssplit
+        // outputs) keeps watching every PID: that is the 2026-08-13 freeze fix.
+        if (timing_pid_ >= 0 && pid != timing_pid_) continue;
         auto it = watch_last_.find(pid);
         if (it == watch_last_.end()) {
             watch_last_[pid] = pts;
@@ -438,18 +484,256 @@ void TimelineStamper::scan_stale(int pid, int64_t pts, int64_t house_now, int st
              -(lag * 9 / 100000), house_now);
 }
 
+bool TimelineStamper::scan_late(int pid, int64_t pts, int64_t house_now, int64_t stamp) {
+    // python's `_scan_late`, line for line: see ts_timeline.py for the design.
+    int64_t margin = house_now - stamp;
+    auto wl = watch_last_.find(pid);
+    const int64_t last_pts = wl == watch_last_.end() ? pts : wl->second;
+    // The LATE side: media behind house.
+    if (margin <= LATE_NS) {
+        late_open_ = false;               // one on-time buffer: it is jitter
+    } else {
+        if (!late_open_) {
+            late_open_ = true;
+            late_since_ = house_now;
+            late_min_ = margin;
+        } else if (margin < late_min_) {
+            late_min_ = margin;
+        }
+        if (house_now - late_since_ >= LATE_HOLD_NS) {
+            // `delta_ticks` carries the LEVEL that forced this (negative — media
+            // behind house), the same convention as the 5 s net's lag.
+            reanchor(pid, last_pts, pts, -(late_min_ * 9 / 100000), house_now);
+            return true;
+        }
+    }
+    // The EARLY side: media ahead of house — live-cadence producers only.
+    if (!repair_on_ || margin >= -EARLY_NS) {
+        early_open_ = false;              // one on-time buffer: it is jitter
+    } else {
+        if (!early_open_) {
+            early_open_ = true;
+            early_since_ = house_now;
+            early_max_ = margin;
+        } else if (margin > early_max_) {
+            early_max_ = margin;
+        }
+        if (house_now - early_since_ >= EARLY_HOLD_NS) {
+            // Positive delta_ticks: media ahead of house, by the level.
+            reanchor(pid, last_pts, pts, (-early_max_) * 9 / 100000, house_now);
+            return true;
+        }
+    }
+    return false;
+}
+
+namespace {
+// Signed, wrap-folded difference on an N-bit counter.
+int64_t fold(int64_t d, int64_t modulo) {
+    d %= modulo;
+    if (d < 0) d += modulo;
+    return d > modulo / 2 ? d - modulo : d;
+}
+int64_t read_pes_dts(const uint8_t* pkt) {
+    // Caller has already established a PES header with a PTS at payload_offset.
+    int off = payload_offset(pkt);
+    if (off + 19 > PKT) return -1;
+    const uint8_t* p = pkt + off;
+    if (!(p[7] & 0x40)) return -1;
+    return ((int64_t)((p[14] >> 1) & 0x07) << 30) | ((int64_t)p[15] << 22) |
+           ((int64_t)(p[16] >> 1) << 15) | ((int64_t)p[17] << 7) | (p[18] >> 1);
+}
+// Rewrite the 33-bit value of a 5-byte PES timestamp field in place, keeping
+// its 4-bit prefix ('0010' PTS-only, '0011' PTS of a pair, '0001' DTS) and the
+// three marker bits exactly as the mux wrote them.
+void write_ts_field(uint8_t* f, int64_t v) {
+    f[0] = (uint8_t)((f[0] & 0xF0) | (((v >> 30) & 0x07) << 1) | 0x01);
+    f[1] = (uint8_t)((v >> 22) & 0xFF);
+    f[2] = (uint8_t)((((v >> 15) & 0x7F) << 1) | 0x01);
+    f[3] = (uint8_t)((v >> 7) & 0xFF);
+    f[4] = (uint8_t)(((v & 0x7F) << 1) | 0x01);
+}
+void write_pcr(uint8_t* pkt, int64_t pcr27) {
+    int64_t base = pcr27 / 300;
+    int ext = (int)(pcr27 % 300);
+    pkt[6] = (uint8_t)(base >> 25);
+    pkt[7] = (uint8_t)(base >> 17);
+    pkt[8] = (uint8_t)(base >> 9);
+    pkt[9] = (uint8_t)(base >> 1);
+    pkt[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
+    pkt[11] = (uint8_t)(ext & 0xFF);
+}
+}  // namespace
+
+namespace {
+constexpr size_t COND_RECENT = 8;
+}  // namespace
+
+void TimelineStamper::cond_remember(CondClock& c, int64_t d_ns) {
+    if (c.recent.size() >= COND_RECENT) c.recent.erase(c.recent.begin());
+    c.recent.push_back(d_ns);
+}
+
+int64_t TimelineStamper::cond_step_ns(const CondClock& c, int64_t d_ns) {
+    if (c.recent.empty()) return d_ns;
+    std::vector<int64_t> v(c.recent);
+    std::sort(v.begin(), v.end());
+    return d_ns - v[v.size() / 2];
+}
+
+int64_t TimelineStamper::cond_pcr_floor_pts(int64_t house_now) const {
+    int64_t floor = cond_ref_wpts_;
+    for (const auto& kv : cond_seen_) {
+        if (kv.first == cond_ref_pid_ || house_now - kv.second.second > COND_PCR_RECENT_NS) continue;
+        const int64_t d = fold(kv.second.first - cond_ref_wpts_, PTS_WRAP);
+        if (d < 0 && pts90k_to_ns(-d) <= COND_PCR_FLOOR_NS && fold(kv.second.first - floor, PTS_WRAP) < 0)
+            floor = kv.second.first;
+    }
+    return floor;
+}
+
+int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
+    int absorbed = 0;
+    for (size_t off = 0; off + PKT <= len; off += PKT) {
+        uint8_t* pkt = data + off;
+        if (pkt[0] != SYNC_BYTE) continue;
+        const int pid = ts_pid(pkt);
+        // --- PCR (adaptation field): regenerated from the conditioned PTS ---
+        int64_t pcr = read_pcr(pkt);
+        if (pcr >= 0) {
+            cond_pcr_pid_ = pid;
+            if (timing_pid_ != pid) {
+                timing_pid_ = pid;
+                // Learned after the anchor was taken on another PID: re-base
+                // onto the timing PID's next PES (reported as a re-anchor).
+                timing_rebase_pending_ = anchored_ && anchor_pid_ != pid;
+            }
+            if (cond_ref_pid_ >= 0) {
+                // wpts − lead, in MEDIA time: flat between frames, never advanced
+                // by arrival (a 94 KB I-frame's 350 ms of wire time is not media
+                // time, and interpolating by it stepped the PCR — measured on
+                // the .103 capture). One frame of PCR jitter is nothing to a
+                // demuxer's skew filter; a step is a discontinuity.
+                int64_t w = cond_pcr_floor_pts(house_now) * 300 - floor_div(COND_PCR_LEAD_NS * 27, 1000);
+                w %= PCR_MODULO;
+                if (w < 0) w += PCR_MODULO;
+                bool di = !cond_pcr_regen_;              // first regenerated value
+                if (cond_pcr_regen_) {                    // guard among regenerated values only
+                    const int64_t dw = fold(w - cond_last_wpcr_, PCR_MODULO);
+                    if (dw < 0) {
+                        w = cond_last_wpcr_;              // monotone guard
+                    } else if (std::llabs(floor_div(dw * 1000, 27) - (house_now - cond_last_wpcr_house_)) >
+                               COND_MAX_NS) {
+                        // The clock moved by more than the conditioner's bound past
+                        // the time that passed: a source restart, which reaches the
+                        // wire as written. NOT a delivery burst — SRT hands us
+                        // hundreds of ms in one go, and a demuxer told to reset on
+                        // each of those re-armed the keyframe gate every GOP (.103,
+                        // 2026-09-08 12:23, 61 re-arms in 4 min at a 300 ms bound).
+                        di = true;
+                    }
+                }
+                if (di) pkt[5] |= 0x80;                 // signalled discontinuity
+                write_pcr(pkt, w);
+                cond_pcr_regen_ = true;
+                cond_last_wpcr_ = w;
+                cond_last_wpcr_house_ = house_now;
+                cond_have_wpcr_ = true;
+                // One event per new deviation of the source's PCR from ours.
+                const int64_t off = fold(w - pcr, PCR_MODULO);
+                if (!cond_pcr_reported_ ||
+                    std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > COND_STEP_NS) {
+                    const int64_t step = cond_pcr_reported_ ? off - cond_pcr_reported_offset_ : off;
+                    cond_pcr_reported_ = true;
+                    cond_pcr_reported_offset_ = off;
+                    absorbed++;
+                    if (on_conditioned_) on_conditioned_({pid, true, floor_div(step, 300), floor_div(off, 300), house_now});
+                }
+            } else {
+                cond_last_wpcr_ = pcr;                  // raw, until a PTS exists
+                cond_have_wpcr_ = true;
+            }
+        }
+        // --- PES PTS/DTS ---
+        if (!ts_pusi(pkt)) continue;
+        const int64_t pts = read_pes_pts(pkt);
+        if (pts < 0) continue;
+        const int poff = payload_offset(pkt);
+        auto it = cond_pes_.find(pid);
+        if (it == cond_pes_.end()) {
+            it = cond_pes_.emplace(pid, CondClock{pts, house_now, 0, {}}).first;
+        } else {
+            CondClock& c = it->second;
+            const int64_t d_ns = pts90k_to_ns(fold(pts - c.last_raw, PTS_WRAP));
+            const int64_t a_ns = house_now - c.last_house;
+            if (std::llabs(d_ns) > COND_STEP_NS && std::llabs(d_ns) <= COND_MAX_NS &&
+                std::llabs(d_ns - a_ns) > COND_STEP_NS) {
+                // floor_div, not `/`: `cond_step_ns` is negative on a backward
+                // PTS step (the common case here), and C++ truncation toward
+                // zero would round it one tick off python's `//` — the twins
+                // must write byte-identical bytes.
+                const int64_t step = floor_div(cond_step_ns(c, d_ns) * 9, 100000);
+                c.offset -= step;
+                absorbed++;
+                if (on_conditioned_) on_conditioned_({pid, false, step, c.offset, house_now});
+            } else if (std::llabs(d_ns) <= COND_STEP_NS) {
+                cond_remember(c, d_ns);
+            }
+            c.last_raw = pts;
+            c.last_house = house_now;
+        }
+        CondClock& c = it->second;
+        int64_t wpts = (pts + c.offset) % PTS_WRAP;
+        if (wpts < 0) wpts += PTS_WRAP;
+        // The reference PID is the one carrying the PCR (its PTS is what the PCR
+        // must trail — an audio PID's PTS can lead the video's by over a second,
+        // and a PCR derived from it puts every video frame that far late: .103,
+        // 2026-09-08 11:41). Until a PES on the PCR PID is seen, the first PES
+        // PID stands in.
+        if (cond_ref_pid_ < 0 || (pid == cond_pcr_pid_ && cond_ref_pid_ != pid)) {
+            cond_ref_pid_ = pid;
+            cond_pcr_regen_ = false;          // a new reference is a new PCR epoch: flagged, unguarded
+        }
+        if (pid == cond_ref_pid_) {
+            cond_ref_wpts_ = wpts;
+            cond_ref_house_ = house_now;
+        }
+        cond_seen_[pid] = {wpts, house_now};
+        if (c.offset == 0) continue;
+        write_ts_field(pkt + poff + 9, wpts);
+        const int64_t dts = read_pes_dts(pkt);
+        if (dts >= 0) {
+            int64_t wdts = (dts + c.offset) % PTS_WRAP;
+            if (wdts < 0) wdts += PTS_WRAP;
+            // A DTS after its own PTS is not a timeline (vMix writes one while
+            // its pacer resets); decode no later than presentation.
+            if (fold(wdts - wpts, PTS_WRAP) > 0) wdts = wpts;
+            write_ts_field(pkt + poff + 14, wdts);
+        }
+    }
+    return absorbed;
+}
+
 bool TimelineStamper::scan_stamp(const uint8_t* data, size_t len, int64_t house_now,
-                                 int64_t* out) {
+                                 int64_t* out, int* out_pid, int64_t* out_pts) {
     bool have = false;
+    bool have_timing = false;
     for (size_t off = 0; off + PKT <= len; off += PKT) {
         const uint8_t* pkt = data + off;
         if (pkt[0] != SYNC_BYTE || !ts_pusi(pkt)) continue;
         int64_t pts = read_pes_pts(pkt);
         if (pts < 0) continue;
         int pid = ts_pid(pkt);
+        const bool is_timing = timing_pid_ < 0 || pid == timing_pid_;
         if (!anchored_) {
+            anchor_pid_ = pid;
             anchored_ = true;
             anchor_ = house_now;
+            // The timing PID may already be known (its PCR was conditioned in
+            // this very buffer) while the first PES in it is another PID's:
+            // re-base onto the carrier's next PES, exactly as when the PCR is
+            // learned later (python: `_scan_stamp`).
+            timing_rebase_pending_ = timing_pid_ >= 0 && pid != timing_pid_;
             // The drift servo's t0: its settling period is measured from the
             // anchor, because what it must not measure through is the producer
             // transient that starts right here.
@@ -470,12 +754,15 @@ bool TimelineStamper::scan_stamp(const uint8_t* data, size_t len, int64_t house_
         int64_t prev = it == unwrapped_.end() ? latch_.first_pts(pid, ref_) : it->second;
         int64_t u = unwrap_near(pts, prev);
         unwrapped_[pid] = u;
-        if (!have) {
-            // The FIRST PES in the buffer: that is where the buffer's media
-            // content starts; the last one would drag the stamp forward by the
-            // mux's interleave depth.
+        // The FIRST PES in the buffer (that is where its media content starts;
+        // the last one would drag the stamp forward by the interleave depth) —
+        // except that the timing PID's first PES wins over any other PID's.
+        if (!have || (is_timing && !have_timing)) {
             have = true;
+            have_timing = is_timing;
             *out = anchor_ + pts90k_to_ns(u - ref_);
+            if (out_pid) *out_pid = pid;
+            if (out_pts) *out_pts = pts;
         }
     }
     return have;
@@ -483,33 +770,69 @@ bool TimelineStamper::scan_stamp(const uint8_t* data, size_t len, int64_t house_
 
 int64_t TimelineStamper::stamp(const uint8_t* data, size_t len, int64_t house_now,
                                int stream) {
+    // The buffer's first PES, found once for every mechanism below — python's
+    // `pes[0]` and its `if pes` gate.
+    int pes_pid = 0;
+    int64_t pes_pts = 0;
+    const bool have_pes = first_pes(data, len, &pes_pid, &pes_pts);
+    if (timing_rebase_pending_ && anchored_) {
+        // The anchor was taken on a PID that is not the PCR carrier (its PES
+        // arrived first); the carrier's first PES re-bases the epoch onto it.
+        for (size_t off = 0; off + PKT <= len; off += PKT) {
+            const uint8_t* pkt = data + off;
+            if (pkt[0] != SYNC_BYTE || !ts_pusi(pkt) || ts_pid(pkt) != timing_pid_) continue;
+            const int64_t pts = read_pes_pts(pkt);
+            if (pts < 0) continue;
+            timing_rebase_pending_ = false;
+            reanchor(timing_pid_, pts, pts, 0, house_now);
+            anchor_pid_ = timing_pid_;
+            break;
+        }
+    }
     if (anchored_) {
-        // The buffer's first PES, found once for the two mechanisms below —
-        // python's `pes[0]` and its `if pes` gate.
-        int pes_pid = 0;
-        int64_t pes_pts = 0;
-        bool have_pes = first_pes(data, len, &pes_pid, &pes_pts);
         scan_watch(data, len, house_now);              // may re-anchor before we stamp
         if (have_pes) {
             scan_stale(pes_pid, pes_pts, house_now, stream);   // ... and so may the net
             // ... and if neither did, the drift slew nudges the anchor the few
             // ns this buffer's share of the correction is worth. After both, so
             // a re-anchor's fresh baseline is never slewed by the epoch it just
-            // replaced.
-            slew(house_now);
+            // replaced. Timing PID only (its buffers are what the servo measured).
+            if (timing_pid_ < 0 || pes_pid == timing_pid_) slew(house_now);
         }
     }
     latch_.feed(data, len);                            // epoch-consistent first PES per PID
     int64_t s = 0;
-    if (scan_stamp(data, len, house_now, &s)) {
-        // The latch-repair window first: while it is open, a stamp that lands
-        // after its own arrival is the anchor's error, and is paid back here.
-        s = repair(house_now, s);
-        // Closed loop: measure this buffer's MAPPED time against the house time
-        // it arrived at — before the monotone floor below, which guards what
-        // leaves rather than describing the mapping (a clamped stamp would read
-        // as a source falling behind, and the staleness net owns that mode).
-        observe(house_now, s);
+    int s_pid = -1;
+    int64_t s_pts = 0;
+    if (scan_stamp(data, len, house_now, &s, &s_pid, &s_pts)) {
+        // Only the timing PID's buffers may judge the anchor (see timing_pid_):
+        // every mechanism below reads arrival against THIS stamp, and another
+        // PID's PES can legitimately sit seconds off the timing PID's.
+        const bool timing = timing_pid_ < 0 || s_pid == timing_pid_;
+        if (timing) {
+            // The latch-repair window first: while it is open, a stamp that
+            // lands after its own arrival is the anchor's error, paid back here.
+            s = repair(house_now, s);
+            // The late/early tier of the net: this buffer's own mapped time
+            // against its arrival over the hold. It re-anchors ON this buffer,
+            // which then leaves stamped with its arrival — restamped on the
+            // fresh epoch (python: `_scan_late` in `stamp`). The re-anchor's
+            // reference is the PES the stamp was READ FROM (`s_pts`, the
+            // timing PID's — python's `timing_pes[0]`), never the buffer's
+            // first PES of any PID: with an audio PES ahead of the video's
+            // in the buffer, a reference taken off the audio left every
+            // video stamp the written A/V skew behind house, the hold
+            // matured again 10 s later, and the egress re-anchored every
+            // 10 s for ever (.103, 2026-09-08 13:02-13:15, levels growing
+            // to -3 s; one dropped bus buffer per re-anchor).
+            if (scan_late(s_pid, s_pts, house_now, s)) {
+                latch_.feed(data, len);
+                scan_stamp(data, len, house_now, &s, &s_pid);
+            }
+            // Closed loop: this buffer's MAPPED time against the house time it
+            // arrived at — before the monotone floor below.
+            observe(house_now, s);
+        }
     } else {
         // No PES in this buffer (PSI/PCR-only, or continuation packets), or
         // nothing latched yet — repeat the staircase rather than emit a
@@ -545,6 +868,14 @@ std::string reanchor_event_json(const TimelineStamper::Reanchor& r) {
            ",\"deltaTicks\":" + std::to_string(r.delta_ticks) +
            ",\"anchorNs\":" + std::to_string(r.anchor_ns) +
            ",\"count\":" + std::to_string(r.count) + "}";
+}
+
+std::string conditioned_event_json(const TimelineStamper::Conditioned& c) {
+    return std::string("{\"event\":\"timeline_conditioned\",\"pid\":") + std::to_string(c.pid) +
+           ",\"clock\":\"" + (c.pcr ? "pcr" : "pts") + "\"" +
+           ",\"stepTicks\":" + std::to_string(c.step_ticks) +
+           ",\"offsetTicks\":" + std::to_string(c.offset_ticks) +
+           ",\"houseNs\":" + std::to_string(c.house_ns) + "}";
 }
 
 std::string settled_event_json(const TimelineStamper::Settled& s) {

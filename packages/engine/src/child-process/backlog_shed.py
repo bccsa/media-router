@@ -186,12 +186,33 @@ class PostShedStallWatch:
 class BacklogShedPolicy:
     """Decides WHEN a clock-paced leg must hand its retained backlog back.
 
-    `observe(lateness_ms, now_ms)` takes one sample per buffer and returns:
+    `observe(lateness_ms, now_ms, queued_ms=None)` takes one sample per buffer
+    and returns:
 
         None            nothing to do
         "shed"          start shedding now (returned once per episode)
         "implausible"   the sample is past `sanity_ms` — reported once per
                         episode so the runner can log it; never a shed
+        "timeline"      the excess is sustained but NOTHING IS QUEUED upstream
+                        of the shed point (`queued_ms` < `tolerance_ms`) — the
+                        leg is not holding a backlog, its buffers are simply
+                        stamped in the past. Reported once per episode; never
+                        a shed, and the hold restarts so the reading is asked
+                        again after another `hold_ms`.
+
+    WHY `queued_ms` DECIDES. Lateness alone cannot tell a retained backlog from
+    a late TIMELINE. A backlog is data parked in the leg's queues: dropping it
+    returns it at I/O speed. A late timeline is a producer stamping behind
+    real time (field, 10.9.16.103 2026-09-08: a gateway mux rewound ~1 s, the
+    ingest stamper re-anchors only after its own 10 s late hold, and for those
+    seconds every buffer reached the decoder ~500 ms "late" with the queues
+    EMPTY). Shedding on that drops every frame — nothing dropped makes the
+    next one arrive earlier — until the producer re-anchors and a keyframe
+    follows: 1072 frames, 21.9 s black, twice in six minutes. So a shed is
+    only offered when at least `tolerance_ms` of data is actually queued; the
+    runner measures that lazily (`queued_ms` may be a callable, evaluated only
+    when the hold has matured) so the steady state still costs one compare.
+    None means "unknown" and keeps the old behaviour.
 
     `now_ms` is any monotonic millisecond count; the runner passes the pipeline
     clock's running time, so the policy and the measurement share one time base.
@@ -204,17 +225,20 @@ class BacklogShedPolicy:
         self.cooldown_ms = float(cooldown_ms)
         self.sanity_ms = float(sanity_ms)
         self.sheds = 0
+        self.timeline_refusals = 0    # sheds refused because nothing was queued
         self._above_since = None      # start of the current unbroken excess run
         self._last_shed_end = None    # cooldown anchor; None = never shed
         self._implausible = False     # latched so it is reported once, not per buffer
+        self._timeline = False        # latched: "timeline" reported once per episode
 
     def reset(self):
         """Drop the streak (not the counters): a flush/re-anchor makes the
         samples either side of it incomparable."""
         self._above_since = None
         self._implausible = False
+        self._timeline = False
 
-    def observe(self, lateness_ms, now_ms):
+    def observe(self, lateness_ms, now_ms, queued_ms=None):
         if lateness_ms is None or lateness_ms != lateness_ms:   # NaN
             return None
         if abs(lateness_ms) > self.sanity_ms:
@@ -228,6 +252,7 @@ class BacklogShedPolicy:
         self._implausible = False
         if lateness_ms <= self.tolerance_ms:
             self._above_since = None
+            self._timeline = False
             return None
         if self._above_since is None:
             self._above_since = now_ms
@@ -239,6 +264,15 @@ class BacklogShedPolicy:
         # rather than paying the hold window again.
         if self._last_shed_end is not None and now_ms - self._last_shed_end < self.cooldown_ms:
             return None
+        # Is there anything to shed? Measured only now, once per matured hold.
+        queued = queued_ms() if callable(queued_ms) else queued_ms
+        if queued is not None and queued < self.tolerance_ms:
+            self.timeline_refusals += 1
+            self._above_since = now_ms       # ask again after another hold
+            if self._timeline:
+                return None
+            self._timeline = True
+            return "timeline"
         return "shed"
 
     def shed_finished(self, now_ms):

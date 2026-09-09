@@ -41,9 +41,11 @@ def check(name, cond):
 
 desc = runner.bus_edge_branch_description("/tmp/mr-bus-40000-abc123.sock")
 check("byte cap is 500 ms at 64 Mbit/s", runner.BUS_EDGE_QUEUE_MAX_BYTES == 4_000_000)
+check("time bound is 5 s — past any in-place re-anchor step, so a forward stamp step never leaks a buffer",
+      runner.BUS_EDGE_QUEUE_MS == 5_000)
 check(
     "description pins the byte cap next to the time bound",
-    "max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000" in desc,
+    "max-size-time=5000000000 max-size-buffers=0 max-size-bytes=4000000" in desc,
 )
 
 if Gst.ElementFactory.find("unixfdsink") is None:
@@ -64,7 +66,7 @@ else:
     check("branch parses into queue + unixfdsink", queue is not None and sink is not None)
     if queue is not None:
         check("queue is leaky downstream (drops oldest)", int(queue.get_property("leaky")) == 2)
-        check("queue time bound is 500 ms", queue.get_property("max-size-time") == 500_000_000)
+        check("queue time bound is 5 s", queue.get_property("max-size-time") == 5_000_000_000)
         check("queue buffer count is unbounded", queue.get_property("max-size-buffers") == 0)
         check(
             "queue byte bound is the edge cap",

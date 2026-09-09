@@ -20,10 +20,23 @@ describe('pacedMixer', () => {
             }),
         ).toBe(
             'audiomixer name=omix0 force-live=true latency=50000000' +
-                ' min-upstream-latency=50000000' +
+                ' min-upstream-latency=50000000 start-time-selection=first' +
                 ' ! audio/x-raw,rate=48000,channels=2' +
                 ' ! identity name=omix0_pace sync=true',
         );
+    });
+
+    it('anchors the output timeline at the first input (never at running time 0)', () => {
+        // Default `zero` + the base_time=0 house clock = the mixer starts at
+        // BOOT and races the box's uptime as silence before consuming a sample
+        // (10.9.16.111, 2026-09-08: 13 min of dead Audio Out after a restart).
+        const s = pacedMixer({
+            name: 'm',
+            latencyNs: 200_000_000,
+            caps: 'audio/x-raw,rate=48000,channels=2',
+            pacerName: 'm_out',
+        });
+        expect(s).toMatch(/^audiomixer name=m [^!]*\bstart-time-selection=first\b[^!]* ! /);
     });
 
     it('names the capsfilter only when the caller needs to address it', () => {
@@ -103,7 +116,7 @@ describe('buildAudioMixInput — many sources (mixer arm)', () => {
         const { fragment, continuationName } = buildAudioMixInput({ sources: [] });
         expect(fragment).toBe(
             'audiomixer name=mixin force-live=true latency=200000000' +
-                ' min-upstream-latency=200000000' +
+                ' min-upstream-latency=200000000 start-time-selection=first' +
                 ' ! capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2"' +
                 ' ! identity name=mixin_out sync=true',
         );

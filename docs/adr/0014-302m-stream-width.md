@@ -113,3 +113,20 @@ presentation leg) if it ever needs placement.
 - `packages/engine/src/plugins/PluginModule.ts` — `getBusStreamChannels`;
   `packages/engine/src/routing/MediaRouter.ts` — `getModuleBusSources`.
 - `docs/TodoNotes.md` — "302M input captured only X32 inputs 1–2 of 32" (2026-09-05).
+
+## Narrow devices: a range that runs past the device is honoured, not refused
+
+302M has no mono width, but PipeWire's UCM split exposes some interfaces as
+1-channel sources (an SSL 2's Mic1/Mic2, field 2026-09-08). A capture range that
+runs PAST the device's channels is honoured rather than refused
+(`AudioInput302mModule`):
+
+- ONE device channel into the stereo pair → **dual-mono**: the same channel on
+  both 302M channels (`dualMono` in status). A mono mic belongs in both ears /
+  centred in a stereo mix, not the left channel only.
+- anything wider → the matrix feeds the device channels it has and leaves the
+  remaining 302M channels at **zero** (`silentChannels` in status).
+- only a range that STARTS beyond the device is an error — nothing to capture.
+
+This does not change the wire width (still 2/4/6/8, ADR-0014 proper); it defines
+what fills a pair when the device is narrower than the operator's range.

@@ -89,6 +89,67 @@ p = bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=1_000)
 verdicts, _ = feed(p, 250.0, 0.0, 5_000)
 check("lateness exactly at tolerance never sheds", verdicts == [])
 
+# --- nothing queued: a late timeline is refused, not shed ---------------------
+# The 10.9.16.103 case (2026-09-08): every buffer ~500 ms over budget for
+# seconds, queues empty. Dropping cannot return anything, so the policy must
+# say "timeline" once, restart its hold, and never offer a shed while the
+# queues stay empty — and offer one the moment they hold a backlog.
+p = bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=5_000, cooldown_ms=60_000)
+t = 0.0
+out = []
+while t <= 5_100:
+    v = p.observe(500.0, t, queued_ms=0.0)
+    if v:
+        out.append((v, t))
+    t += 20.0
+check("a matured hold with nothing queued is reported as a late timeline, not shed",
+      [v for v, _ in out] == ["timeline"])
+check("the refusal is counted", p.timeline_refusals == 1)
+verdicts, t = feed(p, 500.0, t, 4_000)
+check("inside the restarted hold nothing is asked or reported", verdicts == [])
+out = []
+while t <= 10_400:
+    v = p.observe(500.0, t, queued_ms=40.0)
+    if v:
+        out.append(v)
+    t += 20.0
+check("a second matured hold with the queues still empty refuses again, silently",
+      out == [] and p.timeline_refusals == 2)
+# The callable form: evaluated only when a hold matures, so the steady state
+# never pays for the queue walk.
+calls = []
+def _walk():
+    calls.append(1)
+    return 600.0
+verdicts, t = feed(p, 500.0, t, 4_000)
+check("the callable is not evaluated inside the hold", calls == [])
+out = []
+while t <= 15_800 and not out:
+    v = p.observe(500.0, t, queued_ms=_walk)
+    if v:
+        out.append(v)
+    t += 20.0
+check("with a real backlog queued the same excess sheds", out == ["shed"] and len(calls) == 1)
+p.shed_finished(t)
+check("the shed counter is separate from the refusals",
+      p.sheds == 1 and p.timeline_refusals == 2)
+# Back inside tolerance clears the latch, so the NEXT late-timeline episode is
+# reported again.
+p2 = bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=1_000, cooldown_ms=0)
+t = 0.0
+seen = []
+for _ in range(60):
+    v = p2.observe(500.0, t, queued_ms=0.0); t += 20.0
+    if v: seen.append(v)
+p2.observe(0.0, t, queued_ms=0.0); t += 20.0
+for _ in range(60):
+    v = p2.observe(500.0, t, queued_ms=0.0); t += 20.0
+    if v: seen.append(v)
+check("each late-timeline episode is reported once", seen == ["timeline", "timeline"])
+check("None for queued_ms keeps the old behaviour (unknown = shed)",
+      bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=0, cooldown_ms=0).observe(500.0, 0.0) is None
+      and bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=0, cooldown_ms=0)._above_since is None)
+
 # --- rate limiting -----------------------------------------------------------
 p = bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=1_000, cooldown_ms=60_000)
 verdicts, t = feed(p, 800.0, 0.0, 1_100)

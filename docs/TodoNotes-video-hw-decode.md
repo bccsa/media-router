@@ -267,6 +267,12 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
       freeze still exists, so keep the toggle OFF there). Fleet release
       gated on the burn-in soak (see the feature-freeze note in
       `TodoNotes.md`).
+      **REMOVED 2026-09-08 (at the operator's request):** the per-module
+      `clockSync` toggle is now deleted from the video-player, not just
+      superseded — the engine-wide contract flag is the only control. The
+      legacy `MR_TIME_SYNC_CONTRACT=0` path still passes source PES timestamps
+      through, so that path is unsupported for the video player rather than
+      toggle-gated. See the video-player settings-trim note in `TodoNotes.md`.
 
 - [ ] renderWatch expected-fps fallback: streams without VUI timing negotiate
       `framerate=0/1` and the watch stays silent; fall back to the ts-probe

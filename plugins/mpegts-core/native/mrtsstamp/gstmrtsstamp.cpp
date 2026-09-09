@@ -76,7 +76,7 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.3.0"
+#define MRTSSTAMP_VERSION "2.4.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -105,8 +105,13 @@ struct MrTsStampPending {
     gint64 count;
     gint64 repair_ns;            /* settled: what the latch-repair window cost */
     gint64 window_ns;
+    gboolean pcr;                /* conditioned: which clock stepped */
+    gint64 step_ticks;           /* conditioned: the step taken out of the wire */
+    gint64 offset_ticks;         /* conditioned: the PID's cumulative correction */
+    gint64 house_ns;             /* conditioned: house time of the step */
 };
-enum { MRTSSTAMP_PENDING_ANCHOR = 0, MRTSSTAMP_PENDING_REANCHOR, MRTSSTAMP_PENDING_SETTLED };
+enum { MRTSSTAMP_PENDING_ANCHOR = 0, MRTSSTAMP_PENDING_REANCHOR, MRTSSTAMP_PENDING_SETTLED,
+       MRTSSTAMP_PENDING_CONDITIONED };
 
 /* One factory per kind, naming every field it fills: the struct is positional
  * and three kinds share it, so a brace-init with padding zeros would let a
@@ -128,6 +133,16 @@ static MrTsStampPending mrtsstamp_pending_reanchor(const mrts::TimelineStamper::
     p.last_pts = r.last_pts;
     p.delta_ticks = r.delta_ticks;
     p.count = (gint64)r.count;
+    return p;
+}
+static MrTsStampPending mrtsstamp_pending_conditioned(const mrts::TimelineStamper::Conditioned &c) {
+    MrTsStampPending p{};
+    p.kind = MRTSSTAMP_PENDING_CONDITIONED;
+    p.pid = c.pid;
+    p.pcr = c.pcr ? TRUE : FALSE;
+    p.step_ticks = c.step_ticks;
+    p.offset_ticks = c.offset_ticks;
+    p.house_ns = c.house_ns;
     return p;
 }
 static MrTsStampPending mrtsstamp_pending_settled(const mrts::TimelineStamper::Settled &s) {
@@ -163,6 +178,7 @@ struct _GstMrTsStamp {
     gboolean repair_latch;
     gboolean checked;            /* one-shot clock/segment diagnostics per arm */
     gboolean seg_warned;         /* one-shot unmappable-segment report per arm */
+    gint map_warned;             /* one-shot buffer-map-failure report (atomic, pre-lock) */
     guint64 copies;              /* buffers we were handed as a COPY (see above) */
     /* Bytes seen on the sink pad since construction, active OR passthrough —
      * the producer's egress byte counter (`bytes-total`). Counted here, in C,
@@ -209,6 +225,12 @@ static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
             pending->push_back(mrtsstamp_pending_settled(s));
         },
         self->repair_latch != FALSE);
+    /* The timeline conditioner rides the same live-cadence opt-in as the latch
+     * repair (`repair-latch`): both rest on delivery cadence being media
+     * cadence, which an HLS fan-out's bursts are not. */
+    self->st->set_on_conditioned([pending](const mrts::TimelineStamper::Conditioned &c) {
+        pending->push_back(mrtsstamp_pending_conditioned(c));
+    });
 }
 
 /* Running-time, which under the contract IS house-clock time. Written as
@@ -319,6 +341,24 @@ static void gst_mrtsstamp_post_segment_warning(GstMrTsStamp *self, const gchar *
                GST_OBJECT_NAME(self), why);
 }
 
+/* The buffer would not map. ENGINE-VISIBLE and once per arm (atomic latch, no
+ * lock — this fires before we take one): the buffer then leaves UNSTAMPED and
+ * UNCONDITIONED, shipping the source's own timing, so it must not pass in
+ * silence. READ rarely failed; READWRITE (the conditioner's mode) on shared or
+ * read-only memory can. */
+static void gst_mrtsstamp_post_map_warning(GstMrTsStamp *self, gboolean rw) {
+    if (!g_atomic_int_compare_and_exchange(&self->map_warned, 0, 1))
+        return;
+    const gchar *why = rw ? "buffer would not map READWRITE — conditioner and stamp skipped"
+                          : "buffer would not map READ — stamp skipped";
+    GstStructure *s = gst_structure_new("mrtsstamp-map-failed",
+                                        "why", G_TYPE_STRING, why, NULL);
+    gst_element_post_message(GST_ELEMENT_CAST(self),
+                             gst_message_new_element(GST_OBJECT_CAST(self), s));
+    g_printerr("[mrtsstamp] %s: %s — buffer passed through with source timing\n",
+               GST_OBJECT_NAME(self), why);
+}
+
 /* --- transform ----------------------------------------------------------- */
 
 static void gst_mrtsstamp_post(GstMrTsStamp *self, const MrTsStampPending &p) {
@@ -327,7 +367,14 @@ static void gst_mrtsstamp_post(GstMrTsStamp *self, const MrTsStampPending &p) {
      * `timeline_reanchor` engine events, so nothing downstream can tell which
      * stamper produced them. */
     GstStructure *s;
-    if (p.kind == MRTSSTAMP_PENDING_SETTLED) {
+    if (p.kind == MRTSSTAMP_PENDING_CONDITIONED) {
+        s = gst_structure_new("mrtsstamp-conditioned",
+                              "pid", G_TYPE_INT, p.pid,
+                              "clock", G_TYPE_STRING, p.pcr ? "pcr" : "pts",
+                              "stepTicks", G_TYPE_INT64, p.step_ticks,
+                              "offsetTicks", G_TYPE_INT64, p.offset_ticks,
+                              "houseNs", G_TYPE_INT64, p.house_ns, NULL);
+    } else if (p.kind == MRTSSTAMP_PENDING_SETTLED) {
         s = gst_structure_new("mrtsstamp-settled",
                               "anchorNs", G_TYPE_INT64, p.anchor_ns,
                               "repairNs", G_TYPE_INT64, p.repair_ns,
@@ -360,8 +407,15 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
     self->bytes_total.fetch_add(gst_buffer_get_size(buf), std::memory_order_relaxed);
     if (!self->active) return GST_FLOW_OK;
 
-    /* READ, not READWRITE: only the buffer's PTS/DTS change, never its bytes. */
-    if (!gst_buffer_map(buf, &mi, GST_MAP_READ)) return GST_FLOW_OK;
+    /* READWRITE only when the timeline conditioner may rewrite PES/PCR fields
+     * (live-cadence producers, `repair-latch`); otherwise READ — the stamp is
+     * the buffer's PTS/DTS, never its bytes. In-place basetransform hands us a
+     * writable buffer (prepare_output_buffer counts the copies that costs). */
+    const gboolean conditioning = self->repair_latch != FALSE;
+    if (!gst_buffer_map(buf, &mi, conditioning ? GST_MAP_READWRITE : GST_MAP_READ)) {
+        gst_mrtsstamp_post_map_warning(self, conditioning);
+        return GST_FLOW_OK;
+    }
 
     gint64 now = gst_mrtsstamp_house_now(self);
     std::vector<MrTsStampPending> posts;
@@ -381,6 +435,9 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
     }
     /* ONE egress, so ONE stream: every branch of this producer shares the
      * anchor and the monotone floor, which is what keeps A/V paired. */
+    /* Condition first: a source clock step is taken out of the PES/PCR bytes
+     * before the stamper's watch can read it as a discontinuity. */
+    if (conditioning) self->st->condition(mi.data, mi.size, now);
     stamp = self->st->stamp(mi.data, mi.size, now, 0);
     posts.swap(*self->pending);
     /* Segment mapping under the lock only for the one-shot warn latch; the
@@ -520,6 +577,7 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
                 self->active = want;
                 self->checked = FALSE;
                 self->seg_warned = FALSE;
+                g_atomic_int_set(&self->map_warned, 0);
                 gst_mrtsstamp_reset(self);
             }
             g_mutex_unlock(&self->lock);
@@ -621,6 +679,7 @@ static void gst_mrtsstamp_init(GstMrTsStamp *self) {
     self->repair_latch = TRUE;
     self->checked = FALSE;
     self->seg_warned = FALSE;
+    self->map_warned = 0;
     self->copies = 0;
     self->st = NULL;
     self->pending = new std::vector<MrTsStampPending>();

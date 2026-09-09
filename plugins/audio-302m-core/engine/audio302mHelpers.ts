@@ -95,17 +95,19 @@ export interface PacedMixerOpts {
 }
 
 /**
- * `audiomixer force-live=true ! <caps> ! identity sync=true` — the one shape
- * every 302M aggregation point uses, in one place because the `identity` is a
- * FIX, not a style: see `buildAudioMixInput` below for the measurement. Both
- * the input fan-in here and the n1-mixer's feature mixers build through this,
- * so the pacer can never be dropped from one of them by accident.
+ * `audiomixer force-live=true start-time-selection=first ! <caps> ! identity
+ * sync=true` — the one shape every 302M aggregation point uses, in one place
+ * because the `identity` and the start-time selection are FIXES, not style:
+ * see `buildAudioMixInput` below for both measurements. Both the input fan-in
+ * here and the n1-mixer's feature mixers build through this, so neither can be
+ * dropped from one of them by accident.
  */
 export function pacedMixer(opts: PacedMixerOpts): string {
     const caps = opts.capsName ? `capsfilter name=${opts.capsName} caps="${opts.caps}"` : opts.caps;
     return (
         `audiomixer name=${opts.name} force-live=true ` +
         `latency=${opts.latencyNs} min-upstream-latency=${opts.latencyNs}` +
+        ' start-time-selection=first' +
         ` ! ${caps}` +
         ` ! identity name=${opts.pacerName} sync=true`
     );
@@ -161,6 +163,28 @@ export interface AudioMixInputOpts {
  *   startup offset of about 2 × the mixer latency (measured 0.12 / 0.42 /
  *   1.02 s at latency 50 / 200 / 500 ms) and nothing per buffer after that.
  *   Sink-agnostic by construction, so it holds for every 302M module's tail.
+ * - `start-time-selection=first`: where the mixer's OUTPUT timeline begins.
+ *   The aggregator default (`zero`) starts the output segment at running time
+ *   0, and under the time-sync contract (ADR-0005: `base_time=0`, house-clock
+ *   PTS) running time 0 is BOOT — the live inputs arrive stamped at the house
+ *   time, i.e. the box's uptime ahead of where the mixer starts. The mixer
+ *   then has to emit that whole gap as silence before it ever reaches a
+ *   sample it can consume; until it does, each input pad holds its first
+ *   buffer, the 100 ms branch queue fills, tsdemux blocks and the leaky bus
+ *   queue drains the feed on the floor. Measured 10.9.16.111 (Audio Out
+ *   (302M), 4 inputs, 2026-09-08): a 938 s gap after an engine restart was
+ *   still silent at +204 s; a 3818 s gap after a device change took ~13 min
+ *   (the sink pad probe read the first buffers 3 708 732 ms "late", the
+ *   branch aligner "joined only 0–1 access units", the runner sat at 27 %
+ *   CPU racing the gap). Producer arms fare worse: the bus stamper anchors on
+ *   the first PES while the mixer is still racing, so once it catches up the
+ *   stamps sit a constant uptime-at-start behind the house clock (−900 s on
+ *   the Audio Mixer's egress, −805 s on the three transcoders it feeds).
+ *   `first` anchors the output at the running time of the first input buffer
+ *   — under `force-live` the aggregator picks the current running time if a
+ *   timeout comes first (gstaggregator.c wait_and_check), so a dark start is
+ *   anchored live too. Same-timeline inputs are then consumed from the first
+ *   buffer, and the stamps downstream read the house clock.
  *   Defaults are right for everything else (`single-segment=false` is
  *   identity's default).
  *

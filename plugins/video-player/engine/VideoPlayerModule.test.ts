@@ -159,7 +159,7 @@ describe('VideoPlayerModule helpers', () => {
         describe('with sync=true (HLS branch)', () => {
             it('emits sync=true max-lateness=1000000000 on waylandsink', () => {
                 expect(buildSink('', { ...both, waylandSession: true }, { sync: true })).toBe(
-                    'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=true',
+                    'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=false',
                 );
             });
             it('emits sync=true max-lateness=1000000000 on kmssink with connector-id', () => {
@@ -170,12 +170,12 @@ describe('VideoPlayerModule helpers', () => {
                         { sync: true },
                     ),
                 ).toBe(
-                    'kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 qos=true',
+                    'kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 qos=false',
                 );
             });
             it('emits sync=true max-lateness=1000000000 on auto-pick kmssink', () => {
                 expect(buildSink('', { ...both, waylandSession: false }, { sync: true })).toBe(
-                    'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                    'kmssink name=sink sync=true max-lateness=1000000000 qos=false',
                 );
             });
             it('emits sync=true max-lateness=1000000000 on autovideosink', () => {
@@ -185,15 +185,16 @@ describe('VideoPlayerModule helpers', () => {
                         { wayland: false, kms: false, waylandSession: false },
                         { sync: true },
                     ),
-                ).toBe('autovideosink sync=true max-lateness=1000000000 qos=true');
+                ).toBe('autovideosink sync=true max-lateness=1000000000 qos=false');
             });
-            it('composes with qos=false (the full HLS knob combo)', () => {
-                // sync=true qos=false is what the operator picks for HLS — the
-                // sink honours PTS (no fast/slow oscillation) AND doesn't ask
-                // the decoder to drop. max-lateness=1000000000 covers the third leg.
-                expect(
-                    buildSink('', { ...both, waylandSession: true }, { sync: true, qos: false }),
-                ).toBe(
+            it('never emits QoS on the paced sink (there is no setting for it)', () => {
+                // A paced sink must never emit QoS: GstVideoDecoder answers a
+                // consistently late stream by dropping every frame before
+                // `timestamp + 2 × lateness`, which froze .103 (2026-09-08) at
+                // 50 fps in / 0 fps out. max-lateness=1000000000 is the only
+                // late-frame bound a paced sink gets. The old `qos` option was
+                // removed the same day.
+                expect(buildSink('', { ...both, waylandSession: true }, { sync: true })).toBe(
                     'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=false',
                 );
             });
@@ -363,24 +364,10 @@ describe('VideoPlayerModule helpers', () => {
             // intervals, so set-timestamps=true bursts whole GOPs and paces at
             // ~1 fps (field-measured 2026-08-09). The sink rides the source PTS.
             const s = buildLivePipeline(
-                'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                'kmssink name=sink sync=true max-lateness=1000000000 qos=false',
                 busSource,
                 false,
                 200,
-                false,
-                true,
-            );
-            expect(s).toContain('tsparse set-timestamps=false');
-            expect(s).not.toContain('set-timestamps=true');
-        });
-
-        it('clockSync keeps tsparse and preserves the source timeline (set-timestamps=false)', () => {
-            const s = buildLivePipeline(
-                'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
-                busSource,
-                false,
-                200,
-                true,
                 true,
             );
             expect(s).toContain('tsparse set-timestamps=false');
@@ -506,7 +493,6 @@ describe('VideoPlayerModule helpers', () => {
                     busSource,
                     false,
                     200,
-                    false,
                     true,
                 );
                 expect(s).toContain('tsparse set-timestamps=false ! tee name=vp_ts ! tsdemux');
@@ -548,7 +534,6 @@ describe('VideoPlayerModule helpers', () => {
                     true,
                     200,
                     false,
-                    false,
                     selectDecoder({ codec: 'h264', available: all }),
                 );
                 expect(s).toContain(
@@ -568,7 +553,6 @@ describe('VideoPlayerModule helpers', () => {
                     false,
                     200,
                     false,
-                    false,
                     selectDecoder({ codec: 'h265', available: all }),
                 );
                 expect(s).toContain(
@@ -585,7 +569,6 @@ describe('VideoPlayerModule helpers', () => {
                     busSource,
                     false,
                     1500,
-                    false,
                     false,
                     selectDecoder({
                         codec: 'h265',
@@ -608,7 +591,6 @@ describe('VideoPlayerModule helpers', () => {
                     false,
                     200,
                     false,
-                    false,
                     selectDecoder({
                         codec: 'h264',
                         available: { h264parse: true, avdec_h264: true },
@@ -625,7 +607,6 @@ describe('VideoPlayerModule helpers', () => {
                     busSource,
                     false,
                     200,
-                    false,
                     false,
                     selectDecoder({
                         codec: 'h264',
@@ -649,7 +630,6 @@ describe('VideoPlayerModule helpers', () => {
                     false,
                     200,
                     false,
-                    false,
                     selectDecoder({ codec: 'h264', available: all }),
                 );
                 // Slice from tsdemux so the pre-tsparse jitter queue (same
@@ -669,7 +649,6 @@ describe('VideoPlayerModule helpers', () => {
                     busSource,
                     true,
                     200,
-                    true,
                     true,
                     selectDecoder({ codec: 'h265', available: all }),
                 );
