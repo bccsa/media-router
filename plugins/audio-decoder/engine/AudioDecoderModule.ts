@@ -3,6 +3,7 @@ import {
     backlogShedConfig,
     buildBusSrc,
     effectivePlayoutOffsetNs,
+    pulsePinnedStreamProps,
     type PipelineDescription,
     type ModuleServices,
     type PlayoutOffsetServices,
@@ -406,7 +407,7 @@ export class AudioDecoderModule extends GstPluginBase {
             // playout-offset push targets (`setElementProperty('sink', …)`),
             // and adding it unconditionally would change the legacy pipeline
             // string that MR_TIME_SYNC_CONTRACT=0 must reproduce byte for byte.
-            `pulsesink${contract ? ' name=sink' : ''} device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${contract || lowLatencySync ? pacedSinkBufferUs : sinkBufferUs}${sinkTiming}`,
+            `pulsesink${contract ? ' name=sink' : ''} device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${contract || lowLatencySync ? pacedSinkBufferUs : sinkBufferUs}${sinkTiming} ${pulsePinnedStreamProps()}`,
         ];
         const pipeline = parts.join(' ! ');
 

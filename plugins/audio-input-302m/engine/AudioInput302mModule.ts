@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     buildBusSink,
+    pulsePinnedStreamProps,
     type ChannelMapEntry,
     type ModuleServices,
     type PipelineDescription,
@@ -200,7 +201,7 @@ export class AudioInput302mModule extends GstPluginBase {
         const quantum = Math.round(Math.max(40, Math.min(1000, o.srcBufferMs)) * 48);
         const src =
             `pipewiresrc target-object=${device}` +
-            ` stream-properties="props,node.latency=(string)${quantum}/48000"`;
+            ` ${pulsePinnedStreamProps({ 'node.latency': `${quantum}/48000` })}`;
 
         if (deviceChannels && deviceChannels > 0) {
             if (firstChannel > deviceChannels) {

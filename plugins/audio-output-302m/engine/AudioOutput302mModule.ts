@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     backlogShedConfig,
+    pulsePinnedStreamProps,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -196,8 +197,8 @@ export class AudioOutput302mModule extends GstPluginBase {
         const sink = contract
             ? `pulsesink name=sink device=${device} sync=true provide-clock=false` +
               ` slave-method=${SLAVE_METHOD_SKEW} max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
-              ` ts-offset=${tsOffsetNs}`
-            : `pulsesink device=${device} sync=false`;
+              ` ts-offset=${tsOffsetNs} ${pulsePinnedStreamProps()}`
+            : `pulsesink device=${device} sync=false ${pulsePinnedStreamProps()}`;
         // Placement (if any) sits between the VU and the sink: the level meter
         // reads the mix, the sink receives the device-wide spread.
         const pipeline =

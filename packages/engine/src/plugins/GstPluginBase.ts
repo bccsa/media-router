@@ -12,6 +12,7 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { effectiveLatchRepair } from './latchRepair.js';
+import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -305,7 +306,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 this.log.debug({ err }, 'VU process error (auxiliary — non-fatal)');
             });
 
-            const vuPipeline = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000 ! audioconvert ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=66000000 ! fakesink sync=false`;
+            const vuPipeline = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()} ! audioconvert ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=66000000 ! fakesink sync=false`;
             await this.vuProcess.start({ pipeline: vuPipeline });
         } catch (err) {
             this.log.warn({ err }, 'VU process failed to start');

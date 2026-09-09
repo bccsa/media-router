@@ -37,6 +37,13 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('udpsink');
     });
 
+    it('pins the capture stream to its own null-sink (#736): no WirePlumber fallback, linger until the sink exists', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({}).pipeline).toContain(
+            'pulsesrc device=MR_PW_enc-1.monitor buffer-time=200000 stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"',
+        );
+    });
+
     it('pins the pulsesrc ring to srcBufferMs (default 200 ms = the previous implicit gst default, clamped to 40 ms floor)', () => {
         const { module } = makeModule();
         expect(module.buildPipeline({}).pipeline).toContain(
