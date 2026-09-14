@@ -2,6 +2,22 @@
 
 ## Open
 
+### Subtitles (2026-09-09, docs/subtitles-teletext-vtt-plan.md, ADR-0016)
+- [x] `subtitle-core` library plugin: KLV-wrapped WebVTT cue carrier (TS + python twins), shared overlay schema/props, subtitle bus input + pay-tail fragments
+- [x] Generic `PipelineDescription.runnerHooks` seam (plugin python installed in the runner) + subtitle-core's `py/subtitle_bridge.py`: `pay` (text appsink → KLV appsrc, house-time stamps, 2 s re-send) and `overlay` (KLV pad → cue reader → textoverlay `text` via video-pad probe)
+- [x] `teletext-subtitles` plugin: TS in, one subtitle output per page (`teletextdec` per page), cue status, no-cue warning
+- [x] video-player `subtitles-in` dot + live overlay controls; transcoder `subtitles-in` dot with pre-tee burn-in
+- [x] ts-splitter labels DVB teletext / DVB-sub / KLVA private PIDs by descriptor
+- [x] Yocto: zvbi recipe + plugins-bad `teletext` PACKAGECONFIG + `gstreamer1.0-plugins-bad-teletext` image package (built for rpi5 via a scratch layer; hot-loaded on .103 from /tmp for the spike)
+- [x] Field test on 10.9.16.103 (2026-09-10): generator → teletext-subtitles (cues counted, health ok) → transcoder burn-in verified on a decoded frame of its output. Found + fixed: `GstChildProcess.startPayload` is an explicit field list, so `runnerHooks` had to be added there (test pins it). Test rig left wired (see memory `ttx-test-rig-103`)
+- [ ] Field test against the NO-OCC-Gate01 feed (real teletext)
+- [ ] transcoder → video-player on .103: player gets frames stamped ~318 s in the future (`backlogShed implausible`), the transcoder egress stamper logs `anchor pulled back 3xx s` at start — happens without the subtitle input too; likely the .103 latch-repair issue already on record, not the subtitle work. Demo currently feeds the player directly from the test picture with page 692 on its own Subtitles In
+- [ ] Auto-populate the page list from the PMT teletext descriptor (the gate advertises 8 pages with languages) — needs the descriptor bytes from the splitter/discovery
+- [ ] hls-pipe: migrate its `"VTT "` private-PES subtitle mux to the KLV carrier (tsdemux never exposes the current one)
+- [ ] DVB-sub output mode (`dvbsubenc`) for third-party receivers
+- [ ] Pi 5 hardware HEVC decode cannot feed an in-chain overlay (SAND-only DMABuf, no v4l2convert) — the player fell to software decode when a subtitle source was wired (10.9.16.103, 2026-09-09). Player subtitles on hw routes need a compositor layer (transparent surface above the video) instead of an element in the decode chain; burn-in in the transcoder is unaffected
+- [ ] Transcoder → player on .103 test rig: player alternated 24 fps / ~0 fps and the transcoder egress stamper logged periodic +1.00 s PTS steps while the transcoder's own TS (captured 58 s) is clean — unexplained, investigate the stamper on x264 zerolatency output
+
 - [ ] **gate01 muxer memory growth (2026-09-06): confirm the retention point
   on a box.** Five mpegts-muxers on .46 (ZA-HZ-SRT02 ENG/FRA/NYA/SWA + "10020
   -> RIST") grew to 2.8 GB / 0.6 GB each at exactly their program bitrate

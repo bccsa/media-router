@@ -12,6 +12,8 @@ import {
     buildEncodeLeaf,
     busTeeName,
 } from '@media-router/engine';
+import { subtitleRenderPlan } from '@media-router/plugin-subtitle-core';
+import type { RunnerHook } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
 
 /** `name=` of the input tsdemux — the target of `preserveSourceTimeline`
@@ -53,10 +55,20 @@ export interface TranscoderPipelineInputs {
      *  leaf's software `videoscale ! videoconvert` stage is replaced by the
      *  hardware equivalent (`vapostproc` for VA, `v4l2convert` for the Pi ISP). */
     hwScalers?: { va?: boolean; v4l2?: boolean };
+    /**
+     * Subtitle source wired to `subtitles-in` plus the module config the
+     * overlay controls read. When set, ONE `textoverlay` sits on the shared
+     * decoded frame ahead of the tee — every rendition gets the burn-in for
+     * the price of one render — and the subtitle TS comes in on its own bus
+     * edge. Absent → pipeline string unchanged.
+     */
+    subtitles?: { port: number; socketPath?: string; config: Record<string, unknown> };
 }
 
 export interface TranscoderPipelineResult {
     pipeline: string;
+    /** Subtitle bridge hook when a subtitle source is wired — put on the description verbatim. */
+    runnerHooks?: RunnerHook[];
     /** Bus-egress tee names (one per rendition, `busout_<port>`) — the module
      *  polls these for per-rendition output throughput. Single source of truth
      *  for the names constructed in the leaf builder. */
@@ -244,9 +256,15 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // deinterlace → drop to the target framerate → tee. No videoconvert here
     // (moved into the leaves so it runs on the small downscaled frame).
     // videorate runs on its own thread via the raw buffer queue.
+    // Subtitle burn-in (optional): the overlay draws on the conformed frame just
+    // before the fan-out, so all renditions carry identical text; its cues
+    // arrive on a separate bus input the runner's subtitle bridge reads.
+    const subs = input.subtitles ? subtitleRenderPlan(input.subtitles, input.subtitles.config) : undefined;
+    const overlay = subs ? `${subs.overlayElement} ! ` : '';
     const pipeline =
         `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! ${videoCaps} ! ${decoder} ! ${rawBuffer} ! ` +
-        `${deinterlacer}videorate ! video/x-raw,framerate=${fps}/1 ! tee name=t ${teeBranches}`;
+        `${deinterlacer}videorate ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
+        (subs ? ` ${subs.inputFragment}` : '');
 
-    return { pipeline, sinkNames };
+    return { pipeline, sinkNames, ...(subs ? { runnerHooks: subs.runnerHooks } : {}) };
 }

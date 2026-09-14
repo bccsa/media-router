@@ -2049,6 +2049,62 @@ conformance suite in `unixfdbus-core/tests/`, the mrts golden-parity suite in
 sidecars, and without it they `skipIf` themselves out — a green run that
 proved nothing about the cross-language contract.
 
+## Subtitles (`subtitle-core` + the runner's subtitle bridge)
+
+Subtitles ride the bus as their own `muxed/mpegts` stream: one WebVTT cue per
+PES, wrapped in a KLV triplet (`meta/x-klv`), cue times in house-clock media
+time (ADR-0016). `plugins/subtitle-core` is the library plugin every subtitle
+producer and consumer imports; its `py/subtitle_bridge.py` does the per-cue
+work INSIDE the pipeline runner — shipped by the plugin, installed through the
+generic `PipelineDescription.runnerHooks` seam (see below), so the engine
+learns nothing about subtitles and plugins only describe elements.
+
+**Producing a subtitle stream** (reference: `teletext-subtitles`): end each
+subtitle branch in an `appsink` that receives one `text/x-raw` buffer per cue
+(empty = clear), add `buildSubtitlePayTail({appsrcName, muxName, pid:
+subtitleStreamPid(i), port})` for its bus egress, and put the pairs on the
+description as `runnerHooks: [subtitleRunnerHook({ pay: [{appsink, appsrc,
+holdMs, label}] })]`. The
+bridge stamps each cue at the house time it arrives, pushes the KLV buffer,
+re-sends live cues every 2 s for late joiners, and reports each cue on the
+`subtitle:cue` plugin-event channel (`{label, text, startMs, count}`) for
+status. Give the output port `streamInfo: { media: 'subtitle', codec: 'webvtt',
+language }`.
+
+**Rendering subtitles** (reference: `video-player`, `transcoder`): copy
+`SUBTITLE_INPUT_PORT` into your ports (a `subtitles-in` bus input), copy
+`SUBTITLE_OVERLAY_SCHEMA` verbatim into `configSchema.properties` and list
+`SUBTITLE_OVERLAY_LIVE_KEYS` in `liveUpdatableParams` (pin both with a test —
+see `video-player/engine/subtitleManifest.test.ts`). In `buildPipeline`, when
+`getModuleBusSource(instanceId, SUBTITLE_INPUT_PORT_ID)` returns a source,
+splice `buildSubtitleOverlayElement(name, config)` into your video path AFTER
+`videoconvert`, append `buildSubtitleInput({port, socketPath, demuxName})` as
+a separate fragment, and add `runnerHooks: [subtitleRunnerHook({ overlay:
+{ demux, overlay } })]` to the description. Live look changes: `subtitleOverlayLiveUpdates(changes, config)`
+→ `setElementProperty(overlayName, property, value)`. Do NOT link the
+textoverlay text pad — the bridge sets the element's `text` property from a
+probe on its video sink pad, frame-accurate against the stamped timeline (the
+text pad's window semantics flash or block; see the ADR).
+
+Always look up your VIDEO input with an explicit port id
+(`getModuleBusSource(instanceId, 'mpegts-in')`) once you have two bus inputs —
+without it the subtitle edge can be mistaken for the video.
+
+### Runner hooks (`PipelineDescription.runnerHooks`) — plugin python inside the runner
+
+A plugin that needs work the pipeline STRING cannot express — an appsink
+callback, a dynamic-pad link, a per-buffer probe — ships that python in its
+own `py/` dir and names it on the description:
+`runnerHooks: [{ module: 'my_hook', config: {...} }]`. Before PLAYING the
+runner imports the module (every `plugins/*/py` dir is on its PYTHONPATH) and
+calls `install(pipeline, config, ctx)`; on stop it calls `clear()`. `ctx` is
+`{ emit_event(dict), emit_plugin_event(channel, payload) }` — engine events
+and the module's plugin-event channel, the two things the hook cannot own. A
+hook that fails to import or install is reported as a warning and skipped;
+it must never take the media pipeline down. Module names must be unique
+across plugins (one flat python namespace). Reference: `subtitle-core/py/
+subtitle_bridge.py` (+ its GStreamer-free unit test beside it).
+
 ## Available Services (`this.services`)
 
 | Property | Type | Description |

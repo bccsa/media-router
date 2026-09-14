@@ -22,6 +22,14 @@
                 "streamType": "muxed/mpegts",
                 "label": "MPEG-TS In",
                 "maxConnections": 1
+            },
+            {
+                "id": "subtitles-in",
+                "direction": "input",
+                "streamType": "muxed/mpegts",
+                "label": "Subtitles In",
+                "maxConnections": 1,
+                "acceptsStreamTypes": ["muxed/mpegts"]
             }
         ],
         "configSchema": {
@@ -80,6 +88,62 @@
                         "single": "Single core (lowest latency)"
                     },
                     "description": "Software (CPU) decode threading — only matters when the stream falls back to software decode (no hardware decoder for this codec). AUTO (default): spreads the decode across three cores, so a stream the CPU can't decode on one core keeps up — a Pi 5 has no H.264 hardware decoder, and single-threaded it lagged a 1080p50 feed while sitting 62% idle. Costs ~3 frames of latency (~60 ms at 50 fps). SINGLE CORE: one core, no added latency — use only when that 60 ms matters more than keeping up, and the CPU is comfortably ahead."
+                },
+                "subtitlePosition": {
+                    "type": "string",
+                    "enum": ["bottom", "top", "center"],
+                    "default": "bottom",
+                    "x-enumLabels": { "bottom": "Bottom", "top": "Top", "center": "Center" },
+                    "x-live": true,
+                    "description": "Vertical placement of subtitle text on the picture."
+                },
+                "subtitleAlign": {
+                    "type": "string",
+                    "enum": ["center", "left", "right"],
+                    "default": "center",
+                    "x-enumLabels": { "center": "Center", "left": "Left", "right": "Right" },
+                    "x-live": true,
+                    "description": "Horizontal alignment of subtitle text."
+                },
+                "subtitleSize": {
+                    "type": "number",
+                    "default": 36,
+                    "minimum": 12,
+                    "maximum": 120,
+                    "x-widget": "slider",
+                    "x-step": 2,
+                    "x-unit": "pt",
+                    "x-live": true,
+                    "description": "Subtitle font size. Scales with the picture height (the renderer resizes relative to the frame), so one value suits every rendition."
+                },
+                "subtitleMargin": {
+                    "type": "number",
+                    "default": 40,
+                    "minimum": 0,
+                    "maximum": 400,
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "px",
+                    "x-live": true,
+                    "description": "Distance from the top or bottom edge (ignored for Center)."
+                },
+                "subtitleBackground": {
+                    "type": "boolean",
+                    "default": true,
+                    "x-live": true,
+                    "description": "Draw a shaded box behind the text for legibility over bright pictures."
+                },
+                "subtitleBackgroundOpacity": {
+                    "type": "number",
+                    "default": 60,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "%",
+                    "x-live": true,
+                    "x-showWhen": "subtitleBackground=true",
+                    "description": "Opacity of the shaded box (0 = invisible, 100 = solid black)."
                 }
             }
         },
@@ -109,7 +173,8 @@
         "engine": "./engine/VideoPlayerModule.ts"
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-subtitle-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

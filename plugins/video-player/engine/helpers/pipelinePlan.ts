@@ -17,6 +17,7 @@ import {
 } from './pipelines.js';
 import { decoderRankEnv, VIDEO_DECODER_NAME, type DecoderSelection } from './decoderSelection.js';
 import type { RenderTargetReady } from './renderTarget.js';
+import { subtitleRenderPlan } from '@media-router/plugin-subtitle-core';
 
 /**
  * Turn a resolved render target plus the module's current state into the
@@ -193,6 +194,12 @@ export interface LivePlanInput {
      * ratchet it guards is a property of pacing (see `backlogShedConfig`).
      */
     services?: BacklogShedServices | null;
+    /**
+     * Subtitle source wired to `subtitles-in` (subtitle-core carrier) plus the
+     * module config the overlay controls read. Absent → no overlay, no extra
+     * input, pipeline string unchanged.
+     */
+    subtitles?: { port: number; socketPath?: string; config: Record<string, unknown> };
 }
 
 export function planLivePipeline(input: LivePlanInput): PipelineDescription {
@@ -217,15 +224,18 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
                   keyframeAligned: true,
               })
             : undefined;
+    const subs = input.subtitles ? subtitleRenderPlan(input.subtitles, input.subtitles.config) : undefined;
     return {
-        pipeline: buildLivePipeline(
-            input.sinkElement,
-            input.udpSource,
-            input.waylandFullscreen,
-            Number(input.bufferMs ?? 200),
-            input.sinkPaced,
-            input.decoder,
-        ),
+        pipeline:
+            buildLivePipeline(
+                input.sinkElement,
+                input.udpSource,
+                input.waylandFullscreen,
+                Number(input.bufferMs ?? 200),
+                input.sinkPaced,
+                input.decoder,
+                subs?.overlayElement,
+            ) + (subs ? ` ${subs.inputFragment}` : ''),
         restartOnError: true,
         // Merged, never replaced: `input.env` carries the wayland app_id
         // (MR_GLIB_PRGNAME) the compositor pins our surface by, and losing it
@@ -276,5 +286,6 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // re-rolled on every restart (−85 ms measured on .103's video edge).
         // `applyTimeSync` drops it when the contract is off.
         alignBranchesToStamps: { demuxes: [VP_DEMUX_NAME] },
+        ...(subs ? { runnerHooks: subs.runnerHooks } : {}),
     };
 }

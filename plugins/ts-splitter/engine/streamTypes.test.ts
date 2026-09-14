@@ -36,10 +36,11 @@ describe('streamTypeInfo — Opus on stream_type 0x06', () => {
         expect(streamTypeInfo(0x06, ISO639_NOR + OPUS_REGISTRATION + OPUS_DVB_EXT)).toEqual(opus);
     });
 
-    it('leaves other 0x06 streams private (DVB subtitle / teletext must not become opus)', () => {
+    it('leaves other 0x06 streams private or their own identity — never opus', () => {
         expect(streamTypeInfo(0x06)).toEqual(privateData);
         expect(streamTypeInfo(0x06, ISO639_NOR)).toEqual(privateData); // language only
-        expect(streamTypeInfo(0x06, '5908' + '6e6f721000010002')).toEqual(privateData); // DVB sub
+        // DVB sub is a subtitle stream now (descriptor 0x59), still not opus
+        expect(streamTypeInfo(0x06, '5908' + '6e6f721000010002')).toEqual({ media: 'subtitle', codec: 'dvbsub' });
         expect(streamTypeInfo(0x06, '7f024f02')).toEqual(privateData); // ext, but not ext tag 0x80
         expect(streamTypeInfo(0x06, '05044f707500')).toEqual(privateData); // registration != "Opus"
     });
@@ -102,5 +103,30 @@ describe('formatPid', () => {
     it('hex-formats a PID', () => {
         expect(formatPid(0x1f0)).toBe('0x1f0');
         expect(formatPid(0)).toBe('0x0');
+    });
+});
+
+describe('streamTypeInfo — subtitle and metadata identities on stream_type 0x06', () => {
+    // NO-OCC-Gate01 feed, PID 0x20: teletext descriptor with eight subtitle pages
+    const TELETEXT = '56286e6f72169264657511506e6c641695656e67108866726116007370611610726f6e1620706f6c1630';
+    const DVB_SUB = '5908656e6710000100020003'; // tag 0x59: eng, type 0x10, page ids
+    const KLVA = '05044b4c5641'; // registration "KLVA" — mpegtsmux's meta/x-klv streams
+
+    it('teletext descriptor → subtitle/teletext', () => {
+        expect(streamTypeInfo(0x06, TELETEXT)).toEqual({ media: 'subtitle', codec: 'teletext' });
+        expect(streamLabel(0x20, streamTypeInfo(0x06, TELETEXT))).toBe('Subtitle (teletext, PID 0x20)');
+    });
+
+    it('DVB subtitling descriptor → subtitle/dvbsub', () => {
+        expect(streamTypeInfo(0x06, DVB_SUB)).toEqual({ media: 'subtitle', codec: 'dvbsub' });
+    });
+
+    it('KLVA registration → metadata/klv (name carousel, subtitle cue streams)', () => {
+        expect(streamTypeInfo(0x06, KLVA)).toEqual({ media: 'metadata', codec: 'klv' });
+        expect(streamTypeInfo(0x06, '0a04656e6700' + KLVA)).toEqual({ media: 'metadata', codec: 'klv' });
+    });
+
+    it('a truncated descriptor loop is still private, never a throw', () => {
+        expect(streamTypeInfo(0x06, '5628')).toEqual({ media: 'data', codec: 'private' });
     });
 });

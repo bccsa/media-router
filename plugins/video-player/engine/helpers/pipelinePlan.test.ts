@@ -261,6 +261,35 @@ describe('planLivePipeline', () => {
         expect(desc.pipeline).toContain('appsink name=tsprobe');
     });
 
+    it('adds the subtitle overlay + input only when a subtitle source is wired', () => {
+        const plain = planLivePipeline(base);
+        expect(plain.pipeline).not.toContain('textoverlay');
+        expect(plain.runnerHooks).toBeUndefined();
+
+        const withSubs = planLivePipeline({
+            ...base,
+            subtitles: {
+                port: 5600,
+                socketPath: '/tmp/mr-bus-5600-edge.sock',
+                config: { subtitlePosition: 'top', subtitleSize: 48 },
+            },
+        });
+        // overlay sits between the convert stage and the sink, driven by config
+        expect(withSubs.pipeline).toContain(
+            '! videoconvert ! videoscale ! textoverlay name=subov wait-text=false text="" valignment=top ' +
+                'halignment=center font-desc="Sans Bold 48" ypad=40 shaded-background=true shading-value=153 ! kmssink name=sink',
+        );
+        // the subtitle TS comes in on its own bus edge into a named demux
+        expect(withSubs.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
+        expect(withSubs.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
+        expect(withSubs.runnerHooks).toEqual([
+            { module: 'subtitle_bridge', config: { overlay: { demux: 'subdemux', overlay: 'subov' } } },
+        ]);
+        // everything else about the description is untouched
+        expect(withSubs.tsProbe).toEqual(plain.tsProbe);
+        expect(withSubs.alignBranchesToStamps).toEqual(plain.alignBranchesToStamps);
+    });
+
     it('watches render keep-up only when the sink is named', () => {
         expect(planLivePipeline(base).renderWatch).toEqual({ sink: 'sink' });
         // autovideosink (dev boxes) is a bin without `name=sink` — the runner

@@ -10,6 +10,12 @@ import {
     type PipelineDescription,
 } from '@media-router/engine';
 import {
+    SUBTITLE_INPUT_PORT_ID,
+    SUBTITLE_OVERLAY_LIVE_KEYS,
+    SUBTITLE_OVERLAY_NAME,
+    applySubtitleLiveUpdates,
+} from '@media-router/plugin-subtitle-core';
+import {
     bootNowMs,
     COG_POLL_INTERVAL_MS,
     ensureWaylandEnv,
@@ -95,12 +101,15 @@ type RunnerErrorEvent = { kind?: string; message?: string; element?: string };
  * surprises), `renderLag` (is the render chain keeping up).
  */
 export class VideoPlayerModule extends GstPluginBase {
+    /** The video input port; the subtitle input is SUBTITLE_INPUT_PORT_ID. */
+    static readonly VIDEO_INPUT_PORT_ID = 'mpegts-in';
+
     // `fallbackText` is "live" only in the *fallback* pipeline — the `nov`
     // textoverlay element doesn't exist in the live (bus → decodebin)
     // pipeline. With a source connected, a fallbackText change is silently
     // deferred to the next fallback render. See onLiveConfigUpdate for the
     // hasSource guard that enforces this.
-    protected liveUpdatableParams = ['fallbackText', 'lipSyncMs'];
+    protected liveUpdatableParams = ['fallbackText', 'lipSyncMs', ...SUBTITLE_OVERLAY_LIVE_KEYS];
 
     /** Probed once at plugin load — set by `initManifest`. */
     private static sinks: SinkAvailability = { wayland: false, kms: false };
@@ -818,7 +827,7 @@ export class VideoPlayerModule extends GstPluginBase {
     private async pollBusResume(): Promise<void> {
         if (!this.busStallDetected || this.pipelineRestartInProgress) return;
         const instanceId = this.services?.instanceId ?? '';
-        const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+        const source = this.videoSource();
         if (!source) return;
         const signal = await pollResumeSignal({
             tapActive: this.resumeTapActive,
@@ -931,7 +940,7 @@ export class VideoPlayerModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         return codecMemoryKey(
             instanceId,
-            this.services?.mediaRouter?.getModuleBusSource(instanceId),
+            this.videoSource(),
         );
     }
 
@@ -1070,7 +1079,7 @@ export class VideoPlayerModule extends GstPluginBase {
             // new text takes effect the next time the fallback pipeline is
             // built (source disconnect, stall, module restart).
             const instanceId = this.services?.instanceId ?? '';
-            const hasSource = !!this.services?.mediaRouter?.getModuleBusSource(instanceId);
+            const hasSource = !!this.videoSource();
             const fallbackPipelineActive = !hasSource || this.busStallDetected;
             if (fallbackPipelineActive) {
                 const text = changes.fallbackText as string;
@@ -1087,6 +1096,14 @@ export class VideoPlayerModule extends GstPluginBase {
             // whole rather than sent as the raw trim.
             await this.pushSinkTsOffset();
         }
+        // Subtitle look: live on the overlay element (present only while a
+        // subtitle source is wired — a miss is logged, never fatal).
+        await applySubtitleLiveUpdates(
+            changes,
+            this.config,
+            (property, value) => this.setElementProperty(SUBTITLE_OVERLAY_NAME, property, value),
+            (err, property) => this.log.debug({ err, property }, 'Failed to update subtitle overlay'),
+        );
         this.updateStatusData();
     }
 
@@ -1134,7 +1151,7 @@ export class VideoPlayerModule extends GstPluginBase {
         const sink = planSink(target, config, videoTsOffsetNs(this.services, config));
 
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+        const udpSource = this.videoSource();
         const sourceSilent = !!udpSource && this.busStallDetected;
         const useFallback = !udpSource || sourceSilent;
 
@@ -1181,6 +1198,10 @@ export class VideoPlayerModule extends GstPluginBase {
         this.detectedCodec ??= VideoPlayerModule.codecMemory.recall(
             codecMemoryKey(instanceId, udpSource),
         );
+        const subtitleSource = this.services?.mediaRouter?.getModuleBusSource(
+            instanceId,
+            SUBTITLE_INPUT_PORT_ID,
+        );
         const decoder = this.selectDecoderRung(this.detectedCodec);
         this.liveDecoder = decoder;
         this.liveDecoderCodec = this.detectedCodec;
@@ -1213,12 +1234,21 @@ export class VideoPlayerModule extends GstPluginBase {
             sinkPaced: sink.sinkPaced,
             // Read only for the time-sync contract gate on the backlog shedder.
             services: this.services,
+            subtitles: subtitleSource
+                ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }
+                : undefined,
         });
+    }
+
+    /** The bus source wired to the VIDEO input (never the subtitle edge). */
+    private videoSource() {
+        const instanceId = this.services?.instanceId ?? '';
+        return this.services?.mediaRouter?.getModuleBusSource(instanceId, VideoPlayerModule.VIDEO_INPUT_PORT_ID);
     }
 
     private updateStatusData(): void {
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+        const udpSource = this.videoSource();
         this.setStatusData('input', {
             source: udpSource ? `bus ${udpSource.port}` : '—',
             state: udpSource ? 'connected' : 'no source',

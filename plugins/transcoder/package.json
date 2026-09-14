@@ -268,6 +268,62 @@
                     "default": true,
                     "x-advanced": true,
                     "description": "Carry the SOURCE stream's timestamps through the transcode (default on). Output PTS/PCR then match the input's, so downstream muxers align this video with its sibling audio by real timestamps and lipsync survives module restarts. Turn off only to fall back to the previous per-start timeline behaviour."
+                },
+                "subtitlePosition": {
+                    "type": "string",
+                    "enum": ["bottom", "top", "center"],
+                    "default": "bottom",
+                    "x-enumLabels": { "bottom": "Bottom", "top": "Top", "center": "Center" },
+                    "x-live": true,
+                    "description": "Vertical placement of subtitle text on the picture."
+                },
+                "subtitleAlign": {
+                    "type": "string",
+                    "enum": ["center", "left", "right"],
+                    "default": "center",
+                    "x-enumLabels": { "center": "Center", "left": "Left", "right": "Right" },
+                    "x-live": true,
+                    "description": "Horizontal alignment of subtitle text."
+                },
+                "subtitleSize": {
+                    "type": "number",
+                    "default": 36,
+                    "minimum": 12,
+                    "maximum": 120,
+                    "x-widget": "slider",
+                    "x-step": 2,
+                    "x-unit": "pt",
+                    "x-live": true,
+                    "description": "Subtitle font size. Scales with the picture height (the renderer resizes relative to the frame), so one value suits every rendition."
+                },
+                "subtitleMargin": {
+                    "type": "number",
+                    "default": 40,
+                    "minimum": 0,
+                    "maximum": 400,
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "px",
+                    "x-live": true,
+                    "description": "Distance from the top or bottom edge (ignored for Center)."
+                },
+                "subtitleBackground": {
+                    "type": "boolean",
+                    "default": true,
+                    "x-live": true,
+                    "description": "Draw a shaded box behind the text for legibility over bright pictures."
+                },
+                "subtitleBackgroundOpacity": {
+                    "type": "number",
+                    "default": 60,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "%",
+                    "x-live": true,
+                    "x-showWhen": "subtitleBackground=true",
+                    "description": "Opacity of the shaded box (0 = invisible, 100 = solid black)."
                 }
             }
         },
@@ -295,7 +351,8 @@
     },
     "dependencies": {
         "@media-router/engine": "workspace:*",
-        "@media-router/plugin-mpegts-core": "workspace:*"
+        "@media-router/plugin-mpegts-core": "workspace:*",
+        "@media-router/plugin-subtitle-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

@@ -1898,6 +1898,40 @@ def _now_running_ms():
     return (clock.get_time() - pipe.get_base_time()) / 1e6
 
 
+_runner_hooks = []      # python modules installed for the running pipeline
+
+
+def _install_runner_hooks(pipe, hooks):
+    """`hooks = [{"module": "<py module in a plugin's py/ dir>", "config": {...}}]`.
+    Each module implements `install(pipeline, config, ctx)` and `clear()`.
+    A hook that fails to import or install is reported and skipped — it must
+    never take the media pipeline down."""
+    global _runner_hooks
+    _clear_runner_hooks()
+    ctx = {"emit_event": emit_event, "emit_plugin_event": emit_plugin_event}
+    for hook in hooks or []:
+        name = (hook or {}).get("module")
+        if not name:
+            continue
+        try:
+            import importlib
+            mod = importlib.import_module(name)
+            mod.install(pipe, (hook or {}).get("config"), ctx)
+            _runner_hooks.append(mod)
+        except Exception as exc:  # noqa: BLE001 — a plugin hook fault is not a pipeline fault
+            emit_event({"event": "warning", "message": f"runner hook '{name}' failed: {exc}"})
+
+
+def _clear_runner_hooks():
+    global _runner_hooks
+    for mod in _runner_hooks:
+        try:
+            mod.clear()
+        except Exception:  # noqa: BLE001
+            pass
+    _runner_hooks = []
+
+
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
@@ -1980,6 +2014,11 @@ def handle_start(data):
         el = pipeline.get_by_name(src_name)
         if el:
             _install_stream_discovery(el, src_name, read_klv_names)
+    # Plugin-owned runner hooks (`runnerHooks`): a plugin ships python in its
+    # own `py/` dir (on our PYTHONPATH) and names it here; we import it and
+    # hand it the pipeline before PLAYING. The runner learns nothing about the
+    # plugin's domain (ADR-0002 — the same seam the stamper's ts_timeline uses).
+    _install_runner_hooks(pipeline, data.get("runnerHooks"))
 
     # Set software-decoder threading. `max-threads` is always the core count;
     # `decoderThreadType` (default 'auto') decides whether to force FRAME
@@ -2079,6 +2118,7 @@ def handle_stop(data=None):
     _clear_preserve_timeline()
     _clear_branch_align()
     gst_bus_stamper.clear()
+    _clear_runner_hooks()
     _stop_rist()
     _stop_ts_probe()
     _stop_render_watch()

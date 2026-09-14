@@ -232,4 +232,11 @@ describe('start payload (the wire to the runner)', () => {
         expect(child.startPayload({ pipeline: 'x', latchRepair: true }).latchRepair).toBe(true);
         expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('latchRepair', undefined);
     });
+
+    it('carries runnerHooks verbatim — plugin python the runner must install', () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        const hooks = [{ module: 'subtitle_bridge', config: { pay: [{ appsink: 'a', appsrc: 'b', holdMs: 8000 }] } }];
+        expect(child.startPayload({ pipeline: 'x', runnerHooks: hooks }).runnerHooks).toEqual(hooks);
+        expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('runnerHooks', undefined);
+    });
 });

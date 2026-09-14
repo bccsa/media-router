@@ -4,10 +4,12 @@ import { TranscoderModule } from './TranscoderModule.js';
 
 function makeModule(opts: { upstream?: { port: number; socketPath: string } | undefined } = {}) {
     const module = new TranscoderModule();
-    const getModuleBusSource = vi.fn(() =>
-        'upstream' in opts
-            ? opts.upstream
-            : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+    const getModuleBusSource = vi.fn((_id: string, portId?: string) =>
+        portId === 'subtitles-in'
+            ? undefined
+            : 'upstream' in opts
+              ? opts.upstream
+              : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
     );
     let nextPort = 41000;
     const assignBusChannel = vi.fn((_id: string, _portId?: string) => ({
@@ -37,8 +39,8 @@ describe('getDynamicPorts', () => {
             ],
         };
         const ports = module.getDynamicPorts();
-        expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'out-0', 'out-1']);
-        expect(ports[1].label).toBe('1080p');
+        expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'subtitles-in', 'out-0', 'out-1']);
+        expect(ports[2].label).toBe('1080p');
     });
 
     it('input + one provisional output for empty (pre-start) config', () => {
@@ -47,14 +49,14 @@ describe('getDynamicPorts', () => {
         const { module } = makeModule();
         (module as any).config = {};
         const ports = module.getDynamicPorts();
-        expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'out-0']);
+        expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'subtitles-in', 'out-0']);
     });
 
     it('input only when renditions is an explicit empty array', () => {
         const { module } = makeModule();
         (module as any).config = { renditions: [] };
         const ports = module.getDynamicPorts();
-        expect(ports.map((p) => p.id)).toEqual(['mpegts-in']);
+        expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'subtitles-in']);
     });
 });
 

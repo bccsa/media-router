@@ -245,6 +245,9 @@ export class GstChildProcess extends EventEmitter {
             // GstPluginBase (undefined = the runner's live default).
             latchRepair: desc.latchRepair,
             inputStallWatch: desc.inputStallWatch,
+            // Plugin-owned runner python (`runnerHooks`, e.g. subtitle-core's
+            // bridge) — forwarded verbatim; the runner imports and installs it.
+            runnerHooks: desc.runnerHooks,
         };
     }
 

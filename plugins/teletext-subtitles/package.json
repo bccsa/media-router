@@ -1,0 +1,87 @@
+{
+    "name": "@media-router/plugin-teletext-subtitles",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Teletext subtitle decoder — one MPEG-TS input carrying DVB teletext, one subtitle output per configured page",
+    "mediaRouter": {
+        "pluginId": "teletext-subtitles",
+        "displayName": "Teletext Subtitles",
+        "description": "Decodes the DVB teletext stream in an MPEG-TS once and turns each configured subtitle page (888, 692, …) into its own subtitle output. Wire a subtitle output into the Subtitles In port of a Video Player (rendered on the display) or a Video Transcoder (burned into every rendition). Subtitle outputs are MPEG-TS on the bus like everything else, so they also travel through SRT/RIST outputs and the MPEG-TS muxer.",
+        "color": "#0ea5e9",
+        "icon": "chat-bubble-bottom-center-text",
+        "category": "codec",
+        "architectures": ["arm64", "x86_64"],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "pages": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "default": [
+                        { "page": 888, "language": "eng", "name": "" }
+                    ],
+                    "description": "Teletext subtitle pages to decode — \"+ Add\" creates another subtitle output port. The page numbers and languages a service carries are listed in its PMT teletext descriptor (the TS Splitter shows the teletext PID); common subtitle pages are 888 (English) and the 6xx range.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "page": {
+                                "type": "number",
+                                "default": 888,
+                                "minimum": 100,
+                                "maximum": 899,
+                                "description": "Teletext page number (decimal, 100–899)"
+                            },
+                            "language": {
+                                "type": "string",
+                                "default": "",
+                                "description": "ISO 639-2 language code (eng, nor, fra, …) — carried in the subtitle stream's name channel"
+                            },
+                            "name": {
+                                "type": "string",
+                                "default": "",
+                                "description": "Label (optional; defaults to language + page)"
+                            }
+                        }
+                    },
+                    "x-liveUpdatable": false
+                },
+                "cueHoldSeconds": {
+                    "type": "number",
+                    "default": 8,
+                    "minimum": 1,
+                    "maximum": 30,
+                    "x-unit": "s",
+                    "description": "Longest a subtitle stays on screen when the broadcaster never sends a clear for it. Teletext subtitles are normally erased by the next page or an explicit blank page; this is the safety net."
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "input",
+                "label": "Input",
+                "fields": [
+                    { "key": "channel", "label": "Bus channel" }
+                ]
+            },
+            {
+                "id": "cues",
+                "label": "Subtitles",
+                "fields": [
+                    { "key": "pages", "label": "Pages" },
+                    { "key": "total", "label": "Cues decoded" },
+                    { "key": "last", "label": "Last cue" }
+                ]
+            }
+        ],
+        "engine": "./engine/TeletextSubtitlesModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-subtitle-core": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

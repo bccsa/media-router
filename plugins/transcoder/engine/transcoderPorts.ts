@@ -8,6 +8,8 @@
  * constants, no runtime dependency on the pipeline.
  */
 
+import { SUBTITLE_INPUT_PORT } from '@media-router/plugin-subtitle-core';
+import type { DynamicPort } from '@media-router/engine';
 import {
     SPEED_PRESETS,
     H264_PROFILES,
@@ -18,8 +20,6 @@ import {
     type SpeedPreset,
 } from '@media-router/engine';
 
-export type PortDirection = 'input' | 'output';
-
 /** Encoder-impl selector as it appears in config — a concrete impl or 'auto'. */
 export type ImplChoice = ImplId | 'auto';
 
@@ -27,17 +27,7 @@ const CODEC_IDS: readonly CodecId[] = ['h264', 'h265', 'av1'];
 const ENCODER_IMPLS: readonly ImplChoice[] = ['auto', 'v4l2', 'va', 'software'];
 const RATE_CONTROLS: readonly RateControl[] = ['cbr', 'vbr'];
 
-export interface DynamicPort {
-    id: string;
-    direction: PortDirection;
-    streamType: 'muxed/mpegts';
-    label: string;
-    maxConnections: number;
-    /** Output ports carry MPEG-TS, so downstream consumers must wait for this
-     *  pipeline to be PLAYING before they can be wired — same contract as the
-     *  encoder / muxer outputs. */
-    requiresOrderedApply?: boolean;
-}
+export type { DynamicPort };
 
 /**
  * Optional per-rendition encoder overrides. Every field is optional: an absent
@@ -188,6 +178,9 @@ export function buildDynamicPorts(renditions: Rendition[]): DynamicPort[] {
             label: 'MPEG-TS In',
             maxConnections: 1,
         },
+        // Optional subtitle input: burned into every rendition ahead of the tee
+        // (subtitle-core carrier; same controls as the video-player).
+        { ...SUBTITLE_INPUT_PORT },
     ];
     renditions.forEach((r, i) => {
         ports.push({
