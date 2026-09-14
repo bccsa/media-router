@@ -13,6 +13,12 @@ import {
     type SpeedPreset,
     type ThroughputSample,
 } from '@media-router/engine';
+import {
+    SUBTITLE_INPUT_PORT_ID,
+    SUBTITLE_OVERLAY_LIVE_KEYS,
+    SUBTITLE_OVERLAY_NAME,
+    applySubtitleLiveUpdates,
+} from '@media-router/plugin-subtitle-core';
 import { buildPipeline, DEMUX_NAME } from './transcoderPipeline.js';
 import { renditionSummary, throughputSection } from './transcoderStatus.js';
 import {
@@ -41,7 +47,7 @@ import {
  * encoder. Encoder selection (codec + impl) reuses the same shared CBR-tuned
  * branch builder as the Video Encoder plugin.
  *
- * Nothing here is live-tweakable — renditions / codec / framerate all change the
+ * Only the subtitle look is live-tweakable — renditions / codec / framerate all change the
  * pipeline shape (or the port set), so every edit rebuilds. The base class's
  * empty `liveUpdatableParams` default is exactly right, so it isn't overridden.
  */
@@ -76,6 +82,19 @@ export class TranscoderModule extends GstPluginBase {
      * than naming an encoder that isn't there.
      */
     static probed: ProbedEncoders = ProbedEncoders.unprobed();
+
+    /** Only the subtitle look is live; every encode knob rebuilds (see above). */
+    protected liveUpdatableParams = [...SUBTITLE_OVERLAY_LIVE_KEYS];
+
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        await super.onLiveConfigUpdate(changes);
+        await applySubtitleLiveUpdates(
+            changes,
+            this.config,
+            (property, value) => this.setElementProperty(SUBTITLE_OVERLAY_NAME, property, value),
+            (err, property) => this.log.debug({ err, property }, 'Failed to update subtitle overlay'),
+        );
+    }
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
         TranscoderModule.probed = await ProbedEncoders.probe(ENCODER_ELEMENTS, {
@@ -127,7 +146,8 @@ export class TranscoderModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
 
-        const upstream = router.getModuleBusSource(instanceId);
+        const upstream = router.getModuleBusSource(instanceId, 'mpegts-in');
+        const subtitleSource = router.getModuleBusSource(instanceId, SUBTITLE_INPUT_PORT_ID);
         if (!upstream) {
             this.setHealth('warning', 'No upstream MPEG-TS source connected');
             return null;
@@ -221,6 +241,9 @@ export class TranscoderModule extends GstPluginBase {
             decodeThreads,
             deinterlace,
             hwScalers: TranscoderModule.probed.hwScalers,
+            subtitles: subtitleSource
+                ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }
+                : undefined,
         });
         if (!result) return null;
 
@@ -249,6 +272,7 @@ export class TranscoderModule extends GstPluginBase {
         return {
             pipeline: result.pipeline,
             restartOnError: true,
+            ...(result.runnerHooks ? { runnerHooks: result.runnerHooks } : {}),
             // Restart-proof lipsync (default on): output PES PTS/PCR carry the
             // SOURCE timeline instead of a fresh per-incarnation rebase, so
             // downstream muxers align this video with its sibling audio by real

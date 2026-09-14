@@ -48,10 +48,35 @@ const PRIVATE_PES = 0x06;
  * them as private data.
  */
 export function streamTypeInfo(streamType: number, esInfoHex?: string): StreamTypeInfo {
-    if (streamType === PRIVATE_PES && isOpusEsInfo(esInfoHex)) {
-        return { media: 'audio', codec: 'opus' };
+    if (streamType === PRIVATE_PES) {
+        const byDescriptor = privateStreamIdentity(esInfoHex);
+        if (byDescriptor) return byDescriptor;
     }
     return STREAM_TYPES[streamType] ?? { media: 'data', codec: `0x${streamType.toString(16)}` };
+}
+
+/**
+ * Identity of a stream_type 0x06 (private PES) ES from its descriptor loop —
+ * the PMT names these only there. DVB teletext (tag 0x56) and DVB subtitling
+ * (tag 0x59) are subtitle streams; a KLVA registration (tag 0x05) is KLV
+ * metadata — what mpegtsmux writes for the fleet's own name carousel and
+ * subtitle cue streams; Opus by registration / DVB extension. Anything else
+ * stays generic private data.
+ */
+function privateStreamIdentity(esInfoHex: string | undefined): StreamTypeInfo | undefined {
+    const bytes = esInfoBytes(esInfoHex);
+    if (!bytes) return undefined;
+    for (let i = 0; i + 2 <= bytes.length; i += 2 + bytes[i + 1]) {
+        const tag = bytes[i];
+        const len = bytes[i + 1];
+        if (i + 2 + len > bytes.length) break;
+        if (tag === 0x56) return { media: 'subtitle', codec: 'teletext' };
+        if (tag === 0x59) return { media: 'subtitle', codec: 'dvbsub' };
+        if (tag === 0x05 && len >= 4 && bytes.subarray(i + 2, i + 6).toString('latin1') === 'KLVA') {
+            return { media: 'metadata', codec: 'klv' };
+        }
+    }
+    return isOpusEsInfo(esInfoHex) ? { media: 'audio', codec: 'opus' } : undefined;
 }
 
 export function formatPid(pid: number): string {

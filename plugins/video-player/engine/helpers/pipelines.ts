@@ -341,6 +341,14 @@ export function buildLivePipeline(
      * the TS probe has reported a codec.
      */
     decoder: DecoderSelection = DECODEBIN_SELECTION,
+    /**
+     * Subtitle overlay element (subtitle-core `buildSubtitleOverlayElement`),
+     * spliced between the convert stage and the sink ONLY when a subtitle
+     * source is wired — with none, the string is byte-identical to before.
+     * After `videoconvert` so it negotiates a system-memory format it can
+     * blend into; the runner's subtitle bridge drives its `text` property.
+     */
+    overlay?: string,
 ): string {
     // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
@@ -512,6 +520,6 @@ export function buildLivePipeline(
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     return (
         `${tsInput} ! tee name=${PROBE_TEE_NAME} ! tsdemux name=${VP_DEMUX_NAME} latency=0 ! ${caps}${q} ! ` +
-        `${decoder.chain} ! ${convert} ! ${sinkElement}${probeTap}`
+        `${decoder.chain} ! ${convert} ! ${overlay ? `${overlay} ! ` : ''}${sinkElement}${probeTap}`
     );
 }

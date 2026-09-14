@@ -359,7 +359,7 @@ describe('TsSplitterModule discovery', () => {
             streams: [
                 // ISO639 'nor' + Opus registration + DVB extension 0x80.
                 { pid: 0x20, streamType: 0x06, esInfo: '0a046e6f720005044f7075737f028002' },
-                // A teletext-style 0x06 on the same mux must stay private.
+                // A teletext 0x06 on the same mux is a subtitle stream, never opus.
                 { pid: 0x21, streamType: 0x06, esInfo: '5608' + '6e6f721000010002' },
             ],
             pcrPid: 0x65,
@@ -369,7 +369,8 @@ describe('TsSplitterModule discovery', () => {
         expect(port.streamInfo).toMatchObject({ media: 'audio', codec: 'opus', language: 'nor' });
         expect(port.label).toBe('Audio nor (opus, PID 0x20)');
         const teletext = module.getDynamicPorts().find((p) => p.id === pidPortId(0x21))!;
-        expect(teletext.streamInfo).toMatchObject({ media: 'data', codec: 'private' });
+        expect(teletext.streamInfo).toMatchObject({ media: 'subtitle', codec: 'teletext' });
+        expect(teletext.label).toBe('Subtitle (teletext, PID 0x21)');
 
         const section = (module as any).dynamicStatusSections.find(
             (s: { id: string }) => s.id === 'stream-32',

@@ -149,21 +149,23 @@ describe('renditionLabel', () => {
 describe('buildDynamicPorts', () => {
     it('always exposes one MPEG-TS input', () => {
         const ports = buildDynamicPorts([]);
-        expect(ports).toHaveLength(1);
+        // the video input plus the (optional) subtitle input — no outputs yet
+        expect(ports).toHaveLength(2);
         expect(ports[0]).toMatchObject({ id: 'mpegts-in', direction: 'input', maxConnections: 1 });
+        expect(ports[1]).toMatchObject({ id: 'subtitles-in', direction: 'input', maxConnections: 1 });
     });
 
     it('adds one ordered-apply output per rendition with a label', () => {
         const ports = buildDynamicPorts([r({ name: '1080p' }), r({ width: 640, height: 360 })]);
-        expect(ports).toHaveLength(3);
-        expect(ports[1]).toMatchObject({
+        expect(ports).toHaveLength(4);
+        expect(ports[2]).toMatchObject({
             id: 'out-0',
             direction: 'output',
             label: '1080p',
             maxConnections: -1,
             requiresOrderedApply: true,
         });
-        expect(ports[2]).toMatchObject({ id: 'out-1', label: '640x360' });
+        expect(ports[3]).toMatchObject({ id: 'out-1', label: '640x360' });
     });
 });
 
@@ -410,5 +412,50 @@ describe('resolveImpl', () => {
 
     it('honours an explicit impl when available', () => {
         expect(resolveImpl('h265', 'va', ['va'])).toBe('va');
+    });
+});
+
+describe('subtitle burn-in', () => {
+    const outputs = [
+        {
+            port: 40100,
+            portId: 'out-0',
+            rendition: { name: 'HD', width: 1920, height: 1080, bitrate: 5000 },
+            encode: {
+                codec: 'h264' as const,
+                impl: 'software' as const,
+                rateControl: 'cbr' as const,
+                speedPreset: 'ultrafast' as const,
+                h264Profile: 'auto' as const,
+                sceneCut: 40,
+                cpbSeconds: 1,
+            },
+        },
+    ];
+    const base = { input: { port: 5000 }, outputs, framerate: 25, gopFrames: 50 };
+
+    it('is absent unless a subtitle source is wired', () => {
+        const r = buildPipeline(base)!;
+        expect(r.pipeline).not.toContain('textoverlay');
+        expect(r.runnerHooks).toBeUndefined();
+    });
+
+    it('draws once on the shared frame ahead of the tee and reads cues from its own bus edge', () => {
+        const r = buildPipeline({
+            ...base,
+            subtitles: { port: 5600, socketPath: '/tmp/mr-bus-5600-edge.sock', config: { subtitleAlign: 'left' } },
+        })!;
+        expect(r.pipeline).toContain(
+            'videorate ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
+                'valignment=bottom halignment=left font-desc="Sans Bold 36" ypad=40 shaded-background=true shading-value=153 ! tee name=t ',
+        );
+        expect(r.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
+        expect(r.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
+        expect(r.runnerHooks).toEqual([
+            { module: 'subtitle_bridge', config: { overlay: { demux: 'subdemux', overlay: 'subov' } } },
+        ]);
+        // the plain string is a strict prefix-with-insertion: nothing else moved
+        const plain = buildPipeline(base)!.pipeline;
+        expect(r.pipeline.replace(/textoverlay[^!]*! /, '').replace(/ unixfdsrc .*$/, '')).toBe(plain);
     });
 });

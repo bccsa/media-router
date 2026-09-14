@@ -10,6 +10,7 @@ export type {
     TsProbeRunnerConfig,
     BacklogShedConfig,
     InputStallWatch,
+    RunnerHook,
     EngineServices,
     ModuleServices,
     DynamicPort,

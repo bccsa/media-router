@@ -468,6 +468,21 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/subtitle-core:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/teletext-subtitles:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@media-router/plugin-subtitle-core':
+        specifier: workspace:*
+        version: link:../subtitle-core
+
   plugins/transcoder:
     dependencies:
       '@media-router/engine':
@@ -476,6 +491,9 @@ importers:
       '@media-router/plugin-mpegts-core':
         specifier: workspace:*
         version: link:../mpegts-core
+      '@media-router/plugin-subtitle-core':
+        specifier: workspace:*
+        version: link:../subtitle-core
 
   plugins/ts-splitter:
     dependencies:
@@ -502,6 +520,9 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-subtitle-core':
+        specifier: workspace:*
+        version: link:../subtitle-core
 
 packages:
 

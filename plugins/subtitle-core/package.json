@@ -1,0 +1,23 @@
+{
+    "name": "@media-router/plugin-subtitle-core",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): subtitle domain base code. The KLV-wrapped WebVTT cue carrier every subtitle producer/consumer speaks (TS + python twins, byte-pinned against each other), the shared overlay config schema and textoverlay property mapping the video-player and transcoder both render with, and the pipeline fragments for a subtitle bus input.",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit",
+        "test": "pnpm run test:py",
+        "test:py": "cd py && python3 subtitle_klv_test.py && python3 subtitle_bridge_test.py"
+    }
+}

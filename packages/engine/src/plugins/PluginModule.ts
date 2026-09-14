@@ -503,7 +503,25 @@ export interface PipelineDescription {
      * `gst_input_stall_watch.py`.
      */
     inputStallWatch?: InputStallWatch[];
+    /**
+     * Plugin-owned runner-side python (`plugins/<x>/py/<module>.py`, on the
+     * runner's PYTHONPATH). For each entry the runner imports `module` and
+     * calls `install(pipeline, config, ctx)` before PLAYING and `clear()` on
+     * stop; `ctx` gives it `emit_event` and `emit_plugin_event`. The engine
+     * never learns the domain (ADR-0002): subtitle-core's `subtitle_bridge`
+     * is the first user, a plugin that needs per-buffer or dynamic-pad work
+     * inside the runner is the next.
+     */
+    runnerHooks?: RunnerHook[];
 }
+
+export interface RunnerHook {
+    /** Python module name (unique across plugins, like every plugin py module). */
+    module: string;
+    /** Passed to the module's `install` verbatim (JSON). */
+    config?: unknown;
+}
+
 
 /** One entry of `PipelineDescription.inputStallWatch`. */
 export interface InputStallWatch {
