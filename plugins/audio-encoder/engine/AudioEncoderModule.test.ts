@@ -44,6 +44,11 @@ describe('AudioEncoderModule.buildPipeline', () => {
         );
     });
 
+    it('asks the egress stamper for a 100 ms conditioner threshold (one audio PID off a pulsesrc ring)', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({}).conditionStepMs).toBe(100);
+    });
+
     it('pins the pulsesrc ring to srcBufferMs (default 200 ms = the previous implicit gst default, clamped to 40 ms floor)', () => {
         const { module } = makeModule();
         expect(module.buildPipeline({}).pipeline).toContain(

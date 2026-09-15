@@ -2003,7 +2003,8 @@ def handle_start(data):
     # and the probe must own that edge's first buffer. The probes themselves arm
     # per tee as consumers attach. Gated on the same flag as the clock, because
     # the stamp is only meaningful once base_time is pinned to 0.
-    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"))
+    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"),
+                           data.get("conditionStepMs"))
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
