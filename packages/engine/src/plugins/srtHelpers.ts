@@ -78,6 +78,10 @@ interface CallerTracker {
     prevLost: number;
     prevTotal: number;
     lossAvg: number;
+    /** Cumulative byte counter at the previous sample (rate baseline). */
+    prevBytes: number;
+    /** Wall-clock ms of the previous sample; 0 = not yet seeded. */
+    prevAt: number;
 }
 
 /** Per-direction stat-key map; `srtsrc` and `srtsink` use different names. */
@@ -86,7 +90,6 @@ function keysFor(direction: SrtDirection): {
     bytesTotal: string;
     packets: string;
     packetsLost: string;
-    bitrate: string;
     statusField: string;
     statusFieldLabel: string;
 } {
@@ -96,7 +99,6 @@ function keysFor(direction: SrtDirection): {
               bytesTotal: 'bytes-received-total',
               packets: 'packets-received',
               packetsLost: 'packets-received-lost',
-              bitrate: 'receive-rate-mbps',
               statusField: 'bytesReceived',
               statusFieldLabel: 'Bytes Received',
           }
@@ -105,7 +107,6 @@ function keysFor(direction: SrtDirection): {
               bytesTotal: 'bytes-sent-total',
               packets: 'packets-sent',
               packetsLost: 'packets-sent-lost',
-              bitrate: 'send-rate-mbps',
               statusField: 'bytesSent',
               statusFieldLabel: 'Bytes Sent',
           };
@@ -116,6 +117,19 @@ function keysFor(direction: SrtDirection): {
  * `poll()` on a timer; the poller reads stats from `host.getElementStats()`,
  * computes deltas, smooths packet loss with an EMA, and updates the host's
  * badges + dynamic status sections.
+ *
+ * Bitrate is derived HERE from cumulative byte counters, never read from
+ * srtsink/srtsrc's `send-rate-mbps` / `receive-rate-mbps` (issue #749). Those
+ * come from `srt_bstats(sock, &stats, 0)` — clear=0 — and libsrt computes them
+ * as bytes-since-last-clear / time-since-last-clear, where "last clear" is the
+ * moment the SRT socket was opened. So they are the average since the socket
+ * came up, converging only as 1/t: an output that sat connected while its
+ * encoder was still starting read low for the rest of its life and "reached
+ * full bitrate" only after a restart opened a fresh socket. The wire rate was
+ * never throttled (libsrt's pacing estimator uses 0.5–1 s windows). Per-poll
+ * deltas over wall-clock elapsed give the live figure the badge claims to be.
+ * Caller mode uses the element's own `bytes-*-total` (survives libsrt-level
+ * reconnects); listener mode uses each caller socket's `bytes-*`.
  *
  * Listener mode is detected by the *presence* of a `callers` array in the
  * stats payload (empty array still counts as listener — that fixes a dead-
@@ -131,6 +145,8 @@ export class SrtStatPoller {
     constructor(
         private readonly host: SrtStatPollerHost,
         private readonly direction: SrtDirection,
+        /** Clock for rate deltas — injectable so tests control elapsed time. */
+        private readonly now: () => number = Date.now,
     ) {
         this.keys = keysFor(direction);
         this.callerFields = [
@@ -148,12 +164,6 @@ export class SrtStatPoller {
         // Drop the live-bitrate face badge too, so a stale rate doesn't linger
         // next to the "Connecting" badge across the restart-backoff window.
         this.host.clearBadge('bitrate');
-    }
-
-    /** Per-flow bitrate in Mbps from a stats/caller object; 0 when absent. */
-    private numericBitrate(c: Record<string, unknown>): number {
-        const v = Number(c[this.keys.bitrate] ?? c['bandwidth-mbps'] ?? 0);
-        return Number.isFinite(v) ? v : 0;
     }
 
     /** Read one set of stats and update the host. Safe to call when not running. */
@@ -178,15 +188,16 @@ export class SrtStatPoller {
 
     private handleListenerMode(callers: Array<Record<string, unknown>>): void {
         const sections: StatusSection[] = [];
-        let totalMbps = 0;
+        let totalKbps = 0;
         for (let i = 0; i < callers.length; i++) {
             sections.push({
                 id: `caller-${i}`,
                 label: `Caller ${i + 1}`,
                 fields: this.callerFields,
             });
-            this.host.setStatusData(`caller-${i}`, this.computeCallerFields(callers[i], i));
-            totalMbps += this.numericBitrate(callers[i]);
+            const { fields, kbps } = this.computeCallerFields(callers[i], i);
+            this.host.setStatusData(`caller-${i}`, fields);
+            totalKbps += kbps ?? 0;
         }
         this.host.setSections(sections);
 
@@ -213,15 +224,15 @@ export class SrtStatPoller {
         }
         // Aggregate live bitrate on the face (sum across every caller). Cleared
         // when nothing is flowing so it never lingers on an idle listener.
-        if (totalMbps > 0) {
-            this.host.setBadge('bitrate', bitrateBadge(Math.round(totalMbps * 1000)));
+        if (totalKbps > 0) {
+            this.host.setBadge('bitrate', bitrateBadge(Math.round(totalKbps)));
         } else {
             this.host.clearBadge('bitrate');
         }
     }
 
     private handleCallerMode(stats: Record<string, unknown>): void {
-        const fields = this.computeCallerFields(stats, 0);
+        const { fields, kbps } = this.computeCallerFields(stats, 0);
 
         const rawBytes = Number(stats[this.keys.bytesTotal] ?? stats[this.keys.bytes] ?? 0);
         const isActive = rawBytes > 0 && rawBytes > this.lastBytes;
@@ -234,9 +245,13 @@ export class SrtStatPoller {
         });
         if (isActive) {
             this.host.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
-            const mbps = this.numericBitrate(stats);
-            if (mbps > 0) this.host.setBadge('bitrate', bitrateBadge(Math.round(mbps * 1000)));
-            else this.host.clearBadge('bitrate');
+            // First poll after (re)start only seeds the baseline — no badge
+            // until there is an interval to rate over.
+            if (kbps !== undefined && kbps > 0) {
+                this.host.setBadge('bitrate', bitrateBadge(Math.round(kbps)));
+            } else {
+                this.host.clearBadge('bitrate');
+            }
         } else {
             this.host.setBadge('status', {
                 icon: 'radio',
@@ -250,19 +265,43 @@ export class SrtStatPoller {
 
     /**
      * Compute the per-caller field bundle (bitrate / rtt / packetLoss / bytes)
-     * and side-effect into the loss-EMA tracker for this caller index.
+     * and side-effect into the loss-EMA + rate-baseline tracker for this caller
+     * index. `kbps` is the live bitrate over the interval since the previous
+     * sample, or `undefined` on the seeding sample.
      */
-    private computeCallerFields(c: Record<string, unknown>, idx: number): Record<string, unknown> {
+    private computeCallerFields(
+        c: Record<string, unknown>,
+        idx: number,
+    ): { fields: Record<string, unknown>; kbps: number | undefined } {
         let tracker = this.callerStats.get(idx);
         if (!tracker) {
-            tracker = { prevLost: 0, prevTotal: 0, lossAvg: 0 };
+            tracker = { prevLost: 0, prevTotal: 0, lossAvg: 0, prevBytes: 0, prevAt: 0 };
             this.callerStats.set(idx, tracker);
         }
 
         const rtt = (c['rtt-ms'] ?? '—') as string | number;
-        const bitrate = (c[this.keys.bitrate] ?? c['bandwidth-mbps'] ?? '—') as string | number;
         const rawBytes = Number(c[this.keys.bytes] ?? 0);
         const bytesFormatted = rawBytes > 0 ? formatBytes(rawBytes) : '—';
+
+        // Live bitrate = Δ(cumulative bytes) over wall-clock elapsed. Prefer the
+        // element-level total (caller mode) and fall back to the per-socket
+        // counter (listener callers carry no `-total`). A counter below its
+        // baseline is a re-spawned socket/element — rate 0, never negative.
+        const counter = Number(c[this.keys.bytesTotal] ?? c[this.keys.bytes] ?? 0);
+        const at = this.now();
+        let kbps: number | undefined;
+        if (tracker.prevAt > 0) {
+            const elapsedS = (at - tracker.prevAt) / 1000;
+            const deltaBytes = counter < tracker.prevBytes ? 0 : counter - tracker.prevBytes;
+            kbps = elapsedS > 0 ? (deltaBytes * 8) / elapsedS / 1000 : 0;
+        }
+        tracker.prevBytes = counter;
+        tracker.prevAt = at;
+        // Status-modal field is unit "Mbps" (plugin manifests) — two decimals.
+        // A dash until there is an interval to rate over, and while nothing
+        // has ever flowed (an unconnected caller should not read "0 Mbps").
+        const bitrate: string | number =
+            kbps === undefined || counter === 0 ? '—' : Math.round(kbps / 10) / 100;
 
         const currLost = Number(c[this.keys.packetsLost] ?? 0);
         const currTotal = Number(c[this.keys.packets] ?? 0);
@@ -285,10 +324,13 @@ export class SrtStatPoller {
         tracker.prevTotal = currTotal;
 
         return {
-            bitrate,
-            rtt,
-            packetLoss,
-            [this.keys.statusField]: bytesFormatted,
+            fields: {
+                bitrate,
+                rtt,
+                packetLoss,
+                [this.keys.statusField]: bytesFormatted,
+            },
+            kbps,
         };
     }
 }
