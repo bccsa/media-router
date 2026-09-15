@@ -1145,6 +1145,35 @@ every poll the engine resets any non-`MR_PW_*` sink that isn't at unity gain bac
 attenuation will stack on top of whatever WirePlumber restored (commonly 40%). See
 [ADR-0006](../docs/adr/0006-hardware-sinks-held-at-unity-gain.md).
 
+### Linking a stream to specific device channels
+
+WirePlumber links a stream to a device by channel POSITION, so a ≤ 8-channel
+stream on a multichannel (AUX-named) card only ever reaches its first two
+ports. When a module must land on channels N..M, create the stream exactly that
+wide and unpositioned (`audio/x-raw,channels=N,channel-mask=(bitmask)0x0`), give
+it `node.name=<this.pwNodeName>` and `node.autoconnect=false` through
+`pulsePinnedStreamProps({...})`, and let the engine link it:
+
+```ts
+import { StreamPortLinker, type StreamLinkSpec } from '@media-router/engine';
+
+private linkPlan: StreamLinkSpec | null = null;   // set in buildPipeline
+private readonly linker = new StreamPortLinker({
+    getPlan: () => this.linkPlan,
+    onResult: (r, plan) => { /* status / health */ },
+    onError: (err) => this.log.warn({ err }, 'link failed'),
+});
+// after super.onStart() and in onPipelinePlaying():
+void this.linker.ensure();
+```
+
+`linkStreamPorts` reads `pw-dump` (the only place `port.id`, the channel index,
+is exposed), waits for the stream node's ports, and links stream port k to
+device port `firstIndex + k` by object id. It is idempotent, so calling it on
+every PLAYING (a runner-internal restart re-creates the node) is the intended
+pattern. Real examples: `audio-input-302m` (capture, dual-mono) and
+`audio-output-302m` (placement). Background: ADR-0014, 2026-09-15 amendment.
+
 For non-PipeWire devices (V4L2, DRM, custom hardware), register a raw provider:
 
 ```typescript
@@ -1870,6 +1899,40 @@ names no plugin itself, ADR-0007) and leave the repair off in your own sidecar
 (`TimelineStamper(..., repair_latch=False)`, the default), or every later
 segment head will be stamped late by a segment. The native element exposes
 the same switch as `repair-latch` (read at arm).
+
+**A consumer on a dark bus waits, it does not restart.** `unixfdsrc` is not a
+live source, so a consumer whose producer is connected but silent (interlocked
+off, peer down) never prerolls. The runner arms its 10 s "reached PLAYING"
+watchdog on the FIRST BUFFER for unixfdsrc-headed pipelines (ADR-0010 rule 3):
+the pipeline parks in PAUSED, after 10 s the module's health reads "Waiting for
+upstream module(s): X" via the same `busGate` path as the socket gate, and the
+first buffer clears it and starts the deadline. Nothing to do in a plugin —
+but do not build a bus consumer whose head is something other than the
+`buildBusSrc` unixfdsrc and expect the same grace; every other head is live.
+
+**UDP silence is a state (`udpSilenceRestartMs`).** `udpsrc` is not live: a
+quiet sender parks the pipeline in PAUSED and used to trip the PLAYING
+watchdog and the 5 s udpsrc timeout into a rebuild every ~15 s. Now the runner
+data-gates the watchdog for udpsrc heads (as for unixfdsrc), reports the first
+silent timeout after start or after data as `input_silent` (the module gets
+`inputSilent` → health warning; mpegts-ip-input also flips its badge to
+Waiting) and the first packet back as `input_resumed` (`inputResumed` →
+warning cleared). Declare `udpSilenceRestartMs` on the description only when a
+rebuild genuinely helps — mpegts-ip-input and aes67-input do for MULTICAST
+(60 s) to re-join a dropped group; leave it 0 for unicast. The runner side of
+all this is `gst_source_gate.py`.
+
+**Conditioner step threshold (`conditionStepMs`).** The stamper's wire
+conditioner rewrites a PES PTS step that the buffer's arrival did not match
+(a source clock step, not content) out of the wire — 300 ms default, which
+B-frame reorder and jitter sit well inside. A producer whose egress is ONE
+audio PID off a live capture ring can put a lower threshold on its description
+(`conditionStepMs`); the audio-encoder sets 100 because its pulsesrc
+re-timestamps by a whole ~200 ms ring now and then with no arrival change, and
+every paced consumer downstream stored that as +200 ms of latency per event
+(#751 follow-up, 2026-09-15). Do NOT lower it on a video egress (reorder reads
+as a step). The runner passes it to the stampers as `condition-step-ms`
+(native, read at arm) / `condition_step_ns` (python probe).
 
 **Where stamper events come from (debugging).** Anchor / settled / re-anchor /
 segment-warning events and the periodic `timeline_drift` report (per armed

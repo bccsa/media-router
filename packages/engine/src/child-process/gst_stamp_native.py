@@ -173,11 +173,14 @@ def insert_elements(pipe):
         sys.stderr.flush()
 
 
-def activate(el, name, repair_latch=True):
+def activate(el, name, repair_latch=True, condition_step_ms=None):
     """Arm one spliced element. Setting `active` IS the whole arm: it resets the
     latch and takes the element out of passthrough, in that order. The
-    latch-repair policy is set first so the fresh latch is built with it."""
+    latch-repair policy (and a per-egress conditioner threshold, when the
+    producer set one) is set first so the fresh latch is built with it."""
     el.set_property("repair-latch", bool(repair_latch))
+    if condition_step_ms and el.find_property("condition-step-ms") is not None:
+        el.set_property("condition-step-ms", int(condition_step_ms))
     el.set_property("active", True)
     sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "
                      f"armed on {name} (first consumer edge, native mrtsstamp)\n")
@@ -199,8 +202,12 @@ def drift_stats(el):
     s = el.get_property("drift")
     if s is None:
         return None
-    return {k: s.get_value(k) for k in
-            ("ppm", "slewNs", "marginNs", "engageNs", "samples", "window")}
+    d = {k: s.get_value(k) for k in
+         ("ppm", "slewNs", "marginNs", "engageNs", "samples", "window")}
+    # `ppb` arrived with the dead-band removal (#751); an older native reports
+    # only the truncated ppm, which is the best it knows.
+    d["ppb"] = s.get_value("ppb") if s.has_field("ppb") else d["ppm"] * 1000
+    return d
 
 
 def copy_count_note(el):

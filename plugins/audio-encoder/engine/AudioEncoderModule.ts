@@ -202,6 +202,10 @@ export class AudioEncoderModule extends GstPluginBase {
 
         return {
             pipeline,
+            // One audio PID straight off a pulsesrc ring: a PTS jump of a whole
+            // ring (~200 ms) with no arrival change is never content, so let the
+            // egress stamper's conditioner absorb it (see PipelineDescription).
+            conditionStepMs: 100,
         };
     }
 }

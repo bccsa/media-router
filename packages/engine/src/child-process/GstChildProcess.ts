@@ -188,30 +188,17 @@ export class GstChildProcess extends EventEmitter {
             this.emit('stateChange', data);
         });
 
-        ipc.on('vuData', (data) => {
-            this.emit('vuData', data);
-        });
-
-        // Generic pipeline→plugin data channel (channel + payload). Pure
-        // passthrough — the module decides what to do with each channel (e.g.
-        // `level:sclevel` for the audio-dynamics ducker, `stream:discovered` /
-        // `stream:names` for the mpegts demuxer's inspector).
-        ipc.on('pluginEvent', (data) => {
-            this.emit('pluginEvent', data);
-        });
-
-        ipc.on('error', (data) => {
-            this.emit('error', data);
-        });
-
-        // unixfd socket-gate progress: the runner is waiting (indefinitely)
-        // for producer edge sockets before launching the pipeline. Forwarded
-        // so the module can surface a health warning naming the pending
-        // sockets — without it a gated module reports healthy while nothing
-        // runs. `pending: []` clears the signal (gate opened).
-        ipc.on('busGate', (data) => {
-            this.emit('busGate', data);
-        });
+        // Pure pass-through events, same name in and out:
+        //  - vuData / pluginEvent: the generic pipeline→plugin data channels
+        //    (the module decides what to do with each channel);
+        //  - error: the runner's fatal-lifecycle report (carries `kind`);
+        //  - busGate: socket-gate progress (`pending: []` = gate opened);
+        //  - inputSilent / inputResumed: udpsrc silence as a state.
+        for (const name of ['vuData', 'pluginEvent', 'error', 'busGate', 'inputSilent', 'inputResumed'] as const) {
+            ipc.on(name, (data) => {
+                this.emit(name, data);
+            });
+        }
     }
 
     /**
@@ -244,6 +231,10 @@ export class GstChildProcess extends EventEmitter {
             // The stamper's latch-repair policy, resolved per route by
             // GstPluginBase (undefined = the runner's live default).
             latchRepair: desc.latchRepair,
+            // A producer's own conditioner threshold (undefined = stamper default).
+            conditionStepMs: desc.conditionStepMs,
+            // Multicast re-join bound for udpsrc silence (undefined = never restart on silence).
+            udpSilenceRestartMs: desc.udpSilenceRestartMs,
             inputStallWatch: desc.inputStallWatch,
             // Plugin-owned runner python (`runnerHooks`, e.g. subtitle-core's
             // bridge) — forwarded verbatim; the runner imports and installs it.

@@ -398,6 +398,35 @@ check("a mid-run rebuffer (a LEVEL step) provokes no correction at all",
 check("and the loop stands down rather than chasing it",
       st.drift_stats()['ppm'] == 0)
 
+# A LEVEL STEP under a real drift (#751 follow-up, 2026-09-14). `collapse_at`
+# shifts the producer's lead by 400 ms at hour 2 while the clock runs 50 ppm off.
+# Measured on .22: a ~120 ms pulsesrc level jump after an upstream restart read as
+# a slope for the whole 20-min window and the integrator swallowed it (±100 ppm
+# within 15 min, half an hour of unwinding). The step must leave the locked rate
+# exactly where it was and the post-step trend must stay flat — in both
+# directions, because the give-back watchdog only ever saw one of them.
+for ppm, shift, name in ((50, 400_000_000, 'lead shrinks'), (50, -400_000_000, 'lead grows'),
+                         (-50, -400_000_000, 'slow source, lead grows')):
+    st = t.TimelineStamper()
+    margins = []
+    rate_before = None
+    for i in range(int(4 * D_RATE)):
+        house = hls_house(i, ppm)
+        if i >= 2 * D_RATE:
+            house += shift
+        if i == 2 * D_RATE - 1:
+            rate_before = st.drift_stats()['ppb']
+        margins.append(st.stamp(pes_ts_packet(0x100, pts=FIRST + i * D_STEP), house) - house)
+    after = st.drift_stats()['ppb']
+    per_hour = settled(margins, 4) - settled(margins, 3)
+    check(f"a 400 ms level step ({name}) does not move the locked rate "
+          f"({rate_before:+d} -> {after:+d} ppb)",
+          abs(after - rate_before) <= 1500)
+    check(f"and the trend after the step is still flat ({name}, {per_hour / 1e6:+.1f} ms/h)",
+          abs(per_hour) <= 5_000_000)
+    check(f"and the step itself passed through untouched ({name})",
+          abs((settled(margins, 3) - settled(margins, 1)) - (-shift)) <= 60_000_000)
+
 # Nothing at all happens during the settling period — the transient a producer
 # opens with is exactly what the old design measured, and exactly what it must
 # not.
@@ -466,8 +495,27 @@ base_h = hls_house(int(1 * D_RATE), 50)
 st.stamp(pes_ts_packet(0x100, pts=LOOP0), base_h)
 st.stamp(pes_ts_packet(0x100, pts=LOOP0 + D_STEP), base_h + D_STEP_NS)
 check("and the re-anchor resets it — rate, window and settling all fresh",
-      st.drift_stats() == {'ppm': 0, 'slewNs': 0, 'marginNs': 0, 'engageNs': 0,
-                           'samples': 0, 'window': t.TimelineStamper._TREND_SLOTS})
+      st.drift_stats() == {'ppm': 0, 'ppb': 0, 'slewNs': 0, 'marginNs': 0,
+                           'engageNs': 0, 'samples': 0,
+                           'window': t.TimelineStamper._TREND_SLOTS})
+
+# No dead-band (#751, 2026-09-14). The first cut ignored any slope under 10 ppm
+# as noise, so a 6 ppm source was never corrected and a 12 ppm source was
+# corrected to a 5-9 ppm residual and then HELD there — 0.5-0.8 s/day per hop,
+# which a clock-paced consumer stores as latency (2.5 s across a 3-hop route
+# after two days at SCC). The rate is held in ppb so the residual keeps
+# integrating; what is left after four hours is under a ppm in both cases.
+for ppm in (6, 12, -6):
+    st, m = hls_run(ppm, 4)
+    per_hour = settled(m, 4) - settled(m, 3)
+    check(f"a {ppm:+d} ppm source (under the old 10 ppm floor) has its trend "
+          f"cancelled ({per_hour / 1e6:+.1f} ms in the last hour)",
+          abs(per_hour) <= 5_000_000)
+    check(f"and the servo holds its offset to the sub-ppm ({ppm:+d}: "
+          f"{st.drift_stats()['ppb']:+d} ppb)",
+          abs(st.drift_stats()['ppb'] + ppm * 1000) <= 1000)
+    check(f"while the lead stays the producer's ({ppm:+d})",
+          settled(m, 4) > settled(m, 0.5) - t.TimelineStamper._GIVEBACK_NS)
 
 # PES-less buffers repeat the previous stamp, so their "margin" is that stamp's
 # AGE — feeding them to the estimator would read as a source falling behind.
@@ -841,6 +889,27 @@ check("conditioned: both PES offsets are back to zero once the reset is over",
       {e['pid']: e['offsetTicks'] for e in cond_events if e['clock'] == 'pts'} == {A: 0, V: 0})
 check("conditioned: written PTS − PCR sits on the lead throughout",
       all(abs(t.TimelineStamper._fold(w_v[i] - w_pcr[i] // 300, t.PTS_WRAP) / 90000 - 0.25) < 0.05 for i in range(1, 600)))
+
+# Per-egress threshold (#751 follow-up, 2026-09-15): an audio encoder's pulsesrc
+# re-timestamps by a whole ~200 ms ring now and then with NO arrival change — on
+# .22 every encoder egress stepped +190 ms at once, three times in a day, and every
+# paced consumer downstream stored each as +200 ms of latency. 190 ms sits under
+# the 300 ms default (chosen for B-frame reorder, which a single audio PID never
+# has), so the audio-encoder asks for 100 ms: the same step is then written out
+# of the wire, and a 20 ms opus cadence is untouched either way.
+for thr, name, want in ((None, 'default 300 ms', 0), (100_000_000, 'audio-encoder 100 ms', 1)):
+    ev = []
+    ast = t.TimelineStamper(repair_latch=True, on_conditioned=ev.append, condition_step_ns=thr)
+    written = []
+    for i in range(400):
+        h = HOUSE + i * 20_000_000
+        pts = FIRST + i * 1800 + (17100 if i >= 200 else 0)          # +190 ms at i=200, arrival continuous
+        buf = bytearray(pes_ts_packet(A, pts=pts)); ast.condition(buf, h); written.append(p.read_pes_pts(buf))
+    steps = [t.TimelineStamper._fold(written[i + 1] - written[i], t.PTS_WRAP) for i in range(399)]
+    check(f"a 190 ms pulsesrc re-timestamp on one audio PID: {name} -> {want} conditioned event(s)",
+          len(ev) == want and all(e['stepTicks'] == 17100 for e in ev))
+    check(f"and the written audio cadence is {'continuous' if want else 'left with the step'} ({name})",
+          (all(s == 1800 for s in steps)) if want else (steps.count(1800) == 398 and 18900 in steps))
 
 # The correction is sized by cadence, not arrival: the step lands on a 94 KB
 # I-frame that took 350 ms to arrive (the .103 capture). Absorbing "delta minus

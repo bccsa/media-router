@@ -267,6 +267,10 @@ export class Aes67InputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
+            // udpsrc silence is a health warning, not a rebuild (gst_source_gate.py);
+            // a MULTICAST membership lost across a network blip is the one case a
+            // rebuild helps, so re-join after a minute of silence. Unicast: never.
+            udpSilenceRestartMs: multicast ? 60_000 : 0,
         };
     }
 

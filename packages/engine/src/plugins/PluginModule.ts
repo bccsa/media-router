@@ -291,6 +291,26 @@ export interface PipelineDescription {
      */
     latchRepair?: boolean;
     /**
+     * Per-egress threshold (ms) for the stamper's wire conditioner: a PES PTS
+     * delta beyond it that the buffer's arrival did not match is a source
+     * clock step and is written out of the wire. Unset = the stamper's 300 ms
+     * default, which B-frame reorder and network jitter sit well inside. A
+     * producer whose egress is ONE audio PID off a live capture ring may set
+     * it lower — the audio-encoder sets 100: its pulsesrc re-timestamps by a
+     * whole ~200 ms ring now and then with no arrival change, and every paced
+     * consumer downstream stored that as +200 ms of latency per event
+     * (#751 follow-up, 2026-09-15). Only read on the contract path.
+     */
+    conditionStepMs?: number;
+    /**
+     * udpsrc silence past this many ms errors the pipeline out (`udp_timeout`)
+     * so the restart path re-joins the group — MULTICAST inputs only, where a
+     * network blip can silently drop the IGMP membership. Unset/0 = silence is
+     * only ever a health warning (`input_silent` / `input_resumed`); a listening
+     * unicast socket needs nothing rebuilt. (#751 follow-up, 2026-09-15.)
+     */
+    udpSilenceRestartMs?: number;
+    /**
      * Contract clock WITHOUT the timeline pinning: the runner still puts this
      * pipeline on the contract's monotonic house clock, but skips
      * `set_base_time(0)` / `set_start_time(CLOCK_TIME_NONE)` and lets base-time

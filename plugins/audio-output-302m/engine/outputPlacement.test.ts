@@ -26,7 +26,7 @@ describe('buildOutputPlacement', () => {
         }
     });
 
-    it('places an 8-channel mix on outputs 9–16 of a 32-channel card: whole width, unpositioned, matrix', () => {
+    it('places an 8-channel mix on outputs 9–16 of a 32-channel card: 16 wide (not 32), unpositioned, matrix', () => {
         const r = buildOutputPlacement({
             device: DEV,
             channels: 8,
@@ -34,20 +34,20 @@ describe('buildOutputPlacement', () => {
             deviceChannels: 32,
         });
         expect(r.error).toBeUndefined();
-        const expectedRows = Array.from({ length: 32 }, (_, d) =>
-            row(8, d >= 8 && d < 16 ? d - 8 : null),
+        const expectedRows = Array.from({ length: 16 }, (_, d) =>
+            row(8, d >= 8 ? d - 8 : null),
         ).join(', ');
         expect(r.fragment).toBe(
-            `audioconvert mix-matrix="<${expectedRows}>" ! audio/x-raw,channels=32,channel-mask=(bitmask)0x0`,
+            `audioconvert mix-matrix="<${expectedRows}>" ! audio/x-raw,channels=16,channel-mask=(bitmask)0x0`,
         );
     });
 
-    it('places a stereo mix on outputs 3–4', () => {
+    it('places a stereo mix on outputs 3–4 of a 48-channel card as a 4-wide stream', () => {
         const r = buildOutputPlacement({
             device: DEV,
             channels: 2,
             firstChannel: 3,
-            deviceChannels: 4,
+            deviceChannels: 48,
         });
         expect(r.fragment).toBe(
             `audioconvert mix-matrix="<${[row(2, null), row(2, null), row(2, 0), row(2, 1)].join(', ')}>"` +
@@ -55,10 +55,27 @@ describe('buildOutputPlacement', () => {
         );
     });
 
-    it('needs no matrix when the mix IS the device', () => {
-        expect(
-            buildOutputPlacement({ device: DEV, channels: 8, firstChannel: 1, deviceChannels: 8 }),
-        ).toEqual({ fragment: 'audioconvert ! audio/x-raw,channels=8,channel-mask=(bitmask)0x0' });
+    it('a mono output on channel 3 of a 48-channel card is a 3-wide stream', () => {
+        const r = buildOutputPlacement({
+            device: DEV,
+            channels: 1,
+            firstChannel: 3,
+            deviceChannels: 48,
+        });
+        expect(r.fragment).toBe(
+            `audioconvert mix-matrix="<${[row(1, null), row(1, null), row(1, 0)].join(', ')}>"` +
+                ' ! audio/x-raw,channels=3,channel-mask=(bitmask)0x0',
+        );
+    });
+
+    it('needs no matrix when the mix starts at channel 1 (8 from 1 on any wide card)', () => {
+        for (const deviceChannels of [8, 48]) {
+            expect(
+                buildOutputPlacement({ device: DEV, channels: 8, firstChannel: 1, deviceChannels }),
+            ).toEqual({
+                fragment: 'audioconvert ! audio/x-raw,channels=8,channel-mask=(bitmask)0x0',
+            });
+        }
     });
 
     it('refuses a range past the device', () => {
@@ -90,9 +107,8 @@ describe('buildOutputPlacement', () => {
             firstChannel: 0,
             deviceChannels: 32,
         });
-        // 99 → 8 channels from channel 1 → 8 == width? no (32) → matrix 32×8 from column 0.
-        expect(r.fragment).toContain('mix-matrix=');
-        expect(r.fragment).toContain('channels=32,channel-mask=(bitmask)0x0');
+        // 99 → 8 channels from channel 1 → 8 wide, no matrix.
+        expect(r.fragment).toBe('audioconvert ! audio/x-raw,channels=8,channel-mask=(bitmask)0x0');
         expect(
             buildOutputPlacement({
                 device: DEV,

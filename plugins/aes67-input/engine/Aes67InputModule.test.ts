@@ -49,6 +49,12 @@ describe('Aes67InputModule.buildPipeline', () => {
         );
     });
 
+    it('declares the multicast re-join bound for udp silence, none for unicast', () => {
+        const module = makeModule();
+        expect(module.buildPipeline({ address: '239.69.0.1', port: 5004 })!.udpSilenceRestartMs).toBe(60_000);
+        expect(module.buildPipeline({ address: '10.9.16.5', port: 5004 })!.udpSilenceRestartMs).toBe(0);
+    });
+
     it('builds the AES67 receive chain onto the 302M bus', () => {
         const module = makeModule();
         const desc = module.buildPipeline({ address: '239.69.0.1', port: 5004 });

@@ -459,7 +459,7 @@ describe.skipIf(!havePython || !haveNative)('python/native stamping parity', () 
         };
         const py = await timelineOf(pythonSidecar, ['--stamp-timeline']);
         const native = await timelineOf(nativeSidecar, ['--stamp-timeline']);
-        const keys = ['engageNs', 'marginNs', 'ppm', 'samples', 'slewNs', 'window'];
+        const keys = ['engageNs', 'marginNs', 'ppb', 'ppm', 'samples', 'slewNs', 'window'];
         expect(Object.keys(py.timeline as object).sort()).toEqual(keys);
         expect(Object.keys(native.timeline as object).sort()).toEqual(keys);
         // Nothing has drifted yet in a two-second test — what is pinned is that

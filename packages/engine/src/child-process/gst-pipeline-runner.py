@@ -115,12 +115,12 @@ klv_timer_id = None      # GLib source id of the running carousel timer
 # fires, the pipeline never came up, so we surface a restartable error (the
 # parent's restartOnError then rebuilds) instead of wedging silently forever.
 #
-# LOAD-BEARING INVARIANT: this blanket deadline is safe ONLY because every
-# source in this engine is a LIVE source (udpsrc/srtsrc/etc.), so the pipeline
-# reaches PLAYING with NO_PREROLL — it does NOT wait for data. A non-live path
-# that prerolls off a source which can be silent at startup would turn "waiting
-# for data" into a 10 s restart loop; such a path must pass `playingTimeoutMs:0`
-# (handle_start honours it) to opt out, or gate the watchdog on data arrival.
+# LOAD-BEARING INVARIANT: this blanket deadline is safe ONLY for a LIVE head
+# (srtsrc, ristsrc, capture, test sources), which reaches PLAYING with
+# NO_PREROLL and does NOT wait for data. The two non-live heads in this engine,
+# `unixfdsrc` and `udpsrc`, are gated on their first data instead — see
+# gst_source_gate.py (ADR-0010 rule 3), which also owns udpsrc silence. A path
+# that wants no deadline at all passes `playingTimeoutMs: 0`.
 PLAYING_WATCHDOG_MS = 10000
 playing_watchdog_id = None  # GLib source id of the running PLAYING watchdog
 
@@ -269,6 +269,7 @@ def _teardown_pipeline(pipe, drain=True, errored=False):
     """
     if pipe is None:
         return
+    source_gate.stop()
     if drain:
         _eos_drain(pipe, errored=errored)
     pipe.set_state(Gst.State.NULL)
@@ -282,6 +283,22 @@ def _cancel_playing_watchdog():
         playing_watchdog_id = None
 
 
+def _arm_playing_watchdog(timeout_ms):
+    global playing_watchdog_id
+    _cancel_playing_watchdog()
+    if timeout_ms > 0:
+        playing_watchdog_id = GLib.timeout_add(timeout_ms, _on_playing_timeout)
+
+
+def _fail_pipeline(event, drain=True, errored=False):
+    """The one fatal-lifecycle exit: report `event`, tear the pipeline down
+    and leave the main loop so the parent's restart policy takes over."""
+    emit_event(event)
+    _teardown_pipeline(pipeline, drain=drain, errored=errored)
+    if loop and loop.is_running():
+        loop.quit()
+
+
 def _on_playing_timeout():
     """Watchdog fired: the pipeline never reached PLAYING. Treat as a fatal
     lifecycle error so the gst-runner restart path recovers it."""
@@ -293,14 +310,11 @@ def _on_playing_timeout():
         _ret, state, _pending = pipeline.get_state(0)
         if state == Gst.State.PLAYING:
             return False
-    emit_event({
+    _fail_pipeline({
         "event": "error",
         "kind": "playing_timeout",
         "message": f"pipeline did not reach PLAYING within {PLAYING_WATCHDOG_MS} ms",
     })
-    _teardown_pipeline(pipeline)
-    if loop and loop.is_running():
-        loop.quit()
     return False  # one-shot
 
 # ---------------------------------------------------------------------------
@@ -444,28 +458,22 @@ def on_bus_message(bus, message):
         # differently from a hard failure (e.g. video-player's colour-bars
         # fallback) — the unixfd equivalent of `GstUDPSrcTimeout` below.
         if element.startswith("buswd"):
-            emit_event({"event": "error", "kind": "bus_stall",
-                        "message": str(err.message),
-                        "debug": debug or "", "element": element})
+            ev = {"event": "error", "kind": "bus_stall", "message": str(err.message),
+                  "debug": debug or "", "element": element}
         else:
-            emit_event({"event": "error", "message": str(err.message),
-                        "debug": debug or "", "element": element})
+            ev = {"event": "error", "message": str(err.message),
+                  "debug": debug or "", "element": element}
         # Stop the pipeline on error. `errored`: the source that just failed
         # can no longer carry a pipeline-level EOS, so the drain goes straight
         # at the decoder instead of burning its budget (see _eos_drain).
         _stop_input_stall_watch()
-        _teardown_pipeline(pipeline, errored=True)
-        if loop and loop.is_running():
-            loop.quit()
+        _fail_pipeline(ev, errored=True)
 
     elif t == Gst.MessageType.EOS:
-        emit_event({"event": "eos"})
         _stop_input_stall_watch()
         # Already drained by definition — EOS reached the sinks, so the decoder
         # is idle and a second EOS would only stall the teardown.
-        _teardown_pipeline(pipeline, drain=False)
-        if loop and loop.is_running():
-            loop.quit()
+        _fail_pipeline({"event": "eos"}, drain=False)
 
     elif t == Gst.MessageType.STATE_CHANGED:
         if message.src == pipeline:
@@ -473,6 +481,7 @@ def on_bus_message(bus, message):
             state_name = new.value_nick  # 'playing', 'paused', 'ready', 'null'
             if new == Gst.State.PLAYING:
                 _cancel_playing_watchdog()
+                source_gate.on_playing()
                 _arm_input_stall_watch()
             emit_event({"event": "state_change", "state": state_name})
 
@@ -496,22 +505,10 @@ def on_bus_message(bus, message):
         elif name == "level":
             handle_level_message(structure)
         elif name == "GstUDPSrcTimeout":
-            # udpsrc has not received data within its configured timeout.
-            # Surface this as an error so the gst-runner's restart path
-            # triggers — udpsrc itself does not stop the pipeline on
-            # timeout, it just posts the message. `kind` discriminates this
-            # from generic bus errors so consumers (e.g. video-player) can
-            # treat the source-silent case differently from a hard failure.
-            emit_event(
-                {
-                    "event": "error",
-                    "kind": "udp_timeout",
-                    "message": "UDP source timeout (no data received)",
-                }
-            )
-            _teardown_pipeline(pipeline)
-            if loop and loop.is_running():
-                loop.quit()
+            # udpsrc has not received data within its configured timeout. A
+            # state, not a fault — see gst_source_gate.py: warn once, keep the
+            # pipeline, restart only past a producer-declared multicast bound.
+            source_gate.on_udp_timeout(src.get_name() if src is not None else "udpsrc")
 
     return True
 
@@ -2003,7 +2000,8 @@ def handle_start(data):
     # and the probe must own that edge's first buffer. The probes themselves arm
     # per tee as consumers attach. Gated on the same flag as the clock, because
     # the stamp is only meaningful once base_time is pinned to 0.
-    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"))
+    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"),
+                           data.get("conditionStepMs"))
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
@@ -2098,7 +2096,12 @@ def handle_start(data):
     _cancel_playing_watchdog()
     _pt = data.get("playingTimeoutMs")
     timeout_ms = PLAYING_WATCHDOG_MS if _pt is None else int(_pt)
-    if timeout_ms > 0:
+    # Non-live heads (unixfdsrc / udpsrc) start the deadline at their first data
+    # and udpsrc silence is watched from here on — gst_source_gate.py. A live
+    # head keeps the blanket deadline.
+    deferred = source_gate.start(pipeline, ret == Gst.StateChangeReturn.ASYNC, timeout_ms,
+                                 data.get("udpSilenceRestartMs"))
+    if timeout_ms > 0 and not deferred:
         playing_watchdog_id = GLib.timeout_add(timeout_ms, _on_playing_timeout)
 
     running = True
@@ -2114,6 +2117,7 @@ def handle_stop(data=None):
     """
     global pipeline, running
     _cancel_playing_watchdog()
+    source_gate.stop()
     _clear_pending_bus_attaches()
     _clear_preserve_timeline()
     _clear_branch_align()
@@ -3541,7 +3545,14 @@ def _stop_render_watch():
 # and the tick; this file wires in the two things only the runner knows — how
 # to emit an engine event and how to fail the pipeline the way the bus ERROR
 # path does (errored teardown, loop quit → the parent's restartOnError).
-import gst_input_stall_watch as input_stall                       # noqa: E402
+import gst_input_stall_watch as input_stall
+import gst_source_gate as source_gate                       # noqa: E402
+# Non-live source heads (data-gated PLAYING deadline, udpsrc silence) — see
+# gst_source_gate.py. Configured here, once every callable it needs exists.
+# Late-bound `emit_event` (the suites swap it for a collector), same as the
+# stall watch above.
+source_gate.configure(lambda obj: emit_event(obj), _fail_pipeline, _arm_playing_watchdog,
+                      lambda: pipeline)
 
 
 def _fail_pipeline_on_stall():

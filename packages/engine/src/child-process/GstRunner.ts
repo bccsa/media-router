@@ -453,7 +453,9 @@ export class GstRunner {
                     // attribution for diagnostics and per-element policies.
                     element: eventJson.element,
                 });
-                this.ipc.sendEvent('stateChange', { state: 'error' });
+                // `kind` rides along so GstPluginBase can tell a reconnect
+                // (`bus_producer_restarted`) from a fault when it flips health.
+                this.ipc.sendEvent('stateChange', { state: 'error', kind: eventJson.kind });
                 if (this.restartOnError) this.scheduleRestart();
                 break;
 
@@ -494,6 +496,36 @@ export class GstRunner {
                 console.error(
                     `[gst-runner] latch settled on ${String(eventJson.tee)}: anchor pulled back ${(-(Number(eventJson.repairNs) || 0) / 1e6).toFixed(1)} ms in the first ${(Number(eventJson.windowNs) || 0) / 1e9} s`,
                 );
+                break;
+
+            // A unixfdsrc-headed consumer on a connected but DARK bus (runner
+            // `_data_wait`): it waits instead of restart-looping, and after the
+            // watchdog period says so. Reported through the same `busGate`
+            // channel as the socket gate, so GstPluginBase names the upstream
+            // module in the health warning and clears only its own warning
+            // (ADR-0010 rule 2) when data arrives.
+            case 'waiting_for_data':
+                console.error(`[gst-runner] ${eventJson.message}`);
+                this.ipc.sendEvent('busGate', {
+                    pending: Array.isArray(eventJson.sockets) ? (eventJson.sockets as string[]) : [],
+                });
+                break;
+
+            case 'data_arrived':
+                console.error('[gst-runner] bus data arrived — PLAYING deadline armed');
+                this.ipc.sendEvent('busGate', { pending: [] });
+                break;
+
+            // udpsrc silence (runner `_udp_silence`): a state the module shows
+            // as a health warning + Waiting badge, not a rebuild.
+            case 'input_silent':
+                console.error(`[gst-runner] ${eventJson.message}`);
+                this.ipc.sendEvent('inputSilent', { message: eventJson.message, element: eventJson.element });
+                break;
+
+            case 'input_resumed':
+                console.error(`[gst-runner] ${eventJson.message}`);
+                this.ipc.sendEvent('inputResumed', { message: eventJson.message });
                 break;
 
             case 'warning':

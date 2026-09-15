@@ -123,7 +123,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(wide!.pipeline).not.toContain('channel-mask');
     });
 
-    it('places an 8-channel mix on outputs 9–16 of a 32-channel card, upstream of an untouched sink', () => {
+    it('places an 8-channel mix on outputs 9–16 of a 32-channel card as a 16-wide stream, upstream of an untouched sink', () => {
         const { module } = makeModule({ sources: 1, deviceChannels: 32 });
         const desc = module.buildPipeline({
             device: 'alsa_output.usb-foo',
@@ -135,12 +135,13 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         // The mix is 8 wide; VU reads it before the spread.
         expect(p).toContain('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8"');
         expect(p).toMatch(
-            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=32,channel-mask=\(bitmask\)0x0 ! pulsesink device=alsa_output\.usb-foo sync=false stream-properties="[^"]*"$/,
+            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! pulsesink device=alsa_output\.usb-foo sync=false stream-properties="[^"]*"$/,
         );
+        // 16 wide — up to the last channel used, never the card's 32.
         // Row 8 (device channel 9) carries mix channel 0: the first lit cell.
         const matrix = /mix-matrix="<(.*)>"/.exec(p)![1];
         const rows = matrix.split('>, <');
-        expect(rows).toHaveLength(32);
+        expect(rows).toHaveLength(16);
         expect(rows[8].replace(/[<>]/g, '').split(', ')[0]).toBe('(float)1.0000');
         expect(rows[0].replace(/[<>]/g, '')).not.toContain('1.0000');
         expect(module.setStatusData).toHaveBeenCalledWith(
