@@ -76,3 +76,52 @@ warned during the gate window had its health erased by an unrelated gate opening
 - [[0009]] — the sibling self-heal decision from the same change-set: a degraded
   pipeline recovers itself rather than waiting for a human. Same principle, other
   end of the pipeline lifecycle.
+
+## Amendment 2026-09-15 — the gate also covers a connected bus that carries no data
+
+The socket gate answers "the producer has not created its socket yet". A
+second dark case slipped past it: a producer whose socket ACCEPTS but that sends
+nothing — an encoder disabled by an interlock, a caller whose peer is down.
+`unixfdsrc` is not a live source, so a consumer on such a bus sits ASYNC in
+PAUSED and the runner's blanket 10 s "reached PLAYING" watchdog read that as a
+wedge: `playing_timeout` → restart → identical pipeline → 10 s → again. Measured
+on the SCC French master (2026-09-15): 940 rebuilds an hour for two dark inputs,
+each one a PipeWire stream torn down and re-created, journald dropping ~145
+lines every 30 s — and the churn is the prime suspect for the pulsesrc ring
+re-timestamps that grew the translator's headphone latency in 200 ms steps.
+
+Rule 3. **For a `unixfdsrc`-headed pipeline the PLAYING deadline starts at the
+first buffer, not at start.** Until then the pipeline waits passively (sink
+built and corked, nothing spawned, nothing torn down); after the watchdog
+period of silence the runner reports `waiting_for_data` once, which `GstRunner`
+forwards on the SAME `busGate` channel as rule 2, so the module shows
+"Waiting for upstream module(s): X" and clears only its own warning when
+`data_arrived` follows. Once data flows the deadline is the same 10 s as before —
+a wedge WITH data is still a wedge and still restarts. Every other head in the
+engine is a live source and reaches PLAYING with NO_PREROLL, so the blanket
+deadline stands there (`gst-pipeline-runner.py` `_data_wait`,
+`gst_playing_watchdog_data_gate_test.py`).
+
+Not changed: an SRT/RIST caller whose peer is down still errors and restarts
+on its plugin's own backoff (srt-input caps it at 10 s on purpose — the peer's
+return is what the retry is for).
+
+## Amendment 2026-09-15 (2) — udpsrc is not live either; UDP silence is a state
+
+`udpsrc` is not live either (measured on the dev host and on .103), so rule 3
+applies to UDP-headed producers as well, and UDP silence is a STATE — the first
+`GstUDPSrcTimeout` after start or after data emits `input_silent` (health
+warning, Waiting badge), the first packet back emits `input_resumed`; the
+pipeline is never rebuilt for a quiet sender. A pure-UDP head reports through
+that path only (no `waiting_for_data`), so a silent input warns exactly once. The one legitimate rebuild is a
+MULTICAST membership lost across a network blip, so a producer may declare
+`udpSilenceRestartMs` (mpegts-ip-input and aes67-input: 60 s, multicast only)
+past which the old `udp_timeout` error and restart still apply. And a parked consumer whose
+producer restarts under it (socket gone or re-created, polled every 2 s) errors
+out as `bus_producer_restarted` — shown as a warning through both the `error`
+and the following `stateChange` (the runner tags the latter with the kind) — so
+the normal restart reconnects it instead of leaving it on a dead socket for
+ever. The deadline waits for EVERY non-live head's first buffer (a mux waits
+for all its inputs). All of this lives in `gst_source_gate.py`; the runner only
+wires it.
+

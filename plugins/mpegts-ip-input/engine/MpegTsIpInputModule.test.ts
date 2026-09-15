@@ -83,6 +83,12 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('auto-multicast=true');
     });
 
+    it('re-joins a MULTICAST group after 60 s of udp silence, never restarts a unicast listener', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({ address: '239.1.1.1', port: 5004 })!.udpSilenceRestartMs).toBe(60_000);
+        expect(module.buildPipeline({ address: '0.0.0.0', port: 5004 })!.udpSilenceRestartMs).toBe(0);
+    });
+
     it('inserts the RTP depay chain when encapsulation is rtp', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ encapsulation: 'rtp' });

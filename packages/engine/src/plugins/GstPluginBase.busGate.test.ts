@@ -105,6 +105,54 @@ const gate = (child: InstanceType<typeof h.FakeChildProcess>, pending: string[])
 
 beforeEach(() => vi.clearAllMocks());
 
+describe('GstPluginBase inputSilent / producer-restart → health', () => {
+    it('udpsrc silence is a warning the module owns and clears on resume', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('inputSilent', { message: 'UDP source netsrc silent — waiting for data, not restarting' });
+        expect(module.getState().health).toBe('warning');
+        expect(module.getState().error).toContain('silent');
+        child.emit('inputResumed', { message: 'UDP source receiving again' });
+        expect(module.getState().health).toBe('ok');
+    });
+
+    it('a resume never clears someone else\'s health text', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('inputSilent', { message: 'silent' });
+        child.emit('error', { message: 'Bus ERROR: not-linked' });
+        expect(module.getState().health).toBe('error');
+        child.emit('inputResumed', {});
+        expect(module.getState().health).toBe('error');
+    });
+
+    it('a consumer reconnecting after its producer restarted is a warning, not an error', async () => {
+        const { module, child } = await makeStarted(null);
+        // The runner sends `error` and then `stateChange {state:'error'}` — the
+        // warning must survive BOTH (the stateChange used to stomp it to error).
+        child.emit('error', {
+            kind: 'bus_producer_restarted',
+            message: 'producer bus socket /tmp/x.sock was re-created while waiting for its first data — reconnecting',
+        });
+        child.emit('stateChange', { state: 'error', kind: 'bus_producer_restarted' });
+        expect(module.getState().health).toBe('warning');
+        // ...and the PLAYING that follows the reconnect clears it.
+        child.emit('stateChange', { state: 'playing' });
+        expect(module.getState().health).toBe('ok');
+        // A real fault still lands as an error, both halves.
+        child.emit('error', { message: 'Bus ERROR: not-linked' });
+        child.emit('stateChange', { state: 'error' });
+        expect(module.getState().health).toBe('error');
+    });
+
+    it('a gate warning is not withdrawn by an unrelated resume, and vice versa', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('busGate', { pending: [EDGE_A] });
+        child.emit('inputResumed', {});
+        expect(module.getState().health).toBe('warning');
+        child.emit('busGate', { pending: [] });
+        expect(module.getState().health).toBe('ok');
+    });
+});
+
 describe('GstPluginBase busGate → health', () => {
     it('names the upstream module and sink port, not the socket path', async () => {
         const { module, child } = await makeStarted([busSource(EDGE_A, 'mpegts-in-1', 'input')]);

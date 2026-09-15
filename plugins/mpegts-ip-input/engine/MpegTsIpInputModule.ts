@@ -58,6 +58,14 @@ export class MpegTsIpInputModule extends GstPluginBase {
 
         // A stalled/down udpsrc is silent; reflect outages on the face immediately
         // rather than leaving a stale "flowing" badge across the restart backoff.
+        // udpsrc silence is a state, not a restart (runner `_udp_silence`): the
+        // face flips to Waiting on the first silent timeout and the stats poll
+        // brings Connected back with the first packets.
+        this.childProcess?.on('inputSilent', () => {
+            this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
+            this.clearBadge('bitrate');
+            this.setStatusData('video', { video: '—' });
+        });
         this.childProcess?.on('stateChange', (data: { state: string }) => {
             if (data.state === 'stopped' || data.state === 'error') {
                 this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
@@ -143,8 +151,10 @@ export class MpegTsIpInputModule extends GstPluginBase {
 
         // RTP carries its own caps; raw UDP needs explicit MPEG-TS caps so
         // negotiation works before the first packet arrives. 5 s silence on the
-        // network udpsrc posts a timeout the runner turns into a bus error so
-        // the restart path triggers.
+        // network udpsrc posts a timeout the runner reports as `input_silent`
+        // (health warning, Waiting badge) — it no longer rebuilds the pipeline;
+        // only a MULTICAST input restarts, after `udpSilenceRestartMs`, to
+        // re-join a group a network blip may have dropped.
         const caps =
             encapsulation === 'rtp'
                 ? 'application/x-rtp, media=(string)video, clock-rate=(int)90000, encoding-name=(string)MP2T'
@@ -204,6 +214,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
             tsProbe: { appsink: 'tsprobe' },
+            udpSilenceRestartMs: multicast ? 60_000 : 0,
         };
     }
 

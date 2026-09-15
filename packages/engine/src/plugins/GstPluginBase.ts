@@ -12,6 +12,12 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { effectiveLatchRepair } from './latchRepair.js';
+
+/** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
+ *  this module: health stays a warning through the restart that follows. */
+const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
+/** The transient warnings a module writes and later withdraws itself. */
+type OwnedWarning = 'gate' | 'silence' | 'reconnect';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
@@ -222,7 +228,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // Spawn child process
         this.childProcess = new GstChildProcess();
 
-        this.childProcess.on('stateChange', (data: { state: string }) => {
+        this.childProcess.on('stateChange', (data: { state: string; kind?: string }) => {
             if (data.state === 'playing') {
                 this.running = true;
                 this.ready = true;
@@ -243,7 +249,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 // control state here so a restart doesn't strand them.
                 this.onPipelinePlaying();
             } else if (data.state === 'error') {
-                this.health = 'error';
+                // A reconnect-class exit keeps the warning the error event
+                // just set (see RECONNECT_ERROR_KINDS); anything else is a fault.
+                if (!RECONNECT_ERROR_KINDS.has(data.kind ?? '')) this.health = 'error';
             } else if (data.state === 'stopped') {
                 this.running = false;
                 this.ready = false;
@@ -263,8 +271,23 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.dispatchPluginEvent(data.channel, data.payload);
         });
 
-        this.childProcess.on('error', (data: { message: string }) => {
+        this.childProcess.on('error', (data: { message: string; kind?: string }) => {
+            if (RECONNECT_ERROR_KINDS.has(data.kind ?? '')) {
+                // A wait on upstream (the producer restarted under us), not a
+                // fault of this module; cleared by the PLAYING that follows.
+                this.ownWarning('reconnect', data.message);
+                return;
+            }
             this.setHealth('error', data.message);
+        });
+
+        // udpsrc silence: a state (gst_source_gate.py), shown as a warning we
+        // own and clear ourselves on `inputResumed`.
+        this.childProcess.on('inputSilent', (data: { message: string }) => {
+            this.ownWarning('silence', data.message);
+        });
+        this.childProcess.on('inputResumed', () => {
+            this.clearOwnWarning('silence');
         });
 
         // unixfd socket-gate progress: the runner waits indefinitely for
@@ -318,7 +341,27 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** True while the CURRENT warning is this module's socket-gate warning —
      *  see `handleBusGate` and `setHealth`. */
-    private gateWarningActive = false;
+    /**
+     * Which of OUR transient warnings currently holds the health text, or
+     * null. Three sources write a warning they later withdraw (the socket
+     * gate, udpsrc silence, a producer-restart reconnect); each may clear ONLY
+     * its own — any other health write (`setHealth`) supersedes the latch, so a
+     * gate opening or a feed resuming can never hide a real failure that
+     * arrived in between (ADR-0010 rule 2).
+     */
+    private ownedWarning: OwnedWarning | null = null;
+
+    private ownWarning(kind: OwnedWarning, message: string): void {
+        this.setHealth('warning', message);
+        // AFTER setHealth — which clears the latch for every caller.
+        this.ownedWarning = kind;
+    }
+
+    private clearOwnWarning(kind: OwnedWarning): void {
+        if (this.ownedWarning !== kind) return;
+        if (this.health === 'warning') this.setHealth('ok');
+        this.ownedWarning = null;
+    }
 
     /**
      * Report (or clear) the runner's indefinite wait for its producer edge
@@ -333,18 +376,14 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (pending.length > 0) {
             const waitingOn = this.describePendingProducers(pending);
             this.setStatusData('bus', { 'Waiting for producer': waitingOn.join(', ') });
-            this.setHealth('warning', `Waiting for upstream module(s): ${waitingOn.join(', ')}`);
-            // AFTER setHealth — which clears the flag for every caller, so it
-            // only ever marks a warning we put there ourselves.
-            this.gateWarningActive = true;
+            this.ownWarning('gate', `Waiting for upstream module(s): ${waitingOn.join(', ')}`);
         } else {
             this.setStatusData('bus', {});
             // Clear ONLY our own warning. Anything else that warned since (a
             // crashed helper process, a missing device) owns the health text
             // now, and flipping it to 'ok' here hid a real failure behind an
             // unrelated gate opening.
-            if (this.gateWarningActive && this.health === 'warning') this.setHealth('ok');
-            this.gateWarningActive = false;
+            this.clearOwnWarning('gate');
         }
     }
 
@@ -786,9 +825,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      *  layer also surfaces module-scoped conditions here (e.g. the live
      *  input-swap pending window — MpegTsBusExecutor). */
     setHealth(health: ModuleHealth, error?: string): void {
-        // Any other health write supersedes the socket-gate warning, so the
-        // gate opening must not stomp it back to 'ok' — see `handleBusGate`.
-        this.gateWarningActive = false;
+        // Any other health write supersedes an owned transient warning, so
+        // its clearing must not stomp the new text back to 'ok'.
+        this.ownedWarning = null;
         this.health = health;
         this.error = error;
         this.emit('stateChange', this.getState());

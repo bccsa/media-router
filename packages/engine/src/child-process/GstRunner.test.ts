@@ -47,6 +47,44 @@ describe('GstRunner — Python event routing', () => {
         vi.useRealTimers();
     });
 
+    it('a reconnect-class error carries its kind on the stateChange too', () => {
+        emit({ event: 'error', kind: 'bus_producer_restarted', message: 'producer socket went away — reconnecting' });
+        expect((lastByType('event', 'error')?.data as { kind: string }).kind).toBe('bus_producer_restarted');
+        expect(lastByType('event', 'stateChange')?.data).toEqual({ state: 'error', kind: 'bus_producer_restarted' });
+    });
+
+    it('udpsrc silence is a state: inputSilent / inputResumed events, never an error or restart', () => {
+        emit({ event: 'input_silent', kind: 'udp_timeout', element: 'netsrc',
+               message: 'UDP source netsrc silent — waiting for data, not restarting' });
+        const silent = lastByType('event', 'inputSilent');
+        expect((silent?.data as { element: string }).element).toBe('netsrc');
+        expect(lastByType('event', 'error')).toBeUndefined();
+        expect(lastByType('event', 'stateChange')).toBeUndefined();
+        emit({ event: 'input_resumed', message: 'UDP source receiving again' });
+        expect(lastByType('event', 'inputResumed')).toBeDefined();
+        expect(lastByType('event', 'error')).toBeUndefined();
+    });
+
+    it('a dark unixfd bus is reported as a gate, not an error, and clears on data', () => {
+        // The runner's data-gated PLAYING watchdog (gst-pipeline-runner.py
+        // `_data_wait`): a consumer whose producer sends nothing yet waits and
+        // says so through the SAME busGate channel as the socket gate, so the
+        // module shows "Waiting for upstream module(s): X" and never restarts.
+        emit({
+            event: 'waiting_for_data',
+            sockets: ['/tmp/mr-bus-40000-b76ed2.sock'],
+            message: 'no data yet on bus socket(s) /tmp/mr-bus-40000-b76ed2.sock after 10000 ms',
+        });
+        const gate = lastByType('event', 'busGate');
+        expect((gate?.data as { pending: string[] }).pending).toEqual(['/tmp/mr-bus-40000-b76ed2.sock']);
+        expect(lastByType('event', 'error')).toBeUndefined();
+        expect(lastByType('event', 'stateChange')).toBeUndefined();
+
+        emit({ event: 'data_arrived', sockets: ['/tmp/mr-bus-40000-b76ed2.sock'] });
+        const cleared = lastByType('event', 'busGate');
+        expect((cleared?.data as { pending: string[] }).pending).toEqual([]);
+    });
+
     it('rejects pending setProperty when Python emits command_error', () => {
         runner.handleControlMessage({
             id: 'rpc-1',
