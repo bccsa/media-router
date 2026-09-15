@@ -27,11 +27,16 @@ export type OutputPlacement =
  * Playback mirror of the 302M input's capture shape (ADR-0014): PipeWire links
  * ports by channel POSITION, and a stream of ≤ 8 channels is given default
  * positions (FL, FR, …) that never match a multichannel card's AUX-named
- * ports — so a positioned 8-channel stream reaches two outputs. A stream that
- * is as wide as the device and unpositioned (`channel-mask=0x0`) links
- * port-for-port in index order instead. So the mix is spread onto the device's
- * full width with an `audioconvert mix-matrix` (every other column silent) and
- * the sink is handed the whole card.
+ * ports — so a positioned 8-channel stream reaches two outputs. An
+ * unpositioned stream (`channel-mask=0x0`) links port-for-port in index order
+ * instead, whatever its width. So the mix is spread with an `audioconvert
+ * mix-matrix` onto a stream exactly `lastChannel` wide — wide enough to reach
+ * the last device channel it lands on, and not the device's full width: on an
+ * X32 a mono output on channel 3 is a 3-channel stream, not a 48-channel one
+ * (each pulse stream costs pipewire-pulse two scratch buffers per channel,
+ * measured 10.9.16.50 2026-09-15). Unlike the capture side this stays on
+ * WirePlumber's auto-link: pipewire-pulse never attaches a sink to a stream
+ * with `node.autoconnect=false`, and pulsesink then cannot reach PLAYING.
  *
  * The DEFAULT range — stereo or mono from channel 1 — deliberately keeps the
  * legacy positioned stream: every existing profile's pipeline string stays
@@ -45,8 +50,8 @@ export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
 
     if (firstChannel === 1 && channels <= 2) return { fragment: null };
 
-    const width = o.deviceChannels ?? 0;
-    if (width <= 0) {
+    const deviceWidth = o.deviceChannels ?? 0;
+    if (deviceWidth <= 0) {
         return {
             error:
                 `Audio device "${o.device}" is not enumerated by PipeWire, so its channel ` +
@@ -54,15 +59,17 @@ export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
                 'Check the device is connected and re-pick it from the list.',
         };
     }
-    if (lastChannel > width) {
+    if (lastChannel > deviceWidth) {
         return {
             error:
-                `Audio device "${o.device}" has ${width} channels — ` +
+                `Audio device "${o.device}" has ${deviceWidth} channels — ` +
                 `cannot play on ${firstChannel}–${lastChannel}`,
         };
     }
 
-    // Whole device, unpositioned → PipeWire links every port in index order.
+    // As wide as the last channel used, unpositioned → PipeWire links
+    // port-for-port in index order; the matrix parks the mix at its columns.
+    const width = lastChannel;
     const wide = `audio/x-raw,channels=${width},channel-mask=(bitmask)0x0`;
     if (firstChannel === 1 && channels === width) {
         return { fragment: `audioconvert ! ${wide}` };

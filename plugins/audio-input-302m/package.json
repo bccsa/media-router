@@ -75,11 +75,11 @@
                     "type": "number",
                     "default": 60,
                     "minimum": 40,
-                    "maximum": 1000,
+                    "maximum": 85,
                     "x-widget": "slider",
-                    "x-step": 10,
+                    "x-step": 5,
                     "x-unit": "ms",
-                    "description": "Requested capture quantum — part of the source's standing latency; 40-60 validated on smooth systems, raise if capture xruns appear."
+                    "description": "Requested capture quantum — part of the source's standing latency; 40-60 validated on smooth systems, raise if capture xruns appear. 85 ms is the PipeWire quantum-limit (4096 samples) shipped in the image; anything above it would be clamped silently."
                 },
                 "lcpVisible": {
                     "type": "boolean",

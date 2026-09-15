@@ -101,6 +101,42 @@ Two deliberate differences from the capture side:
 helper is the obvious fit for `audio-decoder` (the other `pulsesink`
 presentation leg) if it ever needs placement.
 
+## Amendment (2026-09-15): explicit port links replace whole-device capture
+
+Decision 3 and the output addendum's "full width, unpositioned, matrix" shape
+are superseded. Both 302M modules now create a stream exactly as wide as the
+module's range (`audio/x-raw,channels=N,channel-mask=0x0` → ports
+`input_1..N` / `output_1..N`) with `node.autoconnect=false` and a findable
+`node.name` (`MR_PW_<instanceId>`), and the ENGINE links the stream's ports to
+the device's ports by channel index (`StreamPortLinker` /
+`linkStreamPorts` in `packages/engine/src/audio/streamPortLinks.ts`, run after
+start and on every PLAYING because a runner-internal restart re-creates the
+node). Ports are read from `pw-dump` (`port.id` is the channel index; `pw-link`
+object ids are allocation order and re-shuffle) and linked by object id.
+`channels` + `firstChannel` in the UI are exactly the link plan: "2 from 9" is
+`capture_AUX8 → input_1`, `capture_AUX9 → input_2`, nothing else. Dual-mono is
+the one device port linked to both stream inputs; a range past the device leaves
+the extra inputs unlinked (silence). The output's DEFAULT range (≤ 2 from
+channel 1) still keeps the legacy positioned stream, byte-identical.
+
+**Why.** Measured on 10.9.16.50 (ZA-SCC-AES50, X32 via KT-USB 48 in / 48 out,
+PipeWire 1.6.3, 2026-09-15): nine stereo inputs each captured 32 channels, so
+the daemon carried 288 capture links (+ 97 for three 32-wide mono outputs); the
+daemon's client-node bookkeeping cost ~2 MB per linked port (674 kB `struct mix`
+per port and per link — upstream 650a96b8aa fixes it, backported in the image),
+every capture runner held 100 MB of audioconvert scratch (33 MB touched), and
+pipewire-pulse 26 MB per placed output. The box OOM-killed PipeWire twice in a
+morning. Explicit links cost nothing per unused channel: 18 capture links for
+the same profile, ~2 MB of scratch per runner. WirePlumber's position matching,
+the reason for decision 3, never enters the picture when the engine links.
+
+**Consequences.** `srcBufferMs` is capped at 85 ms (= `quantum-limit` 4096 in
+the image's PipeWire config). A card whose port index is not its channel order
+would mis-link; every ALSA card seen so far (AUX-named X32, FL/FR USB DACs,
+UCM-split SSL 2 mono sources) indexes in channel order. If a stream never
+exposes its ports the module warns ("did not appear") instead of playing the
+wrong channels.
+
 ## References
 
 - `plugins/audio-302m-core/engine/audio302mHelpers.ts` — `build302mEncodeBranch`,

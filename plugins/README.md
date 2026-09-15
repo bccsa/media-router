@@ -1145,6 +1145,35 @@ every poll the engine resets any non-`MR_PW_*` sink that isn't at unity gain bac
 attenuation will stack on top of whatever WirePlumber restored (commonly 40%). See
 [ADR-0006](../docs/adr/0006-hardware-sinks-held-at-unity-gain.md).
 
+### Linking a stream to specific device channels
+
+WirePlumber links a stream to a device by channel POSITION, so a ≤ 8-channel
+stream on a multichannel (AUX-named) card only ever reaches its first two
+ports. When a module must land on channels N..M, create the stream exactly that
+wide and unpositioned (`audio/x-raw,channels=N,channel-mask=(bitmask)0x0`), give
+it `node.name=<this.pwNodeName>` and `node.autoconnect=false` through
+`pulsePinnedStreamProps({...})`, and let the engine link it:
+
+```ts
+import { StreamPortLinker, type StreamLinkSpec } from '@media-router/engine';
+
+private linkPlan: StreamLinkSpec | null = null;   // set in buildPipeline
+private readonly linker = new StreamPortLinker({
+    getPlan: () => this.linkPlan,
+    onResult: (r, plan) => { /* status / health */ },
+    onError: (err) => this.log.warn({ err }, 'link failed'),
+});
+// after super.onStart() and in onPipelinePlaying():
+void this.linker.ensure();
+```
+
+`linkStreamPorts` reads `pw-dump` (the only place `port.id`, the channel index,
+is exposed), waits for the stream node's ports, and links stream port k to
+device port `firstIndex + k` by object id. It is idempotent, so calling it on
+every PLAYING (a runner-internal restart re-creates the node) is the intended
+pattern. Real examples: `audio-input-302m` (capture, dual-mono) and
+`audio-output-302m` (placement). Background: ADR-0014, 2026-09-15 amendment.
+
 For non-PipeWire devices (V4L2, DRM, custom hardware), register a raw provider:
 
 ```typescript
