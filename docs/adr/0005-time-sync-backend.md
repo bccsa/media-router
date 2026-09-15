@@ -572,6 +572,54 @@ same fixture asserting the same integers.
   in both cases doing nothing is better than what we were doing. It would have
   caught the field incident within minutes.
 
+- **Amendment 2026-09-14 (#751): the 10 ppm dead-band is gone; the rate is held
+  in ppb.** The floor ("a slope under 10 ppm is noise, under a second a day")
+  was the field failure in slow motion: SCC's French route read 2.5 s after
+  ~44 h. Measured on the French master (10.9.16.22, 23 h up), every stamped
+  egress had walked its post-slew margin by 0.2–0.5 s since the servo engaged,
+  and the residual slopes all sat at |5–7| ppm — the integrator had stopped
+  just under the floor and held that rate for ever, or never engaged at all on
+  a source under it. A clock-paced consumer (`pulsesink sync=true`,
+  `audiomixer force-live ! identity sync=true`) STORES a growing lead as
+  latency in its 100 ms + 5 s leaky bus queue, and nothing on the early side
+  bounds it (the early re-anchor is gated on latch repair). Two or three such
+  hops at ~0.4 s/day each is the 2.5 s. The loop is closed, so integrating the
+  estimator's own noise cannot diverge — it wanders around the true offset by
+  the noise's size — and the sign confirmation still stops a level step from
+  reading as a trend. `drift_stats()` / the `drift` property / the sidecar
+  stats line gained `ppb`; `ppm` stays as the truncated view. Fixture: a
+  6/12 ppm source now settles to ±2 ppb of its offset (python and C++ pin the
+  same integers).
+
+- **Amendment 2026-09-14, second (#751 follow-up): a LEVEL STEP is rebased out
+  of the trend.** The "two consecutive same-signed slopes" guard only catches a
+  blip in one level; a step that STAYS in the 20-min window reads as a
+  same-signed slope for ten sub-windows and the integrator (a tenth per
+  sub-window) swallows it whole. Seen on .22 the same afternoon: when FRA01
+  came back and its feeds relinked the PipeWire graph, every encoder egress's
+  pulsesrc level jumped ~120 ms and the servos ran to ±100 ppm within 15 min,
+  then unwound for half an hour, walking the corrected margin by tens of ms
+  each way. A jump over `_LEVEL_STEP_NS` (60 ms) between consecutive
+  sub-window levels cannot be rate (500 ppm, 2.5× the clamp), so the stored
+  trend and the engage level are shifted by it and the rate stands. Fixture:
+  a 400 ms step under a 50 ppm source leaves the lock within 100 ppb and the
+  post-step trend flat, both directions.
+
+- **Amendment 2026-09-15 (#751 follow-up, third): the conditioner's step
+  threshold is per egress (`PipelineDescription.conditionStepMs` →
+  `condition-step-ms` / `condition_step_ns`), default 300 ms.** Overnight
+  telemetry on the French master showed a different growth shape once the
+  servo was fixed: three times in a day several pulsesrc-fed encoder egresses
+  re-timestamped by a whole ring (+190 ms, no arrival change) at the same
+  instant, and every paced consumer downstream — the translator box's SRT
+  input, its transcoder, its 302M output — stored each as +200 ms of latency.
+  The step-rejection amendment above correctly kept the servo out of it; the
+  conditioner would have written it out of the wire but 190 ms sits under the
+  300 ms chosen for B-frame reorder. One audio PID has no reorder, so the
+  audio-encoder declares 100 ms for its own egress and every other producer
+  keeps the default. Fixture: a +190 ms step on a 20 ms opus ladder passes at
+  300 and is absorbed once at 100, both twins.
+
 - **The monotone floor needed no change**, and the reason is quantitative: one
   slew step is `rate × dt`, nanoseconds per buffer (8 µs at the clamp for a 40 ms
   buffer), while the floor only clamps a stamp that would go BACKWARDS and

@@ -158,6 +158,7 @@ enum {
     PROP_0,
     PROP_ACTIVE,
     PROP_REPAIR_LATCH,
+    PROP_CONDITION_STEP_MS,
     PROP_COPY_COUNT,
     PROP_DRIFT,
     PROP_BYTES_TOTAL,
@@ -176,6 +177,10 @@ struct _GstMrTsStamp {
     /* The stamper's latch-repair window (`repair-latch`, ts_timeline.py "latch
      * repair"). Read when a fresh stamper is built, i.e. on every arm. */
     gboolean repair_latch;
+    /* The conditioner's step threshold for this egress (`condition-step-ms`,
+     * ts_timeline.py `condition_step_ns`); read at the next arm like
+     * `repair-latch`. */
+    gint condition_step_ms;
     gboolean checked;            /* one-shot clock/segment diagnostics per arm */
     gboolean seg_warned;         /* one-shot unmappable-segment report per arm */
     gint map_warned;             /* one-shot buffer-map-failure report (atomic, pre-lock) */
@@ -231,6 +236,7 @@ static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
     self->st->set_on_conditioned([pending](const mrts::TimelineStamper::Conditioned &c) {
         pending->push_back(mrtsstamp_pending_conditioned(c));
     });
+    self->st->set_condition_step_ns((int64_t)self->condition_step_ms * 1000000LL);
 }
 
 /* Running-time, which under the contract IS house-clock time. Written as
@@ -599,6 +605,11 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
             self->repair_latch = g_value_get_boolean(value);
             g_mutex_unlock(&self->lock);
             break;
+        case PROP_CONDITION_STEP_MS:
+            g_mutex_lock(&self->lock);
+            self->condition_step_ms = g_value_get_int(value);
+            g_mutex_unlock(&self->lock);
+            break;
         case PROP_COALESCE:
             self->coalesce.store(g_value_get_boolean(value) ? 1 : 0, std::memory_order_relaxed);
             break;
@@ -620,6 +631,11 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
         case PROP_REPAIR_LATCH:
             g_mutex_lock(&self->lock);
             g_value_set_boolean(value, self->repair_latch);
+            g_mutex_unlock(&self->lock);
+            break;
+        case PROP_CONDITION_STEP_MS:
+            g_mutex_lock(&self->lock);
+            g_value_set_int(value, self->condition_step_ms);
             g_mutex_unlock(&self->lock);
             break;
         case PROP_COALESCE:
@@ -647,6 +663,7 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
             g_value_take_boxed(value,
                                gst_structure_new("mrtsstamp-drift",
                                                  "ppm", G_TYPE_INT, d.ppm,
+                                                 "ppb", G_TYPE_INT64, d.ppb,
                                                  "slewNs", G_TYPE_INT64, d.slew_ns,
                                                  "marginNs", G_TYPE_INT64, d.margin_ns,
                                                  "engageNs", G_TYPE_INT64, d.engage_ns,
@@ -677,6 +694,7 @@ static void gst_mrtsstamp_init(GstMrTsStamp *self) {
      * its media cadence (the one assumption the repair rests on). The HLS
      * path does not go through this element at all. */
     self->repair_latch = TRUE;
+    self->condition_step_ms = 300;
     self->checked = FALSE;
     self->seg_warned = FALSE;
     self->map_warned = 0;
@@ -727,6 +745,17 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
                              TRUE,
                              (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
+        gobject_class, PROP_CONDITION_STEP_MS,
+        g_param_spec_int("condition-step-ms", "Conditioner step threshold (ms)",
+                         "A PES PTS delta beyond this that the buffer's arrival did not "
+                         "match is a source clock step and is written out of the wire "
+                         "(ts_timeline.py `_COND_STEP_NS`). 300 ms default; a producer "
+                         "whose egress is one audio PID off a live capture ring sets 100 "
+                         "(the audio-encoder: its pulsesrc re-timestamps by a whole ring "
+                         "now and then). Read at the next arm.",
+                         20, 10000, 300,
+                         (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
         gobject_class, PROP_COPY_COUNT,
         g_param_spec_uint64("copy-count", "Copy count",
                             "Buffers that arrived non-writable and so had to be copied "
@@ -745,7 +774,7 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
     g_object_class_install_property(
         gobject_class, PROP_DRIFT,
         g_param_spec_boxed("drift", "Drift",
-                           "Drift-servo state (ppm, slewNs, marginNs, engageNs, "
+                           "Drift-servo state (ppm, ppb, slewNs, marginNs, engageNs, "
                            "samples, window) — the source's clock offset against ours and "
                            "what holding it has cost the anchor. Read periodically "
                            "by the runner; the native equivalent of the python "

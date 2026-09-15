@@ -117,6 +117,13 @@ class TimelineStamper {
         : on_anchor_(std::move(on_anchor)), on_reanchor_(std::move(on_reanchor)),
           on_settled_(std::move(on_settled)), repair_on_(repair_latch) {}
 
+    // The conditioner's step threshold for THIS egress, ns; 0 = the 300 ms
+    // default (ts_timeline.py `condition_step_ns`). The audio-encoder sets
+    // 100 ms: one audio PID off a live ring has no reorder to mistake for a
+    // step, and its pulsesrc re-timestamps by a whole ~200 ms ring now and then.
+    void set_condition_step_ns(int64_t ns) { cond_threshold_ns_ = ns; }
+    int64_t cond_threshold() const;
+
     // Map one outgoing buffer of `stream` onto the house timeline. EVERY
     // buffer gets a valid stamp: one with no PES header at all (PSI/PCR-only
     // or continuation packets) repeats the stream's last stamp, because a
@@ -159,7 +166,8 @@ class TimelineStamper {
     // and nothing is being corrected — which a reader must be able to tell from
     // a measured zero.
     struct Drift {
-        int ppm;
+        int ppm;          // `ppb` truncated toward zero
+        int64_t ppb;      // the rate at the resolution the servo holds it
         int64_t slew_ns;
         int64_t margin_ns;
         int64_t engage_ns;
@@ -178,8 +186,8 @@ class TimelineStamper {
     // are never observed: they repeat the staircase, so their "margin" is the
     // previous stamp's age, not a measurement.
     void observe(int64_t house_now, int64_t stamp);
-    // Trend of the margin across the window in ppm; false while it is not full.
-    bool slope_ppm(int64_t* out) const;
+    // Trend of the margin across the window in ppb; false while it is not full.
+    bool slope_ppb(int64_t* out) const;
     // One servo step, per closed sub-window.
     void update_rate();
     // Apply the locked rate to the anchor for the elapsed house time.
@@ -234,7 +242,7 @@ class TimelineStamper {
     std::vector<std::pair<int64_t, int64_t>> trend_;   // (house time, level)
     int64_t level_ = 0;           // newest sub-window level, i.e. the margin now
     bool has_level_ = false;
-    int rate_ppm_ = 0;            // the correction rate currently applied
+    int64_t rate_ppb_ = 0;        // the correction rate currently applied (ppb)
     int slope_sign_ = 0;          // sign of the last qualifying slope
     int64_t engage_level_ = 0;    // margin level when the servo engaged
     bool has_engage_ = false;
@@ -252,6 +260,7 @@ class TimelineStamper {
     OnSettled on_settled_;
     OnConditioned on_conditioned_;
     bool repair_on_ = false;
+    int64_t cond_threshold_ns_ = 0;       // per-egress conditioner threshold, 0 = default
     // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
     struct CondClock {
         int64_t last_raw;      // last raw value seen (90 kHz for PES, 27 MHz for PCR)

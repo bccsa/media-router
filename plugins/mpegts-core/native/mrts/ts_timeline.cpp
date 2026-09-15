@@ -60,7 +60,7 @@ constexpr int64_t EARLY_HOLD_NS = 10'000'000'000LL;
 // PTS (or PCR) delta beyond COND_STEP_NS that its arrival did not match is a
 // clock step and is absorbed; beyond COND_MAX_NS it is a real discontinuity
 // and is left to the watch.
-constexpr int64_t COND_STEP_NS = 300'000'000LL;
+constexpr int64_t COND_STEP_NS = 300'000'000LL;   // default; per-egress override via set_condition_step_ns
 constexpr int64_t COND_MAX_NS = 10'000'000'000LL;
 // PCR regeneration (ts_timeline.py `_COND_PCR_LEAD_NS`): a consumer's tsdemux
 // places every buffer at `stamp + (PTS − PCR)`, so the wire's PTS − PCR must be
@@ -81,13 +81,23 @@ constexpr int64_t COND_PCR_FLOOR_NS = 1'000'000'000LL;  // ... and may pull the 
 // position loop that shipped first read it as an error and spent its whole
 // authority destroying it.
 constexpr int SLEW_MAX_PPM = 200;
+constexpr int64_t SLEW_MAX_PPB = (int64_t)SLEW_MAX_PPM * 1000;   // the rate's own unit
 constexpr int64_t SETTLE_NS = 300'000'000'000LL;      // 5 min before anything is measured
 constexpr int64_t DRIFT_BUCKET_NS = 2'000'000'000LL;  // lower-envelope bucket
 constexpr int64_t SUBWINDOW_NS = 120'000'000'000LL;   // ... one median level per 2 min
 constexpr size_t TREND_SLOTS = 10;                    // ... x this = a 20 min window
 constexpr size_t TREND_EDGE = 3;                      // levels per end of the slope
-constexpr int64_t TREND_MIN_PPM = 10;                 // below this it is noise
+// No dead-band under the slope (2026-09-14, #751): the first cut ignored any
+// slope under 10 ppm as noise and every stamped hop then walked at a 5-9 ppm
+// residual for ever, which a clock-paced consumer stores as latency. The rate
+// is kept in ppb so a sub-ppm residual still integrates (ts_timeline.py).
 constexpr int64_t TREND_GAIN_NUM = 1, TREND_GAIN_DEN = 10;
+// A jump this big between consecutive sub-window levels is a LEVEL STEP, not
+// rate (60 ms in one 2-min sub-window is 500 ppm, 2.5x the whole ±200 ppm
+// authority; a 400 ppm source moves 48 ms): the trend and the engage level are
+// rebased onto it, the rate stands (ts_timeline.py `_LEVEL_STEP_NS`,
+// 2026-09-14 #751 follow-up).
+constexpr int64_t LEVEL_STEP_NS = 60'000'000LL;
 constexpr int64_t GIVEBACK_NS = 200'000'000LL;        // margin we will never cost
 
 // Latch repair (the 2026-09-05 GATE01 field failure) — design and rationale in
@@ -209,7 +219,7 @@ void TimelineStamper::reset_drift(int64_t house_now, bool have_now) {
     trend_.clear();
     level_ = 0;
     has_level_ = false;
-    rate_ppm_ = 0;
+    rate_ppb_ = 0;
     slope_sign_ = 0;
     engage_level_ = 0;
     has_engage_ = false;
@@ -221,7 +231,9 @@ void TimelineStamper::reset_drift(int64_t house_now, bool have_now) {
 }
 
 TimelineStamper::Drift TimelineStamper::drift() const {
-    return {rate_ppm_, slew_total_, has_level_ ? level_ : 0,
+    // `ppm` truncates toward zero (C division), the same as python's
+    // `_trunc_div`, so a sub-ppm rate reads 0 ppm in either direction.
+    return {(int)(rate_ppb_ / 1000), rate_ppb_, slew_total_, has_level_ ? level_ : 0,
             has_engage_ ? engage_level_ : 0, (int)trend_.size(), (int)TREND_SLOTS};
 }
 
@@ -285,10 +297,21 @@ void TimelineStamper::observe(int64_t house_now, int64_t stamp) {
     env_min_ = margin;
     if (house_now < sub_end_) return;
     // Sub-window closed: one robust level, and a chance to re-estimate.
-    level_ = median(sub_);
-    has_level_ = true;
+    int64_t level = median(sub_);
     sub_.clear();
     sub_end_ = house_now + SUBWINDOW_NS;
+    if (!trend_.empty()) {
+        int64_t d = level - trend_.back().second;
+        if (d > LEVEL_STEP_NS || -d > LEVEL_STEP_NS) {
+            // A LEVEL STEP: the producer's business, never a rate. Rebase the
+            // trend and the engage level so neither the integrator nor the
+            // give-back watchdog sees it; the locked rate stands.
+            for (auto& tv : trend_) tv.second += d;
+            if (has_engage_) engage_level_ += d;
+        }
+    }
+    level_ = level;
+    has_level_ = true;
     trend_.push_back({house_now, level_});
     if (trend_.size() > TREND_SLOTS) trend_.erase(trend_.begin());
     update_rate();
@@ -296,7 +319,7 @@ void TimelineStamper::observe(int64_t house_now, int64_t stamp) {
 
 // Both endpoints are MEDIANS of TREND_EDGE levels, so no single sub-window can
 // tilt the answer.
-bool TimelineStamper::slope_ppm(int64_t* out) const {
+bool TimelineStamper::slope_ppb(int64_t* out) const {
     if (trend_.size() < TREND_SLOTS) return false;
     std::vector<int64_t> old_t, old_v, new_t, new_v;
     for (size_t i = 0; i < TREND_EDGE; i++) {
@@ -308,13 +331,13 @@ bool TimelineStamper::slope_ppm(int64_t* out) const {
     }
     int64_t dt = median(new_t) - median(old_t);
     if (dt <= 0) return false;
-    *out = floor_div((median(new_v) - median(old_v)) * 1'000'000, dt);
+    *out = floor_div((median(new_v) - median(old_v)) * 1'000'000'000LL, dt);
     return true;
 }
 
 void TimelineStamper::update_rate() {
     int64_t slope = 0;
-    if (!slope_ppm(&slope)) return;
+    if (!slope_ppb(&slope)) return;
     if (!has_engage_) {
         has_engage_ = true;
         engage_level_ = level_;
@@ -324,7 +347,7 @@ void TimelineStamper::update_rate() {
         // since we started correcting — the one thing this loop must never be
         // responsible for. Stand down completely and re-settle; the staleness
         // net owns a margin this loop cannot hold.
-        rate_ppm_ = 0;
+        rate_ppb_ = 0;
         slope_sign_ = 0;
         epoch_start_ = trend_.empty() ? epoch_start_ : trend_.back().first;
         trend_.clear();
@@ -332,9 +355,7 @@ void TimelineStamper::update_rate() {
         return;
     }
     int sign = slope > 0 ? 1 : (slope < 0 ? -1 : 0);
-    if (slope < 0 ? -slope < TREND_MIN_PPM : slope < TREND_MIN_PPM) {
-        // Under a second a day: not worth moving for, and small enough to be
-        // the envelope's own noise. The rate we already hold stays held.
+    if (sign == 0) {
         slope_sign_ = 0;
         return;
     }
@@ -347,7 +368,7 @@ void TimelineStamper::update_rate() {
     // Integrate the RESIDUAL slope: the rate converges on the source's own
     // offset and then holds it with the slope at zero.
     int64_t step = floor_div(slope * TREND_GAIN_NUM, TREND_GAIN_DEN);
-    rate_ppm_ = (int)clamp64(rate_ppm_ + step, -SLEW_MAX_PPM, SLEW_MAX_PPM);
+    rate_ppb_ = clamp64(rate_ppb_ + step, -SLEW_MAX_PPB, SLEW_MAX_PPB);
 }
 
 void TimelineStamper::slew(int64_t house_now) {
@@ -359,12 +380,12 @@ void TimelineStamper::slew(int64_t house_now) {
     int64_t dt = house_now - slew_last_;
     if (dt <= 0) return;
     slew_last_ = house_now;
-    if (rate_ppm_ == 0) return;
+    if (rate_ppb_ == 0) return;
     // POSITIVE rate means media is running behind house (source slow), so the
     // anchor moves FORWARD to keep the stamps up with it; negative cancels the
-    // growth of a fast source's lead. `_rate_ppm` of real time and nothing
+    // growth of a fast source's lead. `rate_ppb_` of real time and nothing
     // else — no level term, so a healthy margin is never a target.
-    int64_t step = floor_div((int64_t)rate_ppm_ * (dt / 1000), 1000);
+    int64_t step = floor_div(rate_ppb_ * (dt / 1000), 1'000'000);
     if (step != 0) {
         anchor_ += step;
         slew_total_ += step;
@@ -592,6 +613,10 @@ int64_t TimelineStamper::cond_pcr_floor_pts(int64_t house_now) const {
     return floor;
 }
 
+int64_t TimelineStamper::cond_threshold() const {
+    return cond_threshold_ns_ > 0 ? cond_threshold_ns_ : COND_STEP_NS;
+}
+
 int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
     int absorbed = 0;
     for (size_t off = 0; off + PKT <= len; off += PKT) {
@@ -642,7 +667,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 // One event per new deviation of the source's PCR from ours.
                 const int64_t off = fold(w - pcr, PCR_MODULO);
                 if (!cond_pcr_reported_ ||
-                    std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > COND_STEP_NS) {
+                    std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > cond_threshold()) {
                     const int64_t step = cond_pcr_reported_ ? off - cond_pcr_reported_offset_ : off;
                     cond_pcr_reported_ = true;
                     cond_pcr_reported_offset_ = off;
@@ -666,8 +691,8 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
             CondClock& c = it->second;
             const int64_t d_ns = pts90k_to_ns(fold(pts - c.last_raw, PTS_WRAP));
             const int64_t a_ns = house_now - c.last_house;
-            if (std::llabs(d_ns) > COND_STEP_NS && std::llabs(d_ns) <= COND_MAX_NS &&
-                std::llabs(d_ns - a_ns) > COND_STEP_NS) {
+            if (std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
+                std::llabs(d_ns - a_ns) > cond_threshold()) {
                 // floor_div, not `/`: `cond_step_ns` is negative on a backward
                 // PTS step (the common case here), and C++ truncation toward
                 // zero would round it one tick off python's `//` — the twins
@@ -676,7 +701,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 c.offset -= step;
                 absorbed++;
                 if (on_conditioned_) on_conditioned_({pid, false, step, c.offset, house_now});
-            } else if (std::llabs(d_ns) <= COND_STEP_NS) {
+            } else if (std::llabs(d_ns) <= cond_threshold()) {
                 cond_remember(c, d_ns);
             }
             c.last_raw = pts;
@@ -889,6 +914,7 @@ std::string settled_event_json(const TimelineStamper::Settled& s) {
 
 std::string drift_stats_json(const TimelineStamper::Drift& d) {
     return "{\"ppm\":" + std::to_string(d.ppm) +
+           ",\"ppb\":" + std::to_string(d.ppb) +
            ",\"slewNs\":" + std::to_string(d.slew_ns) +
            ",\"marginNs\":" + std::to_string(d.margin_ns) +
            ",\"engageNs\":" + std::to_string(d.engage_ns) +

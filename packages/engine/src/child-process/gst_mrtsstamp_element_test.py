@@ -741,7 +741,7 @@ d = el.get_property("drift")
 check("the element exposes a drift structure with the python field names",
       d is not None
       and sorted(d.nth_field_name(i) for i in range(d.n_fields()))
-      == ["engageNs", "marginNs", "ppm", "samples", "slewNs", "window"])
+      == ["engageNs", "marginNs", "ppb", "ppm", "samples", "slewNs", "window"])
 check("a stamper that has measured nothing reports no samples",
       d.get_value("samples") == 0 and d.get_value("ppm") == 0
       and d.get_value("window") == 10)

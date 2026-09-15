@@ -77,6 +77,13 @@ def unwrap_near(pts: int, ref: int) -> int:
     return base if (ref - base) <= PTS_WRAP // 2 else base + PTS_WRAP
 
 
+def _trunc_div(a, b):
+    """Integer division truncating toward zero (C's `/`), so a sub-ppm rate
+    reports as 0 ppm in either direction — the same as the C++ port."""
+    q = abs(a) // b
+    return q if a >= 0 else -q
+
+
 def median(values):
     """Upper median of a small list. Written out (not `statistics.median`) so
     the C++ port can be tick-for-tick identical: on an even count this takes
@@ -297,7 +304,7 @@ class TimelineStamper:
     # segment, and every segment boundary would read as a clock step.
     # Reported per absorbed step (`on_conditioned`), so the source fault stays
     # visible in the journal while the picture no longer pays for it.
-    _COND_STEP_NS = 300_000_000
+    _COND_STEP_NS = 300_000_000         # default; a producer may lower it per egress (`condition_step_ns`)
     _COND_MAX_NS = 10_000_000_000
     # The CORRECTION is sized by the clock's own cadence — the median of its
     # recent in-cadence deltas — not by arrival: a step that lands on a 94 KB
@@ -375,7 +382,7 @@ class TimelineStamper:
     #   can tilt it.
     #
     # SERVO — a rate lock, not a position lock:
-    #   `_rate_ppm` is an integrator on the RESIDUAL slope: every sub-window it
+    #   `_rate_ppb` is an integrator on the RESIDUAL slope: every sub-window it
     #   moves by `_TREND_GAIN` of whatever slope is left, so it converges on the
     #   source's true ppm offset and then holds it, with the measured slope at
     #   zero. Nulling the slope directly (rate = -slope) would un-correct itself
@@ -385,11 +392,34 @@ class TimelineStamper:
     #   `_SETTLE_NS`   nothing is measured for the first 5 minutes of an epoch.
     #                  A producer's startup transient — the buildup — is not
     #                  drift, and a re-anchor restarts the clock on this.
-    #   `_TREND_MIN_PPM` a slope under 10 ppm (0.9 s/day) is left alone: at the
-    #                  trend window's length that is ~12 ms of level change,
-    #                  which is the same order as the envelope's own noise.
+    #   NO dead-band under the slope (2026-09-14, #751). The first cut left any
+    #                  slope under 10 ppm alone as "noise, under a second a
+    #                  day" — and that is exactly what every stamped hop then
+    #                  walked: the integrator stopped with a 5-9 ppm residual
+    #                  and held it for ever (10 ppm is 0.86 s/day, and a
+    #                  clock-paced consumer STORES a growing lead as latency:
+    #                  2.5 s on a 3-hop route after two days at SCC). The rate
+    #                  is therefore kept in ppb, so a sub-ppm residual still
+    #                  integrates, and the loop is closed — integrating the
+    #                  estimator's own noise cannot diverge, it only wanders
+    #                  around the true offset by the noise's size.
     #   two consecutive same-signed slopes before the rate moves at all, so a
-    #                  one-off step in the level can never be read as a trend.
+    #                  one-off blip in one level can never be read as a trend.
+    #   `_LEVEL_STEP_NS` a LEVEL STEP is rebased out of the trend (2026-09-14,
+    #                  #751 follow-up). The two-sign rule cannot catch a step
+    #                  that STAYS in the window: it reads as a same-signed slope
+    #                  for the next ten sub-windows and the integrator swallows
+    #                  it whole (ten steps of a tenth) — measured on .22 when a
+    #                  restarted upstream feed relinked the PipeWire graph and
+    #                  every encoder egress's pulsesrc level jumped ~120 ms: the
+    #                  servos ran to ±100 ppm within 15 min and then spent half
+    #                  an hour unwinding, walking the corrected margin by tens
+    #                  of ms each way. Rate cannot move a level 60 ms in one
+    #                  2-min sub-window short of 500 ppm — 2.5x our whole ±200
+    #                  authority, and a 400 ppm source (the clamp fixture) moves
+    #                  48 ms — so a bigger jump between consecutive levels is a step: the
+    #                  stored trend (and the engage level the watchdog reads)
+    #                  are shifted by it, the rate is left exactly where it was.
     #   `_SLEW_MAX_PPM` 200 ppm — ~5x the worst crystal pair, 720 ms/hour of
     #                  authority, and 200 µs per second is orders below lipsync.
     #   `_GIVEBACK_NS` the outcome watchdog, and the direct answer to the field
@@ -407,8 +437,9 @@ class TimelineStamper:
     _SUBWINDOW_NS = 120_000_000_000     # ... reduced to one median level per 2 min
     _TREND_SLOTS = 10                   # ... x this = a 20 min trend window
     _TREND_EDGE = 3                     # levels averaged at each end of the slope
-    _TREND_MIN_PPM = 10                 # below this the slope is noise, not drift
     _TREND_GAIN_NUM, _TREND_GAIN_DEN = 1, 10     # residual-slope integrator gain
+    _LEVEL_STEP_NS = 60_000_000         # a jump this big between consecutive levels is a STEP, not rate
+    _SLEW_MAX_PPB = _SLEW_MAX_PPM * 1000         # the rate's own unit (see below)
     _GIVEBACK_NS = 200_000_000          # margin we will never be seen to cost
 
     # --- latch repair (the 2026-09-05 GATE01 field failure) -----------------
@@ -453,8 +484,17 @@ class TimelineStamper:
     _LATCH_REPAIR_NS = 3_000_000_000    # window after an anchor the repair is open
 
     def __init__(self, on_anchor=None, on_reanchor=None, on_settled=None,
-                 repair_latch=False, on_conditioned=None):
+                 repair_latch=False, on_conditioned=None, condition_step_ns=None):
         self.latch = TimelineLatch()
+        # The conditioner's step threshold for THIS egress. 300 ms is the
+        # default (B-frame reorder and jitter live well inside it); a producer
+        # whose egress carries one audio PID off a live capture ring can set it
+        # lower — the audio-encoder sets 100 ms (2026-09-15, #751 follow-up):
+        # its pulsesrc re-timestamps by a whole ring (~200 ms) now and then with
+        # no arrival change, and every paced consumer downstream stored that as
+        # +200 ms of latency per event. There is no reorder on a single audio PID
+        # to mistake for a step.
+        self._cond_threshold_ns = int(condition_step_ns) if condition_step_ns else self._COND_STEP_NS
         self.anchor = None      # house time (ns) latched at the first PES
         self.ref = None         # that first PES (90 kHz), the timeline's zero
         self.reanchors = 0
@@ -511,7 +551,7 @@ class TimelineStamper:
         self._sub_end = None    # house time the sub-window closes at
         self._trend = []        # (house time, level) per closed sub-window
         self._level = None      # newest sub-window level, i.e. the margin now
-        self._rate_ppm = 0      # the correction rate currently applied
+        self._rate_ppb = 0      # the correction rate currently applied (ppb)
         self._slope_sign = 0    # sign of the last qualifying slope (confirmation)
         self._engage_level = None    # margin level when the servo engaged
         self._epoch_start = house_now
@@ -522,7 +562,8 @@ class TimelineStamper:
         """Current drift state, for the producers' periodic stats line.
 
         `ppm` is the correction rate the servo has locked onto — the source's
-        clock offset from ours — and `slewNs` what applying it has cost (or
+        clock offset from ours — and `ppb` the same rate at the resolution the
+        servo actually holds it (`ppm` truncates toward zero); `slewNs` is what applying it has cost (or
         given) the anchor this epoch. `marginNs` is the current envelope level
         (`house - stamp`; NEGATIVE means the producer is delivering ahead of its
         own stamps, which is a healthy delivery lead and not an error).
@@ -533,7 +574,8 @@ class TimelineStamper:
         full window nothing is being corrected, which a reader has to be able to
         tell from a measured zero.
         """
-        return {'ppm': self._rate_ppm, 'slewNs': self._slew_total,
+        return {'ppm': _trunc_div(self._rate_ppb, 1000), 'ppb': self._rate_ppb,
+                'slewNs': self._slew_total,
                 'marginNs': self._level if self._level is not None else 0,
                 'engageNs': self._engage_level if self._engage_level is not None else 0,
                 'samples': len(self._trend), 'window': self._TREND_SLOTS}
@@ -623,16 +665,26 @@ class TimelineStamper:
         if house_now < self._sub_end:
             return
         # Sub-window closed: one robust level, and a chance to re-estimate.
-        self._level = median(self._sub)
+        level = median(self._sub)
         self._sub = []
         self._sub_end = house_now + self._SUBWINDOW_NS
+        if self._trend and abs(level - self._trend[-1][1]) > self._LEVEL_STEP_NS:
+            # A LEVEL STEP (a rebuffer, a relinked graph, a route change): the
+            # producer's business, never a rate. Rebase the trend and the engage
+            # level onto the new level so neither the integrator nor the
+            # give-back watchdog sees it; the locked rate stands.
+            d = level - self._trend[-1][1]
+            self._trend = [(t, v + d) for t, v in self._trend]
+            if self._engage_level is not None:
+                self._engage_level += d
+        self._level = level
         self._trend.append((house_now, self._level))
         if len(self._trend) > self._TREND_SLOTS:
             del self._trend[0]
         self._update_rate()
 
-    def _slope_ppm(self):
-        """Trend of the margin across the window, in ppm of house time, or None
+    def _slope_ppb(self):
+        """Trend of the margin across the window, in ppb of house time, or None
         while the window is not full. Both endpoints are MEDIANS of `_TREND_EDGE`
         levels, so no single sub-window can tilt the answer."""
         if len(self._trend) < self._TREND_SLOTS:
@@ -642,11 +694,11 @@ class TimelineStamper:
         dt = median([t for t, _ in new]) - median([t for t, _ in old])
         if dt <= 0:
             return None
-        return (median([v for _, v in new]) - median([v for _, v in old])) * 1_000_000 // dt
+        return (median([v for _, v in new]) - median([v for _, v in old])) * 1_000_000_000 // dt
 
     def _update_rate(self):
         """One servo step, per closed sub-window."""
-        slope = self._slope_ppm()
+        slope = self._slope_ppb()
         if slope is None:
             return
         if self._engage_level is None:
@@ -657,16 +709,14 @@ class TimelineStamper:
             # much since we started correcting — which is the one thing this loop
             # must never be responsible for. Stand down completely and re-settle;
             # the staleness net is what owns a margin this loop cannot hold.
-            self._rate_ppm = 0
+            self._rate_ppb = 0
             self._slope_sign = 0
             self._trend = []
             self._engage_level = None
             self._epoch_start = self._trend_now()
             return
         sign = 1 if slope > 0 else (-1 if slope < 0 else 0)
-        if abs(slope) < self._TREND_MIN_PPM:
-            # Under a second a day. Not worth moving for, and small enough to be
-            # the envelope's own noise. The rate we already hold stays held.
+        if sign == 0:
             self._slope_sign = 0
             return
         if sign != self._slope_sign:
@@ -680,8 +730,8 @@ class TimelineStamper:
         # offset and then holds it with the slope at zero. (Setting the rate to
         # the slope instead would undo itself the moment it worked.)
         step = slope * self._TREND_GAIN_NUM // self._TREND_GAIN_DEN
-        self._rate_ppm = max(-self._SLEW_MAX_PPM,
-                             min(self._SLEW_MAX_PPM, self._rate_ppm + step))
+        self._rate_ppb = max(-self._SLEW_MAX_PPB,
+                             min(self._SLEW_MAX_PPB, self._rate_ppb + step))
 
     def _trend_now(self):
         """House time of the newest sub-window — the restart point after a
@@ -694,7 +744,7 @@ class TimelineStamper:
         POSITIVE rate means media is running behind house (source slow), so the
         anchor moves FORWARD to keep the stamps up with it; negative moves it
         back, cancelling the growth of a fast source's lead. Either way it is
-        `_rate_ppm` of real time and nothing else — no level term, so a healthy
+        `_rate_ppb` of real time and nothing else — no level term, so a healthy
         margin is never a target. Integer arithmetic in MICROseconds of elapsed
         house time, which is what keeps this identical in C++ and floors the
         same way in both languages for a negative rate.
@@ -706,9 +756,9 @@ class TimelineStamper:
         if dt <= 0:
             return
         self._slew_last = house_now
-        if not self._rate_ppm:
+        if not self._rate_ppb:
             return
-        step = self._rate_ppm * (dt // 1000) // 1000
+        step = self._rate_ppb * (dt // 1000) // 1_000_000
         if step:
             self.anchor += step
             self._slew_total += step
@@ -1007,7 +1057,7 @@ class TimelineStamper:
                     # One event per new deviation of the source's PCR from ours.
                     o = self._fold(w - pcr, PCR_MODULO)
                     if (self._cond_pcr_reported is None
-                            or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._COND_STEP_NS):
+                            or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._cond_threshold_ns):
                         step = o if self._cond_pcr_reported is None else o - self._cond_pcr_reported
                         self._cond_pcr_reported = o
                         absorbed += 1
@@ -1029,15 +1079,15 @@ class TimelineStamper:
             else:
                 d_ns = pts90k_to_ns(self._fold(pts - c[0], PTS_WRAP))
                 a_ns = house_now - c[1]
-                if (abs(d_ns) > self._COND_STEP_NS and abs(d_ns) <= self._COND_MAX_NS
-                        and abs(d_ns - a_ns) > self._COND_STEP_NS):
+                if (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
+                        and abs(d_ns - a_ns) > self._cond_threshold_ns):
                     step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
                     c[2] -= step
                     absorbed += 1
                     if self._on_conditioned:
                         self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
                                               'offsetTicks': c[2], 'houseNs': house_now})
-                elif abs(d_ns) <= self._COND_STEP_NS:
+                elif abs(d_ns) <= self._cond_threshold_ns:
                     self._cond_remember(c, d_ns)
                 c[0], c[1] = pts, house_now
             wpts = (pts + c[2]) % PTS_WRAP

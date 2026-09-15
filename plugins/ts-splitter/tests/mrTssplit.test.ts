@@ -503,6 +503,7 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         expect(Object.keys(stats.timeline as object).sort()).toEqual([
             'engageNs',
             'marginNs',
+            'ppb',
             'ppm',
             'samples',
             'slewNs',

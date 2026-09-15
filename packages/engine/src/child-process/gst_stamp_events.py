@@ -127,7 +127,7 @@ def drift_event(tee, d):
 
 def drift_log(tee, d):
     """`drift_event`'s line on the runner's log (see `log_line`)."""
-    log_line(tee, f"drift {d['ppm']:+d} ppm, margin "
+    log_line(tee, f"drift {d.get('ppb', d['ppm'] * 1000) / 1000:+.1f} ppm, margin "
                   f"{d['marginNs'] / 1e6:+.2f} ms (engaged at "
                   f"{d['engageNs'] / 1e6:+.2f} ms), anchor slewed "
                   f"{d['slewNs'] / 1e6:+.3f} ms")

@@ -507,11 +507,73 @@ int main() {
         CHECK("and its 2 s delivery lead is still there",
               settled(4.0) > 2'500'000'000LL
               && settled(4.0) > settled(0.5) - GIVEBACK_NS);
-        // ...and the locked rate is python's to the ppm (-52 / +49 there).
+        // ...and the locked rate is python's to the ppb (-50002 / +49997 there).
         CHECK("the servo locked onto the source's own offset",
-              st.drift().ppm == (ppm == 50 ? -52 : 49));
+              st.drift().ppb == (ppm == 50 ? -50002 : 49997)
+              && st.drift().ppm == (ppm == 50 ? -50 : 49));
         CHECK("and the trend window is full and engaged",
               st.drift().samples == TREND_SLOTS && st.drift().engage_ns != 0);
+    }
+    // No dead-band (#751, 2026-09-14): sources under the old 10 ppm floor are
+    // corrected too, to the sub-ppm. Literals are python's (`hls_run(ppm, 4)`).
+    for (int ppm : {6, 12, -6}) {
+        TimelineStamper st;
+        std::vector<int64_t> m;
+        for (int i = 0; i < 4 * D_RATE; i++) {
+            int64_t h = hls_house(i, ppm);
+            m.push_back(stamp_of(st, {pes_packet(0x100, FIRST_PES + (int64_t)i * D_STEP)}, h)
+                        - h);
+        }
+        auto settled = [&m](double hour) {
+            int i = (int)(hour * D_RATE);
+            int64_t best = m[i];
+            for (int k = (i > 300 ? i - 300 : 0); k < i + 300 && k < (int)m.size(); k++)
+                if (m[k] > best) best = m[k];
+            return best;
+        };
+        int64_t per_hour = settled(4.0) - settled(3.0);
+        CHECK("a source under the old 10 ppm floor has its trend cancelled",
+              (per_hour < 0 ? -per_hour : per_hour) <= 5'000'000LL);
+        CHECK("and the servo holds its offset to the sub-ppm (python's literal)",
+              st.drift().ppb == (ppm == 6 ? -6002 : ppm == 12 ? -12004 : 5998));
+        CHECK("while the lead stays the producer's",
+              settled(4.0) > settled(0.5) - GIVEBACK_NS);
+    }
+    // A LEVEL STEP under a real drift (#751 follow-up): 400 ms of lead shifts at
+    // hour 2 while the clock runs `ppm` off. The locked rate must not move and
+    // the post-step trend must stay flat, both directions. Literals are
+    // python's (ts_timeline_test.py, the level-step block).
+    {
+        struct Case { int ppm; int64_t shift; int64_t after_ppb; };
+        for (Case c : {Case{50, 400'000'000LL, -50002}, Case{50, -400'000'000LL, -50003},
+                       Case{-50, -400'000'000LL, 50002}}) {
+            TimelineStamper st;
+            std::vector<int64_t> m;
+            int64_t before = 0;
+            for (int i = 0; i < 4 * D_RATE; i++) {
+                int64_t h = hls_house(i, c.ppm);
+                if (i >= 2 * D_RATE) h += c.shift;
+                if (i == 2 * D_RATE - 1) before = st.drift().ppb;
+                m.push_back(stamp_of(st, {pes_packet(0x100, FIRST_PES + (int64_t)i * D_STEP)}, h)
+                            - h);
+            }
+            auto settled = [&m](double hour) {
+                int i = (int)(hour * D_RATE);
+                int64_t best = m[i];
+                for (int k = (i > 300 ? i - 300 : 0); k < i + 300 && k < (int)m.size(); k++)
+                    if (m[k] > best) best = m[k];
+                return best;
+            };
+            int64_t d = st.drift().ppb - before;
+            CHECK("a 400 ms level step does not move the locked rate (python's literal)",
+                  (d < 0 ? -d : d) <= 1500 && st.drift().ppb == c.after_ppb);
+            int64_t per_hour = settled(4.0) - settled(3.0);
+            CHECK("and the trend after the step is still flat",
+                  (per_hour < 0 ? -per_hour : per_hour) <= 5'000'000LL);
+            int64_t stepped = (settled(3.0) - settled(1.0)) + c.shift;
+            CHECK("and the step itself passed through untouched",
+                  (stepped < 0 ? -stepped : stepped) <= 60'000'000LL);
+        }
     }
     {
         // Nothing at all during the settling period, and the ±200 ppm bound
@@ -628,9 +690,9 @@ int main() {
     // The stats line's `timeline` object — one shape for every producer, so a
     // burn-in chart never has to know which implementation stamped.
     {
-        CHECK("drift_stats_json carries ppm/slewNs/marginNs/engageNs/samples/window",
-              drift_stats_json({-50, -353102332LL, -2666666650LL, -2600000000LL, 10, 10})
-                  == "{\"ppm\":-50,\"slewNs\":-353102332,\"marginNs\":-2666666650,"
+        CHECK("drift_stats_json carries ppm/ppb/slewNs/marginNs/engageNs/samples/window",
+              drift_stats_json({-50, -50002, -353102332LL, -2666666650LL, -2600000000LL, 10, 10})
+                  == "{\"ppm\":-50,\"ppb\":-50002,\"slewNs\":-353102332,\"marginNs\":-2666666650,"
                      "\"engageNs\":-2600000000,\"samples\":10,\"window\":10}");
     }
 
@@ -942,6 +1004,37 @@ int main() {
             stamp_of(sm, {pes_packet(0x100, FIRST_PES + i * STEP + (i >= EARLY_AT ? 45000 : 0))},
                      HOUSE + i * STEP_NS);
         CHECK("a 500 ms lead is inside the early bound and never trips it", small == 0);
+    }
+
+    // Per-egress conditioner threshold (#751 follow-up): a +190 ms PTS step on
+    // one audio PID with continuous arrival passes the 300 ms default and is
+    // absorbed at the audio-encoder's 100 ms (python parity, same numbers).
+    for (int pass = 0; pass < 2; pass++) {
+        std::vector<TimelineStamper::Conditioned> ev;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { ev.push_back(c); });
+        if (pass == 1) st.set_condition_step_ns(100'000'000LL);
+        std::vector<int64_t> written;
+        for (int i = 0; i < 400; i++) {
+            int64_t h = HOUSE + (int64_t)i * 20'000'000LL;
+            int64_t pts = FIRST_PES + (int64_t)i * 1800 + (i >= 200 ? 17100 : 0);
+            TsPacket t = pes_packet(0x140, pts);
+            st.condition(t.b, PKT, h);
+            written.push_back(read_pes_pts(t.b));
+        }
+        int cont = 0; bool has_step = false;
+        for (size_t i = 0; i + 1 < written.size(); i++) {
+            int64_t d = written[i + 1] - written[i];
+            if (d == 1800) cont++;
+            if (d == 18900) has_step = true;
+        }
+        if (pass == 0) {
+            CHECK("190 ms audio re-timestamp: default 300 ms threshold leaves it on the wire",
+                  ev.empty() && cont == 398 && has_step);
+        } else {
+            CHECK("190 ms audio re-timestamp: the audio-encoder's 100 ms threshold writes it out",
+                  ev.size() == 1 && ev[0].step_ticks == 17100 && cont == 399);
+        }
     }
 
     // --- the timeline conditioner (the vMix CBR pacer reset, 2026-09-08) -----
