@@ -12,10 +12,11 @@
  *     <text line>\n
  *     [<text line>\n ...]
  *
- * Times are HOUSE-CLOCK media time (ADR-0005: running-time ≡ house time in
- * every synced pipeline), so a consumer compares them directly against the
- * PTS of the video frames it composes — no offset, no re-anchoring. WebVTT
- * allows any number of hour digits, which a monotonic house clock needs.
+ * Times are RELATIVE TO THE CARRYING PES (ADR-0016 as amended 2026-09-16):
+ * `00:00:00.000 --> 00:00:03.800` = show from this PES's time for 3.8 s. The
+ * producer re-sends a live cue every 2 s with the remaining span, so a late
+ * joiner and a receiver on another box (other house clock) both time it
+ * right. The hour field allows any number of digits, as WebVTT does.
  * An EMPTY text is a CLEAR cue: it ends whatever is showing at `start`.
  *
  * The python twin (`py/subtitle_klv.py`) encodes byte-identically; both test

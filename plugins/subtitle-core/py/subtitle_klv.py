@@ -9,7 +9,10 @@ Wire layout of the KLV value (UTF-8):
     HH:MM:SS.mmm --> HH:MM:SS.mmm\\n
     <text line>\\n [...]
 
-Times are house-clock media time in ms (ADR-0005). Empty text = CLEAR cue.
+Times are RELATIVE TO THE CARRYING PES, in ms (ADR-0016 as amended
+2026-09-16): `00:00:00.000 --> 00:00:03.800` means "show from this PES's time
+for 3.8 s". They are never house-clock absolutes — those cannot cross to a
+box with another clock. Empty text = CLEAR cue.
 """
 
 KEY = bytes.fromhex("060e2b34020501010e0e4d5253554231")

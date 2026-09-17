@@ -30,6 +30,15 @@ check("live cue", b.make_cue(1000.4, "x", 8000) == (1000, 9000, "x"))
 check("clear cue", b.make_cue(1000, "", 8000) == (1000, 1000, ""))
 check("negative hold clamps", b.make_cue(1000, "x", -5) == (1000, 1000, "x"))
 
+# Wire times are relative to the carrying PES (sent at `now`).
+check("relative: running cue shows from +0 with its remaining span",
+      b.relative_cue((1000, 4800, "Hi"), 2000) == (0, 2800, "Hi"))
+check("relative: future cue keeps its lead", b.relative_cue((3000, 4000, "Hi"), 2000) == (1000, 2000, "Hi"))
+check("relative: past end never goes negative", b.relative_cue((1000, 1500, "Hi"), 2000) == (0, 0, "Hi"))
+check("relative: clear cue stays (0, 0, '')", b.relative_cue((2000, 2000, ""), 2000) == (0, 0, ""))
+check("absolute: anchors on the receiver's own time", b.absolute_cue((0, 2800, "Hi"), 90_000) == (90_000, 92_800, "Hi"))
+check("round trip on another clock lands the same span",
+      b.absolute_cue(b.relative_cue((1000, 4800, "Hi"), 2000), 500_000) == (500_000, 502_800, "Hi"))
 check("frame time trusts aligned pts", b.frame_time(5000, 5300) == 5000)
 check("frame time falls back to now", b.frame_time(5000, 90_000) == 90_000)
 check("frame time no pts", b.frame_time(None, 42) == 42)

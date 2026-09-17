@@ -29,6 +29,12 @@ what lets one fixture assert the same integers out of both languages. Splitting
 it would mean splitting the C++ side identically to keep that parity readable,
 so the cost is paid twice and the parity surface that guards against timeline
 bugs multiplies. Keep it one file per language.
+
+TIMING ELIGIBILITY (2026-09-16): only a video/audio PES, or a PES on the
+PCR-carrying PID, may define an egress's timeline — see `timing_pes`. A
+private-data PID (KLV subtitle cues, teletext, DVB subtitles) is stamped on the
+media's anchor but never moves it; a private-only egress without PCR never
+anchors and stamps at arrival.
 """
 from ts_psi import (PKT, SYNC, iter_packets, payload_offset, read_pcr, read_pes_pts,
                     ts_pid)
@@ -65,6 +71,44 @@ def iter_pes(data):
         if pts is None:
             continue
         yield ts_pid(pkt), pts
+
+
+def timing_stream_id(sid: int) -> bool:
+    """stream_id of an elementary stream that may define an egress timeline:
+    video 0xE0-0xEF or audio 0xC0-0xDF. Private data (0xBD: KLV/WebVTT cues,
+    teletext, DVB subtitles — but also AC-3 and Opus) is not, unless its PID
+    carries the PCR (see `timing_pes`)."""
+    return (sid & 0xF0) == 0xE0 or (sid & 0xE0) == 0xC0
+
+
+def timing_pes(pkt, pid: int, timing_pid) -> bool:
+    """TIMING ELIGIBILITY — the C++ `timing_pes`, rule for rule. Only a
+    video/audio PES, or a PES on the PCR-carrying PID, may anchor, latch,
+    trip the watch, be conditioned or feed the servo. A subtitle stream is
+    sparse and its PTS legitimately sit seconds off the video's: on the .108
+    route (2026-09-16) the anchor was taken on the KLV PID's first PES and the
+    latch repair pulled it back 1992 ms for the whole incarnation. `pkt`
+    holds a PES header with a PTS (`read_pes_pts` is not None)."""
+    sid = pkt[payload_offset(pkt) + 3]
+    return timing_stream_id(sid) or pid == timing_pid
+
+
+def iter_timing_pes(data, timing_pid, seen=None):
+    """`iter_pes` restricted to timing-eligible PES (see `timing_pes`). `seen`
+    (a list) gets True appended when the buffer carried ANY PES with a PTS,
+    eligible or not — the C++ `any_pes`."""
+    for pkt in iter_packets(data):
+        if not (pkt[1] & 0x40):
+            continue
+        pts = read_pes_pts(pkt)
+        if pts is None:
+            continue
+        if seen is not None and not seen:
+            seen.append(True)
+        pid = ts_pid(pkt)
+        if not timing_pes(pkt, pid, timing_pid):
+            continue
+        yield pid, pts
 
 
 def unwrap_near(pts: int, ref: int) -> int:
@@ -306,6 +350,9 @@ class TimelineStamper:
     # visible in the journal while the picture no longer pays for it.
     _COND_STEP_NS = 300_000_000         # default; a producer may lower it per egress (`condition_step_ns`)
     _COND_MAX_NS = 10_000_000_000
+    # How long a PID's OWN correction (a step it took alone) is carried before
+    # it is released as the stream's real placement (C++: COND_OWN_HOLD_NS).
+    _COND_OWN_HOLD_NS = 30_000_000_000
     # The CORRECTION is sized by the clock's own cadence — the median of its
     # recent in-cadence deltas — not by arrival: a step that lands on a 94 KB
     # I-frame (350 ms of wire time at 2 Mbit/s, measured on the .103 capture)
@@ -512,7 +559,13 @@ class TimelineStamper:
         self._early_since = None  # house time the margin went below -_EARLY_NS
         self._early_max = 0     # the largest (least early) margin since (the level)
         self._on_conditioned = on_conditioned
-        self._cond_pes = {}     # pid -> [last raw PTS, last house, offset ticks]
+        # pid -> {'last_raw', 'last_house', 'offset' (total ticks written),
+        #         'own' (steps taken alone), 'own_since', 'prog_applied', 'recent'}
+        self._cond_pes = {}
+        # The PROGRAM's correction (ticks): the sum of the reference PID's
+        # steps; every other PID adopts it when its own PTS shows the same
+        # jump, a PID first seen afterwards at once (C++: `cond_prog_offset_`).
+        self._cond_prog_offset = 0
         self._cond_ref_pid = None    # the PCR's source: the PID carrying the PCR (first PES PID until seen)
         self._cond_pcr_pid = None
         # TIMING PID: under conditioning, the PID carrying the PCR is the egress's
@@ -777,8 +830,11 @@ class TimelineStamper:
         # unchanged — the watch still decides (and may re-anchor) before
         # anything is stamped. `memoryview` keeps ts_psi's per-packet slices as
         # views rather than 188-byte copies.
-        pes = list(iter_pes(memoryview(data) if not isinstance(data, memoryview)
-                            else data))
+        # Timing-eligible PES only (`timing_pes`): a private-data PID's headers
+        # are neither watched, latched, stamped from nor conditioned.
+        seen = []
+        pes = list(iter_timing_pes(memoryview(data) if not isinstance(data, memoryview)
+                                   else data, self._timing_pid, seen))
         if self._timing_rebase_pending and self.anchor is not None:
             # The anchor was taken on a PID that is not the PCR carrier (its PES
             # arrived first); the carrier's first PES re-bases the epoch onto it.
@@ -820,6 +876,15 @@ class TimelineStamper:
             # time it arrived at — before the monotone floor below, which is a
             # guard on what leaves rather than a statement about the mapping.
             self._observe(house_now, stamp)
+        if stamp is None and seen:
+            # PES, but none that may define a timeline (a private-only egress:
+            # a KLV subtitle leg off a splitter, no PCR). Anchored or not — the
+            # splitter shares ONE stamper across its per-PID outputs, so the
+            # KLV leg's stamper IS anchored, on the video — every such buffer
+            # leaves stamped at its ARRIVAL, which is the time its consumers
+            # read a cue by. Repeating the staircase instead would freeze the
+            # leg's timeline at its first stamp (C++: `any_pes`).
+            stamp = house_now
         if stamp is None:
             # A stream whose FIRST buffer carries no PES (a PSI-only flush on a
             # freshly wired output) has no staircase to repeat: house time is
@@ -1073,43 +1138,89 @@ class TimelineStamper:
             if pts is None:
                 continue
             poff = payload_offset(pkt)
+            # Which PIDs may define a clock: `timing_pes`. A private-data PID's
+            # PTS is not a clock — never steps the program, never the PCR's
+            # reference or floor — but it IS on the program's timeline and
+            # follows the program's correction like every other PID.
+            timing = timing_pes(pkt, pid, self._timing_pid)
+            is_ref = timing and (self._cond_ref_pid is None or pid == self._cond_ref_pid
+                                 or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid))
+            # ONE program, ONE clock — with PIDs that may also step on their
+            # own: the reference's steps are the program's; another PID adopts
+            # the pending program correction when its own PTS jumps by the same
+            # amount, keeps a step it took alone as its own (the vMix pacer
+            # reset), and has that own part released after _COND_OWN_HOLD_NS if
+            # it never reverts (a branch alignment is placement, not a clock).
             c = self._cond_pes.get(pid)
             if c is None:
-                c = self._cond_pes[pid] = [pts, house_now, 0, []]
+                c = self._cond_pes[pid] = {'last_raw': pts, 'last_house': house_now,
+                                           'offset': self._cond_prog_offset, 'own': 0, 'own_since': 0,
+                                           'prog_applied': self._cond_prog_offset, 'recent': []}
             else:
-                d_ns = pts90k_to_ns(self._fold(pts - c[0], PTS_WRAP))
-                a_ns = house_now - c[1]
-                if (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
-                        and abs(d_ns - a_ns) > self._cond_threshold_ns):
+                d_ns = pts90k_to_ns(self._fold(pts - c['last_raw'], PTS_WRAP))
+                a_ns = house_now - c['last_house']
+                pending = self._cond_prog_offset - c['prog_applied']
+                stepped = (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
+                           and abs(d_ns - a_ns) > self._cond_threshold_ns)
+                if not stepped and abs(d_ns) <= self._cond_threshold_ns:
+                    self._cond_remember(c, d_ns)                     # the nominal's source
+                if is_ref:
+                    if stepped:
+                        step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
+                        self._cond_prog_offset -= step
+                        c['prog_applied'] = self._cond_prog_offset
+                        c['offset'] = self._cond_prog_offset + c['own']
+                        absorbed += 1
+                        if self._on_conditioned:
+                            self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
+                                                  'offsetTicks': c['offset'], 'houseNs': house_now})
+                elif pending and abs((d_ns - a_ns) * _NS_DEN // _NS_NUM + pending) \
+                        <= self._cond_threshold_ns * _NS_DEN // _NS_NUM:
+                    c['offset'] += pending
+                    c['prog_applied'] = self._cond_prog_offset
+                    absorbed += 1
+                    if self._on_conditioned:
+                        self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': -pending,
+                                              'offsetTicks': c['offset'], 'houseNs': house_now})
+                elif timing and stepped:
                     step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
-                    c[2] -= step
+                    c['offset'] -= step
+                    c['own'] -= step
+                    c['own_since'] = (c['own_since'] or house_now) if c['own'] else 0
                     absorbed += 1
                     if self._on_conditioned:
                         self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
-                                              'offsetTicks': c[2], 'houseNs': house_now})
-                elif abs(d_ns) <= self._cond_threshold_ns:
-                    self._cond_remember(c, d_ns)
-                c[0], c[1] = pts, house_now
-            wpts = (pts + c[2]) % PTS_WRAP
-            # The reference PID is the one carrying the PCR (its PTS is what the
-            # PCR must trail — an audio PID's PTS can lead the video's by over a
-            # second, and a PCR derived from it puts every video frame that far
-            # late: .103, 2026-09-08 11:41). Until a PES on the PCR PID is seen,
-            # the first PES PID stands in.
-            if self._cond_ref_pid is None or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid):
-                self._cond_ref_pid = pid
-                self._cond_pcr_regen = False      # a new reference is a new PCR epoch: flagged, unguarded
-            if pid == self._cond_ref_pid:
-                self._cond_ref_wpts, self._cond_ref_house = wpts, house_now
-            self._cond_seen[pid] = (wpts, house_now)
-            if not c[2]:
+                                              'offsetTicks': c['offset'], 'houseNs': house_now})
+                if c['own'] and c['own_since'] and house_now - c['own_since'] > self._COND_OWN_HOLD_NS:
+                    rel = c['own']
+                    c['offset'] -= rel
+                    c['own'] = 0
+                    c['own_since'] = 0
+                    if self._on_conditioned:
+                        self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': rel,
+                                              'offsetTicks': c['offset'], 'houseNs': house_now})
+                c['last_raw'], c['last_house'] = pts, house_now
+            wpts = (pts + c['offset']) % PTS_WRAP
+            if timing:
+                # The reference PID is the one carrying the PCR (its PTS is what
+                # the PCR must trail — an audio PID's PTS can lead the video's by
+                # over a second, and a PCR derived from it puts every video frame
+                # that far late: .103, 2026-09-08 11:41). Until a PES on the PCR
+                # PID is seen, the first PES PID stands in.
+                if self._cond_ref_pid is None or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid):
+                    self._cond_ref_pid = pid
+                    self._cond_pcr_regen = False      # a new reference is a new PCR epoch: flagged, unguarded
+                if pid == self._cond_ref_pid:
+                    self._cond_ref_wpts, self._cond_ref_house = wpts, house_now
+                self._cond_seen[pid] = (wpts, house_now)
+            if not c['offset']:
                 continue
             self._write_ts_field(data, off + poff + 9, wpts)
             if pkt[poff + 7] & 0x40 and poff + 19 <= PKT:
                 q = pkt[poff + 14:poff + 19]
                 dts = (((q[0] >> 1) & 0x07) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) \
                     | (q[3] << 7) | (q[4] >> 1)
-                wdts = (dts + c[2]) % PTS_WRAP
+                wdts = (dts + c['offset']) % PTS_WRAP
                 # A DTS after its own PTS is not a timeline (vMix writes one
                 # while its pacer resets): decode no later than presentation.
                 if self._fold(wdts - wpts, PTS_WRAP) > 0:
@@ -1131,17 +1242,17 @@ class TimelineStamper:
 
     @classmethod
     def _cond_remember(cls, c, d_ns):
-        if len(c[3]) >= cls._COND_RECENT:
-            del c[3][0]
-        c[3].append(d_ns)
+        if len(c['recent']) >= cls._COND_RECENT:
+            del c['recent'][0]
+        c['recent'].append(d_ns)
 
     @staticmethod
     def _cond_step_ns(c, d_ns):
         """The step to absorb: the raw delta less the clock's nominal interval
         (median of its recent in-cadence deltas). C++ `cond_step_ns`."""
-        if not c[3]:
+        if not c['recent']:
             return d_ns
-        return d_ns - sorted(c[3])[len(c[3]) // 2]
+        return d_ns - sorted(c['recent'])[len(c['recent']) // 2]
 
     @staticmethod
     def _fold(d, modulo):

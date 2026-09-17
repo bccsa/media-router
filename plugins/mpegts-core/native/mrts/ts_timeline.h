@@ -29,9 +29,18 @@ int64_t unwrap_near(int64_t pts, int64_t ref);
 // first PID to latch defines the epoch and every later PID's first PTS is
 // unwrapped to the 2^33 period nearest that reference, so a stream starting
 // astride the boundary stays ONE timeline instead of two 26.5 h apart.
+// Whether this PES packet may define an egress's timeline: a video or audio
+// stream_id, or the PID carrying the PCR (`timing_pid`, -1 = unknown). Private
+// data (KLV subtitle cues, teletext, DVB subtitles) never does — see the
+// definition for the 2026-09-16 field failure. `pkt` holds a PES header with
+// a PTS (`read_pes_pts` >= 0).
+bool timing_pes(const uint8_t* pkt, int pid, int timing_pid);
+
 class TimelineLatch {
   public:
-    void feed(const uint8_t* data, size_t len);
+    // `timing_pid`: PES that fail `timing_pes` are not latched (-1 = only the
+    // stream_id rule applies).
+    void feed(const uint8_t* data, size_t len, int timing_pid = -1);
     bool latched(int pid) const { return first_pts_.count(pid) != 0; }
     // First PES PTS latched for `pid`, epoch-unwrapped; `fallback` if none.
     int64_t first_pts(int pid, int64_t fallback) const;
@@ -263,11 +272,24 @@ class TimelineStamper {
     int64_t cond_threshold_ns_ = 0;       // per-egress conditioner threshold, 0 = default
     // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
     struct CondClock {
-        int64_t last_raw;      // last raw value seen (90 kHz for PES, 27 MHz for PCR)
+        int64_t last_raw;      // last raw PTS seen (90 kHz)
         int64_t last_house;    // house time it arrived at
-        int64_t offset;        // correction applied (same unit as last_raw)
+        int64_t offset;        // total correction written (ticks) = program part + own part
+        int64_t own;           // steps this PID took ALONE (ticks); released after COND_OWN_HOLD_NS
+        int64_t own_since;     // house time `own` became non-zero (0 = none)
+        int64_t prog_applied;  // the program correction this PID has adopted so far (ticks)
         std::vector<int64_t> recent;   // recent in-cadence deltas (ns), the nominal's source
     };
+    // The PROGRAM's correction (ticks): the sum of the steps the reference PID
+    // (the PCR carrier) absorbed. A source clock step moves every PID by the
+    // same amount, so every other PID adopts it — the moment its own PTS shows
+    // the same jump (a PID idle across the restart adopts it late), a PID first
+    // seen afterwards at once. What a PID steps by ALONE stays its own
+    // (`CondClock::own`, the vMix pacer reset) and is released if it never
+    // reverts (a consumer's branch alignment is placement, not a clock step).
+    // Per-PID-only offsets left PIDs disagreeing for the life of the process
+    // (2026-09-17: .108 splitter 7.3 s off the PCR, .103 muxer egress 0.94 s).
+    int64_t cond_prog_offset_ = 0;
     // The step to absorb: the raw delta less this clock's nominal interval (the
     // median of its recent in-cadence deltas), so a step that lands on a large
     // frame is not over-corrected by that frame's wire time.

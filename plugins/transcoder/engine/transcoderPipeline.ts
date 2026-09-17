@@ -255,15 +255,25 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // Shared pre-tee path: demux → decode → raw buffer (thread boundary) →
     // deinterlace → drop to the target framerate → tee. No videoconvert here
     // (moved into the leaves so it runs on the small downscaled frame).
-    // videorate runs on its own thread via the raw buffer queue.
+    // videorate runs on its own thread via the raw buffer queue. It is
+    // `drop-only`: it must never DUPLICATE. Under the time-sync contract the
+    // pipeline runs with base_time 0, decoded frames sit at house time
+    // (~10^5..10^6 s) while tsdemux's segment starts at 0, and a duplicating
+    // videorate fills that whole span with copies of the first frame (22 M
+    // frames on the 2026-09-16 .103 rig: 200-300 fps of dups, output timeline
+    // racing 8-14x, two cores burned, the rendition unmuxable downstream).
+    // drop-only also rules out the dup storm after any forward PTS jump; a
+    // slower-than-target source simply delivers its real rate.
     // Subtitle burn-in (optional): the overlay draws on the conformed frame just
     // before the fan-out, so all renditions carry identical text; its cues
     // arrive on a separate bus input the runner's subtitle bridge reads.
-    const subs = input.subtitles ? subtitleRenderPlan(input.subtitles, input.subtitles.config) : undefined;
+    const subs = input.subtitles
+        ? subtitleRenderPlan(input.subtitles, input.subtitles.config)
+        : undefined;
     const overlay = subs ? `${subs.overlayElement} ! ` : '';
     const pipeline =
         `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! ${videoCaps} ! ${decoder} ! ${rawBuffer} ! ` +
-        `${deinterlacer}videorate ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
+        `${deinterlacer}videorate drop-only=true ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 
     return { pipeline, sinkNames, ...(subs ? { runnerHooks: subs.runnerHooks } : {}) };

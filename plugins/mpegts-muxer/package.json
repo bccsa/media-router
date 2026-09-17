@@ -2,11 +2,11 @@
     "name": "@media-router/plugin-mpegts-muxer",
     "version": "2.0.0",
     "private": true,
-    "description": "Multi-program MPEG-TS muxer — combines N video and M audio MPEG-TS sources into a single transport stream",
+    "description": "MPEG-TS muxer — combines any number of MPEG-TS sources (video, audio, subtitles) into a single transport stream",
     "mediaRouter": {
         "pluginId": "mpegts-muxer",
         "displayName": "MPEG-TS Muxer",
-        "description": "Combines several muxed/mpegts streams into one — pick any number of video and audio inputs.",
+        "description": "Combines several muxed/mpegts streams into one — any input takes any stream type (video, audio, KLV/WebVTT or DVB subtitles).",
         "color": "#f59e0b",
         "icon": "git-merge",
         "category": "processing",
@@ -18,32 +18,19 @@
         "configSchema": {
             "type": "object",
             "properties": {
-                "videoStreams": {
-                    "type": "array",
-                    "maxItems": 8,
-                    "default": [{ "name": "" }],
-                    "description": "Video input streams — \"+ Add\" creates another input port. Each name is broadcast in-band (stream-info channel) so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" }
-                        }
-                    },
-                    "x-liveUpdatable": true
-                },
-                "audioStreams": {
+                "inputs": {
                     "type": "array",
                     "maxItems": 16,
                     "default": [{ "name": "" }],
-                    "description": "Audio input streams — \"+ Add\" creates another input port. Each name is broadcast in-band (stream-info channel) so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
+                    "description": "Inputs — \"+ Add\" creates another input port. Any input takes any MPEG-TS source: every stream it carries (video, audio, KLV/WebVTT subtitles, DVB or teletext subtitles) is re-muxed onto its own fixed PID — automatic by input index, or set per stream below. Give an input a language and it is written into the output PMT as its streams' ISO 639 language descriptor — the standard signalling a downstream splitter labels from (\"Audio nor\").",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" },
+                            "name": { "type": "string", "default": "", "description": "Label for this input pin in the editor (optional). Not carried in the transport stream — MPEG-TS has no standard stream-name field; use Language for signalling receivers understand." },
                             "language": {
                                 "type": "string",
                                 "default": "",
-                                "description": "ISO 639 language code (2/3-letter, e.g. en / eng / deu) written into the output PMT as this stream's language descriptor — the standard signalling every receiver understands. Blank passes the source stream's own language through unchanged. Applied at pipeline build — changing it restarts the muxer."
+                                "description": "ISO 639 language code (2/3-letter, e.g. en / eng / deu) written into the output PMT as the language descriptor of this input's streams — the standard signalling every receiver understands (audio today; KLV/teletext once mpegtsmux carries it for them). Blank passes the source stream's own language through unchanged. Applied at pipeline build — changing it restarts the muxer."
                             },
                             "offsetMs": {
                                 "type": "number",
@@ -52,7 +39,15 @@
                                 "maximum": 2000,
                                 "x-step": 10,
                                 "x-unit": "ms",
-                                "description": "Lipsync offset for this audio input on the mux timeline. Negative advances audio — set to minus the measured audio-late skew to cancel a stable path delay with no added latency (costs ~|offset| of clipped audio at pipeline start). Re-measure after changing audio-path buffering. Applied at pad-link time — changing it restarts the muxer."
+                                "description": "Lipsync offset for this input's AUDIO stream on the mux timeline. Negative advances audio — set to minus the measured audio-late skew to cancel a stable path delay with no added latency (costs ~|offset| of clipped audio at pipeline start). Re-measure after changing audio-path buffering. Applied at pad-link time — changing it restarts the muxer."
+                            },
+                            "pid": {
+                                "type": "number",
+                                "default": 0,
+                                "minimum": 0,
+                                "maximum": 8187,
+                                "x-step": 1,
+                                "description": "Output PID of this input's video; its other streams follow — audio +1, KLV/WebVTT subtitles +2, DVB/teletext subtitles +3. Leave 0 to assign automatically (input 1 → 256, input 2 → 264, …): the assigned value is written back here so the field shows the PID in use. A block overlapping another input's, or touching 4096 (PMT), stops the muxer with an error naming the clash. Changing it restarts the muxer."
                             }
                         }
                     },
@@ -91,12 +86,6 @@
                     "x-step": 50,
                     "x-unit": "ms",
                     "x-liveUpdatable": false
-                },
-                "emitStreamInfo": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Broadcast the in-band stream-info channel (names + codec info for streams MPEG-TS can't signal natively) on the private metadata PID 0x1f0, with the PCR pinned to the first media stream. Natively-signalled data (codec stream types, language descriptors) is always on the wire regardless. Turn off only for strict external receivers that reject unknown private PIDs.",
-                    "x-liveUpdatable": false
                 }
             }
         },
@@ -113,8 +102,9 @@
                 "id": "inputs",
                 "label": "Active Inputs",
                 "fields": [
-                    { "key": "video", "label": "Video Streams" },
-                    { "key": "audio", "label": "Audio Streams" }
+                    { "key": "connected", "label": "Connected Inputs" },
+                    { "key": "streams", "label": "Streams Routed" },
+                    { "key": "mode", "label": "Port Mode" }
                 ]
             },
             {
@@ -133,6 +123,8 @@
     },
     "scripts": {
         "build": "tsc",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc --noEmit",
+        "test": "pnpm run test:py",
+        "test:py": "cd py && python3 mux_routing_test.py"
     }
 }

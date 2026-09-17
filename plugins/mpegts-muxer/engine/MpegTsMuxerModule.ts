@@ -1,3 +1,4 @@
+import { muxInputBasePid, muxRouteMedia } from './muxPids.js';
 import {
     DEFAULT_MPEGTS_ALIGNMENT,
     GstPluginBase,
@@ -12,31 +13,38 @@ import {
 import {
     buildDynamicPorts,
     buildPipeline,
-    isAudioInputPort,
-    isVideoInputPort,
+    configPidConflicts,
+    effectiveInputPid,
+    inputEntries,
+    isInputPort,
+    isLegacyConfig,
+    MuxerPidConflictError,
     sortSources,
-    streamEntries,
     type DynamicPort,
-    type MuxedStreamPid,
+    type InputEntry,
+    type MuxedStreamSlot,
     type UdpInputSource,
 } from './mpegtsMuxerPipeline.js';
-import { buildKlvPayload, serializeKlvPayload, type NamedStreamInput } from './klvPayload.js';
+
 /**
  * MPEG-TS Muxer plugin.
  *
- * Combines several muxed/mpegts UDP-multicast streams into one. Each connected
- * input port is demuxed back to its elementary streams and re-muxed into a
- * single transport stream, then sent to the output multicast group assigned by
- * MediaRouter. PID collisions are handled by mpegtsmux itself.
+ * Combines several muxed/mpegts bus streams into one. Each connected input
+ * port is demuxed back to its elementary streams and every stream — video,
+ * audio, KLV (WebVTT subtitles), DVB/teletext subtitles — is re-muxed into a
+ * single transport stream on a deterministic PID, then published on the bus
+ * channel assigned by MediaRouter. Inputs are media-agnostic: see the header
+ * of mpegtsMuxerPipeline.ts for the routing/PID contract and how configs from
+ * before generic inputs keep their ports and PIDs.
  */
 export class MpegTsMuxerModule extends GstPluginBase {
-    // The stream arrays are live for renames only: a name edit changes only a
-    // label and never the port set, so it applies without a pipeline rebuild;
+    // The input arrays (generic and legacy) are live for renames only: a name is a UI label on the
+    // input pin and never reaches the wire, so it applies without a rebuild;
     // adding/removing an entry changes the port set and routes through the
     // pending-restart path via `isLiveChange` below.
-    protected liveUpdatableParams: string[] = ['videoStreams', 'audioStreams'];
+    protected liveUpdatableParams: string[] = ['inputs', 'videoStreams', 'audioStreams'];
 
-    /** Output-bitrate poller on the udpsink. */
+    /** Output-bitrate poller on the bus egress. */
     private readonly throughput = new ThroughputPoller({
         getBytes: () => this.readSinkBytes(),
         publish: (sample) => this.publishThroughput(sample),
@@ -45,32 +53,33 @@ export class MpegTsMuxerModule extends GstPluginBase {
      *  fan-out `tee` (busTeeName). */
     private busSinkName: string | undefined;
 
-    // In-band stream-info state (KLV carousel), rebuilt on every pipeline
-    // build. `streamPids` joins `stream:discovered` events (demux element +
-    // media) back to output PIDs; `discovered` holds the first caps seen per
-    // output PID (the first matching pad is the one the link rule routed);
-    // `hasStreamInfo` gates all pushes (no `klvsrc` in the pipeline → no-op).
-    private streamPids: MuxedStreamPid[] = [];
+    // Routed-stream bookkeeping for the status panel, rebuilt on every
+    // pipeline build. `slots` joins `stream:discovered` events (demux element
+    // + the pad's route class) back to output PIDs; `discovered` holds the
+    // first caps seen per output PID (the first pad of a class is the one the
+    // rule routed).
+    private slots: MuxedStreamSlot[] = [];
     private discovered = new Map<number, StreamCapsInfo>();
-    private hasStreamInfo = false;
+    private connectedInputs = 0;
+    private legacyNoted = false;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
     }
 
-    /** Generate one input port per configured video/audio stream + a single output port. */
+    /** Generate one input port per configured input + a single output port. */
     getDynamicPorts(config: Record<string, unknown> = this.config): DynamicPort[] {
-        return buildDynamicPorts(streamEntries(config, 'video'), streamEntries(config, 'audio'));
+        return buildDynamicPorts(inputEntries(config));
     }
 
-    /** Stream-array edits are live only when the length is unchanged (rename)
-     *  AND no entry's `offsetMs` or `language` changed. A grown/shrunk array
-     *  means a different port set; an offset change alters the pad-link rules
-     *  and a language change alters the branch's `taginject` — both are
-     *  applied at build time, so treating them as live would silently swallow
-     *  the edit. All route through pending-restart. */
+    /** Input-array edits are live only when the length is unchanged (rename)
+     *  AND no entry's `offsetMs`, `language` or PID override changed. A
+     *  grown/shrunk array means a different port set; an offset or PID change
+     *  alters the pad-link routes and a language change alters the branch's
+     *  `taginject` — all applied at build time, so treating them as live
+     *  would silently swallow the edit. All route through pending-restart. */
     isLiveChange(key: string, newValue: unknown, oldValue: unknown): boolean {
-        if (key !== 'videoStreams' && key !== 'audioStreams') return true;
+        if (!['inputs', 'videoStreams', 'audioStreams'].includes(key)) return true;
         if (
             !Array.isArray(newValue) ||
             !Array.isArray(oldValue) ||
@@ -79,19 +88,26 @@ export class MpegTsMuxerModule extends GstPluginBase {
             return false;
         }
         return newValue.every((e, i) => {
-            const entry = e as { offsetMs?: unknown; language?: unknown } | null;
-            const prev = oldValue[i] as { offsetMs?: unknown; language?: unknown } | null;
+            const entry = (e ?? {}) as Record<string, unknown>;
+            const prev = (oldValue[i] ?? {}) as Record<string, unknown>;
+            // The module's own seed — the automatic PID written back into a
+            // blank field (see seedAssignedPids) — changes nothing on the wire
+            // and must not bounce the muxer through a restart.
+            const pidUnchanged =
+                (entry.pid ?? 0) === (prev.pid ?? 0) ||
+                ((prev.pid ?? 0) === 0 && entry.pid === muxInputBasePid(i));
             return (
-                (entry?.offsetMs ?? 0) === (prev?.offsetMs ?? 0) &&
-                (entry?.language ?? '') === (prev?.language ?? '')
+                (entry.offsetMs ?? 0) === (prev.offsetMs ?? 0) &&
+                (entry.language ?? '') === (prev.language ?? '') &&
+                pidUnchanged
             );
         });
     }
 
     async onStart(): Promise<void> {
         await super.onStart();
-        // Poll udpsink bytes-served every 2s. The poller's counter-reset guard
-        // turns the udpsink counter resetting to 0 on a child re-spawn
+        // Poll the egress bytes-served every 2s. The poller's counter-reset
+        // guard turns the counter resetting to 0 on a child re-spawn
         // (restartOnError) into a fresh baseline instead of a negative rate.
         this.throughput.start();
     }
@@ -117,36 +133,47 @@ export class MpegTsMuxerModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
 
-        // Per-input names for the in-band carousel (plan D4): operator-set
-        // label from the stream array entry matching the sink port's index,
-        // falling back to `sourceModuleId` from the connection record inside
-        // the pipeline builder.
+        const entries = inputEntries(config);
+        const legacy = isLegacyConfig(config);
+        // Operator PIDs are checked over EVERY configured input, wired or not,
+        // so a clash surfaces as soon as it is set (see configPidConflicts).
+        // The wired layout is re-checked in buildPipeline.
+        const pidConflicts = configPidConflicts(entries);
+        if (pidConflicts.length > 0) {
+            this.setHealth('error', `PID conflict — ${pidConflicts.join('; ')}`);
+            return null;
+        }
+        if (!legacy) this.seedAssignedPids(config, entries);
+        if (legacy && !this.legacyNoted) {
+            this.legacyNoted = true;
+            this.log.info(
+                'Legacy video/audio input ports in use — ids and PIDs preserved; ' +
+                    're-create the module to switch to generic inputs',
+            );
+        }
+
         const allSources = router.getModuleBusSources(instanceId);
         const muxedSources: UdpInputSource[] = allSources
-            .filter((s) => isVideoInputPort(s.sinkPortId) || isAudioInputPort(s.sinkPortId))
+            .filter((s) => isInputPort(s.sinkPortId))
             .map((s) => {
-                const entry = entryForPort(config, s.sinkPortId);
+                const entry = entryForPort(entries, s.sinkPortId);
                 return {
                     sinkPortId: s.sinkPortId,
                     port: s.port,
-                    name: entry?.name,
-                    sourceModuleId: s.sourceModuleId,
                     socketPath: s.socketPath,
                     offsetMs: entry?.offsetMs,
                     language: entry?.language,
+                    ...(entry?.pid !== undefined ? { pid: entry.pid } : {}),
                 };
             });
         const sources = sortSources(muxedSources);
 
-        // Parser selection is now done by the Python pad-link runner from
-        // each pad's caps at pad-added time — unsupported codecs surface as
-        // a runner-emitted warning, not as a pre-flight pipeline refusal.
-
-        const videoCount = sources.filter((s) => isVideoInputPort(s.sinkPortId)).length;
-        const audioCount = sources.filter((s) => isAudioInputPort(s.sinkPortId)).length;
+        // Parser selection is done by the Python pad-link runner from each
+        // pad's caps at pad-added time — unsupported codecs surface as a
+        // runner-emitted warning, not as a pre-flight pipeline refusal.
 
         if (sources.length === 0) {
-            this.setHealth('warning', 'No inputs connected — connect at least one encoder');
+            this.setHealth('warning', 'No inputs connected — connect at least one source');
             return null;
         }
 
@@ -162,30 +189,35 @@ export class MpegTsMuxerModule extends GstPluginBase {
         // constant — see the queueLeaky doc in the pipeline helpers.
         const queueLeaky = (config.queueLeaky as boolean) ?? false;
         const queueDepthMs = config.queueDepthMs as number | undefined;
-        const result = buildPipeline({
-            sources,
-            output: endpoint,
-            alignment,
-            queueLeaky,
-            queueDepthMs,
-            emitStreamInfo: (config.emitStreamInfo as boolean) ?? true,
-            videoParserBypass: config.videoParserBypass === true,
-        });
+        let result;
+        try {
+            result = buildPipeline({
+                sources,
+                output: endpoint,
+                alignment,
+                queueLeaky,
+                queueDepthMs,
+                videoParserBypass: config.videoParserBypass === true,
+            });
+        } catch (err) {
+            if (!(err instanceof MuxerPidConflictError)) throw err;
+            this.setHealth('error', err.message);
+            return null;
+        }
         if (!result) return null;
 
-        // Stream-info state for this build: discovery is per-pipeline (a
-        // rebuild re-fires every pad-added), so stale codec info must not
-        // leak across builds.
-        this.streamPids = result.streamPids;
-        this.hasStreamInfo = result.hasStreamInfo;
+        // Discovery is per-pipeline (a rebuild re-fires every pad-added), so
+        // stale entries must not leak across builds.
+        this.slots = result.slots;
         this.discovered.clear();
+        this.connectedInputs = sources.length;
 
         this.setStatusData('bus', { channel: endpoint.port });
-        this.setStatusData('inputs', { video: videoCount, audio: audioCount });
+        this.publishInputStatus(legacy);
 
         return {
             pipeline: result.pipeline,
-            linkOnPadAdded: result.linkOnPadAdded,
+            runnerHooks: result.runnerHooks,
             restartOnError: true,
             // Anchor every input branch to its producer's house stamps, so the
             // branches' private zero points stop showing up as A/V skew at the
@@ -198,70 +230,57 @@ export class MpegTsMuxerModule extends GstPluginBase {
         };
     }
 
-    /** Re-seed the carousel on every PLAYING transition — the runner clears
-     *  its payload store on each (re)start, and a crash-restart re-fires
-     *  discovery, so pushing the name-only payload here is never stale. */
-    protected onPipelinePlaying(): void {
-        this.pushStreamInfo();
+    /**
+     * Write the automatic base PID into every blank `inputs[i].pid` so the
+     * settings field shows the PID actually in use instead of 0 (the operator
+     * asked for exactly that, 2026-09-16). Goes through `emitConfigUpdate` →
+     * manager persist, like the splitter's discovered streams; the value is
+     * what the layout would have chosen anyway, and `isLiveChange` recognises
+     * the seed so the echoed patch never restarts the muxer. Once written the
+     * PID is explicit: adding inputs later never moves it.
+     */
+    private seedAssignedPids(config: Record<string, unknown>, entries: InputEntry[]): void {
+        const raw = Array.isArray(config.inputs) ? (config.inputs as unknown[]) : [{}];
+        let changed = false;
+        const inputs = raw.slice(0, entries.length).map((item, i) => {
+            if (entries[i].pid !== undefined) return item;
+            changed = true;
+            return {
+                ...((item ?? {}) as Record<string, unknown>),
+                pid: effectiveInputPid(entries[i], i),
+            };
+        });
+        if (changed) this.emitConfigUpdate({ inputs });
     }
 
-    /** First discovery per output PID wins: the pad-link rule routes the
-     *  first matching pad of each (demux, media), and discovery reports pads
-     *  in pad-added order — later same-media pads on that demux are the ones
-     *  the rule did NOT link. */
+    /** "Active Inputs" panel: connected inputs, streams routed so far, mode. */
+    private publishInputStatus(legacy: boolean): void {
+        this.setStatusData('inputs', {
+            connected: this.connectedInputs,
+            streams: this.discovered.size,
+            mode: legacy ? 'legacy video/audio ports' : 'generic',
+        });
+    }
+
+    /** First discovery per output PID wins: the rule routes the first pad of
+     *  each (demux, route class), and discovery reports pads in pad-added
+     *  order — later same-class pads on that demux are the ones the rule did
+     *  NOT link (sunk). The class is read from the pad's caps exactly as the
+     *  hook reads it (`muxRouteMedia` is the hook classifier's twin).
+     *  Feeds the "Streams Routed" status count. */
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel !== 'stream:discovered') return;
-        const event = payload as { from?: string; media?: string; caps?: string } | null;
-        if (!event?.from || !event.media || typeof event.caps !== 'string') return;
-        const stream = this.streamPids.find(
-            (s) => s.demux === event.from && s.media === event.media,
-        );
-        if (!stream || this.discovered.has(stream.pid)) return;
-        this.discovered.set(stream.pid, capsStreamInfo(event.caps));
-        this.pushStreamInfo();
-    }
-
-    /** Live rename path: the stream arrays are live for name-only edits (see
-     *  isLiveChange), and a rename only needs a carousel re-push. */
-    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        await super.onLiveConfigUpdate(changes);
-        if ('videoStreams' in changes || 'audioStreams' in changes) this.pushStreamInfo();
-    }
-
-    /** Build + push the current carousel payload (names always; codec info
-     *  only for non-native codecs per the klvPayload layering rule). */
-    private pushStreamInfo(): void {
-        if (!this.hasStreamInfo) return;
-        const router = this.services?.mediaRouter;
-        const instanceId = this.services?.instanceId ?? '';
-        const bySinkPort = new Map(
-            (router?.getModuleBusSources(instanceId) ?? []).map((s) => [
-                s.sinkPortId,
-                s.sourceModuleId,
-            ]),
-        );
-        const inputs: NamedStreamInput[] = this.streamPids.map((s) => ({
-            pid: s.pid,
-            media: s.media,
-            sinkPortId: s.sinkPortId,
-            name: entryForPort(this.config, s.sinkPortId)?.name,
-            sourceModuleId: bySinkPort.get(s.sinkPortId),
-            discovered: this.discovered.get(s.pid),
-        }));
-        this.setKlvPayload('klvsrc', serializeKlvPayload(buildKlvPayload(inputs)));
+        const event = payload as { from?: string; caps?: string } | null;
+        if (!event?.from || typeof event.caps !== 'string') return;
+        const media = muxRouteMedia(event.caps);
+        const slot = this.slots.find((s) => s.demux === event.from && s.media === media);
+        if (!slot || this.discovered.has(slot.pid)) return;
+        this.discovered.set(slot.pid, capsStreamInfo(event.caps));
+        this.publishInputStatus(isLegacyConfig(this.config));
     }
 }
 
-/** Stream entry for a sink port id (`video-0` / `audio-2`) from the config
- *  stream arrays (legacy count+map configs are normalised by `streamEntries`).
- *  Carries the operator label (blank = unset), the lipsync offsetMs and the
- *  ISO 639 language. */
-function entryForPort(
-    config: Record<string, unknown>,
-    sinkPortId: string,
-): { name: string; offsetMs: number; language: string } | undefined {
-    const media = isVideoInputPort(sinkPortId) ? 'video' : 'audio';
-    const idx = Number(sinkPortId.slice(media.length + 1));
-    if (!Number.isInteger(idx) || idx < 0) return undefined;
-    return streamEntries(config, media)[idx];
+/** Input entry for a sink port id (`input-2`, or a legacy `video-0` / `audio-2`). */
+function entryForPort(entries: InputEntry[], sinkPortId: string): InputEntry | undefined {
+    return entries.find((e) => e.id === sinkPortId);
 }
