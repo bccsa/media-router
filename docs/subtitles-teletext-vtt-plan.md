@@ -47,7 +47,8 @@
 - The KLV metadata channel (muxer name carousel, PID 0x1f0, `meta/x-klv`,
   runner `set_klv_payload` + appsrc) is production-proven end to end and its
   wire format already reserved optional `codec: "webvtt"` entries for streams
-  TS cannot signal natively (`klvPayload.ts`, `capsStreamInfo.ts`).
+  TS cannot signal natively (`klvPayload.ts` — since deleted with the carousel,
+  ADR-0017; `capsStreamInfo.ts` remains).
 - `tsHelpers.ts` reserves PID headroom for subtitles between audio (0x140…)
   and metadata (0x1f0). Shared types already have `StreamType 'text/subtitle'`
   (reserved, unused), `StreamMedia 'subtitle'`, and a sky-blue subtitle chip in

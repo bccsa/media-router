@@ -1116,3 +1116,108 @@ check("... and the rewritten PTS carries the floored offset (byte parity with C+
       p.read_pes_pts(cr_buf) == 8128801)
 
 print("\nALL ts_timeline TESTS PASSED")
+
+
+# --- timing eligibility (2026-09-16): private data never defines a timeline --
+priv = t.TimelineLatch()
+priv.feed(pes_ts_packet(0x10a, pts=4242, stream_id=0xBD) + pes_ts_packet(0x65, pts=1000))
+check("latch still records every PID it is fed (callers filter)", priv.latched(0x10a))
+check("timing_stream_id: video/audio yes, private no",
+      t.timing_stream_id(0xE0) and t.timing_stream_id(0xEF) and t.timing_stream_id(0xC0)
+      and t.timing_stream_id(0xDF) and not t.timing_stream_id(0xBD) and not t.timing_stream_id(0xBF))
+klv = pes_ts_packet(0x10a, pts=99, stream_id=0xBD)
+check("timing_pes: a private PES qualifies only on the PCR-carrying PID",
+      not t.timing_pes(klv, 0x10a, None) and t.timing_pes(klv, 0x10a, 0x10a)
+      and t.timing_pes(pes_ts_packet(0x65, pts=1), 0x65, None))
+check("iter_timing_pes drops the private PES",
+      list(t.iter_timing_pes(klv + pes_ts_packet(0x65, pts=1000), None)) == [(0x65, 1000)])
+
+HOUSE = 1_000_000_000_000
+STEP, STEP_NS = 3600, 40_000_000
+FIRST = 8_100_000
+KLV_LEAD = 2 * 90000
+anchors, settled = [], []
+st = t.TimelineStamper(on_anchor=lambda ev: anchors.append(ev),
+                       on_settled=lambda ev: settled.append(ev), repair_latch=True)
+# THE .108 ROUTE: KLV cue 2 s ahead of the video, first in the buffer.
+s0 = st.stamp(pes_ts_packet(0x10a, pts=FIRST + KLV_LEAD, stream_id=0xBD)
+              + pes_ts_packet(0x100, pts=FIRST), HOUSE)
+check("anchor taken on the video PES, not the KLV that arrived first",
+      anchors and anchors[0]["pid"] == 0x100 and s0 == HOUSE)
+on_cadence = True
+for i in range(1, 101):
+    buf = b""
+    if i % 25 == 0:
+        buf += pes_ts_packet(0x10a, pts=FIRST + i * STEP + KLV_LEAD, stream_id=0xBD)
+    buf += pes_ts_packet(0x100, pts=FIRST + i * STEP)
+    if st.stamp(buf, HOUSE + i * STEP_NS) != HOUSE + i * STEP_NS:
+        on_cadence = False
+check("video stamps stay on cadence while KLV cues ride along", on_cadence)
+check("the repair window closed without pulling the anchor",
+      len(settled) == 1 and settled[0]["repairNs"] == 0)
+# A KLV-only egress WITH PCR on the KLV PID still anchors on it.
+anchors = []
+st2 = t.TimelineStamper(on_anchor=lambda ev: anchors.append(ev), repair_latch=True)
+pcr = bytearray(p.build_pcr_packet(0x181, FIRST * 300))
+st2.condition(pcr, HOUSE)
+s = st2.stamp(pes_ts_packet(0x181, pts=FIRST, stream_id=0xBD), HOUSE + 1)
+check("the PCR carrier's private PES anchors an egress that has nothing else",
+      anchors and anchors[0]["pid"] == 0x181 and s == HOUSE + 1)
+# A KLV-only egress WITHOUT PCR never anchors: arrival stamps.
+anchors = []
+st3 = t.TimelineStamper(on_anchor=lambda ev: anchors.append(ev), repair_latch=True)
+a = st3.stamp(pes_ts_packet(0x10a, pts=FIRST, stream_id=0xBD), HOUSE)
+b = st3.stamp(pes_ts_packet(0x10a, pts=FIRST + 90000, stream_id=0xBD), HOUSE + 5 * STEP_NS)
+check("a private-only egress without PCR is stamped at arrival",
+      not anchors and a == HOUSE and b == HOUSE + 5 * STEP_NS)
+# The splitter shares ONE stamper across its per-PID outputs: anchored on the
+# video (stream 0x100), its KLV leg (stream 0x10a) still carries only private
+# PES — those must leave at ARRIVAL too, not frozen at the first stamp.
+st4 = t.TimelineStamper(repair_latch=True)
+st4.stamp(pes_ts_packet(0x100, pts=FIRST), HOUSE, 0x100)
+k1 = st4.stamp(pes_ts_packet(0x10a, pts=FIRST + 4500, stream_id=0xBD), HOUSE + STEP_NS, 0x10a)
+k2 = st4.stamp(pes_ts_packet(0x10a, pts=FIRST + 9000, stream_id=0xBD), HOUSE + 40 * STEP_NS, 0x10a)
+k3 = st4.stamp(pes_ts_packet(0x10a, pts=FIRST + 13500, stream_id=0xBD), HOUSE + 90 * STEP_NS, 0x10a)
+check("an anchored stamper still stamps a private-only leg at arrival, never frozen",
+      k1 == HOUSE + STEP_NS and k2 == HOUSE + 40 * STEP_NS and k3 == HOUSE + 90 * STEP_NS)
+print("all timing-eligibility checks passed")
+
+# --- program-wide steps vs lone steps (2026-09-17; C++ twin in ts_timeline_test.cpp) --
+_S, _SN = 3600, 40_000_000
+_fold = t.TimelineStamper._fold
+V, R, K = 0x100, 0x110, 0x10a
+JUMP = 658800                                   # +7.32 s: a mux restart, every PID jumps at once
+pst = t.TimelineStamper(repair_latch=True)
+wv, wr, wk = [], [], []
+for i in range(400):
+    h = HOUSE + i * _SN; j = JUMP if i >= 200 else 0
+    has_r, has_k = (i < 190 or i >= 230), i % 50 == 0      # 0x110 idle across the restart
+    buf = p.build_pcr_packet(V, (FIRST - 9000 + i * _S + j) * 300) + pes_ts_packet(V, pts=FIRST + i * _S + j)
+    if has_r: buf += pes_ts_packet(R, pts=FIRST + 40000 + i * _S + j)
+    if has_k: buf += pes_ts_packet(K, pts=FIRST + 20000 + i * _S + j, stream_id=0xBD)
+    buf = bytearray(buf); pst.condition(buf, h); pk = list(p.iter_packets(bytes(buf)))
+    wv.append(p.read_pes_pts(pk[1])); idx = 2
+    if has_r: wr.append((i, p.read_pes_pts(pk[idx]))); idx += 1
+    if has_k: wk.append((i, p.read_pes_pts(pk[idx])))
+check("program step: the reference's written PTS is continuous through a +7.32 s source jump",
+      all(_fold(wv[i] - wv[i - 1], t.PTS_WRAP) == _S for i in range(1, 400)))
+check("program step: a video PID idle across the jump adopts the same correction (relation to the reference kept)",
+      all(_fold(w - wv[i], t.PTS_WRAP) == 40000 for i, w in wr))
+check("program step: a private PID adopts the same correction too",
+      all(_fold(w - wv[i], t.PTS_WRAP) == 20000 for i, w in wk))
+MOVE = 83700                                    # a lone -930 ms move of 0x110 (branch alignment) that never reverts
+lev = []
+lst2 = t.TimelineStamper(repair_latch=True, on_conditioned=lev.append)
+rel = []
+for i in range(1000):                          # 40 s
+    h = HOUSE + i * _SN; m = MOVE if i >= 100 else 0
+    buf = bytearray(p.build_pcr_packet(V, (FIRST - 9000 + i * _S) * 300) + pes_ts_packet(V, pts=FIRST + i * _S)
+                    + pes_ts_packet(R, pts=FIRST + 40000 + i * _S - m))
+    lst2.condition(buf, h); pk = list(p.iter_packets(bytes(buf)))
+    rel.append(_fold(p.read_pes_pts(pk[2]) - p.read_pes_pts(pk[1]), t.PTS_WRAP))
+check("lone step: absorbed while it could still revert (relation held for 28 s)", all(r == 40000 for r in rel[100:800]))
+check("lone step: released after the hold — the wire shows the stream's real placement", rel[999] == 40000 - MOVE)
+pes_ev = [e for e in lev if e['clock'] == 'pts']
+check("lone step: one step event, one release event, nothing on the reference",
+      [e['pid'] for e in pes_ev] == [R, R] and pes_ev[0]['offsetTicks'] != 0 and pes_ev[1]['offsetTicks'] == 0)
+print("all conditioner program/lone-step checks passed")

@@ -1,3 +1,4 @@
+import sys
 #!/usr/bin/env python3
 """Subtitle bridge — the runner-side half of the subtitle-core cue carrier.
 
@@ -12,20 +13,28 @@ things the plugin cannot own: `emit_event(dict)` (engine events) and
 
 Producer side (`pay`, one entry per subtitle stream): an `appsink`
 in the pipeline delivers cue TEXT (one buffer per cue — a teletext page from
-`teletextdec`, empty = clear). The bridge stamps the cue with the house time
-it arrived at (running-time ≡ house time on a contract pipeline, ADR-0005),
-wraps it as a KLV-wrapped WebVTT cue (`subtitle_klv`, plugins/subtitle-core/py)
-and pushes it into the stream's `appsrc` (`meta/x-klv,parsed=true` → mpegtsmux
-→ bus). A cue is re-sent every RESEND_MS while it is live so a consumer that
+`teletextdec`, empty = clear). The bridge keeps the cue's lifetime in house
+time (running-time ≡ house time on a contract pipeline, ADR-0005), but what
+goes on the WIRE is clock-free: the KLV PES is stamped with the send time and
+the WebVTT block inside carries times RELATIVE TO THAT PES (`relative_cue`) —
+"show from +0.000 to +3.800". A cue is re-sent every RESEND_MS while it is
+live, each time with its remaining span recomputed, so a consumer that
 attaches mid-cue still shows it; `holdMs` bounds a cue whose source never
-sends a clear.
+sends a clear. Relative times are what let a cue survive a hop to ANOTHER
+box (SRT/RIST → splitter → player): the receiving engine's house clock has
+no relation to ours, but the PES travels in the same TS as the video and is
+re-stamped by the same stamper, so "relative to this PES" stays true there
+(2026-09-16 — absolute house times never matched on the far side, and the
+KLV PID's jumping PTS re-anchored every stamper on the route).
 
 Consumer side (`overlay`): the bridge links every `meta/x-klv` pad the
 named tsdemux exposes to a `queue ! appsink` cue reader (anything else to a
-fakesink, so a mis-wired A/V stream cannot stall the demux), keeps the latest
-cue, and drives the `text` property of the named `textoverlay` from a BUFFER
-probe on its video sink pad: the text is set on the first frame whose PTS
-reaches the cue's start and cleared on the first frame past its end. The
+fakesink, so a mis-wired A/V stream cannot stall the demux), turns each cue
+back into local house time (`absolute_cue`: the cue PES's own frame time —
+its PTS when stamp-aligned, else its arrival — plus the relative span), keeps
+the latest, and drives the `text` property of the named `textoverlay` from a
+BUFFER probe on its video sink pad: the text is set on the first frame whose
+PTS reaches the cue's start and cleared on the first frame past its end. The
 textoverlay TEXT PAD is deliberately not used — its buffer-window semantics
 (no-duration buffers flash for one frame, a pending buffer blocks the pad)
 were the whole problem in the 2026-09-09 spike; a property set from the video
@@ -64,6 +73,13 @@ def install(pipe, config, ctx=None):
     _install(pipe, config.get("pay"), config.get("overlay"))
 
 
+def _trace(msg):
+    """One line per overlay transition on the runner's stderr (journal
+    `[gst-py]`): the only remote evidence that a cue was drawn."""
+    sys.stderr.write(f"[subtitle_bridge] {msg}\n")
+    sys.stderr.flush()
+
+
 def _warn(message):
     if _emit_event:
         _emit_event({"event": "warning", "message": f"subtitle bridge: {message}"})
@@ -90,6 +106,23 @@ def make_cue(now_ms, text, hold_ms):
     if not text:
         return (start, start, "")
     return (start, start + max(0, int(hold_ms)), text)
+
+
+def relative_cue(cue, now_ms):
+    """Wire form of a cue sent at house time `now_ms`: the same (start, end,
+    text) with both times relative to the carrying PES (never negative — a cue
+    already running shows from +0). A clear cue stays (0, 0, '')."""
+    start, end, text = cue
+    rel_start = max(0.0, start - now_ms)
+    rel_end = max(rel_start, end - now_ms)
+    return (rel_start, rel_end, text)
+
+
+def absolute_cue(rel, t0_ms):
+    """A received cue (relative times) back on the consumer's own house
+    timeline, anchored at `t0_ms` — the cue PES's frame time."""
+    start, end, text = rel
+    return (t0_ms + start, t0_ms + end, text)
 
 
 def frame_time(pts_ms, now_ms):
@@ -205,7 +238,7 @@ def _on_text_sample(sink, entry):
 def _push_cue(entry, cue, now_ms):
     import subtitle_klv  # plugins/subtitle-core/py — on the runner's PYTHONPATH
     _, Gst = _gst()
-    payload = subtitle_klv.encode_cue(*cue)
+    payload = subtitle_klv.encode_cue(*relative_cue(cue, now_ms))
     buf = Gst.Buffer.new_wrapped(payload)
     buf.pts = int(now_ms * 1e6)
     buf.dts = buf.pts
@@ -289,10 +322,20 @@ def _on_cue_sample(sink, st):
     if not smp:
         return Gst.FlowReturn.OK
     buf = smp.get_buffer()
-    cue = subtitle_klv.decode_cue(buf.extract_dup(0, buf.get_size()))
-    if cue is not None:
-        st["cue"] = cue
-        st["count"] += 1
+    rel = subtitle_klv.decode_cue(buf.extract_dup(0, buf.get_size()))
+    if rel is None:
+        return Gst.FlowReturn.OK
+    # Anchor the relative span on the cue PES's own frame time: its PTS when
+    # this branch is stamp-aligned with the video, else its arrival (the cue
+    # and its video left the far end together, so arrival is within the
+    # playout budget of the right frame).
+    now = house_now_ms(st["pipe"])
+    pts_ms = buf.pts / 1e6 if buf.pts != Gst.CLOCK_TIME_NONE else None
+    t0 = frame_time(pts_ms, now)
+    if t0 is None:
+        return Gst.FlowReturn.OK
+    st["cue"] = absolute_cue(rel, t0)
+    st["count"] += 1
     return Gst.FlowReturn.OK
 
 
@@ -310,9 +353,11 @@ def _on_video_frame(pad, info, st):
     if kind == "show":
         st["ov"].set_property("text", text)
         st["shown"] = text
+        _trace(f"show {text.replace(chr(10), ' / ')[:60]!r}")
     else:
         st["ov"].set_property("text", "")
         st["shown"] = None
+        _trace("clear")
         if st["cue"] is not None and (not st["cue"][2] or frame_time(pts_ms, now) >= st["cue"][1]):
             st["cue"] = None
     return Gst.PadProbeReturn.OK

@@ -4,7 +4,7 @@ A subtitle stream on the bus is a single-program MPEG-TS whose one elementary
 stream carries **one WebVTT cue block per PES, wrapped in a SMPTE 336M-style
 KLV triplet** (`meta/x-klv,parsed=true` — stream_type 0x06 + KLVA
 registration, which `mpegtsmux` writes and `tsdemux` exposes natively). Cue
-times are **house-clock media time** (ADR-0005). Producers and consumers
+times are **relative to the carrying PES** (amended 2026-09-16, below). Producers and consumers
 speak it through `plugins/subtitle-core` (TypeScript and python twins,
 byte-pinned to each other); the plugin's own `py/subtitle_bridge.py` does the
 per-cue work on both ends inside the pipeline runner, installed through the
@@ -65,3 +65,31 @@ pad is never linked.
 References: `docs/subtitles-teletext-vtt-plan.md` (research + spike),
 `plugins/subtitle-core/` (incl. `py/subtitle_bridge.py`), the runner's `runnerHooks` seam,
 `plugins/teletext-subtitles/`.
+
+## Amendment 2026-09-16 — cue times are relative to the PES, not house time
+
+The first cut wrote the cue's absolute house-clock start/end into the WebVTT
+block and stamped the PES with the cue start. Field test .103 → muxer → SRT →
+.108 showed why that cannot work beyond one engine: the receiving box has its
+own monotonic house clock, so absolute times never matched a frame and no cue
+was drawn; and a PES PTS that jumps back to a cue's start on every re-send
+made every stamper on the route treat the KLV PID as a clock reset and
+re-anchor the whole program (video dropped to 0.5 fps).
+
+Now: the PES PTS is the **send time** (monotonic), the block carries
+`start --> end` **relative to that PES** (a running cue is `0 --> remaining`,
+recomputed on each 2 s re-send), and the consumer anchors the span on the cue
+PES's own frame time (its PTS when stamp-aligned, else its arrival). The PES
+travels in the same TS as the video and is re-stamped by the same stamper on
+every hop, so "relative to this PES" stays true on any box. Wire format
+(KLV key, WebVTT block) is unchanged; only the meaning of the times.
+
+And the stamper side, same day: `mrts::TimelineStamper` (native `mrtsstamp`,
+`mr-tssplit`, `mr-bus-fanout`) and its python twin only let a PES whose
+`stream_id` is video (0xE0–0xEF) or audio (0xC0–0xDF), or the PCR-carrying
+PID, anchor, latch-repair, trip the watch, define a conditioner step or feed
+the drift servo (`timing_pes`). A private PID still FOLLOWS the program's
+conditioner correction (ADR-0018) — it is on the program's timeline, it just
+never sets it. A private-data PID (0xBD: KLV cues, teletext, DVB
+subtitles) rides the media's anchor untouched; an egress with nothing but
+private PES and no PCR never anchors and stamps every buffer at arrival.

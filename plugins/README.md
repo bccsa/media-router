@@ -866,7 +866,7 @@ Each branch's first element's sink pad is auto-ghosted, so the rule only needs t
 
 **Skipping the injected parser (`parser: 'none'`).** The runner prepends a codec parser to every branch it links (`h264parse config-interval=-1`, `aacparse`, …) so mixed-codec sources work without per-pad config and parameter sets are re-emitted before every IDR. On a video branch that parser costs one frame of latency: it can only close an access unit when it sees the start of the next one (41 ms at 25 fps, measured into the mpegts-muxer 2026-09-04). A rule may set `parser: 'none'` to skip it; for H.264/H.265 pads the runner then declares `alignment=au` with a `capssetter` instead (truthful on this bus — tsdemux emits one whole PES = one access unit per buffer, ADR-0011), so `mpegtsmux`/`avdec_*` negotiate. Audio and unknown codecs ignore the flag. It is opt-in per module (mpegts-muxer `videoParserBypass`) and must stay off for sources whose PES framing is sloppy or that do not repeat SPS/PPS in-band.
 
-**Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This was the (retired) mpegts-demuxer's PID-based port routing (plan Phase 3); the mpegts-muxer's per-PID inputs still use `matchPids`; without it the positional contract is unchanged.
+**Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This was the (retired) mpegts-demuxer's PID-based port routing (plan Phase 3); without it the positional contract is unchanged (the mpegts-muxer now routes through the media-agnostic contract below).
 
 **Pinning an outer muxer's request-pad name (`requestedPadNames`).** With `linkTo`, the runner asks the target for an implicit `sink_%d` pad by default. Pass `requestedPadNames: ['sink_256', …]` to request an exact pad per branch index — the mpegts-muxer uses `sink_<pid>` to pin each stream's PID (plan D3). Indices past the list end fall back to `sink_%d`.
 
@@ -884,7 +884,11 @@ return {
 };
 ```
 
-#### In-band metadata carousel (`appsrc` + `setKlvPayload` / `readKlvNames`)
+**Routing every stream of a source (the mpegts-muxer).** The two contracts above filter pads by kind and leave everything else unlinked — fine while one demuxer feeds one branch, fatal when a source carries only streams the rule does not match: `tsdemux` combines its pads' flow returns, so a TS whose ONLY pad is unlinked returns NOT_LINKED and the source errors out in a restart loop (a KLV-only subtitle TS on an audio rule, 2026-09-15). A plugin that needs more than the positional contract does NOT extend the runner: it ships the pad-added logic as a **runner hook** (next section). The mpegts-muxer is the reference — `plugins/mpegts-muxer/py/mux_routing.py` classifies every pad its `tsdemux` exposes (video / audio / klv / subtitle / data), routes the first pad of each class to its `sink_<pid>` request pad on the mux with the right codec parser injected, sinks the rest into a `fakesink`, pins `prog-map`'s `PCR_1` on the first video pad it links, and keeps a sparse cue pad restamped and GAP-fed so the aggregator never waits on it. Its TypeScript side (`engine/muxPids.ts`) only describes the routes; `py/mux_routing_test.py` runs a real TS through tsdemux → hook → mpegtsmux. Nothing of this lives in the engine (ADR-0017).
+
+#### In-band metadata carousel (`appsrc` + `setKlvPayload` / `readKlvNames`) — no current consumer
+
+**Status (2026-09-16):** the MPEG-TS muxer's name carousel that used this was retired (ADR-0017) and the mpegts-demuxer that read it is gone, so the seam below has NO consumer in the tree today. It stays documented because the runner still implements it; a plugin that needs a low-rate in-band payload can pick it up as-is.
 
 Generic runner mechanism for riding a low-rate metadata buffer alongside a TS,
 built for the MPEG-TS muxer/demuxer in-band name channel but not tied to it.
@@ -907,8 +911,8 @@ or pipeline health:
   discovered pad on `stream:discovered`). Parsing must be total — a malformed
   payload can never throw out of the handler (warn once, ignore).
 
-The MPEG-TS muxer (`setKlvPayload`) and demuxer (`readKlvNames`) are the
-reference consumers; the payload format itself is plugin-defined.
+The MPEG-TS muxer (`setKlvPayload`) and demuxer (`readKlvNames`) WERE the
+reference consumers (both retired); the payload format itself is plugin-defined.
 
 **PCR warning (hard requirement).** A live `do-timestamp` appsrc feeding an
 `mpegtsmux` WILL be picked as the mux's PCR stream unless you pin PCR to a
@@ -927,7 +931,7 @@ the mux pad — mpegtsmux converts to 639-2B). Put into the KLV channel ONLY wha
 the standard cannot express: freeform names, and codec identity for private
 payloads with no TS mapping (e.g. WebVTT). Use `capsStreamInfo(caps)` from the
 engine to classify — its `nativeTs` flag says whether the codec is already on
-the wire. Reference: the muxer's `klvPayload.ts` + `MpegTsMuxerModule.pushStreamInfo`.
+the wire. (The muxer's name carousel that applied this rule was retired 2026-09-16, ADR-0017 — identity now travels as ISO 639 descriptors only; the rule stands for any future in-band payload.)
 
 ### Health Status
 
@@ -2165,8 +2169,11 @@ calls `install(pipeline, config, ctx)`; on stop it calls `clear()`. `ctx` is
 and the module's plugin-event channel, the two things the hook cannot own. A
 hook that fails to import or install is reported as a warning and skipped;
 it must never take the media pipeline down. Module names must be unique
-across plugins (one flat python namespace). Reference: `subtitle-core/py/
-subtitle_bridge.py` (+ its GStreamer-free unit test beside it).
+across plugins (one flat python namespace). References: `subtitle-core/py/
+subtitle_bridge.py` (+ its GStreamer-free unit test beside it) and
+`mpegts-muxer/py/mux_routing.py` — a hook that owns dynamic-pad linking end
+to end (classify → parse → request pad → PCR pin → sparse keepalive), the
+shape to copy when a plugin's demuxer needs more than the positional rules.
 
 ## Available Services (`this.services`)
 

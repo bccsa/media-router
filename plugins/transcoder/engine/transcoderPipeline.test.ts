@@ -310,12 +310,12 @@ describe('deinterlacing', () => {
         const p = buildPipeline({ ...base, outputs: [out(0, r())] })!.pipeline;
         // mode=auto self-detects from decoded buffer flags: interlaced content is
         // deinterlaced, progressive passes through — the "auto by default" contract.
-        expect(p).toMatch(/! deinterlace mode=auto ! videorate ! video\/x-raw,framerate=50\/1/);
+        expect(p).toMatch(/! deinterlace mode=auto ! videorate drop-only=true ! video\/x-raw,framerate=50\/1/);
     });
 
     it('force mode deinterlaces unconditionally', () => {
         const p = buildPipeline({ ...base, deinterlace: 'force', outputs: [out(0, r())] })!.pipeline;
-        expect(p).toContain('deinterlace mode=interlaced ! videorate');
+        expect(p).toContain('deinterlace mode=interlaced ! videorate drop-only=true');
         expect(p).not.toContain('mode=auto');
     });
 
@@ -446,7 +446,7 @@ describe('subtitle burn-in', () => {
             subtitles: { port: 5600, socketPath: '/tmp/mr-bus-5600-edge.sock', config: { subtitleAlign: 'left' } },
         })!;
         expect(r.pipeline).toContain(
-            'videorate ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
+            'videorate drop-only=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
                 'valignment=bottom halignment=left font-desc="Sans Bold 36" ypad=40 shaded-background=true shading-value=153 ! tee name=t ',
         );
         expect(r.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);

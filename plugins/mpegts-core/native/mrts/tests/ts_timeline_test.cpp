@@ -19,7 +19,7 @@ namespace {
 // Hand-built PES packet (ts_psi_test.cpp / gst_bus_stamper_test.py parity):
 // PUSI, payload 00 00 01 <stream_id>, then the '10' marker, PTS_DTS_flags and
 // the 5-byte PTS. `pts` < 0 = a PES with no PTS at all.
-TsPacket pes_packet(int pid, int64_t pts) {
+TsPacket pes_packet(int pid, int64_t pts, uint8_t stream_id = 0xE0) {
     TsPacket t;
     std::memset(t.b, 0xFF, PKT);
     t.b[0] = SYNC_BYTE;
@@ -30,7 +30,7 @@ TsPacket pes_packet(int pid, int64_t pts) {
     t.b[i++] = 0x00;
     t.b[i++] = 0x00;
     t.b[i++] = 0x01;
-    t.b[i++] = 0xE0;
+    t.b[i++] = stream_id;
     t.b[i++] = 0x00;
     t.b[i++] = 0x00;
     t.b[i++] = 0x80;
@@ -44,6 +44,13 @@ TsPacket pes_packet(int pid, int64_t pts) {
         t.b[i++] = (uint8_t)((p >> 7) & 0xFF);
         t.b[i++] = 0x01 | (uint8_t)((p & 0x7F) << 1);
     }
+    return t;
+}
+
+// A PCR-only packet (adaptation field, no payload) on `pid`.
+TsPacket pcr_packet(int pid, int64_t pcr27) {
+    TsPacket t;
+    build_pcr_packet(pid, pcr27, 0, t.b);
     return t;
 }
 
@@ -131,6 +138,156 @@ int main() {
     auto q = bytes_of({pes_packet(0x65, -1), filler_packet(0x100)});
     quiet.feed(q.data(), q.size());
     CHECK("no latch from PTS-less PES / PSI", !quiet.has_epoch());
+
+    // --- timing eligibility (2026-09-16): private data never defines a timeline
+    {
+        TimelineLatch priv;
+        auto pv = bytes_of({pes_packet(0x10a, 4242, 0xBD), pes_packet(0x65, 1000)});
+        priv.feed(pv.data(), pv.size());
+        CHECK("a private-data PES (0xBD) never sets the latch epoch",
+              priv.epoch_ref(-1) == 1000 && !priv.latched(0x10a) && priv.latched(0x65));
+        TimelineLatch carrier;
+        carrier.feed(pv.data(), pv.size(), 0x10a);
+        CHECK("... unless its PID carries the PCR (the timing PID)",
+              carrier.latched(0x10a) && carrier.epoch_ref(-1) == 4242);
+        TimelineLatch aud;
+        auto av = bytes_of({pes_packet(0xCC, 77, 0xC0)});
+        aud.feed(av.data(), av.size());
+        CHECK("an audio stream_id (0xC0) is timing-eligible", aud.latched(0xCC));
+    }
+    {
+        // THE .108 ROUTE: a KLV subtitle PID whose PES lead the video by 2 s and
+        // arrive first in the buffer. The anchor must land on the video and the
+        // 3 s repair window must not move it.
+        int anchor_pid = -1;
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st([&](const TimelineStamper::Anchored& a) { anchor_pid = a.pid; }, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); }, true);
+        const int64_t KLV_LEAD = 2 * 90000;
+        int64_t s0 = stamp_of(
+            st, {pes_packet(0x10a, FIRST_PES + KLV_LEAD, 0xBD), pes_packet(0x100, FIRST_PES)}, HOUSE);
+        CHECK("anchor taken on the video PES, not the KLV that arrived first", anchor_pid == 0x100);
+        CHECK("the first stamp is the arrival", s0 == HOUSE);
+        bool on_cadence = true;
+        for (int i = 1; i <= 100; i++) {   // 4 s at 40 ms: past the 3 s repair window
+            std::vector<TsPacket> buf;
+            if (i % 25 == 0) buf.push_back(pes_packet(0x10a, FIRST_PES + i * STEP + KLV_LEAD, 0xBD));
+            buf.push_back(pes_packet(0x100, FIRST_PES + i * STEP));
+            if (stamp_of(st, buf, HOUSE + i * STEP_NS) != HOUSE + i * STEP_NS) on_cadence = false;
+        }
+        CHECK("video stamps stay on cadence while KLV cues ride along", on_cadence);
+        CHECK("the repair window closed without pulling the anchor",
+              settled.size() == 1 && settled[0].repair_ns == 0);
+        CHECK("no re-anchor off the KLV PID", st.reanchors() == 0);
+    }
+    {
+        // A KLV-only egress WITH its PCR on the KLV PID (a teletext page output)
+        // has nothing else: the PCR carrier's private PES anchors it.
+        int anchor_pid = -1;
+        TimelineStamper st([&](const TimelineStamper::Anchored& a) { anchor_pid = a.pid; }, nullptr,
+                           nullptr, true);
+        auto pcr = bytes_of({pcr_packet(0x181, FIRST_PES * 300)});
+        st.condition(pcr.data(), pcr.size(), HOUSE);
+        int64_t s = stamp_of(st, {pes_packet(0x181, FIRST_PES, 0xBD)}, HOUSE + 1);
+        CHECK("the PCR carrier's private PES anchors an egress that has nothing else",
+              anchor_pid == 0x181 && s == HOUSE + 1);
+    }
+    {
+        // A KLV-only egress WITHOUT PCR (a splitter leg) never anchors: every
+        // buffer leaves stamped at its arrival, which is what its consumers use.
+        int anchors = 0;
+        TimelineStamper st([&](const TimelineStamper::Anchored&) { anchors++; }, nullptr, nullptr,
+                           true);
+        int64_t a = stamp_of(st, {pes_packet(0x10a, FIRST_PES, 0xBD)}, HOUSE);
+        int64_t b = stamp_of(st, {pes_packet(0x10a, FIRST_PES + 90000, 0xBD)}, HOUSE + 5 * STEP_NS);
+        CHECK("a private-only egress without PCR is stamped at arrival",
+              anchors == 0 && a == HOUSE && b == HOUSE + 5 * STEP_NS);
+    }
+
+    {
+        // The splitter shares ONE stamper across its per-PID outputs: anchored
+        // on the video (stream 0x100), its KLV leg (stream 0x10a) still carries
+        // only private PES. Those buffers must leave at ARRIVAL too — the
+        // staircase repeat froze the leg at its first stamp (.108, 2026-09-16).
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        (void)stamp_of(st, {pes_packet(0x100, FIRST_PES)}, HOUSE, 0x100);
+        int64_t k1 = stamp_of(st, {pes_packet(0x10a, FIRST_PES + 4500, 0xBD)}, HOUSE + STEP_NS, 0x10a);
+        int64_t k2 = stamp_of(st, {pes_packet(0x10a, FIRST_PES + 9000, 0xBD)}, HOUSE + 40 * STEP_NS, 0x10a);
+        int64_t k3 = stamp_of(st, {pes_packet(0x10a, FIRST_PES + 13500, 0xBD)}, HOUSE + 90 * STEP_NS, 0x10a);
+        CHECK("an anchored stamper still stamps a private-only leg at arrival, never frozen",
+              k1 == HOUSE + STEP_NS && k2 == HOUSE + 40 * STEP_NS && k3 == HOUSE + 90 * STEP_NS);
+    }
+
+    // --- program-wide steps vs lone steps (2026-09-17) -----------------------
+    {
+        // A mux restart: every PID's PTS jumps +7.32 s at once. The reference
+        // (0x100, PCR carrier) absorbs it; 0x110 (video, IDLE across the restart)
+        // and 0x10a (private KLV, one PES per 2 s) must ADOPT the same correction
+        // so the program stays consistent — the .108 splitter absorbed it on
+        // 0x100 alone and left the others 7.3 s off the regenerated PCR.
+        constexpr int V = 0x100, R = 0x110, K = 0x10a;
+        constexpr int64_t JUMP = 658800;                 // +7.32 s in 90 kHz
+        auto fold2 = [](int64_t d, int64_t m) { d %= m; if (d < 0) d += m; return d > m / 2 ? d - m : d; };
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        std::vector<int64_t> wv, wr, wk; std::vector<int> ir, ik;
+        for (int i = 0; i < 400; i++) {
+            const int64_t h = HOUSE + i * STEP_NS;
+            const int64_t j = i >= 200 ? JUMP : 0;
+            const bool has_r = i < 190 || i >= 230, has_k = i % 50 == 0;
+            std::vector<TsPacket> pk = {pcr_packet(V, (FIRST_PES - 9000 + i * STEP + j) * 300),
+                                        pes_packet(V, FIRST_PES + i * STEP + j)};
+            if (has_r) pk.push_back(pes_packet(R, FIRST_PES + 40000 + i * STEP + j));
+            if (has_k) pk.push_back(pes_packet(K, FIRST_PES + 20000 + i * STEP + j, 0xBD));
+            auto data = bytes_of(pk);
+            st.condition(data.data(), data.size(), h);
+            wv.push_back(read_pes_pts(data.data() + PKT));
+            size_t idx = 2;
+            if (has_r) { wr.push_back(read_pes_pts(data.data() + idx * PKT)); ir.push_back(i); idx++; }
+            if (has_k) { wk.push_back(read_pes_pts(data.data() + idx * PKT)); ik.push_back(i); }
+        }
+        bool vcont = true;
+        for (size_t i = 1; i < wv.size(); i++) vcont &= fold2(wv[i] - wv[i - 1], PTS_WRAP) == STEP;
+        bool rrel = true, krel = true;
+        for (size_t n = 0; n < wr.size(); n++) rrel &= fold2(wr[n] - wv[ir[n]], PTS_WRAP) == 40000;
+        for (size_t n = 0; n < wk.size(); n++) krel &= fold2(wk[n] - wv[ik[n]], PTS_WRAP) == 20000;
+        CHECK("program step: the reference's written PTS is continuous through a +7.32 s source jump", vcont);
+        CHECK("program step: a video PID idle across the jump adopts the same correction (relation to the reference kept)", rrel);
+        CHECK("program step: a private PID adopts the same correction too", krel);
+    }
+    {
+        // A lone step: 0x110 alone moves -930 ms (a consumer's branch alignment)
+        // and stays. Absorbed at first — a pacer glitch would revert — but not
+        // for ever: after COND_OWN_HOLD_NS the correction is released and the
+        // wire shows the stream where it really sits (.103 muxer egress carried
+        // a 0.94 s misplacement for the life of the stream, 2026-09-17).
+        constexpr int V = 0x100, R = 0x110;
+        constexpr int64_t MOVE = 83700;                  // 930 ms
+        auto fold2 = [](int64_t d, int64_t m) { d %= m; if (d < 0) d += m; return d > m / 2 ? d - m : d; };
+        std::vector<TimelineStamper::Conditioned> ev;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { ev.push_back(c); });
+        std::vector<int64_t> rel;
+        for (int i = 0; i < 1000; i++) {                 // 40 s
+            const int64_t h = HOUSE + i * STEP_NS;
+            const int64_t m = i >= 100 ? MOVE : 0;
+            auto data = bytes_of({pcr_packet(V, (FIRST_PES - 9000 + i * STEP) * 300), pes_packet(V, FIRST_PES + i * STEP),
+                                  pes_packet(R, FIRST_PES + 40000 + i * STEP - m)});
+            st.condition(data.data(), data.size(), h);
+            rel.push_back(fold2(read_pes_pts(data.data() + 2 * PKT) - read_pes_pts(data.data() + PKT), PTS_WRAP));
+        }
+        bool held = true;
+        for (int i = 100; i < 800; i++) held &= rel[i] == 40000;
+        CHECK("lone step: absorbed while it could still revert (relation held for 28 s)", held);
+        CHECK("lone step: released after the hold — the wire shows the stream's real placement", rel[999] == 40000 - MOVE);
+        int steps = 0, releases = 0, on_ref = 0;
+        for (auto& c : ev) {
+            if (c.pcr) continue;
+            if (c.pid == V) on_ref++;
+            else if (c.offset_ticks != 0) steps++;
+            else releases++;
+        }
+        CHECK("lone step: one step event, one release event, nothing on the reference", steps == 1 && releases == 1 && on_ref == 0);
+    }
 
     // Epoch-consistent latching astride the 33-bit boundary.
     TimelineLatch straddle;

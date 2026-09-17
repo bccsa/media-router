@@ -1,12 +1,28 @@
 /**
- * Pure pipeline-assembly helpers for the MPEG-TS muxer.
+ * Pure pipeline-assembly helpers for the MPEG-TS muxer: the `mpegtsmux`
+ * element, one `tsdemux` branch per wired input, and the `mux_routing` hook
+ * config the plugin's own runner hook (`py/mux_routing.py`, installed through
+ * the engine's generic `runnerHooks` seam) links pads with at pad-added time —
+ * every elementary stream sorted by ROUTE CLASS (video, audio, klv = the
+ * WebVTT carrier of ADR-0016, subtitle = DVB / teletext) to its slot's PID,
+ * anything unrouted sunk into a fakesink so a KLV-only source can no longer
+ * kill the demuxer with NOT_LINKED (the 2026-09-15 .103 restart loop). The
+ * engine carries no muxer knowledge (ADR-0002).
  *
- * Kept free of GStreamer / engine imports so they can be unit-tested with
- * plain inputs.
+ * Config reading lives in `muxerInputs.ts`, the PID slot layout in
+ * `muxerSlots.ts`; both are re-exported here so the module and its tests have
+ * one import. Kept free of GStreamer imports so it unit-tests with plain
+ * inputs.
+ *
+ * There is NO in-band name channel any more (2026-09-16): the KLV "stream-info
+ * carousel" on PID 0x1f0 was retired — nothing on the fleet read it and every
+ * splitter behind a muxer listed it as a stray port. Stream identity travels
+ * the official way only: ISO 639 language descriptors in the PMT, written by
+ * mpegtsmux from the input's `language` (audio today; other classes once
+ * mpegtsmux carries the descriptor for them).
  */
 
 import {
-    audioStreamPid,
     buildBackpressureQueue,
     buildBusSink,
     buildBusSrc,
@@ -14,38 +30,27 @@ import {
     busStallWatch,
     muxSinkPadName,
     tsQueueByteCap,
-    TS_METADATA_PID,
-    videoStreamPid,
     type InputStallWatch,
-    type PadLinkRule,
-    type DynamicPort,
+    type RunnerHook,
 } from '@media-router/engine';
+import {
+    MUX_ROUTING_MODULE,
+    TS_METADATA_PID,
+    type MuxRoute,
+    type MuxRouteMedia,
+    type MuxRoutingConfig,
+    type MuxRoutingInput,
+} from './muxPids.js';
+import { normalizeLanguage, normalizeOffsetMs, type UdpInputSource } from './muxerInputs.js';
+import {
+    findPidConflicts,
+    layoutSlots,
+    MuxerPidConflictError,
+    type MuxedStreamSlot,
+} from './muxerSlots.js';
 
-// Shared engine type. Note: muxer ports never set `streamInfo.pid` — muxer
-// PIDs are assigned by CONNECTED-source ordinal at build time, so a
-// port-index PID would lie on partially-wired setups.
-export type { DynamicPort };
-
-export interface UdpInputSource {
-    /** Sink port id this connection arrives on (e.g. "video-0", "audio-2"). */
-    sinkPortId: string;
-    port: number;
-    /** Operator-set name for this input (live-updatable). Blank → fall back. */
-    name?: string | null;
-    /** Connected source module id (D4 name fallback when no operator name). */
-    sourceModuleId?: string | null;
-    /** Per-consumer edge socket (falls back to the channel socket). */
-    socketPath?: string;
-    /** Lipsync offset (ms) for this input's mux pad — see StreamEntry.offsetMs. */
-    offsetMs?: number;
-    /** ISO 639 language code for this input's PMT descriptor — see
-     *  StreamEntry.language. Blank/absent → pass the source's language through. */
-    language?: string;
-}
-
-const VIDEO_PORT_PREFIX = 'video-';
-const AUDIO_PORT_PREFIX = 'audio-';
-const OUTPUT_PORT_ID = 'mpegts-out';
+export * from './muxerInputs.js';
+export * from './muxerSlots.js';
 
 /**
  * Per-input stall watch (5 s, in ms). A silent-but-connected input —
@@ -88,159 +93,10 @@ const MUX_INPUT_QUEUE_MS = 500;
  *   queue up backlog: output resumes at the live edge immediately after
  *   recovery, at the cost of dropped frames whenever skew exceeds the bound.
  */
-
-/** One configured input stream. */
-export interface StreamEntry {
-    /** Operator-set name (blank = unset). */
-    name: string;
-    /**
-     * Lipsync offset (ms) applied to this input's mux pad via
-     * `GstPad.set_offset()` (audio inputs only — delaying video would add real
-     * latency). Negative advances the stream on the mux timeline: use
-     * `-<measured audio-late skew>` to cancel a stable path offset with no
-     * added latency (costs ~|offset| of clipped audio at pipeline start).
-     * Clamped ±2000; 0/absent → no offset applied (rule shape unchanged).
-     */
-    offsetMs: number;
-    /**
-     * ISO 639 language code (2/3-letter, e.g. en / eng / deu) written into the
-     * output PMT as this stream's language descriptor via a `taginject` in the
-     * input branch (mpegtsmux converts any accepted form to ISO 639-2B on the
-     * wire). Empty → no taginject, so whatever language the SOURCE TS carries
-     * passes through tsdemux→mpegtsmux untouched. Applied at build time —
-     * changing it restarts the muxer (a live `tags` property change is not
-     * reliably re-emitted by taginject).
-     */
-    language: string;
-}
-
-const MAX_OFFSET_MS = 2000;
-
-/** Clamp a raw config offset to ±2000 ms; malformed → 0. */
-function normalizeOffsetMs(raw: unknown): number {
-    const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
-    return Math.max(-MAX_OFFSET_MS, Math.min(MAX_OFFSET_MS, n));
-}
-
-/** Sanitize a raw config language to a bare ISO 639 code; anything else → ''.
- *  The strict 2-3 letter shape doubles as launch-string safety — the value is
- *  interpolated into `taginject tags=…` and can never need quoting. */
-function normalizeLanguage(raw: unknown): string {
-    return typeof raw === 'string' && /^[A-Za-z]{2,3}$/.test(raw) ? raw.toLowerCase() : '';
-}
-
-const MAX_STREAMS: Record<'video' | 'audio', number> = { video: 8, audio: 16 };
-
-/**
- * Read the per-media stream list from config. Current shape: `videoStreams` /
- * `audioStreams` arrays of `{ name }` — one entry per input port, length is
- * the port count ("+ Add" in the UI appends an entry). Legacy shape (counts +
- * a `streamNames` map keyed by port id) is still honoured so deployed configs
- * keep their ports and labels until next edited.
- */
-export function streamEntries(
-    config: Record<string, unknown>,
-    media: 'video' | 'audio',
-): StreamEntry[] {
-    const arr = config[media === 'video' ? 'videoStreams' : 'audioStreams'];
-    if (Array.isArray(arr)) {
-        return arr.slice(0, MAX_STREAMS[media]).map((e) => ({
-            name:
-                typeof (e as { name?: unknown } | null)?.name === 'string'
-                    ? (e as { name: string }).name
-                    : '',
-            offsetMs: normalizeOffsetMs((e as { offsetMs?: unknown } | null)?.offsetMs),
-            language: normalizeLanguage((e as { language?: unknown } | null)?.language),
-        }));
-    }
-    const count = Math.max(
-        0,
-        (config[media === 'video' ? 'videoStreamCount' : 'audioStreamCount'] as number) ?? 1,
-    );
-    const legacyNames = (config.streamNames as Record<string, string> | undefined) ?? {};
-    return Array.from({ length: Math.min(count, MAX_STREAMS[media]) }, (_, i) => ({
-        name: legacyNames[`${media}-${i}`] ?? '',
-        offsetMs: 0,
-        language: '',
-    }));
-}
-
-export function videoPortId(index: number): string {
-    return `${VIDEO_PORT_PREFIX}${index}`;
-}
-export function audioPortId(index: number): string {
-    return `${AUDIO_PORT_PREFIX}${index}`;
-}
-
-export function isVideoInputPort(portId: string): boolean {
-    return portId.startsWith(VIDEO_PORT_PREFIX);
-}
-export function isAudioInputPort(portId: string): boolean {
-    return portId.startsWith(AUDIO_PORT_PREFIX);
-}
-
-/** Compact stream identity for a muxer input pin — operator name and/or
- *  language when set, undefined otherwise (pin keeps its role label). */
-function entryStreamInfo(entry: StreamEntry, media: 'video' | 'audio'): DynamicPort['streamInfo'] {
-    const name = entry.name.trim();
-    if (!name && !entry.language) return undefined;
-    return {
-        media,
-        ...(name ? { name } : {}),
-        ...(entry.language ? { language: entry.language } : {}),
-    };
-}
-
-/**
- * Build the dynamic port list that mirrors the configured stream entries.
- * The output port is always present so downstream players can connect even
- * when no inputs are configured yet.
- */
-export function buildDynamicPorts(
-    videoStreams: StreamEntry[],
-    audioStreams: StreamEntry[],
-): DynamicPort[] {
-    const ports: DynamicPort[] = [];
-    for (let i = 0; i < videoStreams.length; i++) {
-        const streamInfo = entryStreamInfo(videoStreams[i], 'video');
-        ports.push({
-            id: videoPortId(i),
-            direction: 'input',
-            streamType: 'muxed/mpegts',
-            label: `Video ${i + 1}`,
-            maxConnections: 1,
-            ...(streamInfo ? { streamInfo } : {}),
-        });
-    }
-    for (let i = 0; i < audioStreams.length; i++) {
-        const streamInfo = entryStreamInfo(audioStreams[i], 'audio');
-        ports.push({
-            id: audioPortId(i),
-            direction: 'input',
-            streamType: 'muxed/mpegts',
-            label: `Audio ${i + 1}`,
-            maxConnections: 1,
-            // Audio slots take an audio ES in a muxed TS OR a 302M stream
-            // (PCM muxes into the program like any audio) — dual-color dot.
-            acceptsAnyTs: true,
-            ...(streamInfo ? { streamInfo } : {}),
-        });
-    }
-    ports.push({
-        id: OUTPUT_PORT_ID,
-        direction: 'output',
-        streamType: 'muxed/mpegts',
-        label: 'MPEG-TS Out',
-        maxConnections: -1,
-        requiresOrderedApply: true,
-    });
-    return ports;
-}
-
 /**
  * Build a single demux branch for one connected input. The branch ends at
  * `tsdemux name=demux_${branchId}` — its dynamic pads are bridged to
- * `mpegtsmux name=mux` at runtime by the per-media `linkOnPadAdded` rules
+ * `mpegtsmux name=mux` at runtime by the plugin's `mux_routing` hook
  * returned alongside the pipeline (see `buildPipeline`).
  *
  * Goes straight `udpsrc ! tsdemux` with no `tsparse` in between: re-deriving
@@ -306,12 +162,8 @@ export interface MuxerPipelineInputs {
      *  (transcode chain, pacing offset, B-frame delay). Leaky: the backlog
      *  tolerance before shedding starts. */
     queueDepthMs?: number;
-    /** Emit the in-band stream-info channel (KLV carousel on the metadata PID)
-     *  + pin the PCR to the first media stream. Default true; off → pipeline
-     *  byte-identical to the no-metadata shape. */
-    emitStreamInfo?: boolean;
-    /** Skip the runner-injected h26xparse on the VIDEO input branches
-     *  (`PadLinkRule.parser = 'none'`). tsdemux already hands the mux one whole
+    /** Skip the runner-injected h26xparse on the VIDEO routes
+     *  (`MuxRoute.parser = 'none'`). tsdemux already hands the mux one whole
      *  access unit per buffer; the parser only adds a frame of latency (41 ms
      *  at 25 fps, measured 2026-09-04) while waiting for the next AU to close
      *  the current one. Requires sources that repeat SPS/PPS in-band (ours do).
@@ -319,25 +171,14 @@ export interface MuxerPipelineInputs {
     videoParserBypass?: boolean;
 }
 
-/** One muxed stream's identity: which sink port fed it, the branch that demuxes
- *  it, and the deterministic output PID it is pinned to. The module joins
- *  `stream:discovered` events (keyed by demux element + media) back to output
- *  PIDs through this. */
-export interface MuxedStreamPid {
-    sinkPortId: string;
-    media: 'video' | 'audio';
-    pid: number;
-    /** `demux_<i>` element name of this stream's input branch. */
-    demux: string;
-}
-
 export interface MuxerPipelineResult {
     pipeline: string;
-    linkOnPadAdded: PadLinkRule[];
-    /** Output-PID map for every routed stream (see MuxedStreamPid). */
-    streamPids: MuxedStreamPid[];
-    /** True when the pipeline contains the `klvsrc` stream-info appsrc. */
-    hasStreamInfo: boolean;
+    /** The `mux_routing` hook config — one entry per input (see py/mux_routing.py). */
+    routing: MuxRoutingConfig;
+    /** `[{ module: 'mux_routing', config: routing }]` for the PipelineDescription. */
+    runnerHooks: RunnerHook[];
+    /** Every PID slot the rules can fill (see MuxedStreamSlot). */
+    slots: MuxedStreamSlot[];
     /** Every input branch's `tsdemux`, for `alignBranchesToStamps` — the
      *  contract-only fix for per-branch zero points (see buildInputBranch). */
     demuxes: string[];
@@ -347,16 +188,17 @@ export interface MuxerPipelineResult {
 }
 
 /**
- * Assemble the full pipeline + per-media pad-link rules.
+ * Assemble the full pipeline + the `mux_routing` hook config, one input per
+ * source.
  *
- * For each input, we expose a named `tsdemux` and emit one `linkOnPadAdded`
- * rule per media type. The branch itself is a parser-free `queue` — the
- * Python pad-link runner inspects each pad's caps at pad-added time and
- * prepends the matching parser (see `_parser_for_caps` in
- * `gst-pipeline-runner.py`), then links the bin's src into the named
- * muxer's request sink pad. Auto-detect by caps means one demuxer can
- * serve mixed-codec streams (e.g. one AAC + one Opus audio pad) without
- * per-pad config.
+ * For each input, we expose a named `tsdemux` and describe, per route class,
+ * where its first pad goes: its slot's `mux.sink_<pid>`. The branch itself is
+ * a parser-free `queue` — the hook (`py/mux_routing.py`, run inside the
+ * engine's pipeline runner) inspects each pad's caps at pad-added time,
+ * prepends the matching parser and links the bin's src into the named
+ * muxer's request sink pad. Pads with no route (a second audio stream, an
+ * unknown private stream, an upstream muxer's name carousel on 0x1f0) are
+ * sunk by the hook so the demuxer keeps flowing.
  *
  * Returns null when no inputs are wired — the caller should set a health
  * warning rather than start an empty pipeline.
@@ -381,75 +223,36 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // growth. Blocking one pad stalls the demuxer feeding it, and the input
     // stall watch turns that into a module restart — the designed recovery.
     const cap = tsQueueByteCap(depth);
-    const inputQueue = (input.queueLeaky ?? false)
-        ? buildLeakyQueue(depth, cap)
-        : buildBackpressureQueue(depth, cap);
+    const inputQueue =
+        (input.queueLeaky ?? false)
+            ? buildLeakyQueue(depth, cap)
+            : buildBackpressureQueue(depth, cap);
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
 
-    // Deterministic output PIDs (plan D3), assigned BEFORE the mux element is
-    // formatted so the prog-map below can reference them. video-N → 0x100+N,
-    // audio-N → 0x140+N, where N is the 0-based ordinal *within* that media
-    // type — counted in source-sort order so the same wiring always maps to
-    // the same PIDs across restarts. The demuxer on the far end then keeps
-    // stable port identity, and the PID is the join key for in-band naming.
-    // Without this, mpegtsmux auto-numbers PIDs and they drift.
-    const streamPids: MuxedStreamPid[] = [];
-    let videoOrdinal = 0;
-    let audioOrdinal = 0;
-    for (let i = 0; i < input.sources.length; i++) {
-        const source = input.sources[i];
-        if (isVideoInputPort(source.sinkPortId)) {
-            streamPids.push({
-                sinkPortId: source.sinkPortId,
-                media: 'video',
-                pid: videoStreamPid(videoOrdinal++),
-                demux: `demux_${i}`,
-            });
-        }
-        if (isAudioInputPort(source.sinkPortId)) {
-            streamPids.push({
-                sinkPortId: source.sinkPortId,
-                media: 'audio',
-                pid: audioStreamPid(audioOrdinal++),
-                demux: `demux_${i}`,
-            });
-        }
-    }
+    // Deterministic output PIDs (plan D3, generalised — see layoutSlots),
+    // assigned BEFORE the mux element is formatted so the prog-map below can
+    // reference them. Without pinned request-pad names mpegtsmux auto-numbers
+    // PIDs and they drift between restarts.
+    const slots = layoutSlots(input.sources);
+    // Two request pads on one PID: mpegtsmux fails the second link and the
+    // runner reports a pipeline error — a restart loop with a cryptic message.
+    // Refuse to build instead and say exactly which two streams clash.
+    const conflicts = findPidConflicts(slots);
+    if (conflicts.length > 0) throw new MuxerPidConflictError(conflicts);
 
-    // In-band stream-info channel (KLV carousel, plan D2). HARD INVARIANT:
-    // the metadata appsrc and the PCR pin below are emitted by this one code
-    // path TOGETHER — the KLV pad must NEVER carry the load-bearing PCR.
-    // That was the original retirement bug: mpegtsmux picked the live appsrc
-    // (do-timestamp) as the PCR stream, so the receiver's clock was driven by
-    // the ~50 ms carousel software timer instead of the media, surfacing as
-    // sporadic audio drops. `prog-map` pins every pad to program 1 and PCR_1
-    // to the first media stream (video preferred — the media clock), which is
-    // exactly what mpegtsmux does on its own when no metadata pad exists.
-    const emitStreamInfo = input.emitStreamInfo ?? true;
-    const pcrPid = streamPids.find((s) => s.media === 'video')?.pid ?? streamPids[0]?.pid;
-    let muxProps = `alignment=${input.alignment}`;
-    let metadataBranch = '';
-    if (emitStreamInfo && pcrPid !== undefined) {
-        const progEntries = [...streamPids.map((s) => s.pid), TS_METADATA_PID]
-            .map((pid) => `${muxSinkPadName(pid)}=(int)1`)
-            .join(',');
-        muxProps += ` prog-map="program_map,${progEntries},PCR_1=${muxSinkPadName(pcrPid)}"`;
-        // `is-live=false` on purpose (2026-09-02). A LIVE appsrc pad enters the
-        // aggregator's latency arithmetic and makes it impossible (its max
-        // latency is below the media pads' min), so `mpegtsmux` posted the
-        // "Impossible to configure latency: max < min" WARNING on the bus about
-        // 130 times a second — every one a main-loop wakeup marshalled into
-        // the runner's python bus handler. Measured in the muxer rig
-        // (spike/muxer_rig.py): runner 63 → 34 ticks/10 s, main thread 17 → 5,
-        // mux:src 27 → 11, bus messages 129/s → 0, with the output identical
-        // (same buf/s, kbps, video AU/s, 19.5 KLV PES/s with monotonic PTS). A
-        // non-live pad is simply excluded from that computation; `do-timestamp`
-        // still stamps each push with the running time, which is all the
-        // carousel needs to keep the metadata pad's timestamps advancing.
-        metadataBranch =
-            ' appsrc name=klvsrc is-live=false do-timestamp=true format=time' +
-            ` caps="meta/x-klv,parsed=true" ! mux.${muxSinkPadName(TS_METADATA_PID)}`;
-    }
+    // `prog-map` pins every slot to program 1 and seeds PCR_1 with the first
+    // video slot (else the first audio slot). The builder cannot know which
+    // input will actually carry video, so every hook input also carries `pcr`:
+    // the hook re-points PCR_1 at the first video pad it links (else the first
+    // audio pad) — inline PCR on the media clock, never on a data stream.
+    const pcrSlot =
+        slots.find((s) => s.media === 'video') ??
+        slots.find((s) => s.media === 'audio') ??
+        slots[0];
+    const progEntries = slots.map((s) => `${muxSinkPadName(s.pid)}=(int)1`).join(',');
+    const muxProps =
+        `alignment=${input.alignment}` +
+        ` prog-map="program_map,${progEntries},PCR_1=${muxSinkPadName(pcrSlot.pid)}"`;
 
     // TEST (2026-07-16, sporadic-drop hunt): give the aggregator a real
     // latency budget. Measured in the live muxer: buffers arrive ~1s late vs
@@ -465,66 +268,65 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // No leaky queue between mpegtsmux and the bus tee: any drop here is a
     // mid-stream TS slice (part of a frame's payload) and corrupts decode
     // at the receiver.
-    const pipeline = `${muxer} ! ${sink}${metadataBranch} ${branches.join(' ')}`;
+    const pipeline = `${muxer} ! ${sink} ${branches.join(' ')}`;
 
-    // Per-source pad-link rules: each tsdemux gets one rule per media type.
-    // No codec parser in the branch — the Python pad-link runner injects the
-    // matching parser at pad-added time from the actual pad caps, which
-    // means upstream codec changes (or audio-only sources signalling video
-    // by mistake) don't take this plugin's pipeline-build path down.
-    // Each rule requests the exact `sink_<pid>` pad computed above.
-    const bySinkPort = new Map(streamPids.map((s) => [`${s.media}:${s.sinkPortId}`, s]));
-    const linkOnPadAdded: PadLinkRule[] = [];
-    for (const source of input.sources) {
-        const video = bySinkPort.get(`video:${source.sinkPortId}`);
-        if (video) {
-            linkOnPadAdded.push({
-                from: video.demux,
-                media: 'video',
-                branches: [inputQueue],
-                linkTo: 'mux',
-                requestedPadNames: [muxSinkPadName(video.pid)],
-                // Omitted when off so the default rule shape stays byte-identical.
-                ...(input.videoParserBypass ? { parser: 'none' as const } : {}),
-            });
-        }
-        const audio = bySinkPort.get(`audio:${source.sinkPortId}`);
-        if (audio) {
-            // Lipsync offset on the mux request pad (audio only — offsetting
-            // video would add real latency). Omitted when 0 so the default
-            // rule shape stays byte-identical to today's. An operator language
-            // appends a `taginject` whose language-code tag mpegtsmux turns
-            // into this stream's ISO 639 PMT descriptor (overriding whatever
-            // the source TS carried); blank → source language passes through.
-            const offsetMs = normalizeOffsetMs(source.offsetMs);
+    // One hook input per source. No codec parser in the branch — the hook
+    // injects the matching parser at pad-added time from the actual pad caps,
+    // which means upstream codec changes don't take this plugin's
+    // pipeline-build path down. Each route requests the exact `sink_<pid>`
+    // pad of its slot.
+    const inputs: MuxRoutingInput[] = input.sources.map((source, i) => {
+        const demux = `demux_${i}`;
+        const routes: Partial<Record<MuxRouteMedia, MuxRoute>> = {};
+        for (const slot of slots) {
+            if (slot.demux !== demux) continue;
+            const route: MuxRoute = { padName: muxSinkPadName(slot.pid), branch: inputQueue };
+            if (slot.media === 'video' && input.videoParserBypass) route.parser = 'none';
+            // A cue stream has one buffer per cue: without GAP keepalive the
+            // aggregator holds the video up to latency + min-upstream-latency
+            // (2.4 s here) whenever the pad is idle, then bursts it (the .108
+            // 0.5 fps, 2026-09-16). The hook also restamps the branch to the
+            // mux position on every buffer — see MuxRoute.sparse.
+            if (slot.media === 'klv' || slot.media === 'subtitle') route.sparse = true;
+            // An operator language appends a `taginject` whose language-code tag
+            // mpegtsmux turns into the stream's ISO 639 PMT descriptor — the
+            // official carrier of stream identity, what the fleet's splitters
+            // label from ("Audio nor (aac, PID …)"). On every non-video class:
+            // audio gets the descriptor today, klv/teletext once mpegtsmux
+            // writes it for them. Blank → the source language passes through.
             const language = normalizeLanguage(source.language);
-            const branch = language
-                ? `${inputQueue} ! taginject name=lang_${audio.pid} tags=language-code=${language}`
-                : inputQueue;
-            linkOnPadAdded.push({
-                from: audio.demux,
-                media: 'audio',
-                branches: [branch],
-                linkTo: 'mux',
-                requestedPadNames: [muxSinkPadName(audio.pid)],
-                ...(offsetMs !== 0 ? { padOffsetNs: offsetMs * 1_000_000 } : {}),
-            });
+            if (language && slot.media !== 'video') {
+                route.branch = `${inputQueue} ! taginject name=lang_${slot.pid} tags=language-code=${language}`;
+            }
+            if (slot.media === 'audio') {
+                // Lipsync offset on the mux request pad (audio only — offsetting
+                // video would add real latency). Omitted when 0 so the default
+                // route shape stays byte-identical.
+                const offsetMs = normalizeOffsetMs(source.offsetMs);
+                if (offsetMs !== 0) route.padOffsetNs = offsetMs * 1_000_000;
+            }
+            routes[slot.media] = route;
         }
-    }
+        return {
+            demux,
+            linkTo: 'mux',
+            routes,
+            // A muxer from before 2026-09-16 upstream still emits its name
+            // carousel on the metadata PID — never re-mux that.
+            ignorePids: [TS_METADATA_PID],
+            pcr: { program: 1 },
+        };
+    });
+    const routing: MuxRoutingConfig = { inputs };
 
     return {
         pipeline,
-        linkOnPadAdded,
-        streamPids,
-        hasStreamInfo: emitStreamInfo && pcrPid !== undefined,
+        routing,
+        runnerHooks: [{ module: MUX_ROUTING_MODULE, config: routing }],
+        slots,
         demuxes: input.sources.map((_s, i) => `demux_${i}`),
         inputStallWatch: input.sources.map((_s, i) =>
             busStallWatch(inputBusSrcName(String(i)), INPUT_STALL_TIMEOUT_MS),
         ),
     };
-}
-
-/** Sort a list of input sources so the resulting pipeline is deterministic. */
-export function sortSources(sources: UdpInputSource[]): UdpInputSource[] {
-    return [...sources].sort((a, b) => a.sinkPortId.localeCompare(b.sinkPortId));
 }

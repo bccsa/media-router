@@ -192,7 +192,10 @@ export class GstRunner {
 
             case 'getStats': {
                 const d = msg.data as { element: string };
-                this.forwardTracked(msg.id, 'stats', 'stats', { cmd: 'get_stats', element: d.element });
+                this.forwardTracked(msg.id, 'stats', 'stats', {
+                    cmd: 'get_stats',
+                    element: d.element,
+                });
                 break;
             }
 
@@ -393,7 +396,10 @@ export class GstRunner {
         try {
             this.handlePythonEvent(eventJson);
         } catch (err) {
-            console.error(`[gst-runner] Python event handler threw (event=${String(eventJson.event)}):`, err);
+            console.error(
+                `[gst-runner] Python event handler threw (event=${String(eventJson.event)}):`,
+                err,
+            );
         }
     }
 
@@ -482,7 +488,7 @@ export class GstRunner {
 
             case 'pad_linked':
                 console.error(
-                    `[gst-runner] Pad linked: rule=${eventJson.rule} index=${eventJson.index} pad=${eventJson.padName}` +
+                    `[gst-runner] Pad linked: rule=${eventJson.rule} ${eventJson.media !== undefined ? `media=${eventJson.media}` : `index=${eventJson.index}`} pad=${eventJson.padName}` +
                         (eventJson.padOffsetNs !== undefined
                             ? ` padOffsetNs=${eventJson.padOffsetNs}`
                             : ''),
@@ -507,7 +513,9 @@ export class GstRunner {
             case 'waiting_for_data':
                 console.error(`[gst-runner] ${eventJson.message}`);
                 this.ipc.sendEvent('busGate', {
-                    pending: Array.isArray(eventJson.sockets) ? (eventJson.sockets as string[]) : [],
+                    pending: Array.isArray(eventJson.sockets)
+                        ? (eventJson.sockets as string[])
+                        : [],
                 });
                 break;
 
@@ -520,7 +528,10 @@ export class GstRunner {
             // as a health warning + Waiting badge, not a rebuild.
             case 'input_silent':
                 console.error(`[gst-runner] ${eventJson.message}`);
-                this.ipc.sendEvent('inputSilent', { message: eventJson.message, element: eventJson.element });
+                this.ipc.sendEvent('inputSilent', {
+                    message: eventJson.message,
+                    element: eventJson.element,
+                });
                 break;
 
             case 'input_resumed':
