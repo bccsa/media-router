@@ -50,7 +50,8 @@
                 "id": "streams",
                 "label": "Detected Streams",
                 "fields": [
-                    { "key": "detected", "label": "Count" }
+                    { "key": "detected", "label": "Live" },
+                    { "key": "stale", "label": "Stale (linked, gone from source)" }
                 ]
             }
         ],

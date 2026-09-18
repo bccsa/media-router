@@ -536,10 +536,25 @@ function handleBackground(port: { streamType: string; acceptsAnyTs?: boolean }):
                     v-for="port in outputPorts"
                     :key="port.id"
                     class="h-5 flex items-center justify-end min-w-0"
+                    :class="port.stale ? 'group/tb relative' : ''"
                 >
-                    <span class="text-[10px] pr-1 text-muted truncate">{{
-                        compactPortLabel(port)
-                    }}</span>
+                    <span
+                        class="text-[10px] pr-1 text-muted truncate"
+                        :class="port.stale ? 'line-through opacity-60' : ''"
+                        >{{ compactPortLabel(port) }}</span
+                    >
+                    <span
+                        v-if="port.stale"
+                        class="text-[8px] leading-none px-1 py-0.5 mr-1 rounded shrink-0 bg-amber-500/20 text-amber-400"
+                        >stale</span
+                    >
+                    <div
+                        v-if="port.stale"
+                        class="hidden group-hover/tb:block absolute right-0 top-full mt-1 p-2 rounded-md shadow-lg text-[10px] leading-relaxed pointer-events-none bg-card border border-border text-foreground w-56 z-50 whitespace-normal text-left"
+                    >
+                        {{ port.label }} — gone from the source; the port is kept while
+                        something is wired to it.
+                    </div>
                     <span
                         v-if="codecChip(port)"
                         class="text-[8px] leading-none px-1 py-0.5 mr-1 rounded shrink-0"
@@ -596,10 +611,11 @@ function handleBackground(port: { streamType: string; acceptsAnyTs?: boolean }):
             type="source"
             :position="Position.Right"
             v-show="(port.maxConnections ?? -1) !== 0"
-            class="!w-3 !h-3 !rounded-full !border-2 !border-surface"
+            class="!w-3 !h-3 !rounded-full !border-2"
+            :class="port.stale ? '!border-amber-400 !border-dashed' : '!border-surface'"
             :style="{
                 top: handleTop(i),
-                background: handleBackground(port),
+                background: port.stale ? 'transparent' : handleBackground(port),
             }"
         />
     </div>

@@ -15,6 +15,7 @@ import {
     INPUT_PORT_ID,
     INPUT_SRC_NAME,
     buildDynamicPorts,
+    discoveredLabel,
     discoveredStreams,
     mergeDiscovered,
     pidPortId,
@@ -22,7 +23,7 @@ import {
     type DynamicPort,
 } from './splitterPorts.js';
 import { buildSpawnArgs, dispatchRunnerEvent } from './nativeRunner.js';
-import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './streamTypes.js';
+import { formatPid, languageFromEsInfo, streamTypeInfo } from './streamTypes.js';
 
 /**
  * TS-Splitter plugin (coexists with the mpegts-demuxer).
@@ -54,8 +55,16 @@ import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './st
  * consumers stable.
  *
  * Source PMT discovery arrives on the `tssplit:discovered` plugin-event
- * channel and is persisted to `discoveredStreams` config (never removed — a
- * dark source keeps its ports). Labels layer the natively-signalled ISO 639
+ * channel (the source's whole current PMT, every time it is first parsed or
+ * changes) and is reconciled into `discoveredStreams` config: a PID that has
+ * left the source is dropped unless a stored connection still references its
+ * port, in which case it stays, flagged stale (ADR-0021). A dark source
+ * sends no discovery, so it keeps every port. Nothing is undeclared in the
+ * child and no bus channel is released for a pruned PID — there is no
+ * `remove_output` verb, and `add_output` is idempotent on the tee NAME, so a
+ * released port number re-used for a different PID would be silently
+ * ignored; both are reclaimed at the next module stop.
+ * Labels layer the natively-signalled ISO 639
  * language descriptor (carried as raw ES descriptor bytes in the event) onto
  * the generic stream_type label; the in-band KLV name channel is not read
  * here (the demuxer keeps that duty — a name would outrank the language).
@@ -65,7 +74,8 @@ export class TsSplitterModule extends GstPluginBase {
      *  itself for nothing; the engine fans it out to the consumers of each
      *  output leg, which is why it must never mark a pending restart here. */
     protected liveUpdatableParams = ['playoutOffsetMs'];
-    /** Streams seen live this run (PID-keyed). Drives ports + status. */
+    /** The source's CURRENT PMT (PID-keyed) — replaced wholesale by every
+     *  discovery event. Empty until the first PMT of this run. */
     private readonly discovered = new Map<number, DiscoveredStreamConfig>();
     /** Live SPS-derived video parameters per pid ("1920×1080i50 (h264)") —
      *  ephemeral status, deliberately NOT part of discoveredStreams config. */
@@ -263,6 +273,8 @@ export class TsSplitterModule extends GstPluginBase {
             payload as { streams?: Array<{ pid: number; streamType: number; esInfo?: string }> }
         )?.streams;
         if (!Array.isArray(streams)) return;
+        // The event is the whole PMT: rebuild the live set, don't accumulate.
+        this.discovered.clear();
         for (const s of streams) {
             const pid = Number(s.pid);
             const streamType = Number(s.streamType);
@@ -276,15 +288,6 @@ export class TsSplitterModule extends GstPluginBase {
             // in here too — and the resolved media/codec is what gets
             // persisted, since ports and status must not re-derive it.
             const { media, codec } = streamTypeInfo(streamType, s.esInfo);
-            const existing = this.discovered.get(pid);
-            if (
-                existing &&
-                existing.streamType === streamType &&
-                existing.codec === codec &&
-                (existing.language ?? '') === (language ?? '')
-            ) {
-                continue;
-            }
             this.discovered.set(pid, {
                 pid,
                 streamType,
@@ -293,14 +296,41 @@ export class TsSplitterModule extends GstPluginBase {
                 ...(language ? { language } : {}),
             });
         }
+        for (const pid of this.videoInfo.keys()) {
+            if (!this.discovered.has(pid)) this.videoInfo.delete(pid);
+        }
         // emitConfigUpdate persists + re-resolves dynamic ports, so a new PID
-        // port appears in the UI without a reload. The pipeline is NOT
-        // rebuilt here — the branch materializes when the port is first
-        // wired (materializeProducerPort bounce).
-        const next = mergeDiscovered(discoveredStreams(this.config), [...this.discovered.values()]);
+        // port appears (and a pruned one disappears) in the UI without a
+        // reload. The pipeline is NOT rebuilt here — the branch materializes
+        // when the port is first wired (materializeProducerPort bounce).
+        const next = mergeDiscovered(
+            discoveredStreams(this.config),
+            [...this.discovered.values()],
+            (pid) => this.portHasStoredConnection(pid),
+        );
         if (next) this.emitConfigUpdate({ discoveredStreams: next });
         this.publishStatus();
         void this.declareNewOutputs();
+    }
+
+    /**
+     * Whether ANY stored connection (applied or not — the consumer may be
+     * disabled) references this PID's output port. The engine's
+     * `hasStoredConnection` answers from the persisted graph; an engine
+     * without it (older build) only offers the live map, which is the best
+     * available and still never prunes a port with a running consumer.
+     */
+    private portHasStoredConnection(pid: number): boolean {
+        const router = this.services?.mediaRouter as
+            | {
+                  hasStoredConnection?: (moduleId: string, portId: string) => boolean;
+                  getPortConnectionCount?: (moduleId: string, portId: string) => number;
+              }
+            | undefined;
+        const instanceId = this.services?.instanceId ?? '';
+        const portId = pidPortId(pid);
+        if (router?.hasStoredConnection) return router.hasStoredConnection(instanceId, portId);
+        return (router?.getPortConnectionCount?.(instanceId, portId) ?? 0) > 0;
     }
 
     /**
@@ -339,20 +369,29 @@ export class TsSplitterModule extends GstPluginBase {
     }
 
     private publishStatus(): void {
-        const streams = [...this.discovered.values()].sort((a, b) => a.pid - b.pid);
-        this.setStatusData('streams', { detected: streams.length });
+        // Rows = the persisted set (what the ports show), overlaid with the
+        // live PMT. After the first discovery of a run the two agree except
+        // for stale entries; before it, persisted rows are "not seen yet".
+        const rows = new Map<number, DiscoveredStreamConfig>();
+        for (const s of discoveredStreams(this.config)) rows.set(s.pid, s);
+        for (const s of this.discovered.values()) rows.set(s.pid, s);
+        const streams = [...rows.values()].sort((a, b) => a.pid - b.pid);
+        const live = this.discovered.size;
+        const stale = streams.filter((s) => s.stale).length;
+        this.setStatusData('streams', { detected: live, stale });
         this.setBadge('streams', {
             icon: 'git-fork',
-            text: `${streams.length}`,
-            color: streams.length > 0 ? '#10b981' : '#6b7280',
+            text: stale > 0 ? `${live} +${stale}` : `${live}`,
+            color: stale > 0 ? '#f59e0b' : live > 0 ? '#10b981' : '#6b7280',
         });
         // Uniform field shape across every stream section — same-shaped
         // sections collapse into ONE table in the stats modal (row per
         // stream); a conditional language field would split the table.
         this.dynamicStatusSections = streams.map((s) => ({
             id: `stream-${s.pid}`,
-            label: streamLabel(s.pid, s, s.language),
+            label: discoveredLabel(s),
             fields: [
+                { key: 'state', label: 'State' },
                 { key: 'media', label: 'Media' },
                 { key: 'codec', label: 'Codec' },
                 { key: 'video', label: 'Video' },
@@ -363,6 +402,7 @@ export class TsSplitterModule extends GstPluginBase {
         }));
         for (const s of streams) {
             this.setStatusData(`stream-${s.pid}`, {
+                state: s.stale ? 'stale' : this.discovered.has(s.pid) ? 'live' : 'not seen yet',
                 media: s.media,
                 codec: s.codec,
                 video: this.videoInfo.get(s.pid) ?? '—',

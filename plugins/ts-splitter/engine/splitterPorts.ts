@@ -6,9 +6,12 @@
  * runner discovers. Pure (type-only engine imports) so the diff/serialise
  * logic is unit-testable with plain objects — the module owns the side effects.
  *
- * Discovery populates the persisted `discoveredStreams` config but never removes
- * from it (a configured-but-absent stream keeps its port so a downstream stays
- * wired when the source briefly goes dark).
+ * Discovery populates the persisted `discoveredStreams` config. Every discovery
+ * event carries the source's FULL current PMT, so a persisted PID missing from
+ * it has left the source: it is dropped when nothing downstream references its
+ * port, and kept — flagged `stale` — while a stored connection still does, so a
+ * wired consumer survives a source change (ADR-0021). A dark source sends no
+ * discovery at all, so it prunes nothing.
  */
 import { streamLabel, type StreamMedia } from './streamTypes.js';
 import type { DynamicPort } from '@media-router/engine';
@@ -40,6 +43,15 @@ export interface DiscoveredStreamConfig {
      *  signalled — layered into port/status labels; absent when the ES
      *  carries no language descriptor). */
     language?: string;
+    /** Absent from the source's current PMT but kept because a stored
+     *  connection still references its port. Cleared when the PID returns. */
+    stale?: boolean;
+}
+
+/** Port/status label; a stale stream says so. */
+export function discoveredLabel(s: DiscoveredStreamConfig): string {
+    const base = streamLabel(s.pid, s, s.language);
+    return s.stale ? `${base} — stale` : base;
 }
 
 export function pidPortId(pid: number): string {
@@ -69,7 +81,7 @@ export function buildDynamicPorts(discovered: DiscoveredStreamConfig[]): Dynamic
             id: pidPortId(s.pid),
             direction: 'output',
             streamType: 'muxed/mpegts',
-            label: streamLabel(s.pid, s, s.language),
+            label: discoveredLabel(s),
             maxConnections: -1,
             requiresOrderedApply: true,
             streamInfo: {
@@ -78,6 +90,7 @@ export function buildDynamicPorts(discovered: DiscoveredStreamConfig[]): Dynamic
                 codec: s.codec,
                 ...(s.language ? { language: s.language } : {}),
             },
+            ...(s.stale ? { stale: true } : {}),
         });
     }
     return ports;
@@ -90,18 +103,30 @@ export function discoveredStreams(config: Record<string, unknown>): DiscoveredSt
 }
 
 /**
- * Merge freshly-discovered streams into the persisted set. A new PID is added,
- * a changed stream_type updates in place, and an absent PID is KEPT (never
- * auto-removed — its port survives a dark source). Returns null when nothing
- * changed, so the caller can skip a redundant SQLite write.
+ * Reconcile the persisted set with one discovery event (`fresh` = the
+ * source's whole current PMT). A new PID is added, a changed identity updates
+ * in place, a returning PID loses its stale flag. A persisted PID absent from
+ * `fresh` is DROPPED unless `hasConnection(pid)` says a stored connection
+ * still references its port — then it is kept and flagged `stale`. The
+ * predicate must answer from the PERSISTED graph (engine
+ * `hasStoredConnection`), not the live one, or a consumer that is merely
+ * disabled would lose its source port. Returns null when nothing changed, so
+ * the caller can skip a redundant SQLite write.
  */
 export function mergeDiscovered(
     prev: DiscoveredStreamConfig[],
     fresh: DiscoveredStreamConfig[],
+    hasConnection: (pid: number) => boolean,
 ): DiscoveredStreamConfig[] | null {
     const merged = new Map<number, DiscoveredStreamConfig>();
-    for (const s of prev) merged.set(s.pid, s);
-    for (const s of fresh) merged.set(s.pid, s);
+    for (const s of fresh) {
+        const { stale: _drop, ...live } = s;
+        merged.set(s.pid, live);
+    }
+    for (const s of prev) {
+        if (merged.has(s.pid)) continue;
+        if (hasConnection(s.pid)) merged.set(s.pid, { ...s, stale: true });
+    }
     const next = [...merged.values()].sort((a, b) => a.pid - b.pid);
     return sameStreams(prev, next) ? null : next;
 }
@@ -121,7 +146,8 @@ function sameStreams(a: DiscoveredStreamConfig[], b: DiscoveredStreamConfig[]): 
             p.streamType !== s.streamType ||
             p.media !== s.media ||
             p.codec !== s.codec ||
-            (p.language ?? '') !== (s.language ?? '')
+            (p.language ?? '') !== (s.language ?? '') ||
+            (p.stale ?? false) !== (s.stale ?? false)
         ) {
             return false;
         }

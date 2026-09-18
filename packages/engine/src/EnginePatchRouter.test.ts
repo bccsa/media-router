@@ -30,6 +30,7 @@ function createMocks(opts: { modulesRunning?: boolean } = {}) {
     } as any;
 
     const lifecycle = {
+        refreshPorts: vi.fn(),
         startSingle: vi.fn(async () => {}),
         deleteSingle: vi.fn(async () => {}),
         enable: vi.fn(async () => {}),

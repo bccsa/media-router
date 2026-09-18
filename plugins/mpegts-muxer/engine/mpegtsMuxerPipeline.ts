@@ -4,7 +4,8 @@
  * config the plugin's own runner hook (`py/mux_routing.py`, installed through
  * the engine's generic `runnerHooks` seam) links pads with at pad-added time —
  * every elementary stream sorted by ROUTE CLASS (video, audio, klv = the
- * WebVTT carrier of ADR-0016, subtitle = DVB / teletext) to its slot's PID,
+ * WebVTT carrier of ADR-0016, subtitle = DVB / teletext) onto its input's
+ * PID (a multi-stream input's further classes on the next free PIDs),
  * anything unrouted sunk into a fakesink so a KLV-only source can no longer
  * kill the demuxer with NOT_LINKED (the 2026-09-15 .103 restart loop). The
  * engine carries no muxer knowledge (ADR-0002).
@@ -34,6 +35,7 @@ import {
     type RunnerHook,
 } from '@media-router/engine';
 import {
+    MUX_ROUTE_PRIORITY,
     MUX_ROUTING_MODULE,
     TS_METADATA_PID,
     type MuxRoute,
@@ -229,22 +231,25 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             : buildBackpressureQueue(depth, cap);
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
 
-    // Deterministic output PIDs (plan D3, generalised — see layoutSlots),
-    // assigned BEFORE the mux element is formatted so the prog-map below can
-    // reference them. Without pinned request-pad names mpegtsmux auto-numbers
-    // PIDs and they drift between restarts.
+    // Deterministic output PIDs (see layoutSlots): one per generic input,
+    // one per class on a legacy port — assigned BEFORE the mux element is
+    // formatted so the prog-map below can reference them. Without pinned
+    // request-pad names mpegtsmux auto-numbers PIDs and they drift between
+    // restarts.
     const slots = layoutSlots(input.sources);
     // Two request pads on one PID: mpegtsmux fails the second link and the
     // runner reports a pipeline error — a restart loop with a cryptic message.
-    // Refuse to build instead and say exactly which two streams clash.
+    // Refuse to build instead and say exactly which two inputs clash.
     const conflicts = findPidConflicts(slots);
     if (conflicts.length > 0) throw new MuxerPidConflictError(conflicts);
 
     // `prog-map` pins every slot to program 1 and seeds PCR_1 with the first
-    // video slot (else the first audio slot). The builder cannot know which
-    // input will actually carry video, so every hook input also carries `pcr`:
-    // the hook re-points PCR_1 at the first video pad it links (else the first
-    // audio pad) — inline PCR on the media clock, never on a data stream.
+    // legacy video slot (else the first legacy audio slot, else the first
+    // input's PID). The builder cannot know which input will actually carry
+    // video, so every hook input also carries `pcr`: the hook re-points PCR_1
+    // at the first video pad it links (else the first audio pad) — inline PCR
+    // on the media clock, never on a data stream. The extra PIDs a
+    // multi-stream input spills onto are added to the prog-map by the hook.
     const pcrSlot =
         slots.find((s) => s.media === 'video') ??
         slots.find((s) => s.media === 'audio') ??
@@ -273,21 +278,38 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // One hook input per source. No codec parser in the branch — the hook
     // injects the matching parser at pad-added time from the actual pad caps,
     // which means upstream codec changes don't take this plugin's
-    // pipeline-build path down. Each route requests the exact `sink_<pid>`
-    // pad of its slot.
+    // pipeline-build path down. A legacy port's routes request the exact
+    // `sink_<pid>` of their class slot; a generic input hands the hook its
+    // one `pid` and a route per class, and the hook picks each class's pad
+    // from the source PMT (highest-priority class on `pid`, the rest on the
+    // next free PIDs).
     const inputs: MuxRoutingInput[] = input.sources.map((source, i) => {
         const demux = `demux_${i}`;
+        const mine = slots.filter((s) => s.demux === demux);
+        const generic = mine.length === 1 && mine[0].media === undefined;
         const routes: Partial<Record<MuxRouteMedia, MuxRoute>> = {};
-        for (const slot of slots) {
-            if (slot.demux !== demux) continue;
-            const route: MuxRoute = { padName: muxSinkPadName(slot.pid), branch: inputQueue };
-            if (slot.media === 'video' && input.videoParserBypass) route.parser = 'none';
+        // The routed classes are the priority list; `data` (anything else
+        // tsdemux exposes) is deliberately NOT routed: mpegtsmux has no sink
+        // caps for it, and a failed request-pad link is a pipeline error.
+        const classes: Array<{ media: MuxRouteMedia; padName?: string; tag: string }> = generic
+            ? MUX_ROUTE_PRIORITY.map((media) => ({ media, tag: `${demux}_${media}` }))
+            : mine.map((s) => ({
+                  media: s.media!,
+                  padName: muxSinkPadName(s.pid),
+                  tag: String(s.pid),
+              }));
+        for (const { media, padName, tag } of classes) {
+            const route: MuxRoute = {
+                ...(padName ? { padName } : {}),
+                branch: inputQueue,
+            };
+            if (media === 'video' && input.videoParserBypass) route.parser = 'none';
             // A cue stream has one buffer per cue: without GAP keepalive the
             // aggregator holds the video up to latency + min-upstream-latency
             // (2.4 s here) whenever the pad is idle, then bursts it (the .108
             // 0.5 fps, 2026-09-16). The hook also restamps the branch to the
             // mux position on every buffer — see MuxRoute.sparse.
-            if (slot.media === 'klv' || slot.media === 'subtitle') route.sparse = true;
+            if (media === 'klv' || media === 'subtitle') route.sparse = true;
             // An operator language appends a `taginject` whose language-code tag
             // mpegtsmux turns into the stream's ISO 639 PMT descriptor — the
             // official carrier of stream identity, what the fleet's splitters
@@ -295,21 +317,22 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             // audio gets the descriptor today, klv/teletext once mpegtsmux
             // writes it for them. Blank → the source language passes through.
             const language = normalizeLanguage(source.language);
-            if (language && slot.media !== 'video') {
-                route.branch = `${inputQueue} ! taginject name=lang_${slot.pid} tags=language-code=${language}`;
+            if (language && media !== 'video') {
+                route.branch = `${inputQueue} ! taginject name=lang_${tag} tags=language-code=${language}`;
             }
-            if (slot.media === 'audio') {
+            if (media === 'audio') {
                 // Lipsync offset on the mux request pad (audio only — offsetting
                 // video would add real latency). Omitted when 0 so the default
                 // route shape stays byte-identical.
                 const offsetMs = normalizeOffsetMs(source.offsetMs);
                 if (offsetMs !== 0) route.padOffsetNs = offsetMs * 1_000_000;
             }
-            routes[slot.media] = route;
+            routes[media] = route;
         }
         return {
             demux,
             linkTo: 'mux',
+            ...(generic ? { pid: mine[0].pid } : {}),
             routes,
             // A muxer from before 2026-09-16 upstream still emits its name
             // carousel on the metadata PID — never re-mux that.

@@ -40,6 +40,13 @@ export interface PortInfo {
      */
     hideWhenUnconnected?: boolean;
     /**
+     * Display hint from the engine: the port's stream is gone from the live
+     * source and the port survives only because a stored connection still
+     * references it (ts-splitter PID that left the PMT, ADR-0021). Drawn as
+     * an amber dashed dot with a struck-through label; still connectable.
+     */
+    stale?: boolean;
+    /**
      * Structured stream identity for compact pin display (see
      * `utils/portDisplay.ts`): one value shown by priority — in-band name →
      * ISO 639 language → decimal PID — plus a codec chip. `label` stays the

@@ -507,6 +507,47 @@ def test_runner_hooks():
             os.unlink(os.path.join(tmp, f))
         os.rmdir(tmp)
 
+    # G2: a GENERIC input (one `pid`, no per-class padName) — the hook reads the
+    # source PMT and lands the klv-only stream on exactly the input's PID.
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    ts = os.path.join(tmp, "klv.ts")
+    make_klv_ts(ts)
+    r = RunnerProc()
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start",
+                "pipeline": f"filesrc location={ts} ! tsdemux name=demux_0 latency=0 "
+                            'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" '
+                            "! fakesink name=out sync=false",
+                "timeSyncContract": True,
+                "runnerHooks": [{"module": "mux_routing", "config": {"inputs": [{
+                    "demux": "demux_0", "linkTo": "mux", "pid": 300,
+                    "routes": {"video": {"branch": "queue"}, "audio": {"branch": "queue"},
+                               "klv": {"branch": "queue", "sparse": True},
+                               "subtitle": {"branch": "queue", "sparse": True}},
+                    "ignorePids": [0x1F0], "pcr": {"program": 1}}]}}]})
+        check("G2 native hook installed", r.wait_log("runner hook 'mux_routing' installed", timeout=5))
+        linked = r.wait_event(ev_is("pad_linked"), timeout=8)
+        check("G2 klv linked onto the INPUT PID (outPid 300), source pid 0x180",
+              linked is not None and linked.get("media") == "klv" and linked.get("pid") == 0x180
+              and linked.get("outPid") == 300)
+        check("G2 PMT classes were read before linking", r.wait_log("demux_0 PMT: [klv] (pid 300)", timeout=2))
+        routed = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "mux:routed", timeout=5)
+        check("G2 mux:routed plugin event names demux, class and output PID",
+              routed is not None and routed.get("payload", {}).get("demux") == "demux_0"
+              and routed["payload"].get("media") == "klv" and routed["payload"].get("outPid") == 300
+              and routed["payload"].get("srcPid") == 0x180 and "meta/x-klv" in routed["payload"].get("caps", ""))
+        eos = r.wait_event(ev_is("eos"), timeout=15)
+        check("G2 pipeline ran to EOS", eos is not None)
+        check("G2 no error events", not r.has_event(ev_is("error")))
+        r.proc.wait(timeout=5)
+        check("G2 exits 0 after EOS", r.proc.returncode == 0)
+    finally:
+        r.kill()
+        for f in os.listdir(tmp):
+            os.unlink(os.path.join(tmp, f))
+        os.rmdir(tmp)
+
     r = RunnerProc()
     try:
         r.wait_event(ev_is("ready"))

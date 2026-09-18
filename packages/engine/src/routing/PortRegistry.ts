@@ -5,6 +5,23 @@ export interface CompatibilityResult {
     reason?: string;
 }
 
+/** The four fields every connection record carries — live (`Connection`) or
+ *  stored (engine config `connections`). */
+export interface PortEdge {
+    sourceModuleId: string;
+    sourcePortId: string;
+    sinkModuleId: string;
+    sinkPortId: string;
+}
+
+/** True when `edge` is attached to `moduleId:portId` at either end. */
+export function edgeOnPort(edge: PortEdge, moduleId: string, portId: string): boolean {
+    return (
+        (edge.sourceModuleId === moduleId && edge.sourcePortId === portId) ||
+        (edge.sinkModuleId === moduleId && edge.sinkPortId === portId)
+    );
+}
+
 /**
  * Registry of module ports — tracks which ports each module exposes
  * and validates connection compatibility.
@@ -32,26 +49,10 @@ export class PortRegistry {
         return this.ports.get(moduleId) ?? [];
     }
 
-    /** Count active connections on a specific port. */
-    getConnectionCount(
-        moduleId: string,
-        portId: string,
-        connections: Iterable<{
-            sourceModuleId: string;
-            sourcePortId: string;
-            sinkModuleId: string;
-            sinkPortId: string;
-        }>,
-    ): number {
+    /** Count connections on a specific port. */
+    getConnectionCount(moduleId: string, portId: string, connections: Iterable<PortEdge>): number {
         let count = 0;
-        for (const conn of connections) {
-            if (
-                (conn.sourceModuleId === moduleId && conn.sourcePortId === portId) ||
-                (conn.sinkModuleId === moduleId && conn.sinkPortId === portId)
-            ) {
-                count++;
-            }
-        }
+        for (const conn of connections) if (edgeOnPort(conn, moduleId, portId)) count++;
         return count;
     }
 

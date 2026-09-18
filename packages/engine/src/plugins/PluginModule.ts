@@ -29,6 +29,11 @@ export interface DynamicPort {
     /** Display hint: input consumes EITHER TS family (muxed TS or 302M) —
      *  rendered as a dual-color dot. Only for decode-capable inputs. */
     acceptsAnyTs?: boolean;
+    /** Display hint: the port is kept only because a stored connection
+     *  still references it — its stream is absent from the live source
+     *  (ts-splitter PID that left the PMT). Registered and connectable as
+     *  normal; the UI may dim it. */
+    stale?: boolean;
     /** Structured stream identity for compact pin display in the UI (one
      *  value by priority: in-band name → ISO 639 language → decimal PID,
      *  plus a codec chip). `label` stays the full descriptive string. */
@@ -535,8 +540,9 @@ export interface PipelineDescription {
     runnerHooks?: RunnerHook[];
     /**
      * Which runner process hosts this pipeline (ADR-0019). Unset: the native
-     * `mr-gst-runner` when the engine runs `MR_GST_RUNNER_NATIVE=1` and the
-     * description stays inside its feature set, python otherwise. `'python'`
+     * `mr-gst-runner` whenever the description stays inside its feature set
+     * (the default; `MR_GST_RUNNER_NATIVE=0` is the engine-wide rollback),
+     * python otherwise. `'python'`
      * pins the python runner; `'native'` asks for the native one (logged and
      * downgraded to python when the description cannot run there).
      */

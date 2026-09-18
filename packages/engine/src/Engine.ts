@@ -6,6 +6,7 @@ import { probeGstElement } from './plugins/gstInspect.js';
 import { warnDuplicatePyModules } from './child-process/nativeBinaries.js';
 import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
+import type { PortEdge } from './routing/PortRegistry.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
 import { LcpServer } from './comms/LcpServer.js';
 import { ProfileStore } from './api/ProfileStore.js';
@@ -23,6 +24,7 @@ import { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 import { wireEngineEvents } from './EngineEventWiring.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
+import { retireConnectionsOnPorts } from './modules/portPrune.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
 import { resolveEnginePlayoutOffsetMs } from './plugins/playoutOffset.js';
 
@@ -160,6 +162,12 @@ export class Engine {
                 return (modules[id]?.displayName as string) ?? id;
             },
         );
+        // Persisted edges for `hasStoredConnection` — the same list
+        // `ConnectionApplier` re-applies, so a plugin asking whether a port is
+        // still referenced sees edges to disabled/stopped modules too.
+        this.mediaRouter.setStoredConnectionsProvider(
+            () => (this.currentConfig?.connections ?? []) as PortEdge[],
+        );
 
         // Command dispatcher
         this.commandDispatcher = new CommandDispatcher({
@@ -214,6 +222,22 @@ export class Engine {
                     log.error({ moduleId: id, err }, 'Self-stop disable failed');
                 });
         });
+
+        // A re-resolution dropped ports → retire their stored connections here
+        // and in the manager (see modules/portPrune.ts).
+        this.lifecycle.onDynamicPortsRemoved = (moduleId, portIds) =>
+            retireConnectionsOnPorts(
+                {
+                    getConfig: () => this.currentConfig,
+                    removeLiveConnection: (id) => this.mediaRouter.removeConnection(id, true),
+                    publish: (ops) => {
+                        this.managerConnection.send('patch', { ops });
+                        this.lcpServer.broadcastConfigUpdate(ops);
+                    },
+                },
+                moduleId,
+                portIds,
+            );
 
         // When a module generates dynamic ports, push as patch to manager + LCP
         this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {

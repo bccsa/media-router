@@ -752,9 +752,9 @@ interface PipelineDescription {
     useStdioForData?: boolean;
     /**
      * Which child hosts the pipeline (ADR-0019): `'native'` asks for the C++
-     * `mr-gst-runner`, `'python'` pins `gst-pipeline-runner.py`. Unset, the
-     * engine-wide opt-in `MR_GST_RUNNER_NATIVE=1` sends every ELIGIBLE
-     * description native and leaves the rest on python, silently. Not
+     * `mr-gst-runner`, `'python'` pins `gst-pipeline-runner.py`. Unset, every
+     * ELIGIBLE description runs native by default and the rest stay on
+     * python, silently (`MR_GST_RUNNER_NATIVE=0` rolls a whole engine back). Not
      * eligible: a description naming `rist`, `preserveSourceTimeline`,
      * `readKlvNames`, `useStdioForData`, the legacy net `clock` without the
      * contract, or a runner hook with no native form (ADR-0020). Ask
@@ -1271,7 +1271,9 @@ getDynamicPorts(): Array<{
 
 Triggering regeneration: changing a config field that affects port count (e.g. `pairCount`) is enough — the `patchRules` cascade re-emits the dynamic ports and prunes any connections to ports that no longer exist.
 
-**Plugin-driven port changes (`emitConfigUpdate` → live refresh).** A plugin can write its own config to persist runtime discoveries (ts-splitter writing the streams it discovers into a `discoveredStreams` array) via `this.emitConfigUpdate({ key: value })` — this persists to SQLite and broadcasts to the UI. When the changed key affects the port set, the engine re-resolves `getDynamicPorts` off the back of that update and pushes a `/modules/<id>/ports` patch, so the new ports appear on the open Vue Flow node **without a reload**. Debounce these writes (only `emitConfigUpdate` when the discovered set actually changed) so a steady detection loop doesn't spam SQLite. Discovery should populate config, never replace it: don't auto-remove an entry when its stream disappears — keep it and render the port stale, so downstream connections survive a source going dark.
+**Plugin-driven port changes (`emitConfigUpdate` → live refresh).** A plugin can write its own config to persist runtime discoveries (ts-splitter writing the streams it discovers into a `discoveredStreams` array) via `this.emitConfigUpdate({ key: value })` — this persists to SQLite and broadcasts to the UI. When the changed key affects the port set, the engine re-resolves `getDynamicPorts` off the back of that update and pushes a `/modules/<id>/ports` patch, so the new ports appear on the open Vue Flow node **without a reload**. Debounce these writes (only `emitConfigUpdate` when the discovered set actually changed) so a steady detection loop doesn't spam SQLite. Retiring a discovered port (ADR-0021): only when the source is demonstrably live with a different set (a discovery event that omits the PID — a dark source sends none), and only if nothing references the port — ask `this.services.mediaRouter.hasStoredConnection(instanceId, portId)`, which answers from the PERSISTED graph; the live `getConnections()` map drops a consumer's edges while that consumer is disabled or restarting, so it would prune a port whose stored connection then dangles. A referenced-but-absent entry stays, flagged `stale` (a `DynamicPort` display hint + label suffix), so the downstream connection survives.
+
+**Dynamic ports that vanish take their connections with them.** When a re-resolution drops port ids the module had before (an operator removed a muxer input, a teletext page…), the engine retires every stored connection on those ports — live teardown plus a `remove /connections/<id>` patch to the manager — so nothing dangles (`ModuleLifecycle.onDynamicPortsRemoved`). Consequence for plugin authors: **never derive a port id from an array index** when entries can be removed — the ports after the gap would be renamed and their connections would slide onto the wrong input (the muxer keys each input with a persisted `key` for exactly this reason). If a port must survive its stream going away, keep it in the list (the ts-splitter's stale rule above).
 
 For plugins where each port maps to a distinct PipeWire node (rather than one shared null-sink for the whole module), also implement `getPipeWireNodeForPort(portId)`:
 

@@ -208,10 +208,17 @@ export class EnginePatchRouter {
             }
         }
 
-        // Apply batched settings changes (live config updates)
+        // Apply batched settings changes (live config updates), then re-resolve
+        // the module's dynamic ports: an operator edit that changes the port
+        // set (a muxer input removed) must retire the vanished port — and the
+        // connection on it — now, not at the restart the edit is pending on;
+        // until then the edge would dangle in the UI. `refreshPorts` diffs and
+        // no-ops when the set is unchanged or the module is not running (a
+        // stopped module re-resolves at start).
         for (const [moduleId, changes] of settingsChanges) {
             this.moduleManager
                 .applyConfigUpdate(moduleId, changes)
+                .then(() => this.lifecycle.refreshPorts(moduleId))
                 .catch((err) => log.warn({ err, moduleId }, 'Live config update failed'));
         }
     }
