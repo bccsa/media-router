@@ -112,8 +112,12 @@ export class SrtInputModule extends GstPluginBase {
         // tight (10s) — unlike a transient crash, an unreachable SRT peer
         // gains nothing from longer backoff: we don't know when it returns,
         // so retrying often is what feels snappy when it finally does.
+        // keep-listening=true: a listener srtsrc otherwise EOSes (not errors)
+        // when its caller drops; with no bus edge attached that EOS is lost and
+        // the runner wedges with the port unbound.
+        const keepListening = mode === 'listener' ? ' keep-listening=true' : '';
         const pipeline = [
-            `srtsrc name=src uri="${uri}" auto-reconnect=false`,
+            `srtsrc name=src uri="${uri}" auto-reconnect=false${keepListening}`,
             'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
             buildBusSink(udpPort),
         ].join(' ! ');
