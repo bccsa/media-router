@@ -245,6 +245,51 @@ describe('start payload (the wire to the runner)', () => {
         expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('latchRepair', undefined);
     });
 
+    it('records the pipeline launch instant and clears it when the pipeline stops or errors', () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        const handlers = new Map<string, (d: unknown) => void>();
+        child.wireRunnerEvents({ on: (n: string, h: (d: unknown) => void) => handlers.set(n, h) });
+        const fire = (name: string, data: unknown) => handlers.get(name)?.(data);
+
+        expect(child.pipelineLaunchedAt).toBeUndefined();
+        fire('pipelineLaunched', { at: 1000 });
+        expect(child.pipelineLaunchedAt).toBe(1000);
+        fire('stateChange', { state: 'stopped' });
+        expect(child.pipelineLaunchedAt).toBeUndefined();
+        fire('pipelineLaunched', { at: 2000 });
+        fire('stateChange', { state: 'error' });
+        expect(child.pipelineLaunchedAt).toBeUndefined();
+        // A runner-internal relaunch retires the old python silently (no
+        // stopped event) — `pipelineStarting` must clear it instead.
+        fire('pipelineLaunched', { at: 3000 });
+        fire('pipelineStarting', {});
+        expect(child.pipelineLaunchedAt).toBeUndefined();
+    });
+
+    it('restartPipeline clears the launch instant at once, so a second producer PLAYING cannot relaunch mid-gate', async () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        child.ipc = { sendRequest: vi.fn(async () => ({ ok: true })) };
+        child.pipelineDesc = { pipeline: 'fakesrc ! fakesink' };
+        child.launchedAt = 1000;
+        await child.restartPipeline('t');
+        expect(child.pipelineLaunchedAt).toBeUndefined();
+    });
+
+    it('restartPipeline asks the runner to relaunch; a no-op with no pipeline; surfaces runner errors', async () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        const sendRequest = vi.fn(async () => ({ ok: true }));
+        child.ipc = { sendRequest };
+        await child.restartPipeline('x'); // no pipelineDesc yet
+        expect(sendRequest).not.toHaveBeenCalled();
+
+        child.pipelineDesc = { pipeline: 'fakesrc ! fakesink' };
+        await child.restartPipeline('producer p relaunched');
+        expect(sendRequest).toHaveBeenCalledWith('restartPipeline', { reason: 'producer p relaunched' }, 5000);
+
+        sendRequest.mockResolvedValueOnce({ error: 'No pipeline to restart' });
+        await expect(child.restartPipeline('again')).rejects.toThrow('No pipeline to restart');
+    });
+
     it('carries runnerHooks verbatim — plugin python the runner must install', () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
         const hooks = [{ module: 'subtitle_bridge', config: { pay: [{ appsink: 'a', appsrc: 'b', holdMs: 8000 }] } }];

@@ -335,6 +335,8 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 
 Uses JSON Schema to define user-configurable settings. The Manager UI auto-generates a settings form.
 
+Each property renders as a heading plus a control. The heading is the JSON Schema `title` when given, otherwise the key split into words (`playoutOffsetMs` → "Playout Offset Ms"); set `title` whenever the key reads badly (units, acronyms). `description` is **not** shown inline — it appears in a "?" popover next to the heading, so keep it to one short sentence: what the setting does, plus at most one hint (when to raise or lower it). A manifest test caps descriptions at 120 characters and titles at 40. Longer background belongs in the plugin's README.
+
 ```json
 "configSchema": {
     "type": "object",
@@ -342,7 +344,8 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
         "device": {
             "type": "string",
             "default": "",
-            "description": "Select audio source device",
+            "title": "Audio source",
+            "description": "Device to capture from",
             "x-deviceType": "source"
         },
         "codec": {
@@ -396,6 +399,8 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 
 | Extension | Type | Description |
 |-----------|------|-------------|
+| `title` | `string` | (standard JSON Schema) Field heading. Defaults to the humanized key. Also used as the label of `x-contextMenu` entries and array-item fields. |
+| `description` | `string` | (standard JSON Schema) Help text in the field's "?" popover. One short sentence, ≤ 120 characters. |
 | `x-deviceType` | `string` | Device type to populate dropdown from (e.g. `"audio-source"`, `"audio-sink"`, `"video"`, `"drm-connector"`). Plugin must register a matching `DeviceProvider` via `registerServices`. |
 | `x-optionsFrom` | `string` | Renders the field as a **multi-select** whose options come from the module's pushed `fieldOptions[<key>]` (set at runtime via `this.setFieldOptions(key, options)`). Use for options discovered from the configured source rather than a fixed enum — e.g. `hls-player` probes the playlist and reports detected audio / subtitle languages. The stored value is a string array. |
 | `x-widget` | `"slider"` \| `"imageUpload"` \| `"graph"` | `"slider"` renders a range slider instead of a number input. `"imageUpload"` (string-valued field) renders a file picker that uploads via the `plugin:upload` RPC and stores the resulting absolute path; preview thumbnail loaded back through `plugin:upload-get`. `"graph"` renders plot data the module publishes — see [Graph status fields](#graph-status-fields-x-widget-graph). |
@@ -2287,6 +2292,8 @@ For processes that aren't the module's health-defining producer (auxiliary tools
 | `this.config` | `Record<string, unknown>` | Current module configuration |
 | `this.services` | `ModuleServices \| null` | Injected engine services |
 | `this.childProcess` | `GstChildProcess \| null` | Running GStreamer child process |
+| `this.childProcess.pipelineLaunchedAt` | `number \| undefined` | Epoch ms of the current pipeline launch (undefined while down or re-gating); the engine compares producer vs consumer on a producer's PLAYING (ADR-0010 rule 4) |
+| `this.childProcess.restartPipeline(reason)` | method | Relaunch the current pipeline in place (fresh runner, same description) — a pipeline relaunch, not a module stop/start |
 | `this.paModuleId` | `number \| null` | PulseAudio module ID for null-sink cleanup |
 | `this.pwNodeName` | `string` | PipeWire node name (`MR_PW_{instanceId}`) |
 | `this.running` | `boolean` | Whether the pipeline is running |

@@ -18,7 +18,8 @@ const log = createLogger('BusFanout');
  * sibling consumer whenever one consumer stopped draining (restart, crash-loop,
  * preroll). A per-consumer branch with a leaky queue confines a stall to that
  * one branch. Operators restart modules at will, so this must hold without
- * touching the producer or sibling consumers.
+ * touching the producer or sibling consumers. On a producer's PLAYING it also
+ * relaunches consumers still attached to the previous producer instance.
  */
 export class BusFanoutCoordinator {
     constructor(
@@ -69,6 +70,8 @@ export class BusFanoutCoordinator {
      * consumers. Idempotent per socket, so a redundant call is harmless.
      */
     reattachProducer(moduleId: string): void {
+        const producerLaunch = this.moduleGetter(moduleId)?.getChildProcess?.()?.pipelineLaunchedAt;
+        const restarted = new Set<string>();
         for (const conn of this.getConnections()) {
             // BUS_STREAM_TYPES, not just muxed/mpegts: `audio/302m` edges ride
             // the identical fan-out. Filtering them out here stranded every
@@ -76,7 +79,31 @@ export class BusFanoutCoordinator {
             // "Waiting for producer bus socket(s)" until a manual restart.
             if (conn.sourceModuleId === moduleId && BUS_STREAM_TYPES.has(conn.streamType)) {
                 this.attach(conn);
+                this.relaunchStaleConsumer(conn, producerLaunch, restarted);
             }
         }
+    }
+
+    /** A consumer launched at or before the producer's current launch holds a dead
+     *  edge (unixfdsrc may never notice the peer closing) — relaunch it onto the edge
+     *  just attached. No launch time = down or already restarting: leave it. ADR-0010 rule 4. */
+    private relaunchStaleConsumer(
+        conn: Connection,
+        producerLaunch: number | undefined,
+        restarted: Set<string>,
+    ): void {
+        if (producerLaunch === undefined || restarted.has(conn.sinkModuleId)) return;
+        const child = this.moduleGetter(conn.sinkModuleId)?.getChildProcess?.();
+        const consumerLaunch = child?.pipelineLaunchedAt;
+        // A live attachment can only postdate the producer's launch, so a tie is stale too.
+        if (!child || consumerLaunch === undefined || consumerLaunch > producerLaunch) return;
+        restarted.add(conn.sinkModuleId);
+        log.warn(
+            { conn: conn.id, consumer: conn.sinkModuleId, producer: conn.sourceModuleId },
+            'Consumer pipeline predates its producer — attached to a dead edge, relaunching',
+        );
+        child
+            .restartPipeline(`producer ${conn.sourceModuleId} relaunched`)
+            .catch((err) => log.warn({ err, consumer: conn.sinkModuleId }, 'Consumer relaunch failed'));
     }
 }

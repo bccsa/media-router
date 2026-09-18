@@ -112,6 +112,7 @@ export class SrtInputModule extends GstPluginBase {
         // tight (10s) — unlike a transient crash, an unreachable SRT peer
         // gains nothing from longer backoff: we don't know when it returns,
         // so retrying often is what feels snappy when it finally does.
+
         // keep-listening=true: a listener srtsrc otherwise EOSes (not errors)
         // when its caller drops; with no bus edge attached that EOS is lost and
         // the runner wedges with the port unbound.
