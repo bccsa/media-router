@@ -50,6 +50,45 @@ check("mpeg audio parser", m.parser_for_caps_name("audio/mpeg", 1), "mpegaudiopa
 check("klv is parser-free", m.parser_for_caps_name("meta/x-klv"), "")
 check("unknown codec", m.parser_for_caps_name("video/x-wmv"), None)
 
+
+print("1b. PMT classifier + output-PID planner (one PID per input)")
+KLVA = (0x05, b"KLVA")
+OPUS = (0x05, b"Opus")
+check("h264 by stream_type", m.pmt_stream_media(0x1B), "video")
+check("hevc by stream_type", m.pmt_stream_media(0x24), "video")
+check("aac by stream_type", m.pmt_stream_media(0x0F), "audio")
+check("metadata PES is klv", m.pmt_stream_media(0x15), "klv")
+check("0x06 + KLVA is klv", m.pmt_stream_media(0x06, [KLVA]), "klv")
+check("0x06 + teletext desc is subtitle", m.pmt_stream_media(0x06, [(0x0A, None), (0x56, None)]), "subtitle")
+check("0x06 + dvbsub desc is subtitle", m.pmt_stream_media(0x06, [(0x59, None)]), "subtitle")
+check("0x06 + Opus registration is audio", m.pmt_stream_media(0x06, [OPUS]), "audio")
+check("0x06 + Opus DVB extension is audio", m.pmt_stream_media(0x06, [(0x7F, 0x80)]), "audio")
+check("0x06 + AC-3 desc is audio", m.pmt_stream_media(0x06, [(0x6A, None)]), "audio")
+check("0x06 with only a language desc is data", m.pmt_stream_media(0x06, [(0x0A, None)]), "data")
+check("0x06 with an unreadable registration is data", m.pmt_stream_media(0x06, [(0x05, None)]), "data")
+check("unknown stream_type is data", m.pmt_stream_media(0x7F), "data")
+
+ROUTABLE = {"video", "audio", "klv", "subtitle"}
+# Subtitle-only input: the cue stream lands on exactly the input's PID.
+check("klv-only input → klv on the input PID", m.plan_output_pid(264, "klv", {"klv"}, ROUTABLE, {}, {264}), 264)
+# Video + klv input, klv pad first: video is the primary (PMT says so), klv spills.
+taken = {264, 272}
+a = {}
+p1 = m.plan_output_pid(264, "klv", {"video", "klv"}, ROUTABLE, a, taken); a["klv"] = p1; taken.add(p1)
+check("video+klv, klv first → klv spills to the next free PID", p1, 265)
+p2 = m.plan_output_pid(264, "video", {"video", "klv"}, ROUTABLE, a, taken); a["video"] = p2
+check("… and video takes the input PID", p2, 264)
+check("a class already assigned keeps its PID", m.plan_output_pid(264, "klv", {"video", "klv"}, ROUTABLE, a, taken), 265)
+# Spill skips other inputs' PIDs and reserved ones.
+check("spill skips a PID another input owns", m.plan_output_pid(264, "audio", {"video", "audio"}, ROUTABLE, {"video": 264}, {264, 265, 266}), 267)
+check("spill skips the reserved carousel PID", m.plan_output_pid(0x1EF, "audio", {"video", "audio"}, ROUTABLE, {"video": 0x1EF}, {0x1EF}), 0x1F1)
+# Out of PIDs above the input: None (the native form returns -1); the hook reports and sinks.
+check("exhausted → None", m.plan_output_pid(0x1FFD, "audio", {"video", "audio"}, ROUTABLE, {"video": 0x1FFD}, {0x1FFD, 0x1FFE}), None)
+# No PMT seen yet: the first pad is treated as primary.
+check("no PMT → first pad takes the input PID", m.plan_output_pid(300, "audio", set(), ROUTABLE, {}, {300}), 300)
+# PMT lists a video the routes cannot take (no video route): audio is primary.
+check("primary skips classes without a route", m.plan_output_pid(300, "audio", {"video", "audio"}, {"audio"}, {}, {300}), 300)
+
 try:
     import gi
     gi.require_version("Gst", "1.0")
@@ -194,6 +233,66 @@ check("sparse klv route armed", len(m.state()["sparse"]), 1)
 check("no PCR pin for a klv-only input", m.state()["pcr"].get("mux"), None)
 m.clear()
 check("clear() drops the hook state", m.state(), None)
+
+print("2b. real pipeline — generic input: the klv-only TS lands on exactly the input PID")
+pipe_g = Gst.parse_launch(
+    'appsrc name=src format=time caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
+    "! tsdemux name=demux_0 latency=0 "
+    'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" '
+    "! fakesink name=out sync=false"
+)
+out_g = {"n": 0}
+pipe_g.get_by_name("mux").get_static_pad("src").add_probe(
+    Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
+    lambda pad, info: (out_g.__setitem__("n", out_g["n"] + 1), Gst.PadProbeReturn.OK)[1],
+)
+events.clear()
+plugin_events = []
+m.install(pipe_g, {"inputs": [{
+    "demux": "demux_0", "linkTo": "mux", "pid": 300,
+    "routes": {"video": {"branch": "queue"}, "audio": {"branch": "queue"},
+               "klv": {"branch": "queue", "sparse": True}, "subtitle": {"branch": "queue", "sparse": True}},
+    "ignorePids": [0x1F0], "pcr": {"program": 1},
+}]}, {"emit_event": events.append, "emit_plugin_event": lambda c, p: plugin_events.append((c, p))})
+check("PMT watch armed for a generic input", m.state()["bus"] is not None)
+src_g = pipe_g.get_by_name("src")
+chunks_g = [ts[off:off + 188 * 7] for off in range(0, len(ts), 188 * 7)]
+
+
+def feed_g():
+    if not chunks_g:
+        src_g.emit("end-of-stream")
+        return False
+    src_g.emit("push-buffer", Gst.Buffer.new_wrapped(chunks_g.pop(0)))
+    return True
+
+
+GLib.timeout_add(10, feed_g)
+eos_g, err_g = run_to_eos(pipe_g)
+check("generic: pipeline reached EOS", eos_g)
+check("generic: no GStreamer error", err_g, None)
+linked_g = [e for e in events if e.get("event") == "pad_linked"]
+check("generic: exactly one pad linked", len(linked_g), 1)
+check("generic: klv went to the INPUT PID, not pid+2", linked_g[0].get("outPid") if linked_g else None, 300)
+check("generic: PMT classes were read before linking", m.state()["inputs"]["demux_0"]["classes"], {"klv"})
+check("generic: mux got sink_300 only", sorted(p.get_name() for p in pipe_g.get_by_name("mux").sinkpads), ["sink_300"])
+check("generic: mux:routed plugin event", [(c, p["media"], p["outPid"], p["srcPid"]) for c, p in plugin_events],
+      [("mux:routed", "klv", 300, 0x180)])
+check("generic: mux produced output", out_g["n"] > 0)
+check("generic: no error events", [e for e in events if e.get("event") == "error"], [])
+m.clear()
+check("generic: clear() drops the bus watch too", m.state(), None)
+
+print("2c. prog-map gains an entry for a spilled PID before the pad is requested")
+p2c = Gst.parse_launch('mpegtsmux name=mux prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" ! fakesink')
+m._state = {"pcr": {}, "sparse": [], "handlers": [], "warned": set(), "taken": set(), "inputs": {}, "bus": None}
+m._ensure_prog_map(p2c, "mux", 1, "sink_301")
+pm = p2c.get_by_name("mux").get_property("prog-map").to_string()
+check("spilled PID added to program 1", "sink_301=(int)1" in pm)
+check("existing entries kept", "sink_300=(int)1" in pm and "PCR_1=(string)sink_300" in pm.replace("PCR_1=sink_300", "PCR_1=(string)sink_300"))
+m._ensure_prog_map(p2c, "mux", 1, "sink_301")
+check("idempotent", p2c.get_by_name("mux").get_property("prog-map").to_string().count("sink_301") == 1)
+m._state = None
 
 print("3. PCR pin — video first, audio only until video shows up")
 p3 = Gst.parse_launch(

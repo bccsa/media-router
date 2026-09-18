@@ -15,7 +15,7 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/../packages/engine/native/mr-gst-runner
 
 SO   = libmrhook_mux_routing.so
 SRCS = mux_routing.cpp
-PKGS = gstreamer-1.0 glib-2.0 json-glib-1.0
+PKGS = gstreamer-1.0 gstreamer-mpegts-1.0 glib-2.0 json-glib-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
 
@@ -40,7 +40,7 @@ install: $(SO)
 
 else
 all test clean install:
-	@echo "mux-routing: gstreamer-1.0/json-glib-1.0 dev packages not found — skipped"
+	@echo "mux-routing: gstreamer-1.0/gstreamer-mpegts-1.0/json-glib-1.0 dev packages not found — skipped"
 endif
 
 .PHONY: all test clean install

@@ -3,7 +3,7 @@ import { createLogger } from '@media-router/shared-types';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
 import { BusChannelManager } from './BusChannelManager.js';
-import { PortRegistry } from './PortRegistry.js';
+import { PortRegistry, type PortEdge } from './PortRegistry.js';
 import { ConnectionExecutor } from './ConnectionExecutor.js';
 import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
 import { PcmAudioExecutor } from './PcmAudioExecutor.js';
@@ -82,6 +82,33 @@ export class MediaRouter {
 
     setConsumerRestartCallback(cb: (id: string) => Promise<void>): void {
         this.consumerRestartCallback = cb;
+    }
+
+    /**
+     * The PERSISTED graph edges (engine config `connections`), set by the
+     * Engine. `connections` above only holds edges that are applied right
+     * now: `ModuleLifecycle` removes a consumer's edges from it while that
+     * consumer is disabled, stopped or mid-restart, so the live map cannot
+     * answer "does anything still want this port".
+     */
+    private storedConnectionsProvider: (() => ReadonlyArray<PortEdge>) | null = null;
+
+    setStoredConnectionsProvider(provider: () => ReadonlyArray<PortEdge>): void {
+        this.storedConnectionsProvider = provider;
+    }
+
+    /**
+     * True when the persisted graph has any edge on `moduleId:portId`, whether
+     * or not that edge is applied at the moment (the far module may be
+     * disabled). This is the query a plugin must use before retiring one of
+     * its own dynamic ports — the ts-splitter pruning a PID that left the
+     * source PMT — so a port that a stopped consumer still references
+     * survives and its stored connection never dangles. Without a provider
+     * (test harnesses) it falls back to the live map.
+     */
+    hasStoredConnection(moduleId: string, portId: string): boolean {
+        const edges = this.storedConnectionsProvider?.() ?? this.getConnections();
+        return this.portRegistry.getConnectionCount(moduleId, portId, edges) > 0;
     }
 
     setDependencies(

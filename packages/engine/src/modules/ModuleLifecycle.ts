@@ -44,6 +44,14 @@ export function mapPorts(raw: RawPort[]) {
 export class ModuleLifecycle {
     /** Called when a module's dynamic ports are resolved — allows the engine to push updates to the manager. */
     onDynamicPortsResolved?: (moduleId: string, ports: RawPort[]) => void;
+    /**
+     * Called when a re-resolution DROPS ports the module had last time (an
+     * operator removed a muxer input, a teletext page…): the ids that are
+     * gone. The engine retires the stored connections on them — an edge to a
+     * port that no longer exists can never apply, and left in config it
+     * dangles in the UI and fails "port not found" on every restart.
+     */
+    onDynamicPortsRemoved?: (moduleId: string, portIds: string[]) => void;
 
     private connectionApplier: ConnectionApplier;
     /** Serialization lock — prevents concurrent lifecycle operations from racing. */
@@ -96,7 +104,12 @@ export class ModuleLifecycle {
         const instance = this.moduleManager.get(instanceId);
         const dynamicPorts = instance?.getDynamicPorts();
         if (dynamicPorts && dynamicPorts.length > 0) {
+            const next = new Set(dynamicPorts.map((p) => p.id));
+            const removed = ((modConfig.ports ?? []) as RawPort[])
+                .map((p) => p.id)
+                .filter((id) => !next.has(id));
             modConfig.ports = dynamicPorts;
+            if (removed.length > 0) this.onDynamicPortsRemoved?.(instanceId, removed);
             this.onDynamicPortsResolved?.(instanceId, dynamicPorts as RawPort[]);
             return dynamicPorts as RawPort[];
         }

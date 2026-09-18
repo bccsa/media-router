@@ -9,23 +9,35 @@ imports this module (every plugin `py/` dir is on its PYTHONPATH), calls
     config = {"inputs": [{
         "demux":  "demux_0",                 # tsdemux whose pad-added we route
         "linkTo": "mux",                     # the mpegtsmux (request pads)
+        "pid":    264,                       # generic input: the output PID of its stream
         "routes": {                          # first pad of each class goes here
-            "video":    {"padName": "sink_256", "branch": "queue …", "parser": "none"},
-            "audio":    {"padName": "sink_257", "branch": "queue …", "padOffsetNs": -700000000},
-            "klv":      {"padName": "sink_258", "branch": "queue …", "sparse": True},
-            "subtitle": {"padName": "sink_259", "branch": "queue …", "sparse": True},
+            "video":    {"branch": "queue …", "parser": "none"},
+            "audio":    {"branch": "queue …", "padOffsetNs": -700000000},
+            "klv":      {"branch": "queue …", "sparse": True},
+            "subtitle": {"branch": "queue …", "sparse": True},
         },
         "ignorePids": [496],                 # never routed (an upstream name carousel)
         "pcr": {"program": 1},               # pick the PCR stream video-first at link time
     }]}
+
+A LEGACY port (`video-N` / `audio-N`) has no `pid`; each of its routes carries
+a fixed `padName` (`sink_<pid>`) instead.
 
 What one input does at pad-added time:
   * classify the pad by caps — video / audio / klv (`meta/x-klv`, the WebVTT
     carrier of ADR-0016) / subtitle (DVB, teletext) / data;
   * the FIRST pad of a class with a route is parsed (codec parser picked from
     the caps, mpegtsmux refuses unparsed AAC/AC-3/MPEG audio), pushed through
-    the route's `branch` and linked into `linkTo`'s request pad `padName`
-    (`sink_<pid>` pins the output PID);
+    the route's `branch` and linked into `linkTo`'s request pad — the route's
+    `padName` on a legacy port; on a generic input `sink_<pid>` where the
+    input's OWN `pid` goes to its highest-priority class (video, audio, klv,
+    subtitle — `_PRIORITY`) and every further class takes the next free PID
+    above it. Which classes the input carries is read from the source PMT
+    (tsdemux posts every section on the bus; `sync-message::element`) BEFORE
+    any pad appears, so the choice never depends on which pad shows up first
+    and a subtitle-only input lands on exactly the PID the operator set. Once
+    a class has a PID in this run it keeps it. `prog-map` gets an entry for
+    every extra PID before the pad is requested;
   * everything else — a class without a route, a second pad of a routed
     class, an ignored PID — is sunk into a `fakesink` so the demuxer keeps
     flowing: tsdemux combines its pads' flow returns, a TS whose ONLY pad is
@@ -42,14 +54,39 @@ What one input does at pad-added time:
     video, 2026-09-16).
 
 Events go to the engine through `ctx["emit_event"]`: `pad_linked`
-(`rule`, `padName`, `media`, `pid`, `padOffsetNs`), `warning`, `error` — the
-same shapes the runner's own pad-link rules emit, so GstRunner logs them the
-same way. Pinned by `mux_routing_test.py` (real tsdemux → mpegtsmux run).
+(`rule`, `padName`, `media`, `pid`, `outPid`, `padOffsetNs`), `warning`,
+`error` — the same shapes the runner's own pad-link rules emit, so GstRunner
+logs them the same way — and through `ctx["emit_plugin_event"]` one
+`mux:routed` per linked pad (`demux`, `media`, `srcPid`, `outPid`, `caps`)
+for the module's status panel. Pinned by `mux_routing_test.py` (real tsdemux
+→ mpegtsmux run).
 """
 import sys
+import threading
 
 _emit_event = None
-_state = None   # {"pcr": {linkTo: {...}}, "sparse": [...], "handlers": [(element, id)], "warned": set()}
+_emit_plugin_event = None
+# PMT messages and pad-added run on each demuxer's streaming thread; two
+# inputs spilling at once must not pick the same PID (the native form holds a
+# mutex for the same reason).
+_lock = threading.Lock()
+# {"pcr": {linkTo: {...}}, "sparse": [...], "handlers": [(element, id)], "warned": set(),
+#  "taken": set(output PIDs no class may take), "inputs": {demux name: input state},
+#  "bus": (bus, handler id) or None}
+_state = None
+
+# Class order when one input carries several streams: the first class present
+# takes the input's PID. TS twin: MUX_ROUTE_PRIORITY (engine/muxPids.ts).
+_PRIORITY = ("video", "audio", "klv", "subtitle")
+# Output PIDs an extra class may never spill onto (mpegtsmux PMT, the old
+# metadata carousel PID every muxer still drops downstream).
+_RESERVED_PIDS = (0x1000, 0x1F0)
+MAX_ES_PID = 0x1FFE
+
+# PMT stream_type → route class (ISO/IEC 13818-1 table 2-34 + registrations);
+# 0x06 private PES is named by its descriptor loop only (see pmt_stream_media).
+_VIDEO_STREAM_TYPES = {0x01, 0x02, 0x10, 0x1B, 0x24, 0x42, 0xEA}
+_AUDIO_STREAM_TYPES = {0x03, 0x04, 0x0F, 0x11, 0x1C, 0x81, 0x87, 0x8A}
 
 # Caps-name → parser between tsdemux and mpegtsmux. mpegtsmux rejects unparsed
 # AAC / AC-3 / MPEG-audio (no codec_data, framed=false) and the failure
@@ -129,6 +166,75 @@ def pid_from_pad_name(pad_name):
         return None
 
 
+def pmt_stream_media(stream_type, descriptors=()):
+    """Route class of one PMT stream from its stream_type and descriptor
+    loop. `descriptors` is an iterable of (tag, extra): `extra` is the
+    4-byte registration id for a registration descriptor (0x05), the
+    extension tag for a DVB extension descriptor (0x7F), else None — the
+    two facts PyGObject can expose (raw descriptor bytes are not readable
+    from python; the native hook derives the same pair from the bytes). Same
+    identities the ts-splitter labels from (its streamTypes.ts): DVB teletext
+    0x56 / subtitling 0x59 are subtitles, a KLVA registration is KLV,
+    AC-3/E-AC-3/DTS/AAC/Opus descriptors are audio; an unnamed private
+    stream is data."""
+    if stream_type in _VIDEO_STREAM_TYPES:
+        return "video"
+    if stream_type in _AUDIO_STREAM_TYPES:
+        return "audio"
+    if stream_type == 0x15:
+        return "klv"
+    if stream_type == 0x06:
+        for tag, extra in descriptors:
+            if tag in (0x56, 0x59):
+                return "subtitle"
+            if tag == 0x05 and extra == b"KLVA":
+                return "klv"
+            if tag == 0x05 and extra == b"Opus":
+                return "audio"
+            if tag in (0x6A, 0x7A, 0x7B, 0x7C) or (tag == 0x7F and extra == 0x80):
+                return "audio"
+    return "data"
+
+
+def _descriptor_facts(d):
+    """(tag, extra) of a GstMpegts.Descriptor — see pmt_stream_media."""
+    tag = int(d.tag)
+    if tag == 0x05:
+        try:
+            ok, reg, _info = d.parse_registration()
+        except Exception:  # noqa: BLE001
+            ok, reg = False, 0
+        return tag, int(reg).to_bytes(4, "big") if ok else None
+    if tag == 0x7F:
+        return tag, int(d.tag_extension)
+    return tag, None
+
+
+def plan_output_pid(pid, media, classes, routable, assigned, taken):
+    """Output PID for the `media` pad of a generic input whose stream PID is
+    `pid`: the input's own PID for its primary class — the first class in
+    _PRIORITY among `classes` (the PMT's, plus `media` itself in case no PMT
+    was seen) that has a route in `routable` — else the next free PID above
+    `pid` not in `taken`. `assigned` (class → PID already handed out on this
+    input) makes the choice sticky: a class keeps its PID, and the input's
+    PID is handed out once (the primary may well arrive after a spilled
+    class — its PID sits in `taken` from install, so no spill takes it).
+    None when no output PID is left above `pid` (the native form returns -1);
+    the caller reports it and sinks the pad. Pure; unit-tested."""
+    if media in assigned:
+        return assigned[media]
+    present = [c for c in _PRIORITY if (c in classes or c == media) and c in routable]
+    primary = present[0] if present else media
+    if primary == media and pid not in assigned.values():
+        return pid
+    out = pid + 1
+    while out in taken or out in _RESERVED_PIDS:
+        out += 1
+    if out > MAX_ES_PID:
+        return None
+    return out
+
+
 def parser_for_caps_name(caps_name, mpegversion=None):
     """Parser element string, '' for parser-free, None for unknown."""
     if caps_name == "audio/mpeg":
@@ -143,13 +249,22 @@ def parser_for_caps_name(caps_name, mpegversion=None):
 # --- GStreamer plumbing -------------------------------------------------------
 
 def install(pipe, config, ctx=None):
-    global _emit_event, _state
+    global _emit_event, _emit_plugin_event, _state
     clear()
     if ctx:
         _emit_event = ctx.get("emit_event")
-    _state = {"pcr": {}, "sparse": [], "handlers": [], "warned": set()}
-    for entry in (config or {}).get("inputs") or []:
+        _emit_plugin_event = ctx.get("emit_plugin_event")
+    _state = {"pcr": {}, "sparse": [], "handlers": [], "warned": set(),
+              "taken": set(_RESERVED_PIDS), "inputs": {}, "bus": None}
+    entries = (config or {}).get("inputs") or []
+    # Every input's own PID is off limits to every other input's spill.
+    for entry in entries:
+        if entry.get("pid") is not None:
+            _state["taken"].add(int(entry["pid"]))
+    for entry in entries:
         _install_input(pipe, entry)
+    if any(e.get("pid") is not None for e in entries):
+        _watch_pmts(pipe)
 
 
 def clear():
@@ -166,7 +281,76 @@ def clear():
             element.disconnect(hid)
         except Exception:  # noqa: BLE001
             pass
+    if _state["bus"] is not None:
+        bus, hid = _state["bus"]
+        try:
+            bus.disconnect(hid)
+            bus.disable_sync_message_emission()
+        except Exception:  # noqa: BLE001
+            pass
     _state = None
+
+
+def _watch_pmts(pipe):
+    """Read each generic input's stream classes off its demuxer's PMT: tsdemux
+    posts every PSI section it parses as an element message; sync emission
+    delivers it on the demuxer's streaming thread, before that thread adds any
+    pad, so `plan_output_pid` always knows the class set first."""
+    try:
+        import gi
+        gi.require_version("GstMpegts", "1.0")
+        from gi.repository import GstMpegts
+    except (ImportError, ValueError) as e:  # pragma: no cover
+        _emit({"event": "warning",
+               "message": f"mux_routing: GstMpegts unavailable ({e}) — PIDs of multi-stream inputs "
+                          f"follow pad order instead of the PMT"})
+        return
+    bus = pipe.get_bus()
+    if bus is None:
+        return
+
+    def on_sync(_bus, msg):
+        _, Gst = _gst()
+        if msg.type != Gst.MessageType.ELEMENT or _state is None:
+            return
+        src = msg.src
+        name = src.get_name() if src is not None else None
+        inp = _state["inputs"].get(name) if name else None
+        if inp is None:
+            return
+        section = GstMpegts.message_parse_mpegts_section(msg)
+        if section is None or section.section_type != GstMpegts.SectionType.PMT:
+            return
+        pmt = section.get_pmt()
+        if pmt is None:
+            return
+        classes = set()
+        for stream in pmt.streams:
+            descs = [_descriptor_facts(d) for d in (stream.descriptors or [])]
+            classes.add(pmt_stream_media(int(stream.stream_type), descs))
+        with _lock:
+            inp["classes"] = classes
+        # Same spelling as the native form: `demux_0 PMT: [klv, video] (pid 264)`.
+        _log(f"{name} PMT: [{', '.join(sorted(classes))}] (pid {inp['pid']})")
+
+    bus.enable_sync_message_emission()
+    _state["bus"] = (bus, bus.connect("sync-message::element", on_sync))
+
+
+def _ensure_prog_map(pipe, target_name, program, pad_name):
+    """Add `sink_<pid>=(int)program` to `target_name`'s prog-map for a PID the
+    builder could not list (a multi-stream input's spill). Same mechanism as
+    the PCR pin: mpegtsmux reads prog-map per pad at stream creation."""
+    _, Gst = _gst()
+    target = pipe.get_by_name(target_name)
+    if target is None or target.find_property("prog-map") is None:
+        return
+    cur = target.get_property("prog-map")
+    if cur is not None and cur.has_field(pad_name):
+        return
+    struct = cur.copy() if cur is not None else Gst.Structure.new_empty("program_map")
+    struct.set_value(pad_name, int(program))
+    target.set_property("prog-map", struct)
 
 
 def state():
@@ -184,9 +368,29 @@ def _install_input(pipe, entry):
     link_to = entry.get("linkTo")
     ignore = set(entry.get("ignorePids") or [])
     pcr = entry.get("pcr")
+    program = int((pcr or {}).get("program", 1))
     if link_to and pcr:
         _state["pcr"].pop(link_to, None)
     linked = {}   # class → demux pad already routed on this input
+    input_pid = entry.get("pid")
+    # Generic input state: its PID, the classes its PMT carries, and the
+    # output PID each routed class got (sticky for the run).
+    inp = {"pid": int(input_pid) if input_pid is not None else None, "classes": set(), "assigned": {}}
+    _state["inputs"][demux_name] = inp
+
+    def out_pad_name(media, route):
+        """(request-pad name, output PID) for this class; (None, None) when
+        no output PID is left — the caller reports it and sinks the pad."""
+        if inp["pid"] is None:
+            return route.get("padName"), None
+        with _lock:
+            out = plan_output_pid(inp["pid"], media, inp["classes"], set(routes), inp["assigned"],
+                                  _state["taken"])
+            if out is None:
+                return None, None
+            inp["assigned"][media] = out
+            _state["taken"].add(out)
+        return f"sink_{out}", out
 
     def on_pad_added(_element, pad):
         caps = pad.get_current_caps() or pad.query_caps(None)
@@ -197,18 +401,33 @@ def _install_input(pipe, entry):
             return
         media = route_media_for_caps(caps_name)
         route = routes.get(media)
-        if not route or not route.get("padName"):
+        if not route or (inp["pid"] is None and not route.get("padName")):
             _sink_unrouted(pipe, pad, rule_id, f"no route for {media} ({caps_name or 'unknown caps'})")
             return
         if media in linked:
             _sink_unrouted(pipe, pad, rule_id, f"second {media} stream (already routed {linked[media]})")
             return
+        pad_name, out_pid = out_pad_name(media, route)
+        if pad_name is None:
+            _emit({"event": "error",
+                   "message": f"mux_routing: no free output PID above {inp['pid']} for {media} on {rule_id}"})
+            _sink_unrouted(pipe, pad, rule_id, "no free output PID")
+            return
         linked[media] = pad.get_name()
+        if inp["pid"] is not None and out_pid != inp["pid"]:
+            _log(f"{rule_id}: {media} spills to output PID {out_pid} (input PID {inp['pid']} "
+                 f"belongs to {next((c for c, p in inp['assigned'].items() if p == inp['pid']), 'a higher class')})")
         branch = _parser_prefix(pad, caps, rule_id, route.get("parser") or "auto") + (route.get("branch") or "queue")
+        if link_to and inp["pid"] is not None:
+            _ensure_prog_map(pipe, link_to, program, pad_name)
         if link_to and pcr and media in ("video", "audio"):
-            _pin_pcr_before_link(pipe, link_to, int(pcr.get("program", 1)), media, route["padName"], rule_id)
-        _link_pad(pipe, pad, rule_id, media, branch, link_to, route["padName"],
-                  route.get("padOffsetNs"), {"media": media, "pid": pid}, bool(route.get("sparse")))
+            _pin_pcr_before_link(pipe, link_to, program, media, pad_name, rule_id)
+        ok = _link_pad(pipe, pad, rule_id, media, branch, link_to, pad_name,
+                       route.get("padOffsetNs"), {"media": media, "pid": pid, "outPid": out_pid},
+                       bool(route.get("sparse")))
+        if ok and _emit_plugin_event:
+            _emit_plugin_event("mux:routed", {"demux": demux_name, "media": media, "srcPid": pid,
+                                              "outPid": out_pid, "caps": caps.to_string() if caps else ""})
 
     _state["handlers"].append((src, src.connect("pad-added", on_pad_added)))
 
@@ -356,22 +575,22 @@ def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, pad_offs
         sink_pad = bin_.get_static_pad("sink")
         if sink_pad is None:
             _emit({"event": "error", "message": f"mux_routing: branch has no sink pad ({rule_id})"})
-            return
+            return False
         ret = pad.link(sink_pad)
         if ret != Gst.PadLinkReturn.OK:
             _emit({"event": "error", "message": f"mux_routing: pad link failed ({ret}) on {rule_id}"})
-            return
+            return False
         if link_to:
             target = pipe.get_by_name(link_to)
             if target is None:
                 _emit({"event": "error", "message": f"mux_routing: linkTo target not found: {link_to}"})
-                return
+                return False
             src_pad = bin_.get_static_pad("src")
             req_pad = target.request_pad_simple(pad_name)
             if src_pad is None or req_pad is None:
                 _emit({"event": "error",
                        "message": f"mux_routing: could not request {pad_name} on {link_to} ({rule_id})"})
-                return
+                return False
             # Offset BEFORE linking: the sticky segment propagates at link time.
             if pad_offset_ns:
                 req_pad.set_offset(int(pad_offset_ns))
@@ -379,11 +598,13 @@ def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, pad_offs
             if outer != Gst.PadLinkReturn.OK:
                 _emit({"event": "error",
                        "message": f"mux_routing: could not link branch to {link_to} ({outer}) ({rule_id})"})
-                return
+                return False
             if sparse:
                 _arm_sparse_pad(pipe, req_pad, rule_id, media)
         bin_.sync_state_with_parent()
         _emit({"event": "pad_linked", "rule": rule_id, "padName": pad.get_name(), **extra,
                **({"padOffsetNs": int(pad_offset_ns)} if (pad_offset_ns and link_to) else {})})
+        return True
     except GLib.Error as e:
         _emit({"event": "error", "message": f"mux_routing: branch parse failed: {e.message}"})
+        return False

@@ -80,31 +80,80 @@ describe('buildDynamicPorts', () => {
     });
 });
 
+const unlinked = () => false;
+const linked = () => true;
+
 describe('mergeDiscovered', () => {
-    it('adds new PIDs, keeps absent ones, and returns null when unchanged', () => {
+    it('adds new PIDs and returns null when unchanged', () => {
         const a = [video(0x65)];
-        const merged = mergeDiscovered(a, [audio(0xcc)]);
-        expect(merged?.map((s) => s.pid)).toEqual([0x65, 0xcc]); // new added, old kept
-        expect(mergeDiscovered(merged!, [])).toBeNull(); // absent kept => no change
-        expect(mergeDiscovered(a, a)).toBeNull(); // identical
+        const merged = mergeDiscovered(a, [video(0x65), audio(0xcc)], unlinked);
+        expect(merged?.map((s) => s.pid)).toEqual([0x65, 0xcc]);
+        expect(mergeDiscovered(merged!, merged!, unlinked)).toBeNull(); // identical
+        expect(mergeDiscovered(a, a, linked)).toBeNull();
+    });
+
+    it('drops an absent PID whose port nothing references', () => {
+        const merged = mergeDiscovered([video(0x65), audio(0xcc)], [video(0x65)], unlinked);
+        expect(merged?.map((s) => s.pid)).toEqual([0x65]);
+        // Everything gone from the source and nothing wired ⇒ empty list.
+        expect(mergeDiscovered([video(0x65)], [], unlinked)).toEqual([]);
+    });
+
+    it('keeps an absent PID that a stored connection references, flagged stale', () => {
+        const asked: number[] = [];
+        const merged = mergeDiscovered([video(0x65), audio(0xcc)], [video(0x65)], (pid) => {
+            asked.push(pid);
+            return pid === 0xcc;
+        });
+        expect(asked).toEqual([0xcc]); // only absent PIDs are queried
+        expect(merged).toEqual([video(0x65), { ...audio(0xcc), stale: true }]);
+        // Still absent, still linked ⇒ steady state, no re-persist.
+        expect(mergeDiscovered(merged!, [video(0x65)], linked)).toBeNull();
+    });
+
+    it('a stale PID that loses its last connection is dropped on the next discovery', () => {
+        const prev = [video(0x65), { ...audio(0xcc), stale: true }];
+        expect(mergeDiscovered(prev, [video(0x65)], unlinked)).toEqual([video(0x65)]);
+    });
+
+    it('a returning PID loses its stale flag', () => {
+        const prev = [video(0x65), { ...audio(0xcc), stale: true }];
+        const merged = mergeDiscovered(prev, [video(0x65), audio(0xcc)], linked);
+        expect(merged).toEqual([video(0x65), audio(0xcc)]);
+        expect(merged![1]).not.toHaveProperty('stale');
     });
 
     it('updates in place when a PID changes stream_type', () => {
-        const merged = mergeDiscovered([{ ...video(0x65), streamType: 0x02 }], [video(0x65)]);
+        const merged = mergeDiscovered(
+            [{ ...video(0x65), streamType: 0x02 }],
+            [video(0x65)],
+            unlinked,
+        );
         expect(merged).not.toBeNull();
         expect(merged![0].streamType).toBe(0x1b);
     });
 
     it('re-persists when only the codec changes (Opus 0x06 persisted as private)', () => {
         const stale = [{ ...opus(0x20), media: 'data' as const, codec: 'private' }];
-        const merged = mergeDiscovered(stale, [opus(0x20)]);
+        const merged = mergeDiscovered(stale, [opus(0x20)], unlinked);
         expect(merged).not.toBeNull();
         expect(merged![0]).toMatchObject({ media: 'audio', codec: 'opus' });
         // media is compared too, so a media-only re-classification (can't
         // happen today — media and codec move together) still re-persists.
         expect(
-            mergeDiscovered([{ ...opus(0x20), media: 'data' as const }], [opus(0x20)]),
+            mergeDiscovered([{ ...opus(0x20), media: 'data' as const }], [opus(0x20)], unlinked),
         ).not.toBeNull();
+    });
+});
+
+describe('stale ports', () => {
+    it('a stale stream keeps its port, marked in the label and the stale hint', () => {
+        const ports = buildDynamicPorts([{ ...audio(0xcc), stale: true }, video(0x65)]);
+        const port = ports.find((p) => p.id === 'pid-0xcc')!;
+        expect(port.label).toBe('Audio (aac, PID 0xcc) — stale');
+        expect(port.stale).toBe(true);
+        expect(port.maxConnections).toBe(-1); // still connectable
+        expect(ports.find((p) => p.id === 'pid-0x65')).not.toHaveProperty('stale');
     });
 });
 

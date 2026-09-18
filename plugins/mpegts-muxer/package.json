@@ -22,7 +22,7 @@
                     "type": "array",
                     "maxItems": 16,
                     "default": [{ "name": "" }],
-                    "description": "Inputs — \"+ Add\" creates another input port. Any input takes any MPEG-TS source: every stream it carries (video, audio, KLV/WebVTT subtitles, DVB or teletext subtitles) is re-muxed onto its own fixed PID — automatic by input index, or set per stream below. Give an input a language and it is written into the output PMT as its streams' ISO 639 language descriptor — the standard signalling a downstream splitter labels from (\"Audio nor\").",
+                    "description": "Inputs — \"+ Add\" creates another input port with the next free PID. Any input takes any MPEG-TS source; the stream it carries is re-muxed onto the input's PID, fixed, so downstream PIDs never change. Normally one stream per input (split a multi-stream source with a TS Splitter first); a source that carries several streams keeps its main one (video, else audio, else subtitles) on the PID and the rest take the next free PIDs — the PIDs panel shows them. Give an input a language and it is written into the output PMT as its stream's ISO 639 language descriptor — the standard signalling a downstream splitter labels from (\"Audio nor\").",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -45,9 +45,9 @@
                                 "type": "number",
                                 "default": 0,
                                 "minimum": 0,
-                                "maximum": 8187,
+                                "maximum": 8190,
                                 "x-step": 1,
-                                "description": "Output PID of this input's video; its other streams follow — audio +1, KLV/WebVTT subtitles +2, DVB/teletext subtitles +3. Leave 0 to assign automatically (input 1 → 256, input 2 → 264, …): the assigned value is written back here so the field shows the PID in use. A block overlapping another input's, or touching 4096 (PMT), stops the muxer with an error naming the clash. Changing it restarts the muxer."
+                                "description": "Output PID of this input's stream — what a downstream TS Splitter shows. Assigned automatically when the input is added (next free, from 256 in steps of 8) and written back here; edit it to any free value 32–8190. Two inputs on one PID, or 4096 (PMT) / 496 (reserved), stops the muxer with an error naming the clash. Changing it restarts the muxer."
                             }
                         }
                     },

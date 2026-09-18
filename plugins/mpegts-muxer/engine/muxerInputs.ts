@@ -4,8 +4,9 @@
  *
  * INPUTS ARE MEDIA-AGNOSTIC (ADR-0017): a muxer has N generic inputs
  * (`inputs[]` → ports `input-0..N-1`); any input takes any muxed/mpegts source.
- * Each generic input owns an 8-PID block (`muxPids.ts`: `muxInputBasePid(N)`
- * = 0x100 + 8·N, classes at +0 video / +1 audio / +2 klv / +3 subtitle).
+ * Each generic input has ONE PID — the output PID of the stream it carries
+ * (`muxPids.ts`; a multi-stream input spills its further classes onto the
+ * next free PIDs, decided by the runner hook from the source PMT).
  *
  * Configs written before this (`videoStreams` / `audioStreams`, ports
  * `video-N` / `audio-N`) keep working untouched: their ports keep their ids
@@ -18,11 +19,11 @@
  */
 
 import type { DynamicPort } from '@media-router/engine';
-import { muxInputBasePid, MUX_SLOTS_PER_CLASS } from './muxPids.js';
+import { MAX_ES_PID, MIN_ES_PID, nextFreeInputPid } from './muxPids.js';
 
-// Shared engine type. Note: muxer ports never set `streamInfo.pid` — a
-// generic input's PIDs depend on which stream classes the connected source
-// turns out to carry, so a single port-level PID would lie.
+// Shared engine type. Note: muxer ports never set `streamInfo.pid` — an
+// input's extra streams (if the source carries several) land on PIDs the
+// hook picks at run time, so a single port-level PID could lie.
 export type { DynamicPort };
 
 export interface UdpInputSource {
@@ -40,31 +41,37 @@ export interface UdpInputSource {
     /** ISO 639 language code for this input's audio PMT descriptor — see
      *  InputEntry.language. Blank/absent → pass the source's language through. */
     language?: string;
-    /** Operator base PID for this input's block — see InputEntry.pid. */
+    /** Operator PID for this input's stream — see InputEntry.pid. */
     pid?: number;
 }
-
-/** Elementary-stream PID range: below 0x20 is PSI/SI, 0x1fff is the null packet. */
-export const MIN_ES_PID = 0x0020;
-export const MAX_ES_PID = 0x1ffe;
-/** Highest base PID that keeps the whole block (+3) inside the ES range. */
-export const MAX_INPUT_BASE_PID = MAX_ES_PID - 3;
 
 const INPUT_PORT_PREFIX = 'input-';
 const LEGACY_VIDEO_PORT_PREFIX = 'video-';
 const LEGACY_AUDIO_PORT_PREFIX = 'audio-';
 const OUTPUT_PORT_ID = 'mpegts-out';
 
-/** Generic input count cap — one PID block per input (`muxPids.ts`). */
-export const MAX_INPUTS = MUX_SLOTS_PER_CLASS;
+/** Generic input count cap — the schema's `inputs.maxItems`. */
+export const MAX_INPUTS = 16;
 /** Legacy list caps (the old schema's maxItems), kept so old configs read the same. */
 const LEGACY_MAX_STREAMS: Record<'video' | 'audio', number> = { video: 8, audio: 16 };
 
 /** One configured input. */
 export interface InputEntry {
-    /** Sink port id: `input-N`, or the `video-N` / `audio-N` of a legacy config. */
+    /** Sink port id: `input-<key>`, or the `video-N` / `audio-N` of a legacy config. */
     id: string;
-    /** Pin label (`Input 1`, or the legacy `Video 1` / `Audio 1`). */
+    /**
+     * Stable identity of a generic input (config `key`): the port id is
+     * `input-<key>`, NOT `input-<index>`, so removing an entry from the list
+     * never renames the ones after it — every connection stays on its own
+     * input and only the removed input's port (and, via the engine, its
+     * connection) goes away. Assigned once (`assignInputKeys`: the entry's
+     * index if free, else one past the highest key) and written back with
+     * the PID so it survives; an entry whose key is not yet persisted still
+     * resolves to the same value, so the id never flips when the seed lands.
+     * Existing configs seed index keys, so their ids do not change.
+     */
+    key?: number;
+    /** Pin label by POSITION (`Input 1`, or the legacy `Video 1` / `Audio 1`). */
     label: string;
     /** Operator-set name (blank = unset). */
     name: string;
@@ -96,12 +103,11 @@ export interface InputEntry {
      */
     legacyMedia?: 'video' | 'audio';
     /**
-     * Operator base PID of this input's block (config `pid`): its video goes
-     * here, audio at +1, KLV/WebVTT subtitles at +2, DVB/teletext at +3.
-     * Undefined = automatic (`muxInputBasePid(index)`); the module writes the
-     * automatic value back into the config so the field shows the PID in use.
-     * Applied at build time; a block colliding with any other slot, or with a
-     * reserved PID, is a build error — the muxer refuses to start and names
+     * Output PID of this input's stream (config `pid`). Undefined = automatic
+     * (the next free PID, `assignInputPids`); the module writes the value
+     * back into the config so the field shows the PID in use and later
+     * inputs never move it. Applied at build time; two inputs on one PID, or
+     * a reserved PID, is a build error — the muxer refuses to start and names
      * the clash (`MuxerPidConflictError`) rather than letting mpegtsmux fail
      * the second request pad on the wire. Not used by legacy ports.
      */
@@ -123,11 +129,11 @@ export function normalizeLanguage(raw: unknown): string {
     return typeof raw === 'string' && /^[A-Za-z]{2,3}$/.test(raw) ? raw.toLowerCase() : '';
 }
 
-/** A raw config base PID: an integer whose block fits the ES range → that PID;
- *  0, blank or malformed → undefined (automatic). */
+/** A raw config PID: an integer in the ES range → that PID; 0, blank or
+ *  malformed → undefined (automatic). */
 export function normalizePid(raw: unknown): number | undefined {
     const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
-    if (typeof n !== 'number' || !Number.isInteger(n) || n < MIN_ES_PID || n > MAX_INPUT_BASE_PID) {
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < MIN_ES_PID || n > MAX_ES_PID) {
         return undefined;
     }
     return n;
@@ -144,10 +150,48 @@ function entryFields(raw: unknown): Pick<InputEntry, 'name' | 'offsetMs' | 'lang
     };
 }
 
-/** The base PID a generic input entry uses: its operator value, else the
- *  automatic block for its port index. */
-export function effectiveInputPid(entry: InputEntry, index: number): number {
-    return entry.pid ?? muxInputBasePid(index);
+/** A raw config key: a non-negative integer → that key; anything else → undefined. */
+export function normalizeKey(raw: unknown): number | undefined {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : undefined;
+}
+
+/**
+ * The stable key of every generic input, in list order: an explicit `key`
+ * is kept; an entry without one takes its own index when no entry holds
+ * that key, else one past the highest key in use. Pure and deterministic
+ * over the raw list, so the id of a not-yet-seeded entry is the id it gets
+ * once seeded.
+ */
+export function assignInputKeys(rawInputs: unknown[]): number[] {
+    const raws = rawInputs.map((r) => (r ?? {}) as Record<string, unknown>);
+    const used = new Set(raws.flatMap((r) => {
+        const k = normalizeKey(r.key);
+        return k !== undefined ? [k] : [];
+    }));
+    return raws.map((r, i) => {
+        const explicit = normalizeKey(r.key);
+        if (explicit !== undefined) return explicit;
+        const key = used.has(i) ? Math.max(-1, ...used) + 1 : i;
+        used.add(key);
+        return key;
+    });
+}
+
+/**
+ * The PID every generic input uses, in entry order: an operator value is
+ * kept as is (even when it duplicates another — `configPidConflicts` reports
+ * that); a blank one gets the next free automatic PID, skipping every
+ * operator value and every PID assigned earlier in the list. Existing
+ * inputs therefore never move when one is added.
+ */
+export function assignInputPids(entries: InputEntry[]): number[] {
+    const taken = new Set(entries.flatMap((e) => (e.pid !== undefined ? [e.pid] : [])));
+    return entries.map((e) => {
+        if (e.pid !== undefined) return e.pid;
+        const pid = nextFreeInputPid(taken);
+        taken.add(pid);
+        return pid;
+    });
 }
 
 /** True when the config still carries the pre-generic stream lists. */
@@ -192,8 +236,9 @@ function legacyEntries(config: Record<string, unknown>, media: 'video' | 'audio'
 /**
  * Read the input list from config.
  *
- * Current shape: `inputs` — an array of `{ name, language, offsetMs }`, one
- * entry per input port ("+ Add" in the UI appends an entry), ports `input-N`.
+ * Current shape: `inputs` — an array of `{ key, pid, name, language,
+ * offsetMs }`, one entry per input port ("+ Add" in the UI appends an entry),
+ * ports `input-<key>` (see InputEntry.key — never by position).
  *
  * LEGACY KEYS WIN. A config that still carries `videoStreams` / `audioStreams`
  * (or the even older counts) is read exactly as before — ports `video-N` /
@@ -208,16 +253,19 @@ export function inputEntries(config: Record<string, unknown>): InputEntry[] {
     if (isLegacyConfig(config)) {
         return [...legacyEntries(config, 'video'), ...legacyEntries(config, 'audio')];
     }
-    const arr = Array.isArray(config.inputs) ? config.inputs : [{}];
-    return arr.slice(0, MAX_INPUTS).map((e, i) => ({
-        id: inputPortId(i),
+    const arr = (Array.isArray(config.inputs) ? config.inputs : [{}]).slice(0, MAX_INPUTS);
+    const keys = assignInputKeys(arr);
+    return arr.map((e, i) => ({
+        id: inputPortId(keys[i]),
+        key: keys[i],
         label: `Input ${i + 1}`,
         ...entryFields(e),
     }));
 }
 
-export function inputPortId(index: number): string {
-    return `${INPUT_PORT_PREFIX}${index}`;
+/** Port id of the generic input with stable key `key` (see InputEntry.key). */
+export function inputPortId(key: number): string {
+    return `${INPUT_PORT_PREFIX}${key}`;
 }
 
 /** Any of this module's input port ids — generic or legacy. */

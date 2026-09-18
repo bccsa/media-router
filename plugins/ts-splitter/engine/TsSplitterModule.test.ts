@@ -444,3 +444,105 @@ describe('TsSplitterModule video info', () => {
         expect((module as any).videoInfo.size).toBe(0);
     });
 });
+
+describe('TsSplitterModule stale-PID cleanup', () => {
+    function moduleWith(persisted: unknown[], hasStoredConnection?: (m: string, p: string) => boolean) {
+        const { module } = makeModule();
+        (module as any).config = { discoveredStreams: persisted };
+        const emitted: Array<Record<string, unknown>> = [];
+        vi.spyOn(module as any, 'emitConfigUpdate').mockImplementation((changes: any) => {
+            emitted.push(changes);
+            Object.assign((module as any).config, changes);
+        });
+        if (hasStoredConnection) {
+            (module as any).services.mediaRouter.hasStoredConnection = vi.fn(hasStoredConnection);
+        }
+        return { module, emitted };
+    }
+    const persistedVideo = { pid: 0x65, streamType: 0x1b, media: 'video', codec: 'h264' };
+    const persistedAudio = { pid: 0xc9, streamType: 0x0f, media: 'audio', codec: 'aac' };
+    const videoOnly = { streams: [{ pid: 0x65, streamType: 0x1b }], pcrPid: 0x65 };
+
+    it('drops a persisted PID that left the source when nothing references its port', () => {
+        const { module, emitted } = moduleWith([persistedVideo, persistedAudio], () => false);
+        (module as any).onPluginEvent('tssplit:discovered', videoOnly);
+        expect(emitted).toHaveLength(1);
+        expect((emitted[0].discoveredStreams as any[]).map((s) => s.pid)).toEqual([0x65]);
+        expect(module.getDynamicPorts().map((p) => p.id)).toEqual(['mpegts-in', pidPortId(0x65)]);
+        // Status rows follow: the pruned stream is gone, the badge is green.
+        expect((module as any).statusData['stream-201']).toBeUndefined();
+        expect((module as any).statusData.streams).toEqual({ detected: 1, stale: 0 });
+    });
+
+    it('keeps a PID that a stored connection references, flagged stale (consumer may be disabled)', () => {
+        const asked: string[] = [];
+        const { module, emitted } = moduleWith([persistedVideo, persistedAudio], (m, p) => {
+            asked.push(`${m}:${p}`);
+            return p === pidPortId(0xc9);
+        });
+        (module as any).onPluginEvent('tssplit:discovered', videoOnly);
+        expect(asked).toEqual([`split-1:${pidPortId(0xc9)}`]);
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].discoveredStreams).toEqual([persistedVideo, { ...persistedAudio, stale: true }]);
+        const port = module.getDynamicPorts().find((p) => p.id === pidPortId(0xc9))!;
+        expect(port.stale).toBe(true);
+        expect(port.label).toBe('Audio (aac, PID 0xc9) — stale');
+        expect((module as any).statusData['stream-201'].state).toBe('stale');
+        expect((module as any).statusData['stream-101'].state).toBe('live');
+        expect((module as any).statusData.streams).toEqual({ detected: 1, stale: 1 });
+        // Re-delivering the same PMT is steady state — no second write.
+        (module as any).onPluginEvent('tssplit:discovered', videoOnly);
+        expect(emitted).toHaveLength(1);
+    });
+
+    it('a stale PID returns to the source ⇒ flag cleared', () => {
+        const { module, emitted } = moduleWith(
+            [persistedVideo, { ...persistedAudio, stale: true }],
+            () => true,
+        );
+        (module as any).onPluginEvent('tssplit:discovered', {
+            streams: [{ pid: 0x65, streamType: 0x1b }, { pid: 0xc9, streamType: 0x0f }],
+            pcrPid: 0x65,
+        });
+        expect(emitted).toHaveLength(1);
+        expect(emitted[0].discoveredStreams).toEqual([persistedVideo, persistedAudio]);
+        expect(module.getDynamicPorts().find((p) => p.id === pidPortId(0xc9))).not.toHaveProperty('stale');
+    });
+
+    it('falls back to the live connection count on an engine without hasStoredConnection', () => {
+        const { module, emitted } = moduleWith([persistedVideo, persistedAudio]);
+        (module as any).services.mediaRouter.getPortConnectionCount = vi.fn(
+            (_m: string, p: string) => (p === pidPortId(0xc9) ? 1 : 0),
+        );
+        (module as any).onPluginEvent('tssplit:discovered', videoOnly);
+        expect(emitted[0].discoveredStreams).toEqual([persistedVideo, { ...persistedAudio, stale: true }]);
+    });
+
+    it('no oracle at all (bare harness) ⇒ absent PIDs are dropped', () => {
+        const { module, emitted } = moduleWith([persistedVideo, persistedAudio]);
+        (module as any).onPluginEvent('tssplit:discovered', videoOnly);
+        expect((emitted[0].discoveredStreams as any[]).map((s) => s.pid)).toEqual([0x65]);
+    });
+
+    it('a dark source (no discovery event) prunes nothing', () => {
+        const { module, emitted } = moduleWith([persistedVideo, persistedAudio], () => false);
+        expect(emitted).toHaveLength(0);
+        expect(module.getDynamicPorts().map((p) => p.id)).toEqual([
+            'mpegts-in',
+            pidPortId(0x65),
+            pidPortId(0xc9),
+        ]);
+    });
+
+    it('drops the video-info row of a pruned PID', () => {
+        const { module } = moduleWith([], () => false);
+        (module as any).onPluginEvent('tssplit:discovered', {
+            streams: [{ pid: 0x65, streamType: 0x1b }, { pid: 0x66, streamType: 0x1b }],
+            pcrPid: 0x65,
+        });
+        (module as any).onPluginEvent('tssplit:videoinfo', { pid: 0x66, codec: 'h264', display: '720p50' });
+        expect((module as any).videoInfo.has(0x66)).toBe(true);
+        (module as any).onPluginEvent('tssplit:discovered', videoOnly);
+        expect((module as any).videoInfo.has(0x66)).toBe(false);
+    });
+});

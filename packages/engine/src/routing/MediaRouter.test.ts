@@ -773,3 +773,30 @@ describe('MediaRouter', () => {
         expect(router.getConnections()).toHaveLength(0);
     }, 10_000);
 });
+
+describe('MediaRouter.hasStoredConnection', () => {
+    it('answers from the persisted edges, not the live map', () => {
+        const router = new MediaRouter();
+        router.setStoredConnectionsProvider(() => [
+            {
+                sourceModuleId: 'split-1',
+                sourcePortId: 'pid-0x65',
+                sinkModuleId: 'player-1',
+                sinkPortId: 'mpegts-in',
+            },
+        ]);
+        // The player is disabled: nothing is applied, but the edge is stored.
+        expect(router.getConnections()).toHaveLength(0);
+        expect(router.hasStoredConnection('split-1', 'pid-0x65')).toBe(true);
+        expect(router.hasStoredConnection('split-1', 'pid-0xc9')).toBe(false);
+        expect(router.hasStoredConnection('other', 'pid-0x65')).toBe(false);
+    });
+
+    it('falls back to the live map without a provider', async () => {
+        const router = new MediaRouter();
+        registerMpegtsPair(router);
+        expect(router.hasStoredConnection('encoder', 'mpegts-out')).toBe(false);
+        await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
+        expect(router.hasStoredConnection('encoder', 'mpegts-out')).toBe(true);
+    });
+});

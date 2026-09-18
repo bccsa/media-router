@@ -29,6 +29,11 @@ export interface DynamicPort {
     /** Display hint: input consumes EITHER TS family (muxed TS or 302M) —
      *  rendered as a dual-color dot. Only for decode-capable inputs. */
     acceptsAnyTs?: boolean;
+    /** Display hint: the port is kept only because a stored connection
+     *  still references it — its stream is absent from the live source
+     *  (ts-splitter PID that left the PMT). Registered and connectable as
+     *  normal; the UI may dim it. */
+    stale?: boolean;
     /** Structured stream identity for compact pin display in the UI (one
      *  value by priority: in-band name → ISO 639 language → decimal PID,
      *  plus a codec chip). `label` stays the full descriptive string. */

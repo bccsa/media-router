@@ -1,57 +1,45 @@
 /**
  * Muxer PID SLOT LAYOUT and conflict detection. Pure — no GStreamer / engine
- * runtime. Which output PID each route class of each input is pinned to
- * (ADR-0017: generic inputs in 8-PID blocks, legacy ports on the old per-kind
- * ranges), and why a layout may be refused (`MuxerPidConflictError`).
+ * runtime. Which output PID each input is pinned to (ADR-0017 as amended
+ * 2026-09-18: one PID per generic input; legacy ports on the old per-kind
+ * class ranges), and why a layout may be refused (`MuxerPidConflictError`).
  */
 
 import {
-    muxInputBasePid,
-    muxInputClassPid,
     muxSlotPid,
+    nextFreeInputPid,
     MUX_SLOTS_PER_CLASS,
-    TS_METADATA_PID,
+    RESERVED_PIDS,
     type MuxRouteMedia,
 } from './muxPids.js';
 import { legacyPortMedia, portIndex, type InputEntry, type UdpInputSource } from './muxerInputs.js';
 
-/** PIDs an override may never take, with the reason shown to the operator.
- *  0x1f0 is the metadata PID older muxers used for their name carousel: every
- *  muxer still drops an upstream 0x1f0 (`ignorePids`), so a block landing on
- *  it would vanish at the next hop. */
-const RESERVED_PIDS: ReadonlyArray<[number, string]> = [
-    [0x1000, "mpegtsmux's PMT"],
-    [TS_METADATA_PID, "the metadata PID older muxers' name carousel used (dropped downstream)"],
-];
-
-/** Route classes a generic input carries through. `data` (anything else
- *  tsdemux exposes) is deliberately NOT routed: mpegtsmux has no sink caps
- *  for it, and a failed request-pad link is a pipeline error. */
-const ROUTED_MEDIA: readonly MuxRouteMedia[] = ['video', 'audio', 'klv', 'subtitle'];
-
 /**
- * One output PID slot: the input (sink port + demux branch) that may fill it,
- * the route class it takes, and the deterministic PID it is pinned to. The
- * module joins `stream:discovered` events (demux element + the pad's route
- * class) back to slots through this.
+ * One output PID slot: the input (sink port + demux branch) that fills it
+ * and the PID it is pinned to. A GENERIC input has exactly one slot — its
+ * stream's PID — with no `media`: which class lands there (and where any
+ * further class of a multi-stream source goes) is the runner hook's call
+ * from the source PMT, reported back on `mux:routed`. A LEGACY port has one
+ * slot per class it routes, each on a fixed class-range PID.
  */
 export interface MuxedStreamSlot {
     sinkPortId: string;
     /** `demux_<i>` element name of this slot's input branch. */
     demux: string;
-    media: MuxRouteMedia;
+    /** Legacy ports only; absent on a generic input's slot. */
+    media?: MuxRouteMedia;
     pid: number;
-    /** False when the PID comes from an operator-set base (InputEntry.pid). */
+    /** False when the PID comes from an operator-set value (InputEntry.pid). */
     automatic: boolean;
 }
 
 /**
  * Slot layout for the given (already sorted) sources.
  *
- * Generic `input-N`: one 8-PID block per input — the operator's `pid` or the
- * automatic `muxInputBasePid(N)` (N is the PORT index, so a slot keeps its PID
- * whatever else is (dis)connected) — with each class at its fixed offset
- * (`muxInputClassPid`: video +0, audio +1, klv +2, subtitle +3).
+ * Generic `input-N`: ONE slot on the operator's `pid`, or — for a source
+ * that arrives without one (the module normally seeds every entry first) —
+ * the next free automatic PID, skipping every set PID and every automatic
+ * one handed out earlier in the list.
  *
  * Legacy `video-N` / `audio-N`: the port's own kind at the OLD scheme — the
  * connected-source ordinal within that kind (video 0x100+, audio 0x140+),
@@ -64,16 +52,23 @@ export function layoutSlots(sources: UdpInputSource[]): MuxedStreamSlot[] {
     const slots: MuxedStreamSlot[] = [];
     let videoOrdinal = 0;
     let audioOrdinal = 0;
+    const taken = new Set(sources.flatMap((s) => (s.pid !== undefined ? [s.pid] : [])));
     sources.forEach((source, i) => {
         const demux = `demux_${i}`;
         const legacy = legacyPortMedia(source.sinkPortId);
-        const push = (media: MuxRouteMedia, pid: number, automatic: boolean) => {
-            slots.push({ sinkPortId: source.sinkPortId, demux, media, pid, automatic });
+        const push = (pid: number, automatic: boolean, media?: MuxRouteMedia) => {
+            slots.push({
+                sinkPortId: source.sinkPortId,
+                demux,
+                ...(media ? { media } : {}),
+                pid,
+                automatic,
+            });
         };
         // Legacy per-class ranges (see layoutSlots doc); no slot when the
         // ordinal runs past the range.
         const legacySlot = (media: MuxRouteMedia, index: number) => {
-            if (index < MUX_SLOTS_PER_CLASS) push(media, muxSlotPid(media, index), true);
+            if (index < MUX_SLOTS_PER_CLASS) push(muxSlotPid(media, index), true, media);
         };
         if (legacy === 'video') {
             legacySlot('video', videoOrdinal++);
@@ -87,15 +82,13 @@ export function layoutSlots(sources: UdpInputSource[]): MuxedStreamSlot[] {
             legacySlot('subtitle', i);
             return;
         }
-        // Generic: one block per input — the operator's base PID or the
-        // automatic block for the PORT index, so a slot keeps its PID whatever
-        // else is (dis)connected.
-        const n = portIndex(source.sinkPortId) ?? i;
-        const base = source.pid ?? (n < MUX_SLOTS_PER_CLASS ? muxInputBasePid(n) : undefined);
-        if (base === undefined) return;
-        for (const media of ROUTED_MEDIA) {
-            push(media, muxInputClassPid(base, media), source.pid === undefined);
+        if (source.pid !== undefined) {
+            push(source.pid, false);
+            return;
         }
+        const pid = nextFreeInputPid(taken);
+        taken.add(pid);
+        push(pid, true);
     });
     return slots;
 }
@@ -110,13 +103,13 @@ export class MuxerPidConflictError extends Error {
 }
 
 function describeSlot(slot: MuxedStreamSlot): string {
-    return `${slot.sinkPortId} ${slot.media}${slot.automatic ? ' (automatic)' : ''}`;
+    return `${slot.sinkPortId}${slot.media ? ` ${slot.media}` : ''}${slot.automatic ? ' (automatic)' : ''}`;
 }
 
 /**
  * Every PID clash in a slot layout, as operator-facing sentences. Two slots on
  * one PID is a clash whether the PIDs were set or automatic (an override that
- * lands on another input's automatic slot is the common mistake); a set PID on
+ * lands on another input's automatic PID is the common mistake); a set PID on
  * a reserved value is one too. Automatic slots never clash with each other by
  * construction, so an empty result is the normal case.
  */

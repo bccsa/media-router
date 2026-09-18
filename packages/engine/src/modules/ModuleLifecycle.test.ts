@@ -380,6 +380,27 @@ describe('ModuleLifecycle', () => {
             expect(mediaRouter.portRegistry.get('demux-1', 'pid-0x100')).toBeDefined();
         });
 
+        it('reports the ids a re-resolution dropped, so the engine can retire their connections', async () => {
+            const { lc } = makeLifecycle();
+            await lc.startAll();
+            const instance = moduleManager.get('demux-1')!;
+            const other = { ...pidPort, id: 'pid-0x140', label: 'Audio' };
+            const spy = vi.spyOn(instance, 'getDynamicPorts').mockReturnValue([pidPort, other] as never);
+            lc.refreshPorts('demux-1'); // caches both
+            const removed = vi.fn();
+            lc.onDynamicPortsRemoved = removed;
+
+            spy.mockReturnValue([pidPort] as never);
+            lc.refreshPorts('demux-1');
+
+            expect(removed).toHaveBeenCalledWith('demux-1', ['pid-0x140']);
+            // Nothing dropped → no call.
+            removed.mockClear();
+            spy.mockReturnValue([pidPort, other] as never);
+            lc.refreshPorts('demux-1');
+            expect(removed).not.toHaveBeenCalled();
+        });
+
         it('is a no-op when the resolved port set is unchanged', async () => {
             const { lc } = makeLifecycle();
             await lc.startAll();
