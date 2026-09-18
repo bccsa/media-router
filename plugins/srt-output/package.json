@@ -29,12 +29,13 @@
                 "host": {
                     "type": "string",
                     "default": "0.0.0.0",
-                    "description": "Listen/connect address"
+                    "description": "Listen or connect address"
                 },
                 "port": {
                     "type": "number",
                     "default": 9000,
-                    "description": "SRT port"
+                    "title": "Port",
+                    "description": ""
                 },
                 "mode": {
                     "type": "string",
@@ -44,22 +45,24 @@
                         "rendezvous"
                     ],
                     "default": "caller",
-                    "description": "Connection mode"
+                    "description": ""
                 },
                 "latency": {
                     "type": "number",
                     "default": 125,
-                    "description": "SRT latency (ms)"
+                    "title": "Latency",
+                    "description": "ms. Raise on lossy links for more retransmission time."
                 },
                 "streamId": {
                     "type": "string",
                     "default": "",
-                    "description": "Stream ID for access control"
+                    "title": "Stream ID",
+                    "description": "For access control"
                 },
                 "passphrase": {
                     "type": "string",
                     "default": "",
-                    "description": "Encryption passphrase"
+                    "description": ""
                 },
                 "pbKeyLen": {
                     "type": "number",
@@ -70,7 +73,8 @@
                         32
                     ],
                     "default": 0,
-                    "description": "Encryption key length (0 = none)"
+                    "title": "Key Length",
+                    "description": "0 = none"
                 },
                 "packetsPerDatagram": {
                     "type": "number",
@@ -85,7 +89,8 @@
                         "7": "SRT-aligned (1316 B)"
                     },
                     "default": 0,
-                    "description": "Wire datagram packing. Default lets srtsink slice each bus buffer (one access unit) to its 1316 B SRT payload size itself — no TS re-parsing, lowest latency. 1/7 force a specific size through tsparse (a pure re-chunk, no timestamp changes)."
+                    "title": "Packets per Datagram",
+                    "description": "Default slices to 1316 B in srtsink, lowest latency. 1 or 7 force a size via tsparse."
                 }
             }
         },

@@ -11,10 +11,14 @@ import { computed } from 'vue';
 import MrInput from './MrInput.vue';
 import MrSelect from './MrSelect.vue';
 import MrToggle from './MrToggle.vue';
+import MrHelpTip from './MrHelpTip.vue';
 
 export interface ItemField {
     key: string;
     type: string;
+    /** Heading (schema `title`, else the humanized key). */
+    label: string;
+    /** Help text for the "?" popover; empty = no popover. */
     description: string;
     /** Schema default — an unset boolean toggle displays this state. */
     default?: unknown;
@@ -93,7 +97,10 @@ function onInput(value: string | number): void {
 
 <template>
     <div class="space-y-0.5">
-        <label class="text-[10px] text-muted">{{ field.description }}</label>
+        <label class="flex items-center gap-1 text-[10px] text-muted">
+            {{ field.label }}
+            <MrHelpTip v-if="field.description" :text="field.description" />
+        </label>
 
         <MrSelect
             v-if="field.enumValues"

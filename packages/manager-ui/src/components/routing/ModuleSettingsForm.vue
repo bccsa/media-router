@@ -6,6 +6,7 @@ import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
 import MrSlider from '@/components/common/MrSlider.vue';
 import MrToggle from '@/components/common/MrToggle.vue';
 import MrArrayField from '@/components/common/MrArrayField.vue';
+import MrHelpTip from '@/components/common/MrHelpTip.vue';
 import GraphField from '@/components/routing/widgets/GraphField.vue';
 import type { FormField } from '@/composables/useModuleSettingsForm';
 import { useSocketStore } from '@/stores/socket';
@@ -224,23 +225,17 @@ function clearUpload(field: FormField): void {
         v-show="isVisible(field)"
         class="space-y-1.5"
     >
-        <label class="flex items-center gap-1 text-xs font-medium text-subtle">
+        <label class="flex items-center gap-1.5 text-xs font-medium text-subtle">
             {{ field.label }}
-            <span
+            <MrHelpTip
                 v-if="field.liveUpdatable"
-                class="text-amber-500 text-[10px] cursor-help relative group"
-                >&#9889;
-                <span
-                    class="hidden group-hover:block absolute left-4 -top-1 w-40 p-2 rounded-md shadow-lg text-[9px] leading-relaxed bg-card border border-border text-foreground"
-                    style="z-index: 9999"
-                >
-                    Live update — changes apply instantly without restarting the module
-                </span>
-            </span>
+                text="Live update — changes apply instantly without restarting the module"
+                width="w-40"
+            >
+                <span class="text-amber-500 text-[10px]">&#9889;</span>
+            </MrHelpTip>
+            <MrHelpTip v-if="field.description" :text="field.description" />
         </label>
-        <p v-if="field.description" class="text-[10px] text-muted">
-            {{ field.description }}
-        </p>
         <!-- Display-only widget: holds no value, renders data the plugin
              publishes. `useModuleSettingsForm` keeps it out of saved settings. -->
         <GraphField

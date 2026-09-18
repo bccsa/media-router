@@ -37,7 +37,8 @@
                             "cname": "link1"
                         }
                     ],
-                    "description": "RIST output links",
+                    "title": "Links",
+                    "description": "Several links bond for load balancing or backup",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -48,27 +49,32 @@
                                     "caller"
                                 ],
                                 "default": "caller",
-                                "description": "Connection mode"
+                                "title": "Mode",
+                                "description": ""
                             },
                             "address": {
                                 "type": "string",
                                 "default": "localhost",
-                                "description": "Host / IP address"
+                                "title": "Address",
+                                "description": ""
                             },
                             "port": {
                                 "type": "number",
                                 "default": 5004,
-                                "description": "Port"
+                                "title": "Port",
+                                "description": ""
                             },
                             "weight": {
                                 "type": "number",
                                 "default": 50,
-                                "description": "Weight (0=backup, 1-100=load balance)"
+                                "title": "Weight",
+                                "description": "0 = backup, 1–100 = load balance"
                             },
                             "cname": {
                                 "type": "string",
                                 "default": "",
-                                "description": "CNAME identifier"
+                                "title": "CNAME",
+                                "description": "Link identifier"
                             }
                         }
                     }
@@ -81,17 +87,19 @@
                         2
                     ],
                     "default": 1,
-                    "description": "RIST profile (0=simple, 1=main, 2=advanced)"
+                    "description": "0 = simple, 1 = main, 2 = advanced"
                 },
                 "buffer": {
                     "type": "number",
                     "default": 1000,
-                    "description": "Retransmission buffer (ms)"
+                    "title": "Retransmission Buffer",
+                    "description": "ms"
                 },
                 "secret": {
                     "type": "string",
                     "default": "",
-                    "description": "PSK encryption passphrase"
+                    "title": "Passphrase",
+                    "description": "PSK passphrase"
                 },
                 "encryptionType": {
                     "type": "number",
@@ -101,17 +109,20 @@
                         256
                     ],
                     "default": 0,
-                    "description": "Encryption (0=none, 128=AES-128, 256=AES-256)"
+                    "title": "Encryption",
+                    "description": "0 = none, 128 = AES-128, 256 = AES-256"
                 },
                 "statsInterval": {
                     "type": "number",
                     "default": 1000,
-                    "description": "Stats interval (ms)"
+                    "title": "Stats Interval",
+                    "description": "ms"
                 },
                 "nullPacketDeletion": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable NPD (receiver must support)"
+                    "title": "Null Packet Deletion",
+                    "description": "Receiver must support NPD"
                 }
             }
         },

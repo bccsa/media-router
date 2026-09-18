@@ -32,7 +32,8 @@
                     "default": "",
                     "x-live": true,
                     "x-debounceMs": 800,
-                    "description": "HLS playlist URL (master or media .m3u8). Paste to auto-detect available languages."
+                    "title": "Playlist URL",
+                    "description": "Master or media .m3u8. Paste to detect languages."
                 },
                 "quality": {
                     "type": "string",
@@ -46,7 +47,7 @@
                         "max360": "Auto — up to 360p",
                         "lowest": "Lowest (data saver)"
                     },
-                    "description": "Picture quality. Auto adapts to bandwidth; the 'up to' options cap how high it goes — pick the highest your playback device handles smoothly (≤720p on a Raspberry Pi 5, which has no hardware H.264 decoder). Adapts smoothly below the cap. Lowest forces the smallest variant."
+                    "description": "Cap how high Auto goes. Pick the highest your device decodes smoothly (720p on a Pi 5)."
                 },
                 "abrPreset": {
                     "type": "string",
@@ -57,48 +58,56 @@
                         "unstable": "Unstable network"
                     },
                     "x-showWhen": "quality=auto,max1080,max720,max480,max360",
-                    "description": "ABR tuning — 'unstable' tightens reactivity for slow / lossy networks"
+                    "title": "ABR Preset",
+                    "description": "'Unstable' reacts faster on slow or lossy networks"
                 },
                 "audioLanguages": {
                     "type": "array",
                     "items": { "type": "string" },
                     "default": [],
                     "x-optionsFrom": "audio",
-                    "description": "Audio languages to include (none selected = all detected). Apply + restart to take effect."
+                    "title": "Audio Languages",
+                    "description": "None = all detected. Restart to apply."
                 },
                 "subtitleLanguages": {
                     "type": "array",
                     "items": { "type": "string" },
                     "default": [],
                     "x-optionsFrom": "subtitles",
-                    "description": "Subtitle languages to multiplex inline (none = off). Apply + restart to take effect."
+                    "title": "Subtitle Languages",
+                    "description": "Multiplexed inline. None = off. Restart to apply."
                 },
                 "allowMonoAudio": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Permit mono-only audio groups (default prefers stereo+)"
+                    "title": "Allow Mono Audio",
+                    "description": "Permit mono-only audio groups"
                 },
                 "liveStartSegments": {
                     "type": "number",
                     "default": 6,
+                    "title": "Live Start Segments",
                     "description": "Segments behind the live edge to start at"
                 },
                 "liveSyncSec": {
                     "type": "number",
                     "default": 0,
                     "x-unit": "s",
-                    "description": "Target latency from the live edge (0 = auto-tune to 2× target duration)"
+                    "title": "Live Sync",
+                    "description": "Target latency from the live edge. 0 = auto."
                 },
                 "liveMaxLagSec": {
                     "type": "number",
                     "default": 30,
                     "x-unit": "s",
-                    "description": "Max tolerated live-edge lag before skip-on-stall acts"
+                    "title": "Live Max Lag",
+                    "description": "Lag tolerated before Skip on stall acts"
                 },
                 "skipOnStall": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Jump to the live edge when max lag is exceeded (introduces visible jumps)"
+                    "title": "Skip on Stall",
+                    "description": "Jump to the live edge when max lag is exceeded"
                 }
             }
         },

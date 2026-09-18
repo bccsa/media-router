@@ -31,21 +31,23 @@
                 "device": {
                     "type": "string",
                     "default": "",
-                    "description": "Select audio output device",
+                    "description": "Output device",
                     "x-deviceType": "audio-sink"
                 },
                 "volumeMax": {
                     "type": "number",
                     "enum": [100, 150, 200, 300, 500],
                     "default": 150,
-                    "description": "Maximum volume slider range (%)"
+                    "title": "Volume Range",
+                    "description": "Upper end of the volume slider"
                 },
                 "volume": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Output volume (%)",
+                    "title": "Output Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -56,7 +58,8 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
@@ -68,7 +71,8 @@
                     "x-widget": "slider",
                     "x-step": 25,
                     "x-unit": "ms",
-                    "description": "Mix latency budget — how long the mixer waits for lagging inputs before emitting; starved inputs are silence-filled."
+                    "title": "Mix Latency",
+                    "description": "How long to wait for lagging inputs before emitting; starved inputs get silence."
                 },
                 "lipSyncMs": {
                     "type": "number",
@@ -79,40 +83,46 @@
                     "x-step": 10,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "Lip-sync trim for THIS output, added on top of the route's Playout offset (set on the source module). Positive DELAYS audio, negative advances it. Keep it small (tens of ms) — it is for the residual skew of this output's own chain (transcoder hop, DAC); the route offset is what keeps it locked to the video-player. A trim beyond the route offset is clamped: audio cannot play before it arrives. Applies live. No effect while the engine time-sync contract is off."
+                    "title": "Lip-Sync Trim",
+                    "description": "Trim on top of the route's playout offset. Positive delays audio. Keep to tens of ms."
                 },
                 "channels": {
                     "type": "number",
                     "minimum": 1,
                     "maximum": 8,
                     "default": 2,
-                    "description": "Playback channels of the mix (1–8), placed on the device from First channel."
+                    "description": "1–8, placed on the device from First channel"
                 },
                 "firstChannel": {
                     "type": "number",
                     "minimum": 1,
                     "default": 1,
-                    "description": "First device output channel to play on (1-based). E.g. 8 channels from 9 drives outputs 9–16."
+                    "title": "First Channel",
+                    "description": "1-based. 8 channels from 9 = outputs 9–16."
                 },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel"
+                    "title": "Show on LCP",
+                    "description": "Show on the Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
                     "default": 0,
-                    "description": "Display order on LCP (lower = left)"
+                    "title": "LCP Order",
+                    "description": "Order on the Local Control Panel, lower = left"
                 },
                 "lcpVolumeEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow volume control on LCP"
+                    "title": "LCP Volume",
+                    "description": "Allow volume control on the Local Control Panel"
                 },
                 "lcpMuteEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow mute control on LCP"
+                    "title": "LCP Mute",
+                    "description": "Allow mute control on the Local Control Panel"
                 }
             }
         },

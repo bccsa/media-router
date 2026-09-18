@@ -53,7 +53,7 @@
                         "compressor": "Compressor",
                         "gate": "Gate"
                     },
-                    "description": "Ducker: sidechain input compresses the program (voice ducks music). Compressor: program compresses itself. Gate: attenuate below threshold."
+                    "description": "Ducker: sidechain ducks the program. Compressor: program compresses itself. Gate: attenuate below threshold."
                 },
                 "threshold": {
                     "type": "number",
@@ -72,7 +72,8 @@
                     "minimum": -40,
                     "maximum": 0,
                     "default": -12,
-                    "description": "Exact level the program drops to while the sidechain is active (relative to normal)",
+                    "title": "Duck Depth",
+                    "description": "Level the program drops to while the sidechain is active",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-unit": "dB",
@@ -85,7 +86,7 @@
                     "minimum": 0,
                     "maximum": 2000,
                     "default": 250,
-                    "description": "How long to stay ducked after the sidechain goes quiet, before releasing",
+                    "description": "Time to stay ducked after the sidechain goes quiet",
                     "x-widget": "slider",
                     "x-step": 10,
                     "x-unit": "ms",
@@ -147,6 +148,7 @@
                     "minimum": 0,
                     "maximum": 24,
                     "default": 0,
+                    "title": "Makeup Gain",
                     "description": "Makeup gain after processing",
                     "x-widget": "slider",
                     "x-step": 0.5,
@@ -160,6 +162,7 @@
                     "minimum": -72,
                     "maximum": 0,
                     "default": -48,
+                    "title": "Gate Depth",
                     "description": "Attenuation while the gate is closed",
                     "x-widget": "slider",
                     "x-step": 1,
@@ -179,6 +182,7 @@
                         "self": "Program (self)",
                         "sidechain": "Sidechain input"
                     },
+                    "title": "Gate Key",
                     "description": "Signal that opens the gate",
                     "x-live": true,
                     "x-showWhen": "mode=gate"

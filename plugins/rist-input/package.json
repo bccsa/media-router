@@ -38,7 +38,8 @@
                             "cname": "link1"
                         }
                     ],
-                    "description": "RIST input links",
+                    "title": "Links",
+                    "description": "Several links bond for load balancing or backup",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -49,27 +50,32 @@
                                     "caller"
                                 ],
                                 "default": "listener",
-                                "description": "Connection mode"
+                                "title": "Mode",
+                                "description": ""
                             },
                             "address": {
                                 "type": "string",
                                 "default": "0.0.0.0",
-                                "description": "Host / IP address"
+                                "title": "Address",
+                                "description": ""
                             },
                             "port": {
                                 "type": "number",
                                 "default": 5004,
-                                "description": "Port"
+                                "title": "Port",
+                                "description": ""
                             },
                             "weight": {
                                 "type": "number",
                                 "default": 50,
-                                "description": "Weight (0=backup, 1-100=load balance)"
+                                "title": "Weight",
+                                "description": "0 = backup, 1–100 = load balance"
                             },
                             "cname": {
                                 "type": "string",
                                 "default": "",
-                                "description": "CNAME identifier"
+                                "title": "CNAME",
+                                "description": "Link identifier"
                             }
                         }
                     }
@@ -82,24 +88,27 @@
                         2
                     ],
                     "default": 1,
-                    "description": "RIST profile (0=simple, 1=main, 2=advanced)"
+                    "description": "0 = simple, 1 = main, 2 = advanced"
                 },
                 "buffer": {
                     "type": "number",
                     "default": 1000,
-                    "description": "Retransmission buffer (ms)"
+                    "title": "Retransmission Buffer",
+                    "description": "ms"
                 },
                 "sessionTimeout": {
                     "type": "number",
                     "default": 0,
                     "x-unit": "ms",
                     "x-advanced": true,
-                    "description": "Flow session timeout (ms). 0 = librist default (2000). How long the receiver tolerates NO data before deleting the flow and reconnecting from scratch. On links with brief blackouts or restart-prone senders, ~10000 keeps the flow alive through the gap — playback freezes for the gap only, instead of a delete/reconnect that cascades into downstream pipeline rebuilds."
+                    "title": "Session Timeout",
+                    "description": "No-data time before the flow is dropped and reconnected. 0 = 2000. ~10000 rides out brief blackouts."
                 },
                 "secret": {
                     "type": "string",
                     "default": "",
-                    "description": "PSK encryption passphrase"
+                    "title": "Passphrase",
+                    "description": "PSK passphrase"
                 },
                 "encryptionType": {
                     "type": "number",
@@ -109,12 +118,14 @@
                         256
                     ],
                     "default": 0,
-                    "description": "Encryption (0=none, 128=AES-128, 256=AES-256)"
+                    "title": "Encryption",
+                    "description": "0 = none, 128 = AES-128, 256 = AES-256"
                 },
                 "statsInterval": {
                     "type": "number",
                     "default": 1000,
-                    "description": "Stats interval (ms)"
+                    "title": "Stats Interval",
+                    "description": "ms"
                 },
                 "playoutOffsetMs": {
                     "type": "number",
@@ -122,7 +133,8 @@
                     "maximum": 10000,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "Playout offset for every player fed from this source — how far behind the shared house clock they present. This is the ROUTE's latency budget, set once here instead of per player, so a video-player and an audio-decoder split off this source stay locked to each other. Leave EMPTY to use the engine-wide default (60 ms unless the engine sets otherwise). Raise it if playback stutters on a jittery link; lower it for the tightest latency. Applies live to every connected player, with no restart. Has no effect while the engine time-sync contract is off."
+                    "title": "Playout Offset",
+                    "description": "Route latency budget: how far behind the house clock players present. Empty = engine default (60 ms)."
                 }
             }
         },

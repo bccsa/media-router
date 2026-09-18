@@ -86,7 +86,8 @@
                         60
                     ],
                     "default": 20,
-                    "description": "Opus frame size in ms (lower = less latency, more CPU/bandwidth)",
+                    "title": "Frame Size",
+                    "description": "Lower = less latency, more CPU and bandwidth",
                     "x-showWhen": "codec=opus"
                 },
                 "audioType": {
@@ -104,13 +105,15 @@
                         "2051": "Restricted Low-delay"
                     },
                     "default": 0,
-                    "description": "Opus audio type",
+                    "title": "Audio Type",
+                    "description": "Opus application type",
                     "x-showWhen": "codec=opus"
                 },
                 "inbandFec": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable in-band forward error correction. Typically only needed when distributing audio without a reliable container (e.g. sending feeds to MediaMTX for WebRTC); leave off for RIST/SRT.",
+                    "title": "In-band FEC",
+                    "description": "Only for audio sent without a reliable container (WebRTC). Off for RIST/SRT.",
                     "x-showWhen": "codec=opus"
                 },
                 "packetLoss": {
@@ -126,7 +129,8 @@
                         50
                     ],
                     "default": 10,
-                    "description": "Expected packet loss % — encoder adds more redundancy at higher values",
+                    "title": "Expected Packet Loss",
+                    "description": "Higher adds more redundancy",
                     "x-showWhen": "codec=opus"
                 },
                 "srcBufferMs": {
@@ -137,7 +141,8 @@
                     "x-widget": "slider",
                     "x-step": 10,
                     "x-unit": "ms",
-                    "description": "Audio capture ring buffer (pulsesrc). 200 = the previous implicit default, now pinned explicitly. Part of the standing audio latency on re-encode paths; lower only during a measured tuning pass (overrun/crackle risk)."
+                    "title": "Capture Buffer",
+                    "description": "Capture ring buffer. Lower only while measuring."
                 },
                 "tsAlignment": {
                     "type": "number",
@@ -152,7 +157,8 @@
                         "7": "SRT-aligned (1316 B)"
                     },
                     "default": 7,
-                    "description": "MPEG-TS muxer alignment — keep at SRT-aligned for SRT/RIST/UDP transport. Use Continuous only for v1-style receivers that derive timing from byte flow (their tsparse mis-estimates bitrate from 1316 B bursts)"
+                    "title": "TS Alignment",
+                    "description": "Keep SRT-aligned for SRT/RIST/UDP. Continuous only for v1-style byte-flow receivers."
                 },
                 "sampleRate": {
                     "type": "number",
@@ -161,7 +167,8 @@
                         48000
                     ],
                     "default": 48000,
-                    "description": "Audio sample rate in Hz"
+                    "title": "Sample Rate",
+                    "description": "Hz"
                 },
                 "channels": {
                     "type": "number",
@@ -180,14 +187,16 @@
                         500
                     ],
                     "default": 150,
-                    "description": "Maximum volume slider range (%)"
+                    "title": "Volume Range",
+                    "description": "Upper end of the volume slider"
                 },
                 "volume": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Volume (%)",
+                    "title": "Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -198,29 +207,34 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel"
+                    "title": "Show on LCP",
+                    "description": "Show on the Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
                     "default": 0,
-                    "description": "Display order on LCP (lower = left)"
+                    "title": "LCP Order",
+                    "description": "Order on the Local Control Panel, lower = left"
                 },
                 "lcpVolumeEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow volume control on LCP"
+                    "title": "LCP Volume",
+                    "description": "Allow volume control on the Local Control Panel"
                 },
                 "lcpMuteEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow mute control on LCP"
+                    "title": "LCP Mute",
+                    "description": "Allow mute control on the Local Control Panel"
                 }
             }
         },

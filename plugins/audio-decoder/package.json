@@ -37,7 +37,7 @@
                 "channels": {
                     "type": "number",
                     "default": 2,
-                    "description": "Channels (auto-detected from encoder)",
+                    "description": "Auto-detected from the encoder",
                     "x-readOnly": true
                 },
                 "volumeMax": {
@@ -50,14 +50,16 @@
                         500
                     ],
                     "default": 150,
-                    "description": "Maximum volume slider range (%)"
+                    "title": "Volume Range",
+                    "description": "Upper end of the volume slider"
                 },
                 "volume": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Volume (%)",
+                    "title": "Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -68,7 +70,8 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
@@ -79,7 +82,8 @@
                         1
                     ],
                     "default": 0,
-                    "description": "PulseAudio sync mode (0 = resample \u2014 prevents latency drift, 1 = skew)"
+                    "title": "Sync Method",
+                    "description": "0 = resample (no latency drift), 1 = skew"
                 },
                 "bufferMs": {
                     "type": "number",
@@ -89,7 +93,8 @@
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",
-                    "description": "Post-tsdemux jitter buffer (non-leaky). Unset defaults to 300. Keep low (50-100) for smooth splitter-fed live inputs — on re-encode paths its standing fill lands 1:1 as audio-late A/V skew; raise (e.g. 1500) for HLS or bursty demuxer-fed sources to absorb mid-stream join + decoder CPU spikes."
+                    "title": "Buffer",
+                    "description": "Keep low (50–100) for live inputs; raise (1500) for HLS or bursty sources."
                 },
                 "sinkBufferMs": {
                     "type": "number",
@@ -99,17 +104,20 @@
                     "x-widget": "slider",
                     "x-step": 10,
                     "x-unit": "ms",
-                    "description": "Audio sink ring buffer. 200 bridges the source's PES-burst spacing; lower only during a measured tuning pass (underflow/crackle risk). Contributes to the standing audio latency on re-encode paths."
+                    "title": "Sink Buffer",
+                    "description": "200 bridges PES-burst spacing. Lower only while measuring."
                 },
                 "clockSync": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Lock to the shared engine clock so audio stays in sync with a video-player fed from the same source (no drift over time). Turn ON for both this decoder and the matching video-player when you split one stream into separate audio + video playout. Leave OFF for standalone/low-latency audio."
+                    "title": "Clock Sync",
+                    "description": "Lock to the engine clock. Turn on with the matching video player when splitting one stream."
                 },
                 "lowLatencySync": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Deterministic playout anchor (lipsync fix for re-encode paths): render at PTS + Sync offset instead of on arrival, so the decoder→encoder loop stops accumulating standing latency into the re-encoded audio timeline. Late timelines (mid-stream joins, restarts) play immediately rather than going silent. Ignored when Clock sync is ON."
+                    "title": "Low-Latency Sync",
+                    "description": "Render at PTS plus the sync trim instead of on arrival. Ignored when Clock sync is on."
                 },
                 "syncOffsetMs": {
                     "type": "number",
@@ -120,27 +128,32 @@
                     "x-step": 50,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this decoder and the video-player beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this output's own chain adds (DAC, amplifier, speaker distance). On the legacy path (engine time-sync contract off) it keeps its old meaning: the pacing margin for Low-latency sync, 0 = arrival-anchored."
+                    "title": "Sync Trim",
+                    "description": "Trim on top of the route's playout offset for this output's own chain (DAC, amplifier)."
                 },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel"
+                    "title": "Show on LCP",
+                    "description": "Show on the Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
                     "default": 0,
-                    "description": "Display order on LCP (lower = left)"
+                    "title": "LCP Order",
+                    "description": "Order on the Local Control Panel, lower = left"
                 },
                 "lcpVolumeEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow volume control on LCP"
+                    "title": "LCP Volume",
+                    "description": "Allow volume control on the Local Control Panel"
                 },
                 "lcpMuteEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow mute control on LCP"
+                    "title": "LCP Mute",
+                    "description": "Allow mute control on the Local Control Panel"
                 }
             }
         },

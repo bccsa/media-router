@@ -30,33 +30,36 @@
                 "device": {
                     "type": "string",
                     "default": "",
-                    "description": "Select audio input device",
+                    "description": "Capture device",
                     "x-deviceType": "audio-source"
                 },
                 "channels": {
                     "type": "number",
                     "enum": [2, 4, 6, 8],
                     "default": 2,
-                    "description": "Channels in this 302M stream. SMPTE-302M carries at most 8 — add another Audio Input (302M) for each further block of channels."
+                    "description": "302M carries at most 8; add another input for more"
                 },
                 "firstChannel": {
                     "type": "number",
                     "minimum": 1,
                     "default": 1,
-                    "description": "First device channel to capture (1-based). E.g. 8 channels from 9 captures desk inputs 9–16."
+                    "title": "First Channel",
+                    "description": "1-based. 8 channels from 9 = desk inputs 9–16."
                 },
                 "volumeMax": {
                     "type": "number",
                     "enum": [100, 150, 200, 300, 500],
                     "default": 150,
-                    "description": "Maximum volume slider range (%)"
+                    "title": "Volume Range",
+                    "description": "Upper end of the volume slider"
                 },
                 "volume": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Input volume (%)",
+                    "title": "Input Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -67,7 +70,8 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
@@ -79,27 +83,32 @@
                     "x-widget": "slider",
                     "x-step": 5,
                     "x-unit": "ms",
-                    "description": "Requested capture quantum — part of the source's standing latency; 40-60 validated on smooth systems, raise if capture xruns appear. 85 ms is the PipeWire quantum-limit (4096 samples) shipped in the image; anything above it would be clamped silently."
+                    "title": "Capture Buffer",
+                    "description": "Capture quantum. 40–60 on smooth systems; raise on xruns. Above 85 ms is clamped."
                 },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel"
+                    "title": "Show on LCP",
+                    "description": "Show on the Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
                     "default": 0,
-                    "description": "Display order on LCP (lower = left)"
+                    "title": "LCP Order",
+                    "description": "Order on the Local Control Panel, lower = left"
                 },
                 "lcpVolumeEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow volume control on LCP"
+                    "title": "LCP Volume",
+                    "description": "Allow volume control on the Local Control Panel"
                 },
                 "lcpMuteEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow mute control on LCP"
+                    "title": "LCP Mute",
+                    "description": "Allow mute control on the Local Control Panel"
                 }
             }
         },

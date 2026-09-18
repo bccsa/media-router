@@ -23,6 +23,7 @@
                     "minimum": 2,
                     "maximum": 16,
                     "default": 4,
+                    "title": "Pair Count",
                     "description": "Number of input/output pairs"
                 }
             }

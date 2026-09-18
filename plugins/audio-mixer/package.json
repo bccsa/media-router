@@ -41,7 +41,8 @@
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Master volume (%)",
+                    "title": "Master Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -51,7 +52,8 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
@@ -60,7 +62,7 @@
                     "minimum": 1,
                     "maximum": 2,
                     "default": 2,
-                    "description": "Mix channels (this mixer encodes stereo 302M)"
+                    "description": "Encodes stereo 302M"
                 },
                 "pcmBitDepth": {
                     "type": "number",
@@ -70,7 +72,8 @@
                         "24": "24-bit"
                     },
                     "default": 16,
-                    "description": "Word length of the 302M PCM this module puts on the bus. 16-bit carries a third less data per hop (about 14% less CPU per bus hop on a Pi 4) and is transparent for anything that ends in Opus/AAC; choose 24-bit only when the PCM itself is the deliverable."
+                    "title": "PCM Bit Depth",
+                    "description": "16-bit is a third less bus data and transparent for Opus/AAC; use 24-bit only when PCM is the deliverable."
                 },
                 "mixLatencyMs": {
                     "type": "number",
@@ -80,7 +83,8 @@
                     "x-widget": "slider",
                     "x-step": 25,
                     "x-unit": "ms",
-                    "description": "Mix latency budget — how long the mixer waits for lagging sources before emitting; starved sources are silence-filled."
+                    "title": "Mix Latency",
+                    "description": "How long to wait for lagging inputs before emitting; starved inputs get silence."
                 }
             }
         },

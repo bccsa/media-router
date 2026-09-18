@@ -6,6 +6,7 @@ import MrArrayItemField, { type ItemField } from './MrArrayItemField.vue';
 const codecField: ItemField = {
     key: 'codec',
     type: 'string',
+    label: 'Codec',
     description: 'Codec',
     enumValues: ['h264', 'h265'],
     enumLabels: { h264: 'H.264', h265: 'H.265' },
@@ -16,6 +17,7 @@ const codecField: ItemField = {
 const sceneCutField: ItemField = {
     key: 'sceneCut',
     type: 'number',
+    label: 'Scene Cut',
     description: 'Scene cut',
     advanced: true,
     inheritable: true,
@@ -84,6 +86,7 @@ describe('MrArrayItemField — boolean without a module-global (audio-transcoder
     const fecField: ItemField = {
         key: 'inbandFec',
         type: 'boolean',
+        label: 'In-band FEC',
         description: 'Opus in-band forward error correction',
         default: false,
         advanced: true,
@@ -115,6 +118,7 @@ describe('MrArrayItemField — boolean WITH a module-global (override semantics)
     const boolOverride: ItemField = {
         key: 'someFlag',
         type: 'boolean',
+        label: 'Some Flag',
         description: 'Flag override',
         default: false,
         advanced: true,
@@ -142,6 +146,7 @@ describe('MrArrayItemField — enum without a module-global (audio-transcoder fr
     const frameSizeField: ItemField = {
         key: 'frameSize',
         type: 'number',
+        label: 'Frame Size',
         description: 'Opus frame size',
         default: 20,
         enumValues: [2.5, 5, 10, 20, 40, 60],

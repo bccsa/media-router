@@ -21,7 +21,8 @@
                     "default": [
                         { "page": 888, "language": "eng", "name": "" }
                     ],
-                    "description": "Teletext subtitle pages to decode — \"+ Add\" creates another subtitle output port. The page numbers and languages a service carries are listed in its PMT teletext descriptor (the TS Splitter shows the teletext PID); common subtitle pages are 888 (English) and the 6xx range.",
+                    "title": "Pages",
+                    "description": "Each page is a subtitle output port. Common pages: 888 and the 6xx range.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -30,17 +31,20 @@
                                 "default": 888,
                                 "minimum": 100,
                                 "maximum": 899,
-                                "description": "Teletext page number (decimal, 100–899)"
+                                "title": "Page",
+                                "description": "Decimal, 100–899"
                             },
                             "language": {
                                 "type": "string",
                                 "default": "",
-                                "description": "ISO 639-2 language code (eng, nor, fra, …) — carried in the subtitle stream's name channel"
+                                "title": "Language",
+                                "description": "ISO 639-2 code (eng, nor, fra)"
                             },
                             "name": {
                                 "type": "string",
                                 "default": "",
-                                "description": "Label (optional; defaults to language + page)"
+                                "title": "Name",
+                                "description": "Defaults to language + page"
                             }
                         }
                     },
@@ -52,7 +56,8 @@
                     "minimum": 1,
                     "maximum": 30,
                     "x-unit": "s",
-                    "description": "Longest a subtitle stays on screen when the broadcaster never sends a clear for it. Teletext subtitles are normally erased by the next page or an explicit blank page; this is the safety net."
+                    "title": "Cue Hold",
+                    "description": "Longest a subtitle stays when the broadcaster never clears it"
                 }
             }
         },

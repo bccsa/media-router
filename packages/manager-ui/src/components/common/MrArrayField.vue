@@ -2,7 +2,9 @@
 import { computed, ref } from 'vue';
 import MrButton from './MrButton.vue';
 import MrArrayItemField, { type ItemField } from './MrArrayItemField.vue';
+import MrHelpTip from './MrHelpTip.vue';
 import { matchShowWhen } from '@/utils/showWhen';
+import { fieldLabel } from '@/utils/fieldLabel';
 
 interface ItemSchema {
     type?: string;
@@ -68,7 +70,8 @@ const fields = computed<Field[]>(() => {
             key,
             type: (prop.type as string) ?? 'string',
             default: prop.default,
-            description: (prop.description as string) ?? key,
+            label: fieldLabel(key, prop),
+            description: (prop.description as string) ?? '',
             enumValues: prop.enum as unknown[] | undefined,
             enumLabels: prop['x-enumLabels'] as Record<string, string> | undefined,
             advanced: !!prop['x-advanced'],
@@ -142,9 +145,9 @@ function clearField(index: number, key: string) {
 <template>
     <div class="space-y-2">
         <div class="flex items-center justify-between">
-            <div>
+            <div class="flex items-center gap-1.5">
                 <span v-if="label" class="text-xs font-medium text-foreground">{{ label }}</span>
-                <p v-if="description" class="text-[10px] text-muted">{{ description }}</p>
+                <MrHelpTip v-if="description" :text="description" />
             </div>
             <MrButton size="sm" variant="secondary" :disabled="disabled" @click="addItem"
                 >+ Add</MrButton

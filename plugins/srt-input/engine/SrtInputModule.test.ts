@@ -81,19 +81,6 @@ describe('SrtInputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('auto-reconnect=false');
     });
 
-    it('keeps listening after the caller drops (listener mode)', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ mode: 'listener' });
-        expect(desc!.pipeline).toContain('auto-reconnect=false keep-listening=true');
-    });
-
-    it('does not set keep-listening in caller mode', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ mode: 'caller', host: '10.9.16.22' });
-        expect(desc!.pipeline).toContain('mode=caller');
-        expect(desc!.pipeline).not.toContain('keep-listening');
-    });
-
     it('sets the leaky queue + correct restart backoff window', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});

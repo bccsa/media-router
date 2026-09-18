@@ -32,7 +32,8 @@ export const SUBTITLE_OVERLAY_SCHEMA: Record<string, Record<string, unknown>> = 
         default: 'bottom',
         'x-enumLabels': { bottom: 'Bottom', top: 'Top', center: 'Center' },
         'x-live': true,
-        description: 'Vertical placement of subtitle text on the picture.',
+        title: 'Subtitle Position',
+        description: 'Vertical placement',
     },
     subtitleAlign: {
         type: 'string',
@@ -40,7 +41,8 @@ export const SUBTITLE_OVERLAY_SCHEMA: Record<string, Record<string, unknown>> = 
         default: 'center',
         'x-enumLabels': { center: 'Center', left: 'Left', right: 'Right' },
         'x-live': true,
-        description: 'Horizontal alignment of subtitle text.',
+        title: 'Subtitle Alignment',
+        description: 'Horizontal alignment',
     },
     subtitleSize: {
         type: 'number',
@@ -51,8 +53,8 @@ export const SUBTITLE_OVERLAY_SCHEMA: Record<string, Record<string, unknown>> = 
         'x-step': 2,
         'x-unit': 'pt',
         'x-live': true,
-        description:
-            'Subtitle font size. Scales with the picture height (the renderer resizes relative to the frame), so one value suits every rendition.',
+        title: 'Subtitle Size',
+        description: 'Scales with picture height, so one value suits every output size',
     },
     subtitleMargin: {
         type: 'number',
@@ -63,13 +65,15 @@ export const SUBTITLE_OVERLAY_SCHEMA: Record<string, Record<string, unknown>> = 
         'x-step': 5,
         'x-unit': 'px',
         'x-live': true,
-        description: 'Distance from the top or bottom edge (ignored for Center).',
+        title: 'Subtitle Margin',
+        description: 'Distance from the top or bottom edge; ignored for Center',
     },
     subtitleBackground: {
         type: 'boolean',
         default: true,
         'x-live': true,
-        description: 'Draw a shaded box behind the text for legibility over bright pictures.',
+        title: 'Subtitle Background',
+        description: 'Shaded box behind the text for legibility',
     },
     subtitleBackgroundOpacity: {
         type: 'number',
@@ -81,7 +85,8 @@ export const SUBTITLE_OVERLAY_SCHEMA: Record<string, Record<string, unknown>> = 
         'x-unit': '%',
         'x-live': true,
         'x-showWhen': 'subtitleBackground=true',
-        description: 'Opacity of the shaded box (0 = invisible, 100 = solid black).',
+        title: 'Subtitle Background Opacity',
+        description: '0 = invisible, 100 = solid black',
     },
 };
 
