@@ -20,12 +20,12 @@ const log = createLogger('nativeAssets');
  */
 
 /** Packaged install root (`make native-install` → Yocto image). */
-function installedRoot(): string {
+export function installedRoot(): string {
     return process.env.MR_LIBEXEC_DIR ?? '/usr/libexec/media-router';
 }
 
 /** Repo/deployed plugins root — works from src (tsx/vitest) and dist. */
-function pluginsRoot(): string {
+export function pluginsRoot(): string {
     // src/child-process or dist/child-process -> packages/engine -> repo root
     return process.env.MR_PLUGINS_DIR ?? join(__dirname, '../../../..', 'plugins');
 }

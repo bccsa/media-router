@@ -39,3 +39,13 @@ Recorded exceptions:
    above), which is what keeps [[0001]]'s "shared media maths lives in a
    `<domain>-core` plugin" intact. A stamper that grew its own maths would be
    breaking this ADR, not extending it.
+
+3. **mpegts-core sources compiled into the native runner** ([[0019]]): the
+   C++ runner's branch aligner and TS video-info probe parse TS through
+   `plugins/mpegts-core/native/mrts/{ts_psi,ts_timeline,ts_video_info,sps_parse}.cpp`
+   compiled into `mr-gst-runner` (its Makefile's `MRTS`) — a compile-time
+   engine→plugin dependency that exception 1 (runtime lookups) does not
+   cover. Same condition as exception 2: the runner carries NO TS arithmetic
+   of its own, so there is one definition, in mpegts-core, for the python
+   runner, `mrtsstamp` and the native runner alike. Removing mpegts-core
+   breaks the runner build, loudly.

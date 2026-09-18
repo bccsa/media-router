@@ -750,6 +750,18 @@ interface PipelineDescription {
     pipeline: string;
     /** When true, stdin/stdout carry binary data (MPEG-TS), not bus messages. */
     useStdioForData?: boolean;
+    /**
+     * Which child hosts the pipeline (ADR-0019): `'native'` asks for the C++
+     * `mr-gst-runner`, `'python'` pins `gst-pipeline-runner.py`. Unset, the
+     * engine-wide opt-in `MR_GST_RUNNER_NATIVE=1` sends every ELIGIBLE
+     * description native and leaves the rest on python, silently. Not
+     * eligible: a description naming `rist`, `preserveSourceTimeline`,
+     * `readKlvNames`, `useStdioForData`, the legacy net `clock` without the
+     * contract, or a runner hook with no native form (ADR-0020). Ask
+     * `nativeRunnerIneligibility()` (`child-process/nativeRunner.ts`) before
+     * pinning `'native'`; a pinned request that cannot be honoured is logged.
+     */
+    runner?: 'python' | 'native';
     /** Auto-restart on bus error / EOS. */
     restartOnError?: boolean;
     /**
@@ -2174,6 +2186,19 @@ subtitle_bridge.py` (+ its GStreamer-free unit test beside it) and
 `mpegts-muxer/py/mux_routing.py` — a hook that owns dynamic-pad linking end
 to end (classify → parse → request pad → PCR pin → sparse keepalive), the
 shape to copy when a plugin's demuxer needs more than the positional rules.
+
+**Native form (ADR-0020).** The native pipeline runner (`mr-gst-runner`,
+ADR-0019) cannot import python, so a hook that must run there ships a second
+form: `native/<tool>/libmrhook_<module>.so` exporting `mr_hook_abi`,
+`mr_hook_install(pipeline, config_json, ctx)` and `mr_hook_clear()` from
+`packages/engine/native/mr-gst-runner/mr_hook.h` — the same config (as JSON
+text), the same `ctx` (`emit_event`, `emit_plugin_event`, `log`), the same
+events and log lines. Built by the plugin's own `Makefile` (see
+`mpegts-muxer/native/mux-routing/`), installed with every native tool. The
+python module remains the reference and keeps its suite; the native one is
+pinned through the runner protocol suite. A pipeline whose hooks all have a
+native form is eligible for the native runner; one that names a python-only
+hook is hosted on the python runner, automatically.
 
 ## Available Services (`this.services`)
 

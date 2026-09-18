@@ -371,13 +371,14 @@ for i, group in enumerate(LADDER):
     buf = Gst.Buffer.new_wrapped(b"".join(pkts))
     buf.pts = buf.dts = stamp
     src.emit("push-buffer", buf)
-# One repeat of an earlier access unit's payload: two PES sharing a tail cannot
-# decide between themselves, and the index has to say so instead of picking.
-# A trailing PES follows it, because an access unit is only closed — and only
-# indexed — when the NEXT one starts.
+# One repeat of an earlier access unit's payload (serial 1 — the SECOND, so
+# the queue's first join is on a tail nothing else pending carries): two PES
+# sharing a tail are told apart by EMISSION ORDER (the queue), never by
+# content — silence and a test tone repeat their payload every few frames. A
+# trailing PES follows it, as the shape the ladder always had.
 cc = [0]
 src.emit("push-buffer", Gst.Buffer.new_wrapped(
-    pes_packets(PID, PES0 + 99 * 3600, adts_frame(0), cc)
+    pes_packets(PID, PES0 + 99 * 3600, adts_frame(1), cc)
     + pes_packets(PID, PES0 + 100 * 3600, adts_frame(255), cc)))
 src.emit("end-of-stream")
 pipe.get_bus().timed_pop_filtered(3 * Gst.SECOND,
@@ -395,25 +396,62 @@ check("K is the UNCLAMPED mapping, not the latest reading",
 check("every stamped buffer was measured",
       state is not None and state["ksamples"] == len(LADDER))
 
-# The join: every access unit's payload head maps back to ITS OWN PES PTS —
-# except serial 0, whose payload was deliberately repeated at the end (below).
+# What the branch would take (below) needs the index BEFORE the joins consume
+# it: first pending entry per tail, exactly what a lookup in order would see.
+by_tail = {}
+for t, p_ in (state["aus"].get(PID, []) if state else []):
+    by_tail.setdefault(t, p_)
+# The join: in emission order, every access unit's payload tail maps back to
+# ITS OWN PES PTS — serial 1 included, whose payload the trailing buffer
+# repeats: once in step, the earliest pending match is the ladder's, and the
+# repeat is what the next lookup on that tail gets.
 joined = 0
 wrong = []
 for pts, ser in serial_of.items():
-    if ser == 0:
-        continue
-    head = adts_frame(ser)[-64:]
-    got = state["byTail"].get(head) if state else None
+    got = runner._branch_align_join(state, PID, adts_frame(ser)[-64:]) if state else None
     if got == pts:
         joined += 1
     else:
         wrong.append((ser, pts, got))
-print(f"    payload-tail index: {joined}/{len(serial_of) - 1} access units joined "
+print(f"    payload-tail join: {joined}/{len(serial_of)} access units joined "
       f"back to their own PES{'' if not wrong else f' (wrong: {wrong[:3]})'}")
-check("every access unit is joinable by its payload tail",
-      joined == len(serial_of) - 1)
-check("a tail two access units share decides NOTHING (None, not a guess)",
-      state is not None and state["byTail"].get(adts_frame(0)[-64:]) is None)
+check("every access unit is joinable by its payload tail, in order",
+      joined == len(serial_of))
+check("a tail two access units share is resolved by emission order, not guessed",
+      state is not None
+      and runner._branch_align_join(state, PID, adts_frame(1)[-64:]) == PES0 + 99 * 3600)
+check("the trailing access unit follows the repeat",
+      state is not None
+      and runner._branch_align_join(state, PID, adts_frame(255)[-64:]) == PES0 + 100 * 3600)
+check("a tail nothing pending carries joins nothing",
+      state is not None and runner._branch_align_join(state, PID, b"\x00" * 64) is None)
+
+# The FIRST join on a PID cannot lean on order: what is queued ahead of it are
+# access units the demuxer discarded before its PSI, and on digital silence
+# they carry the very tail it emitted. So that first match has to be unique
+# among the pending entries, or it decides nothing; from the first unique join
+# on, the queue is in step and the earliest match is the emitted AU.
+import collections as _collections
+_fresh = {"aus": {PID: _collections.deque([(b"x" * 64, 9), (b"s" * 64, 10), (b"s" * 64, 11),
+                                            (b"u" * 64, 12), (b"s" * 64, 13), (b"s" * 64, 14)])},
+          "synced": {}}
+check("before the queue is in step, a repeated tail OFF THE HEAD decides nothing",
+      runner._branch_align_join(_fresh, PID, b"s" * 64) is None
+      and len(_fresh["aus"][PID]) == 6)
+check("a unique first match puts the queue in step and drops what preceded it",
+      runner._branch_align_join(_fresh, PID, b"u" * 64) == 12
+      and _fresh["synced"].get(PID) is True and len(_fresh["aus"][PID]) == 2)
+check("in step, a repeated tail resolves to the earliest pending entry",
+      runner._branch_align_join(_fresh, PID, b"s" * 64) == 13
+      and runner._branch_align_join(_fresh, PID, b"s" * 64) == 14)
+# A silent leg: every tail identical. Pre-PSI discards are never queued (see
+# below), so the head is the demuxer's first AU — a head match needs no
+# uniqueness, and the leg aligns on silence too.
+_silent = {"aus": {PID: _collections.deque([(b"s" * 64, 20), (b"s" * 64, 21), (b"s" * 64, 22)])},
+           "synced": {}}
+check("on silence the first join takes the head — position decides, not content",
+      runner._branch_align_join(_silent, PID, b"s" * 64) == 20
+      and runner._branch_align_join(_silent, PID, b"s" * 64) == 21)
 
 # What the branch would take, from the two measured quantities only: it emits
 # access unit X while the demuxer hands back a CLAMPED buffer's stamp, so
@@ -422,7 +460,7 @@ check("a tail two access units share decides NOTHING (None, not a guess)",
 for i in clamped:
     emitted = LADDER[i][0]
     head = adts_frame(serial_of[emitted])[-64:]
-    computed = (state["k"] + ns(state["byTail"][head]) - stamps[i]) if state else None
+    computed = (state["k"] + ns(by_tail[head]) - stamps[i]) if state else None
     clamp = stamps[i] - (K_TRUE + ns(emitted))
     print(f"    buffer {i}: clamp={clamp / 1e6:+.3f} ms → correction "
           f"{computed / 1e6 if computed is not None else None:+.3f} ms")
@@ -430,10 +468,13 @@ for i in clamped:
           clamp > 0 and computed == -clamp)
 runner._clear_branch_align()
 
-# A PES the demuxer will DISCARD (it sits ahead of the PSI) is still indexed and
-# still counts toward K — the join decides what the branch emitted, so the index
-# must carry everything and prejudge nothing. Skipping those PES is what made the
-# first cut measure a K short by exactly the discarded media.
+# A PES the demuxer will DISCARD (it sits ahead of the PSI) still counts toward
+# K — K is the producer's mapping and every stamped buffer carries it, and
+# skipping those PES is what made the first cut measure a K short by exactly
+# the discarded media. But it is NOT queued for the join: tsdemux programs its
+# pad at the PMT and starts on the next PUSI, so what the queue holds must be
+# exactly what the demuxer will hand back — on a silent leg the head's
+# position is the only thing that can identify the first emitted AU.
 pipe = Gst.parse_launch(
     f'appsrc name=src is-live=true format=time do-timestamp=false caps="{TS_CAPS}" '
     "! identity name=demux_0 ! fakesink name=fs sync=false async=false")
@@ -456,12 +497,14 @@ state = runner._branch_align.get("demux_0")
 pipe.set_state(Gst.State.NULL)
 check("K comes off the buffer's FIRST PES — including PES the demuxer discards",
       state is not None and state["k"] == K_TRUE)
-# (The 5th is still OPEN — an access unit is indexed when the next one starts —
-# so the first four are what this buffer can prove.)
-check("every PES in the buffer is indexed, discarded or not",
+# (Every PES here carries a length, so all five are closed the moment they
+# are complete; the two ahead of the PSI are the demuxer's discards.)
+_queued = [p_ for _t, p_ in (state["aus"].get(PID, []) if state else [])]
+check("only the PES after PAT+PMT are queued for the join, in order",
+      state is not None and _queued == [PES0 + i * 3600 for i in range(2, 5)])
+check("the queue's head is the first access unit the demuxer will emit",
       state is not None
-      and all(state["byTail"].get(adts_frame(100 + i)[-64:]) == PES0 + i * 3600
-              for i in range(4)))
+      and runner._branch_align_join(state, PID, adts_frame(102)[-64:]) == PES0 + 2 * 3600)
 runner._clear_branch_align()
 
 
@@ -537,6 +580,32 @@ check("a rejection is an engine-visible `warning` naming the branch, pid and err
       and "demux_1" in events[0]["message"] and "pid=0x100" in events[0]["message"]
       and "-95656 ms" in events[0]["message"]
       and "out of step" in events[0]["message"])
+
+print("\n--- 5. one length-bearing PES per bus buffer: the 302M / audio shape ---")
+# Every 302M egress is exactly this: `mpegtsmux alignment=7` plus the stamper's
+# coalescing put ONE access unit in each bus buffer, and an audio PES carries a
+# length, so tsdemux emits it inside the same buffer — before any next PUSI.
+# An index that only closed an AU at the next PUSI had nothing to join against
+# and every audio-output-302m branch ran un-anchored for its whole life
+# ("joined only 0 access units", 10.9.16.50, 2026-09-17). The join has to be
+# ready the moment the PES is complete.
+import io as _io
+_legs1 = [Leg("A", 0x100, 0x1000, 0x100, "sink_256", 1, 0),
+          Leg("B", 0x101, 0x1001, 0x140, "sink_320", 1, 0)]
+_cap, _old = _io.StringIO(), sys.stderr
+sys.stderr = _cap
+try:
+    one_skew, one_offsets, one_counts = run_rig(_legs1, align=True)
+finally:
+    sys.stderr = _old
+_log = _cap.getvalue()
+print(f"    one AU per buffer: counts={one_counts} offsets(ns)={one_offsets} "
+      f"verdicts={_log.count('median of')} giveups={_log.count('joined only')}")
+check("the fixture muxed both single-AU legs", min(one_counts.values()) > 100)
+check("a length-bearing PES is joined the moment it is complete (no give-up)",
+      "joined only" not in _log)
+check("both single-AU branches reached a verdict",
+      _log.count("median of") == 2)
 
 print()
 if _failures:

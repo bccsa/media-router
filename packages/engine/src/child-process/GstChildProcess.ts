@@ -239,6 +239,8 @@ export class GstChildProcess extends EventEmitter {
             // Plugin-owned runner python (`runnerHooks`, e.g. subtitle-core's
             // bridge) — forwarded verbatim; the runner imports and installs it.
             runnerHooks: desc.runnerHooks,
+            // Which runner binary hosts it (ADR-0019) — resolved at spawn.
+            runner: desc.runner,
         };
     }
 

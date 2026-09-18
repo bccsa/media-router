@@ -10,7 +10,8 @@ import type {
     PreserveSourceTimelineConfig,
 } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
-import { pluginPythonPaths } from './nativeBinaries.js';
+import { pluginPythonPaths, pluginsRoot } from './nativeBinaries.js';
+import { selectRunner } from './nativeRunner.js';
 import { runnerEnv } from './runnerEnv.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
@@ -59,6 +60,8 @@ export interface RunnerStartOptions {
     keyframeGate?: KeyframeGateConfig;
     backlogShed?: BacklogShedConfig;
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
+    /** Which runner binary hosts the pipeline (ADR-0019) — see `nativeRunner.ts`. */
+    runner?: 'python' | 'native';
 }
 
 export interface PythonProcessOptions {
@@ -111,9 +114,12 @@ export class PythonProcess {
         const { pipeline, linkOnPadAdded = [], env = {} } = opts;
 
         const mode = this.options.useStdioForData ? 'data-pipe' : 'bus-messages';
+        // Python or the native mr-gst-runner (ADR-0019) — same protocol, so
+        // everything below is binary-agnostic.
+        const runner = selectRunner(opts, this.options.pythonRunnerPath);
         // Log the full pipeline string — truncating it hides the failing element
         // when a plugin's pipeline is rejected by parse_launch.
-        console.error(`[gst-runner] Starting pipeline (${mode}): ${pipeline}`);
+        console.error(`[gst-runner] Starting pipeline (${mode}, ${runner.kind} runner): ${pipeline}`);
         if (linkOnPadAdded.length > 0) {
             console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(linkOnPadAdded)}`);
         }
@@ -127,9 +133,12 @@ export class PythonProcess {
         if (pyPaths.length > 0) {
             spawnEnv.PYTHONPATH = [...pyPaths, spawnEnv.PYTHONPATH].filter(Boolean).join(':');
         }
+        // The native runner cannot derive the plugins tree from its own path
+        // once installed under libexec; both runners honour this override.
+        if (!spawnEnv.MR_PLUGINS_DIR) spawnEnv.MR_PLUGINS_DIR = pluginsRoot();
 
         if (this.options.useStdioForData) {
-            this.proc = spawn('python3', [this.options.pythonRunnerPath], {
+            this.proc = spawn(runner.file, runner.args, {
                 stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
                 env: spawnEnv,
             });
@@ -156,7 +165,7 @@ export class PythonProcess {
             // Also watch stderr for fallback/debug
             this.proc.stderr?.on('data', this.parseStderr);
         } else {
-            this.proc = spawn('python3', [this.options.pythonRunnerPath], {
+            this.proc = spawn(runner.file, runner.args, {
                 stdio: ['pipe', 'pipe', 'pipe'],
                 env: spawnEnv,
             });
