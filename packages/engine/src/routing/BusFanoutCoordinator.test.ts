@@ -95,3 +95,73 @@ describe('BusFanoutCoordinator', () => {
         expect(attach).not.toHaveBeenCalled();
     });
 });
+
+describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING', () => {
+    const PORT = 40002;
+    // ADR-0010 rule 4: a consumer launched at/before the producer's current launch holds a dead edge.
+    function rig(opts: { producerLaunch?: number; consumerLaunch?: number; conns?: Connection[] }) {
+        const attach = vi.fn();
+        const restart = vi.fn(async () => {});
+        const producer = {
+            getBusAttachTarget: () => ({ sendBusAttach: attach, sendBusDetach: vi.fn() }),
+            getChildProcess: () => ({ pipelineLaunchedAt: opts.producerLaunch }),
+        };
+        const consumer = {
+            getChildProcess: () => ({ pipelineLaunchedAt: opts.consumerLaunch, restartPipeline: restart }),
+        };
+        const conns = opts.conns ?? [conn()];
+        const coord = new BusFanoutCoordinator(
+            (id) =>
+                id === 'srt-input-a'
+                    ? (producer as never)
+                    : id === 'mpegts-muxer-b'
+                      ? (consumer as never)
+                      : undefined,
+            () => PORT,
+            () => conns,
+        );
+        return { coord, attach, restart };
+    }
+
+    it('relaunches a consumer that launched before the producer, after re-attaching its edge', () => {
+        const { coord, attach, restart } = rig({ producerLaunch: 2000, consumerLaunch: 1000 });
+        coord.reattachProducer('srt-input-a');
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(restart).toHaveBeenCalledTimes(1);
+        expect(restart.mock.calls[0][0]).toContain('srt-input-a');
+        expect(attach.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]);
+    });
+
+    it('treats a same-millisecond launch as stale — a live attachment can only postdate the producer', () => {
+        const { coord, restart } = rig({ producerLaunch: 2000, consumerLaunch: 2000 });
+        coord.reattachProducer('srt-input-a');
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a consumer that launched after the producer alone (it holds the live edge)', () => {
+        const { coord, restart } = rig({ producerLaunch: 1000, consumerLaunch: 2000 });
+        coord.reattachProducer('srt-input-a');
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('leaves a consumer with no launch time alone — it is down or already restarting', () => {
+        const { coord, restart } = rig({ producerLaunch: 2000, consumerLaunch: undefined });
+        coord.reattachProducer('srt-input-a');
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the producer launch time is unknown (non-gst producer)', () => {
+        const { coord, restart } = rig({ producerLaunch: undefined, consumerLaunch: 1000 });
+        coord.reattachProducer('srt-input-a');
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('relaunches a consumer once even with several edges from the same producer', () => {
+        const a = conn();
+        const b = conn({ id: 'srt-input-a:mpegts-out-mpegts-muxer-b:audio-1', sinkPortId: 'audio-1' });
+        const { coord, attach, restart } = rig({ producerLaunch: 2000, consumerLaunch: 1000, conns: [a, b] });
+        coord.reattachProducer('srt-input-a');
+        expect(attach).toHaveBeenCalledTimes(2);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+});

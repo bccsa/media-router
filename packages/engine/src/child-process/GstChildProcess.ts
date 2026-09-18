@@ -71,6 +71,8 @@ export class GstChildProcess extends EventEmitter {
     private ipc: RunnerChannel | null = null;
     private pipelineDesc: PipelineDescription | null = null;
     private running = false;
+    /** When the runner launched the current Python pipeline (see `pipelineLaunchedAt`). */
+    private launchedAt: number | undefined;
     private backoff = new ExponentialBackoff(3000, 60000, MAX_RESTARTS, 30000);
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private destroyed = false;
@@ -184,8 +186,16 @@ export class GstChildProcess extends EventEmitter {
             }
             if (state === 'stopped' || state === 'error') {
                 this.running = false;
+                this.launchedAt = undefined; // no live attachment until the next launch
             }
             this.emit('stateChange', data);
+        });
+
+        ipc.on('pipelineStarting', () => {
+            this.launchedAt = undefined; // retired launch; gated until the next pipelineLaunched
+        });
+        ipc.on('pipelineLaunched', (data) => {
+            this.launchedAt = (data as { at?: number }).at ?? Date.now();
         });
 
         // Pure pass-through events, same name in and out:
@@ -434,6 +444,22 @@ export class GstChildProcess extends EventEmitter {
         return this.running;
     }
 
+    /** Epoch ms of the current Python pipeline's launch (when a consumer's
+     *  unixfdsrc connected); undefined while down or restarting. */
+    get pipelineLaunchedAt(): number | undefined {
+        return this.launchedAt;
+    }
+
+    /** Relaunch the current pipeline in place (fresh Python, same description). */
+    async restartPipeline(reason: string): Promise<void> {
+        if (!this.ipc || !this.pipelineDesc) return;
+        this.launchedAt = undefined; // so a second producer PLAYING cannot relaunch us again mid-gate
+        throwIfRpcError(
+            await this.ipc.sendRequest('restartPipeline', { reason }, 5000),
+            'restartPipeline',
+        );
+    }
+
     // --- Restart policy ---
 
     private scheduleRestart(): void {
@@ -480,5 +506,6 @@ export class GstChildProcess extends EventEmitter {
         this.backend = null;
         this.ipc = null;
         this.running = false;
+        this.launchedAt = undefined;
     }
 }
