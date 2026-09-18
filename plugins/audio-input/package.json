@@ -30,17 +30,18 @@
                 "device": {
                     "type": "string",
                     "default": "",
-                    "description": "Select audio source device",
+                    "description": "Source device",
                     "x-deviceType": "audio-source"
                 },
                 "sampleRate": {
                     "type": "number",
-                    "description": "Sample rate (auto-detected from device)",
+                    "title": "Sample Rate",
+                    "description": "Auto-detected",
                     "x-readOnly": true
                 },
                 "channels": {
                     "type": "number",
-                    "description": "Channels (auto-detected from device)",
+                    "description": "Auto-detected",
                     "x-readOnly": true
                 },
                 "volumeMax": {
@@ -53,14 +54,16 @@
                         500
                     ],
                     "default": 150,
-                    "description": "Maximum volume slider range (%)"
+                    "title": "Volume Range",
+                    "description": "Upper end of the volume slider"
                 },
                 "volume": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Input volume (%)",
+                    "title": "Input Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -71,29 +74,34 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel"
+                    "title": "Show on LCP",
+                    "description": "Show on the Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
                     "default": 0,
-                    "description": "Display order on LCP (lower = left)"
+                    "title": "LCP Order",
+                    "description": "Order on the Local Control Panel, lower = left"
                 },
                 "lcpVolumeEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow volume control on LCP"
+                    "title": "LCP Volume",
+                    "description": "Allow volume control on the Local Control Panel"
                 },
                 "lcpMuteEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow mute control on LCP"
+                    "title": "LCP Mute",
+                    "description": "Allow mute control on the Local Control Panel"
                 }
             }
         },

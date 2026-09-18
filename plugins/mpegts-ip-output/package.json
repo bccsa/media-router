@@ -38,7 +38,7 @@
                 "interface": {
                     "type": "string",
                     "default": "",
-                    "description": "Network interface for multicast egress; empty = system default",
+                    "description": "Empty = system default",
                     "x-deviceType": "network-interface"
                 },
                 "ttl": {
@@ -46,7 +46,8 @@
                     "minimum": 1,
                     "maximum": 255,
                     "default": 16,
-                    "description": "Multicast/unicast TTL"
+                    "title": "TTL",
+                    "description": "Hop limit"
                 },
                 "destinations": {
                     "type": "array",
@@ -56,19 +57,21 @@
                             "port": 5000
                         }
                     ],
-                    "description": "Destination host:port targets. One multicast entry serves unlimited receivers; add entries for unicast fan-out.",
+                    "description": "One multicast entry serves all receivers; add entries for unicast fan-out",
                     "items": {
                         "type": "object",
                         "properties": {
                             "host": {
                                 "type": "string",
                                 "default": "239.1.1.1",
-                                "description": "Destination host / multicast group"
+                                "title": "Host",
+                                "description": "Host or multicast group"
                             },
                             "port": {
                                 "type": "number",
                                 "default": 5000,
-                                "description": "Destination port"
+                                "title": "Port",
+                                "description": ""
                             }
                         }
                     }
@@ -86,7 +89,8 @@
                         "7": "Seven TS packets (1316 B)"
                     },
                     "default": 0,
-                    "description": "Wire datagram packing (raw mode). The bus carries one buffer per access unit, so the output always re-slices to the wire size (a pure re-chunk, no timestamp changes). Default and 7 = 1316 B; 1 = one TS packet per datagram. In RTP mode the payloader governs the final size unless a size is forced here."
+                    "title": "Packets per Datagram",
+                    "description": "0 and 7 = 1316 B datagrams; 1 = one TS packet each"
                 }
             }
         },

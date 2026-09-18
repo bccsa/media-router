@@ -22,15 +22,16 @@
                     "type": "array",
                     "maxItems": 16,
                     "default": [{ "name": "" }],
-                    "description": "Inputs — \"+ Add\" creates another input port with the next free PID. Any input takes any MPEG-TS source; the stream it carries is re-muxed onto the input's PID, fixed, so downstream PIDs never change. Normally one stream per input (split a multi-stream source with a TS Splitter first); a source that carries several streams keeps its main one (video, else audio, else subtitles) on the PID and the rest take the next free PIDs — the PIDs panel shows them. Give an input a language and it is written into the output PMT as its stream's ISO 639 language descriptor — the standard signalling a downstream splitter labels from (\"Audio nor\").",
+                    "description": "Each input gets a fixed output PID, so downstream PIDs never change",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "default": "", "description": "Label for this input pin in the editor (optional). Not carried in the transport stream — MPEG-TS has no standard stream-name field; use Language for signalling receivers understand." },
+                            "name": { "type": "string", "default": "", "title": "Name", "description": "Editor label only; not in the transport stream" },
                             "language": {
                                 "type": "string",
                                 "default": "",
-                                "description": "ISO 639 language code (2/3-letter, e.g. en / eng / deu) written into the output PMT as the language descriptor of this input's streams — the standard signalling every receiver understands (audio today; KLV/teletext once mpegtsmux carries it for them). Blank passes the source stream's own language through unchanged. Applied at pipeline build — changing it restarts the muxer."
+                                "title": "Language",
+                                "description": "ISO 639 code written into the PMT. Blank = pass through. Restarts the muxer."
                             },
                             "offsetMs": {
                                 "type": "number",
@@ -39,7 +40,8 @@
                                 "maximum": 2000,
                                 "x-step": 10,
                                 "x-unit": "ms",
-                                "description": "Lipsync offset for this input's AUDIO stream on the mux timeline. Negative advances audio — set to minus the measured audio-late skew to cancel a stable path delay with no added latency (costs ~|offset| of clipped audio at pipeline start). Re-measure after changing audio-path buffering. Applied at pad-link time — changing it restarts the muxer."
+                                "title": "Audio Offset",
+                                "description": "Lip-sync offset for this input's audio. Negative advances. Restarts the muxer."
                             },
                             "pid": {
                                 "type": "number",
@@ -47,7 +49,8 @@
                                 "minimum": 0,
                                 "maximum": 8190,
                                 "x-step": 1,
-                                "description": "Output PID of this input's stream — what a downstream TS Splitter shows. Assigned automatically when the input is added (next free, from 256 in steps of 8) and written back here; edit it to any free value 32–8190. Two inputs on one PID, or 4096 (PMT) / 496 (reserved), stops the muxer with an error naming the clash. Changing it restarts the muxer."
+                                "title": "PID",
+                                "description": "Auto-assigned on add; edit to any free value 32–8190. Restarts the muxer."
                             }
                         }
                     },
@@ -62,18 +65,21 @@
                         "7": "SRT-aligned (1316 B)"
                     },
                     "default": 7,
-                    "description": "MPEG-TS muxer alignment — keep at SRT-aligned for SRT/RIST/UDP transport. Use Continuous only for v1-style receivers that derive timing from byte flow (their tsparse mis-estimates bitrate from 1316 B bursts)"
+                    "title": "TS Alignment",
+                    "description": "Keep SRT-aligned for SRT/RIST/UDP. Continuous only for v1-style byte-flow receivers."
                 },
                 "queueLeaky": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Input queue behaviour. OFF (non-leaky): never drop — hold the leading stream up to Queue depth while waiting out A/V skew or a stall; backlog flushes after recovery (contribution/stability). ON (leaky): shed the oldest frame once Queue depth of backlog builds, so output resumes at the live edge immediately after a stall (live production). Queues sit upstream of the muxer, after the codec parser — drops always land on whole frames; the mux output itself is never queued (a drop there would corrupt the TS mid-frame).",
+                    "title": "Leaky Input Queues",
+                    "description": "Off: never drop, hold through stalls (contribution). On: shed backlog and resume at the live edge (live).",
                     "x-liveUpdatable": false
                 },
                 "videoParserBypass": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Low-latency video input: skip the H.264/H.265 parser in front of the mux and take each demuxed access unit as-is. Saves one frame of latency per video input (40 ms at 25 fps) — the parser can only close a frame when the next one starts. Only for sources that repeat SPS/PPS before every keyframe (every Media Router encoder does); on a foreign source with sloppy PES framing leave this OFF, the parser is what re-frames it and speeds recovery after packet loss. Applied at pad-link time — changing it restarts the muxer.",
+                    "title": "Video Parser Bypass",
+                    "description": "Skip the video parser, saving one frame of latency. Only for sources repeating SPS/PPS per keyframe.",
                     "x-liveUpdatable": false
                 },
                 "queueDepthMs": {
@@ -81,7 +87,8 @@
                     "minimum": 100,
                     "maximum": 5000,
                     "default": 500,
-                    "description": "Input queue bound. Non-leaky: how much A/V arrival skew to absorb without back-pressuring (set ≥ the worst skew of your wiring: transcode chain ~200 ms, demuxer audio pacing 160 ms, B-frame delay ~120 ms). Leaky: how much backlog to tolerate before shedding starts.",
+                    "title": "Queue Depth",
+                    "description": "Non-leaky: A/V skew absorbed before back-pressure. Leaky: backlog before shedding.",
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",

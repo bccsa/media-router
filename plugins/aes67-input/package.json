@@ -30,25 +30,27 @@
                 "discoveredStream": {
                     "type": "string",
                     "default": "",
-                    "description": "Stream announced over SAP on this network. Picking one supplies its address, port, encoding, channel count and payload type — leave empty to configure them by hand below.",
+                    "title": "Discovered Stream",
+                    "description": "Stream found via SAP. Picking one fills in the fields below.",
                     "x-deviceType": "aes67-stream"
                 },
                 "address": {
                     "type": "string",
                     "default": "",
-                    "description": "Multicast group to join (e.g. 239.69.0.1) or the local address to receive unicast on. Ignored when a discovered stream is selected."
+                    "description": "Multicast group or local unicast address. Ignored when a discovered stream is selected."
                 },
                 "port": {
                     "type": "number",
                     "minimum": 1,
                     "maximum": 65535,
                     "default": 5004,
-                    "description": "RTP port (AES67 default 5004)"
+                    "title": "RTP Port",
+                    "description": "AES67 default 5004"
                 },
                 "interface": {
                     "type": "string",
                     "default": "",
-                    "description": "Network interface for the multicast join and SAP discovery; empty = system default",
+                    "description": "Empty = system default",
                     "x-deviceType": "network-interface"
                 },
                 "encoding": {
@@ -58,14 +60,14 @@
                         "L16"
                     ],
                     "default": "L24",
-                    "description": "Wire sample format: L24 (24-bit, the AES67 default) or L16"
+                    "description": "L24 is the AES67 default"
                 },
                 "channels": {
                     "type": "number",
                     "minimum": 1,
                     "maximum": 8,
                     "default": 2,
-                    "description": "Channels in the received stream. This input encodes stereo 302M, so more than 2 are downmixed."
+                    "description": "The bus carries stereo 302M; more than 2 are downmixed"
                 },
                 "pcmBitDepth": {
                     "type": "number",
@@ -75,14 +77,16 @@
                         "24": "24-bit"
                     },
                     "default": 16,
-                    "description": "Word length of the 302M PCM this module puts on the bus. 16-bit carries a third less data per hop (about 14% less CPU per bus hop on a Pi 4) and is transparent for anything that ends in Opus/AAC; choose 24-bit only when the PCM itself is the deliverable."
+                    "title": "PCM Bit Depth",
+                    "description": "16-bit is a third less bus data and transparent for Opus/AAC; use 24-bit only when PCM is the deliverable."
                 },
                 "payloadType": {
                     "type": "number",
                     "minimum": 96,
                     "maximum": 127,
                     "default": 96,
-                    "description": "RTP dynamic payload type the sender uses"
+                    "title": "Payload Type",
+                    "description": "RTP payload type the sender uses"
                 },
                 "jitterBufferMs": {
                     "type": "number",
@@ -92,24 +96,28 @@
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-unit": "ms",
-                    "description": "Receive buffer. AES67 packets are 1 ms, so this is 20 packet times by default — enough for ordinary switch jitter without adding audible delay. Raise on a congested or wireless path."
+                    "title": "Jitter Buffer",
+                    "description": "Default 20 ms = 20 packet times. Raise on congested or wireless paths."
                 },
                 "ptpSync": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Schedule audio against the sender's PTP media clock (RFC 7273) instead of arrival time. Needs a PTP grandmaster on the network AND the grandmaster ID below; without them the stream goes silent, which is why it is off by default."
+                    "title": "PTP Sync",
+                    "description": "Schedule on the sender's PTP clock. Needs a grandmaster and its ID below, or the stream goes silent."
                 },
                 "ptpGmid": {
                     "type": "string",
                     "default": "",
-                    "description": "PTP grandmaster ID, e.g. 00-1D-C1-FF-FE-50-30-EE. Required by PTP sync; a discovered stream's announcement shows the sender's."
+                    "title": "PTP Grandmaster ID",
+                    "description": "Required for PTP sync, e.g. 00-1D-C1-FF-FE-50-30-EE"
                 },
                 "ptpDomain": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 127,
                     "default": 0,
-                    "description": "PTP domain (AES67 media profile default 0)"
+                    "title": "PTP Domain",
+                    "description": "AES67 default 0"
                 },
                 "playoutOffsetMs": {
                     "type": "number",
@@ -117,7 +125,8 @@
                     "maximum": 10000,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "Playout offset for every player fed from this source — how far behind the shared house clock they present. This is the ROUTE's latency budget, set once here instead of per player, so a video-player and an audio-decoder split off this source stay locked to each other. Leave EMPTY to use the engine-wide default (60 ms unless the engine sets otherwise). Raise it if playback stutters on a jittery link; lower it for the tightest latency. Applies live to every connected player, with no restart. Has no effect while the engine time-sync contract is off."
+                    "title": "Playout Offset",
+                    "description": "Route latency budget: how far behind the house clock players present. Empty = engine default (60 ms)."
                 }
             }
         },

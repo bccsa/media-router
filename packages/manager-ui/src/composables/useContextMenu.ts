@@ -5,6 +5,7 @@ import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
 import { matchShowWhen } from '@/utils/showWhen';
+import { fieldLabel } from '@/utils/fieldLabel';
 
 // SVG icon paths (stroke-based, 24×24 viewBox)
 const icons = {
@@ -59,7 +60,7 @@ export function useContextMenu(
                     continue;
                 if (schema.type === 'boolean') {
                     contextSettings.push({
-                        label: schema.description?.replace(/\s*\(.*\)/, '') || key,
+                        label: fieldLabel(key, schema),
                         action: `setting:${key}`,
                         toggle: {
                             value: !!(mod.settings?.[key] ?? schema.default ?? false),
@@ -72,7 +73,7 @@ export function useContextMenu(
                             ? Number(mod.settings[maxFrom])
                             : (schema.maximum ?? 100);
                     contextSettings.push({
-                        label: schema.description?.replace(/\s*\(.*\)/, '') || key,
+                        label: fieldLabel(key, schema),
                         action: `setting:${key}`,
                         slider: {
                             min: schema.minimum ?? 0,

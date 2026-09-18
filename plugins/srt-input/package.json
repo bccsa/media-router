@@ -30,12 +30,13 @@
                 "host": {
                     "type": "string",
                     "default": "0.0.0.0",
-                    "description": "Listen/connect address"
+                    "description": "Listen or connect address"
                 },
                 "port": {
                     "type": "number",
                     "default": 9000,
-                    "description": "SRT port"
+                    "title": "Port",
+                    "description": ""
                 },
                 "mode": {
                     "type": "string",
@@ -45,22 +46,24 @@
                         "rendezvous"
                     ],
                     "default": "listener",
-                    "description": "Connection mode"
+                    "description": ""
                 },
                 "latency": {
                     "type": "number",
                     "default": 125,
-                    "description": "SRT latency (ms)"
+                    "title": "Latency",
+                    "description": "ms. Raise on lossy links for more retransmission time."
                 },
                 "streamId": {
                     "type": "string",
                     "default": "",
-                    "description": "Stream ID for access control"
+                    "title": "Stream ID",
+                    "description": "For access control"
                 },
                 "passphrase": {
                     "type": "string",
                     "default": "",
-                    "description": "Encryption passphrase"
+                    "description": ""
                 },
                 "pbKeyLen": {
                     "type": "number",
@@ -71,7 +74,8 @@
                         32
                     ],
                     "default": 0,
-                    "description": "Encryption key length (0 = none)"
+                    "title": "Key Length",
+                    "description": "0 = none"
                 },
                 "playoutOffsetMs": {
                     "type": "number",
@@ -79,7 +83,8 @@
                     "maximum": 10000,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "Playout offset for every player fed from this source — how far behind the shared house clock they present. This is the ROUTE's latency budget, set once here instead of per player, so a video-player and an audio-decoder split off this source stay locked to each other. Leave EMPTY to use the engine-wide default (60 ms unless the engine sets otherwise). Raise it if playback stutters on a jittery link; lower it for the tightest latency. Applies live to every connected player, with no restart. Has no effect while the engine time-sync contract is off."
+                    "title": "Playout Offset",
+                    "description": "Route latency budget: how far behind the house clock players present. Empty = engine default (60 ms)."
                 }
             }
         },

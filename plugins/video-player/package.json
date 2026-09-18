@@ -38,19 +38,21 @@
                 "display": {
                     "type": "string",
                     "default": "",
-                    "description": "Display output (DRM connector)",
+                    "description": "DRM connector",
                     "x-deviceType": "drm-connector"
                 },
                 "fallbackText": {
                     "type": "string",
                     "default": "No video detected",
-                    "description": "Overlay text when no stream is connected",
+                    "title": "Fallback Text",
+                    "description": "Shown when no stream is connected",
                     "x-live": true
                 },
                 "fallbackImagePath": {
                     "type": "string",
                     "default": "",
-                    "description": "Image shown as fallback when no stream (otherwise SMPTE colour bars).",
+                    "title": "Fallback Image",
+                    "description": "Shown when no stream is connected; otherwise colour bars",
                     "x-widget": "imageUpload"
                 },
                 "bufferMs": {
@@ -61,12 +63,13 @@
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",
-                    "description": "Pre-decode buffer. Keep low (200) for live SRT/RIST; raise (e.g. 1500) for HLS so the decoder has lookahead until the next I-frame after a mid-stream join. Adds end-to-end latency."
+                    "title": "Buffer",
+                    "description": "Keep low (200) for live SRT/RIST; raise (1500) for HLS. Adds this much latency."
                 },
                 "sync": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Smooth playback vs lowest latency. ON (default): each frame is presented at its timestamp, giving smooth, evenly-paced playback — network and decode jitter is absorbed by letting early frames wait a few tens of ms (median added latency is ~zero). OFF: every frame is shown the instant it is ready — the lowest possible latency, at the cost of visible judder under jitter. Turn OFF for ultra-low-latency chains, or as the robust fallback for degraded sources with broken PCR timing, which can stall under paced playback."
+                    "description": "On: smooth, timestamp-paced playback. Off: lowest latency, judder under jitter; fallback for broken PCR."
                 },
                 "lipSyncMs": {
                     "type": "number",
@@ -77,7 +80,8 @@
                     "x-step": 50,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this player and the audio-decoder beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this player's own display chain adds (panel processing, HDMI receiver). Positive DELAYS video to meet audio that's playing late; negative advances it. Adjust live while watching until lips match. Only applies with Sync on."
+                    "title": "Lip-Sync Trim",
+                    "description": "Trim on top of the route's playout offset for this display. Positive delays video. Needs Sync on."
                 },
                 "cpuDecodeThreading": {
                     "type": "string",
@@ -87,7 +91,8 @@
                         "auto": "Auto (multi-core)",
                         "single": "Single core (lowest latency)"
                     },
-                    "description": "Software (CPU) decode threading — only matters when the stream falls back to software decode (no hardware decoder for this codec). AUTO (default): spreads the decode across three cores, so a stream the CPU can't decode on one core keeps up — a Pi 5 has no H.264 hardware decoder, and single-threaded it lagged a 1080p50 feed while sitting 62% idle. Costs ~3 frames of latency (~60 ms at 50 fps). SINGLE CORE: one core, no added latency — use only when that 60 ms matters more than keeping up, and the CPU is comfortably ahead."
+                    "title": "CPU Decode Threading",
+                    "description": "Software decode only. Auto uses three cores (~60 ms latency); Single adds none but must keep up."
                 },
                 "subtitlePosition": {
                     "type": "string",
@@ -95,7 +100,8 @@
                     "default": "bottom",
                     "x-enumLabels": { "bottom": "Bottom", "top": "Top", "center": "Center" },
                     "x-live": true,
-                    "description": "Vertical placement of subtitle text on the picture."
+                    "title": "Subtitle Position",
+                    "description": "Vertical placement"
                 },
                 "subtitleAlign": {
                     "type": "string",
@@ -103,7 +109,8 @@
                     "default": "center",
                     "x-enumLabels": { "center": "Center", "left": "Left", "right": "Right" },
                     "x-live": true,
-                    "description": "Horizontal alignment of subtitle text."
+                    "title": "Subtitle Alignment",
+                    "description": "Horizontal alignment"
                 },
                 "subtitleSize": {
                     "type": "number",
@@ -114,7 +121,8 @@
                     "x-step": 2,
                     "x-unit": "pt",
                     "x-live": true,
-                    "description": "Subtitle font size. Scales with the picture height (the renderer resizes relative to the frame), so one value suits every rendition."
+                    "title": "Subtitle Size",
+                    "description": "Scales with picture height, so one value suits every output size"
                 },
                 "subtitleMargin": {
                     "type": "number",
@@ -125,13 +133,15 @@
                     "x-step": 5,
                     "x-unit": "px",
                     "x-live": true,
-                    "description": "Distance from the top or bottom edge (ignored for Center)."
+                    "title": "Subtitle Margin",
+                    "description": "Distance from the top or bottom edge; ignored for Center"
                 },
                 "subtitleBackground": {
                     "type": "boolean",
                     "default": true,
                     "x-live": true,
-                    "description": "Draw a shaded box behind the text for legibility over bright pictures."
+                    "title": "Subtitle Background",
+                    "description": "Shaded box behind the text for legibility"
                 },
                 "subtitleBackgroundOpacity": {
                     "type": "number",
@@ -143,7 +153,8 @@
                     "x-unit": "%",
                     "x-live": true,
                     "x-showWhen": "subtitleBackground=true",
-                    "description": "Opacity of the shaded box (0 = invisible, 100 = solid black)."
+                    "title": "Subtitle Background Opacity",
+                    "description": "0 = invisible, 100 = solid black"
                 }
             }
         },

@@ -25,11 +25,11 @@
                     "default": [
                         { "name": "PCM 302M", "codec": "pcm" }
                     ],
-                    "description": "Output renditions — \"+ Add\" creates another output port. Each rendition re-encodes the shared decoded audio: Opus/AAC for contribution/distribution, PCM 302M for lossless timeline-true audio to mixers, outputs, or other devices.",
+                    "description": "Each rendition is an output port. Opus/AAC for distribution, PCM 302M for lossless audio.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "default": "", "description": "Output label (optional)" },
+                            "name": { "type": "string", "default": "", "title": "Name", "description": "Optional label" },
                             "codec": {
                                 "type": "string",
                                 "enum": ["opus", "aac", "pcm"],
@@ -39,7 +39,8 @@
                                     "pcm": "PCM 302M (lossless)"
                                 },
                                 "default": "opus",
-                                "description": "Codec for this rendition. PCM 302M is fixed-rate (~2.3 Mbps stereo) and carries the source timeline losslessly."
+                                "title": "Codec",
+                                "description": "PCM 302M is fixed-rate (~2.3 Mbps stereo) and lossless"
                             },
                             "bitrate": {
                                 "type": "number",
@@ -47,7 +48,8 @@
                                 "default": 128,
                                 "x-unit": "kbps",
                                 "x-showWhen": "codec=opus,aac",
-                                "description": "Encode bitrate"
+                                "title": "Bitrate",
+                                "description": ""
                             },
                             "frameSize": {
                                 "type": "number",
@@ -56,14 +58,16 @@
                                 "x-unit": "ms",
                                 "x-showWhen": "codec=opus",
                                 "x-advanced": true,
-                                "description": "Opus frame size — smaller = lower latency, higher overhead"
+                                "title": "Frame Size",
+                                "description": "Smaller = lower latency, more overhead"
                             },
                             "inbandFec": {
                                 "type": "boolean",
                                 "default": false,
                                 "x-showWhen": "codec=opus",
                                 "x-advanced": true,
-                                "description": "Opus in-band forward error correction"
+                                "title": "In-band FEC",
+                                "description": "Opus forward error correction"
                             },
                             "packetLoss": {
                                 "type": "number",
@@ -72,7 +76,8 @@
                                 "x-unit": "%",
                                 "x-showWhen": "codec=opus",
                                 "x-advanced": true,
-                                "description": "Expected packet loss (drives FEC strength)"
+                                "title": "Expected Packet Loss",
+                                "description": "Drives FEC strength"
                             },
                             "audioType": {
                                 "type": "number",
@@ -86,7 +91,8 @@
                                 "default": 0,
                                 "x-showWhen": "codec=opus",
                                 "x-advanced": true,
-                                "description": "Opus application type (Auto picks by frame size)"
+                                "title": "Audio Type",
+                                "description": "Auto picks by frame size"
                             }
                         }
                     }
@@ -96,7 +102,8 @@
                     "minimum": 0,
                     "maximum": 150,
                     "default": 100,
-                    "description": "Volume (%)",
+                    "title": "Volume",
+                    "description": "",
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
@@ -106,7 +113,8 @@
                 "audioEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Audio enabled",
+                    "title": "Audio Enabled",
+                    "description": "",
                     "x-live": true,
                     "x-contextMenu": true
                 },
@@ -115,14 +123,15 @@
                     "minimum": 1,
                     "maximum": 2,
                     "default": 2,
-                    "description": "Channels (PCM 302M renditions are encoded stereo)"
+                    "description": "PCM 302M renditions are stereo"
                 },
                 "sampleRate": {
                     "type": "number",
                     "enum": [48000],
                     "default": 48000,
                     "x-readOnly": true,
-                    "description": "Sample rate (48 kHz — SMPTE 302M standard)"
+                    "title": "Sample Rate",
+                    "description": "48 kHz (SMPTE 302M)"
                 },
                 "bufferMs": {
                     "type": "number",
@@ -132,13 +141,15 @@
                     "x-widget": "slider",
                     "x-step": 25,
                     "x-unit": "ms",
-                    "description": "Post-demux jitter buffer (single-source input). No real-time sink in the encode path, so keep this low — standing fill in this non-leaky queue adds arrival latency at downstream muxers. Raise for HLS/bursty sources only."
+                    "title": "Buffer",
+                    "description": "Keep low; its fill adds latency at downstream muxers. Raise for HLS or bursty sources."
                 },
                 "preserveSourceTimeline": {
                     "type": "boolean",
                     "default": true,
                     "x-advanced": true,
-                    "description": "Carry the SOURCE stream's timestamps through the transcode (default on). Output PTS then match the input's, so downstream muxers align this audio with its sibling video by real timestamps and lipsync survives module restarts. Turn off only to fall back to the previous per-start timeline behaviour."
+                    "title": "Preserve Source Timeline",
+                    "description": "Keep source timestamps so muxers align audio with video and lip-sync survives restarts."
                 },
                 "pcmBitDepth": {
                     "type": "number",
@@ -148,7 +159,8 @@
                         "24": "24-bit"
                     },
                     "default": 16,
-                    "description": "Word length of the 302M PCM this module puts on the bus. 16-bit carries a third less data per hop (about 14% less CPU per bus hop on a Pi 4) and is transparent for anything that ends in Opus/AAC; choose 24-bit only when the PCM itself is the deliverable."
+                    "title": "PCM Bit Depth",
+                    "description": "16-bit is a third less bus data and transparent for Opus/AAC; use 24-bit only when PCM is the deliverable."
                 },
                 "tsAlignment": {
                     "type": "number",
@@ -159,27 +171,32 @@
                         "7": "SRT-aligned (1316 B)"
                     },
                     "default": 7,
-                    "description": "MPEG-TS output alignment for Opus/AAC renditions — keep SRT-aligned for SRT/RIST/UDP transport"
+                    "title": "TS Alignment",
+                    "description": "Keep SRT-aligned for SRT/RIST/UDP"
                 },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel"
+                    "title": "Show on LCP",
+                    "description": "Show on the Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
                     "default": 0,
-                    "description": "Display order on LCP (lower = left)"
+                    "title": "LCP Order",
+                    "description": "Order on the Local Control Panel, lower = left"
                 },
                 "lcpVolumeEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow volume control on LCP"
+                    "title": "LCP Volume",
+                    "description": "Allow volume control on the Local Control Panel"
                 },
                 "lcpMuteEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Allow mute control on LCP"
+                    "title": "LCP Mute",
+                    "description": "Allow mute control on the Local Control Panel"
                 }
             }
         },

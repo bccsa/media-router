@@ -29,19 +29,20 @@
                 "address": {
                     "type": "string",
                     "default": "",
-                    "description": "Destination: a multicast group (e.g. 239.69.0.1 — AES67 streams are normally multicast) or a single unicast host"
+                    "description": "Multicast group (usual for AES67) or a single unicast host"
                 },
                 "port": {
                     "type": "number",
                     "minimum": 1,
                     "maximum": 65535,
                     "default": 5004,
-                    "description": "RTP port (AES67 default 5004)"
+                    "title": "RTP Port",
+                    "description": "AES67 default 5004"
                 },
                 "interface": {
                     "type": "string",
                     "default": "",
-                    "description": "Network interface to send on; empty = system default",
+                    "description": "Empty = system default",
                     "x-deviceType": "network-interface"
                 },
                 "encoding": {
@@ -51,14 +52,14 @@
                         "L16"
                     ],
                     "default": "L24",
-                    "description": "Wire sample format: L24 (24-bit, the AES67 default) or L16"
+                    "description": "L24 is the AES67 default"
                 },
                 "channels": {
                     "type": "number",
                     "minimum": 1,
                     "maximum": 2,
                     "default": 2,
-                    "description": "Channels to send. This output mixes its 302M sources to stereo, so this is 1 or 2."
+                    "description": "1 or 2. Sources are mixed to stereo."
                 },
                 "ptimeMs": {
                     "type": "number",
@@ -70,35 +71,40 @@
                     ],
                     "default": 1,
                     "x-unit": "ms",
-                    "description": "Packet time. 1 ms is the AES67 default every receiver must support; 4 ms lowers packet rate, 0.125/0.25 ms lower latency at high packet rates."
+                    "title": "Packet Time",
+                    "description": "1 ms is the AES67 default. 4 ms lowers packet rate; 0.125/0.25 ms lowers latency."
                 },
                 "payloadType": {
                     "type": "number",
                     "minimum": 96,
                     "maximum": 127,
                     "default": 96,
-                    "description": "RTP dynamic payload type to send with"
+                    "title": "Payload Type",
+                    "description": "RTP payload type to send"
                 },
                 "mtu": {
                     "type": "number",
                     "minimum": 576,
                     "maximum": 9000,
                     "default": 1452,
-                    "description": "Maximum packet size. One packet time must fit inside it — the module refuses to start rather than fragment."
+                    "title": "MTU",
+                    "description": "One packet time must fit, or the module refuses to start"
                 },
                 "ttl": {
                     "type": "number",
                     "minimum": 1,
                     "maximum": 255,
                     "default": 16,
-                    "description": "Multicast TTL (hop limit)"
+                    "title": "TTL",
+                    "description": "Multicast hop limit"
                 },
                 "dscp": {
                     "type": "number",
                     "minimum": -1,
                     "maximum": 63,
                     "default": 46,
-                    "description": "DSCP marking for the media packets. 46 (EF) is the AES67 recommendation; -1 leaves packets unmarked."
+                    "title": "DSCP",
+                    "description": "46 (EF) is the AES67 recommendation; -1 = unmarked"
                 },
                 "senderLatencyMs": {
                     "type": "number",
@@ -108,29 +114,34 @@
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-unit": "ms",
-                    "description": "Sender pacing budget — how far behind the house clock packets leave, so they can be spaced evenly instead of leaving in bursts. This is NOT the route playout offset: RTP timestamps carry the alignment, so anything added here is spent from the receiver's link offset. Keep it small."
+                    "title": "Sender Latency",
+                    "description": "Pacing budget so packets leave evenly. Not the route offset; keep it small."
                 },
                 "ptpSync": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Stamp RTP timestamps from the PTP epoch, so receivers locked to the same grandmaster align sample-exactly. Requires a PTP-disciplined system clock (ptp4l/phc2sys); without one the module keeps free-running timestamps and says so rather than announcing a clock it does not have."
+                    "title": "PTP Sync",
+                    "description": "Stamp RTP from the PTP epoch. Needs a PTP-disciplined system clock."
                 },
                 "ptpGmid": {
                     "type": "string",
                     "default": "",
-                    "description": "PTP grandmaster ID to announce, e.g. 00-1D-C1-FF-FE-50-30-EE. Only announced when the epoch was actually locked."
+                    "title": "PTP Grandmaster ID",
+                    "description": "Announced to receivers once the epoch is locked"
                 },
                 "ptpDomain": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 127,
                     "default": 0,
-                    "description": "PTP domain (AES67 media profile default 0)"
+                    "title": "PTP Domain",
+                    "description": "AES67 default 0"
                 },
                 "sapEnabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Announce this stream over SAP (239.255.255.255:9875) so other devices can discover it"
+                    "title": "SAP Announce",
+                    "description": "Announce this stream so other devices can discover it"
                 },
                 "sapIntervalS": {
                     "type": "number",
@@ -138,12 +149,14 @@
                     "maximum": 300,
                     "default": 30,
                     "x-unit": "s",
-                    "description": "Seconds between SAP announcements"
+                    "title": "SAP Interval",
+                    "description": "Seconds between announcements"
                 },
                 "sessionName": {
                     "type": "string",
                     "default": "",
-                    "description": "Session name shown in other devices' stream pickers; empty = auto"
+                    "title": "Session Name",
+                    "description": "Shown in other devices' stream pickers. Empty = auto."
                 }
             }
         },

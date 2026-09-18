@@ -62,7 +62,7 @@ When I paste a review or ask you to review changes:
 - **Vue Flow** for the routing editor — modules as nodes, connections as edges
 - **Shared components**: `MrButton`, `MrInput`, `MrSelect`, `MrSlider`, `MrToggle`, `MrTooltip`, `MrModal`, `MrContextMenu` — use these instead of raw HTML elements
 - **Composables** for complex logic: `useContextMenu`, `useFocusMode`, `useGraphSync`
-- **Tooltips** use the styled popup pattern (`group/tb` + `group-hover/tb:block`), not native `title` attributes
+- **Tooltips** never use native `title` attributes. `MrTooltip` (CSS `group/tb` + `group-hover/tb:block`) for chrome that never scrolls; `MrHelpTip` (teleported, pinnable) for anything inside a scroll box or that touch users must reach — settings help text always uses `MrHelpTip` (ADR-0022)
 
 ### Plugin Architecture
 

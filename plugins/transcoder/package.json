@@ -26,20 +26,21 @@
                         { "name": "720p", "width": 1280, "height": 720, "bitrate": 2500 },
                         { "name": "480p", "width": 854, "height": 480, "bitrate": 1200 }
                     ],
-                    "description": "Output quality renditions — \"+ Add\" creates another MPEG-TS output port. Each is decoded once and re-encoded at the given size and bitrate.",
+                    "description": "Each rendition is an output port, re-encoded at its size and bitrate",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "default": "", "description": "Label (optional)" },
-                            "width": { "type": "number", "default": 1280, "minimum": 16, "maximum": 7680, "description": "Width (px)" },
-                            "height": { "type": "number", "default": 720, "minimum": 16, "maximum": 4320, "description": "Height (px)" },
-                            "bitrate": { "type": "number", "default": 2500, "minimum": 128, "maximum": 50000, "description": "Bitrate (kbps)" },
+                            "name": { "type": "string", "default": "", "title": "Name", "description": "Optional label" },
+                            "width": { "type": "number", "default": 1280, "minimum": 16, "maximum": 7680, "title": "Width", "description": "px" },
+                            "height": { "type": "number", "default": 720, "minimum": 16, "maximum": 4320, "title": "Height", "description": "px" },
+                            "bitrate": { "type": "number", "default": 2500, "minimum": 128, "maximum": 50000, "title": "Bitrate", "description": "kbps" },
                             "codec": {
                                 "type": "string",
                                 "enum": ["h264", "h265", "av1"],
                                 "x-advanced": true,
                                 "x-enumLabels": { "h264": "H.264", "h265": "H.265", "av1": "AV1" },
-                                "description": "Override output codec for this rendition. Blank = inherit the global codec."
+                                "title": "Codec",
+                                "description": "Override for this rendition. Blank = inherit."
                             },
                             "encoderImpl": {
                                 "type": "string",
@@ -51,7 +52,8 @@
                                     "va": "VA-API hardware (Intel iGPU)",
                                     "software": "Software (x264/x265)"
                                 },
-                                "description": "Override encoder implementation for this rendition. Resolved against this rendition's codec. Blank = inherit the global implementation."
+                                "title": "Encoder",
+                                "description": "Override for this rendition. Blank = inherit."
                             },
                             "rateControl": {
                                 "type": "string",
@@ -61,7 +63,8 @@
                                     "cbr": "CBR (constant)",
                                     "vbr": "VBR (variable)"
                                 },
-                                "description": "Override rate control for this rendition. Blank = inherit."
+                                "title": "Rate Control",
+                                "description": "Override for this rendition. Blank = inherit."
                             },
                             "speedPreset": {
                                 "type": "string",
@@ -77,7 +80,8 @@
                                     "slow": "Slow"
                                 },
                                 "x-showWhen": "encoderImpl=software,va,auto",
-                                "description": "Override speed↔quality preset for this rendition (software x264/x265 / VA-API only). Raise it on just the top rendition for cleaner motion without paying the CPU on every quality. Blank = inherit."
+                                "title": "Speed Preset",
+                                "description": "Override for this rendition. Raise on the top rendition only for cleaner motion."
                             },
                             "h264Profile": {
                                 "type": "string",
@@ -90,7 +94,8 @@
                                     "high": "High"
                                 },
                                 "x-showWhen": "codec=h264",
-                                "description": "Override H.264 profile for this rendition (H.264 only) — e.g. Baseline on a low rendition targeting old decoders. Blank = inherit."
+                                "title": "H.264 Profile",
+                                "description": "Override for this rendition. Blank = inherit."
                             },
                             "sceneCut": {
                                 "type": "number",
@@ -98,14 +103,16 @@
                                 "maximum": 100,
                                 "x-advanced": true,
                                 "x-showWhen": "encoderImpl=software,auto",
-                                "description": "Override scene-cut threshold for this rendition (software x264/x265 only; 0 = off). Blank = inherit."
+                                "title": "Scene Cut",
+                                "description": "Override (software only; 0 = off). Blank = inherit."
                             },
                             "cpbSeconds": {
                                 "type": "number",
                                 "minimum": 0.1,
                                 "maximum": 2,
                                 "x-advanced": true,
-                                "description": "Override HRD buffer depth (seconds) for this rendition. Blank = inherit."
+                                "title": "CPB Depth",
+                                "description": "Override for this rendition. Blank = inherit."
                             }
                         }
                     },
@@ -119,7 +126,7 @@
                         "av1"
                     ],
                     "default": "h264",
-                    "description": "Output video codec (applied to every rendition)"
+                    "description": "Applied to every rendition"
                 },
                 "rateControl": {
                     "type": "string",
@@ -129,7 +136,8 @@
                         "cbr": "CBR (constant — safest for UDP/SRT)",
                         "vbr": "VBR (variable — better quality on motion)"
                     },
-                    "description": "Encoder rate control for every rendition. CBR (default) holds a constant bitrate (peak = target) — best for fixed-bandwidth UDP/SRT/MPEG-TS, since bursts can overrun the receiver's buffer and read as packet loss. VBR targets the bitrate as an average and lets per-frame size vary for better quality on motion, with the peak capped at 1.5x to bound bursts."
+                    "title": "Rate Control",
+                    "description": "CBR: constant bitrate, safest for fixed-bandwidth links. VBR: better motion quality, peak capped at 1.5x."
                 },
                 "encoderImpl": {
                     "type": "string",
@@ -146,7 +154,8 @@
                         "va": "VA-API hardware (Intel iGPU)",
                         "software": "Software (x264/x265)"
                     },
-                    "description": "Encoder implementation. Auto prefers a hardware block, then software. V4L2 is the Pi's SoC encoder; VA-API is the Intel iGPU (x86) — the only H.265 encoder on Intel boxes with no x265enc, and it offloads the CPU. Software (x264/x265) exposes the richest tuning (scene-cut, profiles) and runs many renditions at once. The dropdown only lists impls actually installed for the chosen codec."
+                    "title": "Encoder",
+                    "description": "Auto prefers hardware (V4L2 on Pi, VA-API on Intel), then software. Only installed options are listed."
                 },
                 "speedPreset": {
                     "type": "string",
@@ -169,7 +178,8 @@
                         "medium": "Medium — balanced",
                         "slow": "Slow — highest CPU, best quality"
                     },
-                    "description": "Software x264/x265 speed↔quality preset (on Intel VA-API it maps to target-usage; ignored by V4L2 hardware and AV1). Faster presets use less CPU but block up on hard content — fast motion and fine/scrolling text; slower presets spend more CPU for cleaner quality at the same bitrate. Default 'ultrafast' suits a CPU-bound Pi; on a box with spare cores raise it (e.g. Fast/Medium) for cleaner motion. Applies to every rendition and rebuilds the pipeline.",
+                    "title": "Speed Preset",
+                    "description": "x264/x265 speed vs quality. Faster = less CPU, blockier on hard content. Rebuilds the pipeline.",
                     "x-showWhen": "encoderImpl=software,va,auto"
                 },
                 "h264Profile": {
@@ -187,7 +197,8 @@
                         "main": "Main",
                         "high": "High — best efficiency"
                     },
-                    "description": "H.264 output profile — constrains encoder features for decoder compatibility (H.264 only; ignored for H.265/AV1). Baseline is the most widely decodable (no CABAC or B-frames — best for old/embedded hardware decoders); Main adds CABAC; High adds the 8×8 transform for best efficiency. Auto lets the encoder choose. Applies to every rendition and rebuilds the pipeline.",
+                    "title": "H.264 Profile",
+                    "description": "Decoder compatibility. Baseline decodes everywhere, High is most efficient. Rebuilds the pipeline.",
                     "x-showWhen": "codec=h264"
                 },
                 "sceneCut": {
@@ -197,7 +208,8 @@
                     "default": 40,
                     "x-widget": "slider",
                     "x-step": 5,
-                    "description": "Scene-cut detection threshold for software x264/x265 (H.264/H.265 only; ignored by V4L2 and VA-API hardware). When the encoder detects a hard cut it inserts an adaptive keyframe there, so the picture snaps clean at the cut instead of blocking until the next scheduled keyframe. 40 is x264's default; higher = more sensitive (more keyframes, more bitrate); 0 = off (strict fixed-GOP — use for byte-aligned ABR renditions). Note: tune=zerolatency runs with no lookahead, so detection is reactive rather than optimally placed. Applies to every rendition and rebuilds the pipeline.",
+                    "title": "Scene Cut",
+                    "description": "Adaptive keyframe on hard cuts (software encoders only). 40 = x264 default, 0 = off.",
                     "x-showWhen": "encoderImpl=software,auto"
                 },
                 "cpbSeconds": {
@@ -209,7 +221,8 @@
                     "x-step": 0.1,
                     "x-unit": "s",
                     "x-advanced": true,
-                    "description": "HRD buffer depth in seconds of the rate cap (x264/x265 vbv-bufsize, VA-API cpb-size). Bounds the encoder's worst-case burst — above all scene-cut keyframes: an oversized keyframe must be serialized over the link at the stream rate, so it (and every frame queued behind it) lands late at the receiver and gets dropped there. 1 s is the classic default; lower it toward 0.3–0.5 s when the delivery path has little bandwidth headroom (long-haul RIST/SRT) at some cost in keyframe quality. Applies to every rendition and rebuilds the pipeline.",
+                    "title": "CPB Depth",
+                    "description": "Encoder burst bound in seconds of the rate cap. Lower to 0.3–0.5 s on links with little headroom.",
                     "x-showWhen": "encoderImpl=software,va,auto"
                 },
                 "framerate": {
@@ -222,7 +235,8 @@
                         60
                     ],
                     "default": 50,
-                    "description": "Output framerate (shared by all renditions, keeps keyframes aligned for ABR)"
+                    "title": "Frame Rate",
+                    "description": "Shared by all renditions so keyframes stay aligned"
                 },
                 "deinterlace": {
                     "type": "string",
@@ -233,14 +247,15 @@
                         "force": "Force deinterlace",
                         "off": "Keep interlaced (pass-through)"
                     },
-                    "description": "Interlaced sources (1080i etc.) are deinterlaced automatically by default — progressive sources pass through untouched. 'Keep interlaced' skips deinterlacing and passes the fields through; only useful when renditions keep the source resolution (scaling interlaced fields corrupts them). Note: only the software (x264) H.264 encoder can flag its output as interlaced; VA-API/V4L2 outputs remain progressive-flagged."
+                    "description": "Auto deinterlaces interlaced sources. Keep interlaced only at source resolution."
                 },
                 "gopFrames": {
                     "type": "number",
                     "default": 50,
                     "minimum": 1,
                     "maximum": 600,
-                    "description": "Keyframe interval in frames (the standard encoder unit — x264/x265 key-int-max). A keyframe is forced every N frames; shorter = faster channel-join/recovery but more bitrate. At 50 fps, 50 = 1 s, 100 = 2 s.",
+                    "title": "GOP Length",
+                    "description": "Keyframe interval in frames. Shorter = faster join, more bitrate. 50 = 1 s at 50 fps.",
                     "x-unit": "frames"
                 },
                 "cpuDecodeThreading": {
@@ -251,14 +266,16 @@
                         "multi": "Multi-core (spread decode across cores)",
                         "single": "Single core (lowest latency)"
                     },
-                    "description": "Software decode threading. MULTI-CORE (default) forces FFmpeg frame threading (thread-type=frame) so the decode spreads across all CPU cores instead of pinning one at 100% — important on the Pi 5, which has no hardware H.264 decoder. Costs ~1 frame of latency per core. SINGLE CORE is GStreamer's default live behaviour (one core, lowest latency) — use if latency matters more than spreading the load."
+                    "title": "CPU Decode Threading",
+                    "description": "Multi-core spreads software decode across cores, ~1 frame latency per core. Single = lowest latency."
                 },
                 "bufferMs": {
                     "type": "number",
                     "minimum": 100,
                     "maximum": 2000,
                     "default": 200,
-                    "description": "Buffer (ms) — sizes the network jitter queue and the decoded-frame buffer that lets the decoder work ahead. Absorbs timing jitter so a momentary stall drops fewer frames (less macroblocking). It does NOT add decode cores. 200 ms is a sane default; lower it for tighter latency, raise it if you still see drops. Costs this much latency. Floored at 100 ms — below that, a scene-cut keyframe burst back-pressures into the compressed input and sheds H.264 mid-GOP (ghosting/scrambling until the next keyframe).",
+                    "title": "Buffer",
+                    "description": "Jitter and decode-ahead buffer. Costs this much latency. Floored at 100 ms.",
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms"
@@ -267,7 +284,8 @@
                     "type": "boolean",
                     "default": true,
                     "x-advanced": true,
-                    "description": "Carry the SOURCE stream's timestamps through the transcode (default on). Output PTS/PCR then match the input's, so downstream muxers align this video with its sibling audio by real timestamps and lipsync survives module restarts. Turn off only to fall back to the previous per-start timeline behaviour."
+                    "title": "Preserve Source Timeline",
+                    "description": "Keep source timestamps so muxers align video with audio and lip-sync survives restarts."
                 },
                 "subtitlePosition": {
                     "type": "string",
@@ -275,7 +293,8 @@
                     "default": "bottom",
                     "x-enumLabels": { "bottom": "Bottom", "top": "Top", "center": "Center" },
                     "x-live": true,
-                    "description": "Vertical placement of subtitle text on the picture."
+                    "title": "Subtitle Position",
+                    "description": "Vertical placement"
                 },
                 "subtitleAlign": {
                     "type": "string",
@@ -283,7 +302,8 @@
                     "default": "center",
                     "x-enumLabels": { "center": "Center", "left": "Left", "right": "Right" },
                     "x-live": true,
-                    "description": "Horizontal alignment of subtitle text."
+                    "title": "Subtitle Alignment",
+                    "description": "Horizontal alignment"
                 },
                 "subtitleSize": {
                     "type": "number",
@@ -294,7 +314,8 @@
                     "x-step": 2,
                     "x-unit": "pt",
                     "x-live": true,
-                    "description": "Subtitle font size. Scales with the picture height (the renderer resizes relative to the frame), so one value suits every rendition."
+                    "title": "Subtitle Size",
+                    "description": "Scales with picture height, so one value suits every output size"
                 },
                 "subtitleMargin": {
                     "type": "number",
@@ -305,13 +326,15 @@
                     "x-step": 5,
                     "x-unit": "px",
                     "x-live": true,
-                    "description": "Distance from the top or bottom edge (ignored for Center)."
+                    "title": "Subtitle Margin",
+                    "description": "Distance from the top or bottom edge; ignored for Center"
                 },
                 "subtitleBackground": {
                     "type": "boolean",
                     "default": true,
                     "x-live": true,
-                    "description": "Draw a shaded box behind the text for legibility over bright pictures."
+                    "title": "Subtitle Background",
+                    "description": "Shaded box behind the text for legibility"
                 },
                 "subtitleBackgroundOpacity": {
                     "type": "number",
@@ -323,7 +346,8 @@
                     "x-unit": "%",
                     "x-live": true,
                     "x-showWhen": "subtitleBackground=true",
-                    "description": "Opacity of the shaded box (0 = invisible, 100 = solid black)."
+                    "title": "Subtitle Background Opacity",
+                    "description": "0 = invisible, 100 = solid black"
                 }
             }
         },

@@ -3,10 +3,14 @@ import type { ModuleState } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { matchShowWhen } from '@/utils/showWhen';
 import { stripDisplayFields, type GraphSource } from '@/utils/displayWidgets';
+import { fieldLabel } from '@/utils/fieldLabel';
 
 /** JSON Schema property shape with media-router extensions. */
 interface SchemaProperty {
     type?: string;
+    /** Field heading; falls back to the humanized key. */
+    title?: string;
+    /** Help text shown in the field's "?" popover. */
     description?: string;
     default?: unknown;
     enum?: unknown[];
@@ -93,7 +97,7 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         return Object.entries(schemaProps).map(([key, prop]) => ({
             key,
             type: prop.type ?? 'string',
-            label: key.replace(/([A-Z])/g, ' $1').replace(/^./, (s: string) => s.toUpperCase()),
+            label: fieldLabel(key, prop),
             description: prop.description ?? '',
             defaultValue: prop.default,
             enumValues: prop.enum,
