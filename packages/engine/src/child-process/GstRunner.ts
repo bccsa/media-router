@@ -162,6 +162,20 @@ export class GstRunner {
                 this.exitWhenDrained();
                 break;
 
+            // Relaunch the current pipeline (same description, fresh Python).
+            // Used by BusFanoutCoordinator for a consumer whose unixfdsrc holds
+            // a dead producer edge; the relaunch re-gates on the new edge.
+            case 'restartPipeline':
+                if (!this.lastStart) {
+                    this.ipc.sendResponse(msg.id, { error: 'No pipeline to restart' });
+                    break;
+                }
+                console.error(
+                    `[gst-runner] Relaunch requested: ${(msg.data as { reason?: string })?.reason ?? 'no reason given'}`,
+                );
+                this.startPipeline(this.lastStart, msg.id);
+                break;
+
             case 'getState':
                 this.ipc.sendResponse(msg.id, {
                     state: this.currentState,
@@ -652,6 +666,8 @@ export class GstRunner {
 
         this.lastStart = opts;
         const epoch = ++this.startEpoch;
+        // The previous launch is retired; until the gate opens there is no live attachment.
+        this.ipc.sendEvent('pipelineStarting', {});
         this.clearQueuedBusAttaches('superseded by a newer start');
 
         const launch = () => {
@@ -669,6 +685,10 @@ export class GstRunner {
             });
             this.python = py;
             py.start(opts);
+            // A consumer's unixfdsrc connects during this start, so this is
+            // the instant its bus attachment dates from (GstChildProcess
+            // records it; BusFanoutCoordinator compares producer vs consumer).
+            this.ipc.sendEvent('pipelineLaunched', { at: Date.now() });
             // `py.start` writes the `start` command synchronously and Python
             // executes commands in order, so anything flushed here lands AFTER
             // the pipeline exists — the queued attaches find their tee (or the

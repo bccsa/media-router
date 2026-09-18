@@ -2292,6 +2292,8 @@ For processes that aren't the module's health-defining producer (auxiliary tools
 | `this.config` | `Record<string, unknown>` | Current module configuration |
 | `this.services` | `ModuleServices \| null` | Injected engine services |
 | `this.childProcess` | `GstChildProcess \| null` | Running GStreamer child process |
+| `this.childProcess.pipelineLaunchedAt` | `number \| undefined` | Epoch ms of the current pipeline launch (undefined while down or re-gating); the engine compares producer vs consumer on a producer's PLAYING (ADR-0010 rule 4) |
+| `this.childProcess.restartPipeline(reason)` | method | Relaunch the current pipeline in place (fresh runner, same description) — a pipeline relaunch, not a module stop/start |
 | `this.paModuleId` | `number \| null` | PulseAudio module ID for null-sink cleanup |
 | `this.pwNodeName` | `string` | PipeWire node name (`MR_PW_{instanceId}`) |
 | `this.running` | `boolean` | Whether the pipeline is running |

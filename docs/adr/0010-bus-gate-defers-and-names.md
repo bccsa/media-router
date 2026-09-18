@@ -125,3 +125,29 @@ ever. The deadline waits for EVERY non-live head's first buffer (a mux waits
 for all its inputs). All of this lives in `gst_source_gate.py`; the runner only
 wires it.
 
+## Amendment 2026-09-18 — a consumer that predates its producer's launch is relaunched
+
+The socket poll above only runs while a consumer waits for its first data. A
+consumer that had already flowed, or whose `unixfdsrc` never surfaced the peer
+closing, was uncovered: FRA01 "MUL IN" launched one second after a producer
+instance that died three seconds later and then sat at 0 kbps for an hour with
+no error, while the returning producer streamed into an edge nobody read. Rule
+1's re-attach rebuilt the edge; nothing rebuilt the consumer.
+
+Rule 4. **A consumer whose pipeline launched at or before its producer's current
+launch cannot hold the live edge, so the producer's PLAYING relaunches it.**
+`GstRunner` posts `pipelineLaunched {at}` on every launch and `pipelineStarting`
+when a launch is retired; `GstChildProcess` keeps that as `pipelineLaunchedAt`
+(cleared on stopped / error / starting and when a relaunch is requested);
+`BusFanoutCoordinator.reattachProducer` compares consumer against producer after
+attaching each edge and calls `restartPipeline` once per stale consumer. It is a
+pipeline relaunch — fresh Python, same description, re-gated on the new edge —
+never a module stop/start, so PipeWire objects and downstream links survive and
+the cascade `ModuleLifecycle._restart` forbids stays forbidden. A consumer with
+no launch time is down or already re-gating and is left alone. Not covered: a
+producer without a `GstChildProcess` (hls-player's fan-out sidecar) — its
+consumers still rely on the poll. Both timestamps are `Date.now()` in the runner
+host; under the forked backend a wall-clock step between two launches can
+misjudge one comparison (`BusFanoutCoordinator.test.ts`, `GstChildProcess.test.ts`,
+`GstRunner.test.ts`).
+

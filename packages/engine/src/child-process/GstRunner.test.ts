@@ -297,6 +297,40 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { element?: string }).element).toBe('unixfdsink3');
     });
 
+    it('restartPipeline relaunches the last start (answering that request) and refuses with nothing started', () => {
+        runner.handleControlMessage({ id: 'rpc-rs0', type: 'request', action: 'restartPipeline', data: {} });
+        expect(lastByType('response')?.id).toBe('rpc-rs0');
+        expect(lastByType('response')?.data).toEqual({ error: 'No pipeline to restart' });
+
+        const start = vi
+            .spyOn(runner as unknown as { startPipeline: (o: unknown, id: string) => void }, 'startPipeline')
+            .mockImplementation(() => {});
+        (runner as unknown as { lastStart: unknown }).lastStart = { pipeline: 'fakesrc ! fakesink' };
+        const backoff = (runner as unknown as { restartBackoff: { reset: () => void } }).restartBackoff;
+        const reset = vi.spyOn(backoff, 'reset');
+        runner.handleControlMessage({ id: 'rpc-rs1', type: 'request', action: 'restartPipeline', data: { reason: 't' } });
+        expect(start).toHaveBeenCalledWith({ pipeline: 'fakesrc ! fakesink' }, 'rpc-rs1');
+        // A relaunch must not defeat the consumer's own crash-loop backoff.
+        expect(reset).not.toHaveBeenCalled();
+    });
+
+    it('posts pipelineLaunched the instant an ungated start launches python', () => {
+        // BusFanoutCoordinator dates a consumer's bus attachment from this event.
+        runner.handleControlMessage({
+            id: 'rpc-pl',
+            type: 'request',
+            action: 'startPipeline',
+            data: { pipeline: 'fakesrc ! fakesink', restartOnError: false },
+        });
+        const launched = lastByType('event', 'pipelineLaunched');
+        expect(typeof (launched?.data as { at: number }).at).toBe('number');
+        // …preceded by pipelineStarting (the retire marker a relaunch clears the epoch on).
+        const events = sent.filter((m) => m.type === 'event').map((m) => m.action);
+        expect(events.indexOf('pipelineStarting')).toBeGreaterThanOrEqual(0);
+        expect(events.indexOf('pipelineStarting')).toBeLessThan(events.indexOf('pipelineLaunched'));
+        runner.shutdown('test done');
+    });
+
     describe('indefinite unixfd socket gate', () => {
         const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
         const gatedStart = (id: string, socket: string) =>
