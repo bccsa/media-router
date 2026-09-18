@@ -33,6 +33,7 @@ try:
 except (ValueError, ImportError):
     _GSTAPP_AVAILABLE = False
 
+import collections
 import json
 import math
 import os
@@ -1435,11 +1436,62 @@ _BRANCH_ALIGN_GIVEUP_MS = 15000.0
 # Below this the branch is already where the stamps say it should be, and a
 # timeline step costs more than it buys.
 _BRANCH_ALIGN_MIN_NS = 2_000_000
-# How many access units of payload→PTS history a branch keeps while it waits for
-# its demuxer's first output. The join is normally in the first few; the live
-# video branch had discarded five buffers' worth before it emitted. This is the
+# How many completed access units per PID a branch keeps queued for its
+# demuxer to hand back. The join is normally the first few; the live video
+# branch had discarded five buffers' worth before it emitted. This is the
 # memory bound, not an expectation.
 _BRANCH_ALIGN_HISTORY = 4096
+
+
+def _branch_align_join(st, pid, tail):
+    """The PTS of the access unit the demuxer just emitted on `pid`, joined by
+    its payload tail IN EMISSION ORDER — or None.
+
+    A demuxer hands back a PID's access units strictly in sequence, so the
+    completed AUs sit in a per-PID queue and — once the queue is in step with
+    the demuxer — the one just emitted is the EARLIEST pending entry whose
+    tail matches. Order is what makes a repeated tail decidable: digital
+    silence and a test tone repeat their payload every few frames (a periodic
+    302M leg had 75 distinct tails and then none), and a content-only index
+    had to call every later lookup ambiguous — every audio-output-302m branch
+    on 10.9.16.50 ran un-anchored for that reason (2026-09-17).
+
+    IN STEP means the caller joins EVERY emitted buffer, from the first, so
+    the queue never holds more than the AUs the demuxer has not handed back
+    yet. Joining only once measuring starts left ~150 AUs pending, and on a
+    test tone the earliest matching tail was then 80 frames early: −1.87 s,
+    rejected. The queue also never holds what the demuxer will not emit: an
+    access unit that started before the branch had seen its PAT and PMT is
+    discarded by tsdemux (it programs the pad at the PMT and starts on the
+    next PUSI), so the index does not queue it (`close_au`) — which is what
+    makes the queue's HEAD the demuxer's first emitted AU on a silent leg,
+    where every tail is the same and only position can decide. So: a match
+    at the head is always the AU; before the queue is in step, a match
+    further down must be UNIQUE among the pending entries or it decides
+    nothing (whatever sits ahead of it then is a discard this index did not
+    predict, and a repeated tail cannot say how many). From the first join
+    on, the earliest match is the AU. Entries before a match go with it.
+    Pure, so the rule is pinned by gst_branch_align_test.py.
+    """
+    q = st["aus"].get(pid)
+    if not q:
+        return None
+    hit = None
+    for i, (t, pts) in enumerate(q):
+        if t != tail:
+            continue
+        if hit is None:
+            hit = (i, pts)
+            if i == 0 or st["synced"].get(pid):
+                break
+        else:
+            return None                 # first join, off the head, and the tail repeats
+    if hit is None:
+        return None
+    for _ in range(hit[0] + 1):
+        q.popleft()
+    st["synced"][pid] = True
+    return hit[1]
 # Bytes of PES payload TAIL used as the join key — the end of the last slice,
 # which no two frames share (an access unit's HEAD is codec boilerplate every
 # frame repeats: measured on the live H.264 leg, a head join landed whole frames
@@ -1472,12 +1524,14 @@ def _install_branch_stamp_align(pipe, cfg):
             "name": name,
             "k": None,          # min(stamp − ns(firstPES)) — the house mapping
             "ksamples": 0,
-            # PES payload TAIL -> that PES's PTS, or None once two access units
-            # of this branch have shared a tail (an unusable key, not a licence
-            # to pick one).
-            "byTail": {},
-            "tailOrder": [],    # insertion order, for the history bound
-            "open": {},         # pid -> [pts, bytearray] of the AU being received
+            # pid -> deque of (payload TAIL, PES PTS) of completed access units
+            # not yet handed back by the demuxer, in arrival order — the
+            # join is by tail IN THAT ORDER (`_branch_align_join`).
+            "aus": {},
+            "synced": {},       # pid -> True once its queue is in step with the demuxer
+            "psi": [False, False],  # PAT seen, PMT seen — before both, an AU is one tsdemux discards
+            "indexed": 0,       # access units indexed so far (for the log)
+            "open": {},         # pid -> [pts, bytearray, need, afterPsi] of the AU being received
             "sink_pad": sink_pad,
             "sink_probe_id": None,
             "pending": 0,       # armed src pads still awaiting their offset
@@ -1494,21 +1548,39 @@ def _install_branch_stamp_align(pipe, cfg):
             """An access unit ends where the next one starts (a video PES has no
             length field), so a PUSI closes the one before it — the same trigger
             the demuxer emits on, which is why the join is always ready in time.
+
+            A PES WITH a length (audio, 302M, private data) ends when that many
+            bytes have arrived, and tsdemux emits it THEN — inside the same bus
+            buffer, before any next PUSI. Closing such an AU only at the next
+            PUSI left it open while the demuxer's src probe looked it up, so a
+            one-AU-per-buffer leg (every 302M egress: mpegtsmux alignment=7 +
+            the stamper's coalescing) joined NOTHING and every audio-output-302m
+            branch ran un-anchored (10.9.16.50, 2026-09-17). `_complete_au`
+            below is the length-driven close; this one stays the PUSI close.
             """
             rec = st["open"].pop(pid, None)
             if rec is None or rec[0] is None or len(rec[1]) < _BRANCH_ALIGN_KEY_BYTES:
                 return
+            if not rec[3]:
+                return              # started before PAT+PMT: the demuxer discards it
             tail = bytes(rec[1][-_BRANCH_ALIGN_KEY_BYTES:])
-            prev = st["byTail"].get(tail, False)
-            if prev is False:
-                st["tailOrder"].append(tail)
-                if len(st["tailOrder"]) > _BRANCH_ALIGN_HISTORY:
-                    st["byTail"].pop(st["tailOrder"].pop(0), None)
-                st["byTail"][tail] = rec[0]
-            elif prev != rec[0]:
-                # Two access units with the same tail: the key cannot decide
-                # between them, so it decides nothing (None disqualifies it).
-                st["byTail"][tail] = None
+            q = st["aus"].get(pid)
+            if q is None:
+                q = st["aus"][pid] = collections.deque()
+            q.append((tail, rec[0]))
+            if len(q) > _BRANCH_ALIGN_HISTORY:
+                q.popleft()
+            st["indexed"] += 1
+
+        def _complete_au(st, pid):
+            """Close the open AU on `pid` once its PES length is satisfied: trim
+            to the declared length (the demuxer emits exactly that) and index
+            it now, so the join is ready before the demuxer's push."""
+            rec = st["open"].get(pid)
+            if rec is None or rec[2] is None or len(rec[1]) < rec[2]:
+                return
+            del rec[1][rec[2]:]
+            close_au(st, pid)
 
         def index_sink_buffer(_pad, info, st=state):
             """One pass over the branch's TS: the producer's mapping (K), and a
@@ -1535,7 +1607,16 @@ def _install_branch_stamp_align(pipe, cfg):
                 if pkt[1] & 0x40:                   # PUSI: a PES may start here
                     p = pkt[off:]
                     if len(p) < 14 or p[0] != 0x00 or p[1] != 0x00 or p[2] != 0x01:
-                        continue                    # PSI section, not a PES
+                        # A PSI section: PAT on pid 0, PMT = table_id 0x02. The
+                        # demuxer emits nothing until it has both.
+                        if off + 1 < len(pkt):
+                            tid_at = off + 1 + pkt[off]
+                            if pid == 0:
+                                st["psi"][0] = True
+                            elif (st["psi"][0] and tid_at < len(pkt)
+                                    and pkt[tid_at] == 0x02):
+                                st["psi"][1] = True
+                        continue                    # not a PES
                     pts = ts_psi.read_pes_pts(pkt)
                     close_au(st, pid)
                     # K is measured from the buffer's FIRST PES: that is the PES
@@ -1543,9 +1624,17 @@ def _install_branch_stamp_align(pipe, cfg):
                     # makes of the buffer.
                     if pts is not None and first_pts is None:
                         first_pts = pts
-                    st["open"][pid] = [pts, bytearray(pkt[off + 9 + p[8]:])]
+                    # PES_packet_length (0 = unbounded, video): payload bytes to
+                    # expect after the header, or None — see close_au.
+                    hdr = 9 + p[8]
+                    plen = (p[4] << 8) | p[5]
+                    need = (6 + plen - hdr) if plen and 6 + plen > hdr else None
+                    st["open"][pid] = [pts, bytearray(pkt[off + hdr:]), need,
+                                       st["psi"][0] and st["psi"][1]]
+                    _complete_au(st, pid)
                 elif pid in st["open"]:
                     st["open"][pid][1] += pkt[off:]
+                    _complete_au(st, pid)
             if first_pts is None or stamp == Gst.CLOCK_TIME_NONE:
                 return Gst.PadProbeReturn.OK
             k = stamp - ts_timeline.pts90k_to_ns(first_pts)
@@ -1607,6 +1696,18 @@ def _install_branch_stamp_align(pipe, cfg):
             buf = info.get_buffer()
             if buf is None:
                 return Gst.PadProbeReturn.OK
+            # Which access unit is this? Join it back to the TS by its payload
+            # TAIL, in emission order — the demuxer strips the PES header and
+            # passes the payload through untouched, and this probe is ahead of
+            # any parser. EVERY buffer joins, from the first, so the queue
+            # stays in step with the demuxer (see _branch_align_join); only
+            # the settled window's joins become samples.
+            anchor = None
+            size = buf.get_size()
+            if size >= _BRANCH_ALIGN_KEY_BYTES:
+                tail = buf.extract_dup(size - _BRANCH_ALIGN_KEY_BYTES,
+                                       _BRANCH_ALIGN_KEY_BYTES)
+                anchor = _branch_align_join(st, pid, tail)
             pts = buf.pts
             if pts == Gst.CLOCK_TIME_NONE or st["k"] is None:
                 return Gst.PadProbeReturn.OK
@@ -1621,18 +1722,9 @@ def _install_branch_stamp_align(pipe, cfg):
             if elapsed < _BRANCH_ALIGN_SETTLE_MS:
                 return Gst.PadProbeReturn.OK          # still settling
             if len(samples) < _BRANCH_ALIGN_SAMPLES:
-                # Which access unit is this? Join it back to the TS by its
-                # payload TAIL — the demuxer strips the PES header and passes
-                # the payload through untouched, and this probe is ahead of any
-                # parser.
-                size = buf.get_size()
-                if size >= _BRANCH_ALIGN_KEY_BYTES:
-                    tail = buf.extract_dup(size - _BRANCH_ALIGN_KEY_BYTES,
-                                           _BRANCH_ALIGN_KEY_BYTES)
-                    anchor = st["byTail"].get(tail)
-                    if anchor is not None:
-                        samples.append(
-                            st["k"] + ts_timeline.pts90k_to_ns(anchor) - pts)
+                if anchor is not None:
+                    samples.append(
+                        st["k"] + ts_timeline.pts90k_to_ns(anchor) - pts)
                 if len(samples) < _BRANCH_ALIGN_SAMPLES:
                     if elapsed > _BRANCH_ALIGN_GIVEUP_MS:
                         if not finish(st, pad):
@@ -1661,7 +1753,7 @@ def _install_branch_stamp_align(pipe, cfg):
                 f"[gst-runner.py] branchAlign: {st['name']} {pad.get_name()} "
                 f"pid=0x{pid:x} offsetNs={off} ({off / 1e6:+.3f} ms){note} "
                 f"(median of {len(samples)} joined AUs, spread {spread / 1e6:.3f} ms, "
-                f"K={st['k']} from {st['ksamples']} buffers, ausIndexed={len(st['byTail'])})\n")
+                f"K={st['k']} from {st['ksamples']} buffers, ausIndexed={st['indexed']})\n")
             sys.stderr.flush()
             return Gst.PadProbeReturn.REMOVE
 

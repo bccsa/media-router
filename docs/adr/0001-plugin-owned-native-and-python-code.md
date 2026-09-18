@@ -31,3 +31,13 @@ registration.
 - The MPEG-TS python reference modules and their C++ port live side by side
   in `mpegts-core` (the python is the executable specification; the parity
   suite in `mpegts-core/tests/` enforces byte-identical outputs).
+
+## Status
+
+Amended by [[0019]] (2026-09-17): the engine's own pipeline runner,
+`packages/engine/native/mr-gst-runner/`, is C++ inside `packages/engine` —
+engine core under [[0002]], not data-path plugin code, and the one exception
+to "never inside `packages/engine`". It follows this ADR's plain-make
+contract and is discovered by the same root `make native*` targets
+(`packages/engine/native/*/Makefile`, owner `engine`, installed to
+`/usr/libexec/media-router/engine/`). Everything else here stands.

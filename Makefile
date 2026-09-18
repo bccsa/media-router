@@ -14,7 +14,9 @@
 # library plugins) are declared as make prerequisites inside each tool's
 # Makefile, so build order never matters here.
 
-NATIVE_DIRS := $(patsubst %/Makefile,%,$(wildcard plugins/*/native/*/Makefile))
+# Plus the engine's own native code (the gst pipeline runner, ADR-0019): its
+# owner folder is `engine`, so it installs to libexec/media-router/engine/.
+NATIVE_DIRS := $(patsubst %/Makefile,%,$(wildcard plugins/*/native/*/Makefile packages/engine/native/*/Makefile))
 
 # Fail with a clear message instead of a cryptic compile error.
 preflight:
