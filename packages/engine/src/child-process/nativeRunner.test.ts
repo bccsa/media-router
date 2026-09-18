@@ -172,20 +172,30 @@ describe('selectRunner', () => {
     const logs: string[] = [];
     const log = (l: string) => logs.push(l);
 
-    it('defaults to python when nothing opts in', () => {
-        const cmd = selectRunner(audioMatrix, PY, {}, log);
-        expect(cmd).toEqual({ kind: 'python', file: 'python3', args: [PY] });
-    });
-
-    it('goes native for an eligible description under MR_GST_RUNNER_NATIVE=1', () => {
+    it('goes native by default for an eligible description — nothing to set', () => {
         const dir = fakeBinDir();
-        const cmd = selectRunner(audioMatrix, PY, { MR_GST_RUNNER_NATIVE: '1', MR_NATIVE_BIN_DIR: dir }, log);
+        const cmd = selectRunner(audioMatrix, PY, { MR_NATIVE_BIN_DIR: dir }, log);
         expect(cmd.kind).toBe('native');
         expect(cmd.file).toBe(join(dir, 'mr-gst-runner'));
         expect(cmd.args).toEqual([]);
     });
 
-    it('keeps an ineligible description on python even under the opt-in, silently', () => {
+    it('MR_GST_RUNNER_NATIVE=0 is the engine-wide rollback to python', () => {
+        const dir = fakeBinDir();
+        const cmd = selectRunner(audioMatrix, PY, { MR_GST_RUNNER_NATIVE: '0', MR_NATIVE_BIN_DIR: dir }, log);
+        expect(cmd).toEqual({ kind: 'python', file: 'python3', args: [PY] });
+        // an explicit per-module pin still wins over the rollback
+        expect(selectRunner({ ...audioMatrix, runner: 'native' }, PY, { MR_GST_RUNNER_NATIVE: '0', MR_NATIVE_BIN_DIR: dir }, log).kind).toBe('native');
+    });
+
+    it('falls back to python, loudly, when the binary is not built', () => {
+        logs.length = 0;
+        const cmd = selectRunner(audioMatrix, PY, { MR_NATIVE_BIN_DIR: '/nonexistent' }, log);
+        expect(cmd.kind).toBe('python');
+        expect(logs[0]).toMatch(/not built/);
+    });
+
+    it('keeps an ineligible description on python by default, silently', () => {
         logs.length = 0;
         const dir = fakeBinDir();
         const cmd = selectRunner(
@@ -198,7 +208,7 @@ describe('selectRunner', () => {
         expect(logs).toEqual([]);
     });
 
-    it('honours runner: "native" without the engine-wide opt-in', () => {
+    it('honours runner: "native" explicitly', () => {
         const dir = fakeBinDir();
         const cmd = selectRunner({ ...audioMatrix, runner: 'native' }, PY, { MR_NATIVE_BIN_DIR: dir }, log);
         expect(cmd.kind).toBe('native');
@@ -214,7 +224,7 @@ describe('selectRunner', () => {
         expect(logs[0]).toMatch(/not built/);
     });
 
-    it('runner: "python" pins python even under the opt-in', () => {
+    it('runner: "python" pins python under the default', () => {
         const dir = fakeBinDir();
         const cmd = selectRunner(
             { ...audioMatrix, runner: 'python' },

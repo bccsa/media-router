@@ -535,8 +535,9 @@ export interface PipelineDescription {
     runnerHooks?: RunnerHook[];
     /**
      * Which runner process hosts this pipeline (ADR-0019). Unset: the native
-     * `mr-gst-runner` when the engine runs `MR_GST_RUNNER_NATIVE=1` and the
-     * description stays inside its feature set, python otherwise. `'python'`
+     * `mr-gst-runner` whenever the description stays inside its feature set
+     * (the default; `MR_GST_RUNNER_NATIVE=0` is the engine-wide rollback),
+     * python otherwise. `'python'`
      * pins the python runner; `'native'` asks for the native one (logged and
      * downgraded to python when the description cannot run there).
      */

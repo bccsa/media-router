@@ -752,9 +752,9 @@ interface PipelineDescription {
     useStdioForData?: boolean;
     /**
      * Which child hosts the pipeline (ADR-0019): `'native'` asks for the C++
-     * `mr-gst-runner`, `'python'` pins `gst-pipeline-runner.py`. Unset, the
-     * engine-wide opt-in `MR_GST_RUNNER_NATIVE=1` sends every ELIGIBLE
-     * description native and leaves the rest on python, silently. Not
+     * `mr-gst-runner`, `'python'` pins `gst-pipeline-runner.py`. Unset, every
+     * ELIGIBLE description runs native by default and the rest stay on
+     * python, silently (`MR_GST_RUNNER_NATIVE=0` rolls a whole engine back). Not
      * eligible: a description naming `rist`, `preserveSourceTimeline`,
      * `readKlvNames`, `useStdioForData`, the legacy net `clock` without the
      * contract, or a runner hook with no native form (ADR-0020). Ask
