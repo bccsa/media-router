@@ -5,9 +5,10 @@ that child is now one of two binaries speaking the **same** stdin/stderr JSON
 protocol: `gst-pipeline-runner.py` (python, the reference) or `mr-gst-runner`
 (C++, `packages/engine/native/mr-gst-runner/`). The engine picks per
 pipeline (`selectRunner`, `child-process/nativeRunner.ts`): a description that
-stays inside the native runner's feature set runs natively when
-`MR_GST_RUNNER_NATIVE=1` (or the module sets `runner: 'native'`); everything
-else runs on python as before.
+stays inside the native runner's feature set runs natively — by default,
+nothing to set — and everything else runs on python as before. A module can
+pin either with `runner`; `MR_GST_RUNNER_NATIVE=0` is the engine-wide
+rollback to python.
 
 ## Why
 
@@ -92,7 +93,11 @@ log). The plugin ships in every image and is resolved the same way
 - Protocol conformance is pinned black-box by
   `native_runner_protocol_test.py` (in `test:py`); the engine-side selection
   by `nativeRunner.test.ts`.
-- Rollback: unset `MR_GST_RUNNER_NATIVE` (or `runner: 'python'` per module).
+- Native was opt-in (`MR_GST_RUNNER_NATIVE=1`) for the first trial; after
+  the clean 16 h soak on three boxes (2026-09-18) it is the default, so a
+  fresh image runs native with no drop-in. Rollback: `MR_GST_RUNNER_NATIVE=0`
+  engine-wide (a `media-router.service.d` drop-in) or `runner: 'python'` per
+  module.
 
 ## References
 

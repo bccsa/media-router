@@ -14,9 +14,9 @@ import { installedRoot, pluginsRoot } from './nativeBinaries.js';
  *  1. `PipelineDescription.runner` — `'python'` pins python (a module that
  *     knows it needs a python-only feature at runtime); `'native'` asks for
  *     the native runner.
- *  2. `MR_GST_RUNNER_NATIVE=1` — the engine-wide opt-in: every ELIGIBLE
- *     description goes native. Unset, only an explicit `runner: 'native'`
- *     does.
+ *  2. `MR_GST_RUNNER_NATIVE=0` — the engine-wide rollback: every description
+ *     goes python unless it pins `runner: 'native'`. Native is the DEFAULT
+ *     (since the 2026-09-18 soak); nothing has to be set to get it.
  *  3. Eligibility — the description must stay inside what the binary
  *     implements (`nativeRunnerEligible`), and the binary must exist. Anything
  *     else falls back to python; a request that cannot be honoured is logged,
@@ -136,9 +136,9 @@ export function resolveNativeRunner(env: NodeJS.ProcessEnv = process.env): strin
     return candidates.find((p) => existsSync(p)) ?? null;
 }
 
-/** Engine-wide opt-in: `MR_GST_RUNNER_NATIVE=1`. */
+/** Native by default; `MR_GST_RUNNER_NATIVE=0` is the engine-wide rollback to python. */
 export function nativeRunnerDefault(env: NodeJS.ProcessEnv = process.env): boolean {
-    return env.MR_GST_RUNNER_NATIVE === '1';
+    return env.MR_GST_RUNNER_NATIVE !== '0';
 }
 
 /**
@@ -166,7 +166,7 @@ export function selectRunner(
         log(
             requested === 'native'
                 ? 'native runner requested but mr-gst-runner is not built/installed — python runner'
-                : 'MR_GST_RUNNER_NATIVE=1 but mr-gst-runner is not built/installed — python runner',
+                : 'mr-gst-runner is not built/installed (make native) — python runner',
         );
         return python;
     }
