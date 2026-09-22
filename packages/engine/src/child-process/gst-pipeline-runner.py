@@ -3417,7 +3417,20 @@ def _start_ts_probe(pipe, cfg):
             payload["display"] = ts_video_info.format_video_info(info)
         emit_plugin_event("tsprobe:videoinfo", payload)
 
+    def _emit_pmt(pmt):
+        # Whole PMT + raw ES descriptor loops as hex (same shape as the
+        # splitter's `tssplit:discovered`) for descriptor-only facts.
+        es_info = pmt.get("es_info") or {}
+        emit_plugin_event("tsprobe:pmt", {
+            "programNumber": pmt.get("program_number"),
+            "pcrPid": pmt.get("pcr_pid", -1),
+            "streams": [{"pid": pid, "streamType": stype,
+                         "esInfo": bytes(es_info.get(pid, b"")).hex()}
+                        for pid, stype in pmt["streams"]],
+        })
+
     def _on_pmt():
+        _emit_pmt(st["disc"].pmt)
         for pid, stype in st["disc"].pmt["streams"]:
             codec = VIDEO_TYPES.get(stype)
             if codec is None:

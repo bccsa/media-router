@@ -398,7 +398,11 @@ export interface PipelineDescription {
      * display}` — `display` pre-formatted ("1920×1080i50"), geometry fields
      * null until the SPS parses (H.264/H.265 only; MPEG-1/2 report codec
      * only). Cheap by design: full scan until the first SPS, then 1-in-64
-     * buffer sampling. Never affects routing.
+     * buffer sampling. Never affects routing. Every PMT change also emits
+     * `tsprobe:pmt`: `{programNumber, pcrPid, streams: [{pid, streamType,
+     * esInfo}]}` with each ES's raw descriptor loop as hex (the shape of the
+     * splitter's `tssplit:discovered`) — descriptor-only facts a plugin
+     * reads itself (e.g. teletext-subtitles → its detected-page list).
      */
     tsProbe?: TsProbeRunnerConfig;
     /**
@@ -555,7 +559,6 @@ export interface RunnerHook {
     /** Passed to the module's `install` verbatim (JSON). */
     config?: unknown;
 }
-
 
 /** One entry of `PipelineDescription.inputStallWatch`. */
 export interface InputStallWatch {

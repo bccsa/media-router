@@ -17,7 +17,9 @@ change *how* plugins work rather than add one.
   loader skips them, the GUI never shows them, but their code (C++, python,
   shared assets) fully participates in build and runtime resolution. Named
   `<domain>-core`: `unixfdbus-core` (GstUnixFd bus transport), `mpegts-core`
-  (MPEG-TS packet core + its python reference spec), `rist-core` (librist
+  (MPEG-TS packet core + its python reference spec, and the TypeScript
+  `descriptorsFromEsInfo`/`isoLanguage` reader for the PMT `esInfo` hex the
+  runner reports), `rist-core` (librist
   bindings), `aes67-core` (SAP/SDP + the TAI clock), `audio-302m-core` (the
   shared SMPTE-302M TypeScript helpers).
 
@@ -801,6 +803,11 @@ interface PipelineDescription {
      * `mpegts-ip-input` (input) and `video-player` (which keys its decoder
      * selection off the reported codec). (The ts-splitter gets the same info
      * per routed video PID on `tssplit:videoinfo`, no extra config.)
+     * Every PMT change also emits `tsprobe:pmt` `{programNumber, pcrPid,
+     * streams: [{pid, streamType, esInfo}]}` with each ES's raw descriptor
+     * loop as hex — for descriptor-only facts a plugin wants to read itself
+     * (teletext-subtitles turns the 0x56 teletext descriptor into its
+     * detected-page pick list). A tap with NO video ES still gets this event.
      */
     tsProbe?: TsProbeRunnerConfig;
     /**
