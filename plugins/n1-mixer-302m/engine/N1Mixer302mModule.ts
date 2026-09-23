@@ -1,5 +1,6 @@
 import { GstPluginBase, type PipelineDescription } from '@media-router/engine';
 import {
+    normalize302mChannels,
     probe302mSupport,
     s302mFormatFor,
     type AudioMixSource,
@@ -9,6 +10,7 @@ import {
     buildN1Pipeline,
     buildN1Ports,
     n1PortId,
+    readChannels,
     readPairCount,
     type DynamicPort,
     type N1Output,
@@ -49,6 +51,14 @@ export class N1Mixer302mModule extends GstPluginBase {
         return buildN1Ports(readPairCount(config));
     }
 
+    /** The 302M wire width every output encodes — consumers size their
+     *  channel-map matrices from it. A mono mix goes out as dual-mono stereo. */
+    getBusStreamChannels(portId: string): number | undefined {
+        return /^out-\d+$/.test(portId)
+            ? normalize302mChannels(readChannels(this.config))
+            : undefined;
+    }
+
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         const router = this.services?.mediaRouter;
         const instanceId = this.services?.instanceId ?? '';
@@ -63,6 +73,7 @@ export class N1Mixer302mModule extends GstPluginBase {
         }
 
         const pairCount = readPairCount(config);
+        const channels = readChannels(config);
 
         // Group connected sources by input index; clamp guards stale edges in
         // the window after a pairCount shrink.
@@ -97,11 +108,13 @@ export class N1Mixer302mModule extends GstPluginBase {
             outputs,
             latencyMs: Number(config.mixLatencyMs ?? 200),
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
+            channels,
         });
         if (!pipeline) return null;
 
         this.setStatusData('routing', {
             pairCount,
+            channels,
             connectedInputs: inputs.size,
             activeOutputs: outputs.length,
         });

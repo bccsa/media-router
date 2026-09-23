@@ -1126,6 +1126,11 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   rendered as an `audioconvert mix-matrix` (mono→stereo fan-out, downmix, channel
   picking, per-channel gain). `buildAudioMixInput` applies it per branch; single-source
   modules like `audio-transcoder` inline it on the trunk.
+- `positionedChannelsClause(channels)` — `audioconvert <identity mix-matrix> !
+  audio/x-raw,channels=N,channel-mask=<GStreamer default layout>`. Gives an
+  unpositioned N-wide stream (whole-device `pipewiresrc` capture, a decoded wide 302M
+  mix) the layout `avenc_s302m` insists on; `audio-input-302m` and `n1-mixer-302m`
+  both encode through it. `POSITIONED_302M_MASK` is the mask table.
 - `applyVolumeLiveUpdate(changes)` (protected on `GstPluginBase`) — the shared
   `volume`/`audioEnabled` live-update for any pipeline with the standard
   `volume name=vol` fader: merges config + drives the element (gst only, no pactl).

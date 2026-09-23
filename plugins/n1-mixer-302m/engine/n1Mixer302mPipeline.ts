@@ -14,6 +14,7 @@ import {
     buildAudioMixInput,
     build302mEncodeBranch,
     pacedMixer,
+    positionedChannelsClause,
     type AudioMixSource,
     s302mFormatFor,
     type S302mFormat,
@@ -25,6 +26,10 @@ export const MIN_PAIRS = 2;
 export const MAX_PAIRS = 16;
 export const DEFAULT_PAIRS = 4;
 
+/** Mix widths the `channels` setting offers: mono, or a 302M wire width. */
+export const N1_CHANNEL_COUNTS = [1, 2, 4, 6, 8] as const;
+export const DEFAULT_CHANNELS = 2;
+
 export function n1PortId(dir: 'in' | 'out', index: number): string {
     return `${dir}-${index}`;
 }
@@ -35,6 +40,20 @@ export function readPairCount(config: Record<string, unknown>): number {
     const n = Math.round(Number(config.pairCount));
     if (!Number.isFinite(n)) return DEFAULT_PAIRS;
     return Math.max(MIN_PAIRS, Math.min(MAX_PAIRS, n));
+}
+
+/** The configured mix width, or stereo for anything off the offered set. */
+export function readChannels(config: Record<string, unknown>): number {
+    const n = Number(config.channels);
+    return (N1_CHANNEL_COUNTS as readonly number[]).includes(n) ? n : DEFAULT_CHANNELS;
+}
+
+/** A wide mix leaves the output mixer unpositioned (wide 302M inputs decode
+ *  that way and the mixer fixates on the first pad) and `avenc_s302m` refuses
+ *  it — measured .103, gst 1.28.2, 2026-09-23. Stereo and mono decode
+ *  positioned and keep their launch string unchanged. */
+function positionedTail(channels: number): string {
+    return channels > 2 ? ` ! ${positionedChannelsClause(channels)}` : '';
 }
 
 /** N input + N output ports, all 302M. Inputs take unlimited connections
@@ -80,6 +99,9 @@ export interface N1PipelineInputs {
     latencyMs: number;
     /** 302M word length of every output (`pcmBitDepth`). Default 16-bit. */
     pcmFormat?: S302mFormat;
+    /** Mix width of every input fan-in and output mixer (`channels`). Default
+     *  stereo. Mono mixes are encoded dual-mono — 302M has no 1-channel wire. */
+    channels?: number;
 }
 
 // The output mixers bridge only intra-pipeline jitter between the input
@@ -118,11 +140,12 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     if (input.inputs.size === 0 || outputs.length === 0) return null;
 
     const parts: string[] = [];
+    const channels = input.channels ?? DEFAULT_CHANNELS;
 
     for (const [i, sources] of input.inputs) {
         const { fragment, continuationName } = buildAudioMixInput({
             sources,
-            channels: 2,
+            channels,
             latencyMs: input.latencyMs,
             mixerName: `inmix${i}`,
         });
@@ -144,9 +167,11 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
             pacedMixer({
                 name: `omix${out.index}`,
                 latencyNs: OUTPUT_MIX_LATENCY_NS,
-                caps: 'audio/x-raw,rate=48000,channels=2',
+                caps: `audio/x-raw,rate=48000,channels=${channels}`,
                 pacerName: `omix${out.index}_pace`,
-            }) + ` ! ${build302mEncodeBranch({ format: pcmFormat })} ! ${sink}`,
+            }) +
+                positionedTail(channels) +
+                ` ! ${build302mEncodeBranch({ format: pcmFormat, channels })} ! ${sink}`,
         );
     }
 

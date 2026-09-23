@@ -322,6 +322,7 @@
 - [x] SRT/RIST latency growth
 
 ### Features
+- [x] N-1 mixer channel count (#667, 2026-09-23) — `n1-mixer-302m` gains a `channels` setting (Mono / Stereo / 4 / 6 / 8): mix width of every pair, `getBusStreamChannels` declares the 302M wire width, wide mixes get the shared `positionedChannelsClause` (audio-302m-core, also used by audio-input-302m) before `avenc_s302m` (a wide 302M input decodes unpositioned and the encoder refuses a layout-less stream — measured .103 gst 1.28.2); the channel-map editor sizes a 302M source grid from the wire width (`wire302mChannels`), so Mono shows its two dual-mono channels (ADR-0014 amended). Live-verified on the .103 N-1 test rig (`/data/n1`, user units `n1-tone-1..3`) at 2 / 8 / 1 channels. The deprecated PipeWire `n1-mixer` is unchanged.
 - [x] HLS Player plugin (hls-pipe submodule) — pulls HLS → MPEG-TS, auto-detects audio/subtitle languages from the playlist, multi-language inline mux + inline WebVTT subtitles, ABR + live-latency controls (built + unit-tested; live-stream verification pending)
 - [x] HLS Player review fixes — URL-clear stops the runner, pacing re-anchors after stalls, crash-loop visibility (shared `spawnRunnerProcess` health wiring, also rist-in/out), serialized live URL updates; `PacedUdpTsSink` moved into the engine; structural `SegmentSink` in hls-pipe
 - [ ] MPEG-TS muxer/demuxer plugins revamp that it detect the input streams and make outputs acordingly

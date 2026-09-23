@@ -4,6 +4,7 @@ import {
     activeOutputIndices,
     buildN1Pipeline,
     buildN1Ports,
+    readChannels,
     readPairCount,
     type N1Output,
 } from './n1Mixer302mPipeline.js';
@@ -33,6 +34,17 @@ describe('readPairCount', () => {
         expect(readPairCount({ pairCount: 2 })).toBe(2);
         expect(readPairCount({ pairCount: 0 })).toBe(2);
         expect(readPairCount({ pairCount: 99 })).toBe(16);
+    });
+});
+
+describe('readChannels', () => {
+    it('accepts only the offered widths and falls back to stereo', () => {
+        expect(readChannels({})).toBe(2);
+        expect(readChannels({ channels: 'junk' })).toBe(2);
+        expect(readChannels({ channels: 3 })).toBe(2);
+        expect(readChannels({ channels: 16 })).toBe(2);
+        expect(readChannels({ channels: 1 })).toBe(1);
+        expect(readChannels({ channels: 8 })).toBe(8);
     });
 });
 
@@ -209,6 +221,63 @@ describe('buildN1Pipeline', () => {
             latencyMs: 500,
         })!;
         expect(single).not.toContain('latency=500000000');
+    });
+
+    it('mixes and encodes every stage at the configured width', () => {
+        const wide = buildN1Pipeline({
+            inputs: mkInputs([0, 1], 2),
+            outputs: mkOutputs([0, 1]),
+            latencyMs: 200,
+            channels: 8,
+        })!;
+        // Input fan-in, matrix branches and output mixers all pin 8 channels…
+        expect(
+            wide.match(/capsfilter name=inmix\d_caps caps="audio\/x-raw,rate=48000,channels=8"/g),
+        ).toHaveLength(2);
+        expect(
+            wide.match(/audiomixer name=omix\d [^!]+! audio\/x-raw,rate=48000,channels=8 !/g),
+        ).toHaveLength(2);
+        // …and the 302M encode carries the same width on the wire.
+        expect(wide.match(/format=S16LE,rate=48000,channels=8 ! avenc_s302m/g)).toHaveLength(2);
+        expect(wide).not.toContain('channels=2');
+        // A wide mix leaves the mixer unpositioned (wide 302M decodes that
+        // way) and avenc_s302m refuses it — the pacer hands the encoder a
+        // layout via an identity matrix + explicit mask, per output.
+        expect(
+            wide.match(
+                /identity name=omix\d_pace sync=true ! audioconvert mix-matrix="<<\(float\)1\.0000, \(float\)0\.0000[^"]*>" ! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x63f ! audioconvert ! audioresample/g,
+            ),
+        ).toHaveLength(2);
+
+        // Stereo stays the default when nothing is configured.
+        const stereo = buildN1Pipeline({
+            inputs: mkInputs([0, 1]),
+            outputs: mkOutputs([0, 1]),
+            latencyMs: 200,
+        })!;
+        expect(stereo).not.toContain('channels=8');
+        expect(stereo.match(/rate=48000,channels=2/g)!.length).toBeGreaterThan(0);
+        // Stereo decodes positioned already — no matrix stage, string unchanged.
+        expect(stereo).not.toContain('mix-matrix');
+        expect(stereo).not.toContain('channel-mask');
+    });
+
+    it('a mono mix is summed at one channel and encoded dual-mono stereo', () => {
+        const mono = buildN1Pipeline({
+            inputs: mkInputs([0, 1]),
+            outputs: mkOutputs([0, 1]),
+            latencyMs: 200,
+            channels: 1,
+        })!;
+        expect(
+            mono.match(/capsfilter name=inmix\d_out caps="audio\/x-raw,rate=48000,channels=1"/g),
+        ).toHaveLength(2);
+        expect(
+            mono.match(/audiomixer name=omix\d [^!]+! audio\/x-raw,rate=48000,channels=1 !/g),
+        ).toHaveLength(2);
+        expect(mono.match(/format=S16LE,rate=48000,channels=2 ! avenc_s302m/g)).toHaveLength(2);
+        expect(mono).not.toContain('channels=1 ! avenc_s302m');
+        expect(mono).not.toContain('mix-matrix');
     });
 
     it('per-edge unixfd sockets in, fan-out tees out', () => {

@@ -56,8 +56,12 @@ determinism.
   editor (which reads the producer's `channels` setting) and the fan-in matrix
   (which reads the declared width) agree only while a producer's declared
   width equals `normalize302mChannels(channels)`. `audio-input-302m` keeps
-  that invariant; a producer that cannot must not expose a `channels` setting
-  under that name.
+  that invariant. Since 2026-09-23 the editor applies the same snap to a 302M
+  source port (`wire302mChannels`, manager-ui), so a producer may offer a
+  `channels` value narrower than its wire — `n1-mixer-302m`'s Mono is encoded
+  dual-mono stereo and the editor draws two source channels. A producer whose
+  wire width is NOT `normalize302mChannels(channels)` (aes67-input's fixed
+  stereo) must still not expose a `channels` setting under that name.
 - The engine learns a device's width through the Pulse compatibility layer
   (`pactl`), which caps at 32 channels; channels 33+ of a wider card are not
   selectable until device enumeration moves off `pactl`.
