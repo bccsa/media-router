@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+    BITRATE_KBPS,
     INPUT_PORT_ID,
     buildDynamicPorts,
     outputPortId,
@@ -34,6 +37,32 @@ describe('readRenditions', () => {
 });
 
 describe('renditionLabel', () => {
+    it('accepts any bitrate and clamps it to the codec range (#664)', () => {
+        const r = readRenditions({
+            renditions: [
+                { codec: 'opus', bitrate: 48 },
+                { codec: 'opus', bitrate: 9999 },
+                { codec: 'opus', bitrate: 0 },
+                { codec: 'aac', bitrate: 9999 },
+                { codec: 'aac', bitrate: 10 },
+                { codec: 'aac', bitrate: 'junk' },
+            ],
+        });
+        expect(r.map((x) => x.bitrate)).toEqual([48, 510, 128, 320, 32, 128]);
+    });
+
+    it('manifest rendition bitrate bounds mirror BITRATE_KBPS (#664)', () => {
+        const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
+        const prop = pkg.mediaRouter.configSchema.properties.renditions.items.properties.bitrate;
+        expect(prop.minimum).toBe(Math.min(...Object.values(BITRATE_KBPS).map((r) => r.min)));
+        expect(prop.maximum).toBe(Math.max(...Object.values(BITRATE_KBPS).map((r) => r.max)));
+        expect(prop['x-maxBy'].map).toEqual({
+            opus: BITRATE_KBPS.opus.max,
+            aac: BITRATE_KBPS.aac.max,
+        });
+        expect(prop.default).toBe(BITRATE_KBPS.opus.default);
+    });
+
     it('prefers the operator name, else codec + bitrate, and PCM 302M without bitrate', () => {
         expect(renditionLabel({ name: 'Main', codec: 'opus', bitrate: 128 })).toBe('Main');
         expect(renditionLabel({ name: '', codec: 'opus', bitrate: 128 })).toBe('Opus 128k');

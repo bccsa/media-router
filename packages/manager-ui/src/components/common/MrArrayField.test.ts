@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MrArrayField from './MrArrayField.vue';
+import MrSelect from './MrSelect.vue';
 
 const schema = {
     type: 'object',
@@ -25,6 +26,48 @@ const schema = {
     },
 };
 
+describe('MrArrayField — item-relative x-maxBy (audio-transcoder bitrate, #664)', () => {
+    const boundedSchema = {
+        type: 'object',
+        properties: {
+            codec: { type: 'string', enum: ['opus', 'aac'], default: 'opus', description: 'Codec' },
+            bitrate: {
+                type: 'number',
+                minimum: 6,
+                maximum: 510,
+                default: 128,
+                description: 'Bitrate',
+                'x-maxBy': { field: 'codec', map: { opus: 510, aac: 320 } },
+            },
+        },
+    };
+
+    it("caps the number input by the item's own codec", () => {
+        const wrapper = mount(MrArrayField, {
+            props: {
+                modelValue: [
+                    { codec: 'opus', bitrate: 48 },
+                    { codec: 'aac', bitrate: 96 },
+                ],
+                schema: boundedSchema,
+            },
+        });
+        const maxes = wrapper.findAll('input[type="number"]').map((i) => i.attributes('max'));
+        expect(maxes).toEqual(['510', '320']);
+    });
+
+    it('pulls the bitrate down to the new cap when the codec changes', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ codec: 'opus', bitrate: 510 }], schema: boundedSchema },
+        });
+        wrapper.findComponent(MrSelect).vm.$emit('update:modelValue', 'aac');
+        await wrapper.vm.$nextTick();
+        expect(wrapper.emitted('update:modelValue')!.at(-1)).toEqual([
+            [{ codec: 'aac', bitrate: 320 }],
+        ]);
+    });
+});
+
 describe('MrArrayField', () => {
     it('seeds only primary fields on Add (advanced fields stay absent = inherit)', async () => {
         const wrapper = mount(MrArrayField, { props: { modelValue: [], schema } });
@@ -44,9 +87,7 @@ describe('MrArrayField', () => {
         expect(wrapper.text()).toContain('Advanced (per-encode overrides)');
 
         // Expand.
-        const toggle = wrapper
-            .findAll('button')
-            .find((b) => b.text().includes('Advanced'))!;
+        const toggle = wrapper.findAll('button').find((b) => b.text().includes('Advanced'))!;
         await toggle.trigger('click');
         expect(wrapper.text()).toContain('Codec');
     });
@@ -57,9 +98,7 @@ describe('MrArrayField', () => {
         const wrapper = mount(MrArrayField, {
             props: { modelValue: [{ name: 'A', bitrate: 100, codec: 'h265' }], schema },
         });
-        const toggle = wrapper
-            .findAll('button')
-            .find((b) => b.text().includes('Advanced'))!;
+        const toggle = wrapper.findAll('button').find((b) => b.text().includes('Advanced'))!;
         await toggle.trigger('click');
         expect(wrapper.text()).toContain('Codec');
         expect(wrapper.text()).not.toContain('Profile');
@@ -74,9 +113,7 @@ describe('MrArrayField', () => {
                 globalConfig: { codec: 'h264' },
             },
         });
-        const toggle = wrapper
-            .findAll('button')
-            .find((b) => b.text().includes('Advanced'))!;
+        const toggle = wrapper.findAll('button').find((b) => b.text().includes('Advanced'))!;
         await toggle.trigger('click');
         expect(wrapper.text()).toContain('Profile');
     });

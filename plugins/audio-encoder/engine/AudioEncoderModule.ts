@@ -10,6 +10,22 @@ import {
     type ModuleServices,
     type ThroughputSample,
 } from '@media-router/engine';
+
+/** Encoder bitrate bounds in kbps per codec; the manifest's bitrate
+ *  minimum/maximum/x-maxBy mirror this table (asserted in the tests). */
+export const BITRATE_KBPS: Record<string, { min: number; max: number; default: number }> = {
+    opus: { min: 6, max: 510, default: 128 },
+    aac: { min: 32, max: 320, default: 128 },
+};
+
+/** Clamp an operator bitrate (kbps) to the codec's range (#664); unset/junk/≤0 → default. */
+export function clampBitrateKbps(codec: string, kbps: unknown): number {
+    const r = BITRATE_KBPS[codec] ?? BITRATE_KBPS.opus;
+    const n = Math.round(Number(kbps));
+    if (!Number.isFinite(n) || n <= 0) return r.default;
+    return Math.min(r.max, Math.max(r.min, n));
+}
+
 /**
  * Audio Encoder plugin.
  *
@@ -90,9 +106,10 @@ export class AudioEncoderModule extends GstPluginBase {
     private updateStatusData(): void {
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
+        const codec = (this.config.codec as string) ?? 'opus';
         this.setStatusData('encoder', {
-            codec: (this.config.codec as string) ?? 'opus',
-            bitrate: (this.config.bitrate as number) ?? 128,
+            codec,
+            bitrate: clampBitrateKbps(codec, this.config.bitrate),
             frameSize: (this.config.frameSize as number) ?? 20,
             sampleRate: (this.config.sampleRate as number) ?? 48000,
             channels: (this.config.channels as number) ?? 2,
@@ -116,7 +133,7 @@ export class AudioEncoderModule extends GstPluginBase {
             await this.setElementProperty(
                 elementName,
                 'bitrate',
-                (changes.bitrate as number) * 1000,
+                clampBitrateKbps(codec, changes.bitrate) * 1000,
             );
         }
         this.updateStatusData();
@@ -129,7 +146,7 @@ export class AudioEncoderModule extends GstPluginBase {
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription {
         const codec = (config.codec as string) ?? 'opus';
-        const bitrate = (config.bitrate as number) ?? 128;
+        const bitrate = clampBitrateKbps(codec, config.bitrate);
         const sampleRate = (config.sampleRate as number) ?? 48000;
         const channels = (config.channels as number) ?? 2;
         // Respect audioEnabled on start — otherwise a muted module unmutes

@@ -55,6 +55,7 @@ const items = computed(() => {
 interface Field extends ItemField {
     default: unknown;
     showWhen?: string;
+    maxBy?: { field: string; map: Record<string, number> };
 }
 
 /** Inherit semantics only exist when the module declares a same-named global. */
@@ -74,6 +75,9 @@ const fields = computed<Field[]>(() => {
             description: (prop.description as string) ?? '',
             enumValues: prop.enum as unknown[] | undefined,
             enumLabels: prop['x-enumLabels'] as Record<string, string> | undefined,
+            minimum: prop.minimum as number | undefined,
+            maximum: prop.maximum as number | undefined,
+            maxBy: prop['x-maxBy'] as Field['maxBy'],
             advanced: !!prop['x-advanced'],
             inheritable: isInheritable(key, !!prop['x-advanced']),
             showWhen: prop['x-showWhen'] as string | undefined,
@@ -98,10 +102,24 @@ function toggleAdvanced(idx: number) {
  * or the inherited global — is h264).
  */
 function isVisible(field: Field, item: Record<string, unknown>): boolean {
-    return matchShowWhen(field.showWhen, (key) => {
-        const own = item[key];
-        return own !== undefined && own !== '' ? own : props.globalConfig?.[key];
-    });
+    return matchShowWhen(field.showWhen, (key) => itemValue(item, key));
+}
+
+/** An item's value for `key`, falling back to the module-global when inherited. */
+function itemValue(item: Record<string, unknown>, key: string): unknown {
+    const own = item[key];
+    return own !== undefined && own !== '' ? own : props.globalConfig?.[key];
+}
+
+/** Effective `maximum` for this item — item-relative `x-maxBy`, else the schema's. */
+function itemMax(field: Field, item: Record<string, unknown>): number | undefined {
+    if (!field.maxBy) return field.maximum;
+    return field.maxBy.map[String(itemValue(item, field.maxBy.field) ?? '')] ?? field.maximum;
+}
+
+function fieldForItem(field: Field, item: Record<string, unknown>): Field {
+    const maximum = itemMax(field, item);
+    return maximum === field.maximum ? field : { ...field, maximum };
 }
 
 function addItem() {
@@ -125,7 +143,15 @@ function removeItem(index: number) {
 function updateField(index: number, key: string, value: unknown) {
     const updated = items.value.map((item, i) => {
         if (i !== index) return item;
-        return { ...(item as Record<string, unknown>), [key]: value };
+        const next = { ...(item as Record<string, unknown>), [key]: value };
+        // A controller change (codec) can lower another field's x-maxBy cap;
+        // pull that field down so the saved item never exceeds what it shows.
+        for (const f of fields.value) {
+            if (f.maxBy?.field !== key || typeof next[f.key] !== 'number') continue;
+            const max = itemMax(f, next);
+            if (max !== undefined && (next[f.key] as number) > max) next[f.key] = max;
+        }
+        return next;
     });
     emit('update:modelValue', updated);
 }
@@ -173,7 +199,7 @@ function clearField(index: number, key: string) {
             <template v-for="field in primaryFields" :key="field.key">
                 <MrArrayItemField
                     v-if="isVisible(field, item as Record<string, unknown>)"
-                    :field="field"
+                    :field="fieldForItem(field, item as Record<string, unknown>)"
                     :value="(item as Record<string, unknown>)[field.key]"
                     :disabled="disabled"
                     @update="updateField(idx, field.key, $event)"
@@ -197,7 +223,7 @@ function clearField(index: number, key: string) {
                     <template v-for="field in advancedFields" :key="field.key">
                         <MrArrayItemField
                             v-if="isVisible(field, item as Record<string, unknown>)"
-                            :field="field"
+                            :field="fieldForItem(field, item as Record<string, unknown>)"
                             :value="(item as Record<string, unknown>)[field.key]"
                             :disabled="disabled"
                             @update="updateField(idx, field.key, $event)"

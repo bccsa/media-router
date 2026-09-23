@@ -358,16 +358,13 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
         },
         "bitrate": {
             "type": "number",
+            "minimum": 6,
+            "maximum": 510,
             "default": 128,
-            "description": "Bitrate in kbps",
+            "description": "Any bitrate in kbps (Opus 6-510, AAC 32-320); 48-64 is enough for speech.",
             "x-liveUpdatable": true,
-            "x-enumBy": {
-                "field": "codec",
-                "map": {
-                    "opus": [32, 64, 96, 128, 192, 256, 320, 510],
-                    "aac": [32, 64, 96, 128, 160, 192, 256, 320]
-                }
-            }
+            "x-debounceMs": 300,
+            "x-maxBy": { "field": "codec", "map": { "opus": 510, "aac": 320 } }
         },
         "frameSize": {
             "type": "number",
@@ -420,7 +417,7 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 | `x-unit` | `string` | Unit label displayed next to the value (e.g. `"%"`, `"kbps"`, `"ms"`) |
 | `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable) |
 
-**Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, and item-relative `x-showWhen` are honoured — `x-showWhen` is evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
+**Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, `minimum`/`maximum`, and item-relative `x-showWhen` / `x-maxBy` are honoured — `x-showWhen` and `x-maxBy` are evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item; a controller change (e.g. codec) pulls a dependent number down to its new `x-maxBy` cap (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
 
 #### Graph status fields (`x-widget: "graph"`)
 
