@@ -54,6 +54,19 @@ describe('N1Mixer302mModule.getDynamicPorts', () => {
     });
 });
 
+describe('N1Mixer302mModule.getBusStreamChannels', () => {
+    it('declares the 302M wire width of every output, never of an input', () => {
+        const { module } = makeModule();
+        expect(module.getBusStreamChannels('out-0')).toBe(2);
+        expect(module.getBusStreamChannels('in-0')).toBeUndefined();
+        module.config = { channels: 8 };
+        expect(module.getBusStreamChannels('out-3')).toBe(8);
+        // A mono mix leaves as dual-mono stereo — the wire is never 1 wide.
+        module.config = { channels: 1 };
+        expect(module.getBusStreamChannels('out-0')).toBe(2);
+    });
+});
+
 describe('N1Mixer302mModule.buildPipeline', () => {
     it('errors on runtimes without 302M support', () => {
         N1Mixer302mModule.setS302mSupported(false);
@@ -108,9 +121,27 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         expect(desc!.restartOnError).toBe(true);
         expect(module.setStatusData).toHaveBeenCalledWith('routing', {
             pairCount: 2,
+            channels: 2,
             connectedInputs: 2,
             activeOutputs: 2,
         });
         expect(setHealth).toHaveBeenCalledWith('ok');
+    });
+
+    it('builds the whole matrix at the configured channel width', () => {
+        const { module } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
+        const desc = module.buildPipeline({ pairCount: 2, channels: 6 });
+        expect(desc!.pipeline).toContain(
+            'capsfilter name=inmix0_out caps="audio/x-raw,rate=48000,channels=6"',
+        );
+        expect(desc!.pipeline).toContain(
+            '! audio/x-raw,rate=48000,channels=6 ! identity name=omix0_pace',
+        );
+        expect(desc!.pipeline).toContain('audio/x-raw,channels=6,channel-mask=(bitmask)0x3f');
+        expect(desc!.pipeline).toContain('rate=48000,channels=6 ! avenc_s302m');
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'routing',
+            expect.objectContaining({ channels: 6 }),
+        );
     });
 });

@@ -3,7 +3,6 @@ import {
     buildBusSink,
     pulsePinnedStreamProps,
     StreamPortLinker,
-    type ChannelMapEntry,
     type ModuleServices,
     type PipelineDescription,
     type StreamLinkDeps,
@@ -12,8 +11,8 @@ import {
 } from '@media-router/engine';
 import {
     build302mEncodeBranch,
-    mixMatrixClause,
     normalize302mChannels,
+    positionedChannelsClause,
 } from '@media-router/plugin-audio-302m-core';
 
 /**
@@ -59,8 +58,6 @@ import {
  * - Device hot-plug: base-class watchdog stops/starts the pipeline.
  * - NEVER a default device: unconfigured = health error, no pipeline.
  */
-/** GStreamer's default channel layouts for the 302M widths (FL FR / +RL RR / 5.1 / 7.1). */
-const POSITIONED_MASK: Record<number, string> = { 2: '0x3', 4: '0x33', 6: '0x3f', 8: '0x63f' };
 
 export class AudioInput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
@@ -250,21 +247,12 @@ export class AudioInput302mModule extends GstPluginBase {
                 'node.name': this.pwNodeName,
                 'node.autoconnect': 'false',
             })}`;
-        // Unpositioned → ports input_1..N, linked by index below. `avenc_s302m`
-        // refuses a stream without a channel layout, and audioconvert neither
-        // invents positions for an unpositioned input without a mix-matrix nor
-        // adds them when an equal-count identity leaves the layout untouched —
-        // so both the identity matrix AND an explicit mask are needed (bare
-        // pipelines on gst 1.28.2, 2026-09-15). The mask is GStreamer's default
-        // layout for N; 302M carries plain PCM pairs, positions mean nothing.
-        const identity: ChannelMapEntry[] = Array.from({ length: channels }, (_, i) => ({
-            srcChannel: i,
-            dstChannel: i,
-        }));
+        // Unpositioned → ports input_1..N, linked by index below; then the
+        // shared layout stage, because `avenc_s302m` refuses a layout-less
+        // stream (see `positionedChannelsClause`).
         const clause =
             `${src} ! audio/x-raw,channels=${channels},channel-mask=(bitmask)0x0` +
-            ` ! audioconvert${mixMatrixClause(identity, channels, channels)}` +
-            ` ! audio/x-raw,channels=${channels},channel-mask=(bitmask)${POSITIONED_MASK[channels] ?? '0x0'}`;
+            ` ! ${positionedChannelsClause(channels)}`;
 
         const available =
             deviceChannels && deviceChannels > 0

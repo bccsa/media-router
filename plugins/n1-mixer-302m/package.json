@@ -26,6 +26,20 @@
                     "title": "Pair Count",
                     "description": "Number of input/output pairs"
                 },
+                "channels": {
+                    "type": "number",
+                    "enum": [1, 2, 4, 6, 8],
+                    "x-enumLabels": {
+                        "1": "Mono",
+                        "2": "Stereo",
+                        "4": "4 channels",
+                        "6": "6 channels",
+                        "8": "8 channels"
+                    },
+                    "default": 2,
+                    "title": "Channels",
+                    "description": "Mix width of every pair. 302M carries 2, 4, 6 or 8; mono is encoded as dual-mono stereo."
+                },
                 "pcmBitDepth": {
                     "type": "number",
                     "enum": [16, 24],
@@ -56,6 +70,7 @@
                 "label": "N-1 Routing",
                 "fields": [
                     { "key": "pairCount", "label": "Pairs" },
+                    { "key": "channels", "label": "Mix Width" },
                     { "key": "connectedInputs", "label": "Connected Inputs" },
                     { "key": "activeOutputs", "label": "Active Outputs" }
                 ]

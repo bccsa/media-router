@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
 import { useEngineStore, type ChannelMapEntry } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
+import { wire302mChannels } from '@/utils/channelWidth';
 
 const props = defineProps<{
     engineId: string;
@@ -28,7 +29,17 @@ const dstModule = computed(() => {
     const conn = connection.value;
     return conn ? (engine.value?.modules[conn.sinkModuleId] ?? null) : null;
 });
-const srcChannels = computed(() => (srcModule.value?.settings?.channels as number) ?? 2);
+// A 302M producer's `channels` is its mix width, not always its wire width
+// (Mono goes out dual-mono): size the source grid from the wire (ADR-0014).
+const srcIs302m = computed(() => {
+    const conn = connection.value;
+    const port = srcModule.value?.ports?.find((p) => p.id === conn?.sourcePortId);
+    return port?.streamType === 'audio/302m';
+});
+const srcChannels = computed(() => {
+    const configured = (srcModule.value?.settings?.channels as number) ?? 2;
+    return srcIs302m.value ? wire302mChannels(configured) : configured;
+});
 const dstChannels = computed(() => (dstModule.value?.settings?.channels as number) ?? 2);
 
 // Local editable channel map
