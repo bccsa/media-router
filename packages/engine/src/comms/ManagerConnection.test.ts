@@ -348,4 +348,39 @@ describe('ManagerConnection', () => {
         vi.advanceTimersByTime(5000);
         expect(MockedClient).toHaveBeenCalled(); // 8100 > 7500 max — guaranteed fired
     });
+
+    // --- Multi-path status (#692) ---
+
+    it('pathStatus reports connected vs configured paths', () => {
+        expect(conn.pathStatus).toEqual({ connected: 0, total: 0 });
+        conn.connect({ ...testProfile, paths: [testProfile.paths[0], { host: '10.0.2.1', port: 3002 }] });
+        (clientInstances[0] as any).connectedPaths = [1];
+        expect(conn.pathStatus).toEqual({ connected: 1, total: 2 });
+    });
+
+    it('forwards pathUp / pathDown from the client', () => {
+        conn.connect(testProfile);
+        (clientInstances[0] as any).connectedPaths = [];
+        const up = vi.fn();
+        const down = vi.fn();
+        conn.on('pathUp', up);
+        conn.on('pathDown', down);
+        clientInstances[0].emit('pathUp', 0);
+        clientInstances[0].emit('pathDown', 0);
+        expect(up).toHaveBeenCalledWith(0);
+        expect(down).toHaveBeenCalledWith(0);
+    });
+
+    it('pathDetails lists every configured path with its live state', () => {
+        expect(conn.pathDetails).toEqual([]);
+        conn.connect({
+            ...testProfile,
+            paths: [testProfile.paths[0], { host: '10.0.2.1', port: 3002 }],
+        });
+        (clientInstances[0] as any).connectedPaths = [1];
+        expect(conn.pathDetails).toEqual([
+            { host: '127.0.0.1', port: 3000, connected: false },
+            { host: '10.0.2.1', port: 3002, connected: true },
+        ]);
+    });
 });

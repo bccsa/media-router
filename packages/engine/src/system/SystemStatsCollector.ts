@@ -20,6 +20,8 @@ export interface SystemStats {
     ips?: string[];
     hostname?: string;
     buildNumber?: string;
+    /** Manager paths connected vs configured — filled in by the engine, not the collector (issue #692). */
+    managerPaths?: { connected: number; total: number };
 }
 
 // Thermal-zone `type` values that correspond to a real CPU/SoC sensor,

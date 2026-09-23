@@ -2,7 +2,8 @@ import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
 import { encrypt } from './encryption.js';
 import { FragmentTransport } from './FragmentTransport.js';
-import { ReliableDelivery } from './ReliableDelivery.js';
+import { ReliableDelivery, type SentCopy } from './ReliableDelivery.js';
+import { SeqDedup } from './SeqDedup.js';
 import type { DgramMessage } from '@media-router/shared-types';
 
 export interface SocketOptions {
@@ -10,8 +11,10 @@ export interface SocketOptions {
     port: number;
     /** Remote address. */
     address: string;
-    /** Shared fragment transport (owns the udp socket + fragment-level reliability). */
+    /** Fragment transport (owns the udp socket + fragment-level reliability) the first endpoint is reached through. */
     transport: FragmentTransport;
+    /** Our listener port the first endpoint reaches us on (server side). */
+    localPort?: number;
     /** Whether this is the client side of the connection. */
     isClient?: boolean;
     /** Client identifier (for encryption key lookup). */
@@ -24,10 +27,37 @@ export interface SocketOptions {
     missedKeepaliveThreshold?: number;
     /** Called when this socket disconnects. */
     onDisconnect?: (socketID: string) => void;
+    /** Receive-side dedup table. A multi-path Client shares one across its path Sockets. */
+    seqDedup?: SeqDedup;
+    /** Shared ackID source. Server acks fan out to every path, so a Client's path Sockets must never reuse an ackID. */
+    nextAckId?: () => number;
+}
+
+/** One remote address a session is reachable at, and the transport that reaches it. */
+export interface Endpoint {
+    key: string;
+    transport: FragmentTransport;
+    address: string;
+    port: number;
+    /** Our own listener port this endpoint reaches us on (0 when unknown). */
+    localPort: number;
+    lastSeen: number;
+}
+
+/** Endpoint facts safe to hand to callers (no transport handle). */
+export interface EndpointInfo {
+    address: string;
+    port: number;
+    localPort: number;
+    lastSeen: number;
+}
+
+export function endpointKey(address: string, port: number): string {
+    return `${address}:${port}`;
 }
 
 /**
- * A single bidirectional connection.
+ * A single bidirectional session.
  *
  * Handles the full pipeline:
  *   send: JSON → encrypt → fragment → UDP
@@ -35,6 +65,13 @@ export interface SocketOptions {
  *
  * Provides guaranteed delivery via ACK/retry with exponential backoff.
  * Sends keepalive heartbeats to detect connection loss.
+ *
+ * A server-side Socket may span several ENDPOINTS — one per path the client
+ * reaches us on (different client sockets, possibly via different listeners).
+ * Every send fans out to all live endpoints with one shared seq so the
+ * client's dedup collapses the copies; an endpoint that stops being heard
+ * from is pruned (`pathDown`) while the session lives on through the rest.
+ * A client-side Socket always has exactly one endpoint (its path).
  */
 export class Socket extends EventEmitter {
     socketID: string;
@@ -42,13 +79,11 @@ export class Socket extends EventEmitter {
     readonly isClient: boolean;
     readonly clientID: string;
     /** Server-side: the client's session nonce from the connect payload —
-     *  distinguishes handshake retries from a reborn client on the same
-     *  endpoint (see Server.handleConnect). Undefined for older clients. */
+     *  distinguishes handshake retries / additional paths from a reborn client
+     *  (see Server.handleConnect). Undefined for older clients. */
     connectNonce: string | undefined;
 
-    private port: number;
-    private address: string;
-    private transport: FragmentTransport;
+    private endpoints = new Map<string, Endpoint>();
     private encryptionKey: string | undefined;
     private connectionTimeout: number;
     private missedKeepaliveThreshold: number;
@@ -70,29 +105,34 @@ export class Socket extends EventEmitter {
     /** Monotonic sequence number stamped on outgoing data messages. */
     private seqCounter = 0;
 
-    /** Delivered seq → timestamp (ms). Dedups multi-path copies and retransmits; evicted by age. */
-    private seenSeqs = new Map<number, number>();
-    /** Age bound — must outlast the sender's ~13s fallback-resend window. */
-    private readonly seqDedupTtlMs = 30000;
-    /** Hard backstop; age eviction (seqDedupTtlMs) is the primary bound. */
-    private readonly maxSeenSeqs = 65536;
+    /** (session, seq) dedup — own table unless the Client shared one across its paths. */
+    private readonly dedup: SeqDedup;
+    private readonly ownsDedup: boolean;
 
     constructor(options: SocketOptions) {
         super();
-        this.port = options.port;
-        this.address = options.address;
-        this.transport = options.transport;
         this.isClient = options.isClient ?? false;
         this.clientID = options.clientID ?? '';
         this.encryptionKey = options.encryptionKey;
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
         this.onDisconnectCb = options.onDisconnect;
+        this.ownsDedup = !options.seqDedup;
+        this.dedup = options.seqDedup ?? new SeqDedup();
+        this.touchEndpoint(
+            options.transport,
+            options.port,
+            options.address,
+            options.localPort ?? 0,
+        );
         this.reliable = new ReliableDelivery(
-            this.transport,
-            () => ({ port: this.port, address: this.address }),
+            (key) => {
+                const ep = this.endpoints.get(key);
+                return ep ? { port: ep.port, address: ep.address } : undefined;
+            },
             (info) => this.emit('ackTimeout', info),
             () => this.destroyed,
+            options.nextAckId,
         );
 
         // Client sockets get their socketID assigned by the server
@@ -101,24 +141,91 @@ export class Socket extends EventEmitter {
         this.startKeepalive();
     }
 
-    /** Update remote address (NAT traversal). */
-    updateRemote(port: number, address: string): void {
-        this.port = port;
-        this.address = address;
+    // ---- Endpoints -----------------------------------------------------------
+
+    /**
+     * Record that the peer was just heard from at `address:port` via
+     * `transport`. Adds the endpoint (emits `pathUp`) or refreshes it. Also
+     * covers NAT rebinds: the new mapping shows up as a fresh endpoint and the
+     * stale one ages out. Returns true when the endpoint is new.
+     */
+    touchEndpoint(
+        transport: FragmentTransport,
+        port: number,
+        address: string,
+        localPort = 0,
+    ): boolean {
+        const key = endpointKey(address, port);
+        const existing = this.endpoints.get(key);
+        const now = Date.now();
+        if (existing) {
+            existing.lastSeen = now;
+            existing.transport = transport;
+            if (localPort) existing.localPort = localPort;
+            return false;
+        }
+        this.endpoints.set(key, { key, transport, address, port, localPort, lastSeen: now });
+        if (this.endpoints.size > 1) this.emit('pathUp', key);
+        return true;
     }
 
-    /** Current remote endpoint (used by Server to recognise handshake retries). */
+    /** True if `address:port` is one of this session's live endpoints. */
+    hasEndpoint(address: string, port: number): boolean {
+        return this.endpoints.has(endpointKey(address, port));
+    }
+
+    /** Live endpoint keys (`address:port`). */
+    get endpointKeys(): string[] {
+        return [...this.endpoints.keys()];
+    }
+
+    /** Live endpoints with the listener port each one reaches us on. */
+    get endpointInfo(): EndpointInfo[] {
+        return [...this.endpoints.values()].map(({ address, port, localPort, lastSeen }) => ({
+            address,
+            port,
+            localPort,
+            lastSeen,
+        }));
+    }
+
+    /** Most recently heard-from endpoint. */
+    private primaryEndpoint(): Endpoint {
+        let best: Endpoint | undefined;
+        for (const ep of this.endpoints.values()) {
+            if (!best || ep.lastSeen > best.lastSeen) best = ep;
+        }
+        return best as Endpoint;
+    }
+
+    /** Current primary remote endpoint. */
     get remotePort(): number {
-        return this.port;
+        return this.primaryEndpoint().port;
     }
     get remoteAddress(): string {
-        return this.address;
+        return this.primaryEndpoint().address;
+    }
+
+    /**
+     * Drop endpoints silent for a whole keepalive death window. Never prunes
+     * the last one — session death is the watchdog's call, not this one's.
+     */
+    private pruneEndpoints(now: number): void {
+        if (this.endpoints.size <= 1) return;
+        const deadline = this.connectionTimeout * this.missedKeepaliveThreshold;
+        for (const ep of [...this.endpoints.values()]) {
+            if (this.endpoints.size <= 1) break;
+            if (now - ep.lastSeen > deadline) {
+                this.endpoints.delete(ep.key);
+                this.emit('pathDown', ep.key);
+            }
+        }
     }
 
     // ---- Send ---------------------------------------------------------------
 
     /**
-     * Send a message to the remote side.
+     * Send a message to the remote side (every live endpoint).
      * @param topic Application-level topic string.
      * @param message Arbitrary JSON-serialisable payload.
      * @param options `guaranteeDelivery` to enable ACK/retry.
@@ -143,6 +250,23 @@ export class Socket extends EventEmitter {
         this._send(topic, message, options);
     }
 
+    /**
+     * Send to ONE endpoint only — the handshake reply must answer the path
+     * that asked, not every path the session is known on.
+     */
+    sendToEndpoint(
+        address: string,
+        port: number,
+        topic: string | null,
+        message: unknown,
+        options: { type?: DgramMessage['type']; guaranteeDelivery?: boolean } = {},
+    ): void {
+        if (this.destroyed) return;
+        const ep = this.endpoints.get(endpointKey(address, port));
+        if (!ep) return;
+        this._send(topic, message, options, ep);
+    }
+
     private _send(
         topic: string | null,
         message: unknown,
@@ -152,6 +276,7 @@ export class Socket extends EventEmitter {
             ackID?: number;
             seq?: number;
         },
+        only?: Endpoint,
     ): void {
         // Assign ackID for guaranteed delivery
         if (!options.ackID && options.guaranteeDelivery) {
@@ -200,10 +325,15 @@ export class Socket extends EventEmitter {
 
         const buf = Buffer.from(JSON.stringify(envelope));
         const reliable = !!options.guaranteeDelivery;
-        const messageId = this.transport.send(buf, this.port, this.address, reliable);
+        const targets = only ? [only] : [...this.endpoints.values()];
+        const copies: SentCopy[] = targets.map((ep) => ({
+            transport: ep.transport,
+            messageId: ep.transport.send(buf, ep.port, ep.address, reliable),
+            endpointKey: ep.key,
+        }));
 
         if (reliable && options.ackID !== undefined) {
-            this.reliable.track(options.ackID, messageId, topic ?? undefined);
+            this.reliable.track(options.ackID, copies, topic ?? undefined);
         }
     }
 
@@ -257,14 +387,15 @@ export class Socket extends EventEmitter {
                 if (msg.data?.ackID !== undefined) {
                     this.sendAck(msg.data.ackID);
                 }
-                // Dedup by sequence number. Multi-path copies and retransmits
-                // share a seq; genuinely distinct messages always get distinct
-                // seqs, so identical payloads are never wrongly dropped — the
-                // old receive-time content hash did exactly that when latency
+                // Dedup by (sending session, seq). Multi-path copies and
+                // retransmits share both; genuinely distinct messages always get
+                // distinct seqs, so identical payloads are never wrongly dropped —
+                // the old receive-time content hash did exactly that when latency
                 // bunched packets into one 500ms window.
                 if (msg.seq !== undefined) {
-                    if (this.seenSeqs.has(msg.seq)) break;
-                    this.markSeqSeen(msg.seq);
+                    if (this.dedup.isDuplicate(msg.data?.socketID as string | undefined, msg.seq)) {
+                        break;
+                    }
                 }
                 const topic = msg.data?.topic;
                 if (topic) {
@@ -295,24 +426,6 @@ export class Socket extends EventEmitter {
 
     private sendAck(ackID: number): void {
         this._send(null, null, { type: 'ack', ackID });
-    }
-
-    /**
-     * Record a delivered sequence number. Evicts by age (older than
-     * `seqDedupTtlMs`, which outlasts the retransmit window) so the table stays
-     * bounded regardless of message rate — the count cap is only a backstop.
-     * seq is monotonic per socket, so entries are inserted in time order and the
-     * oldest is always at the front.
-     */
-    private markSeqSeen(seq: number): void {
-        const now = Date.now();
-        this.seenSeqs.set(seq, now);
-        while (this.seenSeqs.size > 0) {
-            const oldest = this.seenSeqs.keys().next().value as number;
-            const ts = this.seenSeqs.get(oldest) ?? 0;
-            if (this.seenSeqs.size <= this.maxSeenSeqs && now - ts <= this.seqDedupTtlMs) break;
-            this.seenSeqs.delete(oldest);
-        }
     }
 
     // ---- Keepalive -----------------------------------------------------------
@@ -355,6 +468,8 @@ export class Socket extends EventEmitter {
             return;
         }
 
+        this.pruneEndpoints(now);
+
         if (now - this.keepAliveTime > this.connectionTimeout) {
             this.missedKeepalives++;
             if (this.missedKeepalives >= this.missedKeepaliveThreshold) {
@@ -389,9 +504,10 @@ export class Socket extends EventEmitter {
         }
 
         // Clean up guaranteed-delivery timers + release retained fragments for this
-        // socket. The transport itself is shared (owned by Server/Client) — don't destroy it.
+        // socket. The transports are shared (owned by Server/Client) — don't destroy them.
         this.reliable.destroy();
-        this.seenSeqs.clear();
+        // A shared dedup table belongs to the Client and outlives this path.
+        if (this.ownsDedup) this.dedup.clear();
 
         this.onDisconnectCb?.(this.socketID);
         this.emit('disconnected', this.socketID);

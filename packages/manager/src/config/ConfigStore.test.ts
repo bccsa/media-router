@@ -465,4 +465,20 @@ describe('ConfigStore', () => {
             expect(g.color).toBe('#3b82f6');
         });
     });
+
+    describe('Manager settings', () => {
+        it('has no listeners until the operator saves some', () => {
+            expect(store.getDgramListeners()).toBeUndefined();
+        });
+
+        it('round-trips the listener list and overwrites on save', () => {
+            store.setDgramListeners([{ port: 3000 }, { port: 3002, bindAddress: '10.0.2.1' }]);
+            expect(store.getDgramListeners()).toEqual([
+                { port: 3000 },
+                { port: 3002, bindAddress: '10.0.2.1' },
+            ]);
+            store.setDgramListeners([{ port: 4000 }]);
+            expect(store.getDgramListeners()).toEqual([{ port: 4000 }]);
+        });
+    });
 });

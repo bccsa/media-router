@@ -13,6 +13,7 @@ const log = createLogger('ManagerConnection');
  *   - 'command' (command) — manager sent a command
  *   - 'connected' — connected to manager
  *   - 'disconnected' — lost connection to manager
+ *   - 'pathUp' / 'pathDown' (index) — one of the profile's paths changed state
  */
 export class ManagerConnection extends EventEmitter {
     /**
@@ -36,6 +37,24 @@ export class ManagerConnection extends EventEmitter {
 
     get isConnected(): boolean {
         return this._isConnected;
+    }
+
+    /** Paths connected vs configured on the active profile (issue #692). */
+    get pathStatus(): { connected: number; total: number } {
+        return {
+            connected: this.client?.connectedPaths.length ?? 0,
+            total: this.currentProfile?.paths.length ?? 0,
+        };
+    }
+
+    /** Every configured path with its live state — for the local API / device-manager. */
+    get pathDetails(): Array<{ host: string; port: number; connected: boolean }> {
+        const up = new Set(this.client?.connectedPaths ?? []);
+        return (this.currentProfile?.paths ?? []).map((p, i) => ({
+            host: p.host,
+            port: p.port,
+            connected: up.has(i),
+        }));
     }
 
     /** Connect to manager using the given profile. */
@@ -117,6 +136,28 @@ export class ManagerConnection extends EventEmitter {
         this.client.on('data', (topic: string, message: unknown) => {
             this.emit(topic, message);
         });
+
+        // Per-path health: the session survives a single path loss, so these
+        // are the only signal that a redundant path has quietly died.
+        this.client.on('pathUp', (index: number) => {
+            log.info(
+                { path: this.pathLabel(profile, index), ...this.pathStatus },
+                'Manager path up',
+            );
+            this.emit('pathUp', index);
+        });
+        this.client.on('pathDown', (index: number) => {
+            log.warn(
+                { path: this.pathLabel(profile, index), ...this.pathStatus },
+                'Manager path down',
+            );
+            this.emit('pathDown', index);
+        });
+    }
+
+    private pathLabel(profile: ManagerConnectionProfile, index: number): string {
+        const p = profile.paths[index];
+        return p ? `${p.host}:${p.port}` : String(index);
     }
 
     private scheduleReconnect(): void {

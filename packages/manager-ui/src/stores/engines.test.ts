@@ -328,6 +328,29 @@ describe('useEngineStore', () => {
             expect(engine.buildNumber).toBe('v2.0.1');
         });
 
+        it('setPaths replaces the live path list and ignores identical updates', () => {
+            const store = useEngineStore();
+            const paths = [{ remote: '10.0.0.8:47112', listenerPort: 3000 }];
+            store.setPaths('eng-1', paths);
+            expect(store.getEngine('eng-1')!.paths).toEqual(paths);
+            const before = store.engines;
+            store.setPaths('eng-1', [{ remote: '10.0.0.8:47112', listenerPort: 3000 }]);
+            expect(store.engines).toBe(before);
+            store.setPaths('eng-1', []);
+            expect(store.getEngine('eng-1')!.paths).toEqual([]);
+        });
+
+        it('updates managerPaths only when the counts change', () => {
+            const store = useEngineStore();
+            store.setEngineInfo('eng-1', { managerPaths: { connected: 2, total: 2 } });
+            expect(store.getEngine('eng-1')!.managerPaths).toEqual({ connected: 2, total: 2 });
+            const before = store.engines;
+            store.setEngineInfo('eng-1', { managerPaths: { connected: 2, total: 2 } });
+            expect(store.engines).toBe(before);
+            store.setEngineInfo('eng-1', { managerPaths: { connected: 1, total: 2 } });
+            expect(store.getEngine('eng-1')!.managerPaths).toEqual({ connected: 1, total: 2 });
+        });
+
         it('only updates provided fields', () => {
             const store = useEngineStore();
             store.setEngineInfo('eng-1', { ip: '10.0.0.1' });

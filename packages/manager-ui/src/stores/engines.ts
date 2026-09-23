@@ -136,6 +136,17 @@ export interface ConnectionState {
     channelMap?: ChannelMapEntry[];
 }
 
+export interface ManagerPathStatus {
+    connected: number;
+    total: number;
+}
+
+/** One live path as the manager sees it: engine source endpoint + the manager listener port it uses. */
+export interface EnginePathInfo {
+    remote: string;
+    listenerPort: number;
+}
+
 export interface SystemStats {
     cpu: number; // CPU usage %
     mem: number; // Memory usage %
@@ -166,6 +177,10 @@ export interface EngineState {
     ips?: string[];
     hostname?: string;
     buildNumber?: string;
+    /** dgram-comms paths connected vs configured on the engine (issue #692). */
+    managerPaths?: ManagerPathStatus;
+    /** Live paths with the manager listener port each one uses (issue #692). */
+    paths?: EnginePathInfo[];
     /** Sidebar group id — defaults to 'ungrouped' on the server. */
     groupId: string;
     /** Position within the group; ascending. */
@@ -257,6 +272,8 @@ export const useEngineStore = defineStore('engines', () => {
             ips: data.ips as string[] | undefined,
             hostname: data.hostname as string | undefined,
             buildNumber: data.buildNumber as string | undefined,
+            managerPaths: data.managerPaths as ManagerPathStatus | undefined,
+            paths: (data.paths as EnginePathInfo[] | undefined) ?? [],
             groupId: (data.group_id as string) ?? 'ungrouped',
             sortOrder: (data.sort_order as number) ?? 0,
         });
@@ -452,9 +469,29 @@ export const useEngineStore = defineStore('engines', () => {
         }
     }
 
+    /** Replace an engine's live path list (manager-side view, issue #692). */
+    function setPaths(engineId: string, paths: EnginePathInfo[]) {
+        const engine = engines.value.get(engineId);
+        if (!engine) return;
+        const same =
+            engine.paths?.length === paths.length &&
+            engine.paths.every(
+                (p, i) => p.remote === paths[i].remote && p.listenerPort === paths[i].listenerPort,
+            );
+        if (same) return;
+        engines.value.set(engineId, { ...engine, paths: paths.map((p) => ({ ...p })) });
+        engines.value = new Map(engines.value);
+    }
+
     function setEngineInfo(
         engineId: string,
-        info: { ip?: string; ips?: string[]; hostname?: string; buildNumber?: string },
+        info: {
+            ip?: string;
+            ips?: string[];
+            hostname?: string;
+            buildNumber?: string;
+            managerPaths?: ManagerPathStatus;
+        },
     ) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
@@ -473,6 +510,14 @@ export const useEngineStore = defineStore('engines', () => {
         }
         if (info.buildNumber && engine.buildNumber !== info.buildNumber) {
             engine.buildNumber = info.buildNumber;
+            changed = true;
+        }
+        if (
+            info.managerPaths &&
+            (engine.managerPaths?.connected !== info.managerPaths.connected ||
+                engine.managerPaths?.total !== info.managerPaths.total)
+        ) {
+            engine.managerPaths = { ...info.managerPaths };
             changed = true;
         }
         if (changed) engines.value = new Map(engines.value);
@@ -494,6 +539,7 @@ export const useEngineStore = defineStore('engines', () => {
         removeEngine,
         removeConnection,
         setSystemStats,
+        setPaths,
         setEngineInfo,
         renameEngine,
     };

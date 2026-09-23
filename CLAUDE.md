@@ -116,7 +116,7 @@ pnpm test -- --coverage
 
 | Port | Service |
 |------|---------|
-| 3000 | dgram-comms (encrypted UDP) |
+| 3000 | dgram-comms (encrypted UDP) — default; more listeners via Settings → Engine Comms (ADR-0023) |
 | 3001 | Engine Local API (Fastify) |
 | 5173 | Manager UI dev (Vite) |
 | 8080 | Manager HTTP + Socket.IO |

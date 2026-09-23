@@ -43,8 +43,13 @@ export class EngineEventForwarder {
     setup(): void {
         this.engineManager.on('engineOnline', (engineId: string) => {
             this.io.emit('engine:online', { engineId });
+            this.emitPaths(engineId);
             // Don't auto-send start here — wait for engine to report its running state
         });
+
+        // Which listener port each of the engine's paths uses (issue #692).
+        this.engineManager.on('enginePathUp', (engineId: string) => this.emitPaths(engineId));
+        this.engineManager.on('enginePathDown', (engineId: string) => this.emitPaths(engineId));
 
         // Engine reports its running state on connect. Manager state is authoritative.
         this.engineManager.on('engineRunningState', (engineId: string, data: unknown) => {
@@ -74,6 +79,7 @@ export class EngineEventForwarder {
         });
 
         this.engineManager.on('engineOffline', (engineId: string) => {
+            this.io.emit('engine:paths', { engineId, paths: [] });
             this.cachedModuleStates.delete(engineId);
             this.engineData.delete(engineId);
             this.logBuffers.delete(engineId);
@@ -155,6 +161,7 @@ export class EngineEventForwarder {
             if (d.ips) this.setEngineData(engineId, 'ips', d.ips);
             if (d.hostname) this.setEngineData(engineId, 'hostname', d.hostname);
             if (d.buildNumber) this.setEngineData(engineId, 'buildNumber', d.buildNumber);
+            if (d.managerPaths) this.setEngineData(engineId, 'managerPaths', d.managerPaths);
             this.io.volatile.emit('engine:system', { engineId, ...d });
         });
 
@@ -238,6 +245,11 @@ export class EngineEventForwarder {
                 patch: [{ op: 'replace', path: `/modules/${moduleId}/ports`, value: ports }],
             });
         });
+    }
+
+    /** Broadcast which listener port each of an engine's live paths uses (issue #692). */
+    private emitPaths(engineId: string): void {
+        this.io.emit('engine:paths', { engineId, paths: this.engineManager.enginePaths(engineId) });
     }
 
     /** Store arbitrary data for an engine (keyed by topic). */
