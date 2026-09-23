@@ -49,6 +49,12 @@ function registerHealthRoutes(app: ReturnType<typeof Fastify>, engine: Engine): 
 }
 
 function registerEngineRoutes(app: ReturnType<typeof Fastify>, engine: Engine): void {
+    // Live state of every manager path on the active profile (issue #692) —
+    // polled by device-manager so its profile editor can show a dot per path.
+    app.get('/api/v1/manager/status', async () => ({
+        connected: engine.managerConnection.isConnected,
+        paths: engine.managerConnection.pathDetails,
+    }));
     app.get('/api/v1/engine/status', async () => {
         return {
             running: engine.running,

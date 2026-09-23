@@ -3,15 +3,24 @@ import { EventEmitter } from 'events';
 import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
 import { decrypt, encrypt } from './encryption.js';
 import { FragmentTransport } from './FragmentTransport.js';
-import { Socket } from './Socket.js';
-import type { DgramMessage } from '@media-router/shared-types';
+import { Socket, type EndpointInfo } from './Socket.js';
+import type { DgramMessage, DgramListener } from '@media-router/shared-types';
 import { DgramWireMessageSchema, DgramDataSchema } from '@media-router/shared-types';
 
+/** One UDP socket the server listens on — the shared `DgramListener` shape. */
+export type ListenerSpec = DgramListener;
+
 export interface ServerOptions {
-    /** UDP port to listen on (default 3000). */
+    /** UDP port to listen on (default 3000). Shorthand for a single listener. */
     port?: number;
-    /** Bind address (default "0.0.0.0"). */
+    /** Bind address (default "0.0.0.0"). Shorthand for a single listener. */
     bindAddress?: string;
+    /**
+     * Listen on several port/address pairs at once so engines can reach the
+     * same session over more than one network path. Overrides `port` /
+     * `bindAddress` when given. At least one entry.
+     */
+    listeners?: ListenerSpec[];
     /** Map of clientID → encryption password. */
     encryptionKeys?: Record<string, string>;
     /** Connection timeout in ms (default 5000). */
@@ -20,15 +29,35 @@ export interface ServerOptions {
     missedKeepaliveThreshold?: number;
     /** Minimum ms between repeated "No key" / "Decryption failed" warnings per client (default 30_000). */
     rejectLogIntervalMs?: number;
-    /** SO_RCVBUF for the listening UDP socket in bytes (default 4 MiB). Clamped to net.core.rmem_max. */
+    /** SO_RCVBUF for each listening UDP socket in bytes (default 4 MiB). Clamped to net.core.rmem_max. */
     recvBufferSize?: number;
+}
+
+interface Listener {
+    spec: ListenerSpec;
+    udpSocket: dgram.Socket;
+    transport: FragmentTransport;
+    closed: boolean;
+}
+
+/** Bound port for logs (the spec's port when unbound or ephemeral-unbound). */
+function listenerPort(l: Listener): number {
+    try {
+        return l.udpSocket.address().port;
+    } catch {
+        return l.spec.port;
+    }
 }
 
 /**
  * dgram-comms UDP server.
  *
- * Listens for client connections, validates credentials, manages Socket instances.
- * Emits 'connection' when a new client connects successfully.
+ * Listens on one or more UDP sockets, validates credentials, manages Socket
+ * instances. One Socket (session) per clientID: a client that connects over
+ * several paths — different source sockets, possibly different listeners —
+ * joins the SAME session by presenting the same session nonce, and every
+ * server→client message is fanned out to all of that session's live
+ * endpoints. Emits 'connection' when a new client connects successfully.
  */
 export class Server extends EventEmitter {
     private port: number;
@@ -37,8 +66,7 @@ export class Server extends EventEmitter {
     private connectionTimeout: number;
     private missedKeepaliveThreshold: number;
 
-    private udpSocket: dgram.Socket;
-    private transport: FragmentTransport;
+    private udpListeners: Listener[] = [];
 
     /** Connected sockets by socketID. */
     private sockets = new Map<string, Socket>();
@@ -63,27 +91,49 @@ export class Server extends EventEmitter {
 
     constructor(options: ServerOptions = {}) {
         super();
-        this.port = options.port ?? 3000;
-        this.bindAddress = options.bindAddress ?? '0.0.0.0';
+        const specs: ListenerSpec[] = options.listeners?.length
+            ? options.listeners
+            : [{ port: options.port ?? 3000, bindAddress: options.bindAddress }];
+        this.port = specs[0].port;
+        this.bindAddress = specs[0].bindAddress ?? '0.0.0.0';
         this.encryptionKeys = { ...options.encryptionKeys };
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
         this.rejectLogIntervalMs = options.rejectLogIntervalMs ?? 30_000;
 
-        // Enlarge SO_RCVBUF so a fleet-wide reconnect storm (every engine
-        // reconnecting at once after a manager restart) doesn't overflow the
-        // OS-default ~208 KB receive buffer and drop packets as RcvbufErrors.
-        this.udpSocket = dgram.createSocket({
-            type: 'udp4',
-            recvBufferSize: options.recvBufferSize ?? DEFAULT_RECV_BUFFER_SIZE,
-        });
-        this.transport = new FragmentTransport(this.udpSocket, {
-            reassemblyTimeoutMs: this.connectionTimeout * 2,
-        });
+        for (const spec of specs) {
+            // Enlarge SO_RCVBUF so a fleet-wide reconnect storm (every engine
+            // reconnecting at once after a manager restart) doesn't overflow the
+            // OS-default ~208 KB receive buffer and drop packets as RcvbufErrors.
+            const udpSocket = dgram.createSocket({
+                type: 'udp4',
+                recvBufferSize: options.recvBufferSize ?? DEFAULT_RECV_BUFFER_SIZE,
+            });
+            const transport = new FragmentTransport(udpSocket, {
+                reassemblyTimeoutMs: this.connectionTimeout * 2,
+            });
+            udpSocket.on('error', (err) => {
+                console.error(
+                    `[dgram-comms Server] listener ${spec.bindAddress ?? '0.0.0.0'}:${spec.port} error: ${err.message}`,
+                );
+            });
+            this.udpListeners.push({ spec: { ...spec }, udpSocket, transport, closed: false });
+        }
+    }
 
-        this.udpSocket.on('error', (err) => {
-            console.error(`[dgram-comms Server] error: ${err.message}`);
-        });
+    /** First listener's UDP socket (single-listener callers and tests). */
+    private get udpSocket(): dgram.Socket {
+        return this.udpListeners[0].udpSocket;
+    }
+
+    /** First listener's transport (single-listener callers and tests). */
+    private get transport(): FragmentTransport {
+        return this.udpListeners[0].transport;
+    }
+
+    /** The listeners this server was built with. */
+    get listenerSpecs(): ListenerSpec[] {
+        return this.udpListeners.map((l) => ({ ...l.spec }));
     }
 
     /**
@@ -108,11 +158,60 @@ export class Server extends EventEmitter {
         return { suppressed };
     }
 
-    /** Start listening on the configured port. */
+    /**
+     * Start listening on every configured listener. Rejects if any bind fails —
+     * and then closes the ones that did bind, so a half-started server never
+     * lingers holding ports. The instance is not restartable after that.
+     */
     async start(): Promise<void> {
-        return new Promise((resolve) => {
-            this.udpSocket.on('message', (msg, rinfo) => this.onPacket(msg, rinfo));
-            this.udpSocket.bind(this.port, this.bindAddress, () => {
+        try {
+            await Promise.all(this.udpListeners.map((l) => this.bindListener(l)));
+        } catch (err) {
+            await this.closeListeners();
+            throw err;
+        }
+    }
+
+    /**
+     * Probe whether `spec` can be bound right now (bind + close a throwaway
+     * socket). Lets a caller reject a bad listener set BEFORE tearing down a
+     * live server. Not a guarantee — the port can be taken in between.
+     */
+    static canBind(spec: ListenerSpec): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const probe = dgram.createSocket('udp4');
+            probe.once('error', (err) => {
+                probe.close();
+                reject(err);
+            });
+            probe.bind(spec.port, spec.bindAddress ?? '0.0.0.0', () => probe.close(resolve));
+        });
+    }
+
+    private async closeListeners(): Promise<void> {
+        await Promise.all(
+            this.udpListeners.map((l) => {
+                l.transport.destroy();
+                if (l.closed) return Promise.resolve();
+                l.closed = true;
+                return new Promise<void>((resolve) => {
+                    try {
+                        l.udpSocket.close(() => resolve());
+                    } catch {
+                        resolve();
+                    }
+                });
+            }),
+        );
+    }
+
+    private bindListener(l: Listener): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const onError = (err: Error) => reject(err);
+            l.udpSocket.once('error', onError);
+            l.udpSocket.on('message', (msg, rinfo) => this.onPacket(msg, rinfo, l));
+            l.udpSocket.bind(l.spec.port, l.spec.bindAddress ?? '0.0.0.0', () => {
+                l.udpSocket.off('error', onError);
                 resolve();
             });
         });
@@ -127,10 +226,7 @@ export class Server extends EventEmitter {
         this.clientToSocket.clear();
         this.rejectLogState.clear();
         this.resetLastSent.clear();
-        this.transport.destroy();
-        return new Promise((resolve) => {
-            this.udpSocket.close(() => resolve());
-        });
+        await this.closeListeners();
     }
 
     /**
@@ -188,11 +284,30 @@ export class Server extends EventEmitter {
         return socket?.connected ?? false;
     }
 
+    /** Live endpoint keys (`address:port`) of a client's session; empty when offline. */
+    clientEndpoints(clientId: string): string[] {
+        return this.clientSocket(clientId)?.endpointKeys ?? [];
+    }
+
+    /** Live endpoints of a client's session with the listener port each arrived on. */
+    clientEndpointInfo(clientId: string): EndpointInfo[] {
+        return this.clientSocket(clientId)?.endpointInfo ?? [];
+    }
+
+    private clientSocket(clientId: string): Socket | undefined {
+        const socketId = this.clientToSocket.get(clientId);
+        return socketId ? this.sockets.get(socketId) : undefined;
+    }
+
     // ---- Packet handling -----------------------------------------------------
 
-    private onPacket(rawPacket: Buffer, rinfo: dgram.RemoteInfo): void {
+    private onPacket(
+        rawPacket: Buffer,
+        rinfo: dgram.RemoteInfo,
+        listener: Listener = this.udpListeners[0],
+    ): void {
         // Reassemble fragments (and service fragment-level NACKs internally)
-        const complete = this.transport.receive(rawPacket, rinfo);
+        const complete = listener.transport.receive(rawPacket, rinfo);
         if (!complete) return;
 
         // Parse and validate JSON envelope
@@ -258,41 +373,32 @@ export class Server extends EventEmitter {
         switch (type) {
             case 'connect':
                 console.log(
-                    `[dgram-comms Server] connect from ${clientID} (${rinfo.address}:${rinfo.port}), has key: ${!!this.encryptionKeys[clientID]}`,
+                    `[dgram-comms Server] connect from ${clientID} (${rinfo.address}:${rinfo.port} → :${listenerPort(listener)}), has key: ${!!this.encryptionKeys[clientID]}`,
                 );
-                this.handleConnect(clientID, data, rinfo);
+                this.handleConnect(clientID, data, rinfo, listener);
                 break;
 
-            case 'keepAlive': {
-                const socket = this.getSocketByDataSocketID(data?.socketID as string);
-                if (socket) {
-                    socket.updateRemote(rinfo.port, rinfo.address);
-                    socket.resetKeepalive();
-                } else {
-                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo);
-                }
-                break;
-            }
-
-            case 'ack': {
-                const socket = this.getSocketByDataSocketID(data?.socketID as string);
-                if (socket) {
-                    socket.updateRemote(rinfo.port, rinfo.address);
-                    socket.handleMessage({ ...msg, data });
-                } else {
-                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo);
-                }
-                break;
-            }
-
+            case 'keepAlive':
+            case 'ack':
             case 'data': {
                 const socket = this.getSocketByDataSocketID(data?.socketID as string);
-                if (socket) {
-                    socket.updateRemote(rinfo.port, rinfo.address);
-                    socket.handleMessage({ ...msg, data });
-                } else {
-                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo);
+                if (!socket) {
+                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo, listener);
+                    break;
                 }
+                // The packet named a live socketID (a server-issued UUID an
+                // off-path sender can't know — the same trust the old
+                // follow-the-sender NAT update relied on), so its source is
+                // one of this session's endpoints: add or refresh it. A NAT
+                // rebind shows up as a new endpoint; the stale one ages out.
+                socket.touchEndpoint(
+                    listener.transport,
+                    rinfo.port,
+                    rinfo.address,
+                    listenerPort(listener),
+                );
+                if (type === 'keepAlive') socket.resetKeepalive();
+                else socket.handleMessage({ ...msg, data });
                 break;
             }
         }
@@ -302,6 +408,7 @@ export class Server extends EventEmitter {
         clientID: string,
         data: DgramMessage['data'],
         rinfo: dgram.RemoteInfo,
+        listener: Listener = this.udpListeners[0],
     ): void {
         // Validate client has a registered encryption key
         if (!this.encryptionKeys[clientID]) return;
@@ -313,34 +420,47 @@ export class Server extends EventEmitter {
         if (existingSocketId) {
             const existing = this.sockets.get(existingSocketId);
             if (existing) {
-                // A connect from the SAME endpoint AND same session nonce is a
-                // handshake retry (the client fires connects at 0/200/500ms and
-                // on a high-RTT link the retry always beats the first reply),
-                // NOT a new session. Replacing the socket here minted a new
-                // socketID per retry and the client ended up on whichever
+                // Same session nonce ⇒ same session: either a handshake RETRY
+                // (the client fires connects at 0/200/500ms and on a high-RTT
+                // link the retry beats the first reply) or an ADDITIONAL PATH
+                // (another client socket, maybe via another listener). Both
+                // must land on the existing socket: replacing it minted a new
+                // socketID per connect and the client ended up on whichever
                 // reply landed last — a coin flip against the manager's live
                 // socket, after which every packet it sent was dropped as
-                // unknown-socketID (measured on the NO-BR gate, RTT ~350ms).
-                // Re-ack with the SAME socketID instead.
+                // unknown-socketID (measured on the NO-BR gate, RTT ~350ms);
+                // with two paths the two connects fought forever.
                 //
-                // The nonce guards the endpoint check against a reborn client
-                // (crash-loop) landing on the same ephemeral port: reusing the
-                // old socket there would let its seq-dedup table silently eat
-                // the new session's early messages. Different nonce ⇒ rebirth.
-                if (
-                    existing.remoteAddress === rinfo.address &&
-                    existing.remotePort === rinfo.port &&
-                    existing.connectNonce === nonce
-                ) {
+                // The nonce guards against a reborn client (crash-loop)
+                // landing on the same ephemeral port: reusing the old socket
+                // there would let its seq-dedup table silently eat the new
+                // session's early messages. Different nonce ⇒ rebirth. A
+                // nonce-less (older) client only counts as a retry from the
+                // endpoint we already know — a new endpoint is a rebirth.
+                const sameEndpoint = existing.hasEndpoint(rinfo.address, rinfo.port);
+                if (existing.connectNonce === nonce && (sameEndpoint || nonce !== undefined)) {
+                    const added = existing.touchEndpoint(
+                        listener.transport,
+                        rinfo.port,
+                        rinfo.address,
+                        listenerPort(listener),
+                    );
+                    if (added) {
+                        console.log(
+                            `[dgram-comms Server] ${clientID} joined path ${rinfo.address}:${rinfo.port} → :${listenerPort(listener)} (${existing.endpointKeys.length} paths)`,
+                        );
+                    }
                     existing.resetKeepalive();
-                    existing.send('connected', existing.socketID, {
+                    // Answer the path that asked; the other paths already have it.
+                    existing.sendToEndpoint(rinfo.address, rinfo.port, 'connected', existing.socketID, {
                         type: 'connected',
                         guaranteeDelivery: true,
                     });
                     return;
                 }
-                // Different endpoint or nonce → genuine reconnect (new client):
-                // tear down the old session and build a fresh one.
+                // Different nonce (or unknown endpoint from a nonce-less
+                // client) → genuine reconnect: tear down the old session and
+                // build a fresh one.
                 console.log(`[dgram-comms Server] ${clientID} reconnecting — replacing old socket`);
                 existing.destroy();
                 this.sockets.delete(existingSocketId);
@@ -352,7 +472,8 @@ export class Server extends EventEmitter {
         const socket = new Socket({
             port: rinfo.port,
             address: rinfo.address,
-            transport: this.transport,
+            transport: listener.transport,
+            localPort: listenerPort(listener),
             isClient: false,
             clientID,
             encryptionKey: this.encryptionKeys[clientID],
@@ -369,6 +490,11 @@ export class Server extends EventEmitter {
                 }
             },
         });
+        socket.on('pathDown', (key: string) => {
+            console.log(`[dgram-comms Server] ${clientID} path ${key} down (${socket.endpointKeys.length} left)`);
+            this.emit('pathDown', clientID, key);
+        });
+        socket.on('pathUp', (key: string) => this.emit('pathUp', clientID, key));
 
         socket.connectNonce = nonce;
         this.sockets.set(socket.socketID, socket);
@@ -406,6 +532,7 @@ export class Server extends EventEmitter {
         clientID: string,
         socketID: string | undefined,
         rinfo: dgram.RemoteInfo,
+        listener: Listener = this.udpListeners[0],
     ): void {
         if (!socketID) return;
         const key = this.encryptionKeys[clientID];
@@ -431,6 +558,11 @@ export class Server extends EventEmitter {
             iv: encrypted.iv,
             data: encrypted.data,
         };
-        this.transport.send(Buffer.from(JSON.stringify(envelope)), rinfo.port, rinfo.address, false);
+        listener.transport.send(
+            Buffer.from(JSON.stringify(envelope)),
+            rinfo.port,
+            rinfo.address,
+            false,
+        );
     }
 }

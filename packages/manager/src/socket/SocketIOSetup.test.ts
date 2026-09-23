@@ -26,6 +26,7 @@ describe('setupSocketIO', () => {
 
         const engineManager = {
             isEngineOnline: vi.fn().mockReturnValue(online),
+            enginePaths: vi.fn().mockReturnValue([]),
             sendToEngine: vi.fn(),
         } as any;
         const pluginRegistry = { overlayManifest: vi.fn() } as any;

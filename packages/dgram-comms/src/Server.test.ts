@@ -459,6 +459,7 @@ describe('Server', () => {
             'engine-1',
             'forgotten-sock',
             expect.objectContaining({ address: '10.0.0.1', port: 5000 }),
+            expect.anything(),
         );
     });
 
@@ -480,5 +481,139 @@ describe('Server', () => {
 
         expect(server['clientToSocket'].get('engine-1')).toBe('live-replacement-sock');
         expect(disconnectSpy).not.toHaveBeenCalled();
+    });
+
+    // ---- Multi-path sessions ----
+
+    it('a same-nonce connect from a NEW endpoint joins the session instead of replacing it', () => {
+        // Second engine path (another client socket, maybe another listener):
+        // same session nonce ⇒ same socketID, no churn, no second connection
+        // event, and the handshake reply goes to the path that asked.
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const connSpy = vi.fn();
+        server.on('connection', connSpy);
+        const connect = { message: 'session-nonce-1' };
+
+        server['handleConnect']('engine-1', connect, rinfo('10.0.0.1', 5000));
+        const socketId = server['clientToSocket'].get('engine-1')!;
+        const socket = server['sockets'].get(socketId)!;
+        const toEndpoint = vi.spyOn(socket, 'sendToEndpoint');
+
+        server['handleConnect']('engine-1', connect, rinfo('10.0.2.1', 6000));
+
+        expect(server['clientToSocket'].get('engine-1')).toBe(socketId);
+        expect(server['sockets'].size).toBe(1);
+        expect(connSpy).toHaveBeenCalledTimes(1);
+        expect(server.clientEndpoints('engine-1').sort()).toEqual([
+            '10.0.0.1:5000',
+            '10.0.2.1:6000',
+        ]);
+        expect(toEndpoint).toHaveBeenCalledWith(
+            '10.0.2.1',
+            6000,
+            'connected',
+            socketId,
+            expect.objectContaining({ type: 'connected', guaranteeDelivery: true }),
+        );
+    });
+
+    it('a nonce-less connect from a new endpoint is still a rebirth (older client)', () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        server['handleConnect']('engine-1', {}, rinfo('10.0.0.1', 5000));
+        const first = server['clientToSocket'].get('engine-1')!;
+        server['handleConnect']('engine-1', {}, rinfo('10.0.2.1', 6000));
+        expect(server['clientToSocket'].get('engine-1')).not.toBe(first);
+        expect(server.clientEndpoints('engine-1')).toEqual(['10.0.2.1:6000']);
+    });
+
+    it('an authenticated packet from a new endpoint adds it to the session (NAT rebind)', () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        server['handleConnect']('engine-1', { message: 'n' }, rinfo('10.0.0.1', 5000));
+        const socketId = server['clientToSocket'].get('engine-1')!;
+        const packet = Buffer.from(
+            JSON.stringify({
+                type: 'keepAlive',
+                clientID: 'engine-1',
+                data: { socketID: socketId },
+            }),
+        );
+        vi.spyOn(server['transport'], 'receive').mockReturnValue(packet);
+        server['onPacket'](Buffer.alloc(1), rinfo('10.0.0.1', 5999));
+        expect(server.clientEndpoints('engine-1').sort()).toEqual([
+            '10.0.0.1:5000',
+            '10.0.0.1:5999',
+        ]);
+    });
+
+    it('builds one UDP socket per listener and reports the specs', () => {
+        vi.mocked(dgram.createSocket).mockClear();
+        server = new Server({
+            listeners: [{ port: 3000 }, { port: 3002, bindAddress: '10.0.2.1' }],
+        });
+        expect(dgram.createSocket).toHaveBeenCalledTimes(2);
+        expect(server.listenerSpecs).toEqual([
+            { port: 3000, bindAddress: undefined },
+            { port: 3002, bindAddress: '10.0.2.1' },
+        ]);
+        expect(server['port']).toBe(3000);
+    });
+
+    it('start() rejects when a listener cannot bind and releases the ones that did', async () => {
+        const blocker = dgram.createSocket('udp4');
+        const port = await new Promise<number>((resolve) =>
+            blocker.bind(0, '127.0.0.1', () => resolve(blocker.address().port)),
+        );
+        server = new Server({
+            listeners: [
+                { port: 0, bindAddress: '127.0.0.1' },
+                { port, bindAddress: '127.0.0.1' },
+            ],
+        });
+        await expect(server.start()).rejects.toThrow(/EADDRINUSE/);
+        // The first listener bound fine and must not linger holding its port.
+        expect(() => server['udpListeners'][0].udpSocket.address()).toThrow();
+        await server.stop(); // idempotent after the cleanup
+        blocker.close();
+    });
+
+    it('canBind resolves for a free port and rejects for a taken one', async () => {
+        const blocker = dgram.createSocket('udp4');
+        const port = await new Promise<number>((resolve) =>
+            blocker.bind(0, '127.0.0.1', () => resolve(blocker.address().port)),
+        );
+        await expect(Server.canBind({ port, bindAddress: '127.0.0.1' })).rejects.toThrow(
+            /EADDRINUSE/,
+        );
+        await expect(
+            Server.canBind({ port: 0, bindAddress: '127.0.0.1' }),
+        ).resolves.toBeUndefined();
+        blocker.close();
+        server = new Server();
+    });
+
+    it('clientEndpointInfo names the listener port each endpoint arrived on', () => {
+        server = new Server({
+            listeners: [{ port: 3000 }, { port: 3002 }],
+            encryptionKeys: { 'engine-1': 'secret' },
+        });
+        const connect = { message: 'nonce-1' };
+        server['handleConnect'](
+            'engine-1',
+            connect,
+            rinfo('10.0.0.1', 5000),
+            server['udpListeners'][0],
+        );
+        server['handleConnect'](
+            'engine-1',
+            connect,
+            rinfo('10.0.0.1', 6000),
+            server['udpListeners'][1],
+        );
+        expect(
+            server
+                .clientEndpointInfo('engine-1')
+                .map((e) => `${e.address}:${e.port}@${e.localPort}`),
+        ).toEqual(['10.0.0.1:5000@3000', '10.0.0.1:6000@3002']);
+        expect(server.clientEndpointInfo('nobody')).toEqual([]);
     });
 });

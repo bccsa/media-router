@@ -17,6 +17,7 @@ import {
     ProfileQuerySchema,
     RollbackSchema,
     DeviceListSchema,
+    ManagerSettingsSchema,
 } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
@@ -150,6 +151,26 @@ export function registerRpcHandlers(socket: IOSocket, deps: RpcDeps): void {
         requireEngine(engineId);
         const devices = eventForwarder.getEngineData(engineId, `devices:${type}`);
         return devices ?? [];
+    });
+
+    // --- Manager settings (issue #692) ---
+
+    respond(socket, 'settings:get', z.object({}).optional().nullable(), () => ({
+        dgramListeners: engineManager.dgramListeners,
+    }));
+
+    // Rebind first, persist only on success: a set that cannot bind leaves
+    // both the live server and the DB on the previous listeners.
+    respond(socket, 'settings:set', ManagerSettingsSchema, async ({ dgramListeners }) => {
+        try {
+            await engineManager.setListeners(dgramListeners);
+        } catch (err) {
+            throw new RpcError(`Could not bind listeners: ${(err as Error).message}`);
+        }
+        configStore.setDgramListeners(dgramListeners);
+        const settings = { dgramListeners: engineManager.dgramListeners };
+        io.emit('settings:updated', settings);
+        return settings;
     });
 
     // --- Engine CRUD ---

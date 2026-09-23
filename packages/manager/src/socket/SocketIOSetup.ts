@@ -98,6 +98,11 @@ export function setupSocketIO(deps: SocketDeps): void {
                     ips: eventForwarder.getEngineData(e.engine_id as string, 'ips'),
                     hostname: eventForwarder.getEngineData(e.engine_id as string, 'hostname'),
                     buildNumber: eventForwarder.getEngineData(e.engine_id as string, 'buildNumber'),
+                    managerPaths: eventForwarder.getEngineData(
+                        e.engine_id as string,
+                        'managerPaths',
+                    ),
+                    paths: engineManager.enginePaths(e.engine_id as string),
                     modules,
                     connections,
                     interlocks,

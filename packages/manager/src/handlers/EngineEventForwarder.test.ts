@@ -27,6 +27,7 @@ function createMocks() {
 
     const engineManager = new EventEmitter() as any;
     engineManager.sendToEngine = vi.fn();
+    engineManager.enginePaths = vi.fn().mockReturnValue([]);
 
     const engineCommands = {
         isRunning: vi.fn().mockReturnValue(false),
@@ -378,6 +379,27 @@ describe('EngineEventForwarder', () => {
                 engineId: 'eng-1',
                 cpuPercent: 45,
             });
+        });
+
+        it('broadcasts engine:paths on online, path up/down and offline (#692)', () => {
+            const { engineManager, io } = createMocks();
+            const paths = [{ remote: '10.0.0.8:47112', listenerPort: 3000 }];
+            engineManager.enginePaths.mockReturnValue(paths);
+            engineManager.emit('engineOnline', 'eng-1');
+            expect(io.emit).toHaveBeenCalledWith('engine:paths', { engineId: 'eng-1', paths });
+            io.emit.mockClear();
+            engineManager.emit('enginePathUp', 'eng-1', '10.0.0.8:42974');
+            engineManager.emit('enginePathDown', 'eng-1', '10.0.0.8:42974');
+            expect(io.emit.mock.calls.filter((c: unknown[]) => c[0] === 'engine:paths')).toHaveLength(2);
+            io.emit.mockClear();
+            engineManager.emit('engineOffline', 'eng-1');
+            expect(io.emit).toHaveBeenCalledWith('engine:paths', { engineId: 'eng-1', paths: [] });
+        });
+
+        it('caches managerPaths when present (#692)', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineSystem', 'eng-1', { managerPaths: { connected: 1, total: 2 } });
+            expect(forwarder.getEngineData('eng-1', 'managerPaths')).toEqual({ connected: 1, total: 2 });
         });
 
         it('caches ips array when present', () => {

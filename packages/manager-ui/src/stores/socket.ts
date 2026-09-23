@@ -85,6 +85,12 @@ export const useSocketStore = defineStore('socket', () => {
         s.on('engine:online', (data: { engineId: string }) => {
             useEngineStore().setOnline(data.engineId, true);
         });
+        s.on(
+            'engine:paths',
+            (data: { engineId: string; paths: Array<{ remote: string; listenerPort: number }> }) => {
+                useEngineStore().setPaths(data.engineId, data.paths);
+            },
+        );
         s.on('engine:offline', (data: { engineId: string }) => {
             useEngineStore().setOnline(data.engineId, false);
             useEngineStore().clearEngineRuntime(data.engineId);
@@ -169,6 +175,7 @@ export const useSocketStore = defineStore('socket', () => {
                 ips?: string[];
                 hostname?: string;
                 buildNumber?: string;
+                managerPaths?: { connected: number; total: number };
             }) => {
                 const store = useEngineStore();
                 store.setSystemStats(data.engineId, {
@@ -178,12 +185,13 @@ export const useSocketStore = defineStore('socket', () => {
                     undervoltage: data.undervoltage,
                     processCount: data.processCount,
                 });
-                if (data.ip || data.ips || data.hostname || data.buildNumber) {
+                if (data.ip || data.ips || data.hostname || data.buildNumber || data.managerPaths) {
                     store.setEngineInfo(data.engineId, {
                         ip: data.ip,
                         ips: data.ips,
                         hostname: data.hostname,
                         buildNumber: data.buildNumber,
+                        managerPaths: data.managerPaths,
                     });
                 }
             },

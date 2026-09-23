@@ -33,6 +33,8 @@ export {
     ProfileQuerySchema,
     RollbackSchema,
     DeviceListSchema,
+    DgramListenerSchema,
+    ManagerSettingsSchema,
     CreateEngineProfileSchema,
     EngineIdPayloadSchema,
     ModuleRestartPayloadSchema,
@@ -630,6 +632,26 @@ export interface DgramMessage {
         ackID?: number;
         socketID?: string;
     };
+}
+
+/** One UDP listener the manager accepts engine connections on (see ManagerSettingsSchema). */
+export interface DgramListener {
+    port: number;
+    /** IPv4 to bind; omitted = all interfaces. */
+    bindAddress?: string;
+}
+
+/** One live path of an engine's session as the manager sees it (issue #692). */
+export interface EnginePath {
+    /** Engine-side source `address:port`. */
+    remote: string;
+    /** Manager listener port the path arrives on. */
+    listenerPort: number;
+}
+
+/** Manager-level settings persisted in manager.db and edited from the manager UI. */
+export interface ManagerSettings {
+    dgramListeners: DgramListener[];
 }
 
 /** A manager connection profile stored on the engine. */

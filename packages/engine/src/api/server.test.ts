@@ -13,7 +13,10 @@ describe('Engine API Server', () => {
         mockEngine = {
             running: true,
             moduleManager: { size: 3 },
-            managerConnection: { isConnected: true },
+            managerConnection: {
+                isConnected: true,
+                pathDetails: [{ host: '10.0.0.1', port: 3000, connected: true }],
+            },
             pluginLoader: {
                 getManifests: vi
                     .fn()
@@ -59,6 +62,11 @@ describe('Engine API Server', () => {
         }));
 
         // Engine routes
+        app.get('/api/v1/manager/status', async () => ({
+            connected: mockEngine.managerConnection.isConnected,
+            paths: mockEngine.managerConnection.pathDetails,
+        }));
+
         app.get('/api/v1/engine/status', async () => ({
             running: mockEngine.running,
             moduleCount: mockEngine.moduleManager.size,
@@ -140,6 +148,14 @@ describe('Engine API Server', () => {
     });
 
     // --- Engine ---
+
+    it('GET /api/v1/manager/status returns per-path live state (#692)', async () => {
+        const res = await app.inject({ method: 'GET', url: '/api/v1/manager/status' });
+        expect(JSON.parse(res.payload)).toEqual({
+            connected: true,
+            paths: [{ host: '10.0.0.1', port: 3000, connected: true }],
+        });
+    });
 
     it('GET /api/v1/engine/status returns engine state', async () => {
         const res = await app.inject({ method: 'GET', url: '/api/v1/engine/status' });

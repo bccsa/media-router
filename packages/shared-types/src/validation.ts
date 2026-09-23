@@ -214,6 +214,29 @@ export const DeviceListSchema = z.object({
         .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
 });
 
+// --- Manager Settings -------------------------------------------------------
+
+/** One UDP listener the manager accepts engine connections on. */
+export const DgramListenerSchema = z.object({
+    port: z.number().int().min(1).max(65535),
+    /** IPv4 to bind; omitted = all interfaces. */
+    bindAddress: z.ipv4().optional(),
+});
+
+/**
+ * `settings:set` / `settings:get`. At least one listener always remains so a
+ * save can never leave the manager unreachable by every engine. A port may
+ * appear once: a wildcard bind and a specific-address bind on the same port
+ * collide at bind time, so they are rejected up front too.
+ */
+export const ManagerSettingsSchema = z.object({
+    dgramListeners: z
+        .array(DgramListenerSchema)
+        .min(1, 'At least one listener is required')
+        .max(16)
+        .refine((list) => new Set(list.map((l) => l.port)).size === list.length, 'Duplicate port'),
+});
+
 // --- Engine HTTP Payloads ---------------------------------------------------
 
 const ManagerPathSchema = z.object({

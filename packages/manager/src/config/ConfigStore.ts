@@ -5,6 +5,8 @@ import { EngineRepository } from './EngineRepository.js';
 import { EngineGroupRepository } from './EngineGroupRepository.js';
 import { ProfileRepository } from './ProfileRepository.js';
 import { ConfigHistoryRepository } from './ConfigHistoryRepository.js';
+import { ManagerSettingsRepository } from './ManagerSettingsRepository.js';
+import type { DgramListener } from '@media-router/shared-types';
 
 const log = createLogger('ConfigStore');
 
@@ -16,6 +18,7 @@ const log = createLogger('ConfigStore');
  *   - `EngineGroupRepository` — `engine_groups`
  *   - `ProfileRepository` — `engine_profiles`
  *   - `ConfigHistoryRepository` — `engine_config_history` + debounce timers
+ *   - `ManagerSettingsRepository` — `manager_settings` (the manager's own knobs)
  *
  * The facade orchestrates cross-table cascades (e.g. `deleteEngine` removes
  * profiles + history) so each repo stays single-table. Schema setup (DDL,
@@ -27,6 +30,7 @@ export class ConfigStore {
     private groups: EngineGroupRepository;
     private profiles: ProfileRepository;
     private history: ConfigHistoryRepository;
+    private settings: ManagerSettingsRepository;
 
     constructor(dbPath?: string) {
         if (!dbPath) {
@@ -46,6 +50,7 @@ export class ConfigStore {
         this.engines = new EngineRepository(this.db);
         this.groups = new EngineGroupRepository(this.db);
         this.profiles = new ProfileRepository(this.db, this.history);
+        this.settings = new ManagerSettingsRepository(this.db);
 
         log.info({ dbPath }, 'database opened');
     }
@@ -199,6 +204,17 @@ export class ConfigStore {
         versionId: number,
     ): Record<string, unknown> | undefined {
         return this.history.getVersion(engineId, profileName, versionId);
+    }
+
+    // --- Manager settings ---
+
+    /** Listeners saved from the UI; undefined until the operator has saved once. */
+    getDgramListeners(): DgramListener[] | undefined {
+        return this.settings.get<DgramListener[]>('dgramListeners');
+    }
+
+    setDgramListeners(listeners: DgramListener[]): void {
+        this.settings.set('dgramListeners', listeners);
     }
 
     // --- Lifecycle ---

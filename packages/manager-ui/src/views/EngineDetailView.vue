@@ -115,6 +115,20 @@ const infoRows = computed(() => {
                   : 'Unknown',
         },
         { label: 'Hostname', value: engine.value.hostname ?? '—' },
+        ...(engine.value.managerPaths
+            ? [
+                  {
+                      label: 'Manager paths',
+                      value: [
+                          `${engine.value.managerPaths.connected}/${engine.value.managerPaths.total} up`,
+                          ...(engine.value.paths ?? []).map(
+                              (p) => `:${p.listenerPort} ← ${p.remote}`,
+                          ),
+                      ].join(' · '),
+                      accent: engine.value.managerPaths.connected === engine.value.managerPaths.total,
+                  },
+              ]
+            : []),
         ...(engine.value.buildNumber ? [{ label: 'Build', value: engine.value.buildNumber }] : []),
         { label: 'Active Profile', value: engine.value.activeProfile ?? 'None' },
         { label: 'Modules', value: String(Object.keys(engine.value.modules).length) },

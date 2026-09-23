@@ -4,6 +4,7 @@ import { useThemeStore } from '@/stores/theme';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
 import MrToggle from '@/components/common/MrToggle.vue';
+import DgramListenersCard from '@/components/settings/DgramListenersCard.vue';
 
 const theme = useThemeStore();
 const socket = useSocketStore();
@@ -69,6 +70,9 @@ const managerUrl = computed(() => (typeof location !== 'undefined' ? location.or
                 </div>
             </div>
         </div>
+
+        <!-- Engine comms listeners (issue #692) -->
+        <DgramListenersCard />
 
         <!-- About -->
         <div class="rounded-lg overflow-hidden bg-card border border-border">

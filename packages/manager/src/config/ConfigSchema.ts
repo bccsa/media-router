@@ -65,6 +65,12 @@ function createTables(db: Database.Database): void {
             FOREIGN KEY (engine_id) REFERENCES engines(engine_id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS manager_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS engine_config_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             engine_id TEXT NOT NULL,

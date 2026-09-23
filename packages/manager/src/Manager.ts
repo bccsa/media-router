@@ -4,6 +4,7 @@ import cors from 'cors';
 import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shared-types';
+import type { DgramListener } from '@media-router/shared-types';
 import { ConfigStore } from './config/ConfigStore.js';
 import { EngineConnectionManager } from './engines/EngineConnectionManager.js';
 import { PluginRegistry } from './plugins/PluginRegistry.js';
@@ -18,6 +19,7 @@ const log = createLogger('Manager');
 
 export interface ManagerConfig {
     httpPort?: number;
+    /** Default UDP listener for engines when the operator has never saved one (issue #692). */
     dgramPort?: number;
     dbPath?: string;
 }
@@ -50,7 +52,12 @@ export class Manager {
 
         // Core services
         this.configStore = new ConfigStore(this.config.dbPath);
-        this.engineManager = new EngineConnectionManager(this.configStore, this.config.dgramPort);
+        // Listeners saved from the UI win over the entrypoint's default port:
+        // the DB is what the operator edits and it rides along in /data.
+        const listeners: DgramListener[] = this.configStore.getDgramListeners() ?? [
+            { port: this.config.dgramPort },
+        ];
+        this.engineManager = new EngineConnectionManager(this.configStore, listeners);
 
         // HTTP + Socket.IO
         const app = express();
@@ -122,7 +129,7 @@ export class Manager {
         registerHttpRoutes({ app });
 
         log.info(
-            { httpPort: this.config.httpPort, dgramPort: this.config.dgramPort },
+            { httpPort: this.config.httpPort, dgramListeners: this.engineManager.dgramListeners },
             'Manager configured',
         );
     }
@@ -131,7 +138,7 @@ export class Manager {
         if (this.running) return;
         await this.pluginRegistry.init();
         await this.engineManager.start();
-        log.info({ port: this.config.dgramPort }, 'dgram-comms listening');
+        log.info({ listeners: this.engineManager.dgramListeners }, 'dgram-comms listening');
 
         await new Promise<void>((resolve) => {
             this.httpServer.listen(this.config.httpPort, () => {

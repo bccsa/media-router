@@ -31,6 +31,10 @@ function captureHandlers(configStore: ConfigStore) {
         refreshEncryptionKeys: vi.fn(),
         notifyRename: vi.fn(),
         sendToEngine: vi.fn(),
+        dgramListeners: [{ port: 3000 }],
+        setListeners: vi.fn(async (l: unknown[]) => {
+            engineManager.dgramListeners = l;
+        }),
     } as any;
     const eventForwarder = {
         getEngineData: vi.fn().mockReturnValue(undefined),
@@ -542,5 +546,64 @@ describe('rpcHandlers — plugins + devices', () => {
         };
         expect(res.ok).toBe(false);
         expect(res.error).toBe('Engine not found');
+    });
+});
+
+describe('rpcHandlers — manager settings (#692)', () => {
+    let store: ConfigStore;
+    beforeEach(() => {
+        store = new ConfigStore(':memory:');
+    });
+    afterEach(() => {
+        store.close();
+    });
+
+    it('settings:get returns the live listeners', async () => {
+        const { call } = captureHandlers(store);
+        const res = await call<{ data: { dgramListeners: unknown[] } }>('settings:get', null);
+        expect(res.ok).toBe(true);
+        expect(res.data.dgramListeners).toEqual([{ port: 3000 }]);
+    });
+
+    it('settings:set rebinds, persists, broadcasts and acks the new list', async () => {
+        const { call, io, engineManager } = captureHandlers(store);
+        const listeners = [{ port: 3000 }, { port: 3002, bindAddress: '10.0.2.1' }];
+        const res = await call<{ data: { dgramListeners: unknown[] } }>('settings:set', {
+            dgramListeners: listeners,
+        });
+        expect(res.ok).toBe(true);
+        expect(engineManager.setListeners).toHaveBeenCalledWith(listeners);
+        expect(store.getDgramListeners()).toEqual(listeners);
+        expect(io.emit).toHaveBeenCalledWith('settings:updated', { dgramListeners: listeners });
+        expect(res.data.dgramListeners).toEqual(listeners);
+    });
+
+    it('settings:set rejects an empty list, a bad port, a bad address and duplicates', async () => {
+        const { call, engineManager } = captureHandlers(store);
+        for (const bad of [
+            { dgramListeners: [] },
+            { dgramListeners: [{ port: 70000 }] },
+            { dgramListeners: [{ port: 3000, bindAddress: 'eth0' }] },
+            { dgramListeners: [{ port: 3000 }, { port: 3000 }] },
+            { dgramListeners: [{ port: 3000 }, { port: 3000, bindAddress: '10.0.2.1' }] },
+        ]) {
+            const res = await call<{ error: string }>('settings:set', bad);
+            expect(res.ok).toBe(false);
+            expect(res.error).toBe('Validation failed');
+        }
+        expect(engineManager.setListeners).not.toHaveBeenCalled();
+        expect(store.getDgramListeners()).toBeUndefined();
+    });
+
+    it('settings:set does not persist when the rebind fails', async () => {
+        const { call, engineManager, io } = captureHandlers(store);
+        engineManager.setListeners.mockRejectedValueOnce(new Error('bind EADDRINUSE 0.0.0.0:3002'));
+        const res = await call<{ error: string }>('settings:set', {
+            dgramListeners: [{ port: 3002 }],
+        });
+        expect(res.ok).toBe(false);
+        expect(res.error).toMatch(/Could not bind listeners: .*EADDRINUSE/);
+        expect(store.getDgramListeners()).toBeUndefined();
+        expect(io.emit).not.toHaveBeenCalledWith('settings:updated', expect.anything());
     });
 });

@@ -1559,6 +1559,18 @@ interface ManagerConnectionProfile {
 - Duplicate copies (from other paths) are discarded
 - Path health is tracked independently — if one path fails, the other continues
 
+**Server side (ADR-0023, issue #692).** The manager listens on one or more UDP
+listeners (`port` + optional `bindAddress`), stored in `manager_settings` and
+edited in the manager UI (Settings → Engine Comms); a change rebinds live. All
+of an engine's paths belong to ONE session: every path's `connect` carries the
+client's session nonce, and a nonce the server already knows joins the existing
+session as another endpoint (same socketID) instead of replacing it. The server
+fans every message out to all live endpoints, each through the listener it
+arrived on; endpoints silent for a full keepalive death window are pruned while
+the session survives on the rest. Receive-side dedup is keyed on (sending
+session, seq) and, on the engine, shared across path sockets. The engine
+reports `managerPaths {connected,total}` in its system stats.
+
 #### 8.1.4 Message Format
 
 ```typescript

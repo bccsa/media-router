@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as dgram from 'dgram';
 import { Socket } from './Socket.js';
 import { FragmentTransport } from './FragmentTransport.js';
+import { SeqDedup } from './SeqDedup.js';
 
 /**
  * Sequence-number dedup replaced an earlier receive-time content hash that
@@ -69,10 +70,7 @@ describe('Socket seq-based dedup', () => {
 
     it('still ACKs a duplicate so the sender stops retransmitting', () => {
         makeSocket();
-        const ackSpy = vi.spyOn(
-            s as unknown as { sendAck: (id: number) => void },
-            'sendAck',
-        );
+        const ackSpy = vi.spyOn(s as unknown as { sendAck: (id: number) => void }, 'sendAck');
         const dataSpy = vi.fn();
         s.on('data', dataSpy);
 
@@ -106,10 +104,7 @@ describe('Socket seq-based dedup', () => {
 
     it('ACKs the guaranteed connected handshake — every copy, but connects once', () => {
         makeSocket();
-        const ackSpy = vi.spyOn(
-            s as unknown as { sendAck: (id: number) => void },
-            'sendAck',
-        );
+        const ackSpy = vi.spyOn(s as unknown as { sendAck: (id: number) => void }, 'sendAck');
         const connSpy = vi.fn();
         s.on('connected', connSpy);
 
@@ -261,5 +256,139 @@ describe('Socket watchdog event-loop-lag guard', () => {
         vi.advanceTimersByTime(3600);
 
         expect(s.destroyed).toBe(true);
+    });
+});
+
+describe('Socket multi-path', () => {
+    const sockets: Socket[] = [];
+    const udps: dgram.Socket[] = [];
+
+    afterEach(() => {
+        for (const s of sockets.splice(0)) s.disconnect();
+        for (const u of udps.splice(0)) u.close();
+        vi.useRealTimers();
+    });
+
+    const tx = () => {
+        const udp = dgram.createSocket('udp4');
+        udps.push(udp);
+        return new FragmentTransport(udp);
+    };
+    const make = (opts: Partial<ConstructorParameters<typeof Socket>[0]> = {}) => {
+        const s = new Socket({
+            port: 1,
+            address: '10.0.0.1',
+            transport: tx(),
+            clientID: 'c',
+            encryptionKey: 'k',
+            connectionTimeout: 1000,
+            missedKeepaliveThreshold: 3,
+            ...opts,
+        });
+        sockets.push(s);
+        return s;
+    };
+    const dataMsg = (socketID: string, seq: number) =>
+        ({
+            type: 'data',
+            clientID: 'c',
+            seq,
+            data: { topic: 't', message: seq, socketID },
+        }) as Parameters<Socket['handleMessage']>[0];
+
+    it('fans a send out to every endpoint through its own transport', () => {
+        const s = make();
+        const t2 = tx();
+        s.touchEndpoint(t2, 2, '10.0.2.1');
+        const spy1 = vi
+            .spyOn(s['endpoints'].get('10.0.0.1:1')!.transport, 'send')
+            .mockReturnValue(1);
+        const spy2 = vi.spyOn(t2, 'send').mockReturnValue(2);
+
+        s.send('cfg', { a: 1 });
+
+        expect(spy1).toHaveBeenCalledWith(expect.any(Buffer), 1, '10.0.0.1', false);
+        expect(spy2).toHaveBeenCalledWith(expect.any(Buffer), 2, '10.0.2.1', false);
+        // Same seq on both copies
+        const seq1 = JSON.parse((spy1.mock.calls[0][0] as Buffer).toString()).seq;
+        const seq2 = JSON.parse((spy2.mock.calls[0][0] as Buffer).toString()).seq;
+        expect(seq1).toBe(seq2);
+    });
+
+    it('sendToEndpoint reaches only the named endpoint', () => {
+        const s = make();
+        const t2 = tx();
+        s.touchEndpoint(t2, 2, '10.0.2.1');
+        const spy1 = vi
+            .spyOn(s['endpoints'].get('10.0.0.1:1')!.transport, 'send')
+            .mockReturnValue(1);
+        const spy2 = vi.spyOn(t2, 'send').mockReturnValue(2);
+        s.sendToEndpoint('10.0.2.1', 2, 'connected', 'id', { type: 'connected' });
+        expect(spy1).not.toHaveBeenCalled();
+        expect(spy2).toHaveBeenCalledTimes(1);
+    });
+
+    it('prunes an endpoint silent for a full death window, never the last one', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-09-23T10:00:00Z'));
+        const s = make();
+        s.markConnected();
+        s.touchEndpoint(tx(), 2, '10.0.2.1');
+        const down = vi.fn();
+        s.on('pathDown', down);
+        vi.spyOn(s['endpoints'].get('10.0.0.1:1')!.transport, 'send').mockReturnValue(0);
+        vi.spyOn(s['endpoints'].get('10.0.2.1:2')!.transport, 'send').mockReturnValue(0);
+
+        // Keep endpoint 1 alive, let endpoint 2 fall silent past 3 × 1000 ms.
+        for (let i = 0; i < 16; i++) {
+            vi.advanceTimersByTime(250);
+            s.touchEndpoint(s['endpoints'].get('10.0.0.1:1')!.transport, 1, '10.0.0.1');
+            s.resetKeepalive();
+        }
+        expect(down).toHaveBeenCalledWith('10.0.2.1:2');
+        expect(s.endpointKeys).toEqual(['10.0.0.1:1']);
+
+        // The sole remaining endpoint is never pruned by silence alone.
+        vi.advanceTimersByTime(250);
+        s.resetKeepalive();
+        expect(s.endpointKeys).toEqual(['10.0.0.1:1']);
+        expect(s.destroyed).toBe(false);
+    });
+
+    it('a shared SeqDedup collapses the same (session, seq) across two path sockets', () => {
+        const shared = new SeqDedup();
+        const a = make({ isClient: true, seqDedup: shared });
+        const b = make({ isClient: true, seqDedup: shared });
+        const got: number[] = [];
+        a.on('data', (_t: string, m: number) => got.push(m));
+        b.on('data', (_t: string, m: number) => got.push(m));
+
+        a.handleMessage(dataMsg('srv', 1));
+        b.handleMessage(dataMsg('srv', 1)); // bonded copy via the other path
+        b.handleMessage(dataMsg('srv', 2));
+        a.handleMessage(dataMsg('srv', 2));
+
+        expect(got).toEqual([1, 2]);
+        // A path dying must not wipe the Client's table.
+        a.disconnect();
+        expect(shared.size).toBe(2);
+    });
+
+    it('dedup keys on the sending session, so a new session restarting at seq 1 is delivered', () => {
+        const s = make({ isClient: true });
+        const got: unknown[] = [];
+        s.on('data', (_t: string, m: unknown) => got.push(m));
+        s.handleMessage(dataMsg('session-A', 1));
+        s.handleMessage(dataMsg('session-B', 1));
+        expect(got).toHaveLength(2);
+    });
+
+    it('endpointInfo carries the local listener port per endpoint', () => {
+        const s = make({ localPort: 3000 });
+        s.touchEndpoint(tx(), 2, '10.0.2.1', 3002);
+        expect(s.endpointInfo.map((e) => [e.address, e.port, e.localPort])).toEqual([
+            ['10.0.0.1', 1, 3000],
+            ['10.0.2.1', 2, 3002],
+        ]);
     });
 });

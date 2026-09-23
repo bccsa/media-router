@@ -1,9 +1,11 @@
 import * as crypto from 'crypto';
 import * as dgram from 'dgram';
+import * as os from 'os';
 import { EventEmitter } from 'events';
 import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
 import { decrypt } from './encryption.js';
 import { FragmentTransport } from './FragmentTransport.js';
+import { SeqDedup } from './SeqDedup.js';
 import { Socket } from './Socket.js';
 import type { DgramMessage, ManagerPath } from '@media-router/shared-types';
 import { DgramWireMessageSchema, DgramDataSchema } from '@media-router/shared-types';
@@ -36,17 +38,30 @@ interface PathState {
 }
 
 /**
+ * First non-internal IPv4 address of a named interface, or undefined. Node's
+ * dgram has no SO_BINDTODEVICE, so "bind to eth1" means "bind to eth1's
+ * current address" — resolved when the path socket is created (the Client is
+ * rebuilt on every full reconnect, so a DHCP change is picked up then).
+ */
+export function resolveInterfaceAddress(
+    name: string,
+    interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
+): string | undefined {
+    const addrs = interfaces[name] ?? [];
+    return addrs.find((a) => a.family === 'IPv4' && !a.internal)?.address;
+}
+
+/**
  * dgram-comms multi-path UDP client.
  *
- * Connects to a server via 1–N UDP paths (for redundancy) and sends every
- * message on ALL paths, stamped with one shared sequence number per logical
- * message. The receiver's seq dedup is designed to collapse those bonded
- * copies — but note this is NOT exercised today: the server keeps a single
- * socket per clientID and each path's connect replaces the other's socket
- * (see Server.handleConnect), so only the current path's packets survive the
- * socketID lookup and reach dedup. True path bonding needs the server-side
- * multi-endpoint handshake fixed first; the shared-seq design is the right
- * groundwork for when it is.
+ * Connects to a server via 1–N UDP paths (for redundancy). Every path
+ * presents the same session nonce, so the server binds them all to ONE
+ * session (same socketID) and fans its replies out to every live path;
+ * the client sends every message on ALL connected paths, stamped with one
+ * shared sequence number per logical message. A dedup table shared across
+ * the path Sockets collapses the bonded copies in both directions. A path
+ * that dies is re-handshaken on its own 1s retry while the others carry the
+ * session — the higher level only sees `disconnected` when every path is gone.
  *
  * Emits:
  *   - `data` (topic, message) — received application message (deduped)
@@ -67,19 +82,30 @@ export class Client extends EventEmitter {
     /** Monotonic sequence number; one per logical send, shared across all path copies. */
     private seq = 0;
 
+    /** One receive-side dedup table for every path — a copy that already landed on another path is dropped. */
+    private readonly dedup = new SeqDedup();
+
+    /** ackIDs unique across paths: the server's acks reach every path, so path A must not own path B's number. */
+    private ackCounter = 0;
+
     /**
      * Session nonce carried in every connect packet. Lets the server tell a
-     * handshake RETRY (same Client re-sending connect because the reply was
-     * lost or slow) from a REBIRTH (a new Client that happens to bind the same
-     * ephemeral port, e.g. a crash-looping engine): retries must keep the
-     * existing server socket, rebirths must replace it — otherwise the old
-     * socket's seq-dedup table can silently eat the new session's messages.
+     * handshake RETRY or an ADDITIONAL PATH (same Client, same session) from a
+     * REBIRTH (a new Client that happens to bind the same ephemeral port, e.g.
+     * a crash-looping engine): the former join the existing server socket,
+     * the latter must replace it — otherwise the old socket's seq-dedup table
+     * can silently eat the new session's messages.
      */
     private readonly sessionNonce = crypto.randomUUID();
 
     /** Whether at least one path is connected. */
     get connected(): boolean {
         return this.pathStates.some((p) => p.connected);
+    }
+
+    /** Indices of the paths currently connected. */
+    get connectedPaths(): number[] {
+        return this.pathStates.flatMap((p, i) => (p.connected ? [i] : []));
     }
 
     constructor(options: ClientOptions) {
@@ -118,9 +144,18 @@ export class Client extends EventEmitter {
             console.error(`[dgram-comms Client] path ${index} error: ${err.message}`);
         });
 
-        // Bind (optionally to specific interface)
-        if (path.bindAddress) {
-            udpSocket.bind(0, path.bindAddress);
+        // Bind to a specific source address when asked: explicit address, or
+        // the named interface's current address. Unbound ⇒ OS routing picks.
+        const bindAddress =
+            path.bindAddress ??
+            (path.bindInterface ? resolveInterfaceAddress(path.bindInterface) : undefined);
+        if (path.bindInterface && !path.bindAddress && !bindAddress) {
+            console.warn(
+                `[dgram-comms Client] path ${index}: interface ${path.bindInterface} has no IPv4 address — leaving unbound`,
+            );
+        }
+        if (bindAddress) {
+            udpSocket.bind(0, bindAddress);
         }
 
         const pathState: PathState = {
@@ -171,6 +206,8 @@ export class Client extends EventEmitter {
             encryptionKey: this.encryptionKey,
             connectionTimeout: this.connectionTimeout,
             missedKeepaliveThreshold: this.missedKeepaliveThreshold,
+            seqDedup: this.dedup,
+            nextAckId: () => ++this.ackCounter,
             onDisconnect: () => {
                 if (this.destroyed) return; // destroy() is silent by contract
                 const cur = this.pathStates[index];
@@ -199,9 +236,9 @@ export class Client extends EventEmitter {
         });
 
         // Forward data events. Retransmit dedup happens by messageId in the
-        // transport, and same-seq dedup in Socket.handleMessage would collapse
-        // bonded multi-path copies too (once server-side bonding exists — see
-        // the class doc); either way identical payloads are never wrongly dropped.
+        // transport; the shared (session, seq) dedup in Socket.handleMessage
+        // collapses the server's bonded multi-path copies, so each logical
+        // message reaches the application once whichever path delivered it.
         socket.on('data', (topic: string, message: unknown) => {
             this.emit('data', topic, message);
         });
@@ -300,6 +337,7 @@ export class Client extends EventEmitter {
         }
 
         this.pathStates = [];
+        this.dedup.clear();
         this.removeAllListeners();
     }
 }
