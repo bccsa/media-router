@@ -2,13 +2,20 @@ import { describe, it, expect } from 'vitest';
 import { buildPipeline } from './teletextPipeline.js';
 
 const outputs = [
-    { portId: 'page-0', port: 40300, page: { page: 888, language: 'eng', name: '' } },
-    { portId: 'page-1', port: 40301, page: { page: 692, language: 'nor', name: 'Norsk' } },
+    { portId: 'page-888', port: 40300, page: { page: 888, language: 'eng', name: '' } },
+    { portId: 'page-692', port: 40301, page: { page: 692, language: 'nor', name: 'Norsk' } },
 ];
 
 describe('teletext pipeline', () => {
-    it('returns null with no outputs', () => {
-        expect(buildPipeline({ input: { port: 5004 }, outputs: [], cueHoldMs: 8000 })).toBeNull();
+    it('with no outputs it is the PMT probe tap alone', () => {
+        const r = buildPipeline({ input: { port: 5004 }, outputs: [], cueHoldMs: 8000 });
+        expect(r.pipeline).toMatch(/^unixfdsrc /);
+        expect(r.pipeline).toMatch(
+            /! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe$/,
+        );
+        expect(r.pipeline).not.toContain('tsdemux');
+        expect(r.subtitlePay).toEqual([]);
+        expect(r.sinkNames).toEqual([]);
     });
 
     it('decodes the teletext ES once and fans it to one decoder per page', () => {
@@ -21,7 +28,11 @@ describe('teletext pipeline', () => {
         expect(p).toMatch(/^unixfdsrc /);
         expect(p).toContain('/run/edge.sock');
         expect(p).toContain(
-            '! tsdemux name=demux latency=0 ! capsfilter caps="application/x-teletext" ! tee name=t ',
+            '! tee name=in_t ! queue ! tsdemux name=demux latency=0 ! capsfilter caps="application/x-teletext" ! tee name=t ',
+        );
+        // report-only PMT tap off the input tee, leaky so it can never stall the demux
+        expect(p).toContain(
+            'in_t. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
         );
         expect(p).toContain(
             't. ! queue ! teletextdec name=ttx_0 page=888 subtitles-mode=true subtitles-template="%s\n" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_0',

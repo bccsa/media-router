@@ -408,9 +408,37 @@ void emit_info(int pid, const std::string& codec, const mrts::VideoInfo* info) {
     runner().emit_plugin_event("tsprobe:videoinfo", n);
 }
 
+// `tsprobe:pmt` — the whole PMT with each ES's raw descriptor loop as hex, the
+// same shape as the splitter's `tssplit:discovered`. Emitted on every PMT
+// change so a plugin can read descriptor-only facts itself.
+void emit_pmt(const mrts::Pmt& pmt) {
+    JsonArray* streams = json_array_new();
+    for (const mrts::PmtStream& s : pmt.streams) {
+        JsonObject* e = json_object_new();
+        json_object_set_int_member(e, "pid", s.pid);
+        json_object_set_int_member(e, "streamType", s.stream_type);
+        std::string hex;
+        char b[3];
+        for (uint8_t v : s.es_info) {
+            std::snprintf(b, sizeof b, "%02x", v);
+            hex += b;
+        }
+        json_object_set_string_member(e, "esInfo", hex.c_str());
+        json_array_add_object_element(streams, e);
+    }
+    JsonObject* o = json_object_new();
+    json_object_set_int_member(o, "programNumber", pmt.program_number);
+    json_object_set_int_member(o, "pcrPid", pmt.pcr_pid);
+    json_object_set_array_member(o, "streams", streams);
+    JsonNode* n = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(n, o);
+    runner().emit_plugin_event("tsprobe:pmt", n);
+}
+
 void on_pmt(State& st) {
     const auto& pmt = st.disc.pmt();
     if (!pmt) return;
+    emit_pmt(*pmt);
     for (const mrts::PmtStream& s : pmt->streams) {
         const char* codec = codec_for_type(s.stream_type);
         if (!codec) continue;

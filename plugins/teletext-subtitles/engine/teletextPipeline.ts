@@ -1,8 +1,9 @@
 /**
  * GStreamer pipeline for the teletext subtitle decoder.
  *
- *   bus TS ─ tsdemux ─ application/x-teletext ─ tee ┬ teletextdec page=888 ─ appsink ttxsink_0
- *                                                    └ teletextdec page=692 ─ appsink ttxsink_1
+ *   bus TS ─ tee in_t ┬ tsdemux ─ application/x-teletext ─ tee ┬ teletextdec page=888 ─ appsink ttxsink_0
+ *                     │                                        └ teletextdec page=692 ─ appsink ttxsink_1
+ *                     └ leaky queue ─ appsink tsprobe   (engine tsProbe → `tsprobe:pmt`)
  *   appsrc subsrc_0 (KLV) ─ mpegtsmux ─ bus out 0
  *   appsrc subsrc_1 (KLV) ─ mpegtsmux ─ bus out 1
  *
@@ -17,6 +18,11 @@
  * as the video transcoder selects `video/x-h264`. `subtitles-mode` strips the
  * page header and blank rows; the template with a REAL newline replaces the
  * element's default, which prints a literal backslash-n.
+ *
+ * The `tsprobe` tap feeds the engine's report-only TS probe, whose PMT event
+ * carries the teletext descriptor the module turns into the detected-page
+ * list. With NO pages selected the pipeline is the tap alone, so a freshly
+ * wired module still learns what the stream announces.
  */
 
 import { buildTsUdpInput } from '@media-router/engine';
@@ -28,6 +34,7 @@ import {
 import { pageLabel, type TeletextPage } from './teletextPorts.js';
 
 export const DEMUX_NAME = 'demux';
+export const PROBE_SINK_NAME = 'tsprobe';
 
 export interface TeletextOutput {
     portId: string;
@@ -59,14 +66,18 @@ export function appsrcName(index: number): string {
     return `subsrc_${index}`;
 }
 
-export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineResult | null {
-    if (input.outputs.length === 0) return null;
-
+export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineResult {
     const tsInput = buildTsUdpInput({
         port: input.input.port,
         socketPath: input.input.socketPath,
         jitterMs: 200,
     });
+    // Leaky: a report-only tap must shed, never back-pressure the demux branch.
+    const probeTap = `queue leaky=downstream max-size-buffers=64 ! appsink name=${PROBE_SINK_NAME}`;
+
+    if (input.outputs.length === 0) {
+        return { pipeline: `${tsInput} ! ${probeTap}`, subtitlePay: [], sinkNames: [] };
+    }
 
     const decoders = input.outputs
         .map(
@@ -88,8 +99,9 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
         .join(' ');
 
     const pipeline =
-        `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! capsfilter caps="application/x-teletext" ! tee name=t ` +
-        `${decoders} ${tails}`;
+        `${tsInput} ! tee name=in_t ! queue ! tsdemux name=${DEMUX_NAME} latency=0 ` +
+        `! capsfilter caps="application/x-teletext" ! tee name=t ` +
+        `${decoders} ${tails} in_t. ! ${probeTap}`;
 
     return {
         pipeline,

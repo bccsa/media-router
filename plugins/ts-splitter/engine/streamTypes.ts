@@ -17,6 +17,8 @@
  * discovery event carries — on top of the generic stream_type label.
  */
 
+import { descriptorsFromEsInfo, isoLanguage } from '@media-router/plugin-mpegts-core';
+
 export type StreamMedia = 'video' | 'audio' | 'subtitle' | 'metadata' | 'data';
 
 export interface StreamTypeInfo {
@@ -64,15 +66,10 @@ export function streamTypeInfo(streamType: number, esInfoHex?: string): StreamTy
  * stays generic private data.
  */
 function privateStreamIdentity(esInfoHex: string | undefined): StreamTypeInfo | undefined {
-    const bytes = esInfoBytes(esInfoHex);
-    if (!bytes) return undefined;
-    for (let i = 0; i + 2 <= bytes.length; i += 2 + bytes[i + 1]) {
-        const tag = bytes[i];
-        const len = bytes[i + 1];
-        if (i + 2 + len > bytes.length) break;
+    for (const { tag, data } of descriptorsFromEsInfo(esInfoHex)) {
         if (tag === 0x56) return { media: 'subtitle', codec: 'teletext' };
         if (tag === 0x59) return { media: 'subtitle', codec: 'dvbsub' };
-        if (tag === 0x05 && len >= 4 && bytes.subarray(i + 2, i + 6).toString('latin1') === 'KLVA') {
+        if (tag === 0x05 && data.subarray(0, 4).toString('latin1') === 'KLVA') {
             return { media: 'metadata', codec: 'klv' };
         }
     }
@@ -84,19 +81,6 @@ export function formatPid(pid: number): string {
 }
 
 /**
- * An ES's raw PMT descriptor-loop bytes from the hex `esInfo` field of
- * `tssplit:discovered` — undefined when absent or not clean hex. Descriptor
- * data is source-controlled wire input, so every walk below bounds-checks and
- * the parsers are total: garbage yields "unknown", never a throw.
- */
-function esInfoBytes(esInfoHex: string | undefined): Buffer | undefined {
-    if (!esInfoHex || !/^[0-9a-fA-F]+$/.test(esInfoHex) || esInfoHex.length % 2 !== 0) {
-        return undefined;
-    }
-    return Buffer.from(esInfoHex, 'hex');
-}
-
-/**
  * Does the descriptor loop identify the ES as Opus? Opus rides stream_type 0x06
  * (private PES), so the PMT's stream_type says nothing — identity lives only in
  * the descriptors: a registration descriptor (tag 0x05) with format_identifier
@@ -105,18 +89,11 @@ function esInfoBytes(esInfoHex: string | undefined): Buffer | undefined {
  * generic private data.
  */
 function isOpusEsInfo(esInfoHex: string | undefined): boolean {
-    const bytes = esInfoBytes(esInfoHex);
-    if (!bytes) return false;
-    for (let i = 0; i + 2 <= bytes.length; i += 2 + bytes[i + 1]) {
-        const len = bytes[i + 1];
-        if (i + 2 + len > bytes.length) break; // truncated descriptor — stop
-        if (bytes[i] === 0x05 && len >= 4) {
-            if (bytes.subarray(i + 2, i + 6).toString('latin1') === 'Opus') return true;
-        } else if (bytes[i] === 0x7f && len >= 1 && bytes[i + 2] === 0x80) {
-            return true;
-        }
-    }
-    return false;
+    return descriptorsFromEsInfo(esInfoHex).some(
+        ({ tag, data }) =>
+            (tag === 0x05 && data.subarray(0, 4).toString('latin1') === 'Opus') ||
+            (tag === 0x7f && data[0] === 0x80),
+    );
 }
 
 /**
@@ -125,12 +102,10 @@ function isOpusEsInfo(esInfoHex: string | undefined): boolean {
  * non-letter codes yield undefined, never a throw.
  */
 export function languageFromEsInfo(esInfoHex: string | undefined): string | undefined {
-    const bytes = esInfoBytes(esInfoHex);
-    if (!bytes) return undefined;
-    for (let i = 0; i + 2 <= bytes.length; i += 2 + bytes[i + 1]) {
-        if (bytes[i] !== 0x0a || bytes[i + 1] < 3 || i + 5 > bytes.length) continue;
-        const code = bytes.subarray(i + 2, i + 5).toString('latin1');
-        if (/^[A-Za-z]{3}$/.test(code)) return code.toLowerCase();
+    for (const { tag, data } of descriptorsFromEsInfo(esInfoHex)) {
+        if (tag !== 0x0a) continue;
+        const code = isoLanguage(data.subarray(0, 3).toString('latin1'));
+        if (code) return code;
     }
     return undefined;
 }

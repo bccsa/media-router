@@ -6,7 +6,7 @@
     "mediaRouter": {
         "pluginId": "teletext-subtitles",
         "displayName": "Teletext Subtitles",
-        "description": "Decodes the DVB teletext stream in an MPEG-TS once and turns each configured subtitle page (888, 692, …) into its own subtitle output. Wire a subtitle output into the Subtitles In port of a Video Player (rendered on the display) or a Video Transcoder (burned into every rendition). Subtitle outputs are MPEG-TS on the bus like everything else, so they also travel through SRT/RIST outputs and the MPEG-TS muxer.",
+        "description": "Decodes the DVB teletext stream in an MPEG-TS once and turns each selected subtitle page into its own subtitle output. Pages the stream announces in its PMT appear under Detected Pages to pick from; Manual Pages covers anything unannounced. Wire a subtitle output into the Subtitles In port of a Video Player (rendered on the display) or a Video Transcoder (burned into every rendition). Subtitle outputs are MPEG-TS on the bus like everything else, so they also travel through SRT/RIST outputs and the MPEG-TS muxer.",
         "color": "#0ea5e9",
         "icon": "chat-bubble-bottom-center-text",
         "category": "codec",
@@ -15,14 +15,21 @@
         "configSchema": {
             "type": "object",
             "properties": {
+                "detectedPages": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "x-optionsFrom": "announcedPages",
+                    "title": "Detected Pages",
+                    "description": "Pages announced in the stream's PMT, each pick becoming a subtitle output port.",
+                    "x-liveUpdatable": false
+                },
                 "pages": {
                     "type": "array",
                     "maxItems": 8,
-                    "default": [
-                        { "page": 888, "language": "eng", "name": "" }
-                    ],
-                    "title": "Pages",
-                    "description": "Each page is a subtitle output port. Common pages: 888 and the 6xx range.",
+                    "default": [],
+                    "title": "Manual Pages",
+                    "description": "Pages to decode by number when the stream does not announce them.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -70,6 +77,13 @@
                 ]
             },
             {
+                "id": "detected",
+                "label": "Detected",
+                "fields": [
+                    { "key": "pages", "label": "Announced pages" }
+                ]
+            },
+            {
                 "id": "cues",
                 "label": "Subtitles",
                 "fields": [
@@ -83,6 +97,7 @@
     },
     "dependencies": {
         "@media-router/engine": "workspace:*",
+        "@media-router/plugin-mpegts-core": "workspace:*",
         "@media-router/plugin-subtitle-core": "workspace:*"
     },
     "scripts": {

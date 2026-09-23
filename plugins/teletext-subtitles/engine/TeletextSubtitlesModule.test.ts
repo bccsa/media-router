@@ -16,20 +16,45 @@ function makeModule(opts: { upstream?: { port: number; socketPath: string } | un
     };
     (module as any).setHealth = vi.fn();
     (module as any).setStatusData = vi.fn();
+    (module as any).setFieldOptions = vi.fn();
+    (module as any).emitConfigUpdate = vi.fn((changes: Record<string, unknown>) =>
+        Object.assign((module as any).config, changes),
+    );
     return { module, getModuleBusSource, assignBusChannel };
 }
 
 describe('getDynamicPorts', () => {
-    it('input + one output per page; provisional 888 before config lands', () => {
+    it('input + one output per page, none before a page is picked or typed', () => {
         const { module } = makeModule();
         (module as any).config = {};
-        expect(module.getDynamicPorts().map((p) => p.id)).toEqual(['mpegts-in', 'page-0']);
+        expect(module.getDynamicPorts().map((p) => p.id)).toEqual(['mpegts-in']);
         (module as any).config = { pages: [{ page: 888 }, { page: 692 }] };
         expect(module.getDynamicPorts().map((p) => p.id)).toEqual([
             'mpegts-in',
-            'page-0',
-            'page-1',
+            'page-888',
+            'page-692',
         ]);
+    });
+
+    it('picked detected pages become ports labelled with the announced language', () => {
+        const { module } = makeModule();
+        (module as any).config = {
+            detectedPages: ['692'],
+            discoveredPages: [{ page: 692, language: 'nor', type: 2 }],
+            pages: [],
+        };
+        const ports = module.getDynamicPorts();
+        expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'page-692']);
+        expect(ports[1].label).toBe('nor 692');
+    });
+
+    it('caps the ports at 8 pages', () => {
+        const { module } = makeModule();
+        (module as any).config = {
+            detectedPages: ['100', '101', '102', '103', '104'],
+            pages: [{ page: 200 }, { page: 201 }, { page: 202 }, { page: 203 }],
+        };
+        expect(module.getDynamicPorts()).toHaveLength(9);
     });
 });
 
@@ -44,12 +69,26 @@ describe('buildPipeline', () => {
         );
     });
 
-    it('warns with an explicit empty page list', () => {
-        const { module } = makeModule();
-        expect(module.buildPipeline({ pages: [] })).toBeNull();
+    it('runs the PMT probe alone (and warns) with no pages selected', () => {
+        const { module, assignBusChannel } = makeModule();
+        const desc = module.buildPipeline({ pages: [], detectedPages: [] })!;
+        expect(assignBusChannel).not.toHaveBeenCalled();
+        expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
+        expect(desc.pipeline).not.toContain('tsdemux');
+        expect(desc.runnerHooks).toBeUndefined();
+        expect((module as any).setHealth).toHaveBeenLastCalledWith(
+            'warning',
+            expect.stringContaining('No pages selected'),
+        );
+        expect((module as any).setStatusData).toHaveBeenCalledWith('detected', {
+            pages: 'waiting for the PMT',
+        });
+        // the base class sets ok on PLAYING — the hook must re-assert the warning
+        (module as any).setHealth.mockClear();
+        (module as any).onPipelinePlaying();
         expect((module as any).setHealth).toHaveBeenCalledWith(
             'warning',
-            expect.stringContaining('No teletext pages'),
+            expect.stringContaining('No pages selected'),
         );
     });
 
@@ -63,9 +102,10 @@ describe('buildPipeline', () => {
             cueHoldSeconds: 5,
         })!;
         expect(assignBusChannel).toHaveBeenCalledTimes(2);
-        expect(assignBusChannel).toHaveBeenCalledWith('ttx-1', 'page-0');
-        expect(assignBusChannel).toHaveBeenCalledWith('ttx-1', 'page-1');
+        expect(assignBusChannel).toHaveBeenCalledWith('ttx-1', 'page-888');
+        expect(assignBusChannel).toHaveBeenCalledWith('ttx-1', 'page-692');
         expect(desc.restartOnError).toBe(true);
+        expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
         expect(desc.pipeline).toContain('teletextdec name=ttx_0 page=888');
         expect(desc.pipeline).toContain('tee name=busout_41000');
         expect(desc.pipeline).toContain('tee name=busout_41001');
@@ -110,5 +150,70 @@ describe('cue status', () => {
             total: 2,
             last: 'eng 888: Hello / World',
         });
+    });
+
+    it('reports pages beyond the 8-decoder cap', () => {
+        const { module } = makeModule();
+        module.buildPipeline({
+            pages: Array.from({ length: 10 }, (_, i) => ({ page: 100 + i })),
+        });
+        expect((module as any).setStatusData).toHaveBeenCalledWith(
+            'cues',
+            expect.objectContaining({ pages: expect.stringContaining('limit 8, 2 not decoded') }),
+        );
+    });
+});
+
+describe('detected pages', () => {
+    // teletext descriptor: eng 888 subtitles + nor 692 subtitles
+    const TTX_ES = '560a' + '656e671088' + '6e6f721692';
+    const pmt = {
+        pcrPid: 0x65,
+        streams: [
+            { pid: 0x65, streamType: 0x1b, esInfo: '' },
+            { pid: 0x20, streamType: 0x06, esInfo: TTX_ES },
+        ],
+    };
+
+    it('persists the announced list once, offers it as pick-list options and status', () => {
+        const { module } = makeModule();
+        (module as any).config = { pages: [], detectedPages: [] };
+        module.buildPipeline((module as any).config);
+        (module as any).onPluginEvent('tsprobe:pmt', pmt);
+        expect((module as any).emitConfigUpdate).toHaveBeenCalledTimes(1);
+        expect((module as any).config.discoveredPages).toEqual([
+            { page: 692, language: 'nor', type: 2 },
+            { page: 888, language: 'eng', type: 2 },
+        ]);
+        expect((module as any).setFieldOptions).toHaveBeenLastCalledWith('announcedPages', [
+            { value: '692', label: '692 nor · subtitles' },
+            { value: '888', label: '888 eng · subtitles' },
+        ]);
+        expect((module as any).setStatusData).toHaveBeenLastCalledWith('detected', {
+            pages: '692 nor · subtitles, 888 eng · subtitles',
+        });
+        // same PMT again: no redundant persist
+        (module as any).onPluginEvent('tsprobe:pmt', pmt);
+        expect((module as any).emitConfigUpdate).toHaveBeenCalledTimes(1);
+        // a PMT without teletext clears the list
+        (module as any).onPluginEvent('tsprobe:pmt', { streams: pmt.streams.slice(0, 1) });
+        expect((module as any).config.discoveredPages).toEqual([]);
+        expect((module as any).setStatusData).toHaveBeenLastCalledWith('detected', {
+            pages: 'none announced in the PMT',
+        });
+    });
+
+    it('republishes the persisted list on start, before the first PMT', () => {
+        const { module } = makeModule();
+        (module as any).config = {
+            pages: [],
+            detectedPages: ['888'],
+            discoveredPages: [{ page: 888, language: 'eng', type: 2 }],
+        };
+        module.buildPipeline((module as any).config);
+        expect((module as any).setFieldOptions).toHaveBeenCalledWith('announcedPages', [
+            { value: '888', label: '888 eng · subtitles' },
+        ]);
+        expect((module as any).emitConfigUpdate).not.toHaveBeenCalled();
     });
 });

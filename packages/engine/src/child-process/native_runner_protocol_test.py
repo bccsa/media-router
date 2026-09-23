@@ -748,6 +748,11 @@ def test_video_gates():
               first is not None and first["payload"].get("codec") == "h264" and first["payload"].get("pid", 0) > 0)
         full = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "tsprobe:videoinfo"
                             and e["payload"].get("width"), timeout=8)
+        pmt = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "tsprobe:pmt", timeout=8)
+        check("J probe reports the whole PMT with per-ES descriptor hex",
+              pmt is not None and any(s.get("streamType") == 0x1b and isinstance(s.get("esInfo"), str)
+                                      for s in pmt["payload"].get("streams", []))
+              and pmt["payload"].get("pcrPid", 0) > 0)
         check("J probe parses the SPS into width/height/fps",
               full is not None and full["payload"].get("width") == 64 and full["payload"].get("height") == 48
               and abs((full["payload"].get("fps") or 0) - 25) < 0.01 and "64" in (full["payload"].get("display") or ""))
