@@ -26,17 +26,15 @@ export class SrtInputModule extends GstPluginBase {
     constructor() {
         super();
         // The host bridges the poller's needs to GstPluginBase's protected
-        // surface. `setSections` writes the mutable array directly because
-        // `dynamicStatusSections` is exposed as a protected field.
+        // surface. `setSections` goes through `setDynamicSections` so a
+        // departed caller's status row is dropped with its section.
         const host: SrtStatPollerHost = {
             isRunning: () => this.running,
             getElementStats: () => this.getElementStats('src'),
             setStatusData: (section, data) => this.setStatusData(section, data),
             setBadge: (id, badge) => this.setBadge(id, badge),
             clearBadge: (id) => this.clearBadge(id),
-            setSections: (sections) => {
-                this.dynamicStatusSections = sections;
-            },
+            setSections: (sections) => this.setDynamicSections(sections),
         };
         this.statPoller = new SrtStatPoller(host, 'receive');
     }
@@ -62,7 +60,7 @@ export class SrtInputModule extends GstPluginBase {
                     color: '#f59e0b',
                 });
                 this.clearBadge('callers');
-                this.dynamicStatusSections = [];
+                this.setDynamicSections([]);
                 this.statPoller.reset();
             }
         });

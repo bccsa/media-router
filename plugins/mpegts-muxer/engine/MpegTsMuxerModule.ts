@@ -289,18 +289,20 @@ export class MpegTsMuxerModule extends GstPluginBase {
     private publishPidStatus(entries: InputEntry[]): void {
         const byDemux = new Map<string, MuxedStreamSlot[]>();
         for (const s of this.slots) byDemux.set(s.demux, [...(byDemux.get(s.demux) ?? []), s]);
-        this.dynamicStatusSections = [...byDemux.entries()].map(([demux, slots]) => {
-            const entry = entries.find((e) => e.id === slots[0].sinkPortId);
-            const label = entry?.name.trim() || entry?.label || slots[0].sinkPortId;
-            return {
-                id: `pids-${demux}`,
-                label: `Input ${label}`,
-                fields: [
-                    { key: 'pid', label: 'PID' },
-                    { key: 'streams', label: 'Streams (class → PID)' },
-                ],
-            };
-        });
+        this.setDynamicSections(
+            [...byDemux.entries()].map(([demux, slots]) => {
+                const entry = entries.find((e) => e.id === slots[0].sinkPortId);
+                const label = entry?.name.trim() || entry?.label || slots[0].sinkPortId;
+                return {
+                    id: `pids-${demux}`,
+                    label: `Input ${label}`,
+                    fields: [
+                        { key: 'pid', label: 'PID' },
+                        { key: 'streams', label: 'Streams (class → PID)' },
+                    ],
+                };
+            }),
+        );
         for (const [demux, slots] of byDemux) {
             const configured = slots[0].media === undefined ? slots[0].pid : undefined;
             const routed = this.routed.get(demux) ?? [];
@@ -330,13 +332,19 @@ export class MpegTsMuxerModule extends GstPluginBase {
      *  because it cannot know the output PID. */
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel !== 'mux:routed') return;
-        const event = payload as
-            | { demux?: string; media?: string; outPid?: number; caps?: string }
-            | null;
+        const event = payload as {
+            demux?: string;
+            media?: string;
+            outPid?: number;
+            caps?: string;
+        } | null;
         const outPid = Number(event?.outPid);
         if (!event?.demux || !event.media || !Number.isFinite(outPid)) return;
         if (this.discovered.has(outPid)) return;
-        this.discovered.set(outPid, capsStreamInfo(typeof event.caps === 'string' ? event.caps : ''));
+        this.discovered.set(
+            outPid,
+            capsStreamInfo(typeof event.caps === 'string' ? event.caps : ''),
+        );
         const list = this.routed.get(event.demux) ?? [];
         list.push({ media: event.media as MuxRouteMedia, outPid });
         this.routed.set(event.demux, list);

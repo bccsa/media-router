@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <string>
 #include <vector>
+#include <cstdio>
 #include <cstring>
 
 GST_DEBUG_CATEGORY(mrrist_debug);
@@ -64,11 +65,35 @@ static std::string mrrist_augment_url(const std::string &url, const MrRistCommon
     return url + (url.find('?') == std::string::npos ? "?" : "&") + extra;
 }
 
+/* "Peer <id> receiver name is now: <cname>" (rist-common.c, on every SDES
+ * that changes the name) → `mrrist-peer` bus message, receiver element only.
+ * librist's receiver stats JSON identifies peers by id alone, so this is the
+ * only way the RIST input can label a row with the remote link's name; the
+ * sender's stats already carry it (librist logs the line for both directions,
+ * hence the type gate). The cname is remote-supplied wire bytes: only valid
+ * UTF-8 becomes a label. Posting from the librist thread is fine (same as stats). */
+static void mrrist_post_peer_name(GstElement *el, const std::string &line) {
+    static const std::string kPrefix = "Peer ";
+    static const std::string kMarker = " receiver name is now: ";
+    if (!G_TYPE_CHECK_INSTANCE_TYPE(el, GST_TYPE_MRRISTSRC)) return;
+    if (line.compare(0, kPrefix.size(), kPrefix) != 0) return;
+    const size_t m = line.find(kMarker);
+    if (m == std::string::npos) return;
+    unsigned id = 0;
+    if (sscanf(line.c_str() + kPrefix.size(), "%u", &id) != 1) return;
+    const std::string cname = line.substr(m + kMarker.size());
+    if (cname.empty() || !g_utf8_validate(cname.c_str(), (gssize)cname.size(), nullptr)) return;
+    GstStructure *s = gst_structure_new(MRRIST_PEER_STRUCTURE, "id", G_TYPE_UINT, id,
+                                        "cname", G_TYPE_STRING, cname.c_str(), nullptr);
+    gst_element_post_message(el, gst_message_new_element(GST_OBJECT_CAST(el), s));
+}
+
 static int mrrist_log_cb(void *arg, enum rist_log_level level, const char *msg) {
     GstElement *el = GST_ELEMENT(arg);
     if (!msg) return 0;
     std::string line(msg);
     while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    if (level == RIST_LOG_INFO) mrrist_post_peer_name(el, line);
     if (level <= RIST_LOG_INFO) {
         /* One write() per line, no buffering: the runner relays stderr line by
          * line. librist logs per EVENT (peer state, loss bursts), never per
@@ -129,6 +154,8 @@ typedef int (*sender_stats_callback_set_fn)(struct rist_ctx *, int,
  * stats callback. Does NOT call rist_start: callers apply their own knobs
  * (npd, wake-on-write, fifo size) first. FALSE => an element error was posted. */
 gboolean mrrist_common_open(GstElement *el, MrRistCommon *c, gboolean sender) {
+    /* INFO is load-bearing: the `mrrist-peer` names above are lifted from an
+     * INFO line, so raising this threshold silently drops peer labels. */
     c->logging.log_level = RIST_LOG_INFO;
     c->logging.log_cb = mrrist_log_cb;
     c->logging.log_cb_arg = el;

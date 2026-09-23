@@ -175,7 +175,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // the way the playout offset is, never hard-coded per producer.
             desc.latchRepair = effectiveLatchRepair(this.services);
             this.log.info(
-                { clockSync: desc.clockSync === true, liveCaptureClock, latchRepair: desc.latchRepair },
+                {
+                    clockSync: desc.clockSync === true,
+                    liveCaptureClock,
+                    latchRepair: desc.latchRepair,
+                },
                 liveCaptureClock
                     ? 'Time-sync contract: monotonic house clock, base_time=natural (live capture), producer-stamped bus PTS'
                     : 'Time-sync contract: monotonic house clock, base_time=0, producer-stamped bus PTS',
@@ -548,6 +552,35 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
     }
 
+    /**
+     * Replace the dynamic sections. Status data of a dynamic section that is
+     * NOT in the new list goes with it — per-peer / per-caller / per-stream
+     * sections are keyed by ids that never come back (librist peer counter,
+     * caller index, PID), so without this the store leaks one entry per
+     * departed subject (135 seen on one long-running RIST output). Manifest
+     * sections are never touched. One state change for the whole swap.
+     */
+    protected setDynamicSections(sections: typeof this.dynamicStatusSections): void {
+        const keep = new Set(sections.map((sec) => sec.id));
+        for (const sec of this.dynamicStatusSections) {
+            if (!keep.has(sec.id)) delete this.statusData[sec.id];
+        }
+        this.dynamicStatusSections = sections;
+        this.emit('stateChange', this.getState());
+    }
+
+    /** Add a dynamic section unless one with that id already exists. */
+    protected upsertStatusSection(section: (typeof this.dynamicStatusSections)[number]): void {
+        if (this.dynamicStatusSections.some((sec) => sec.id === section.id)) return;
+        this.setDynamicSections([...this.dynamicStatusSections, section]);
+    }
+
+    /** Drop one section's data and its dynamic section, if any. */
+    protected clearStatusSection(sectionId: string): void {
+        delete this.statusData[sectionId];
+        this.setDynamicSections(this.dynamicStatusSections.filter((sec) => sec.id !== sectionId));
+    }
+
     getLiveUpdatableParams(): string[] {
         return this.liveUpdatableParams;
     }
@@ -669,7 +702,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             );
             return;
         }
-        this.log.warn({ backlogShed: payload }, 'Backlog shed — retained latency returned to the playout budget');
+        this.log.warn(
+            { backlogShed: payload },
+            'Backlog shed — retained latency returned to the playout budget',
+        );
     }
 
     /**

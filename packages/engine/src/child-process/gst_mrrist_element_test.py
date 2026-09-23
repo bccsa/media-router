@@ -13,6 +13,9 @@ A paced fakesrc feeds `mrristsink` (caller) over 127.0.0.1 to `mrristsrc`
       packets: the src folds what librist already released into one buffer.
   --  Both elements post `mrrist-stats` bus messages carrying librist's JSON
       (sender-stats / receiver-stats) — the module's stats channel.
+  --  The receiver (and only the receiver) posts `mrrist-peer` {id, cname}
+      with the sender's cname (lifted from librist's log): the RIST input's
+      per-peer row label.
   --  Tearing both pipelines down does not hang (src `unlock` works).
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable or the plugin has
@@ -53,7 +56,8 @@ def fail(msg):
 
 
 received = {"bytes": 0, "buffers": 0, "multi": 0, "unaligned": 0}
-stats = {"sender": 0, "receiver": 0}
+stats = {"sender": 0, "receiver": 0, "peer_names": []}
+TX_CNAME = "loop-tx"
 
 
 def on_rx(pad, info):
@@ -78,6 +82,12 @@ def watch_stats(bus, who):
                     stats["sender"] += 1
                 if "receiver-stats" in js:
                     stats["receiver"] += 1
+            elif s and s.get_name() == "mrrist-peer":
+                if who != "receiver":
+                    fail("mrrist-peer posted by the sender element — it is receiver-only")
+                ok, pid = s.get_uint("id")
+                if ok and pid > 0 and s.get_string("cname"):
+                    stats["peer_names"].append(s.get_string("cname"))
         elif msg.type == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
             fail(f"{who} pipeline error: {err.message} ({dbg})")
@@ -100,7 +110,7 @@ tx = Gst.parse_launch(
     f'fakesrc is-live=true sync=true sizetype=fixed sizemax={PKT} datarate={PKT * PPS} ! '
     f'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! '
     f'valve name=gate drop=true ! '
-    f'mrristsink name=snk urls="rist://127.0.0.1:{PORT}?cname=loop&weight=5" profile=1 buffer=300 '
+    f'mrristsink name=snk urls="rist://127.0.0.1:{PORT}?cname={TX_CNAME}&weight=5" profile=1 buffer=300 '
     f'secret="{SECRET}" aes-type=128 stats-interval=500')
 snk = tx.get_by_name("snk")
 gate = tx.get_by_name("gate")
@@ -157,6 +167,8 @@ if received["multi"] == 0:
     fail("no multi-packet buffers: src is not batching already-released packets")
 if stats["sender"] == 0 or stats["receiver"] == 0:
     fail(f"missing mrrist-stats messages (sender={stats['sender']} receiver={stats['receiver']})")
+if TX_CNAME not in stats["peer_names"]:
+    fail(f"receiver posted no mrrist-peer message naming the sender '{TX_CNAME}' (got {stats['peer_names']})")
 if teardown > 3.0:
     fail(f"teardown took {teardown:.1f} s — src unlock not honoured")
 print("OK gst_mrrist_element_test.py")

@@ -79,3 +79,9 @@ the whole section object. Mixing the two in one section therefore means the next
 meter poll wipes the curves. **Give graphs a section of their own** (the
 audio-processing plugin uses `graphs`), and leave it out of `statusSections` so
 it stays invisible in the stats popup — it exists for the `x-graph` widgets alone.
+
+*Amendment (2026-09-23, #682):* removal is explicit too. Dynamic sections are
+replaced through `setDynamicSections` (or `upsertStatusSection` /
+`clearStatusSection`), which deletes the status data of every dynamic section
+that vanished from the list. Assigning `dynamicStatusSections` directly leaves
+the departed subject's data in the store forever.

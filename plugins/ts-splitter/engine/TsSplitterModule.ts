@@ -98,7 +98,10 @@ export class TsSplitterModule extends GstPluginBase {
     static registerServices(_services: EngineServices): void {
         if (TsSplitterModule.classifiersRegistered) return;
         TsSplitterModule.classifiersRegistered = true;
-        registerCodecClassifier({ test: (caps) => caps.startsWith('audio/x-ac3'), classify: () => 'ac3' });
+        registerCodecClassifier({
+            test: (caps) => caps.startsWith('audio/x-ac3'),
+            classify: () => 'ac3',
+        });
         registerCodecClassifier({
             test: (caps) => caps.startsWith('audio/mpeg') && /mpegversion=\(int\)1\b/.test(caps),
             classify: () => 'mp2',
@@ -107,7 +110,10 @@ export class TsSplitterModule extends GstPluginBase {
             test: (caps) => caps.startsWith('audio/mpeg') && /mpegversion=\(int\)4\b/.test(caps),
             classify: () => 'aac',
         });
-        registerCodecClassifier({ test: (caps) => caps.startsWith('audio/x-opus'), classify: () => 'opus' });
+        registerCodecClassifier({
+            test: (caps) => caps.startsWith('audio/x-opus'),
+            classify: () => 'opus',
+        });
         // SMPTE 302M PCM — what every 302M-bus producer (audio-input-302m,
         // audio-mixer, PCM transcoder renditions, …) emits. tsdemux exposes it
         // as bare `audio/x-smpte-302m` (no parser exists for parsebin to plug,
@@ -162,7 +168,7 @@ export class TsSplitterModule extends GstPluginBase {
         if (!router || !upstream) {
             this.setHealth('warning', 'No upstream MPEG-TS source connected');
             this.publishStatus();
-            return;   // idle — no child until an input is wired
+            return; // idle — no child until an input is wired
         }
 
         // Allocate (sticky, owner-keyed `${instanceId}:pid-0x…`) an endpoint
@@ -173,7 +179,10 @@ export class TsSplitterModule extends GstPluginBase {
         for (const s of discoveredStreams(this.config)) {
             const ep = router.assignBusChannel(instanceId, pidPortId(s.pid));
             if (!ep) {
-                this.setHealth('error', `UDP port pool exhausted while allocating ${pidPortId(s.pid)}`);
+                this.setHealth(
+                    'error',
+                    `UDP port pool exhausted while allocating ${pidPortId(s.pid)}`,
+                );
                 return;
             }
             outputs.push({ pid: s.pid, streamType: s.streamType, port: ep.port });
@@ -183,7 +192,10 @@ export class TsSplitterModule extends GstPluginBase {
 
         const binary = resolveNativeBinary('mr-tssplit', 'ts-splitter');
         if (!binary) {
-            this.setHealth('error', 'mr-tssplit binary not found — run `make native` (see plugins/README.md)');
+            this.setHealth(
+                'error',
+                'mr-tssplit binary not found — run `make native` (see plugins/README.md)',
+            );
             return;
         }
         this.controller = new NativeSinkController(
@@ -387,19 +399,21 @@ export class TsSplitterModule extends GstPluginBase {
         // Uniform field shape across every stream section — same-shaped
         // sections collapse into ONE table in the stats modal (row per
         // stream); a conditional language field would split the table.
-        this.dynamicStatusSections = streams.map((s) => ({
-            id: `stream-${s.pid}`,
-            label: discoveredLabel(s),
-            fields: [
-                { key: 'state', label: 'State' },
-                { key: 'media', label: 'Media' },
-                { key: 'codec', label: 'Codec' },
-                { key: 'video', label: 'Video' },
-                { key: 'language', label: 'Language' },
-                { key: 'pid', label: 'PID' },
-                { key: 'pidDec', label: 'PID (dec)' },
-            ],
-        }));
+        this.setDynamicSections(
+            streams.map((s) => ({
+                id: `stream-${s.pid}`,
+                label: discoveredLabel(s),
+                fields: [
+                    { key: 'state', label: 'State' },
+                    { key: 'media', label: 'Media' },
+                    { key: 'codec', label: 'Codec' },
+                    { key: 'video', label: 'Video' },
+                    { key: 'language', label: 'Language' },
+                    { key: 'pid', label: 'PID' },
+                    { key: 'pidDec', label: 'PID (dec)' },
+                ],
+            })),
+        );
         for (const s of streams) {
             this.setStatusData(`stream-${s.pid}`, {
                 state: s.stale ? 'stale' : this.discovered.has(s.pid) ? 'live' : 'not seen yet',

@@ -177,13 +177,6 @@
         "engine": "./engine/RistOutputModule.ts",
         "faceWidgets": [
             {
-                "id": "quality-meter",
-                "type": "meter",
-                "section": "stats",
-                "key": "quality",
-                "color": "#10b981"
-            },
-            {
                 "id": "status-line",
                 "type": "status-line",
                 "section": "stats",
