@@ -30,9 +30,7 @@ export class SrtOutputModule extends GstPluginBase {
             setStatusData: (section, data) => this.setStatusData(section, data),
             setBadge: (id, badge) => this.setBadge(id, badge),
             clearBadge: (id) => this.clearBadge(id),
-            setSections: (sections) => {
-                this.dynamicStatusSections = sections;
-            },
+            setSections: (sections) => this.setDynamicSections(sections),
         };
         this.statPoller = new SrtStatPoller(host, 'send');
     }
@@ -53,7 +51,7 @@ export class SrtOutputModule extends GstPluginBase {
                     color: '#f59e0b',
                 });
                 this.clearBadge('callers');
-                this.dynamicStatusSections = [];
+                this.setDynamicSections([]);
                 this.statPoller.reset();
             }
         });

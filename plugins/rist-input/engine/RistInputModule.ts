@@ -1,9 +1,12 @@
 import {
     GstPluginBase,
     buildBusSink,
+    formatBitrate,
     quoteGstString,
     type PipelineDescription,
 } from '@media-router/engine';
+import { RistFlowTracker, peerRtt } from './ristFlowTracker.js';
+import { RistLinkHealth } from './ristLinkHealth.js';
 
 interface RistLink {
     mode: 'listener' | 'caller';
@@ -17,6 +20,11 @@ interface RistLink {
 const RIST_SRC = 'ristsrc';
 /** Bus-message structure the element posts librist's stats JSON under. */
 const RIST_STATS_STRUCTURE = 'mrrist-stats';
+/** {id, cname}: the remote's SDES name per peer id, lifted from librist's log by
+ *  the element — the receiver stats JSON names peers by id only. */
+const RIST_PEER_STRUCTURE = 'mrrist-peer';
+/** Names outlive their peer briefly (they arrive before the first stats window). */
+const PEER_NAME_CAP = 64;
 
 /**
  * RIST Input plugin.
@@ -32,35 +40,33 @@ const RIST_STATS_STRUCTURE = 'mrrist-stats';
  * kept for full feature support: per-link weight, cname, main/advanced
  * profiles, encryption.
  */
-/**
- * Link-health hysteresis on librist's quality metric (100 = no loss). RIST
- * recovers lost packets via retransmission, so a badly degraded link can carry
- * a perfect stream — invisible unless surfaced here. Field case, 2026-08-02:
- * production-hours loss storms of 10–20 % (all recovered, `lost=0`) were the
- * prime suspect behind intermittent video delivery dips, yet every ad-hoc
- * link check came back clean because only unrecovered loss is observable.
- * Warn after WARN_STREAK consecutive low-quality stats windows; clear only
- * after CLEAR_STREAK clean ones so a flapping link doesn't flap the health.
- */
-const QUALITY_WARN = 85;
-const QUALITY_CLEAR = 95;
-const WARN_STREAK = 3;
-const CLEAR_STREAK = 5;
+/** How often the card re-checks for flows that went silent (librist stops
+ *  reporting a flow the moment it has no queued data — no farewell). */
+const SWEEP_MS = 2000;
+
+/** Per-peer rows: the receiver JSON carries no cname and no per-peer quality
+ *  or loss — only these counters — so the label is librist's peer id. */
+const PEER_FIELDS = [
+    { key: 'bitrate', label: 'Bitrate' },
+    { key: 'received', label: 'Packets Received' },
+    { key: 'rtcpIn', label: 'RTCP Received' },
+    { key: 'rtcpOut', label: 'RTCP Sent' },
+    { key: 'rtt', label: 'RTT', unit: 'ms' },
+];
 
 export class RistInputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
      *  never by this pipeline, so it is live and never pends a restart. */
     protected liveUpdatableParams = ['playoutOffsetMs'];
-    private linkWarnActive = false;
-    private lowStreak = 0;
-    private okStreak = 0;
+    private linkHealth = new RistLinkHealth();
+    private flows = new RistFlowTracker();
+    private peerNames = new Map<number, string>();
+    private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
     async onStart(): Promise<void> {
-        // A rebuilt receiver re-measures from scratch — stale hysteresis must
-        // not suppress or fake a link warning.
-        this.linkWarnActive = false;
-        this.lowStreak = 0;
-        this.okStreak = 0;
+        this.linkHealth.reset();
+        this.flows.reset();
+        this.peerNames.clear();
         // Assign the bus output channel before buildPipeline reads it back.
         // The port is the channel identity (busout_<port> tee under unixfd).
         if (this.services?.mediaRouter) {
@@ -76,6 +82,20 @@ export class RistInputModule extends GstPluginBase {
             linkCount: links.length,
             encrypted: (this.config.secret as string) ? 'Yes' : 'No',
         });
+        // librist emits no receiver stats until a flow carries data, so a
+        // never-connected input would otherwise show no badge at all.
+        this.renderPeers();
+        this.sweepTimer = setInterval(() => {
+            if (this.flows.sweep(Date.now(), this.staleMs())) this.renderPeers();
+        }, SWEEP_MS);
+    }
+
+    async onStop(): Promise<void> {
+        if (this.sweepTimer) {
+            clearInterval(this.sweepTimer);
+            this.sweepTimer = null;
+        }
+        await super.onStop();
     }
 
     buildPipeline(_config: Record<string, unknown>): PipelineDescription | null {
@@ -102,7 +122,7 @@ export class RistInputModule extends GstPluginBase {
             ...(sessionTimeout ? [`session-timeout=${sessionTimeout}`] : []),
             ...(secret ? [`secret=${quoteGstString(secret)}`] : []),
             ...(encType ? [`aes-type=${encType}`] : []),
-            `stats-interval=${(this.config.statsInterval as number) ?? 1000}`,
+            `stats-interval=${this.statsIntervalMs()}`,
         ];
         const pipeline =
             `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ` +
@@ -112,7 +132,10 @@ export class RistInputModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
-            busReports: [{ element: RIST_SRC, structure: RIST_STATS_STRUCTURE }],
+            busReports: [
+                { element: RIST_SRC, structure: RIST_STATS_STRUCTURE },
+                { element: RIST_SRC, structure: RIST_PEER_STRUCTURE },
+            ],
         };
     }
 
@@ -124,6 +147,8 @@ export class RistInputModule extends GstPluginBase {
         } else if (channel === `${RIST_STATS_STRUCTURE}:${RIST_SRC}`) {
             const parsed = parseStatsMessage(payload);
             if (parsed) this.applyStats(parsed);
+        } else if (channel === `${RIST_PEER_STRUCTURE}:${RIST_SRC}`) {
+            this.applyPeerName(payload as { id?: unknown; cname?: unknown } | null);
         }
     }
 
@@ -135,124 +160,105 @@ export class RistInputModule extends GstPluginBase {
         );
     }
 
-    /** Render a librist receiver-stats payload (same JSON the CLI printed). */
+    private statsIntervalMs(): number {
+        return (this.config.statsInterval as number) ?? 1000;
+    }
+
+    /** A flow that missed three stats windows is gone (min 3 s). */
+    private staleMs(): number {
+        return Math.max(3000, 3 * this.statsIntervalMs());
+    }
+
+    /** Remote link name for a peer id; re-labels the row if it is already shown. */
+    private applyPeerName(msg: { id?: unknown; cname?: unknown } | null): void {
+        const id = Number(msg?.id);
+        const cname = typeof msg?.cname === 'string' ? msg.cname.trim() : '';
+        if (!Number.isFinite(id) || !cname) return;
+        this.peerNames.set(id, cname);
+        for (const key of this.peerNames.keys()) {
+            if (this.peerNames.size <= PEER_NAME_CAP) break;
+            this.peerNames.delete(key);
+        }
+        if (this.flows.livePeers().some((p) => (p.id ?? 0) === id)) this.renderPeers();
+    }
+
+    /** One librist receiver-stats payload (same JSON the CLI prints): one flow. */
     private applyStats(json: Record<string, any>): void {
         const flow = json?.['receiver-stats']?.flowinstant;
         if (!flow?.stats) return;
+        const now = Date.now();
+        this.flows.observe(flow, now);
+        this.flows.sweep(now, this.staleMs());
+        this.renderFlowStats();
+        this.renderPeers();
+    }
 
-        const s = flow.stats;
-
+    /** Live Stats section, quality badge and link health — across all fresh flows. */
+    private renderFlowStats(): void {
+        const c = this.flows.counters();
         // Recovered-loss rate this stats window: what fraction of the wire
         // went missing before retransmission repaired it. `lost` only counts
         // UNrecovered packets, so this is the metric that exposes a degraded
         // link that still delivers a perfect stream.
-        const missing = Number(s.missing ?? 0);
-        const received = Number(s.received ?? 0);
-        const lossPct = received + missing > 0 ? (100 * missing) / (received + missing) : 0;
+        const lossPct =
+            c.received + c.missing > 0 ? (100 * c.missing) / (c.received + c.missing) : 0;
+        const rtt = peerRtt(this.flows.livePeers()[0]);
 
-        const peers = flow.peers as
-            | Array<{ id?: number; cname?: string; stats?: Record<string, unknown> }>
-            | undefined;
-        const firstPeer = peers?.[0]?.stats;
-        const rtt =
-            typeof firstPeer?.avg_rtt === 'number'
-                ? (firstPeer.avg_rtt as number).toFixed(2)
-                : String(firstPeer?.rtt ?? '—');
-
-        // Flow-level stats (aggregate across all peers)
         this.setStatusData('stats', {
-            received,
-            dropped: Number(s.dropped_late ?? 0),
-            recovered: Number(s.recovered_total ?? 0),
+            quality: c.quality,
+            received: c.received,
+            dropped: c.dropped,
+            recovered: c.recovered,
             loss: lossPct.toFixed(1),
-            lost: Number(s.lost ?? 0),
+            lost: c.lost,
             rtt,
         });
-
-        // Per-peer stats and dynamic sections
-        if (peers && peers.length > 0) {
-            const peerFields = [
-                { key: 'quality', label: 'Quality', unit: '%' },
-                { key: 'received', label: 'Received' },
-                { key: 'dropped', label: 'Dropped' },
-                { key: 'recovered', label: 'Recovered' },
-                { key: 'lost', label: 'Permanently Lost' },
-                { key: 'rtt', label: 'RTT', unit: 'ms' },
-            ];
-
-            for (const peer of peers) {
-                const p = peer.stats;
-                if (!p) continue;
-
-                const peerId = peer.id ?? 0;
-                const cname = peer.cname || `Link ${peerId}`;
-                const sectionId = `peer-${peerId}`;
-
-                this.setStatusData(sectionId, {
-                    quality: typeof p.quality === 'number' ? p.quality : 0,
-                    received: Number(p.received ?? 0),
-                    dropped: Number(p.dropped_late ?? 0),
-                    recovered: Number(p.recovered_total ?? 0),
-                    lost: Number(p.lost ?? 0),
-                    rtt:
-                        typeof p.avg_rtt === 'number'
-                            ? `${(p.avg_rtt as number).toFixed(2)}`
-                            : String(p.rtt ?? '—'),
-                });
-
-                const existing = this.dynamicStatusSections.find((sec) => sec.id === sectionId);
-                if (!existing) {
-                    this.dynamicStatusSections = [
-                        ...this.dynamicStatusSections,
-                        { id: sectionId, label: cname, fields: peerFields },
-                    ];
-                }
-            }
-        }
-
-        const quality = Number(s.quality ?? 0);
-        this.applyLinkHealth(quality, lossPct, rtt);
+        this.linkHealth.update(c.quality, lossPct, rtt, {
+            warn: (msg) => this.setHealth('warning', msg),
+            clearOwnWarning: () => {
+                if (this.health === 'warning') this.setHealth('ok');
+            },
+        });
         this.setBadge('quality', {
             icon: 'signal',
-            text: `${quality}%`,
-            color: quality >= 90 ? '#10b981' : quality >= 50 ? '#f59e0b' : '#ef4444',
-        });
-
-        // Connection badge — show peer count
-        const peerCount = peers?.length ?? 0;
-        this.setBadge('connections', {
-            icon: 'link',
-            text: `${peerCount}`,
-            color: peerCount > 0 ? '#10b981' : '#6b7280',
+            text: `${c.quality}%`,
+            color: c.quality >= 90 ? '#10b981' : c.quality >= 50 ? '#f59e0b' : '#ef4444',
         });
     }
 
-    /** See the hysteresis constants above for why this exists. */
-    private applyLinkHealth(quality: number, lossPct: number, rtt: string): void {
-        if (quality < QUALITY_WARN) {
-            this.lowStreak++;
-            this.okStreak = 0;
-        } else if (quality >= QUALITY_CLEAR) {
-            this.okStreak++;
-            this.lowStreak = 0;
-        } else {
-            // In-between band: neither degrades further nor proves recovery.
-            this.lowStreak = 0;
-            this.okStreak = 0;
+    /** Per-peer sections reconciled to the live set, and the connections badge. */
+    private renderPeers(): void {
+        const live = this.flows.livePeers();
+        const sections = live.map((peer) => ({
+            id: `peer-${peer.id ?? 0}`,
+            label: this.peerNames.get(peer.id ?? 0) ?? `Peer ${peer.id ?? 0}`,
+            fields: PEER_FIELDS,
+        }));
+        // A reconnected peer gets a fresh librist id, so anything not live
+        // this window is a ghost (25 piled up on one single-link input).
+        this.setDynamicSections(sections);
+        for (const peer of live) {
+            const p = peer.stats ?? {};
+            this.setStatusData(`peer-${peer.id ?? 0}`, {
+                // librist reports bits/s; the shared formatter takes kbps and
+                // picks the unit itself.
+                bitrate: typeof p.bitrate === 'number' ? formatBitrate(p.bitrate / 1000) : '—',
+                received: Number(p.received_data ?? 0),
+                rtcpIn: Number(p.received_rtcp ?? 0),
+                rtcpOut: Number(p.sent_rtcp ?? 0),
+                rtt: peerRtt(peer),
+            });
         }
-        if (this.lowStreak >= WARN_STREAK) {
-            this.linkWarnActive = true;
-            this.setHealth(
-                'warning',
-                `RIST link degraded — recovering ${lossPct.toFixed(0)}% packet loss ` +
-                    `(RTT ${rtt} ms); stream still intact`,
-            );
-        } else if (this.okStreak >= CLEAR_STREAK && this.linkWarnActive) {
-            // Only clear health WE degraded — never stomp a warning another
-            // path owns.
-            if (this.health === 'warning') this.setHealth('ok');
-            this.linkWarnActive = false;
-        }
+
+        // Live peers over configured links: a link that never connected (or a
+        // listener with more senders than links) shows on the card as amber.
+        const peerCount = live.length;
+        const linkCount = this.links().length;
+        this.setBadge('connections', {
+            icon: 'link',
+            text: `${peerCount}/${linkCount}`,
+            color: peerCount === 0 ? '#6b7280' : peerCount === linkCount ? '#10b981' : '#f59e0b',
+        });
     }
 }
 

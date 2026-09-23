@@ -1593,6 +1593,21 @@ this.setStatusData('udp', {
 });
 ```
 
+Sections that come and go at runtime (per peer, per caller, per PID) are
+**dynamic sections**. Never assign `dynamicStatusSections` directly — go through
+the base helpers so the status data of a departed subject is dropped with its
+section (ids like a librist peer counter or a caller index never come back, and
+the store leaked one entry per departed peer before):
+
+```typescript
+// Replace the whole list; data for sections no longer listed is deleted.
+this.setDynamicSections(peers.map((p) => ({ id: `peer-${p.id}`, label: `Peer ${p.id}`, fields })));
+// Add one section if absent.
+this.upsertStatusSection({ id: 'caller-0', label: 'Caller 1', fields });
+// Drop one section and its data.
+this.clearStatusSection('peer-42');
+```
+
 Values are coerced to primitives. For structured PLOT data — a transfer curve,
 a frequency response — use `setStatusGraph(section, key, graph)` instead: same
 channel and same store, but the value keeps its shape so a `x-widget: "graph"`
@@ -2340,7 +2355,7 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | Audio Encoder | `plugins/audio-encoder/` | `static initManifest` for codec capability probing, live bitrate via `setElementProperty`, UDP-port allocation |
 | Audio Decoder | `plugins/audio-decoder/` | Stream probing (`probeMpegTsStream`), idle when no upstream connected (`null` from `buildPipeline`). **Requires `ts-splitter` to be installed** — that plugin's `static registerServices` provides the opus/aac/mp2/ac3 codec classifiers `probeMpegTsStream` consults. Without it, `probeResult.codec` always reports `'unknown'` and the decoder silently falls back to `decodebin`. |
 | SRT Input / Output | `plugins/srt-input/`, `plugins/srt-output/` | Per-caller stat polling, dynamic `statusSections` for multi-peer state, badges, `restartBackoffMs` tuning |
-| RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | Native `mrristsrc` / `mrristsink` elements (`rist-core/native/mrrist`, librist in C, ADR-0013); stats via `busReports` on `mrrist-stats` bus messages; `quoteGstString` for URL/passphrase properties |
+| RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | Native `mrristsrc` / `mrristsink` elements (`rist-core/native/mrrist`, librist in C, ADR-0013); stats via `busReports` on `mrrist-stats` bus messages, receiver peer names on `mrrist-peer`; `quoteGstString` for URL/passphrase properties |
 | MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignBusChannel(instanceId, portId)`, `linkOnPadAdded` rules |
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |

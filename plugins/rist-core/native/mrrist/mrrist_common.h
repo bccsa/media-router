@@ -9,6 +9,9 @@ GST_DEBUG_CATEGORY_EXTERN(mrrist_debug);
 
 #define MRRIST_TS_CAPS "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
 #define MRRIST_STATS_STRUCTURE "mrrist-stats"
+/* {id: uint, cname: string} — the remote's SDES cname per peer id, lifted from
+ * librist's log because the receiver stats JSON names peers by id only. */
+#define MRRIST_PEER_STRUCTURE "mrrist-peer"
 #define MRRIST_DEFAULT_CHUNK 1316   /* 7 x 188: the classic TS-over-datagram unit */
 
 struct MrRistCommon {

@@ -51,7 +51,15 @@ describe('RistOutputModule.buildPipeline', () => {
     it('carries the librist sender config with per-link rist:// URLs', () => {
         const { module } = makeModule();
         module.config = {
-            links: [{ mode: 'caller', address: 'rist.example.net', port: 5004, weight: 5, cname: 'tx1' }],
+            links: [
+                {
+                    mode: 'caller',
+                    address: 'rist.example.net',
+                    port: 5004,
+                    weight: 5,
+                    cname: 'tx1',
+                },
+            ],
             profile: 1,
             buffer: 1200,
             secret: 'hush',
@@ -89,10 +97,25 @@ describe('RistOutputModule.buildPipeline', () => {
         const { module, setStatusData } = makeModule();
         module.onPluginEvent('mrrist-stats:ristsink', {
             json: JSON.stringify({
-                'sender-stats': { peer: { id: 1, cname: 'tx1', stats: { quality: 99, sent: 5, retransmitted: 0, bandwidth: 1000, avg_rtt: 1.5 } } },
+                'sender-stats': {
+                    peer: {
+                        id: 1,
+                        cname: 'tx1',
+                        stats: {
+                            quality: 99,
+                            sent: 5,
+                            retransmitted: 0,
+                            bandwidth: 1000,
+                            avg_rtt: 1.5,
+                        },
+                    },
+                },
             }),
         });
-        expect(setStatusData).toHaveBeenCalledWith('peer-1', expect.objectContaining({ quality: 99, sent: 5 }));
+        expect(setStatusData).toHaveBeenCalledWith(
+            'peer-1',
+            expect.objectContaining({ quality: 99, sent: 5 }),
+        );
         setStatusData.mockClear();
         module.onPluginEvent('mrrist-stats:ristsink', { json: '{not json' });
         module.onPluginEvent('mrrist-stats:other', { json: '{}' });
@@ -134,7 +157,13 @@ describe('RistOutputModule rist:stats rendering', () => {
         expect(module.dynamicStatusSections[0]).toMatchObject({ id: 'peer-1', label: 'remote-tx' });
         expect(setStatusData).toHaveBeenCalledWith(
             'peer-1',
-            expect.objectContaining({ quality: 95, sent: 1000, retransmitted: 5, bandwidth: '4.5 Mbps', rtt: '12.30' }),
+            expect.objectContaining({
+                quality: 95,
+                sent: 1000,
+                retransmitted: 5,
+                bandwidth: '4.5 Mbps',
+                rtt: '12.30',
+            }),
         );
     });
 
@@ -180,7 +209,9 @@ describe('RistOutputModule rist:stats rendering', () => {
         };
         stats(module, payload);
         stats(module, payload);
-        expect(module.dynamicStatusSections.filter((s: { id: string }) => s.id === 'peer-1')).toHaveLength(1);
+        expect(
+            module.dynamicStatusSections.filter((s: { id: string }) => s.id === 'peer-1'),
+        ).toHaveLength(1);
     });
 
     it('tracks peer last-seen timestamps in peerLastSeen', () => {
@@ -194,26 +225,44 @@ describe('RistOutputModule rist:stats rendering', () => {
     it('colours the quality badge green/amber/red by threshold', () => {
         const { module, setBadge } = makeModule();
         stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 95 } } } });
-        expect(setBadge).toHaveBeenCalledWith('quality', expect.objectContaining({ color: '#10b981' }));
+        expect(setBadge).toHaveBeenCalledWith(
+            'quality',
+            expect.objectContaining({ color: '#10b981' }),
+        );
 
         setBadge.mockClear();
         stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 60 } } } });
-        expect(setBadge).toHaveBeenCalledWith('quality', expect.objectContaining({ color: '#f59e0b' }));
+        expect(setBadge).toHaveBeenCalledWith(
+            'quality',
+            expect.objectContaining({ color: '#f59e0b' }),
+        );
 
         setBadge.mockClear();
         stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 30 } } } });
-        expect(setBadge).toHaveBeenCalledWith('quality', expect.objectContaining({ color: '#ef4444' }));
+        expect(setBadge).toHaveBeenCalledWith(
+            'quality',
+            expect.objectContaining({ color: '#ef4444' }),
+        );
     });
 
-    it('emits a connections badge reflecting the peer-last-seen size', () => {
+    it('emits a connections badge as reporting peers over configured links', () => {
         const { module, setBadge } = makeModule();
+        module.config = {
+            links: [
+                { mode: 'caller', address: 'a', port: 1 },
+                { mode: 'caller', address: 'b', port: 2 },
+            ],
+        };
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90 } } } });
+        expect(setBadge).toHaveBeenLastCalledWith(
+            'connections',
+            expect.objectContaining({ text: '1/2', color: '#f59e0b' }),
+        );
         stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90 } } } });
         stats(module, { 'sender-stats': { peer: { id: 2, stats: { quality: 90 } } } });
         // Last call should reflect 2 active peers
-        const lastConnectionsCall = setBadge.mock.calls
-            .filter((c) => c[0] === 'connections')
-            .pop();
-        expect(lastConnectionsCall![1]).toMatchObject({ text: '2', color: '#10b981' });
+        const lastConnectionsCall = setBadge.mock.calls.filter((c) => c[0] === 'connections').pop();
+        expect(lastConnectionsCall![1]).toMatchObject({ text: '2/2', color: '#10b981' });
     });
 
     it('ignores payloads without sender-stats.peer.stats', () => {
@@ -246,13 +295,16 @@ describe('RistOutputModule.cleanupStalePeers', () => {
             { id: 'peer-1', label: 'a', fields: [] },
             { id: 'peer-2', label: 'b', fields: [] },
         ];
+        module.statusData = { 'peer-1': { sent: 1 }, 'peer-2': { sent: 2 } };
         module.cleanupStalePeers();
         expect(module.peerLastSeen.has(1)).toBe(false);
         expect(module.peerLastSeen.has(2)).toBe(true);
         expect(module.dynamicStatusSections.map((s: { id: string }) => s.id)).toEqual(['peer-2']);
+        // Data goes with the section — it used to leak one entry per peer id.
+        expect(Object.keys(module.statusData)).toEqual(['peer-2']);
         expect(setBadge).toHaveBeenCalledWith(
             'connections',
-            expect.objectContaining({ text: '1' }),
+            expect.objectContaining({ text: '1/1' }),
         );
     });
 

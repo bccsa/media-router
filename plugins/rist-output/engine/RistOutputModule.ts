@@ -124,20 +124,15 @@ export class RistOutputModule extends GstPluginBase {
         for (const [id, ts] of this.peerLastSeen) {
             if (now - ts > 3000) {
                 this.peerLastSeen.delete(id);
-                this.dynamicStatusSections = this.dynamicStatusSections.filter(
-                    (sec) => sec.id !== `peer-${id}`,
-                );
+                // Section AND its data — the data used to leak per peer id
+                // (peer-2…peer-135 seen on one long-running output).
+                this.clearStatusSection(`peer-${id}`);
                 changed = true;
             }
         }
         if (changed) {
-            const peerCount = this.peerLastSeen.size;
-            this.setBadge('connections', {
-                icon: 'link',
-                text: `${peerCount}`,
-                color: peerCount > 0 ? '#10b981' : '#6b7280',
-            });
-            if (peerCount === 0) {
+            this.renderConnectionsBadge();
+            if (this.peerLastSeen.size === 0) {
                 this.clearBadge('quality');
             }
         }
@@ -177,14 +172,7 @@ export class RistOutputModule extends GstPluginBase {
             { key: 'rtt', label: 'RTT', unit: 'ms' },
         ];
 
-        // Ensure this peer's section exists in dynamic sections
-        const existing = this.dynamicStatusSections.find((sec) => sec.id === sectionId);
-        if (!existing) {
-            this.dynamicStatusSections = [
-                ...this.dynamicStatusSections,
-                { id: sectionId, label: cname || `Link ${peerId}`, fields: peerFields },
-            ];
-        }
+        this.upsertStatusSection({ id: sectionId, label: cname, fields: peerFields });
 
         // Track connected peers with timestamp
         this.peerLastSeen.set(peerId, Date.now());
@@ -196,11 +184,19 @@ export class RistOutputModule extends GstPluginBase {
             text: `${s.quality ?? 0}%`,
             color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444',
         });
+        this.renderConnectionsBadge();
+    }
+
+    /** Reporting peers over configured links — same form as the RIST input card.
+     *  (librist keeps reporting a caller that never got an answer, so this can
+     *  still read n/n with a dead remote — #679.) */
+    private renderConnectionsBadge(): void {
         const peerCount = this.peerLastSeen.size;
+        const linkCount = this.links().length;
         this.setBadge('connections', {
             icon: 'link',
-            text: `${peerCount}`,
-            color: peerCount > 0 ? '#10b981' : '#6b7280',
+            text: `${peerCount}/${linkCount}`,
+            color: peerCount === 0 ? '#6b7280' : peerCount === linkCount ? '#10b981' : '#f59e0b',
         });
     }
 }

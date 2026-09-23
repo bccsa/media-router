@@ -17,6 +17,10 @@
  * produced — the same document the CLI printed and the python binding
  * forwarded — so the module's parser is unchanged. Subscribe via
  * `PipelineDescription.busReports` ({element, structure: "mrrist-stats"}).
+ * mrristsrc's log callback additionally posts `mrrist-peer` {id: uint,
+ * cname: string} from librist's "Peer N receiver name is now: X" line — the
+ * receiver stats JSON has no cname per peer, and that line is the only place
+ * it surfaces (the sink's stats carry the cname already, so it stays quiet).
  *
  * LOGGING: librist lines at INFO and above are written to stderr as
  * `[librist] …` — exactly what the python binding did — so the runner's
