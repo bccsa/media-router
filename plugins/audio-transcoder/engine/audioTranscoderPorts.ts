@@ -71,7 +71,7 @@ export function readRenditions(config: Record<string, unknown>): Rendition[] {
         return {
             name: typeof e.name === 'string' ? e.name : '',
             codec,
-            bitrate: toPositiveInt(e.bitrate, 128),
+            bitrate: clampBitrateKbps(codec, e.bitrate),
             frameSize: toOptionalNumber(e.frameSize),
             inbandFec: typeof e.inbandFec === 'boolean' ? e.inbandFec : undefined,
             packetLoss: toOptionalNumber(e.packetLoss),
@@ -80,9 +80,19 @@ export function readRenditions(config: Record<string, unknown>): Rendition[] {
     });
 }
 
-function toPositiveInt(value: unknown, fallback: number): number {
-    const n = Math.round(Number(value));
-    return Number.isFinite(n) && n > 0 ? n : fallback;
+/** Encoder bitrate bounds in kbps per codec; the manifest's rendition bitrate
+ *  minimum/maximum/x-maxBy mirror this table (asserted in the tests). */
+export const BITRATE_KBPS: Record<string, { min: number; max: number; default: number }> = {
+    opus: { min: 6, max: 510, default: 128 },
+    aac: { min: 32, max: 320, default: 128 },
+};
+
+/** Clamp an operator bitrate (kbps) to the codec's range (#664); unset/junk/≤0 → default. */
+export function clampBitrateKbps(codec: string, kbps: unknown): number {
+    const r = BITRATE_KBPS[codec] ?? BITRATE_KBPS.opus;
+    const n = Math.round(Number(kbps));
+    if (!Number.isFinite(n) || n <= 0) return r.default;
+    return Math.min(r.max, Math.max(r.min, n));
 }
 
 function toOptionalNumber(value: unknown): number | undefined {

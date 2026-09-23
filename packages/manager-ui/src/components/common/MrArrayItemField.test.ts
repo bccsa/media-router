@@ -82,6 +82,30 @@ describe('MrArrayItemField — advanced number', () => {
     });
 });
 
+describe('MrArrayItemField — free number with schema bounds (audio-transcoder bitrate, #664)', () => {
+    it('passes minimum/maximum through to the number input', () => {
+        const wrapper = mount(MrArrayItemField, {
+            props: {
+                field: {
+                    key: 'bitrate',
+                    type: 'number',
+                    label: 'Bitrate',
+                    description: '',
+                    default: 128,
+                    minimum: 6,
+                    maximum: 510,
+                    advanced: false,
+                },
+                value: 48,
+            },
+        });
+        const input = wrapper.find('input');
+        expect(input.attributes('type')).toBe('number');
+        expect(input.attributes('min')).toBe('6');
+        expect(input.attributes('max')).toBe('510');
+    });
+});
+
 describe('MrArrayItemField — boolean without a module-global (audio-transcoder opus FEC)', () => {
     const fecField: ItemField = {
         key: 'inbandFec',

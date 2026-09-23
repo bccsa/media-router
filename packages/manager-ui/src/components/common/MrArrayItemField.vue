@@ -24,6 +24,9 @@ export interface ItemField {
     default?: unknown;
     enumValues?: unknown[];
     enumLabels?: Record<string, string>;
+    /** Schema `minimum` / `maximum` — number inputs clamp to them. */
+    minimum?: number;
+    maximum?: number;
     /** Grouped under the collapsed "Advanced" section. */
     advanced: boolean;
     /** Inherit semantics — only when the module has a SAME-NAMED global this
@@ -136,6 +139,8 @@ function onInput(value: string | number): void {
                 <MrInput
                     :model-value="isSet ? (value as string | number) : ''"
                     :type="field.type === 'number' ? 'number' : 'text'"
+                    :min="field.minimum"
+                    :max="field.maximum"
                     :placeholder="field.inheritable ? 'Inherit (global)' : undefined"
                     :disabled="disabled"
                     @update:model-value="onInput"

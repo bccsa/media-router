@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { bitrateBadge } from '@media-router/engine';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { BITRATE_KBPS } from './AudioEncoderModule.js';
 import { AudioEncoderModule } from './AudioEncoderModule.js';
 
 function makeModule(opts: { busPort?: number | null } = {}) {
@@ -54,15 +57,42 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(module.buildPipeline({}).pipeline).toContain(
             'pulsesrc device=MR_PW_enc-1.monitor buffer-time=200000',
         );
-        expect(module.buildPipeline({ srcBufferMs: 60 }).pipeline).toContain(
-            'buffer-time=60000',
-        );
-        expect(module.buildPipeline({ srcBufferMs: 5 }).pipeline).toContain(
-            'buffer-time=40000',
-        );
+        expect(module.buildPipeline({ srcBufferMs: 60 }).pipeline).toContain('buffer-time=60000');
+        expect(module.buildPipeline({ srcBufferMs: 5 }).pipeline).toContain('buffer-time=40000');
         expect(module.buildPipeline({ srcBufferMs: 5000 }).pipeline).toContain(
             'buffer-time=1000000',
         );
+    });
+
+    it('takes any bitrate in kbps and clamps it to the codec range (#664)', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({ bitrate: 48 }).pipeline).toContain('opusenc bitrate=48000');
+        expect(module.buildPipeline({ bitrate: 1 }).pipeline).toContain('opusenc bitrate=6000');
+        expect(module.buildPipeline({ bitrate: 9999 }).pipeline).toContain(
+            'opusenc bitrate=510000',
+        );
+        expect(module.buildPipeline({ codec: 'aac', bitrate: 9999 }).pipeline).toContain(
+            'avenc_aac bitrate=320000',
+        );
+        expect(module.buildPipeline({ codec: 'aac', bitrate: 10 }).pipeline).toContain(
+            'avenc_aac bitrate=32000',
+        );
+        expect(module.buildPipeline({ bitrate: 'junk' }).pipeline).toContain(
+            'opusenc bitrate=128000',
+        );
+        expect(module.buildPipeline({ bitrate: 0 }).pipeline).toContain('opusenc bitrate=128000');
+    });
+
+    it('manifest bitrate bounds mirror BITRATE_KBPS (#664)', () => {
+        const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
+        const prop = pkg.mediaRouter.configSchema.properties.bitrate;
+        expect(prop.minimum).toBe(Math.min(...Object.values(BITRATE_KBPS).map((r) => r.min)));
+        expect(prop.maximum).toBe(Math.max(...Object.values(BITRATE_KBPS).map((r) => r.max)));
+        expect(prop['x-maxBy'].map).toEqual({
+            opus: BITRATE_KBPS.opus.max,
+            aac: BITRATE_KBPS.aac.max,
+        });
+        expect(prop.default).toBe(BITRATE_KBPS.opus.default);
     });
 
     it('builds an AAC path when codec=aac', () => {
@@ -130,7 +160,6 @@ describe('AudioEncoderModule.buildPipeline', () => {
         const desc = module.buildPipeline({ codec: 'opus', audioType: 2049 });
         expect(desc.pipeline).toContain('audio-type=2049');
     });
-
 });
 
 describe('AudioEncoderModule.updateStatusData', () => {
@@ -138,11 +167,23 @@ describe('AudioEncoderModule.updateStatusData', () => {
 
     it('populates the encoder section from current config', () => {
         const { module, setStatusData } = makeModule();
-        module.config = { codec: 'aac', bitrate: 192, frameSize: 10, sampleRate: 44100, channels: 2 };
+        module.config = {
+            codec: 'aac',
+            bitrate: 192,
+            frameSize: 10,
+            sampleRate: 44100,
+            channels: 2,
+        };
         module.updateStatusData();
         expect(setStatusData).toHaveBeenCalledWith(
             'encoder',
-            expect.objectContaining({ codec: 'aac', bitrate: 192, frameSize: 10, sampleRate: 44100, channels: 2 }),
+            expect.objectContaining({
+                codec: 'aac',
+                bitrate: 192,
+                frameSize: 10,
+                sampleRate: 44100,
+                channels: 2,
+            }),
         );
     });
 

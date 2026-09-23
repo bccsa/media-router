@@ -44,12 +44,14 @@
                             },
                             "bitrate": {
                                 "type": "number",
-                                "enum": [32, 64, 96, 128, 192, 256, 320],
+                                "minimum": 6,
+                                "maximum": 510,
                                 "default": 128,
                                 "x-unit": "kbps",
                                 "x-showWhen": "codec=opus,aac",
                                 "title": "Bitrate",
-                                "description": ""
+                                "description": "Any bitrate in kbps (Opus 6-510, AAC 32-320); 48-64 is enough for speech.",
+                                "x-maxBy": { "field": "codec", "map": { "opus": 510, "aac": 320 } }
                             },
                             "frameSize": {
                                 "type": "number",
