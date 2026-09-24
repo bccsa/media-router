@@ -42,11 +42,36 @@ function createMocks() {
         .fn()
         .mockReturnValue({ emit: roomEmit, volatile: { emit: roomVolatileEmit } });
 
+    const rooms = new Map<string, Set<string>>();
+    const sockets = new Map<string, any>();
     const io = {
         emit: vi.fn(),
         volatile: { emit: volatileEmit },
         to: toRoom,
+        sockets: { adapter: { rooms }, sockets },
     } as any;
+
+    /** A fake browser socket in `watch:<engineId>`; `writable` mirrors engine.io's transport flag. */
+    function addWatcher(id: string, engineId: string, writable = true) {
+        const drains: Array<() => void> = [];
+        const socket = {
+            emit: vi.fn(),
+            conn: {
+                transport: { writable },
+                once: vi.fn((event: string, cb: () => void) => {
+                    if (event === 'drain') drains.push(cb);
+                }),
+            },
+            drain() {
+                socket.conn.transport.writable = true;
+                for (const cb of drains.splice(0)) cb();
+            },
+        };
+        sockets.set(id, socket);
+        if (!rooms.has(`watch:${engineId}`)) rooms.set(`watch:${engineId}`, new Set());
+        rooms.get(`watch:${engineId}`)!.add(id);
+        return socket;
+    }
 
     const forwarder = new EngineEventForwarder(configStore, engineManager, engineCommands, io);
     forwarder.setup();
@@ -61,6 +86,8 @@ function createMocks() {
         toRoom,
         roomEmit,
         roomVolatileEmit,
+        addWatcher,
+        rooms,
     };
 }
 
@@ -315,7 +342,9 @@ describe('EngineEventForwarder', () => {
 
         it('caches but does not broadcast when no placed module matches', () => {
             const { forwarder, engineManager, configStore, io } = createMocks();
-            configStore.getProfile.mockReturnValue({ modules: { 'a-1': { pluginId: 'audio-input' } } });
+            configStore.getProfile.mockReturnValue({
+                modules: { 'a-1': { pluginId: 'audio-input' } },
+            });
 
             engineManager.emit('engineCapabilities', 'eng-1', { transcoder: { properties: {} } });
 
@@ -340,17 +369,19 @@ describe('EngineEventForwarder', () => {
     });
 
     describe('engineVu', () => {
-        it('emits VU data to watchers room via volatile', () => {
-            const { engineManager, toRoom, roomVolatileEmit } = createMocks();
+        it('routes VU payloads to the engine watchers through the socket fanout', () => {
+            const { engineManager, addWatcher, roomVolatileEmit } = createMocks();
+            const a = addWatcher('sock-a', 'eng-1');
+            const other = addWatcher('sock-b', 'eng-2');
 
-            engineManager.emit('engineVu', 'eng-1', { moduleId: 'mod-1', levels: [0.5] });
+            engineManager.emit('engineVu', 'eng-1', { batch: { 'mod-1': [6] } });
 
-            expect(toRoom).toHaveBeenCalledWith('watch:eng-1');
-            expect(roomVolatileEmit).toHaveBeenCalledWith('engine:vu', {
+            expect(a.emit).toHaveBeenCalledWith('engine:vu', {
                 engineId: 'eng-1',
-                moduleId: 'mod-1',
-                levels: [0.5],
+                batch: { 'mod-1': [6] },
             });
+            expect(other.emit).not.toHaveBeenCalled();
+            expect(roomVolatileEmit).not.toHaveBeenCalled();
         });
     });
 
@@ -390,7 +421,9 @@ describe('EngineEventForwarder', () => {
             io.emit.mockClear();
             engineManager.emit('enginePathUp', 'eng-1', '10.0.0.8:42974');
             engineManager.emit('enginePathDown', 'eng-1', '10.0.0.8:42974');
-            expect(io.emit.mock.calls.filter((c: unknown[]) => c[0] === 'engine:paths')).toHaveLength(2);
+            expect(
+                io.emit.mock.calls.filter((c: unknown[]) => c[0] === 'engine:paths'),
+            ).toHaveLength(2);
             io.emit.mockClear();
             engineManager.emit('engineOffline', 'eng-1');
             expect(io.emit).toHaveBeenCalledWith('engine:paths', { engineId: 'eng-1', paths: [] });
@@ -398,8 +431,13 @@ describe('EngineEventForwarder', () => {
 
         it('caches managerPaths when present (#692)', () => {
             const { forwarder, engineManager } = createMocks();
-            engineManager.emit('engineSystem', 'eng-1', { managerPaths: { connected: 1, total: 2 } });
-            expect(forwarder.getEngineData('eng-1', 'managerPaths')).toEqual({ connected: 1, total: 2 });
+            engineManager.emit('engineSystem', 'eng-1', {
+                managerPaths: { connected: 1, total: 2 },
+            });
+            expect(forwarder.getEngineData('eng-1', 'managerPaths')).toEqual({
+                connected: 1,
+                total: 2,
+            });
         });
 
         it('caches ips array when present', () => {
@@ -531,10 +569,7 @@ describe('EngineEventForwarder', () => {
         it('drops malformed payloads (no reason field) without throwing', () => {
             const { engineManager, io } = createMocks();
             engineManager.emit('engineRebootFailed', 'eng-1', {});
-            expect(io.emit).not.toHaveBeenCalledWith(
-                'engine:rebootFailed',
-                expect.anything(),
-            );
+            expect(io.emit).not.toHaveBeenCalledWith('engine:rebootFailed', expect.anything());
         });
     });
 

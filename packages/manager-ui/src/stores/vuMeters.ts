@@ -9,22 +9,24 @@ import { reactive, onUnmounted } from 'vue';
  * reassignment on every update.
  *
  * Uses a reactive object so Vue tracks individual property access.
- * Auto-clears stale entries after 2s of no updates so a few dropped
- * UDP packets (~15Hz nominal cadence, 1s engine heartbeat) don't flash
- * the meter to zero and look like an audio dropout.
+ * Auto-clears stale entries after 2.5s of no updates so a dropped batch
+ * (10Hz batches, unchanged meters re-sent once per 1s heartbeat) doesn't
+ * flash the meter to zero and look like an audio dropout (#677).
  */
 export const useVuStore = defineStore('vuMeters', () => {
     // Key: "engineId/instanceId", Value: array of block levels per channel
     const levels = reactive<Record<string, number[]>>({});
     // Track last update time per key for staleness detection
     const lastUpdate: Record<string, number> = {};
-    const STALE_MS = 2000; // hold last value for 2s before zeroing — survives ~30 missed VU cycles at 15Hz
+    const STALE_MS = 2500; // hold last value 2.5 s before zeroing — 2× the 1 s heartbeat plus WAN jitter
 
     // Cleanup timer — runs every 500ms, resets stale VU data to zeros
     const cleanupTimer = setInterval(() => {
         const now = Date.now();
         for (const key of Object.keys(lastUpdate)) {
             if (now - lastUpdate[key] > STALE_MS && levels[key]?.some((v) => v > 0)) {
+                // Trace for #677-class reports: a zeroed meter is a delivery gap, not silence.
+                console.debug(`[vu] stale meter zeroed ${key} after ${now - lastUpdate[key]} ms`);
                 levels[key] = levels[key].map(() => 0);
             }
         }

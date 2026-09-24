@@ -439,7 +439,8 @@
 - [x] MPEG-TS muxer/demuxer latency growth
 - [x] Engine auto-start after reset when stopped
 - [x] Clone/add auto-start when engine stopped
-- [x] VU meter zero on missed packet (2s hold)
+- [x] VU meter zero on missed packet (2.5s hold since #677)
+- [x] #677 VU meters flash to zero: runner and VuBatcher both deduped unchanged VU at 1000 ms (batcher window now 500 ms); manager coalesces VU per browser socket instead of volatile-dropping it while a frame is in flight; UI hold 2.5 s
 - [x] Clone from settings panel parity with right-click
 - [x] SRT failed connection CPU spike
 - [x] Editable engine ID

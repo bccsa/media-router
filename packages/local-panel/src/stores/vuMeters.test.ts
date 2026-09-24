@@ -56,13 +56,13 @@ describe('VU Meters Store', () => {
         expect(store.get('enc-1')).toEqual([]);
     });
 
-    it('zeros stale VU data after 1500ms without update', () => {
+    it('zeros stale VU data after 2500ms without update', () => {
         const store = useVuStore();
         // VU levels are linear (0-1 range) — must have values > 0 to trigger zeroing
         store.update('mic-1', [0.5, 0.3]);
 
-        // Advance past STALE_MS (1500) + cleanup interval (500)
-        vi.advanceTimersByTime(2000);
+        // Advance past STALE_MS (2500) + cleanup interval (500)
+        vi.advanceTimersByTime(3000);
 
         expect(store.get('mic-1')).toEqual([0, 0]);
     });
@@ -71,7 +71,7 @@ describe('VU Meters Store', () => {
         const store = useVuStore();
         store.update('mic-1', [0.5, 0.3]);
 
-        // Advance 1000ms — within the 1500ms window
+        // Advance 1000ms — within the 2500ms window
         vi.advanceTimersByTime(1000);
 
         expect(store.get('mic-1')).toEqual([0.5, 0.3]);

@@ -9,9 +9,10 @@
  * message per flush window keeps metering just as live and the flow sparse
  * enough that its queue stays empty.
  *
- * Dedup: unchanged VU inside the heartbeat window is skipped entirely; an
- * unchanged module still re-sends once per heartbeat so meters never freeze
- * stale. Batches go best-effort — VU repeats continuously, so repetition is
+ * Dedup: unchanged VU inside the heartbeat window is skipped entirely. The
+ * runner already re-sends an unchanged module once per second, so this
+ * window only guards sources that don't; it must stay well below 1000 ms
+ * (#677). Batches go best-effort — VU repeats continuously, so repetition is
  * the delivery guarantee.
  */
 export class VuBatcher {
@@ -24,7 +25,10 @@ export class VuBatcher {
         private readonly sendBatch: (batch: Record<string, number[]>) => void,
         /** 100ms → 10Hz metering: fluid needles at one packet per window. */
         private readonly flushMs = 100,
-        private readonly heartbeatMs = 1000,
+        /** Must stay well under the runner's own 1000 ms VU heartbeat: an equal
+         *  window rejected its re-sends that landed a few ms early → 2 s meter
+         *  gaps → UI zeroed the meter (#677). */
+        private readonly heartbeatMs = 500,
     ) {}
 
     /**

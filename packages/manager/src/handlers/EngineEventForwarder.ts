@@ -10,6 +10,7 @@ import {
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { EngineCommandService } from './EngineCommandService.js';
+import { VuSocketFanout } from './VuSocketFanout.js';
 
 const log = createLogger('EngineEventForwarder');
 
@@ -31,13 +32,17 @@ export class EngineEventForwarder {
      */
     private removedModules = new Map<string, Set<string>>();
     private readonly LOG_BUFFER_MAX = 1000;
+    /** VU → watch rooms, latest-wins per browser socket (#677). */
+    private readonly vuFanout: VuSocketFanout;
 
     constructor(
         private configStore: ConfigStore,
         private engineManager: EngineConnectionManager,
         private engineCommands: EngineCommandService,
         private io: SocketIOServer,
-    ) {}
+    ) {
+        this.vuFanout = new VuSocketFanout(io);
+    }
 
     /** Wire all engine events. Call once during Manager construction. */
     setup(): void {
@@ -143,14 +148,9 @@ export class EngineEventForwarder {
 
         this.engineManager.on('engineVu', (engineId: string, data: unknown) => {
             if (typeof data !== 'object' || data === null) return;
-            // ONE volatile emit per engine payload — never a burst. Unpacking a
-            // batch into N volatile emits dropped the tail of every burst
-            // (volatile discards whenever the transport buffer isn't drained,
-            // which it never is mid-burst): measured 80-90% VU loss, heaviest
-            // for the modules serialized last. The browser unpacks instead.
-            this.io
-                .to(`watch:${engineId}`)
-                .volatile.emit('engine:vu', { engineId, ...(data as Record<string, unknown>) });
+            // ONE payload per engine batch — never a burst (a burst of N emits
+            // lost 80-90% of VU). The browser unpacks the batch.
+            this.vuFanout.emit(engineId, { engineId, ...(data as Record<string, unknown>) });
         });
 
         this.engineManager.on('engineSystem', (engineId: string, data: unknown) => {
@@ -194,9 +194,7 @@ export class EngineEventForwarder {
             }
             const { type, devices } = payload;
             this.setEngineData(engineId, `devices:${type}`, devices);
-            this.io
-                .to(`watch:${engineId}`)
-                .emit('engine:deviceList', { engineId, type, devices });
+            this.io.to(`watch:${engineId}`).emit('engine:deviceList', { engineId, type, devices });
         });
 
         // LCP start/stop commands — update running state + broadcast to browsers
@@ -313,9 +311,7 @@ export class EngineEventForwarder {
      * case, so overlaying prefers the engine's real capabilities (issue #661).
      */
     getPluginSchemas(engineId: string): Record<string, unknown> | undefined {
-        return this.getEngineData(engineId, 'pluginSchemas') as
-            | Record<string, unknown>
-            | undefined;
+        return this.getEngineData(engineId, 'pluginSchemas') as Record<string, unknown> | undefined;
     }
 
     /** Get log buffer for an engine (used for logs:history request). */
