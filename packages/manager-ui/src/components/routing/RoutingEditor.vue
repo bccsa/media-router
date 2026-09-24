@@ -479,6 +479,7 @@ function dismissAll() {
             v-if="settingsPanel"
             :engine-id="engineId"
             :module-id="settingsPanel.moduleId"
+            @select="(id: string) => (settingsPanel = { moduleId: id })"
             @close="settingsPanel = null"
         />
 

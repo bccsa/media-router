@@ -185,7 +185,9 @@ export function useContextMenu(
         } else if (action === 'focus' || action === 'unfocus') {
             setModuleFocused(eid, moduleId, action === 'focus');
         } else if (action === 'clone') {
-            patch.cloneModule(eid, moduleId);
+            // Open the copy so the user can edit it straight away (#675).
+            const cloneId = patch.cloneModule(eid, moduleId);
+            if (cloneId) settingsPanel.value = { moduleId: cloneId };
         } else if (action === 'enable' || action === 'disable') {
             patch.moduleToggle(eid, moduleId, action === 'enable');
         } else if (action === 'delete') {

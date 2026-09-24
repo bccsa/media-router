@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+
+const mockCloneModule = vi.fn();
+vi.mock('@/composables/usePatch', () => ({
+    patch: {
+        cloneModule: (...args: unknown[]) => mockCloneModule(...args),
+        moduleRename: vi.fn(),
+        moduleToggle: vi.fn(),
+        removeModule: vi.fn(),
+    },
+}));
+
 import ModuleSettingsPanel from './ModuleSettingsPanel.vue';
 import { useEngineStore } from '@/stores/engines';
 
@@ -31,6 +42,7 @@ function mountPanel(moduleId = 'audio-input-abc') {
 describe('ModuleSettingsPanel', () => {
     beforeEach(() => {
         setActivePinia(createPinia());
+        mockCloneModule.mockReset();
     });
 
     it('shows the plugin id alongside the editable display name', () => {
@@ -47,5 +59,28 @@ describe('ModuleSettingsPanel', () => {
         const wrapper = mountPanel('does-not-exist');
 
         expect(wrapper.text()).not.toContain('audio-input');
+    });
+
+    it('emits select with the clone id so the panel switches to the copy (#675)', async () => {
+        seedEngine();
+        mockCloneModule.mockReturnValue('audio-input-copy');
+        const wrapper = mountPanel();
+
+        const cloneBtn = wrapper.findAll('button').find((b) => b.text() === 'Clone');
+        await cloneBtn!.trigger('click');
+
+        expect(mockCloneModule).toHaveBeenCalledWith('eng-1', 'audio-input-abc');
+        expect(wrapper.emitted('select')).toEqual([['audio-input-copy']]);
+    });
+
+    it('does not emit select when the clone fails', async () => {
+        seedEngine();
+        mockCloneModule.mockReturnValue(undefined);
+        const wrapper = mountPanel();
+
+        const cloneBtn = wrapper.findAll('button').find((b) => b.text() === 'Clone');
+        await cloneBtn!.trigger('click');
+
+        expect(wrapper.emitted('select')).toBeUndefined();
     });
 });
