@@ -58,6 +58,17 @@ describe('VuBatcher', () => {
         expect(sendBatch).toHaveBeenCalledWith({ 'mod-1': [-10] });
     });
 
+    it('accepts the runner heartbeat with margin: unchanged at 900 ms passes, 400 ms is still deduped (#677)', () => {
+        // The runner re-sends an unchanged reading every ≥1000 ms; IPC jitter
+        // can deliver it early. A window equal to the runner's dropped those
+        // re-sends and left 2 s meter holes, so the window must sit well below.
+        expect(batcher.enqueue('mod-1', [6])).toBe(true);
+        vi.advanceTimersByTime(400);
+        expect(batcher.enqueue('mod-1', [6])).toBe(false);
+        vi.advanceTimersByTime(500); // 900 ms since the last queued reading
+        expect(batcher.enqueue('mod-1', [6])).toBe(true);
+    });
+
     it('always queues a changed reading', () => {
         batcher.enqueue('mod-1', [-10]);
         vi.advanceTimersByTime(250);

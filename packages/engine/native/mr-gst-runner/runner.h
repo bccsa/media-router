@@ -36,6 +36,7 @@ namespace mr {
 
 // Same numbers as the python runner — the engine's kill windows are derived
 // from them (eosDrainContract.test.ts).
+// Engine VuBatcher.heartbeatMs must stay well below this or re-sends get deduped (#677).
 constexpr int VU_HEARTBEAT_MS = 1000;
 constexpr int PLAYING_WATCHDOG_MS = 10000;
 constexpr int EOS_DRAIN_TIMEOUT_MS = 6000;

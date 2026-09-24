@@ -10,6 +10,7 @@ import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
+import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { effectiveLatchRepair } from './latchRepair.js';
 
@@ -41,6 +42,12 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     protected childProcess: GstChildProcess | null = null;
     /** Separate VU metering child process (for data-mode pipelines). */
     private vuProcess: GstChildProcess | null = null;
+    /** Journal trace when a running module's meter stream stops (#677): pipeline stall, not UI loss. */
+    private readonly vuStall = new VuStallWatch({
+        onStall: (gapMs) =>
+            this.log.warn({ gapMs }, 'VU meter stalled: no level messages from the pipeline'),
+        onResume: (gapMs) => this.log.info({ gapMs }, 'VU meter resumed'),
+    });
     /** PulseAudio module ID for the null-sink created on start. */
     protected paModuleId: number | null = null;
     /** Per-instance logger — initialized in onInit with the instance ID. */
@@ -266,6 +273,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         this.childProcess.on('vuData', (data: { peak: number[] }) => {
             this.setVuData(data.peak);
+            this.vuStall.tick();
         });
 
         // Generic pipeline→plugin data channel. Delivered to the subclass hook
@@ -328,6 +336,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.vuProcess = new GstChildProcess();
             this.vuProcess.on('vuData', (data: { peak: number[] }) => {
                 this.setVuData(data.peak);
+                this.vuStall.tick();
             });
             this.vuProcess.on('error', (err: unknown) => {
                 this.log.debug({ err }, 'VU process error (auxiliary — non-fatal)');
@@ -413,6 +422,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     async onStop(): Promise<void> {
+        this.vuStall.reset();
         if (this.vuProcess) {
             await this.vuProcess.destroy();
             this.vuProcess = null;
@@ -431,6 +441,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     async onDestroy(): Promise<void> {
+        this.vuStall.reset();
         // Ensure subclass cleanup (PipeWire null-sinks, VU loopbacks, etc.) runs
         // Each step is guarded so a failure doesn't prevent subsequent cleanup
         if (this.running) {

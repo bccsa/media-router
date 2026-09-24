@@ -80,6 +80,7 @@ bus_reports = set()
 # VU throttle: only send when changed, heartbeat every 1s
 last_vu = None
 last_vu_time = 0
+# Engine VuBatcher.heartbeatMs must stay well below this or re-sends get deduped (#677).
 VU_HEARTBEAT_MS = 1000
 
 # Throughput tracking per element (pad probes)
