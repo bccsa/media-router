@@ -50,7 +50,7 @@
                                 "x-unit": "kbps",
                                 "x-showWhen": "codec=opus,aac",
                                 "title": "Bitrate",
-                                "description": "Any bitrate in kbps (Opus 6-510, AAC 32-320); 48-64 is enough for speech.",
+                                "description": "Total for all channels, not per channel (Opus 6-510, AAC 32-320); 48-64 is enough for speech.",
                                 "x-maxBy": { "field": "codec", "map": { "opus": 510, "aac": 320 } }
                             },
                             "frameSize": {

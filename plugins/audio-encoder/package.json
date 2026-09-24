@@ -49,7 +49,8 @@
                     "default": 128,
                     "minimum": 6,
                     "maximum": 510,
-                    "description": "Any bitrate in kbps (Opus 6-510, AAC 32-320); 48-64 is enough for speech.",
+                    "description": "Total for all channels, not per channel (Opus 6-510, AAC 32-320); 48-64 is enough for speech.",
+                    "x-unit": "kbps",
                     "x-liveUpdatable": true,
                     "x-debounceMs": 300,
                     "x-maxBy": {
@@ -72,7 +73,7 @@
                     ],
                     "default": 20,
                     "title": "Frame Size",
-                    "description": "Lower = less latency, more CPU and bandwidth",
+                    "description": "Lower = less latency, more CPU; TS overhead grows sharply below 10 ms",
                     "x-showWhen": "codec=opus"
                 },
                 "audioType": {
