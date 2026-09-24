@@ -367,6 +367,7 @@
 - [x] Rename search field to "Search modules…"
 - [x] Rename N-1 Mixer to "N-1 Audio Mixer"
 - [x] New module visible without refresh
+- [x] Clone opens the copy in the settings panel (#675, 2026-09-24): both clone entry points (node context menu, panel Clone button) now switch `settingsPanel` to the returned clone id; the panel emits `select` so RoutingEditor can retarget it in place
 
 ### Engine
 - [x] Playout offset D default 300 → 60 ms (ADR-0005 decision 4 amendment,

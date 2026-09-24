@@ -9,7 +9,7 @@ import { patch } from '@/composables/usePatch';
 import { useModuleSettingsForm } from '@/composables/useModuleSettingsForm';
 
 const props = defineProps<{ engineId: string; moduleId: string }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; select: [moduleId: string] }>();
 
 // Close panel on Escape key
 function onKeydown(e: KeyboardEvent) {
@@ -125,7 +125,9 @@ function doToggle() {
     patch.moduleToggle(props.engineId, props.moduleId, !isEnabled.value);
 }
 function doClone() {
-    patch.cloneModule(props.engineId, props.moduleId);
+    // Switch the panel to the copy so it can be edited straight away (#675).
+    const cloneId = patch.cloneModule(props.engineId, props.moduleId);
+    if (cloneId) emit('select', cloneId);
 }
 function doDelete() {
     if (confirm(`Delete "${module.value?.displayName}"?`)) {
