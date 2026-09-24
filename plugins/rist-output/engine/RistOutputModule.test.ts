@@ -146,6 +146,7 @@ describe('RistOutputModule rist:stats rendering', () => {
                     stats: {
                         quality: 95,
                         sent: 1000,
+                        received: 8,
                         retransmitted: 5,
                         bandwidth: 4_500_000,
                         avg_rtt: 12.3,
@@ -224,28 +225,28 @@ describe('RistOutputModule rist:stats rendering', () => {
 
     it('colours the quality badge green/amber/red by threshold', () => {
         const { module, setBadge } = makeModule();
-        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 95 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 95, received: 9 } } } });
         expect(setBadge).toHaveBeenCalledWith(
             'quality',
             expect.objectContaining({ color: '#10b981' }),
         );
 
         setBadge.mockClear();
-        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 60 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 60, received: 9 } } } });
         expect(setBadge).toHaveBeenCalledWith(
             'quality',
             expect.objectContaining({ color: '#f59e0b' }),
         );
 
         setBadge.mockClear();
-        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 30 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 30, received: 9 } } } });
         expect(setBadge).toHaveBeenCalledWith(
             'quality',
             expect.objectContaining({ color: '#ef4444' }),
         );
     });
 
-    it('emits a connections badge as reporting peers over configured links', () => {
+    it('emits a connections badge as answered peers over configured links', () => {
         const { module, setBadge } = makeModule();
         module.config = {
             links: [
@@ -253,16 +254,78 @@ describe('RistOutputModule rist:stats rendering', () => {
                 { mode: 'caller', address: 'b', port: 2 },
             ],
         };
-        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90, received: 9 } } } });
         expect(setBadge).toHaveBeenLastCalledWith(
             'connections',
             expect.objectContaining({ text: '1/2', color: '#f59e0b' }),
         );
-        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90 } } } });
-        stats(module, { 'sender-stats': { peer: { id: 2, stats: { quality: 90 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90, received: 9 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 2, stats: { quality: 90, received: 9 } } } });
         // Last call should reflect 2 active peers
         const lastConnectionsCall = setBadge.mock.calls.filter((c) => c[0] === 'connections').pop();
         expect(lastConnectionsCall![1]).toMatchObject({ text: '2/2', color: '#10b981' });
+    });
+
+    it('does not count a caller nobody answers (#679)', () => {
+        // librist never marks a never-answered caller dead, so it keeps
+        // reporting it with quality 100 and received 0 every interval.
+        const { module, setBadge, setStatusData } = makeModule();
+        module.config = { links: [{ mode: 'caller', address: 'a', port: 1 }] };
+        stats(module, {
+            'sender-stats': {
+                peer: { id: 1, stats: { quality: 100, sent: 500, received: 0, avg_rtt: 0 } },
+            },
+        });
+        expect(module.peerLastSeen.has(1)).toBe(true);
+        expect(module.peerLastAnswered.has(1)).toBe(false);
+        expect(setBadge).toHaveBeenLastCalledWith(
+            'connections',
+            expect.objectContaining({ text: '0/1', color: '#6b7280' }),
+        );
+        expect(setBadge).not.toHaveBeenCalledWith('quality', expect.anything());
+        // The per-link row still exists (packets are going out) but shows no RTT.
+        expect(module.dynamicStatusSections.map((s: { id: string }) => s.id)).toEqual(['peer-1']);
+        expect(setStatusData).toHaveBeenCalledWith(
+            'peer-1',
+            expect.objectContaining({ sent: 500, rtt: '—' }),
+        );
+    });
+
+    it('counts the peer once RTCP comes back and drops it when it stops', () => {
+        vi.useFakeTimers();
+        try {
+            const { module, setBadge, clearBadge } = makeModule();
+            module.config = { links: [{ mode: 'caller', address: 'a', port: 1 }] };
+            stats(module, {
+                'sender-stats': { peer: { id: 1, stats: { quality: 100, received: 0 } } },
+            });
+            stats(module, {
+                'sender-stats': {
+                    peer: { id: 1, stats: { quality: 98, received: 10, avg_rtt: 4 } },
+                },
+            });
+            expect(setBadge).toHaveBeenLastCalledWith(
+                'connections',
+                expect.objectContaining({ text: '1/1', color: '#10b981' }),
+            );
+            expect(setBadge).toHaveBeenCalledWith(
+                'quality',
+                expect.objectContaining({ text: '98%' }),
+            );
+            // Remote goes away but librist keeps emitting records for the peer.
+            vi.advanceTimersByTime(3500);
+            stats(module, {
+                'sender-stats': { peer: { id: 1, stats: { quality: 100, received: 0 } } },
+            });
+            expect(module.peerLastAnswered.has(1)).toBe(false);
+            expect(setBadge).toHaveBeenLastCalledWith(
+                'connections',
+                expect.objectContaining({ text: '0/1' }),
+            );
+            expect(clearBadge).toHaveBeenCalledWith('quality');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('ignores payloads without sender-stats.peer.stats', () => {
@@ -291,6 +354,8 @@ describe('RistOutputModule.cleanupStalePeers', () => {
         const { module, setBadge } = makeModule();
         module.peerLastSeen.set(1, Date.now() - 5000);
         module.peerLastSeen.set(2, Date.now() - 1000);
+        module.peerLastAnswered.set(1, Date.now() - 5000);
+        module.peerLastAnswered.set(2, Date.now() - 1000);
         module.dynamicStatusSections = [
             { id: 'peer-1', label: 'a', fields: [] },
             { id: 'peer-2', label: 'b', fields: [] },
@@ -299,6 +364,8 @@ describe('RistOutputModule.cleanupStalePeers', () => {
         module.cleanupStalePeers();
         expect(module.peerLastSeen.has(1)).toBe(false);
         expect(module.peerLastSeen.has(2)).toBe(true);
+        expect(module.peerLastAnswered.has(1)).toBe(false);
+        expect(module.peerLastAnswered.has(2)).toBe(true);
         expect(module.dynamicStatusSections.map((s: { id: string }) => s.id)).toEqual(['peer-2']);
         // Data goes with the section — it used to leak one entry per peer id.
         expect(Object.keys(module.statusData)).toEqual(['peer-2']);
@@ -311,9 +378,24 @@ describe('RistOutputModule.cleanupStalePeers', () => {
     it('clears the quality badge once the last peer is dropped', () => {
         const { module, clearBadge } = makeModule();
         module.peerLastSeen.set(1, Date.now() - 5000);
+        module.peerLastAnswered.set(1, Date.now() - 5000);
         module.cleanupStalePeers();
         expect(module.peerLastSeen.size).toBe(0);
+        expect(module.peerLastAnswered.size).toBe(0);
         expect(clearBadge).toHaveBeenCalledWith('quality');
+    });
+
+    it('scales the stale window with statsInterval (3 records, never under 3 s)', () => {
+        const { module } = makeModule();
+        module.config = { statsInterval: 5000 };
+        module.peerLastSeen.set(1, Date.now() - 12_000);
+        module.peerLastAnswered.set(1, Date.now() - 12_000);
+        module.cleanupStalePeers();
+        expect(module.peerLastAnswered.has(1)).toBe(true);
+        module.peerLastSeen.set(1, Date.now() - 16_000);
+        module.peerLastAnswered.set(1, Date.now() - 16_000);
+        module.cleanupStalePeers();
+        expect(module.peerLastAnswered.has(1)).toBe(false);
     });
 
     it('is a no-op when no peers are stale', () => {

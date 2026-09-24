@@ -34,7 +34,12 @@ const RIST_STATS_STRUCTURE = 'mrrist-stats';
  * profiles, encryption, NPD.
  */
 export class RistOutputModule extends GstPluginBase {
-    private peerLastSeen = new Map<number, number>(); // peerId → timestamp
+    private peerLastSeen = new Map<number, number>(); // peerId → last stats record
+    // peerId → last stats record with RTCP back from the remote. librist never
+    // marks a caller dead that was never answered (rist_timeout_check needs
+    // last_pkt_received > 0), so it keeps reporting it alive at quality 100 —
+    // #679. Only answered peers count as connected.
+    private peerLastAnswered = new Map<number, number>();
     private peerCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
     async onStart(): Promise<void> {
@@ -58,6 +63,7 @@ export class RistOutputModule extends GstPluginBase {
             this.peerCleanupTimer = null;
         }
         this.peerLastSeen.clear();
+        this.peerLastAnswered.clear();
         await super.onStop();
     }
 
@@ -118,11 +124,17 @@ export class RistOutputModule extends GstPluginBase {
         );
     }
 
+    /** Peers go stale after three missed stats records (never under 3 s). */
+    private staleMs(): number {
+        return Math.max(3000, 3 * ((this.config.statsInterval as number) ?? 1000));
+    }
+
     private cleanupStalePeers(): void {
         const now = Date.now();
+        const stale = this.staleMs();
         let changed = false;
         for (const [id, ts] of this.peerLastSeen) {
-            if (now - ts > 3000) {
+            if (now - ts > stale) {
                 this.peerLastSeen.delete(id);
                 // Section AND its data — the data used to leak per peer id
                 // (peer-2…peer-135 seen on one long-running output).
@@ -130,9 +142,15 @@ export class RistOutputModule extends GstPluginBase {
                 changed = true;
             }
         }
+        for (const [id, ts] of this.peerLastAnswered) {
+            if (now - ts > stale) {
+                this.peerLastAnswered.delete(id);
+                changed = true;
+            }
+        }
         if (changed) {
             this.renderConnectionsBadge();
-            if (this.peerLastSeen.size === 0) {
+            if (this.peerLastAnswered.size === 0) {
                 this.clearBadge('quality');
             }
         }
@@ -148,6 +166,9 @@ export class RistOutputModule extends GstPluginBase {
         const peerId = peer.id ?? 0;
         const cname = peer.cname || `Link ${peerId}`;
         const sectionId = `peer-${peerId}`;
+        // `received` = RTCP packets from the remote this interval (receiver
+        // keepalive is 100 ms) — zero means nobody is listening.
+        const answered = Number(s.received ?? 0) > 0;
 
         // Per-link stats
         this.setStatusData(sectionId, {
@@ -160,7 +181,11 @@ export class RistOutputModule extends GstPluginBase {
             // Unrounded on purpose: a sub-kbps trickle must survive as a
             // fraction to reach the formatter's bps tier.
             bandwidth: typeof s.bandwidth === 'number' ? formatBitrate(s.bandwidth / 1000) : '—',
-            rtt: typeof s.avg_rtt === 'number' ? `${s.avg_rtt.toFixed(2)}` : String(s.rtt ?? '—'),
+            rtt: !answered
+                ? '—'
+                : typeof s.avg_rtt === 'number'
+                  ? `${s.avg_rtt.toFixed(2)}`
+                  : String(s.rtt ?? '—'),
         });
 
         // Dynamic section per peer
@@ -174,24 +199,25 @@ export class RistOutputModule extends GstPluginBase {
 
         this.upsertStatusSection({ id: sectionId, label: cname, fields: peerFields });
 
-        // Track connected peers with timestamp
-        this.peerLastSeen.set(peerId, Date.now());
+        const now = Date.now();
+        this.peerLastSeen.set(peerId, now);
+        if (answered) this.peerLastAnswered.set(peerId, now);
         this.cleanupStalePeers();
 
-        // Update badges
-        this.setBadge('quality', {
-            icon: 'signal',
-            text: `${s.quality ?? 0}%`,
-            color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444',
-        });
+        // Quality is meaningless for a peer nobody answers (librist says 100).
+        if (answered) {
+            this.setBadge('quality', {
+                icon: 'signal',
+                text: `${s.quality ?? 0}%`,
+                color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444',
+            });
+        }
         this.renderConnectionsBadge();
     }
 
-    /** Reporting peers over configured links — same form as the RIST input card.
-     *  (librist keeps reporting a caller that never got an answer, so this can
-     *  still read n/n with a dead remote — #679.) */
+    /** Answered peers over configured links — same form as the RIST input card. */
     private renderConnectionsBadge(): void {
-        const peerCount = this.peerLastSeen.size;
+        const peerCount = this.peerLastAnswered.size;
         const linkCount = this.links().length;
         this.setBadge('connections', {
             icon: 'link',

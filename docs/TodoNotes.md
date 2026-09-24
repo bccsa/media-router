@@ -7,7 +7,7 @@
 - [x] `GstPluginBase.setDynamicSections/upsertStatusSection/clearStatusSection` (ADR-0007 amendment): status data of departed dynamic sections is deleted. Same leak fixed in rist-output, srt-input/-output (poller host), ts-splitter, mpegts-muxer.
 - [x] Field: .108 rig fed from the dev box over 3 links → 3/3 with per-link bitrates in weight ratio; sender restarted with 2 links → 2/3 and old rows gone within 4 s. Deployed .108 + .103, not .46/.20.
 - [x] Per-peer rows labelled with the SENDER's link cname: `mrrist` log callback posts `mrrist-peer` {id, cname} from librist's `Peer N receiver name is now: X` line (the only place the receiver sees a name; `struct rist_peer` is opaque, local port is 0 on main-profile children). Mirrors what rist-output already shows. arm64 .so rebuilt locally + deployed .108/.103; x86 (.46) needs the build server. `gst_mrrist_element_test.py` pins the message.
-- [ ] #679: librist never marks a caller peer dead that has NEVER received a packet (`rist_timeout_check` needs `last_pkt_received > 0`), so the sender reports it alive with quality 100. Needs a sender-side "answered" test (e.g. RTCP `received` > 0 in a window) or a librist patch.
+- [x] #679 (2026-09-24): rist-output counts a peer as connected only while librist's sender stats show RTCP `received` > 0 for it (`peerLastAnswered`); never-answered callers show `0/N`, no quality badge, RTT `—`. Stale window = max(3 s, 3×statsInterval). librist itself still never marks such a peer dead.
 - [ ] Several .20 configs list one listener port for several links (mtlcnwcg4ekc 3×10503, mtn2c13i0iby 2×10513; CM-VV-FRA02 dials 10500 twice) — config errors, will show amber.
 
 ### #692 manager 1 + n UDP listeners / multi-path engine comms (2026-09-23)
