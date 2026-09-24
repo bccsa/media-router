@@ -44,8 +44,13 @@ export function useGraphSync(
     const socket = useSocketStore();
     const engineStore = useEngineStore();
     const toast = useToast();
-    const { fitView, setCenter, screenToFlowCoordinate, onNodesInitialized, findNode } =
-        useVueFlow();
+    const {
+        fitView,
+        setCenter,
+        screenToFlowCoordinate,
+        onNodesInitialized,
+        findNode,
+    } = useVueFlow();
     const hasInitialFit = ref(false);
 
     // --- Nodes ---
@@ -262,13 +267,24 @@ export function useGraphSync(
         });
     }
 
-    function onNodeDragStart(event: { node: Node }) {
-        activeDrags.add(event.node.id);
+    // Group drags report every moved node in `nodes`; `node` is only the one grabbed.
+    function draggedNodes(event: { node?: Node; nodes?: Node[] }): Node[] {
+        if (event.nodes?.length) return event.nodes;
+        return event.node ? [event.node] : [];
     }
 
-    function onNodeDragStop(event: { node: Node }) {
-        activeDrags.delete(event.node.id);
-        patch.modulePosition(engineId(), event.node.id, event.node.position);
+    function onNodeDragStart(event: { node?: Node; nodes?: Node[] }) {
+        for (const n of draggedNodes(event)) activeDrags.add(n.id);
+    }
+
+    function onNodeDragStop(event: { node?: Node; nodes?: Node[] }) {
+        const moved = draggedNodes(event);
+        for (const n of moved) activeDrags.delete(n.id);
+        if (moved.length === 0) return;
+        patch.modulePositions(
+            engineId(),
+            moved.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
+        );
     }
 
     function onEdgeDelete(edgeId: string) {

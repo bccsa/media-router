@@ -60,8 +60,16 @@ export const patch = {
         ]);
     },
 
-    modulePosition(engineId: string, moduleId: string, position: { x: number; y: number }) {
-        emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/position`, value: position }]);
+    /** One patch for every moved module (single or group drag). */
+    modulePositions(engineId: string, positions: Array<{ id: string; x: number; y: number }>) {
+        emit(
+            engineId,
+            positions.map(({ id, x, y }) => ({
+                op: 'replace' as const,
+                path: `/modules/${id}/position`,
+                value: { x, y },
+            })),
+        );
     },
 
     moduleSize(engineId: string, moduleId: string, size: { width: number; height: number }) {
@@ -70,6 +78,14 @@ export const patch = {
 
     moduleField(engineId: string, moduleId: string, field: string, value: unknown) {
         emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/${field}`, value }]);
+    },
+
+    /** Same field on several modules in one patch (group actions). */
+    modulesField(engineId: string, moduleIds: string[], field: string, value: unknown) {
+        emit(
+            engineId,
+            moduleIds.map((id) => ({ op: 'replace' as const, path: `/modules/${id}/${field}`, value })),
+        );
     },
 
     moduleToggle(engineId: string, moduleId: string, enabled: boolean) {
@@ -82,6 +98,13 @@ export const patch = {
 
     removeModule(engineId: string, moduleId: string) {
         emit(engineId, [{ op: 'remove', path: `/modules/${moduleId}` }]);
+    },
+
+    removeModules(engineId: string, moduleIds: string[]) {
+        emit(
+            engineId,
+            moduleIds.map((id) => ({ op: 'remove' as const, path: `/modules/${id}` })),
+        );
     },
 
     cloneModule(engineId: string, moduleId: string): string | undefined {

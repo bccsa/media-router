@@ -2,6 +2,13 @@
 
 ## Open
 
+### Routing multi-select / group actions (2026-09-24)
+- [x] Group drag snapped back: drag-stop persisted only the grabbed node, the store rebuild then reset the rest. `onNodeDragStop` saves every node in `event.nodes` via `patch.modulePositions` (one patch).
+- [x] Selected `module` nodes had no outline (default theme only styles built-in node types) — `.vue-flow__node.selected` in main.css.
+- [x] `useMultiSelect`: toolbar Select mode (plain drag box, tap toggles, clears on exit), Escape clears, Delete/Backspace confirms via MrModal for modules + loose connections; keys only while focus is on the canvas and no panel/menu/dialog is open. Vue Flow's own delete key (local-only ghost delete) disabled.
+- [x] Group context menu (`utils/moduleMenuItems.ts`): right-click a selected module or the selection box, or long-press the box on touch → Restart/Enable/Disable/Focus/Delete for all; `patch.modulesField` / `patch.removeModules`.
+- [ ] Tap-to-toggle and long-press on the selection box not yet tried on a real touchscreen.
+
 ### #682 RIST input badge 2 with 3 links (2026-09-23)
 - [x] Badge counted librist's whole flow peer list (dead peers included) while per-peer sections were never pruned — a reconnected peer gets a fresh id, so ghost "Link N" rows piled up (25 on one single-link GATE01 input) and the card contradicted itself. Now `ristFlowTracker.ts` keeps the latest window per flow (stats arrive one message per flow; dead=2 = session-timeout farewell, silent flows swept after 3 windows on a 2 s timer), unions live peers, `setDynamicSections` reconciles the rows, badge reads `live/configured` (amber when they differ, also above), `0/N` from start (librist emits no receiver stats until a flow carries data). Per-peer rows show the keys the receiver JSON actually has (bitrate, packets, RTCP in/out, RTT) — the old ones rendered zeros; no cname on the receiver side, so rows are `Peer <id>`. `stats.quality` published for the status line (was `Q: —`); the `quality-meter` face widget (a green bar no other module has) removed from both RIST manifests — the quality badge is the indicator. rist-output badge in the same form.
 - [x] `GstPluginBase.setDynamicSections/upsertStatusSection/clearStatusSection` (ADR-0007 amendment): status data of departed dynamic sections is deleted. Same leak fixed in rist-output, srt-input/-output (poller host), ts-splitter, mpegts-muxer.

@@ -65,13 +65,36 @@ describe('usePatch', () => {
         expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops: expectedOps });
     });
 
-    it('modulePosition sends a replace op for position', () => {
-        patch.modulePosition('eng-1', 'mod-1', { x: 100, y: 200 });
+    it('modulePositions sends one replace op per moved module in one patch', () => {
+        patch.modulePositions('eng-1', [
+            { id: 'mod-1', x: 100, y: 200 },
+            { id: 'mod-2', x: 300, y: 200 },
+        ]);
 
         const expectedOps = [
             { op: 'replace', path: '/modules/mod-1/position', value: { x: 100, y: 200 } },
+            { op: 'replace', path: '/modules/mod-2/position', value: { x: 300, y: 200 } },
         ];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
+        expect(mockEmit).toHaveBeenCalledTimes(1);
+    });
+
+    it('modulesField sets one field on several modules in one patch', () => {
+        patch.modulesField('eng-1', ['a', 'b'], 'enabled', false);
+
+        expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', [
+            { op: 'replace', path: '/modules/a/enabled', value: false },
+            { op: 'replace', path: '/modules/b/enabled', value: false },
+        ]);
+    });
+
+    it('removeModules removes several modules in one patch', () => {
+        patch.removeModules('eng-1', ['a', 'b']);
+
+        expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', [
+            { op: 'remove', path: '/modules/a' },
+            { op: 'remove', path: '/modules/b' },
+        ]);
     });
 
     it('moduleField sends a replace op for an arbitrary field', () => {

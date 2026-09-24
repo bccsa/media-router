@@ -8,6 +8,7 @@ import ModuleSettingsPanel from './ModuleSettingsPanel.vue';
 import AddModulePanel from './AddModulePanel.vue';
 import MrContextMenu from '@/components/common/MrContextMenu.vue';
 import MrButton from '@/components/common/MrButton.vue';
+import MrModal from '@/components/common/MrModal.vue';
 import MrTooltip from '@/components/common/MrTooltip.vue';
 import LogViewer from './LogViewer.vue';
 import ChannelMapEditor from './ChannelMapEditor.vue';
@@ -18,6 +19,7 @@ import { useSocketStore } from '@/stores/socket';
 import { useFocusMode } from '@/composables/useFocusMode';
 import { useContextMenu } from '@/composables/useContextMenu';
 import { useGraphSync } from '@/composables/useGraphSync';
+import { useMultiSelect } from '@/composables/useMultiSelect';
 import { computeAutoLayout } from '@/utils/autoLayout';
 import { patch } from '@/composables/usePatch';
 
@@ -29,27 +31,8 @@ const engineStore = useEngineStore();
 const engine = computed(() => engineStore.getEngine(props.engineId));
 
 // --- Composables ---
-const { focusMode, focusedModules, setModuleFocused, isEdgeDimmed, provideToChildren } =
-    useFocusMode(engine);
+const { focusMode, focusedModules, isEdgeDimmed, provideToChildren } = useFocusMode(engine);
 provideToChildren();
-
-const {
-    contextMenu,
-    edgeContextMenu,
-    settingsPanel,
-    contextMenuItems,
-    edgeMenuItems,
-    editingEdgeLabel,
-    channelMapEdge,
-    onNodeContextMenu,
-    openContextMenuFromTouch,
-    dismissContextMenus,
-    onContextAction,
-    onEdgeClick,
-    onEdgeContextMenu,
-    onEdgeContextAction,
-    saveEdgeLabel,
-} = useContextMenu(() => props.engineId, engine, focusedModules, setModuleFocused);
 
 const {
     nodes,
@@ -71,6 +54,59 @@ const showModuleList = ref(false);
 const showLogs = ref(false);
 const showResetConfirm = ref(false);
 const showInterlocks = ref(false);
+
+const {
+    selectMode,
+    selectedCount,
+    selectedNodeIds,
+    pendingDelete,
+    deleteTitle,
+    deleteMessage,
+    requestDelete,
+    confirmDelete,
+} = useMultiSelect({
+    engineId: () => props.engineId,
+    engine,
+    container: containerRef,
+    isBlocked: () =>
+        !!(
+            contextMenu.value ||
+            edgeContextMenu.value ||
+            settingsPanel.value ||
+            editingEdgeLabel.value ||
+            channelMapEdge.value ||
+            showAddPanel.value ||
+            showInterlocks.value ||
+            showResetConfirm.value ||
+            showModuleList.value
+        ),
+    onEdgeDelete: (id) => onEdgeDelete(id),
+    openGroupMenu: (ids, x, y) => openGroupMenuAt(x, y, ids),
+});
+
+const {
+    contextMenu,
+    menuModuleId,
+    edgeContextMenu,
+    settingsPanel,
+    contextMenuItems,
+    edgeMenuItems,
+    editingEdgeLabel,
+    channelMapEdge,
+    onNodeContextMenu,
+    onSelectionContextMenu,
+    openContextMenuFromTouch,
+    openGroupMenuAt,
+    dismissContextMenus,
+    onContextAction,
+    onEdgeClick,
+    onEdgeContextMenu,
+    onEdgeContextAction,
+    saveEdgeLabel,
+} = useContextMenu(() => props.engineId, engine, focusedModules, {
+    selectedIds: selectedNodeIds,
+    requestDelete: (ids) => requestDelete(ids),
+});
 
 function confirmReset() {
     showResetConfirm.value = false;
@@ -99,7 +135,7 @@ let ctxSliderPending: { action: string; value: number } | null = null;
 function onContextSliderChange(action: string, value: number) {
     if (!contextMenu.value || !action.startsWith('setting:')) return;
     const key = action.replace('setting:', '');
-    const moduleId = contextMenu.value.moduleId;
+    const moduleId = menuModuleId.value;
     ctxSliderPending = { action, value };
     if (!ctxSliderTimer) {
         patch.moduleSetting(props.engineId, moduleId, key, value);
@@ -117,7 +153,7 @@ function onContextSliderChange(action: string, value: number) {
 function onContextToggleChange(action: string, value: boolean) {
     if (!contextMenu.value || !action.startsWith('setting:')) return;
     const key = action.replace('setting:', '');
-    const moduleId = contextMenu.value.moduleId;
+    const moduleId = menuModuleId.value;
     patch.moduleSetting(props.engineId, moduleId, key, value);
 }
 
@@ -313,6 +349,23 @@ function dismissAll() {
                 </MrButton>
             </MrTooltip>
 
+            <MrTooltip
+                :text="
+                    selectMode
+                        ? 'Select mode on: drag to box-select, tap modules to add or remove. Right-click the selection for group actions.'
+                        : 'Turn on to box-select by dragging. Without it: Shift+drag, or Ctrl/Cmd+click. Right-click the selection for group actions.'
+                "
+                width="w-60"
+            >
+                <MrButton
+                    size="sm"
+                    :variant="selectMode ? 'primary' : 'secondary'"
+                    @click="selectMode = !selectMode"
+                >
+                    Select{{ selectedCount > 1 ? ` (${selectedCount})` : '' }}
+                </MrButton>
+            </MrTooltip>
+
             <MrTooltip text="Manage interlock (exclusive-mute) groups">
                 <MrButton size="sm" variant="secondary" @click="showInterlocks = !showInterlocks">
                     Interlocks ({{ engine?.interlocks?.length ?? 0 }})
@@ -395,10 +448,15 @@ function dismissAll() {
             :max-zoom="2"
             :default-zoom="1"
             fit-view-on-init
+            :delete-key-code="null"
+            :selection-key-code="selectMode ? true : 'Shift'"
+            :multi-selection-key-code="selectMode ? true : ['Meta', 'Control']"
+            :pan-on-drag="!selectMode"
             @connect="onConnect"
             @edge-click="onEdgeClick"
             @edge-context-menu="onEdgeContextMenu"
             @node-context-menu="onNodeContextMenu"
+            @selection-context-menu="onSelectionContextMenu"
             @node-drag-start="onNodeDragStart"
             @node-drag-stop="onNodeDragStop"
             @pane-click="dismissAll"
@@ -490,6 +548,17 @@ function dismissAll() {
             :connection-id="channelMapEdge"
             @close="channelMapEdge = null"
         />
+
+        <!-- Delete confirmation (group action / Delete key) -->
+        <MrModal v-if="pendingDelete" :title="deleteTitle" @close="pendingDelete = null">
+            <p class="text-sm text-subtle">{{ deleteMessage }}</p>
+            <template #footer>
+                <MrButton size="sm" variant="secondary" @click="pendingDelete = null"
+                    >Cancel</MrButton
+                >
+                <MrButton size="sm" variant="danger" @click="confirmDelete">Delete</MrButton>
+            </template>
+        </MrModal>
 
         <!-- Reset confirmation -->
         <Teleport to="body">
