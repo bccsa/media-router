@@ -164,3 +164,15 @@ textarea:focus {
     background: rgba(16, 185, 129, 0.08);
     border: 1px solid var(--accent);
 }
+
+/* Custom `module` nodes get no selected style from the default theme. */
+.vue-flow .vue-flow__node.selected > div {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.vue-flow .vue-flow__nodesselection-rect {
+    background: rgba(16, 185, 129, 0.05);
+    border: 1px dashed var(--accent);
+    cursor: grab;
+}

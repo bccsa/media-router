@@ -1183,7 +1183,7 @@ Palette is distinguishable under protanopia, deuteranopia, and tritanopia. Line 
 | Zoom/pan | Vue Flow built-in (mouse wheel, drag background) |
 | Minimap | Vue Flow MiniMap component |
 | Snap-to-grid | Vue Flow grid snapping |
-| Multi-select | Shift+click or drag-select box |
+| Multi-select | Shift+drag box or Ctrl/Cmd+click; toolbar Select mode = plain drag box, tap to toggle (touch). Right-click (touch: long-press) the selection → group Restart/Enable/Disable/Focus/Delete. Delete/Backspace on the canvas asks before removing selected modules and loose connections; right-click Delete on one module is immediate |
 | Auto-layout | Optional dagre/elkjs layout algorithm |
 | Live VU meters | Canvas2D overlay inside module nodes (60fps capable). Click a VU meter bar → popup volume slider (live-updatable, no restart) |
 | Module settings | Double-click node → settings panel/modal |

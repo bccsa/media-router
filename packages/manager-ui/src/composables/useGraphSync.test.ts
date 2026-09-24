@@ -12,6 +12,7 @@ import type { EngineState } from '@/stores/engines';
 // test can flush the deferred (pending) edges the same way the real graph does.
 const flow = vi.hoisted(() => ({
     nodesInitialized: [] as Array<() => void>,
+    raw: (() => {}) as (...args: unknown[]) => void,
 }));
 
 vi.mock('@vue-flow/core', () => ({
@@ -37,7 +38,7 @@ vi.mock('@/composables/usePatch', () => ({
         addConnection: vi.fn(),
         removeConnection: vi.fn(),
         addModule: vi.fn(),
-        modulePosition: vi.fn(),
+        modulePositions: (...args: unknown[]) => flow.raw(...args),
     },
 }));
 
@@ -91,7 +92,7 @@ function mount(state: ReturnType<typeof makeEngine>) {
     const engine = computed(() => engineRef.value);
     const focusMode = ref(false);
     const focusedModules = computed(() => new Set<string>());
-    const { edges } = useGraphSync(
+    const { edges, onNodeDragStart, onNodeDragStop } = useGraphSync(
         () => 'eng-1',
         engine,
         focusMode,
@@ -99,7 +100,7 @@ function mount(state: ReturnType<typeof makeEngine>) {
         () => false,
     );
     for (const cb of flow.nodesInitialized) cb();
-    return { edges, engineRef };
+    return { edges, engineRef, onNodeDragStart, onNodeDragStop };
 }
 
 /** Stream colour for audio/pcm, and the grey an idle (non-flowing) edge wears. */
@@ -180,5 +181,41 @@ describe('useGraphSync edge animation', () => {
             transition: 'opacity 0.2s ease, stroke 0.2s ease',
         });
         expect(edge.interactionWidth).toBe(20);
+    });
+});
+
+describe('useGraphSync group drag', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        flow.nodesInitialized.length = 0;
+    });
+
+    const node = (id: string, x: number, y: number) =>
+        ({ id, position: { x, y } }) as unknown as import('@vue-flow/core').Node;
+
+    it('persists every node of a group drag in one patch', () => {
+        const raw = vi.fn();
+        flow.raw = raw;
+        const g = mount(makeEngine({ engineRunning: false, src: false, sink: false }));
+        const moved = [node('src', 16, 32), node('sink', 400, 32)];
+
+        g.onNodeDragStart({ node: moved[0], nodes: moved });
+        g.onNodeDragStop({ node: moved[0], nodes: moved });
+
+        expect(raw).toHaveBeenCalledTimes(1);
+        expect(raw).toHaveBeenCalledWith('eng-1', [
+            { id: 'src', x: 16, y: 32 },
+            { id: 'sink', x: 400, y: 32 },
+        ]);
+    });
+
+    it('still persists a single-node drag without a nodes array', () => {
+        const raw = vi.fn();
+        flow.raw = raw;
+        const g = mount(makeEngine({ engineRunning: false, src: false, sink: false }));
+
+        g.onNodeDragStop({ node: node('src', 48, 64) });
+
+        expect(raw).toHaveBeenCalledWith('eng-1', [{ id: 'src', x: 48, y: 64 }]);
     });
 });

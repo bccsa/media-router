@@ -1,172 +1,90 @@
-import { ref, computed, type ComputedRef, type Ref } from 'vue';
+import { ref, computed, type ComputedRef } from 'vue';
 import type { Node } from '@vue-flow/core';
-import type { EngineState } from '@/stores/engines';
+import type { EngineState, ModuleState } from '@/stores/engines';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
-import { matchShowWhen } from '@/utils/showWhen';
-import { fieldLabel } from '@/utils/fieldLabel';
+import {
+    buildEdgeMenuItems,
+    buildGroupMenuItems,
+    buildModuleMenuItems,
+} from '@/utils/moduleMenuItems';
 
-// SVG icon paths (stroke-based, 24×24 viewBox)
-const icons = {
-    editLabel:
-        '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
-    channelMap:
-        '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
-    restart:
-        '<polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />',
-    settings:
-        '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-    clone: '<rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />',
-    disable: '<circle cx="12" cy="12" r="10" /><line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />',
-    enable: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />',
-    focus: '<circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />',
-    delete: '<polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />',
-};
-
-/** Map context menu actions to Socket.IO events + extra payload */
-// Actions that stay as commands (lifecycle operations)
+/** Actions that stay as commands (lifecycle operations). */
 const commandActions: Record<string, string> = {
     restart: 'module:restart',
 };
+
+/** Canvas multi-selection hooks; omitted = single-module menus only. */
+export interface MenuSelection {
+    selectedIds: () => string[];
+    requestDelete: (moduleIds: string[]) => void;
+}
+
+const isModule = (m: ModuleState | undefined): m is ModuleState => !!m;
 
 export function useContextMenu(
     engineId: () => string,
     engine: ComputedRef<EngineState | undefined>,
     focusedModules: ComputedRef<Set<string>>,
-    setModuleFocused: (engineId: string, moduleId: string, focused: boolean) => void,
+    selection?: MenuSelection,
 ) {
     const socket = useSocketStore();
 
-    const contextMenu = ref<{ x: number; y: number; moduleId: string } | null>(null);
+    // `targets` = modules the menu acts on: one, or the whole selection.
+    const contextMenu = ref<{ x: number; y: number; targets: string[] } | null>(null);
     const edgeContextMenu = ref<{ x: number; y: number; edgeId: string } | null>(null);
     const settingsPanel = ref<{ moduleId: string } | null>(null);
     let contextMenuOpenedAt = 0;
 
+    /** First target — the module inline settings sliders act on. */
+    const menuModuleId = computed(() => contextMenu.value?.targets[0] ?? '');
+
     const contextMenuItems = computed<MenuItem[]>(() => {
-        const mod = contextMenu.value ? engine.value?.modules[contextMenu.value.moduleId] : null;
-        const isEnabled = mod?.enabled !== false;
-        const moduleId = contextMenu.value?.moduleId ?? '';
-        const isFocused = focusedModules.value.has(moduleId);
-
-        // Build context settings (sliders, etc.) from configSchema fields with x-contextMenu: true
-        const contextSettings: MenuItem[] = [];
-        if (mod?.configSchema) {
-            const props = ((mod.configSchema as any).properties ?? {}) as Record<string, any>;
-            for (const [key, schema] of Object.entries(props)) {
-                if (!schema['x-contextMenu']) continue;
-                // x-showWhen: only show if the referenced setting matches.
-                if (!matchShowWhen(schema['x-showWhen'] as string | undefined, (condKey) => mod.settings?.[condKey]))
-                    continue;
-                if (schema.type === 'boolean') {
-                    contextSettings.push({
-                        label: fieldLabel(key, schema),
-                        action: `setting:${key}`,
-                        toggle: {
-                            value: !!(mod.settings?.[key] ?? schema.default ?? false),
-                        },
-                    });
-                } else if (schema['x-widget'] === 'slider' || schema.type === 'number') {
-                    const maxFrom = schema['x-maxFrom'];
-                    const maxVal =
-                        maxFrom && mod.settings?.[maxFrom] != null
-                            ? Number(mod.settings[maxFrom])
-                            : (schema.maximum ?? 100);
-                    contextSettings.push({
-                        label: fieldLabel(key, schema),
-                        action: `setting:${key}`,
-                        slider: {
-                            min: schema.minimum ?? 0,
-                            max: maxVal,
-                            step: schema['x-step'] ?? 1,
-                            value: Number(mod.settings?.[key] ?? schema.default ?? 0),
-                            unit: schema['x-unit'] as string | undefined,
-                        },
-                    });
-                }
-            }
+        const targets = contextMenu.value?.targets ?? [];
+        const modules = engine.value?.modules ?? {};
+        if (targets.length > 1) {
+            const mods = targets.map((id) => modules[id]).filter(isModule);
+            const allFocused = targets.every((id) => focusedModules.value.has(id));
+            return buildGroupMenuItems(mods, allFocused);
         }
-
-        const items: MenuItem[] = [];
-        if (contextSettings.length > 0) {
-            items.push(...contextSettings);
-            items.push({ label: '', action: '', divider: true });
-        }
-
-        items.push(
-            {
-                label: 'Restart',
-                action: 'restart',
-                icon: icons.restart,
-                tooltip: 'Stop and restart the module pipeline',
-            },
-            {
-                label: 'Settings',
-                action: 'settings',
-                icon: icons.settings,
-                tooltip: 'Open module configuration panel',
-            },
-            {
-                label: 'Clone',
-                action: 'clone',
-                icon: icons.clone,
-                tooltip: 'Create a copy of this module with the same settings',
-            },
-            { label: '', action: '', divider: true },
-            isEnabled
-                ? {
-                      label: 'Disable',
-                      action: 'disable',
-                      icon: icons.disable,
-                      tooltip: 'Stop the module and disconnect all links',
-                  }
-                : {
-                      label: 'Enable',
-                      action: 'enable',
-                      icon: icons.enable,
-                      tooltip: 'Start the module and reconnect links',
-                  },
-            { label: '', action: '', divider: true },
-            isFocused
-                ? {
-                      label: 'Default',
-                      action: 'unfocus',
-                      icon: icons.focus,
-                      tooltip: 'Remove from focus group',
-                  }
-                : {
-                      label: 'Focus',
-                      action: 'focus',
-                      icon: icons.focus,
-                      tooltip: 'Highlight this module in focus mode',
-                  },
-            { label: '', action: '', divider: true },
-            {
-                label: 'Delete',
-                action: 'delete',
-                danger: true,
-                icon: icons.delete,
-                tooltip: 'Permanently remove this module and its connections',
-            },
-        );
-        return items;
+        const id = targets[0] ?? '';
+        return buildModuleMenuItems(modules[id], focusedModules.value.has(id));
     });
+
+    /** Selection to act on when `id` is clicked: the group if `id` is in it. */
+    function targetsFor(id: string): string[] {
+        const sel = selection?.selectedIds() ?? [];
+        return sel.length > 1 && sel.includes(id) ? sel : [id];
+    }
+
+    function openAt(x: number, y: number, targets: string[]) {
+        if (targets.length === 0) return;
+        contextMenu.value = { x, y, targets };
+        contextMenuOpenedAt = Date.now();
+    }
 
     function onNodeContextMenu(payload: { event: MouseEvent | TouchEvent; node: Node }) {
         payload.event.preventDefault();
         const e = payload.event;
         const x = 'clientX' in e ? e.clientX : e.touches[0].clientX;
         const y = 'clientY' in e ? e.clientY : e.touches[0].clientY;
-        contextMenu.value = { x, y, moduleId: payload.node.id };
-        contextMenuOpenedAt = Date.now();
+        openAt(x, y, targetsFor(payload.node.id));
+    }
+
+    /** Right-click on the dashed rectangle around a multi-selection. */
+    function onSelectionContextMenu(payload: { event: MouseEvent; nodes: Node[] }) {
+        payload.event.preventDefault();
+        openAt(
+            payload.event.clientX,
+            payload.event.clientY,
+            payload.nodes.map((n) => n.id),
+        );
     }
 
     function openContextMenuFromTouch(id: string, e: TouchEvent) {
         const touch = e.touches[0] ?? e.changedTouches[0];
-        if (touch) {
-            contextMenu.value = { moduleId: id, x: touch.clientX, y: touch.clientY };
-            contextMenuOpenedAt = Date.now();
-        }
+        if (touch) openAt(touch.clientX, touch.clientY, targetsFor(id));
     }
 
     function dismissContextMenus() {
@@ -177,41 +95,45 @@ export function useContextMenu(
 
     function onContextAction(action: string) {
         if (!contextMenu.value) return;
-        const moduleId = contextMenu.value.moduleId;
+        const ids = contextMenu.value.targets;
+        const moduleId = ids[0];
         const eid = engineId();
 
         if (action === 'settings') {
             settingsPanel.value = { moduleId };
-        } else if (action === 'focus' || action === 'unfocus') {
-            setModuleFocused(eid, moduleId, action === 'focus');
         } else if (action === 'clone') {
             // Open the copy so the user can edit it straight away (#675).
             const cloneId = patch.cloneModule(eid, moduleId);
             if (cloneId) settingsPanel.value = { moduleId: cloneId };
         } else if (action === 'enable' || action === 'disable') {
-            patch.moduleToggle(eid, moduleId, action === 'enable');
+            patch.modulesField(eid, ids, 'enabled', action === 'enable');
+        } else if (action === 'focus' || action === 'unfocus') {
+            patch.modulesField(eid, ids, 'focused', action === 'focus');
         } else if (action === 'delete') {
-            patch.removeModule(eid, moduleId);
+            // A picked single Delete is explicit; a group delete confirms first.
+            if (ids.length > 1 && selection) selection.requestDelete(ids);
+            else patch.removeModules(eid, ids);
         } else if (commandActions[action]) {
-            socket.emit(commandActions[action], { engineId: eid, moduleId });
+            for (const id of ids) socket.emit(commandActions[action], { engineId: eid, moduleId: id });
         }
         contextMenu.value = null;
     }
 
+    function eventPoint(e: any): { x: number; y: number } {
+        return {
+            x: 'clientX' in e ? e.clientX : (e.touches?.[0]?.clientX ?? 0),
+            y: 'clientY' in e ? e.clientY : (e.touches?.[0]?.clientY ?? 0),
+        };
+    }
+
     function onEdgeClick(payload: any) {
-        const e = payload.event;
-        const x = 'clientX' in e ? e.clientX : (e.touches?.[0]?.clientX ?? 0);
-        const y = 'clientY' in e ? e.clientY : (e.touches?.[0]?.clientY ?? 0);
-        edgeContextMenu.value = { x, y, edgeId: payload.edge.id };
+        edgeContextMenu.value = { ...eventPoint(payload.event), edgeId: payload.edge.id };
         contextMenuOpenedAt = Date.now();
     }
 
     function onEdgeContextMenu(payload: any) {
         payload.event.preventDefault();
-        const e = payload.event;
-        const x = 'clientX' in e ? e.clientX : (e.touches?.[0]?.clientX ?? 0);
-        const y = 'clientY' in e ? e.clientY : (e.touches?.[0]?.clientY ?? 0);
-        edgeContextMenu.value = { x, y, edgeId: payload.edge.id };
+        edgeContextMenu.value = { ...eventPoint(payload.event), edgeId: payload.edge.id };
     }
 
     // --- Edge context menu items ---
@@ -230,33 +152,7 @@ export function useContextMenu(
         // Channel maps apply to both audio transports: pw-links re-wire per
         // the map; 302m edges render it as an audioconvert mix-matrix in the
         // consumer's decode branch.
-        const isAudio = srcStreamType === 'audio/pcm' || srcStreamType === 'audio/302m';
-
-        const items: MenuItem[] = [
-            {
-                label: 'Edit Label',
-                action: 'editLabel',
-                icon: icons.editLabel,
-                tooltip: 'Add or edit a text label on this connection',
-            },
-        ];
-        if (isAudio) {
-            items.push({
-                label: 'Channel Map',
-                action: 'channelMap',
-                icon: icons.channelMap,
-                tooltip: 'Configure per-channel audio routing between modules',
-            });
-        }
-        items.push({ label: '', action: '', divider: true });
-        items.push({
-            label: 'Delete Connection',
-            action: 'delete',
-            danger: true,
-            icon: icons.delete,
-            tooltip: 'Remove this connection',
-        });
-        return items;
+        return buildEdgeMenuItems(srcStreamType === 'audio/pcm' || srcStreamType === 'audio/302m');
     });
 
     function onEdgeContextAction(action: string, onDelete: (edgeId: string) => void) {
@@ -292,6 +188,7 @@ export function useContextMenu(
 
     return {
         contextMenu,
+        menuModuleId,
         edgeContextMenu,
         settingsPanel,
         contextMenuItems,
@@ -299,7 +196,9 @@ export function useContextMenu(
         editingEdgeLabel,
         channelMapEdge,
         onNodeContextMenu,
+        onSelectionContextMenu,
         openContextMenuFromTouch,
+        openGroupMenuAt: openAt,
         dismissContextMenus,
         onContextAction,
         onEdgeClick,
