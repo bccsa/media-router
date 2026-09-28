@@ -109,8 +109,6 @@ export interface MuxRoute {
     padName?: string;
     /** parse_launch fragment between the hook-injected parser and the mux. */
     branch: string;
-    /** Optional `GstPad.set_offset()` on the request pad (lipsync, audio only). */
-    padOffsetNs?: number;
     /** `'none'` skips the video parser and declares alignment=au instead. */
     parser?: 'auto' | 'none';
     /** One buffer per cue: the hook restamps to the mux position and sends GAPs while idle. */

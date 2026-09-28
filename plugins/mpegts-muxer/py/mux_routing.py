@@ -12,7 +12,7 @@ imports this module (every plugin `py/` dir is on its PYTHONPATH), calls
         "pid":    264,                       # generic input: the output PID of its stream
         "routes": {                          # first pad of each class goes here
             "video":    {"branch": "queue …", "parser": "none"},
-            "audio":    {"branch": "queue …", "padOffsetNs": -700000000},
+            "audio":    {"branch": "queue …"},
             "klv":      {"branch": "queue …", "sparse": True},
             "subtitle": {"branch": "queue …", "sparse": True},
         },
@@ -54,7 +54,7 @@ What one input does at pad-added time:
     video, 2026-09-16).
 
 Events go to the engine through `ctx["emit_event"]`: `pad_linked`
-(`rule`, `padName`, `media`, `pid`, `outPid`, `padOffsetNs`), `warning`,
+(`rule`, `padName`, `media`, `pid`, `outPid`), `warning`,
 `error` — the same shapes the runner's own pad-link rules emit, so GstRunner
 logs them the same way — and through `ctx["emit_plugin_event"]` one
 `mux:routed` per linked pad (`demux`, `media`, `srcPid`, `outPid`, `caps`)
@@ -423,8 +423,7 @@ def _install_input(pipe, entry):
         if link_to and pcr and media in ("video", "audio"):
             _pin_pcr_before_link(pipe, link_to, program, media, pad_name, rule_id)
         ok = _link_pad(pipe, pad, rule_id, media, branch, link_to, pad_name,
-                       route.get("padOffsetNs"), {"media": media, "pid": pid, "outPid": out_pid},
-                       bool(route.get("sparse")))
+                       {"media": media, "pid": pid, "outPid": out_pid}, bool(route.get("sparse")))
         if ok and _emit_plugin_event:
             _emit_plugin_event("mux:routed", {"demux": demux_name, "media": media, "srcPid": pid,
                                               "outPid": out_pid, "caps": caps.to_string() if caps else ""})
@@ -564,7 +563,7 @@ def _arm_sparse_pad(pipe, req_pad, rule_id, media):
     return st
 
 
-def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, pad_offset_ns, extra, sparse):
+def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, extra, sparse):
     GLib, Gst = _gst()
     try:
         bin_ = Gst.parse_bin_from_description(branch_str, True)
@@ -591,9 +590,6 @@ def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, pad_offs
                 _emit({"event": "error",
                        "message": f"mux_routing: could not request {pad_name} on {link_to} ({rule_id})"})
                 return False
-            # Offset BEFORE linking: the sticky segment propagates at link time.
-            if pad_offset_ns:
-                req_pad.set_offset(int(pad_offset_ns))
             outer = src_pad.link(req_pad)
             if outer != Gst.PadLinkReturn.OK:
                 _emit({"event": "error",
@@ -602,8 +598,7 @@ def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, pad_offs
             if sparse:
                 _arm_sparse_pad(pipe, req_pad, rule_id, media)
         bin_.sync_state_with_parent()
-        _emit({"event": "pad_linked", "rule": rule_id, "padName": pad.get_name(), **extra,
-               **({"padOffsetNs": int(pad_offset_ns)} if (pad_offset_ns and link_to) else {})})
+        _emit({"event": "pad_linked", "rule": rule_id, "padName": pad.get_name(), **extra})
         return True
     except GLib.Error as e:
         _emit({"event": "error", "message": f"mux_routing: branch parse failed: {e.message}"})

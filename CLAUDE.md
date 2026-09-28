@@ -71,7 +71,7 @@ When I paste a review or ask you to review changes:
 - Engine modules extend `GstPluginBase` and implement `buildPipeline(config)`
 - Services available to plugins: `this.services.pipeWire`, `this.services.mediaRouter`, `this.services.processManager`
 - Cleanup is automatic via ownership tracking — plugins don't need manual cleanup in `onStop()`
-- Custom schema extensions: `x-widget`, `x-live`, `x-maxFrom`, `x-contextMenu`, `x-unit`, `x-deviceType`, `x-readOnly`
+- Custom schema extensions: `x-widget`, `x-live`, `x-maxFrom`, `x-contextMenu`, `x-unit`, `x-deviceType`, `x-readOnly`, `x-showWhen`, `x-maxBy`; array items also `x-unique`, `x-reserved`, `x-autoAssign` (see `plugins/README.md`)
 
 ### Communication Style
 

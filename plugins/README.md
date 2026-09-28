@@ -419,6 +419,14 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 
 **Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, `minimum`/`maximum`, and item-relative `x-showWhen` / `x-maxBy` are honoured — `x-showWhen` and `x-maxBy` are evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item; a controller change (e.g. codec) pulls a dependent number down to its new `x-maxBy` cap (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
 
+Item fields also take three sibling-uniqueness hints (scope: that one array, never across modules):
+
+| Extension | Type | Description |
+|-----------|------|-------------|
+| `x-unique` | `true` | No two items may hold the same value. A duplicate edit is shown with an error and never written to the config. |
+| `x-reserved` | `number[]` | Values no item may take (same error path). |
+| `x-autoAssign` | `{ start, step }` | "+ Add" seeds the lowest free `start + k·step` (≤ `maximum`, not reserved); an unassigned value (blank, 0, outside `minimum`/`maximum`) is shown filled the same way, in list order. The mpegts-muxer input `pid` uses `{ "start": 256, "step": 8 }`, matching its engine seed. |
+
 #### Graph status fields (`x-widget: "graph"`)
 
 **The rule: `packages/` contains only generic systems.** A widget in

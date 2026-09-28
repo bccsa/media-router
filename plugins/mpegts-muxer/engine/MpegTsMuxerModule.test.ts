@@ -19,7 +19,15 @@ import {
     type InputEntry,
 } from './mpegtsMuxerPipeline.js';
 import { MpegTsMuxerModule } from './MpegTsMuxerModule.js';
-import type { MuxRoutingConfig } from './muxPids.js';
+import { ignoredOffsets } from './muxerInputs.js';
+import {
+    MAX_ES_PID,
+    MIN_ES_PID,
+    MUX_INPUT_PID_FIRST,
+    MUX_INPUT_PID_STEP,
+    RESERVED_PIDS,
+    type MuxRoutingConfig,
+} from './muxPids.js';
 import type { PipelineDescription } from '@media-router/engine';
 
 /** The mux_routing hook inputs a built PipelineDescription carries. */
@@ -30,12 +38,27 @@ const entry = (id: string, extra: Partial<InputEntry> = {}): InputEntry => ({
     id,
     label: id,
     name: '',
-    offsetMs: 0,
     language: '',
     ...extra,
 });
 
 describe('mpegtsMuxerPipeline helpers', () => {
+    describe('ignoredOffsets (Audio Offset removed 2026-09-28)', () => {
+        it('lists every stored non-zero offsetMs, generic and legacy', () => {
+            expect(
+                ignoredOffsets({
+                    inputs: [{ offsetMs: 0 }, { offsetMs: -700 }, null, {}],
+                    audioStreams: [{ offsetMs: 40 }],
+                }),
+            ).toEqual(['inputs[1]=-700', 'audioStreams[0]=40']);
+            expect(ignoredOffsets({ inputs: [{ name: 'A' }] })).toEqual([]);
+        });
+        it('is dropped when entries are read', () => {
+            const entries = inputEntries({ inputs: [{ offsetMs: -700 }] });
+            expect('offsetMs' in entries[0]).toBe(false);
+        });
+    });
+
     describe('inputEntries', () => {
         it('reads the generic inputs array, tolerating malformed entries', () => {
             const entries = inputEntries({ inputs: [{ name: 'Cam 1' }, {}, null, { name: 7 }] });
@@ -45,12 +68,11 @@ describe('mpegtsMuxerPipeline helpers', () => {
                     key: 0,
                     label: 'Input 1',
                     name: 'Cam 1',
-                    offsetMs: 0,
                     language: '',
                 },
-                { id: 'input-1', key: 1, label: 'Input 2', name: '', offsetMs: 0, language: '' },
-                { id: 'input-2', key: 2, label: 'Input 3', name: '', offsetMs: 0, language: '' },
-                { id: 'input-3', key: 3, label: 'Input 4', name: '', offsetMs: 0, language: '' },
+                { id: 'input-1', key: 1, label: 'Input 2', name: '', language: '' },
+                { id: 'input-2', key: 2, label: 'Input 3', name: '', language: '' },
+                { id: 'input-3', key: 3, label: 'Input 4', name: '', language: '' },
             ]);
         });
         it('keys ports by the persisted `key`, so removing an entry never renames the ones after it', () => {
@@ -82,21 +104,9 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(entries.map((e) => e.language)).toEqual(['eng', 'de', '', '', '', '']);
         });
-        it('maps offsetMs, clamping to ±2000 and zeroing malformed values', () => {
-            const entries = inputEntries({
-                inputs: [
-                    { offsetMs: -700 },
-                    { offsetMs: -9999 },
-                    { offsetMs: 9999 },
-                    { offsetMs: 'nope' },
-                    { offsetMs: NaN },
-                ],
-            });
-            expect(entries.map((e) => e.offsetMs)).toEqual([-700, -2000, 2000, 0, 0]);
-        });
         it('defaults to one generic input on an empty config', () => {
             expect(inputEntries({})).toEqual([
-                { id: 'input-0', key: 0, label: 'Input 1', name: '', offsetMs: 0, language: '' },
+                { id: 'input-0', key: 0, label: 'Input 1', name: '', language: '' },
             ]);
         });
         it('clamps to the schema maxItems (16 — one PID slot per class per input)', () => {
@@ -108,14 +118,13 @@ describe('mpegtsMuxerPipeline helpers', () => {
             it('keeps the legacy port ids, labels and kinds so existing wiring survives', () => {
                 const entries = inputEntries({
                     videoStreams: [{ name: 'Cam 1' }],
-                    audioStreams: [{ name: 'FOH', language: 'ENG', offsetMs: -700 }, {}],
+                    audioStreams: [{ name: 'FOH', language: 'ENG' }, {}],
                 });
                 expect(entries).toEqual([
                     {
                         id: 'video-0',
                         label: 'Video 1',
                         name: 'Cam 1',
-                        offsetMs: 0,
                         language: '',
                         legacyMedia: 'video',
                     },
@@ -123,7 +132,6 @@ describe('mpegtsMuxerPipeline helpers', () => {
                         id: 'audio-0',
                         label: 'Audio 1',
                         name: 'FOH',
-                        offsetMs: -700,
                         language: 'eng',
                         legacyMedia: 'audio',
                     },
@@ -131,7 +139,6 @@ describe('mpegtsMuxerPipeline helpers', () => {
                         id: 'audio-1',
                         label: 'Audio 2',
                         name: '',
-                        offsetMs: 0,
                         language: '',
                         legacyMedia: 'audio',
                     },
@@ -633,22 +640,6 @@ describe('mpegtsMuxerPipeline helpers', () => {
                     }
                 }
             });
-            it('puts offsetMs on the AUDIO route as padOffsetNs, omitted at 0, clamped ±2000', () => {
-                const result = buildPipeline({
-                    sources: [
-                        { sinkPortId: 'input-0', port: 40001, offsetMs: -700 },
-                        { sinkPortId: 'input-1', port: 40003, offsetMs: 0 },
-                        { sinkPortId: 'input-2', port: 40004, offsetMs: -5000 },
-                    ],
-                    output,
-                    alignment: 7,
-                })!;
-                const [r0, r1, r2] = result.routing.inputs.map((r) => r.routes);
-                expect(r0.audio!.padOffsetNs).toBe(-700_000_000);
-                expect('padOffsetNs' in r0.video!).toBe(false);
-                expect('padOffsetNs' in r1.audio!).toBe(false);
-                expect(r2.audio!.padOffsetNs).toBe(-2_000_000_000);
-            });
         });
 
         it('reports every input branch demux for the stamp-anchored alignment', () => {
@@ -826,13 +817,13 @@ describe('MpegTsMuxerModule', () => {
             ]);
         });
 
-        it('isLiveChange: rename is live; add/remove, offset or language edits are not', () => {
+        it('isLiveChange: rename is live; add/remove, PID or language edits are not', () => {
             const { module } = makeModule();
             expect(module.isLiveChange('inputs', [{ name: 'B' }], [{ name: 'A' }])).toBe(true);
             expect(module.isLiveChange('inputs', [{}, {}], [{}])).toBe(false);
             expect(module.isLiveChange('inputs', [{}], undefined)).toBe(false);
             expect(
-                module.isLiveChange('inputs', [{ name: 'ENG', offsetMs: -700 }], [{ name: 'ENG' }]),
+                module.isLiveChange('inputs', [{ name: 'ENG', pid: 300 }], [{ name: 'ENG', pid: 256 }]),
             ).toBe(false);
             expect(
                 module.isLiveChange(
@@ -844,14 +835,14 @@ describe('MpegTsMuxerModule', () => {
             expect(
                 module.isLiveChange(
                     'inputs',
-                    [{ name: 'NOR', offsetMs: -700, language: 'eng' }],
-                    [{ name: 'ENG', offsetMs: -700, language: 'eng' }],
+                    [{ name: 'NOR', pid: 256, language: 'eng' }],
+                    [{ name: 'ENG', pid: 256, language: 'eng' }],
                 ),
             ).toBe(true);
             expect(module.isLiveChange('bufferMs', 100, 50)).toBe(true);
         });
 
-        it('threads the input entry offsetMs and language into that input audio route', () => {
+        it('threads the input entry language into that input audio route', () => {
             const { module } = makeModule({
                 sources: [
                     { sinkPortId: 'input-0', port: 40001 },
@@ -859,18 +850,17 @@ describe('MpegTsMuxerModule', () => {
                 ],
             });
             (module as any).config = {
-                inputs: [{ name: '' }, { name: 'DE', offsetMs: -700, language: 'deu' }],
+                inputs: [{ name: '' }, { name: 'DE', language: 'deu' }],
                 alignment: 7,
             };
             const desc = module.buildPipeline((module as any).config)!;
             const [r0, r1] = hookInputs(desc).map((r) => r.routes);
-            expect('padOffsetNs' in r0.audio!).toBe(false);
-            expect(r1.audio!.padOffsetNs).toBe(-700_000_000);
+            expect(r0.audio!.branch).not.toContain('taginject');
             expect(r1.audio!.branch).toContain('taginject name=lang_demux_1_audio tags=language-code=deu');
             expect(r1.video!.branch).not.toContain('taginject');
         });
 
-        it('exposes name/language/offsetMs on inputs items, no legacy lists and no carousel toggle in the schema', () => {
+        it('exposes name/language/pid on inputs items, no offsetMs, no legacy lists and no carousel toggle in the schema', () => {
             const schema = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'))
                 .mediaRouter.configSchema.properties;
             expect(schema.inputs).toMatchObject({
@@ -883,12 +873,19 @@ describe('MpegTsMuxerModule', () => {
                 type: 'string',
                 default: '',
             });
-            expect(schema.inputs.items.properties.offsetMs).toMatchObject({
+            expect(schema.inputs.items.properties.offsetMs).toBeUndefined();
+            expect(schema.inputs.items.properties.pid).toMatchObject({
                 type: 'number',
-                default: 0,
-                minimum: -2000,
-                maximum: 2000,
+                minimum: MIN_ES_PID,
+                maximum: MAX_ES_PID,
+                'x-unique': true,
+                'x-autoAssign': { start: MUX_INPUT_PID_FIRST, step: MUX_INPUT_PID_STEP },
             });
+            // The UI's reserved list must be exactly the engine's.
+            const byNum = (a: number, b: number) => a - b;
+            expect([...schema.inputs.items.properties.pid['x-reserved']].sort(byNum)).toEqual(
+                RESERVED_PIDS.map(([pid]) => pid).sort(byNum),
+            );
             expect(schema.videoStreams).toBeUndefined();
             expect(schema.audioStreams).toBeUndefined();
             expect(schema.emitStreamInfo).toBeUndefined();
@@ -1204,15 +1201,9 @@ describe('operator PID (one PID per input) + duplicate checking', () => {
             ).toBe(true);
         });
 
-        it('exposes one pid field on inputs items with the schema bounds, and no per-class fields', () => {
+        it('exposes no per-class PID fields on inputs items', () => {
             const props = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'))
                 .mediaRouter.configSchema.properties.inputs.items.properties;
-            expect(props.pid).toMatchObject({
-                type: 'number',
-                default: 0,
-                minimum: 0,
-                maximum: 8190,
-            });
             for (const key of ['videoPid', 'audioPid', 'klvPid', 'subtitlePid']) {
                 expect(props[key]).toBeUndefined();
             }

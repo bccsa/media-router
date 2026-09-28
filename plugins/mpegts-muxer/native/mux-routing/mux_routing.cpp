@@ -437,7 +437,7 @@ void on_sync_message(GstBus*, GstMessage* msg, gpointer) {
 }
 
 bool link_pad(Input& in, GstPad* pad, const std::string& media, const std::string& branch_str,
-              const std::string& pad_name, gint64 pad_offset_ns, bool has_offset, int pid, int out_pid, bool sparse) {
+              const std::string& pad_name, int pid, int out_pid, bool sparse) {
     GstElement* pipe = in.pipe;
     const std::string& rule_id = in.rule_id;
     GError* err = nullptr;
@@ -480,8 +480,6 @@ bool link_pad(Input& in, GstPad* pad, const std::string& media, const std::strin
             gst_object_unref(target);
             return false;
         }
-        // Offset BEFORE linking: the sticky segment propagates at link time.
-        if (has_offset && pad_offset_ns) gst_pad_set_offset(req_pad, pad_offset_ns);
         GstPadLinkReturn outer = gst_pad_link(src_pad, req_pad);
         gst_object_unref(src_pad);
         if (outer != GST_PAD_LINK_OK) {
@@ -500,7 +498,6 @@ bool link_pad(Input& in, GstPad* pad, const std::string& media, const std::strin
                      json_escape(GST_PAD_NAME(pad)) + "\",\"media\":\"" + media + "\",\"pid\":" +
                      (pid >= 0 ? std::to_string(pid) : "null") + ",\"outPid\":" +
                      (out_pid >= 0 ? std::to_string(out_pid) : "null");
-    if (has_offset && pad_offset_ns && !in.link_to.empty()) ev += ",\"padOffsetNs\":" + std::to_string(pad_offset_ns);
     ev += "}";
     emit_json(ev);
     return true;
@@ -584,12 +581,9 @@ void on_pad_added(GstElement*, GstPad* pad, gpointer user) {
     if (!in.link_to.empty() && in.pid >= 0) ensure_prog_map(in.pipe, in.link_to, in.pcr_program, pad_name);
     if (!in.link_to.empty() && in.has_pcr && (media == "video" || media == "audio"))
         pin_pcr_before_link(in.pipe, in.link_to, in.pcr_program, media, pad_name, in.rule_id);
-    bool has_offset = json_object_has_member(route, "padOffsetNs") &&
-                      !JSON_NODE_HOLDS_NULL(json_object_get_member(route, "padOffsetNs"));
-    gint64 offset = has_offset ? json_object_get_int_member(route, "padOffsetNs") : 0;
     bool sparse = json_object_has_member(route, "sparse") && !JSON_NODE_HOLDS_NULL(json_object_get_member(route, "sparse")) &&
                   json_object_get_boolean_member(route, "sparse");
-    bool ok = link_pad(in, pad, media, branch, pad_name, offset, has_offset, pid, out_pid, sparse);
+    bool ok = link_pad(in, pad, media, branch, pad_name, pid, out_pid, sparse);
     if (ok && g_state && g_state->ctx && g_state->ctx->emit_plugin_event) {
         std::string payload = "{\"demux\":\"" + json_escape(in.demux) + "\",\"media\":\"" + media + "\",\"srcPid\":" +
                               (pid >= 0 ? std::to_string(pid) : "null") + ",\"outPid\":" +

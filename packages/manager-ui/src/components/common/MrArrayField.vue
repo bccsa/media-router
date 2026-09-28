@@ -5,6 +5,8 @@ import MrArrayItemField, { type ItemField } from './MrArrayItemField.vue';
 import MrHelpTip from './MrHelpTip.vue';
 import { matchShowWhen } from '@/utils/showWhen';
 import { fieldLabel } from '@/utils/fieldLabel';
+import { fillAutoAssigned, nextFreeValue, type AutoAssign } from '@/utils/uniqueItemValues';
+import { useUniqueItemDrafts } from '@/composables/useUniqueItemDrafts';
 
 interface ItemSchema {
     type?: string;
@@ -34,10 +36,11 @@ const emit = defineEmits<{
 // Fill missing fields with defaults from schema for existing items. Advanced
 // (override) fields are deliberately NOT filled — an absent key means "inherit
 // the module-global setting", which is the whole point of a per-item override.
-const items = computed(() => {
-    const raw = props.modelValue ?? [];
+// Unassigned `x-autoAssign` fields show the value the engine would seed.
+const items = computed<Record<string, unknown>[]>(() => {
+    const raw = (props.modelValue ?? []) as Record<string, unknown>[];
     if (!props.schema?.properties) return raw;
-    return raw.map((item) => {
+    const patchedItems = raw.map((item) => {
         const patched = { ...(item as Record<string, unknown>) };
         for (const [key, rawProp] of Object.entries(props.schema.properties!)) {
             const prop = rawProp as Record<string, unknown>;
@@ -50,12 +53,20 @@ const items = computed(() => {
         }
         return patched;
     });
+    const auto = fields.value.flatMap((f) => (f.autoAssign ? [{ ...f, autoAssign: f.autoAssign }] : []));
+    return fillAutoAssigned(patchedItems, auto);
 });
 
 interface Field extends ItemField {
     default: unknown;
     showWhen?: string;
     maxBy?: { field: string; map: Record<string, number> };
+    /** `x-unique`: no two items may hold the same value. */
+    unique?: boolean;
+    /** `x-reserved`: values no item may take. */
+    reserved?: number[];
+    /** `x-autoAssign`: "+ Add" seeds the next free `start + k·step`. */
+    autoAssign?: AutoAssign;
 }
 
 /** Inherit semantics only exist when the module declares a same-named global. */
@@ -81,6 +92,9 @@ const fields = computed<Field[]>(() => {
             advanced: !!prop['x-advanced'],
             inheritable: isInheritable(key, !!prop['x-advanced']),
             showWhen: prop['x-showWhen'] as string | undefined,
+            unique: !!prop['x-unique'],
+            reserved: prop['x-reserved'] as number[] | undefined,
+            autoAssign: prop['x-autoAssign'] as AutoAssign | undefined,
         };
     });
 });
@@ -129,10 +143,18 @@ function addItem() {
     for (const f of fields.value) {
         if (f.inheritable) continue;
         if (f.advanced && f.default === undefined) continue;
+        if (f.autoAssign) {
+            const taken = items.value.map((it) => it[f.key]);
+            const v = nextFreeValue(taken, f.autoAssign, f.reserved, f.maximum);
+            if (v !== undefined) newItem[f.key] = v;
+            continue;
+        }
         newItem[f.key] = f.default ?? (f.type === 'number' ? 0 : '');
     }
     emit('update:modelValue', [...items.value, newItem]);
 }
+
+const drafts = useUniqueItemDrafts(items, () => props.modelValue, updateField);
 
 function removeItem(index: number) {
     const updated = [...items.value];
@@ -200,9 +222,10 @@ function clearField(index: number, key: string) {
                 <MrArrayItemField
                     v-if="isVisible(field, item as Record<string, unknown>)"
                     :field="fieldForItem(field, item as Record<string, unknown>)"
-                    :value="(item as Record<string, unknown>)[field.key]"
+                    :value="drafts.fieldValue(idx, field.key)"
+                    :error="drafts.fieldError(idx, field.key)"
                     :disabled="disabled"
-                    @update="updateField(idx, field.key, $event)"
+                    @update="drafts.update(idx, field, $event)"
                     @clear="clearField(idx, field.key)"
                 />
             </template>
@@ -224,9 +247,10 @@ function clearField(index: number, key: string) {
                         <MrArrayItemField
                             v-if="isVisible(field, item as Record<string, unknown>)"
                             :field="fieldForItem(field, item as Record<string, unknown>)"
-                            :value="(item as Record<string, unknown>)[field.key]"
+                            :value="drafts.fieldValue(idx, field.key)"
+                            :error="drafts.fieldError(idx, field.key)"
                             :disabled="disabled"
-                            @update="updateField(idx, field.key, $event)"
+                            @update="drafts.update(idx, field, $event)"
                             @clear="clearField(idx, field.key)"
                         />
                     </template>

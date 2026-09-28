@@ -1360,9 +1360,7 @@ def _install_preserve_timeline(pipe, cfg):
 # Branches are then aligned BY CONSTRUCTION rather than by luck, and against an
 # absolute (house) reference rather than each other — so a restart re-derives
 # the same timeline instead of re-rolling the skew, and two branches fed by
-# DIFFERENT producers align too (each carries its own K). The per-input
-# `offsetMs` lipsync knob is untouched: it rides on the mux's request pad, this
-# on the demuxer's src pad, so it stays exactly the manual trim it always was.
+# DIFFERENT producers align too (each carries its own K).
 #
 # NOTHING IS APPLIED ON A GUESS. No join, or a payload head that two PES of this
 # branch share (so the join would be a coin toss), leaves the branch exactly as

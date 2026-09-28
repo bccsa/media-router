@@ -26,6 +26,7 @@ import {
     type UdpInputSource,
 } from './mpegtsMuxerPipeline.js';
 import type { MuxRouteMedia } from './muxPids.js';
+import { ignoredOffsets } from './muxerInputs.js';
 
 /**
  * MPEG-TS Muxer plugin.
@@ -68,6 +69,13 @@ export class MpegTsMuxerModule extends GstPluginBase {
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
+        const offsets = ignoredOffsets(config);
+        if (offsets.length > 0) {
+            this.log.warn(
+                `Audio Offset removed — ignoring stored offsetMs (${offsets.join(', ')}); ` +
+                    'lipsync is no longer trimmed on these inputs',
+            );
+        }
         // Persist every input's stable key (and PID) as soon as the module
         // exists, running or not: an operator may remove an input before the
         // first build, and the keys are what keep the other inputs' ports.
@@ -80,9 +88,9 @@ export class MpegTsMuxerModule extends GstPluginBase {
     }
 
     /** Input-array edits are live only when the length is unchanged (rename)
-     *  AND no entry's `offsetMs`, `language` or PID override changed. A
-     *  grown/shrunk array means a different port set; an offset or PID change
-     *  alters the pad-link routes and a language change alters the branch's
+     *  AND no entry's `language` or PID override changed. A grown/shrunk
+     *  array means a different port set; a PID change alters the pad-link
+     *  routes and a language change alters the branch's
      *  `taginject` — all applied at build time, so treating them as live
      *  would silently swallow the edit. All route through pending-restart. */
     isLiveChange(key: string, newValue: unknown, oldValue: unknown): boolean {
@@ -110,7 +118,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
                 normalizeKey(entry.key) === normalizeKey(prev.key) ||
                 (normalizeKey(prev.key) === undefined && entry.key === prevEntries[i]?.key);
             return (
-                (entry.offsetMs ?? 0) === (prev.offsetMs ?? 0) &&
                 (entry.language ?? '') === (prev.language ?? '') &&
                 pidUnchanged &&
                 keyUnchanged
@@ -181,7 +188,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
                     sinkPortId: s.sinkPortId,
                     port: s.port,
                     socketPath: s.socketPath,
-                    offsetMs: entry?.offsetMs,
                     language: entry?.language,
                     ...(entry?.pid !== undefined ? { pid: entry.pid } : {}),
                 };
