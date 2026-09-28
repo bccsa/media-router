@@ -8,7 +8,7 @@
         "displayName": "Teletext Subtitles",
         "description": "Decodes the DVB teletext stream in an MPEG-TS once and turns each selected subtitle page into its own subtitle output. Pages the stream announces in its PMT appear under Detected Pages to pick from; Manual Pages covers anything unannounced. Wire a subtitle output into the Subtitles In port of a Video Player (rendered on the display) or a Video Transcoder (burned into every rendition). Subtitle outputs are MPEG-TS on the bus like everything else, so they also travel through SRT/RIST outputs and the MPEG-TS muxer.",
         "color": "#0ea5e9",
-        "icon": "chat-bubble-bottom-center-text",
+        "icon": "captions",
         "category": "codec",
         "architectures": ["arm64", "x86_64"],
         "ports": [],
