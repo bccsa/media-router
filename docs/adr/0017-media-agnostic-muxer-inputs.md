@@ -40,7 +40,7 @@ to ride a muxed program to reach a remote site, so the muxer must carry them.
 - The engine's `PadLinkRule.media: 'video' | 'audio'` (positional
   `branches`) is untouched. The muxer does not use it: its hook config is one
   `MuxRoutingInput` per source (`demux`, `linkTo`, `routes` per class with
-  `padName` / `branch` / `padOffsetNs` / `parser` / `sparse`, `ignorePids`,
+  `padName` / `branch` / `parser` / `sparse`, `ignorePids`,
   `pcr`), types in `muxPids.ts`, pinned end to end by `py/mux_routing_test.py`
   (a real KLV TS through tsdemux → hook → mpegtsmux). *2026-09-16 revision:*
   the first cut put this routing, the PCR pin and the sparse restamp into the
@@ -93,6 +93,21 @@ to ride a muxed program to reach a remote site, so the muxer must carry them.
   default when no PCR pad matches, and what the first cut did too. The set
   PID was never deployed to the fleet before this change, so no migration:
   existing seeded values stay exactly as written.
+  *2026-09-28 amendment:* the settings UI also picks the PID when the
+  operator clicks "+ Add" (generic item hints on `pid`: `x-autoAssign`
+  `{start: 0x100, step: 8}`, `x-unique`, `x-reserved` = `RESERVED_PIDS`,
+  pinned to `muxPids.ts` by a test), and fills a blank/0 PID for display with
+  the value the engine's seed would write (same order, same grid). A PID
+  that duplicates a sibling or is reserved is shown with an error and never
+  written to the config; the engine's seed and build-time conflict check stay
+  as the guard for configs written any other way.
+- **No per-input Audio Offset** (2026-09-28): the `offsetMs` lipsync trim
+  (`GstPad.set_offset()` on the audio request pad) is removed from the
+  schema, the engine and both hook forms — the operator asked for inputs to
+  carry name, language and PID only. A stored `offsetMs` is ignored; the
+  module logs a warning naming each input that still carries a non-zero
+  value, so a calibrated trim is not lost silently. The engine's generic
+  `PadLinkRule.padOffsetNs` stays in the runners, unused.
 - **Input ports are keyed, not positional** (2026-09-18): a generic input's
   port id is `input-<key>`, `key` a stable integer the module seeds into the
   entry (its index if free, else one past the highest key — existing configs

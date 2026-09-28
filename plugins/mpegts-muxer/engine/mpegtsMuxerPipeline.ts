@@ -43,7 +43,7 @@ import {
     type MuxRoutingConfig,
     type MuxRoutingInput,
 } from './muxPids.js';
-import { normalizeLanguage, normalizeOffsetMs, type UdpInputSource } from './muxerInputs.js';
+import { normalizeLanguage, type UdpInputSource } from './muxerInputs.js';
 import {
     findPidConflicts,
     layoutSlots,
@@ -319,13 +319,6 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             const language = normalizeLanguage(source.language);
             if (language && media !== 'video') {
                 route.branch = `${inputQueue} ! taginject name=lang_${tag} tags=language-code=${language}`;
-            }
-            if (media === 'audio') {
-                // Lipsync offset on the mux request pad (audio only — offsetting
-                // video would add real latency). Omitted when 0 so the default
-                // route shape stays byte-identical.
-                const offsetMs = normalizeOffsetMs(source.offsetMs);
-                if (offsetMs !== 0) route.padOffsetNs = offsetMs * 1_000_000;
             }
             routes[media] = route;
         }

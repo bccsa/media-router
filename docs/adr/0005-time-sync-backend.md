@@ -919,9 +919,9 @@ the mux 100–121 ms apart — a fresh value on every mux incarnation (120.4 /
   because each read a transient. The correction therefore lands as one timeline
   step a few seconds in, while the mux is still filling its latency budget.
 
-- **Two knobs, two pads, no interaction.** The operator's per-input `offsetMs`
-  rides on the mux's REQUEST pad and stays exactly the manual lipsync trim it
-  always was; this correction rides on the demuxer's SRC pad, upstream of it.
+- **Rides on the demuxer's SRC pad.** (The muxer's per-input `offsetMs`
+  trim on the REQUEST pad that this once sat beside was removed 2026-09-28 —
+  see ADR-0017.)
 
 - **Contract-only, decided in one place.** `GstPluginBase.applyTimeSync` drops
   the config when the contract is off (the mirror of it dropping

@@ -517,9 +517,6 @@ export interface PipelineDescription {
      * absolute reference, so alignment holds across branches, across producers,
      * and across restarts. Rejected (and logged) past 500 ms, where the reading
      * is no longer the zero-point error this removes.
-     *
-     * The per-input `offsetMs` lipsync trim is unaffected: it rides on the mux's
-     * request pad, this on the demuxer's src pad.
      */
     alignBranchesToStamps?: AlignBranchesToStampsConfig;
     /**
@@ -712,8 +709,8 @@ export interface PadLinkRule {
      * the target's timeline; negative advances it (buffers whose shifted
      * running-time falls before the segment start are clipped — costs that
      * much stream at startup, nothing steady-state). Requires `linkTo`;
-     * ignored on the `matchPids` tee-fanout path. First consumer: mpegts-muxer
-     * per-audio-input lipsync offset (cancels a measured constant path skew).
+     * ignored on the `matchPids` tee-fanout path. Generic runner support; no
+     * plugin sets it today (the muxer's Audio Offset was removed 2026-09-28).
      */
     padOffsetNs?: number;
     /**

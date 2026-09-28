@@ -39,6 +39,8 @@ export interface ItemField {
 const props = defineProps<{
     field: ItemField;
     value: unknown;
+    /** Validation message shown under the input (e.g. duplicate value). */
+    error?: string;
     disabled?: boolean;
 }>();
 
@@ -142,6 +144,7 @@ function onInput(value: string | number): void {
                     :min="field.minimum"
                     :max="field.maximum"
                     :placeholder="field.inheritable ? 'Inherit (global)' : undefined"
+                    :error="error"
                     :disabled="disabled"
                     @update:model-value="onInput"
                 />

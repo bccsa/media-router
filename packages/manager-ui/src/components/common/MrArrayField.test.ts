@@ -118,3 +118,104 @@ describe('MrArrayField', () => {
         expect(wrapper.text()).toContain('Profile');
     });
 });
+
+describe('MrArrayField — x-unique / x-autoAssign (muxer input PID)', () => {
+    const pidSchema = {
+        type: 'object',
+        properties: {
+            name: { type: 'string', default: '' },
+            pid: {
+                type: 'number',
+                title: 'PID',
+                minimum: 32,
+                maximum: 8190,
+                'x-unique': true,
+                'x-reserved': [496, 4096],
+                'x-autoAssign': { start: 256, step: 8 },
+            },
+        },
+    };
+
+    it('Add seeds the next free PID, skipping every sibling value', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ name: 'A', pid: 256 }, { name: 'B', pid: 272 }], schema: pidSchema },
+        });
+        await wrapper.find('button').trigger('click');
+        expect(wrapper.emitted('update:modelValue')![0][0]).toEqual([
+            { name: 'A', pid: 256 },
+            { name: 'B', pid: 272 },
+            { name: '', pid: 264 },
+        ]);
+    });
+
+    it('holds a duplicate edit back with an error and never emits it', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ name: 'A', pid: 256 }, { name: 'B', pid: 264 }], schema: pidSchema },
+        });
+        const input = wrapper.findAll('input[type="number"]')[1];
+        await input.setValue('256');
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+        expect(wrapper.text()).toContain('PID 256 is already used by Item 1');
+
+        await input.setValue('300');
+        expect(wrapper.emitted('update:modelValue')!.at(-1)).toEqual([
+            [{ name: 'A', pid: 256 }, { name: 'B', pid: 300 }],
+        ]);
+        expect(wrapper.text()).not.toContain('already used');
+    });
+
+    it('drops a rejected draft once the list changes, so a freed PID can be typed again', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ name: 'A', pid: 256 }, { name: 'B', pid: 264 }], schema: pidSchema },
+        });
+        await wrapper.findAll('input[type="number"]')[1].setValue('256');
+        expect(wrapper.text()).toContain('already used by Item 1');
+        // Item 1 moves off 256 (here: the parent echoes a new list).
+        await wrapper.setProps({ modelValue: [{ name: 'A', pid: 300 }, { name: 'B', pid: 264 }] });
+        expect(wrapper.text()).not.toContain('already used');
+        const input = wrapper.findAll('input[type="number"]')[1];
+        expect((input.element as HTMLInputElement).value).toBe('264');
+        await input.setValue('256');
+        expect(wrapper.emitted('update:modelValue')!.at(-1)).toEqual([
+            [{ name: 'A', pid: 300 }, { name: 'B', pid: 256 }],
+        ]);
+    });
+
+    it('shows unassigned (blank / 0) PIDs as the values the engine seeds, never as duplicates', () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ pid: 0 }, { pid: 256 }, {}], schema: pidSchema },
+        });
+        const values = wrapper
+            .findAll('input[type="number"]')
+            .map((i) => (i.element as HTMLInputElement).value);
+        expect(values).toEqual(['264', '256', '272']);
+        expect(wrapper.text()).not.toContain('already used');
+    });
+
+    it('checks x-unique on advanced fields too', async () => {
+        const advSchema = {
+            type: 'object',
+            properties: {
+                id: { type: 'number', title: 'ID', 'x-advanced': true, 'x-unique': true },
+            },
+        };
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ id: 5 }, { id: 6 }], schema: advSchema },
+        });
+        for (const t of wrapper.findAll('button').filter((b) => b.text().includes('Advanced'))) {
+            await t.trigger('click');
+        }
+        await wrapper.findAll('input[type="number"]')[1].setValue('5');
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+        expect(wrapper.text()).toContain('ID 5 is already used by Item 1');
+    });
+
+    it('rejects a reserved PID', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ name: 'A', pid: 256 }], schema: pidSchema },
+        });
+        await wrapper.find('input[type="number"]').setValue('4096');
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+        expect(wrapper.text()).toContain('PID 4096 is reserved');
+    });
+});

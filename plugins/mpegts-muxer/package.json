@@ -33,24 +33,16 @@
                                 "title": "Language",
                                 "description": "ISO 639 code written into the PMT. Blank = pass through. Restarts the muxer."
                             },
-                            "offsetMs": {
-                                "type": "number",
-                                "default": 0,
-                                "minimum": -2000,
-                                "maximum": 2000,
-                                "x-step": 10,
-                                "x-unit": "ms",
-                                "title": "Audio Offset",
-                                "description": "Lip-sync offset for this input's audio. Negative advances. Restarts the muxer."
-                            },
                             "pid": {
                                 "type": "number",
-                                "default": 0,
-                                "minimum": 0,
+                                "minimum": 32,
                                 "maximum": 8190,
                                 "x-step": 1,
+                                "x-unique": true,
+                                "x-reserved": [496, 4096],
+                                "x-autoAssign": { "start": 256, "step": 8 },
                                 "title": "PID",
-                                "description": "Auto-assigned on add; edit to any free value 32–8190. Restarts the muxer."
+                                "description": "Output PID of this input. Auto-assigned on add; edit to any free value 32–8190. Restarts the muxer."
                             }
                         }
                     },

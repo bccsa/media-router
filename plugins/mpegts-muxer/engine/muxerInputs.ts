@@ -36,8 +36,6 @@ export interface UdpInputSource {
     sourceModuleId?: string | null;
     /** Per-consumer edge socket (falls back to the channel socket). */
     socketPath?: string;
-    /** Lipsync offset (ms) for this input's audio mux pad — see InputEntry.offsetMs. */
-    offsetMs?: number;
     /** ISO 639 language code for this input's audio PMT descriptor — see
      *  InputEntry.language. Blank/absent → pass the source's language through. */
     language?: string;
@@ -76,15 +74,6 @@ export interface InputEntry {
     /** Operator-set name (blank = unset). */
     name: string;
     /**
-     * Lipsync offset (ms) applied to this input's AUDIO mux pad via
-     * `GstPad.set_offset()` (never video — delaying video would add real
-     * latency). Negative advances the stream on the mux timeline: use
-     * `-<measured audio-late skew>` to cancel a stable path offset with no
-     * added latency (costs ~|offset| of clipped audio at pipeline start).
-     * Clamped ±2000; 0/absent → no offset applied (route shape unchanged).
-     */
-    offsetMs: number;
-    /**
      * ISO 639 language code (2/3-letter, e.g. en / eng / deu) written into the
      * output PMT as the language descriptor of this input's streams via a
      * `taginject` in each non-video branch (mpegtsmux converts any accepted
@@ -114,14 +103,6 @@ export interface InputEntry {
     pid?: number;
 }
 
-const MAX_OFFSET_MS = 2000;
-
-/** Clamp a raw config offset to ±2000 ms; malformed → 0. */
-export function normalizeOffsetMs(raw: unknown): number {
-    const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
-    return Math.max(-MAX_OFFSET_MS, Math.min(MAX_OFFSET_MS, n));
-}
-
 /** Sanitize a raw config language to a bare ISO 639 code; anything else → ''.
  *  The strict 2-3 letter shape doubles as launch-string safety — the value is
  *  interpolated into `taginject tags=…` and can never need quoting. */
@@ -139,12 +120,11 @@ export function normalizePid(raw: unknown): number | undefined {
     return n;
 }
 
-function entryFields(raw: unknown): Pick<InputEntry, 'name' | 'offsetMs' | 'language' | 'pid'> {
+function entryFields(raw: unknown): Pick<InputEntry, 'name' | 'language' | 'pid'> {
     const e = (raw ?? {}) as Record<string, unknown>;
     const pid = normalizePid(e.pid);
     return {
         name: typeof e.name === 'string' ? e.name : '',
-        offsetMs: normalizeOffsetMs(e.offsetMs),
         language: normalizeLanguage(e.language),
         ...(pid !== undefined ? { pid } : {}),
     };
@@ -194,6 +174,22 @@ export function assignInputPids(entries: InputEntry[]): number[] {
     });
 }
 
+/**
+ * Every stored non-zero `offsetMs`, as `"<list>[<i>]=<ms>"` — the per-input
+ * Audio Offset was removed 2026-09-28 (ADR-0017). Ignored; reported so a
+ * calibrated lipsync trim is not lost silently.
+ */
+export function ignoredOffsets(config: Record<string, unknown>): string[] {
+    return ['inputs', 'videoStreams', 'audioStreams'].flatMap((list) => {
+        const arr = config[list];
+        if (!Array.isArray(arr)) return [];
+        return arr.flatMap((e, i) => {
+            const ms = (e as Record<string, unknown> | null)?.offsetMs;
+            return typeof ms === 'number' && ms !== 0 ? [`${list}[${i}]=${ms}`] : [];
+        });
+    });
+}
+
 /** True when the config still carries the pre-generic stream lists. */
 export function isLegacyConfig(config: Record<string, unknown>): boolean {
     return (
@@ -227,7 +223,6 @@ function legacyEntries(config: Record<string, unknown>, media: 'video' | 'audio'
         id: `${prefix}${i}`,
         label: `${label} ${i + 1}`,
         name: legacyNames[`${media}-${i}`] ?? '',
-        offsetMs: 0,
         language: '',
         legacyMedia: media,
     }));
@@ -236,8 +231,8 @@ function legacyEntries(config: Record<string, unknown>, media: 'video' | 'audio'
 /**
  * Read the input list from config.
  *
- * Current shape: `inputs` — an array of `{ key, pid, name, language,
- * offsetMs }`, one entry per input port ("+ Add" in the UI appends an entry),
+ * Current shape: `inputs` — an array of `{ key, pid, name, language }`,
+ * one entry per input port ("+ Add" in the UI appends an entry),
  * ports `input-<key>` (see InputEntry.key — never by position).
  *
  * LEGACY KEYS WIN. A config that still carries `videoStreams` / `audioStreams`
