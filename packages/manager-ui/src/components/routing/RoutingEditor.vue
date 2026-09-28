@@ -22,6 +22,7 @@ import { useGraphSync } from '@/composables/useGraphSync';
 import { useMultiSelect } from '@/composables/useMultiSelect';
 import { computeAutoLayout } from '@/utils/autoLayout';
 import { patch } from '@/composables/usePatch';
+import { panActivationKey } from '@/utils/panKey';
 
 const props = defineProps<{ engineId: string }>();
 provide('engineId', props.engineId);
@@ -452,6 +453,7 @@ function dismissAll() {
             :selection-key-code="selectMode ? true : 'Shift'"
             :multi-selection-key-code="selectMode ? true : ['Meta', 'Control']"
             :pan-on-drag="!selectMode"
+            :pan-activation-key-code="panActivationKey"
             @connect="onConnect"
             @edge-click="onEdgeClick"
             @edge-context-menu="onEdgeContextMenu"
