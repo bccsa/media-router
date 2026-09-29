@@ -24,10 +24,7 @@ function createMocks(opts: { modulesRunning?: boolean } = {}) {
         broadcastConfigUpdateExcept: vi.fn(),
     } as any;
 
-    const managerConnection = {
-        isConnected: true,
-        send: vi.fn(),
-    } as any;
+    const localChanges = { config: vi.fn() } as any;
 
     const lifecycle = {
         refreshPorts: vi.fn(),
@@ -41,13 +38,13 @@ function createMocks(opts: { modulesRunning?: boolean } = {}) {
         moduleManager,
         mediaRouter,
         lcpServer,
-        managerConnection,
+        localChanges,
         lifecycle,
         () => config,
         () => opts.modulesRunning ?? true,
     );
 
-    return { router, config, moduleManager, mediaRouter, lcpServer, managerConnection, lifecycle };
+    return { router, config, moduleManager, mediaRouter, lcpServer, localChanges, lifecycle };
 }
 
 describe('EnginePatchRouter', () => {
@@ -71,11 +68,11 @@ describe('EnginePatchRouter', () => {
         });
 
         it('does NOT forward back to manager', () => {
-            const { router, managerConnection } = createMocks();
+            const { router, localChanges } = createMocks();
             router.onPatch('manager', 'manager', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            expect(localChanges.config).not.toHaveBeenCalled();
         });
     });
 
@@ -100,18 +97,15 @@ describe('EnginePatchRouter', () => {
         });
 
         it('debounced forwards to manager', async () => {
-            const { router, managerConnection } = createMocks();
+            const { router, localChanges } = createMocks();
             router.onPatch('lcp-1', 'lcp', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
             // Not sent yet (debounced)
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            expect(localChanges.config).not.toHaveBeenCalled();
             // Wait for debounce
             await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).toHaveBeenCalledWith(
-                'patch',
-                expect.objectContaining({ ops: expect.any(Array) }),
-            );
+            expect(localChanges.config).toHaveBeenCalledWith(expect.any(Array));
         });
     });
 
@@ -449,7 +443,7 @@ describe('EnginePatchRouter', () => {
 
     describe('debounced forward to manager', () => {
         it('accumulates ops from multiple LCP patches before sending', async () => {
-            const { router, managerConnection } = createMocks();
+            const { router, localChanges } = createMocks();
             router.onPatch('lcp-1', 'lcp', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
@@ -457,38 +451,25 @@ describe('EnginePatchRouter', () => {
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 60 },
             ]);
 
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            expect(localChanges.config).not.toHaveBeenCalled();
             await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).toHaveBeenCalledTimes(1);
+            expect(localChanges.config).toHaveBeenCalledTimes(1);
             // Should contain both ops
-            const sentOps = managerConnection.send.mock.calls[0][1].ops;
+            const sentOps = localChanges.config.mock.calls[0][0];
             expect(sentOps).toHaveLength(2);
         });
 
-        it('does not forward when manager is disconnected', async () => {
-            const { router, managerConnection } = createMocks();
-            managerConnection.isConnected = false;
-
-            router.onPatch('lcp-1', 'lcp', [
-                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
-            ]);
-
-            await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).not.toHaveBeenCalled();
-        });
-
         it('does not forward when no pending ops', async () => {
-            const { router, managerConnection } = createMocks();
+            const { router, localChanges } = createMocks();
             // Trigger debounce but somehow ops are empty — edge case
             // The debounce timer fires but pendingOps is empty
-            // This is tested implicitly by the isConnected check above
-            // but let's test destroy clears timers
+            // destroy clears the pending timer
             router.onPatch('lcp-1', 'lcp', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
             router.destroy();
             await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            expect(localChanges.config).not.toHaveBeenCalled();
         });
     });
 
@@ -540,14 +521,14 @@ describe('EnginePatchRouter', () => {
 
     describe('destroy', () => {
         it('clears debounce timers', async () => {
-            const { router, managerConnection } = createMocks();
+            const { router, localChanges } = createMocks();
             router.onPatch('lcp-1', 'lcp', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
             router.destroy();
             await new Promise((r) => setTimeout(r, 150));
             // Timer was cleared, so manager never receives the patch
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            expect(localChanges.config).not.toHaveBeenCalled();
         });
     });
 
@@ -562,13 +543,13 @@ describe('EnginePatchRouter', () => {
             const moduleManager = {} as any;
             const mediaRouter = {} as any;
             const lcpServer = { broadcastConfigUpdate: vi.fn() } as any;
-            const managerConnection = { isConnected: false, send: vi.fn() } as any;
+            const localChanges = { config: vi.fn() } as any;
             const lifecycle = {} as any;
             const router = new EnginePatchRouter(
                 moduleManager,
                 mediaRouter,
                 lcpServer,
-                managerConnection,
+                localChanges,
                 lifecycle,
                 () => null,
                 () => false,

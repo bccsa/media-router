@@ -30,6 +30,7 @@
         "@fastify/cors": "^11.2.0",
         "@media-router/dgram-comms": "workspace:*",
         "@media-router/shared-types": "workspace:*",
+        "@media-router/topic-tree": "workspace:*",
         "ajv": "^8.18.0",
         "fastify": "^5.8.2",
         "socket.io": "^4.8.3"

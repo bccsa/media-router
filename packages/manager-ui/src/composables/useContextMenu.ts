@@ -2,7 +2,7 @@ import { ref, computed, type ComputedRef } from 'vue';
 import type { Node } from '@vue-flow/core';
 import type { EngineState, ModuleState } from '@/stores/engines';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
-import { useSocketStore } from '@/stores/socket';
+import { engineActions } from '@/utils/engineActions';
 import { patch } from '@/composables/usePatch';
 import {
     buildEdgeMenuItems,
@@ -10,10 +10,7 @@ import {
     buildModuleMenuItems,
 } from '@/utils/moduleMenuItems';
 
-/** Actions that stay as commands (lifecycle operations). */
-const commandActions: Record<string, string> = {
-    restart: 'module:restart',
-};
+
 
 /** Canvas multi-selection hooks; omitted = single-module menus only. */
 export interface MenuSelection {
@@ -29,8 +26,6 @@ export function useContextMenu(
     focusedModules: ComputedRef<Set<string>>,
     selection?: MenuSelection,
 ) {
-    const socket = useSocketStore();
-
     // `targets` = modules the menu acts on: one, or the whole selection.
     const contextMenu = ref<{ x: number; y: number; targets: string[] } | null>(null);
     const edgeContextMenu = ref<{ x: number; y: number; edgeId: string } | null>(null);
@@ -113,8 +108,8 @@ export function useContextMenu(
             // A picked single Delete is explicit; a group delete confirms first.
             if (ids.length > 1 && selection) selection.requestDelete(ids);
             else patch.removeModules(eid, ids);
-        } else if (commandActions[action]) {
-            for (const id of ids) socket.emit(commandActions[action], { engineId: eid, moduleId: id });
+        } else if (action === 'restart') {
+            for (const id of ids) void engineActions.restartModule(eid, id);
         }
         contextMenu.value = null;
     }

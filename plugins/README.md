@@ -715,6 +715,17 @@ Declare sections that appear in a stats popup on the module node. The stats icon
 ]
 ```
 
+### Status keys and schema flags are dashboard API
+
+Every module value is reachable in the subscribable tree
+(`/engines/<id>/modules/<mid>/…` on the manager, `/modules/<mid>/…` on a
+router's `:8081/tree` — ADR-0024). Dashboards bind to status section ids,
+status keys and settings keys by name, and read `x-readOnly` / `x-live` (via
+the value descriptor) to decide whether a control is writable and applies at
+once or on restart. Renaming any of these breaks dashboards; treat them like a
+public interface. `emitConfigUpdate` values reach the manager with guaranteed
+delivery, and are journaled while the router is offline (ADR-0025).
+
 ---
 
 ## Engine Module

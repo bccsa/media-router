@@ -13,6 +13,7 @@
     "dependencies": {
         "@media-router/dgram-comms": "workspace:*",
         "@media-router/shared-types": "workspace:*",
+        "@media-router/topic-tree": "workspace:*",
         "better-sqlite3": "^12.8.0",
         "compression": "^1.8.1",
         "cors": "^2.8.6",

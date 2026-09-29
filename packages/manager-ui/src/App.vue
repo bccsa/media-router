@@ -6,9 +6,13 @@ import DisconnectedOverlay from '@/components/common/DisconnectedOverlay.vue';
 import MrToastHost from '@/components/common/MrToastHost.vue';
 import { useSocketStore } from '@/stores/socket';
 import { useThemeStore } from '@/stores/theme';
+import { useTopics } from '@/composables/useTopics';
 
 const socket = useSocketStore();
 useThemeStore(); // Ensure theme is applied
+
+// What every view needs: the router list, their load, the sidebar groups.
+useTopics(() => ['/engines/+/info', '/engines/+/system', '/groups']);
 
 onMounted(() => {
     socket.connect();

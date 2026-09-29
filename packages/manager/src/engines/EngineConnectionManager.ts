@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Server, type ListenerSpec } from '@media-router/dgram-comms';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, type ConfigPushTag } from '@media-router/shared-types';
 import type { EnginePath } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import { reconcileInterlocks } from '../config/reconcileInterlocks.js';
@@ -10,6 +10,8 @@ const log = createLogger('EngineConnectionManager');
 /** Engine→manager topics forwarded 1:1 as `engine<Topic>` events. */
 const FORWARDED_TOPICS: Array<[topic: string, event: string]> = [
     ['state', 'engineState'],
+    // Leaf state ops once our `hello` offered them (ADR-0025)
+    ['statePatch', 'engineStatePatch'],
     ['vu', 'engineVu'],
     ['system', 'engineSystem'],
     // Engine advertises its effective per-plugin config schemas on connect —
@@ -86,6 +88,8 @@ export class EngineConnectionManager extends EventEmitter {
             log.info({ engineId: clientId }, 'engine connected');
             this.onlineEngines.add(clientId);
             this.engineSockets.set(clientId, socket);
+            // Offer leaf state patches; older engines ignore the topic (ADR-0025).
+            socket.send('hello', { features: ['statePatch'] }, { guaranteeDelivery: true });
             this.pushActiveConfig(clientId, socket);
             this.emit('engineOnline', clientId);
             for (const [topic, event] of FORWARDED_TOPICS) {
@@ -133,7 +137,8 @@ export class EngineConnectionManager extends EventEmitter {
             );
             this.emit('interlockRepair', clientId, repairOps);
         }
-        socket.send('config', config, { guaranteeDelivery: true });
+        const _push: ConfigPushTag = { reason: 'connect', profile: profileName };
+        socket.send('config', { ...config, _push }, { guaranteeDelivery: true });
     }
 
     /** Start listening for engine connections. */

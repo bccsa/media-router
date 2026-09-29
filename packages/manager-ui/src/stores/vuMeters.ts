@@ -51,6 +51,12 @@ export const useVuStore = defineStore('vuMeters', () => {
         return levels[`${engineId}/${instanceId}`];
     }
 
+    function remove(engineId: string, instanceId: string) {
+        const key = `${engineId}/${instanceId}`;
+        delete levels[key];
+        delete lastUpdate[key];
+    }
+
     function clear(engineId: string) {
         for (const key of Object.keys(levels)) {
             if (key.startsWith(`${engineId}/`)) {
@@ -80,5 +86,5 @@ export const useVuStore = defineStore('vuMeters', () => {
         }
     }
 
-    return { levels, update, get, clear, rename };
+    return { levels, update, get, remove, clear, rename };
 });

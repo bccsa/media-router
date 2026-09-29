@@ -1588,39 +1588,40 @@ interface DgramMessage {
 }
 ```
 
-### 8.2 Manager ↔ Web UI
+### 8.2 Manager ↔ Web UI — the subscribable tree (ADR-0024)
 
-**Socket.IO** over WebSocket (carried forward from v1.0).
+**Socket.IO** over WebSocket, one address space and four verbs. Supersedes the
+v1.0 event list and the `watch:<engineId>` rooms.
 
-#### 8.2.1 Events
+| Verb | Payload | Ack |
+|------|---------|-----|
+| `sub` / `unsub` | `{ patterns }` | snapshot as `add` ops |
+| `write` | `{ id, ops }` (add/replace/remove at tree paths) | `{ rejected: [{ index, path, reason }] }` |
+| `call` | `{ path, method, args }` | method result, or an error message |
+| `tree` (server → client) | `{ ops }` — JSON Patch deltas, one frame per flush tick | — |
+| `hello` (server → client) | `{ proto, build }` — the UI reloads once when the build differs; a protocol mismatch is refused at the handshake and also reloads once | — |
+| `tree:renamed` (server → client) | `{ from, to }` — an engine rename re-keyed this socket's subscriptions | — |
 
-| Event | Direction | Payload |
-|-------|-----------|---------|
-| `auth` | Client → Server | `{ username, password }` |
-| `auth:result` | Server → Client | `{ success, user, permissions }` |
-| `engine:state` | Server → Client | Full or delta engine state |
-| `engine:update` | Client → Server | Configuration changes |
-| `engine:status` | Server → Client | Online/offline, resource metrics |
-| `profile:switch` | Client → Server | `{ engineId, profileId }` |
-| `link:warning` | Server → Client | Breaking change notification |
+- **Tree:** `/engines/<id>/{info, system, devices/<type>, logs, events,
+  modules/<mid>/…, connections/<cid>, interlocks/<iid>, profiles}`, `/groups`,
+  `/settings`, `/plugins`. Array elements are addressed by `id`.
+- **Patterns:** a pattern matches its node and everything below it; `+`
+  matches one segment. Data nobody subscribes to is not sent.
+- **Echo:** every op of a write comes back to its writer tagged with the
+  write id, carrying the stored value; a rejected op snaps the control back.
+- **Checks:** browser writes are validated per op against the value's
+  descriptor (`describeModuleValue`: read/write, live/restart, type, range,
+  enum); no clamping.
+- **Delivery:** latest value per path while a socket's transport is busy
+  (the #677 rule, generalised).
 
-#### 8.2.2 Delta Updates
+#### 8.2.1 Router tree (engine dashboards)
 
-**v1.0 problem:** Full configuration sent on every change (v1.0's `confManager.append()` broadcasts the entire modified subtree).
-
-**v2.0 approach:** Delta/patch updates using JSON Patch (RFC 6902) or a similar diff format:
-
-```typescript
-// Server sends only what changed
-{
-    event: "engine:state",
-    engineId: "router_1",
-    patch: [
-        { op: "replace", path: "/modules/SrtOut1/settings/srtPort", value: 8891 },
-        { op: "replace", path: "/status/cpu", value: 42 }
-    ]
-}
-```
+Each router serves its own subtree, rooted at `/`, on :8081 under the
+Socket.IO path `/tree`. It works with or without a manager link. It accepts
+value writes only (`settings/<key>`, `enabled`, `info/running`) and the calls
+module restart and device reboot. Reboot needs `{ confirm: true }` while the
+manager link is down. `tools/tree-cli/mr_tree.js` speaks both ends.
 
 ### 8.3 Engine ↔ Local Control Panel
 
@@ -1631,6 +1632,9 @@ interface DgramMessage {
 | `state` | Engine → LCP | Module runtime states (filtered by `operatorVisible`) |
 | `config:update` | Engine → LCP | Active profile configuration changes (module added/removed/updated, routing changes) |
 | `control` | LCP → Engine | Operator actions (volume, mute, start/stop) |
+
+The LCP is unchanged by the tree; its local writes and Start/Stop reach the
+manager as described in §8.4.
 
 #### 8.3.1 Live Config Propagation
 
@@ -1690,6 +1694,32 @@ LCP ──(control)──▶ Engine
 ```
 
 Both paths converge on the same result: all connected clients (manager UI browsers and LCP) reflect the current state. Volume slider positions, mute states, and other runtime controls stay in sync regardless of where the change originated.
+
+### 8.4 Router ↔ Manager State Sync and Outages (ADR-0025)
+
+- **State patches:** after the manager's `hello { features: ['statePatch'] }`,
+  the router sends module runtime state as leaf ops (`statePatch { seq, ops }`)
+  instead of whole states. A seq gap makes the manager send `stateResync`; a
+  full `state` snapshot still goes out every 60 s. Measured on .103: engine →
+  manager 27.5 → 15.5 kB/s.
+- **Tagged pushes:** every config push carries
+  `_push { reason: 'connect' | 'activate', profile }`.
+- **Local changes:** operator writes (LCP, router tree), plugin auto-writes,
+  self-stop, dynamic ports and local Start/Stop go to the manager with
+  guaranteed delivery. While the link is down, or until the connect push is
+  merged, they are kept in an in-memory journal, latest op per path.
+- **Reconnect:** a `connect` push of the running profile is merged with the
+  journal (the on-site value wins). Entries for modules or connections the
+  manager no longer has are dropped and logged. Only the difference is
+  applied, through the engine patch router: live values at once, modules and
+  connections added or removed, non-live settings flagged `pendingRestart`.
+  The journal is then replayed to the manager. A Start/Stop made during the
+  outage rides the connect handshake (`engineRunningState { localChange }`)
+  and the manager adopts it. A profile switched during the outage rebuilds
+  the modules. An activation, a stopped router or a first boot replace the
+  config as before.
+- **No saved config:** a restarted router waits for the manager and starts
+  from its config.
 
 ---
 

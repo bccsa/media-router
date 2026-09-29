@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useSocketStore } from '@/stores/socket';
+import { useTreeDataStore } from '@/stores/treeData';
+import { useTopics } from '@/composables/useTopics';
 import { useEngineStore } from '@/stores/engines';
 import { useToast } from '@/composables/useToast';
 import MrInput from '@/components/common/MrInput.vue';
 import MrButton from '@/components/common/MrButton.vue';
-import type { DgramListener, ManagerSettings } from '@media-router/shared-types';
+import type { DgramListener } from '@media-router/shared-types';
 
 /**
  * The UDP ports engines connect to the manager on (issue #692). One is the
  * minimum; extra ports give engines with several paths a second door in.
- * Saved to manager.db over `settings:set` and applied live.
+ * Written to `/settings/dgramListeners` on the tree, saved to manager.db and applied live.
  */
 const socket = useSocketStore();
 const toast = useToast();
@@ -54,18 +56,20 @@ function clone(list: DgramListener[]): DgramListener[] {
     }));
 }
 
-async function load() {
-    loading.value = true;
-    try {
-        const s = await socket.request<ManagerSettings>('settings:get');
-        saved.value = clone(s.dgramListeners);
-        rows.value = clone(s.dgramListeners);
-    } catch (err) {
-        toast.show(`Could not load listeners: ${(err as Error).message}`);
-    } finally {
+// Follow the manager's value; rows being edited are left alone.
+const treeData = useTreeDataStore();
+useTopics(() => ['/settings']);
+watch(
+    () => treeData.settings.dgramListeners as DgramListener[] | undefined,
+    (live) => {
+        if (!live) return;
+        const editing = dirty.value;
+        saved.value = clone(live);
+        if (!editing) rows.value = clone(live);
         loading.value = false;
-    }
-}
+    },
+    { immediate: true },
+);
 
 function add() {
     const used = new Set(rows.value.map((r) => r.port));
@@ -95,13 +99,8 @@ function setPort(i: number, value: string | number) {
 async function apply() {
     saving.value = true;
     try {
-        const s = await socket.request<ManagerSettings>(
-            'settings:set',
-            { dgramListeners: clone(rows.value) },
-            { timeoutMs: 20_000 },
-        );
-        saved.value = clone(s.dgramListeners);
-        rows.value = clone(s.dgramListeners);
+        await socket.writeOrThrow([{ op: 'replace', path: '/settings/dgramListeners', value: clone(rows.value) }]);
+        saved.value = clone(rows.value);
         toast.show('Listeners applied — engines reconnect within a few seconds', 'info');
     } catch (err) {
         toast.show((err as Error).message);
@@ -114,7 +113,6 @@ function reset() {
     rows.value = clone(saved.value);
 }
 
-onMounted(load);
 </script>
 
 <template>

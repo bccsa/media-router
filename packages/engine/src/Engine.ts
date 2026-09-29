@@ -8,6 +8,7 @@ import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
 import type { PortEdge } from './routing/PortRegistry.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
+import { LocalChanges } from './comms/LocalChanges.js';
 import { LcpServer } from './comms/LcpServer.js';
 import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
@@ -27,6 +28,9 @@ import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
 import { retireConnectionsOnPorts } from './modules/portPrune.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
 import { resolveEnginePlayoutOffsetMs } from './plugins/playoutOffset.js';
+import type { RouterTree } from './tree/RouterTree.js';
+import { createRouterTree } from './tree/createRouterTree.js';
+import * as fs from 'fs';
 
 const log = createLogger('Engine');
 
@@ -98,6 +102,10 @@ export class Engine {
     private lifecycle: ModuleLifecycle;
     /** Single source of truth for module run state — see ModuleRunController. */
     readonly runController: ModuleRunController;
+    /** This box's own tree (ADR-0024) on :8081 under `/tree`. */
+    readonly routerTree: RouterTree;
+    /** On-site changes: guaranteed to the manager, journaled during an outage (ADR-0025). */
+    private readonly localChanges: LocalChanges;
 
     /** Last config received from manager. */
     private currentConfig: Record<string, unknown> | null = null;
@@ -147,9 +155,24 @@ export class Engine {
             this.playoutOffsetMs,
         );
         this.managerConnection = new ManagerConnection();
+        this.localChanges = new LocalChanges(this.managerConnection);
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
         this.lcpServer._getInitData = () => this.getLcpInitData();
         this.profileStore = new ProfileStore(config.profilesPath);
+        this.routerTree = createRouterTree({
+            config: () => this.currentConfig,
+            pluginLoader: this.pluginLoader,
+            moduleManager: this.moduleManager,
+            profileStore: this.profileStore,
+            // Both are built further down; the tree only calls them at runtime.
+            runController: () => this.runController,
+            commandDispatcher: () => this.commandDispatcher,
+            managerConnection: this.managerConnection,
+            localChanges: this.localChanges,
+            patch: (senderId, ops) => this.enginePatchRouter?.onPatch(senderId, 'lcp', ops),
+            device: { ips: this.deviceIps, hostname: this.deviceHostname, buildNumber: this.deviceBuildNumber },
+            build: () => String(Math.round(fs.statSync(__filename).mtimeMs)),
+        });
 
         this.mediaRouter.setDependencies(
             this.pipeWire,
@@ -215,7 +238,7 @@ export class Engine {
                     const ops = [
                         { op: 'replace' as const, path: `/modules/${id}/enabled`, value: false },
                     ];
-                    this.managerConnection.send('patch', { ops });
+                    this.localChanges.config(ops);
                     this.lcpServer.broadcastConfigUpdate(ops);
                 })
                 .catch((err: unknown) => {
@@ -231,7 +254,7 @@ export class Engine {
                     getConfig: () => this.currentConfig,
                     removeLiveConnection: (id) => this.mediaRouter.removeConnection(id, true),
                     publish: (ops) => {
-                        this.managerConnection.send('patch', { ops });
+                        this.localChanges.config(ops);
                         this.lcpServer.broadcastConfigUpdate(ops);
                     },
                 },
@@ -257,7 +280,7 @@ export class Engine {
             const ops = [
                 { op: 'replace' as const, path: `/modules/${moduleId}/ports`, value: ports },
             ];
-            this.managerConnection.send('patch', { ops });
+            this.localChanges.config(ops);
             this.lcpServer.broadcastConfigUpdate(ops);
         };
 
@@ -271,6 +294,7 @@ export class Engine {
             stats.processCount =
                 this.moduleManager.gstProcessCount + this.processManager.activeCount;
             stats.managerPaths = this.managerConnection.pathStatus;
+            this.routerTree.system(stats as unknown as Record<string, unknown>);
             this.managerConnection.send('system', stats);
         });
 
@@ -279,7 +303,7 @@ export class Engine {
             this.moduleManager,
             this.mediaRouter,
             this.lcpServer,
-            this.managerConnection,
+            this.localChanges,
             this.lifecycle,
             () => this.currentConfig,
             () => this.runController.isRunning,
@@ -294,7 +318,6 @@ export class Engine {
             deviceProviders: this.deviceProviders,
             commandDispatcher: this.commandDispatcher,
             enginePatchRouter: this.enginePatchRouter,
-            systemStats: this.systemStats,
             runController: this.runController,
             getCurrentConfig: () => this.currentConfig,
             setCurrentConfig: (config) => {
@@ -303,6 +326,8 @@ export class Engine {
             enrichConfigForLcp: (config) => this.enrichConfigForLcp(config),
             refreshModulePorts: (moduleId) => this.lifecycle.refreshPorts(moduleId),
             pluginSchemas: () => this.pluginLoader.getPluginSchemas(),
+            routerTree: this.routerTree,
+            localChanges: this.localChanges,
         });
     }
 
@@ -334,12 +359,16 @@ export class Engine {
         });
         log.info({ pluginCount }, 'Loaded plugins');
         warnDuplicatePyModules();
+        // Stats and device lists run from boot, manager or not (ADR-0025).
+        this.systemStats.start();
+        this.deviceProviders.startPolling();
 
         this.apiServer = await createApiServer(this, this.config.apiPort ?? 3001);
         log.info({ port: this.config.apiPort ?? 3001 }, 'Local API listening');
 
         await this.lcpServer.start();
-        log.info({ port: this.config.lcpPort ?? 8081 }, 'LCP Socket.IO listening');
+        this.routerTree.attach(this.lcpServer.http);
+        log.info({ port: this.config.lcpPort ?? 8081 }, 'LCP Socket.IO + router tree listening');
 
         // Auto-connect to manager if a profile is active
         const active = this.profileStore.getActive();
@@ -357,6 +386,7 @@ export class Engine {
 
     async stop(): Promise<void> {
         this.systemStats.stop();
+        this.deviceProviders.stopPolling();
         await this.lifecycle.stopAll();
         await this.processManager.killAll();
         this.managerConnection.disconnect();
@@ -369,6 +399,7 @@ export class Engine {
         this._running = false;
         this.enginePatchRouter?.destroy();
         this.lcpServer.broadcastEngineRunning(false);
+        await this.routerTree.close();
         await this.lcpServer.stop();
         this.lcpServer.removeAllListeners();
         this.logForwarder.destroy();

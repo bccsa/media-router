@@ -5,7 +5,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 const mockApplyEnginePatch = vi.fn();
-const mockEmit = vi.fn();
+const mockWrite = vi.fn(async () => ({ rejected: [] }));
+/** The tree write for engine-relative ops: paths under /engines/<id>. */
+const atEngine = (engineId: string, ops: Array<{ path: string }>) =>
+    ops.map((op) => ({ ...op, path: `/engines/${engineId}${op.path}` }));
 const mockGetEngine = vi.fn();
 
 vi.mock('@/stores/engines', () => ({
@@ -16,7 +19,7 @@ vi.mock('@/stores/engines', () => ({
 }));
 
 vi.mock('@/stores/socket', () => ({
-    useSocketStore: () => ({ emit: mockEmit }),
+    useSocketStore: () => ({ write: mockWrite }),
 }));
 
 import { patch } from './usePatch';
@@ -25,7 +28,7 @@ describe('usePatch', () => {
     beforeEach(() => {
         setActivePinia(createPinia());
         mockApplyEnginePatch.mockClear();
-        mockEmit.mockClear();
+        mockWrite.mockClear();
         mockGetEngine.mockReset();
     });
 
@@ -34,7 +37,7 @@ describe('usePatch', () => {
 
         const expectedOps = [{ op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 }];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
-        expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops: expectedOps });
+        expect(mockWrite).toHaveBeenCalledWith(atEngine('eng-1', expectedOps));
     });
 
     it('moduleSettings sends multiple replace ops', () => {
@@ -62,7 +65,7 @@ describe('usePatch', () => {
             { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' },
         ];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
-        expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops: expectedOps });
+        expect(mockWrite).toHaveBeenCalledWith(atEngine('eng-1', expectedOps));
     });
 
     it('modulePositions sends one replace op per moved module in one patch', () => {
@@ -76,7 +79,7 @@ describe('usePatch', () => {
             { op: 'replace', path: '/modules/mod-2/position', value: { x: 300, y: 200 } },
         ];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
-        expect(mockEmit).toHaveBeenCalledTimes(1);
+        expect(mockWrite).toHaveBeenCalledTimes(1);
     });
 
     it('modulesField sets one field on several modules in one patch', () => {
@@ -117,7 +120,7 @@ describe('usePatch', () => {
 
         const expectedOps = [{ op: 'add', path: '/modules/mod-new', value: moduleData }];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
-        expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops: expectedOps });
+        expect(mockWrite).toHaveBeenCalledWith(atEngine('eng-1', expectedOps));
     });
 
     it('removeModule sends a remove op', () => {
@@ -125,7 +128,7 @@ describe('usePatch', () => {
 
         const expectedOps = [{ op: 'remove', path: '/modules/mod-1' }];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
-        expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops: expectedOps });
+        expect(mockWrite).toHaveBeenCalledWith(atEngine('eng-1', expectedOps));
     });
 
     it('addConnection sends an add op with /connections/-', () => {
@@ -163,7 +166,7 @@ describe('usePatch', () => {
         patch.raw('eng-1', ops);
 
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', ops);
-        expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops });
+        expect(mockWrite).toHaveBeenCalledWith(atEngine('eng-1', ops));
     });
 
     describe('cloneModule', () => {
@@ -188,7 +191,7 @@ describe('usePatch', () => {
             const result = patch.cloneModule('eng-1', 'mod-missing');
 
             expect(result).toBeUndefined();
-            expect(mockEmit).not.toHaveBeenCalled();
+            expect(mockWrite).not.toHaveBeenCalled();
             expect(mockApplyEnginePatch).not.toHaveBeenCalled();
         });
 
@@ -198,7 +201,7 @@ describe('usePatch', () => {
             const result = patch.cloneModule('eng-1', 'mod-src');
 
             expect(result).toBeUndefined();
-            expect(mockEmit).not.toHaveBeenCalled();
+            expect(mockWrite).not.toHaveBeenCalled();
         });
 
         it('carries manifest-derived fields (statusSections, faceWidgets, interlock, resizable) through the clone', () => {
@@ -321,7 +324,7 @@ describe('usePatch', () => {
 
         // applyEnginePatch should be called before emit
         const applyOrder = mockApplyEnginePatch.mock.invocationCallOrder[0];
-        const emitOrder = mockEmit.mock.invocationCallOrder[0];
+        const emitOrder = mockWrite.mock.invocationCallOrder[0];
         expect(applyOrder).toBeLessThan(emitOrder);
     });
 });

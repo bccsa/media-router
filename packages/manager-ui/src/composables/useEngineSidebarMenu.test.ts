@@ -14,13 +14,13 @@ import { useEngineGroupsStore } from '@/stores/engineGroups';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineSidebarMenu } from './useEngineSidebarMenu';
 
-// engineGroupsApi.update routes through useSocketStore().request() since the
-// HTTP API was retired — stub that to a resolved promise so collapse/toggle
-// tests don't hang on the 10s "Socket not connected" timeout.
+// Group edits are tree writes and engine actions tree calls — stub both so
+// the tests never wait on a real connection.
 beforeEach(() => {
     setActivePinia(createPinia());
     const socket = useSocketStore();
-    socket.request = vi.fn().mockResolvedValue(undefined) as typeof socket.request;
+    socket.write = vi.fn().mockResolvedValue({ rejected: [] }) as typeof socket.write;
+    socket.call = vi.fn().mockResolvedValue({}) as typeof socket.call;
 });
 
 function seedStores() {
@@ -145,11 +145,11 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
         expect(requestRename).toHaveBeenCalledWith('studio');
     });
 
-    it('engine:reboot routes through requestReboot with the engine name (no direct socket emit)', async () => {
+    it('engine:reboot routes through requestReboot with the engine name (no direct reboot call)', async () => {
         seedStores();
         const requestReboot = vi.fn();
         const socket = useSocketStore();
-        const emit = vi.spyOn(socket, 'emit');
+        const call = vi.spyOn(socket, 'call');
         const menu = useEngineSidebarMenu({
             requestRename: vi.fn(),
             requestEdit: vi.fn(),
@@ -158,11 +158,11 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
         });
         menu.openEngineMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'e1');
         await menu.dispatch('engine:reboot', { navigate: vi.fn(), packGroup: vi.fn() });
-        // Host owns the confirmation modal — the composable must NOT emit
-        // engine:reboot directly, otherwise a stray right-click would reboot
-        // the host without warning.
+        // Host owns the confirmation modal — the composable must NOT call
+        // reboot directly, otherwise a stray right-click would reboot the
+        // host without warning.
         expect(requestReboot).toHaveBeenCalledWith({ engineId: 'e1', engineName: 'E1' });
-        expect(emit).not.toHaveBeenCalledWith('engine:reboot', expect.anything());
+        expect(call).not.toHaveBeenCalled();
     });
 
     it('group:delete routes through requestDelete with name', async () => {

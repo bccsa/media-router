@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { wireEngineEvents, type EngineEventContext } from './EngineEventWiring.js';
+import { LocalChanges } from './comms/LocalChanges.js';
 
 /**
  * Tests focus on the state-resync heartbeat — the rest of the wiring is
@@ -26,7 +27,6 @@ interface Stubs {
         startPolling: ReturnType<typeof vi.fn>;
         stopPolling: ReturnType<typeof vi.fn>;
     };
-    systemStats: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
     logForwarder: EventEmitter;
 }
 
@@ -51,13 +51,11 @@ function makeStubs(): Stubs {
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
     });
-    const systemStats = { start: vi.fn(), stop: vi.fn() };
     return {
         moduleManager,
         managerConnection,
         lcpServer,
         deviceProviders,
-        systemStats,
         logForwarder: new EventEmitter(),
     };
 }
@@ -74,13 +72,14 @@ function makeCtx(stubs: Stubs): EngineEventContext {
             stubs.deviceProviders as unknown as EngineEventContext['deviceProviders'],
         commandDispatcher: { dispatch: vi.fn() } as unknown as EngineEventContext['commandDispatcher'],
         enginePatchRouter: { onPatch: vi.fn() } as unknown as EngineEventContext['enginePatchRouter'],
-        systemStats: stubs.systemStats as unknown as EngineEventContext['systemStats'],
         runController: { isRunning: false } as unknown as EngineEventContext['runController'],
         getCurrentConfig: () => null,
         setCurrentConfig: vi.fn(),
         enrichConfigForLcp: (c) => c,
         refreshModulePorts: vi.fn(),
         pluginSchemas: vi.fn(() => ({ transcoder: { properties: {} } })),
+        routerTree: null,
+        localChanges: new LocalChanges(stubs.managerConnection),
     };
 }
 
@@ -289,6 +288,8 @@ describe('wireEngineEvents — LCP lifecycle commands', () => {
     it.each(['start', 'stop'] as const)(
         'dispatches %s locally and notifies the manager guaranteed',
         (action) => {
+            stubs.managerConnection.isConnected = true;
+            stubs.managerConnection.emit('config', { modules: {}, _push: { reason: 'connect', profile: 'p' } });
             stubs.lcpServer.emit('control', { action });
 
             expect(ctx.commandDispatcher.dispatch).toHaveBeenCalledWith({ command: action });
@@ -385,5 +386,138 @@ describe('wireEngineEvents — module state batching', () => {
         expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({
             'mod-1': { running: true, health: 'ok' },
         });
+    });
+});
+
+describe('wireEngineEvents — state patches (ADR-0025)', () => {
+    let stubs: Stubs;
+    const patches = () => stubs.managerConnection.send.mock.calls.filter(([topic]) => topic === 'statePatch');
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        stubs = makeStubs();
+        wireEngineEvents(makeCtx(stubs));
+        stubs.moduleManager.getAllStates.mockReturnValue({ 'mod-1': { running: true, health: 'ok' } });
+        stubs.managerConnection.emit('connected');
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('sends whole states until the manager offers statePatch', () => {
+        stubs.managerConnection.sendState.mockClear();
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'warning' });
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({ 'mod-1': { running: true, health: 'warning' } });
+        expect(patches()).toHaveLength(0);
+    });
+
+    it('after hello: a baseline snapshot, then numbered leaf ops', () => {
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'ok' });
+        stubs.managerConnection.sendState.mockClear();
+        stubs.managerConnection.emit('hello', { features: ['statePatch'] });
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
+
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'warning' });
+        vi.advanceTimersByTime(250);
+        expect(patches()).toEqual([
+            ['statePatch', { seq: 1, ops: [{ op: 'replace', path: '/modules/mod-1/health', value: 'warning' }] }],
+        ]);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
+    });
+
+    it('stateResync sends a snapshot and restarts the numbering', () => {
+        stubs.managerConnection.emit('hello', { features: ['statePatch'] });
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'warning' });
+        vi.advanceTimersByTime(250);
+        stubs.managerConnection.sendState.mockClear();
+        stubs.managerConnection.emit('stateResync', {});
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: false, health: 'warning' });
+        vi.advanceTimersByTime(250);
+        expect(patches().at(-1)?.[1].seq).toBe(1);
+    });
+
+    it('full snapshots only every 60 s in patch mode', () => {
+        stubs.managerConnection.emit('hello', { features: ['statePatch'] });
+        stubs.managerConnection.sendState.mockClear();
+        vi.advanceTimersByTime(50_000);
+        expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(10_000);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
+    });
+
+    it('a disconnect falls back to whole states until the next hello', () => {
+        stubs.managerConnection.emit('hello', { features: ['statePatch'] });
+        stubs.managerConnection.emit('disconnected');
+        stubs.managerConnection.emit('connected');
+        stubs.managerConnection.sendState.mockClear();
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'warning' });
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
+        expect(patches()).toHaveLength(0);
+    });
+});
+
+describe('wireEngineEvents — outage and reconnect (ADR-0025)', () => {
+    let stubs: Stubs;
+    let ctx: EngineEventContext;
+    let config: Record<string, unknown>;
+    const push = (volume: number) => ({
+        modules: { m1: { pluginId: 'mixer', settings: { volume } } },
+        connections: [],
+        _push: { reason: 'connect', profile: 'p' },
+    });
+
+    beforeEach(() => {
+        stubs = makeStubs();
+        ctx = makeCtx(stubs);
+        config = { modules: { m1: { pluginId: 'mixer', settings: { volume: 100 } } }, connections: [] };
+        ctx.getCurrentConfig = () => config;
+        ctx.setCurrentConfig = vi.fn((c) => (config = c));
+        (ctx.runController as { isRunning: boolean }).isRunning = true;
+        wireEngineEvents(ctx);
+        stubs.managerConnection.isConnected = true;
+        stubs.managerConnection.emit('connected');
+        stubs.managerConnection.emit('config', push(100));
+        stubs.managerConnection.emit('disconnected');
+        stubs.managerConnection.isConnected = false;
+        stubs.managerConnection.send.mockClear();
+    });
+
+    it('an outage Stop rides the connect handshake, guaranteed, for the manager to adopt', () => {
+        stubs.lcpServer.emit('control', { action: 'stop' });
+        (ctx.runController as { isRunning: boolean }).isRunning = false;
+        expect(stubs.managerConnection.send).not.toHaveBeenCalled();
+        stubs.managerConnection.isConnected = true;
+        stubs.managerConnection.emit('connected');
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'engineRunningState',
+            { running: false, localChange: true },
+            { guaranteeDelivery: true },
+        );
+    });
+
+    it('a plugin auto-write updates the engine config and the LCP, and is journaled offline', () => {
+        stubs.moduleManager.emit('configUpdated', 'm1', { volume: 55 });
+        const op = { op: 'replace', path: '/modules/m1/settings/volume', value: 55 };
+        expect((config.modules as any).m1.settings.volume).toBe(55);
+        expect(stubs.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([op]);
+        expect(stubs.managerConnection.send).not.toHaveBeenCalled();
+        stubs.managerConnection.isConnected = true;
+        stubs.managerConnection.emit('connected');
+        stubs.managerConnection.emit('config', push(100));
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('patch', { ops: [op] }, { guaranteeDelivery: true });
+    });
+
+    it('a reconnect push goes to the patch router as a difference, not a swap', () => {
+        stubs.managerConnection.isConnected = true;
+        stubs.managerConnection.emit('connected');
+        stubs.managerConnection.emit('config', push(80));
+        expect(ctx.enginePatchRouter.onPatch).toHaveBeenCalledWith('manager', 'manager', [
+            { op: 'replace', path: '/modules/m1/settings/volume', value: 80 },
+        ]);
+        expect(ctx.setCurrentConfig).not.toHaveBeenCalled();
     });
 });

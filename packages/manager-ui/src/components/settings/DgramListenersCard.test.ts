@@ -3,9 +3,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
-const request = vi.fn();
+const write = vi.fn();
+const subscribe = vi.fn(() => () => {});
+const writeOrThrow = async (ops: unknown) => {
+    const { rejected } = await write(ops);
+    if (rejected.length > 0) throw new Error(rejected[0].reason);
+};
 vi.mock('@/stores/socket', () => ({
-    useSocketStore: () => ({ request }),
+    useSocketStore: () => ({ write, writeOrThrow, subscribe }),
 }));
 const show = vi.fn();
 vi.mock('@/composables/useToast', () => ({
@@ -14,15 +19,14 @@ vi.mock('@/composables/useToast', () => ({
 
 import DgramListenersCard from './DgramListenersCard.vue';
 import { useEngineStore } from '@/stores/engines';
+import { useTreeDataStore } from '@/stores/treeData';
 
+/** The card reads `/settings` from the tree mirror; seed it as a snapshot would. */
 async function mountCard(listeners: Array<{ port: number; bindAddress?: string }>) {
-    request.mockReset();
+    write.mockReset();
     show.mockReset();
-    request.mockImplementation(async (event: string, payload?: any) => {
-        if (event === 'settings:get') return { dgramListeners: listeners };
-        if (event === 'settings:set') return { dgramListeners: payload.dgramListeners };
-        throw new Error(`unexpected ${event}`);
-    });
+    write.mockResolvedValue({ rejected: [] });
+    useTreeDataStore().apply(['settings'], { op: 'add', path: '/settings', value: { dgramListeners: listeners } });
     const wrapper = mount(DgramListenersCard);
     await flushPromises();
     return wrapper;
@@ -33,7 +37,7 @@ describe('DgramListenersCard', () => {
 
     it('loads the saved listeners into one row each', async () => {
         const w = await mountCard([{ port: 3000 }, { port: 3002, bindAddress: '10.0.2.1' }]);
-        expect(request).toHaveBeenCalledWith('settings:get');
+        expect(subscribe).toHaveBeenCalledWith(['/settings']);
         const rows = w.findAll('[data-test="listener-row"]');
         expect(rows).toHaveLength(2);
         expect((rows[0].find('input[type="number"]').element as HTMLInputElement).value).toBe(
@@ -50,7 +54,7 @@ describe('DgramListenersCard', () => {
         expect(w.find('[data-test="apply"]').attributes('disabled')).toBeDefined();
     });
 
-    it('Add picks the next free port, warns on removal of a saved one, and applies over RPC', async () => {
+    it('Add picks the next free port, warns on removal of a saved one, and applies as a tree write', async () => {
         const w = await mountCard([{ port: 3000 }, { port: 3001 }]);
 
         await w.find('[data-test="add"]').trigger('click');
@@ -65,11 +69,9 @@ describe('DgramListenersCard', () => {
 
         await w.find('[data-test="apply"]').trigger('click');
         await flushPromises();
-        expect(request).toHaveBeenCalledWith(
-            'settings:set',
-            { dgramListeners: [{ port: 3000 }, { port: 3002 }] },
-            expect.objectContaining({ timeoutMs: expect.any(Number) }),
-        );
+        expect(write).toHaveBeenCalledWith([
+            { op: 'replace', path: '/settings/dgramListeners', value: [{ port: 3000 }, { port: 3002 }] },
+        ]);
         expect(show).toHaveBeenCalledWith(expect.stringContaining('applied'), 'info');
         // Saved snapshot caught up: no longer dirty, no warning.
         expect(w.find('[data-test="remove-warning"]').exists()).toBe(false);
@@ -118,9 +120,8 @@ describe('DgramListenersCard', () => {
 
     it('shows the server error when the rebind is refused', async () => {
         const w = await mountCard([{ port: 3000 }]);
-        request.mockImplementation(async (event: string) => {
-            if (event === 'settings:set') throw new Error('Could not bind listeners: EADDRINUSE');
-            return { dgramListeners: [{ port: 3000 }] };
+        write.mockResolvedValue({
+            rejected: [{ index: 0, path: '/settings/dgramListeners', reason: 'Could not bind listeners: EADDRINUSE' }],
         });
         await w.find('[data-test="add"]').trigger('click');
         await w.find('[data-test="apply"]').trigger('click');

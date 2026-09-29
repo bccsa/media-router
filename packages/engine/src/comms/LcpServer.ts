@@ -34,6 +34,9 @@ const MIME_TYPES: Record<string, string> = {
  *
  * Emits:
  *   - 'control' (command) — LCP sent a control command
+ *   - 'local:config' (patch, exceptSocketId?) — every config change it broadcasts
+ *   - 'local:running' (running) — every run-intent change it broadcasts
+ * The router's tree (ADR-0024) follows the same changes through these.
  */
 export class LcpServer extends EventEmitter {
     private httpServer: HttpServer;
@@ -90,6 +93,11 @@ export class LcpServer extends EventEmitter {
         });
     }
 
+    /** The HTTP server, so the router tree can share port 8081. */
+    get http(): HttpServer {
+        return this.httpServer;
+    }
+
     /** Start listening. */
     async start(): Promise<void> {
         return new Promise((resolve) => {
@@ -137,6 +145,7 @@ export class LcpServer extends EventEmitter {
     broadcastEngineRunning(running: boolean): void {
         this._engineRunning = running;
         this.io.emit('engineRunning', running);
+        this.emit('local:running', running);
     }
 
     /**
@@ -145,6 +154,7 @@ export class LcpServer extends EventEmitter {
      */
     broadcastConfigUpdate(patch: unknown[]): void {
         this.io.emit('configUpdate', patch);
+        this.emit('local:config', patch);
     }
 
     /**
@@ -153,6 +163,7 @@ export class LcpServer extends EventEmitter {
      */
     broadcastConfigUpdateExcept(excludeSocketId: string, patch: unknown[]): void {
         this.io.except(excludeSocketId).emit('configUpdate', patch);
+        this.emit('local:config', patch, excludeSocketId);
     }
 
     /**

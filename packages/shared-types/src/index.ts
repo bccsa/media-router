@@ -5,47 +5,35 @@
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
 export { LiveArrayIndex } from './LiveArrayIndex.js';
+export * from './tree/index.js';
 export {
     PatchOpSchema,
     PatchOpsSchema,
     DgramWireMessageSchema,
     DgramDataSchema,
     EngineRunningStateSchema,
+    StatePatchSchema,
     LcpEngineCommandSchema,
     DynamicPortsSchema,
     RebootFailedSchema,
     PatchEnvelopeSchema,
-    // Manager Socket RPC payloads — every event in rpcHandlers.ts has its
-    // schema exported here so the manager-ui can build matching payloads.
+    // Payloads of the manager tree's writes and calls (ADR-0024).
     EngineIdSchema,
     CreateEngineSchema,
-    UpdateEngineSchema,
-    DeleteEngineSchema,
     ReorderEnginesSchema,
     CreateGroupSchema,
     UpdateGroupSchema,
-    DeleteGroupSchema,
-    ReorderGroupsSchema,
-    ListProfilesSchema,
-    CreateManagerProfileSchema,
-    DeleteProfileSchema,
-    ActivateProfileSchema,
     ProfileQuerySchema,
-    RollbackSchema,
-    DeviceListSchema,
     DgramListenerSchema,
     ManagerSettingsSchema,
     CreateEngineProfileSchema,
-    EngineIdPayloadSchema,
-    ModuleRestartPayloadSchema,
-    BrowserPatchPayloadSchema,
     InterlockSchema,
     InterlocksSchema,
     validateInterlocksInvariants,
     safeParse,
     validated,
 } from './validation.js';
-export type { InterlockInvariantIssue } from './validation.js';
+export type { InterlockInvariantIssue, ConfigPushTag } from './validation.js';
 
 // --- Error Classes ----------------------------------------------------------
 

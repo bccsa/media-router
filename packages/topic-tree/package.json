@@ -1,0 +1,20 @@
+{
+    "name": "@media-router/topic-tree",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Server side of the subscribable tree (ADR-0024): subscriptions, per-socket delivery, write/call dispatch",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@media-router/shared-types": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0",
+        "socket.io": "^4.8.3",
+        "socket.io-client": "^4.8.3"
+    }
+}

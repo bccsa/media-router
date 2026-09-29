@@ -19,7 +19,7 @@ and switches to a fallback picture by design, so it never restart-looped and
 its health stays ok while dark (checked 2026-09-15).
 
 Evidence is the engine journal (`journalctl _UID=1001`) plus the module's
-runtime state from the local manager (mr_ctl.js → Socket.IO `engine:state`).
+runtime state from the local manager (mr_ctl.js → a tree snapshot of the module).
 
 Usage (on the box, as mrstation):
   python3 live_reconnect_test.py [--src ID] [--dst ID] [--gen UNIT] [--engine ID] [--quick]

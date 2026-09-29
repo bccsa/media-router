@@ -3,7 +3,8 @@ import { ref, computed, watch, onMounted, onUnmounted, toRef } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
 import ModuleSettingsForm from './ModuleSettingsForm.vue';
 import { useEngineStore } from '@/stores/engines';
-import { useSocketStore } from '@/stores/socket';
+import { useTopics } from '@/composables/useTopics';
+import { engineActions } from '@/utils/engineActions';
 import { useDeviceStore } from '@/stores/devices';
 import { patch } from '@/composables/usePatch';
 import { useModuleSettingsForm } from '@/composables/useModuleSettingsForm';
@@ -19,7 +20,6 @@ onMounted(() => document.addEventListener('keydown', onKeydown));
 onUnmounted(() => document.removeEventListener('keydown', onKeydown));
 
 const engineStore = useEngineStore();
-const socket = useSocketStore();
 const deviceStore = useDeviceStore();
 
 const module = computed(() => engineStore.getEngine(props.engineId)?.modules[props.moduleId]);
@@ -57,9 +57,8 @@ const { formFields, localSettings, isFieldVisible, getFieldEnum, getFieldMax, up
         module,
     });
 
-// Device lists come from `useDeviceStore`, populated live via socket push.
-// This panel does one HTTP snapshot per required type on open so dropdowns
-// render without waiting for the first push.
+// Device lists come from `useDeviceStore`, filled by the tree; subscribe to
+// the types this module's schema asks for while the panel is open.
 const requiredDeviceTypes = computed<string[]>(() => {
     const schema = module.value?.configSchema as { properties?: Record<string, { 'x-deviceType'?: string }> } | undefined;
     if (!schema?.properties) return [];
@@ -69,34 +68,7 @@ const requiredDeviceTypes = computed<string[]>(() => {
     }
     return Array.from(types);
 });
-
-const fetchedKeys = new Set<string>();
-
-async function fetchSnapshot(type: string) {
-    const cacheKey = `${props.engineId}::${type}`;
-    if (fetchedKeys.has(cacheKey)) return;
-    fetchedKeys.add(cacheKey);
-    try {
-        const devices = await socket.request<unknown[]>('device:list', {
-            engineId: props.engineId,
-            type,
-        });
-        deviceStore.set(props.engineId, type, devices as never);
-    } catch (err) {
-        console.warn('[ModuleSettings] Failed to load device list', type, err);
-        fetchedKeys.delete(cacheKey); // retry on next change
-    }
-}
-
-// Re-run whenever the set of required types changes — covers both initial
-// mount (configSchema arrives async over the wire) and module switching.
-watch(
-    requiredDeviceTypes,
-    (types) => {
-        for (const type of types) fetchSnapshot(type);
-    },
-    { immediate: true },
-);
+useTopics(() => requiredDeviceTypes.value.map((type) => `/engines/${props.engineId}/devices/${type}`));
 
 /** Build device dropdown options. If the currently selected device was unplugged,
  *  keep it in the list greyed out so config survives unplug/replug cycles. */
@@ -118,8 +90,7 @@ function deviceOptions(fieldKey: string, type: string) {
 const isEnabled = computed(() => module.value?.enabled !== false);
 
 function doRestart() {
-    // Restart stays as a command (lifecycle operation)
-    socket.emit('module:restart', { engineId: props.engineId, moduleId: props.moduleId });
+    void engineActions.restartModule(props.engineId, props.moduleId);
 }
 function doToggle() {
     patch.moduleToggle(props.engineId, props.moduleId, !isEnabled.value);

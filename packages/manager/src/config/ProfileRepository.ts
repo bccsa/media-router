@@ -8,7 +8,7 @@ const log = createLogger('ProfileRepository');
  * Coerce a loaded profile config into a well-formed shape so callers never see
  * `interlocks: undefined` or (from an earlier applyJsonPatch bug)
  * `interlocks: { "-": {...} }`. Single coercion point — PatchRouter /
- * SocketIOSetup / reconcileInterlocks don't need defensive `Array.isArray`.
+ * EngineView / reconcileInterlocks don't need defensive `Array.isArray`.
  */
 function normalizeProfileConfig(config: Record<string, unknown>): Record<string, unknown> {
     config.interlocks = coerceArray(config.interlocks);

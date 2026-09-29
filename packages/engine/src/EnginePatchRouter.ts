@@ -8,7 +8,7 @@ interface ResolvedPatchOp extends PatchOp {
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
 import type { LcpServer } from './comms/LcpServer.js';
-import type { ManagerConnection } from './comms/ManagerConnection.js';
+import type { LocalChanges } from './comms/LocalChanges.js';
 import type { ModuleLifecycle } from './modules/ModuleLifecycle.js';
 
 const log = createLogger('EnginePatchRouter');
@@ -32,7 +32,7 @@ export class EnginePatchRouter {
         private moduleManager: ModuleManager,
         private mediaRouter: MediaRouter,
         private lcpServer: LcpServer,
-        private managerConnection: ManagerConnection,
+        private localChanges: Pick<LocalChanges, 'config'>,
         private lifecycle: ModuleLifecycle,
         private getConfig: () => Record<string, unknown> | null,
         private getModulesRunning: () => boolean,
@@ -272,7 +272,8 @@ export class EnginePatchRouter {
     }
 
     /**
-     * Debounced forward of LCP patches to manager (100ms).
+     * Debounced forward of LCP patches to manager (100ms), guaranteed when
+     * linked and journaled during an outage (LocalChanges, ADR-0025).
      * Accumulates ops so rapid changes (e.g. fader movement) don't lose intermediate values.
      */
     private pendingOps: PatchOp[] = [];
@@ -286,10 +287,9 @@ export class EnginePatchRouter {
             key,
             setTimeout(() => {
                 this.debounceTimers.delete(key);
-                if (this.managerConnection.isConnected && this.pendingOps.length > 0) {
-                    this.managerConnection.send('patch', { ops: this.pendingOps });
-                }
+                const ops = this.pendingOps;
                 this.pendingOps = [];
+                this.localChanges.config(ops);
             }, 100),
         );
     }

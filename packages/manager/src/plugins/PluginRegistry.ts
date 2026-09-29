@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ResizableBounds, UploadsPolicy } from '@media-router/shared-types';
+import { overlayManifest, type ResizableBounds, type UploadsPolicy } from '@media-router/shared-types';
 
 export interface PluginManifest {
     pluginId: string;
@@ -128,16 +128,7 @@ export class PluginRegistry {
     overlayManifest(mod: Record<string, unknown>, engineSchemas?: Record<string, unknown>): void {
         const manifest = this.find(mod.pluginId as string);
         if (!manifest) return;
-        if ((manifest.ports ?? []).length > 0) mod.ports = manifest.ports;
-        const engineSchema = engineSchemas?.[mod.pluginId as string];
-        mod.configSchema = engineSchema ?? manifest.configSchema ?? {};
-        mod.color = manifest.color;
-        mod.icon = manifest.icon;
-        mod.statusSections = manifest.statusSections;
-        mod.faceWidgets = manifest.faceWidgets;
-        mod.interlock = manifest.interlock === true;
-        mod.resizable = manifest.resizable ?? false;
-        mod.uploads = manifest.uploads;
+        overlayManifest(mod, manifest, engineSchemas?.[mod.pluginId as string]);
     }
 
     /**

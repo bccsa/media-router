@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
 import { getLucideIcon } from '@/composables/useLucideIcons';
-import { useSocketStore } from '@/stores/socket';
+import { useTreeDataStore } from '@/stores/treeData';
+import { useTopics } from '@/composables/useTopics';
 
 interface PluginInfo {
     pluginId: string;
@@ -15,7 +16,7 @@ interface PluginInfo {
     color?: string;
     // Manifest-derived fields the optimistic add must carry — without them,
     // freshly-added resizable/interlock plugins miss their affordances until
-    // a full refresh rehydrates them via `engine:list`.
+    // the write's echo brings the enriched module.
     resizable?: boolean | { minWidth?: number; minHeight?: number; maxWidth?: number; maxHeight?: number };
     interlock?: boolean;
     statusSections?: Array<Record<string, unknown>>;
@@ -24,23 +25,15 @@ interface PluginInfo {
 
 const emit = defineEmits<{ close: []; add: [plugin: PluginInfo, displayName: string] }>();
 
-const plugins = ref<PluginInfo[]>([]);
-const loading = ref(true);
+// The plugin catalog is a tree branch, subscribed while the panel is open.
+const treeData = useTreeDataStore();
+useTopics(() => ['/plugins']);
+const plugins = computed(() => Object.values(treeData.plugins) as unknown as PluginInfo[]);
+const loading = computed(() => plugins.value.length === 0);
 const searchQuery = ref('');
 const selectedPlugin = ref<PluginInfo | null>(null);
 const moduleName = ref('');
 
-const socket = useSocketStore();
-
-onMounted(async () => {
-    try {
-        plugins.value = await socket.request<PluginInfo[]>('plugin:list');
-    } catch (err) {
-        console.warn('[AddModulePanel] Failed to load plugins', err);
-    } finally {
-        loading.value = false;
-    }
-});
 
 const categories = ['input', 'output', 'protocol', 'codec', 'processing', 'utility'];
 const categoryLabels: Record<string, string> = {

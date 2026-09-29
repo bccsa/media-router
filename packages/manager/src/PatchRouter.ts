@@ -1,103 +1,84 @@
-import type { Server as SocketIOServer } from 'socket.io';
 import { createLogger, applyJsonPatch, LiveArrayIndex } from '@media-router/shared-types';
 import type { PatchOp } from '@media-router/shared-types';
 import type { ConfigStore } from './config/ConfigStore.js';
 import type { EngineConnectionManager } from './engines/EngineConnectionManager.js';
-import type { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
 import type { PluginRegistry } from './plugins/PluginRegistry.js';
+import type { RuntimeCache } from './tree/RuntimeCache.js';
+import type { ConfigOp, TreePublisher } from './tree/TreePublisher.js';
 import { dispatchRule, type RuleContext } from './patchRules.js';
 
 const log = createLogger('PatchRouter');
 
 /**
- * Canonical sender id for an engine. Used across transports so the patch
- * router can reason about "who sent this" with a single string regardless of
- * whether it came over Socket.IO (browser) or dgram-comms (engine).
- *
- * Browsers use their Socket.IO `socket.id` — already globally unique. Engines
- * use `engine:<engineId>`, which can never collide with a Socket.IO id (those
- * are random base-whatever strings, not prefixed with `engine:`).
+ * Canonical sender id for an engine. Browsers use their Socket.IO `socket.id`;
+ * engines use `engine:<engineId>`, which can never collide with one.
  */
 export function engineSenderId(engineId: string): string {
     return `engine:${engineId}`;
 }
 
+type Keyed = { id?: unknown };
+
+/** `/connections/<index>…` → `/connections/<id>…` so tree subscribers address elements by id. */
+function idPath(op: PatchOp, arrays: Record<string, LiveArrayIndex<Keyed>>): PatchOp {
+    const m = /^\/(connections|interlocks)\/(\d+)(\/.*)?$/.exec(op.path);
+    if (!m) return op;
+    const id = arrays[m[1]].at(m[2])?.id;
+    return typeof id === 'string' ? { ...op, path: `/${m[1]}/${id}${m[3] ?? ''}` } : op;
+}
+
+interface Processed {
+    /** Full ordered list applied to the stored config (index paths, for engines). */
+    processed: PatchOp[];
+    /** Ops preprocessing added on top of what the sender sent. */
+    cascades: PatchOp[];
+    /** The same ops in id-path form, flagged by origin, for the tree. */
+    published: ConfigOp[];
+    /** Indexes of sender ops that the rules dropped (unknown id, …). */
+    dropped: number[];
+}
+
 /**
- * Manager-side N-1 Patch Router.
- *
- * Receives JSON Patch ops from any client (browser or engine), persists to
- * SQLite, detects side effects, and forwards to every destination except the
- * sender. Both transports (Socket.IO browsers, dgram engine) follow one
- * invariant — the sender gets only the cascades preprocessing added, every
- * other destination gets the full processed op list.
+ * Manager-side patch router: persists config ops from a browser or an engine,
+ * adds cascades (patchRules.ts), and forwards them — to the engine as index
+ * paths (the sender engine gets cascades only), to the tree as id paths (a
+ * browser sender gets its own ops back as the write echo).
  */
 export class PatchRouter {
     constructor(
         private configStore: ConfigStore,
         private engineManager: EngineConnectionManager,
-        private io: SocketIOServer,
+        private publisher: TreePublisher,
         private pluginRegistry: PluginRegistry,
-        private eventForwarder: EngineEventForwarder,
+        private runtime: RuntimeCache,
     ) {}
 
-    /**
-     * Process a patch from any source (browser or engine).
-     *
-     * Sender IDs are unified strings across transports:
-     *   - Browser senders use their Socket.IO `socket.id` (e.g. "AbC123").
-     *   - Engine senders use the sentinel `engineSenderId(engineId)` (e.g.
-     *     "engine:local"). This lets the broadcast logic treat "sender" as
-     *     a single string regardless of transport, with one rule for all
-     *     destinations.
-     *
-     * @param senderId  Unified sender ID (browser socket.id or engine sentinel).
-     * @param engineId  Which engine's config to patch.
-     * @param ops       JSON Patch operations as sent by the originator.
-     */
-    onPatch(senderId: string, engineId: string, ops: PatchOp[]): void {
-        if (!ops || ops.length === 0) return;
-
+    /** Returns the indexes of `ops` that were dropped instead of applied. */
+    onPatch(senderId: string, engineId: string, ops: PatchOp[], writeId?: number): number[] {
+        if (!ops || ops.length === 0) return [];
         const engine = this.configStore.getEngine(engineId);
         if (!engine?.active_profile) {
             log.warn({ engineId }, 'No active profile — dropping patch');
-            return;
+            return ops.map((_, i) => i);
         }
 
-        log.debug({ engineId, senderId, opCount: ops.length }, 'Processing patch');
+        let result: Processed = { processed: [], cascades: [], published: [], dropped: [] };
+        this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
+            result = this.preprocessOps(engineId, config, ops);
+            applyJsonPatch(config, result.processed);
+            return config;
+        });
 
-        // `preprocessOps` returns two op lists:
-        //   - `processed`: full list applied to the stored config (rewrites of
-        //     originals + cascades added by preprocessing).
-        //   - `cascades`: only ops added by preprocessing on top of what the
-        //     sender sent (e.g. interlock mutes, connection cleanup on module
-        //     delete). The sender has NOT applied these.
-        // Rewrites of originals deliberately stay out of `cascades` — echoing
-        // them back to the sender would double-apply (e.g. a rewritten
-        // index-based remove on an array the sender already spliced by id).
-        let processed: PatchOp[] = [];
-        let cascades: PatchOp[] = [];
-        const updatedConfig = this.configStore.modifyProfileConfig(
-            engineId,
-            engine.active_profile as string,
-            (config) => {
-                const result = this.preprocessOps(engineId, config, ops);
-                processed = result.processed;
-                cascades = result.cascades;
-                applyJsonPatch(config, processed);
-                return config;
-            },
-        );
-
-        // Module runtime state is cached per engine and merged, never deleted —
-        // reconcile it here, the one place every module add/remove passes
-        // through. Without this a removed module's last state lingers and
-        // `watch:engine` rehydration serves the ghost (docs/TodoNotes.md).
-        this.reconcileModuleStateCache(engineId, processed);
-
-        this.broadcast(engineId, senderId, processed, cascades, ops, updatedConfig);
+        this.reconcileModuleStateCache(engineId, result.processed);
+        this.sendToEngine(engineId, senderId, result);
+        this.publisher.config(engineId, this.enrich(engineId, result.published), senderId, writeId);
+        if (result.processed.some((op) => /^\/(modules\/[^/]+|connections(\/[^/]+)?)$/.test(op.path))) {
+            this.publisher.info(engineId);
+        }
+        return result.dropped;
     }
 
-    /** Purge cached state for removed modules; lift tombstones for re-added ones. */
+    /** Removed modules lose their cached state; re-added ones lose their tombstone. */
     private reconcileModuleStateCache(engineId: string, processed: PatchOp[]): void {
         const removed: string[] = [];
         const added: string[] = [];
@@ -107,162 +88,64 @@ export class PatchRouter {
             if (op.op === 'remove') removed.push(match[1]);
             else if (op.op === 'add') added.push(match[1]);
         }
-        if (added.length > 0) this.eventForwarder.clearModuleTombstones(engineId, added);
-        if (removed.length > 0) this.eventForwarder.purgeModuleStates(engineId, removed);
+        if (added.length > 0) this.runtime.clearModuleTombstones(engineId, added);
+        if (removed.length > 0) this.runtime.purgeModuleStates(engineId, removed);
     }
 
-    /**
-     * N-1 dispatch — send the patch to every destination for `engineId` except
-     * the sender. One invariant, uniformly applied across both transports:
-     *
-     *   destination IS sender   → receive `cascades` only
-     *   destination NOT sender  → receive the full op list
-     *
-     * The payload's path form differs by transport (engine needs index-based
-     * paths because `applyJsonPatch` can't walk arrays by id; browsers prefer
-     * id-based because their store's applyOp handles both and id paths survive
-     * concurrent array mutations). That's a transport detail — the rule above
-     * stays the same.
-     *
-     * Socket.IO handles browser fan-out natively via rooms: `except(senderId)`
-     * excludes the sender socket, `to(senderId)` targets just them. When the
-     * engine is the sender, its sentinel id matches no Socket.IO socket, so
-     * `except` broadcasts to all browsers and `to` is a no-op — the same rule
-     * produces the correct result without branching on sender type.
-     */
-    private broadcast(
-        engineId: string,
-        senderId: string,
-        processed: PatchOp[],
-        cascades: PatchOp[],
-        originals: PatchOp[],
-        updatedConfig: Record<string, unknown> | undefined,
-    ): void {
-        const engineSid = engineSenderId(engineId);
-
-        // --- Engine destination (dgram-comms, index-based paths) ---
-        if (this.engineManager.isEngineOnline(engineId)) {
-            const delta = senderId === engineSid ? cascades : processed;
-            if (delta.length > 0) {
-                this.engineManager.sendToEngine(
-                    engineId,
-                    'patch',
-                    { ops: delta },
-                    { guaranteeDelivery: true },
-                );
-            }
-        }
-
-        // --- Browser destinations (Socket.IO, id-based originals + cascades) ---
-        // Non-sender browsers get originals (id-based, unambiguous under
-        // concurrent edits) plus any cascades preprocessing added, with UI
-        // fields merged onto module-adds.
-        const enriched = this.enrichOpsForBroadcast(
-            engineId,
-            [...originals, ...cascades],
-            updatedConfig,
-        );
-        this.io.except(senderId).emit('engine:update', { engineId, patch: enriched });
-        // Sender browser (if any) already applied originals — send cascades only.
-        // No-op when engineSenderId was the sender (no socket matches).
-        if (cascades.length > 0) {
-            this.io.to(senderId).emit('engine:update', { engineId, patch: cascades });
+    /** N-1 to the engine: the engine as sender gets only the cascades it did not apply. */
+    private sendToEngine(engineId: string, senderId: string, r: Processed): void {
+        if (!this.engineManager.isEngineOnline(engineId)) return;
+        const delta = senderId === engineSenderId(engineId) ? r.cascades : r.processed;
+        if (delta.length > 0) {
+            this.engineManager.sendToEngine(engineId, 'patch', { ops: delta }, { guaranteeDelivery: true });
         }
     }
 
     /**
-     * Dispatch each incoming op through the rule table.
-     *
-     * `preprocessOps` is intentionally tiny — all domain logic lives in
-     * `patchRules.ts`. Adding a new cascade = adding a new rule function.
-     * The dispatcher itself never needs to change.
-     *
-     * Module *state* is snapshotted once before the loop, so cascade rules see
-     * the pre-patch world — cascades fire on the state as it was when the
-     * patch arrived, not on an intermediate state between ops.
-     *
-     * Array *membership* is the one thing that has to move with the batch.
-     * Rules rewrite `/connections/<id>` to an index, and that index is only
-     * valid at the point its op lands in the processed list. Resolving every
-     * op against the pre-patch array made two id-based removes in one batch
-     * mis-target: the first removal shifts the array and the second index then
-     * deletes whatever slid into the freed slot. `LiveArrayIndex` folds each
-     * emitted op back in, so every op resolves ids against the array as it
-     * will be when that op applies. Element contents stay pre-patch, so the
-     * cascade rules keep their semantics.
+     * Run each op through the rule table. Module state is snapshotted once,
+     * so cascades see the pre-patch world; array membership folds forward
+     * (`LiveArrayIndex`) so an index is valid at the point its op applies.
      */
-    private preprocessOps(
-        engineId: string,
-        config: Record<string, unknown>,
-        ops: PatchOp[],
-    ): { processed: PatchOp[]; cascades: PatchOp[] } {
+    private preprocessOps(engineId: string, config: Record<string, unknown>, ops: PatchOp[]): Processed {
         if (!Array.isArray(config.interlocks)) config.interlocks = [];
-        const connections = new LiveArrayIndex(
-            '/connections',
-            (config.connections ?? []) as Array<Record<string, unknown>>,
-        );
-        const interlocks = new LiveArrayIndex(
-            '/interlocks',
-            config.interlocks as Array<{ id: string; members: string[] }>,
-        );
+        const arrays = {
+            connections: new LiveArrayIndex<Keyed>('/connections', (config.connections ?? []) as Keyed[]),
+            interlocks: new LiveArrayIndex<Keyed>('/interlocks', config.interlocks as Keyed[]),
+        };
         const base = {
             modules: (config.modules ?? {}) as Record<string, Record<string, unknown>>,
             pluginRegistry: this.pluginRegistry,
-            engineSchemas: this.eventForwarder.getPluginSchemas(engineId),
+            engineSchemas: this.runtime.getPluginSchemas(engineId),
         };
-
-        const processed: PatchOp[] = [];
-        const cascades: PatchOp[] = [];
-        for (const op of ops) {
+        const out: Processed = { processed: [], cascades: [], published: [], dropped: [] };
+        ops.forEach((op, index) => {
             const ctx: RuleContext = {
                 ...base,
-                connections: connections.snapshot(),
-                interlocks: interlocks.snapshot(),
+                connections: arrays.connections.snapshot() as Array<Record<string, unknown>>,
+                interlocks: arrays.interlocks.snapshot() as Array<{ id: string; members: string[] }>,
             };
             const result = dispatchRule(op, ctx);
-            processed.push(...result.processed);
-            cascades.push(...result.cascades);
+            const cascades = new Set(result.cascades);
+            if (!result.processed.some((p) => !cascades.has(p))) out.dropped.push(index);
+            out.processed.push(...result.processed);
+            out.cascades.push(...result.cascades);
             for (const emitted of result.processed) {
-                connections.track(emitted);
-                interlocks.track(emitted);
+                out.published.push({ op: idPath(emitted, arrays), fromSender: !cascades.has(emitted) });
+                arrays.connections.track(emitted);
+                arrays.interlocks.track(emitted);
             }
-        }
-        return { processed, cascades };
+        });
+        return out;
     }
 
-    /**
-     * Enrich ops for broadcast (e.g. module add needs full module data with manifest info).
-     */
-    private enrichOpsForBroadcast(
-        engineId: string,
-        ops: PatchOp[],
-        updatedConfig: Record<string, unknown> | undefined,
-    ): PatchOp[] {
-        const enriched: PatchOp[] = [];
-
-        for (const op of ops) {
-            // Module add: stamp manifest fields + runtime defaults so freshly
-            // added modules render the same as those rehydrated by `engine:list`.
-            // Without this, plugin features keyed off manifest fields (resize
-            // grip, interlock affordance, status sections) only appear after a
-            // full refresh.
-            if (op.op === 'add' && op.path.match(/^\/modules\/[^/]+$/) && op.value) {
-                const moduleId = op.path.split('/')[2];
-                const value: Record<string, unknown> = {
-                    ...(op.value as Record<string, unknown>),
-                };
-                this.pluginRegistry.enrichModule(
-                    moduleId,
-                    value,
-                    this.eventForwarder.getPluginSchemas(engineId),
-                );
-                enriched.push({ ...op, value });
-                continue;
-            }
-
-            enriched.push(op);
-        }
-
-        return enriched;
+    /** Module adds carry manifest fields + runtime defaults, like a snapshot does. */
+    private enrich(engineId: string, entries: ConfigOp[]): ConfigOp[] {
+        return entries.map((entry) => {
+            const { op } = entry;
+            if (op.op !== 'add' || !/^\/modules\/[^/]+$/.test(op.path) || !op.value) return entry;
+            const value = { ...(op.value as Record<string, unknown>) };
+            this.pluginRegistry.enrichModule(op.path.split('/')[2], value, this.runtime.getPluginSchemas(engineId));
+            return { ...entry, op: { ...op, value } };
+        });
     }
 }

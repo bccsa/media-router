@@ -9,7 +9,7 @@ import type { EngineState } from '@/stores/engines';
 const mockCloneModule = vi.fn();
 const mockModulesField = vi.fn();
 const mockRemoveModules = vi.fn();
-const mockEmit = vi.fn();
+const mockCall = vi.fn(async (..._args: unknown[]) => ({}));
 
 vi.mock('@/composables/usePatch', () => ({
     patch: {
@@ -20,7 +20,7 @@ vi.mock('@/composables/usePatch', () => ({
 }));
 
 vi.mock('@/stores/socket', () => ({
-    useSocketStore: () => ({ emit: (...args: unknown[]) => mockEmit(...args) }),
+    useSocketStore: () => ({ call: (...args: unknown[]) => mockCall(...args) }),
 }));
 
 import { useContextMenu } from './useContextMenu';
@@ -60,7 +60,7 @@ const rightClick = (id: string) => ({
 
 beforeEach(() => {
     setActivePinia(createPinia());
-    for (const m of [mockCloneModule, mockModulesField, mockRemoveModules, mockEmit]) m.mockReset();
+    for (const m of [mockCloneModule, mockModulesField, mockRemoveModules, mockCall]) m.mockReset();
 });
 
 describe('useContextMenu clone action (#675)', () => {
@@ -172,8 +172,8 @@ describe('useContextMenu group actions', () => {
 
         menu.onContextAction('restart');
 
-        expect(mockEmit).toHaveBeenCalledTimes(3);
-        expect(mockEmit).toHaveBeenCalledWith('module:restart', { engineId: 'eng-1', moduleId: 'c' });
+        expect(mockCall).toHaveBeenCalledTimes(3);
+        expect(mockCall).toHaveBeenCalledWith('/engines/eng-1/modules/c', 'restart');
     });
 
     it('hands a group delete to the confirm instead of deleting', () => {

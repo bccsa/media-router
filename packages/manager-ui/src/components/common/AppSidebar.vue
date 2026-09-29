@@ -5,6 +5,7 @@ import draggable from 'vuedraggable';
 import { useEngineStore } from '@/stores/engines';
 import { useEngineGroupsStore } from '@/stores/engineGroups';
 import { useSocketStore } from '@/stores/socket';
+import { engineActions } from '@/utils/engineActions';
 import { engineGroupsApi } from '@/api/engineGroups';
 import { useEngineSidebarMenu } from '@/composables/useEngineSidebarMenu';
 import EngineGroup from './EngineGroup.vue';
@@ -108,7 +109,7 @@ function confirmRebootEngine() {
     if (!rebootModal.value) return;
     const engineId = rebootModal.value.engineId;
     rebootModal.value = null;
-    socket.emit('engine:reboot', { engineId });
+    void engineActions.reboot(engineId);
 }
 
 // Failure notification driven by the engine reporting `rebootFailed`

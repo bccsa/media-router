@@ -4,16 +4,24 @@ import cors from 'cors';
 import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shared-types';
-import type { DgramListener } from '@media-router/shared-types';
+import type { DgramListener, PatchOp } from '@media-router/shared-types';
 import { ConfigStore } from './config/ConfigStore.js';
 import { EngineConnectionManager } from './engines/EngineConnectionManager.js';
 import { PluginRegistry } from './plugins/PluginRegistry.js';
+import { TopicBus } from '@media-router/topic-tree';
 import { EngineCommandService } from './handlers/EngineCommandService.js';
 import { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
 import { PatchRouter, engineSenderId } from './PatchRouter.js';
-import { setupSocketIO } from './socket/SocketIOSetup.js';
 import { registerHttpRoutes } from './routes/httpRoutes.js';
 import { PluginUploadService } from './services/PluginUploadService.js';
+import { RuntimeCache } from './tree/RuntimeCache.js';
+import { EngineView } from './tree/EngineView.js';
+import { ManagerTree } from './tree/ManagerTree.js';
+import { TreePublisher } from './tree/TreePublisher.js';
+import { TreeWrites } from './tree/TreeWrites.js';
+import { AdminWrites } from './tree/AdminWrites.js';
+import { TreeCalls } from './tree/TreeCalls.js';
+import { setupTree } from './tree/setupTree.js';
 
 const log = createLogger('Manager');
 
@@ -31,11 +39,11 @@ export interface ManagerConfig {
  * Business logic:
  * - PatchRouter.ts                — unified N-1 config patch routing
  * - handlers/EngineCommandService — engine start/stop with retry
- * - handlers/EngineEventForwarder — engine→browser event streaming
+ * - handlers/EngineEventForwarder — engine events → runtime cache → tree
+ * - tree/                         — the browser protocol (ADR-0024): tree
+ *                                    source, publisher, write/call dispatch
  * - plugins/PluginRegistry.ts     — plugin manifest scanning
- * - routes/httpRoutes.ts          — /health + static SPA serving (application
- *                                    API lives on Socket.IO RPC, see
- *                                    socket/rpcHandlers.ts)
+ * - routes/httpRoutes.ts          — /health + static SPA serving
  */
 export class Manager {
     private readonly config: Required<ManagerConfig>;
@@ -81,51 +89,53 @@ export class Manager {
         // Services
         this.pluginRegistry = new PluginRegistry();
         const pluginRegistry = this.pluginRegistry;
-        this.engineCommands = new EngineCommandService(this.configStore, this.engineManager);
+        const configStore = this.configStore;
+        const engineManager = this.engineManager;
+        this.engineCommands = new EngineCommandService(configStore, engineManager);
         const engineCommands = this.engineCommands;
-        const eventForwarder = new EngineEventForwarder(
-            this.configStore,
-            this.engineManager,
-            engineCommands,
-            this.io,
-        );
-        const patchRouter = new PatchRouter(
-            this.configStore,
-            this.engineManager,
-            this.io,
-            pluginRegistry,
-            eventForwarder,
-        );
 
-        // Wire everything
+        // The tree (ADR-0024): runtime cache + stored config → one subscribable view.
+        const runtime = new RuntimeCache();
+        const view = new EngineView({ configStore, runtime, pluginRegistry, engineManager });
+        const tree = new ManagerTree({ view, configStore, engineManager, pluginRegistry });
+        const bus = new TopicBus(tree);
+        const publisher = new TreePublisher(bus, view);
+
+        const eventForwarder = new EngineEventForwarder(
+            configStore,
+            engineManager,
+            engineCommands,
+            runtime,
+            publisher,
+        );
+        const patchRouter = new PatchRouter(configStore, engineManager, publisher, pluginRegistry, runtime);
         eventForwarder.setup();
 
         // Handle patches from engine (N-1 router)
-        this.engineManager.on('enginePatch', (engineId: string, data: unknown) => {
+        engineManager.on('enginePatch', (engineId: string, data: unknown) => {
             const envelope = safeParse(PatchEnvelopeSchema, data, 'enginePatch', log);
             if (envelope) patchRouter.onPatch(engineSenderId(engineId), engineId, envelope.ops);
         });
 
-        // Broadcast interlock repairs made during engine reconnect so browsers update.
-        this.engineManager.on('interlockRepair', (engineId: string, ops: unknown) => {
-            this.io.emit('engine:update', { engineId, patch: ops });
+        // Interlock repairs made on engine reconnect (id paths) reach every browser.
+        engineManager.on('interlockRepair', (engineId: string, ops: PatchOp[]) => {
+            publisher.config(engineId, ops.map((op) => ({ op, fromSender: false })), '');
         });
 
-        const pluginUploads = new PluginUploadService(pluginRegistry);
-
-        setupSocketIO({
-            io: this.io,
-            configStore: this.configStore,
-            engineManager: this.engineManager,
-            pluginRegistry,
-            engineCommands,
-            eventForwarder,
+        const writes = new TreeWrites(
             patchRouter,
-            pluginUploads,
+            view,
+            new AdminWrites({ configStore, engineManager, engineCommands, runtime, publisher, tree }),
+            bus,
+        );
+        const calls = new TreeCalls({
+            configStore,
+            engineManager,
+            runtime,
+            publisher,
+            pluginUploads: new PluginUploadService(pluginRegistry),
         });
-        // HTTP now only serves /health + the SPA static bundle. Every plugin
-        // and application API — including upload + preview — lives on
-        // Socket.IO RPC.
+        setupTree({ io: this.io, bus, writes, calls });
         registerHttpRoutes({ app });
 
         log.info(

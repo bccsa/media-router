@@ -27,10 +27,9 @@ const engineIdChanged = computed(
 );
 
 function openEdit() {
-    // Password stays blank: the server never round-trips the dgram-comms
-    // shared secret to the client. Omitting `password` from the
-    // `engine:update` RPC payload means "keep current" — the schema in
-    // shared-types/validation.ts (UpdateEngineSchema) treats it as optional.
+    // Password stays blank: the server never sends the dgram-comms shared
+    // secret to the client. A blank field means "keep current" — only a
+    // typed password is sent, via the `setPassword` call.
     editError.value = '';
     showPassword.value = false;
     editForm.value = {
@@ -53,26 +52,22 @@ async function saveEdit() {
     editLoading.value = true;
     editError.value = '';
     try {
-        const payload: {
-            engineId: string;
-            displayName: string;
-            password?: string;
-            newEngineId?: string;
-        } = {
-            engineId: props.engineId,
-            displayName: editForm.value.displayName,
-        };
-        if (editForm.value.password) payload.password = editForm.value.password;
-        if (engineIdChanged.value) payload.newEngineId = editForm.value.engineId.trim();
+        // Name and password on the current id first; a rename re-keys everything after.
+        const at = `/engines/${props.engineId}`;
+        if (editForm.value.displayName !== engine.value?.name) {
+            await socket.writeOrThrow([
+                { op: 'replace', path: `${at}/info/name`, value: editForm.value.displayName },
+            ]);
+        }
+        if (editForm.value.password) {
+            await socket.call(at, 'setPassword', { password: editForm.value.password });
+        }
+        if (engineIdChanged.value) {
+            await socket.call(at, 'rename', { newEngineId: editForm.value.engineId.trim() });
+        }
 
-        await socket.request('engine:update', payload);
-
-        // The ack and the `engine:renamed` broadcast travel on the same
-        // socket, but Socket.IO doesn't guarantee the broadcast handler has
-        // fired by the time the ack callback returns. Yield one tick so the
-        // socket store's `engine:renamed` handler can rekey the engine Map
-        // first — otherwise `router.replace(/engines/${newId})` would briefly
-        // render the "Engine not found" empty state against the new id.
+        // Yield one tick so the `tree:renamed` re-key lands before the route
+        // changes — otherwise `/engines/${newId}` briefly renders "not found".
         await nextTick();
 
         const newId = engineIdChanged.value ? editForm.value.engineId.trim() : null;
@@ -88,7 +83,7 @@ async function saveEdit() {
 async function deleteEngine() {
     deleting.value = true;
     try {
-        await socket.request('engine:delete', { engineId: props.engineId });
+        await socket.writeOrThrow([{ op: 'remove', path: `/engines/${props.engineId}` }]);
         router.push('/engines');
     } catch (err) {
         console.warn('[EngineDetail] delete failed', err);
@@ -131,8 +126,8 @@ const infoRows = computed(() => {
             : []),
         ...(engine.value.buildNumber ? [{ label: 'Build', value: engine.value.buildNumber }] : []),
         { label: 'Active Profile', value: engine.value.activeProfile ?? 'None' },
-        { label: 'Modules', value: String(Object.keys(engine.value.modules).length) },
-        { label: 'Connections', value: String(engine.value.connections.length) },
+        { label: 'Modules', value: String(engine.value.moduleCount ?? Object.keys(engine.value.modules).length) },
+        { label: 'Connections', value: String(engine.value.connectionCount ?? engine.value.connections.length) },
     ];
     return rows;
 });

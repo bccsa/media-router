@@ -2,7 +2,7 @@ import { ref, computed } from 'vue';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useEngineGroupsStore } from '@/stores/engineGroups';
-import { useSocketStore } from '@/stores/socket';
+import { engineActions } from '@/utils/engineActions';
 import { engineGroupsApi } from '@/api/engineGroups';
 
 /**
@@ -22,7 +22,6 @@ export function useEngineSidebarMenu(callbacks: {
 }) {
     const engineStore = useEngineStore();
     const groupsStore = useEngineGroupsStore();
-    const socket = useSocketStore();
 
     type EngineMenuCtx = { kind: 'engine'; engineId: string };
     type GroupMenuCtx = { kind: 'group'; groupId: string };
@@ -102,8 +101,10 @@ export function useEngineSidebarMenu(callbacks: {
 
         if (ctx.kind === 'engine') {
             const engineId = ctx.engineId;
-            if (action === 'engine:start' || action === 'engine:stop' || action === 'engine:reset') {
-                socket.emit(action, { engineId });
+            if (action === 'engine:start' || action === 'engine:stop') {
+                engineActions.setRunning(engineId, action === 'engine:start');
+            } else if (action === 'engine:reset') {
+                void engineActions.reset(engineId);
             } else if (action === 'engine:reboot') {
                 // Confirm before firing — rebooting kills the engine host.
                 const engine = engineStore.getEngine(engineId);
