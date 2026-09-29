@@ -154,7 +154,7 @@ The engine searches for this file in its working directory and up to 3 parent di
 ## Testing
 
 ```bash
-# Run all tests (280 tests across 27 files)
+# Run all tests
 pnpm test
 
 # Run with coverage
@@ -163,6 +163,14 @@ pnpm test -- --coverage
 # Run a specific test file
 pnpm test -- packages/engine/src/routing/PortRegistry.test.ts
 ```
+
+Tests run our own packages from source: `vitest.config.ts` aliases each
+workspace package to its `src` (a new package needs an entry there), so no
+build is needed. That includes `@media-router/topic-tree/testing`, the tree
+test helpers (`fakeSocket`, `objectSource`), a real package subpath. The
+exception is hls-player's paced-sink tests, which run the engine's compiled
+sink in a real worker: build the engine first
+(`pnpm --filter @media-router/engine build`).
 
 ## Project Structure
 

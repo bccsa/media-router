@@ -133,6 +133,7 @@ export class Manager {
             engineManager,
             runtime,
             publisher,
+            patchRouter,
             pluginUploads: new PluginUploadService(pluginRegistry),
         });
         setupTree({ io: this.io, bus, writes, calls });

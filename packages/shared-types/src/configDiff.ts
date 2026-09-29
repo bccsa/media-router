@@ -1,4 +1,5 @@
-import { coerceArray, joinPath, type PatchOp } from '@media-router/shared-types';
+import { coerceArray, type PatchOp } from './index.js';
+import { joinPath } from './tree/paths.js';
 
 type Obj = Record<string, unknown>;
 
@@ -34,7 +35,8 @@ function moduleOps(id: string, prev: Obj, next: Obj): PatchOp[] {
  * patch router so each has its live effect (ADR-0025): modules added or
  * removed whole, settings per key, other module fields whole; connections
  * by id (a re-pointed edge is removed and re-added), channel maps in place;
- * interlocks whole. Removes come first.
+ * interlocks whole. Removes come first. Used by a router's connect push and
+ * by the manager's rollback.
  */
 export function diffConfig(from: Obj, to: Obj): PatchOp[] {
     const ops: PatchOp[] = [];

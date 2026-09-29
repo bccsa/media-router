@@ -29,6 +29,11 @@
   in that window is not reverted by the older push. A journal without a known
   profile (nothing pushed since boot) is dropped. A plugin auto-write also
   updates the router's own config, LCP and tree, not only the manager's.
+- **Rollback applies the difference (amended 2026-09-29).** Rolling back the
+  active profile sends the router only the difference, through the manager's
+  `PatchRouter` like any edit, never a rebuild, so restart-required settings
+  stay pending (UR-MGR-006c). Old routers apply it too: they already take
+  manager patches. `diffConfig` lives in shared-types for both ends.
 
 ## Why
 

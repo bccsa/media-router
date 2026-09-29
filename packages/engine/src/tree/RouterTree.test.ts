@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { TreeCallError } from '@media-router/topic-tree';
-import { fakeSocket } from '@media-router/topic-tree/dist/testing.js';
+import { fakeSocket } from '@media-router/topic-tree/testing';
 import { applyJsonPatch, type PatchOp } from '@media-router/shared-types';
 import { RouterView, type RouterViewDeps } from './RouterView.js';
 import { RouterTree } from './RouterTree.js';

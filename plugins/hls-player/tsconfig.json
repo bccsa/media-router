@@ -5,5 +5,5 @@
         "rootDir": "./engine"
     },
     "include": ["engine"],
-    "exclude": ["engine/**/*.test.ts"]
+    "exclude": ["engine/**/*.test.ts", "engine/**/testing/**"]
 }

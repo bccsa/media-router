@@ -352,7 +352,9 @@ function handleFileImport(event: Event) {
     <!-- Rollback confirmation -->
     <MrModal v-if="showRollbackConfirm" title="Rollback Config" @close="showRollbackConfirm = null">
         <p class="text-sm text-subtle">
-            Restore this version? The current config will be overwritten.
+            Restore this version? The current config will be overwritten. If this profile is
+            active, the router applies the changes now; settings that need a restart wait
+            until the module restarts.
         </p>
         <template #footer>
             <MrButton variant="secondary" @click="showRollbackConfirm = null">Cancel</MrButton>

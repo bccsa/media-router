@@ -378,9 +378,14 @@ Anything else is rejected with `not writable` or `read-only`.
 
 - **`engineId` format.** 1–64 characters, starting with a letter or digit,
   then letters, digits, `.`, `_` or `-`.
-- **Rollback.** It stores the old version as the profile's config and does
-  nothing else. It publishes nothing and doesn't push the config to a running
-  router. Re-activate the profile to apply it.
+- **Rollback.** It restores the version's graph and settings; the run intent
+  (running or stopped) stays as it is. For the active profile the manager
+  sends the router only the difference, as it does for any edit: live values
+  take effect at once, restart-required settings wait for a module restart
+  (`pendingRestart`), and modules and connections are added or removed.
+  Nothing is restarted, and subscribers get the changes as ordinary ops. An
+  offline router gets the change when it reconnects. Any other profile is only
+  stored.
 
 ---
 

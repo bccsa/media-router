@@ -1,5 +1,4 @@
-import { createLogger, type PatchOp } from '@media-router/shared-types';
-import { diffConfig, GRAPH_KEYS } from './configDiff.js';
+import { createLogger, diffConfig, GRAPH_KEYS, type PatchOp } from '@media-router/shared-types';
 import type { ConfigPush, LocalChanges } from './LocalChanges.js';
 
 const log = createLogger('ConfigPush');

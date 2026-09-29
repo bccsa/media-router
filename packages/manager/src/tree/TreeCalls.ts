@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import { CreateEngineSchema, EngineIdSchema, createLogger, splitPath } from '@media-router/shared-types';
+import { CreateEngineSchema, EngineIdSchema, createLogger, diffConfig, splitPath } from '@media-router/shared-types';
 import { TreeCallError, type TreeCaller } from '@media-router/topic-tree';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
+import type { PatchRouter } from '../PatchRouter.js';
 import type { PluginUploadService } from '../services/PluginUploadService.js';
 import type { RuntimeCache } from './RuntimeCache.js';
 import type { TreePublisher } from './TreePublisher.js';
@@ -20,6 +21,7 @@ export interface TreeCallsDeps {
     engineManager: EngineConnectionManager;
     runtime: RuntimeCache;
     publisher: TreePublisher;
+    patchRouter: PatchRouter;
     pluginUploads: PluginUploadService;
 }
 
@@ -33,7 +35,7 @@ function args<T>(schema: z.ZodType<T>, raw: unknown): T {
 export class TreeCalls {
     constructor(private readonly d: TreeCallsDeps) {}
 
-    handle(_caller: TreeCaller, path: string, method: string, raw: unknown): unknown {
+    handle(caller: TreeCaller, path: string, method: string, raw: unknown): unknown {
         const [root, id, branch, sub] = splitPath(path);
         if (root === 'engines' && id === undefined && method === 'create') return this.createEngine(raw);
         if (root === 'engines' && id !== undefined) {
@@ -42,7 +44,7 @@ export class TreeCalls {
             if (branch === 'modules' && sub !== undefined && method === 'restart') {
                 return this.command(id, { command: 'moduleRestart', moduleId: sub });
             }
-            if (branch === 'profiles' && sub !== undefined) return this.profileCall(id, sub, method, raw);
+            if (branch === 'profiles' && sub !== undefined) return this.profileCall(caller, id, sub, method, raw);
         }
         if (root === 'plugins' && id !== undefined) return this.pluginCall(id, method, raw);
         throw new TreeCallError(`no method ${method} on ${path}`);
@@ -114,8 +116,8 @@ export class TreeCalls {
         return {};
     }
 
-    private profileCall(engineId: string, name: string, method: string, raw: unknown): unknown {
-        const { configStore } = this.d;
+    private profileCall(caller: TreeCaller, engineId: string, name: string, method: string, raw: unknown): unknown {
+        const { configStore, patchRouter } = this.d;
         switch (method) {
             case 'config': {
                 const config = configStore.getProfile(engineId, name);
@@ -127,7 +129,19 @@ export class TreeCalls {
             case 'rollback': {
                 const version = configStore.getVersion(engineId, name, args(Rollback, raw).versionId);
                 if (!version) throw new TreeCallError('Version not found');
-                configStore.updateProfileConfig(engineId, name, version);
+                const current = configStore.getProfile(engineId, name);
+                if (!current) throw new TreeCallError('Profile not found');
+                // Restores the graph and settings; the run intent stays today's.
+                const restored = { ...version, running: current.running };
+                if (configStore.getEngine(engineId)?.active_profile !== name) {
+                    configStore.updateProfileConfig(engineId, name, restored);
+                    return {};
+                }
+                // The difference goes out like any edit: live values at once,
+                // restart-required ones pending (UR-MGR-006c).
+                const ops = diffConfig(current, restored);
+                const dropped = patchRouter.onPatch(caller.socketId, engineId, ops).map((i) => ops[i].path);
+                if (dropped.length > 0) log.warn({ engineId, profile: name, dropped }, 'Rollback ops not applied');
                 return {};
             }
             default:

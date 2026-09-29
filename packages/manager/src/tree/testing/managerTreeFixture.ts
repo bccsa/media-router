@@ -3,7 +3,7 @@ import { vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { applyTreeOp } from '@media-router/shared-types';
 import { TopicBus } from '@media-router/topic-tree';
-import { fakeSocket } from '@media-router/topic-tree/dist/testing.js';
+import { fakeSocket } from '@media-router/topic-tree/testing';
 import { ConfigStore } from '../../config/ConfigStore.js';
 import { PluginRegistry } from '../../plugins/PluginRegistry.js';
 import { EngineCommandService } from '../../handlers/EngineCommandService.js';
@@ -63,7 +63,7 @@ export function setup() {
     new EngineEventForwarder(configStore, engineManager, engineCommands, runtime, publisher).setup();
     const patchRouter = new PatchRouter(configStore, engineManager, publisher, registry, runtime);
     const writes = new TreeWrites(patchRouter, view, new AdminWrites({ configStore, engineManager, engineCommands, runtime, publisher, tree }), bus);
-    const calls = new TreeCalls({ configStore, engineManager, runtime, publisher, pluginUploads: {} as any });
+    const calls = new TreeCalls({ configStore, engineManager, runtime, publisher, patchRouter, pluginUploads: {} as any });
     const sock = (id: string, patterns: string[]) => {
         const s = fakeSocket(id);
         bus.attach(s);

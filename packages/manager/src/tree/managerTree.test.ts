@@ -127,6 +127,41 @@ describe('manager tree (integration)', () => {
         expect(() => calls.handle({ socketId: 'a' }, '/engines/e2', 'explode', {})).toThrow(/no method/);
     });
 
+    it('rollback sends the active profile only the difference and keeps the run intent', async () => {
+        const { writes, calls, engineManager, stored, track } = setup();
+        const t = track('a', ['/engines/e1/modules/m1/settings/volume']);
+        const write = (path: string, value: unknown) => writes.handle({ socketId: 'x' }, [{ op: 'replace', path, value }], 1);
+        await write('/engines/e1/info/running', false); // first version: stopped, volume 80
+        vi.advanceTimersByTime(11 * 60 * 1000); // history keeps one version per 10 min
+        await write('/engines/e1/info/running', true);
+        await write('/engines/e1/modules/m1/settings/volume', 120);
+        const versions = calls.handle({ socketId: 'x' }, '/engines/e1/profiles/default', 'history', {}) as Array<{ id: number; config: string }>;
+        const stopped = versions.find((v) => JSON.parse(v.config).running === false)!;
+        engineManager.sendToEngine.mockClear();
+        calls.handle({ socketId: 'x' }, '/engines/e1/profiles/default', 'rollback', { versionId: stopped.id });
+        expect(stored().modules.m1.settings.volume).toBe(80);
+        expect(stored().running).toBe(true);
+        // No config push, no start: live values apply, restart-required ones wait (UR-MGR-006c).
+        expect(engineManager.sendToEngine.mock.calls).toEqual([
+            ['e1', 'patch', { ops: [{ op: 'replace', path: '/modules/m1/settings/volume', value: 80 }] }, { guaranteeDelivery: true }],
+        ]);
+        expect(t.sync().engines.e1.modules.m1.settings.volume).toBe(80);
+    });
+
+    it('rollback of an inactive profile only stores it', () => {
+        const { configStore, calls, engineManager } = setup();
+        const spare = (volume: number) => ({ modules: { m1: { pluginId: 'audio-output', settings: { volume } } }, connections: [], interlocks: [] });
+        configStore.createProfile('e1', 'spare', {});
+        configStore.updateProfileConfig('e1', 'spare', spare(10));
+        vi.advanceTimersByTime(11 * 60 * 1000);
+        configStore.updateProfileConfig('e1', 'spare', spare(20));
+        const versions = configStore.getVersionHistory('e1', 'spare');
+        const first = versions.find((v) => JSON.parse(v.config).modules.m1.settings.volume === 10)!;
+        calls.handle({ socketId: 'x' }, '/engines/e1/profiles/spare', 'rollback', { versionId: first.id });
+        expect((configStore.getProfile('e1', 'spare') as any).modules.m1.settings.volume).toBe(10);
+        expect(engineManager.sendToEngine).not.toHaveBeenCalled();
+    });
+
     it('anything outside the writable paths is rejected', async () => {
         const { writes } = setup();
         const res = await writes.handle({ socketId: 'a' }, [{ op: 'replace', path: '/foo', value: 1 }], 1);

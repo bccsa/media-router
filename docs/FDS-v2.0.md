@@ -929,8 +929,8 @@ If engine X has > 10 versions, delete oldest
 1. User opens version history for an engine (manager UI)
 2. Manager lists stored versions with timestamps and optional labels
 3. User selects a version to preview (diff view against current config)
-4. User confirms restore → manager replaces current config with selected version
-5. If the engine is online, the restored config is pushed immediately
+4. User confirms restore → manager restores the version's graph and settings; the run intent (running/stopped) stays as it is
+5. If the profile is active, the manager sends the engine the difference through its patch router, like any edit: live values apply at once, restart-required settings are held pending (UR-MGR-006c), modules and connections are added or removed. An offline engine gets it in the connect push (ADR-0025). A non-active profile is only stored.
 
 The current (live) config is always the `config` column in the `engines` table. The `engine_config_history` table holds only historical snapshots.
 

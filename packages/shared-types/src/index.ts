@@ -5,6 +5,7 @@
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
 export { LiveArrayIndex } from './LiveArrayIndex.js';
+export { diffConfig, GRAPH_KEYS } from './configDiff.js';
 export * from './tree/index.js';
 export {
     PatchOpSchema,

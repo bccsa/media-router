@@ -40,6 +40,20 @@ const STOP_PIPELINE_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 1000;
 // them and the parent's `stop()` sees a channel close instead of a clean exit.
 export const SHUTDOWN_FLUSH_MS = 250;
 
+// Replies to a tracked request: they resolve by request id, so a retired
+// process's reply can only answer a request it was sent.
+const REPLY_EVENTS = new Set([
+    'property',
+    'stats',
+    'throughput',
+    'property_set',
+    'tracking',
+    'bus_reinput_done',
+    'command_error',
+]);
+// A retired process's events worth a log line when dropped.
+const RETIRED_LOGGED = new Set(['error', 'warning', 'state_change']);
+
 // The `startPipeline` wire message: the runner start options plus the two
 // restart-policy knobs GstRunner consumes itself (not forwarded to Python).
 interface StartPipelineMessage extends RunnerStartOptions {
@@ -405,8 +419,22 @@ export class GstRunner {
      * Error boundary around every Python event. The runner shares the engine
      * process, so a throw here must stay a logged, dropped event — never an
      * uncaught exception that takes every other module's runner with it.
+     *
+     * Only the live process speaks for the pipeline. A predecessor retired by a
+     * relaunch keeps draining (seconds, if its EOS drain times out) and its late
+     * `null` / teardown error would otherwise mark the new pipeline stopped or
+     * restart it. Its replies still answer the requests it was sent.
      */
-    private dispatchPythonEvent(eventJson: Record<string, unknown>): void {
+    private dispatchPythonEvent(from: PythonProcess, eventJson: Record<string, unknown>): void {
+        const event = String(eventJson.event);
+        if (from !== this.python && !REPLY_EVENTS.has(event)) {
+            if (RETIRED_LOGGED.has(event)) {
+                console.error(
+                    `[gst-runner] Dropped ${event} from a retired process: ${String(eventJson.message ?? eventJson.state)}`,
+                );
+            }
+            return;
+        }
         try {
             this.handlePythonEvent(eventJson);
         } catch (err) {
@@ -679,7 +707,7 @@ export class GstRunner {
             const py: PythonProcess = new PythonProcess({
                 pythonRunnerPath: this.pythonRunnerPath,
                 useStdioForData: opts.useStdioForData ?? false,
-                onEvent: (event) => this.dispatchPythonEvent(event),
+                onEvent: (event) => this.dispatchPythonEvent(py, event),
                 onExit: (code, signal) => this.handlePythonExit(py, code, signal),
                 onSpawnError: (err) => this.handlePythonSpawnError(py, err),
             });
