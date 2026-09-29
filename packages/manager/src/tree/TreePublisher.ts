@@ -1,5 +1,5 @@
-import { diffValues, dropUndefined, joinPath, type PatchOp } from '@media-router/shared-types';
-import type { PublishOptions, TopicBus } from '@media-router/topic-tree';
+import { META_RUNTIME_FIELDS, diffValues, dropUndefined, joinPath, touchedModules, type PatchOp } from '@media-router/shared-types';
+import { DerivedNodes, type PublishOptions, type TopicBus } from '@media-router/topic-tree';
 import type { EngineView } from './EngineView.js';
 import type { StateChange } from './RuntimeCache.js';
 
@@ -13,15 +13,21 @@ export interface ConfigOp {
 const OFFLINE_CLEARED = ['error', 'statusData', 'badges', 'fieldOptions', 'vu'];
 
 const enginePath = (engineId: string, ...rest: string[]) => joinPath(['engines', engineId, ...rest]);
+const metaModules = (engineId: string) => ['meta', 'engines', engineId, 'modules'];
+
 
 /** Turns manager-side changes into tree ops on the bus. */
 export class TreePublisher {
     private lastInfo = new Map<string, Record<string, unknown>>();
+    /** `/meta/engines/<id>/modules/<mid>` descriptors, republished while subscribed. */
+    private readonly meta: DerivedNodes;
 
     constructor(
         private readonly bus: TopicBus,
         private readonly view: EngineView,
-    ) {}
+    ) {
+        this.meta = new DerivedNodes(bus, (p) => view.moduleMeta(p[2], p[4]));
+    }
 
     publish(ops: PatchOp[], opts?: PublishOptions): void {
         if (ops.length > 0) this.bus.publish(ops, opts);
@@ -33,7 +39,11 @@ export class TreePublisher {
         const prev = this.lastInfo.get(engineId);
         if (!next) {
             this.lastInfo.delete(engineId);
-            if (prev) this.publish([{ op: 'remove', path: enginePath(engineId) }]);
+            this.meta.forget(['meta', 'engines', engineId]);
+            if (prev) {
+                this.publish([{ op: 'remove', path: enginePath(engineId) }]);
+                this.publish([{ op: 'remove', path: joinPath(['meta', 'engines', engineId]) }], { named: true });
+            }
             return;
         }
         this.lastInfo.set(engineId, next);
@@ -62,6 +72,19 @@ export class TreePublisher {
             }
         }
         this.publish(ops);
+        const prefix = enginePath(engineId).length;
+        this.refreshMeta(engineId, touchedModules(ops.map((o) => ({ ...o, path: o.path.slice(prefix) })), META_RUNTIME_FIELDS));
+    }
+
+    /** Leaf state ops from a router's `statePatch` (engine-relative paths). */
+    statePatch(engineId: string, ops: PatchOp[]): void {
+        this.publish(ops.map((op) => ({ ...op, path: enginePath(engineId) + op.path })));
+        this.refreshMeta(engineId, touchedModules(ops, META_RUNTIME_FIELDS));
+    }
+
+    /** These modules' descriptor inputs changed (settings, schema, live params). */
+    metaChanged(engineId: string, moduleIds: Iterable<string>): void {
+        for (const id of moduleIds) this.meta.refresh([...metaModules(engineId), id]);
     }
 
     vu(engineId: string, batch: Record<string, number[]>): void {
@@ -94,7 +117,7 @@ export class TreePublisher {
     /** Runtime reset of an engine that went offline, for every placed module. */
     offline(engineId: string): void {
         const ops: PatchOp[] = [];
-        for (const id of Object.keys(this.view.profileConfig(engineId)?.modules ?? {})) {
+        for (const id of this.view.moduleIds(engineId)) {
             ops.push({ op: 'replace', path: enginePath(engineId, 'modules', id, 'running'), value: false });
             ops.push({ op: 'replace', path: enginePath(engineId, 'modules', id, 'health'), value: 'stopped' });
             for (const f of OFFLINE_CLEARED) ops.push({ op: 'remove', path: enginePath(engineId, 'modules', id, f) });
@@ -104,6 +127,8 @@ export class TreePublisher {
         ops.push({ op: 'replace', path: enginePath(engineId, 'logs'), value: [] });
         this.publish(ops);
         this.info(engineId);
+        // Live params were engine-reported; the schema's x-live applies again.
+        this.refreshAllMeta(engineId);
     }
 
     /** Processed config ops (engine-relative, id paths); the sender's own come back tagged. */
@@ -113,6 +138,7 @@ export class TreePublisher {
             const prefixed = { ...op, path: prefix + op.path };
             this.bus.publish([prefixed], fromSender ? { origin: senderId, writeId } : {});
         }
+        this.refreshMeta(engineId, touchedModules(entries.map((e) => e.op)));
     }
 
     /** Whole graph replace — profile activation. */
@@ -124,6 +150,16 @@ export class TreePublisher {
         ]);
         this.profiles(engineId);
         this.info(engineId);
+        this.refreshAllMeta(engineId);
+    }
+
+    private refreshAllMeta(engineId: string): void {
+        this.meta.refreshChildren(metaModules(engineId), this.view.moduleIds(engineId));
+    }
+
+    private refreshMeta(engineId: string, touched: Set<string> | 'all'): void {
+        if (touched === 'all') this.refreshAllMeta(engineId);
+        else this.metaChanged(engineId, touched);
     }
 
     profiles(engineId: string): void {
@@ -132,6 +168,8 @@ export class TreePublisher {
 
     renamed(oldId: string, newId: string): void {
         this.bus.renamePrefix(['engines', oldId], ['engines', newId]);
+        this.bus.renamePrefix(['meta', 'engines', oldId], ['meta', 'engines', newId]);
+        this.meta.forget(['meta', 'engines', oldId]);
         this.lastInfo.delete(oldId);
         this.publish([{ op: 'remove', path: enginePath(oldId) }]);
         this.info(newId);

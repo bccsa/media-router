@@ -18,6 +18,8 @@ export interface PublishOptions {
     /** Socket that wrote the op; it gets the op back tagged with `writeId`. */
     origin?: string;
     writeId?: number;
+    /** Deliver only to patterns that name the op's first segment (a derived branch, not `/` or `+`). */
+    named?: boolean;
 }
 
 /** Concrete paths a pattern names, expanding each '+' through the source. */
@@ -32,6 +34,25 @@ function expand(source: TreeSource, pattern: readonly string[]): string[][] {
         paths = next;
     }
     return paths;
+}
+
+/** Whether a pattern names a path's first segment — not `/` or `+` (derived branches). */
+function namesRoot(pattern: readonly string[], path: readonly string[]): boolean {
+    return pattern.length > 0 && pattern[0] === path[0];
+}
+
+/** Drop paths equal to or below another path in the list (a snapshot sends each value once). */
+function outermost(paths: string[][]): string[][] {
+    const kept = new Set<string>();
+    const out: string[][] = [];
+    for (const p of [...paths].sort((a, b) => a.length - b.length)) {
+        let covered = false;
+        for (let k = 0; k <= p.length && !covered; k++) covered = kept.has(joinPath(p.slice(0, k)));
+        if (covered) continue;
+        kept.add(joinPath(p));
+        out.push(p);
+    }
+    return out;
 }
 
 /** Patterns no other pattern in the list already delivers (snapshot dedupe). */
@@ -73,12 +94,11 @@ export class TopicBus {
         this.outboxes.get(socketId)?.outbox.flushNow();
         const parsed = patterns.map(parsePattern);
         for (const pattern of parsed) this.index.add(socketId, pattern);
+        const paths = withoutCovered(parsed).flatMap((pattern) => expand(this.source, pattern));
         const ops: PatchOp[] = [];
-        for (const pattern of withoutCovered(parsed)) {
-            for (const path of expand(this.source, pattern)) {
-                const value = this.source.get(path);
-                if (value !== undefined) ops.push({ op: 'add', path: joinPath(path), value });
-            }
+        for (const path of outermost(paths)) {
+            const value = this.source.get(path);
+            if (value !== undefined) ops.push({ op: 'add', path: joinPath(path), value });
         }
         return ops;
     }
@@ -91,13 +111,23 @@ export class TopicBus {
         return this.index.patternsOf(socketId);
     }
 
+    /** Whether a socket subscribes at or around `path` by naming its first segment (not `/` or `+`). */
+    namedBy(path: readonly string[]): boolean {
+        for (const patterns of this.index.match(path).values()) {
+            if (patterns.some((p) => namesRoot(p, path))) return true;
+        }
+        return false;
+    }
+
     /** Deliver ops to every socket whose patterns they touch. */
     publish(ops: PatchOp[], opts: PublishOptions = {}): void {
         const echoTo = opts.writeId !== undefined ? opts.origin : undefined;
         for (const op of ops) {
             const path = splitPath(op.path);
             const hits = this.index.match(path);
-            for (const [socketId, patterns] of hits) {
+            for (const [socketId, all] of hits) {
+                const patterns = opts.named ? all.filter((p) => namesRoot(p, path)) : all;
+                if (patterns.length === 0) continue;
                 const shaped = projectOp(op, path, patterns);
                 if (!shaped) continue;
                 this.push(socketId, socketId === echoTo ? { ...shaped, w: opts.writeId } : shaped);

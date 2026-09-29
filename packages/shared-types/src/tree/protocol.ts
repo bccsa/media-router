@@ -27,12 +27,12 @@ export const TREE_EVENTS = {
     renamed: 'tree:renamed',
 } as const;
 
-/** Socket.IO path of a router's tree endpoint on :8081. */
 /** Branches a router serves at `/` (ADR-0024). */
 export const ROUTER_BRANCHES = ['info', 'system', 'devices', 'logs', 'modules', 'connections', 'interlocks'];
 /** Branches of `/engines/<id>` on the manager: a router's, plus its profiles. */
 export const ENGINE_BRANCHES = [...ROUTER_BRANCHES, 'profiles'];
 
+/** Socket.IO path of a router's tree endpoint on :8081. */
 export const ROUTER_TREE_PATH = '/tree';
 
 export const PatternListSchema = z.object({

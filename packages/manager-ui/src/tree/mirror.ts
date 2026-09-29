@@ -206,9 +206,9 @@ export function dropUncovered(gone: string[], remaining: string[]): void {
 
 /** An engine was renamed on the manager: re-key everything held under the old id. */
 export function applyRenamed({ from, to }: TreeRenamed): void {
-    const [, oldId] = splitPath(from);
+    const [root, oldId] = splitPath(from);
     const [, newId] = splitPath(to);
-    if (!oldId || !newId) return;
+    if (root !== 'engines' || !oldId || !newId) return;
     useEngineStore().renameEngine(oldId, newId);
     useLogStore().rename(oldId, newId);
     useDeviceStore().rename(oldId, newId);

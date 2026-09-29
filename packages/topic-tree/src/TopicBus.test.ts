@@ -32,6 +32,13 @@ describe('TopicBus', () => {
         expect(ops.map((o) => o.path)).toEqual(['/engines/e1']);
     });
 
+    it('a `+` pattern overlapping a subtree does not repeat its values in the snapshot', () => {
+        const bus = new TopicBus(objectSource(world()));
+        bus.attach(fakeSocket('s'));
+        const paths = bus.subscribe('s', ['/engines/+/info', '/engines/e1']).map((o) => o.path);
+        expect(paths.sort()).toEqual(['/engines/e1', '/engines/e2/info']);
+    });
+
     it('delivers only to overlapping subscribers, pruning ancestor writes', () => {
         const bus = new TopicBus(objectSource(world()));
         const a = fakeSocket('a');

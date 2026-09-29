@@ -93,8 +93,8 @@ export const PatchEnvelopeSchema = z.object({
  * Engine identifier — also the dgram-comms `clientId` and the SQLite PK across
  * `engines`, `engine_profiles`, `engine_config_history`. Restricted to a safe
  * URL-token charset so the id is round-trippable through log lines,
- * filesystem paths (engine-side `profile.name`), and Socket.IO room names
- * (`watch:<engineId>`) without needing escaping anywhere. Length cap matches what a typical operator
+ * filesystem paths (engine-side `profile.name`), and tree paths without
+ * needing escaping anywhere. Length cap matches what a typical operator
  * deployment will use (e.g. `studio-a-engine`) without being so long that it
  * pollutes log output.
  */
@@ -143,7 +143,7 @@ export const ReorderEnginesSchema = z.object({
         .min(1),
 });
 
-/** Write `add /groups/-`. */
+/** Write `add /groups/<id>` (the client picks the id). */
 export const CreateGroupSchema = z.object({
     name: z.string().min(1).max(64),
     color: HexColor.optional(),
@@ -173,7 +173,7 @@ export const DgramListenerSchema = z.object({
 });
 
 /**
- * `settings:set` / `settings:get`. At least one listener always remains so a
+ * Write `replace /settings/dgramListeners`. At least one listener always remains so a
  * save can never leave the manager unreachable by every engine. A port may
  * appear once: a wildcard bind and a specific-address bind on the same port
  * collide at bind time, so they are rejected up front too.

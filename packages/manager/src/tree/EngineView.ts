@@ -1,4 +1,11 @@
-import { ENGINE_BRANCHES, coerceArray, dropUndefined } from '@media-router/shared-types';
+import {
+    ENGINE_BRANCHES,
+    coerceArray,
+    describeModule,
+    dropUndefined,
+    type DescribableModule,
+    type ModuleMeta,
+} from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
@@ -83,6 +90,16 @@ export class EngineView {
     module(engineId: string, moduleId: string): Obj | undefined {
         const stored = ((this.profileConfig(engineId)?.modules ?? {}) as Record<string, Obj>)[moduleId];
         return stored ? this.mergeModule(engineId, moduleId, stored) : undefined;
+    }
+
+    moduleIds(engineId: string): string[] {
+        return Object.keys((this.profileConfig(engineId)?.modules ?? {}) as Obj);
+    }
+
+    /** A module's `/meta` node (ADR-0024). */
+    moduleMeta(engineId: string, moduleId: string): ModuleMeta | undefined {
+        const mod = this.module(engineId, moduleId);
+        return mod ? describeModule(mod as DescribableModule) : undefined;
     }
 
     profiles(engineId: string): Obj {

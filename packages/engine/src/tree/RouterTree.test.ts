@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { TreeCallError } from '@media-router/topic-tree';
-import type { PatchOp } from '@media-router/shared-types';
+import { fakeSocket } from '@media-router/topic-tree/dist/testing.js';
+import { applyJsonPatch, type PatchOp } from '@media-router/shared-types';
 import { RouterView, type RouterViewDeps } from './RouterView.js';
 import { RouterTree } from './RouterTree.js';
 import { routerCall, routerWrites, type RouterActions } from './routerWrites.js';
@@ -32,7 +33,8 @@ function setup() {
         info: () => info,
     };
     const actions: RouterActions = {
-        patch: vi.fn(),
+        // Applies to the config, as the engine's patch router does.
+        patch: vi.fn((_sender: string, ops: PatchOp[]) => applyJsonPatch(config, ops)),
         setRunning: vi.fn(),
         restartModule: vi.fn(),
         reboot: vi.fn(),
@@ -42,7 +44,7 @@ function setup() {
     const tree = new RouterTree(view, actions, () => 'b1');
     const published = vi.spyOn(tree.bus, 'publish');
     const write = (ops: PatchOp[]) => routerWrites(tree, actions, 's1', ops, 7);
-    return { info, view, tree, actions, published, write };
+    return { config, info, view, tree, actions, published, write };
 }
 
 describe('RouterView', () => {
@@ -163,7 +165,8 @@ describe('router writes', () => {
             { op: 'replace', path: '/modules/m1/settings/gain', value: 15 },
         ]);
         expect(result.rejected).toEqual([]);
-        expect(write([{ op: 'replace', path: '/modules/m1/settings/gain', value: 15 }]).rejected[0].reason).toBe('above maximum 10');
+        // The next batch starts from the stored config, now ceiling 20.
+        expect(write([{ op: 'replace', path: '/modules/m1/settings/gain', value: 25 }]).rejected[0].reason).toBe('above maximum 20');
     });
 
     it('info/running goes to the run controller', () => {
@@ -197,5 +200,49 @@ describe('router calls', () => {
     it('fails an unknown method', () => {
         const { actions } = setup();
         expect(() => routerCall(actions, '/modules/m1', 'explode', {})).toThrow('no method explode on /modules/m1');
+    });
+});
+
+describe('router /meta', () => {
+    afterEach(() => vi.useRealTimers());
+
+    /** A socket subscribed to `patterns`; `sent()` = the ops it received so far. */
+    function named(tree: RouterTree, patterns: string[]) {
+        const s = fakeSocket('d');
+        tree.bus.attach(s);
+        tree.bus.subscribe('d', patterns);
+        return () => {
+            vi.advanceTimersByTime(60);
+            return s.frames().flat();
+        };
+    }
+
+    it('serves descriptors beside the tree, not under `/`; only enabled among module fields', () => {
+        const { view } = setup();
+        expect(view.get(['meta', 'modules', 'm1', 'settings', 'volume'])).toMatchObject({ access: 'write', apply: 'live', max: 150 });
+        expect(view.get(['meta', 'modules', 'm1', 'settings', 'detected'])).toMatchObject({ access: 'read' });
+        expect(Object.keys(view.get(['meta', 'modules', 'm1']) as object).sort()).toEqual(['enabled', 'settings', 'statusData']);
+        expect(view.get(['meta', 'info', 'running'])).toMatchObject({ access: 'write', type: 'boolean' });
+        expect(view.keys([])).not.toContain('meta');
+    });
+
+    it('republishes a descriptor when a manager push changes its inputs', () => {
+        vi.useFakeTimers();
+        const { tree, config } = setup();
+        const sent = named(tree, ['/meta/modules/m1/settings/gain']);
+        // gain's max follows `ceiling` (x-maxFrom).
+        config.modules.m1.settings.ceiling = 25;
+        tree.config([{ op: 'replace', path: '/modules/m1/settings/ceiling', value: 25 }]);
+        expect(sent().find((o) => o.path === '/meta/modules/m1')?.value.settings.gain.max).toBe(25);
+    });
+
+    it('a write on the router tree itself refreshes the descriptors it changed', () => {
+        vi.useFakeTimers();
+        const { tree, write } = setup();
+        const sent = named(tree, ['/meta/modules/m1/settings/gain']);
+        expect(write([{ op: 'replace', path: '/modules/m1/settings/ceiling', value: 30 }]).rejected).toEqual([]);
+        expect(sent().find((o) => o.path === '/meta/modules/m1')?.value.settings.gain.max).toBe(30);
+        write([{ op: 'replace', path: '/modules/m1/settings/ceiling', value: 40 }]);
+        expect(sent()).toContainEqual({ op: 'replace', path: '/meta/modules/m1/settings/gain/max', value: 40 });
     });
 });

@@ -3,8 +3,18 @@ export { WILDCARD, parsePattern, covers, isAncestorOf, overlaps } from './patter
 export { prune, projectOp } from './project.js';
 export { diffValues } from './diff.js';
 export { getAt, keysOf, applyTreeOp } from './apply.js';
-export { describeModuleValue, checkWrite, ModuleWriteCheck } from './describe.js';
-export type { ValueDescriptor, DescribableModule } from './describe.js';
+export {
+    describeModuleValue,
+    describeModule,
+    metaAt,
+    touchedModules,
+    checkWrite,
+    ModuleWriteCheck,
+    ROUTER_INFO_META,
+    ENGINE_INFO_META,
+    META_RUNTIME_FIELDS,
+} from './describe.js';
+export type { ValueDescriptor, DescribableModule, ModuleMeta } from './describe.js';
 export {
     TREE_PROTOCOL,
     TREE_EVENTS,

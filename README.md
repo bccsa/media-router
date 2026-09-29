@@ -68,8 +68,8 @@ See [plugins/README.md](plugins/README.md) for the full plugin development guide
 | 3001 | Engine Local API (Fastify REST) |
 | 5173 | Manager UI dev server (Vite) |
 | 5174 | Local Panel dev server (Vite) |
-| 8080 | Manager HTTP + Socket.IO |
-| 8081 | Local Control Panel (Socket.IO + static files) |
+| 8080 | Manager HTTP + Socket.IO ([tree API](docs/tree-api.md)) |
+| 8081 | Local Control Panel (Socket.IO + static files); router tree API on Socket.IO path `/tree` |
 | 8082 | Profile Manager |
 
 ## Quick Start
@@ -221,6 +221,7 @@ See [docs/implementation-plan-v2.0.md](docs/implementation-plan-v2.0.md) for ful
 
 - [User Requirements Specification](docs/URS-v2.0.md)
 - [Functional Design Specification](docs/FDS-v2.0.md)
+- [Tree API (Socket.IO)](docs/tree-api.md) — reading, writing and calls on the manager and routers; the API for dashboards and integrations
 - [Implementation Plan](docs/implementation-plan-v2.0.md)
 - [Plugin Development Guide](plugins/README.md)
 - [Dependencies](DEPENDENCIES.md)

@@ -356,7 +356,7 @@ export interface ModuleRuntimeState {
     pendingRestart: boolean;
     /** Params that are currently live-updatable (reported at runtime). */
     liveUpdatableParams?: string[];
-    /** VU meter levels per channel (dBFS, negative values). */
+    /** VU level per channel, 0–15 blocks: round((dBFS + 60) / 4), 15 ≈ 0 dBFS. */
     vuData?: number[];
     /** SRT connection statistics (when module is SRT-based). */
     srtStats?: SrtStatistics;

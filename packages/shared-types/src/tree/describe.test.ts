@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeModuleValue, checkWrite, type DescribableModule } from './describe.js';
+import { describeModuleValue, describeModule, checkWrite, metaAt, touchedModules, type DescribableModule } from './describe.js';
 import { WriteRequestSchema, PatternListSchema } from './protocol.js';
 
 const mod: DescribableModule = {
@@ -48,8 +48,23 @@ describe('describeModuleValue', () => {
 
     it('labels status values from the manifest sections', () => {
         expect(describeModuleValue(mod, ['statusData', 'stats', 'bitrate'])).toEqual({
-            access: 'read', type: 'number', label: 'Bitrate', unit: 'Mbps',
+            access: 'read', label: 'Bitrate', unit: 'Mbps',
         });
+    });
+
+    it('describeModule: every setting and declared status field, max resolved', () => {
+        const meta = describeModule(mod);
+        expect(meta.settings.volume).toMatchObject({ access: 'write', apply: 'live', max: 200 });
+        expect(meta.settings.channels.access).toBe('read');
+        expect(meta.settings.legacyKey).toBeUndefined();
+        expect(meta.statusData.stats.bitrate).toEqual({ access: 'read', label: 'Bitrate', unit: 'Mbps' });
+        expect(meta.enabled).toMatchObject({ access: 'write', type: 'boolean' });
+        expect(meta.displayName?.access).toBe('write');
+    });
+
+    it('describeModule: only the listed module fields are writable (a router takes enabled)', () => {
+        const meta = describeModule(mod, ['enabled']);
+        expect(Object.keys(meta).sort()).toEqual(['enabled', 'settings', 'statusData']);
     });
 
     it('treats module fields as writable only when listed', () => {
@@ -86,5 +101,42 @@ describe('tree protocol schemas', () => {
         expect(WriteRequestSchema.safeParse({ id: 1, ops: [{ op: 'replace', path: '/a', value: 1 }] }).success).toBe(true);
         expect(WriteRequestSchema.safeParse({ id: -1, ops: [] }).success).toBe(false);
         expect(PatternListSchema.safeParse({ patterns: [] }).success).toBe(false);
+    });
+});
+
+describe('touchedModules', () => {
+    const op = (path: string) => ({ op: 'replace' as const, path, value: 1 });
+
+    it('collects module ids; a whole-module op counts; other branches do not', () => {
+        expect(touchedModules([op('/modules/a/settings/v'), op('/modules/b'), op('/connections/c1')])).toEqual(new Set(['a', 'b']));
+    });
+
+    it("a root or whole /modules op touches 'all'", () => {
+        expect(touchedModules([op('')])).toBe('all');
+        expect(touchedModules([op('/modules')])).toBe('all');
+    });
+
+    it('with fields, only those module fields (or the whole module) count', () => {
+        const ops = [op('/modules/a/statusData/x'), op('/modules/b/liveUpdatableParams'), op('/modules/c')];
+        expect(touchedModules(ops, ['liveUpdatableParams'])).toEqual(new Set(['b', 'c']));
+    });
+});
+
+describe('metaAt', () => {
+    const info = { running: { access: 'write' as const } };
+    const built: string[] = [];
+    const moduleMeta = (id: string) => {
+        built.push(id);
+        return id === 'm1' ? describeModule(mod) : undefined;
+    };
+
+    it('builds only what the path needs', () => {
+        built.length = 0;
+        expect(metaAt(['info', 'running'], info, () => ['m1'], moduleMeta)).toEqual({ access: 'write' });
+        expect(built).toEqual([]);
+        expect(metaAt(['modules', 'm1', 'settings', 'volume'], info, () => ['m1'], moduleMeta)).toMatchObject({ max: 200 });
+        expect(built).toEqual(['m1']);
+        expect(Object.keys(metaAt([], info, () => ['m1'], moduleMeta) as object)).toEqual(['info', 'modules']);
+        expect(metaAt(['other'], info, () => ['m1'], moduleMeta)).toBeUndefined();
     });
 });

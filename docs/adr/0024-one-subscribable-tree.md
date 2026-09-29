@@ -29,7 +29,12 @@ own subtree rooted at `/` — exactly what the manager holds under
   on-demand lookups (profile config, history).
 - **`/meta` + path** is the value's descriptor from the shared `describe()`:
   `access` read|write, `apply` live|restart, type, range (`x-maxFrom`
-  resolved), step, unit, enum, label, widget.
+  resolved), step, unit, enum, label, widget. Amended 2026-09-29: it mirrors the value paths
+  (`/meta/engines/<id>/modules/<mid>/settings/<key>`, `…/statusData/<section>/<key>`,
+  `/meta/engines/<id>/info/running`; a router serves `/meta/modules/…` and
+  `/meta/info`) and is live: a descriptor is republished when its inputs
+  change (a referenced setting, the schema, the engine's live params). It is
+  not part of `/` — only a subscription that names `/meta` receives it.
 - **Checks**: every browser write is validated per op against its descriptor
   — read-only, runtime, undeclared key, wrong type, out of range or enum all
   reject. Writes a router originates are trusted. A router accepts only value

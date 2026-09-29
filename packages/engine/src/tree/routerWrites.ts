@@ -42,6 +42,8 @@ export function routerWrites(
     if (values.length > 0) {
         actions.patch(socketId, values);
         tree.bus.publish(values, { origin: socketId, writeId });
+        // The patch path skips the tree for its own writer (already published), so refresh here.
+        tree.metaChanged(values);
     }
     const running = accepted.find((op) => op.path === '/info/running');
     if (running) {

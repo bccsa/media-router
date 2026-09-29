@@ -1,4 +1,4 @@
-import { ENGINE_BRANCHES, getAt, keysOf } from '@media-router/shared-types';
+import { ENGINE_BRANCHES, ENGINE_INFO_META, getAt, keysOf, metaAt } from '@media-router/shared-types';
 import type { TreeSource } from '@media-router/topic-tree';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
@@ -14,7 +14,7 @@ export interface ManagerTreeDeps {
     pluginRegistry: PluginRegistry;
 }
 
-/** The manager's tree (ADR-0024), read on demand from the config store and caches. */
+/** The manager's tree (ADR-0024), read on demand from the config store and caches. `/meta` sits beside it. */
 export class ManagerTree implements TreeSource {
     constructor(private readonly deps: ManagerTreeDeps) {}
 
@@ -32,6 +32,8 @@ export class ManagerTree implements TreeSource {
                 return getAt({ dgramListeners: this.deps.engineManager.dgramListeners }, rest);
             case 'plugins':
                 return getAt(this.plugins(), rest);
+            case 'meta':
+                return this.meta(rest);
             default:
                 return undefined;
         }
@@ -40,6 +42,7 @@ export class ManagerTree implements TreeSource {
     keys(path: readonly string[]): string[] {
         if (path.length === 0) return [...ROOTS];
         if (path[0] === 'engines' && path.length === 1) return this.deps.view.ids();
+        if (path[0] === 'meta' && path.length === 2 && path[1] === 'engines') return this.deps.view.ids();
         if (path[0] === 'engines' && path.length === 2) {
             return this.deps.view.exists(path[1]) ? [...ENGINE_BRANCHES] : [];
         }
@@ -65,6 +68,20 @@ export class ManagerTree implements TreeSource {
             return getAt(view.module(engineId, deeper[0]), deeper.slice(1));
         }
         return getAt(view.branch(engineId, branch), deeper);
+    }
+
+    /** Descriptors, mirroring `/engines` (ADR-0024); not part of `/` — subscribe by name. */
+    private meta(rest: readonly string[]): unknown {
+        const { view } = this.deps;
+        const [root, engineId, ...below] = rest;
+        const one = (id: string, path: readonly string[]) =>
+            view.exists(id)
+                ? metaAt(path, ENGINE_INFO_META, () => view.moduleIds(id), (m) => view.moduleMeta(id, m))
+                : undefined;
+        const all = () => Object.fromEntries(view.ids().map((id) => [id, one(id, [])]));
+        if (root === undefined) return { engines: all() };
+        if (root !== 'engines') return undefined;
+        return engineId === undefined ? all() : one(engineId, below);
     }
 
     private plugins(): Record<string, unknown> {

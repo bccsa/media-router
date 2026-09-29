@@ -1,14 +1,16 @@
 import type { Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import {
+    META_RUNTIME_FIELDS,
     ROUTER_TREE_PATH,
     TREE_PROTOCOL,
     diffValues,
     joinPath,
     splitPath,
+    touchedModules,
     type PatchOp,
 } from '@media-router/shared-types';
-import { TopicBus, attachTree } from '@media-router/topic-tree';
+import { DerivedNodes, TopicBus, attachTree } from '@media-router/topic-tree';
 import type { RouterView } from './RouterView.js';
 import { routerWrites, routerCall, type RouterActions } from './routerWrites.js';
 
@@ -19,6 +21,8 @@ import { routerWrites, routerCall, type RouterActions } from './routerWrites.js'
  */
 export class RouterTree {
     readonly bus: TopicBus;
+    /** `/meta/modules/<id>` descriptors, republished while subscribed. */
+    private readonly meta: DerivedNodes;
     private io: SocketIOServer | null = null;
     private lastInfo: Record<string, unknown> | undefined;
     private lastSystem: Record<string, unknown> | undefined;
@@ -29,6 +33,7 @@ export class RouterTree {
         private readonly build: () => string,
     ) {
         this.bus = new TopicBus(view);
+        this.meta = new DerivedNodes(this.bus, (p) => view.moduleMeta(p[2]));
     }
 
     attach(http: HttpServer): void {
@@ -50,7 +55,9 @@ export class RouterTree {
 
     /** Leaf ops of module runtime state (from RuntimeDiffer). */
     moduleOps(ops: PatchOp[]): void {
-        if (ops.length > 0) this.bus.publish(ops);
+        if (ops.length === 0) return;
+        this.bus.publish(ops);
+        this.refreshMeta(touchedModules(ops, META_RUNTIME_FIELDS));
     }
 
     vu(instanceId: string, levels: number[]): void {
@@ -79,6 +86,7 @@ export class RouterTree {
         }
         for (const b of arrays) out.push({ op: 'replace', path: `/${b}`, value: this.view.branch(b) });
         if (out.length > 0) this.bus.publish(out);
+        this.metaChanged(ops);
         this.info();
     }
 
@@ -104,5 +112,15 @@ export class RouterTree {
         const next = this.view.branch('info') as Record<string, unknown>;
         this.bus.publish(diffValues(this.lastInfo ?? {}, next, ['info']));
         this.lastInfo = JSON.parse(JSON.stringify(next));
+    }
+
+    /** Config ops were applied (manager push, plugin auto-write, a tree write): refresh their modules' descriptors. */
+    metaChanged(ops: PatchOp[]): void {
+        this.refreshMeta(touchedModules(ops));
+    }
+
+    private refreshMeta(touched: Set<string> | 'all'): void {
+        if (touched === 'all') this.meta.refreshChildren(['meta', 'modules'], this.view.moduleIds());
+        else for (const id of touched) this.meta.refresh(['meta', 'modules', id]);
     }
 }

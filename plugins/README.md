@@ -722,8 +722,9 @@ Every module value is reachable in the subscribable tree
 router's `:8081/tree` — ADR-0024). Dashboards bind to status section ids,
 status keys and settings keys by name, and read `x-readOnly` / `x-live` (via
 the value descriptor) to decide whether a control is writable and applies at
-once or on restart. Renaming any of these breaks dashboards; treat them like a
-public interface. `emitConfigUpdate` values reach the manager with guaranteed
+once or on restart (`/meta` + the value's path, e.g.
+`/meta/engines/<id>/modules/<mid>/settings/volume`). Renaming any of these
+breaks dashboards; treat them like a public interface. `emitConfigUpdate` values reach the manager with guaranteed
 delivery, and are journaled while the router is offline (ADR-0025).
 
 ---

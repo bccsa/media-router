@@ -1281,7 +1281,6 @@ A shared set of Vue components for consistent styling:
 - `MrToggle` — On/off switch
 - `MrSlider` — Range slider with value display
 - `MrModal` — Dialog/popover
-- `MrTabs` — Tab navigation
 - `MrTable` — Sortable, filterable data table
 - `MrVuMeter` — Canvas2D VU meter (carried forward concept, reimplemented in Vue). Clickable: opens a popup `MrSlider` for live volume adjustment
 
@@ -1591,7 +1590,8 @@ interface DgramMessage {
 ### 8.2 Manager ↔ Web UI — the subscribable tree (ADR-0024)
 
 **Socket.IO** over WebSocket, one address space and four verbs. Supersedes the
-v1.0 event list and the `watch:<engineId>` rooms.
+v1.0 event list and the `watch:<engineId>` rooms. Full reference — every path,
+write, call and error: [docs/tree-api.md](tree-api.md).
 
 | Verb | Payload | Ack |
 |------|---------|-----|
@@ -1607,6 +1607,9 @@ v1.0 event list and the `watch:<engineId>` rooms.
   `/settings`, `/plugins`. Array elements are addressed by `id`.
 - **Patterns:** a pattern matches its node and everything below it; `+`
   matches one segment. Data nobody subscribes to is not sent.
+- **Descriptors:** `/meta` + a value's path is what the value is and whether
+  this server takes writes to it (read/write, live/restart, type, range with
+  `x-maxFrom` resolved, unit, enum, label). Live; not part of `/`.
 - **Echo:** every op of a write comes back to its writer tagged with the
   write id, carrying the stored value; a rejected op snaps the control back.
 - **Checks:** browser writes are validated per op against the value's

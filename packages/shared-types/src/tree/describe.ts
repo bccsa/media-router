@@ -1,7 +1,9 @@
 import type { PatchOp } from '../index.js';
 import { dropUndefined } from './object.js';
+import { getAt } from './apply.js';
+import { splitPath } from './paths.js';
 
-/** What a value is and what a client may do with it (served at /meta + path). */
+/** What a value is and what a client may do with it (served at `/meta` + its path). */
 export interface ValueDescriptor {
     access: 'read' | 'write';
     /** Writable values only: applied at once, or on the module's next restart. */
@@ -87,19 +89,15 @@ function describeSetting(mod: DescribableModule, key: string): ValueDescriptor |
     return dropUndefined(d);
 }
 
-function describeStatus(mod: DescribableModule, section: string, key: string): ValueDescriptor {
-    const sections = [...(mod.statusSections ?? []), ...(mod.dynamicStatusSections ?? [])];
-    const field = sections.find((s) => s.id === section)?.fields.find((f) => f.key === key);
-    const value = mod.statusData?.[section]?.[key];
-    return dropUndefined({
-        access: 'read',
-        type: value === undefined ? undefined : typeof value,
-        label: field?.label ?? key,
-        unit: field?.unit,
-        format: field?.format,
-    });
+function statusSectionsOf(mod: DescribableModule): StatusSectionLike[] {
+    return [...(mod.statusSections ?? []), ...(mod.dynamicStatusSections ?? [])];
 }
 
+/** Declared status fields only; no type — it would follow the live value. */
+function describeStatus(mod: DescribableModule, section: string, key: string): ValueDescriptor {
+    const field = statusSectionsOf(mod).find((s) => s.id === section)?.fields.find((f) => f.key === key);
+    return dropUndefined({ access: 'read', label: field?.label ?? key, unit: field?.unit, format: field?.format });
+}
 
 /**
  * Describe a value inside one module node, `rel` being its path below the
@@ -112,6 +110,91 @@ export function describeModuleValue(mod: DescribableModule, rel: readonly string
     if (rel.length === 1 && WRITABLE_FIELDS[field]) return { ...WRITABLE_FIELDS[field] };
     return rel.length >= 1 ? { access: 'read' } : null;
 }
+
+/** A module's `/meta` node: the writable module fields this server takes, settings, status. */
+export interface ModuleMeta {
+    enabled?: ValueDescriptor;
+    displayName?: ValueDescriptor;
+    position?: ValueDescriptor;
+    size?: ValueDescriptor;
+    focused?: ValueDescriptor;
+    settings: Record<string, ValueDescriptor>;
+    statusData: Record<string, Record<string, ValueDescriptor>>;
+}
+
+/**
+ * Every described value of one module, keyed like the module node — its
+ * `/meta` node (ADR-0024). `writable` = the module fields this server takes
+ * writes to (a router: `enabled` only).
+ */
+export function describeModule(
+    mod: DescribableModule,
+    writable: readonly string[] = Object.keys(WRITABLE_FIELDS),
+): ModuleMeta {
+    const fields: Record<string, ValueDescriptor> = {};
+    for (const f of writable) if (WRITABLE_FIELDS[f]) fields[f] = { ...WRITABLE_FIELDS[f] };
+    const settings: Record<string, ValueDescriptor> = {};
+    for (const key of Object.keys(schemaProps(mod))) {
+        const d = describeSetting(mod, key);
+        if (d) settings[key] = d;
+    }
+    const statusData: Record<string, Record<string, ValueDescriptor>> = {};
+    for (const s of statusSectionsOf(mod)) {
+        const section = (statusData[s.id] ??= {});
+        for (const f of s.fields) section[f.key] = describeStatus(mod, s.id, f.key);
+    }
+    return { ...fields, settings, statusData };
+}
+
+/**
+ * Resolve a path below one router's `/meta` node — `info/…`, `modules/<id>/…`,
+ * `modules`, or all of it — building only what the path needs.
+ */
+export function metaAt(
+    rest: readonly string[],
+    info: Readonly<Record<string, ValueDescriptor>>,
+    moduleIds: () => string[],
+    moduleMeta: (id: string) => ModuleMeta | undefined,
+): unknown {
+    const [branch, id, ...deeper] = rest;
+    if (branch === 'info') return getAt(info, rest.slice(1));
+    if (branch === 'modules' && id !== undefined) return getAt(moduleMeta(id), deeper);
+    const modules = () => Object.fromEntries(moduleIds().map((m) => [m, moduleMeta(m)]));
+    if (branch === 'modules') return modules();
+    return branch === undefined ? { info, modules: modules() } : undefined;
+}
+
+/**
+ * Modules a batch of `/modules/<id>/…` ops touches, whose descriptors may
+ * have changed; `'all'` when an op replaces the root or the whole `/modules`
+ * branch. With `fields`, only ops on those module fields (or on the whole
+ * module) count.
+ */
+export function touchedModules(ops: readonly PatchOp[], fields?: readonly string[]): Set<string> | 'all' {
+    const ids = new Set<string>();
+    for (const op of ops) {
+        const [branch, id, field] = splitPath(op.path);
+        if (branch === undefined || (branch === 'modules' && id === undefined)) return 'all';
+        if (branch !== 'modules') continue;
+        if (!fields || field === undefined || fields.includes(field)) ids.add(id);
+    }
+    return ids;
+}
+
+const RUNNING: ValueDescriptor = { access: 'write', apply: 'live', type: 'boolean', label: 'Running' };
+/** A router's writable info, `/meta/info` on its own tree. */
+export const ROUTER_INFO_META: Readonly<Record<string, ValueDescriptor>> = { running: RUNNING };
+/** An engine's writable info on the manager, `/meta/engines/<id>/info`. */
+export const ENGINE_INFO_META: Readonly<Record<string, ValueDescriptor>> = {
+    running: RUNNING,
+    name: { access: 'write', apply: 'live', type: 'string', label: 'Name' },
+    activeProfile: { access: 'write', apply: 'live', type: 'string', label: 'Active profile' },
+    groupId: { access: 'write', apply: 'live', type: 'string', label: 'Group' },
+    sortOrder: { access: 'write', apply: 'live', type: 'integer', label: 'Sort order', min: 0 },
+};
+
+/** Module fields whose runtime value changes that module's descriptors. */
+export const META_RUNTIME_FIELDS = ['liveUpdatableParams', 'dynamicStatusSections'];
 
 function typeOk(type: string | undefined, value: unknown): boolean {
     switch (type) {

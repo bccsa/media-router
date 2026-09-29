@@ -76,8 +76,7 @@ export class EngineEventForwarder {
                 em.sendToEngine(engineId, 'stateResync', {}, { guaranteeDelivery: true });
             }
             this.patchSeq.set(engineId, msg.seq);
-            const applied = this.runtime.applyStateOps(engineId, msg.ops as PatchOp[]);
-            this.publisher.publish(applied.map((op) => ({ ...op, path: joinPath(['engines', engineId]) + op.path })));
+            this.publisher.statePatch(engineId, this.runtime.applyStateOps(engineId, msg.ops as PatchOp[]));
         });
 
         // The engine's effective per-plugin schemas (issue #661): refresh placed modules.
@@ -91,15 +90,15 @@ export class EngineEventForwarder {
             if (!engine?.active_profile) return;
             const profile = this.configStore.getProfile(engineId, engine.active_profile as string);
             const modules = (profile?.modules ?? {}) as Record<string, Obj>;
+            const placed = Object.entries(modules).filter(([, mod]) => data[mod.pluginId as string] !== undefined);
             this.publisher.publish(
-                Object.entries(modules)
-                    .filter(([, mod]) => data[mod.pluginId as string] !== undefined)
-                    .map(([id, mod]) => ({
-                        op: 'replace' as const,
-                        path: joinPath(['engines', engineId, 'modules', id, 'configSchema']),
-                        value: data[mod.pluginId as string],
-                    })),
+                placed.map(([id, mod]) => ({
+                    op: 'replace' as const,
+                    path: joinPath(['engines', engineId, 'modules', id, 'configSchema']),
+                    value: data[mod.pluginId as string],
+                })),
             );
+            this.publisher.metaChanged(engineId, placed.map(([id]) => id));
         });
 
         // One batch per engine flush; older engines send one module per message.

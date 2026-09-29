@@ -1,4 +1,17 @@
-import { ROUTER_BRANCHES, coerceArray, getAt, keysOf, overlayManifest, appendRing, type ModuleRuntimeState } from '@media-router/shared-types';
+import {
+    ROUTER_BRANCHES,
+    ROUTER_INFO_META,
+    appendRing,
+    coerceArray,
+    describeModule,
+    getAt,
+    keysOf,
+    metaAt,
+    overlayManifest,
+    type DescribableModule,
+    type ModuleMeta,
+    type ModuleRuntimeState,
+} from '@media-router/shared-types';
 import type { TreeSource } from '@media-router/topic-tree';
 
 /** What the router view reads from the engine. */
@@ -33,6 +46,7 @@ export class RouterView implements TreeSource {
     get(path: readonly string[]): unknown {
         const [branch, ...rest] = path;
         if (branch === undefined) return Object.fromEntries(ROUTER_BRANCHES.map((b) => [b, this.get([b])]));
+        if (branch === 'meta') return this.meta(rest);
         if (branch === 'modules' && rest.length > 0) return getAt(this.module(rest[0]), rest.slice(1));
         return getAt(this.branch(branch), rest);
     }
@@ -83,5 +97,20 @@ export class RouterView implements TreeSource {
         }
         if (this.vu[instanceId]) mod.vu = this.vu[instanceId];
         return mod;
+    }
+
+    /** `/meta` (ADR-0024): what this router's values are and which take writes; not part of `/`. */
+    meta(rest: readonly string[]): unknown {
+        return metaAt(rest, ROUTER_INFO_META, () => this.moduleIds(), (m) => this.moduleMeta(m));
+    }
+
+    moduleIds(): string[] {
+        return Object.keys((this.deps.config()?.modules ?? {}) as Obj);
+    }
+
+    /** A router takes `enabled` and settings writes only. */
+    moduleMeta(instanceId: string): ModuleMeta | undefined {
+        const mod = this.module(instanceId);
+        return mod ? describeModule(mod as DescribableModule, ['enabled']) : undefined;
     }
 }

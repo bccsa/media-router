@@ -34,6 +34,8 @@ function createMocks(modules: Record<string, unknown> = {}) {
         devices: vi.fn(),
         event: vi.fn(),
         offline: vi.fn(),
+        statePatch: vi.fn(),
+        metaChanged: vi.fn(),
     } as any;
     new EngineEventForwarder(configStore, engineManager, engineCommands, runtime, publisher).setup();
     return { configStore, engineManager, engineCommands, runtime, publisher, stored };
@@ -140,7 +142,7 @@ describe('EngineEventForwarder', () => {
             engineManager.emit('engineState', 'eng-1', { m1: { health: 'ok', statusData: { kbps: 1 } } });
             engineManager.emit('engineStatePatch', 'eng-1', { seq: 1, ops: [op('/modules/m1/statusData/kbps', 2)] });
             expect(runtime.getStates('eng-1').m1).toEqual({ health: 'ok', statusData: { kbps: 2 } });
-            expect(publisher.publish).toHaveBeenLastCalledWith([op('/engines/eng-1/modules/m1/statusData/kbps', 2)]);
+            expect(publisher.statePatch).toHaveBeenLastCalledWith('eng-1', [op('/modules/m1/statusData/kbps', 2)]);
             expect(engineManager.sendToEngine).not.toHaveBeenCalled();
         });
 
@@ -166,7 +168,7 @@ describe('EngineEventForwarder', () => {
             runtime.purgeModuleStates('eng-1', ['ghost']);
             engineManager.emit('engineStatePatch', 'eng-1', { seq: 1, ops: [op('/modules/ghost/health', 'ok')] });
             expect(runtime.getStates('eng-1')).toEqual({});
-            expect(publisher.publish.mock.calls.flatMap(([ops]: [unknown[]]) => ops)).toEqual([]);
+            expect(publisher.statePatch).toHaveBeenLastCalledWith('eng-1', []);
         });
     });
 
@@ -181,6 +183,8 @@ describe('EngineEventForwarder', () => {
             expect(publisher.publish).toHaveBeenCalledWith([
                 { op: 'replace', path: '/engines/eng-1/modules/m1/configSchema', value: { properties: { hw: {} } } },
             ]);
+            // Their descriptors follow the new schema (/meta).
+            expect(publisher.metaChanged).toHaveBeenCalledWith('eng-1', ['m1']);
         });
 
         it('drops non-object payloads', () => {
