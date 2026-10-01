@@ -145,14 +145,17 @@
                 "fields": [
                     {
                         "key": "profile",
+                        "type": "string",
                         "label": "Profile"
                     },
                     {
                         "key": "linkCount",
+                        "type": "number",
                         "label": "Links"
                     },
                     {
                         "key": "encrypted",
+                        "type": "string",
                         "label": "Encrypted"
                     }
                 ]
@@ -163,27 +166,33 @@
                 "fields": [
                     {
                         "key": "received",
+                        "type": "number",
                         "label": "Received"
                     },
                     {
                         "key": "dropped",
+                        "type": "number",
                         "label": "Dropped"
                     },
                     {
                         "key": "recovered",
+                        "type": "number",
                         "label": "Recovered"
                     },
                     {
                         "key": "loss",
+                        "type": "number",
                         "label": "Loss (recovered)",
                         "unit": "%"
                     },
                     {
                         "key": "lost",
+                        "type": "number",
                         "label": "Permanently Lost"
                     },
                     {
                         "key": "rtt",
+                        "type": "number",
                         "label": "RTX RTT",
                         "unit": "ms"
                     }

@@ -196,14 +196,17 @@
                 "fields": [
                     {
                         "key": "gainReduction",
+                        "type": "string",
                         "label": "Gain Reduction"
                     },
                     {
                         "key": "keyLevel",
+                        "type": "string",
                         "label": "Key Level"
                     },
                     {
                         "key": "element",
+                        "type": "string",
                         "label": "DSP Element"
                     }
                 ]

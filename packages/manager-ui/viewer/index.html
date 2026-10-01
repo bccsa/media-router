@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Dashboards</title>
+    <link rel="icon" href="/favicon.svg" />
+    <style>
+        /* Dark --d-bg (dashboard.css) before the bundle loads, so the page never flashes white. */
+        html, body, #app { margin: 0; height: 100%; overflow: hidden; background: #0f1117; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script type="module" src="../src/dashboard/standalone/main.ts"></script>
+</body>
+</html>

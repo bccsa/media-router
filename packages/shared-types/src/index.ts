@@ -2,50 +2,44 @@
 // Media Router v2.0 — Shared Type Definitions
 // ============================================================================
 
+import type { ModuleHealth } from './health.js';
+
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
 export { LiveArrayIndex } from './LiveArrayIndex.js';
+export { diffConfig, GRAPH_KEYS } from './configDiff.js';
+export * from './dashboard.js';
+export * from './scriptRun.js';
+export * from './scriptRuns.js';
+export * from './tree/index.js';
 export {
     PatchOpSchema,
     PatchOpsSchema,
     DgramWireMessageSchema,
     DgramDataSchema,
     EngineRunningStateSchema,
-    LcpEngineCommandSchema,
+    StatePatchSchema,
+    LocalRunCommandSchema,
     DynamicPortsSchema,
     RebootFailedSchema,
     PatchEnvelopeSchema,
-    // Manager Socket RPC payloads — every event in rpcHandlers.ts has its
-    // schema exported here so the manager-ui can build matching payloads.
+    // Payloads of the manager tree's writes and calls (ADR-0024).
     EngineIdSchema,
     CreateEngineSchema,
-    UpdateEngineSchema,
-    DeleteEngineSchema,
     ReorderEnginesSchema,
     CreateGroupSchema,
     UpdateGroupSchema,
-    DeleteGroupSchema,
-    ReorderGroupsSchema,
-    ListProfilesSchema,
-    CreateManagerProfileSchema,
-    DeleteProfileSchema,
-    ActivateProfileSchema,
     ProfileQuerySchema,
-    RollbackSchema,
-    DeviceListSchema,
     DgramListenerSchema,
     ManagerSettingsSchema,
     CreateEngineProfileSchema,
-    EngineIdPayloadSchema,
-    ModuleRestartPayloadSchema,
-    BrowserPatchPayloadSchema,
     InterlockSchema,
     InterlocksSchema,
     validateInterlocksInvariants,
     safeParse,
     validated,
 } from './validation.js';
-export type { InterlockInvariantIssue } from './validation.js';
+export type { InterlockInvariantIssue, ConfigPushTag } from './validation.js';
 
 // --- Error Classes ----------------------------------------------------------
 
@@ -353,8 +347,10 @@ export interface ChannelMapEntry {
 
 // --- Module Runtime State ---------------------------------------------------
 
-/** Overall module health for the state icon. */
-export type ModuleHealth = 'ok' | 'warning' | 'error' | 'stopped';
+export { MODULE_HEALTH, type ModuleHealth } from './health.js';
+export { VU_BLOCKS, vuBlockDbfs } from './vu.js';
+export { carriesAudio } from './carriesAudio.js';
+export { audioEnabledTargets, groupStates, interlockRepairs, unmuteCascade, withInterlockMutes } from './interlockMutes.js';
 
 /** Runtime state of a module instance, reported by the engine. */
 export interface ModuleRuntimeState {
@@ -368,7 +364,7 @@ export interface ModuleRuntimeState {
     pendingRestart: boolean;
     /** Params that are currently live-updatable (reported at runtime). */
     liveUpdatableParams?: string[];
-    /** VU meter levels per channel (dBFS, negative values). */
+    /** VU level per channel in blocks (VU_BLOCKS, vu.ts). */
     vuData?: number[];
     /** SRT connection statistics (when module is SRT-based). */
     srtStats?: SrtStatistics;
@@ -516,6 +512,8 @@ export interface StatusField {
     unit?: string;
     /** How to format the value. */
     format?: 'number' | 'percent' | 'duration' | 'bytes';
+    /** What the plugin sends: dashboards pick widgets by it, router online or not. */
+    type?: 'number' | 'string' | 'boolean';
 }
 
 /** SRT connection statistics. */

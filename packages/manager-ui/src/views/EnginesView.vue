@@ -29,7 +29,7 @@ async function register() {
     loading.value = true;
     error.value = '';
     try {
-        await socket.request('engine:create', { ...form.value });
+        await socket.call('/engines', 'create', { ...form.value });
         showRegister.value = false;
         form.value = { engineId: '', displayName: '', password: '' };
     } catch (err) {
@@ -83,7 +83,7 @@ async function register() {
                     <div v-if="engine.ips?.length">{{ engine.ips.join(', ') }}</div>
                     <div v-if="engine.buildNumber" class="opacity-70">{{ engine.buildNumber }}</div>
                     <div>Profile: {{ engine.activeProfile ?? 'None' }}</div>
-                    <div>Modules: {{ Object.keys(engine.modules).length }}</div>
+                    <div>Modules: {{ engine.moduleCount ?? Object.keys(engine.modules).length }}</div>
                 </div>
             </RouterLink>
         </div>

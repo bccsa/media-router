@@ -2,22 +2,13 @@
 // Minimal on-box manager client for the live reconnect test (runs on a
 // media-router box next to its LOCAL manager on :8080).
 //
-//   node mr_ctl.js state  <engineId> <moduleId>        → JSON runtime state of one module
+//   node mr_ctl.js state  <engineId> <moduleId>        → JSON state of one module
 //   node mr_ctl.js enable <engineId> <moduleId> true|false
 //
-// Uses the same Socket.IO surface the manager UI uses: `watch:engine` to get
-// `engine:state` (ModuleRuntimeState per module) and `patch` with a JSON-patch
-// op on /modules/<id>/enabled. socket.io-client is resolved from the installed
-// packages, so nothing extra has to be shipped.
+// Speaks the tree protocol (ADR-0024) through ../tree-cli/tree.js: a
+// snapshot of /engines/<id>/modules/<id>, or a write to its `enabled`.
 'use strict';
-const path = require('path');
-const roots = ['/opt/media-router/packages/engine', '/opt/media-router/packages/manager', process.cwd()];
-let ioPath = null;
-for (const r of roots) {
-    try { ioPath = require.resolve('socket.io-client', { paths: [r] }); break; } catch (_e) { /* next */ }
-}
-if (!ioPath) { console.error('socket.io-client not found'); process.exit(2); }
-const { io } = require(ioPath);
+const { connect } = require('../tree-cli/tree.js');
 
 const [cmd, engineId, moduleId, arg] = process.argv.slice(2);
 if (!cmd || !engineId || !moduleId) {
@@ -25,28 +16,30 @@ if (!cmd || !engineId || !moduleId) {
     process.exit(2);
 }
 const url = process.env.MR_MANAGER_URL || 'http://127.0.0.1:8080';
-const sock = io(url, { transports: ['websocket'], reconnection: false, timeout: 5000 });
-const die = (msg, code = 1) => { console.error(msg); sock.close(); process.exit(code); };
-const timer = setTimeout(() => die('timeout talking to the manager'), 8000);
+const base = `/engines/${engineId}/modules/${moduleId}`;
 
-sock.on('connect_error', (e) => die(`connect_error: ${e.message}`));
-sock.on('connect', () => {
+async function main() {
+    const t = connect(url);
+    const timer = setTimeout(() => {
+        console.error('timeout talking to the manager');
+        process.exit(1);
+    }, 8000);
+    await t.ready;
     if (cmd === 'state') {
-        sock.on('engine:state', (msg) => {
-            if (!msg || msg.engineId !== engineId) return;
-            const st = (msg.state || {})[moduleId];
-            if (st === undefined) return; // partial delta without our module — keep waiting
-            clearTimeout(timer);
-            console.log(JSON.stringify(st));
-            sock.close();
-            process.exit(0);
-        });
-        sock.emit('watch:engine', { engineId });
+        const [op] = await t.sub([base]);
+        if (!op) throw new Error(`no module ${moduleId} on ${engineId}`);
+        console.log(JSON.stringify(op.value));
     } else if (cmd === 'enable') {
-        const value = arg === 'true';
-        sock.emit('patch', { engineId, ops: [{ op: 'replace', path: `/modules/${moduleId}/enabled`, value }] });
-        setTimeout(() => { clearTimeout(timer); sock.close(); process.exit(0); }, 400);
+        const { rejected } = await t.write([{ op: 'replace', path: `${base}/enabled`, value: arg === 'true' }]);
+        if (rejected.length > 0) throw new Error(rejected[0].reason);
     } else {
-        die(`unknown command ${cmd}`, 2);
+        throw new Error(`unknown command ${cmd}`);
     }
+    clearTimeout(timer);
+    t.close();
+}
+
+main().catch((e) => {
+    console.error(e.message);
+    process.exit(1);
 });

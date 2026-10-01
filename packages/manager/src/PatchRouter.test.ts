@@ -16,17 +16,18 @@ function createMocks() {
         sendToEngine: vi.fn(),
     } as any;
 
-    const emitted: Array<{ event: string; data: unknown }> = [];
-    const senderEmissions: Array<{ event: string; data: unknown }> = [];
-    const senderRoom = {
-        emit: vi.fn((event: string, data: unknown) => senderEmissions.push({ event, data })),
-    };
-    const io = {
-        emit: vi.fn((event: string, data: unknown) => emitted.push({ event, data })),
-        except: vi.fn().mockReturnThis(),
-        to: vi.fn().mockReturnValue(senderRoom),
+    // Tree publications: each processed op, flagged by whether the sender applied it.
+    const published: Array<{ engineId: string; entries: Array<{ op: any; fromSender: boolean }>; senderId: string; writeId?: number }> = [];
+    const publisher = {
+        config: vi.fn((engineId: string, entries: any[], senderId: string, writeId?: number) =>
+            published.push({ engineId, entries, senderId, writeId }),
+        ),
+        info: vi.fn(),
     } as any;
-
+    /** Every op tree subscribers receive, in order. */
+    const browserOps = () => published.flatMap((p) => p.entries.map((e) => e.op));
+    /** Ops the sender had not applied — the server-added cascades. */
+    const cascadesOf = () => published.flatMap((p) => p.entries.filter((e) => !e.fromSender).map((e) => e.op));
     const pluginRegistry: any = {
         find: vi.fn().mockReturnValue({
             pluginId: 'audio-input',
@@ -64,20 +65,23 @@ function createMocks() {
     // manager's own manifest. Tests override the return value to exercise #661.
     const eventForwarder: any = {
         getPluginSchemas: vi.fn().mockReturnValue(undefined),
+        // A router's reported identity (`features`); none by default → an older router.
+        getData: vi.fn().mockReturnValue(undefined),
         purgeModuleStates: vi.fn(),
         clearModuleTombstones: vi.fn(),
     };
 
-    const router = new PatchRouter(configStore, engineManager, io, pluginRegistry, eventForwarder);
+    const router = new PatchRouter(configStore, engineManager, publisher, pluginRegistry, eventForwarder);
     return {
         router,
         configStore,
         engineManager,
-        io,
+        publisher,
+        published,
+        browserOps,
+        cascadesOf,
         pluginRegistry,
         eventForwarder,
-        emitted,
-        senderRoom,
     };
 }
 
@@ -91,12 +95,17 @@ describe('PatchRouter', () => {
             expect(configStore.modifyProfileConfig).toHaveBeenCalled();
         });
 
-        it('broadcasts to other browsers (skip sender)', () => {
-            const { router, io } = createMocks();
+        it('publishes to the tree as the sender own ops, with its write id', () => {
+            const { router, published } = createMocks();
             router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' },
-            ]);
-            expect(io.except).toHaveBeenCalledWith('browser-1');
+            ], 7);
+            expect(published).toEqual([{
+                engineId: 'eng-1',
+                senderId: 'browser-1',
+                writeId: 7,
+                entries: [{ op: { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' }, fromSender: true }],
+            }]);
         });
 
         it('forwards patch to engine', () => {
@@ -128,18 +137,12 @@ describe('PatchRouter', () => {
             // naturally reaches every browser (the one-invariant broadcast uses
             // `except(senderId)` uniformly; with no matching socket it's a no-op
             // exclusion = full broadcast).
-            const { router, io } = createMocks();
+            const { router, publisher, browserOps } = createMocks();
             router.onPatch(engineSenderId('eng-1'), 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
-            expect(io.except).toHaveBeenCalledWith('engine:eng-1');
-            expect(io.emit).toHaveBeenCalledWith(
-                'engine:update',
-                expect.objectContaining({
-                    engineId: 'eng-1',
-                    patch: expect.any(Array),
-                }),
-            );
+            expect(publisher.config).toHaveBeenCalledWith('eng-1', expect.any(Array), 'engine:eng-1', undefined);
+            expect(browserOps()).toEqual([{ op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 }]);
         });
 
         it('does NOT forward back to engine', () => {
@@ -645,12 +648,20 @@ describe('PatchRouter', () => {
             ]);
         });
 
+        it('a router that keeps its interlocks (ADR-0028) gets the unmute alone; it mutes and reports', () => {
+            const { router, configStore, engineManager, eventForwarder } = createMocks();
+            eventForwarder.getData.mockImplementation((_e: string, topic: string) => (topic === 'features' ? ['dashboards', 'interlocks'] : undefined));
+            configStore.modifyProfileConfig.mockImplementation((_eid: string, _pid: string, fn: any) => fn(configWithInterlock({ hotMembers: ['b'] })));
+            router.onPatch('browser-1', 'eng-1', [{ op: 'replace', path: '/modules/a/settings/audioEnabled', value: true }]);
+            expect(engineManager.sendToEngine.mock.calls[0][2].ops).toEqual([{ op: 'replace', path: '/modules/a/settings/audioEnabled', value: true }]);
+        });
+
         it('does NOT echo rewrites-of-originals to the sender (double-apply guard)', () => {
             // Regression: previously any op rewritten by preprocessOps was a NEW
             // object reference, so the sender's "filter extras by identity" shipped
             // it back. Sender had already spliced by id; a rewritten index-based
             // remove would splice the wrong entry.
-            const { router, configStore, io, senderRoom } = createMocks();
+            const { router, configStore, browserOps, cascadesOf } = createMocks();
             configStore.modifyProfileConfig.mockImplementation(
                 (_eid: string, _pid: string, fn: any) => {
                     return fn({
@@ -667,15 +678,15 @@ describe('PatchRouter', () => {
 
             router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/connections/abc' }]);
 
-            // No cascade for a simple connection remove — sender gets no echo.
-            expect(io.to).not.toHaveBeenCalled();
-            expect(senderRoom.emit).not.toHaveBeenCalled();
+            // The echo is the id path, never the rewritten index — safe to re-apply.
+            expect(browserOps()).toEqual([{ op: 'remove', path: '/connections/abc' }]);
+            expect(cascadesOf()).toEqual([]);
         });
 
-        it('sender receives the cascade mute ops via io.to(senderId)', () => {
+        it('the cascade mute reaches the sender as an op it did not apply', () => {
             // Sender already applied the unmute optimistically — they need the
             // server-added mute of the other member so their UI updates.
-            const { router, configStore, io, senderRoom } = createMocks();
+            const { router, configStore, cascadesOf } = createMocks();
             configStore.modifyProfileConfig.mockImplementation(
                 (_eid: string, _pid: string, fn: any) => {
                     return fn(configWithInterlock({ hotMembers: ['b'] }));
@@ -686,16 +697,13 @@ describe('PatchRouter', () => {
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
-            expect(io.to).toHaveBeenCalledWith('browser-1');
-            const senderCall = senderRoom.emit.mock.calls[0];
-            expect(senderCall[0]).toBe('engine:update');
-            expect(senderCall[1].patch).toEqual([
+            expect(cascadesOf()).toEqual([
                 { op: 'replace', path: '/modules/b/settings/audioEnabled', value: false },
             ]);
         });
 
-        it('other browsers receive originals + cascade', () => {
-            const { router, configStore, io } = createMocks();
+        it('subscribers receive the cascade mute before the unmute (never two hot)', () => {
+            const { router, configStore, browserOps } = createMocks();
             configStore.modifyProfileConfig.mockImplementation(
                 (_eid: string, _pid: string, fn: any) => {
                     return fn(configWithInterlock({ hotMembers: ['b'] }));
@@ -706,12 +714,9 @@ describe('PatchRouter', () => {
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
-            const otherBrowserCall = io.emit.mock.calls.find((c: any) => c[0] === 'engine:update');
-            expect(otherBrowserCall).toBeDefined();
-            const patch = otherBrowserCall![1].patch;
-            expect(patch).toEqual([
-                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
+            expect(browserOps()).toEqual([
                 { op: 'replace', path: '/modules/b/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
         });
 
@@ -1159,7 +1164,7 @@ describe('PatchRouter', () => {
 
     describe('enrichOpsForBroadcast', () => {
         it('enriches module add with manifest data for broadcast', () => {
-            const { router, configStore, io, pluginRegistry } = createMocks();
+            const { router, configStore, browserOps, pluginRegistry } = createMocks();
             pluginRegistry.find.mockReturnValue({
                 pluginId: 'audio-input',
                 color: '#3b82f6',
@@ -1184,10 +1189,8 @@ describe('PatchRouter', () => {
                 },
             ]);
 
-            // Browser broadcast should have enriched data
-            const emitCall = io.emit.mock.calls[0];
-            const browserOps = emitCall[1].patch;
-            const addOp = browserOps.find((o: any) => o.op === 'add');
+            // The tree gets the enriched module
+            const addOp = browserOps().find((o: any) => o.op === 'add');
             expect(addOp.value).toEqual(
                 expect.objectContaining({
                     instanceId: 'mod-new',
@@ -1203,7 +1206,7 @@ describe('PatchRouter', () => {
         });
 
         it('passes through non-add ops unchanged', () => {
-            const { router, configStore, io } = createMocks();
+            const { router, configStore, browserOps } = createMocks();
             configStore.modifyProfileConfig.mockImplementation(
                 (_eid: string, _pid: string, fn: any) => {
                     const config = {
@@ -1218,17 +1221,15 @@ describe('PatchRouter', () => {
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New' },
             ]);
 
-            const emitCall = io.emit.mock.calls[0];
-            const browserOps = emitCall[1].patch;
-            expect(browserOps).toEqual([
+            expect(browserOps()).toEqual([
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New' },
             ]);
         });
     });
 
     describe('engine vs browser ops routing', () => {
-        it('engine receives processedOps (index-based), browsers receive original ops', () => {
-            const { router, configStore, engineManager, io } = createMocks();
+        it('engine receives processedOps (index-based), the tree gets id paths', () => {
+            const { router, configStore, engineManager, browserOps } = createMocks();
             configStore.modifyProfileConfig.mockImplementation(
                 (_eid: string, _pid: string, fn: any) => {
                     const config = {
@@ -1247,16 +1248,8 @@ describe('PatchRouter', () => {
             const engineOps = engineManager.sendToEngine.mock.calls[0][2].ops;
             expect(engineOps[0].path).toBe('/connections/0');
 
-            // Browsers get original ID-based path
-            const exceptCall = io.except.mock.calls[0];
-            expect(exceptCall[0]).toBe('browser-1');
-            const browserEmit = io.except('browser-1').emit;
-            // io.except returns `this` (the io mock), so emit is io.emit after except
-            // The broadcast call is chained: io.except(senderId).emit(...)
-            // Since except returns this, the emit call is on io itself
-            const emitCalls = io.emit.mock.calls;
-            const browserOps = emitCalls[0][1].patch;
-            expect(browserOps[0].path).toBe('/connections/conn-a');
+            // The tree gets the id path back from the index the rules produced
+            expect(browserOps()[0].path).toBe('/connections/conn-a');
         });
     });
 

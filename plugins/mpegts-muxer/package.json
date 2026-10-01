@@ -93,25 +93,25 @@
                 "id": "udp",
                 "label": "UDP Output",
                 "fields": [
-                    { "key": "host", "label": "Multicast" },
-                    { "key": "port", "label": "Port" }
+                    { "key": "host", "type": "string", "label": "Multicast" },
+                    { "key": "port", "type": "number", "label": "Port" }
                 ]
             },
             {
                 "id": "inputs",
                 "label": "Active Inputs",
                 "fields": [
-                    { "key": "connected", "label": "Connected Inputs" },
-                    { "key": "streams", "label": "Streams Routed" },
-                    { "key": "mode", "label": "Port Mode" }
+                    { "key": "connected", "type": "number", "label": "Connected Inputs" },
+                    { "key": "streams", "type": "number", "label": "Streams Routed" },
+                    { "key": "mode", "type": "string", "label": "Port Mode" }
                 ]
             },
             {
                 "id": "throughput",
                 "label": "Live Throughput",
                 "fields": [
-                    { "key": "Output Bitrate", "label": "Output Bitrate" },
-                    { "key": "Total Bytes", "label": "Total Bytes" }
+                    { "key": "Output Bitrate", "type": "string", "label": "Output Bitrate" },
+                    { "key": "Total Bytes", "type": "string", "label": "Total Bytes" }
                 ]
             }
         ],

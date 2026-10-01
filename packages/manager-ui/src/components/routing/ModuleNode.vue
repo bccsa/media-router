@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import * as wire from '@media-router/shared-types/browser';
 import {
     computed,
     inject,
@@ -27,6 +28,9 @@ import { useResizableCard } from '@/composables/useResizableCard';
 import { useLongPress } from '@/composables/useLongPress';
 import { upstreamPorts } from '@/utils/upstreamLabels';
 import { codecChip, compactPortLabel } from '@/utils/portDisplay';
+
+// shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
+const { carriesAudio } = wire;
 
 const props = defineProps<{ data: ModuleState }>();
 
@@ -216,18 +220,10 @@ function getFaceWidgetValue(widget: Record<string, unknown>): number {
 
 const hasStats = computed(() => allStatusSections.value.length > 0);
 
-// Show VU meters if the module carries audio: any `audio/*` port (pcm, 302m
-// PCM-in-TS, opus, aac), or an input that `acceptsAnyTs` — that flag exists
-// for the audio-transcoder decoding a muxed TS / 302M stream, whose OUTPUTS
-// are compressed renditions typed `muxed/mpegts`. Without this clause a 302M→
-// Opus transcoder had no meter on the manager while the LCP showed it (the
-// engine streams VU for it regardless — the gating was UI-only).
-const hasAudio = computed(
-    () =>
-        props.data.ports?.some(
-            (p) => p.streamType.startsWith('audio/') || p.acceptsAnyTs === true,
-        ) ?? false,
-);
+// Show VU meters if the module carries audio. Without the `acceptsAnyTs`
+// clause a 302M→Opus transcoder had no meter on the manager while the LCP
+// showed it (the engine streams VU for it regardless — the gating was UI-only).
+const hasAudio = computed(() => carriesAudio(props.data.ports));
 // Read VU data from dedicated reactive store (updates at ~15Hz without triggering full re-render)
 const vuChannels = computed(() => {
     const live = vuStore.get(engineId, props.data.instanceId);

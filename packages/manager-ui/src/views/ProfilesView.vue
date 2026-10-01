@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, computed } from 'vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
+import { useTopics } from '@/composables/useTopics';
+import { engineActions } from '@/utils/engineActions';
+import type { PatchOp } from '@media-router/shared-types';
 import MrButton from '@/components/common/MrButton.vue';
 import MrModal from '@/components/common/MrModal.vue';
 import MrInput from '@/components/common/MrInput.vue';
@@ -11,7 +14,16 @@ const engineStore = useEngineStore();
 const socket = useSocketStore();
 const engine = computed(() => engineStore.getEngine(props.engineId));
 
-const profiles = ref<Array<{ profile_name: string }>>([]);
+// The profile list is the engine's `profiles` branch, live while this view is open.
+useTopics(() => [`/engines/${props.engineId}/profiles`]);
+const profiles = computed(() =>
+    Object.keys(engine.value?.profiles ?? {}).map((profile_name) => ({ profile_name })),
+);
+const at = computed(() => `/engines/${props.engineId}`);
+
+function write(op: PatchOp) {
+    return socket.writeOrThrow([op]);
+}
 const showCreate = ref(false);
 const newProfileName = ref('');
 const showSwitchConfirm = ref<string | null>(null);
@@ -21,28 +33,13 @@ const importData = ref('');
 const importName = ref('');
 const error = ref('');
 
-async function loadProfiles() {
-    error.value = '';
-    try {
-        profiles.value = await socket.request<Array<{ profile_name: string }>>('profile:list', {
-            engineId: props.engineId,
-        });
-    } catch (err) {
-        error.value = err instanceof Error ? err.message : 'Failed to load profiles';
-    }
-}
-
 async function createProfile() {
     if (!newProfileName.value.trim()) return;
     error.value = '';
     try {
-        await socket.request('profile:create', {
-            engineId: props.engineId,
-            profileName: newProfileName.value.trim(),
-        });
+        await write({ op: 'add', path: `${at.value}/profiles/${newProfileName.value.trim()}`, value: {} });
         newProfileName.value = '';
         showCreate.value = false;
-        await loadProfiles();
     } catch (err) {
         error.value = err instanceof Error ? err.message : 'Failed to create profile';
     }
@@ -51,20 +48,9 @@ async function createProfile() {
 async function switchProfile(name: string) {
     error.value = '';
     try {
-        // Activate involves a guaranteed-delivery config push to the engine
-        // plus per-module manifest enrichment — give it more headroom than
-        // the default 10s so a loaded Pi with SQLite contention doesn't
-        // spuriously fail the call.
-        await socket.request(
-            'profile:activate',
-            { engineId: props.engineId, profileName: name },
-            { timeoutMs: 30_000 },
-        );
+        await write({ op: 'replace', path: `${at.value}/info/activeProfile`, value: name });
         showSwitchConfirm.value = null;
-        if (engine.value?.running) {
-            socket.emit('engine:stop', { engineId: props.engineId });
-        }
-        await loadProfiles();
+        if (engine.value?.running) engineActions.setRunning(props.engineId, false);
     } catch (err) {
         error.value = err instanceof Error ? err.message : 'Failed to activate profile';
     }
@@ -73,12 +59,8 @@ async function switchProfile(name: string) {
 async function deleteProfile(name: string) {
     error.value = '';
     try {
-        await socket.request('profile:delete', {
-            engineId: props.engineId,
-            profileName: name,
-        });
+        await write({ op: 'remove', path: `${at.value}/profiles/${name}` });
         showDeleteConfirm.value = null;
-        await loadProfiles();
     } catch (err) {
         error.value = err instanceof Error ? err.message : 'Failed to delete profile';
     }
@@ -97,9 +79,10 @@ async function loadHistory(profileName: string) {
     }
     showHistory.value = profileName;
     try {
-        history.value = await socket.request<
-            Array<{ id: number; saved_at: string; config: string }>
-        >('profile:history', { engineId: props.engineId, profileName });
+        history.value = await socket.call<Array<{ id: number; saved_at: string; config: string }>>(
+            `${at.value}/profiles/${profileName}`,
+            'history',
+        );
     } catch {
         history.value = [];
     }
@@ -109,11 +92,7 @@ async function rollback(versionId: number) {
     if (!showHistory.value) return;
     error.value = '';
     try {
-        await socket.request('profile:rollback', {
-            engineId: props.engineId,
-            profileName: showHistory.value,
-            versionId,
-        });
+        await socket.call(`${at.value}/profiles/${showHistory.value}`, 'rollback', { versionId });
         showRollbackConfirm.value = null;
         previewVersion.value = null;
         await loadHistory(showHistory.value);
@@ -125,10 +104,7 @@ async function rollback(versionId: number) {
 async function exportProfile(name: string) {
     error.value = '';
     try {
-        const config = await socket.request<unknown>('profile:config', {
-            engineId: props.engineId,
-            profileName: name,
-        });
+        const config = await socket.call<unknown>(`${at.value}/profiles/${name}`, 'config');
         const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -152,15 +128,10 @@ async function importProfile() {
         return;
     }
     try {
-        await socket.request('profile:create', {
-            engineId: props.engineId,
-            profileName: importName.value.trim(),
-            config,
-        });
+        await write({ op: 'add', path: `${at.value}/profiles/${importName.value.trim()}`, value: { config } });
         showImport.value = false;
         importName.value = '';
         importData.value = '';
-        await loadProfiles();
     } catch (err) {
         error.value = err instanceof Error ? err.message : 'Failed to import profile';
     }
@@ -180,7 +151,6 @@ function handleFileImport(event: Event) {
     reader.readAsText(file);
 }
 
-onMounted(loadProfiles);
 </script>
 
 <template>
@@ -382,7 +352,9 @@ onMounted(loadProfiles);
     <!-- Rollback confirmation -->
     <MrModal v-if="showRollbackConfirm" title="Rollback Config" @close="showRollbackConfirm = null">
         <p class="text-sm text-subtle">
-            Restore this version? The current config will be overwritten.
+            Restore this version? The current config will be overwritten. If this profile is
+            active, the router applies the changes now; settings that need a restart wait
+            until the module restarts.
         </p>
         <template #footer>
             <MrButton variant="secondary" @click="showRollbackConfirm = null">Cancel</MrButton>

@@ -20,7 +20,7 @@ export default defineConfig({
     // pre-bundle it (and convert CJS → ESM) in dev mode. The `build` block
     // below handles the same problem at production build time via Rollup.
     optimizeDeps: {
-        include: ['@media-router/shared-types'],
+        include: ['@media-router/shared-types', '@media-router/shared-types/browser'],
     },
     build: {
         commonjsOptions: {

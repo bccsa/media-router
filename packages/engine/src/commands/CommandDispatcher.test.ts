@@ -14,8 +14,8 @@ function createMockContext(): CommandContext {
             updateChannelMap: vi.fn().mockResolvedValue(undefined),
             removeConnection: vi.fn().mockResolvedValue(undefined),
         } as any,
-        lcpServer: {
-            broadcastConfigUpdate: vi.fn(),
+        localServer: {
+            configChanged: vi.fn(),
         } as any,
         currentConfig: { modules: {}, connections: [] },
         isEngineRunning: vi.fn().mockReturnValue(true),
@@ -80,7 +80,7 @@ describe('CommandDispatcher', () => {
 
         it('broadcasts a queued stop immediately while a slow start still holds the lock', async () => {
             // The regression this guards: stop pressed during a 16s pipeline
-            // bring-up queued behind commandLock, so the LCP kept showing
+            // bring-up queued behind commandLock, so the router tree kept showing
             // "running" until the bring-up finished — while the manager
             // flipped instantly.
             let resolveStart!: () => void;
@@ -306,7 +306,7 @@ describe('CommandDispatcher', () => {
     });
 
     describe('moduleConfig', () => {
-        it('applies config update and broadcasts to LCP', async () => {
+        it('applies config update and tells the router tree', async () => {
             (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue({ running: true });
 
             dispatcher.dispatch({
@@ -319,7 +319,7 @@ describe('CommandDispatcher', () => {
             expect(ctx.moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', {
                 volume: 80,
             });
-            expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([
+            expect(ctx.localServer.configChanged).toHaveBeenCalledWith([
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
         });
@@ -373,7 +373,7 @@ describe('CommandDispatcher', () => {
             dispatcher.dispatch({ command: 'moduleDisable', moduleId: 'mod-1' });
             await flush();
             expect(ctx.disableModule).toHaveBeenCalledWith('mod-1');
-            expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([
+            expect(ctx.localServer.configChanged).toHaveBeenCalledWith([
                 { op: 'replace', path: '/modules/mod-1/enabled', value: false },
             ]);
         });
@@ -382,7 +382,7 @@ describe('CommandDispatcher', () => {
             dispatcher.dispatch({ command: 'moduleEnable', moduleId: 'mod-1' });
             await flush();
             expect(ctx.enableModule).toHaveBeenCalledWith('mod-1');
-            expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([
+            expect(ctx.localServer.configChanged).toHaveBeenCalledWith([
                 { op: 'replace', path: '/modules/mod-1/enabled', value: true },
             ]);
         });
@@ -405,14 +405,14 @@ describe('CommandDispatcher', () => {
                 'in-0',
                 undefined,
             );
-            expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalled();
+            expect(ctx.localServer.configChanged).toHaveBeenCalled();
         });
 
         it('routingDisconnect removes connection and broadcasts', async () => {
             dispatcher.dispatch({ command: 'routingDisconnect', connectionId: 'conn-1' });
             await flush();
             expect(ctx.mediaRouter.removeConnection).toHaveBeenCalledWith('conn-1');
-            expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([
+            expect(ctx.localServer.configChanged).toHaveBeenCalledWith([
                 { op: 'remove', path: '/connections/conn-1' },
             ]);
         });

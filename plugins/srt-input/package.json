@@ -95,18 +95,22 @@
                 "fields": [
                     {
                         "key": "mode",
+                        "type": "string",
                         "label": "Mode"
                     },
                     {
                         "key": "host",
+                        "type": "string",
                         "label": "Host"
                     },
                     {
                         "key": "port",
+                        "type": "number",
                         "label": "Port"
                     },
                     {
                         "key": "encrypted",
+                        "type": "string",
                         "label": "Encrypted"
                     }
                 ]
@@ -117,24 +121,29 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "Mbps"
                     },
                     {
                         "key": "rtt",
+                        "type": "number",
                         "label": "RTT",
                         "unit": "ms"
                     },
                     {
                         "key": "packetLoss",
+                        "type": "string",
                         "label": "Packet Loss"
                     },
                     {
                         "key": "bytesReceived",
+                        "type": "string",
                         "label": "Bytes Received"
                     },
                     {
                         "key": "callers",
+                        "type": "number",
                         "label": "Callers"
                     }
                 ]

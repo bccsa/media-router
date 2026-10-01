@@ -14,7 +14,7 @@ import { validateInterlocksInvariants } from '@media-router/shared-types';
  * Assumes `config.interlocks` is already a proper array (ConfigStore.getProfile
  * normalizes on load, so callers don't need to).
  */
-export function reconcileInterlocks(config: Record<string, unknown>): PatchOp[] {
+export function reconcileInterlocks(config: Record<string, unknown>, opts: { mutes?: boolean } = {}): PatchOp[] {
     const interlocks = (config.interlocks ?? []) as Array<{ id: string; members: string[] }>;
     if (interlocks.length === 0) return [];
 
@@ -51,7 +51,9 @@ export function reconcileInterlocks(config: Record<string, unknown>): PatchOp[] 
             ops.push({ op: 'replace', path: `/interlocks/${ilk.id}/members`, value: cleaned });
         }
 
-        // 2. Enforce "at most one hot" — first member in array wins
+        // 2. Enforce "at most one hot" — first member in array wins (not for a
+        // router that keeps its interlocks itself, ADR-0028).
+        if (opts.mutes === false) continue;
         let hotSeen = false;
         for (const moduleId of ilk.members) {
             const mod = modules[moduleId];

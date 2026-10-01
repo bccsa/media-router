@@ -40,13 +40,26 @@ export const DgramWireMessageSchema = z.object({
 
 // --- Engine Event Payloads --------------------------------------------------
 
-/** Engine running state report. */
+/** Engine running state report; `localChange` = set on site during an outage, adopt it (ADR-0025). */
 export const EngineRunningStateSchema = z.object({
     running: z.boolean(),
+    localChange: z.boolean().optional(),
 });
 
-/** LCP engine command (start/stop). */
-export const LcpEngineCommandSchema = z.object({
+/** Carried as `_push` on every manager config push (ADR-0025). */
+export interface ConfigPushTag {
+    reason: 'connect' | 'activate';
+    profile: string;
+}
+
+/** Leaf state ops from an engine, numbered so the manager spots a gap (ADR-0025). */
+export const StatePatchSchema = z.object({
+    seq: z.number().int(),
+    ops: z.array(PatchOpSchema),
+});
+
+/** A Start/Stop made on the router itself (wire topic `lcpEngineCommand`). */
+export const LocalRunCommandSchema = z.object({
     command: z.enum(['start', 'stop']),
 });
 
@@ -66,13 +79,11 @@ export const PatchEnvelopeSchema = z.object({
     ops: PatchOpsSchema,
 });
 
-// --- Manager Socket RPC Payloads --------------------------------------------
+// --- Manager Tree Payloads --------------------------------------------------
 //
-// All manager mutations + reads flow through Socket.IO with an ack callback.
-// The HTTP API was retired — only `/health` and the SPA's static assets are
-// served over HTTP now. Each event accepts a payload and returns
-// `Ack<T> = { ok: true; data?: T } | { ok: false; error: string; details? }`
-// via the ack callback.
+// Payloads of the manager tree's writes and calls (ADR-0024). The HTTP API
+// was retired — only `/health` and the SPA's static assets are served over
+// HTTP.
 //
 // Schemas below are shared between the manager (which validates incoming
 // payloads with `safeParse`) and the manager-ui (which builds payloads of
@@ -82,8 +93,8 @@ export const PatchEnvelopeSchema = z.object({
  * Engine identifier — also the dgram-comms `clientId` and the SQLite PK across
  * `engines`, `engine_profiles`, `engine_config_history`. Restricted to a safe
  * URL-token charset so the id is round-trippable through log lines,
- * filesystem paths (engine-side `profile.name`), and Socket.IO room names
- * (`watch:<engineId>`) without needing escaping anywhere. Length cap matches what a typical operator
+ * filesystem paths (engine-side `profile.name`), and tree paths without
+ * needing escaping anywhere. Length cap matches what a typical operator
  * deployment will use (e.g. `studio-a-engine`) without being so long that it
  * pollutes log output.
  */
@@ -112,29 +123,14 @@ const GroupIdSchema = z
     .max(80)
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 
-/** `engine:create` */
+/** Call `create` on `/engines`. */
 export const CreateEngineSchema = z.object({
     engineId: EngineIdSchema,
     displayName: z.string().min(1),
     password: z.string().min(1),
 });
 
-/**
- * `engine:update` — `engineId` is the current row's PK. If `newEngineId` is
- * provided and differs, the row is renamed atomically along with display_name
- * and password (see `ConfigStore.renameEngine`).
- */
-export const UpdateEngineSchema = z.object({
-    engineId: EngineIdSchema,
-    displayName: z.string().min(1),
-    password: z.string().optional(),
-    newEngineId: EngineIdSchema.optional(),
-});
-
-/** `engine:delete` */
-export const DeleteEngineSchema = z.object({ engineId: EngineIdSchema });
-
-/** `engine:reorder` */
+/** Writes to `/engines/<id>/info/{groupId,sortOrder}`. */
 export const ReorderEnginesSchema = z.object({
     updates: z
         .array(
@@ -147,13 +143,13 @@ export const ReorderEnginesSchema = z.object({
         .min(1),
 });
 
-/** `engine-group:create` */
+/** Write `add /groups/<id>` (the client picks the id). */
 export const CreateGroupSchema = z.object({
     name: z.string().min(1).max(64),
     color: HexColor.optional(),
 });
 
-/** `engine-group:update` */
+/** Writes to `/groups/<id>/{name,color,collapsed}`. */
 export const UpdateGroupSchema = z.object({
     groupId: GroupIdSchema,
     name: z.string().min(1).max(64).optional(),
@@ -161,57 +157,10 @@ export const UpdateGroupSchema = z.object({
     color: HexColor.nullable().optional(),
 });
 
-/** `engine-group:delete` */
-export const DeleteGroupSchema = z.object({ groupId: GroupIdSchema });
-
-/** `engine-group:reorder` */
-export const ReorderGroupsSchema = z.object({
-    orderedIds: z.array(GroupIdSchema).min(1),
-});
-
-/** `profile:list` */
-export const ListProfilesSchema = z.object({ engineId: EngineIdSchema });
-
-/** `profile:create` */
-export const CreateManagerProfileSchema = z.object({
-    engineId: EngineIdSchema,
-    profileName: ProfileNameSchema,
-    config: z.record(z.string(), z.unknown()).optional(),
-});
-
-/** `profile:delete` */
-export const DeleteProfileSchema = z.object({
-    engineId: EngineIdSchema,
-    profileName: ProfileNameSchema,
-});
-
-/** `profile:activate` */
-export const ActivateProfileSchema = z.object({
-    engineId: EngineIdSchema,
-    profileName: ProfileNameSchema,
-});
-
-/** `profile:config` / `profile:history` */
+/** Engine + profile name pair; the profile name rule backs `/engines/<id>/profiles/<name>` writes. */
 export const ProfileQuerySchema = z.object({
     engineId: EngineIdSchema,
     profileName: ProfileNameSchema,
-});
-
-/** `profile:rollback` */
-export const RollbackSchema = z.object({
-    engineId: EngineIdSchema,
-    profileName: ProfileNameSchema,
-    versionId: z.number().int().positive(),
-});
-
-/** `device:list` — initial-snapshot read for plugin-registered device types. */
-export const DeviceListSchema = z.object({
-    engineId: EngineIdSchema,
-    type: z
-        .string()
-        .min(1)
-        .max(64)
-        .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
 });
 
 // --- Manager Settings -------------------------------------------------------
@@ -224,7 +173,7 @@ export const DgramListenerSchema = z.object({
 });
 
 /**
- * `settings:set` / `settings:get`. At least one listener always remains so a
+ * Write `replace /settings/dgramListeners`. At least one listener always remains so a
  * save can never leave the manager unreachable by every engine. A port may
  * appear once: a wildcard bind and a specific-address bind on the same port
  * collide at bind time, so they are rejected up front too.
@@ -253,25 +202,6 @@ export const CreateEngineProfileSchema = z.object({
     managerPort: z.number().int().positive(),
     password: z.string().min(1),
     paths: z.array(ManagerPathSchema).optional(),
-});
-
-// --- Socket.IO Payloads -----------------------------------------------------
-
-/** Payload with just an engineId. */
-export const EngineIdPayloadSchema = z.object({
-    engineId: z.string().min(1),
-});
-
-/** module:restart payload. */
-export const ModuleRestartPayloadSchema = z.object({
-    engineId: z.string().min(1),
-    moduleId: z.string().min(1),
-});
-
-/** Browser patch payload (engineId + ops). */
-export const BrowserPatchPayloadSchema = z.object({
-    engineId: z.string().min(1),
-    ops: PatchOpsSchema,
 });
 
 // --- Interlocks -------------------------------------------------------------

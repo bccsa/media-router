@@ -106,13 +106,15 @@ const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
     },
 });
 
-// resolveNativeBinary lives in the compiled engine package, outside this
-// file's mock graph — vi.mock('node:fs') cannot reach it. Drive it through
-// its documented MR_NATIVE_BIN_DIR override instead, so the choice of fan-out
-// implementation is deterministic here (without it these tests would depend
-// on whether the native tools happen to be built).
+// The engine resolves from source in tests (vitest.config.ts), so the
+// node:fs mock above also drives resolveNativeBinary / resolvePythonScript.
+// MR_NATIVE_BIN_DIR still pins WHERE the binary is looked for, so the choice
+// of fan-out never depends on whether the native tools happen to be built.
 let nativeBinDir: string;
 let emptyBinDir: string;
+/** Everything exists except the native fan-out binary. */
+const noNativeFanout = () =>
+    (existsSync as unknown as ReturnType<typeof vi.fn>).mockImplementation((p: unknown) => !String(p).endsWith('mr-bus-fanout'));
 beforeAll(() => {
     nativeBinDir = mkdtempSync(join(tmpdir(), 'hls-native-'));
     emptyBinDir = mkdtempSync(join(tmpdir(), 'hls-nonative-'));
@@ -209,6 +211,7 @@ describe('HlsPlayerModule.onStart', () => {
     it('falls back to the python sidecar when the native binary is absent', async () => {
         const { module, spawn } = makeModule();
         process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        noNativeFanout();
         await module.onStart();
         const { opts } = sidecarOf(spawn);
         expect(opts.command).toBe('python3');
@@ -233,6 +236,7 @@ describe('HlsPlayerModule.onStart', () => {
         const py = makeModule();
         py.module.services.timeSyncContract = true;
         process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        noNativeFanout();
         await py.module.onStart();
         expect(sidecarOf(py.spawn).opts.command).toBe('python3');
         expect(sidecarOf(py.spawn).opts.args).toContain('--stamp-timeline');
@@ -241,9 +245,8 @@ describe('HlsPlayerModule.onStart', () => {
     it('reports an error when NEITHER fan-out implementation is available', async () => {
         const { module, spawn } = makeModule();
         process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
-        // resolvePythonScript scans MR_PLUGINS_DIR (like resolveNativeBinary it
-        // lives in the compiled engine, outside this file's fs mock) — point it
-        // at an empty dir so the python sidecar is unavailable too.
+        // resolvePythonScript scans MR_PLUGINS_DIR — point it at an empty dir
+        // so the python sidecar is unavailable too.
         process.env.MR_PLUGINS_DIR = emptyBinDir;
         (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
         await module.onStart();

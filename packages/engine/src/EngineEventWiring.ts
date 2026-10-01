@@ -1,17 +1,20 @@
 import type { ModuleRuntimeState, PatchOp } from '@media-router/shared-types';
-import { createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shared-types';
+import { applyJsonPatch, createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shared-types';
 
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
 import type { ManagerConnection } from './comms/ManagerConnection.js';
-import { ModuleStateBatcher } from './comms/ModuleStateBatcher.js';
 import { VuBatcher } from './comms/VuBatcher.js';
+import { ManagerStateSync } from './comms/ManagerStateSync.js';
+import { applyConfigPush } from './comms/applyConfigPush.js';
+import type { LocalChanges } from './comms/LocalChanges.js';
+import type { RouterTree } from './tree/RouterTree.js';
+import type { LocalServer } from './comms/LocalServer.js';
 import type { LcpServer } from './comms/LcpServer.js';
 import type { PipeWireManager } from './audio/PipeWireManager.js';
 import type { LogForwarder } from './logging/LogForwarder.js';
 import type { CommandDispatcher } from './commands/CommandDispatcher.js';
 import type { EnginePatchRouter } from './EnginePatchRouter.js';
-import type { SystemStatsCollector } from './system/SystemStatsCollector.js';
 import type { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 import type { ModuleRunController } from './modules/ModuleRunController.js';
 
@@ -21,12 +24,12 @@ export interface EngineEventContext {
     logForwarder: LogForwarder;
     moduleManager: ModuleManager;
     managerConnection: ManagerConnection;
+    localServer: LocalServer;
     lcpServer: LcpServer;
     pipeWire: PipeWireManager;
     deviceProviders: DeviceProviderRegistry;
     commandDispatcher: CommandDispatcher;
     enginePatchRouter: EnginePatchRouter;
-    systemStats: SystemStatsCollector;
     runController: ModuleRunController;
     getCurrentConfig: () => Record<string, unknown> | null;
     setCurrentConfig: (config: Record<string, unknown>) => void;
@@ -37,26 +40,28 @@ export interface EngineEventContext {
     /** Effective per-plugin config schemas for THIS host, sent to the manager
      *  on connect so it shows this engine's real capabilities (issue #661). */
     pluginSchemas: () => Record<string, unknown>;
+    /** The router's own tree (ADR-0024); null in unit tests that don't need it. */
+    routerTree: RouterTree | null;
+    /** On-site config and run-state changes: guaranteed upstream, journaled offline (ADR-0025). */
+    localChanges: LocalChanges;
 }
 
 export function wireEngineEvents(ctx: EngineEventContext): void {
+    const tree = ctx.routerTree;
     ctx.logForwarder.on('logs', (batch: unknown[]) => {
+        tree?.logs(batch);
         if (ctx.managerConnection.isConnected) {
             ctx.managerConnection.send('logs', batch);
         }
     });
 
-    // Manager-bound module state goes through batch + dedup (see
-    // ModuleStateBatcher for the traffic math); dropped batches are healed by
-    // the guaranteed 10s snapshot resync below. The LCP broadcast stays
-    // unbatched and keeps the full state, vuData included.
-    const stateBatcher = new ModuleStateBatcher((batch) =>
-        ctx.managerConnection.sendState(batch),
-    );
-
+    // Module state to the manager (batched whole states or leaf patches) and
+    // the router tree (ManagerStateSync). The LCP broadcast stays unbatched
+    // and keeps the full state, vuData included.
+    const states = new ManagerStateSync(ctx.managerConnection, () => ctx.moduleManager.getAllStates(), tree);
     ctx.moduleManager.on('stateChange', (instanceId: string, state: ModuleRuntimeState) => {
         ctx.lcpServer.broadcastState(instanceId, state);
-        stateBatcher.enqueue(instanceId, state);
+        states.stateChange(instanceId, state);
     });
 
     ctx.moduleManager.on(
@@ -68,7 +73,17 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
                 path: `/modules/${instanceId}/settings/${key}`,
                 value,
             }));
-            ctx.managerConnection.send('patch', { ops });
+            // Mute state is the interlocks' (ADR-0028): through the patch router, like any write.
+            if ('audioEnabled' in changes) {
+                ctx.enginePatchRouter.onPatch(`plugin:${instanceId}`, 'local', ops);
+                ctx.refreshModulePorts(instanceId);
+                return;
+            }
+            // The engine's own config, the router tree and the LCP follow the
+            // plugin's value too, as for dynamic ports and self-stop.
+            applyJsonPatch(ctx.getCurrentConfig(), ops);
+            ctx.localServer.configChanged(ops);
+            ctx.localChanges.config(ops);
             // A plugin auto-write can change its dynamic port set (mpegts-
             // demuxer persisting discovered streams, plan Phase 3). Re-resolve
             // unconditionally — refreshPorts diffs the resolved list and
@@ -79,19 +94,36 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     );
 
     // VU: batched + deduped on its way to the manager (see VuBatcher for the
-    // WAN rationale). The LCP broadcast stays per-module and immediate — it's
-    // loopback, not the WAN flow — but reuses the batcher's dedup verdict.
+    // WAN rationale). The router tree and the LCP get each change at once —
+    // they're local, not the WAN flow — but reuse the batcher's dedup verdict.
     const vuBatcher = new VuBatcher((batch) => ctx.managerConnection.send('vu', { batch }));
     ctx.moduleManager.on('vuData', (instanceId: string, data: number[]) => {
         if (vuBatcher.enqueue(instanceId, data)) {
             ctx.lcpServer.broadcastVuData(instanceId, data);
+            tree?.vu(instanceId, data);
         }
     });
 
     // Clean up VU + state dedup maps when modules are destroyed
     ctx.moduleManager.on('moduleDeleted', (instanceId: string) => {
         vuBatcher.drop(instanceId);
-        stateBatcher.drop(instanceId);
+        states.drop(instanceId);
+        if (tree) delete tree.view.vu[instanceId];
+    });
+
+    // Config and run-intent changes reach the router tree and the LCP; a
+    // writer's own ops were published to it already.
+    ctx.localServer.on('local:config', (patch: PatchOp[], exceptSocketId?: string) => {
+        if (tree && !(exceptSocketId && tree.bus.has(exceptSocketId))) tree.config(patch);
+        const lcpOps = patch.map((op) =>
+            op.path === '/' && op.op === 'replace' ? { ...op, value: ctx.enrichConfigForLcp(op.value as Record<string, unknown>) } : op,
+        );
+        if (exceptSocketId) ctx.lcpServer.broadcastConfigUpdateExcept(exceptSocketId, lcpOps);
+        else ctx.lcpServer.broadcastConfigUpdate(lcpOps);
+    });
+    ctx.localServer.on('local:running', (running: boolean) => {
+        tree?.info();
+        ctx.lcpServer.broadcastEngineRunning(running);
     });
 
     ctx.managerConnection.on('config', (config: unknown) => {
@@ -100,9 +132,18 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             return;
         }
         log.info('Received config from manager');
-        ctx.setCurrentConfig(config as Record<string, unknown>);
-        const enriched = ctx.enrichConfigForLcp(config as Record<string, unknown>);
-        ctx.lcpServer.broadcastConfigUpdate([{ op: 'replace', path: '/', value: enriched }]);
+        applyConfigPush(
+            {
+                localChanges: ctx.localChanges,
+                getConfig: ctx.getCurrentConfig,
+                setConfig: ctx.setCurrentConfig,
+                isRunning: () => ctx.runController.isRunning,
+                applyOps: (ops) => ctx.enginePatchRouter.onPatch('manager', 'manager', ops),
+                broadcastConfig: (c) => ctx.localServer.configChanged([{ op: 'replace', path: '/', value: c }]),
+                restartAll: () => ctx.commandDispatcher.dispatch({ command: 'start' }),
+            },
+            config as Record<string, unknown>,
+        );
     });
 
     ctx.managerConnection.on('command', (command: unknown) => {
@@ -117,17 +158,12 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // guaranteed: it updates the manager's persisted desired-run-state, and if
     // it's lost the 10s engineRunningState reconcile actively reverts the
     // operator's action (stop undone by an auto-start within one heartbeat).
-    // Rare operator-initiated traffic — no retransmit-flood risk (that rule is
-    // for repeating telemetry, see the deviceList note below).
+    // During an outage it is journaled and reported in the connect handshake.
     ctx.lcpServer.on('control', (command: unknown) => {
         const cmd = command as Record<string, unknown>;
         if (cmd.action === 'start' || cmd.action === 'stop') {
             ctx.commandDispatcher.dispatch({ command: cmd.action });
-            ctx.managerConnection.send(
-                'lcpEngineCommand',
-                { command: cmd.action },
-                { guaranteeDelivery: true },
-            );
+            ctx.localChanges.running(cmd.action === 'start');
         }
     });
 
@@ -138,12 +174,11 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             ctx.enginePatchRouter.onPatch('manager', 'manager', envelope.ops as PatchOp[]);
     });
 
-    // Handle patches from LCP (already validated by LcpServer, but _socketId comes through)
+    // Patches from the LCP (validated by LcpServer; _socketId comes through)
     ctx.lcpServer.on('patch', (data: unknown) => {
         const d = data as { ops?: unknown[]; _socketId?: string };
         const envelope = safeParse(PatchEnvelopeSchema, d, 'lcp:patch', log);
-        if (envelope)
-            ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
+        if (envelope) ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'local', envelope.ops as PatchOp[]);
     });
 
     // Forward every registered device provider's changes to the manager
@@ -159,6 +194,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     ctx.deviceProviders.on(
         'deviceList',
         ({ type, devices }: { type: string; devices: unknown }) => {
+            tree?.devices(type, devices);
             if (!ctx.managerConnection.isConnected) return;
             ctx.managerConnection.send('deviceList', { type, devices });
         },
@@ -197,27 +233,28 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // module-state and systemStats resyncs already do.
     let stateResyncTimer: ReturnType<typeof setInterval> | null = null;
 
-    // Best-effort full-state snapshot (connect + 10s resync). The batcher
-    // refreshes its dedup cache and drops any pending batch — the snapshot
-    // already contains everything queued. Best-effort on purpose: the resync
-    // repeats every 10s, so a drop self-heals next tick; guaranteed delivery
-    // turned each snapshot into a 10x retransmit storm on lossy uplinks.
-    const sendStateSnapshot = (): void => {
-        const lean = stateBatcher.snapshot(ctx.moduleManager.getAllStates());
-        if (!lean) return;
-        ctx.managerConnection.sendState(lean);
-    };
+    // The manager offers state patches (ADR-0025); a gap it detects asks for a snapshot.
+    ctx.managerConnection.on('hello', (hello: unknown) => states.hello(hello));
+    ctx.managerConnection.on('stateResync', () => states.snapshot());
+
+    const onLinkChange = () => tree?.info();
+    ctx.managerConnection.on('pathUp', onLinkChange);
+    ctx.managerConnection.on('pathDown', onLinkChange);
 
     ctx.managerConnection.on('connected', () => {
-        ctx.systemStats.start();
+        onLinkChange();
         // Best-effort: this handshake triggers manager-driven auto-start, but
         // it re-sends on the 10s heartbeat below — a dropped packet delays the
         // reconcile one interval at most. Repetition beats retransmission:
         // guaranteed delivery here contributed to the retransmit flood that
-        // choked the NO-BR uplink.
-        ctx.managerConnection.send('engineRunningState', {
-            running: ctx.runController.isRunning,
-        });
+        // choked the NO-BR uplink. Except a Start/Stop made during the outage:
+        // it rides guaranteed, so the manager adopts it instead of reverting it.
+        const running = ctx.runController.isRunning;
+        if (ctx.localChanges.takeRunChange()) {
+            ctx.managerConnection.send('engineRunningState', { running, localChange: true }, { guaranteeDelivery: true });
+        } else {
+            ctx.managerConnection.send('engineRunningState', { running });
+        }
         // Advertise this host's effective plugin schemas so the manager renders
         // this engine's real capabilities (e.g. hardware encoders) rather than
         // its own host probe. Static per session, so sent once on connect;
@@ -226,10 +263,10 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         ctx.managerConnection.send('capabilities', ctx.pluginSchemas(), {
             guaranteeDelivery: true,
         });
-        sendStateSnapshot();
+        states.connected();
         if (stateResyncTimer) clearInterval(stateResyncTimer);
         stateResyncTimer = setInterval(() => {
-            sendStateSnapshot();
+            states.heartbeat();
             // Re-send the running-state handshake too — repetition makes the
             // auto-start reconcile self-healing without per-message
             // retransmits. The manager treats repeats as idempotent
@@ -241,20 +278,21 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             // cache-wiping reconnect flap (see the note above).
             void sendInitialDeviceSnapshots();
         }, 10_000);
-        // Always push a full snapshot of every device type on connect, then
-        // let the registry's internal polling take over change detection.
+        // Always push a full snapshot of every device type on connect; the
+        // registry's polling (started at boot) does change detection.
         ctx.deviceProviders.resetSnapshots();
         void sendInitialDeviceSnapshots();
-        ctx.deviceProviders.startPolling();
     });
+    // Stats and device polling keep running without a manager: the router's
+    // own tree still serves them (ADR-0025).
     ctx.managerConnection.on('disconnected', () => {
-        ctx.systemStats.stop();
-        ctx.deviceProviders.stopPolling();
+        ctx.localChanges.linkDown();
+        onLinkChange();
         if (stateResyncTimer) {
             clearInterval(stateResyncTimer);
             stateResyncTimer = null;
         }
-        stateBatcher.reset();
+        states.disconnected();
         vuBatcher.reset();
     });
 }

@@ -15,7 +15,8 @@ import ChannelMapEditor from './ChannelMapEditor.vue';
 import EdgeLabelEditor from './EdgeLabelEditor.vue';
 import InterlockPanel from './InterlockPanel.vue';
 import { useEngineStore } from '@/stores/engines';
-import { useSocketStore } from '@/stores/socket';
+import { useTopics } from '@/composables/useTopics';
+import { engineActions } from '@/utils/engineActions';
 import { useFocusMode } from '@/composables/useFocusMode';
 import { useContextMenu } from '@/composables/useContextMenu';
 import { useGraphSync } from '@/composables/useGraphSync';
@@ -27,7 +28,6 @@ import { panActivationKey } from '@/utils/panKey';
 const props = defineProps<{ engineId: string }>();
 provide('engineId', props.engineId);
 
-const socket = useSocketStore();
 const engineStore = useEngineStore();
 const engine = computed(() => engineStore.getEngine(props.engineId));
 
@@ -111,7 +111,7 @@ const {
 
 function confirmReset() {
     showResetConfirm.value = false;
-    socket.emit('engine:reset', { engineId: props.engineId });
+    void engineActions.reset(props.engineId);
 }
 
 function formatLayout() {
@@ -168,30 +168,20 @@ function preventBrowserZoom(e: WheelEvent) {
 }
 onMounted(() => {
     containerRef.value?.addEventListener('wheel', preventBrowserZoom, { passive: false });
-    socket.emit('watch:engine', { engineId: props.engineId });
 });
 onUnmounted(() => {
     containerRef.value?.removeEventListener('wheel', preventBrowserZoom);
-    socket.emit('watch:engine', { engineId: '' });
 });
+
+// The whole engine — graph, runtime, VU, logs, devices — while the editor shows it.
+useTopics(() => [`/engines/${props.engineId}`]);
 
 // When engineId changes, reset UI state
 watch(
     () => props.engineId,
-    (id) => {
-        socket.emit('watch:engine', { engineId: id });
+    () => {
         focusMode.value = false;
         hasInitialFit.value = false;
-    },
-);
-
-// Re-subscribe on Socket.IO reconnect (VU/logs stop without this)
-watch(
-    () => socket.connected,
-    (isConnected) => {
-        if (isConnected && props.engineId) {
-            socket.emit('watch:engine', { engineId: props.engineId });
-        }
     },
 );
 
@@ -261,14 +251,14 @@ function dismissAll() {
                     v-if="engine?.running"
                     size="sm"
                     variant="danger"
-                    @click="socket.emit('engine:stop', { engineId: props.engineId })"
+                    @click="engineActions.setRunning(props.engineId, false)"
                 >
                     Stop
                 </MrButton>
                 <MrButton
                     v-else
                     size="sm"
-                    @click="socket.emit('engine:start', { engineId: props.engineId })"
+                    @click="engineActions.setRunning(props.engineId, true)"
                 >
                     Start
                 </MrButton>

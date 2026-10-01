@@ -21,7 +21,10 @@ import { createServer as createHttpServer, type Server as HttpServer } from 'nod
 import { createServer as createUnixServer, type Server as UnixServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { requireFreshEngineBuild } from './testing/engineBuild.js';
+
+beforeAll(requireFreshEngineBuild);
 
 const RUNNER = join(__dirname, 'hls-pipe-runner.ts');
 const TSX = join(__dirname, '..', '..', '..', 'node_modules', '.bin', 'tsx');

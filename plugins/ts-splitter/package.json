@@ -43,16 +43,16 @@
                 "id": "input",
                 "label": "Input",
                 "fields": [
-                    { "key": "host", "label": "Multicast" },
-                    { "key": "port", "label": "Port" }
+                    { "key": "host", "type": "string", "label": "Multicast" },
+                    { "key": "port", "type": "number", "label": "Port" }
                 ]
             },
             {
                 "id": "streams",
                 "label": "Detected Streams",
                 "fields": [
-                    { "key": "detected", "label": "Live" },
-                    { "key": "stale", "label": "Stale (linked, gone from source)" }
+                    { "key": "detected", "type": "number", "label": "Live" },
+                    { "key": "stale", "type": "number", "label": "Stale (linked, gone from source)" }
                 ]
             }
         ],

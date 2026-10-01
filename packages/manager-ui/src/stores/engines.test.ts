@@ -302,80 +302,6 @@ describe('useEngineStore', () => {
         });
     });
 
-    describe('setEngineInfo', () => {
-        beforeEach(() => {
-            const store = useEngineStore();
-            store.addEngine({
-                engine_id: 'eng-1',
-                display_name: 'Pi5',
-                online: true,
-                modules: {},
-                connections: [],
-            });
-        });
-
-        it('updates ip, hostname, and buildNumber', () => {
-            const store = useEngineStore();
-            store.setEngineInfo('eng-1', {
-                ip: '192.168.1.100',
-                hostname: 'pi5',
-                buildNumber: 'v2.0.1',
-            });
-
-            const engine = store.getEngine('eng-1')!;
-            expect(engine.ip).toBe('192.168.1.100');
-            expect(engine.hostname).toBe('pi5');
-            expect(engine.buildNumber).toBe('v2.0.1');
-        });
-
-        it('setPaths replaces the live path list and ignores identical updates', () => {
-            const store = useEngineStore();
-            const paths = [{ remote: '10.0.0.8:47112', listenerPort: 3000 }];
-            store.setPaths('eng-1', paths);
-            expect(store.getEngine('eng-1')!.paths).toEqual(paths);
-            const before = store.engines;
-            store.setPaths('eng-1', [{ remote: '10.0.0.8:47112', listenerPort: 3000 }]);
-            expect(store.engines).toBe(before);
-            store.setPaths('eng-1', []);
-            expect(store.getEngine('eng-1')!.paths).toEqual([]);
-        });
-
-        it('updates managerPaths only when the counts change', () => {
-            const store = useEngineStore();
-            store.setEngineInfo('eng-1', { managerPaths: { connected: 2, total: 2 } });
-            expect(store.getEngine('eng-1')!.managerPaths).toEqual({ connected: 2, total: 2 });
-            const before = store.engines;
-            store.setEngineInfo('eng-1', { managerPaths: { connected: 2, total: 2 } });
-            expect(store.engines).toBe(before);
-            store.setEngineInfo('eng-1', { managerPaths: { connected: 1, total: 2 } });
-            expect(store.getEngine('eng-1')!.managerPaths).toEqual({ connected: 1, total: 2 });
-        });
-
-        it('only updates provided fields', () => {
-            const store = useEngineStore();
-            store.setEngineInfo('eng-1', { ip: '10.0.0.1' });
-
-            const engine = store.getEngine('eng-1')!;
-            expect(engine.ip).toBe('10.0.0.1');
-            expect(engine.hostname).toBeUndefined();
-        });
-
-        it('ignores unknown engine', () => {
-            const store = useEngineStore();
-            store.setEngineInfo('nonexistent', { ip: '1.2.3.4' });
-            // Should not throw
-        });
-
-        it('does not trigger reactivity if nothing changed', () => {
-            const store = useEngineStore();
-            store.setEngineInfo('eng-1', { ip: '10.0.0.1' });
-            const map1 = store.engines;
-            store.setEngineInfo('eng-1', { ip: '10.0.0.1' }); // same value
-            // Map reference should be the same (no unnecessary reactivity trigger)
-            expect(store.engines).toBe(map1);
-        });
-    });
-
     describe('engineList', () => {
         it('returns all engines as array', () => {
             const store = useEngineStore();
@@ -446,26 +372,4 @@ describe('useEngineStore', () => {
         });
     });
 
-    describe('clearEngineRuntime', () => {
-        it('preserves engine.running across an offline blip', () => {
-            const store = useEngineStore();
-            store.addEngine({
-                engine_id: 'eng-1',
-                display_name: 'E1',
-                running: true,
-                modules: {
-                    'mod-1': { pluginId: 'p', displayName: 'M1', running: true, health: 'ok' },
-                },
-                connections: [],
-            });
-
-            store.clearEngineRuntime('eng-1');
-
-            const engine = store.getEngine('eng-1')!;
-            expect(engine.running).toBe(true);
-            expect(engine.modules['mod-1'].running).toBe(false);
-            expect(engine.modules['mod-1'].health).toBe('stopped');
-            expect(engine.system).toBeUndefined();
-        });
-    });
 });

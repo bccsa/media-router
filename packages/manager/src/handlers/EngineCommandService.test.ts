@@ -43,6 +43,8 @@ describe('EngineCommandService', () => {
 
         expect(sentMessages).toHaveLength(2);
         expect(sentMessages[0].topic).toBe('config');
+        // Tagged so the engine swaps rather than merges (ADR-0025).
+        expect(sentMessages[0].data._push).toEqual({ reason: 'activate', profile: 'default' });
         expect(sentMessages[1].topic).toBe('command');
         expect(sentMessages[1].data).toEqual({ command: 'start' });
     });

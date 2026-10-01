@@ -297,6 +297,42 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { element?: string }).element).toBe('unixfdsink3');
     });
 
+    it('drops a retired predecessor\'s events: its late null or teardown error cannot stop or restart the live pipeline', () => {
+        const internals = runner as unknown as {
+            python: unknown;
+            currentState: string;
+            dispatchPythonEvent: (from: unknown, e: Record<string, unknown>) => void;
+            scheduleRestart: () => void;
+        };
+        const live = {};
+        const retired = {};
+        internals.python = live;
+        const restart = vi.spyOn(internals, 'scheduleRestart').mockImplementation(() => {});
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+        internals.dispatchPythonEvent(live, { event: 'state_change', state: 'playing' });
+        internals.dispatchPythonEvent(retired, { event: 'state_change', state: 'null' });
+        internals.dispatchPythonEvent(retired, { event: 'error', message: 'Internal data stream error.' });
+        expect(sent.filter((m) => m.action === 'stateChange').map((m) => m.data)).toEqual([{ state: 'playing' }]);
+        expect(restart).not.toHaveBeenCalled();
+        expect(internals.currentState).toBe('playing');
+        expect(logged.mock.calls.map((c) => c[0])).toEqual([
+            '[gst-runner] Dropped state_change from a retired process: null',
+            '[gst-runner] Dropped error from a retired process: Internal data stream error.',
+        ]);
+        logged.mockRestore();
+    });
+
+    it('a retired predecessor\'s reply still answers the request it was sent', () => {
+        const internals = runner as unknown as { python: unknown; dispatchPythonEvent: (from: unknown, e: Record<string, unknown>) => void };
+        const retired = { sendCommand: vi.fn() };
+        internals.python = retired;
+        runner.handleControlMessage({ id: 'rpc-r1', type: 'request', action: 'getProperty', data: { element: 'src', property: 'uri' } });
+        const [reqId] = [...(runner as unknown as { ipc: { pending: Map<string, unknown> } }).ipc.pending.keys()];
+        internals.python = {};
+        internals.dispatchPythonEvent(retired, { event: 'property', id: reqId, element: 'src', property: 'uri', value: 'udp://a' });
+        expect(lastByType('response')).toMatchObject({ id: 'rpc-r1', data: { value: 'udp://a' } });
+    });
+
     it('restartPipeline relaunches the last start (answering that request) and refuses with nothing started', () => {
         runner.handleControlMessage({ id: 'rpc-rs0', type: 'request', action: 'restartPipeline', data: {} });
         expect(lastByType('response')?.id).toBe('rpc-rs0');

@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted } from 'vue';
 import { useLogStore, LEVEL_LABELS, LEVEL_COLORS, type LogEntry } from '@/stores/logs';
-import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
 
 const props = defineProps<{ engineId: string }>();
 
 const logStore = useLogStore();
-const socket = useSocketStore();
 const engineStore = useEngineStore();
 
 // Per-level visibility. Default: info + warn + error (ignore noise from trace/debug)
@@ -60,9 +58,8 @@ function deselectAll() {
     hiddenSources.value = new Set(allSources.value);
 }
 
-// Request history on mount + scroll to bottom
+// History arrives with the editor's engine subscription; scroll to the bottom.
 onMounted(async () => {
-    socket.requestLogHistory(props.engineId);
     await nextTick();
     if (scrollEl.value) {
         scrollEl.value.scrollTop = scrollEl.value.scrollHeight;

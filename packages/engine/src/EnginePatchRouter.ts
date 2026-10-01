@@ -1,14 +1,15 @@
-import { createLogger, applyJsonPatch, LiveArrayIndex } from '@media-router/shared-types';
+import { createLogger, applyJsonPatch, LiveArrayIndex, withInterlockMutes } from '@media-router/shared-types';
 import type { PatchOp, ChannelMapEntry } from '@media-router/shared-types';
 
 /** PatchOp with resolved connection ID for side effect handling. */
 interface ResolvedPatchOp extends PatchOp {
     _connId?: string;
 }
+import { settleInterlocks } from './interlocks.js';
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
-import type { LcpServer } from './comms/LcpServer.js';
-import type { ManagerConnection } from './comms/ManagerConnection.js';
+import type { LocalServer } from './comms/LocalServer.js';
+import type { LocalChanges } from './comms/LocalChanges.js';
 import type { ModuleLifecycle } from './modules/ModuleLifecycle.js';
 
 const log = createLogger('EnginePatchRouter');
@@ -16,12 +17,12 @@ const log = createLogger('EnginePatchRouter');
 /**
  * Engine-side N-1 Patch Router.
  *
- * Receives JSON Patch ops from any client (manager or LCP),
- * applies to currentConfig, detects and executes side effects,
- * and forwards to all other clients (skip sender).
+ * Receives JSON Patch ops from the manager or from this router's own tree
+ * (a dashboard on site), applies them to currentConfig, runs their side
+ * effects and passes them on, skipping the sender.
  *
- * Manager sends patch → apply + side effects → send to all LCPs
- * LCP sends patch     → apply + side effects → send to manager + all other LCPs
+ * Manager sends patch → apply + side effects → router tree
+ * Local write         → apply + side effects → manager + the rest of the router tree
  */
 export class EnginePatchRouter {
     private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -31,8 +32,8 @@ export class EnginePatchRouter {
     constructor(
         private moduleManager: ModuleManager,
         private mediaRouter: MediaRouter,
-        private lcpServer: LcpServer,
-        private managerConnection: ManagerConnection,
+        private localServer: LocalServer,
+        private localChanges: Pick<LocalChanges, 'config'>,
         private lifecycle: ModuleLifecycle,
         private getConfig: () => Record<string, unknown> | null,
         private getModulesRunning: () => boolean,
@@ -40,11 +41,11 @@ export class EnginePatchRouter {
 
     /**
      * Process a patch from any source.
-     * @param senderId  Socket ID of the sender (LCP socket ID or 'manager')
-     * @param senderType  'manager' or 'lcp'
+     * @param senderId  Socket ID of the sender (a router tree socket, or 'manager')
+     * @param senderType  'manager' or 'local'
      * @param ops  JSON Patch operations
      */
-    onPatch(senderId: string, senderType: 'manager' | 'lcp', ops: PatchOp[]): void {
+    onPatch(senderId: string, senderType: 'manager' | 'local', ops: PatchOp[]): void {
         if (!ops || ops.length === 0) return;
 
         const config = this.getConfig();
@@ -55,23 +56,32 @@ export class EnginePatchRouter {
 
         log.debug({ senderType, opCount: ops.length }, 'Processing patch');
 
-        // 1. Pre-resolve connection IDs from index-based paths (before applying removes them)
-        const resolvedOps = this.resolveConnectionIds(ops, config);
+        // 0. Interlocks are kept here, for writes from any source (ADR-0028): an
+        // unmute mutes the rest of its group in the same apply.
+        const { ops: withMutes, mutes } = withInterlockMutes(ops, config);
 
-        // 2. Apply to in-memory config
-        applyJsonPatch(config, ops);
+        // 1. Pre-resolve connection IDs from index-based paths (before applying removes them)
+        const resolvedOps = this.resolveConnectionIds(withMutes, config);
+
+        // 2. Apply to in-memory config. Whatever the batch did (several members
+        // unmuted at once, a group created or its members changed), at most one
+        // stays live: the first in `members`.
+        applyJsonPatch(config, withMutes);
+        const { repairs, all, ours, report } = settleInterlocks(config, ops, withMutes, mutes);
 
         // 3. Detect side effects and execute
-        this.detectSideEffects(resolvedOps, config);
+        this.detectSideEffects([...resolvedOps, ...repairs], config);
 
-        // 3. Forward to other clients (skip sender)
+        // 4. Forward: everyone sees every op, and the manager hears the mutes made here.
         if (senderType === 'manager') {
-            // From manager → broadcast to ALL LCPs
-            this.lcpServer.broadcastConfigUpdate(ops);
+            this.localServer.configChanged(all);
+            if (ours.length > 0) this.forwardToManager(report);
         } else {
-            // From LCP → broadcast to other LCPs (skip sender) + debounced forward to manager
-            this.lcpServer.broadcastConfigUpdateExcept(senderId, ops);
-            this.debouncedForwardToManager(ops);
+            // A local write: the rest of the router tree, and the manager (throttled).
+            // The writer has its own ops already, not the mutes they brought.
+            this.localServer.configChanged(ops, senderId);
+            if (ours.length > 0) this.localServer.configChanged(ours);
+            this.forwardToManager([...all, ...report]);
         }
     }
 
@@ -272,26 +282,27 @@ export class EnginePatchRouter {
     }
 
     /**
-     * Debounced forward of LCP patches to manager (100ms).
-     * Accumulates ops so rapid changes (e.g. fader movement) don't lose intermediate values.
+     * Forward of local patches to the manager, at most one send per 100 ms
+     * (ops batched meanwhile), so a fader drag reaches it while moving.
+     * Guaranteed when linked, journaled during an outage (LocalChanges, ADR-0025).
      */
     private pendingOps: PatchOp[] = [];
+    private lastForward = 0;
 
-    private debouncedForwardToManager(ops: PatchOp[]): void {
+    private forwardToManager(ops: PatchOp[]): void {
         this.pendingOps.push(...ops);
-        const key = 'lcpPatch';
-        const existing = this.debounceTimers.get(key);
-        if (existing) clearTimeout(existing);
-        this.debounceTimers.set(
-            key,
-            setTimeout(() => {
-                this.debounceTimers.delete(key);
-                if (this.managerConnection.isConnected && this.pendingOps.length > 0) {
-                    this.managerConnection.send('patch', { ops: this.pendingOps });
-                }
-                this.pendingOps = [];
-            }, 100),
-        );
+        const key = 'localPatch';
+        if (this.debounceTimers.has(key)) return;
+        const flush = () => {
+            this.debounceTimers.delete(key);
+            this.lastForward = Date.now();
+            const batch = this.pendingOps;
+            this.pendingOps = [];
+            this.localChanges.config(batch);
+        };
+        const wait = this.lastForward + 100 - Date.now();
+        if (wait <= 0) flush();
+        else this.debounceTimers.set(key, setTimeout(flush, wait));
     }
 
     /** Clean up timers. */

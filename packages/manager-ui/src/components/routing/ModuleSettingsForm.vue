@@ -128,9 +128,10 @@ async function loadPreview(absolutePath: string): Promise<void> {
     const pluginId = modulePluginId();
     if (!pluginId) return;
     try {
-        const res = await socket.request<{ bytes: ArrayBuffer | Uint8Array; contentType: string }>(
-            'plugin:upload-get',
-            { pluginId, filename },
+        const res = await socket.call<{ bytes: ArrayBuffer | Uint8Array; contentType: string }>(
+            `/plugins/${pluginId}`,
+            'readUpload',
+            { filename },
         );
         if (!res?.bytes) return;
         // Server returns Node Buffer; in the browser socket.io delivers it
@@ -181,20 +182,21 @@ async function onUploadImage(field: FormField, event: Event): Promise<void> {
     }
     try {
         // Socket.IO encodes Uint8Array as a binary frame on the wire — no
-        // base64 round-trip, same channel as the rest of the app's RPC.
+        // base64 round-trip, same channel as every other tree call.
         const bytes = new Uint8Array(await file.arrayBuffer());
         // Generous timeout for uploads — even a multi-megabyte image over
         // a slow link can push past the default 10 s RPC cap, and a
         // timeout here would leave the UI showing "disconnected" while
         // the server is still happily receiving bytes.
-        const result = await socket.request<{ path: string; filename: string }>(
-            'plugin:upload',
-            { pluginId, moduleId: props.moduleId, filename: file.name, bytes },
+        const result = await socket.call<{ path: string; filename: string }>(
+            `/plugins/${pluginId}`,
+            'upload',
+            { moduleId: props.moduleId, filename: file.name, bytes },
             { timeoutMs: 5 * 60 * 1000 },
         );
         if (result?.path) {
             // Prime the preview from the bytes already in memory — same
-            // Blob trick as `loadPreview`, no second RPC and no base64 copy.
+            // Blob trick as `loadPreview`, no second call and no base64 copy.
             const blob = new Blob([bytes as unknown as BlobPart], {
                 type: file.type || 'application/octet-stream',
             });

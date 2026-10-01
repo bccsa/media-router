@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { Server, type ListenerSpec } from '@media-router/dgram-comms';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, type ConfigPushTag } from '@media-router/shared-types';
 import type { EnginePath } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import { reconcileInterlocks } from '../config/reconcileInterlocks.js';
@@ -10,6 +10,8 @@ const log = createLogger('EngineConnectionManager');
 /** Engine→manager topics forwarded 1:1 as `engine<Topic>` events. */
 const FORWARDED_TOPICS: Array<[topic: string, event: string]> = [
     ['state', 'engineState'],
+    // Leaf state ops once our `hello` offered them (ADR-0025)
+    ['statePatch', 'engineStatePatch'],
     ['vu', 'engineVu'],
     ['system', 'engineSystem'],
     // Engine advertises its effective per-plugin config schemas on connect —
@@ -20,8 +22,8 @@ const FORWARDED_TOPICS: Array<[topic: string, event: string]> = [
     // (e.g. 'audio-source', 'video', 'drm-connector'); the forwarder caches per
     // type and broadcasts to subscribed browsers.
     ['deviceList', 'engineDeviceList'],
-    // LCP engine start/stop (forward running state to browsers)
-    ['lcpEngineCommand', 'engineLcpCommand'],
+    // Start/Stop made on the router itself (wire name kept from the LCP era)
+    ['lcpEngineCommand', 'engineLocalRunCommand'],
     // Engine reports its running state on connect
     ['engineRunningState', 'engineRunningState'],
     // Unified patch from engine (N-1 router)
@@ -53,6 +55,9 @@ export class EngineConnectionManager extends EventEmitter {
     private engineSockets = new Map<string, unknown>();
     private _listeners: ListenerSpec[];
     private started = false;
+
+    /** Whether a router keeps its interlocks itself (ADR-0028); then the connect push leaves its mutes to it. */
+    keepsInterlocks: (engineId: string) => boolean = () => false;
 
     constructor(configStore: ConfigStore, listeners: number | ListenerSpec[] = 3000) {
         super();
@@ -86,6 +91,8 @@ export class EngineConnectionManager extends EventEmitter {
             log.info({ engineId: clientId }, 'engine connected');
             this.onlineEngines.add(clientId);
             this.engineSockets.set(clientId, socket);
+            // Offer leaf state patches; older engines ignore the topic (ADR-0025).
+            socket.send('hello', { features: ['statePatch'] }, { guaranteeDelivery: true });
             this.pushActiveConfig(clientId, socket);
             this.emit('engineOnline', clientId);
             for (const [topic, event] of FORWARDED_TOPICS) {
@@ -122,7 +129,7 @@ export class EngineConnectionManager extends EventEmitter {
         // with two members of a group hot at once.
         let repairOps: ReturnType<typeof reconcileInterlocks> = [];
         const config = this.configStore.modifyProfileConfig(clientId, profileName, (cfg) => {
-            repairOps = reconcileInterlocks(cfg);
+            repairOps = reconcileInterlocks(cfg, { mutes: !this.keepsInterlocks(clientId) });
             return cfg;
         });
         if (!config) return;
@@ -133,7 +140,8 @@ export class EngineConnectionManager extends EventEmitter {
             );
             this.emit('interlockRepair', clientId, repairOps);
         }
-        socket.send('config', config, { guaranteeDelivery: true });
+        const _push: ConfigPushTag = { reason: 'connect', profile: profileName };
+        socket.send('config', { ...config, _push }, { guaranteeDelivery: true });
     }
 
     /** Start listening for engine connections. */

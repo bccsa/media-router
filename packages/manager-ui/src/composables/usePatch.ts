@@ -16,15 +16,19 @@ interface PatchOp {
 }
 
 /**
- * Send a patch: apply to local store first (optimistic), then emit to server.
- * The N-1 router skips the sender, so without the local apply the sender
- * would never see its own change until refresh.
+ * Send a patch: apply to the local store first (optimistic), then write it to
+ * the tree at `/engines/<id>/…`. The echo brings the stored value back; a
+ * rejected op snaps back the same way (ADR-0024).
  */
 function emit(engineId: string, ops: PatchOp[]) {
-    // 1. Apply optimistically to local store
     useEngineStore().applyEnginePatch(engineId, ops);
-    // 2. Send to server (server broadcasts to everyone else)
-    useSocketStore().emit('patch', { engineId, ops });
+    const prefix = `/engines/${engineId}`;
+    useSocketStore()
+        .write(ops.map((op) => ({ ...op, path: prefix + op.path })))
+        .then(({ rejected }) => {
+            if (rejected.length > 0) console.warn('[patch] rejected by the manager', rejected);
+        })
+        .catch((err) => console.warn('[patch] write failed', err));
 }
 
 /**
@@ -128,10 +132,8 @@ export const patch = {
                     configSchema: jsonClone(mod.configSchema),
                     color: mod.color,
                     icon: mod.icon,
-                    // Manifest-derived fields the manager would overlay on
-                    // broadcast — but the N-1 router skips the sender, so
-                    // copy them here too or the local optimistic view loses
-                    // resize grips, status sections, etc. until refresh.
+                    // Manifest-derived fields, copied so the optimistic view
+                    // has resize grips, status sections, etc. before the echo.
                     statusSections: jsonClone(mod.statusSections),
                     faceWidgets: jsonClone(mod.faceWidgets),
                     interlock: mod.interlock === true,

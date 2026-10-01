@@ -40,7 +40,7 @@ All config changes (settings, rename, position, connections, etc.) flow through 
 | **dgram-comms** | `packages/dgram-comms` | Encrypted UDP protocol with AES-256-GCM, fragmentation, and keepalives |
 | **Engine** | `packages/engine` | GStreamer pipeline management, PipeWire audio routing, plugin host, N-1 patch router |
 | **Manager** | `packages/manager` | Express HTTP server, Socket.IO, SQLite config store, N-1 patch router |
-| **Manager UI** | `packages/manager-ui` | Vue 3 + Vue Flow routing editor, Pinia stores, Tailwind CSS dark theme |
+| **Manager UI** | `packages/manager-ui` | Vue 3 + Vue Flow routing editor, Pinia stores, Tailwind CSS dark theme; dashboards, whose viewer-only build (`dist-dashboard`) the engine serves on :8081/d/ |
 | **Local Panel** | `packages/local-panel` | Operator control interface (vertical faders, VU meters, mute buttons) |
 | **Profile Manager** | `packages/profile-manager` | Engine-side app for configuring which manager to connect to |
 
@@ -68,8 +68,8 @@ See [plugins/README.md](plugins/README.md) for the full plugin development guide
 | 3001 | Engine Local API (Fastify REST) |
 | 5173 | Manager UI dev server (Vite) |
 | 5174 | Local Panel dev server (Vite) |
-| 8080 | Manager HTTP + Socket.IO |
-| 8081 | Local Control Panel (Socket.IO + static files) |
+| 8080 | Manager HTTP + Socket.IO ([tree API](docs/tree-api.md)) |
+| 8081 | Local Control Panel (Socket.IO + static files); dashboards at `/d/` ([ADR-0026](docs/adr/0026-dashboards.md)); router tree API on Socket.IO path `/tree` |
 | 8082 | Profile Manager |
 
 ## Quick Start
@@ -123,7 +123,7 @@ node packages/manager/dist/index.js
 node packages/engine/dist/index.js
 ```
 
-The LCP is served automatically by the engine on port 8081.
+The LCP is served automatically by the engine on port 8081, its dashboards at `http://<engine>:8081/d/`.
 
 ### First-time Setup
 
@@ -154,7 +154,7 @@ The engine searches for this file in its working directory and up to 3 parent di
 ## Testing
 
 ```bash
-# Run all tests (280 tests across 27 files)
+# Run all tests
 pnpm test
 
 # Run with coverage
@@ -164,16 +164,25 @@ pnpm test -- --coverage
 pnpm test -- packages/engine/src/routing/PortRegistry.test.ts
 ```
 
+Tests run our own packages from source: `vitest.config.ts` aliases each
+workspace package to its `src` (a new package needs an entry there), so no
+build is needed. That includes `@media-router/topic-tree/testing`, the tree
+test helpers (`fakeSocket`, `objectSource`), a real package subpath. The
+exception is hls-player's paced-sink tests, which run the engine's compiled
+sink in a real worker: build the engine first
+(`pnpm --filter @media-router/engine build`).
+
 ## Project Structure
 
 ```
 media-router/
   packages/
-    shared-types/     # TypeScript types, PatchOp, applyJsonPatch, logger
+    shared-types/     # TypeScript types, PatchOp, applyJsonPatch, logger; dashboard schema + button scripts
+    topic-tree/       # The subscribable tree server (ADR-0024)
     dgram-comms/      # Encrypted UDP transport
     engine/           # Media engine (GStreamer + PipeWire + EnginePatchRouter)
     manager/          # Central manager (Express + SQLite + PatchRouter)
-    manager-ui/       # Web UI (Vue 3 + Vue Flow)
+    manager-ui/       # Web UI (Vue 3 + Vue Flow); src/dashboard/ = dashboards, viewer/ → dist-dashboard/ (served by the engine on :8081/d/)
     local-panel/      # Operator control panel (faders, VU, mute)
     profile-manager/  # Engine connection config
   plugins/
@@ -191,6 +200,9 @@ media-router/
     FDS-v2.0.md       # Functional Design Specification
     implementation-plan-v2.0.md
     TodoNotes.md      # Active issue tracker
+    dashboards.md     # How dashboards work
+    tree-api.md       # Tree API (manager + router)
+    adr/              # Architecture decisions
 ```
 
 ## Roadmap
@@ -208,7 +220,8 @@ media-router/
 | 8 | Protocol Plugins: HLS & Stream Probing | Partial (probing done, HLS not started) |
 | 8B | Audio Channel Mapping | Partial (designed, pw-link implemented) |
 | 9 | Audio Processing Plugins | Partial (N-1 mixer done, sound processor/ducking not started) |
-| 10 | Local Control Panel | Done |
+| 10 | Local Control Panel | Done (kept until the fleet has moved to dashboards) |
+| 10B | Dashboards (ADR-0026/0027) | Done (router + manager dashboards, viewer on :8081/d/, button scripts) |
 | 11 | Profile Manager App | Partial (API done, UI scaffold) |
 | 12 | Video Modules | Not started |
 | 13 | Security & Auth | Not started |
@@ -221,6 +234,10 @@ See [docs/implementation-plan-v2.0.md](docs/implementation-plan-v2.0.md) for ful
 
 - [User Requirements Specification](docs/URS-v2.0.md)
 - [Functional Design Specification](docs/FDS-v2.0.md)
+- [Tree API (Socket.IO)](docs/tree-api.md) — reading, writing and calls on the manager and routers; the API for dashboards and integrations
+- [Dashboards user manual](docs/manuals/dashboards.md) — for operators and dashboard builders: opening, reading, using, building, buttons, copying, history, screens, troubleshooting
+- [How dashboards work](docs/dashboards.md) — router and manager dashboards, the viewer on :8081/d/, adding a widget, checking a router; decisions in [ADR-0026](docs/adr/0026-dashboards.md) and [ADR-0027](docs/adr/0027-button-scripts.md)
+- [Architecture decisions](docs/adr/README.md)
 - [Implementation Plan](docs/implementation-plan-v2.0.md)
 - [Plugin Development Guide](plugins/README.md)
 - [Dependencies](DEPENDENCIES.md)

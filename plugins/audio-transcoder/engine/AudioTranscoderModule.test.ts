@@ -7,6 +7,8 @@ import { REPROBE_INTERVAL_MS } from './reprobeLoop.js';
 interface SourceOpts {
     streamType?: string;
     channelMap?: Array<{ srcChannel: number; dstChannel: number; gain?: number }>;
+    /** Bus width the producer declares (`getBusStreamChannels`). */
+    sourceChannels?: number;
 }
 
 /**
@@ -44,6 +46,9 @@ function makeModule(
                   sinkPortId: INPUT_PORT_ID,
                   streamType: source.streamType ?? 'muxed/mpegts',
                   channelMap: source.channelMap,
+                  ...(source.sourceChannels !== undefined
+                      ? { sourceChannels: source.sourceChannels }
+                      : {}),
               },
           ]
         : [];
@@ -162,6 +167,36 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         // 2 rows (output stereo) × 6 columns (probed source channels).
         expect(desc!.pipeline).toContain(
             'mix-matrix="<<(float)1.0000, (float)0.0000, (float)0.0000, (float)0.0000, (float)0.0000, (float)0.0000>, <(float)0.0000, (float)0.0000, (float)1.0000, (float)0.0000, (float)0.0000, (float)0.0000>>"',
+        );
+    });
+
+    it('matrix input dimension comes from the producer-declared width when the probe has none (4-ch 302M)', () => {
+        // A 302M PMT carries no channel count, so the probe reports only the
+        // codec; sizing the matrix 2-wide against a 4-wide stream fails caps
+        // negotiation (ZA-SCC-AES50 ENG/NYA/SWA → ClarioCast, 2026-10-01).
+        const { module } = makeModule({
+            streamType: 'audio/302m',
+            channelMap: [{ srcChannel: 3, dstChannel: 0, gain: 0.25 }],
+            sourceChannels: 4,
+        });
+        module.probeResult = { codec: 's302m' };
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }], channels: 1 });
+        // 1 row (mono output) × 4 columns (declared source channels).
+        expect(desc!.pipeline).toContain(
+            'mix-matrix="<<(float)0.0000, (float)0.0000, (float)0.0000, (float)0.2500>>"',
+        );
+        expect(desc!.pipeline).toContain('audio/x-raw,channels=1');
+    });
+
+    it('producer-declared width wins over the probe when both are known', () => {
+        const { module } = makeModule({
+            channelMap: [{ srcChannel: 0, dstChannel: 0 }],
+            sourceChannels: 4,
+        });
+        module.probeResult = { codec: 'ac3', channels: 6 };
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }], channels: 1 });
+        expect(desc!.pipeline).toContain(
+            'mix-matrix="<<(float)1.0000, (float)0.0000, (float)0.0000, (float)0.0000>>"',
         );
     });
 

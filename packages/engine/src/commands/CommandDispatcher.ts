@@ -2,19 +2,19 @@ import type { ChannelMapEntry, PatchOp } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import type { ModuleManager } from '../modules/ModuleManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
-import type { LcpServer } from '../comms/LcpServer.js';
+import type { LocalServer } from '../comms/LocalServer.js';
 
 const log = createLogger('CommandDispatcher');
 
 export interface CommandContext {
     moduleManager: ModuleManager;
     mediaRouter: MediaRouter;
-    lcpServer: LcpServer;
+    localServer: LocalServer;
     currentConfig: Record<string, unknown> | null;
     /** Engine-level run intent (ModuleRunController.isRunning). Gates single-module starts. */
     isEngineRunning: () => boolean;
     /**
-     * Echo the target run state to the LCP the moment a lifecycle command is
+     * Echo the target run state to the router tree the moment a lifecycle command is
      * accepted. The run flag itself flips at execution (ModuleRunController),
      * but execution queues behind commandLock — a stop dispatched during a
      * start's pipeline bring-up (~16s of connection application + bus-consumer
@@ -143,7 +143,7 @@ export class CommandDispatcher {
                     .then(() => {
                         log.debug({ moduleId }, 'moduleConfig: applied');
                         for (const [key, value] of Object.entries(changes)) {
-                            this.ctx.lcpServer.broadcastConfigUpdate([
+                            this.ctx.localServer.configChanged([
                                 {
                                     op: 'replace',
                                     path: `/modules/${moduleId}/settings/${key}`,
@@ -166,7 +166,7 @@ export class CommandDispatcher {
                 this.commandLock = this.commandLock
                     .then(async () => {
                         await this.ctx.disableModule(moduleId);
-                        this.ctx.lcpServer.broadcastConfigUpdate([
+                        this.ctx.localServer.configChanged([
                             { op: 'replace', path: `/modules/${moduleId}/enabled`, value: false },
                         ]);
                     })
@@ -179,7 +179,7 @@ export class CommandDispatcher {
                 this.commandLock = this.commandLock
                     .then(async () => {
                         await this.ctx.enableModule(moduleId);
-                        this.ctx.lcpServer.broadcastConfigUpdate([
+                        this.ctx.localServer.configChanged([
                             { op: 'replace', path: `/modules/${moduleId}/enabled`, value: true },
                         ]);
                     })
@@ -264,7 +264,7 @@ export class CommandDispatcher {
                     )
                     .then((connId) => {
                         log.info({ connectionId: connId }, 'Live connect');
-                        this.ctx.lcpServer.broadcastConfigUpdate([
+                        this.ctx.localServer.configChanged([
                             {
                                 op: 'add',
                                 path: '/connections/-',
@@ -300,7 +300,7 @@ export class CommandDispatcher {
                     .removeConnection(connectionId)
                     .then(() => {
                         log.info({ connectionId }, 'Live disconnect');
-                        this.ctx.lcpServer.broadcastConfigUpdate([
+                        this.ctx.localServer.configChanged([
                             { op: 'remove', path: `/connections/${connectionId}` },
                         ]);
                     })

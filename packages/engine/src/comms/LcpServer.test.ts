@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { io as IOClient, type Socket as ClientSocket } from 'socket.io-client';
 import { LcpServer } from './LcpServer.js';
+import { LocalServer } from './LocalServer.js';
 
 /**
  * Integration tests for LcpServer ↔ LCP client communication.
@@ -25,11 +26,14 @@ const TEST_PORT = 18081 + Math.floor(Math.random() * 1000);
 
 describe('LcpServer', () => {
     let lcpServer: LcpServer;
+    let local: LocalServer;
     let client: ClientSocket;
 
     beforeEach(async () => {
-        lcpServer = new LcpServer(TEST_PORT);
-        await lcpServer.start();
+        local = new LocalServer(TEST_PORT, { viewer: [], lcp: [] });
+        lcpServer = new LcpServer();
+        lcpServer.attach(local.http);
+        await local.start();
 
         client = IOClient(`http://localhost:${TEST_PORT}`, {
             transports: ['websocket'],
@@ -46,7 +50,8 @@ describe('LcpServer', () => {
 
     afterEach(async () => {
         client.disconnect();
-        await lcpServer.stop();
+        await lcpServer.close();
+        await local.stop();
     });
 
     it('broadcasts configUpdate to connected clients', async () => {
@@ -241,12 +246,5 @@ describe('LcpServer', () => {
         await new Promise((r) => setTimeout(r, 100));
         expect(received).toBe(false);
         client2.disconnect();
-    });
-
-    it('serves static files via HTTP when static dir exists', async () => {
-        // The test environment has local-panel/dist built, so this should serve index.html
-        const response = await fetch(`http://localhost:${TEST_PORT}/`);
-        expect(response.status).toBe(200);
-        expect(response.headers.get('content-type')).toContain('text/html');
     });
 });

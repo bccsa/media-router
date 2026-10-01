@@ -73,23 +73,23 @@
                 "id": "input",
                 "label": "Input",
                 "fields": [
-                    { "key": "channel", "label": "Bus channel" }
+                    { "key": "channel", "type": "number", "label": "Bus channel" }
                 ]
             },
             {
                 "id": "detected",
                 "label": "Detected",
                 "fields": [
-                    { "key": "pages", "label": "Announced pages" }
+                    { "key": "pages", "type": "string", "label": "Announced pages" }
                 ]
             },
             {
                 "id": "cues",
                 "label": "Subtitles",
                 "fields": [
-                    { "key": "pages", "label": "Pages" },
-                    { "key": "total", "label": "Cues decoded" },
-                    { "key": "last", "label": "Last cue" }
+                    { "key": "pages", "type": "string", "label": "Pages" },
+                    { "key": "total", "type": "number", "label": "Cues decoded" },
+                    { "key": "last", "type": "string", "label": "Last cue" }
                 ]
             }
         ],

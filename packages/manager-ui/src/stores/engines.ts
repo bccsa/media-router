@@ -12,7 +12,7 @@ import type {
     ResizableBounds,
     StatusValue,
 } from '@media-router/shared-types';
-const { applyJsonPatch, coerceArray } = shared;
+const { applyTreeOp, coerceArray, getAt, splitPath } = shared;
 
 // --- Types ---
 
@@ -185,6 +185,11 @@ export interface EngineState {
     groupId: string;
     /** Position within the group; ascending. */
     sortOrder: number;
+    /** Counts from the manager's info node — valid without the graph loaded. */
+    moduleCount?: number;
+    connectionCount?: number;
+    /** Stored profiles of the engine (name → active flag). */
+    profiles?: Record<string, { name: string; active: boolean }>;
 }
 
 // --- Store ---
@@ -218,9 +223,8 @@ export const useEngineStore = defineStore('engines', () => {
 
     /**
      * Turn raw server-shape module data into a `ModuleState`. Single point of
-     * truth for every per-module field — used by both `addEngine` (initial
-     * sync) and `setEngineConfig` (lazy profile load). Adding a new field
-     * means one edit here, not two.
+     * truth for every per-module field — used by `addEngine` and by tree
+     * `add /modules…` ops. Adding a new field means one edit here.
      */
     function normalizeModule(id: string, mod: Record<string, unknown>): ModuleState {
         return {
@@ -246,6 +250,10 @@ export const useEngineStore = defineStore('engines', () => {
             resizable: mod.resizable as ModuleState['resizable'],
             uploads: mod.uploads as ModuleState['uploads'],
             liveUpdatableParams: mod.liveUpdatableParams as string[] | undefined,
+            error: (mod.error as string | null | undefined) ?? undefined,
+            badges: mod.badges as ModuleState['badges'],
+            dynamicStatusSections: mod.dynamicStatusSections as ModuleState['dynamicStatusSections'],
+            fieldOptions: mod.fieldOptions as ModuleState['fieldOptions'],
         };
     }
 
@@ -303,53 +311,17 @@ export const useEngineStore = defineStore('engines', () => {
         }
         if (changed) engines.value = new Map(engines.value);
     }
-
-    /** Set full config (modules + connections) for an engine — used by lazy loading. */
-    function setEngineConfig(
-        engineId: string,
-        rawModules: Record<string, unknown>,
-        rawConnections: unknown,
-    ) {
-        const engine = engines.value.get(engineId);
-        if (!engine) return;
-
-        const modules: Record<string, ModuleState> = {};
-        for (const [id, mod] of Object.entries(
-            rawModules as Record<string, Record<string, unknown>>,
-        )) {
-            modules[id] = normalizeModule(id, mod);
-        }
-
-        engine.modules = modules;
-        engine.connections = coerceArray<ConnectionState>(rawConnections);
-        engines.value = new Map(engines.value);
-    }
-
     /**
-     * Apply JSON Patch (RFC 6902) operations to an engine's state.
-     * Delegates to `applyJsonPatch` from `shared-types` so the walker behaves
-     * identically on both sides of the wire — id-based array paths, '-'
-     * append, and intermediate auto-creation all live in one place.
+     * Apply tree ops (engine-relative JSON Patch paths) to an engine's state:
+     * id-based array paths, idempotent `-` appends by id. Module values are
+     * normalised on the way in. `skipUnchanged` drops an echo that changes
+     * nothing, so a slider drag does not rebuild the Map per echo.
      */
-    function applyEnginePatch(engineId: string, patchOps: unknown[]) {
+    function applyEnginePatch(engineId: string, patchOps: unknown[], opts?: { skipUnchanged?: boolean }) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
 
-        const updated: EngineState = {
-            ...engine,
-            modules: { ...engine.modules },
-            connections: [...engine.connections],
-            interlocks: [...(engine.interlocks ?? [])],
-        };
-
-        // Normalise raw module shapes the server sends. Three entry points:
-        //   - `add /modules/<id>`     — clone/addModule from another browser
-        //   - `replace /modules/<id>` — full-module replace
-        //   - `replace /modules`      — wholesale dict replace (profile activate)
-        // Without this, an imported profile that lacks `instanceId` on its
-        // module values produces nodes with `id: undefined` and Vue Flow
-        // crashes in `parseNode` (`e.id.toString()`).
-        const ops = (patchOps as PatchOp[]).map((op): PatchOp => {
+        let ops = (patchOps as PatchOp[]).map((op): PatchOp => {
             if (
                 (op.op === 'add' || op.op === 'replace') &&
                 /^\/modules\/[^/]+$/.test(op.path) &&
@@ -361,7 +333,7 @@ export const useEngineStore = defineStore('engines', () => {
                     value: normalizeModule(moduleId, op.value as Record<string, unknown>),
                 };
             }
-            if (op.op === 'replace' && op.path === '/modules' && op.value) {
+            if (op.op !== 'remove' && op.path === '/modules' && op.value) {
                 const raw = op.value as Record<string, Record<string, unknown>>;
                 const next: Record<string, ModuleState> = {};
                 for (const [id, mod] of Object.entries(raw)) {
@@ -371,60 +343,87 @@ export const useEngineStore = defineStore('engines', () => {
             }
             return op;
         });
+        if (opts?.skipUnchanged) {
+            ops = ops.filter(
+                (op) =>
+                    op.op === 'remove' ||
+                    JSON.stringify(getAt(engine, splitPath(op.path))) !== JSON.stringify(op.value),
+            );
+            if (ops.length === 0) return;
+        }
 
-        applyJsonPatch(updated as unknown as Record<string, unknown>, ops);
+        const updated: EngineState = {
+            ...engine,
+            modules: { ...engine.modules },
+            connections: [...engine.connections],
+            interlocks: [...(engine.interlocks ?? [])],
+        };
+        for (const op of ops) applyTreeOp(updated as unknown as Record<string, unknown>, op);
 
         engines.value.set(engineId, updated);
         engines.value = new Map(engines.value);
     }
 
-    function setOnline(engineId: string, online: boolean) {
-        const engine = engines.value.get(engineId);
-        if (!engine || engine.online === online) return;
-        // Replace with a new object so Vue's computed caching detects the change
-        engines.value.set(engineId, { ...engine, online });
+    /** The engine, created blank if the tree names one the store does not know yet. */
+    function ensureEngine(engineId: string): EngineState {
+        let engine = engines.value.get(engineId);
+        if (!engine) {
+            engine = {
+                engineId,
+                name: engineId,
+                online: false,
+                running: false,
+                activeProfile: null,
+                modules: {},
+                connections: [],
+                interlocks: [],
+                paths: [],
+                groupId: 'ungrouped',
+                sortOrder: 0,
+            };
+            engines.value.set(engineId, engine);
+            engines.value = new Map(engines.value);
+        }
+        return engine;
+    }
+
+    /** Replace some engine-level fields (the tree's `info` node). */
+    function patchInfo(engineId: string, fields: Partial<EngineState>) {
+        const engine = ensureEngine(engineId);
+        engines.value.set(engineId, { ...engine, ...fields });
         engines.value = new Map(engines.value);
     }
 
-    /**
-     * Clear runtime data when engine goes offline (stats, module health, badges).
-     * Does NOT clear `engine.running` — that flag is the persisted user intent
-     * (Start/Stop button), authoritative on the manager. Wiping it here would
-     * desync the button across an offline/online blip: the engine reconnects
-     * still running, but the UI would have forgotten and shown "Start".
-     */
-    function clearEngineRuntime(engineId: string) {
+    /** Runtime field of one module, written in place — the hot path (health, statusData…). */
+    function applyRuntimeOp(engineId: string, moduleId: string, op: PatchOp) {
+        const mod = engines.value.get(engineId)?.modules[moduleId];
+        if (mod) applyTreeOp(mod as unknown as Record<string, unknown>, op);
+    }
+
+    function setSystem(engineId: string, system: SystemStats | undefined) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
-        engine.system = undefined;
-        for (const mod of Object.values(engine.modules)) {
-            mod.running = false;
-            mod.health = 'stopped';
-            mod.error = undefined;
-            mod.statusData = undefined;
-            mod.badges = undefined;
-            mod.fieldOptions = undefined;
-        }
+        engine.system = system;
         engines.value = new Map(engines.value);
     }
 
+    /** Forget an engine's graph once nothing subscribes to it any more. */
+    function dropGraph(engineId: string, branches: Array<'modules' | 'connections' | 'interlocks' | 'profiles'>) {
+        const engine = engines.value.get(engineId);
+        if (!engine) return;
+        const next: EngineState = { ...engine };
+        if (branches.includes('modules')) next.modules = {};
+        if (branches.includes('connections')) next.connections = [];
+        if (branches.includes('interlocks')) next.interlocks = [];
+        if (branches.includes('profiles')) next.profiles = undefined;
+        engines.value.set(engineId, next);
+        engines.value = new Map(engines.value);
+    }
     function setRunning(engineId: string, running: boolean) {
         const engine = engines.value.get(engineId);
         if (!engine || engine.running === running) return;
         engines.value.set(engineId, { ...engine, running });
         engines.value = new Map(engines.value);
-    }
-
-    function updateEngineInfo(data: Record<string, unknown>) {
-        const engine = engines.value.get(data.engine_id as string);
-        if (engine) {
-            engine.name = (data.display_name as string) ?? engine.name;
-            engine.activeProfile = (data.active_profile as string) ?? engine.activeProfile;
-            engine.online = (data.online as boolean) ?? engine.online;
-            if (typeof data.group_id === 'string') engine.groupId = data.group_id;
-            if (typeof data.sort_order === 'number') engine.sortOrder = data.sort_order;
-            engines.value = new Map(engines.value);
-        }
     }
 
     function removeEngine(engineId: string) {
@@ -461,68 +460,6 @@ export const useEngineStore = defineStore('engines', () => {
         engines.value = new Map(engines.value);
     }
 
-    function setSystemStats(engineId: string, stats: SystemStats) {
-        const engine = engines.value.get(engineId);
-        if (engine) {
-            engine.system = stats;
-            engines.value = new Map(engines.value);
-        }
-    }
-
-    /** Replace an engine's live path list (manager-side view, issue #692). */
-    function setPaths(engineId: string, paths: EnginePathInfo[]) {
-        const engine = engines.value.get(engineId);
-        if (!engine) return;
-        const same =
-            engine.paths?.length === paths.length &&
-            engine.paths.every(
-                (p, i) => p.remote === paths[i].remote && p.listenerPort === paths[i].listenerPort,
-            );
-        if (same) return;
-        engines.value.set(engineId, { ...engine, paths: paths.map((p) => ({ ...p })) });
-        engines.value = new Map(engines.value);
-    }
-
-    function setEngineInfo(
-        engineId: string,
-        info: {
-            ip?: string;
-            ips?: string[];
-            hostname?: string;
-            buildNumber?: string;
-            managerPaths?: ManagerPathStatus;
-        },
-    ) {
-        const engine = engines.value.get(engineId);
-        if (!engine) return;
-        let changed = false;
-        if (info.ip && engine.ip !== info.ip) {
-            engine.ip = info.ip;
-            changed = true;
-        }
-        if (info.ips && JSON.stringify(info.ips) !== JSON.stringify(engine.ips)) {
-            engine.ips = info.ips;
-            changed = true;
-        }
-        if (info.hostname && engine.hostname !== info.hostname) {
-            engine.hostname = info.hostname;
-            changed = true;
-        }
-        if (info.buildNumber && engine.buildNumber !== info.buildNumber) {
-            engine.buildNumber = info.buildNumber;
-            changed = true;
-        }
-        if (
-            info.managerPaths &&
-            (engine.managerPaths?.connected !== info.managerPaths.connected ||
-                engine.managerPaths?.total !== info.managerPaths.total)
-        ) {
-            engine.managerPaths = { ...info.managerPaths };
-            changed = true;
-        }
-        if (changed) engines.value = new Map(engines.value);
-    }
-
     return {
         engines,
         engineList,
@@ -530,17 +467,15 @@ export const useEngineStore = defineStore('engines', () => {
         getEngine,
         addEngine,
         applyReorder,
-        setEngineConfig,
         applyEnginePatch,
-        setOnline,
-        clearEngineRuntime,
+        ensureEngine,
+        patchInfo,
+        applyRuntimeOp,
+        setSystem,
+        dropGraph,
         setRunning,
-        updateEngineInfo,
         removeEngine,
         removeConnection,
-        setSystemStats,
-        setPaths,
-        setEngineInfo,
         renameEngine,
     };
 });

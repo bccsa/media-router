@@ -6,7 +6,7 @@ Media Router is a distributed broadcast media routing system for BCC South Afric
 
 - **Stack**: TypeScript, pnpm monorepo, Vue 3, Pinia, Vue Flow, Express v5, Fastify, Socket.IO, SQLite, GStreamer, PipeWire, Python GI bindings
 - **Target hardware**: Raspberry Pi 5 (arm64), Debian 12 Bookworm
-- **Docs**: `docs/URS-v2.0.md`, `docs/FDS-v2.0.md`, `docs/implementation-plan-v2.0.md`
+- **Docs**: `docs/URS-v2.0.md`, `docs/FDS-v2.0.md`, `docs/implementation-plan-v2.0.md`, `docs/tree-api.md` (the tree API: manager + router)
 - **Architecture decisions**: `docs/adr/` — read before changing architecture; add an ADR when locking a new one
 - **Active issues**: `docs/TodoNotes.md`
 - **Plugin guide**: `plugins/README.md`
@@ -120,5 +120,5 @@ pnpm test -- --coverage
 | 3001 | Engine Local API (Fastify) |
 | 5173 | Manager UI dev (Vite) |
 | 8080 | Manager HTTP + Socket.IO |
-| 8081 | Local Control Panel |
+| 8081 | Local Control Panel; dashboards at `/d/` (ADR-0026); router tree on Socket.IO path `/tree` (ADR-0024) |
 | 8082 | Profile Manager |

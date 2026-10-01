@@ -54,6 +54,9 @@ importers:
       '@media-router/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@media-router/topic-tree':
+        specifier: workspace:*
+        version: link:../topic-tree
       ajv:
         specifier: ^8.18.0
         version: 8.18.0
@@ -125,6 +128,9 @@ importers:
       '@media-router/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@media-router/topic-tree':
+        specifier: workspace:*
+        version: link:../topic-tree
       better-sqlite3:
         specifier: ^12.8.0
         version: 12.8.0
@@ -255,6 +261,22 @@ importers:
       '@types/node':
         specifier: ^25.5.0
         version: 25.5.0
+
+  packages/topic-tree:
+    dependencies:
+      '@media-router/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.5.0
+      socket.io:
+        specifier: ^4.8.3
+        version: 4.8.3
+      socket.io-client:
+        specifier: ^4.8.3
+        version: 4.8.3
 
   plugins/aes67-core:
     devDependencies:

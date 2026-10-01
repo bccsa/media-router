@@ -1,4 +1,4 @@
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, type ConfigPushTag } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 
@@ -88,7 +88,8 @@ export class EngineCommandService {
                         engine.active_profile as string,
                     );
                     if (config) {
-                        this.engineManager.sendToEngine(engineId, 'config', config, {
+                        const _push: ConfigPushTag = { reason: 'activate', profile: engine.active_profile as string };
+                        this.engineManager.sendToEngine(engineId, 'config', { ...config, _push }, {
                             guaranteeDelivery: true,
                         });
                     }

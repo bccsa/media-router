@@ -71,6 +71,12 @@ function createTables(db: Database.Database): void {
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS manager_dashboards (
+            id TEXT PRIMARY KEY,
+            config TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS engine_config_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             engine_id TEXT NOT NULL,

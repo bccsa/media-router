@@ -5,6 +5,6 @@
         "rootDir": "./src"
     },
     "include": ["src"],
-    "exclude": ["src/**/*.test.ts"],
-    "references": [{ "path": "../shared-types" }, { "path": "../dgram-comms" }]
+    "exclude": ["src/**/*.test.ts", "src/**/testing/**"],
+    "references": [{ "path": "../shared-types" }, { "path": "../dgram-comms" }, { "path": "../topic-tree" }]
 }

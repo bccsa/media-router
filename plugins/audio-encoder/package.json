@@ -231,10 +231,12 @@
                 "fields": [
                     {
                         "key": "host",
+                        "type": "string",
                         "label": "Multicast"
                     },
                     {
                         "key": "port",
+                        "type": "number",
                         "label": "Port"
                     }
                 ]
@@ -245,20 +247,24 @@
                 "fields": [
                     {
                         "key": "codec",
+                        "type": "string",
                         "label": "Codec"
                     },
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "kbps"
                     },
                     {
                         "key": "sampleRate",
+                        "type": "number",
                         "label": "Sample Rate",
                         "unit": "Hz"
                     },
                     {
                         "key": "channels",
+                        "type": "number",
                         "label": "Channels"
                     }
                 ]
@@ -269,10 +275,12 @@
                 "fields": [
                     {
                         "key": "Output Bitrate",
+                        "type": "string",
                         "label": "Output Bitrate"
                     },
                     {
                         "key": "Total Bytes",
+                        "type": "string",
                         "label": "Total Bytes"
                     }
                 ]

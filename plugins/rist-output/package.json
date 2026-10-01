@@ -133,14 +133,17 @@
                 "fields": [
                     {
                         "key": "profile",
+                        "type": "string",
                         "label": "Profile"
                     },
                     {
                         "key": "linkCount",
+                        "type": "number",
                         "label": "Links"
                     },
                     {
                         "key": "encrypted",
+                        "type": "string",
                         "label": "Encrypted"
                     }
                 ]
@@ -151,23 +154,28 @@
                 "fields": [
                     {
                         "key": "quality",
+                        "type": "number",
                         "label": "Quality",
                         "unit": "%"
                     },
                     {
                         "key": "sent",
+                        "type": "number",
                         "label": "Packets Sent"
                     },
                     {
                         "key": "retransmitted",
+                        "type": "number",
                         "label": "Retransmitted"
                     },
                     {
                         "key": "bandwidth",
+                        "type": "string",
                         "label": "Bandwidth"
                     },
                     {
                         "key": "rtt",
+                        "type": "number",
                         "label": "RTT",
                         "unit": "ms"
                     }

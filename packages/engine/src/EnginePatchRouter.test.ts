@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EnginePatchRouter } from './EnginePatchRouter.js';
 
 function createMocks(opts: { modulesRunning?: boolean } = {}) {
@@ -19,15 +19,9 @@ function createMocks(opts: { modulesRunning?: boolean } = {}) {
         updateChannelMap: vi.fn(async () => {}),
     } as any;
 
-    const lcpServer = {
-        broadcastConfigUpdate: vi.fn(),
-        broadcastConfigUpdateExcept: vi.fn(),
-    } as any;
+    const localServer = { configChanged: vi.fn() } as any;
 
-    const managerConnection = {
-        isConnected: true,
-        send: vi.fn(),
-    } as any;
+    const localChanges = { config: vi.fn() } as any;
 
     const lifecycle = {
         refreshPorts: vi.fn(),
@@ -40,14 +34,14 @@ function createMocks(opts: { modulesRunning?: boolean } = {}) {
     const router = new EnginePatchRouter(
         moduleManager,
         mediaRouter,
-        lcpServer,
-        managerConnection,
+        localServer,
+        localChanges,
         lifecycle,
         () => config,
         () => opts.modulesRunning ?? true,
     );
 
-    return { router, config, moduleManager, mediaRouter, lcpServer, managerConnection, lifecycle };
+    return { router, config, moduleManager, mediaRouter, localServer, localChanges, lifecycle };
 }
 
 describe('EnginePatchRouter', () => {
@@ -60,58 +54,105 @@ describe('EnginePatchRouter', () => {
             expect((config.modules as any)['mod-1'].displayName).toBe('New Name');
         });
 
-        it('broadcasts to ALL LCPs', () => {
-            const { router, lcpServer } = createMocks();
+        it('tells the router tree', () => {
+            const { router, localServer } = createMocks();
             router.onPatch('manager', 'manager', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
-            expect(lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([
+            expect(localServer.configChanged).toHaveBeenCalledWith([
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
         });
 
         it('does NOT forward back to manager', () => {
-            const { router, managerConnection } = createMocks();
+            const { router, localChanges } = createMocks();
             router.onPatch('manager', 'manager', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            expect(localChanges.config).not.toHaveBeenCalled();
         });
     });
 
-    describe('onPatch from LCP', () => {
+    describe('onPatch from the router tree', () => {
         it('applies patch to config', () => {
             const { router, config } = createMocks();
-            router.onPatch('lcp-1', 'lcp', [
+            router.onPatch('tree-1', 'local', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
             expect((config.modules as any)['mod-1'].settings.volume).toBe(50);
         });
 
-        it('broadcasts to other LCPs (skip sender)', () => {
-            const { router, lcpServer } = createMocks();
-            router.onPatch('lcp-1', 'lcp', [
+        it('tells the rest of the router tree (skip the writer)', () => {
+            const { router, localServer } = createMocks();
+            router.onPatch('tree-1', 'local', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
-            expect(lcpServer.broadcastConfigUpdateExcept).toHaveBeenCalledWith(
-                'lcp-1',
-                expect.any(Array),
-            );
+            expect(localServer.configChanged).toHaveBeenCalledWith(expect.any(Array), 'tree-1');
         });
 
-        it('debounced forwards to manager', async () => {
-            const { router, managerConnection } = createMocks();
-            router.onPatch('lcp-1', 'lcp', [
+        it('forwards to manager', () => {
+            const { router, localChanges } = createMocks();
+            router.onPatch('tree-1', 'local', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
-            // Not sent yet (debounced)
-            expect(managerConnection.send).not.toHaveBeenCalled();
-            // Wait for debounce
-            await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).toHaveBeenCalledWith(
-                'patch',
-                expect.objectContaining({ ops: expect.any(Array) }),
-            );
+            expect(localChanges.config).toHaveBeenCalledWith(expect.any(Array));
+        });
+
+        it('an unmute mutes the rest of its interlock here, and everyone sees the mutes', () => {
+            const { router, config, localServer, localChanges, moduleManager } = createMocks();
+            const mods = config.modules as Record<string, any>;
+            mods['mic-a'] = { pluginId: 'audio-input', settings: { audioEnabled: true } };
+            mods['mic-b'] = { pluginId: 'audio-input', settings: { audioEnabled: false } };
+            config.interlocks = [{ id: 'ilk-1', name: 'Mics', members: ['mic-a', 'mic-b'] }];
+            const unmute = { op: 'replace' as const, path: '/modules/mic-b/settings/audioEnabled', value: true };
+            const mute = { op: 'replace', path: '/modules/mic-a/settings/audioEnabled', value: false };
+            router.onPatch('tree-1', 'local', [unmute]);
+            expect([mods['mic-a'].settings.audioEnabled, mods['mic-b'].settings.audioEnabled]).toEqual([false, true]);
+            // The writer has its own op; the mute goes to every viewer, the writer too.
+            expect(localServer.configChanged).toHaveBeenCalledWith([unmute], 'tree-1');
+            expect(localServer.configChanged).toHaveBeenCalledWith([mute]);
+            // The manager: the ops, then the whole group as it stands.
+            expect(localChanges.config).toHaveBeenCalledWith([mute, unmute, mute, unmute]);
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mic-a', expect.objectContaining({ audioEnabled: false }));
+        });
+
+        it('applies them to the manager’s writes too, and reports the group back', () => {
+            const { router, config, localServer, localChanges } = createMocks();
+            const mods = config.modules as Record<string, any>;
+            mods['mic-a'] = { pluginId: 'audio-input', settings: { audioEnabled: true } };
+            mods['mic-b'] = { pluginId: 'audio-input', settings: { audioEnabled: false } };
+            config.interlocks = [{ id: 'ilk-1', name: 'Mics', members: ['mic-a', 'mic-b'] }];
+            router.onPatch('manager', 'manager', [{ op: 'replace', path: '/modules/mic-b/settings/audioEnabled', value: true }]);
+            expect(mods['mic-a'].settings.audioEnabled).toBe(false);
+            expect(localServer.configChanged).toHaveBeenCalledWith([
+                { op: 'replace', path: '/modules/mic-a/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/mic-b/settings/audioEnabled', value: true },
+            ]);
+            expect(localChanges.config).toHaveBeenCalledWith([
+                { op: 'replace', path: '/modules/mic-a/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/mic-b/settings/audioEnabled', value: true },
+            ]);
+        });
+
+        it('a batch that unmutes two members, or new members, leaves one live: the first in the group', () => {
+            const { router, config } = createMocks();
+            const mods = config.modules as Record<string, any>;
+            for (const id of ['a', 'b', 'c']) mods[id] = { pluginId: 'audio-input', settings: { audioEnabled: false } };
+            config.interlocks = [{ id: 'ilk-1', name: 'Mics', members: ['a', 'b'] }];
+            router.onPatch('manager', 'manager', [
+                { op: 'replace', path: '/modules/b/settings/audioEnabled', value: true },
+                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
+            ]);
+            expect([mods.a.settings.audioEnabled, mods.b.settings.audioEnabled]).toEqual([true, false]);
+            mods.c.settings.audioEnabled = true;
+            router.onPatch('manager', 'manager', [{ op: 'replace', path: '/interlocks/0/members', value: ['c', 'a', 'b'] }]);
+            expect([mods.c.settings.audioEnabled, mods.a.settings.audioEnabled]).toEqual([true, false]);
+        });
+
+        it('leaves writes that touch no interlock alone', () => {
+            const { router, localChanges } = createMocks();
+            router.onPatch('manager', 'manager', [{ op: 'replace', path: '/modules/mod-1/settings/volume', value: 3 }]);
+            expect(localChanges.config).not.toHaveBeenCalled();
         });
     });
 
@@ -215,7 +256,7 @@ describe('EnginePatchRouter', () => {
                 { id: 'conn-b', sourceModuleId: 'b', sinkModuleId: 'y' },
             ];
 
-            // LCPs/browsers address connections by id — those never shift, and
+            // Browsers address connections by id — those never shift, and
             // must keep resolving to themselves alongside index-based ops.
             router.onPatch('manager', 'manager', [
                 { op: 'remove', path: '/connections/conn-b' },
@@ -447,48 +488,42 @@ describe('EnginePatchRouter', () => {
         });
     });
 
-    describe('debounced forward to manager', () => {
-        it('accumulates ops from multiple LCP patches before sending', async () => {
-            const { router, managerConnection } = createMocks();
-            router.onPatch('lcp-1', 'lcp', [
-                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
-            ]);
-            router.onPatch('lcp-1', 'lcp', [
-                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 60 },
-            ]);
+    describe('throttled forward to manager', () => {
+        beforeEach(() => vi.useFakeTimers());
+        afterEach(() => vi.useRealTimers());
+        const vol = (value: number) => [{ op: 'replace' as const, path: '/modules/mod-1/settings/volume', value }];
 
-            expect(managerConnection.send).not.toHaveBeenCalled();
-            await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).toHaveBeenCalledTimes(1);
-            // Should contain both ops
-            const sentOps = managerConnection.send.mock.calls[0][1].ops;
-            expect(sentOps).toHaveLength(2);
+        it('sends the first op at once and batches the rest of the 100 ms', () => {
+            const { router, localChanges } = createMocks();
+            router.onPatch('tree-1', 'local', vol(50));
+            expect(localChanges.config).toHaveBeenCalledTimes(1);
+            router.onPatch('tree-1', 'local', vol(60));
+            router.onPatch('tree-1', 'local', vol(70));
+            expect(localChanges.config).toHaveBeenCalledTimes(1);
+            vi.advanceTimersByTime(100);
+            expect(localChanges.config).toHaveBeenCalledTimes(2);
+            expect(localChanges.config.mock.calls[1][0]).toHaveLength(2);
         });
 
-        it('does not forward when manager is disconnected', async () => {
-            const { router, managerConnection } = createMocks();
-            managerConnection.isConnected = false;
-
-            router.onPatch('lcp-1', 'lcp', [
-                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
-            ]);
-
-            await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).not.toHaveBeenCalled();
+        it('keeps forwarding during a continuous drag, not only after it stops', () => {
+            const { router, localChanges } = createMocks();
+            // A fader writing every 90 ms for ~1 s.
+            for (let i = 0; i < 12; i++) {
+                router.onPatch('tree-1', 'local', vol(50 + i));
+                vi.advanceTimersByTime(90);
+            }
+            expect(localChanges.config.mock.calls.length).toBeGreaterThanOrEqual(10);
+            vi.advanceTimersByTime(100);
+            expect(localChanges.config.mock.calls.flatMap((c: any[]) => c[0]).at(-1).value).toBe(61);
         });
 
-        it('does not forward when no pending ops', async () => {
-            const { router, managerConnection } = createMocks();
-            // Trigger debounce but somehow ops are empty — edge case
-            // The debounce timer fires but pendingOps is empty
-            // This is tested implicitly by the isConnected check above
-            // but let's test destroy clears timers
-            router.onPatch('lcp-1', 'lcp', [
-                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
-            ]);
+        it('sends nothing pending after destroy', () => {
+            const { router, localChanges } = createMocks();
+            router.onPatch('tree-1', 'local', vol(50));
+            router.onPatch('tree-1', 'local', vol(60));
             router.destroy();
-            await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(150);
+            expect(localChanges.config).toHaveBeenCalledTimes(1);
         });
     });
 
@@ -538,43 +573,30 @@ describe('EnginePatchRouter', () => {
         });
     });
 
-    describe('destroy', () => {
-        it('clears debounce timers', async () => {
-            const { router, managerConnection } = createMocks();
-            router.onPatch('lcp-1', 'lcp', [
-                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
-            ]);
-            router.destroy();
-            await new Promise((r) => setTimeout(r, 150));
-            // Timer was cleared, so manager never receives the patch
-            expect(managerConnection.send).not.toHaveBeenCalled();
-        });
-    });
-
     describe('edge cases', () => {
         it('drops patch with no ops', () => {
-            const { router, lcpServer } = createMocks();
+            const { router, localServer } = createMocks();
             router.onPatch('manager', 'manager', []);
-            expect(lcpServer.broadcastConfigUpdate).not.toHaveBeenCalled();
+            expect(localServer.configChanged).not.toHaveBeenCalled();
         });
 
         it('drops patch when no config', () => {
             const moduleManager = {} as any;
             const mediaRouter = {} as any;
-            const lcpServer = { broadcastConfigUpdate: vi.fn() } as any;
-            const managerConnection = { isConnected: false, send: vi.fn() } as any;
+            const localServer = { configChanged: vi.fn() } as any;
+            const localChanges = { config: vi.fn() } as any;
             const lifecycle = {} as any;
             const router = new EnginePatchRouter(
                 moduleManager,
                 mediaRouter,
-                lcpServer,
-                managerConnection,
+                localServer,
+                localChanges,
                 lifecycle,
                 () => null,
                 () => false,
             );
             router.onPatch('manager', 'manager', [{ op: 'replace', path: '/x', value: 1 }]);
-            expect(lcpServer.broadcastConfigUpdate).not.toHaveBeenCalled();
+            expect(localServer.configChanged).not.toHaveBeenCalled();
         });
     });
 });

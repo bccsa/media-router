@@ -2,8 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { WorkerPacedTsSink } from './workerPacedSink.js';
+import { requireFreshEngineBuild } from './testing/engineBuild.js';
+
+beforeAll(requireFreshEngineBuild);
 
 /** One paced datagram on the unix-stream transport: 128 TS packets. */
 const CHUNK = 128 * 188;

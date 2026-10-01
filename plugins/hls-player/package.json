@@ -116,18 +116,18 @@
                 "id": "source",
                 "label": "Source",
                 "fields": [
-                    { "key": "playlist", "label": "Playlist" },
-                    { "key": "quality", "label": "Quality" },
-                    { "key": "audio", "label": "Audio" },
-                    { "key": "subtitles", "label": "Subtitles" }
+                    { "key": "playlist", "type": "string", "label": "Playlist" },
+                    { "key": "quality", "type": "string", "label": "Quality" },
+                    { "key": "audio", "type": "string", "label": "Audio" },
+                    { "key": "subtitles", "type": "string", "label": "Subtitles" }
                 ]
             },
             {
                 "id": "stats",
                 "label": "Live Stats",
                 "fields": [
-                    { "key": "bitrate", "label": "Bitrate", "unit": "Mbps" },
-                    { "key": "data", "label": "Data Sent" }
+                    { "key": "bitrate", "type": "number", "label": "Bitrate", "unit": "Mbps" },
+                    { "key": "data", "type": "string", "label": "Data Sent" }
                 ]
             }
         ],

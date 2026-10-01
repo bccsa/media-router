@@ -137,18 +137,22 @@
                 "fields": [
                     {
                         "key": "source",
+                        "type": "string",
                         "label": "Source"
                     },
                     {
                         "key": "format",
+                        "type": "string",
                         "label": "Format"
                     },
                     {
                         "key": "payloadType",
+                        "type": "number",
                         "label": "Payload Type"
                     },
                     {
                         "key": "multicast",
+                        "type": "string",
                         "label": "Multicast"
                     }
                 ]
@@ -159,6 +163,7 @@
                 "fields": [
                     {
                         "key": "ptpSync",
+                        "type": "string",
                         "label": "PTP Sync"
                     }
                 ]
@@ -169,11 +174,13 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "Mbps"
                     },
                     {
                         "key": "bytesReceived",
+                        "type": "string",
                         "label": "Bytes Received"
                     }
                 ]
@@ -184,6 +191,7 @@
                 "fields": [
                     {
                         "key": "discovered",
+                        "type": "number",
                         "label": "Streams Seen"
                     }
                 ]

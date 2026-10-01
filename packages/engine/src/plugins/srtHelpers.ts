@@ -189,6 +189,10 @@ export class SrtStatPoller {
     private handleListenerMode(callers: Array<Record<string, unknown>>): void {
         const sections: StatusSection[] = [];
         let totalKbps = 0;
+        let rated = false;
+        let totalBytes = 0;
+        const rtts: number[] = [];
+        const losses: number[] = [];
         for (let i = 0; i < callers.length; i++) {
             sections.push({
                 id: `caller-${i}`,
@@ -198,6 +202,10 @@ export class SrtStatPoller {
             const { fields, kbps } = this.computeCallerFields(callers[i], i);
             this.host.setStatusData(`caller-${i}`, fields);
             totalKbps += kbps ?? 0;
+            if (typeof fields.bitrate === 'number') rated = true;
+            totalBytes += Number(callers[i][this.keys.bytes] ?? 0);
+            if (typeof fields.rtt === 'number') rtts.push(fields.rtt);
+            if (fields.packetLoss !== '—') losses.push(this.callerStats.get(i)!.lossAvg);
         }
         this.host.setSections(sections);
 
@@ -211,7 +219,20 @@ export class SrtStatPoller {
         // otherwise shows a lone "Callers: 0" row; the stats modal hides fields
         // with no value, so an empty object collapses the Live Stats section
         // entirely until a caller connects.
-        this.host.setStatusData('stats', callerCount > 0 ? { callers: callerCount } : {});
+        // With callers, `stats` carries the whole input (the manifest's fields,
+        // which dashboards bind): bitrate and bytes summed, RTT and loss the worst.
+        this.host.setStatusData(
+            'stats',
+            callerCount > 0
+                ? {
+                      callers: callerCount,
+                      bitrate: rated ? Math.round(totalKbps / 10) / 100 : '—',
+                      rtt: rtts.length > 0 ? Math.max(...rtts) : '—',
+                      packetLoss: losses.length > 0 ? `${Math.max(...losses).toFixed(2)}%` : '—',
+                      [this.keys.statusField]: totalBytes > 0 ? formatBytes(totalBytes) : '—',
+                  }
+                : {},
+        );
         this.host.setBadge('callers', {
             icon: 'users',
             text: String(callerCount),
