@@ -86,6 +86,14 @@ describe('SrtStatPoller.poll (listener mode)', () => {
             text: '6.6 Mbps',
             color: '#10b981',
         });
+        // `stats` carries the whole input for dashboards: sum, worst RTT, total bytes.
+        expect(host.setStatusData).toHaveBeenLastCalledWith('stats', {
+            callers: 2,
+            bitrate: 6.6,
+            rtt: 30,
+            packetLoss: expect.stringMatching(/%$/),
+            bytesReceived: expect.stringMatching(/MB$/),
+        });
     });
 
     it('never reads srtsink/srtsrc *-rate-mbps (cumulative-since-socket-open average, #749)', async () => {
@@ -162,7 +170,8 @@ describe('SrtStatPoller.poll (listener mode)', () => {
         });
         const poller = new SrtStatPoller(host, 'receive');
         await poller.poll();
-        expect(host.setStatusData).toHaveBeenCalledWith('stats', { callers: 2 });
+        // The seeding poll has no interval yet: a dash, never a false 0 Mbps.
+        expect(host.setStatusData).toHaveBeenCalledWith('stats', expect.objectContaining({ callers: 2, bitrate: '—' }));
     });
 
     it('clears the status badge once at least one caller is connected', async () => {
