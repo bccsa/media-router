@@ -35,9 +35,16 @@
                 },
                 "channels": {
                     "type": "number",
-                    "enum": [2, 4, 6, 8],
+                    "enum": [1, 2, 4, 6, 8],
+                    "x-enumLabels": {
+                        "1": "Mono",
+                        "2": "Stereo",
+                        "4": "4 channels",
+                        "6": "6 channels",
+                        "8": "8 channels"
+                    },
                     "default": 2,
-                    "description": "302M carries at most 8; add another input for more"
+                    "description": "Mono = one device channel on both sides. 302M carries at most 8; add another input for more"
                 },
                 "firstChannel": {
                     "type": "number",

@@ -194,6 +194,47 @@ describe('AudioInput302mModule.buildPipeline', () => {
         });
     });
 
+    it('Mono (#778): one desk channel linked to both sides of a stereo 302M pair', () => {
+        const { module, setHealth } = makeModule({ deviceChannels: 48 });
+        const desc = module.buildPipeline({ device: DEV, channels: 1, firstChannel: 5 });
+        expect(desc).not.toBeNull();
+        // The wire is still stereo — 302M has no mono width.
+        expect(desc!.pipeline).toContain('channels=2,channel-mask=(bitmask)0x0');
+        expect(desc!.pipeline).toContain('rate=48000,channels=2 ! avenc_s302m');
+        // Device channel 5 on BOTH stream inputs — never 5 left / 6 right.
+        expect(module.linkPlan).toEqual({
+            streamNode: 'MR_PW_ain-1',
+            direction: 'capture',
+            deviceNode: DEV,
+            firstIndex: 4,
+            channels: 2,
+            dualMono: true,
+        });
+        expect(setHealth).toHaveBeenLastCalledWith('ok');
+        expect(module.setStatusData).toHaveBeenCalledWith('input', {
+            device: DEV,
+            channels: 2,
+            firstChannel: 5,
+            lastChannel: 5,
+            deviceChannels: 48,
+            dualMono: true,
+        });
+    });
+
+    it('Mono on a device of unknown width is dual-mono too; Mono past the device names the one channel', () => {
+        const { module } = makeModule({ deviceChannels: null });
+        module.buildPipeline({ device: DEV, channels: 1, firstChannel: 3 });
+        expect(module.linkPlan).toMatchObject({ firstIndex: 2, channels: 2, dualMono: true });
+
+        const { module: m2, setHealth } = makeModule({ deviceChannels: 2 });
+        expect(m2.buildPipeline({ device: DEV, channels: 1, firstChannel: 3 })).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith(
+            'error',
+            expect.stringContaining('has 2 channels — cannot capture 3'),
+        );
+        expect(setHealth).not.toHaveBeenCalledWith('error', expect.stringContaining('3–'));
+    });
+
     it('the last channel of a wide desk into a stereo stream is dual-mono too', () => {
         const { module } = makeModule({ deviceChannels: 48 });
         module.buildPipeline({ device: DEV, channels: 2, firstChannel: 48 });
@@ -271,6 +312,9 @@ describe('AudioInput302mModule.buildPipeline', () => {
         // Wire width, not the raw setting: snapped onto the 302M set.
         module.config = { device: DEV, channels: 3 };
         expect(module.getBusStreamChannels('audio-out')).toBe(4);
+        // Mono goes out dual-mono: consumers see a stereo stream.
+        module.config = { device: DEV, channels: 1 };
+        expect(module.getBusStreamChannels('audio-out')).toBe(2);
         module.config = { device: DEV };
         expect(module.getBusStreamChannels('audio-out')).toBe(2);
         expect(module.getBusStreamChannels('other')).toBeUndefined();
@@ -295,6 +339,35 @@ describe('AudioInput302mModule device links', () => {
             silent: 0,
         });
         expect(setHealth).not.toHaveBeenCalledWith('warning', expect.anything());
+    });
+
+    it('Mono links the one device channel to both stream inputs', async () => {
+        const { module, setHealth } = makeModule({ deviceChannels: 48 });
+        module.buildPipeline({ device: DEV, channels: 1, firstChannel: 5 });
+        module.linkDeps = fakeDeps(48, 2);
+        await module.linker.ensure();
+        // capture_AUX4 (id 104) → input_1 (300) AND input_2 (301)
+        expect(module.linkDeps.link.mock.calls).toEqual([
+            [104, 300],
+            [104, 301],
+        ]);
+        expect(module.setStatusData).toHaveBeenCalledWith('links', {
+            linked: 2,
+            expected: 2,
+            silent: 0,
+        });
+        expect(setHealth).not.toHaveBeenCalledWith('warning', expect.anything());
+    });
+
+    it('a Mono range with no device port warns about the one channel, not a pair', async () => {
+        const { module, setHealth } = makeModule({ deviceChannels: null });
+        module.buildPipeline({ device: DEV, channels: 1, firstChannel: 9 });
+        module.linkDeps = fakeDeps(4, 2);
+        await module.linker.ensure();
+        expect(setHealth).toHaveBeenLastCalledWith(
+            'warning',
+            expect.stringMatching(/no channels at 9$/),
+        );
     });
 
     it('warns when the stream never appears, and clears the warning once it links', async () => {

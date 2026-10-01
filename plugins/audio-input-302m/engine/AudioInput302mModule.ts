@@ -11,6 +11,7 @@ import {
 } from '@media-router/engine';
 import {
     build302mEncodeBranch,
+    channelRange,
     normalize302mChannels,
     positionedChannelsClause,
 } from '@media-router/plugin-audio-302m-core';
@@ -28,7 +29,10 @@ import {
  * ceiling, not ours), so a wide desk is several of these modules: `channels`
  * picks the stream width and `firstChannel` (1-based) where on the device it
  * starts — an X32's 32 inputs are four modules at 8 channels, first channel
- * 1 / 9 / 17 / 25.
+ * 1 / 9 / 17 / 25. `channels` 1 is Mono (#778): ONE device channel, the one
+ * at `firstChannel`, linked to both sides of a stereo 302M pair — the same
+ * dual-mono plan the narrow-device case below falls into, here chosen on
+ * purpose (a mono mic belongs on both sides, not left-only).
  *
  * Capture is a `pipewiresrc` stream exactly `channels` wide, unpositioned,
  * created with `node.autoconnect=false`, and the ENGINE links its ports to the
@@ -156,13 +160,16 @@ export class AudioInput302mModule extends GstPluginBase {
             return null;
         }
 
-        const channels = normalize302mChannels(Number(config.channels ?? 2));
+        const requested = Number(config.channels ?? 2);
+        const mono = requested === 1;
+        const channels = normalize302mChannels(requested);
         const firstChannel = Math.max(1, Math.trunc(Number(config.firstChannel ?? 1)) || 1);
         const deviceChannels = this.services?.pipeWire?.getDeviceInfo(device)?.channels ?? null;
 
         const capture = this.buildCapture({
             device,
             channels,
+            mono,
             firstChannel,
             deviceChannels,
             srcBufferMs: Number(config.srcBufferMs ?? 60),
@@ -191,7 +198,7 @@ export class AudioInput302mModule extends GstPluginBase {
             device,
             channels,
             firstChannel,
-            lastChannel: firstChannel - 1 + channels,
+            lastChannel: capture.lastChannel,
             ...(deviceChannels ? { deviceChannels } : {}),
             ...(silentChannels > 0 ? { silentChannels } : {}),
             ...(dualMono ? { dualMono: true } : {}),
@@ -208,27 +215,41 @@ export class AudioInput302mModule extends GstPluginBase {
     /**
      * `pipewiresrc` stream `channels` wide on the device, plus the plan that
      * links stream channel k to device channel `firstChannel-1+k`. A single
-     * available channel into a stereo stream is duplicated (`dualMono`);
-     * otherwise channels past the device's width stay unlinked and come out
-     * silent (`silentChannels` says how many). Null (with the health error
-     * set) when nothing in the range exists on the device.
+     * available channel into a stereo stream is duplicated (`dualMono`) — by
+     * request when `mono`, otherwise because the device ends there; channels
+     * past the device's width stay unlinked and come out silent
+     * (`silentChannels` says how many). Null (with the health error set) when
+     * nothing in the range exists on the device.
      */
     private buildCapture(o: {
         device: string;
+        /** 302M stream width (2 for Mono). */
         channels: number;
+        /** Mono: the one device channel at `firstChannel` feeds both stream inputs. */
+        mono: boolean;
         /** 1-based first device channel. */
         firstChannel: number;
         /** Device width as PipeWire reports it; null when not enumerated. */
         deviceChannels: number | null;
         srcBufferMs: number;
-    }): { clause: string; silentChannels: number; dualMono: boolean; plan: StreamLinkSpec } | null {
-        const { device, channels, firstChannel, deviceChannels } = o;
-        const lastChannel = firstChannel - 1 + channels;
+    }): {
+        clause: string;
+        /** Last device channel the REQUESTED range covers — `firstChannel` for
+         *  Mono; a range past the device still reports its requested end. */
+        lastChannel: number;
+        silentChannels: number;
+        dualMono: boolean;
+        plan: StreamLinkSpec;
+    } | null {
+        const { device, channels, mono, firstChannel, deviceChannels } = o;
+        // Device channels the range asks for; the stream is `channels` wide regardless.
+        const rangeChannels = mono ? 1 : channels;
+        const lastChannel = firstChannel - 1 + rangeChannels;
         if (deviceChannels && deviceChannels > 0 && firstChannel > deviceChannels) {
             this.setHealth(
                 'error',
                 `Audio device "${device}" has ${deviceChannels} channel${deviceChannels === 1 ? '' : 's'} — ` +
-                    `cannot capture ${firstChannel}–${lastChannel}`,
+                    `cannot capture ${channelRange(firstChannel, lastChannel)}`,
             );
             return null;
         }
@@ -256,12 +277,13 @@ export class AudioInput302mModule extends GstPluginBase {
 
         const available =
             deviceChannels && deviceChannels > 0
-                ? Math.min(channels, deviceChannels - firstChannel + 1)
-                : channels;
+                ? Math.min(rangeChannels, deviceChannels - firstChannel + 1)
+                : rangeChannels;
         // One channel into the stereo pair → dual-mono (see class comment).
         const dualMono = available === 1 && channels === 2;
         return {
             clause,
+            lastChannel,
             silentChannels: dualMono ? 0 : channels - available,
             dualMono,
             plan: {
@@ -286,9 +308,11 @@ export class AudioInput302mModule extends GstPluginBase {
             );
         } else if (result.linked === 0 && result.missing > 0) {
             this.linkWarning = true;
+            const first = plan.firstIndex + 1;
             this.setHealth(
                 'warning',
-                `Audio device "${plan.deviceNode}" has no channels at ${plan.firstIndex + 1}–${plan.firstIndex + expected}`,
+                `Audio device "${plan.deviceNode}" has no channels at ` +
+                    channelRange(first, plan.dualMono ? first : plan.firstIndex + expected),
             );
         } else if (result.linked + result.missing < expected) {
             this.linkWarning = true;

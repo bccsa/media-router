@@ -89,6 +89,17 @@ describe('buildOutputPlacement', () => {
         expect(r.error).toContain('has 32 channels — cannot play on 45–52');
     });
 
+    it('a mono output past the device names the one channel, not a pair', () => {
+        const r = buildOutputPlacement({
+            device: DEV,
+            channels: 1,
+            firstChannel: 3,
+            deviceChannels: 2,
+        });
+        expect(r.error).toContain('has 2 channels — cannot play on 3');
+        expect(r.error).not.toContain('3–');
+    });
+
     it('refuses a non-default range when the device width is unknown', () => {
         const r = buildOutputPlacement({
             device: DEV,

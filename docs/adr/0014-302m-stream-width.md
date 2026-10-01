@@ -170,3 +170,11 @@ runs PAST the device's channels is honoured rather than refused
 
 This does not change the wire width (still 2/4/6/8, ADR-0014 proper); it defines
 what fills a pair when the device is narrower than the operator's range.
+
+**Amendment (2026-10-01, #778): Mono as a width.** `audio-input-302m` offers
+`channels` 1 (Mono) alongside 2/4/6/8, the same choice `n1-mixer-302m` already
+had. Mono is the dual-mono plan above chosen on purpose: the ONE device channel
+at `firstChannel` is linked to both inputs of a stereo stream, and the wire
+stays stereo (`getBusStreamChannels` → 2, the editor draws two source
+channels). Before, a mono mic on desk input 5 could only be captured as "2 from
+5" — input 5 left, input 6 right.
