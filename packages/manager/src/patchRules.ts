@@ -1,4 +1,4 @@
-import type { PatchOp } from '@media-router/shared-types';
+import { unmuteCascade, type PatchOp } from '@media-router/shared-types';
 import type { PluginRegistry } from './plugins/PluginRegistry.js';
 
 /**
@@ -50,6 +50,8 @@ export interface RuleContext {
      * (issue #661).
      */
     engineSchemas?: Record<string, unknown>;
+    /** The target router keeps its interlocks itself (ADR-0028): no mutes from here, it reports its own. */
+    routerInterlocks?: boolean;
 }
 
 export interface RuleResult {
@@ -123,7 +125,7 @@ const rewriteInterlockIdPath: Rule = (op, ctx) => {
 
     const rewritten: PatchOp = { ...op, path: `/interlocks/${idx}${rest}` };
     const cascades: PatchOp[] =
-        op.op === 'replace' && rest === '/members'
+        op.op === 'replace' && rest === '/members' && !ctx.routerInterlocks
             ? muteExceptFirstHot(ctx.modules, (op.value as string[]) ?? [])
             : [];
     return { processed: [rewritten, ...cascades], cascades };
@@ -176,19 +178,9 @@ const cascadeInterlockUnmute: Rule = (op, ctx) => {
 
     const moduleId = op.path.split('/')[2];
     const ilk = ctx.interlocks.find((g) => g.members.includes(moduleId));
-    if (!ilk) return { processed: [op], cascades: [] };
+    if (!ilk || ctx.routerInterlocks) return { processed: [op], cascades: [] };
 
-    const cascades: PatchOp[] = ilk.members
-        .filter((id) => id !== moduleId)
-        .filter((id) => {
-            const settings = ctx.modules[id]?.settings as Record<string, unknown> | undefined;
-            return settings && settings.audioEnabled !== false;
-        })
-        .map((id) => ({
-            op: 'replace' as const,
-            path: `/modules/${id}/settings/audioEnabled`,
-            value: false,
-        }));
+    const cascades = unmuteCascade(ctx.modules as Parameters<typeof unmuteCascade>[0], [ilk], moduleId);
 
     return { processed: [...cascades, op], cascades };
 };
@@ -196,7 +188,7 @@ const cascadeInterlockUnmute: Rule = (op, ctx) => {
 /** Index-path members replace (came from code, not a client) — same cascade as rewrite rule. */
 const cascadeMembersIndexReplace: Rule = (op, ctx) => {
     if (op.op !== 'replace' || !/^\/interlocks\/\d+\/members$/.test(op.path)) return null;
-    const cascades = muteExceptFirstHot(ctx.modules, (op.value as string[]) ?? []);
+    const cascades = ctx.routerInterlocks ? [] : muteExceptFirstHot(ctx.modules, (op.value as string[]) ?? []);
     return { processed: [op, ...cascades], cascades };
 };
 
@@ -205,7 +197,7 @@ const cascadeInterlockCreate: Rule = (op, ctx) => {
     if (op.op !== 'add' || op.path !== '/interlocks/-') return null;
     if (!op.value || typeof op.value !== 'object') return null;
     const members = ((op.value as Record<string, unknown>).members as string[]) ?? [];
-    const cascades = muteExceptFirstHot(ctx.modules, members);
+    const cascades = ctx.routerInterlocks ? [] : muteExceptFirstHot(ctx.modules, members);
     return { processed: [op, ...cascades], cascades };
 };
 

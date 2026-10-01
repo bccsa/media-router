@@ -97,6 +97,63 @@ describe('EnginePatchRouter', () => {
             ]);
             expect(localChanges.config).toHaveBeenCalledWith(expect.any(Array));
         });
+
+        it('an unmute mutes the rest of its interlock here, and everyone sees the mutes', () => {
+            const { router, config, localServer, localChanges, moduleManager } = createMocks();
+            const mods = config.modules as Record<string, any>;
+            mods['mic-a'] = { pluginId: 'audio-input', settings: { audioEnabled: true } };
+            mods['mic-b'] = { pluginId: 'audio-input', settings: { audioEnabled: false } };
+            config.interlocks = [{ id: 'ilk-1', name: 'Mics', members: ['mic-a', 'mic-b'] }];
+            const unmute = { op: 'replace' as const, path: '/modules/mic-b/settings/audioEnabled', value: true };
+            const mute = { op: 'replace', path: '/modules/mic-a/settings/audioEnabled', value: false };
+            router.onPatch('tree-1', 'local', [unmute]);
+            expect([mods['mic-a'].settings.audioEnabled, mods['mic-b'].settings.audioEnabled]).toEqual([false, true]);
+            // The writer has its own op; the mute goes to every viewer, the writer too.
+            expect(localServer.configChanged).toHaveBeenCalledWith([unmute], 'tree-1');
+            expect(localServer.configChanged).toHaveBeenCalledWith([mute]);
+            // The manager: the ops, then the whole group as it stands.
+            expect(localChanges.config).toHaveBeenCalledWith([mute, unmute, mute, unmute]);
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mic-a', expect.objectContaining({ audioEnabled: false }));
+        });
+
+        it('applies them to the manager’s writes too, and reports the group back', () => {
+            const { router, config, localServer, localChanges } = createMocks();
+            const mods = config.modules as Record<string, any>;
+            mods['mic-a'] = { pluginId: 'audio-input', settings: { audioEnabled: true } };
+            mods['mic-b'] = { pluginId: 'audio-input', settings: { audioEnabled: false } };
+            config.interlocks = [{ id: 'ilk-1', name: 'Mics', members: ['mic-a', 'mic-b'] }];
+            router.onPatch('manager', 'manager', [{ op: 'replace', path: '/modules/mic-b/settings/audioEnabled', value: true }]);
+            expect(mods['mic-a'].settings.audioEnabled).toBe(false);
+            expect(localServer.configChanged).toHaveBeenCalledWith([
+                { op: 'replace', path: '/modules/mic-a/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/mic-b/settings/audioEnabled', value: true },
+            ]);
+            expect(localChanges.config).toHaveBeenCalledWith([
+                { op: 'replace', path: '/modules/mic-a/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/mic-b/settings/audioEnabled', value: true },
+            ]);
+        });
+
+        it('a batch that unmutes two members, or new members, leaves one live: the first in the group', () => {
+            const { router, config } = createMocks();
+            const mods = config.modules as Record<string, any>;
+            for (const id of ['a', 'b', 'c']) mods[id] = { pluginId: 'audio-input', settings: { audioEnabled: false } };
+            config.interlocks = [{ id: 'ilk-1', name: 'Mics', members: ['a', 'b'] }];
+            router.onPatch('manager', 'manager', [
+                { op: 'replace', path: '/modules/b/settings/audioEnabled', value: true },
+                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
+            ]);
+            expect([mods.a.settings.audioEnabled, mods.b.settings.audioEnabled]).toEqual([true, false]);
+            mods.c.settings.audioEnabled = true;
+            router.onPatch('manager', 'manager', [{ op: 'replace', path: '/interlocks/0/members', value: ['c', 'a', 'b'] }]);
+            expect([mods.c.settings.audioEnabled, mods.a.settings.audioEnabled]).toEqual([true, false]);
+        });
+
+        it('leaves writes that touch no interlock alone', () => {
+            const { router, localChanges } = createMocks();
+            router.onPatch('manager', 'manager', [{ op: 'replace', path: '/modules/mod-1/settings/volume', value: 3 }]);
+            expect(localChanges.config).not.toHaveBeenCalled();
+        });
     });
 
     describe('side effects', () => {

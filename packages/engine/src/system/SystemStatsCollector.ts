@@ -39,8 +39,8 @@ const PREFERRED_ZONE_TYPES = [
     'coretemp',
 ];
 
-/** What this router announces: `dashboards` it serves at :8081/d (ADR-0026). */
-const ENGINE_FEATURES = ['dashboards'];
+/** What this router announces: `dashboards` it serves at :8081/d (ADR-0026); `interlocks` it keeps itself (ADR-0028). */
+const ENGINE_FEATURES = ['dashboards', 'interlocks'];
 
 const isCoreLabel = (label: string): boolean => /^core\b/i.test(label);
 

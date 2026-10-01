@@ -73,6 +73,12 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
                 path: `/modules/${instanceId}/settings/${key}`,
                 value,
             }));
+            // Mute state is the interlocks' (ADR-0028): through the patch router, like any write.
+            if ('audioEnabled' in changes) {
+                ctx.enginePatchRouter.onPatch(`plugin:${instanceId}`, 'local', ops);
+                ctx.refreshModulePorts(instanceId);
+                return;
+            }
             // The engine's own config, the router tree and the LCP follow the
             // plugin's value too, as for dynamic ports and self-stop.
             applyJsonPatch(ctx.getCurrentConfig(), ops);

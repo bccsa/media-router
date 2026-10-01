@@ -72,4 +72,22 @@ describe('applyConfigPush', () => {
         applyConfigPush(deps, config(80));
         expect(deps.setConfig).toHaveBeenCalledWith(config(80));
     });
+
+    it('never runs a pushed config with two members of an interlock live; the mute goes up after the sync', () => {
+        const { deps, link } = setup({ current: null });
+        applyConfigPush(deps, {
+            modules: { a: { settings: { audioEnabled: true } }, b: { settings: { audioEnabled: true } } },
+            connections: [],
+            interlocks: [{ id: 'ilk-1', name: 'Mics', members: ['a', 'b'] }],
+            _push: { reason: 'activate', profile: 'p' },
+        });
+        const ran = (deps.setConfig as any).mock.calls[0][0];
+        expect([ran.modules.a.settings.audioEnabled, ran.modules.b.settings.audioEnabled]).toEqual([true, false]);
+        expect(link.send).toHaveBeenCalledWith(
+            'patch',
+            { ops: [{ op: 'replace', path: '/modules/b/settings/audioEnabled', value: false }] },
+            { guaranteeDelivery: true },
+        );
+    });
 });
+

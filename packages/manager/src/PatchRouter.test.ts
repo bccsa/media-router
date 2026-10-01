@@ -65,6 +65,8 @@ function createMocks() {
     // manager's own manifest. Tests override the return value to exercise #661.
     const eventForwarder: any = {
         getPluginSchemas: vi.fn().mockReturnValue(undefined),
+        // A router's reported identity (`features`); none by default → an older router.
+        getData: vi.fn().mockReturnValue(undefined),
         purgeModuleStates: vi.fn(),
         clearModuleTombstones: vi.fn(),
     };
@@ -644,6 +646,14 @@ describe('PatchRouter', () => {
                 { op: 'replace', path: '/modules/b/settings/audioEnabled', value: false },
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
+        });
+
+        it('a router that keeps its interlocks (ADR-0028) gets the unmute alone; it mutes and reports', () => {
+            const { router, configStore, engineManager, eventForwarder } = createMocks();
+            eventForwarder.getData.mockImplementation((_e: string, topic: string) => (topic === 'features' ? ['dashboards', 'interlocks'] : undefined));
+            configStore.modifyProfileConfig.mockImplementation((_eid: string, _pid: string, fn: any) => fn(configWithInterlock({ hotMembers: ['b'] })));
+            router.onPatch('browser-1', 'eng-1', [{ op: 'replace', path: '/modules/a/settings/audioEnabled', value: true }]);
+            expect(engineManager.sendToEngine.mock.calls[0][2].ops).toEqual([{ op: 'replace', path: '/modules/a/settings/audioEnabled', value: true }]);
         });
 
         it('does NOT echo rewrites-of-originals to the sender (double-apply guard)', () => {

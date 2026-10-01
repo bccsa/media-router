@@ -1,4 +1,4 @@
-import { createLogger, diffConfig, GRAPH_KEYS, type PatchOp } from '@media-router/shared-types';
+import { applyJsonPatch, createLogger, diffConfig, GRAPH_KEYS, interlockRepairs, type PatchOp } from '@media-router/shared-types';
 import type { ConfigPush, LocalChanges } from './LocalChanges.js';
 
 const log = createLogger('ConfigPush');
@@ -31,6 +31,11 @@ export function applyConfigPush(deps: ConfigPushDeps, raw: Obj): void {
     const current = deps.getConfig();
     const runningProfile = deps.localChanges.profile;
     const { config, replay } = deps.localChanges.merge(pushed, _push);
+    // The router keeps its interlocks (ADR-0028): never run a config with two
+    // members live; the mutes go up with the outage replay.
+    const repairs = interlockRepairs(config);
+    applyJsonPatch(config, repairs);
+    if (repairs.length > 0) log.info({ paths: repairs.map((o) => o.path) }, 'Interlocks: muted all but one member');
     const reconnect = _push?.reason === 'connect';
     const profileSwitched = reconnect && runningProfile !== undefined && _push?.profile !== runningProfile;
 
@@ -50,5 +55,5 @@ export function applyConfigPush(deps: ConfigPushDeps, raw: Obj): void {
             deps.restartAll();
         }
     }
-    deps.localChanges.markSynced(replay);
+    deps.localChanges.markSynced([...replay, ...repairs]);
 }

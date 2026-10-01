@@ -1,10 +1,11 @@
-import { createLogger, applyJsonPatch, LiveArrayIndex } from '@media-router/shared-types';
+import { createLogger, applyJsonPatch, LiveArrayIndex, withInterlockMutes } from '@media-router/shared-types';
 import type { PatchOp, ChannelMapEntry } from '@media-router/shared-types';
 
 /** PatchOp with resolved connection ID for side effect handling. */
 interface ResolvedPatchOp extends PatchOp {
     _connId?: string;
 }
+import { settleInterlocks } from './interlocks.js';
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
 import type { LocalServer } from './comms/LocalServer.js';
@@ -55,22 +56,32 @@ export class EnginePatchRouter {
 
         log.debug({ senderType, opCount: ops.length }, 'Processing patch');
 
-        // 1. Pre-resolve connection IDs from index-based paths (before applying removes them)
-        const resolvedOps = this.resolveConnectionIds(ops, config);
+        // 0. Interlocks are kept here, for writes from any source (ADR-0028): an
+        // unmute mutes the rest of its group in the same apply.
+        const { ops: withMutes, mutes } = withInterlockMutes(ops, config);
 
-        // 2. Apply to in-memory config
-        applyJsonPatch(config, ops);
+        // 1. Pre-resolve connection IDs from index-based paths (before applying removes them)
+        const resolvedOps = this.resolveConnectionIds(withMutes, config);
+
+        // 2. Apply to in-memory config. Whatever the batch did (several members
+        // unmuted at once, a group created or its members changed), at most one
+        // stays live: the first in `members`.
+        applyJsonPatch(config, withMutes);
+        const { repairs, all, ours, report } = settleInterlocks(config, ops, withMutes, mutes);
 
         // 3. Detect side effects and execute
-        this.detectSideEffects(resolvedOps, config);
+        this.detectSideEffects([...resolvedOps, ...repairs], config);
 
-        // 4. Forward to the other clients, skipping the sender.
+        // 4. Forward: everyone sees every op, and the manager hears the mutes made here.
         if (senderType === 'manager') {
-            this.localServer.configChanged(ops);
+            this.localServer.configChanged(all);
+            if (ours.length > 0) this.forwardToManager(report);
         } else {
             // A local write: the rest of the router tree, and the manager (throttled).
+            // The writer has its own ops already, not the mutes they brought.
             this.localServer.configChanged(ops, senderId);
-            this.forwardToManager(ops);
+            if (ours.length > 0) this.localServer.configChanged(ours);
+            this.forwardToManager([...all, ...report]);
         }
     }
 

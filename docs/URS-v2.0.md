@@ -178,6 +178,7 @@ Media Router v1.0 provides audio-focused routing with SRT, RIST, WebRTC, and HLS
 | UR-ENG-040 | The engine SHALL be implemented in TypeScript. | P1 |
 | UR-ENG-041 | The engine SHALL use a lightweight application structure (e.g. Fastify) rather than a full-featured API framework. The engine is primarily a process orchestrator managing GStreamer child processes, PipeWire links, and stream routing — not an API server — and its framework choice SHALL reflect this role. | P1 |
 | UR-ENG-042 | The engine's Local API (section 5.5) SHALL be served via an embedded Fastify instance within the engine process. | P1 |
+| UR-ENG-043 | An interlock SHALL keep at most one of its member modules' audio enabled. The router SHALL enforce it for changes from every source (manager, its own screen, buttons, plugins), with or without the manager link, and report the result to every viewer (ADR-0028). | P1 |
 
 ---
 

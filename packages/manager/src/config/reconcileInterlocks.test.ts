@@ -98,4 +98,14 @@ describe('reconcileInterlocks', () => {
             { op: 'replace', path: '/modules/d/settings/audioEnabled', value: false },
         ]);
     });
+
+    it('for a router that keeps its interlocks, cleans members but leaves the mutes to it', () => {
+        const cfg = {
+            modules: { a: { settings: { audioEnabled: true } }, b: { settings: { audioEnabled: true } } },
+            interlocks: [{ id: 'ilk-1', members: ['a', 'b', 'gone'] }],
+        };
+        expect(reconcileInterlocks(cfg, { mutes: false })).toEqual([{ op: 'replace', path: '/interlocks/ilk-1/members', value: ['a', 'b'] }]);
+        expect((cfg.modules.b.settings as any).audioEnabled).toBe(true);
+    });
 });
+

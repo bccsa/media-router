@@ -350,6 +350,7 @@ export interface ChannelMapEntry {
 export { MODULE_HEALTH, type ModuleHealth } from './health.js';
 export { VU_BLOCKS, vuBlockDbfs } from './vu.js';
 export { carriesAudio } from './carriesAudio.js';
+export { audioEnabledTargets, groupStates, interlockRepairs, unmuteCascade, withInterlockMutes } from './interlockMutes.js';
 
 /** Runtime state of a module instance, reported by the engine. */
 export interface ModuleRuntimeState {

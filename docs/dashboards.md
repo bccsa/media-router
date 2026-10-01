@@ -45,6 +45,8 @@ URS §5.4.1 (UR-DSH); paths and calls: [tree API](tree-api.md).
   one is logged and left out). Button scripts: `script.ts`, run by
   `scriptRun.ts` / `scriptRuns.ts` on whichever server the page talks to; a
   run's state is at `/runs/<scope>/<dashboard>/<widget>` (ADR-0027).
+- **Interlocks** hold on every dashboard: the router keeps them for every
+  write and reports the mutes to all viewers (ADR-0028).
 - **Widgets**: `packages/manager-ui/src/dashboard/widgets/<kind>/` — an
   `index.ts` exporting a `WidgetDef` and its component. `registry.ts` finds
   them by glob; `widgets/shared/` holds parts kinds share and is not a kind.

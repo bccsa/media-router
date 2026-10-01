@@ -304,7 +304,7 @@ When a router goes offline:
 
 **`/engines/<id>/interlocks/<iid>`**
 - Fields: `{ id, name, members: [moduleId…], color? }`.
-- Behaviour: at most one member of an interlock is live at a time.
+- Behaviour: at most one member of an interlock is live at a time, kept by the router itself for every write (ADR-0028): unmuting a member mutes the others in the same apply, and the router reports the group's state back, so the mutes reach every viewer as ordinary changes.
 
 **`/engines/<id>/dashboards/<did>`**
 - Fields: `{ name, cols, rows, scroll, zoom, locked, theme, widgets, rev }`.

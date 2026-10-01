@@ -7,6 +7,12 @@ import type { RuntimeCache } from './tree/RuntimeCache.js';
 import type { ConfigOp, TreePublisher } from './tree/TreePublisher.js';
 import { dispatchRule, type RuleContext } from './patchRules.js';
 
+/** The router announced it keeps its interlocks itself (ADR-0028); until its stats say so, the manager does. */
+export function routerKeepsInterlocks(runtime: Pick<RuntimeCache, 'getData'>, engineId: string): boolean {
+    const features = runtime.getData(engineId, 'features');
+    return Array.isArray(features) && features.includes('interlocks');
+}
+
 const log = createLogger('PatchRouter');
 
 /**
@@ -116,6 +122,7 @@ export class PatchRouter {
             modules: (config.modules ?? {}) as Record<string, Record<string, unknown>>,
             pluginRegistry: this.pluginRegistry,
             engineSchemas: this.runtime.getPluginSchemas(engineId),
+            routerInterlocks: routerKeepsInterlocks(this.runtime, engineId),
         };
         const out: Processed = { processed: [], cascades: [], published: [], dropped: [] };
         ops.forEach((op, index) => {

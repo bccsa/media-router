@@ -56,6 +56,9 @@ export class EngineConnectionManager extends EventEmitter {
     private _listeners: ListenerSpec[];
     private started = false;
 
+    /** Whether a router keeps its interlocks itself (ADR-0028); then the connect push leaves its mutes to it. */
+    keepsInterlocks: (engineId: string) => boolean = () => false;
+
     constructor(configStore: ConfigStore, listeners: number | ListenerSpec[] = 3000) {
         super();
         this.configStore = configStore;
@@ -126,7 +129,7 @@ export class EngineConnectionManager extends EventEmitter {
         // with two members of a group hot at once.
         let repairOps: ReturnType<typeof reconcileInterlocks> = [];
         const config = this.configStore.modifyProfileConfig(clientId, profileName, (cfg) => {
-            repairOps = reconcileInterlocks(cfg);
+            repairOps = reconcileInterlocks(cfg, { mutes: !this.keepsInterlocks(clientId) });
             return cfg;
         });
         if (!config) return;

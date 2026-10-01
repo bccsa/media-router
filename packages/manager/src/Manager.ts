@@ -11,7 +11,7 @@ import { PluginRegistry } from './plugins/PluginRegistry.js';
 import { TopicBus } from '@media-router/topic-tree';
 import { EngineCommandService } from './handlers/EngineCommandService.js';
 import { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
-import { PatchRouter, engineSenderId } from './PatchRouter.js';
+import { PatchRouter, engineSenderId, routerKeepsInterlocks } from './PatchRouter.js';
 import { registerHttpRoutes } from './routes/httpRoutes.js';
 import { PluginUploadService } from './services/PluginUploadService.js';
 import { RuntimeCache } from './tree/RuntimeCache.js';
@@ -111,6 +111,7 @@ export class Manager {
             publisher,
         );
         const patchRouter = new PatchRouter(configStore, engineManager, publisher, pluginRegistry, runtime);
+        engineManager.keepsInterlocks = (engineId) => routerKeepsInterlocks(runtime, engineId);
         eventForwarder.setup();
 
         // Handle patches from engine (N-1 router)
