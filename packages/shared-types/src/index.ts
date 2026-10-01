@@ -2,10 +2,15 @@
 // Media Router v2.0 — Shared Type Definitions
 // ============================================================================
 
+import type { ModuleHealth } from './health.js';
+
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
 export { LiveArrayIndex } from './LiveArrayIndex.js';
 export { diffConfig, GRAPH_KEYS } from './configDiff.js';
+export * from './dashboard.js';
+export * from './scriptRun.js';
+export * from './scriptRuns.js';
 export * from './tree/index.js';
 export {
     PatchOpSchema,
@@ -14,7 +19,7 @@ export {
     DgramDataSchema,
     EngineRunningStateSchema,
     StatePatchSchema,
-    LcpEngineCommandSchema,
+    LocalRunCommandSchema,
     DynamicPortsSchema,
     RebootFailedSchema,
     PatchEnvelopeSchema,
@@ -342,8 +347,9 @@ export interface ChannelMapEntry {
 
 // --- Module Runtime State ---------------------------------------------------
 
-/** Overall module health for the state icon. */
-export type ModuleHealth = 'ok' | 'warning' | 'error' | 'stopped';
+export { MODULE_HEALTH, type ModuleHealth } from './health.js';
+export { VU_BLOCKS, vuBlockDbfs } from './vu.js';
+export { carriesAudio } from './carriesAudio.js';
 
 /** Runtime state of a module instance, reported by the engine. */
 export interface ModuleRuntimeState {
@@ -357,7 +363,7 @@ export interface ModuleRuntimeState {
     pendingRestart: boolean;
     /** Params that are currently live-updatable (reported at runtime). */
     liveUpdatableParams?: string[];
-    /** VU level per channel, 0–15 blocks: round((dBFS + 60) / 4), 15 ≈ 0 dBFS. */
+    /** VU level per channel in blocks (VU_BLOCKS, vu.ts). */
     vuData?: number[];
     /** SRT connection statistics (when module is SRT-based). */
     srtStats?: SrtStatistics;
@@ -505,6 +511,8 @@ export interface StatusField {
     unit?: string;
     /** How to format the value. */
     format?: 'number' | 'percent' | 'duration' | 'bytes';
+    /** What the plugin sends: dashboards pick widgets by it, router online or not. */
+    type?: 'number' | 'string' | 'boolean';
 }
 
 /** SRT connection statistics. */

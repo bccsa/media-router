@@ -13,9 +13,11 @@ import {
 import { DerivedNodes, TopicBus, attachTree } from '@media-router/topic-tree';
 import type { RouterView } from './RouterView.js';
 import { routerWrites, routerCall, type RouterActions } from './routerWrites.js';
+import { routerScriptCall, runsTree } from './routerScripts.js';
+import type { ScriptRuns } from '@media-router/shared-types';
 
 /**
- * The router's tree server (ADR-0024) on the LCP's HTTP server under
+ * The router's tree server (ADR-0024) on the local :8081 HTTP server under
  * `/tree`: engine dashboards read and write this box directly, with or
  * without a manager.
  */
@@ -26,6 +28,8 @@ export class RouterTree {
     private io: SocketIOServer | null = null;
     private lastInfo: Record<string, unknown> | undefined;
     private lastSystem: Record<string, unknown> | undefined;
+    /** Button runs (ADR-0027), published at `/runs/_/<dashboard>/<widget>`. */
+    readonly runs: ScriptRuns;
 
     constructor(
         readonly view: RouterView,
@@ -34,6 +38,8 @@ export class RouterTree {
     ) {
         this.bus = new TopicBus(view);
         this.meta = new DerivedNodes(this.bus, (p) => view.moduleMeta(p[2]));
+        this.runs = runsTree((path, state) => this.bus.publish([{ op: 'add', path, value: state }]));
+        view.runs = () => this.runs.tree();
     }
 
     attach(http: HttpServer): void {
@@ -45,11 +51,13 @@ export class RouterTree {
             bus: this.bus,
             hello: () => ({ proto: TREE_PROTOCOL, build: this.build() }),
             onWrite: (caller, ops, writeId) => routerWrites(this, this.actions, caller.socketId, ops, writeId),
-            onCall: (_caller, path, method, args) => routerCall(this.actions, path, method, args),
+            onCall: (_caller, path, method, args) =>
+                routerScriptCall(this, this.actions, this.runs, path, method, args) ?? routerCall(this.actions, path, method, args),
         });
     }
 
     async close(): Promise<void> {
+        this.runs.stopAll();
         await new Promise<void>((resolve) => (this.io ? this.io.close(() => resolve()) : resolve()));
     }
 
@@ -66,9 +74,9 @@ export class RouterTree {
     }
 
     /**
-     * Config ops as the engine applied them. Module paths are id-keyed and go
-     * as-is; connection/interlock ops may carry array indexes, so those
-     * arrays go whole; a root replace is the whole graph.
+     * Config ops as the engine applied them. Module and dashboard paths are
+     * id-keyed and go as-is; connection/interlock ops may carry array
+     * indexes, so those arrays go whole; a root replace is the whole graph.
      */
     config(ops: PatchOp[]): void {
         const out: PatchOp[] = [];
@@ -76,12 +84,16 @@ export class RouterTree {
         for (const op of ops) {
             const [branch, id, ...rest] = splitPath(op.path);
             if (branch === undefined) {
-                for (const b of ['modules', 'connections', 'interlocks']) out.push({ op: 'replace', path: `/${b}`, value: this.view.branch(b) });
+                for (const b of ['modules', 'connections', 'interlocks', 'dashboards']) {
+                    out.push({ op: 'replace', path: `/${b}`, value: this.view.branch(b) });
+                }
             } else if (branch === 'connections' || branch === 'interlocks') {
                 arrays.add(branch);
             } else if (branch === 'modules') {
                 // A module add carries the full node, manifest fields included.
                 out.push(rest.length === 0 && op.op !== 'remove' ? { ...op, value: this.view.module(id) } : op);
+            } else if (branch === 'dashboards') {
+                out.push(op);
             }
         }
         for (const b of arrays) out.push({ op: 'replace', path: `/${b}`, value: this.view.branch(b) });

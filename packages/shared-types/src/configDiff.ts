@@ -3,8 +3,8 @@ import { joinPath } from './tree/paths.js';
 
 type Obj = Record<string, unknown>;
 
-/** Top-level keys that are the routing graph; everything else is plain data. */
-export const GRAPH_KEYS = ['modules', 'connections', 'interlocks'];
+/** Top-level keys applied as a difference (the routing graph, dashboards); everything else is plain data. */
+export const GRAPH_KEYS = ['modules', 'connections', 'interlocks', 'dashboards'];
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const EDGE = ['sourceModuleId', 'sourcePortId', 'sinkModuleId', 'sinkPortId'];
@@ -35,8 +35,8 @@ function moduleOps(id: string, prev: Obj, next: Obj): PatchOp[] {
  * patch router so each has its live effect (ADR-0025): modules added or
  * removed whole, settings per key, other module fields whole; connections
  * by id (a re-pointed edge is removed and re-added), channel maps in place;
- * interlocks whole. Removes come first. Used by a router's connect push and
- * by the manager's rollback.
+ * interlocks whole, dashboards each whole. Removes come first. Used by a
+ * router's connect push and by the manager's rollback.
  */
 export function diffConfig(from: Obj, to: Obj): PatchOp[] {
     const ops: PatchOp[] = [];
@@ -70,6 +70,13 @@ export function diffConfig(from: Obj, to: Obj): PatchOp[] {
 
     if (!same(from.interlocks ?? [], to.interlocks ?? [])) {
         ops.push({ op: from.interlocks ? 'replace' : 'add', path: '/interlocks', value: to.interlocks ?? [] });
+    }
+
+    const da = (from.dashboards ?? {}) as Obj;
+    const db = (to.dashboards ?? {}) as Obj;
+    for (const id of Object.keys(da)) if (!(id in db)) ops.push({ op: 'remove', path: joinPath(['dashboards', id]) });
+    for (const [id, d] of Object.entries(db)) {
+        if (!same(da[id], d)) ops.push({ op: id in da ? 'replace' : 'add', path: joinPath(['dashboards', id]), value: d });
     }
     return ops;
 }

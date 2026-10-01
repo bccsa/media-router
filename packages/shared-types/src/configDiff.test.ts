@@ -46,6 +46,18 @@ describe('diffConfig', () => {
         ]);
     });
 
+    it('dashboards go one by one, each whole', () => {
+        const d = (name: string) => ({ name, cols: 24, rows: 14, widgets: [] });
+        const from = { modules: {}, dashboards: { d1: d('A'), d2: d('B') } };
+        const to = { modules: {}, dashboards: { d2: d('B2'), d3: d('C') } };
+        expect(diffConfig(from, to)).toEqual([
+            { op: 'remove', path: '/dashboards/d1' },
+            { op: 'replace', path: '/dashboards/d2', value: d('B2') },
+            { op: 'add', path: '/dashboards/d3', value: d('C') },
+        ]);
+        expect(diffConfig(to, structuredClone(to))).toEqual([]);
+    });
+
     it('interlocks go whole', () => {
         const to = { modules: {}, interlocks: [{ id: 'i1', members: ['a', 'b'] }] };
         expect(diffConfig({ modules: {} }, to)).toEqual([{ op: 'add', path: '/interlocks', value: to.interlocks }]);

@@ -17,9 +17,20 @@ const mod: DescribableModule = {
             curve: { type: 'string', 'x-widget': 'graph' },
         },
     },
-    statusSections: [{ id: 'stats', fields: [{ key: 'bitrate', label: 'Bitrate', unit: 'Mbps' }] }],
+    statusSections: [{ id: 'stats', fields: [{ key: 'bitrate', label: 'Bitrate', unit: 'Mbps' }, { key: 'rtt', label: 'RTT', type: 'number' }] }],
     statusData: { stats: { bitrate: 1.5 } },
 };
+
+describe('levels in /meta', () => {
+    it('a module that carries audio has levels, stopped or silent too; others none', () => {
+        const audioOut = { ports: [{ streamType: 'audio/pcm' }] };
+        const transcoder = { ports: [{ streamType: 'muxed/mpegts', acceptsAnyTs: true }] };
+        const muxer = { ports: [{ streamType: 'muxed/mpegts' }] };
+        expect([audioOut, transcoder, muxer].map((m) => describeModule(m).vu?.max)).toEqual([15, 15, undefined]);
+        expect(describeModuleValue(audioOut, ['vu'])).toMatchObject({ type: 'array', min: 0, max: 15 });
+        expect(describeModuleValue(muxer, ['vu'])).toEqual({ access: 'read' });
+    });
+});
 
 describe('describeModuleValue', () => {
     it('describes a live slider with its resolved max', () => {
@@ -50,6 +61,10 @@ describe('describeModuleValue', () => {
         expect(describeModuleValue(mod, ['statusData', 'stats', 'bitrate'])).toEqual({
             access: 'read', label: 'Bitrate', unit: 'Mbps',
         });
+    });
+
+    it("carries a status field's declared type (known with the router offline)", () => {
+        expect(describeModuleValue(mod, ['statusData', 'stats', 'rtt'])).toEqual({ access: 'read', label: 'RTT', type: 'number' });
     });
 
     it('describeModule: every setting and declared status field, max resolved', () => {

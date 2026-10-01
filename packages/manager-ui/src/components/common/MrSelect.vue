@@ -5,7 +5,8 @@ const props = defineProps<{
     modelValue?: string | number;
     label?: string;
     description?: string;
-    options: Array<{ value: string | number; label: string }>;
+    /** `group`: consecutive options with the same group get a header. */
+    options: Array<{ value: string | number; label: string; group?: string }>;
     placeholder?: string;
     searchable?: boolean;
     disabled?: boolean;
@@ -22,7 +23,7 @@ const rootRef = ref<HTMLElement | null>(null);
 const filtered = computed(() => {
     if (!search.value) return props.options;
     const q = search.value.toLowerCase();
-    return props.options.filter((o) => o.label.toLowerCase().includes(q));
+    return props.options.filter((o) => `${o.label} ${o.group ?? ''}`.toLowerCase().includes(q));
 });
 
 const selectedLabel = computed(() => {
@@ -107,17 +108,24 @@ onBeforeUnmount(() => {
             </div>
 
             <!-- Options -->
-            <div
-                v-for="opt in filtered"
-                :key="String(opt.value)"
-                @click="selectOption(opt.value)"
-                class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors hover:bg-surface-alt"
-                :class="[
-                    opt.value === modelValue ? 'text-accent bg-surface-alt' : 'text-foreground',
-                ]"
-            >
-                {{ opt.label }}
-            </div>
+            <template v-for="(opt, i) in filtered" :key="String(opt.value)">
+                <div
+                    v-if="opt.group && opt.group !== filtered[i - 1]?.group"
+                    class="px-2.5 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted"
+                >
+                    {{ opt.group }}
+                </div>
+                <div
+                    @click="selectOption(opt.value)"
+                    class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors hover:bg-surface-alt"
+                    :class="[
+                        opt.value === modelValue ? 'text-accent bg-surface-alt' : 'text-foreground',
+                        opt.group ? 'pl-4' : '',
+                    ]"
+                >
+                    {{ opt.label }}
+                </div>
+            </template>
 
             <div v-if="filtered.length === 0" class="px-2.5 py-2 text-xs text-muted">
                 No results

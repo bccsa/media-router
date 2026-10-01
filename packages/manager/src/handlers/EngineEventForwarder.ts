@@ -6,7 +6,7 @@ import {
     type PatchOp,
     EngineRunningStateSchema,
     StatePatchSchema,
-    LcpEngineCommandSchema,
+    LocalRunCommandSchema,
     DynamicPortsSchema,
     RebootFailedSchema,
 } from '@media-router/shared-types';
@@ -19,7 +19,7 @@ import type { TreePublisher } from '../tree/TreePublisher.js';
 const log = createLogger('EngineEventForwarder');
 
 /** System-stat fields that describe the engine rather than its load — they live in `info`. */
-const IDENTITY_FIELDS = ['ip', 'ips', 'hostname', 'buildNumber', 'managerPaths'];
+const IDENTITY_FIELDS = ['ip', 'ips', 'hostname', 'buildNumber', 'features', 'managerPaths'];
 
 type Obj = Record<string, unknown>;
 
@@ -144,9 +144,9 @@ export class EngineEventForwarder {
             this.publisher.devices(engineId, data.type, data.devices);
         });
 
-        // LCP start/stop: the engine already acted; adopt it as the manager's intent.
-        em.on('engineLcpCommand', (engineId: string, data: unknown) => {
-            const parsed = safeParse(LcpEngineCommandSchema, data, 'engineLcpCommand', log);
+        // Start/Stop made on the router: it already acted; adopt it as the manager's intent.
+        em.on('engineLocalRunCommand', (engineId: string, data: unknown) => {
+            const parsed = safeParse(LocalRunCommandSchema, data, 'engineLocalRunCommand', log);
             if (!parsed) return;
             this.engineCommands.setRunning(engineId, parsed.command === 'start');
             this.publisher.info(engineId);

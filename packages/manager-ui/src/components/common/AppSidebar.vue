@@ -249,6 +249,17 @@ const totalEngines = computed(() => engineStore.engineList.length);
                     </span>
                 </div>
                 <RouterLink
+                    to="/dashboards"
+                    class="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm transition-colors"
+                    :class="
+                        route.path.startsWith('/dashboards')
+                            ? 'text-accent-fg bg-accent-muted'
+                            : 'text-subtle'
+                    "
+                >
+                    Dashboards
+                </RouterLink>
+                <RouterLink
                     to="/settings"
                     class="flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm transition-colors"
                     :class="

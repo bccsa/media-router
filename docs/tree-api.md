@@ -34,7 +34,8 @@ outages). The wire types live in
 
 The router's `:8081` port also serves the local control panel (LCP) on the
 default `/socket.io` path. That is a different protocol and is unaffected by
-this API.
+this API. Its dashboards are at `/d/<name>`; `/d/dashboards.json` is the
+running profile's list as JSON (ADR-0026).
 
 **Handshake.** Send the protocol version in the Socket.IO `auth` payload:
 
@@ -229,8 +230,10 @@ manager UI gives up after 10 s (5 min for uploads).
 /engines/<id>/modules/<mid>   one module: config + manifest + runtime + VU
 /engines/<id>/connections/<cid>
 /engines/<id>/interlocks/<iid>
+/engines/<id>/dashboards/<did>  the active profile's dashboards (ADR-0026)
 /engines/<id>/profiles/<name>
 /groups/<gid>                 sidebar groups
+/dashboards/<did>             manager dashboards: across routers (ADR-0026)
 /settings                     manager settings
 /plugins/<pluginId>           plugin manifests
 /meta/...                     descriptors (§8)
@@ -249,6 +252,7 @@ manager UI gives up after 10 s (5 min for uploads).
 | `groupId` | string | yes | sidebar group |
 | `sortOrder` | number | yes | position in the group |
 | `ip`, `ips`, `hostname`, `buildNumber` | | — | reported by the router |
+| `features` | string[] | — | what the router supports; `dashboards` = it serves router dashboards (ADR-0026). Absent on older engines |
 | `managerPaths` | `{ connected, total }` | — | the router's paths to the manager |
 | `paths` | `[{ remote, listenerPort }]` | — | live paths as the manager sees them |
 | `moduleCount`, `connectionCount` | number | — | size of the active profile |
@@ -301,6 +305,31 @@ When a router goes offline:
 **`/engines/<id>/interlocks/<iid>`**
 - Fields: `{ id, name, members: [moduleId…], color? }`.
 - Behaviour: at most one member of an interlock is live at a time.
+
+**`/engines/<id>/dashboards/<did>`**
+- Fields: `{ name, cols, rows, scroll, zoom, locked, theme, widgets, rev }`.
+  `name` is unique in the profile; `cols`/`rows` 1–96; `theme` `dark` \| `light`;
+  `rev` counts saves.
+- `widgets`: `[{ id, type, x, y, w, h, bind?, binds?, action?, script?, inputDisabled?, options? }]`,
+  drawn in order (later on top). `bind` is the value's path relative to the
+  router (`/modules/<mid>/settings/volume`, `/system/cpu`); `binds` is 1–8 such
+  paths for a widget that shows several (a trend); `action` is
+  `{ kind: 'call', path, method }` or `{ kind: 'write', path, value }`.
+  `script` (buttons, ADR-0027) is `{ steps, timeoutS? }`:
+  steps `call` (restart/reset/reboot), `write` (value: `{ lit }`, `{ read }`,
+  `{ op, a, b }`, `{ not }`), `wait`, `if`/`else`, `repeat`, `until`,
+  `waitUntil`, `stop`. It replaces `action`.
+- **`/runs/<scope>/<did>/<wid>`** (beside the roots, like `/meta`; subscribe by
+  name): a button's last run, `{ state: running | done | failed | stopped,
+  step, of, error?, at }`. Scope `_` on a router and for manager dashboards;
+  the engine id for a router dashboard run by the manager.
+- Not writable: change dashboards with the calls in §6.4.
+
+**`/dashboards/<did>`**
+- A manager dashboard: the same fields, but `bind` and action paths are
+  absolute (`/engines/<id>/modules/<mid>/settings/volume`), so one dashboard
+  can mix routers. Stored and served by the manager only; an engine rename
+  moves its paths. Not writable: see the calls in §6.4.
 
 **`/engines/<id>/profiles/<name>`**
 - Fields: `{ name, active }`.
@@ -369,16 +398,37 @@ Anything else is rejected with `not writable` or `read-only`.
 | `/engines/<id>` | `rename` | `{ newEngineId }` | `{ id }` | no; subscribers get `tree:renamed` |
 | `/engines/<id>` | `reset` | — | `{}` | yes: restarts PipeWire and every module |
 | `/engines/<id>` | `reboot` | — | `{}` | yes: reboots the host |
+| `/dashboards/<did>` | `run` | `{ widget }` | `{}` | per step: runs the button's actions or script on the manager (ADR-0027); `Already running`, `This button has no actions` |
+| `/dashboards/<did>` | `stop` | `{ widget }` | `{ stopped }` | — |
+| `/engines/<id>/dashboards/<did>` | `run` / `stop` | `{ widget }` | as above | a router dashboard's button, run by the manager against `/engines/<id>` |
 | `/engines/<id>/modules/<mid>` | `restart` | — | `{}` | yes |
 | `/engines/<id>/profiles/<name>` | `config` | — | the stored profile config | no |
 | `/engines/<id>/profiles/<name>` | `history` | — | `[{ id, saved_at, config }]` (`config` is a JSON string) | no |
 | `/engines/<id>/profiles/<name>` | `rollback` | `{ versionId }` | `{}` | no; see the note below |
+| `/engines/<id>/dashboards` | `save` | `{ id?, dashboard, baseRev?, force? }` | `{ id, rev }` | no; see the note below |
+| `/engines/<id>/dashboards/<did>` | `delete` | — | `{}` | no |
+| `/engines/<id>/dashboards/<did>` | `copy` | `{ toEngine, toProfile, name, modules }` | `{ id }` | no |
+| `/dashboards` | `save` | `{ id?, dashboard, baseRev?, force? }` | `{ id, rev }` | no; as for router dashboards |
+| `/dashboards/<did>` | `delete` | — | `{}` | no; its history goes too |
+| `/dashboards/<did>` | `duplicate` | `{ name }` | `{ id }` | no |
+| `/dashboards/<did>` | `history` | — | `[{ id, saved_at, config }]` (`config` is a JSON string) | no |
+| `/dashboards/<did>` | `rollback` | `{ versionId }` | `{ rev }` | no; restores that version as a new revision |
 | `/plugins/<pluginId>` | `upload` | `{ moduleId, filename, bytes }` (binary) | `{ path, filename }` | no |
 | `/plugins/<pluginId>` | `readUpload` | `{ filename }` | `{ bytes, contentType }` (binary) | no |
 
 - **`engineId` format.** 1–64 characters, starting with a letter or digit,
   then letters, digits, `.`, `_` or `-`.
-- **Rollback.** It restores the version's graph and settings; the run intent
+- **Dashboards.** `save` stores one dashboard in the router's active profile:
+  a new one without `id`, else a replacement. `baseRev` is the revision the
+  editor started from; when the stored one is newer the call fails with
+  `conflict: …` unless `force` is set. Names are unique per profile. The
+  active profile's dashboards reach the router as a patch, and subscribers
+  get them as ordinary ops. `copy` puts a copy in any router's profile,
+  moving every path below `/modules/<from>` to `/modules/<to>` for each pair
+  in `modules`; unmapped modules show as missing there. Manager dashboards
+  keep a history like profiles: a save stores a version at most once per
+  10 minutes, and the last 10 are kept.
+- **Rollback.** It restores the version's graph, settings and dashboards; the run intent
   (running or stopped) stays as it is. For the active profile the manager
   sends the router only the difference, as it does for any edit: live values
   take effect at once, restart-required settings wait for a module restart
@@ -395,12 +445,19 @@ A router serves its own part of the tree at `/`. The layout is exactly what
 the manager holds under `/engines/<id>`, minus `profiles` and `events`:
 
 ```
-/info  /system  /devices/<type>  /logs  /modules/<mid>  /connections/<cid>  /interlocks/<iid>  /meta/...
+/info  /system  /devices/<type>  /logs  /modules/<mid>  /connections/<cid>  /interlocks/<iid>  /dashboards/<did>  /meta/...
 ```
 
-`system`, `devices`, `logs`, `modules`, `connections` and `interlocks` have
-the same shapes as in §6.1. These don't depend on the manager: system stats
-and device lists keep updating while the manager link is down.
+`system`, `devices`, `logs`, `modules`, `connections`, `interlocks` and
+`dashboards` have the same shapes as in §6.1. These don't depend on the
+manager: system stats and device lists keep updating while the manager link
+is down.
+
+The router also serves its dashboard viewer over plain HTTP on :8081
+(ADR-0026): `/d/` lists the running profile's dashboards, `/d/<name>` opens
+one (URL-encoded name), and `/d/dashboards.json` returns `[{ id, name }]`
+(CORS open). device-manager's display picker reads it on the box, through its
+own `/api/dashboards`, so the picker works over HTTPS or a tunnel too.
 
 ### 7.1 `/info`
 
@@ -432,7 +489,10 @@ A router takes **values only**; its structure belongs to the manager.
 | Path | Method | Args | Notes |
 |---|---|---|---|
 | `/modules/<mid>` | `restart` | — | |
+| `/` | `reset` | — | Restarts PipeWire and every module from the config in memory; works with the manager link down. |
 | `/` | `reboot` | `{ confirm?: true }` | While the manager link is down it fails with "The manager is unreachable: after a restart this router stays stopped until it is back. Call again with confirm: true." A rebooted router waits for its manager and starts from the manager's config. |
+| `/dashboards/<did>` | `run` | `{ widget, confirm?: true }` | Runs the button's actions or script on the router (ADR-0027), each step as a tree write or call. A script with a reboot needs `confirm: true` while the manager link is down (the message above). |
+| `/dashboards/<did>` | `stop` | `{ widget }` | Stops that button's run: `{ stopped }`. |
 
 ---
 

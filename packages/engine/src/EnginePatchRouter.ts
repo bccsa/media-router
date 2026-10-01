@@ -7,7 +7,7 @@ interface ResolvedPatchOp extends PatchOp {
 }
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
-import type { LcpServer } from './comms/LcpServer.js';
+import type { LocalServer } from './comms/LocalServer.js';
 import type { LocalChanges } from './comms/LocalChanges.js';
 import type { ModuleLifecycle } from './modules/ModuleLifecycle.js';
 
@@ -16,12 +16,12 @@ const log = createLogger('EnginePatchRouter');
 /**
  * Engine-side N-1 Patch Router.
  *
- * Receives JSON Patch ops from any client (manager or LCP),
- * applies to currentConfig, detects and executes side effects,
- * and forwards to all other clients (skip sender).
+ * Receives JSON Patch ops from the manager or from this router's own tree
+ * (a dashboard on site), applies them to currentConfig, runs their side
+ * effects and passes them on, skipping the sender.
  *
- * Manager sends patch → apply + side effects → send to all LCPs
- * LCP sends patch     → apply + side effects → send to manager + all other LCPs
+ * Manager sends patch → apply + side effects → router tree
+ * Local write         → apply + side effects → manager + the rest of the router tree
  */
 export class EnginePatchRouter {
     private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -31,7 +31,7 @@ export class EnginePatchRouter {
     constructor(
         private moduleManager: ModuleManager,
         private mediaRouter: MediaRouter,
-        private lcpServer: LcpServer,
+        private localServer: LocalServer,
         private localChanges: Pick<LocalChanges, 'config'>,
         private lifecycle: ModuleLifecycle,
         private getConfig: () => Record<string, unknown> | null,
@@ -40,11 +40,11 @@ export class EnginePatchRouter {
 
     /**
      * Process a patch from any source.
-     * @param senderId  Socket ID of the sender (LCP socket ID or 'manager')
-     * @param senderType  'manager' or 'lcp'
+     * @param senderId  Socket ID of the sender (a router tree socket, or 'manager')
+     * @param senderType  'manager' or 'local'
      * @param ops  JSON Patch operations
      */
-    onPatch(senderId: string, senderType: 'manager' | 'lcp', ops: PatchOp[]): void {
+    onPatch(senderId: string, senderType: 'manager' | 'local', ops: PatchOp[]): void {
         if (!ops || ops.length === 0) return;
 
         const config = this.getConfig();
@@ -64,14 +64,13 @@ export class EnginePatchRouter {
         // 3. Detect side effects and execute
         this.detectSideEffects(resolvedOps, config);
 
-        // 3. Forward to other clients (skip sender)
+        // 4. Forward to the other clients, skipping the sender.
         if (senderType === 'manager') {
-            // From manager → broadcast to ALL LCPs
-            this.lcpServer.broadcastConfigUpdate(ops);
+            this.localServer.configChanged(ops);
         } else {
-            // From LCP → broadcast to other LCPs (skip sender) + debounced forward to manager
-            this.lcpServer.broadcastConfigUpdateExcept(senderId, ops);
-            this.debouncedForwardToManager(ops);
+            // A local write: the rest of the router tree, and the manager (throttled).
+            this.localServer.configChanged(ops, senderId);
+            this.forwardToManager(ops);
         }
     }
 
@@ -272,26 +271,27 @@ export class EnginePatchRouter {
     }
 
     /**
-     * Debounced forward of LCP patches to manager (100ms), guaranteed when
-     * linked and journaled during an outage (LocalChanges, ADR-0025).
-     * Accumulates ops so rapid changes (e.g. fader movement) don't lose intermediate values.
+     * Forward of local patches to the manager, at most one send per 100 ms
+     * (ops batched meanwhile), so a fader drag reaches it while moving.
+     * Guaranteed when linked, journaled during an outage (LocalChanges, ADR-0025).
      */
     private pendingOps: PatchOp[] = [];
+    private lastForward = 0;
 
-    private debouncedForwardToManager(ops: PatchOp[]): void {
+    private forwardToManager(ops: PatchOp[]): void {
         this.pendingOps.push(...ops);
-        const key = 'lcpPatch';
-        const existing = this.debounceTimers.get(key);
-        if (existing) clearTimeout(existing);
-        this.debounceTimers.set(
-            key,
-            setTimeout(() => {
-                this.debounceTimers.delete(key);
-                const ops = this.pendingOps;
-                this.pendingOps = [];
-                this.localChanges.config(ops);
-            }, 100),
-        );
+        const key = 'localPatch';
+        if (this.debounceTimers.has(key)) return;
+        const flush = () => {
+            this.debounceTimers.delete(key);
+            this.lastForward = Date.now();
+            const batch = this.pendingOps;
+            this.pendingOps = [];
+            this.localChanges.config(batch);
+        };
+        const wait = this.lastForward + 100 - Date.now();
+        if (wait <= 0) flush();
+        else this.debounceTimers.set(key, setTimeout(flush, wait));
     }
 
     /** Clean up timers. */

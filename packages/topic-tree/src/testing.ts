@@ -34,3 +34,14 @@ export function fakeSocket(id: string) {
 export function objectSource(root: unknown): TreeSource {
     return { get: (path) => getAt(root, path), keys: (path) => keysOf(getAt(root, path)) };
 }
+
+/** What a call that should fail threw (message, `code`), or an empty object when it did not. */
+export function failureOf(fn: () => unknown): { message?: string; code?: string } {
+    try {
+        fn();
+    } catch (err) {
+        return err as { message?: string; code?: string };
+    }
+    return {};
+}
+

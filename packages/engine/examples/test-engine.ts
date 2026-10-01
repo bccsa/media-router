@@ -18,13 +18,12 @@ import { Engine } from '../src/Engine.js';
 
 const engine = new Engine({
     apiPort: 3001,
-    lcpPort: 8081,
 });
 
 engine.start().then(() => {
     console.log('\n=== Engine running ===');
     console.log('Local API:  http://localhost:3001/api/v1/health');
-    console.log('LCP:        Socket.IO on port 8081');
+    console.log(`LCP:        http://localhost:${engine.localServer.port}/  (dashboards at /d/)`);
     console.log('\nPress Ctrl+C to stop.\n');
 });
 

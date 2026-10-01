@@ -216,7 +216,7 @@ export { ModuleManager } from './modules/ModuleManager.js';
 export { ModuleInstance } from './modules/ModuleInstance.js';
 export { MediaRouter } from './routing/MediaRouter.js';
 export { ManagerConnection } from './comms/ManagerConnection.js';
-export { LcpServer } from './comms/LcpServer.js';
+export { LOCAL_PORT, LocalServer } from './comms/LocalServer.js';
 export { ProfileStore } from './api/ProfileStore.js';
 export { GstChildProcess } from './child-process/GstChildProcess.js';
 export { ChildProcessManager } from './child-process/ChildProcessManager.js';

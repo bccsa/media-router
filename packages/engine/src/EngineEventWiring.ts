@@ -9,6 +9,7 @@ import { ManagerStateSync } from './comms/ManagerStateSync.js';
 import { applyConfigPush } from './comms/applyConfigPush.js';
 import type { LocalChanges } from './comms/LocalChanges.js';
 import type { RouterTree } from './tree/RouterTree.js';
+import type { LocalServer } from './comms/LocalServer.js';
 import type { LcpServer } from './comms/LcpServer.js';
 import type { PipeWireManager } from './audio/PipeWireManager.js';
 import type { LogForwarder } from './logging/LogForwarder.js';
@@ -23,6 +24,7 @@ export interface EngineEventContext {
     logForwarder: LogForwarder;
     moduleManager: ModuleManager;
     managerConnection: ManagerConnection;
+    localServer: LocalServer;
     lcpServer: LcpServer;
     pipeWire: PipeWireManager;
     deviceProviders: DeviceProviderRegistry;
@@ -53,7 +55,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         }
     });
 
-    // Manager-bound module state: batched whole states or leaf patches, and
+    // Module state to the manager (batched whole states or leaf patches) and
     // the router tree (ManagerStateSync). The LCP broadcast stays unbatched
     // and keeps the full state, vuData included.
     const states = new ManagerStateSync(ctx.managerConnection, () => ctx.moduleManager.getAllStates(), tree);
@@ -71,10 +73,10 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
                 path: `/modules/${instanceId}/settings/${key}`,
                 value,
             }));
-            // The engine's own config, the LCP and the router tree follow the
+            // The engine's own config, the router tree and the LCP follow the
             // plugin's value too, as for dynamic ports and self-stop.
             applyJsonPatch(ctx.getCurrentConfig(), ops);
-            ctx.lcpServer.broadcastConfigUpdate(ops);
+            ctx.localServer.configChanged(ops);
             ctx.localChanges.config(ops);
             // A plugin auto-write can change its dynamic port set (mpegts-
             // demuxer persisting discovered streams, plan Phase 3). Re-resolve
@@ -86,8 +88,8 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     );
 
     // VU: batched + deduped on its way to the manager (see VuBatcher for the
-    // WAN rationale). The LCP broadcast stays per-module and immediate — it's
-    // loopback, not the WAN flow — but reuses the batcher's dedup verdict.
+    // WAN rationale). The router tree and the LCP get each change at once —
+    // they're local, not the WAN flow — but reuse the batcher's dedup verdict.
     const vuBatcher = new VuBatcher((batch) => ctx.managerConnection.send('vu', { batch }));
     ctx.moduleManager.on('vuData', (instanceId: string, data: number[]) => {
         if (vuBatcher.enqueue(instanceId, data)) {
@@ -103,12 +105,20 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         if (tree) delete tree.view.vu[instanceId];
     });
 
-    // Config and run-intent changes reach the router tree through the same
-    // broadcasts the LCP gets; a tree writer's own ops were published already.
-    ctx.lcpServer.on('local:config', (patch: PatchOp[], exceptSocketId?: string) => {
+    // Config and run-intent changes reach the router tree and the LCP; a
+    // writer's own ops were published to it already.
+    ctx.localServer.on('local:config', (patch: PatchOp[], exceptSocketId?: string) => {
         if (tree && !(exceptSocketId && tree.bus.has(exceptSocketId))) tree.config(patch);
+        const lcpOps = patch.map((op) =>
+            op.path === '/' && op.op === 'replace' ? { ...op, value: ctx.enrichConfigForLcp(op.value as Record<string, unknown>) } : op,
+        );
+        if (exceptSocketId) ctx.lcpServer.broadcastConfigUpdateExcept(exceptSocketId, lcpOps);
+        else ctx.lcpServer.broadcastConfigUpdate(lcpOps);
     });
-    ctx.lcpServer.on('local:running', () => tree?.info());
+    ctx.localServer.on('local:running', (running: boolean) => {
+        tree?.info();
+        ctx.lcpServer.broadcastEngineRunning(running);
+    });
 
     ctx.managerConnection.on('config', (config: unknown) => {
         if (typeof config !== 'object' || config === null) {
@@ -123,8 +133,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
                 setConfig: ctx.setCurrentConfig,
                 isRunning: () => ctx.runController.isRunning,
                 applyOps: (ops) => ctx.enginePatchRouter.onPatch('manager', 'manager', ops),
-                broadcastConfig: (c) =>
-                    ctx.lcpServer.broadcastConfigUpdate([{ op: 'replace', path: '/', value: ctx.enrichConfigForLcp(c) }]),
+                broadcastConfig: (c) => ctx.localServer.configChanged([{ op: 'replace', path: '/', value: c }]),
                 restartAll: () => ctx.commandDispatcher.dispatch({ command: 'start' }),
             },
             config as Record<string, unknown>,
@@ -143,9 +152,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // guaranteed: it updates the manager's persisted desired-run-state, and if
     // it's lost the 10s engineRunningState reconcile actively reverts the
     // operator's action (stop undone by an auto-start within one heartbeat).
-    // Rare operator-initiated traffic — no retransmit-flood risk (that rule is
-    // for repeating telemetry, see the deviceList note below). During an
-    // outage it is journaled and reported in the connect handshake.
+    // During an outage it is journaled and reported in the connect handshake.
     ctx.lcpServer.on('control', (command: unknown) => {
         const cmd = command as Record<string, unknown>;
         if (cmd.action === 'start' || cmd.action === 'stop') {
@@ -161,12 +168,11 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             ctx.enginePatchRouter.onPatch('manager', 'manager', envelope.ops as PatchOp[]);
     });
 
-    // Handle patches from LCP (already validated by LcpServer, but _socketId comes through)
+    // Patches from the LCP (validated by LcpServer; _socketId comes through)
     ctx.lcpServer.on('patch', (data: unknown) => {
         const d = data as { ops?: unknown[]; _socketId?: string };
         const envelope = safeParse(PatchEnvelopeSchema, d, 'lcp:patch', log);
-        if (envelope)
-            ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
+        if (envelope) ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'local', envelope.ops as PatchOp[]);
     });
 
     // Forward every registered device provider's changes to the manager

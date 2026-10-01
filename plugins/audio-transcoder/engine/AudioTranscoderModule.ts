@@ -198,9 +198,11 @@ export class AudioTranscoderModule extends GstPluginBase {
                 probedCodec: this.probeResult?.codec,
                 bufferMs: Number(config.bufferMs ?? 75),
                 channelMap: source.channelMap,
-                // Matrix input dimension from the probe — a 5.1 source with a
-                // stereo-pinned matrix would fail caps negotiation.
-                sourceChannels: this.probeResult?.channels,
+                // Matrix input dimension: the producer's declared bus width
+                // first (a 302M PMT can't tell the probe how wide the stream
+                // is), else the probe (AC-3/AAC carry it) — a wide source with
+                // a stereo-pinned matrix fails caps negotiation.
+                sourceChannels: source.sourceChannels ?? this.probeResult?.channels,
             },
             outputs,
             channels,

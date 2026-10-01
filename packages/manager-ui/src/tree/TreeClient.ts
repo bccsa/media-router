@@ -1,17 +1,24 @@
 import { io, type Socket } from 'socket.io-client';
 // shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
-import * as shared from '@media-router/shared-types';
-import type {
-    PatchOp,
-    TreeAck,
-    TreeFrame,
-    TreeHello,
-    TreeOp,
-    TreeRenamed,
-    WriteResult,
-} from '@media-router/shared-types';
+// Its zod-free browser entry keeps the router's dashboard viewer small.
+import * as wire from '@media-router/shared-types/browser';
+import type { PatchOp } from '@media-router/shared-types';
+import type { TreeAck, TreeErrorCode, TreeFrame, TreeHello, TreeOp, TreeRenamed, WriteResult } from '@media-router/shared-types/browser';
 
-const { TREE_PROTOCOL, TREE_EVENTS, requiredProtocol } = shared;
+const { TREE_PROTOCOL, TREE_EVENTS, requiredProtocol } = wire;
+
+/** A refused request; `code` says why, for the caller to act on. */
+export class TreeRequestError extends Error {
+    constructor(
+        message: string,
+        readonly code?: TreeErrorCode,
+    ) {
+        super(message);
+    }
+}
+
+/** The code of a refused request, if it carried one. */
+export const errorCode = (err: unknown): TreeErrorCode | undefined => (err instanceof TreeRequestError ? err.code : undefined);
 
 /** A write whose echo has not come back within this is forgotten. */
 const PENDING_MAX_MS = 5000;
@@ -22,6 +29,8 @@ export interface TreeClientOptions {
     /** Socket.IO path; a router serves its tree on `/tree`. */
     path?: string;
     onOps(ops: TreeOp[], meta: { snapshot: boolean }): void;
+    /** These patterns' snapshot has arrived: anything they cover and lack does not exist. */
+    onSubscribed?(patterns: string[]): void;
     onDropped?(patterns: string[], remaining: string[]): void;
     onRenamed?(renamed: TreeRenamed): void;
     onConnected?(connected: boolean): void;
@@ -144,15 +153,17 @@ export class TreeClient {
             s.emit(event, payload, (ack: TreeAck<T>) => {
                 clearTimeout(timer);
                 if (ack?.ok) resolve(ack.data);
-                else reject(new Error(ack?.error ?? 'Malformed reply'));
+                else reject(new TreeRequestError(ack?.error ?? 'Malformed reply', ack?.code));
             });
         });
     }
 
     private sendSub(patterns: string[]): void {
         this.socket?.emit(TREE_EVENTS.sub, { patterns }, (ack: TreeAck<{ ops: TreeOp[] }>) => {
-            if (ack?.ok) this.opts.onOps(ack.data.ops, { snapshot: true });
-            else console.warn('[tree] subscribe failed', patterns, ack);
+            if (ack?.ok) {
+                this.opts.onOps(ack.data.ops, { snapshot: true });
+                this.opts.onSubscribed?.(patterns);
+            } else console.warn('[tree] subscribe failed', patterns, ack);
         });
     }
 

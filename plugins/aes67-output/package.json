@@ -167,18 +167,22 @@
                 "fields": [
                     {
                         "key": "destination",
+                        "type": "string",
                         "label": "Destination"
                     },
                     {
                         "key": "format",
+                        "type": "string",
                         "label": "Format"
                     },
                     {
                         "key": "packetTime",
+                        "type": "string",
                         "label": "Packet Time"
                     },
                     {
                         "key": "multicast",
+                        "type": "string",
                         "label": "Multicast"
                     }
                 ]
@@ -189,6 +193,7 @@
                 "fields": [
                     {
                         "key": "epoch",
+                        "type": "string",
                         "label": "RTP Epoch"
                     }
                 ]
@@ -199,11 +204,13 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "Mbps"
                     },
                     {
                         "key": "bytesSent",
+                        "type": "string",
                         "label": "Bytes Sent"
                     }
                 ]

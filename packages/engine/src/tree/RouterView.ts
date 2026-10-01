@@ -3,6 +3,7 @@ import {
     ROUTER_INFO_META,
     appendRing,
     coerceArray,
+    dashboardsOf,
     describeModule,
     getAt,
     keysOf,
@@ -36,6 +37,8 @@ export class RouterView implements TreeSource {
     readonly devices: Record<string, unknown> = {};
     readonly vu: Record<string, number[]> = {};
     system: Obj | undefined;
+    /** Button runs (set by RouterTree); `/runs` sits beside the branches, like `/meta`. */
+    runs: () => Record<string, unknown> = () => ({});
 
     constructor(private readonly deps: RouterViewDeps) {}
 
@@ -47,6 +50,7 @@ export class RouterView implements TreeSource {
         const [branch, ...rest] = path;
         if (branch === undefined) return Object.fromEntries(ROUTER_BRANCHES.map((b) => [b, this.get([b])]));
         if (branch === 'meta') return this.meta(rest);
+        if (branch === 'runs') return getAt(this.runs(), rest);
         if (branch === 'modules' && rest.length > 0) return getAt(this.module(rest[0]), rest.slice(1));
         return getAt(this.branch(branch), rest);
     }
@@ -71,6 +75,8 @@ export class RouterView implements TreeSource {
             case 'connections':
             case 'interlocks':
                 return coerceArray(config?.[name]);
+            case 'dashboards':
+                return dashboardsOf(config);
             default:
                 return undefined;
         }

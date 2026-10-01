@@ -356,18 +356,18 @@
                 "id": "input",
                 "label": "Input",
                 "fields": [
-                    { "key": "host", "label": "Multicast" },
-                    { "key": "port", "label": "Port" }
+                    { "key": "host", "type": "string", "label": "Multicast" },
+                    { "key": "port", "type": "number", "label": "Port" }
                 ]
             },
             {
                 "id": "encoder",
                 "label": "Encoder",
                 "fields": [
-                    { "key": "codec", "label": "Codec" },
-                    { "key": "impl", "label": "Implementation" },
-                    { "key": "framerate", "label": "Framerate" },
-                    { "key": "renditions", "label": "Renditions" }
+                    { "key": "codec", "type": "string", "label": "Codec" },
+                    { "key": "impl", "type": "string", "label": "Implementation" },
+                    { "key": "framerate", "type": "string", "label": "Framerate" },
+                    { "key": "renditions", "type": "string", "label": "Renditions" }
                 ]
             }
         ],

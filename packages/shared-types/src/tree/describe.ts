@@ -2,6 +2,8 @@ import type { PatchOp } from '../index.js';
 import { dropUndefined } from './object.js';
 import { getAt } from './apply.js';
 import { splitPath } from './paths.js';
+import { carriesAudio } from '../carriesAudio.js';
+import { VU_BLOCKS } from '../vu.js';
 
 /** What a value is and what a client may do with it (served at `/meta` + its path). */
 export interface ValueDescriptor {
@@ -23,7 +25,7 @@ export interface ValueDescriptor {
 }
 
 type SchemaProp = Record<string, unknown>;
-type StatusSectionLike = { id: string; fields: Array<{ key: string; label: string; unit?: string; format?: string }> };
+type StatusSectionLike = { id: string; fields: Array<{ key: string; label: string; unit?: string; format?: string; type?: string }> };
 
 /** The module fields `describeModuleValue` reads. */
 export interface DescribableModule {
@@ -33,7 +35,11 @@ export interface DescribableModule {
     statusSections?: StatusSectionLike[];
     dynamicStatusSections?: StatusSectionLike[];
     statusData?: Record<string, Record<string, unknown>>;
+    ports?: Array<{ streamType?: string; acceptsAnyTs?: boolean }>;
 }
+
+/** A module's levels (`vu`): per channel 0–VU_BLOCKS blocks, for every module that carries audio. */
+const LEVELS: ValueDescriptor = { access: 'read', type: 'array', min: 0, max: VU_BLOCKS, label: 'Levels' };
 
 /** Module fields a client may write besides `settings/<key>`. */
 const WRITABLE_FIELDS: Record<string, ValueDescriptor> = {
@@ -93,10 +99,10 @@ function statusSectionsOf(mod: DescribableModule): StatusSectionLike[] {
     return [...(mod.statusSections ?? []), ...(mod.dynamicStatusSections ?? [])];
 }
 
-/** Declared status fields only; no type — it would follow the live value. */
+/** Declared status fields only; the type as the plugin declares it, so it is known with the router offline. */
 function describeStatus(mod: DescribableModule, section: string, key: string): ValueDescriptor {
     const field = statusSectionsOf(mod).find((s) => s.id === section)?.fields.find((f) => f.key === key);
-    return dropUndefined({ access: 'read', label: field?.label ?? key, unit: field?.unit, format: field?.format });
+    return dropUndefined({ access: 'read', label: field?.label ?? key, unit: field?.unit, format: field?.format, type: field?.type });
 }
 
 /**
@@ -108,6 +114,7 @@ export function describeModuleValue(mod: DescribableModule, rel: readonly string
     if (field === 'settings') return rel.length === 2 ? describeSetting(mod, a) : null;
     if (field === 'statusData' && rel.length === 3) return describeStatus(mod, a, b);
     if (rel.length === 1 && WRITABLE_FIELDS[field]) return { ...WRITABLE_FIELDS[field] };
+    if (rel.length === 1 && field === 'vu' && carriesAudio(mod.ports)) return { ...LEVELS };
     return rel.length >= 1 ? { access: 'read' } : null;
 }
 
@@ -120,6 +127,8 @@ export interface ModuleMeta {
     focused?: ValueDescriptor;
     settings: Record<string, ValueDescriptor>;
     statusData: Record<string, Record<string, ValueDescriptor>>;
+    /** Present when the module carries audio, so it reports levels. */
+    vu?: ValueDescriptor;
 }
 
 /**
@@ -143,7 +152,7 @@ export function describeModule(
         const section = (statusData[s.id] ??= {});
         for (const f of s.fields) section[f.key] = describeStatus(mod, s.id, f.key);
     }
-    return { ...fields, settings, statusData };
+    return { ...fields, settings, statusData, ...(carriesAudio(mod.ports) ? { vu: { ...LEVELS } } : {}) };
 }
 
 /**

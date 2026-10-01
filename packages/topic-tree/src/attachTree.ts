@@ -43,7 +43,7 @@ async function reply(ack: unknown, event: string, fn: () => unknown): Promise<vo
         cb({ ok: true, data: await fn() });
     } catch (err) {
         if (err instanceof TreeCallError) {
-            cb({ ok: false, error: err.message });
+            cb({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}) });
             return;
         }
         log.error({ err, event }, 'tree handler threw');

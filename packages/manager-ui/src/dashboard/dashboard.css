@@ -1,0 +1,138 @@
+/* Dashboards (ADR-0026): both themes live here, scoped to the dashboard, so a
+   Light dashboard stays light inside the dark manager UI and the router's
+   viewer needs no other stylesheet. */
+.mr-dash {
+    --d-bg: #0f1117;
+    --d-card: #1b1f2a;
+    --d-border: #2e3241;
+    --d-text: #e2e8f0;
+    --d-muted: #94a3b8;
+    --d-track: #2b3040;
+    --d-accent: #10b981;
+    --d-ok: #22c55e;
+    --d-warning: #f59e0b;
+    --d-error: #ef4444;
+    --d-stopped: #6b7280;
+    --d-vu-off: #262b38;
+    --d-vu-mid: #eab308;
+    /* On a filled accent or a coloured background: knobs, lit text. */
+    --d-on-fill: #ffffff;
+    /* Trend lines, in order. */
+    --d-series-1: #10b981;
+    --d-series-2: #3b82f6;
+    --d-series-3: #f59e0b;
+    --d-series-4: #ef4444;
+    --d-series-5: #a855f7;
+    --d-series-6: #06b6d4;
+    --d-series-7: #ec4899;
+    --d-series-8: #84cc16;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--d-bg);
+    color: var(--d-text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    /* The manager UI's page sets 1.5; the router's viewer doesn't. One value, so the editor matches the screen. */
+    line-height: normal;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mr-dash.theme-light {
+    --d-bg: #eef2f6;
+    --d-card: #ffffff;
+    --d-border: #d7dee7;
+    --d-text: #0f172a;
+    --d-muted: #52607a;
+    --d-track: #dfe5ec;
+    --d-vu-off: #e3e8ee;
+}
+
+.mr-dash .dw {
+    position: absolute;
+    box-sizing: border-box;
+    padding: 3px;
+}
+
+.mr-dash .dw-body {
+    position: relative;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+    background: var(--d-card);
+    border: 1px solid var(--d-border);
+    container-type: size;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.mr-dash .dw-bare .dw-body {
+    background: transparent;
+    border-color: transparent;
+}
+
+.mr-dash .dw-label {
+    flex: none;
+    padding: 4px 6px 0;
+    font-size: var(--dw-label-size, clamp(9px, 11cqmin, 15px));
+    font-weight: var(--dw-label-weight, 400);
+    color: var(--d-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mr-dash .dw.state-stale .dw-body,
+.mr-dash .dw.state-loading .dw-body {
+    opacity: 0.45;
+    filter: grayscale(1);
+}
+
+/* Display only: readable, but visibly not a control. */
+.mr-dash .dw-locked .dw-body {
+    filter: saturate(0.25);
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+.mr-dash .dw-locked .dw-body * {
+    cursor: not-allowed;
+}
+.mr-dash .dw-lock {
+    position: absolute;
+    right: 5px;
+    top: 5px;
+    color: var(--d-muted);
+    pointer-events: none;
+}
+
+.mr-dash .dw.state-missing .dw-body {
+    border-style: dashed;
+    border-color: var(--d-warning);
+    opacity: 0.8;
+}
+
+.mr-dash .dw-flag {
+    position: absolute;
+    right: 6px;
+    top: 4px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--d-warning);
+    pointer-events: none;
+}
+
+.mr-dash .dw-rejected .dw-body {
+    border-color: var(--d-error);
+}
+
+.mr-dash .dw-value {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

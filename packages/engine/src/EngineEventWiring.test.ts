@@ -19,6 +19,12 @@ interface Stubs {
         broadcastState: ReturnType<typeof vi.fn>;
         broadcastVuData: ReturnType<typeof vi.fn>;
         broadcastConfigUpdate: ReturnType<typeof vi.fn>;
+        broadcastConfigUpdateExcept: ReturnType<typeof vi.fn>;
+        broadcastEngineRunning: ReturnType<typeof vi.fn>;
+    };
+    localServer: EventEmitter & {
+        configChanged: ReturnType<typeof vi.fn>;
+        runningChanged: ReturnType<typeof vi.fn>;
     };
     deviceProviders: EventEmitter & {
         types: ReturnType<typeof vi.fn>;
@@ -43,6 +49,12 @@ function makeStubs(): Stubs {
         broadcastState: vi.fn(),
         broadcastVuData: vi.fn(),
         broadcastConfigUpdate: vi.fn(),
+        broadcastConfigUpdateExcept: vi.fn(),
+        broadcastEngineRunning: vi.fn(),
+    });
+    const localServer = Object.assign(new EventEmitter(), {
+        configChanged: vi.fn(),
+        runningChanged: vi.fn(),
     });
     const deviceProviders = Object.assign(new EventEmitter(), {
         types: vi.fn(() => []),
@@ -55,6 +67,7 @@ function makeStubs(): Stubs {
         moduleManager,
         managerConnection,
         lcpServer,
+        localServer,
         deviceProviders,
         logForwarder: new EventEmitter(),
     };
@@ -67,6 +80,7 @@ function makeCtx(stubs: Stubs): EngineEventContext {
         managerConnection:
             stubs.managerConnection as unknown as EngineEventContext['managerConnection'],
         lcpServer: stubs.lcpServer as unknown as EngineEventContext['lcpServer'],
+        localServer: stubs.localServer as unknown as EngineEventContext['localServer'],
         pipeWire: {} as EngineEventContext['pipeWire'],
         deviceProviders:
             stubs.deviceProviders as unknown as EngineEventContext['deviceProviders'],
@@ -312,6 +326,23 @@ describe('wireEngineEvents — LCP lifecycle commands', () => {
     });
 });
 
+describe('wireEngineEvents — the LCP follows every local change', () => {
+    it("gets config changes (skipping a writer's own) and run intent, with lcpType on a whole config", () => {
+        const stubs = makeStubs();
+        const ctx = { ...makeCtx(stubs), enrichConfigForLcp: (c: Record<string, unknown>) => ({ ...c, enriched: true }) };
+        wireEngineEvents(ctx);
+        const op = { op: 'replace', path: '/modules/m1/settings/volume', value: 1 };
+        stubs.localServer.emit('local:config', [op]);
+        stubs.localServer.emit('local:config', [op], 'lcp-socket');
+        stubs.localServer.emit('local:config', [{ op: 'replace', path: '/', value: { modules: {} } }]);
+        stubs.localServer.emit('local:running', true);
+        expect(stubs.lcpServer.broadcastConfigUpdate).toHaveBeenNthCalledWith(1, [op]);
+        expect(stubs.lcpServer.broadcastConfigUpdateExcept).toHaveBeenCalledWith('lcp-socket', [op]);
+        expect(stubs.lcpServer.broadcastConfigUpdate).toHaveBeenLastCalledWith([{ op: 'replace', path: '/', value: { modules: {}, enriched: true } }]);
+        expect(stubs.lcpServer.broadcastEngineRunning).toHaveBeenCalledWith(true);
+    });
+});
+
 describe('wireEngineEvents — module state batching', () => {
     let stubs: Stubs;
 
@@ -503,7 +534,7 @@ describe('wireEngineEvents — outage and reconnect (ADR-0025)', () => {
         stubs.moduleManager.emit('configUpdated', 'm1', { volume: 55 });
         const op = { op: 'replace', path: '/modules/m1/settings/volume', value: 55 };
         expect((config.modules as any).m1.settings.volume).toBe(55);
-        expect(stubs.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([op]);
+        expect(stubs.localServer.configChanged).toHaveBeenCalledWith([op]);
         expect(stubs.managerConnection.send).not.toHaveBeenCalled();
         stubs.managerConnection.isConnected = true;
         stubs.managerConnection.emit('connected');

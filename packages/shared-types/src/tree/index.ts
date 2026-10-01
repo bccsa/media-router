@@ -35,6 +35,7 @@ export type {
     WriteResult,
     TreeRenamed,
     TreeAck,
+    TreeErrorCode,
 } from './protocol.js';
 export { isPlainObject, isContainer, dropUndefined, appendRing, LOG_RING_MAX } from './object.js';
 export { overlayManifest, type ModuleManifestLike } from './moduleNode.js';

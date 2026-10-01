@@ -21,6 +21,7 @@ import { TreePublisher } from './tree/TreePublisher.js';
 import { TreeWrites } from './tree/TreeWrites.js';
 import { AdminWrites } from './tree/AdminWrites.js';
 import { TreeCalls } from './tree/TreeCalls.js';
+import { ManagerScripts } from './tree/ManagerScripts.js';
 import { setupTree } from './tree/setupTree.js';
 
 const log = createLogger('Manager');
@@ -53,6 +54,7 @@ export class Manager {
     private readonly io: SocketIOServer;
     private readonly pluginRegistry: PluginRegistry;
     private readonly engineCommands: EngineCommandService;
+    private readonly scripts: ManagerScripts;
     private running = false;
 
     constructor(config: Partial<ManagerConfig> = {}) {
@@ -128,6 +130,8 @@ export class Manager {
             new AdminWrites({ configStore, engineManager, engineCommands, runtime, publisher, tree }),
             bus,
         );
+        const scripts = (this.scripts = new ManagerScripts({ tree, bus, configStore }));
+        tree.runs = () => scripts.runs.tree();
         const calls = new TreeCalls({
             configStore,
             engineManager,
@@ -135,7 +139,9 @@ export class Manager {
             publisher,
             patchRouter,
             pluginUploads: new PluginUploadService(pluginRegistry),
+            scripts,
         });
+        scripts.attach(writes, calls);
         setupTree({ io: this.io, bus, writes, calls });
         registerHttpRoutes({ app });
 
@@ -164,6 +170,8 @@ export class Manager {
         if (!this.running) return;
         this.running = false;
         this.engineCommands.cancelAll();
+        // Button runs end with the server, as on a router (ADR-0027).
+        this.scripts.runs.stopAll();
         await this.engineManager.stop();
         this.io.close();
         await new Promise<void>((resolve) => this.httpServer.close(() => resolve()));

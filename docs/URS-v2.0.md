@@ -20,7 +20,7 @@
    - 5.1 Media Engine (Router)
    - 5.2 Manager
    - 5.3 Manager Web UI
-   - 5.4 Local Control Panel
+   - 5.4 Local Control Panel (5.4.1 Dashboards)
    - 5.5 Local API
    - 5.6 Communication
    - 5.7 Plugin System
@@ -313,6 +313,26 @@ During live operation, operators often only need to monitor a subset of modules 
 | UR-LCP-006 | The local control panel SHALL be mobile-friendly. | P1 |
 | UR-LCP-007 | The local control panel SHALL only display modules flagged as operator-visible. | P1 |
 
+#### 5.4.1 Dashboards (ADR-0026)
+
+Dashboards will replace the local control panel (ADR-0026).
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| UR-DSH-001 | Users SHALL be able to build dashboards: grids of widgets, each tied to one value (or, for a button, one action) of a router. | P1 |
+| UR-DSH-002 | A router dashboard SHALL be stored in that router's profile, SHALL be served by the router itself and SHALL keep working while the manager link is down. | P1 |
+| UR-DSH-003 | A manager dashboard SHALL be able to show values of several routers and SHALL keep a version history with rollback. | P1 |
+| UR-DSH-004 | Grid size, scroll, pinch zoom, locked (no dashboard menu) and theme SHALL be set per dashboard by its author; viewers SHALL NOT override them. | P1 |
+| UR-DSH-005 | Version 1 SHALL offer fader, slider, number box, toggle, toggle button, dropdown, button, readout, status light, VU meter, trend and bar gauge, and label/frame widgets. Widgets SHALL be modular, so a new one needs no change elsewhere; plugins SHALL NOT ship widgets. | P1 |
+| UR-DSH-006 | Every widget that takes input SHALL be able to have its input disabled (display only). | P1 |
+| UR-DSH-007 | A widget's range, unit and choices SHALL come from the value's descriptor (`/meta`), live. | P1 |
+| UR-DSH-008 | Faders and sliders SHALL be grab-and-drag: a touch alone SHALL NOT change the value. | P1 |
+| UR-DSH-009 | A value that no longer exists, an offline router and a lost connection SHALL be visible on the widgets; writes SHALL NOT be queued while disconnected. | P1 |
+| UR-DSH-010 | Dashboards SHALL be edited only in the manager UI, as a draft published by Save; Save SHALL warn when someone else saved the dashboard meanwhile. | P1 |
+| UR-DSH-011 | Users SHALL be able to duplicate widgets for another module and to copy a dashboard to another router or profile with a module mapping. | P1 |
+| UR-DSH-012 | A router's display SHALL be able to show a dashboard chosen by name (device-manager), following profile switches. | P1 |
+| UR-DSH-013 | Dashboards SHALL replace the local control panel; existing panels are not converted. The LCP SHALL stay alongside them until the fleet has moved. | P1 |
+
 ---
 
 ### 5.5 Local API
@@ -595,7 +615,7 @@ The local API and local control panel run on the engine device itself. Requests 
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | UR-DOC-001 | The project SHALL provide technical documentation covering architecture, module APIs, communication protocols, plugin development, and configuration schema. | P1 |
-| UR-DOC-002 | The project SHALL provide user documentation covering installation, manager UI usage, local control panel operation, and local API usage. | P1 |
+| UR-DOC-002 | The project SHALL provide user documentation covering installation, manager UI usage, local control panel operation, dashboard use and building, and local API usage. | P1 |
 | UR-DOC-003 | All public APIs (manager, local API, plugin interfaces) SHALL have complete reference documentation. | P1 |
 | UR-DOC-004 | Documentation SHALL be maintained alongside code — outdated documentation SHALL be treated as a bug. | P1 |
 

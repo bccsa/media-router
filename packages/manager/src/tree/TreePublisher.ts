@@ -141,12 +141,13 @@ export class TreePublisher {
         this.refreshMeta(engineId, touchedModules(entries.map((e) => e.op)));
     }
 
-    /** Whole graph replace — profile activation. */
+    /** Whole graph replace, dashboards included — profile activation. */
     graph(engineId: string): void {
         this.publish([
             { op: 'replace', path: enginePath(engineId, 'modules'), value: this.view.modules(engineId) },
             { op: 'replace', path: enginePath(engineId, 'connections'), value: this.view.branch(engineId, 'connections') },
             { op: 'replace', path: enginePath(engineId, 'interlocks'), value: this.view.branch(engineId, 'interlocks') },
+            { op: 'replace', path: enginePath(engineId, 'dashboards'), value: this.view.branch(engineId, 'dashboards') },
         ]);
         this.profiles(engineId);
         this.info(engineId);

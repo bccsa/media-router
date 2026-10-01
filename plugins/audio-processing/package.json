@@ -863,10 +863,12 @@
                 "fields": [
                     {
                         "key": "chain",
+                        "type": "string",
                         "label": "Stages"
                     },
                     {
                         "key": "sidechain",
+                        "type": "string",
                         "label": "Sidechain"
                     }
                 ]
@@ -877,22 +879,27 @@
                 "fields": [
                     {
                         "key": "inputLevel",
+                        "type": "string",
                         "label": "Chain In (L/R)"
                     },
                     {
                         "key": "outputLevel",
+                        "type": "string",
                         "label": "Chain Out (L/R)"
                     },
                     {
                         "key": "gainReduction",
+                        "type": "string",
                         "label": "Gain Reduction"
                     },
                     {
                         "key": "keyLevel",
+                        "type": "string",
                         "label": "Key Level"
                     },
                     {
                         "key": "latency",
+                        "type": "string",
                         "label": "DSP Latency"
                     }
                 ]
@@ -903,6 +910,7 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "kbps"
                     }

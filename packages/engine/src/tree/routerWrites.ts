@@ -16,6 +16,8 @@ export interface RouterActions {
     setRunning(running: boolean): void;
     restartModule(instanceId: string): void;
     reboot(): void;
+    /** Restart PipeWire and every module, from the config in memory. */
+    reset(): void;
     managerConnected(): boolean;
 }
 
@@ -64,20 +66,27 @@ function check(checks: ModuleWriteCheck, op: PatchOp): string | null {
     return checks.check(id, seg.slice(2), op);
 }
 
-/** Router calls: module restart, and a device reboot that needs `confirm` without a manager. */
+/** Router calls: module restart, reset, and a device reboot that needs `confirm` without a manager. */
+/** A reboot with the manager down: the router would stay stopped, so the caller must confirm. */
+export const rebootNeedsConfirm = () =>
+    new TreeCallError(
+        'The manager is unreachable: after a restart this router stays stopped until it is back. Call again with confirm: true.',
+        'needs-confirm',
+    );
+
 export function routerCall(actions: RouterActions, path: string, method: string, args: unknown): unknown {
     const seg = splitPath(path);
     if (seg.length === 2 && seg[0] === 'modules' && method === 'restart') {
         actions.restartModule(seg[1]);
         return {};
     }
+    if (seg.length === 0 && method === 'reset') {
+        actions.reset();
+        return {};
+    }
     if (seg.length === 0 && method === 'reboot') {
         const confirmed = (args as { confirm?: unknown } | undefined)?.confirm === true;
-        if (!actions.managerConnected() && !confirmed) {
-            throw new TreeCallError(
-                'The manager is unreachable: after a restart this router stays stopped until it is back. Call again with confirm: true.',
-            );
-        }
+        if (!actions.managerConnected() && !confirmed) throw rebootNeedsConfirm();
         actions.reboot();
         return {};
     }

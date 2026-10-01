@@ -69,10 +69,10 @@
                 "id": "routing",
                 "label": "N-1 Routing",
                 "fields": [
-                    { "key": "pairCount", "label": "Pairs" },
-                    { "key": "channels", "label": "Mix Width" },
-                    { "key": "connectedInputs", "label": "Connected Inputs" },
-                    { "key": "activeOutputs", "label": "Active Outputs" }
+                    { "key": "pairCount", "type": "number", "label": "Pairs" },
+                    { "key": "channels", "type": "number", "label": "Mix Width" },
+                    { "key": "connectedInputs", "type": "number", "label": "Connected Inputs" },
+                    { "key": "activeOutputs", "type": "number", "label": "Active Outputs" }
                 ]
             }
         ],

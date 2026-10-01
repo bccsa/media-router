@@ -9,6 +9,7 @@ import path from 'path';
  */
 const workspaceSources: Record<string, string> = {
     '@media-router/shared-types': 'packages/shared-types/src/index.ts',
+    '@media-router/shared-types/browser': 'packages/shared-types/src/browser.ts',
     '@media-router/engine': 'packages/engine/src/index.ts',
     '@media-router/topic-tree': 'packages/topic-tree/src/index.ts',
     '@media-router/topic-tree/testing': 'packages/topic-tree/src/testing.ts',

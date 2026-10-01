@@ -21,10 +21,11 @@ This is slower and broader than `/review`. Take the time to actually read code, 
 
 Split these across subagents. Each subagent brief should be self-contained and tell the agent exactly what to look for.
 
-- **Engine core** (`packages/engine/src/`) — `Engine`, `EnginePatchRouter`, `CommandDispatcher`, `ModuleManager`, `ModuleLifecycle`, `ModuleInstance`, `MediaRouter`, `ConnectionExecutor`, `PipeWireManager`, `GstChildProcess`, `ProcessManager`, `ManagerConnection`, `LcpServer`, `PluginLoader`, `PluginModule`, `GstPluginBase`, `SystemStatsCollector`
+- **Engine core** (`packages/engine/src/`) — `Engine`, `EnginePatchRouter`, `CommandDispatcher`, `ModuleManager`, `ModuleLifecycle`, `ModuleInstance`, `MediaRouter`, `ConnectionExecutor`, `PipeWireManager`, `GstChildProcess`, `ProcessManager`, `ManagerConnection`, `LocalServer`, `LcpServer`, `PluginLoader`, `PluginModule`, `GstPluginBase`, `SystemStatsCollector`
 - **Manager core** (`packages/manager/src/`) — `Manager`, `PatchRouter`, `patchRules`, `EngineCommandService`, `EngineEventForwarder`, `EngineConnectionManager`, `PluginRegistry`, `ConfigStore`, `routes/httpRoutes`, `tree/` (RuntimeCache, EngineView, ManagerTree, TreePublisher, TreeWrites, TreeCalls)
 - **Manager UI** (`packages/manager-ui/src/`) — stores (`engines`, `socket`, `vuMeters`, `logs`, `treeData`), `tree/` (TreeClient, mirror), composables (`useGraphSync`, `useContextMenu`, `useFocusMode`, `usePatch`, `useStatColor`), routing components (`RoutingEditor`, `ModuleNode`, `ModuleSettingsPanel`, `ChannelMapEditor`, `AddModulePanel`, `LogViewer`)
 - **LCP** (`packages/local-panel/src/`) — stores, composables, components, how it differs from manager-ui
+- **Dashboards** (`packages/manager-ui/src/dashboard/`) — source/useValue, widget registry and widgets, editor, viewer build (`viewer/`, `vite.dashboard.config.ts`); router and manager dashboard calls (`packages/manager/src/tree/*DashboardCalls.ts`)
 - **Plugins** (`plugins/*/engine/*.ts`) — audio-input/output, audio-encoder/decoder, RIST in/out, SRT in/out, n1-mixer, mpegts-router, etc. Check consistency across similar plugins.
 - **Shared types** (`packages/shared-types/src/`) — `applyJsonPatch`, `PatchOp`, `ChannelMapEntry`, `StreamType`, stream colours
 - **dgram-comms** (`packages/dgram-comms/src/`) — `Server`, `Socket`, keepalive/disconnect handling

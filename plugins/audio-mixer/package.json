@@ -95,6 +95,7 @@
                 "fields": [
                     {
                         "key": "sources",
+                        "type": "number",
                         "label": "Sources"
                     }
                 ]
@@ -105,6 +106,7 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Mix Out",
                         "unit": "kbps"
                     }

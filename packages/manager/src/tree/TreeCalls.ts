@@ -5,6 +5,10 @@ import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PatchRouter } from '../PatchRouter.js';
 import type { PluginUploadService } from '../services/PluginUploadService.js';
+import { Rollback, args } from './callArgs.js';
+import { ManagerDashboardCalls } from './ManagerDashboardCalls.js';
+import { RouterDashboardCalls } from './RouterDashboardCalls.js';
+import type { ManagerScripts } from './ManagerScripts.js';
 import type { RuntimeCache } from './RuntimeCache.js';
 import type { TreePublisher } from './TreePublisher.js';
 
@@ -12,7 +16,6 @@ const log = createLogger('TreeCalls');
 
 const SetPassword = z.object({ password: z.string().min(1) });
 const Rename = z.object({ newEngineId: EngineIdSchema });
-const Rollback = z.object({ versionId: z.number().int().positive() });
 const Upload = z.object({ moduleId: z.string().min(1), filename: z.string().min(1), bytes: z.instanceof(Buffer) });
 const ReadUpload = z.object({ filename: z.string().min(1) });
 
@@ -23,19 +26,23 @@ export interface TreeCallsDeps {
     publisher: TreePublisher;
     patchRouter: PatchRouter;
     pluginUploads: PluginUploadService;
-}
-
-function args<T>(schema: z.ZodType<T>, raw: unknown): T {
-    const parsed = schema.safeParse(raw ?? {});
-    if (!parsed.success) throw new TreeCallError('invalid arguments');
-    return parsed.data;
+    /** Button runs (ADR-0027); tried first. */
+    scripts?: ManagerScripts;
 }
 
 /** Actions, secrets, binary and bulky lookups: `call` on a tree node (ADR-0024). */
 export class TreeCalls {
-    constructor(private readonly d: TreeCallsDeps) {}
+    private readonly dashboards: RouterDashboardCalls;
+    private readonly managerDashboards: ManagerDashboardCalls;
+
+    constructor(private readonly d: TreeCallsDeps) {
+        this.dashboards = new RouterDashboardCalls(d);
+        this.managerDashboards = new ManagerDashboardCalls(d);
+    }
 
     handle(caller: TreeCaller, path: string, method: string, raw: unknown): unknown {
+        const run = this.d.scripts?.call(caller, path, method, raw);
+        if (run !== undefined) return run;
         const [root, id, branch, sub] = splitPath(path);
         if (root === 'engines' && id === undefined && method === 'create') return this.createEngine(raw);
         if (root === 'engines' && id !== undefined) {
@@ -45,8 +52,10 @@ export class TreeCalls {
                 return this.command(id, { command: 'moduleRestart', moduleId: sub });
             }
             if (branch === 'profiles' && sub !== undefined) return this.profileCall(caller, id, sub, method, raw);
+            if (branch === 'dashboards') return this.dashboards.handle(caller, id, sub, method, raw);
         }
         if (root === 'plugins' && id !== undefined) return this.pluginCall(id, method, raw);
+        if (root === 'dashboards' && branch === undefined) return this.managerDashboards.handle(id, method, raw);
         throw new TreeCallError(`no method ${method} on ${path}`);
     }
 
@@ -104,6 +113,7 @@ export class TreeCalls {
         }
         runtime.rename(oldId, newId);
         publisher.renamed(oldId, newId);
+        this.managerDashboards.renameEngine(oldId, newId);
         engineManager.notifyRename(oldId, newId);
         engineManager.refreshEncryptionKeys();
         return { id: newId };

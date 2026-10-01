@@ -50,6 +50,7 @@ export function createRouterTree(d: RouterTreeDeps): RouterTree {
             },
             restartModule: (id) => d.commandDispatcher().dispatch({ command: 'moduleRestart', moduleId: id }),
             reboot: () => d.commandDispatcher().dispatch({ command: 'reboot' }),
+            reset: () => d.commandDispatcher().dispatch({ command: 'reset' }),
             managerConnected: () => d.managerConnection.isConnected,
         },
         d.build,

@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TreeClient } from './TreeClient';
+import { TreeClient, errorCode } from './TreeClient';
 
 function fakeIo() {
     const handlers = new Map<string, Array<(...a: any[]) => void>>();
@@ -113,5 +113,16 @@ describe('TreeClient', () => {
     it('rejects a call while disconnected', async () => {
         const { client } = setup();
         await expect(client.call('/engines/e', 'reboot')).rejects.toThrow('Not connected');
+    });
+
+    it('a refused call carries its code', async () => {
+        const { client, io } = setup();
+        io.s.fire('connect');
+        io.acks.call = () => ({ ok: false, error: 'Someone else saved this dashboard meanwhile', code: 'conflict' });
+        const err = await client.call('/dashboards', 'save').catch((e: unknown) => e);
+        expect(errorCode(err)).toBe('conflict');
+        expect((err as Error).message).toBe('Someone else saved this dashboard meanwhile');
+        io.acks.call = () => ({ ok: false, error: 'nope' });
+        expect(errorCode(await client.call('/x', 'y').catch((e: unknown) => e))).toBeUndefined();
     });
 });

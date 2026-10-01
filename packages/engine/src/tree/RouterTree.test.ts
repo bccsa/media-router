@@ -5,6 +5,7 @@ import { applyJsonPatch, type PatchOp } from '@media-router/shared-types';
 import { RouterView, type RouterViewDeps } from './RouterView.js';
 import { RouterTree } from './RouterTree.js';
 import { routerCall, routerWrites, type RouterActions } from './routerWrites.js';
+import { routerScriptCall } from './routerScripts.js';
 
 const schema = {
     properties: {
@@ -38,6 +39,7 @@ function setup() {
         setRunning: vi.fn(),
         restartModule: vi.fn(),
         reboot: vi.fn(),
+        reset: vi.fn(),
         managerConnected: vi.fn().mockReturnValue(true),
     };
     const view = new RouterView(deps);
@@ -46,6 +48,32 @@ function setup() {
     const write = (ops: PatchOp[]) => routerWrites(tree, actions, 's1', ops, 7);
     return { config, info, view, tree, actions, published, write };
 }
+
+describe('router dashboards (ADR-0026)', () => {
+    const dash = (name: string) => ({ name, cols: 24, rows: 14, scroll: false, zoom: false, locked: false, theme: 'dark', widgets: [] });
+
+    it('serves the running profile\'s dashboards and republishes each config op on them', () => {
+        const { config, view, tree, published } = setup();
+        expect(view.get(['dashboards'])).toEqual({});
+        config.dashboards = { d1: dash('Stage') };
+        expect(view.get(['dashboards', 'd1', 'name'])).toBe('Stage');
+        tree.config([{ op: 'add', path: '/dashboards/d2', value: dash('Foyer') }]);
+        expect(published).toHaveBeenCalledWith([{ op: 'add', path: '/dashboards/d2', value: dash('Foyer') }]);
+    });
+
+    it('a root replace (profile activation) republishes the dashboards with the graph', () => {
+        const { config, tree, published } = setup();
+        config.dashboards = { d1: dash('Stage') };
+        tree.config([{ op: 'replace', path: '/', value: config }]);
+        expect(published.mock.calls[0][0]).toContainEqual({ op: 'replace', path: '/dashboards', value: { d1: dash('Stage') } });
+    });
+
+    it('a router takes no dashboard writes: the manager edits them', () => {
+        const { write } = setup();
+        const res = write([{ op: 'add', path: '/dashboards/d9', value: dash('X') }]);
+        expect(res.rejected).toEqual([{ index: 0, path: '/dashboards/d9', reason: 'not writable on a router' }]);
+    });
+});
 
 describe('RouterView', () => {
     it('builds a module from stored config, manifest, host schema and lean runtime', () => {
@@ -71,7 +99,7 @@ describe('RouterView', () => {
 
     it('serves branches, element ids and deep values', () => {
         const { view } = setup();
-        expect(view.keys([])).toEqual(['info', 'system', 'devices', 'logs', 'modules', 'connections', 'interlocks']);
+        expect(view.keys([])).toEqual(['info', 'system', 'devices', 'logs', 'modules', 'connections', 'interlocks', 'dashboards']);
         expect(view.keys(['connections'])).toEqual(['c1']);
         expect(view.get(['modules', 'm1', 'settings', 'volume'])).toBe(100);
         expect(view.get(['connections', 'c1', 'sourceModuleId'])).toBe('m1');
@@ -103,7 +131,7 @@ describe('RouterTree publishing', () => {
     it('config: a root replace republishes the graph', () => {
         const { tree, published } = setup();
         tree.config([{ op: 'replace', path: '', value: {} }]);
-        expect(published.mock.calls[0][0].map((o) => o.path)).toEqual(['/modules', '/connections', '/interlocks']);
+        expect(published.mock.calls[0][0].map((o) => o.path)).toEqual(['/modules', '/connections', '/interlocks', '/dashboards']);
     });
 
     it('info and system publish only what changed', () => {
@@ -186,6 +214,13 @@ describe('router calls', () => {
         expect(actions.restartModule).toHaveBeenCalledWith('m1');
     });
 
+    it('resets, with or without a manager (the config is in memory)', () => {
+        const { actions } = setup();
+        vi.mocked(actions.managerConnected).mockReturnValue(false);
+        routerCall(actions, '/', 'reset', {});
+        expect(actions.reset).toHaveBeenCalledTimes(1);
+    });
+
     it('reboots at once with a manager, only with confirm without one', () => {
         const { actions } = setup();
         routerCall(actions, '/', 'reboot', {});
@@ -246,3 +281,56 @@ describe('router /meta', () => {
         expect(sent()).toContainEqual({ op: 'replace', path: '/meta/modules/m1/settings/gain/max', value: 40 });
     });
 });
+
+describe('button scripts on the router (ADR-0027)', () => {
+    const board = (script: unknown) => ({
+        name: 'Stage', cols: 24, rows: 14, scroll: false, zoom: false, locked: false, theme: 'dark',
+        widgets: [{ id: 'b1', type: 'button', x: 0, y: 0, w: 3, h: 2, script }],
+    });
+    const run = (s: ReturnType<typeof setup>, args: Record<string, unknown> = { widget: 'b1' }) =>
+        routerScriptCall(s.tree, s.actions, s.tree.runs, '/dashboards/d1', 'run', args);
+
+    it('runs the stored steps through the tree checks and publishes progress under /runs', async () => {
+        const s = setup();
+        s.config.dashboards = {
+            d1: board({ steps: [
+                { do: 'write', path: '/modules/m1/settings/volume', value: { lit: 40 } },
+                { do: 'call', path: '/modules/m1', method: 'restart' },
+            ] }),
+        };
+        expect(run(s)).toEqual({});
+        await vi.waitFor(() => expect(s.view.get(['runs', '_', 'd1', 'b1'])).toMatchObject({ state: 'done', step: 2, of: 2 }));
+        expect(s.config.modules.m1.settings.volume).toBe(40);
+        expect(s.actions.restartModule).toHaveBeenCalledWith('m1');
+        expect(s.published).toHaveBeenCalledWith([expect.objectContaining({ op: 'add', path: '/runs/_/d1/b1' })]);
+    });
+
+    it('a write the checks refuse stops the run with its reason', async () => {
+        const s = setup();
+        s.config.dashboards = { d1: board({ steps: [
+            { do: 'write', path: '/modules/m1/settings/volume', value: { lit: 999 } },
+            { do: 'call', path: '/modules/m1', method: 'restart' },
+        ] }) };
+        run(s);
+        await vi.waitFor(() => expect(s.view.get(['runs', '_', 'd1', 'b1'])).toMatchObject({ state: 'failed', step: 1 }));
+        expect((s.view.get(['runs', '_', 'd1', 'b1']) as { error: string }).error).toMatch(/volume/);
+        expect(s.actions.restartModule).not.toHaveBeenCalled();
+    });
+
+    it('a script that reboots asks again without a manager; a button without a script is refused', () => {
+        const s = setup();
+        s.config.dashboards = { d1: board({ steps: [{ do: 'call', path: '/', method: 'reboot' }] }) };
+        vi.mocked(s.actions.managerConnected).mockReturnValue(false);
+        expect(() => run(s)).toThrow(/manager is unreachable/);
+        try {
+            run(s);
+        } catch (err) {
+            expect((err as { code?: string }).code).toBe('needs-confirm');
+        }
+        expect(run(s, { widget: 'b1', confirm: true })).toEqual({});
+        s.config.dashboards = { d1: board(undefined) };
+        expect(() => run(s)).toThrow('This button has no actions');
+        expect(routerScriptCall(s.tree, s.actions, s.tree.runs, '/modules/m1', 'restart', {})).toBeUndefined();
+    });
+});
+

@@ -18,7 +18,7 @@
 3. [Engine](#3-engine)
 4. [Manager](#4-manager)
 5. [Manager Web UI](#5-manager-web-ui)
-6. [Local Control Panel](#6-local-control-panel)
+6. [Local Control Panel and Dashboards](#6-local-control-panel-and-dashboards) — 6.4 [Dashboards](#64-dashboards-adr-0026)
 7. [Local API](#7-local-api)
 8. [Communication Layer](#8-communication-layer)
 9. [Plugin System](#9-plugin-system)
@@ -91,7 +91,8 @@ Covers all subsystems: engine, manager, manager web UI, local control panel, loc
 | **Engine** | Runs media modules (GStreamer pipelines), manages PipeWire audio, hosts local API and local control panel. Operates autonomously when manager is unreachable. |
 | **Manager** | Central configuration store, user auth, RBAC, profile management, cross-device link resolution. Pushes config to engines, receives status updates. |
 | **Manager Web UI** | Vue.js SPA for visual routing, module configuration, engine monitoring. Connects via Socket.IO. |
-| **Local Control Panel** | Vue.js app on engine device for operators. Volume, mute, channel switching. Connects to engine via Socket.IO. |
+| **Local Control Panel** | Vue.js app on engine device for operators. Volume, mute, channel switching. Connects to engine via Socket.IO. Kept until the fleet has moved to dashboards. |
+| **Dashboards** | Grids of generic widgets built in the manager UI (§6.4, ADR-0026): router dashboards in the profile, served by the router at `:8081/d/` from its own tree; manager dashboards on the manager. Buttons run their actions on that server (ADR-0027). |
 | **Local API** | REST API on engine for device config, manager profiles, system info, health. Replaces v1.0 profile manager. |
 | **Communication Layer** | UDP-based dgram-comms (engine↔manager), Socket.IO (manager↔UI, engine↔LCP). |
 
@@ -1260,7 +1261,7 @@ interface EngineConfig {
 
 When focus mode is off, these fields have no visual effect but are still persisted — toggling focus mode on/off does not lose selections. New devices default to normal state (`focused` undefined).
 
-### 5.4 Engine Dashboard
+### 5.4 Engine List
 
 The engine list view shows all managed engines with:
 
@@ -1353,7 +1354,7 @@ The UI uses a **Protocol-style dark theme** as the default, with a light mode al
 
 ---
 
-## 6. Local Control Panel
+## 6. Local Control Panel and Dashboards
 
 ### 6.1 Architecture
 
@@ -1399,6 +1400,19 @@ The local control panel is a **separate Vue.js application** running on the engi
 ### 6.3 Communication
 
 Connects to the engine process via Socket.IO on the local network. No manager involvement — operates independently.
+
+
+### 6.4 Dashboards (ADR-0026)
+
+Dashboards will replace the LCP. Until the fleet has moved both run: the LCP at `http://<router>:8081/`, dashboards at `/d/`. A dashboard is a grid of widgets built in the manager UI; each widget is tied to one value of the tree (ADR-0024) or, for a button, to one action.
+
+- **Kinds.** A *router dashboard* shows one router: it is stored in that router's profile, served by the router at `http://<router>:8081/d/<name>` from its own tree (works with the manager link down) and viewable in the manager UI (Router → Dashboards). `http://<router>:8081/d/` lists the active profile's dashboards (`/d/dashboards.json` gives it as `[{ id, name }]`; `/` redirects to `/d/` only on a router without the LCP; without the viewer build `/d/` is a 404 "Dashboard viewer not built"). A *manager dashboard* mixes routers and is served by the manager only.
+- **Grid.** Columns × rows (default 24 × 14, 1–96 each). Scroll off: the grid fits the screen, cells stretch. Scroll on: fixed 64 px cells, the page scrolls. Pinch zoom: pinch or Ctrl+wheel zooms (0.5–4×), a drag on the background pans, a double tap there resets. Locked: no dashboard menu (the browser's own address bar and Back still work; a kiosk has neither). At most 400 widgets. Theme: Dark or Light. All saved with the dashboard; viewers cannot override them.
+- **Widgets (v1).** Fader, slider, number box, toggle, toggle button (push on / push off a true/false value, lit on true or on false — e.g. mute on *Audio Enabled*), dropdown, button, readout, status light, VU meter, trend (1–8 numbers over the last 1/5/15/60 min, auto or fixed scale; history in the browser tab only, a reload starts empty; gaps while a value is not live), bar gauge, label/frame; a trend's legend names each line (router · module · value), a readout can wrap long text. Each is placed first, then tied to a value it supports through a drill-down picker (router → module or *Router* → value; routers listed in their routing-view groups). Ranges, units and choices come from the value's `/meta` descriptor, live. Every widget has a Label (bound ones), an Accent colour and the label's size and bold (a button's face, a label's own text); a label/frame also has an orientation (horizontal, vertical reading up or down) and a horizontal and a vertical align; every control and button can have its input disabled (display only), shown by a padlock, as is a control on a read-only value; a refused write flashes the widget's border. A fader or slider whose value has no range in `/meta` shows *No range* and takes no input. Faders and sliders take arrow, Page, Home and End keys. Faders and sliders are grab-and-drag: a touch changes nothing, the value moves only with the drag (≤ one write per 100 ms, final value on release; a value with `x-debounceMs` only once the drag rests that long). Buttons restart a module, start/stop, reset (audio + all modules) or reboot the router or set a fixed value — or, per button, a list of such actions and waits, with blocks for if/else, repeat, repeat until, wait until, values, compare and arithmetic where wanted (one editor, in the side panel or a wide popup), run on the server the page talks to (ADR-0027) with progress and Stop on the button, stopping at the first failed step or after its time limit (60 s default, configurable); each run is logged on that server, and a server shutting down stops its runs — asking to confirm by default for restart, Stop, reset and reboot. A reboot the router refuses because its manager is unreachable asks once more ("the router stays stopped after the reboot until it is back") and Yes forces it.
+- **States.** A value whose module is gone (deleted, or not in the active profile) shows *Missing* and takes no input; a router offline or a lost connection greys widgets with their last value marked *Stale*; a connection dot sits in a corner: green = all connected, amber = usable but degraded (on a router's own screen its manager is unreachable, changes are kept and sent later; on a manager dashboard some of its routers are offline), red = no input; a tap on it says why. Writes are never queued while disconnected.
+- **Editing.** Manager UI only, on a draft: *Save* publishes it in one call carrying the revision it started from (a newer stored one is a conflict: overwrite or reload); *Cancel* discards. Right click on a widget (or a selection) offers Delete; arrow keys nudge the selection a cell; Copy and Paste work across dashboards; *To front* / *To back* restack; leaving with unsaved changes asks first. *Duplicate for…* copies a strip of widgets tied to one module for another module; *Copy to…* copies a dashboard to another router or profile, mapping each module it uses (same display name, then same plugin).
+- **Screens.** device-manager display content *Dashboard* + name opens `/d/<name>`; a profile switch shows the new profile's dashboard of that name, or the list of the profile's dashboards.
+- **Older routers** (no `dashboards` in `info.features`) keep their dashboards in the profile untouched; they work from the manager and appear on the router's screen after its upgrade.
 
 ---
 
@@ -1623,8 +1637,9 @@ write, call and error: [docs/tree-api.md](tree-api.md).
 Each router serves its own subtree, rooted at `/`, on :8081 under the
 Socket.IO path `/tree`. It works with or without a manager link. It accepts
 value writes only (`settings/<key>`, `enabled`, `info/running`) and the calls
-module restart and device reboot. Reboot needs `{ confirm: true }` while the
-manager link is down. `tools/tree-cli/mr_tree.js` speaks both ends.
+module `restart`, router `reset` and `reboot`, and a dashboard button's `run` /
+`stop` (ADR-0027). Reboot (and a run whose script reboots) needs
+`{ confirm: true }` while the manager link is down. `tools/tree-cli/mr_tree.js` speaks both ends.
 
 ### 8.3 Engine ↔ Local Control Panel
 
@@ -1697,6 +1712,8 @@ LCP ──(control)──▶ Engine
 ```
 
 Both paths converge on the same result: all connected clients (manager UI browsers and LCP) reflect the current state. Volume slider positions, mute states, and other runtime controls stay in sync regardless of where the change originated.
+
+Router dashboards (§6.4) do not use this protocol: they are clients of the router tree (§8.2.1) on the same port and see the same changes.
 
 ### 8.4 Router ↔ Manager State Sync and Outages (ADR-0025)
 
@@ -2156,6 +2173,9 @@ media-router/
 │   │   │   ├── views/          ← Route views
 │   │   │   ├── stores/         ← Pinia stores
 │   │   │   ├── routing-editor/ ← Vue Flow integration
+│   │   │   └── dashboard/      ← Dashboards (§6.4): widgets/<kind>/, editor/, standalone/ (the router's viewer)
+│   │   ├── viewer/             ← The viewer's page; vite.dashboard.config.ts builds it
+│   │   ├── dist-dashboard/     ← Viewer build the router serves at :8081/d/
 │   │   └── vitest.config.ts
 │   │
 │   ├── local-panel/            ← Vue.js local control panel
@@ -2171,6 +2191,7 @@ media-router/
 │   │
 │   └── shared/                 ← Shared TypeScript types and utilities
 │       ├── src/
+│       │   ├── dashboard.ts    ← Dashboard schema; script.ts / scriptRun.ts: button scripts (ADR-0027)
 │       │   ├── types/          ← Stream types, port types, config schemas
 │       │   ├── schemas/        ← JSON Schema definitions
 │       │   └── utils/          ← Shared utilities
@@ -2237,9 +2258,10 @@ GitHub Actions pipeline on every PR:
 | UR-UI-010 to UR-UI-016c | 5.3 Visual Routing Editor |
 | UR-UI-040 to UR-UI-043 | 5.3.4 Focus Mode |
 | UR-UI-017 to UR-UI-019 | Deferred to future version (URS §9) |
-| UR-UI-020 to UR-UI-023 | 5.4 Engine Dashboard |
+| UR-UI-020 to UR-UI-023 | 5.4 Engine List |
 | UR-UI-030 to UR-UI-033 | 5.5 Component Library, 5.6 Responsive Design |
 | UR-LCP-001 to UR-LCP-007 | 6 Local Control Panel |
+| UR-DSH-001 to UR-DSH-013 | 6.4 Dashboards |
 | UR-API-001 to UR-API-061 | 7 Local API |
 | UR-COM-001 to UR-COM-006 | 8.1 Engine ↔ Manager |
 | UR-COM-010 to UR-COM-012 | 8.2 Manager ↔ Web UI |

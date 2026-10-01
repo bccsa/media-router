@@ -22,8 +22,8 @@ const FORWARDED_TOPICS: Array<[topic: string, event: string]> = [
     // (e.g. 'audio-source', 'video', 'drm-connector'); the forwarder caches per
     // type and broadcasts to subscribed browsers.
     ['deviceList', 'engineDeviceList'],
-    // LCP engine start/stop (forward running state to browsers)
-    ['lcpEngineCommand', 'engineLcpCommand'],
+    // Start/Stop made on the router itself (wire name kept from the LCP era)
+    ['lcpEngineCommand', 'engineLocalRunCommand'],
     // Engine reports its running state on connect
     ['engineRunningState', 'engineRunningState'],
     // Unified patch from engine (N-1 router)

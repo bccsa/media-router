@@ -1,14 +1,27 @@
+<script lang="ts">
+/** Open modals, newest last: Escape closes only the top one. */
+const open: symbol[] = [];
+</script>
+
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue';
 
-defineProps<{ title: string }>();
+/** `width`: a Tailwind max-width class, default `max-w-md`. */
+defineProps<{ title: string; width?: string }>();
 const emit = defineEmits<{ close: [] }>();
 
+const self = Symbol();
 function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') emit('close');
+    if (e.key === 'Escape' && open[open.length - 1] === self) emit('close');
 }
-onMounted(() => document.addEventListener('keydown', onKeydown));
-onUnmounted(() => document.removeEventListener('keydown', onKeydown));
+onMounted(() => {
+    open.push(self);
+    document.addEventListener('keydown', onKeydown);
+});
+onUnmounted(() => {
+    open.splice(open.indexOf(self), 1);
+    document.removeEventListener('keydown', onKeydown);
+});
 </script>
 
 <template>
@@ -16,7 +29,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown));
         <div class="fixed inset-0 z-50 flex items-center justify-center">
             <div class="fixed inset-0 bg-black/50 backdrop-blur-sm" @click="$emit('close')" />
             <div
-                class="relative z-10 w-full max-w-md rounded-lg shadow-xl p-6 bg-card border border-border"
+                class="relative z-10 w-full rounded-lg shadow-xl p-6 bg-card border border-border"
+                :class="width ?? 'max-w-md'"
             >
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-base font-semibold text-foreground">{{ title }}</h3>

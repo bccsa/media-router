@@ -214,12 +214,12 @@ describe('EngineEventForwarder', () => {
             const { engineManager, runtime, publisher } = createMocks();
             engineManager.emit('engineSystem', 'eng-1', {
                 cpu: 12, mem: 40, ip: '10.0.0.1', ips: ['10.0.0.1'], hostname: 'mr',
-                buildNumber: 'v2', managerPaths: { connected: 1, total: 2 },
+                buildNumber: 'v2', features: ['dashboards'], managerPaths: { connected: 1, total: 2 },
             });
             expect(runtime.getData('eng-1', 'hostname')).toBe('mr');
             expect(publisher.infoFields).toHaveBeenCalledWith('eng-1', {
                 ip: '10.0.0.1', ips: ['10.0.0.1'], hostname: 'mr', buildNumber: 'v2',
-                managerPaths: { connected: 1, total: 2 },
+                features: ['dashboards'], managerPaths: { connected: 1, total: 2 },
             });
             expect(publisher.system).toHaveBeenCalledWith('eng-1', undefined, { cpu: 12, mem: 40 });
             engineManager.emit('engineSystem', 'eng-1', { cpu: 13, mem: 40 });
@@ -244,12 +244,12 @@ describe('EngineEventForwarder', () => {
         expect(publisher.devices).toHaveBeenCalledTimes(1);
     });
 
-    it('adopts an LCP start/stop as the manager intent', () => {
+    it("adopts the router's own Start/Stop as the manager intent", () => {
         const { engineManager, engineCommands, publisher } = createMocks();
-        engineManager.emit('engineLcpCommand', 'eng-1', { command: 'stop' });
+        engineManager.emit('engineLocalRunCommand', 'eng-1', { command: 'stop' });
         expect(engineCommands.setRunning).toHaveBeenCalledWith('eng-1', false);
         expect(publisher.info).toHaveBeenCalledWith('eng-1');
-        engineManager.emit('engineLcpCommand', 'eng-1', {});
+        engineManager.emit('engineLocalRunCommand', 'eng-1', {});
         expect(engineCommands.setRunning).toHaveBeenCalledTimes(1);
     });
 

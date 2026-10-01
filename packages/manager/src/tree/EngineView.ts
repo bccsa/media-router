@@ -1,6 +1,7 @@
 import {
     ENGINE_BRANCHES,
     coerceArray,
+    dashboardsOf,
     describeModule,
     dropUndefined,
     type DescribableModule,
@@ -61,6 +62,7 @@ export class EngineView {
             ips: data('ips'),
             hostname: data('hostname'),
             buildNumber: data('buildNumber'),
+            features: data('features'),
             managerPaths: data('managerPaths'),
             paths: engineManager.enginePaths(engineId),
             moduleCount: Object.keys((profile?.modules ?? {}) as Obj).length,
@@ -130,6 +132,8 @@ export class EngineView {
                 return coerceArray(this.profileConfig(engineId)?.interlocks);
             case 'profiles':
                 return this.profiles(engineId);
+            case 'dashboards':
+                return dashboardsOf(this.profileConfig(engineId));
             default:
                 return undefined;
         }

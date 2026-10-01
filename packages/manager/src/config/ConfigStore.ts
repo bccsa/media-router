@@ -6,7 +6,8 @@ import { EngineGroupRepository } from './EngineGroupRepository.js';
 import { ProfileRepository } from './ProfileRepository.js';
 import { ConfigHistoryRepository } from './ConfigHistoryRepository.js';
 import { ManagerSettingsRepository } from './ManagerSettingsRepository.js';
-import type { DgramListener } from '@media-router/shared-types';
+import { DASHBOARD_HISTORY_OWNER, DashboardRepository } from './DashboardRepository.js';
+import type { Dashboard, DgramListener } from '@media-router/shared-types';
 
 const log = createLogger('ConfigStore');
 
@@ -19,6 +20,7 @@ const log = createLogger('ConfigStore');
  *   - `ProfileRepository` — `engine_profiles`
  *   - `ConfigHistoryRepository` — `engine_config_history` + debounce timers
  *   - `ManagerSettingsRepository` — `manager_settings` (the manager's own knobs)
+ *   - `DashboardRepository` — `manager_dashboards` (ADR-0026)
  *
  * The facade orchestrates cross-table cascades (e.g. `deleteEngine` removes
  * profiles + history) so each repo stays single-table. Schema setup (DDL,
@@ -31,6 +33,7 @@ export class ConfigStore {
     private profiles: ProfileRepository;
     private history: ConfigHistoryRepository;
     private settings: ManagerSettingsRepository;
+    private dashboards: DashboardRepository;
 
     constructor(dbPath?: string) {
         if (!dbPath) {
@@ -51,6 +54,7 @@ export class ConfigStore {
         this.groups = new EngineGroupRepository(this.db);
         this.profiles = new ProfileRepository(this.db, this.history);
         this.settings = new ManagerSettingsRepository(this.db);
+        this.dashboards = new DashboardRepository(this.db, this.history);
 
         log.info({ dbPath }, 'database opened');
     }
@@ -204,6 +208,32 @@ export class ConfigStore {
         versionId: number,
     ): Record<string, unknown> | undefined {
         return this.history.getVersion(engineId, profileName, versionId);
+    }
+
+    // --- Manager dashboards (ADR-0026) ---
+
+    getDashboards(): Record<string, Dashboard> {
+        return this.dashboards.all();
+    }
+
+    getDashboard(id: string): Dashboard | undefined {
+        return this.dashboards.get(id);
+    }
+
+    putDashboard(id: string, dashboard: Dashboard): void {
+        this.dashboards.put(id, dashboard);
+    }
+
+    deleteDashboard(id: string): void {
+        this.dashboards.delete(id);
+    }
+
+    getDashboardHistory(id: string): Array<{ id: number; saved_at: string; config: string }> {
+        return this.history.list(DASHBOARD_HISTORY_OWNER, id);
+    }
+
+    getDashboardVersion(id: string, versionId: number): Dashboard | undefined {
+        return this.history.getVersion(DASHBOARD_HISTORY_OWNER, id, versionId) as Dashboard | undefined;
     }
 
     // --- Manager settings ---

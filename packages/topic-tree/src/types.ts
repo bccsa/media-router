@@ -1,4 +1,4 @@
-import type { PatchOp, WriteResult } from '@media-router/shared-types';
+import type { PatchOp, TreeErrorCode, WriteResult } from '@media-router/shared-types';
 
 /** The slice of a Socket.IO server socket the tree needs. */
 export interface TreeSocket {
@@ -35,9 +35,12 @@ export type CallHandler = (
     args: unknown,
 ) => unknown | Promise<unknown>;
 
-/** Thrown by a call handler to fail with a message the client may show. */
+/** Thrown by a call handler to fail with a message the client may show; `code` for the client to act on. */
 export class TreeCallError extends Error {
-    constructor(message: string) {
+    constructor(
+        message: string,
+        readonly code?: TreeErrorCode,
+    ) {
         super(message);
         this.name = 'TreeCallError';
     }

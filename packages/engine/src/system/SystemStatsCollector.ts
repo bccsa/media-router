@@ -20,6 +20,8 @@ export interface SystemStats {
     ips?: string[];
     hostname?: string;
     buildNumber?: string;
+    /** What this engine supports, so a newer manager can tell it from an older one. */
+    features?: string[];
     /** Manager paths connected vs configured — filled in by the engine, not the collector (issue #692). */
     managerPaths?: { connected: number; total: number };
 }
@@ -36,6 +38,9 @@ const PREFERRED_ZONE_TYPES = [
     'soc_thermal',
     'coretemp',
 ];
+
+/** What this router announces: `dashboards` it serves at :8081/d (ADR-0026). */
+const ENGINE_FEATURES = ['dashboards'];
 
 const isCoreLabel = (label: string): boolean => /^core\b/i.test(label);
 
@@ -272,6 +277,8 @@ export class SystemStatsCollector {
                     }
                     if (this.cachedBuildNumber) stats.buildNumber = this.cachedBuildNumber;
                 }
+                // Every sample: a manager learns them right after a (re)connect.
+                stats.features = ENGINE_FEATURES;
                 this.sampleCount++;
 
                 this.onStats(stats);

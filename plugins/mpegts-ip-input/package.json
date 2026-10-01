@@ -83,18 +83,22 @@
                 "fields": [
                     {
                         "key": "address",
+                        "type": "string",
                         "label": "Address"
                     },
                     {
                         "key": "port",
+                        "type": "number",
                         "label": "Port"
                     },
                     {
                         "key": "encapsulation",
+                        "type": "string",
                         "label": "Encapsulation"
                     },
                     {
                         "key": "multicast",
+                        "type": "string",
                         "label": "Multicast"
                     }
                 ]
@@ -105,11 +109,13 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "Mbps"
                     },
                     {
                         "key": "bytesReceived",
+                        "type": "string",
                         "label": "Bytes Received"
                     }
                 ]
@@ -120,6 +126,7 @@
                 "fields": [
                     {
                         "key": "video",
+                        "type": "string",
                         "label": "Detected"
                     }
                 ]

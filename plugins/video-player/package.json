@@ -167,17 +167,17 @@
                 "id": "input",
                 "label": "Input",
                 "fields": [
-                    { "key": "source", "label": "Source" },
-                    { "key": "state", "label": "State" }
+                    { "key": "source", "type": "string", "label": "Source" },
+                    { "key": "state", "type": "string", "label": "State" }
                 ]
             },
             {
                 "id": "display",
                 "label": "Display",
                 "fields": [
-                    { "key": "renderer", "label": "Renderer" },
-                    { "key": "target", "label": "Output" },
-                    { "key": "status", "label": "Status" }
+                    { "key": "renderer", "type": "string", "label": "Renderer" },
+                    { "key": "target", "type": "string", "label": "Output" },
+                    { "key": "status", "type": "string", "label": "Status" }
                 ]
             }
         ],

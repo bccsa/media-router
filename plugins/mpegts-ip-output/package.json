@@ -101,10 +101,12 @@
                 "fields": [
                     {
                         "key": "encapsulation",
+                        "type": "string",
                         "label": "Encapsulation"
                     },
                     {
                         "key": "destinations",
+                        "type": "string",
                         "label": "Destinations"
                     }
                 ]
@@ -115,11 +117,13 @@
                 "fields": [
                     {
                         "key": "bitrate",
+                        "type": "number",
                         "label": "Bitrate",
                         "unit": "Mbps"
                     },
                     {
                         "key": "bytesSent",
+                        "type": "string",
                         "label": "Bytes Sent"
                     }
                 ]

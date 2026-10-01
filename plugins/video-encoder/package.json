@@ -186,27 +186,27 @@
                 "id": "udp",
                 "label": "UDP Output",
                 "fields": [
-                    { "key": "host", "label": "Multicast" },
-                    { "key": "port", "label": "Port" }
+                    { "key": "host", "type": "string", "label": "Multicast" },
+                    { "key": "port", "type": "number", "label": "Port" }
                 ]
             },
             {
                 "id": "encoder",
                 "label": "Encoder",
                 "fields": [
-                    { "key": "codec", "label": "Codec" },
-                    { "key": "impl", "label": "Implementation" },
-                    { "key": "resolution", "label": "Resolution" },
-                    { "key": "framerate", "label": "Framerate" },
-                    { "key": "bitrate", "label": "Bitrate", "unit": "kbps" }
+                    { "key": "codec", "type": "string", "label": "Codec" },
+                    { "key": "impl", "type": "string", "label": "Implementation" },
+                    { "key": "resolution", "type": "string", "label": "Resolution" },
+                    { "key": "framerate", "type": "string", "label": "Framerate" },
+                    { "key": "bitrate", "type": "number", "label": "Bitrate", "unit": "kbps" }
                 ]
             },
             {
                 "id": "throughput",
                 "label": "Live Throughput",
                 "fields": [
-                    { "key": "Output Bitrate", "label": "Output Bitrate" },
-                    { "key": "Total Bytes", "label": "Total Bytes" }
+                    { "key": "Output Bitrate", "type": "string", "label": "Output Bitrate" },
+                    { "key": "Total Bytes", "type": "string", "label": "Total Bytes" }
                 ]
             }
         ],

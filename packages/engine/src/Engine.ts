@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { createLogger, formatError } from '@media-router/shared-types';
+import { createLogger, dashboardsOf, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
 import { probeGstElement } from './plugins/gstInspect.js';
@@ -9,6 +9,7 @@ import { MediaRouter } from './routing/MediaRouter.js';
 import type { PortEdge } from './routing/PortRegistry.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
 import { LocalChanges } from './comms/LocalChanges.js';
+import { LOCAL_PORT, LocalServer } from './comms/LocalServer.js';
 import { LcpServer } from './comms/LcpServer.js';
 import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
@@ -36,7 +37,8 @@ const log = createLogger('Engine');
 
 export interface EngineConfig {
     apiPort?: number;
-    lcpPort?: number;
+    /** The router's own server: LCP, dashboard viewer and router tree (default LOCAL_PORT). */
+    localPort?: number;
     pluginsDir?: string;
     profilesPath?: string;
     /**
@@ -81,6 +83,8 @@ export class Engine {
     readonly moduleManager: ModuleManager;
     readonly mediaRouter: MediaRouter;
     readonly managerConnection: ManagerConnection;
+    readonly localServer: LocalServer;
+    /** The Local Control Panel, kept alongside dashboards for the migration (ADR-0026). */
     readonly lcpServer: LcpServer;
     readonly profileStore: ProfileStore;
     readonly pipeWire: PipeWireManager;
@@ -156,7 +160,9 @@ export class Engine {
         );
         this.managerConnection = new ManagerConnection();
         this.localChanges = new LocalChanges(this.managerConnection);
-        this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
+        this.localServer = new LocalServer(config.localPort ?? LOCAL_PORT);
+        this.localServer._getDashboards = () => dashboardsOf(this.currentConfig);
+        this.lcpServer = new LcpServer();
         this.lcpServer._getInitData = () => this.getLcpInitData();
         this.profileStore = new ProfileStore(config.profilesPath);
         this.routerTree = createRouterTree({
@@ -169,9 +175,9 @@ export class Engine {
             commandDispatcher: () => this.commandDispatcher,
             managerConnection: this.managerConnection,
             localChanges: this.localChanges,
-            patch: (senderId, ops) => this.enginePatchRouter?.onPatch(senderId, 'lcp', ops),
+            patch: (senderId, ops) => this.enginePatchRouter?.onPatch(senderId, 'local', ops),
             device: { ips: this.deviceIps, hostname: this.deviceHostname, buildNumber: this.deviceBuildNumber },
-            build: () => String(Math.round(fs.statSync(__filename).mtimeMs)),
+            build: () => `${Math.round(fs.statSync(__filename).mtimeMs)}-${this.localServer.dashboardBuild()}`,
         });
 
         this.mediaRouter.setDependencies(
@@ -196,14 +202,14 @@ export class Engine {
         this.commandDispatcher = new CommandDispatcher({
             moduleManager: this.moduleManager,
             mediaRouter: this.mediaRouter,
-            lcpServer: this.lcpServer,
+            localServer: this.localServer,
             get currentConfig() {
                 return engine.currentConfig;
             },
             // Lazy: runController is assigned further down in this constructor,
             // and this closure is only invoked at command-dispatch time.
             isEngineRunning: () => this.runController.isRunning,
-            broadcastRunIntent: (running) => this.lcpServer.broadcastEngineRunning(running),
+            broadcastRunIntent: (running) => this.localServer.runningChanged(running),
             startModules: () => this.startModules(),
             stopModules: () => this.stopModules(),
             resetEngine: () => this.resetEngine(),
@@ -239,7 +245,7 @@ export class Engine {
                         { op: 'replace' as const, path: `/modules/${id}/enabled`, value: false },
                     ];
                     this.localChanges.config(ops);
-                    this.lcpServer.broadcastConfigUpdate(ops);
+                    this.localServer.configChanged(ops);
                 })
                 .catch((err: unknown) => {
                     log.error({ moduleId: id, err }, 'Self-stop disable failed');
@@ -255,14 +261,14 @@ export class Engine {
                     removeLiveConnection: (id) => this.mediaRouter.removeConnection(id, true),
                     publish: (ops) => {
                         this.localChanges.config(ops);
-                        this.lcpServer.broadcastConfigUpdate(ops);
+                        this.localServer.configChanged(ops);
                     },
                 },
                 moduleId,
                 portIds,
             );
 
-        // When a module generates dynamic ports, push as patch to manager + LCP
+        // When a module generates dynamic ports, push as patch to the manager and the router tree
         this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {
             log.info(
                 { moduleId, portCount: ports.length },
@@ -281,12 +287,12 @@ export class Engine {
                 { op: 'replace' as const, path: `/modules/${moduleId}/ports`, value: ports },
             ];
             this.localChanges.config(ops);
-            this.lcpServer.broadcastConfigUpdate(ops);
+            this.localServer.configChanged(ops);
         };
 
         // Single source of truth for module run state.
         this.runController = new ModuleRunController(this.lifecycle, (running) =>
-            this.lcpServer.broadcastEngineRunning(running),
+            this.localServer.runningChanged(running),
         );
 
         // System stats
@@ -302,7 +308,7 @@ export class Engine {
         this.enginePatchRouter = new EnginePatchRouter(
             this.moduleManager,
             this.mediaRouter,
-            this.lcpServer,
+            this.localServer,
             this.localChanges,
             this.lifecycle,
             () => this.currentConfig,
@@ -313,6 +319,7 @@ export class Engine {
             logForwarder: this.logForwarder,
             moduleManager: this.moduleManager,
             managerConnection: this.managerConnection,
+            localServer: this.localServer,
             lcpServer: this.lcpServer,
             pipeWire: this.pipeWire,
             deviceProviders: this.deviceProviders,
@@ -366,9 +373,9 @@ export class Engine {
         this.apiServer = await createApiServer(this, this.config.apiPort ?? 3001);
         log.info({ port: this.config.apiPort ?? 3001 }, 'Local API listening');
 
-        await this.lcpServer.start();
-        this.routerTree.attach(this.lcpServer.http);
-        log.info({ port: this.config.lcpPort ?? 8081 }, 'LCP Socket.IO + router tree listening');
+        this.lcpServer.attach(this.localServer.http);
+        await this.localServer.start();
+        this.routerTree.attach(this.localServer.http);
 
         // Auto-connect to manager if a profile is active
         const active = this.profileStore.getActive();
@@ -379,7 +386,7 @@ export class Engine {
 
         this._running = true;
         // Modules are not started yet at process boot (manager-driven
-        // auto-start comes later) — broadcast the real module run state.
+        // auto-start comes later) — tell the LCP the real module run state.
         this.lcpServer.broadcastEngineRunning(this.runController.isRunning);
         log.info('Started');
     }
@@ -398,10 +405,10 @@ export class Engine {
         }
         this._running = false;
         this.enginePatchRouter?.destroy();
-        this.lcpServer.broadcastEngineRunning(false);
+        this.localServer.runningChanged(false);
         await this.routerTree.close();
-        await this.lcpServer.stop();
-        this.lcpServer.removeAllListeners();
+        await this.lcpServer.close();
+        await this.localServer.stop();
         this.logForwarder.destroy();
         log.info('Stopped');
     }

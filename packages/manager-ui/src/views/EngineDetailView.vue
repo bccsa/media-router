@@ -193,6 +193,12 @@ const infoRows = computed(() => {
                 >
                     Manage Profiles
                 </RouterLink>
+                <RouterLink
+                    :to="`/engines/${engine.engineId}/dashboards`"
+                    class="text-sm hover:underline text-accent-fg"
+                >
+                    Dashboards
+                </RouterLink>
             </div>
         </template>
     </div>

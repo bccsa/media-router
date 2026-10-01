@@ -58,8 +58,8 @@ export const StatePatchSchema = z.object({
     ops: z.array(PatchOpSchema),
 });
 
-/** LCP engine command (start/stop). */
-export const LcpEngineCommandSchema = z.object({
+/** A Start/Stop made on the router itself (wire topic `lcpEngineCommand`). */
+export const LocalRunCommandSchema = z.object({
     command: z.enum(['start', 'stop']),
 });
 

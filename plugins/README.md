@@ -415,7 +415,8 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 | `x-advanced` | `boolean` | **(array-item fields only)** Collapse this property into a per-item **Advanced** section in `MrArrayField`, and treat it as an optional _override_: it is NOT seeded with a default on Add, an absent value means "inherit", and the control offers an explicit way back to inherit ("Inherit (global)" for enums, a ↺ reset button for numbers). Used by the transcoder for per-rendition encoder overrides. |
 | `x-contextMenu` | `boolean` | Show this setting in the module's right-click context menu |
 | `x-unit` | `string` | Unit label displayed next to the value (e.g. `"%"`, `"kbps"`, `"ms"`) |
-| `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable) |
+| `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable); on dashboards the value is read-only (`access: 'read'`) |
+| `x-enumLabels` | `{ [value]: string }` | Labels for an `enum`'s values, shown by dropdowns here and on dashboards (e.g. `{ "aac": "AAC" }`) |
 
 **Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, `minimum`/`maximum`, and item-relative `x-showWhen` / `x-maxBy` are honoured — `x-showWhen` and `x-maxBy` are evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item; a controller change (e.g. codec) pulls a dependent number down to its new `x-maxBy` cap (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
 
@@ -698,22 +699,30 @@ Declare sections that appear in a stats popup on the module node. The stats icon
         "id": "srt",
         "label": "SRT Connection",
         "fields": [
-            { "key": "bitrate", "label": "Bitrate", "unit": "kbps" },
-            { "key": "rtt", "label": "RTT", "unit": "ms" },
-            { "key": "clients", "label": "Clients" },
-            { "key": "loss", "label": "Packet Loss", "unit": "%" }
+            { "key": "bitrate", "label": "Bitrate", "unit": "kbps", "type": "number" },
+            { "key": "rtt", "label": "RTT", "unit": "ms", "type": "number" },
+            { "key": "clients", "label": "Clients", "type": "number" },
+            { "key": "loss", "label": "Packet Loss", "unit": "%", "type": "number" }
         ]
     },
     {
         "id": "rist",
         "label": "RIST Output",
         "fields": [
-            { "key": "bitrate", "label": "Bitrate", "unit": "kbps" },
-            { "key": "quality", "label": "Quality" }
+            { "key": "bitrate", "label": "Bitrate", "unit": "kbps", "type": "number" },
+            { "key": "quality", "label": "Quality", "type": "string" }
         ]
     }
 ]
 ```
+
+Every field declares its `type` (`number`, `string` or `boolean`): what the
+plugin puts in `statusData`. Dashboards (ADR-0026) pick widgets by it, so it
+must be known with the router offline; a manifest test fails on a field
+without one. A `number` field may be sent as plain number text (`"2.01"`,
+`toFixed` output) and as `"—"` while idle: widgets read the text and show the
+dash as no value. Formatted text (`"957.6 MB"`, `"105 kbps"`, `"0.00%"`) is a
+`string`: readouts only.
 
 ### Status keys and schema flags are dashboard API
 
@@ -726,6 +735,41 @@ once or on restart (`/meta` + the value's path, e.g.
 `/meta/engines/<id>/modules/<mid>/settings/volume`). Renaming any of these
 breaks dashboards; treat them like a public interface. `emitConfigUpdate` values reach the manager with guaranteed
 delivery, and are journaled while the router is offline (ADR-0025).
+
+Dashboard widgets (ADR-0026) are generic and pick values by their descriptor,
+so describe yours well: a `title`, `x-unit`, `minimum`/`maximum` (or
+`x-maxFrom`/`x-maxBy`) for anything a fader, slider or gauge should drive,
+`enum` + `x-enumLabels` for choices, `x-live` for what applies at once, and
+units on status section fields. A setting without a range is offered to number
+boxes and readouts only. Plugins cannot add dashboard widgets; a display no
+existing widget can do becomes a new generic widget in
+`packages/manager-ui/src/dashboard/widgets/`.
+
+How a manifest becomes a value descriptor is listed in
+[tree-api §8](../docs/tree-api.md#8-descriptors-meta). What the widgets take:
+
+| Widget | Takes |
+|---|---|
+| Fader, slider, bar gauge | a number with `minimum` and `maximum` |
+| Number box, trend | any number (trend: levels too) |
+| Toggle, toggle button | a boolean |
+| Dropdown | a value with an `enum` |
+| Status light | a boolean, or `health` (`ok`/`warning`/`error`/`stopped`) |
+| VU meter | a module's levels |
+| Readout | anything but an object |
+
+Controls (fader, slider, number box, toggles, dropdown) need a writable value:
+`x-readOnly` makes it read-only, so only readouts and lights take it. `x-step`
+is the step of a fader, slider and number box. `x-debounceMs` holds a dashboard
+fader's writes until the drag rests that long (and the final value on release)
+instead of one write per 100 ms — set it on anything costly to change.
+
+Status fields need a `type` in the manifest (`"number"`, `"string"`,
+`"boolean"`) so a dashboard can be built with the router offline.
+Dynamic status sections (`setDynamicSections()`, e.g. one per SRT caller)
+can be bound while the module reports them; a widget on one shows *Missing*
+when that section goes away, so put whole-module totals in a declared
+section (SRT listener mode fills `stats` for that).
 
 ---
 
@@ -2358,7 +2402,7 @@ For processes that aren't the module's health-defining producer (auxiliary tools
 | 3000 | dgram-comms (engine ↔ manager UDP) |
 | 3001 | Engine Local API (Fastify) |
 | 8080 | Manager HTTP + Socket.IO |
-| 8081 | Local Control Panel (Socket.IO) |
+| 8081 | Local Control Panel (Socket.IO); dashboards at `/d/`; router tree (Socket.IO path `/tree`) |
 | 8082 | Profile Manager |
 | 40000-50000 | Bus channel ids (name unixfd socket paths — no sockets bound) |
 

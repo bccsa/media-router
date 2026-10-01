@@ -120,5 +120,5 @@ pnpm test -- --coverage
 | 3001 | Engine Local API (Fastify) |
 | 5173 | Manager UI dev (Vite) |
 | 8080 | Manager HTTP + Socket.IO |
-| 8081 | Local Control Panel; router tree on Socket.IO path `/tree` (ADR-0024) |
+| 8081 | Local Control Panel; dashboards at `/d/` (ADR-0026); router tree on Socket.IO path `/tree` (ADR-0024) |
 | 8082 | Profile Manager |

@@ -33,9 +33,9 @@
                 "id": "routing",
                 "label": "N-1 Routing",
                 "fields": [
-                    { "key": "pairCount", "label": "Pairs" },
-                    { "key": "loopbacks", "label": "Internal Loopbacks" },
-                    { "key": "status", "label": "Status" }
+                    { "key": "pairCount", "type": "number", "label": "Pairs" },
+                    { "key": "loopbacks", "type": "number", "label": "Internal Loopbacks" },
+                    { "key": "status", "type": "string", "label": "Status" }
                 ]
             }
         ],

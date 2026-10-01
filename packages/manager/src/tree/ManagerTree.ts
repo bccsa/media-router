@@ -5,7 +5,7 @@ import type { EngineConnectionManager } from '../engines/EngineConnectionManager
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
 import type { EngineView } from './EngineView.js';
 
-const ROOTS = ['engines', 'groups', 'settings', 'plugins'];
+const ROOTS = ['engines', 'groups', 'settings', 'plugins', 'dashboards'];
 
 export interface ManagerTreeDeps {
     view: EngineView;
@@ -16,6 +16,9 @@ export interface ManagerTreeDeps {
 
 /** The manager's tree (ADR-0024), read on demand from the config store and caches. `/meta` sits beside it. */
 export class ManagerTree implements TreeSource {
+    /** Button runs (ADR-0027, set by ManagerScripts); `/runs` sits beside the roots, like `/meta`. */
+    runs: () => Record<string, unknown> = () => ({});
+
     constructor(private readonly deps: ManagerTreeDeps) {}
 
     get(path: readonly string[]): unknown {
@@ -32,8 +35,12 @@ export class ManagerTree implements TreeSource {
                 return getAt({ dgramListeners: this.deps.engineManager.dgramListeners }, rest);
             case 'plugins':
                 return getAt(this.plugins(), rest);
+            case 'dashboards':
+                return getAt(this.deps.configStore.getDashboards(), rest);
             case 'meta':
                 return this.meta(rest);
+            case 'runs':
+                return getAt(this.runs(), rest);
             default:
                 return undefined;
         }

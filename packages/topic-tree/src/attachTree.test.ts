@@ -33,6 +33,7 @@ describe('attachTree over a real Socket.IO server', () => {
             }),
             onCall: (_caller, path, method) => {
                 if (method === 'fail') throw new TreeCallError('nope');
+                if (method === 'conflict') throw new TreeCallError('taken', 'conflict');
                 return { path, method };
             },
         });
@@ -69,6 +70,7 @@ describe('attachTree over a real Socket.IO server', () => {
             ok: true, data: { path: '/engines/e1', method: 'reboot' },
         });
         expect(await request(c, 'call', { path: '/x', method: 'fail' })).toEqual({ ok: false, error: 'nope' });
+        expect(await request(c, 'call', { path: '/x', method: 'conflict' })).toEqual({ ok: false, error: 'taken', code: 'conflict' });
 
         const frame = new Promise<any>((r) => c.on('tree', r));
         const write = await request(c, 'write', { id: 4, ops: [{ op: 'replace', path: '/engines/e1/settings/volume', value: 1 }] });
