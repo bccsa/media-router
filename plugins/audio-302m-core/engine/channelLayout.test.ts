@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { POSITIONED_302M_MASK, positionedChannelsClause } from './channelLayout.js';
+import { POSITIONED_302M_MASK, channelRange, positionedChannelsClause } from './channelLayout.js';
+
+describe('channelRange', () => {
+    it('names one channel plainly and a span with an en dash', () => {
+        expect(channelRange(5, 5)).toBe('5');
+        expect(channelRange(5, 12)).toBe('5–12');
+        expect(channelRange(1, 2)).toBe('1–2');
+    });
+});
 
 describe('positionedChannelsClause', () => {
     it('renders an identity matrix and the default layout mask for every 302M width', () => {

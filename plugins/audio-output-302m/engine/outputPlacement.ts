@@ -1,5 +1,5 @@
 import type { ChannelMapEntry } from '@media-router/engine';
-import { mixMatrixClause } from '@media-router/plugin-audio-302m-core';
+import { channelRange, mixMatrixClause } from '@media-router/plugin-audio-302m-core';
 
 export interface OutputPlacementOpts {
     /** PipeWire sink node name — only used in messages. */
@@ -55,7 +55,7 @@ export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
         return {
             error:
                 `Audio device "${o.device}" is not enumerated by PipeWire, so its channel ` +
-                `count is unknown — needed to play on ${firstChannel}–${lastChannel}. ` +
+                `count is unknown — needed to play on ${channelRange(firstChannel, lastChannel)}. ` +
                 'Check the device is connected and re-pick it from the list.',
         };
     }
@@ -63,7 +63,7 @@ export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
         return {
             error:
                 `Audio device "${o.device}" has ${deviceWidth} channels — ` +
-                `cannot play on ${firstChannel}–${lastChannel}`,
+                `cannot play on ${channelRange(firstChannel, lastChannel)}`,
         };
     }
 

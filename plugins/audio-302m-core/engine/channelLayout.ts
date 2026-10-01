@@ -31,3 +31,8 @@ export function positionedChannelsClause(channels: number): string {
         ` ! audio/x-raw,channels=${channels},channel-mask=(bitmask)${mask}`
     );
 }
+
+/** "5" for one channel, "5–12" for a range — the shape every 302M health message uses. */
+export function channelRange(first: number, last: number): string {
+    return last > first ? `${first}–${last}` : `${first}`;
+}

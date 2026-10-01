@@ -1192,6 +1192,8 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   unpositioned N-wide stream (whole-device `pipewiresrc` capture, a decoded wide 302M
   mix) the layout `avenc_s302m` insists on; `audio-input-302m` and `n1-mixer-302m`
   both encode through it. `POSITIONED_302M_MASK` is the mask table.
+- `channelRange(first, last)` — `"5"` for one channel, `"5–12"` for a range: the device-channel
+  span in a 302M module's health messages (input capture, output placement).
 - `applyVolumeLiveUpdate(changes)` (protected on `GstPluginBase`) — the shared
   `volume`/`audioEnabled` live-update for any pipeline with the standard
   `volume name=vol` fader: merges config + drives the element (gst only, no pactl).
@@ -1370,7 +1372,7 @@ A producer whose bus stream width is a runtime choice implements
 `getBusStreamChannels(portId): number | undefined` on its module. `MediaRouter.getModuleBusSources`
 hands the value to every consumer of that port as `sourceChannels`, and the 302M fan-in
 (`buildAudioMixInput`) sizes each branch's channel-map matrix from it. It describes the
-WIRE, never a config field: `audio-input-302m` returns its normalised `channels` setting;
+WIRE, never a config field: `audio-input-302m` returns its normalised `channels` setting (Mono → 2, dual-mono);
 `aes67-input`, whose `channels` setting is the received stream while the wire stays
 stereo, declares nothing. Consumers default to stereo when nothing is declared.
 

@@ -22,6 +22,7 @@ nothing in `packages/engine` imports it back
 | `build302mEncodeBranch(opts?)` | PCM → 302M-in-TS encode tail; the caller appends `buildBusSink(...)`. |
 | `mixMatrixClause(map, src, dst)` | A `ChannelMapEntry[]` rendered as an `audioconvert mix-matrix` (fan-out, downmix, channel picking, per-channel gain). |
 | `positionedChannelsClause(n)` | `audioconvert <identity matrix> ! audio/x-raw,channels=n,channel-mask=<default layout>` — gives an unpositioned n-wide stream (whole-device capture, decoded wide 302M) the layout `avenc_s302m` insists on. `POSITIONED_302M_MASK` is the table. |
+| `channelRange(first, last)` | `"5"` for one channel, `"5–12"` for a range — the device-channel span in a 302M module's health messages (input capture, output placement). |
 
 All three fan-in rules — pacing, chaining only from `continuationName`, and
 the single-source bypass — are locked in
