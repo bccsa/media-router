@@ -119,7 +119,7 @@ export class AudioMixerModule extends GstPluginBase {
             outputPort: ep.port,
             channels: (config.channels as number) ?? 2,
             volume: volumePct / 100,
-            latencyMs: Number(config.mixLatencyMs ?? 200),
+            latencyMs: Number(config.mixLatencyMs ?? 20),
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
         });
         if (!result) return null;

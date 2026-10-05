@@ -41,7 +41,7 @@ def check(name, cond):
 
 
 CAPS = "audio/x-raw,rate=48000,channels=2"
-MIXER = ("audiomixer name=mixin force-live=true latency=100000000 min-upstream-latency=100000000"
+MIXER = ("audiomixer name=mixin force-live=true latency=100000000"
          f" start-time-selection=first ! {CAPS} ! identity name=mixin_out sync=true ! fakesink sync=false"
          f"  ( name=mixin_in_a audiotestsrc is-live=true ! audioconvert ! {CAPS} ! queue ) ! mixin.sink_0")
 

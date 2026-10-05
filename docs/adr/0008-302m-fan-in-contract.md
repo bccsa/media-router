@@ -27,7 +27,7 @@ unsynced tail: **11.64 s CPU per 10 s wall**, the same pipeline with the pacer:
 Healthy flow keeps its rate (a live stream already advances at clock rate; the
 pacer only stops the pipeline running AHEAD of the clock). The cost is a one-off
 startup offset of about 2× the mixer latency — measured 0.12 / 0.42 / 1.02 s at
-latency 50 / 200 / 500 ms — and nothing per buffer after that. Sink-agnostic by
+latency 50 / 200 / 500 ms — and nothing per buffer after that. (The 2× was the forced `min-upstream-latency`; see the 2026-10-05 amendment.) Sink-agnostic by
 construction, so it holds for every 302M module's tail.
 
 **Opaque continuation.** `buildAudioMixInput` returns
@@ -141,3 +141,25 @@ whole-pipeline relaunch, so an upstream flap never restarts a live-input
 aggregator or anything below it. The audio-output-302m is a leaf (nothing
 downstream to ripple) and its branches are stamp-aligned at launch, so it
 keeps the classic restart for now.
+
+## Amendment (2026-10-05): the pacer hold is `latency`, not a PTS lead plus 2× latency
+
+Measured on .103 with bus edge-socket taps (same socket, mute steps, five
+replica shapes): the mixer arm as built held audio for **~350 ms at
+`mixLatencyMs` 50** (a real 620 ms through a live-input `audio-mixer` hop,
+1270 ms at 500). Two causes, both removed:
+
+1. **PTS lead.** `mpegtsmux` writes PES PTS ~250 ms ahead of the PCR, and
+   `tsdemux` bases running time on the PCR, so every buffer reaches the
+   pacer ~250 ms "early" and `identity sync=true` holds it. The branches now
+   run `tsdemux ignore-pcr=true` (running time from the first PTS; lead ≈ 0).
+   Stamp-aligned callers (`audio-output-302m`, `alignBranchesToStamps`) opt
+   out with `ignorePcr: false` and keep PCR timing.
+2. **`min-upstream-latency`.** The branches report no latency; forcing it to
+   `latency` doubled the reported pipeline latency and so the hold. Dropped.
+
+Result (replica, mix latency 50 ms): +46 ms; at 20 ms: +17 ms; the deployed
+`audio-mixer` hop measured 0–30 ms on the wire at 50. The hop now costs at
+most the configured budget, so the budget is the latency knob:
+its floor is 20 ms (was 50). The aggregator alone adds ~9 ms; the pacer is
+still required for the post-EOS free-run (rule 1 stands).

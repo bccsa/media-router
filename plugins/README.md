@@ -1134,7 +1134,13 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
 }
 ```
 
-- `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs? })` —
+- `ignorePcr` (option of `buildAudioMixInput` and `MixInputBranchOpts`, default **true**):
+  every branch `tsdemux` runs `ignore-pcr=true`, so running time follows the PTS and the
+  pacer hold is at most the latency budget (mpegtsmux writes PES PTS ~250 ms ahead of the
+  PCR; on PCR timing a `sync=true` element downstream holds that lead). A presentation
+  module that stamp-aligns its branches (`alignBranchesToStamps`, e.g. audio-output-302m)
+  MUST pass `ignorePcr: false` and keep PCR timing. ADR-0008 amendment 2026-10-05.
+- `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs?, liveInputs?, ignorePcr? })` —
   N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
   a dark input silence-fills instead of stalling the mix), or a direct branch with no
   aggregator at all when there is exactly one source. Returns
@@ -1411,7 +1417,8 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   renders every start-time branch as `( name=<bin> … ) ! <mixer>.sink_<i>`
   through the same `liveMixInputBranch`, and always builds the mixer arm
   (the lone-source bypass of ADR-0008 rule 3 is given up: a hot add needs
-  the aggregator to exist — so a lone input pays `mixLatencyMs` plus the
+  the aggregator to exist — so a lone input pays `mixLatencyMs` (the hop costs at
+  most the budget — ADR-0008 amendment 2026-10-05) plus the
   pacer start-up, the cost that bypass avoided).
 - `description` is the branch text ending in the element whose src pad
   links to the aggregator; it is absent on a remove (the connection record

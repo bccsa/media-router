@@ -798,7 +798,7 @@ def test_live_input_branches():
         return
     caps = "audio/x-raw,rate=48000,channels=2"
     tone = f"audiotestsrc is-live=true ! audioconvert ! {caps} ! queue"
-    mixer = ("audiomixer name=mixin force-live=true latency=100000000 min-upstream-latency=100000000"
+    mixer = ("audiomixer name=mixin force-live=true latency=100000000"
              " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
              " ! identity name=mixin_out sync=true ! level name=lvl post-messages=true interval=100000000"
              " ! fakesink sync=false")
@@ -883,7 +883,7 @@ def test_live_input_branches():
     # Control: the default (drain) on the real producer shape — force-live mix
     # into the 302M encode and a bus tee with no edge, i.e. no sink element to
     # post EOS — stalls the full timeout (the .103 measurement behind #787).
-    producer = ("audiomixer name=mixin force-live=true latency=200000000 min-upstream-latency=200000000"
+    producer = ("audiomixer name=mixin force-live=true latency=200000000"
                 " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
                 " ! identity name=mixin_out sync=true ! audioconvert ! audioresample"
                 " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m strict=experimental"

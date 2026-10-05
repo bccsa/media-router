@@ -53,11 +53,11 @@
                 },
                 "mixLatencyMs": {
                     "type": "number",
-                    "default": 200,
-                    "minimum": 50,
+                    "default": 20,
+                    "minimum": 20,
                     "maximum": 2000,
                     "x-widget": "slider",
-                    "x-step": 25,
+                    "x-step": 10,
                     "x-unit": "ms",
                     "title": "Mix Latency",
                     "description": "How long to wait for lagging inputs before emitting; starved inputs get silence."

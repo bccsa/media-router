@@ -24,7 +24,7 @@ describe('pacedMixer', () => {
             }),
         ).toBe(
             'audiomixer name=omix0 force-live=true latency=50000000' +
-                ' min-upstream-latency=50000000 start-time-selection=first' +
+                ' start-time-selection=first' +
                 ' ! audio/x-raw,rate=48000,channels=2' +
                 ' ! identity name=omix0_pace sync=true',
         );
@@ -63,7 +63,7 @@ describe('buildAudioMixInput — many sources (mixer arm)', () => {
         expect(continuationName).toBe('mixin_out');
         expect(fragment).toContain('audiomixer name=mixin force-live=true');
         expect(fragment).toContain('latency=200000000');
-        expect(fragment).toContain('min-upstream-latency=200000000');
+        expect(fragment).not.toContain('min-upstream-latency');
     });
 
     it('pins the mixer OUTPUT caps — a force-live aggregator fixates before inputs deliver caps and otherwise goes mono (gate01 VU bug)', () => {
@@ -96,9 +96,9 @@ describe('buildAudioMixInput — many sources (mixer arm)', () => {
         expect(fragment).toContain('identity name=progmix_out sync=true');
     });
 
-    it('clamps the latency budget to 50–2000 ms', () => {
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 10 }).fragment).toContain(
-            'latency=50000000',
+    it('clamps the latency budget to 20–2000 ms', () => {
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).fragment).toContain(
+            'latency=20000000',
         );
         expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).fragment).toContain(
             'latency=2000000000',
@@ -120,7 +120,7 @@ describe('buildAudioMixInput — many sources (mixer arm)', () => {
         const { fragment, continuationName } = buildAudioMixInput({ sources: [] });
         expect(fragment).toBe(
             'audiomixer name=mixin force-live=true latency=200000000' +
-                ' min-upstream-latency=200000000 start-time-selection=first' +
+                ' start-time-selection=first' +
                 ' ! capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2"' +
                 ' ! identity name=mixin_out sync=true',
         );
@@ -147,9 +147,9 @@ describe('buildAudioMixInput — declared aggregation latency', () => {
         expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 50 }).mixerLatencyNs).toBe(
             50_000_000,
         );
-        // Same clamp as the fragment: 50–2000 ms.
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 10 }).mixerLatencyNs).toBe(
-            50_000_000,
+        // Same clamp as the fragment: 20–2000 ms.
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).mixerLatencyNs).toBe(
+            20_000_000,
         );
         expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).mixerLatencyNs).toBe(
             2_000_000_000,
@@ -197,7 +197,7 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
         });
         expect(fragment).toContain('unixfdsrc socket-path=/tmp/mr-bus-40001-abc.sock');
         expect(fragment).toContain(
-            'tsdemux name=mixin_demux0 latency=0 ! audio/x-smpte-302m ! avdec_s302m',
+            'tsdemux name=mixin_demux0 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m',
         );
         // `sourceChannels: 1` still means a stereo 302M wire (no mono layout
         // exists) — the matrix must be 2 columns wide.
@@ -268,7 +268,7 @@ describe('buildAudioMixInput — live-input mode (#787)', () => {
         expect(branch).toBe(
             'unixfdsrc socket-path=/tmp/mr-bus-40001.sock' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
-                ' ! tsdemux name=d1 latency=0 ! audio/x-smpte-302m ! avdec_s302m' +
+                ' ! tsdemux name=d1 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m' +
                 ' ! audioconvert ! audioresample' +
                 ' ! audio/x-raw,rate=48000,channels=2' +
                 ' ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0',
@@ -301,7 +301,7 @@ describe('buildAudioMixInput — shared branch contract', () => {
         for (const sources of [[SRC], [SRC, SRC2]]) {
             const { fragment } = buildAudioMixInput({ sources });
             expect(fragment).toContain(
-                'tsdemux name=mixin_demux0 latency=0 ! audio/x-smpte-302m ! avdec_s302m',
+                'tsdemux name=mixin_demux0 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m',
             );
         }
     });
@@ -403,5 +403,33 @@ describe('normalize302mChannels', () => {
         const row0 = [z, z, z, z, z, z, '(float)1.0000', z].join(', ');
         const row1 = [z, z, z, z, z, z, z, '(float)1.0000'].join(', ');
         expect(fragment).toContain(`mix-matrix="<<${row0}>, <${row1}>>"`);
+    });
+});
+
+describe('fan-in hop latency — the hop costs mixLatencyMs, not a PTS lead', () => {
+    it('ignores the PCR on every branch unless a stamp-aligned caller opts out', () => {
+        const dflt = buildAudioMixInput({ sources: [SRC, SRC2] });
+        expect(dflt.fragment.match(/ignore-pcr=true/g)).toHaveLength(2);
+        const kept = buildAudioMixInput({ sources: [SRC, SRC2], ignorePcr: false });
+        expect(kept.fragment).not.toContain('ignore-pcr');
+        const live = buildAudioMixInput({ sources: [SRC], liveInputs: true });
+        expect(live.fragment).toContain('ignore-pcr=true');
+    });
+
+    it('never forces an upstream latency on the aggregator (it doubled the pacer hold)', () => {
+        const m = pacedMixer({
+            name: 'm',
+            latencyNs: 50_000_000,
+            caps: 'audio/x-raw',
+            pacerName: 'o',
+        });
+        expect(m).toContain('latency=50000000');
+        expect(m).not.toContain('min-upstream-latency');
+    });
+
+    it('floors the latency budget at 20 ms', () => {
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).mixerLatencyNs).toBe(
+            20_000_000,
+        );
     });
 });

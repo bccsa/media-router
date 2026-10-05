@@ -123,8 +123,9 @@ export interface N1PipelineInputs {
 // The output mixers bridge only intra-pipeline jitter between the input
 // stages' continuous force-live streams — a fixed small budget, NOT the
 // configurable source-side latency (reusing it would double the audible
-// latency to every output).
-const OUTPUT_MIX_LATENCY_NS = 50_000_000;
+// latency to every output). 20 ms: the hop costs this plus the input budget
+// (measured .103 2026-10-05, ADR-0008 amendment).
+const OUTPUT_MIX_LATENCY_NS = 20_000_000;
 
 /**
  * Assemble the full pipeline:

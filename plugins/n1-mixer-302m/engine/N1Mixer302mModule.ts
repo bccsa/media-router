@@ -135,7 +135,7 @@ export class N1Mixer302mModule extends GstPluginBase {
         const pipeline = buildN1Pipeline({
             inputs,
             outputs,
-            latencyMs: Number(config.mixLatencyMs ?? 200),
+            latencyMs: Number(config.mixLatencyMs ?? 20),
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
             channels,
         });
