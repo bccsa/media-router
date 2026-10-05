@@ -13,7 +13,14 @@
  */
 
 import { eqFanOutWrites, resolveEqWrite } from './eqBands.js';
-import { cfg, clampNumber, dbToLinear, type LadspaDynMode, type PropMap } from './lspConfig.js';
+import {
+    clampNumber,
+    dbToLinear,
+    launchProps,
+    type LadspaDynMode,
+    type PropMap,
+    type PropWrite,
+} from './lspConfig.js';
 
 /** The LADSPA-backed modes plus the two that build no LSP element: `none`
  *  (no stage) and `ducker` (native `level`→`volume` loop). */
@@ -80,6 +87,8 @@ export const LIMITER_PROP_MAP: Record<string, PropMap> = {
  *  element (a `command_error` per keystroke otherwise). */
 export interface ChainStages {
     hpf: boolean;
+    /** LSP Autogain stage (`agc`), null when auto gain is off. */
+    agcElement: string | null;
     eqElement: string | null;
     dynElement: string | null;
     dynMode: DynamicsMode;
@@ -93,10 +102,8 @@ export interface ChainStages {
 /** The two stage facts that decide the dynamics element AND its properties. */
 export type DynStages = Pick<ChainStages, 'dynMode' | 'keyedGate'>;
 
-export interface LiveTarget {
+export interface LiveTarget extends PropWrite {
     element: string;
-    prop: string;
-    value: number | boolean;
 }
 
 /**
@@ -110,21 +117,16 @@ export interface LiveTarget {
 export function dynProps(stages: DynStages, config: Record<string, unknown>): string[] {
     const mode = stages.dynMode;
     if (mode === 'none' || mode === 'ducker') return [];
-    const map = DYN_PROP_MAPS[mode];
-    const props = Object.entries(map).map(
-        ([key, { prop, convert }]) => `${prop}=${convert(cfg(config, key))}`,
-    );
-    // Downward expansion — the broadcast-useful direction (0 = upward).
-    if (mode === 'expander') props.push('expander-mode=1');
+    const props = launchProps(DYN_PROP_MAPS[mode], config);
+    // Downward expansion. LSP: 0 = down, 1 = up (measured; the element default is up).
+    if (mode === 'expander') props.push('expander-mode=0');
     // External key on the ONE sc-* element we keep.
     if (mode === 'gate' && stages.keyedGate) props.push('sidechain-input=1');
     return props;
 }
 
 export function limiterProps(config: Record<string, unknown>): string[] {
-    return Object.entries(LIMITER_PROP_MAP).map(
-        ([key, { prop, convert }]) => `${prop}=${convert(cfg(config, key))}`,
-    );
+    return launchProps(LIMITER_PROP_MAP, config);
 }
 
 /**

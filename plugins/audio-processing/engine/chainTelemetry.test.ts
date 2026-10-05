@@ -10,19 +10,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChainTelemetry, type ChainTelemetryHooks } from './chainTelemetry.js';
 import { DYNAMICS_GRAPH, DUCK_ENVELOPE_GRAPH, EQ_GRAPH } from './graphPublisher.js';
-import type { ChainStages } from './lspProcessing.js';
 import type { StatusGraph } from '@media-router/engine';
-
-const stages = (over: Partial<ChainStages> = {}): ChainStages =>
-    ({
-        eqElement: null,
-        dynElement: null,
-        limiterElement: null,
-        dynMode: 'none',
-        keyedGate: false,
-        duckerKey: false,
-        ...over,
-    }) as ChainStages;
+import { stages } from './chainStages.fixture.js';
 
 interface Harness {
     telemetry: ChainTelemetry;

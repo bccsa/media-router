@@ -85,7 +85,7 @@ export function normalize302mChannels(n: number | undefined): S302mChannels {
 export interface PacedMixerOpts {
     /** Element name of the `audiomixer`. */
     name: string;
-    /** Aggregation latency budget, nanoseconds (also `min-upstream-latency`). */
+    /** Aggregation latency budget, nanoseconds. */
     latencyNs: number;
     /** Output caps pinned on the mixer's src pad. */
     caps: string;
@@ -107,8 +107,9 @@ export interface PacedMixerOpts {
 export function pacedMixer(opts: PacedMixerOpts): string {
     const caps = opts.capsName ? `capsfilter name=${opts.capsName} caps="${opts.caps}"` : opts.caps;
     return (
-        `audiomixer name=${opts.name} force-live=true ` +
-        `latency=${opts.latencyNs} min-upstream-latency=${opts.latencyNs}` +
+        // No `min-upstream-latency`: the branches report none, and forcing it
+        // doubled the pacer hold (2× latency, measured .103 2026-10-05).
+        `audiomixer name=${opts.name} force-live=true latency=${opts.latencyNs}` +
         ' start-time-selection=first' +
         ` ! ${caps}` +
         ` ! identity name=${opts.pacerName} sync=true`
@@ -121,7 +122,7 @@ export interface AudioMixInputOpts {
     channels?: number;
     /** audiomixer latency budget in ms — how long the aggregator waits for
      *  lagging inputs before emitting (silence-filling starved pads).
-     *  Default 200, clamped 50–2000. Unused (and free) in the single-source
+     *  Default 200, clamped 20–2000. Unused (and free) in the single-source
      *  arm, which has no aggregator to wait on anything. */
     latencyMs?: number;
     /** Name PREFIX for the fan-in's elements, not an element name: the
@@ -136,6 +137,10 @@ export interface AudioMixInputOpts {
      *  `sink_<i>` pad, mixer arm even for ONE source (ADR-0008 addendum).
      *  Default off — classic callers keep byte-identical strings. */
     liveInputs?: boolean;
+    /** `tsdemux ignore-pcr` on every branch (default true). mpegtsmux writes PES
+     *  PTS ~250 ms ahead of the PCR and a sync element downstream honours that
+     *  lead (measured .103). Off only for stamp-aligned (presentation) callers. */
+    ignorePcr?: boolean;
 }
 
 /**
@@ -152,6 +157,8 @@ export interface MixInputBranchOpts {
     channels?: number;
     /** Per-branch post-decode queue bound in ms. Default 100. */
     branchQueueMs?: number;
+    /** See `AudioMixInputOpts.ignorePcr`. Default true. */
+    ignorePcr?: boolean;
     /** `name=` of the branch's tsdemux. */
     demuxName: string;
 }
@@ -193,6 +200,10 @@ export function liveInputBranchFor(
     return liveMixInputBranch(mixerName, source, opts);
 }
 
+/** `tsdemux` keeps PCR timing only when a caller opts out (stamp-aligned branches). */
+const ignorePcrClause = (ignorePcr: boolean | undefined): string =>
+    ignorePcr === false ? '' : ' ignore-pcr=true';
+
 /** One source's decode branch: 302M edge → raw audio at the mix caps, ending
  *  in its branch queue (the element whose src pad links into the aggregator). */
 export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchOpts): string {
@@ -208,7 +219,8 @@ export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchO
           )
         : '';
     return (
-        `${src} ! tsdemux name=${opts.demuxName} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
+        `${src} ! tsdemux name=${opts.demuxName} latency=0${ignorePcrClause(opts.ignorePcr)}` +
+        ` ! audio/x-smpte-302m ! avdec_s302m` +
         ` ! audioconvert${matrix} ! audioresample` +
         ` ! audio/x-raw,rate=48000,channels=${channels}` +
         ` ! queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`
@@ -244,7 +256,7 @@ export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchO
  *   keeps its rate — a live stream already advances at clock rate; the pacer
  *   only stops the pipeline running AHEAD of the clock, which costs a one-off
  *   startup offset of about 2 × the mixer latency (measured 0.12 / 0.42 /
- *   1.02 s at latency 50 / 200 / 500 ms) and nothing per buffer after that.
+ *   1.02 s at latency 50 / 200 / 500 ms) and nothing per buffer after that. The 2× was the forced `min-upstream-latency`, dropped 2026-10-05 (ADR-0008 amendment).
  *   Sink-agnostic by construction, so it holds for every 302M module's tail.
  * - `start-time-selection=first`: where the mixer's OUTPUT timeline begins.
  *   The aggregator default (`zero`) starts the output segment at running time
@@ -320,7 +332,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     demuxes: string[];
 } {
     const channels = opts.channels ?? 2;
-    const latencyNs = Math.max(50, Math.min(2000, opts.latencyMs ?? 200)) * 1_000_000;
+    const latencyNs = Math.max(20, Math.min(2000, opts.latencyMs ?? 200)) * 1_000_000;
     const mixerName = opts.mixerName ?? 'mixin';
     const branchQueueMs = opts.branchQueueMs;
     const branchQueueNs = Math.max(20, Math.min(2000, branchQueueMs ?? 100)) * 1_000_000;
@@ -344,7 +356,8 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
             ? mixMatrixClause(s.channelMap, normalize302mChannels(s.sourceChannels ?? 2), channels)
             : '';
         return (
-            `${src} ! tsdemux name=${demuxName(s, i)} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
+            `${src} ! tsdemux name=${demuxName(s, i)} latency=0${ignorePcrClause(opts.ignorePcr)}` +
+            ` ! audio/x-smpte-302m ! avdec_s302m` +
             ` ! audioconvert${matrix} ! audioresample`
         );
     };
@@ -375,7 +388,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     // Live-input mode: each branch is a named bin on an explicit request pad,
     // the exact string a hot add sends — so a later live remove finds it.
     const branches = opts.sources.map((s, i) => {
-        const branchOpts = { channels, branchQueueMs };
+        const branchOpts = { channels, branchQueueMs, ignorePcr: opts.ignorePcr };
         if (!live) {
             const text = build302mMixBranch(s, { ...branchOpts, demuxName: demuxName(s, i) });
             return `${text} ! ${mixerName}.`;

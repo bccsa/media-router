@@ -118,6 +118,7 @@ describe('DEFAULTS mirrors the manifest configSchema', () => {
         const structural = new Set([
             'mode',
             'hpfEnabled',
+            'agcEnabled',
             'eqEnabled',
             'limiterEnabled',
             'mixLatencyMs',

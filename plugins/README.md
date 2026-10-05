@@ -1090,7 +1090,7 @@ Real examples: [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts) (HW
 
 `findLadspaElement(suffix)` (from `@media-router/engine`) resolves a GStreamer `ladspa` wrapper element by name suffix — e.g. `findLadspaElement('sc-compressor-stereo')`. LADSPA element names embed the plugin's .so filename *including its version* (`ladspa-lsp-plugins-ladspa-1-2-5-so-…`), so never hardcode them; resolve at start and fail with a clear error when null (plugin library not installed). Real example: [`audio-processing`](audio-processing/engine/AudioProcessingModule.ts) (its predecessor [`audio-dynamics`](audio-dynamics/engine/AudioDynamicsModule.ts) is deprecated). Note the wrapper exposes a multi-audio-input plugin as **one interleaved sink pad** (all audio ports in declaration order) — merge streams with `deinterleave`/`interleave` and force `channel-mask=(bitmask)0x0` on the merged caps. Prefer the SELF-keyed LSP variant of a processor (`compressor-stereo`, not `sc-compressor-stereo`) whenever the DSP doesn't need an external key: it takes plain stereo, so the whole interleave dance disappears.
 
-Two more LADSPA facts that cost time to rediscover: control ports carry **no enum nicks and no units**, so anything enum-like (LSP's `filter-type-N`, `filter-mode-N`, `filter-slope-N`) arrives as a bare `gint` and the label↔index map has to live in the plugin (re-check it on any library version bump), and `(G)`-suffixed ports are **linear gain factors, not dB** — convert in the plugin and clamp to the port range from `gst-inspect-1.0` (an out-of-range write is a GObject warning per keystroke). See `audio-processing/engine/lspProcessing.ts`.
+Three more LADSPA facts that cost time to rediscover: control ports carry **no enum nicks and no units**, so anything enum-like (LSP's `filter-type-N`, `filter-mode-N`, `filter-slope-N`) arrives as a bare `gint` and the label↔index map has to live in the plugin (re-check it on any library version bump), and `(G)`-suffixed ports are **linear gain factors, not dB** — convert in the plugin and clamp to the port range from `gst-inspect-1.0` (an out-of-range write is a GObject warning per keystroke), and LSP Autogain's `*-gain-{grow,fall}-amount` ports are an **index into a fixed dB list** (0.1, 0.5, 1, 3, 6, 9, 10, 12, 15, 18, 20, 21, 24), not a dB value, with element defaults far too slow for speech. See `audio-processing/engine/lspProcessing.ts` and `agcStage.ts`.
 
 ##### Shared video-encoder helpers
 
@@ -1134,7 +1134,13 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
 }
 ```
 
-- `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs? })` —
+- `ignorePcr` (option of `buildAudioMixInput` and `MixInputBranchOpts`, default **true**):
+  every branch `tsdemux` runs `ignore-pcr=true`, so running time follows the PTS and the
+  pacer hold is at most the latency budget (mpegtsmux writes PES PTS ~250 ms ahead of the
+  PCR; on PCR timing a `sync=true` element downstream holds that lead). A presentation
+  module that stamp-aligns its branches (`alignBranchesToStamps`, e.g. audio-output-302m)
+  MUST pass `ignorePcr: false` and keep PCR timing. ADR-0008 amendment 2026-10-05.
+- `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs?, liveInputs?, ignorePcr? })` —
   N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
   a dark input silence-fills instead of stalling the mix), or a direct branch with no
   aggregator at all when there is exactly one source. Returns
@@ -1411,7 +1417,8 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   renders every start-time branch as `( name=<bin> … ) ! <mixer>.sink_<i>`
   through the same `liveMixInputBranch`, and always builds the mixer arm
   (the lone-source bypass of ADR-0008 rule 3 is given up: a hot add needs
-  the aggregator to exist — so a lone input pays `mixLatencyMs` plus the
+  the aggregator to exist — so a lone input pays `mixLatencyMs` (the hop costs at
+  most the budget — ADR-0008 amendment 2026-10-05) plus the
   pacer start-up, the cost that bypass avoided).
 - `description` is the branch text ending in the element whose src pad
   links to the aggregator; it is absent on a remove (the connection record
@@ -2481,7 +2488,7 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
 | N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one force-live `audiomixer` per output (i ≠ o matrix), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignBusChannel` only for outputs with contributors |
-| Audio Processing | `plugins/audio-processing/` | HPF → EQ → dynamics → limiter → ducker on the 302M bus (supersedes the PipeWire `audio-dynamics`). Program + sidechain are both `buildAudioMixInput` fan-ins; LSP LADSPA stages resolved per enabled stage; dB→linear + range clamping isolated in `lspProcessing.ts`; the `sc-*` 4-channel packing survives only for a sidechain-keyed gate |
+| Audio Processing | `plugins/audio-processing/` | HPF → AGC → EQ → dynamics → limiter → ducker on the 302M bus (supersedes the PipeWire `audio-dynamics`). Program + sidechain are both `buildAudioMixInput` fan-ins; LSP LADSPA stages resolved per enabled stage; dB→linear + range clamping isolated in `lspProcessing.ts`; the auto gain (LSP Autogain: kick-in level, target, max gain, speed presets) in `agcStage.ts`; the `sc-*` 4-channel packing survives only for a sidechain-keyed gate |
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates, **codec-aware decoder selection** (see below) |
 | Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignBusChannel(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |

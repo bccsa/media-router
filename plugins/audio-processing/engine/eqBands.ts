@@ -8,7 +8,7 @@
  * Re-check on any lsp-plugins version bump.
  */
 
-import { cfg, clampNumber, dbToLinear } from './lspConfig.js';
+import { cfg, clampNumber, dbToLinear, type PropWrite } from './lspConfig.js';
 
 /** UI bands (0–5). Bands 6–15 exist on the element and stay `filter-type=0`. */
 export const EQ_BANDS = 6;
@@ -121,18 +121,12 @@ export function eqProps(config: Record<string, unknown>): string[] {
     return props;
 }
 
-/** An element property write, before the caller stamps the element name on. */
-export interface EqWrite {
-    prop: string;
-    value: number | boolean;
-}
-
 /**
  * One live `eq*` config key → the property to write on the EQ element, or null
  * when the key drives nothing (a band outside the 6-band UI, or a fan-out knob
  * — see `eqFanOutWrites`).
  */
-export function resolveEqWrite(key: string, value: unknown): EqWrite | null {
+export function resolveEqWrite(key: string, value: unknown): PropWrite | null {
     const band = EQ_BAND_KEY_RE.exec(key);
     if (band) {
         const index = Number(band[1]);
@@ -147,7 +141,7 @@ export function resolveEqWrite(key: string, value: unknown): EqWrite | null {
 }
 
 /** `eqMode` / `eqSlope` are single UI knobs that fan out to all six bands. */
-export function eqFanOutWrites(key: string, value: unknown): EqWrite[] {
+export function eqFanOutWrites(key: string, value: unknown): PropWrite[] {
     const map =
         key === 'eqMode'
             ? { table: EQ_FILTER_MODES, prop: 'filter-mode' }

@@ -5,20 +5,9 @@ import {
     limiterProps,
     resolveEqFanOut,
     resolveLiveTarget,
-    type ChainStages,
 } from './lspProcessing.js';
 import { EQ_BANDS } from './eqBands.js';
-
-const stages = (over: Partial<ChainStages> = {}): ChainStages => ({
-    hpf: false,
-    eqElement: null,
-    dynElement: null,
-    dynMode: 'none',
-    keyedGate: false,
-    limiterElement: null,
-    duckerKey: false,
-    ...over,
-});
+import { stages } from './chainStages.fixture.js';
 
 describe('dynProps', () => {
     it('none / ducker use no LADSPA element at all', () => {
@@ -70,7 +59,7 @@ describe('dynProps', () => {
 
     it('expander runs downward', () => {
         expect(dynProps({ dynMode: 'expander', keyedGate: false }, {})).toContain(
-            'expander-mode=1',
+            'expander-mode=0', // down; 1 is UP on lsp-plugins 1.2.33
         );
     });
 });

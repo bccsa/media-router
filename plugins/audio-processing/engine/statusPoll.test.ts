@@ -1,17 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { hasPollableStages, readChainMeters, MeterPoll } from './statusPoll.js';
-import type { ChainStages } from './lspProcessing.js';
-
-const stages = (over: Partial<ChainStages> = {}): ChainStages => ({
-    hpf: false,
-    eqElement: null,
-    dynElement: null,
-    dynMode: 'none',
-    keyedGate: false,
-    limiterElement: null,
-    duckerKey: false,
-    ...over,
-});
+import { stages } from './chainStages.fixture.js';
 
 /** Property reader over a `${element}.${prop}` table; anything absent reads
  *  back undefined, exactly as an unknown LSP port would. */
@@ -27,6 +16,7 @@ describe('hasPollableStages', () => {
         expect(hasPollableStages(stages({ hpf: true }))).toBe(false); // native element
         expect(hasPollableStages(stages({ eqElement: 'eq-el' }))).toBe(true);
         expect(hasPollableStages(stages({ limiterElement: 'lim-el' }))).toBe(true);
+        expect(hasPollableStages(stages({ agcElement: 'agc-el' }))).toBe(true);
     });
 });
 
@@ -116,6 +106,20 @@ describe('readChainMeters', () => {
         expect(grDb).toBeCloseTo(-2, 5);
     });
 
+    it('reads the auto gain correction and input loudness, and adds its latency', async () => {
+        const read = reader({
+            'agc.latency': 48,
+            'agc.gain-correction-meter': DB(6),
+            'agc.input-loudness-meter-for-long-period': DB(-31),
+        });
+        const { status, agcDb } = await readChainMeters(stages({ agcElement: 'agc-el' }), read);
+        expect(status.agcGain).toBe('+6.0 dB');
+        expect(status.agcInput).toBe('-31.0 LUFS');
+        expect(status.latency).toBe('1.0 ms');
+        expect(status.inputLevel).toBeUndefined(); // autogain has no L/R level ports
+        expect(agcDb).toBeCloseTo(6, 5);
+    });
+
     it('reports zero latency and no meters for a chain with no LADSPA element', async () => {
         const read = reader({});
         const { status } = await readChainMeters(stages({ dynMode: 'ducker' }), read);
@@ -176,7 +180,7 @@ describe('MeterPoll', () => {
         const reducing = mkPoll({ 'dyn.reduction-level-meter': DB(-6) });
         reducing.poll.start(stages({ dynElement: 'dyn-el', dynMode: 'compressor' }));
         await vi.advanceTimersByTimeAsync(1000);
-        expect(reducing.badge).toHaveBeenCalledWith({
+        expect(reducing.badge).toHaveBeenCalledWith('gr', {
             icon: 'activity',
             text: '-6 dB',
             color: '#f59e0b',
@@ -186,7 +190,22 @@ describe('MeterPoll', () => {
         const open = mkPoll({ 'dyn.reduction-level-meter': DB(-0.2) });
         open.poll.start(stages({ dynElement: 'dyn-el', dynMode: 'compressor' }));
         await vi.advanceTimersByTimeAsync(1000);
-        expect(open.badge).toHaveBeenCalledWith(null);
+        expect(open.badge).toHaveBeenCalledWith('gr', null);
         open.poll.stop();
+    });
+
+    it('badges the auto gain correction past 1 dB, signed', async () => {
+        vi.useFakeTimers();
+        const badge = vi.fn();
+        const poll = new MeterPoll({
+            read: reader({ 'agc.gain-correction-meter': DB(9) }),
+            publish: vi.fn(),
+            badge,
+        });
+        poll.start(stages({ agcElement: 'agc-el' }));
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(badge).toHaveBeenCalledWith('agc', expect.objectContaining({ text: '+9 dB' }));
+        expect(badge).toHaveBeenCalledWith('gr', null);
+        poll.stop();
     });
 });

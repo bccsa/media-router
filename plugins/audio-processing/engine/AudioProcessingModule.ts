@@ -12,20 +12,17 @@ import { ChainTelemetry } from './chainTelemetry.js';
 import { DuckerEnvelope } from './duckerEnvelope.js';
 import { GRAPH_SECTION } from './graphPublisher.js';
 import { isLadspaDynMode } from './lspConfig.js';
-import {
-    resolveEqFanOut,
-    resolveLiveTarget,
-    type ChainStages,
-    type DynamicsMode,
-} from './lspProcessing.js';
+import { resolveLiveWrites } from './liveWrites.js';
+import type { ChainStages, DynamicsMode } from './lspProcessing.js';
 
 /**
- * Audio Processing on the 302M bus — HPF → EQ → dynamics → limiter → ducker.
+ * Audio Processing on the 302M bus — HPF → AGC → EQ → dynamics → limiter → ducker.
  *
  * The 302M successor to the PipeWire `audio-dynamics` plugin: same operator
  * knobs (compressor / gate / ducker parameters), plus a 6-band parametric EQ,
- * an expander, a high-pass filter and a brickwall limiter. Program and
- * sidechain are 302M bus inputs, the processed program leaves as 302M — so the
+ * an expander, a high-pass filter, an auto gain (LSP Autogain — the gain only
+ * rises while the input is above its kick-in level) and a brickwall limiter.
+ * Program and sidechain are 302M bus inputs, the processed program leaves as 302M — so the
  * source PES PTS survives the whole chain (no null-sinks, no re-stamping).
  *
  * DSP is LSP LADSPA, resolved from the registry at start (`findLadspaElement`)
@@ -159,13 +156,8 @@ export class AudioProcessingModule extends GstPluginBase {
         if (!stages) return; // ducker params are read live by the envelope
 
         for (const [key, value] of Object.entries(changes)) {
-            const target = resolveLiveTarget(key, value, stages);
-            if (target) {
-                await this.setElementProperty(target.element, target.prop, target.value);
-                continue;
-            }
-            for (const fanned of resolveEqFanOut(key, value, stages)) {
-                await this.setElementProperty(fanned.element, fanned.prop, fanned.value);
+            for (const w of resolveLiveWrites(key, value, stages)) {
+                await this.setElementProperty(w.element, w.prop, w.value);
             }
         }
     }

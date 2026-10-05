@@ -50,6 +50,12 @@ export interface PropMap {
     convert: (v: unknown) => number | boolean;
 }
 
+/** An element property write, before the caller stamps the element name on. */
+export interface PropWrite {
+    prop: string;
+    value: number | boolean;
+}
+
 /**
  * Schema defaults for keys absent from config (fresh instances).
  *
@@ -71,6 +77,10 @@ export const DEFAULTS: Record<string, number | string | boolean> = {
     gateDepth: -48,
     gateKey: 'self',
     hpfFreq: 80,
+    agcKickIn: -60,
+    agcTarget: -23,
+    agcMaxGain: 24,
+    agcSpeed: 'medium',
     eqBypass: false,
     eqInputGain: 0,
     eqOutputGain: 0,
@@ -85,3 +95,10 @@ export const DEFAULTS: Record<string, number | string | boolean> = {
 /** Config value with the schema default applied. */
 export const cfg = (config: Record<string, unknown>, key: string): unknown =>
     config[key] ?? DEFAULTS[key];
+
+/** `prop=value` launch-string pairs for a config→port map, defaults applied. */
+export const launchProps = (
+    map: Record<string, PropMap>,
+    config: Record<string, unknown>,
+): string[] =>
+    Object.entries(map).map(([key, { prop, convert }]) => `${prop}=${convert(cfg(config, key))}`);

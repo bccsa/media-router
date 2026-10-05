@@ -7,23 +7,12 @@ import {
     PROGRAM_PORT,
     SIDECHAIN_PORT,
 } from './chainSetup.js';
-import type { ChainStages } from './lspProcessing.js';
+import { stages } from './chainStages.fixture.js';
 
 const src = (sinkPortId: string, n = 0) => ({
     port: 40100 + n,
     connectionId: `c-${n}`,
     sinkPortId,
-});
-
-const stages = (over: Partial<ChainStages> = {}): ChainStages => ({
-    hpf: false,
-    eqElement: null,
-    dynElement: null,
-    dynMode: 'none',
-    keyedGate: false,
-    limiterElement: null,
-    duckerKey: false,
-    ...over,
 });
 
 /** Resolver double — records what the chain asked for. */
@@ -58,6 +47,9 @@ describe('LIVE_PARAMS', () => {
         expect(LIVE_PARAMS).toContain('eqBand0Type');
         expect(LIVE_PARAMS).toContain('eqBand5Q');
         expect(LIVE_PARAMS).not.toContain('eqBand6Type');
+        expect(LIVE_PARAMS).toContain('agcKickIn');
+        expect(LIVE_PARAMS).toContain('agcSpeed');
+        expect(LIVE_PARAMS).not.toContain('agcEnabled'); // builds the ELEMENT
         expect(LIVE_PARAMS).not.toContain('gateKey');
         expect(LIVE_PARAMS).not.toContain('mode');
         expect(new Set(LIVE_PARAMS).size).toBe(LIVE_PARAMS.length); // no duplicates
@@ -107,6 +99,18 @@ describe('resolveChainStages', () => {
         expect(s.dynElement).toBeNull();
     });
 
+    it('auto gain resolves autogain-stereo ahead of the EQ', async () => {
+        const r = resolver();
+        const s = await resolveChainStages(
+            { agcEnabled: true, eqEnabled: true },
+            'none',
+            false,
+            r.require,
+        );
+        expect(r.asked).toEqual(['autogain-stereo', 'para-equalizer-x16-stereo']);
+        expect(s.agcElement).toBe('ladspa-lsp-test-autogain-stereo');
+    });
+
     it('propagates the resolver refusal for an enabled stage', async () => {
         const boom = vi.fn(async () => {
             throw new Error('install lsp-plugins-ladspa');
@@ -135,6 +139,15 @@ describe('chainSummary', () => {
             sidechain: 'not connected',
         });
         expect(health).toEqual({ level: 'ok' });
+    });
+
+    it('places AGC between the HPF and the EQ', () => {
+        const { data } = chainSummary(
+            stages({ hpf: true, agcElement: 'agc-el', eqElement: 'eq-el' }),
+            'self',
+            0,
+        );
+        expect(data.chain).toBe('HPF → AGC → EQ');
     });
 
     it('says so when nothing is enabled', () => {

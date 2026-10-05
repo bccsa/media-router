@@ -7,6 +7,7 @@
 
 import type { AudioMixSource } from '@media-router/plugin-audio-302m-core';
 import { EQ_BANDS } from './eqBands.js';
+import { AGC_SUFFIX } from './agcStage.js';
 import { isLadspaDynMode } from './lspConfig.js';
 import {
     DYN_SUFFIXES,
@@ -37,6 +38,11 @@ export const LIVE_PARAMS: string[] = [
     'gateDepth',
     // High-pass
     'hpfFreq',
+    // Auto gain
+    'agcKickIn',
+    'agcTarget',
+    'agcMaxGain',
+    'agcSpeed',
     // EQ
     'eqBypass',
     'eqInputGain',
@@ -96,6 +102,7 @@ export async function resolveChainStages(
 
     const stages: ChainStages = {
         hpf: config.hpfEnabled === true,
+        agcElement: null,
         eqElement: null,
         dynElement: null,
         dynMode: mode,
@@ -104,6 +111,9 @@ export async function resolveChainStages(
         duckerKey: mode === 'ducker' && hasSidechain,
     };
 
+    if (config.agcEnabled === true) {
+        stages.agcElement = await requireLadspa(AGC_SUFFIX);
+    }
     if (config.eqEnabled === true) {
         stages.eqElement = await requireLadspa(EQ_SUFFIX);
     }
@@ -138,6 +148,7 @@ export function chainSummary(
     const mode = stages.dynMode;
     const chain = [
         stages.hpf ? 'HPF' : null,
+        stages.agcElement ? 'AGC' : null,
         stages.eqElement ? 'EQ' : null,
         mode === 'none' ? null : mode,
         stages.limiterElement ? 'limiter' : null,

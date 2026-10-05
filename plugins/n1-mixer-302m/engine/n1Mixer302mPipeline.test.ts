@@ -136,7 +136,7 @@ describe('buildN1Pipeline', () => {
             // branch, so nothing can tap the mixer ahead of the clock.
             expect(pipeline).toContain(
                 `audiomixer name=omix${o} force-live=true` +
-                    ' latency=50000000 min-upstream-latency=50000000' +
+                    ' latency=20000000' +
                     ' start-time-selection=first' +
                     ' ! audio/x-raw,rate=48000,channels=2' +
                     ` ! identity name=omix${o}_pace sync=true` +
@@ -220,7 +220,7 @@ describe('buildN1Pipeline', () => {
             latencyMs: 500,
         })!;
         expect(pipeline).toContain('audiomixer name=inmix0 force-live=true latency=500000000');
-        expect(pipeline).toContain('audiomixer name=omix0 force-live=true latency=50000000');
+        expect(pipeline).toContain('audiomixer name=omix0 force-live=true latency=20000000');
 
         const single = buildN1Pipeline({
             inputs: mkInputs([0, 1]),

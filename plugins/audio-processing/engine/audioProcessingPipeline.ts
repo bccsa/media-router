@@ -7,7 +7,7 @@
  * them), the processed program leaves through `build302mEncodeBranch` into the
  * module's own bus fan-out tee.
  *
- *   progmix. ! audioconvert ! <hpf> ! <eq> ! <dynamics> ! <limiter>
+ *   progmix. ! audioconvert ! <hpf> ! <agc> ! <eq> ! <dynamics> ! <limiter>
  *           ! volume name=duckvol ! level name=outlevel ! 302M encode ! bus
  *
  * Every stage is optional; the chain collapses to a straight audioconvert when
@@ -24,6 +24,7 @@ import {
     s302mFormatFor,
 } from '@media-router/plugin-audio-302m-core';
 import { eqProps } from './eqBands.js';
+import { AGC_ELEMENT, agcProps } from './agcStage.js';
 import { dynProps, hpfCutoff, limiterProps, type ChainStages } from './lspProcessing.js';
 
 export interface ProcessingPipelineInputs {
@@ -104,6 +105,9 @@ export function buildProcessingPipeline(
             `audiocheblimit name=hpf mode=high-pass poles=4` +
                 ` cutoff=${hpfCutoff(config.hpfFreq ?? 80)}`,
         );
+    }
+    if (stages.agcElement) {
+        head.push(`${stages.agcElement} name=${AGC_ELEMENT} ${agcProps(config).join(' ')}`);
     }
     if (stages.eqElement) head.push(`${stages.eqElement} name=eq ${eqProps(config).join(' ')}`);
 

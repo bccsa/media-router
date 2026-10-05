@@ -173,6 +173,8 @@ export class AudioOutput302mModule extends GstPluginBase {
         }
 
         const { fragment, continuationName, mixerLatencyNs, demuxes } = buildAudioMixInput({
+            // Branches are stamp-aligned at launch: keep tsdemux on PCR timing.
+            ignorePcr: false,
             sources,
             channels,
             latencyMs: Number(config.mixLatencyMs ?? 200),

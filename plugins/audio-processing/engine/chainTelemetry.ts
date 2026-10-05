@@ -48,7 +48,7 @@ export class ChainTelemetry {
                 // operating point tracks the meter.
                 this.graphs.update(hooks.config(), levels);
             },
-            badge: (badge) => hooks.badge('gr', badge),
+            badge: (id, badge) => hooks.badge(id, badge),
         });
         this.throughput = new ThroughputPoller({
             getBytes: hooks.readSinkBytes,
