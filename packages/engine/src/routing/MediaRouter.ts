@@ -53,6 +53,8 @@ export class MediaRouter {
     private connections = new Map<string, Connection>();
     private handles = new Map<string, ActiveHandle>();
     private executor: ConnectionExecutor | null = null;
+    /** The bus executor, kept for its live-branch verbs (channel-map replace). */
+    private busExecutor: MpegTsBusExecutor | null = null;
     private moduleGetter: ((id: string) => ModuleInstance | undefined) | null = null;
 
     readonly portRegistry = new PortRegistry();
@@ -121,28 +123,31 @@ export class MediaRouter {
         const resolveProducerPort = (moduleId: string, portId?: string) =>
             this.busChannels.get(this.channelKey(moduleId, portId)) ??
             this.busChannels.get(moduleId);
-        this.busFanout = new BusFanoutCoordinator(
-            moduleGetter,
-            resolveProducerPort,
-            () => this.getConnections(),
+        this.busFanout = new BusFanoutCoordinator(moduleGetter, resolveProducerPort, () =>
+            this.getConnections(),
         );
-        this.streamExecutors.register(
-            new PcmAudioExecutor(pipeWire, moduleGetter, connLabel),
-        );
+        this.streamExecutors.register(new PcmAudioExecutor(pipeWire, moduleGetter, connLabel));
         // `audio/302m` (SMPTE 302M PCM-in-TS) is valid MPEG-TS on the wire —
         // it rides the exact same bus transport, so it aliases onto the SAME
         // MpegTsBusExecutor instance (see the register() doc for why not a
         // second instance).
-        this.streamExecutors.register(
-            new MpegTsBusExecutor(
-                moduleGetter,
-                resolveProducerPort,
-                connLabel,
-                (id) => this.consumerRestartCallback?.(id) ?? Promise.resolve(),
-                this.busFanout,
-            ),
-            ['audio/302m'],
+        const busExecutor = new MpegTsBusExecutor(
+            moduleGetter,
+            resolveProducerPort,
+            connLabel,
+            (id) => this.consumerRestartCallback?.(id) ?? Promise.resolve(),
+            this.busFanout,
+            // Remaining bus edges on a sink port (the record under
+            // teardown is already deleted) — the live-remove guard.
+            (sinkModuleId, sinkPortId) =>
+                this.getModuleBusSources(sinkModuleId).filter((s) => s.sinkPortId === sinkPortId)
+                    .length,
         );
+        this.streamExecutors.register(busExecutor, ['audio/302m']);
+        this.busExecutor = busExecutor;
+        // A producer back at PLAYING re-links one branch on a live-input
+        // aggregator instead of relaunching the consumer.
+        this.busFanout.setLiveRelink((conn) => busExecutor.relinkLiveInput(conn));
         this.executor = new ConnectionExecutor(this.streamExecutors);
     }
 
@@ -372,13 +377,16 @@ export class MediaRouter {
             return;
         }
 
+        conn.channelMap = channelMap?.length ? channelMap : undefined;
+
+        // Aggregator sink with the edge live: replace the one branch in place.
+        if (this.handles.has(connId) && (await this.busExecutor?.replaceLiveInput(conn))) return;
+
         const handle = this.handles.get(connId);
         if (handle && this.executor) {
             await this.executor.teardown(handle, conn, true);
             this.handles.delete(connId);
         }
-
-        conn.channelMap = channelMap?.length ? channelMap : undefined;
 
         try {
             const newHandle = await this.executor?.execute(conn);
@@ -562,8 +570,7 @@ export class MediaRouter {
             this.getConnections()
                 .filter(
                     (c) =>
-                        c.sourceModuleId === producerModuleId &&
-                        BUS_STREAM_TYPES.has(c.streamType),
+                        c.sourceModuleId === producerModuleId && BUS_STREAM_TYPES.has(c.streamType),
                 )
                 .map((c) => c.sinkModuleId),
         );
@@ -599,9 +606,7 @@ export class MediaRouter {
 
     /** Resolve every connected bus-carried source (muxed/mpegts or audio/302m)
      *  feeding a given sink module. */
-    getModuleBusSources(
-        moduleId: string,
-    ): Array<{
+    getModuleBusSources(moduleId: string): Array<{
         port: number;
         connectionId: string;
         sourceModuleId: string;

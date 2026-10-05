@@ -48,14 +48,27 @@ describe('GstRunner — Python event routing', () => {
     });
 
     it('a reconnect-class error carries its kind on the stateChange too', () => {
-        emit({ event: 'error', kind: 'bus_producer_restarted', message: 'producer socket went away — reconnecting' });
-        expect((lastByType('event', 'error')?.data as { kind: string }).kind).toBe('bus_producer_restarted');
-        expect(lastByType('event', 'stateChange')?.data).toEqual({ state: 'error', kind: 'bus_producer_restarted' });
+        emit({
+            event: 'error',
+            kind: 'bus_producer_restarted',
+            message: 'producer socket went away — reconnecting',
+        });
+        expect((lastByType('event', 'error')?.data as { kind: string }).kind).toBe(
+            'bus_producer_restarted',
+        );
+        expect(lastByType('event', 'stateChange')?.data).toEqual({
+            state: 'error',
+            kind: 'bus_producer_restarted',
+        });
     });
 
     it('udpsrc silence is a state: inputSilent / inputResumed events, never an error or restart', () => {
-        emit({ event: 'input_silent', kind: 'udp_timeout', element: 'netsrc',
-               message: 'UDP source netsrc silent — waiting for data, not restarting' });
+        emit({
+            event: 'input_silent',
+            kind: 'udp_timeout',
+            element: 'netsrc',
+            message: 'UDP source netsrc silent — waiting for data, not restarting',
+        });
         const silent = lastByType('event', 'inputSilent');
         expect((silent?.data as { element: string }).element).toBe('netsrc');
         expect(lastByType('event', 'error')).toBeUndefined();
@@ -76,7 +89,9 @@ describe('GstRunner — Python event routing', () => {
             message: 'no data yet on bus socket(s) /tmp/mr-bus-40000-b76ed2.sock after 10000 ms',
         });
         const gate = lastByType('event', 'busGate');
-        expect((gate?.data as { pending: string[] }).pending).toEqual(['/tmp/mr-bus-40000-b76ed2.sock']);
+        expect((gate?.data as { pending: string[] }).pending).toEqual([
+            '/tmp/mr-bus-40000-b76ed2.sock',
+        ]);
         expect(lastByType('event', 'error')).toBeUndefined();
         expect(lastByType('event', 'stateChange')).toBeUndefined();
 
@@ -272,6 +287,44 @@ describe('GstRunner — Python event routing', () => {
         expect(response?.data).toEqual({ error: "element 'netin' not found" });
     });
 
+    it('busInputAdd / busInputRemove are tracked RPCs resolved by their *_done events', () => {
+        const pending = () =>
+            (runner as unknown as { ipc: { pending: Map<string, unknown> } }).ipc.pending;
+        runner.handleControlMessage({
+            id: 'rpc-ia',
+            type: 'request',
+            action: 'busInputAdd',
+            data: { element: 'mixin', name: 'mixin_in_x', description: 'unixfdsrc ! queue' },
+        });
+        const [addId] = [...pending().keys()];
+        emit({ event: 'bus_input_add_done', id: addId, name: 'mixin_in_x' });
+        expect(lastByType('response')?.id).toBe('rpc-ia');
+
+        runner.handleControlMessage({
+            id: 'rpc-ir',
+            type: 'request',
+            action: 'busInputRemove',
+            data: { element: 'mixin', name: 'mixin_in_x' },
+        });
+        const [rmId] = [...pending().keys()];
+        emit({ event: 'command_error', id: rmId, message: "element 'mixin' not found" });
+        const response = lastByType('response');
+        expect(response?.id).toBe('rpc-ir');
+        expect(response?.data).toEqual({ error: "element 'mixin' not found" });
+    });
+
+    it('a dropped live input branch is forwarded as inputBranchLost, never an error or restart', () => {
+        emit({
+            event: 'input_branch_lost',
+            name: 'mixin_in_x',
+            message: 'live input mixin_in_x lost',
+        });
+        const lost = lastByType('event', 'inputBranchLost');
+        expect((lost?.data as { name: string }).name).toBe('mixin_in_x');
+        expect(lastByType('event', 'error')).toBeUndefined();
+        expect(lastByType('event', 'stateChange')).toBeUndefined();
+    });
+
     it('updatePipeline replaces the replay description (post-swap crash-restarts use it)', () => {
         runner.handleControlMessage({
             id: 'rpc-up',
@@ -297,7 +350,7 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { element?: string }).element).toBe('unixfdsink3');
     });
 
-    it('drops a retired predecessor\'s events: its late null or teardown error cannot stop or restart the live pipeline', () => {
+    it("drops a retired predecessor's events: its late null or teardown error cannot stop or restart the live pipeline", () => {
         const internals = runner as unknown as {
             python: unknown;
             currentState: string;
@@ -311,8 +364,13 @@ describe('GstRunner — Python event routing', () => {
         const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
         internals.dispatchPythonEvent(live, { event: 'state_change', state: 'playing' });
         internals.dispatchPythonEvent(retired, { event: 'state_change', state: 'null' });
-        internals.dispatchPythonEvent(retired, { event: 'error', message: 'Internal data stream error.' });
-        expect(sent.filter((m) => m.action === 'stateChange').map((m) => m.data)).toEqual([{ state: 'playing' }]);
+        internals.dispatchPythonEvent(retired, {
+            event: 'error',
+            message: 'Internal data stream error.',
+        });
+        expect(sent.filter((m) => m.action === 'stateChange').map((m) => m.data)).toEqual([
+            { state: 'playing' },
+        ]);
         expect(restart).not.toHaveBeenCalled();
         expect(internals.currentState).toBe('playing');
         expect(logged.mock.calls.map((c) => c[0])).toEqual([
@@ -322,29 +380,61 @@ describe('GstRunner — Python event routing', () => {
         logged.mockRestore();
     });
 
-    it('a retired predecessor\'s reply still answers the request it was sent', () => {
-        const internals = runner as unknown as { python: unknown; dispatchPythonEvent: (from: unknown, e: Record<string, unknown>) => void };
+    it("a retired predecessor's reply still answers the request it was sent", () => {
+        const internals = runner as unknown as {
+            python: unknown;
+            dispatchPythonEvent: (from: unknown, e: Record<string, unknown>) => void;
+        };
         const retired = { sendCommand: vi.fn() };
         internals.python = retired;
-        runner.handleControlMessage({ id: 'rpc-r1', type: 'request', action: 'getProperty', data: { element: 'src', property: 'uri' } });
-        const [reqId] = [...(runner as unknown as { ipc: { pending: Map<string, unknown> } }).ipc.pending.keys()];
+        runner.handleControlMessage({
+            id: 'rpc-r1',
+            type: 'request',
+            action: 'getProperty',
+            data: { element: 'src', property: 'uri' },
+        });
+        const [reqId] = [
+            ...(runner as unknown as { ipc: { pending: Map<string, unknown> } }).ipc.pending.keys(),
+        ];
         internals.python = {};
-        internals.dispatchPythonEvent(retired, { event: 'property', id: reqId, element: 'src', property: 'uri', value: 'udp://a' });
+        internals.dispatchPythonEvent(retired, {
+            event: 'property',
+            id: reqId,
+            element: 'src',
+            property: 'uri',
+            value: 'udp://a',
+        });
         expect(lastByType('response')).toMatchObject({ id: 'rpc-r1', data: { value: 'udp://a' } });
     });
 
     it('restartPipeline relaunches the last start (answering that request) and refuses with nothing started', () => {
-        runner.handleControlMessage({ id: 'rpc-rs0', type: 'request', action: 'restartPipeline', data: {} });
+        runner.handleControlMessage({
+            id: 'rpc-rs0',
+            type: 'request',
+            action: 'restartPipeline',
+            data: {},
+        });
         expect(lastByType('response')?.id).toBe('rpc-rs0');
         expect(lastByType('response')?.data).toEqual({ error: 'No pipeline to restart' });
 
         const start = vi
-            .spyOn(runner as unknown as { startPipeline: (o: unknown, id: string) => void }, 'startPipeline')
+            .spyOn(
+                runner as unknown as { startPipeline: (o: unknown, id: string) => void },
+                'startPipeline',
+            )
             .mockImplementation(() => {});
-        (runner as unknown as { lastStart: unknown }).lastStart = { pipeline: 'fakesrc ! fakesink' };
-        const backoff = (runner as unknown as { restartBackoff: { reset: () => void } }).restartBackoff;
+        (runner as unknown as { lastStart: unknown }).lastStart = {
+            pipeline: 'fakesrc ! fakesink',
+        };
+        const backoff = (runner as unknown as { restartBackoff: { reset: () => void } })
+            .restartBackoff;
         const reset = vi.spyOn(backoff, 'reset');
-        runner.handleControlMessage({ id: 'rpc-rs1', type: 'request', action: 'restartPipeline', data: { reason: 't' } });
+        runner.handleControlMessage({
+            id: 'rpc-rs1',
+            type: 'request',
+            action: 'restartPipeline',
+            data: { reason: 't' },
+        });
         expect(start).toHaveBeenCalledWith({ pipeline: 'fakesrc ! fakesink' }, 'rpc-rs1');
         // A relaunch must not defeat the consumer's own crash-loop backoff.
         expect(reset).not.toHaveBeenCalled();
@@ -598,7 +688,9 @@ describe('GstRunner — teardown exits as soon as Python is gone', () => {
         setPython(py);
         (runner as unknown as { restartOnError: boolean }).restartOnError = true;
         exitPython(py, 139, 'SIGSEGV');
-        expect((runner as unknown as { handback: { isArmed: boolean } }).handback.isArmed).toBe(false);
+        expect((runner as unknown as { handback: { isArmed: boolean } }).handback.isArmed).toBe(
+            false,
+        );
         expect((runner as unknown as { restartTimer: unknown }).restartTimer).not.toBeNull();
         // Short of the minimum restart delay (1000 ms base, 0.75 jitter floor)
         // so no respawn is attempted inside the test.
@@ -654,7 +746,9 @@ describe('GstRunner — teardown exits as soon as Python is gone', () => {
             id: 'rpc-g',
             type: 'request',
             action: 'startPipeline',
-            data: { pipeline: `unixfdsrc socket-path=/tmp/gate-${process.pid}-retire.sock ! fakesink` },
+            data: {
+                pipeline: `unixfdsrc socket-path=/tmp/gate-${process.pid}-retire.sock ! fakesink`,
+            },
         });
         expect(old.stop).toHaveBeenCalled();
         expect((runner as unknown as { python: unknown }).python).toBeNull();

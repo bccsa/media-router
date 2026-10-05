@@ -2,11 +2,12 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
+    type LiveInputBranch,
     type PipelineDescription,
     type ThroughputSample,
 } from '@media-router/engine';
 import { probe302mSupport, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
-import { buildMixerPipeline } from './audioMixerPipeline.js';
+import { buildMixerPipeline, mixerInputBranch } from './audioMixerPipeline.js';
 
 const INPUT_PORT_ID = 'audio-in';
 const OUTPUT_PORT_ID = 'audio-out';
@@ -20,14 +21,28 @@ const OUTPUT_PORT_ID = 'audio-out';
  * (or any 302M consumer) when several sources must be summed.
  *
  * Timeline-true: `audiomixer` aggregates by running time, so same-timeline
- * inputs mix content-aligned and the output carries coherent PTS. Any input
- * wiring change restarts the pipeline (one-pipeline model, same contract as
- * the other 302M modules). Per-connection channel maps give per-source
- * routing + gain; the `volume` element is the master fader (live-updatable,
- * VU from the in-pipeline `level`).
+ * inputs mix content-aligned and the output carries coherent PTS. Input
+ * wiring changes are live branch add/remove (`getLiveInputBranch`); only the
+ * last input leaving idles the module. Per-connection channel maps give
+ * per-source routing + gain; `volume` is the master fader (live, VU from `level`).
  */
 export class AudioMixerModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
+
+    /** Live input add/remove for Audio In — see `mixerInputBranch`. */
+    getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
+        if (sinkPortId !== INPUT_PORT_ID) return null;
+        const router = this.services?.mediaRouter;
+        const instanceId = this.services?.instanceId ?? '';
+        if (!router) return null;
+        const source = router
+            .getModuleBusSources(instanceId)
+            .find(
+                (s: { sinkPortId: string; connectionId: string }) =>
+                    s.sinkPortId === INPUT_PORT_ID && s.connectionId === connectionId,
+            );
+        return mixerInputBranch(connectionId, source, (this.config.channels as number) ?? 2);
+    }
 
     private sinkName: string | null = null;
 
@@ -116,6 +131,10 @@ export class AudioMixerModule extends GstPluginBase {
         return {
             pipeline: result.pipeline,
             restartOnError: true,
+            // Audio-only bus producer: no decoder to drain, and a force-live
+            // mix never completes the EOS drain — a stop would stall the 6 s
+            // timeout and EOS every consumer first.
+            eosDrain: false,
         };
     }
 }

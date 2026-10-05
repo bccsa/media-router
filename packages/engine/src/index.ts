@@ -14,6 +14,7 @@ export type {
     EngineServices,
     ModuleServices,
     DynamicPort,
+    LiveInputBranch,
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
@@ -110,6 +111,7 @@ export {
     BUS_WATCHDOG_PREFIX,
     busStallWatch,
     quoteGstString,
+    shortHash,
 } from './plugins/busHelpers.js';
 export type { BusSrcOpts } from './plugins/busHelpers.js';
 export {
@@ -236,7 +238,11 @@ export {
     NativeSinkController,
 } from './child-process/UnixFdFanoutController.js';
 export { probeUnixSocket } from './child-process/busSocketGate.js';
-export type { BusAttachTarget, LiveSwapTarget } from './child-process/UnixFdFanoutController.js';
+export type {
+    BusAttachTarget,
+    LiveInputBranchTarget,
+    LiveSwapTarget,
+} from './child-process/UnixFdFanoutController.js';
 export { resolveNativeBinary, resolvePythonScript } from './child-process/nativeBinaries.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export { probeMpegTsStream, classifyCaps, registerCodecClassifier } from './routing/MpegTsProbe.js';

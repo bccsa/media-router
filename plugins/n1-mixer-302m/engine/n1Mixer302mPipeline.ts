@@ -9,10 +9,11 @@
  * no `pulsesrc`, no `do-timestamp`, no re-stamping anywhere).
  */
 
-import { buildBusSink, type DynamicPort } from '@media-router/engine';
+import { buildBusSink, type DynamicPort, type LiveInputBranch } from '@media-router/engine';
 import {
     buildAudioMixInput,
     build302mEncodeBranch,
+    liveInputBranchFor,
     pacedMixer,
     positionedChannelsClause,
     type AudioMixSource,
@@ -21,6 +22,21 @@ import {
 } from '@media-router/plugin-audio-302m-core';
 
 export type { DynamicPort };
+
+/** Name of input `index`'s fan-in aggregator — what its live branches link into. */
+export function n1InputMixerName(index: number): string {
+    return `inmix${index}`;
+}
+
+/** The live-input branch for one edge on input `index` (`getLiveInputBranch`). */
+export function n1InputBranch(
+    index: number,
+    connectionId: string,
+    source: AudioMixSource | undefined,
+    channels: number,
+): LiveInputBranch {
+    return liveInputBranchFor(n1InputMixerName(index), connectionId, source, { channels });
+}
 
 export const MIN_PAIRS = 2;
 export const MAX_PAIRS = 16;
@@ -143,11 +159,18 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     const channels = input.channels ?? DEFAULT_CHANNELS;
 
     for (const [i, sources] of input.inputs) {
+        // Live-input mode: each source is a named bin on an explicit
+        // `inmix<i>` pad and the fan-in aggregator exists even for one source,
+        // so a second source on an already-connected input is added or
+        // removed on the running pipeline. The FIRST source on an input (or
+        // its last leaving) still restarts: that input's tee and its matrix
+        // links, and possibly the set of active outputs, come and go with it.
         const { fragment, continuationName } = buildAudioMixInput({
             sources,
             channels,
             latencyMs: input.latencyMs,
-            mixerName: `inmix${i}`,
+            mixerName: n1InputMixerName(i),
+            liveInputs: true,
         });
         parts.push(`${fragment} ${continuationName}. ! tee name=in${i}t`);
     }

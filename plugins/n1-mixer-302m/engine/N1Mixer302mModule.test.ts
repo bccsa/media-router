@@ -46,6 +46,41 @@ beforeEach(() => {
     N1Mixer302mModule.setS302mSupported(true);
 });
 
+describe('N1Mixer302mModule.getLiveInputBranch (#787)', () => {
+    it('a wired source on in-<i> gets a branch into that input fan-in', () => {
+        const { module } = makeModule([mkSource('in-1', 0), mkSource('in-1', 1)]);
+        module.config = { pairCount: 3, channels: 2 };
+        const b = module.getLiveInputBranch('in-1', 'c-in-1-1');
+        expect(b).toMatchObject({ element: 'inmix1' });
+        expect(b.name).toMatch(/^inmix1_in_[0-9a-f]{6}$/);
+        expect(b.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40101-x.sock');
+        // The same bin name the start-time pipeline gives that source.
+        expect(module.buildPipeline(module.config)!.pipeline).toContain(`( name=${b.name} `);
+    });
+
+    it('a source already gone (remove) still names its branch, without a description', () => {
+        const { module } = makeModule([mkSource('in-0', 0)]);
+        module.config = { pairCount: 2 };
+        expect(module.getLiveInputBranch('in-0', 'c-gone')).toEqual({
+            element: 'inmix0',
+            name: expect.stringMatching(/^inmix0_in_/),
+        });
+    });
+
+    it('declines ports that are not inputs or lie past pairCount', () => {
+        const { module } = makeModule([mkSource('in-0', 0)]);
+        module.config = { pairCount: 2 };
+        expect(module.getLiveInputBranch('out-0', 'c-in-0-0')).toBeNull();
+        expect(module.getLiveInputBranch('in-5', 'c-in-0-0')).toBeNull();
+    });
+
+    it('opts the pipeline out of the EOS drain (#787)', () => {
+        const { module } = makeModule([mkSource('in-0', 0)]);
+        module.config = { pairCount: 2 };
+        expect(module.buildPipeline(module.config)!.eosDrain).toBe(false);
+    });
+});
+
 describe('N1Mixer302mModule.getDynamicPorts', () => {
     it('resolves from the PASSED config (pre-start, this.config still empty)', () => {
         const { module } = makeModule();
@@ -109,10 +144,10 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         const { module, setHealth } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
         const desc = module.buildPipeline({ pairCount: 2 });
         expect(desc).not.toBeNull();
-        // One source per input pin → direct branches, no input aggregators.
-        expect(desc!.pipeline).not.toContain('audiomixer name=inmix');
-        expect(desc!.pipeline).toContain('capsfilter name=inmix0_out');
-        expect(desc!.pipeline).toContain('capsfilter name=inmix1_out');
+        // One source per input still builds the input fan-in (live inputs, #787).
+        expect(desc!.pipeline).toContain('audiomixer name=inmix0 force-live=true');
+        expect(desc!.pipeline).toContain('capsfilter name=inmix0_caps');
+        expect(desc!.pipeline).toContain('identity name=inmix1_out sync=true');
         expect(desc!.pipeline).toContain('audiomixer name=omix0 force-live=true');
         expect(desc!.pipeline).toContain('audiomixer name=omix1 force-live=true');
         expect(desc!.pipeline).toContain('avenc_s302m strict=experimental');
@@ -132,7 +167,7 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         const { module } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
         const desc = module.buildPipeline({ pairCount: 2, channels: 6 });
         expect(desc!.pipeline).toContain(
-            'capsfilter name=inmix0_out caps="audio/x-raw,rate=48000,channels=6"',
+            'capsfilter name=inmix0_caps caps="audio/x-raw,rate=48000,channels=6"',
         );
         expect(desc!.pipeline).toContain(
             '! audio/x-raw,rate=48000,channels=6 ! identity name=omix0_pace',

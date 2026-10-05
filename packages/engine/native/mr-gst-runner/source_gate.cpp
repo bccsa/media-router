@@ -2,12 +2,14 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <vector>
 
+#include "bus_inputs.h"
 #include "ipc.h"
 #include "json_util.h"
 #include "runner.h"
@@ -18,7 +20,9 @@ namespace {
 
 constexpr int DATA_WAIT_POLL_MS = 2000;
 
-/** The pipeline's source elements made by `factory` (owned refs). */
+/** The pipeline's source elements made by `factory` (owned refs): its own
+ *  sources plus those inside live input branch bins, whose unixfdsrc heads
+ *  must be gated like top-level ones. Other bins are not entered. */
 std::vector<GstElement*> sources_by_factory(GstElement* pipe, const char* factory) {
     std::vector<GstElement*> out;
     if (!GST_IS_BIN(pipe)) return out;
@@ -29,7 +33,11 @@ std::vector<GstElement*> sources_by_factory(GstElement* pipe, const char* factor
         switch (gst_iterator_next(it, &item)) {
             case GST_ITERATOR_OK: {
                 GstElement* el = GST_ELEMENT(g_value_get_object(&item));
-                if (factory_name(el) == factory) out.push_back(GST_ELEMENT(gst_object_ref(el)));
+                if (factory_name(el) == factory) {
+                    out.push_back(GST_ELEMENT(gst_object_ref(el)));
+                } else if (GST_IS_BIN(el) && inputs::is_live_branch(GST_OBJECT_NAME(el) ? GST_OBJECT_NAME(el) : "")) {
+                    for (GstElement* inner : sources_by_factory(el, factory)) out.push_back(inner);
+                }
                 g_value_reset(&item);
                 break;
             }
@@ -319,6 +327,41 @@ bool stop() {
 
 void on_playing() {
     if (clear_data_wait()) ipc::emit(ipc::event("data_arrived"));
+}
+
+void forget_sources_in(GstElement* bin) {
+    std::shared_ptr<DataWait> dw = g_data_wait;
+    if (!dw || !GST_IS_BIN(bin)) return;
+    std::vector<GstElement*> heads = sources_by_factory(bin, "unixfdsrc");
+    for (GstElement* u : sources_by_factory(bin, "udpsrc")) heads.push_back(u);
+    bool all = false;
+    for (GstElement* s : heads) {
+        std::string path;
+        if (factory_name(s) == "unixfdsrc") {
+            gchar* p = nullptr;
+            g_object_get(s, "socket-path", &p, nullptr);
+            if (p) {
+                path = p;
+                g_free(p);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(dw->lock);
+            dw->pending.erase(s);
+            all = dw->pending.empty();
+        }
+        if (!path.empty()) {
+            dw->sockets.erase(std::remove(dw->sockets.begin(), dw->sockets.end(), path), dw->sockets.end());
+            dw->identity.erase(std::remove_if(dw->identity.begin(), dw->identity.end(),
+                                              [&](const std::pair<std::string, SocketIdentity>& e) {
+                                                  return e.first == path;
+                                              }),
+                               dw->identity.end());
+        }
+        gst_object_unref(s);
+    }
+    if (!heads.empty() && all && !dw->fired.exchange(true))
+        g_idle_add(data_arrived_idle, new std::shared_ptr<DataWait>(dw));
 }
 
 void on_udp_timeout(const std::string& src_name) {

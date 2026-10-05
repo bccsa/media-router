@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMixerPipeline } from './audioMixerPipeline.js';
+import { buildMixerPipeline, mixerInputBranch } from './audioMixerPipeline.js';
 
 const SOURCES = [
     { port: 40010, socketPath: '/tmp/mr-bus-40010-c1.sock', connectionId: 'c1' },
@@ -37,7 +37,7 @@ describe('buildMixerPipeline', () => {
         expect(r.sinkName).toBe('busout_41000');
     });
 
-    it('a lone source bypasses the mixer — no aggregation latency in the path', () => {
+    it('a lone source still builds the mixer arm — live inputs need the aggregator in place', () => {
         const r = buildMixerPipeline({
             sources: [SOURCES[0]],
             outputPort: 41000,
@@ -45,15 +45,34 @@ describe('buildMixerPipeline', () => {
             volume: 1,
             latencyMs: 200,
         })!;
-        expect(r.pipeline).not.toContain('audiomixer');
-        expect(r.pipeline).not.toContain('latency=200000000');
-        expect(r.pipeline).not.toContain('sync=true');
-        // Same continuation point, so the tail is unchanged.
-        expect(r.pipeline).toContain(
-            'capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2" mixin_out. ! audioconvert',
-        );
+        expect(r.pipeline).toContain('audiomixer name=mixin force-live=true latency=200000000');
+        expect(r.pipeline).toContain('identity name=mixin_out sync=true');
+        expect(r.pipeline).toContain('mixin_out. ! audioconvert');
         expect(r.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40010-c1.sock');
         expect(r.pipeline).toContain('avenc_s302m');
+    });
+
+    it('wraps every source in a named bin on an explicit mixer pad (#787)', () => {
+        const r = buildMixerPipeline({
+            sources: SOURCES,
+            outputPort: 41000,
+            channels: 2,
+            volume: 1,
+            latencyMs: 200,
+        })!;
+        const bins = [
+            ...r.pipeline.matchAll(
+                /\( name=(mixin_in_[0-9a-f]{6}) unixfdsrc [^)]+\) ! mixin\.sink_(\d)/g,
+            ),
+        ];
+        expect(bins.map((m) => m[2])).toEqual(['0', '1']);
+        // The bin name is the one `mixerInputBranch` gives the engine for a live remove.
+        expect(bins.map((m) => m[1])).toEqual(
+            SOURCES.map((s) => mixerInputBranch(s.connectionId, undefined, 2).name),
+        );
+        // Demuxers are keyed by connection too — no positional names to collide with a later add.
+        expect(r.pipeline).toContain('tsdemux name=mixin_demux_');
+        expect(r.pipeline).not.toContain('mixin_demux0');
     });
 
     it('master volume + VU level sit between the mix and the encode', () => {
@@ -126,5 +145,39 @@ describe('buildMixerPipeline — 302M word length', () => {
         expect(r!.pipeline).toContain(
             'audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m',
         );
+    });
+});
+
+describe('mixerInputBranch — the live-input branch handed to the engine (#787)', () => {
+    it('for a wired source: the mixer, the bin name and the branch text (ending in its queue)', () => {
+        const b = mixerInputBranch(
+            'c1',
+            { ...SOURCES[0], channelMap: [{ srcChannel: 0, dstChannel: 1 }] },
+            2,
+        );
+        expect(b.element).toBe('mixin');
+        expect(b.name).toMatch(/^mixin_in_[0-9a-f]{6}$/);
+        expect(b.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40010-c1.sock');
+        expect(b.description).toContain('tsdemux name=mixin_demux_');
+        expect(b.description).toContain('mix-matrix=');
+        expect(b.description).toMatch(/! queue leaky=0 [^!]+$/);
+        expect(b.description).not.toContain('mixin.');
+    });
+
+    it('for a removed source: just the mixer and the bin name', () => {
+        const b = mixerInputBranch('c1', undefined, 2);
+        expect(b).toEqual({ element: 'mixin', name: mixerInputBranch('c1', SOURCES[0], 2).name });
+    });
+
+    it('the start-time pipeline renders the identical branch under the identical name', () => {
+        const r = buildMixerPipeline({
+            sources: [SOURCES[0]],
+            outputPort: 41000,
+            channels: 2,
+            volume: 1,
+            latencyMs: 200,
+        })!;
+        const b = mixerInputBranch('c1', SOURCES[0], 2);
+        expect(r.pipeline).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
     });
 });

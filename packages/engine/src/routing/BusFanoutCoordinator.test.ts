@@ -50,7 +50,7 @@ describe('BusFanoutCoordinator', () => {
         expect(detach).toHaveBeenCalledWith(busEdgeSocketPath(PORT, c.id));
     });
 
-    it('re-attaches only the producer\'s own bus-carried source edges', () => {
+    it("re-attaches only the producer's own bus-carried source edges", () => {
         const mine = conn();
         const other = conn({
             id: 'x:out-y:in',
@@ -96,6 +96,92 @@ describe('BusFanoutCoordinator', () => {
     });
 });
 
+describe('BusFanoutCoordinator — live input re-link on producer PLAYING (#787)', () => {
+    const PORT = 40002;
+    function rig(opts: {
+        consumerLaunch?: number;
+        branch?: boolean;
+        relink?: (c: Connection) => Promise<boolean>;
+    }) {
+        const attach = vi.fn();
+        const restart = vi.fn(async () => {});
+        const producer = {
+            getBusAttachTarget: () => ({ sendBusAttach: attach, sendBusDetach: vi.fn() }),
+            getChildProcess: () => ({ pipelineLaunchedAt: 2000 }),
+        };
+        const consumerLaunch = 'consumerLaunch' in opts ? opts.consumerLaunch : 1000;
+        const consumer = {
+            running: true,
+            getChildProcess: () => ({
+                pipelineLaunchedAt: consumerLaunch,
+                restartPipeline: restart,
+            }),
+            getLiveInputBranch: vi.fn(() =>
+                (opts.branch ?? true)
+                    ? { element: 'mixin', name: 'mixin_in_x', description: 'unixfdsrc ! queue' }
+                    : null,
+            ),
+            getLiveInputBranchTarget: () => ({ busInputAdd: vi.fn(), busInputRemove: vi.fn() }),
+        };
+        const c = conn();
+        const coord = new BusFanoutCoordinator(
+            (id) =>
+                id === 'srt-input-a'
+                    ? (producer as never)
+                    : id === 'mpegts-muxer-b'
+                      ? (consumer as never)
+                      : undefined,
+            () => PORT,
+            () => [c],
+        );
+        const relink = vi.fn(opts.relink ?? (async () => true));
+        coord.setLiveRelink(relink);
+        return { coord, attach, restart, relink, consumer };
+    }
+
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    it('re-links the branch of a live-input consumer instead of relaunching it', async () => {
+        const { coord, attach, restart, relink } = rig({});
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(relink).toHaveBeenCalledTimes(1);
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('leaves a consumer launched AFTER the producer alone — it connected to the current socket', async () => {
+        const { coord, relink, restart } = rig({ consumerLaunch: 3000 });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(relink).not.toHaveBeenCalled();
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the rule-4 relaunch when the re-link fails', async () => {
+        const { coord, restart } = rig({ relink: async () => false });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('a consumer without the hook keeps the rule-4 relaunch', async () => {
+        const { coord, relink, restart } = rig({ branch: false });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(relink).not.toHaveBeenCalled();
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('a consumer with no launched pipeline is left alone (gating / restarting)', async () => {
+        const { coord, relink, restart } = rig({ consumerLaunch: undefined });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(relink).not.toHaveBeenCalled();
+        expect(restart).not.toHaveBeenCalled();
+    });
+});
+
 describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING', () => {
     const PORT = 40002;
     // ADR-0010 rule 4: a consumer launched at/before the producer's current launch holds a dead edge.
@@ -107,7 +193,10 @@ describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING',
             getChildProcess: () => ({ pipelineLaunchedAt: opts.producerLaunch }),
         };
         const consumer = {
-            getChildProcess: () => ({ pipelineLaunchedAt: opts.consumerLaunch, restartPipeline: restart }),
+            getChildProcess: () => ({
+                pipelineLaunchedAt: opts.consumerLaunch,
+                restartPipeline: restart,
+            }),
         };
         const conns = opts.conns ?? [conn()];
         const coord = new BusFanoutCoordinator(
@@ -129,7 +218,9 @@ describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING',
         expect(attach).toHaveBeenCalledTimes(1);
         expect(restart).toHaveBeenCalledTimes(1);
         expect(restart.mock.calls[0][0]).toContain('srt-input-a');
-        expect(attach.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]);
+        expect(attach.mock.invocationCallOrder[0]).toBeLessThan(
+            restart.mock.invocationCallOrder[0],
+        );
     });
 
     it('treats a same-millisecond launch as stale — a live attachment can only postdate the producer', () => {
@@ -158,8 +249,15 @@ describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING',
 
     it('relaunches a consumer once even with several edges from the same producer', () => {
         const a = conn();
-        const b = conn({ id: 'srt-input-a:mpegts-out-mpegts-muxer-b:audio-1', sinkPortId: 'audio-1' });
-        const { coord, attach, restart } = rig({ producerLaunch: 2000, consumerLaunch: 1000, conns: [a, b] });
+        const b = conn({
+            id: 'srt-input-a:mpegts-out-mpegts-muxer-b:audio-1',
+            sinkPortId: 'audio-1',
+        });
+        const { coord, attach, restart } = rig({
+            producerLaunch: 2000,
+            consumerLaunch: 1000,
+            conns: [a, b],
+        });
         coord.reattachProducer('srt-input-a');
         expect(attach).toHaveBeenCalledTimes(2);
         expect(restart).toHaveBeenCalledTimes(1);

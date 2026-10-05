@@ -26,9 +26,7 @@ function sinkStub(opts: { swapCapable?: boolean; native?: boolean } = {}) {
         start: vi.fn(async () => {}),
         setHealth: vi.fn(),
         refreshPipelineDescription: vi.fn(async () => true),
-        getLiveInputSwap: vi.fn(() =>
-            (opts.swapCapable ?? true) ? { element: 'netin' } : null,
-        ),
+        getLiveInputSwap: vi.fn(() => ((opts.swapCapable ?? true) ? { element: 'netin' } : null)),
         // native sink = no gst child; the swap RPC rides its own controller
         // (ModuleInstance.getLiveSwapTarget falls back to the child for gst).
         getChildProcess: vi.fn(() => (opts.native ? null : { busReinput })),
@@ -88,7 +86,7 @@ describe('MpegTsBusExecutor live input swap', () => {
         expect((sink as any).start).toHaveBeenCalledTimes(1);
     });
 
-    it('non-capable sink keeps today\'s behaviour: immediate detach + restart', async () => {
+    it("non-capable sink keeps today's behaviour: immediate detach + restart", async () => {
         const { sink } = sinkStub({ swapCapable: false });
         const { executor, fanout } = makeExecutor(sink);
 
@@ -256,7 +254,9 @@ describe('MpegTsBusExecutor materializeProducerPort', () => {
             start: vi.fn(async () => {}),
             getChildProcess: vi.fn(() => (opts.native ? null : { busReinput: vi.fn() })),
             getBusAttachTarget: vi.fn(() =>
-                (opts.hasTarget ?? true) ? { sendBusAttach: vi.fn(), sendBusDetach: vi.fn() } : null,
+                (opts.hasTarget ?? true)
+                    ? { sendBusAttach: vi.fn(), sendBusDetach: vi.fn() }
+                    : null,
             ),
             getDynamicPorts: vi.fn(() => [{ id: 'pid-0x65', direction: 'output' }]),
         } as unknown as ModuleInstance;
@@ -314,5 +314,268 @@ describe('MpegTsBusExecutor materializeProducerPort', () => {
 
         await expect(executor.execute(lateWireConn())).rejects.toThrow(/not assigned/);
         expect((producer as any).start).not.toHaveBeenCalled();
+    });
+});
+
+// --- Live input branches (#787): aggregator sinks add/remove one branch live ---
+
+function aggregatorSink(
+    opts: { launched?: boolean; branch?: boolean; description?: boolean } = {},
+) {
+    const busInputAdd = vi.fn(async () => {});
+    const busInputRemove = vi.fn(async () => {});
+    const sink = {
+        running: true,
+        stop: vi.fn(async () => {}),
+        start: vi.fn(async () => {}),
+        setHealth: vi.fn(),
+        refreshPipelineDescription: vi.fn(async () => true),
+        getLiveInputSwap: vi.fn(() => null),
+        getLiveSwapTarget: vi.fn(() => null),
+        noteLiveInputRestored: vi.fn(),
+        getLiveInputBranch: vi.fn((_port: string, connId: string) =>
+            (opts.branch ?? true)
+                ? {
+                      element: 'mixin',
+                      name: `mixin_in_${connId}`,
+                      ...((opts.description ?? true)
+                          ? { description: `unixfdsrc socket-path=/x-${connId} ! queue` }
+                          : {}),
+                  }
+                : null,
+        ),
+        getLiveInputBranchTarget: vi.fn(() => ({ busInputAdd, busInputRemove })),
+        getChildProcess: vi.fn(() => ({
+            pipelineLaunchedAt: (opts.launched ?? true) ? 1000 : undefined,
+        })),
+        getDynamicPorts: vi.fn(() => []),
+    } as unknown as ModuleInstance;
+    return { sink, busInputAdd, busInputRemove };
+}
+
+function makeLiveExecutor(sink: ModuleInstance, remaining = 1) {
+    const fanout = { attach: vi.fn(), detach: vi.fn() };
+    const countBusInputs = vi.fn(() => remaining);
+    const executor = new MpegTsBusExecutor(
+        () => sink,
+        () => PORT,
+        (c) => c.id,
+        undefined,
+        fanout as never,
+        countBusInputs,
+    );
+    return { executor, fanout, countBusInputs };
+}
+
+function mixConn(id: string): Connection {
+    return {
+        id,
+        sourceModuleId: 'src-' + id,
+        sourcePortId: 'out-0',
+        sinkModuleId: 'mixer-1',
+        sinkPortId: 'audio-in',
+        streamType: 'audio/302m',
+    } as Connection;
+}
+
+describe('MpegTsBusExecutor live input branches', () => {
+    let server: Server | null = null;
+
+    afterEach(async () => {
+        if (server) {
+            await new Promise((r) => server!.close(r));
+            server = null;
+        }
+    });
+
+    async function listenEdge(c: Connection): Promise<string> {
+        const edge = busEdgeSocketPath(PORT, c.id);
+        server = createServer();
+        await new Promise<void>((res) => server!.listen(edge, res));
+        return edge;
+    }
+
+    it('adds the branch on a running aggregator: no stop/start, description refreshed', async () => {
+        const { sink, busInputAdd } = aggregatorSink();
+        const { executor, fanout } = makeLiveExecutor(sink);
+        const c = mixConn('c2');
+        await listenEdge(c);
+
+        const handle = await executor.execute(c);
+
+        expect(handle).toMatchObject({ connectionId: 'c2', type: 'bus', busChannel: PORT });
+        expect(fanout.attach).toHaveBeenCalledWith(c);
+        expect(busInputAdd).toHaveBeenCalledWith({
+            element: 'mixin',
+            name: 'mixin_in_c2',
+            description: 'unixfdsrc socket-path=/x-c2 ! queue',
+        });
+        expect((sink as any).refreshPipelineDescription).toHaveBeenCalled();
+        expect((sink as any).stop).not.toHaveBeenCalled();
+        expect((sink as any).start).not.toHaveBeenCalled();
+    });
+
+    it('keeps the classic restart while the sink has no launched pipeline (gating / mid-restart)', async () => {
+        const { sink, busInputAdd } = aggregatorSink({ launched: false });
+        const { executor } = makeLiveExecutor(sink);
+
+        await executor.execute(mixConn('c3'));
+
+        expect(busInputAdd).not.toHaveBeenCalled();
+        expect((sink as any).stop).toHaveBeenCalled();
+        expect((sink as any).start).toHaveBeenCalled();
+    });
+
+    it('falls back to the classic restart when the runner refuses the add', async () => {
+        const { sink, busInputAdd } = aggregatorSink();
+        busInputAdd.mockRejectedValueOnce(new Error("element 'mixin' not found"));
+        const { executor } = makeLiveExecutor(sink);
+        const c = mixConn('c4');
+        await listenEdge(c);
+
+        const handle = await executor.execute(c);
+
+        expect(handle).toMatchObject({ connectionId: 'c4' });
+        expect(busInputAdd).toHaveBeenCalledTimes(1);
+        expect((sink as any).stop).toHaveBeenCalled();
+        expect((sink as any).start).toHaveBeenCalled();
+    });
+
+    it('a sink without the hook is untouched by the live path', async () => {
+        const { sink, busInputAdd } = aggregatorSink({ branch: false });
+        const { executor } = makeLiveExecutor(sink);
+
+        await executor.execute(mixConn('c5'));
+
+        expect(busInputAdd).not.toHaveBeenCalled();
+        expect((sink as any).start).toHaveBeenCalled();
+    });
+
+    it('removes the branch live when other inputs remain: branch first, then the edge, no restart', async () => {
+        const { sink, busInputRemove } = aggregatorSink({ description: false });
+        const { executor, fanout } = makeLiveExecutor(sink, 1);
+        const c = mixConn('c6');
+        const order: string[] = [];
+        busInputRemove.mockImplementation(async () => {
+            order.push('remove');
+        });
+        fanout.detach.mockImplementation(() => order.push('detach'));
+
+        await executor.teardown({ connectionId: 'c6', type: 'bus', busChannel: PORT }, c, false);
+
+        expect(busInputRemove).toHaveBeenCalledWith({ element: 'mixin', name: 'mixin_in_c6' });
+        expect(order).toEqual(['remove', 'detach']);
+        expect((sink as any).refreshPipelineDescription).toHaveBeenCalled();
+        expect((sink as any).stop).not.toHaveBeenCalled();
+    });
+
+    it('the last input on the port keeps the classic teardown (the module must idle)', async () => {
+        const { sink, busInputRemove } = aggregatorSink({ description: false });
+        const { executor, fanout } = makeLiveExecutor(sink, 0);
+
+        await executor.teardown(
+            { connectionId: 'c7', type: 'bus', busChannel: PORT },
+            mixConn('c7'),
+            false,
+        );
+
+        expect(busInputRemove).not.toHaveBeenCalled();
+        expect((sink as any).stop).toHaveBeenCalled();
+        expect((sink as any).start).toHaveBeenCalled();
+        expect(fanout.detach).toHaveBeenCalled();
+    });
+
+    it('the last branch is never removed live, whoever asks — a stale replay copy would gate on it', async () => {
+        const { sink, busInputRemove } = aggregatorSink({ description: false });
+        const { executor, fanout } = makeLiveExecutor(sink, 0);
+
+        await executor.teardown(
+            { connectionId: 'c8', type: 'bus', busChannel: PORT },
+            mixConn('c8'),
+            true,
+        );
+
+        expect(busInputRemove).not.toHaveBeenCalled();
+        expect(fanout.detach).toHaveBeenCalled();
+        // skipModuleRestart: the caller handles the module, so no restart here either.
+        expect((sink as any).stop).not.toHaveBeenCalled();
+    });
+
+    it('a refused remove falls back to the classic teardown', async () => {
+        const { sink, busInputRemove } = aggregatorSink({ description: false });
+        busInputRemove.mockRejectedValueOnce(new Error('branch not found'));
+        const { executor, fanout } = makeLiveExecutor(sink, 1);
+
+        await executor.teardown(
+            { connectionId: 'c9', type: 'bus', busChannel: PORT },
+            mixConn('c9'),
+            false,
+        );
+
+        expect((sink as any).stop).toHaveBeenCalled();
+        expect((sink as any).start).toHaveBeenCalled();
+        expect(fanout.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('relinkLiveInput: drops the branch, waits for the new edge, re-adds, withdraws the lost-input warning', async () => {
+        const { sink, busInputAdd, busInputRemove } = aggregatorSink();
+        const { executor } = makeLiveExecutor(sink);
+        const c = mixConn('c10');
+        await listenEdge(c);
+
+        expect(await executor.relinkLiveInput(c)).toBe(true);
+
+        expect(busInputRemove).toHaveBeenCalledWith(
+            expect.objectContaining({ element: 'mixin', name: 'mixin_in_c10' }),
+        );
+        expect(busInputAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'mixin_in_c10' }));
+        expect(busInputRemove.mock.invocationCallOrder[0]).toBeLessThan(
+            busInputAdd.mock.invocationCallOrder[0],
+        );
+        expect((sink as any).refreshPipelineDescription).toHaveBeenCalled();
+        // Only the lost-input warning is withdrawn — never a blanket health reset.
+        expect((sink as any).noteLiveInputRestored).toHaveBeenCalledWith('mixin_in_c10');
+        expect((sink as any).setHealth).not.toHaveBeenCalled();
+        expect((sink as any).stop).not.toHaveBeenCalled();
+    });
+
+    it('relinkLiveInput: false for a sink without a launched pipeline or when the add fails', async () => {
+        const gating = aggregatorSink({ launched: false });
+        expect(await makeLiveExecutor(gating.sink).executor.relinkLiveInput(mixConn('c11'))).toBe(
+            false,
+        );
+        expect(gating.busInputAdd).not.toHaveBeenCalled();
+
+        const failing = aggregatorSink();
+        failing.busInputAdd.mockRejectedValueOnce(new Error('link failed'));
+        const c = mixConn('c12');
+        await listenEdge(c);
+        expect(await makeLiveExecutor(failing.sink).executor.relinkLiveInput(c)).toBe(false);
+    });
+
+    it('a late producer socket does not restart the sink: the branch is added anyway and the runner contains it', async () => {
+        const { sink, busInputAdd } = aggregatorSink();
+        const { executor } = makeLiveExecutor(sink);
+        const c = mixConn('c13'); // no edge socket listening
+
+        const handle = await executor.execute(c);
+
+        expect(handle).toMatchObject({ connectionId: 'c13' });
+        expect(busInputAdd).toHaveBeenCalledTimes(1);
+        expect((sink as any).stop).not.toHaveBeenCalled();
+    }, 15_000);
+
+    it('replaceLiveInput: remove + add in place, no detach, no restart', async () => {
+        const { sink, busInputAdd, busInputRemove } = aggregatorSink();
+        const { executor, fanout } = makeLiveExecutor(sink);
+
+        expect(await executor.replaceLiveInput(mixConn('c14'))).toBe(true);
+
+        expect(busInputRemove.mock.invocationCallOrder[0]).toBeLessThan(
+            busInputAdd.mock.invocationCallOrder[0],
+        );
+        expect(fanout.detach).not.toHaveBeenCalled();
+        expect((sink as any).stop).not.toHaveBeenCalled();
+        expect((sink as any).refreshPipelineDescription).toHaveBeenCalled();
     });
 });

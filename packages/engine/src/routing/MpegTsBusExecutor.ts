@@ -4,6 +4,13 @@ import type { Connection, ActiveHandle } from './MediaRouter.js';
 import type { StreamTypeExecutor } from './StreamTypeExecutor.js';
 import type { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
 import { PendingInputSwaps, performLiveSwap } from './LiveInputSwap.js';
+import {
+    addLiveInput,
+    liveBranchFor,
+    relinkLiveInput,
+    removeLiveInput,
+    replaceLiveInput,
+} from './LiveInputBranch.js';
 
 const log = createLogger('MpegTsBusExecutor');
 
@@ -46,6 +53,14 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
          * `unixfdsrc` connects); detach on teardown.
          */
         private busFanout?: BusFanoutCoordinator,
+        /**
+         * Bus edges still wired to a sink port — what the live-remove path
+         * checks before taking the LAST input of an aggregator away: with
+         * none left the module must idle (its `buildPipeline` returns null),
+         * so that edge keeps the classic stop/start. Counted after the
+         * connection record is deleted, so it is the remaining set.
+         */
+        private countBusInputs?: (sinkModuleId: string, sinkPortId: string) => number,
     ) {}
 
     async execute(conn: Connection): Promise<ActiveHandle | null> {
@@ -95,6 +110,12 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
             }
             // Fall through: performLiveSwap already detached the old edge —
             // the classic restart below rebuilds against the new connection.
+        }
+
+        // Aggregator sink: add this edge as ONE branch on the running pipeline
+        // (nothing downstream restarts); any failure falls through to the restart.
+        if (await addLiveInput({ sink: sinkModule, conn, udpPort, label: this.connLabel(conn) })) {
+            return { connectionId: conn.id, type: 'bus', busChannel: udpPort };
         }
 
         // Start/restart the consumer so it connects to the producer's edge socket
@@ -236,6 +257,20 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
             }
         }
 
+        // Aggregator sink: take this edge's branch off the running pipeline,
+        // branch first then the edge (same ordering rule as below). The LAST
+        // input of a port keeps the classic path — the module must idle.
+        const sink = conn ? this.moduleGetter(conn.sinkModuleId) : undefined;
+        if (
+            conn &&
+            sink &&
+            (this.countBusInputs?.(conn.sinkModuleId, conn.sinkPortId) ?? 0) > 0 &&
+            (await removeLiveInput({ sink, conn, label: this.connLabel(conn) }))
+        ) {
+            this.busFanout?.detach(conn);
+            return;
+        }
+
         // ORDER IS LOAD-BEARING: quiesce the consumer BEFORE detaching the
         // producer's fan-out branch for this edge.
         //
@@ -256,6 +291,22 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
         if (!skipModuleRestart && conn) await this.restartSinkIdle(conn);
 
         if (conn) this.busFanout?.detach(conn);
+    }
+
+    /** Re-link one live input branch after its producer relaunched
+     *  (BusFanoutCoordinator's per-branch alternative to a consumer relaunch). */
+    async relinkLiveInput(conn: Connection): Promise<boolean> {
+        const sink = this.moduleGetter(conn.sinkModuleId);
+        const udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
+        if (!sink || udpPort === undefined) return false;
+        return relinkLiveInput({ sink, conn, udpPort, label: this.connLabel(conn) });
+    }
+
+    /** Replace one live input branch in place (a channel-map edit). */
+    async replaceLiveInput(conn: Connection): Promise<boolean> {
+        const sink = this.moduleGetter(conn.sinkModuleId);
+        if (!sink || !liveBranchFor(sink, conn)) return false;
+        return replaceLiveInput({ sink, conn, label: this.connLabel(conn) });
     }
 
     /** Classic disconnect: stop then restart the sink so its buildPipeline

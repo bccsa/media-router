@@ -71,4 +71,33 @@ describe('AudioMixerModule.buildPipeline', () => {
         expect(module.buildPipeline({})).toBeNull();
         expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('exhausted'));
     });
+
+    it('opts out of the EOS drain — an audio-only producer whose force-live mix never drains (#787)', () => {
+        const { module } = makeModule(2);
+        expect(module.buildPipeline({})!.eosDrain).toBe(false);
+    });
+});
+
+describe('AudioMixerModule.getLiveInputBranch (#787)', () => {
+    it('a wired Audio In edge gets its branch: mixer element, stable bin name, branch text', () => {
+        const { module } = makeModule(2);
+        module.config = { channels: 2 };
+        const b = module.getLiveInputBranch('audio-in', 'c-1');
+        expect(b).toMatchObject({ element: 'mixin' });
+        expect(b.name).toMatch(/^mixin_in_[0-9a-f]{6}$/);
+        expect(b.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40101-x.sock');
+        // The same name the start-time pipeline gives that source's bin.
+        expect(module.buildPipeline({})!.pipeline).toContain(`( name=${b.name} `);
+    });
+
+    it('an edge that is already gone (remove) still names its branch, without a description', () => {
+        const { module } = makeModule(1);
+        const b = module.getLiveInputBranch('audio-in', 'c-gone');
+        expect(b).toEqual({ element: 'mixin', name: expect.stringMatching(/^mixin_in_/) });
+    });
+
+    it('other ports are not live-input ports', () => {
+        const { module } = makeModule(1);
+        expect(module.getLiveInputBranch('audio-out', 'c-0')).toBeNull();
+    });
 });

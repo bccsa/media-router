@@ -783,6 +783,129 @@ def test_video_gates():
         r.kill()
 
 
+# --------------------------------------------------------------------------- L: live input branches (#787)
+def _drain_timeout_warning(ev):
+    return ev.get("event") == "warning" and "EOS drain timed out" in str(ev.get("message", ""))
+
+
+def test_live_input_branches():
+    """An aggregator sink gains and loses input branches on its running
+    pipeline (`bus_input_add` / `bus_input_remove`), including a branch with a
+    delayed demuxer link, without a rebuild; and `eosDrain: false` lets a
+    force-live mixer stop without the 6 s drain stall."""
+    if Gst.ElementFactory.find("avenc_s302m") is None or Gst.ElementFactory.find("tsdemux") is None:
+        print("SKIP L — avenc_s302m / tsdemux unavailable")
+        return
+    caps = "audio/x-raw,rate=48000,channels=2"
+    tone = f"audiotestsrc is-live=true ! audioconvert ! {caps} ! queue"
+    mixer = ("audiomixer name=mixin force-live=true latency=100000000 min-upstream-latency=100000000"
+             " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
+             " ! identity name=mixin_out sync=true ! level name=lvl post-messages=true interval=100000000"
+             " ! fakesink sync=false")
+    r = RunnerProc()
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": f"{mixer}  ( name=mixin_in_a {tone} ) ! mixin.sink_0",
+                "eosDrain": False})
+        check("L reaches PLAYING with one bin branch", r.wait_event(ev_is("state_change", state="playing")) is not None)
+        check("L VU flows from the start branch", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
+
+        # Plain branch added live.
+        r.send({"cmd": "bus_input_add", "id": "a1", "element": "mixin", "name": "mixin_in_b",
+                "description": "audiotestsrc is-live=true freq=880 ! audioconvert ! " + caps + " ! queue"})
+        check("L bus_input_add -> bus_input_add_done", r.wait_event(ev_is("bus_input_add_done", id="a1")) is not None)
+        r.send({"cmd": "get_property", "id": "p1", "element": "mixin_in_b", "property": "name"})
+        p = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p1")
+        check("L the added bin is in the pipeline under its name", p is not None and p.get("event") == "property")
+
+        # A branch whose demuxer link is delayed (302M over TS through tsdemux).
+        demux_branch = ("audiotestsrc is-live=true ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2"
+                        " ! avenc_s302m strict=experimental ! mpegtsmux ! tsdemux name=mixin_demux_c latency=0"
+                        " ! audio/x-smpte-302m ! avdec_s302m ! audioconvert ! audioresample ! " + caps + " ! queue")
+        r.send({"cmd": "bus_input_add", "id": "a2", "element": "mixin", "name": "mixin_in_c", "description": demux_branch})
+        check("L demuxer-headed branch added live", r.wait_event(ev_is("bus_input_add_done", id="a2")) is not None)
+        time.sleep(1.0)
+        check("L no error after the live adds", not r.has_event(ev_is("error")))
+
+        # A duplicate add is idempotent (the branch IS the requested state —
+        # the producer-PLAYING re-link and the connection re-apply can race for
+        # one edge); an unknown aggregator is a command error, never a fault.
+        r.send({"cmd": "bus_input_add", "id": "a3", "element": "mixin", "name": "mixin_in_b",
+                "description": "audiotestsrc is-live=true ! queue"})
+        check("L duplicate branch add is a no-op done", r.wait_event(ev_is("bus_input_add_done", id="a3")) is not None)
+        r.send({"cmd": "bus_input_add", "id": "a4", "element": "nope", "name": "mixin_in_d",
+                "description": "audiotestsrc is-live=true ! queue"})
+        check("L unknown aggregator -> command_error", r.wait_event(ev_is("command_error", id="a4")) is not None)
+
+        # Containment: a branch whose source dies (here: a unixfdsrc on a
+        # socket nobody serves) is dropped and reported — never a pipeline
+        # error. The mix keeps running on its other inputs.
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        dead = os.path.join(tmp, "dead.sock")
+        r.send({"cmd": "bus_input_add", "id": "a5", "element": "mixin", "name": "mixin_in_dead",
+                "description": f"unixfdsrc socket-path={dead} ! queue"})
+        lost = r.wait_event(lambda e: e.get("event") == "input_branch_lost" and e.get("name") == "mixin_in_dead",
+                            timeout=5)
+        check("L dead-producer branch is reported as input_branch_lost", lost is not None)
+        check("L ...and is NOT a pipeline error", not r.has_event(ev_is("error")))
+        r.send({"cmd": "get_property", "id": "p3", "element": "mixin_in_dead", "property": "name"})
+        p3 = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p3")
+        check("L dropped branch is gone from the pipeline", p3 is not None and p3.get("event") == "command_error")
+        check("L mix still flowing after the drop (VU)", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
+        os.rmdir(tmp)
+
+        # Live removes: the start-time bin, then a live-added one.
+        r.send({"cmd": "bus_input_remove", "id": "r1", "element": "mixin", "name": "mixin_in_a"})
+        check("L start-time bin removed live", r.wait_event(ev_is("bus_input_remove_done", id="r1")) is not None)
+        r.send({"cmd": "bus_input_remove", "id": "r2", "element": "mixin", "name": "mixin_in_c"})
+        check("L demuxer-headed bin removed live", r.wait_event(ev_is("bus_input_remove_done", id="r2")) is not None)
+        r.send({"cmd": "get_property", "id": "p2", "element": "mixin_in_a", "property": "name"})
+        p2 = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p2")
+        check("L removed bin is gone from the pipeline", p2 is not None and p2.get("event") == "command_error")
+        r.send({"cmd": "bus_input_remove", "id": "r3", "element": "mixin", "name": "mixin_in_a"})
+        check("L removing a branch that is already gone is a no-op done",
+              r.wait_event(ev_is("bus_input_remove_done", id="r3")) is not None)
+        time.sleep(1.0)
+        check("L pipeline still alive after removes (VU)", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
+        check("L no error after the live removes", not r.has_event(ev_is("error")))
+
+        # eosDrain:false — a force-live mixer never completes an EOS drain;
+        # without the opt-out this stop would stall EOS_DRAIN_TIMEOUT_MS.
+        t0 = time.monotonic()
+        code = r.stop_and_wait()
+        took = time.monotonic() - t0
+        check("L exits 0 after stop", code == 0)
+        check(f"L eosDrain:false stops a force-live mixer promptly ({took:.1f}s)", took < 3.0)
+        check("L no drain timeout warning with eosDrain:false", not r.has_event(_drain_timeout_warning))
+    finally:
+        r.kill()
+
+    # Control: the default (drain) on the real producer shape — force-live mix
+    # into the 302M encode and a bus tee with no edge, i.e. no sink element to
+    # post EOS — stalls the full timeout (the .103 measurement behind #787).
+    producer = ("audiomixer name=mixin force-live=true latency=200000000 min-upstream-latency=200000000"
+                " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
+                " ! identity name=mixin_out sync=true ! audioconvert ! audioresample"
+                " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m strict=experimental"
+                " ! mpegtsmux latency=0 alignment=7"
+                " ! capssetter caps=\"video/mpegts,systemstream=true,packetsize=188\" replace=true"
+                " ! tee name=busout_41000 allow-not-linked=true"
+                f"  ( name=mixin_in_a {tone} ) ! mixin.sink_0")
+    r = RunnerProc()
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": producer, "timeSyncContract": True})
+        check("L control reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+        time.sleep(1.0)
+        t0 = time.monotonic()
+        r.stop_and_wait(timeout=15)
+        took = time.monotonic() - t0
+        check(f"L default drain stalls a force-live mixer stop ({took:.1f}s)",
+              took >= 5.0 and r.has_event(_drain_timeout_warning))
+    finally:
+        r.kill()
+
+
 test_plain_pipeline()
 test_producer_edge()
 test_consumer_data_wait()
@@ -792,6 +915,7 @@ test_shed_refusals()
 test_runner_hooks()
 test_subtitle_bridge_hook()
 test_video_gates()
+test_live_input_branches()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

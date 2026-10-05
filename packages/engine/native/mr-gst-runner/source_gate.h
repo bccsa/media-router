@@ -35,6 +35,11 @@ void on_playing();
 /** One `GstUDPSrcTimeout` from `src_name`. */
 void on_udp_timeout(const std::string& src_name);
 
+/** A live input branch is leaving the pipeline: its heads no longer
+ *  count for the data wait — not as pending first-data, not as polled
+ *  sockets. Fires `data_arrived` if they were the last pending ones. */
+void forget_sources_in(GstElement* bin);
+
 }  // namespace mr::gate
 
 namespace mr::stall {

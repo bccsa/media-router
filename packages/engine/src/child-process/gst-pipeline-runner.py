@@ -159,6 +159,13 @@ playing_watchdog_id = None  # GLib source id of the running PLAYING watchdog
 # GstRunner.shutdown's SIGKILL/exit timers and GstChildProcess.stop's SIGKILL
 # timer — all >= 8000 ms, pinned by eosDrainContract.test.ts.
 EOS_DRAIN_TIMEOUT_MS = 6000
+# `eosDrain` of the start payload: drain on a deliberate stop. False only for
+# audio-only bus producers — see PipelineDescription.eosDrain.
+_drain_on_stop = True
+# Bin names of the live input branches (`liveInputBranches` + bus_input_add,
+# minus removes): an error inside one is contained — the branch is dropped
+# and `input_branch_lost` reported, the pipeline keeps running.
+_live_input_branches = set()
 
 
 def _drain_decoder_branch(deadline):
@@ -272,7 +279,7 @@ def _teardown_pipeline(pipe, drain=True, errored=False):
     if pipe is None:
         return
     source_gate.stop()
-    if drain:
+    if drain and _drain_on_stop:
         _eos_drain(pipe, errored=errored)
     pipe.set_state(Gst.State.NULL)
 
@@ -453,6 +460,15 @@ def on_bus_message(bus, message):
             emit_event({"event": "warning",
                         "message": f"bus edge failed ({element}): {err.message} — "
                                    f"branch detached, producer unaffected"})
+            return True
+        # CONTAINMENT: an error inside a live input branch (its producer died)
+        # costs that input, not the mix — drop it, report it, keep running.
+        lost = _live_branch_ancestor(src)
+        if lost is not None:
+            _drop_live_branch(lost)
+            emit_event({"event": "input_branch_lost", "name": lost,
+                        "message": f"live input {lost} lost ({element}): {err.message} — "
+                                   f"branch dropped, mix continues without it"})
             return True
         # A `watchdog` element inserted by buildBusSrc's stallTimeoutMs
         # (named `buswd_*`) firing means the bus source is silent but
@@ -2023,7 +2039,7 @@ def _clear_runner_hooks():
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
-    global klv_payloads, klv_timer_id, playing_watchdog_id, bus_reports
+    global klv_payloads, klv_timer_id, playing_watchdog_id, bus_reports, _drain_on_stop
 
     # Drop any carousel state from a prior run; the parent re-pushes after the
     # pipeline is PLAYING. Stale payloads pointing at the old element graph
@@ -2038,6 +2054,11 @@ def handle_start(data):
     pad_link_rules = data.get("linkOnPadAdded", []) or []
     read_klv_names = data.get("readKlvNames", False)
     decoder_thread_type = data.get("decoderThreadType", "auto")
+    # Drain opt-out for audio-only bus producers; absent = drain.
+    _drain_on_stop = data.get("eosDrain", True) is not False
+    _live_input_branches.clear()
+    _live_input_branches.update(str(n) for n in (data.get("liveInputBranches") or []) if n)
+    source_gate.live_branches = _live_input_branches
     _klv_garbage_warned.clear()
 
     if not pipeline_str:
@@ -2210,6 +2231,7 @@ def handle_stop(data=None):
     _cancel_playing_watchdog()
     source_gate.stop()
     _clear_pending_bus_attaches()
+    _live_input_branches.clear()
     _clear_preserve_timeline()
     _clear_branch_align()
     gst_bus_stamper.clear()
@@ -3141,6 +3163,147 @@ def handle_bus_reinput(data):
         return
     sys.stderr.write(f"[gst-runner.py] bus_reinput: {name} -> {socket}\n")
     emit_event({"event": "bus_reinput_done", "id": req_id})
+
+
+def _remove_live_bin(bin_, agg=None):
+    """Stop the branch (the pushing side — NULL ends its thread; no pad probe,
+    one on its own src pad would deadlock the NULL join), unlink it, release
+    the aggregator's request pad (`agg` when given must own it), drop the bin."""
+    # Its heads leave the data wait first: neither pending first-data nor a
+    # polled socket may fire for a branch that is being taken away.
+    source_gate.forget_sources_in(bin_)
+    bin_.set_state(Gst.State.NULL)
+    src = bin_.get_static_pad("src")
+    agg_pad = src.get_peer() if src is not None else None
+    if src is not None and agg_pad is not None:
+        src.unlink(agg_pad)
+    if agg_pad is not None:
+        owner = agg_pad.get_parent()
+        if isinstance(owner, Gst.Element) and (agg is None or owner is agg):
+            owner.release_request_pad(agg_pad)
+    parent = bin_.get_parent()
+    if isinstance(parent, Gst.Bin):
+        parent.remove(bin_)
+
+
+def _live_branch_ancestor(obj):
+    """Name of the live input branch bin above `obj` (a bus message source),
+    or None when it is not inside one."""
+    if not _live_input_branches:
+        return None
+    cur = obj
+    while cur is not None:
+        name = cur.get_name() if hasattr(cur, "get_name") else None
+        if name in _live_input_branches:
+            return name
+        cur = cur.get_parent()
+    return None
+
+
+def _drop_live_branch(name):
+    """Drop a live input branch by name (its producer died under it). True
+    when it existed."""
+    _live_input_branches.discard(name)
+    if not pipeline:
+        return False
+    bin_ = pipeline.get_by_name(name)
+    if bin_ is None:
+        return False
+    _remove_live_bin(bin_)
+    return True
+
+
+def handle_bus_input_add(data):
+    """Add one input branch bin to a running aggregator (tracked, idempotent).
+    Tail src pad ghosted by hand: auto-ghosting would claim the capsfilter's
+    unlinked sink pad behind tsdemux's delayed link."""
+    req_id = data.get("id")
+    element = data.get("element", "")
+    name = data.get("name", "")
+    desc = data.get("description", "")
+    if not pipeline:
+        emit_command_error(req_id, "bus_input_add: no pipeline")
+        return
+    if not element or not name or not desc:
+        emit_command_error(req_id, "bus_input_add: element, name and description required")
+        return
+    if pipeline.get_by_name(name) is not None:
+        # Idempotent: already there (built at start, or the producer-PLAYING
+        # re-link and the connection re-apply raced for the same edge) — that
+        # IS the requested state; an error made the engine restart the module.
+        _live_input_branches.add(name)
+        sys.stderr.write(f"[gst-runner.py] bus_input_add: {name} already present — no-op\n")
+        emit_event({"event": "bus_input_add_done", "id": req_id, "name": name})
+        return
+    agg = pipeline.get_by_name(element)
+    if agg is None:
+        emit_command_error(req_id, f"bus_input_add: element '{element}' not found")
+        return
+    try:
+        bin_ = Gst.parse_bin_from_description(desc, False)
+    except GLib.Error as e:
+        emit_command_error(req_id, f"bus_input_add: parse failed: {e.message}")
+        return
+    bin_.set_name(name)
+    tail = bin_.find_unlinked_pad(Gst.PadDirection.SRC)
+    if tail is None:
+        emit_command_error(req_id, f"bus_input_add: branch '{name}' has no unlinked src pad")
+        return
+    ghost = Gst.GhostPad.new("src", tail)
+    ghost.set_active(True)
+    bin_.add_pad(ghost)
+    # Same parent bin as the aggregator (a cross-bin link cannot be made).
+    parent = agg.get_parent()
+    if not isinstance(parent, Gst.Bin):
+        parent = pipeline
+    parent.add(bin_)
+    agg_pad = agg.request_pad_simple("sink_%u")
+    if agg_pad is None:
+        parent.remove(bin_)
+        emit_command_error(req_id, f"bus_input_add: no request pad on '{element}'")
+        return
+    link = ghost.link(agg_pad)
+    if link != Gst.PadLinkReturn.OK:
+        agg.release_request_pad(agg_pad)
+        parent.remove(bin_)
+        emit_command_error(req_id, f"bus_input_add: link failed ({link})")
+        return
+    # Link first, then run: a source-headed branch pushes the moment it is
+    # PLAYING, and its sticky events need the peer to exist.
+    bin_.sync_state_with_parent()
+    _live_input_branches.add(name)
+    sys.stderr.write(f"[gst-runner.py] bus_input_add: {name} -> {element}\n")
+    emit_event({"event": "bus_input_add_done", "id": req_id, "name": name})
+
+
+def handle_bus_input_remove(data):
+    """Remove the input branch bin `name` from the running aggregator (tracked, idempotent)."""
+    req_id = data.get("id")
+    element = data.get("element", "")
+    name = data.get("name", "")
+    if not pipeline:
+        emit_command_error(req_id, "bus_input_remove: no pipeline")
+        return
+    if not element or not name:
+        emit_command_error(req_id, "bus_input_remove: element and name required")
+        return
+    bin_ = pipeline.get_by_name(name)
+    if bin_ is None:
+        # Idempotent: already gone (dropped as input_branch_lost when its
+        # producer died) — the requested state; an error made the engine
+        # restart the module over nothing.
+        _live_input_branches.discard(name)
+        sys.stderr.write(f"[gst-runner.py] bus_input_remove: {name} already gone — no-op\n")
+        emit_event({"event": "bus_input_remove_done", "id": req_id, "name": name})
+        return
+    agg = pipeline.get_by_name(element)
+    if agg is None:
+        emit_command_error(req_id, f"bus_input_remove: element '{element}' not found")
+        return
+    _remove_live_bin(bin_, agg)
+    _live_input_branches.discard(name)
+    sys.stderr.write(f"[gst-runner.py] bus_input_remove: {name} removed from {element}\n")
+    emit_event({"event": "bus_input_remove_done", "id": req_id, "name": name})
 
 
 # ---------------------------------------------------------------------------
@@ -4370,6 +4533,8 @@ CMD_HANDLERS = {
     "bus_attach": handle_bus_attach,
     "bus_detach": handle_bus_detach,
     "bus_reinput": handle_bus_reinput,
+    "bus_input_add": handle_bus_input_add,
+    "bus_input_remove": handle_bus_input_remove,
 }
 
 def dispatch_command(line):

@@ -58,6 +58,10 @@ struct Runner {
 
     guint playing_watchdog_id = 0;
     int playing_timeout_ms = PLAYING_WATCHDOG_MS;
+    /** `eosDrain` of the start payload: EOS-drain on a deliberate stop.
+     *  False only for audio-only bus producers — see
+     *  PipelineDescription.eosDrain. */
+    bool drain_on_stop = true;
 
     /** `busReports`: (element, structure) pairs forwarded as plugin events. */
     std::set<std::pair<std::string, std::string>> bus_reports;

@@ -1,4 +1,5 @@
 import type { ManagedProcess } from './ManagedProcess.js';
+import type { LiveInputBranch } from '../plugins/PluginModule.js';
 
 /**
  * What the BusFanoutCoordinator needs from a producer to manage its
@@ -18,6 +19,13 @@ export interface BusAttachTarget {
  */
 export interface LiveSwapTarget {
     busReinput(element: string, socket: string): Promise<void>;
+}
+
+/** Target of the tracked `bus_input_add` / `bus_input_remove` RPCs
+ *  (`PluginModule.getLiveInputBranch`). `GstChildProcess` satisfies it. */
+export interface LiveInputBranchTarget {
+    busInputAdd(branch: LiveInputBranch): Promise<void>;
+    busInputRemove(branch: Pick<LiveInputBranch, 'element' | 'name'>): Promise<void>;
 }
 
 /**

@@ -12,6 +12,7 @@
 #include "backlog_shed.h"
 #include "branch_align.h"
 #include "bus_edges.h"
+#include "bus_inputs.h"
 #include "gates.h"
 #include "hooks.h"
 #include "pad_link.h"
@@ -174,7 +175,9 @@ bool Runner::eos_drain(GstElement* pipe, bool errored) {
 void Runner::teardown_pipeline(GstElement* pipe, bool drain, bool errored) {
     if (!pipe) return;
     gate::stop();
-    if (drain) eos_drain(pipe, errored);
+    // `drain_on_stop` (eosDrain:false) applies to EVERY teardown path, not
+    // only the stop command — the watchdog and gate failures reach here too.
+    if (drain && drain_on_stop) eos_drain(pipe, errored);
     gst_element_set_state(pipe, GST_STATE_NULL);
 }
 
@@ -312,6 +315,8 @@ void Runner::handle_start(JsonObject* data) {
 
     // Dynamic-pad-link rules (+ stream discovery on their demuxers).
     padlink::install(pipeline, json_get_array(data, "linkOnPadAdded"));
+    // Live input branch bins (error containment).
+    inputs::declare(json_get_array(data, "liveInputBranches"));
 
     // Multi-branch stamp alignment (contract-only): armed before PLAYING so
     // the first TS bytes carry the mapping every branch is anchored to.
@@ -373,6 +378,8 @@ void Runner::handle_start(JsonObject* data) {
     cancel_playing_watchdog();
     playing_timeout_ms = json_has(data, "playingTimeoutMs") ? (int)json_get_int(data, "playingTimeoutMs")
                                                              : PLAYING_WATCHDOG_MS;
+    // Drain opt-out (audio-only bus producers); absent = drain.
+    drain_on_stop = json_get_bool(data, "eosDrain", true);
     bool deferred = gate::start(pipeline, ret == GST_STATE_CHANGE_ASYNC, playing_timeout_ms,
                                 json_get_int(data, "udpSilenceRestartMs", 0));
     if (playing_timeout_ms > 0 && !deferred) arm_playing_watchdog(playing_timeout_ms);
@@ -391,6 +398,7 @@ void Runner::handle_stop() {
     stamper::clear();
     hooks::clear();
     padlink::clear();
+    inputs::clear();
     tsprobe::stop();
     render::stop();
     stall::stop();
@@ -453,6 +461,23 @@ void Runner::on_bus_message(GstMessage* msg) {
                 if (!edge_socket.empty()) bus::teardown_branch(edge_socket);
                 ipc::warning("bus edge failed (" + element + "): " + message +
                              " — branch detached, producer unaffected");
+                g_clear_error(&err);
+                g_free(debug);
+                return;
+            }
+            // CONTAINMENT: an error inside a live input branch of an
+            // aggregator — its producer died under the unixfdsrc — costs
+            // that input, not the mix. Drop the branch, report it, keep
+            // running; the engine re-adds it when the producer is back.
+            std::string lost = inputs::live_branch_ancestor(src);
+            if (!lost.empty()) {
+                inputs::drop_branch(lost);
+                JsonObject* ev = ipc::event("input_branch_lost");
+                json_object_set_string_member(ev, "name", lost.c_str());
+                std::string text = "live input " + lost + " lost (" + element + "): " + message +
+                                   " — branch dropped, mix continues without it";
+                json_object_set_string_member(ev, "message", text.c_str());
+                ipc::emit(ev);
                 g_clear_error(&err);
                 g_free(debug);
                 return;

@@ -1,4 +1,8 @@
-import { GstPluginBase, type PipelineDescription } from '@media-router/engine';
+import {
+    GstPluginBase,
+    type LiveInputBranch,
+    type PipelineDescription,
+} from '@media-router/engine';
 import {
     normalize302mChannels,
     probe302mSupport,
@@ -9,6 +13,7 @@ import {
     activeOutputIndices,
     buildN1Pipeline,
     buildN1Ports,
+    n1InputBranch,
     n1PortId,
     readChannels,
     readPairCount,
@@ -26,12 +31,36 @@ import {
  * replacing the PipeWire n1-mixer's arrival-time summing (and its re-stamped
  * loop dwell). No PipeWire anywhere in this module.
  *
- * One pipeline for the whole matrix: any input wiring change restarts it,
- * blipping all outputs (inherent to the one-pipeline model — same contract
- * as audio-output-302m gaining a source).
+ * One pipeline for the whole matrix. A further source on an already-connected
+ * input is added/removed live on that input's `inmix<i>` (`getLiveInputBranch`);
+ * the first source on an input, or its last one leaving, still restarts the
+ * pipeline (its tee, matrix links and active outputs change with it).
  */
 export class N1Mixer302mModule extends GstPluginBase {
     protected liveUpdatableParams: string[] = [];
+
+    /** Live input add/remove on `in-<i>` — see `n1InputBranch`. */
+    getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
+        const m = /^in-(\d+)$/.exec(sinkPortId);
+        if (!m) return null;
+        const index = Number(m[1]);
+        if (index >= readPairCount(this.config)) return null;
+        const router = this.services?.mediaRouter;
+        const instanceId = this.services?.instanceId ?? '';
+        if (!router) return null;
+        const mine = router
+            .getModuleBusSources(instanceId)
+            .find(
+                (s: { sinkPortId: string; connectionId: string }) =>
+                    s.sinkPortId === sinkPortId && s.connectionId === connectionId,
+            );
+        // Remove: the record is already gone — name the branch to take off
+        // (the engine keeps the classic restart for the LAST one on a port).
+        // Add: the branch for a running `inmix<i>`; the FIRST source on an
+        // input has no aggregator to join yet — the runner answers "element
+        // not found" and the engine falls back to the restart that builds it.
+        return n1InputBranch(index, connectionId, mine, readChannels(this.config));
+    }
 
     /** gst runtime support for 302M-in-TS, probed once at plugin load. */
     private static s302mSupported = false;
@@ -123,6 +152,9 @@ export class N1Mixer302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            // Audio-only bus producer: no decoder to drain, and force-live
+            // mixers never complete the EOS drain.
+            eosDrain: false,
         };
     }
 }
