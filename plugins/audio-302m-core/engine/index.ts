@@ -9,6 +9,11 @@
 export {
     buildAudioMixInput,
     build302mEncodeBranch,
+    build302mMixBranch,
+    liveDemuxName,
+    liveInputBranchFor,
+    liveMixInputBranch,
+    mixInputBranchName,
     normalize302mChannels,
     pacedMixer,
     probe302mSupport,

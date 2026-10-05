@@ -67,8 +67,14 @@ def configure(emit_event, fail_pipeline, arm_deadline, pipeline_getter):
     _emit, _fail, _arm_deadline, _pipeline = emit_event, fail_pipeline, arm_deadline, pipeline_getter
 
 
+# Bin names of the live input branches (the runner's `_live_input_branches`,
+# shared by reference): their heads are gated like top-level sources.
+live_branches = set()
+
+
 def sources_by_factory(pipe, factory_name):
-    """The pipeline's source elements made by `factory_name`."""
+    """The pipeline's source elements made by `factory_name`: its own sources
+    plus those inside live input branch bins. Other bins are not entered."""
     out = []
     it = pipe.iterate_sources()
     while True:
@@ -77,6 +83,8 @@ def sources_by_factory(pipe, factory_name):
             f = el.get_factory()
             if f is not None and f.get_name() == factory_name:
                 out.append(el)
+            elif isinstance(el, Gst.Bin) and el.get_name() in live_branches:
+                out.extend(sources_by_factory(el, factory_name))
         elif result == Gst.IteratorResult.RESYNC:
             it.resync()
             out = []
@@ -231,6 +239,30 @@ def _on_data_arrived(dw):
         if state != Gst.State.PLAYING:
             _arm_deadline(dw["timeout_ms"])
     return False
+
+
+def forget_sources_in(bin_):
+    """A live input branch is leaving the pipeline: its heads no longer
+    count for the data wait — not as pending first-data, not as polled
+    sockets. Fires `data_arrived` if they were the last pending ones."""
+    dw = data_wait
+    if dw is None or not isinstance(bin_, Gst.Bin):
+        return
+    heads = sources_by_factory(bin_, "unixfdsrc") + sources_by_factory(bin_, "udpsrc")
+    for s in heads:
+        dw["pending"].discard(id(s))
+        f = s.get_factory()
+        if f is not None and f.get_name() == "unixfdsrc":
+            try:
+                path = str(s.get_property("socket-path"))
+            except Exception:  # noqa: BLE001
+                path = None
+            if path:
+                dw["sockets"] = [p for p in dw["sockets"] if p != path]
+                dw["identity"].pop(path, None)
+    if heads and not dw["pending"] and not dw["fired"]:
+        dw["fired"] = True
+        GLib.idle_add(_on_data_arrived, dw)
 
 
 # --------------------------------------------------------------------------- udp silence

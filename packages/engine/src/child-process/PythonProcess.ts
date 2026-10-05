@@ -62,6 +62,10 @@ export interface RunnerStartOptions {
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
     /** Which runner binary hosts the pipeline (ADR-0019) — see `nativeRunner.ts`. */
     runner?: 'python' | 'native';
+    /** EOS-drain before a deliberate stop (default true) — `PipelineDescription.eosDrain`. */
+    eosDrain?: boolean;
+    /** Live input branch bins whose errors are contained — `PipelineDescription.liveInputBranches`. */
+    liveInputBranches?: string[];
 }
 
 export interface PythonProcessOptions {
@@ -119,7 +123,9 @@ export class PythonProcess {
         const runner = selectRunner(opts, this.options.pythonRunnerPath);
         // Log the full pipeline string — truncating it hides the failing element
         // when a plugin's pipeline is rejected by parse_launch.
-        console.error(`[gst-runner] Starting pipeline (${mode}, ${runner.kind} runner): ${pipeline}`);
+        console.error(
+            `[gst-runner] Starting pipeline (${mode}, ${runner.kind} runner): ${pipeline}`,
+        );
         if (linkOnPadAdded.length > 0) {
             console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(linkOnPadAdded)}`);
         }

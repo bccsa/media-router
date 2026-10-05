@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "bus_edges.h"
+#include "bus_inputs.h"
 #include "ipc.h"
 #include "json_util.h"
 #include "runner.h"
@@ -58,6 +59,8 @@ void Runner::dispatch(JsonObject* data) {
     else if (cmd == "bus_attach") bus::handle_bus_attach(data);
     else if (cmd == "bus_detach") bus::handle_bus_detach(data);
     else if (cmd == "bus_reinput") bus::handle_bus_reinput(data);
+    else if (cmd == "bus_input_add") inputs::handle_bus_input_add(data);
+    else if (cmd == "bus_input_remove") inputs::handle_bus_input_remove(data);
     else if (cmd == "set_klv_payload")
         ipc::command_error(json_get_string(data, "id"), "set_klv_payload: not supported by the native runner");
     else ipc::command_error(json_get_string(data, "id"), "Unknown command: " + cmd);

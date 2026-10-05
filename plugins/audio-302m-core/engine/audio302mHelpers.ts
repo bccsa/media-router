@@ -2,7 +2,9 @@ import {
     buildBusSrc,
     gstElementSupportsCaps,
     probeGstElement,
+    shortHash,
     type ChannelMapEntry,
+    type LiveInputBranch,
 } from '@media-router/engine';
 import { mixMatrixClause } from './channelMapMatrix.js';
 
@@ -130,6 +132,87 @@ export interface AudioMixInputOpts {
     mixerName?: string;
     /** Per-branch post-decode queue bound in ms. Default 100. */
     branchQueueMs?: number;
+    /** Live-input mode: each source its own named bin on an explicit
+     *  `sink_<i>` pad, mixer arm even for ONE source (ADR-0008 addendum).
+     *  Default off — classic callers keep byte-identical strings. */
+    liveInputs?: boolean;
+}
+
+/**
+ * Name of the input branch bin for one connection in live-input mode —
+ * shared by `buildAudioMixInput` and a module's `getLiveInputBranch`, so a
+ * branch built at start can still be found by a later live remove.
+ */
+export function mixInputBranchName(mixerName: string, connectionId: string): string {
+    return `${mixerName}_in_${shortHash(connectionId)}`;
+}
+
+export interface MixInputBranchOpts {
+    /** Output channel count of the mix (the branch converts to it). Default 2. */
+    channels?: number;
+    /** Per-branch post-decode queue bound in ms. Default 100. */
+    branchQueueMs?: number;
+    /** `name=` of the branch's tsdemux. */
+    demuxName: string;
+}
+
+/** `name=` of a live-input branch's tsdemux — keyed by the connection like
+ *  the bin, so a branch added later never collides with one built at start. */
+export function liveDemuxName(mixerName: string, connectionId: string): string {
+    return `${mixerName}_demux_${shortHash(connectionId)}`;
+}
+
+/** The live-input branch of ONE wired connection (`getLiveInputBranch` shape).
+ *  `buildAudioMixInput` in live-input mode renders every start-time branch
+ *  through this too, so a module's hook and its `buildPipeline` agree. */
+export function liveMixInputBranch(
+    mixerName: string,
+    source: AudioMixSource,
+    opts: Omit<MixInputBranchOpts, 'demuxName'> = {},
+): LiveInputBranch {
+    return {
+        element: mixerName,
+        name: mixInputBranchName(mixerName, source.connectionId),
+        description: build302mMixBranch(source, {
+            ...opts,
+            demuxName: liveDemuxName(mixerName, source.connectionId),
+        }),
+    };
+}
+
+/** A module's `getLiveInputBranch` answer for one edge of `mixerName`: the
+ *  full branch while the source is wired, just aggregator + bin name once it
+ *  is gone (a remove). */
+export function liveInputBranchFor(
+    mixerName: string,
+    connectionId: string,
+    source: AudioMixSource | undefined,
+    opts: Omit<MixInputBranchOpts, 'demuxName'> = {},
+): LiveInputBranch {
+    if (!source) return { element: mixerName, name: mixInputBranchName(mixerName, connectionId) };
+    return liveMixInputBranch(mixerName, source, opts);
+}
+
+/** One source's decode branch: 302M edge → raw audio at the mix caps, ending
+ *  in its branch queue (the element whose src pad links into the aggregator). */
+export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchOpts): string {
+    const channels = opts.channels ?? 2;
+    const branchQueueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
+    const src = buildBusSrc({ port: source.port, socketPath: source.socketPath });
+    // Per-connection channel mapping on THIS branch's audioconvert.
+    const matrix = source.channelMap?.length
+        ? mixMatrixClause(
+              source.channelMap,
+              normalize302mChannels(source.sourceChannels ?? 2),
+              channels,
+          )
+        : '';
+    return (
+        `${src} ! tsdemux name=${opts.demuxName} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
+        ` ! audioconvert${matrix} ! audioresample` +
+        ` ! audio/x-raw,rate=48000,channels=${channels}` +
+        ` ! queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`
+    );
 }
 
 /**
@@ -239,15 +322,20 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     const channels = opts.channels ?? 2;
     const latencyNs = Math.max(50, Math.min(2000, opts.latencyMs ?? 200)) * 1_000_000;
     const mixerName = opts.mixerName ?? 'mixin';
-    const branchQueueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
+    const branchQueueMs = opts.branchQueueMs;
+    const branchQueueNs = Math.max(20, Math.min(2000, branchQueueMs ?? 100)) * 1_000_000;
+    const live = opts.liveInputs === true;
 
     const outName = `${mixerName}_out`;
     const caps = `audio/x-raw,rate=48000,channels=${channels}`;
     const branchQueue = `queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`;
 
     /** `name=` of branch i's tsdemux — returned as `demuxes` so a presentation
-     *  module can hand them to the runner's `alignBranchesToStamps`. */
-    const demuxName = (i: number): string => `${mixerName}_demux${i}`;
+     *  module can hand them to the runner's `alignBranchesToStamps`. In
+     *  live-input mode the name is keyed by the connection, like the bin, so
+     *  a branch added later never collides with one built at start. */
+    const demuxName = (s: AudioMixSource, i: number): string =>
+        live ? liveDemuxName(mixerName, s.connectionId) : `${mixerName}_demux${i}`;
     /** 302M edge socket → decoded, channel-mapped, resampled raw audio. */
     const decode = (s: AudioMixSource, i: number): string => {
         const src = buildBusSrc({ port: s.port, socketPath: s.socketPath });
@@ -256,19 +344,19 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
             ? mixMatrixClause(s.channelMap, normalize302mChannels(s.sourceChannels ?? 2), channels)
             : '';
         return (
-            `${src} ! tsdemux name=${demuxName(i)} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
+            `${src} ! tsdemux name=${demuxName(s, i)} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
             ` ! audioconvert${matrix} ! audioresample`
         );
     };
 
-    if (opts.sources.length === 1) {
+    if (opts.sources.length === 1 && !live) {
         // The output caps sit on the terminal capsfilter (the queue is
         // transparent to negotiation), so the branch pins the same format the
         // mixer arm publishes, with one element fewer.
         const fragment =
             `${decode(opts.sources[0], 0)} ! ${branchQueue}` +
             ` ! capsfilter name=${outName} caps="${caps}"`;
-        return { fragment, continuationName: outName, demuxes: [demuxName(0)] };
+        return { fragment, continuationName: outName, demuxes: [demuxName(opts.sources[0], 0)] };
     }
 
     // The mixer's OUTPUT caps are pinned immediately on its src pad: a
@@ -284,15 +372,23 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         pacerName: outName,
     });
 
-    const branches = opts.sources.map(
-        (s, i) => `${decode(s, i)} ! ${caps} ! ${branchQueue} ! ${mixerName}.`,
-    );
+    // Live-input mode: each branch is a named bin on an explicit request pad,
+    // the exact string a hot add sends — so a later live remove finds it.
+    const branches = opts.sources.map((s, i) => {
+        const branchOpts = { channels, branchQueueMs };
+        if (!live) {
+            const text = build302mMixBranch(s, { ...branchOpts, demuxName: demuxName(s, i) });
+            return `${text} ! ${mixerName}.`;
+        }
+        const b = liveMixInputBranch(mixerName, s, branchOpts);
+        return `( name=${b.name} ${b.description} ) ! ${mixerName}.sink_${i}`;
+    });
 
     return {
         fragment: [mixer, ...branches].join(' '),
         continuationName: outName,
         mixerLatencyNs: latencyNs,
-        demuxes: opts.sources.map((_, i) => demuxName(i)),
+        demuxes: opts.sources.map((s, i) => demuxName(s, i)),
     };
 }
 

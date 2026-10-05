@@ -7,14 +7,27 @@
  * mix content-aligned and the output carries coherent PTS.
  */
 
-import { buildBusSink, busTeeName } from '@media-router/engine';
+import { buildBusSink, busTeeName, type LiveInputBranch } from '@media-router/engine';
 import {
     buildAudioMixInput,
     build302mEncodeBranch,
+    liveInputBranchFor,
     s302mFormatFor,
     type AudioMixSource,
     type S302mFormat,
 } from '@media-router/plugin-audio-302m-core';
+
+/** Name of the fan-in aggregator — the element every live input branch links into. */
+export const MIXER_NAME = 'mixin';
+
+/** The live-input branch for one Audio In edge (`getLiveInputBranch`). */
+export function mixerInputBranch(
+    connectionId: string,
+    source: AudioMixSource | undefined,
+    channels: number,
+): LiveInputBranch {
+    return liveInputBranchFor(MIXER_NAME, connectionId, source, { channels });
+}
 
 export interface AudioMixerPipelineInputs {
     sources: AudioMixSource[];
@@ -44,10 +57,14 @@ export function buildMixerPipeline(
 ): AudioMixerPipelineResult | null {
     if (input.sources.length === 0) return null;
 
+    // Live inputs: each source a named bin, mixer arm even for one source
+    // (ADR-0008 addendum) — a mixer's job is to take inputs on and off.
     const { fragment, continuationName } = buildAudioMixInput({
         sources: input.sources,
         channels: input.channels,
         latencyMs: input.latencyMs,
+        mixerName: MIXER_NAME,
+        liveInputs: true,
     });
 
     const pipeline =

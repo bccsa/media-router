@@ -96,3 +96,48 @@ Two consequences for the three rules above:
   scheduling against a playout offset subtracts it from `ts-offset`, or the same
   route plays `latencyMs` later through a mixer than through the bypass. Callers
   that end in an unsynced bus tee (the producer modules) ignore it.
+
+## Addendum (2026-10-02): live inputs give up rule 3's bypass — and the drain
+
+#787: every edge added to, removed from or re-mapped on a 302M mixer's input
+stop/started the module, and the restart rippled hop by hop through every
+consumer (the mixer's bus sockets vanish; consumers EOS or error and relaunch
+with an escalating backoff; each relaunch relaunches ITS consumers under
+ADR-0010 rule 4). A remove was worse: a force-live `audiomixer` never
+completes the pipeline-level EOS drain, so the stop stalled the full 6 s
+timeout and the EOS reached every consumer first — measured on .103: 8.6 s
+mixer outage, 10–11 s per hop, two restarts each.
+
+The fix is engine-generic — `PluginModule.getLiveInputBranch` and the
+tracked `bus_input_add` / `bus_input_remove` runner verbs add or remove ONE
+named branch bin on the running pipeline (plugins/README.md, "Live Input
+Branches") — with two consequences for this contract:
+
+- **Rule 3 does not apply to a live-input module.** `buildAudioMixInput({
+  liveInputs: true })` builds the mixer arm for ONE source as well (a hot
+  add needs the aggregator to exist), each source as `( name=<mixer>_in_<hash>
+  … ) ! <mixer>.sink_<i>` on an explicit request pad, demuxers keyed by the
+  connection, all rendered through `liveMixInputBranch` so the start-time
+  branch and a hot-added one are the same text under the same name. The
+  audio-mixer and the n1-mixer-302m's input fan-ins opt in; the
+  audio-output-302m and audio-transcoder keep the bypass (their strings are
+  byte-identical, `liveInputs` defaults off). The cost rule 3 avoided comes
+  back for those two: a lone input pays `mixLatencyMs` (200 ms default) and
+  the pacer's start-up offset. Rules 1 and 2 are untouched.
+- **Audio-only bus producers opt out of the EOS drain** (`PipelineDescription.
+  eosDrain: false`): nothing to drain, and the force-live mix would only
+  stall. The drain default stays — it exists for the Pi's stateless HEVC
+  decoder (eosDrainContract.test.ts).
+
+A dead producer costs its own input, not the mix (same day, after the first
+field test: a hop that idled took its consumer down — the consumer errored
+on the dead socket, relaunched, and gated forever on it). The runner
+contains an error inside a live input branch (`liveInputBranches`,
+filled by GstPluginBase from the hook): the branch is dropped and
+`input_branch_lost` reported, the aggregator silence-fills, the module warns
+by producer. When that producer reaches PLAYING, the fan-out coordinator
+re-links just that branch (`relinkLiveInput`) instead of ADR-0010 rule 4's
+whole-pipeline relaunch, so an upstream flap never restarts a live-input
+aggregator or anything below it. The audio-output-302m is a leaf (nothing
+downstream to ripple) and its branches are stamp-aligned at launch, so it
+keeps the classic restart for now.

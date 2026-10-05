@@ -1384,6 +1384,61 @@ N-channel mix onto device channels `firstChannel..` as a device-wide unpositione
 range so the legacy pipeline string stays byte-identical. Reuse it for any other
 `pulsesink` presentation leg that needs to land on specific outputs of a multichannel card.
 
+### Live Input Branches (`getLiveInputBranch`)
+
+The multi-input counterpart of the swap below, for an AGGREGATOR sink
+(audio-mixer, n1-mixer-302m): an edge added to, removed from or re-mapped on
+one of its input ports becomes ONE branch bin added to or taken off the
+RUNNING pipeline — tracked runner verbs `bus_input_add` / `bus_input_remove`
+(native and python) — instead of a module stop/start. The module's producer
+sockets stay up, so nothing downstream restarts (#787: every wiring edit on
+a 302M mixer used to ripple a stop/start through every consumer hop, and a
+remove stalled 8 s on the EOS drain).
+
+```typescript
+getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
+    if (sinkPortId !== INPUT_PORT_ID) return null;
+    const source = router.getModuleBusSources(instanceId).find(s => s.connectionId === connectionId);
+    // { element: 'mixin', name: 'mixin_in_<hash>', description?: '<branch gst-launch text>' }
+    return liveMixInputBranch('mixin', source, { channels });   // audio-302m-core
+}
+```
+
+- `element` is the aggregator the branch links into (a `sink_%u` request
+  pad); `name` the bin's name, stable per connection and IDENTICAL to the
+  name `buildPipeline` gives that branch — so a branch built at start is
+  found by a later live remove. `buildAudioMixInput({ liveInputs: true })`
+  renders every start-time branch as `( name=<bin> … ) ! <mixer>.sink_<i>`
+  through the same `liveMixInputBranch`, and always builds the mixer arm
+  (the lone-source bypass of ADR-0008 rule 3 is given up: a hot add needs
+  the aggregator to exist — so a lone input pays `mixLatencyMs` plus the
+  pacer start-up, the cost that bypass avoided).
+- `description` is the branch text ending in the element whose src pad
+  links to the aggregator; it is absent on a remove (the connection record
+  is already gone — only `element` + `name` are needed).
+- The engine waits for the producer's edge socket, sends the add, then
+  refreshes the stored description so a crash-replay rebuilds with the
+  branch. The LAST edge of a port keeps the classic teardown (the module
+  must idle); a channel-map edit is a remove + add of that one branch.
+  Return null for edges whose arrival changes more than one branch — and
+  any runner refusal (no pipeline yet, element not found) falls back to
+  the classic restart, which is how the n1-mixer's FIRST source on an input
+  (no `inmix<i>` yet) is handled without the hook having to know.
+- Pair it with `eosDrain: false` on the description: an audio-only bus
+  producer has no decoder to drain, and a force-live mix never completes
+  the drain (6 s stall, EOS to every consumer first).
+- **A dead producer costs its own input, not the mix.** GstPluginBase fills
+  `desc.liveInputBranches` (the bin names) from the hook, and the runner
+  contains an error inside any of them — a producer idled or crashed under
+  the branch's `unixfdsrc` — by dropping that branch and reporting
+  `input_branch_lost` instead of failing the pipeline (the aggregator
+  silence-fills; the module warns "Input from X lost — continuing without
+  it"). When that producer reaches PLAYING again, the BusFanoutCoordinator
+  re-links just that branch (`MpegTsBusExecutor.relinkLiveInput`: drop if
+  still there, wait for the new edge socket, add, clear the warning) instead
+  of ADR-0010 rule 4's whole-pipeline relaunch — so an upstream flap never
+  restarts a live-input aggregator or anything below it.
+
 ### Live Input Swap (`getLiveInputSwap`)
 
 By default, adding or removing a `muxed/mpegts` connection **restarts the sink

@@ -2,6 +2,7 @@ import { createLogger } from '@media-router/shared-types';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
 import { BUS_STREAM_TYPES, type Connection } from './MediaRouter.js';
 import { busTeeName, busEdgeSocketPath } from '../plugins/busHelpers.js';
+import { liveBranchFor } from './LiveInputBranch.js';
 
 const log = createLogger('BusFanout');
 
@@ -46,10 +47,7 @@ export class BusFanoutCoordinator {
         const target = this.moduleGetter(conn.sourceModuleId)?.getBusAttachTarget?.();
         if (!target) return;
         target.sendBusAttach(busTeeName(port), busEdgeSocketPath(port, conn.id));
-        log.debug(
-            { conn: conn.id, port },
-            'Attached bus fan-out branch',
-        );
+        log.debug({ conn: conn.id, port }, 'Attached bus fan-out branch');
     }
 
     /** Detach this connection's fan-out branch on the producer. */
@@ -79,9 +77,54 @@ export class BusFanoutCoordinator {
             // "Waiting for producer bus socket(s)" until a manual restart.
             if (conn.sourceModuleId === moduleId && BUS_STREAM_TYPES.has(conn.streamType)) {
                 this.attach(conn);
-                this.relaunchStaleConsumer(conn, producerLaunch, restarted);
+                this.recoverConsumer(conn, producerLaunch, restarted);
             }
         }
+    }
+
+    /** Per-branch alternative to rule 4 for a live-input aggregator: re-link
+     *  only this edge's branch; the relaunch stays the fallback. */
+    private liveRelink: ((conn: Connection) => Promise<boolean>) | null = null;
+
+    setLiveRelink(fn: (conn: Connection) => Promise<boolean>): void {
+        this.liveRelink = fn;
+    }
+
+    /** Rule 4's test: a consumer launched at or before the producer's current
+     *  launch cannot hold the live edge. */
+    private isStale(conn: Connection, producerLaunch: number | undefined): boolean {
+        const consumerLaunch = this.moduleGetter(conn.sinkModuleId)?.getChildProcess?.()
+            ?.pipelineLaunchedAt;
+        return (
+            producerLaunch !== undefined &&
+            consumerLaunch !== undefined &&
+            consumerLaunch <= producerLaunch
+        );
+    }
+
+    private recoverConsumer(
+        conn: Connection,
+        producerLaunch: number | undefined,
+        restarted: Set<string>,
+    ): void {
+        if (!this.isStale(conn, producerLaunch)) return;
+        const relink = this.liveRelink;
+        const live = liveBranchFor(this.moduleGetter(conn.sinkModuleId), conn);
+        if (!relink || !live?.branch.description) {
+            this.relaunchStaleConsumer(conn, producerLaunch, restarted);
+            return;
+        }
+        void relink(conn)
+            .then((ok) => {
+                if (!ok) this.relaunchStaleConsumer(conn, producerLaunch, restarted);
+            })
+            .catch((err) => {
+                log.warn(
+                    { err, consumer: conn.sinkModuleId },
+                    'Live re-link threw — relaunching consumer',
+                );
+                this.relaunchStaleConsumer(conn, producerLaunch, restarted);
+            });
     }
 
     /** A consumer launched at or before the producer's current launch holds a dead
@@ -104,6 +147,8 @@ export class BusFanoutCoordinator {
         );
         child
             .restartPipeline(`producer ${conn.sourceModuleId} relaunched`)
-            .catch((err) => log.warn({ err, consumer: conn.sinkModuleId }, 'Consumer relaunch failed'));
+            .catch((err) =>
+                log.warn({ err, consumer: conn.sinkModuleId }, 'Consumer relaunch failed'),
+            );
     }
 }

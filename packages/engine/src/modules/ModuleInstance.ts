@@ -3,7 +3,12 @@ import type { ModuleRuntimeState } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
-import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
+import type {
+    BusAttachTarget,
+    LiveInputBranchTarget,
+    LiveSwapTarget,
+} from '../child-process/UnixFdFanoutController.js';
+import type { LiveInputBranch } from '../plugins/PluginModule.js';
 import { PLAYOUT_OFFSET_KEY } from '../plugins/playoutOffset.js';
 
 const log = createLogger('ModuleInstance');
@@ -351,6 +356,21 @@ export class ModuleInstance extends EventEmitter {
      *  or a native sink's own controller — ts-splitter). */
     getLiveSwapTarget(): LiveSwapTarget | null {
         return this.plugin.getLiveSwapTarget?.() ?? this.getChildProcess();
+    }
+
+    /** Live input add/remove for one edge of an aggregator sink port (see PluginModule). */
+    getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
+        return this.plugin.getLiveInputBranch?.(sinkPortId, connectionId) ?? null;
+    }
+
+    /** Target of the tracked `bus_input_add` / `bus_input_remove` RPCs (the gst child). */
+    getLiveInputBranchTarget(): LiveInputBranchTarget | null {
+        return this.getChildProcess();
+    }
+
+    /** A dropped live input branch is back — clears the lost-input warning. */
+    noteLiveInputRestored(branchName: string): void {
+        this.plugin.noteLiveInputRestored?.(branchName);
     }
 
     /** Refresh the stored pipeline description after a live input swap. */

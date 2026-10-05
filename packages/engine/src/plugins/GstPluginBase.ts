@@ -18,9 +18,14 @@ import { effectiveLatchRepair } from './latchRepair.js';
  *  this module: health stays a warning through the restart that follows. */
 const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
 /** The transient warnings a module writes and later withdraws itself. */
-type OwnedWarning = 'gate' | 'silence' | 'reconnect';
+type OwnedWarning = 'gate' | 'silence' | 'reconnect' | 'input-lost';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
+import {
+    annotateLiveInputBranches,
+    describeLiveInputBranch,
+    LostInputs,
+} from './liveInputBranches.js';
 
 const defaultLog = createLogger('GstPluginBase');
 
@@ -99,8 +104,30 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         const desc = this.buildPipeline(this.config);
         if (!desc) return false;
         await this.applyTimeSync(desc);
+        this.annotateLiveInputBranches(desc);
         await this.childProcess.updatePipelineDesc(desc);
+        this.reassertLostInputs();
         return true;
+    }
+
+    private annotateLiveInputBranches(desc: PipelineDescription): void {
+        annotateLiveInputBranches(this as PluginModule, this.services, desc);
+    }
+
+    /** Live input branches dropped by the runner and not yet back. */
+    private readonly lostInputs = new LostInputs();
+
+    /** The engine re-added a dropped branch (producer back): narrow or clear the warning. */
+    noteLiveInputRestored(branchName: string): void {
+        const remaining = this.lostInputs.restore(branchName);
+        if (remaining) this.ownWarning('input-lost', remaining);
+        else this.clearOwnWarning('input-lost');
+    }
+
+    /** `buildPipeline` ends in setHealth('ok') on most modules — put the
+     *  lost-input warning back after any refresh while inputs are missing. */
+    private reassertLostInputs(): void {
+        if (this.lostInputs.size) this.ownWarning('input-lost', this.lostInputs.warning());
     }
 
     /**
@@ -235,6 +262,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // Time sync (opt-in): either mark the description for the engine-wide
         // contract or resolve the legacy shared net clock — see applyTimeSync.
         await this.applyTimeSync(desc);
+        this.annotateLiveInputBranches(desc);
 
         // Spawn child process
         this.childProcess = new GstChildProcess();
@@ -300,6 +328,21 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         });
         this.childProcess.on('inputResumed', () => {
             this.clearOwnWarning('silence');
+        });
+
+        // The runner dropped a live input branch whose producer died; the mix
+        // runs on without it. Refresh the replay copy (it drops the branch
+        // once the producer's port is gone), then warn — refresh re-asserts.
+        this.childProcess.on('inputBranchLost', (data: { name: string; message?: string }) => {
+            this.lostInputs.lose(
+                data.name,
+                describeLiveInputBranch(this as PluginModule, this.services, data.name),
+            );
+            void this.refreshPipelineDescription()
+                .catch((err) =>
+                    this.log.debug({ err }, 'description refresh after lost input failed'),
+                )
+                .finally(() => this.reassertLostInputs());
         });
 
         // unixfd socket-gate progress: the runner waits indefinitely for

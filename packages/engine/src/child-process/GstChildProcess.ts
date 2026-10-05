@@ -5,7 +5,7 @@ import type { RunnerChannel } from './ControlIpc.js';
 import type { RunnerBackend } from './RunnerBackend.js';
 import { InProcessRunnerHost } from './InProcessRunnerHost.js';
 import { ForkedRunnerBackend } from './ForkedRunnerBackend.js';
-import type { PipelineDescription } from '../plugins/PluginModule.js';
+import type { LiveInputBranch, PipelineDescription } from '../plugins/PluginModule.js';
 
 const log = createLogger('GstChildProcess');
 
@@ -203,8 +203,18 @@ export class GstChildProcess extends EventEmitter {
         //    (the module decides what to do with each channel);
         //  - error: the runner's fatal-lifecycle report (carries `kind`);
         //  - busGate: socket-gate progress (`pending: []` = gate opened);
-        //  - inputSilent / inputResumed: udpsrc silence as a state.
-        for (const name of ['vuData', 'pluginEvent', 'error', 'busGate', 'inputSilent', 'inputResumed'] as const) {
+        //  - inputSilent / inputResumed: udpsrc silence as a state;
+        //  - inputBranchLost: a live input branch dropped after its producer
+        //    died (the pipeline keeps running).
+        for (const name of [
+            'vuData',
+            'pluginEvent',
+            'error',
+            'busGate',
+            'inputSilent',
+            'inputResumed',
+            'inputBranchLost',
+        ] as const) {
             ipc.on(name, (data) => {
                 this.emit(name, data);
             });
@@ -251,6 +261,10 @@ export class GstChildProcess extends EventEmitter {
             runnerHooks: desc.runnerHooks,
             // Which runner binary hosts it (ADR-0019) — resolved at spawn.
             runner: desc.runner,
+            // Drain opt-out for audio-only bus producers; undefined = drain.
+            eosDrain: desc.eosDrain,
+            // Live input branch bins (error containment).
+            liveInputBranches: desc.liveInputBranches,
         };
     }
 
@@ -350,6 +364,29 @@ export class GstChildProcess extends EventEmitter {
         if (!this.ipc || !this.running) throw new Error('busReinput: pipeline not running');
         const result = await this.ipc.sendRequest('busReinput', { element, socket }, 5000);
         throwIfRpcError(result, `busReinput(${element})`);
+    }
+
+    /** Add one input branch bin to a running aggregator (`bus_input_add`,
+     *  tracked; resolves once linked and playing). Idempotent on the runner. */
+    async busInputAdd(branch: LiveInputBranch): Promise<void> {
+        if (!this.ipc || !this.running) throw new Error('busInputAdd: pipeline not running');
+        if (!branch.description) throw new Error(`busInputAdd(${branch.name}): no description`);
+        const { element, name, description } = branch;
+        const result = await this.ipc.sendRequest(
+            'busInputAdd',
+            { element, name, description },
+            5000,
+        );
+        throwIfRpcError(result, `busInputAdd(${branch.name})`);
+    }
+
+    /** Remove the input branch bin from the running aggregator
+     *  (`bus_input_remove`, tracked). A branch already gone is a no-op. */
+    async busInputRemove(branch: Pick<LiveInputBranch, 'element' | 'name'>): Promise<void> {
+        if (!this.ipc || !this.running) throw new Error('busInputRemove: pipeline not running');
+        const { element, name } = branch;
+        const result = await this.ipc.sendRequest('busInputRemove', { element, name }, 5000);
+        throwIfRpcError(result, `busInputRemove(${branch.name})`);
     }
 
     /**

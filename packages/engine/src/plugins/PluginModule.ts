@@ -169,6 +169,14 @@ export interface PluginModule {
      */
     getLiveInputSwap?(sinkPortId: string): { element: string } | null;
     /**
+     * Opt a MULTI-INPUT bus sink (an aggregator) into live input add/remove:
+     * the engine mutates ONE named branch bin on the running pipeline instead
+     * of stop/starting the module (plugins/README.md, "Live Input Branches").
+     */
+    getLiveInputBranch?(sinkPortId: string, connectionId: string): LiveInputBranch | null;
+    /** A live input branch that was dropped (dead producer) is back. */
+    noteLiveInputRestored?(branchName: string): void;
+    /**
      * Channel count of the audio stream this module emits on a bus OUTPUT
      * port, for producers whose width is a runtime choice. `MediaRouter`
      * hands it to consumers as `sourceChannels` (`getModuleBusSources`), which
@@ -208,6 +216,17 @@ export interface PluginModule {
     setHealth?(health: 'ok' | 'warning' | 'error' | 'stopped', error?: string): void;
 }
 
+/** One live-addable input branch of an aggregator sink (`getLiveInputBranch`). */
+export interface LiveInputBranch {
+    /** The aggregator element the branch links into (request `sink_%u` pad). */
+    element: string;
+    /** Branch bin name — stable per connection, shared with `buildPipeline`. */
+    name: string;
+    /** gst-launch text ending in the element that links to the aggregator;
+     *  absent on a remove (the connection is already gone). */
+    description?: string;
+}
+
 /**
  * Pipeline description returned by GstPluginBase.buildPipeline().
  * Phase 3 (gst-runner) will consume this to spawn GStreamer.
@@ -228,6 +247,14 @@ export interface PipelineDescription {
      * know when it returns, so retrying often is what feels snappy).
      */
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
+    /** EOS-drain before a deliberate stop (default true). The drain exists for
+     *  stateless video decoders; a force-live audio aggregator never completes
+     *  it, so audio-only bus producers set false. Never on a video decoder. */
+    eosDrain?: boolean;
+    /** Bin names of the live input branches in `pipeline` (filled by
+     *  GstPluginBase from `getLiveInputBranch`). An error inside one drops
+     *  that branch (`input_branch_lost`) instead of failing the pipeline. */
+    liveInputBranches?: string[];
     /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a

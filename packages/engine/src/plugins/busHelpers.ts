@@ -66,8 +66,10 @@ export function busTeeName(port: number): string {
 }
 
 /** 32-bit FNV-1a → 6 hex chars. Keeps per-edge socket paths short (AF_UNIX
- *  ~108-char cap) and collision-safe within a channel's connection set. */
-function shortHash(s: string): string {
+ *  ~108-char cap) and collision-safe within a channel's connection set. Also
+ *  what an aggregator sink names its per-connection input branch bin from
+ *  (`PluginModule.getLiveInputBranch`). */
+export function shortHash(s: string): string {
     let h = 0x811c9dc5;
     for (let i = 0; i < s.length; i++) {
         h ^= s.charCodeAt(i);

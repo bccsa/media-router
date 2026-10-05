@@ -49,6 +49,8 @@ const REPLY_EVENTS = new Set([
     'property_set',
     'tracking',
     'bus_reinput_done',
+    'bus_input_add_done',
+    'bus_input_remove_done',
     'command_error',
 ]);
 // A retired process's events worth a log line when dropped.
@@ -292,6 +294,29 @@ export class GstRunner {
                     cmd: 'bus_reinput',
                     element: d.element,
                     socket: d.socket,
+                });
+                break;
+            }
+
+            case 'busInputAdd': {
+                // Live input branch add on an aggregator sink. Tracked: the
+                // executor refreshes the replay description once it lands.
+                const d = msg.data as { element: string; name: string; description: string };
+                this.forwardTracked(msg.id, 'inadd', 'bus_input_add', {
+                    cmd: 'bus_input_add',
+                    element: d.element,
+                    name: d.name,
+                    description: d.description,
+                });
+                break;
+            }
+
+            case 'busInputRemove': {
+                const d = msg.data as { element: string; name: string };
+                this.forwardTracked(msg.id, 'inrm', 'bus_input_remove', {
+                    cmd: 'bus_input_remove',
+                    element: d.element,
+                    name: d.name,
                 });
                 break;
             }
@@ -581,6 +606,17 @@ export class GstRunner {
                 this.ipc.sendEvent('inputResumed', { message: eventJson.message });
                 break;
 
+            // A live input branch died with its producer and was dropped; the
+            // pipeline keeps running. The module warns by producer and
+            // the engine re-adds the branch when the producer is back.
+            case 'input_branch_lost':
+                console.error(`[gst-runner] ${eventJson.message}`);
+                this.ipc.sendEvent('inputBranchLost', {
+                    name: eventJson.name,
+                    message: eventJson.message,
+                });
+                break;
+
             case 'warning':
                 // Non-fatal runner diagnostics (parser fallback, bus_attach
                 // retries, stale-socket cleanup). Dropping these hid real
@@ -595,6 +631,8 @@ export class GstRunner {
             case 'property_set':
             case 'tracking':
             case 'bus_reinput_done':
+            case 'bus_input_add_done':
+            case 'bus_input_remove_done':
                 // Round-trip response from a tracked Python request. The
                 // confirmation-only emissions (property_set, tracking) also
                 // carry an id now so the parent's setProperty/trackThroughput
