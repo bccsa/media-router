@@ -2,12 +2,14 @@ import { describe, it, expect } from 'vitest';
 import type { AudioMixSource } from '@media-router/plugin-audio-302m-core';
 import { buildProcessingPipeline } from './audioProcessingPipeline.js';
 import type { ChainStages } from './lspProcessing.js';
+import { stages } from './chainStages.fixture.js';
 
 const EQ_EL = 'ladspa-lsp-test-para-equalizer-x16-stereo';
 const COMP_EL = 'ladspa-lsp-test-compressor-stereo';
 const GATE_EL = 'ladspa-lsp-test-gate-stereo';
 const SC_GATE_EL = 'ladspa-lsp-test-sc-gate-stereo';
 const LIM_EL = 'ladspa-lsp-test-limiter-stereo';
+const AGC_EL = 'ladspa-lsp-test-autogain-stereo';
 
 function mkSource(n = 0): AudioMixSource {
     return {
@@ -16,17 +18,6 @@ function mkSource(n = 0): AudioMixSource {
         socketPath: `/tmp/mr-bus-${40100 + n}-abcdef.sock`,
     };
 }
-
-const stages = (over: Partial<ChainStages> = {}): ChainStages => ({
-    hpf: false,
-    eqElement: null,
-    dynElement: null,
-    dynMode: 'none',
-    keyedGate: false,
-    limiterElement: null,
-    duckerKey: false,
-    ...over,
-});
 
 function build(
     over: Partial<ChainStages> = {},
@@ -145,6 +136,25 @@ describe('buildProcessingPipeline', () => {
         // Self-keyed dynamics — the 4-channel packing is gone.
         expect(result.pipeline).not.toContain('deinterleave');
         expect(result.pipeline).not.toContain('interleave');
+    });
+
+    it('auto gain sits between the HPF and the EQ, knobs and fixed internals applied', () => {
+        const result = build(
+            { hpf: true, agcElement: AGC_EL, eqElement: EQ_EL },
+            { agcKickIn: -55, agcTarget: -20, agcMaxGain: 18, agcSpeed: 'fast' },
+        )!;
+        const hpf = result.pipeline.indexOf('name=hpf');
+        const agc = result.pipeline.indexOf(`${AGC_EL} name=agc`);
+        const eq = result.pipeline.indexOf(`${EQ_EL} name=eq`);
+        expect(hpf).toBeGreaterThan(-1);
+        expect(agc).toBeGreaterThan(hpf);
+        expect(eq).toBeGreaterThan(agc);
+        expect(result.pipeline).toContain('the-level-of-silence=-55');
+        expect(result.pipeline).toContain('desired-loudness-level=-20');
+        expect(result.pipeline).toContain('the-maximum-amplification-gain=18');
+        expect(result.pipeline).toContain('long-gain-grow-time=500'); // fast preset
+        expect(result.pipeline).toContain('weighting-function=5');
+        expect(result.pipeline).toContain('enable-quick-amplifier=false');
     });
 
     it('ducker adds a fast sidechain level branch and subscribes to it', () => {

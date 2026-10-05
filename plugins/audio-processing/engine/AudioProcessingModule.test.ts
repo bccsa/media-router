@@ -303,6 +303,18 @@ describe('AudioProcessingModule — live config updates', () => {
         await module.onStop();
     });
 
+    it('drives the auto gain knobs on the running element, speed fanning out', async () => {
+        const { module, setProperty } = await createModule({ agcEnabled: true }, [
+            mkSource('program-in'),
+        ]);
+        await startModule(module);
+        expect(module.resolvedSuffixes).toEqual(['autogain-stereo']);
+        await module.onLiveConfigUpdate({ agcTarget: -20, agcSpeed: 'fast' });
+        expect(setProperty).toHaveBeenCalledWith('agc', 'desired-loudness-level', -20);
+        expect(setProperty).toHaveBeenCalledWith('agc', 'long-gain-grow-time', 500);
+        await module.onStop();
+    });
+
     it('maps the shared dynamics knobs onto the active element (dB → gain)', async () => {
         const { module, setProperty } = await createModule({ mode: 'compressor' }, [
             mkSource('program-in'),

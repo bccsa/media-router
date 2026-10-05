@@ -10,11 +10,14 @@
  *     `output-signal-meter-{left,right}`
  *   - `compressor` / `gate` / `expander` / `sc-gate` / `limiter` (stereo) →
  *     `input-level-meter-{left,right}`, `output-level-meter-{left,right}`
+ *   - `autogain-stereo` (1.2.33) → `gain-correction-meter`,
+ *     `input-loudness-meter-for-long-period` (K-weighted loudness, linear)
  * Re-check on any lsp-plugins version bump: a renamed meter reads back
  * undefined and shows as '—' rather than failing loudly.
  */
 
 import type { ChainStages } from './lspProcessing.js';
+import { AGC_ELEMENT } from './agcStage.js';
 
 /** Reads one property off a named element in the running pipeline. */
 export type ReadProperty = (element: string, prop: string) => Promise<unknown>;
@@ -32,6 +35,12 @@ const toDb = (v: unknown): number | null =>
 
 const fmtDb = (db: number | null): string => (db === null ? '—' : `${db.toFixed(1)} dB`);
 
+const fmtLufs = (db: number | null): string => (db === null ? '—' : `${db.toFixed(1)} LUFS`);
+
+/** Signed, so a lift reads `+6.0 dB` and a cut `-4.0 dB`. */
+const fmtGain = (db: number | null, digits = 1): string =>
+    db === null ? '—' : `${db > 0 ? '+' : ''}${db.toFixed(digits)} dB`;
+
 /** Stereo pair as one field: `-12.3 / -12.1 dB`, left first. A dead channel is
  *  visible as '—' on its side rather than hidden behind a max(). */
 const fmtPair = (left: number | null, right: number | null): string =>
@@ -48,6 +57,8 @@ export interface ChainMeters {
      *  it. Numeric, unlike `status.inputLevel` — it drives the transfer
      *  curve's live operating point. */
     inDb: number | null;
+    /** Auto gain correction in dB (positive = lifting), null without the stage. */
+    agcDb: number | null;
 }
 
 /** The LADSPA elements present, in chain order. */
@@ -59,17 +70,27 @@ function presentElements(stages: ChainStages): string[] {
     ].filter((n): n is string => n !== null);
 }
 
+/** Everything that reports `latency`: the AGC (no L/R level ports) plus the
+ *  level-metered stages. */
+const latencyElements = (stages: ChainStages): string[] => [
+    ...(stages.agcElement ? [AGC_ELEMENT] : []),
+    ...presentElements(stages),
+];
+
 /** True when there is at least one LADSPA element worth polling — the ducker's
  *  own reduction is already visible on the VU meter. */
 export function hasPollableStages(stages: ChainStages): boolean {
-    return presentElements(stages).length > 0;
+    return latencyElements(stages).length > 0;
 }
+
+/** `gr` = gain reduction (amber), `agc` = auto gain correction (sky). */
+export type BadgeId = 'gr' | 'agc';
 
 export interface MeterPollHooks {
     read: ReadProperty;
     publish: (status: Record<string, string>, levels: ChainMeters) => void;
-    /** Gain-reduction badge, or null to clear it. */
-    badge: (badge: { icon: string; text: string; color: string } | null) => void;
+    /** Module-face badge by id, or null to clear it. */
+    badge: (id: BadgeId, badge: { icon: string; text: string; color: string } | null) => void;
 }
 
 /** Meter poll timer + the gain-reduction badge it drives (1 Hz). Started only
@@ -98,11 +119,22 @@ export class MeterPoll {
         this.hooks.publish(status, meters);
         if (grDb !== null && grDb < -1) {
             if (Math.abs(grDb - this.lastGrDb) >= 0.5) this.lastGrDb = grDb;
-            this.hooks.badge({ icon: 'activity', text: `${grDb.toFixed(0)} dB`, color: '#f59e0b' });
+            this.hooks.badge('gr', {
+                icon: 'activity',
+                text: `${grDb.toFixed(0)} dB`,
+                color: '#f59e0b',
+            });
         } else {
             this.lastGrDb = 0;
-            this.hooks.badge(null);
+            this.hooks.badge('gr', null);
         }
+        const { agcDb } = meters;
+        this.hooks.badge(
+            'agc',
+            agcDb !== null && Math.abs(agcDb) >= 1
+                ? { icon: 'activity', text: fmtGain(agcDb, 0), color: '#38bdf8' }
+                : null,
+        );
     }
 }
 
@@ -131,7 +163,7 @@ export async function readChainMeters(
     // operator has no other way to see it.
     let inDb: number | null = null;
     let latency = 0;
-    for (const name of present) {
+    for (const name of latencyElements(stages)) {
         const v = await read(name, 'latency');
         if (typeof v === 'number') latency += v;
     }
@@ -154,5 +186,14 @@ export async function readChainMeters(
     }
     status.gainReduction = fmtDb(grDb);
 
-    return { status, grDb, inDb };
+    let agcDb: number | null = null;
+    if (stages.agcElement) {
+        agcDb = toDb(await read(AGC_ELEMENT, 'gain-correction-meter'));
+        status.agcGain = fmtGain(agcDb);
+        status.agcInput = fmtLufs(
+            toDb(await read(AGC_ELEMENT, 'input-loudness-meter-for-long-period')),
+        );
+    }
+
+    return { status, grDb, inDb, agcDb };
 }

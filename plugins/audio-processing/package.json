@@ -2,11 +2,11 @@
     "name": "@media-router/plugin-audio-processing",
     "version": "2.0.0",
     "private": true,
-    "description": "Audio processing on the 302M bus — high-pass, 6-band parametric EQ, dynamics, limiter and sidechain ducking",
+    "description": "Audio processing on the 302M bus — high-pass, auto gain, 6-band parametric EQ, dynamics, limiter and sidechain ducking",
     "mediaRouter": {
         "pluginId": "audio-processing",
         "displayName": "Audio Processing",
-        "description": "HPF → EQ → dynamics → limiter → ducker on the 302M bus. The sidechain input keys the ducker (or the gate) from any other module's 302M audio.",
+        "description": "HPF → AGC → EQ → dynamics → limiter → ducker on the 302M bus. The sidechain input keys the ducker (or the gate) from any other module's 302M audio.",
         "color": "#f59e0b",
         "icon": "sliders-vertical",
         "category": "processing",
@@ -244,6 +244,72 @@
                     "x-live": true,
                     "x-showWhen": "hpfEnabled=true",
                     "x-debounceMs": 100
+                },
+                "agcEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "title": "Auto Gain",
+                    "description": "Levels speech to the target. Adapts only while the input is above the kick-in level and holds its gain below it"
+                },
+                "agcKickIn": {
+                    "type": "number",
+                    "minimum": -84,
+                    "maximum": -36,
+                    "default": -60,
+                    "title": "Kick-in Level",
+                    "description": "Below this the auto gain holds its gain instead of adapting; it never mutes. Use Gate or Expander to cut pauses",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-live": true,
+                    "x-showWhen": "agcEnabled=true",
+                    "x-debounceMs": 100,
+                    "x-unit": "LUFS"
+                },
+                "agcTarget": {
+                    "type": "number",
+                    "minimum": -40,
+                    "maximum": -10,
+                    "default": -23,
+                    "title": "Target Level",
+                    "description": "Loudness the auto gain steers speech towards",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-live": true,
+                    "x-showWhen": "agcEnabled=true",
+                    "x-debounceMs": 100,
+                    "x-unit": "LUFS"
+                },
+                "agcMaxGain": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 40,
+                    "default": 24,
+                    "title": "Max Gain",
+                    "description": "Ceiling on how far a quiet mic is lifted, which also caps how loud the noise floor can get",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-live": true,
+                    "x-showWhen": "agcEnabled=true",
+                    "x-debounceMs": 100,
+                    "x-unit": "dB"
+                },
+                "agcSpeed": {
+                    "type": "string",
+                    "enum": [
+                        "slow",
+                        "medium",
+                        "fast"
+                    ],
+                    "default": "medium",
+                    "title": "Auto Gain Speed",
+                    "description": "How quickly the gain follows level changes. Slow is smoother, fast catches drops sooner",
+                    "x-enumLabels": {
+                        "slow": "Slow",
+                        "medium": "Medium",
+                        "fast": "Fast"
+                    },
+                    "x-live": true,
+                    "x-showWhen": "agcEnabled=true"
                 },
                 "eqEnabled": {
                     "type": "boolean",
@@ -892,6 +958,16 @@
                         "key": "gainReduction",
                         "type": "string",
                         "label": "Gain Reduction"
+                    },
+                    {
+                        "key": "agcGain",
+                        "type": "string",
+                        "label": "Auto Gain"
+                    },
+                    {
+                        "key": "agcInput",
+                        "type": "string",
+                        "label": "Auto Gain Input"
                     },
                     {
                         "key": "keyLevel",
