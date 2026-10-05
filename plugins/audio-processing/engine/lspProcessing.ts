@@ -114,8 +114,8 @@ export function dynProps(stages: DynStages, config: Record<string, unknown>): st
     const props = Object.entries(map).map(
         ([key, { prop, convert }]) => `${prop}=${convert(cfg(config, key))}`,
     );
-    // Downward expansion — the broadcast-useful direction (0 = upward).
-    if (mode === 'expander') props.push('expander-mode=1');
+    // Downward expansion. LSP: 0 = down, 1 = up (measured; the element default is up).
+    if (mode === 'expander') props.push('expander-mode=0');
     // External key on the ONE sc-* element we keep.
     if (mode === 'gate' && stages.keyedGate) props.push('sidechain-input=1');
     return props;

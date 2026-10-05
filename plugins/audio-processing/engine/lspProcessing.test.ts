@@ -70,7 +70,7 @@ describe('dynProps', () => {
 
     it('expander runs downward', () => {
         expect(dynProps({ dynMode: 'expander', keyedGate: false }, {})).toContain(
-            'expander-mode=1',
+            'expander-mode=0', // down; 1 is UP on lsp-plugins 1.2.33
         );
     });
 });

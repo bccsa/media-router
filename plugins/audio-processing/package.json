@@ -138,6 +138,7 @@
                     "description": "Compression / expansion ratio",
                     "x-widget": "slider",
                     "x-step": 0.5,
+                    "x-unit": ":1",
                     "x-live": true,
                     "x-showWhen": "mode=compressor,expander",
                     "x-debounceMs": 100
