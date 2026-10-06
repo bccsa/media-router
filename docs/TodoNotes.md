@@ -433,6 +433,12 @@
 - [x] srt-output `unpaced` (maxbw=0) opt-in: libsrt's input-rate pacing spread
   each video frame over ~30 ms on the wire. 2026-09-04.
 - [x] Restart module while engine stopped no longer starts a dormant module
+- [x] Enable on a stopped engine no longer starts the module (#696; found again in the code
+  2026-10-04 at BCC Mulanje): the `enabled: true` write only marks it and the next Start brings it
+  up. The intent is read when the step's turn comes on the patch router's lock, so a Stop landing
+  while it waits wins; module add still reads it on arrival (that narrow window is left as is).
+  Verified on .24, 2026-10-05: a0f6f13c started the module 4 ms after the write; with the fix
+  nothing started until the next Start.
 - [x] Engine reconnect preserves running state
 - [x] Restart after engine restarted
 - [x] Spawned process counter in top bar

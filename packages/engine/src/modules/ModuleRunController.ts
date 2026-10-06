@@ -11,7 +11,7 @@ const log = createLogger('ModuleRunController');
  *  - manager command dispatcher (`start` / `stop` commands)
  *  - local API server (`POST /api/v1/engine/{start,stop,restart}`)
  *  - engine reset flow (decides whether to restart after PipeWire bounce)
- *  - patch router (gates auto-start of freshly-added modules)
+ *  - patch router (gates auto-start of freshly-added or enabled modules)
  *  - manager-connect handshake (`engineRunningState` payload)
  *
  * Centralising means the intent flag, lifecycle calls, and downstream
