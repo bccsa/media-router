@@ -404,6 +404,172 @@ check("with no shedder armed, an hour-late leg is left exactly as it is",
       len(arrivals) == n and runner._backlog_shed is None)
 pipe.set_state(Gst.State.NULL)
 
+# --- a sink-point leg that LOST its timeline re-anchors in place ---------------
+# .24, 2026-10-04: after its source came back from a reboot on an earlier PTS
+# epoch, the decoder leg's running tsdemux timestamped nothing and the decoded
+# audio carried the pre-outage timeline on — 588 s late at pulsesink, silence,
+# health "ok", for good. Where the shed point IS the sink and the engine armed
+# it, lateness held past the ceiling moves the leg onto arrival with ONE pad
+# offset on the sink's upstream peer. Test scale: a 2 s ceiling, a 400 ms hold
+# (ships 10 s / 3 s).
+SANITY_T = 2_000
+REANCHOR_T = 400
+LOST_MS = 5_000                     # past the 2 s test ceiling, as 588 s was past 10 s
+
+
+def build_sink_point(element="sink", **policy):
+    """appsrc → identity `pre` → the sink, shed at the sink's own pad (the audio
+    legs' shape). `rendered` counts what reached the sink."""
+    pipe = Gst.parse_launch(
+        "appsrc name=src is-live=true format=time do-timestamp=false ! identity name=pre "
+        f"! fakesink name=sink sync=false async=false signal-handoffs=true ts-offset={BUDGET_MS * 1000000}")
+    runner._apply_contract_clock(pipe)
+    cfg = {"element": element, "sink": "sink", "keyframeAligned": False,
+           "toleranceMs": TOLERANCE_MS, "holdMs": 100_000, "cooldownMs": 100_000,
+           "sanityMs": SANITY_T, "reanchorHoldMs": REANCHOR_T}
+    cfg.update(policy)
+    runner._start_backlog_shedder(pipe, cfg)
+    rendered = []
+    pipe.get_by_name("sink").connect("handoff", lambda _s, _b, _p: rendered.append(1))
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(5 * Gst.SECOND)
+    runner.pipeline = pipe
+    return pipe, pipe.get_by_name("src"), rendered
+
+
+def outcomes(events, outcome):
+    return [p for ch, p in events if ch == "backlog_shed" and p.get("outcome") == outcome]
+
+
+def peer_offset_ms(pipe):
+    return pipe.get_by_name("pre").get_static_pad("src").get_offset() / 1e6
+
+
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point()
+stderr_log = io.StringIO()
+real_stderr = sys.stderr
+sys.stderr = stderr_log
+try:
+    push_for(src, REANCHOR_T + 300, backlog_ms=LOST_MS)
+finally:
+    sys.stderr = real_stderr
+re = outcomes(events, "reanchored")
+check("a sink-point leg held past the ceiling re-anchors exactly once, applied",
+      len(re) == 1 and re[0].get("applied") is True and re[0].get("reanchorCount") == 1)
+ev = re[0] if re else {}
+check("...after reporting the run once as implausible", len(outcomes(events, "implausible")) == 1)
+check("...by the run's floor plus the budget: the least-late buffer lands on arrival",
+      near(ev.get("excessBeforeMs"), LOST_MS - BUDGET_MS, 50)
+      and near(ev.get("correctionMs"), ev.get("excessBeforeMs", 0) + BUDGET_MS, 0.11))
+check("...as ONE pad offset on the sink's upstream peer",
+      near(peer_offset_ms(pipe), ev.get("correctionMs", -1.0), 0.1))
+check("...and says so in the journal",
+      "backlog shed: sink past the sanity ceiling for 400 ms (excess +" in stderr_log.getvalue()
+      and "the leg lost its timeline; re-anchored on arrival (+" in stderr_log.getvalue())
+push_for(src, 300, backlog_ms=LOST_MS)          # the producer side is still as broken
+check("afterwards the same stale stamps sit a full budget ahead of their deadline",
+      near(runner._backlog_shed["last_ms"], -BUDGET_MS, 50))
+check("...and nothing further is reported", len(outcomes(events, "reanchored")) == 1
+      and len(outcomes(events, "implausible")) == 1)
+# The moment its OWN stamps are back on time (the producer recovered, a pinned
+# PCR let go) the move is undone, on that buffer: .24 2026-10-05 kept a leg
+# silent 7.9 s past its producer's return waiting on a hold and a cooldown.
+moved = peer_offset_ms(pipe)
+sys.stderr = stderr_log
+try:
+    push_for(src, 100, backlog_ms=BUDGET_MS - 50)   # own stamps: 50 ms inside the budget
+finally:
+    sys.stderr = real_stderr
+re = outcomes(events, "reanchored")
+check("its own stamps back on time: moved back at once, by exactly the move",
+      len(re) == 2 and re[1].get("offsetMs") == 0 and near(re[1].get("correctionMs"), -moved, 0.11)
+      and re[1].get("reanchorCount") == 1 and peer_offset_ms(pipe) == 0)
+check("...and says so in the journal",
+      "backlog shed: sink back on its own timeline (" in stderr_log.getvalue()
+      and "; re-anchor undone (-" in stderr_log.getvalue())
+before = len(rendered)
+push_for(src, 300, backlog_ms=BUDGET_MS - 50)
+check("...then renders on its own stamps", len(rendered) > before + 5
+      and near(runner._backlog_shed["last_ms"], -50, 50) and len(re) == 2)
+teardown(pipe)
+
+# A timeline still MOVING is its producer's to fix, not a lost one (.24,
+# 2026-10-05: Headphone1's stamps froze — lateness climbing 1 s/s — for 15 s
+# behind its transcoder's egress, then came back; a pad offset, a constant,
+# chased it three times for no audio). Frozen stamps past a 1.5 s hold: never.
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point(reanchorHoldMs=1_500)
+frozen = Gst.SystemClock.obtain().get_time() - LOST_MS * Gst.MSECOND
+end = time.monotonic() + 3.0
+while time.monotonic() < end:
+    buf = Gst.Buffer.new_allocate(None, 32, None)
+    buf.pts = frozen
+    buf.duration = 20 * Gst.MSECOND
+    src.emit("push-buffer", buf)
+    time.sleep(0.02)
+check("frozen stamps are reported once and never re-anchored",
+      len(outcomes(events, "implausible")) == 1 and outcomes(events, "reanchored") == []
+      and peer_offset_ms(pipe) == 0)
+teardown(pipe)
+
+# An INPUT GAP starts the hold over: the hold is there so the producer's nets
+# get the first second after a resume, so it is paid in buffers after the gap.
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point()
+push_for(src, REANCHOR_T - 100, backlog_ms=LOST_MS)
+time.sleep(1.5)
+push_for(src, REANCHOR_T - 100, backlog_ms=LOST_MS)
+check("a run that spans an input gap does not mature on the buffers after it",
+      outcomes(events, "reanchored") == [])
+push_for(src, 300, backlog_ms=LOST_MS)
+check("...a hold of post-gap buffers does", len(outcomes(events, "reanchored")) == 1)
+teardown(pipe)
+
+# One stale buffer is what EVERY outage past the ceiling hands the sink (the AAC
+# decoder flushes its last pre-outage frame) even when the producer recovers.
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point()
+push(src, LOST_MS)
+push_for(src, REANCHOR_T + 400, backlog_ms=BUDGET_MS - 50)
+check("one stale buffer is reported once and never re-anchors the leg",
+      len(outcomes(events, "implausible")) == 1 and outcomes(events, "reanchored") == []
+      and peer_offset_ms(pipe) == 0)
+teardown(pipe)
+
+# EARLY: a timeline far in the FUTURE parks a sync=true audio sink's streaming
+# thread on its first buffer until its time. So while the run is held the shed
+# point DROPS, then the leg re-anchors backwards.
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point()
+push_for(src, REANCHOR_T - 100, backlog_ms=-LOST_MS)
+check("far-early buffers are dropped while the run is held", rendered == [])
+push_for(src, 300, backlog_ms=-LOST_MS)
+re = outcomes(events, "reanchored")
+check("...then the leg re-anchors backwards by the floor plus the budget",
+      len(re) == 1 and near(re[0].get("correctionMs"), -LOST_MS, 50))
+before = len(rendered)
+push_for(src, 300, backlog_ms=-LOST_MS)
+check("...and renders from then on, a budget ahead of its deadline",
+      len(rendered) > before + 5 and near(runner._backlog_shed["last_ms"], -BUDGET_MS, 50))
+teardown(pipe)
+
+# Armed ONLY where the shed point is the sink: a video leg sheds at its decoder,
+# where a pad offset would move the picture and nothing else.
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point(element="pre")
+push_for(src, REANCHOR_T + 400, backlog_ms=LOST_MS)
+check("a decoder-point leg never re-anchors", outcomes(events, "reanchored") == []
+      and len(outcomes(events, "implausible")) == 1)
+teardown(pipe)
+# ...and only when the engine asks (an older engine sends no reanchorHoldMs).
+events = collect_plugin_events()
+pipe, src, rendered = build_sink_point(reanchorHoldMs=None)
+push_for(src, REANCHOR_T + 400, backlog_ms=LOST_MS)
+check("no reanchorHoldMs: reported, never re-anchored",
+      outcomes(events, "reanchored") == [] and len(outcomes(events, "implausible")) == 1)
+teardown(pipe)
+
 # --- the post-shed stall: a decoder that took the resume and went silent -----
 # Pi 400, 2026-08-18: a TEXTBOOK shed — correct IRAP resume, back inside
 # budget, one clean event — left the stateless V4L2 HEVC decoder producing

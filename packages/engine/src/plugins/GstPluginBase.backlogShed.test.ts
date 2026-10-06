@@ -79,6 +79,49 @@ describe('GstPluginBase backlog-shed logging', () => {
         expect(log.warn.mock.calls[2][1]).toContain('nothing shed');
     });
 
+    it('logs an in-place re-anchor as a lost timeline, with the payload', () => {
+        // .24, 2026-10-04: the decoder leg sat 588 s late, silent, health "ok".
+        // The runner now moves such a leg onto arrival; the journal says so.
+        const { module, log } = makeModule();
+        const reanchored = {
+            element: 'sink',
+            outcome: 'reanchored',
+            budgetMs: 160,
+            excessBeforeMs: 587_803.3,
+            correctionMs: 587_963.3,
+            offsetMs: 587_963.3,
+            applied: true,
+            reanchorCount: 1,
+        };
+        module.deliver(BACKLOG_SHED_EVENT, reanchored);
+        expect(log.warn).toHaveBeenCalledWith(
+            { backlogShed: reanchored },
+            'Backlog shed: Timeline lost (588 s late) — re-anchored on arrival; lip sync is approximate',
+        );
+        expect(module.seen).toEqual([[BACKLOG_SHED_EVENT, reanchored]]);
+    });
+
+    it("logs the move back onto the leg's own stamps as good news, not a warning", () => {
+        const { module, log } = makeModule();
+        const restored = {
+            element: 'sink',
+            outcome: 'reanchored',
+            budgetMs: 160,
+            excessBeforeMs: -587_920.1,
+            correctionMs: -587_963.3,
+            offsetMs: 0,
+            applied: true,
+            reanchorCount: 1,
+        };
+        module.deliver(BACKLOG_SHED_EVENT, restored);
+        expect(log.info).toHaveBeenCalledWith(
+            { backlogShed: restored },
+            'Backlog shed: timeline back — re-anchor undone',
+        );
+        expect(log.warn).not.toHaveBeenCalled();
+        expect(module.seen).toEqual([[BACKLOG_SHED_EVENT, restored]]);
+    });
+
     it('still delivers the event to the subclass hook', () => {
         // The module may want to do more with it (health, status, a rebuild);
         // logging must not consume the event.

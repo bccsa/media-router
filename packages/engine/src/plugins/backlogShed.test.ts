@@ -4,8 +4,10 @@ import {
     BACKLOG_SHED_COOLDOWN_MS,
     BACKLOG_SHED_EVENT,
     BACKLOG_SHED_HOLD_MS,
+    BACKLOG_SHED_REANCHOR_HOLD_MS,
     BACKLOG_SHED_SANITY_MS,
     BACKLOG_SHED_TOLERANCE_MS,
+    reanchorWarning,
 } from './backlogShed.js';
 import { MAX_PLAYOUT_OFFSET_MS } from './playoutOffset.js';
 
@@ -22,6 +24,7 @@ describe('backlogShedConfig — the contract gate', () => {
             holdMs: BACKLOG_SHED_HOLD_MS,
             cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
             sanityMs: BACKLOG_SHED_SANITY_MS,
+            reanchorHoldMs: BACKLOG_SHED_REANCHOR_HOLD_MS,
         });
     });
 
@@ -96,5 +99,59 @@ describe('the policy numbers themselves', () => {
 
     it('the event channel is the literal both processes use', () => {
         expect(BACKLOG_SHED_EVENT).toBe('backlog_shed');
+    });
+});
+
+describe('the in-place re-anchor of a leg that lost its timeline', () => {
+    // .24, 2026-10-04: after its source rebooted onto an earlier PTS epoch the
+    // audio-decoder leg sat 588 s late at pulsesink — silence, health "ok" — for
+    // good. A sink-point leg held steadily past the sanity ceiling now
+    // re-anchors on arrival in the runner, and is moved back once its own
+    // stamps are on time again; the engine owns the hold.
+    it('outlasts the producer stamper staleness net (1 s hold) with margin', () => {
+        // The 302M leg of the same outage came back 1.06 s in through its
+        // transcoder's egress net and must never be touched.
+        expect(BACKLOG_SHED_REANCHOR_HOLD_MS).toBeGreaterThanOrEqual(2 * 1_000);
+    });
+
+    it('answers in seconds, inside the shed hold', () => {
+        expect(BACKLOG_SHED_REANCHOR_HOLD_MS).toBeLessThanOrEqual(BACKLOG_SHED_HOLD_MS);
+    });
+
+    it('is carried by every leg — the runner arms it only where the shed point is the sink', () => {
+        expect(backlogShedConfig({ timeSyncContract: true }, VIDEO)?.reanchorHoldMs).toBe(
+            BACKLOG_SHED_REANCHOR_HOLD_MS,
+        );
+    });
+
+    it("names the leg's NET move in the health text, late or early", () => {
+        expect(reanchorWarning({ budgetMs: 160, offsetMs: 587_963.3, applied: true })).toBe(
+            'Timeline lost (588 s late) — re-anchored on arrival; lip sync is approximate',
+        );
+        expect(reanchorWarning({ budgetMs: 160, offsetMs: -30_050, applied: true })).toBe(
+            'Timeline lost (30 s early) — re-anchored on arrival; lip sync is approximate',
+        );
+        // Under 10 s a whole-second figure would hide most of it.
+        expect(reanchorWarning({ budgetMs: 160, offsetMs: 5_240, applied: true })).toBe(
+            'Timeline lost (5.2 s late) — re-anchored on arrival; lip sync is approximate',
+        );
+    });
+
+    it('says so when the runner could not move the leg', () => {
+        expect(reanchorWarning({ budgetMs: 160, offsetMs: 587_963.3, applied: false })).toBe(
+            'Timeline lost (588 s late) — re-anchor failed, no audio',
+        );
+    });
+
+    it('is no warning once the leg is moved back within one budget of its stamps', () => {
+        // The runner undid the move: its own timeline came back.
+        expect(reanchorWarning({ budgetMs: 160, offsetMs: 0, applied: true })).toBeNull();
+        // .24, 2026-10-05: three moves (+189 504.5, +10 288.8, −199 740.5 ms)
+        // netted +52.8 ms, yet the module said "Timeline lost (200 s early)".
+        expect(reanchorWarning({ budgetMs: 240, offsetMs: 52.8, applied: true })).toBeNull();
+        expect(reanchorWarning({ budgetMs: 240, offsetMs: -240, applied: true })).toBeNull();
+        expect(reanchorWarning({ budgetMs: 240, offsetMs: 241, applied: true })).toContain(
+            '(0.2 s late)',
+        );
     });
 });

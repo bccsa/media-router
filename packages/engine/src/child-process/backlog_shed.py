@@ -71,8 +71,33 @@ DEFAULT_COOLDOWN_MS = 60_000.0
 # means the buffer timeline and the pipeline clock are not the same timeline at
 # all (an unstamped producer, a segment this code did not expect), and shedding
 # on it would drop the entire stream for ever chasing a target it can never
-# reach. So it is reported, never acted on. 10 s is `MAX_PLAYOUT_OFFSET_MS`.
+# reach. So it is reported, never SHED on. 10 s is `MAX_PLAYOUT_OFFSET_MS`.
 DEFAULT_SANITY_MS = 10_000.0
+# ...but a leg whose shed point IS its sink (an audio presentation leg) has no
+# reason to stay past it: there the reading is a leg that lost its own timeline
+# and plays NOTHING (pulsesink writes each buffer at its timestamp's ring slot,
+# and the server discards what is behind its read pointer). Field, .24
+# 2026-10-04: after its source (.21) came back from a reboot on an earlier PTS
+# epoch, the running tsdemux timestamped no PES, avdec_aac carried the
+# pre-outage timeline on, and the decoder leg sat 588 s late — silence, health
+# "ok" — for good. Held past the ceiling, steadily, for `reanchorHoldMs` (3 s
+# from the engine: three times the producer stamper's 1 s staleness hold, so a
+# producer that re-anchors its own egress lands first — the 302M leg of the
+# same outage came back 1.06 s in through its transcoder), an ARMED leg
+# re-anchors in place on arrival (the runner's pad offset).
+#
+# STEADILY, because a pad offset is a constant: it can only correct a timeline
+# that is off by a constant. A lost timeline holds still — the decoder above read
+# 588 s late buffer after buffer, and .24's five backward-epoch runs on
+# 2026-10-05 moved 88-190 ms between their first and least-late readings. A
+# producer still moving its stamps does not: on .24 the same day, ~190 s after a
+# 200 s outage, the Hall-audio transcoder's egress froze Headphone1's stamps
+# 186-189 s in the past for 15 s (lateness climbing 1 s/s), then put them back.
+# Three re-anchors chased it and none produced audio. So a run starts over when
+# its readings spread wider than this, or when this long passes with no buffer:
+# what follows an input gap may be another timeline, and the hold exists to give
+# the producer's nets the first second after a resume.
+REANCHOR_STEADY_MS = 1_000.0
 
 # How long a VIDEO leg has to prove its decoder survived the shed, per stage.
 # Field (Pi 400, 2026-08-18): a shed completed normally ("retained
@@ -186,13 +211,34 @@ class PostShedStallWatch:
 class BacklogShedPolicy:
     """Decides WHEN a clock-paced leg must hand its retained backlog back.
 
-    `observe(lateness_ms, now_ms, queued_ms=None)` takes one sample per buffer
-    and returns:
+    `observe(lateness_ms, now_ms, queued_ms=None, budget_ms=0.0)` takes one
+    sample per buffer and returns:
 
         None            nothing to do
         "shed"          start shedding now (returned once per episode)
-        "implausible"   the sample is past `sanity_ms` — reported once per
-                        episode so the runner can log it; never a shed
+        "implausible"   the sample is off the pipeline clock's timeline: more
+                        than `sanity_ms` past its deadline, or stamped more than
+                        `sanity_ms` in the FUTURE (`lateness + budget`, its age
+                        on arrival, below −sanity — never a healthy leg's own
+                        budget, which may itself exceed the ceiling). Reported
+                        once per episode so the runner can log it; never a shed
+        "reanchor"      (armed legs only) EVERY sample has stayed implausible
+                        and STEADY — within `REANCHOR_STEADY_MS` of each other,
+                        with no gap that long — for `reanchor_hold_ms`: the leg
+                        lost its timeline. `reanchor_ms` is the run's FLOOR age,
+                        its least-late buffer, and the runner moves the leg's
+                        running time by exactly that, so the floor buffer lands
+                        on arrival, as a fresh start would place it. `offset_ms`
+                        sums what the leg has been moved by. While an EARLY run
+                        is held `holding_early` is True and the runner drops: a
+                        buffer seconds in the future parks a sync=true audio
+                        sink's streaming thread until then.
+        "restore"       (a moved leg) a buffer that would be on time WITHOUT
+                        `offset_ms`: the leg's own timeline is back (its producer
+                        recovered, a pinned PCR let go), so the correction is now
+                        the error. Undone at once, no hold — every buffer held
+                        back would be silence the leg does not need.
+                        `reanchor_ms` is −`offset_ms`, which returns to 0.
         "timeline"      the excess is sustained but NOTHING IS QUEUED upstream
                         of the shed point (`queued_ms` < `tolerance_ms`) — the
                         leg is not holding a backlog, its buffers are simply
@@ -219,37 +265,85 @@ class BacklogShedPolicy:
     """
 
     def __init__(self, tolerance_ms=DEFAULT_TOLERANCE_MS, hold_ms=DEFAULT_HOLD_MS,
-                 cooldown_ms=DEFAULT_COOLDOWN_MS, sanity_ms=DEFAULT_SANITY_MS):
+                 cooldown_ms=DEFAULT_COOLDOWN_MS, sanity_ms=DEFAULT_SANITY_MS,
+                 reanchor_hold_ms=None):
         self.tolerance_ms = float(tolerance_ms)
         self.hold_ms = float(hold_ms)
         self.cooldown_ms = float(cooldown_ms)
         self.sanity_ms = float(sanity_ms)
+        # None (or <= 0) = never re-anchor: every leg the runner does not arm.
+        self.reanchor_hold_ms = (float(reanchor_hold_ms)
+                                 if reanchor_hold_ms and reanchor_hold_ms > 0 else None)
         self.sheds = 0
+        self.reanchors = 0
+        self.reanchor_ms = None       # what the last "reanchor"/"restore" moves the leg by
+        self.offset_ms = 0.0          # the leg's net move: what its pad offset now adds
         self.timeline_refusals = 0    # sheds refused because nothing was queued
         self._above_since = None      # start of the current unbroken excess run
         self._last_shed_end = None    # cooldown anchor; None = never shed
         self._implausible = False     # latched so it is reported once, not per buffer
         self._timeline = False        # latched: "timeline" reported once per episode
+        self._lost_since = None       # start of the steady implausible run
+        self._lost_floor = None       # ... its least age (< 0: the early side)
+        self._lost_peak = None        # ... its greatest age
+        self._lost_last = None        # ... and its latest sample
+
+    @property
+    def holding_early(self):
+        """An armed leg is holding an EARLY run toward a re-anchor: the runner
+        must drop, or the sink parks on the first buffer."""
+        return (self.reanchor_hold_ms is not None and self._lost_since is not None
+                and self._lost_floor < 0)
 
     def reset(self):
-        """Drop the streak (not the counters): a flush/re-anchor makes the
-        samples either side of it incomparable."""
+        """Drop the streak (not the counters, nor the net move — the pad offset
+        outlives a segment): a flush/re-anchor makes the samples either side of
+        it incomparable."""
         self._above_since = None
         self._implausible = False
         self._timeline = False
+        self._lost_since = None
 
-    def observe(self, lateness_ms, now_ms, queued_ms=None):
+    def observe(self, lateness_ms, now_ms, queued_ms=None, budget_ms=0.0):
         if lateness_ms is None or lateness_ms != lateness_ms:   # NaN
             return None
-        if abs(lateness_ms) > self.sanity_ms:
+        # Where the leg's OWN stamps put this buffer: inside its budget, give or
+        # take the tolerance, means the correction is no longer needed.
+        own_age_ms = lateness_ms + self.offset_ms + budget_ms
+        if self.offset_ms and -self.tolerance_ms <= own_age_ms <= budget_ms + self.tolerance_ms:
+            self.reanchor_ms = -self.offset_ms
+            self.offset_ms = 0.0
+            self.reset()
+            return "restore"
+        age_ms = lateness_ms + budget_ms      # buffer running time → now; < 0 = future
+        if lateness_ms > self.sanity_ms or age_ms < -self.sanity_ms:
             # Not a backlog — see DEFAULT_SANITY_MS. The streak is dropped too:
             # a timeline mismatch must never accumulate toward a shed.
             self._above_since = None
-            if self._implausible:
+            # One run per STEADY stretch (REANCHOR_STEADY_MS). Moving past the
+            # spread also covers a change of side: that is twice the ceiling.
+            if (self._lost_since is None
+                    or now_ms - self._lost_last > REANCHOR_STEADY_MS
+                    or max(self._lost_peak, age_ms) - min(self._lost_floor, age_ms)
+                    > REANCHOR_STEADY_MS):
+                self._lost_since = now_ms
+                self._lost_floor = self._lost_peak = age_ms
+            else:
+                self._lost_floor = min(self._lost_floor, age_ms)
+                self._lost_peak = max(self._lost_peak, age_ms)
+            self._lost_last = now_ms
+            if not self._implausible:
+                self._implausible = True
+                return "implausible"
+            if self.reanchor_hold_ms is None or now_ms - self._lost_since < self.reanchor_hold_ms:
                 return None
-            self._implausible = True
-            return "implausible"
+            self.reanchors += 1
+            self.reanchor_ms = self._lost_floor
+            self.offset_ms += self._lost_floor
+            self.reset()
+            return "reanchor"
         self._implausible = False
+        self._lost_since = None
         if lateness_ms <= self.tolerance_ms:
             self._above_since = None
             self._timeline = False

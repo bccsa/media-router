@@ -11,14 +11,14 @@ import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
-import { BACKLOG_SHED_EVENT } from './backlogShed.js';
+import { BACKLOG_SHED_EVENT, reanchorWarning, type BacklogShedReanchor } from './backlogShed.js';
 import { effectiveLatchRepair } from './latchRepair.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
  *  this module: health stays a warning through the restart that follows. */
 const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
 /** The transient warnings a module writes and later withdraws itself. */
-type OwnedWarning = 'gate' | 'silence' | 'reconnect';
+type OwnedWarning = 'gate' | 'silence' | 'reconnect' | 'reanchored';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
@@ -360,7 +360,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * gate, udpsrc silence, a producer-restart reconnect); each may clear ONLY
      * its own — any other health write (`setHealth`) supersedes the latch, so a
      * gate opening or a feed resuming can never hide a real failure that
-     * arrived in between (ADR-0010 rule 2).
+     * arrived in between (ADR-0010 rule 2). A presentation leg re-anchored on
+     * arrival (`reanchored`) holds one until it is moved back onto its own
+     * stamps or the next PLAYING rebuilds it.
      */
     private ownedWarning: OwnedWarning | null = null;
 
@@ -689,9 +691,29 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * at all, the second that the leg is late but its queues are empty (a
      * producer stamping behind real time — dropping would return nothing), the
      * third that the leg is caught up and waiting for an IRAP it must not skip.
+     * `reanchored` is a sink-point leg that lost its timeline and was moved onto
+     * arrival: audible again, but off the producer's stamps — an owned warning
+     * (ADR-0010 rule 2) says so until the runner moves it back onto them or the
+     * next PLAYING rebuilds it, taken only over a healthy module (or its own
+     * earlier text).
      */
     private logBacklogShed(payload: unknown): void {
-        const p = (payload ?? {}) as { outcome?: string };
+        const p = (payload ?? {}) as { outcome?: string } & BacklogShedReanchor;
+        if (p.outcome === 'reanchored') {
+            const text = reanchorWarning(p);
+            if (text === null) {
+                this.log.info(
+                    { backlogShed: payload },
+                    'Backlog shed: timeline back — re-anchor undone',
+                );
+                this.clearOwnWarning('reanchored');
+                return;
+            }
+            this.log.warn({ backlogShed: payload }, `Backlog shed: ${text}`);
+            const ours = this.health === 'warning' && this.ownedWarning === 'reanchored';
+            if (this.health === 'ok' || ours) this.ownWarning('reanchored', text);
+            return;
+        }
         if (p.outcome === 'implausible') {
             this.log.warn(
                 { backlogShed: payload },

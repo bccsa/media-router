@@ -845,6 +845,82 @@ reporting healthy.
   the pipeline clock are not the same timeline — and shedding toward a target on
   a timeline the leg is not on would drop the entire stream for ever.
 
+- **Amendment 2026-10-04 (BCC Mulanje .24) — a sink-point leg that LOST its
+  timeline re-anchors in place, and moves back when it returns.** The source
+  (.21) came back from a ~10 min outage on an earlier PTS epoch (a reboot: its
+  muxer stamps the boot clock plus 1 h, so a muxer or engine restart only adds
+  a forward gap); the splitter pinned its PCR, the audio-decoder's RUNNING
+  `tsdemux` timestamped no PES (> 15 s off its PCR; its ignore-PCR fallback
+  exists only before the first push), and `avdec_aac` carried the pre-outage
+  timeline on: the leg sat 588 s late at `pulsesink` — silence, health `ok` —
+  for good, while "report, never act" watched.
+  - **Re-anchor.** Where the shed point IS the sink and the engine sends
+    `reanchorHoldMs` (3 s), samples that stay implausible AND STEADY for the
+    hold move the leg with one pad offset on the sink's upstream peer
+    (branchAlign's mechanism) by the run's FLOOR age (`lateness + budget`): its
+    least-late buffer lands on arrival, a full `ts-offset + latency` ahead of
+    its deadline — where a fresh start would place it; at the deadline itself
+    pulsesink would lose it. EARLY means stamped more than 10 s in the FUTURE
+    (age, not lateness — a healthy leg whose budget exceeds the ceiling, D near
+    its 10 s maximum, reads lateness ≈ −budget and is not a mismatch); such a
+    run is dropped while held, or its first buffer parks the sink's streaming
+    thread. 3 s is three times the producer stamper's 1 s staleness hold, so a
+    producer that re-anchors its own egress lands first (the 302M leg of the
+    same outage came back 1.06 s in through its transcoder), and the one stale
+    buffer every AAC decoder flushes after an outage never matures a run. On .24
+    (2026-10-05) five backward epoch changes (three on a first version of this
+    net, two on this one) each brought the decoder back 3.0–3.1 s after its
+    first implausible reading; the stock runner stayed silent. In one of them
+    the 302M leg's own producer re-anchored 1.08 s in, inside the hold, and the
+    net left that leg alone.
+  - **Steady, because a pad offset is a constant** and can only correct a
+    timeline that is off by one. A run starts over when its readings spread
+    wider than 1 s, or when 1 s passes with no buffer (`REANCHOR_STEADY_MS`). A
+    lost timeline holds still — those five runs moved 88–190 ms between their
+    first and least-late readings. A producer still moving its stamps does not,
+    and it is the producer's to fix: on .24 the same day, ~190 s after a 200 s
+    outage, the Hall-audio transcoder's egress froze Headphone1's stamps
+    186–189 s in the past for 15 s (lateness climbing 1 s/s), then put them
+    back; the first version re-anchored that 302M leg three times, none
+    produced audio, and its 10 s re-anchor cooldown kept the leg silent 7.9 s
+    past the producer's own return. That excursion has not recurred on a
+    device since (0 of 4 same-feed outages), so these rules meet it only in
+    the tests, which replay its numbers. The gap rule makes the hold be paid
+    in buffers after a resume, so the producer's nets get that first second
+    (the first version fired a run opened before a 40 s outage on the first
+    buffer after it).
+  - **Moved back at once.** The net move is tracked, and the first buffer the
+    leg's OWN stamps put within its budget (± the shed tolerance) undoes all of
+    it, with no hold (the net has no cooldown at all): a correction must not
+    outlive the loss it corrected (a pinned PCR letting go, a producer coming
+    back). A timeline that returns only part way is re-anchored by the rest. On
+    .24 (2026-10-05) both returns to the real feed after a re-anchor were undone
+    on their first on-time buffer, 0.12 and 0.16 s after the stream resumed.
+  - **Reporting.** `backlog_shed` outcome `reanchored` (`excessBeforeMs`,
+    `correctionMs`, `offsetMs` — the net move, 0 once moved back — `applied`,
+    `reanchorCount`). `GstPluginBase` holds an owned warning naming the NET
+    move ("Timeline lost (N s late) — re-anchored on arrival; lip sync is
+    approximate") until the leg is back within one budget of its stamps or the
+    next PLAYING rebuilds the pipeline and the offset with it, never over an
+    error or another writer's warning (ADR-0010 rule 2).
+  - **Scope.** It is the consumer's net, not the fix: a producer that emits a
+    consistent PCR/PTS across a BACKWARD epoch change (the Stage 3f
+    conditioner) lets a running decoder recover within one buffer. FORWARD
+    epoch changes (through the 33-bit PTS fold, a source that reboots with its
+    uptime, modulo the 26.5 h wrap, past ~13.25 h comes back forward) that fix
+    does not cover: on .24 (2026-10-05) running decoders that had already been
+    through epoch changes ended 186 s late after a 186 s outage and 2,663 s
+    EARLY after a 6 s one, silent, with it and without it — while three
+    forward switches onto fresh decoders healed on their one stale frame. The
+    net is side-agnostic, but no forward loss has yet been reproduced against
+    it. Not covered: video legs (shed at the decoder; the video-player's
+    resume restart builds a fresh demux), one input of a 302M mixer arm
+    (invisible at the sink), timelines lost by less than the ceiling — the
+    decoder's interpolated timeline is late by the OUTAGE, so a backward epoch
+    change with a shorter outage stays below it (reported as `timeline`,
+    silent) and only the producer fix recovers it — and a producer's moving
+    stamps (above), which its own nets must answer.
+
 - **renderWatch could not name this failure, and now can.** With the leg a
   second behind, the `sync=true` sink's own back-pressure throttles ARRIVALS at
   its pad down to the rate it presents, and the frames that never make it are

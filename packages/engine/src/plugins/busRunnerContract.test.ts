@@ -343,6 +343,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
             'holdMs',
             'cooldownMs',
             'sanityMs',
+            'reanchorHoldMs',
         ]) {
             expect(runnerSource).toContain(`cfg.get("${key}"`);
         }

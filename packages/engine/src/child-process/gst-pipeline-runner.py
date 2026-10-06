@@ -4003,6 +4003,15 @@ def _start_backlog_shedder(pipe, cfg):
     to treat an implausible reading as a backlog (it would otherwise drop a
     whole stream chasing a target on a timeline it isn't on).
 
+    A LEG THAT LOST ITS TIMELINE. Where the shed point IS the sink (the audio
+    legs) and the engine sends `reanchorHoldMs`, lateness held steadily past
+    the ceiling re-anchors the leg IN PLACE: one pad offset on the sink's
+    upstream peer — branchAlign's mechanism — moves its running time so the
+    run's least-late buffer lands on arrival. A far-EARLY run is dropped while
+    it is held, or its first buffer parks the sink. The first buffer its own
+    stamps would place on time moves it back. The field cases are at
+    `backlog_shed.DEFAULT_SANITY_MS` and `REANCHOR_STEADY_MS`.
+
     AND THE SHED ITSELF CAN WEDGE THE DECODER. Resuming on the IRAP is correct
     and still not sufficient: on a Pi 400 (2026-08-18) a textbook shed left
     the stateless V4L2 HEVC decoder producing nothing at all — for 12 h, with no
@@ -4049,6 +4058,9 @@ def _start_backlog_shedder(pipe, cfg):
         hold_ms=cfg.get("holdMs", 5_000),
         cooldown_ms=cfg.get("cooldownMs", 60_000),
         sanity_ms=cfg.get("sanityMs", 10_000),
+        # Only where the shed point IS the sink: there a lost timeline is
+        # silence, and the sink's upstream peer moves this leg and nothing else.
+        reanchor_hold_ms=cfg.get("reanchorHoldMs") if name == sink_name else None,
     )
     # Every field below except `probe_id` is written ONLY by the probe callback
     # (one streaming thread) — the same single-writer discipline as the keyframe
@@ -4218,6 +4230,37 @@ def _start_backlog_shedder(pipe, cfg):
         # whatever the decoder then does.
         _stall_arm()
 
+    def _reanchor(restore, late_ms, budget_ms):
+        """Move the leg by `policy.reanchor_ms` with ONE pad offset on the
+        sink's upstream peer (branchAlign's mechanism). A lost timeline moves
+        by the run's floor age, so its least-late buffer lands on arrival — a
+        full budget ahead of its deadline, where a fresh start would put it; a
+        timeline that came back (`restore`) is moved back onto its own stamps.
+        The peer re-sends its SEGMENT on its next push, which resets the
+        policy; this buffer is still on the old timeline, so it goes."""
+        corr_ms = policy.reanchor_ms
+        excess_ms = late_ms if restore else corr_ms - budget_ms
+        peer = pad.get_peer()
+        if peer is not None:
+            peer.set_offset(peer.get_offset() + int(round(corr_ms * 1e6)))
+        what = (f"back on its own timeline ({late_ms - corr_ms:+.0f} ms without the re-anchor)"
+                if restore else
+                f"past the sanity ceiling for {policy.reanchor_hold_ms:.0f} ms (excess "
+                f"{excess_ms:+.0f} ms) — the leg lost its timeline")
+        done = ("re-anchor FAILED: the sink pad has no peer" if peer is None
+                else f"re-anchor undone ({corr_ms:+.0f} ms)" if restore
+                else f"re-anchored on arrival ({corr_ms:+.0f} ms)")
+        _log(f"{what}; {done}")
+        emit_plugin_event("backlog_shed",
+                          {"element": name, "outcome": "reanchored",
+                           "budgetMs": round(budget_ms, 1),
+                           "excessBeforeMs": round(excess_ms, 1),
+                           "correctionMs": round(corr_ms, 1),
+                           "offsetMs": round(policy.offset_ms, 1),
+                           "applied": peer is not None,
+                           "reanchorCount": policy.reanchors})
+        return Gst.PadProbeReturn.DROP
+
     def _on_probe(_pad, info):
         if info.type & Gst.PadProbeType.EVENT_DOWNSTREAM:
             ev = info.get_event()
@@ -4280,7 +4323,8 @@ def _start_backlog_shedder(pipe, cfg):
         # `queued_ms` is a callable: the queue walk runs only once a hold has
         # matured (at most once per `hold_ms`), never per buffer.
         verdict = policy.observe(late_ms, now_ms,
-                                 queued_ms=lambda: _upstream_queued_ms(pad))
+                                 queued_ms=lambda: _upstream_queued_ms(pad),
+                                 budget_ms=budget_ms)
         if verdict == "timeline":
             _log(f"retained {late_ms + budget_ms:.0f} ms against a {budget_ms:.0f} ms "
                  f"budget for {policy.hold_ms:.0f} ms, but the queues upstream are "
@@ -4298,9 +4342,13 @@ def _start_backlog_shedder(pipe, cfg):
                               {"element": name, "outcome": "implausible",
                                "budgetMs": round(budget_ms, 1),
                                "excessBeforeMs": round(late_ms, 1)})
-            return Gst.PadProbeReturn.OK
+            return Gst.PadProbeReturn.DROP if policy.holding_early else Gst.PadProbeReturn.OK
+        if verdict in ("reanchor", "restore"):
+            return _reanchor(verdict == "restore", late_ms, budget_ms)
         if verdict != "shed":
-            return Gst.PadProbeReturn.OK
+            # A far-EARLY run held toward a re-anchor drops EVERY buffer, not
+            # just the one that opened it: the first to reach the sink parks it.
+            return Gst.PadProbeReturn.DROP if policy.holding_early else Gst.PadProbeReturn.OK
         st["shedding"] = True
         st["shed_at"] = now_ms
         st["before_ms"] = late_ms

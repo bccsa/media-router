@@ -75,10 +75,64 @@ export const BACKLOG_SHED_COOLDOWN_MS = 60_000;
  * backlog is bounded by the leg's queues (1 s ES + up to 5 s jitter); tens of
  * seconds means the buffer timeline and the pipeline clock are not the same
  * timeline, and shedding on that would drop the whole stream chasing a target
- * it can never reach. Reported, never acted on. Deliberately the same 10 s as
- * `MAX_PLAYOUT_OFFSET_MS` — no legitimate playout budget is larger.
+ * it can never reach. Reported, never SHED on (a sink-point leg held past it
+ * re-anchors instead — `BACKLOG_SHED_REANCHOR_HOLD_MS`). Deliberately the same
+ * 10 s as `MAX_PLAYOUT_OFFSET_MS` — no legitimate playout budget is larger.
  */
 export const BACKLOG_SHED_SANITY_MS = 10_000;
+
+/**
+ * How long a SINK-POINT leg (`element === sink`: the audio presentation legs)
+ * must read past `BACKLOG_SHED_SANITY_MS`, steadily, before the runner
+ * re-anchors it IN PLACE: one pad offset on the sink's upstream peer puts the
+ * run's least-late buffer on arrival, as a fresh start would. There the reading
+ * is not a measurement to distrust but a leg that lost its own timeline and
+ * plays NOTHING (field, .24 2026-10-04: after its source rebooted onto an
+ * earlier PTS epoch the audio-decoder sat 588 s late, silent, health "ok", for
+ * good). 3 s is three times the producer stamper's staleness hold (1 s), so a
+ * producer that re-anchors its own egress lands first — the 302M leg of that
+ * outage came back 1.06 s in through its transcoder and must not be touched —
+ * and a single stale buffer (every AAC decoder flushes one after an outage)
+ * never qualifies. Steadily: readings that keep moving, or an input gap,
+ * restart the hold (a pad offset can only correct a constant), and the first
+ * buffer the leg's own stamps put on time again moves it back at once
+ * (`REANCHOR_STEADY_MS` and `"restore"` in the runner's `backlog_shed.py`).
+ * Sent on every leg; the runner arms it only where the shed point is the sink,
+ * and an older runner ignores it.
+ */
+export const BACKLOG_SHED_REANCHOR_HOLD_MS = 3_000;
+
+/** A `backlog_shed` payload with outcome `reanchored` (both runners). */
+export interface BacklogShedReanchor {
+    /** The leg's playout budget: its sink's ts-offset plus latency. */
+    budgetMs?: number;
+    /**
+     * The leg's NET move once this one is applied: + its own timeline is that
+     * far late (moved later, to play on arrival), − that far early, 0 back on
+     * its own stamps.
+     */
+    offsetMs?: number;
+    /** False when the sink had no upstream peer to move — the leg is still lost. */
+    applied?: boolean;
+}
+
+/**
+ * The owned health warning of a leg the runner has moved off its own timeline
+ * (`GstPluginBase`): audible again, but placed by arrival rather than by the
+ * producer's stamps, so lip sync is no longer the contract's. The NET move
+ * decides, not the last step: null once the leg sits within one budget of its
+ * own stamps (field, .24 2026-10-05: three moves netting +52.8 ms left
+ * "Timeline lost (200 s early)" on a module that was back on time).
+ */
+export function reanchorWarning(p: BacklogShedReanchor): string | null {
+    const off = p.offsetMs ?? 0;
+    if (Math.abs(off) <= (p.budgetMs ?? 0)) return null;
+    const s = Math.abs(off) / 1000;
+    const lost = `Timeline lost (${s < 10 ? s.toFixed(1) : Math.round(s)} s ${off < 0 ? 'early' : 'late'})`;
+    return p.applied === false
+        ? `${lost} — re-anchor failed, no audio`
+        : `${lost} — re-anchored on arrival; lip sync is approximate`;
+}
 
 /** The slice of `ModuleServices` the gate reads. */
 export interface BacklogShedServices {
@@ -139,5 +193,6 @@ export function backlogShedConfig(
         holdMs: BACKLOG_SHED_HOLD_MS,
         cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
         sanityMs: BACKLOG_SHED_SANITY_MS,
+        reanchorHoldMs: BACKLOG_SHED_REANCHOR_HOLD_MS,
     };
 }

@@ -18,6 +18,7 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.normpath(os.path.join(_HERE, "..", ".."))
 _BIN = os.path.join(_ROOT, "native", "mr-gst-runner", "mr-gst-runner")
+_PY_RUNNER = [sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
 _PLUGINS = os.path.normpath(os.path.join(_ROOT, "..", "..", "plugins"))
 
 if not os.path.exists(_BIN):
@@ -45,11 +46,12 @@ def check(name, cond):
 
 
 class RunnerProc:
-    """One runner process: commands in, parsed events + log lines out."""
+    """One runner process: commands in, parsed events + log lines out. `argv`
+    defaults to the native binary; `_PY_RUNNER` runs the python twin instead."""
 
-    def __init__(self):
+    def __init__(self, argv=None):
         env = dict(os.environ, MR_PLUGINS_DIR=_PLUGINS, MALLOC_ARENA_MAX="2")
-        self.proc = subprocess.Popen([_BIN], stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+        self.proc = subprocess.Popen(argv or [_BIN], stdin=subprocess.PIPE, stderr=subprocess.PIPE,
                                      stdout=subprocess.DEVNULL, env=env, text=True, bufsize=1)
         self.events = []
         self.logs = []
@@ -783,6 +785,131 @@ def test_video_gates():
         r.kill()
 
 
+# --------------------------------------------------------------------------- R: a lost timeline re-anchors (both twins)
+def test_lost_timeline_reanchor():
+    """.24, 2026-10-04: the audio-decoder leg lost its timeline after its source
+    rebooted onto an earlier PTS epoch and played silence 588 s late, for good.
+    A sink-point leg armed with `reanchorHoldMs` now re-anchors in place after a
+    steady hold — both twins, same events. `clocksync` releases a non-live
+    source in real time while its stamps sit 20 s in the PAST (late, the .24
+    shape scaled down) or 20 s in the FUTURE (early: a snapped-back timeline,
+    which would park a sync=true sink); the sink keeps a legal 100 ms budget.
+    Unarmed and decoder-point legs only ever report.
+
+    Three more late arms turn the source's knobs live (`set_property` on its
+    `timestamp-offset`, which moves the stamps, and on the `clocksync` pacing
+    it): `restore` puts the stamps back on time once re-anchored — the move is
+    undone at once; `moving` falls 0.6 s further behind every 0.8 s, the shape
+    of Headphone1's frozen stamps on .24 (2026-10-05) — never re-anchored; `gap`
+    pauses 2 s with its lateness unchanged — the hold starts over after it."""
+    if Gst.ElementFactory.find("clocksync") is None:
+        print("SKIP R — clocksync unavailable")
+        return
+    S = Gst.SECOND
+
+    def start(r, skew_s, element="sink", hold=3000):
+        knobs = {"src": Gst.SystemClock.obtain().get_time() - skew_s * S, "cs": skew_s * S}
+        shed = {"element": element, "sink": "sink", "keyframeAligned": False, "toleranceMs": 250,
+                "holdMs": 5000, "cooldownMs": 60000, "sanityMs": 10000, "reanchorHoldMs": hold}
+        r.send({"cmd": "start", "timeSyncContract": True, "backlogShed": shed,
+                "pipeline": f"audiotestsrc name=src samplesperbuffer=480 timestamp-offset={knobs['src']}"
+                            " ! audio/x-raw,format=S16LE,rate=48000,channels=2"
+                            f" ! clocksync name=cs ts-offset={knobs['cs']} ! identity name=pre"
+                            " ! fakesink name=sink sync=true async=false ts-offset=100000000"})
+        return knobs
+
+    def turn(r, knobs, element, by_ns):
+        knobs[element] += by_ns
+        r.send({"cmd": "set_property", "element": element, "value": knobs[element],
+                "property": "timestamp-offset" if element == "src" else "ts-offset"})
+
+    def sheds(r, outcome):
+        r.pump()
+        return [e["payload"] for e in r.events if e.get("event") == "plugin_event"
+                and e.get("channel") == "backlog_shed" and e["payload"].get("outcome") == outcome]
+
+    twins = (("native", None), ("python", _PY_RUNNER))
+    legs = {"late": (20, "sink", 3000), "early": (-20, "sink", 3000),
+            "unarmed": (20, "sink", None), "decoder": (20, "pre", 3000),
+            "restore": (20, "sink", 3000), "moving": (20, "sink", 3000), "gap": (20, "sink", 3000)}
+    arms = {(twin, leg): RunnerProc(argv) for twin, argv in twins for leg in legs}
+    try:
+        for r in arms.values():
+            r.wait_event(ev_is("ready"), timeout=15)
+        knobs = {key: start(r, *legs[key[1]]) for key, r in arms.items()}
+        t0 = time.monotonic()
+        seen = {}                       # (arm, what) -> when first seen
+        turned = {}                     # arm -> when its knob was last turned
+        while time.monotonic() < t0 + 9.0:
+            now = time.monotonic()
+            for key, r in arms.items():
+                imp, re = sheds(r, "implausible"), sheds(r, "reanchored")
+                for what, hit in (("implausible", imp), ("reanchored", re), ("restored", len(re) > 1)):
+                    if hit and (key, what) not in seen:
+                        seen[(key, what)] = now
+                leg = key[1]
+                if leg == "restore" and re and key not in turned:
+                    turn(r, knobs[key], "cs", -20 * S)      # pacing first: clocksync
+                    turn(r, knobs[key], "src", 20 * S)      # keeps a wait it scheduled
+                    turned[key] = now
+                elif leg == "moving" and now - turned.get(key, t0) >= 0.8:
+                    turn(r, knobs[key], "cs", int(0.6 * S))
+                    turned[key] = now
+                elif leg == "gap" and imp and key not in turned and now - seen[(key, "implausible")] >= 1.5:
+                    turn(r, knobs[key], "src", 2 * S)
+                    turned[key] = now
+            time.sleep(0.05)
+        for twin, _ in twins:
+            for leg, corr in (("late", 20_000), ("early", -20_000)):
+                r = arms[(twin, leg)]
+                imp, re = sheds(r, "implausible"), sheds(r, "reanchored")
+                check(f"R {twin} {leg}: reported once, then re-anchored once, applied",
+                      len(imp) == 1 and len(re) == 1 and re[0].get("applied") is True
+                      and re[0].get("reanchorCount") == 1)
+                at = [seen.get(((twin, leg), o)) for o in ("implausible", "reanchored")]
+                held = at[1] - at[0] if None not in at else -1.0
+                check(f"R {twin} {leg}: after the 3 s hold (held {held:.2f} s)", 2.5 <= held <= 4.5)
+                p = re[0] if re else {}
+                c_ms, x_ms, b_ms = (p.get(k, 0) for k in ("correctionMs", "excessBeforeMs", "budgetMs"))
+                # The floor AGE (≈ the skew; loose for slow hosts), and the
+                # floor's excess exactly one budget below it: the least-late
+                # buffer lands on arrival, a full budget ahead of its deadline.
+                check(f"R {twin} {leg}: by the floor age ({c_ms} ms), its excess one budget "
+                      f"({b_ms} ms) below it ({x_ms} ms), and that is the leg's net move",
+                      abs(c_ms - corr) < 300 and b_ms >= 100 and abs(x_ms - (c_ms - b_ms)) < 0.2
+                      and p.get("offsetMs") == c_ms)
+                check(f"R {twin} {leg}: the payload's fields",
+                      sorted(p) == ["applied", "budgetMs", "correctionMs", "element", "excessBeforeMs",
+                                    "offsetMs", "outcome", "reanchorCount"])
+                check(f"R {twin} {leg}: the journal names it",
+                      any("sink past the sanity ceiling for 3000 ms" in l
+                          and "re-anchored on arrival" in l for l in r.logs))
+                check(f"R {twin} {leg}: no error", not r.has_event(ev_is("error")))
+            for leg in ("unarmed", "decoder", "moving"):
+                r = arms[(twin, leg)]
+                check(f"R {twin} {leg}: reported once, never re-anchored",
+                      len(sheds(r, "implausible")) == 1 and sheds(r, "reanchored") == [])
+            key = (twin, "restore")
+            r = arms[key]
+            re = sheds(r, "reanchored")
+            back = seen[(key, "restored")] - turned[key] if (key, "restored") in seen and key in turned else -1.0
+            check(f"R {twin} restore: its own stamps back on time, the move is undone at once "
+                  f"({back:.2f} s after)",
+                  len(re) == 2 and re[1].get("offsetMs") == 0 and re[1].get("applied") is True
+                  and abs(re[1].get("correctionMs", 0) + re[0].get("correctionMs", 0)) < 0.2
+                  and re[1].get("reanchorCount") == 1 and 0.0 <= back <= 1.0)
+            check(f"R {twin} restore: the journal names it",
+                  any("sink back on its own timeline (" in l and "; re-anchor undone (-" in l for l in r.logs))
+            key = (twin, "gap")
+            re = sheds(arms[key], "reanchored")
+            after = seen[(key, "reanchored")] - turned[key] if (key, "reanchored") in seen and key in turned else -1.0
+            check(f"R {twin} gap: the hold starts over after a 2 s input gap "
+                  f"(re-anchored {after:.2f} s after it began)", len(re) == 1 and 4.0 <= after <= 6.5)
+    finally:
+        for r in arms.values():
+            r.kill()
+
+
 test_plain_pipeline()
 test_producer_edge()
 test_consumer_data_wait()
@@ -792,6 +919,7 @@ test_shed_refusals()
 test_runner_hooks()
 test_subtitle_bridge_hook()
 test_video_gates()
+test_lost_timeline_reanchor()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

@@ -615,6 +615,12 @@ export interface BacklogShedConfig {
     cooldownMs: number;
     /** Lateness past which a reading is a timeline mismatch, not a backlog. */
     sanityMs: number;
+    /**
+     * How long a reading past `sanityMs` must hold, steadily, before a
+     * sink-point leg (`element === sink`) re-anchors in place on arrival.
+     * Absent or 0 = never (what an older engine sends).
+     */
+    reanchorHoldMs?: number;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

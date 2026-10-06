@@ -8,9 +8,12 @@
 // upstream, opens an episode: buffers are DROPPED until one is back inside
 // budget (and, on a keyframe-aligned leg, is an IRAP). Rate-limited by
 // `cooldownMs`; a reading past `sanityMs` is a timeline mismatch and is
-// reported, never acted on. Video sheds arm a post-shed stall watch on the
-// decoder's output (flush, then bus ERROR). Events, log lines and every
-// number are the python's.
+// reported, never shed on — except that a SINK-POINT leg armed with
+// `reanchorHoldMs` and held past it, steadily, re-anchors in place on arrival
+// (one pad offset on the sink's upstream peer; far-early buffers are dropped
+// while held), and moves back the moment its own stamps are on time again.
+// Video sheds arm a post-shed stall watch on the decoder's output (flush, then
+// bus ERROR). Events, log lines and every number are the python's.
 #pragma once
 
 #include <gst/gst.h>

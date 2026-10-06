@@ -12,7 +12,9 @@ What must hold, and why each one is load-bearing:
     oscillation impossible, since a shed always ends at or below zero lateness,
   * an implausible reading is reported once and NEVER sheds; on that path the
     buffer timeline is not the pipeline clock's, and shedding to a target on a
-    timeline you are not on drops the whole stream.
+    timeline you are not on drops the whole stream,
+  * an ARMED leg re-anchors only a STEADY implausible run (a pad offset fixes a
+    constant, nothing else) and undoes the move once its own stamps are back.
 
 Run:  python3 backlog_shed_test.py
 """
@@ -35,14 +37,16 @@ def check(name, cond):
         _failures.append(name)
 
 
-def feed(policy, lateness_ms, t0, ms, step=20.0):
-    """Feed `lateness_ms` from t0 for `ms`, one sample every `step`. Returns
-    (verdicts, next_t) — verdicts are the non-None returns, in order."""
+def feed(policy, lateness_ms, t0, ms, step=20.0, budget_ms=0.0):
+    """Feed `lateness_ms` (a number, or a function of t) from t0 for `ms`, one
+    sample every `step`. Returns (verdicts, next_t) — verdicts are the non-None
+    returns, in order."""
     out = []
     t = t0
     end = t0 + ms
     while t <= end:
-        v = policy.observe(lateness_ms, t)
+        late = lateness_ms(t) if callable(lateness_ms) else lateness_ms
+        v = policy.observe(late, t, budget_ms=budget_ms)
         if v:
             out.append((v, t))
         t += step
@@ -214,6 +218,188 @@ check("reset() drops the streak (a new segment is a new timeline)", verdicts == 
 verdicts, t = feed(p, 800.0, t, 1_100)
 check("and the streak rebuilds normally after it",
       [v for v, _ in verdicts][:1] == ["shed"])
+
+# --- the in-place re-anchor (armed sink-point legs) -----------------------------
+# .24, 2026-10-04: after its source came back from a reboot on an earlier PTS
+# epoch, the decoder leg's running tsdemux timestamped nothing and avdec_aac
+# carried the pre-outage timeline on — 588 s late at the sink, silence, for
+# good. On an ARMED leg a reading held steadily past the ceiling is a lost
+# timeline: re-anchor.
+# (Samples fed after a re-anchor are what the runner then reads: the leg as
+# moved. In the runner the moved peer re-sends its SEGMENT, which resets.)
+LOST = 587_803.0
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+check("an armed leg still reports the first implausible sample",
+      p.observe(LOST, 0.0) == "implausible")
+verdicts, t = feed(p, LOST, 20.0, 2_960)
+check("held under 3 s: nothing yet (a producer re-anchor gets the first go)", verdicts == [])
+check("held 3 s: one re-anchor, the moment the hold matures",
+      t == 3_000.0 and p.observe(LOST, t) == "reanchor")
+check("...by the run's floor, counted, and that is the leg's net move",
+      p.reanchor_ms == LOST and p.reanchors == 1 and p.offset_ms == LOST)
+# The floor is an AGE (lateness + budget, the buffer's distance from now), so
+# the correction puts the floor buffer ON ARRIVAL: a full budget ahead of its
+# deadline, where a fresh start would place it — never at the deadline itself.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+feed(p, LOST, 0.0, 2_980, budget_ms=160.0)
+check("with a 160 ms budget the correction is the excess plus that budget",
+      p.observe(LOST, 3_000.0, budget_ms=160.0) == "reanchor" and p.reanchor_ms == LOST + 160.0)
+# The FLOOR, not the worst: a spike cannot move it.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+for late, at in ((30_000.0, 0.0), (30_180.0, 100.0), (29_950.0, 200.0)):
+    p.observe(late, at)
+check("the correction is the run's least-late reading",
+      p.observe(30_010.0, 1_000.0) == "reanchor" and p.reanchor_ms == 29_950.0)
+
+# STEADY: a pad offset is a constant, so only a timeline off by a constant is
+# one it can fix. Arrival jitter is not movement (.24's backward-epoch runs
+# moved 88-190 ms over their hold): a ±400 ms wobble still matures on time.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+verdicts, t = feed(p, lambda t: 40_000.0 + (400.0 if int(t / 100) % 2 else -400.0), 0.0, 3_000)
+check("jitter inside REANCHOR_STEADY_MS still re-anchors when the hold matures",
+      [v for v, _ in verdicts] == ["implausible", "reanchor"] and verdicts[1][1] == 3_000.0
+      and p.reanchor_ms == 39_600.0)
+check("REANCHOR_STEADY_MS is 1 s", bs.REANCHOR_STEADY_MS == 1_000.0)
+# A reading that STEPS is a new level: the hold starts over, and it is the new
+# level that gets corrected — never the old one, which would overshoot by 15 s.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+feed(p, 40_000.0, 0.0, 1_000)
+verdicts, t = feed(p, 25_000.0, 1_020.0, 2_960)
+check("a reading that steps inside the hold starts it over", verdicts == [])
+verdicts, t = feed(p, 25_000.0, t, 100)
+check("...and the new level matures 3 s after the step, corrected by itself",
+      verdicts[:1] == [("reanchor", 4_020.0)] and p.reanchor_ms == 25_000.0)
+# A producer still MOVING its stamps is not a lost timeline. .24, 2026-10-05,
+# replayed at its own numbers: ~190 s after a 200 s outage the Hall-audio
+# transcoder's egress froze Headphone1's stamps 189 s in the past for 15.4 s —
+# lateness climbing 1 s/s — then put them back. Three re-anchors chased it, none
+# produced audio, and the last kept the leg silent 7.9 s past the producer's
+# own return.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+verdicts, t = feed(p, lambda t: 189_264.5 + t, 0.0, 15_400, budget_ms=240.0)
+verdicts2, t = feed(p, -57.0, t, 10_000, budget_ms=240.0)
+check("frozen producer stamps (lateness climbing 1 s/s for 15 s) are never re-anchored",
+      [v for v, _ in verdicts + verdicts2] == ["implausible"] and p.reanchors == 0)
+check("...so the moment the producer puts them back the leg plays, unmoved",
+      p.offset_ms == 0.0 and not p.holding_early)
+# An INPUT GAP starts the hold over: what follows may be another timeline, and
+# the hold is there so the producer's nets get the first second after a resume.
+# (.24, 2026-10-05: an early run opened before a 40 s outage fired on the first
+# buffer after it, on the pre-outage floor.)
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+verdicts, t = feed(p, -201_545.0, 0.0, 2_000)
+verdicts2, t = feed(p, -201_545.0, 42_000.0, 2_960)
+check("a run that spans an input gap does not mature on the buffers after it",
+      [v for v, _ in verdicts + verdicts2] == ["implausible"] and p.holding_early)
+verdicts, t = feed(p, -201_545.0, t, 40)
+check("...3 s of post-gap readings do", [v for v, _ in verdicts][:1] == ["reanchor"])
+
+# UNDONE the moment the leg's OWN stamps are back on time (its producer
+# recovered, a pinned PCR let go): from then on the correction is the error.
+# At once — every buffer held back would be silence the leg does not need.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+feed(p, 40_000.0, 0.0, 3_000, budget_ms=160.0)
+check("re-anchored by +40 160 ms", p.offset_ms == 40_160.0)
+verdicts, t = feed(p, -160.0, 3_020.0, 5_000, budget_ms=160.0)
+check("a moved leg playing on arrival stays moved", verdicts == [] and p.offset_ms == 40_160.0)
+check("its own stamps back on time: undone at once, by exactly the net move",
+      p.observe(-40_100.0, t, budget_ms=160.0) == "restore"
+      and p.reanchor_ms == -40_160.0 and p.offset_ms == 0.0)
+verdicts, t = feed(p, -100.0, t + 20.0, 5_000, budget_ms=160.0)
+check("...after which it is an ordinary on-time leg", verdicts == [] and p.reanchors == 1)
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+feed(p, 30_000.0, 0.0, 1_000)
+check("...however soon after the re-anchor that happens",
+      p.observe(-29_990.0, 1_020.0) == "restore" and p.offset_ms == 0.0)
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+feed(p, -50_000.0, 0.0, 1_000)
+check("an EARLY move is undone the same way",
+      p.offset_ms == -50_000.0 and p.observe(49_950.0, 1_020.0) == "restore"
+      and p.offset_ms == 0.0)
+# A timeline that comes back only PART way (its own stamps still 5 s late) is
+# not undone — that would leave it silent below the ceiling — but re-anchored
+# by the rest: the net move becomes what its own stamps are still off by.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+feed(p, 30_000.0, 0.0, 1_000)
+verdicts, t = feed(p, -25_000.0, 1_020.0, 1_000)
+check("a partial return is re-anchored by the rest, not undone",
+      [v for v, _ in verdicts] == ["implausible", "reanchor"] and p.reanchor_ms == -25_000.0
+      and p.offset_ms == 5_000.0)
+# Lost AGAIN while moved: moved again; the moves add up and one restore takes
+# all of them back.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+feed(p, 30_000.0, 0.0, 1_000)
+feed(p, 20_000.0, 1_020.0, 1_000)
+check("moves add up", p.reanchors == 2 and p.offset_ms == 50_000.0)
+check("...and one restore takes them all back",
+      p.observe(-49_900.0, 2_040.0) == "restore" and p.reanchor_ms == -50_000.0)
+
+# THE CASE IT MUST NEVER ACT ON: every AAC decoder flushes its last pre-outage
+# frame when the first post-outage one arrives, so every outage past the ceiling
+# hands the sink ONE implausible buffer even when the producer is healthy.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+check("one stale buffer is reported", p.observe(LOST, 0.0) == "implausible")
+verdicts, t = feed(p, -180.0, 20.0, 10_000)
+check("...and a leg back on time never re-anchors", verdicts == [] and p.reanchors == 0)
+
+# The 302M leg of the same outage: implausible for 1.06 s until its transcoder's
+# egress net re-anchored the stamps, then on time. Inside the hold: untouched.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+verdicts, t = feed(p, 587_782.0, 0.0, 1_060)
+verdicts2, t = feed(p, -200.0, t, 10_000)
+check("a leg its producer recovers inside the hold is never re-anchored",
+      [v for v, _ in verdicts + verdicts2] == ["implausible"] and p.reanchors == 0)
+
+# Unarmed (the video decoder point, an older engine): the old contract exactly.
+p = bs.BacklogShedPolicy()
+verdicts, t = feed(p, LOST, 0.0, 60_000)
+check("unarmed: an implausible run is only ever reported",
+      [v for v, _ in verdicts] == ["implausible"] and not p.holding_early)
+check("a zero hold is unarmed too", bs.BacklogShedPolicy(reanchor_hold_ms=0).reanchor_hold_ms is None)
+
+# EARLY: a timeline far in the future. A sync=true audio sink parks its
+# streaming thread on the first such buffer until its time comes, so the run is
+# held as early (the runner drops) and then re-anchored backwards.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+check("an early run is reported", p.observe(-587_000.0, 0.0) == "implausible")
+check("...and held as early from its first sample", p.holding_early)
+p.observe(-587_040.0, 20.0)
+verdicts, t = feed(p, -587_000.0, 40.0, 2_940)
+check("...held for the whole hold", verdicts == [] and p.holding_early)
+check("...then re-anchored backwards by its floor (the earliest reading)",
+      p.observe(-587_000.0, t) == "reanchor" and p.reanchor_ms == -587_040.0)
+check("...after which nothing is held", not p.holding_early)
+p = bs.BacklogShedPolicy(reanchor_hold_ms=3_000)
+p.observe(25_000.0, 0.0)
+check("a LATE run is never held as early", not p.holding_early)
+# EARLY means stamped in the FUTURE (age < −ceiling), not "far ahead of its
+# deadline": a healthy leg whose budget exceeds the ceiling (D at its 10 s
+# maximum plus the sink's latency) reads lateness ≈ −budget on arrival, and must
+# never be dropped or moved off the budget it is honouring.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+verdicts, t = feed(p, -10_100.0, 0.0, 5_000, budget_ms=10_160.0)
+check("a budget past the ceiling is not an early timeline",
+      verdicts == [] and not p.holding_early and p.reanchors == 0)
+check("an unarmed leg never holds an early run",
+      bs.BacklogShedPolicy().observe(-25_000.0, 0.0) == "implausible"
+      and not bs.BacklogShedPolicy().holding_early)
+
+# A run that flips side is a different timeline (twice the ceiling apart, far
+# past REANCHOR_STEADY_MS), so the hold restarts.
+p = bs.BacklogShedPolicy(reanchor_hold_ms=1_000)
+verdicts, t = feed(p, 40_000.0, 0.0, 900)
+verdicts2, t = feed(p, -40_000.0, t, 900)
+check("a run that flips side restarts the hold",
+      [v for v, _ in verdicts + verdicts2] == ["implausible"])
+verdicts, t = feed(p, -40_000.0, t, 200)
+check("...and matures on its own side", [v for v, _ in verdicts][:1] == ["reanchor"]
+      and p.reanchor_ms == -40_000.0)
+
+# A re-anchor never feeds the shed streak: the leg comes back inside budget.
+p = bs.BacklogShedPolicy(tolerance_ms=250, hold_ms=1_000, reanchor_hold_ms=1_000)
+feed(p, 90_000.0, 0.0, 1_100)
+verdicts, t = feed(p, 800.0, 1_120.0, 900)
+check("the streak after a re-anchor starts from zero", verdicts == [])
 
 # --- the post-shed stall watch -----------------------------------------------
 # The other half of an episode: a shed that ENDED correctly (on an IRAP, back

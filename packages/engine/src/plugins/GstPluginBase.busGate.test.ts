@@ -228,3 +228,72 @@ describe('GstPluginBase busGate → health', () => {
         expect(module.getState().health).toBe('ok');
     });
 });
+
+describe('GstPluginBase re-anchored presentation leg → health', () => {
+    // .24, 2026-10-04: the audio-decoder leg lost its timeline (588 s late) and
+    // played silence with health "ok". The runner now re-anchors such a leg on
+    // arrival; until its pipeline is rebuilt it plays off the producer's stamps,
+    // which the module says with a warning it owns (ADR-0010 rule 2).
+    const reanchored = (offsetMs: number, applied = true) => ({
+        channel: 'backlog_shed',
+        payload: { element: 'sink', outcome: 'reanchored', budgetMs: 160, offsetMs, applied },
+    });
+
+    it('warns while the leg is placed by arrival, until the next PLAYING rebuilds it', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('pluginEvent', reanchored(587_963.3));
+        expect(module.getState().health).toBe('warning');
+        expect(module.getState().error).toBe(
+            'Timeline lost (588 s late) — re-anchored on arrival; lip sync is approximate',
+        );
+        child.emit('stateChange', { state: 'playing' });
+        expect(module.getState().health).toBe('ok');
+    });
+
+    it('withdraws it the moment the runner moves the leg back onto its own stamps', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('pluginEvent', reanchored(199_793.3));
+        expect(module.getState().health).toBe('warning');
+        child.emit('pluginEvent', reanchored(0));
+        expect(module.getState().health).toBe('ok');
+        expect(module.getState().error).toBeNull();
+    });
+
+    it('a later move rewrites its own text by the NET move; a failed one says the leg is still silent', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('pluginEvent', reanchored(587_963.3));
+        child.emit('pluginEvent', reanchored(-30_050));
+        expect(module.getState().error).toContain('(30 s early) — re-anchored on arrival');
+        child.emit('pluginEvent', reanchored(12_400, false));
+        expect(module.getState().error).toBe(
+            'Timeline lost (12 s late) — re-anchor failed, no audio',
+        );
+    });
+
+    it("never covers, nor withdraws, an error or another writer's warning", async () => {
+        const { module, child } = await makeStarted(null);
+        module.setHealth('warning', 'ffmpeg helper crashed — restarting (attempt 2)');
+        child.emit('pluginEvent', reanchored(587_963.3));
+        expect(module.getState().error).toBe('ffmpeg helper crashed — restarting (attempt 2)');
+        child.emit('pluginEvent', reanchored(0));
+        expect(module.getState().error).toBe('ffmpeg helper crashed — restarting (attempt 2)');
+        child.emit('error', { message: 'Bus ERROR: internal data stream error' });
+        child.emit('pluginEvent', reanchored(587_963.3));
+        child.emit('pluginEvent', reanchored(0));
+        expect(module.getState().health).toBe('error');
+    });
+
+    it('an implausible reading alone changes nothing (the runner is still holding)', async () => {
+        const { module, child } = await makeStarted(null);
+        child.emit('pluginEvent', {
+            channel: 'backlog_shed',
+            payload: {
+                element: 'sink',
+                outcome: 'implausible',
+                budgetMs: 160,
+                excessBeforeMs: 587_803.3,
+            },
+        });
+        expect(module.getState().health).toBe('ok');
+    });
+});

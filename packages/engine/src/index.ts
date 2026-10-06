@@ -203,6 +203,7 @@ export {
     BACKLOG_SHED_HOLD_MS,
     BACKLOG_SHED_COOLDOWN_MS,
     BACKLOG_SHED_SANITY_MS,
+    BACKLOG_SHED_REANCHOR_HOLD_MS,
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';

@@ -4,6 +4,7 @@
 
 #include "gates.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -21,6 +22,7 @@ namespace {
 constexpr double KEYFRAME_WARN_MS = 3000.0;
 constexpr double STALE_MS = 4000.0;
 constexpr double DEFAULT_STALL_GRACE_MS = 10000.0;
+constexpr double REANCHOR_STEADY_MS = 1000.0;   // backlog_shed.py REANCHOR_STEADY_MS
 
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
 std::string fmt(const char* f, ...) {
@@ -73,29 +75,68 @@ struct StallWatch {
 /** WHEN a clock-paced leg must hand its retained backlog back (backlog_shed.py). */
 struct Policy {
     double tolerance_ms, hold_ms, cooldown_ms, sanity_ms;
+    double reanchor_hold_ms = 0;      // <= 0: never re-anchor (the leg is not armed)
     int sheds = 0;
+    int reanchors = 0;
+    double reanchor_ms = 0;           // what the last "reanchor"/"restore" moves the leg by
+    double offset_ms = 0;             // the leg's net move: what its pad offset now adds
     bool has_above_since = false;
     double above_since = 0;
     bool has_last_shed_end = false;
     double last_shed_end = 0;
     bool implausible = false;
     bool timeline = false;
+    bool lost = false;                // a steady implausible run is open
+    double lost_since = 0, lost_floor = 0, lost_peak = 0, lost_last = 0;   // its start, ages, latest
     void reset() {
         has_above_since = false;
         implausible = false;
         timeline = false;
+        lost = false;
     }
-    /** nullptr, "shed", "implausible" or "timeline". `queued` is lazy. */
+    /** An armed leg holds an EARLY run toward a re-anchor: drop, or the sink parks. */
+    bool holding_early() const { return reanchor_hold_ms > 0 && lost && lost_floor < 0; }
+    /** nullptr, "shed", "implausible", "reanchor", "restore" or "timeline". `queued`
+     *  is lazy; `budget_ms` makes the early bound an AGE (stamped > sanity_ms ahead). */
     template <typename Queued>
-    const char* observe(double lateness_ms, double now_ms, Queued queued) {
+    const char* observe(double lateness_ms, double now_ms, Queued queued, double budget_ms = 0) {
         if (std::isnan(lateness_ms)) return nullptr;
-        if (std::fabs(lateness_ms) > sanity_ms) {
+        // Where the leg's OWN stamps put this buffer: inside its budget, give or
+        // take the tolerance, means the correction is no longer needed.
+        double own_age_ms = lateness_ms + offset_ms + budget_ms;
+        if (offset_ms != 0 && own_age_ms >= -tolerance_ms && own_age_ms <= budget_ms + tolerance_ms) {
+            reanchor_ms = -offset_ms;
+            offset_ms = 0;
+            reset();
+            return "restore";
+        }
+        double age_ms = lateness_ms + budget_ms;   // buffer running time → now; < 0 = future
+        if (lateness_ms > sanity_ms || age_ms < -sanity_ms) {
             has_above_since = false;
-            if (implausible) return nullptr;
-            implausible = true;
-            return "implausible";
+            // One run per STEADY stretch; moving past the spread covers a change of side.
+            if (!lost || now_ms - lost_last > REANCHOR_STEADY_MS ||
+                std::max(lost_peak, age_ms) - std::min(lost_floor, age_ms) > REANCHOR_STEADY_MS) {
+                lost = true;
+                lost_since = now_ms;
+                lost_floor = lost_peak = age_ms;
+            } else {
+                lost_floor = std::min(lost_floor, age_ms);
+                lost_peak = std::max(lost_peak, age_ms);
+            }
+            lost_last = now_ms;
+            if (!implausible) {
+                implausible = true;
+                return "implausible";
+            }
+            if (reanchor_hold_ms <= 0 || now_ms - lost_since < reanchor_hold_ms) return nullptr;
+            reanchors++;
+            reanchor_ms = lost_floor;
+            offset_ms += lost_floor;
+            reset();
+            return "reanchor";
         }
         implausible = false;
+        lost = false;
         if (lateness_ms <= tolerance_ms) {
             has_above_since = false;
             timeline = false;
@@ -330,6 +371,38 @@ void finish_episode(const std::shared_ptr<State>& sp, double late_ms, double now
     stall_arm(sp);
 }
 
+/** Move the leg by `policy.reanchor_ms` with one pad offset on the sink's
+ *  upstream peer: onto arrival when it lost its timeline, back onto its own
+ *  stamps when that timeline returns (`restore`) — gst-pipeline-runner.py
+ *  `_reanchor`. The peer re-sends its SEGMENT on its next push, which resets
+ *  the policy; this buffer is still on the old timeline, so it goes. */
+GstPadProbeReturn reanchor(State& st, GstPad* pad, bool restore, double late_ms, double budget_ms) {
+    double corr_ms = st.policy.reanchor_ms;
+    double excess_ms = restore ? late_ms : corr_ms - budget_ms;
+    GstPad* peer = gst_pad_get_peer(pad);
+    bool applied = peer != nullptr;
+    if (applied) {
+        gst_pad_set_offset(peer, gst_pad_get_offset(peer) + (gint64)std::llround(corr_ms * 1e6));
+        gst_object_unref(peer);
+    }
+    std::string what =
+        restore ? fmt("back on its own timeline (%+.0f ms without the re-anchor)", late_ms - corr_ms)
+                : fmt("past the sanity ceiling for %.0f ms (excess %+.0f ms) — the leg lost its timeline",
+                      st.policy.reanchor_hold_ms, excess_ms);
+    std::string done = !applied ? std::string("re-anchor FAILED: the sink pad has no peer")
+                       : restore ? fmt("re-anchor undone (%+.0f ms)", corr_ms)
+                                 : fmt("re-anchored on arrival (%+.0f ms)", corr_ms);
+    log_line(st, what + "; " + done);
+    JsonObject* o = payload_base(st, "reanchored", budget_ms);
+    json_object_set_double_member(o, "excessBeforeMs", round1(excess_ms));
+    json_object_set_double_member(o, "correctionMs", round1(corr_ms));
+    json_object_set_double_member(o, "offsetMs", round1(st.policy.offset_ms));
+    json_object_set_boolean_member(o, "applied", applied);
+    json_object_set_int_member(o, "reanchorCount", st.policy.reanchors);
+    emit_shed_event(o);
+    return GST_PAD_PROBE_DROP;
+}
+
 GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     std::shared_ptr<State> sp = *static_cast<std::shared_ptr<State>*>(user);
     State& st = *sp;
@@ -397,8 +470,12 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
         return GST_PAD_PROBE_DROP;
     }
 
-    const char* verdict = st.policy.observe(late_ms, now_ms, [pad] { return upstream_queued_ms(pad); });
-    if (!verdict) return GST_PAD_PROBE_OK;
+    const char* verdict =
+        st.policy.observe(late_ms, now_ms, [pad] { return upstream_queued_ms(pad); }, budget_ms);
+    // A far-EARLY run held toward a re-anchor drops EVERY buffer, not just the
+    // one that opened it: the first to reach the sink parks it (python parity).
+    GstPadProbeReturn pass = st.policy.holding_early() ? GST_PAD_PROBE_DROP : GST_PAD_PROBE_OK;
+    if (!verdict) return pass;
     std::string v = verdict;
     if (v == "timeline") {
         log_line(st, fmt("retained %.0f ms against a %.0f ms budget for %.0f ms, but the queues upstream are empty "
@@ -416,9 +493,10 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
         JsonObject* o = payload_base(st, "implausible", budget_ms);
         json_object_set_double_member(o, "excessBeforeMs", round1(late_ms));
         emit_shed_event(o);
-        return GST_PAD_PROBE_OK;
+        return pass;
     }
-    if (v != "shed") return GST_PAD_PROBE_OK;
+    if (v == "reanchor" || v == "restore") return reanchor(st, pad, v == "restore", late_ms, budget_ms);
+    if (v != "shed") return pass;
     st.shedding = true;
     st.shed_at = now_ms;
     st.before_ms = late_ms;
@@ -467,6 +545,8 @@ bool start(GstElement* pipe, JsonObject* cfg) {
     st->sink = sink;
     st->policy = Policy{(double)json_get_int(cfg, "toleranceMs", 250), (double)json_get_int(cfg, "holdMs", 5000),
                         (double)json_get_int(cfg, "cooldownMs", 60000), (double)json_get_int(cfg, "sanityMs", 10000)};
+    // The in-place re-anchor only where the shed point IS the sink (python parity).
+    if (name == sink_name) st->policy.reanchor_hold_ms = (double)json_get_int(cfg, "reanchorHoldMs", 0);
     st->keyframe_aligned = json_get_bool(cfg, "keyframeAligned", true);
     st->stall.enabled = st->keyframe_aligned;   // audio legs are not watched
     st->out_pad = gst_element_get_static_pad(el, "src");
