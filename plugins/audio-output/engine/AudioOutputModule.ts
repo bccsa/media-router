@@ -7,7 +7,6 @@ import {
     pulsePinnedStreamProps,
     type PipelineDescription,
     type EngineServices,
-    type ModuleServices,
 } from '@media-router/engine';
 
 /**
@@ -39,13 +38,16 @@ export class AudioOutputModule extends GstPluginBase {
         return this.deviceName || null;
     }
 
-    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
-        await super.onInit(config, services);
-        this.deviceName = (config.device as string) ?? '';
-
+    /**
+     * The device, and its detected format, are read at every start — never
+     * cached from onInit, which a Restart or Enable used to skip (ADR-0029):
+     * a start after a device change must run, watch and re-detect the NEW one.
+     */
+    private readDevice(): void {
+        this.deviceName = (this.config.device as string) ?? '';
         const det = detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
-            channels: config.channels as number | undefined,
-            sampleRate: config.sampleRate as number | undefined,
+            channels: this.config.channels as number | undefined,
+            sampleRate: this.config.sampleRate as number | undefined,
         });
         this.detectedChannels = det.detected.channels;
         this.detectedSampleRate = det.detected.sampleRate;
@@ -54,6 +56,7 @@ export class AudioOutputModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
+        this.readDevice();
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }

@@ -101,7 +101,13 @@ export interface ModuleServices extends EngineServices {
  * Interface that every plugin's engine module must implement.
  */
 export interface PluginModule {
-    /** Initialise with config and engine services. Called once before start. */
+    /**
+     * Initialise with config and engine services. Runs before the first start,
+     * and again before any start while a non-live change is pending — Restart,
+     * Enable or a connection bounce — so the start that clears `pendingRestart`
+     * applies what was saved (ADR-0029). Keep it idempotent; derive state from
+     * settings in `onStart` rather than caching it here.
+     */
     onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void>;
     /** Start the module (begin processing). */
     onStart(): Promise<void>;

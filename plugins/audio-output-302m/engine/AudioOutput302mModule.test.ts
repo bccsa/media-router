@@ -304,3 +304,44 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 100000000);
     });
 });
+
+describe('AudioOutput302mModule — the device is read at every start (ADR-0029)', () => {
+    /** Started on `old-card`, both cards present; `builds` records each build's sink device. */
+    async function startedOnOldCard() {
+        const { module } = makeModule({ sources: 1, deviceChannels: 2 });
+        const present = new Set(['old-card', 'new-card']);
+        module.services.pipeWire.hasDevice = vi.fn((name: string) => present.has(name));
+        await module.onInit({ device: 'old-card' }, module.services);
+        const build = module.buildPipeline.bind(module);
+        const builds: string[] = [];
+        module.buildPipeline = vi.fn((config: Record<string, unknown>) => {
+            builds.push(/pulsesink device=(\S+)/.exec(build(config).pipeline)![1]);
+            return null; // no runner in a unit test
+        });
+        await module.onStart();
+        return { module, present, builds };
+    }
+
+    it('a restart after a device change checks, watches and plays the new device', async () => {
+        const { module, present, builds } = await startedOnOldCard();
+        await module.onStop();
+        present.delete('old-card'); // the operator moved off a dead card
+        module.config.device = 'new-card';
+        await module.onStart();
+        expect(builds).toEqual(['old-card', 'new-card']); // not parked on a hot-plug wait
+        expect(module.getWatchedDeviceName()).toBe('new-card');
+        await module.onStop();
+    });
+
+    it('a replug while a device change is pending rebuilds on the running card', async () => {
+        const { module, present, builds } = await startedOnOldCard();
+        module.config.device = 'new-card'; // saved, restart pending (UR-MGR-006c)
+        present.delete('old-card');
+        await module.deviceWatchdog.tick();
+        present.add('old-card');
+        await module.deviceWatchdog.tick();
+        expect(builds).toEqual(['old-card', 'old-card']);
+        expect(module.getWatchedDeviceName()).toBe('old-card');
+        await module.onStop();
+    });
+});
