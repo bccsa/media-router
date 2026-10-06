@@ -37,6 +37,9 @@ to 0.24 of a core, the video encoder from 0.46 to 0.26, the SRT output from
   the last partial 7-packet group of every access unit back until the next AU
   started, so each downstream tsdemux completed frames one frame late (41 ms
   at 25 fps). Wire slicing to 1316 is the datagram sink's job (rule 2).
+  2026-10-04: the mpegts-muxer muxes with alignment=0 too under the time-sync
+  contract, whatever its stored `alignment` (ADR-0005, the A/V muxer note);
+  there each audio PES's 2–3 packets waited for the next video frame's push.
 - A large `mpegtsmux alignment` (e.g. 128 = 24 KB): holds packets across
   access units, so a 128 kbit/s audio mux emitted once per ~950 ms. Latency
   that scales inversely with bitrate is unacceptable on a bus every producer
