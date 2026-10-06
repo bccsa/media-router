@@ -783,6 +783,13 @@ Your module class extends `GstPluginBase` which handles GStreamer child process 
 onInit(config, services) → onStart() → [running] → onStop() → onDestroy()
 ```
 
+`onInit` runs before the first start, and again before any start while a
+non-live change is pending — Restart, Enable or a connection bounce — so the
+start that clears the pending-restart flag applies what was saved (ADR-0029).
+A stop/start with nothing pending skips it. Keep `onInit` idempotent, and read
+anything derived from settings (a device name, a count) in `onStart`, so every
+start runs on what is saved now.
+
 ### Plugin Architecture Variants
 
 Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three architectural patterns. Pick the one that fits, then copy the matching starter (see "Picking a Starting Point" above).
@@ -1434,11 +1441,6 @@ Plugins bound to a specific hardware device (USB mic, HDMI display, V4L2 camera)
 export class AudioInputModule extends GstPluginBase {
     private deviceName = '';
 
-    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
-        await super.onInit(config, services);
-        this.deviceName = (config.device as string) ?? '';
-    }
-
     // Return the PipeWire device name to watch (or null to disable).
     protected getWatchedDeviceName(): string | null {
         return this.deviceName || null;
@@ -1458,6 +1460,9 @@ export class AudioInputModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
+        // Read at every start, never cached in onInit: a start after a device
+        // change must run (and watch) the new device (ADR-0029).
+        this.deviceName = (this.config.device as string) ?? '';
         await super.onStart();
         this.startDeviceWatchdog(/* initiallyConnected */ true);
     }

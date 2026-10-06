@@ -21,6 +21,8 @@ export class ModuleInstance extends EventEmitter {
     public config: Record<string, unknown>;
     private _running = false;
     private _pendingRestart = false;
+    /** Bumped by every non-live change; a start clears the flag only if none landed mid-start. */
+    private _pendingGen = 0;
     private _initialized = false;
     private services: ModuleServices | null = null;
     /** Bound listener refs for cleanup — prevents EventEmitter leaks across start/stop cycles. */
@@ -110,14 +112,19 @@ export class ModuleInstance extends EventEmitter {
     /** Initialise and start the module. */
     async start(): Promise<void> {
         if (this._running) return;
+        const gen = this._pendingGen;
         try {
-            if (!this._initialized) {
+            // A pending non-live change re-runs onInit (ADR-0029): a plugin may
+            // derive state from config there, and the start that clears the
+            // pending flag must apply what was saved (field 2026-10-04, BCC
+            // Mulanje: a Restart kept the old device and cleared the flag).
+            if (!this._initialized || this._pendingRestart) {
                 await this.plugin.onInit(this.config, this.services ?? undefined);
                 this._initialized = true;
             }
             await this.plugin.onStart();
             this._running = true;
-            this._pendingRestart = false;
+            if (this._pendingGen === gen) this._pendingRestart = false;
         } catch (err) {
             log.error(
                 { err: formatError(err), instanceId: this.instanceId },
@@ -137,10 +144,10 @@ export class ModuleInstance extends EventEmitter {
             // first act). `_running` stays false here, so nothing else will
             // ever release them — every later stop skips this instance.
             await this.releaseResources();
-            // Re-init on the next start attempt: plugins cache settings in
-            // onInit (e.g. audio-output's device name), and a start that
-            // failed on bad config would otherwise retry against the stale
-            // cache forever even after the config is fixed.
+            // Re-init on the next start attempt: a plugin may derive state
+            // from config in onInit, and a start that failed on bad config
+            // would otherwise retry against that stale state forever even
+            // after the config is fixed.
             this._initialized = false;
             throw err;
         }
@@ -259,6 +266,7 @@ export class ModuleInstance extends EventEmitter {
         // Flag pending restart if non-live params changed
         if (hasNonLive) {
             this._pendingRestart = true;
+            this._pendingGen++;
         }
 
         // This module is a route head and its playout offset D moved — push it

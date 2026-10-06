@@ -151,3 +151,66 @@ describe('AudioOutputModule hot-plug recovery', () => {
         await module.onStop();
     });
 });
+
+describe('AudioOutputModule — the device is read at every start (ADR-0029)', () => {
+    // Field 2026-10-04, BCC Mulanje .24: two identical Shure MVX2U interfaces.
+    // Headphone 2's device was changed and the module restarted, but its
+    // remap-sink stayed on Headphone1's card.
+    const OLD = 'alsa_output.usb-Generic_USB_Audio';
+    const NEW = 'alsa_output.usb-Shure_MVX2U-c7555f27.analog-stereo';
+    const sinkDevices = (pw: ReturnType<typeof createModule>['pw']) =>
+        pw.loadRemapSink.mock.calls.map((c: unknown[]) => c[1]);
+    const watched = (module: AudioOutputModule) => (module as any).getWatchedDeviceName();
+
+    it('a restart after a device change rebuilds the remap-sink on the new device', async () => {
+        const { module, pw, services, config } = createModule(true);
+        await module.onInit(config, services);
+        await module.onStart();
+        await module.onStop();
+        config.device = NEW; // the engine's patch writes the shared settings object
+        await module.onStart();
+        expect(sinkDevices(pw)).toEqual([OLD, NEW]);
+        expect(watched(module)).toBe(NEW);
+        await module.onStop();
+    });
+
+    it("re-detects the new device's format, persists it, and meters the new card", async () => {
+        const { module, pw, services, config } = createModule(true);
+        pw.getDeviceInfo.mockImplementation((name: string) =>
+            name === NEW ? { channels: 1, sampleRate: 44100 } : { channels: 2, sampleRate: 48000 },
+        );
+        const updates: unknown[] = [];
+        module.on('configUpdated', (c) => updates.push(c));
+        await module.onInit(config, services);
+        await module.onStart();
+        await module.onStop();
+        config.device = NEW;
+        await module.onStart();
+        expect(pw.loadRemapSink).toHaveBeenLastCalledWith(
+            'spk-test-001',
+            NEW,
+            1,
+            44100,
+            'spk-test-001',
+        );
+        expect(updates).toEqual([{ channels: 1, sampleRate: 44100 }]);
+        const vu = AudioOutputModule.prototype.buildPipeline.call(module, config).pipeline;
+        expect(vu).toContain(`pulsesrc device=${NEW}.monitor`);
+        expect(vu).toContain('audio/x-raw,channels=1');
+        await module.onStop();
+    });
+
+    it('a device change awaiting restart leaves the running module on its card', async () => {
+        const { module, pw, services, config } = createModule(true);
+        await module.onInit(config, services);
+        await module.onStart();
+        config.device = NEW; // pending restart (UR-MGR-006c)
+        expect(watched(module)).toBe(OLD);
+        pw.setPresent(false);
+        await tickWatchdog(module);
+        pw.setPresent(true);
+        await tickWatchdog(module); // a replug rebuilds on the running card
+        expect(sinkDevices(pw)).toEqual([OLD, OLD]);
+        await module.onStop();
+    });
+});

@@ -1855,7 +1855,7 @@ Is module running?
                         Manager UI shows "pending restart" indicator
 ```
 
-**Pending restart state:** When a running module has restart-required changes that have not been applied, the module's runtime state includes `pendingRestart: true`. The manager UI displays a visual indicator (e.g. a restart icon badge on the module node). The pending changes are applied when the user explicitly restarts the module.
+**Pending restart state:** When a running module has restart-required changes that have not been applied, the module's runtime state includes `pendingRestart: true`. The manager UI displays a visual indicator (e.g. a restart icon badge on the module node). The pending changes are applied when the user explicitly restarts the module. The start that applies them re-runs the plugin's `onInit` (ADR-0029), so state a plugin derived from its settings follows too, and it clears the flag only if no further change was saved while it was in flight — such a change stays pending.
 
 **Mixed updates:** If a single config save includes both live-updatable and restart-required changes, the live-updatable changes are applied immediately and the restart-required changes are held as pending.
 
@@ -1863,7 +1863,8 @@ Is module running?
 
 ```typescript
 interface PluginModule {
-    // Called when module instance is created
+    // Called before the first start, and again before any start while a
+    // non-live change is pending (ADR-0029) — keep it idempotent
     onInit(config: ModuleConfig, context: EngineContext): Promise<void>;
 
     // Called when module is started (run command)

@@ -2,7 +2,6 @@ import {
     GstPluginBase,
     backlogShedConfig,
     pulsePinnedStreamProps,
-    type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
 import { buildAudioMixInput } from '@media-router/plugin-audio-302m-core';
@@ -52,6 +51,12 @@ import { buildOutputPlacement } from './outputPlacement.js';
 export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
 
+    /**
+     * The device this start runs on, read at every start (ADR-0029). The
+     * hot-plug check, the watchdog and every build — a replug, a refreshed
+     * description — use it, so a saved but not yet restarted device change
+     * stays pending (UR-MGR-006c) instead of splitting watchdog and sink.
+     */
     private deviceName = '';
     /**
      * Aggregation latency the RUNNING pipeline's mixer arm declared (ns), 0 in
@@ -61,12 +66,8 @@ export class AudioOutput302mModule extends GstPluginBase {
      */
     private mixerLatencyNs = 0;
 
-    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
-        await super.onInit(config, services);
-        this.deviceName = (config.device as string) ?? '';
-    }
-
     async onStart(): Promise<void> {
+        this.deviceName = (this.config.device as string) ?? '';
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
@@ -145,7 +146,8 @@ export class AudioOutput302mModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
 
-        const device = (config.device as string) ?? '';
+        // The device this start runs on; before any start, the configured one.
+        const device = this.deviceName || ((config.device as string) ?? '');
         if (!device) {
             // Broadcast rule: never fall back to a default device.
             this.setHealth('error', 'No audio device configured');

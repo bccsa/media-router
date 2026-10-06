@@ -140,3 +140,43 @@ describe('AudioInputModule hot-plug recovery', () => {
         await module.onStop();
     });
 });
+
+describe('AudioInputModule — the device is read at every start (ADR-0029)', () => {
+    const OLD = 'alsa_input.usb-Shure_MVX2U';
+    const NEW = 'alsa_input.usb-Shure_MVX2U-c7555f27.mono-fallback';
+
+    it('a restart after a device change rebuilds the remap-source on the new device', async () => {
+        const { module, pw, services, config } = createModule(true);
+        await module.onInit(config, services);
+        await module.onStart();
+        await module.onStop();
+        config.device = NEW; // the engine's patch writes the shared settings object
+        await module.onStart();
+        expect(pw.loadRemapSource.mock.calls.map((c: unknown[]) => c[1])).toEqual([OLD, NEW]);
+        expect((module as any).getWatchedDeviceName()).toBe(NEW);
+        await module.onStop();
+    });
+
+    it("re-detects and persists the new device's format", async () => {
+        const { module, pw, services, config } = createModule(true);
+        pw.getDeviceInfo.mockImplementation((name: string) =>
+            name === NEW ? { channels: 2, sampleRate: 44100 } : { channels: 1, sampleRate: 48000 },
+        );
+        const updates: unknown[] = [];
+        module.on('configUpdated', (c) => updates.push(c));
+        await module.onInit(config, services);
+        await module.onStart();
+        await module.onStop();
+        config.device = NEW;
+        await module.onStart();
+        expect(pw.loadRemapSource).toHaveBeenLastCalledWith(
+            'mic-test-001',
+            NEW,
+            2,
+            44100,
+            'mic-test-001',
+        );
+        expect(updates).toEqual([{ channels: 2, sampleRate: 44100 }]);
+        await module.onStop();
+    });
+});

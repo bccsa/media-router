@@ -428,3 +428,45 @@ describe('AudioInput302mModule device links', () => {
         expect(module.linkDeps.dump).not.toHaveBeenCalled();
     });
 });
+
+describe('AudioInput302mModule — the device is read at every start (ADR-0029)', () => {
+    /** Started on `old-in`, both inputs present; `builds` records each build's capture device. */
+    async function startedOnOldInput() {
+        const { module } = makeModule({ deviceChannels: 2 });
+        const present = new Set(['old-in', 'new-in']);
+        module.services.pipeWire.hasDevice = vi.fn((name: string) => present.has(name));
+        module.linkDeps = fakeDeps(2, 2); // no pw-dump / pw-link in a unit test
+        await module.onInit({ device: 'old-in' }, module.services);
+        const build = module.buildPipeline.bind(module);
+        const builds: string[] = [];
+        module.buildPipeline = vi.fn((config: Record<string, unknown>) => {
+            builds.push(/pipewiresrc target-object=(\S+)/.exec(build(config).pipeline)![1]);
+            return null; // no runner in a unit test
+        });
+        await module.onStart();
+        return { module, present, builds };
+    }
+
+    it('a restart after a device change checks, watches and captures the new device', async () => {
+        const { module, present, builds } = await startedOnOldInput();
+        await module.onStop();
+        present.delete('old-in'); // the operator moved off a dead interface
+        module.config.device = 'new-in';
+        await module.onStart();
+        expect(builds).toEqual(['old-in', 'new-in']); // not parked on a hot-plug wait
+        expect(module.getWatchedDeviceName()).toBe('new-in');
+        await module.onStop();
+    });
+
+    it('a replug while a device change is pending rebuilds on the running device', async () => {
+        const { module, present, builds } = await startedOnOldInput();
+        module.config.device = 'new-in'; // saved, restart pending (UR-MGR-006c)
+        present.delete('old-in');
+        await module.deviceWatchdog.tick();
+        present.add('old-in');
+        await module.deviceWatchdog.tick();
+        expect(builds).toEqual(['old-in', 'old-in']);
+        expect(module.getWatchedDeviceName()).toBe('old-in');
+        await module.onStop();
+    });
+});

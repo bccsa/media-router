@@ -1,13 +1,14 @@
 /**
  * Shared helpers for resolving an audio device's channel count and sample
- * rate at module init / start / reconnect time. Used by both audio-input
+ * rate at module start / reconnect time. Used by both audio-input
  * and audio-output to avoid drifting copies of the same probe-and-validate
  * logic.
  *
  * The two phases:
- *   - `detectDeviceFormat` (called once at `onInit`): probe PipeWire,
- *     compute pending config updates, surface a health warning when
- *     detection is partial or the device isn't enumerated.
+ *   - `detectDeviceFormat` (called first in every `onStart`, so a device
+ *     change is re-detected — ADR-0029): probe PipeWire, compute pending
+ *     config updates, surface a health warning when detection is partial or
+ *     the device isn't enumerated.
  *   - `resolveDeviceFormat` (called at `onStart` / reconnect): re-probe,
  *     fall back to the persisted config, and refuse to proceed when
  *     channels or sample rate are still unknown — the previous silent
@@ -31,7 +32,7 @@ export interface DeviceDetection {
 }
 
 /**
- * Initial probe at module init. Returns whatever PipeWire reports plus
+ * Probe at module start. Returns whatever PipeWire reports plus
  * any config updates and a health warning when info is missing.
  */
 export function detectDeviceFormat(

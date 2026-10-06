@@ -3,7 +3,6 @@ import {
     buildBusSink,
     pulsePinnedStreamProps,
     StreamPortLinker,
-    type ModuleServices,
     type PipelineDescription,
     type StreamLinkDeps,
     type StreamLinkResult,
@@ -66,6 +65,7 @@ import {
 export class AudioInput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
 
+    /** The device this start runs on, read at every start — see audio-output-302m. */
     private deviceName = '';
     /** Device links for the pipeline `buildPipeline` last described; null = none to make. */
     private linkPlan: StreamLinkSpec | null = null;
@@ -79,12 +79,8 @@ export class AudioInput302mModule extends GstPluginBase {
         onError: (err) => this.log.warn({ err }, 'Could not link the capture stream to its device'),
     });
 
-    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
-        await super.onInit(config, services);
-        this.deviceName = (config.device as string) ?? '';
-    }
-
     async onStart(): Promise<void> {
+        this.deviceName = (this.config.device as string) ?? '';
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
@@ -154,7 +150,8 @@ export class AudioInput302mModule extends GstPluginBase {
         this.linkPlan = null;
         if (!router) return null;
 
-        const device = (config.device as string) ?? '';
+        // The device this start runs on; before any start, the configured one.
+        const device = this.deviceName || ((config.device as string) ?? '');
         if (!device) {
             this.setHealth('error', 'No audio device configured');
             return null;

@@ -50,7 +50,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     });
     /** PulseAudio module ID for the null-sink created on start. */
     protected paModuleId: number | null = null;
-    /** Per-instance logger — initialized in onInit with the instance ID. */
+    /** Per-instance logger — created by the first onInit with the instance ID. */
     protected log: ReturnType<typeof createLogger> = defaultLog;
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */
@@ -59,7 +59,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         this.config = config;
         this.services = services ?? null;
-        if (services?.instanceId) {
+        // Once per instance: onInit re-runs after a pending change (ADR-0029),
+        // and every createLogger pipes a stream into stderr that is never released.
+        if (services?.instanceId && this.log === defaultLog) {
             this.log = createLogger(`Plugin:${services.instanceId}`);
         }
     }
