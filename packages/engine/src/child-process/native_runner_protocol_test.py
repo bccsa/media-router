@@ -9,6 +9,7 @@ Run:  python3 native_runner_protocol_test.py
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -47,8 +48,8 @@ def check(name, cond):
 class RunnerProc:
     """One runner process: commands in, parsed events + log lines out."""
 
-    def __init__(self):
-        env = dict(os.environ, MR_PLUGINS_DIR=_PLUGINS, MALLOC_ARENA_MAX="2")
+    def __init__(self, extra_env=None):
+        env = dict(os.environ, MR_PLUGINS_DIR=_PLUGINS, MALLOC_ARENA_MAX="2", **(extra_env or {}))
         self.proc = subprocess.Popen([_BIN], stdin=subprocess.PIPE, stderr=subprocess.PIPE,
                                      stdout=subprocess.DEVNULL, env=env, text=True, bufsize=1)
         self.events = []
@@ -783,6 +784,64 @@ def test_video_gates():
         r.kill()
 
 
+# --------------------------------------------------------------------------- L: live ts-offset resync
+def test_ts_offset_resync():
+    """A live ts-offset CHANGE on an audio sink marks the next buffer DISCONT,
+    and GstAudioBaseSink re-positions on it ("resync after discont/resync")
+    instead of aligning a change under 40 ms away; the same value re-pushed
+    marks nothing; a sink without `alignment-threshold` (a video sink) is never
+    marked. Read from the gst debug log, which prints each buffer's flags as it
+    enters the sink's chain function, after every pad probe. The audio sink is
+    alsasink on ALSA's `null` PCM; skipped where that does not open.
+    (The python twin's rules: gst_ts_offset_resync_test.py.)"""
+    chain = re.compile(r"<sink:sink> calling chainfunction .* flags (0x[0-9a-f]+)")
+    for sink, audio in (("alsasink device=null", True), ("fakesink", False)):
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        log = os.path.join(tmp, "gst.log")
+        r = RunnerProc({"GST_DEBUG": "GST_SCHEDULING:5,audiobasesink:5", "GST_DEBUG_FILE": log,
+                        "GST_DEBUG_NO_COLOR": "1"})
+
+        def push(req_id, ns):
+            """set_property ts-offset; returns (DISCONT buffers into the sink,
+            audio resyncs) logged over the next 0.5 s — None if none arrived."""
+            mark = os.path.getsize(log)
+            r.send({"cmd": "set_property", "id": req_id, "element": "sink", "property": "ts-offset", "value": ns})
+            check(f"L {sink}: push {req_id} acked", r.wait_event(ev_is("property_set", id=req_id)) is not None)
+            time.sleep(0.5)
+            with open(log, errors="replace") as f:
+                f.seek(mark)
+                text = f.read()
+            flags = [int(m.group(1), 16) for m in chain.finditer(text)]
+            if not flags:
+                return None
+            return sum(1 for fl in flags if fl & 0x40), text.count("resync after discont/resync")
+
+        try:
+            r.wait_event(ev_is("ready"))
+            # Not silence: audiotestsrc flags silent buffers GAP, which an audio
+            # sink renders as a gap event, before its DISCONT check.
+            r.send({"cmd": "start", "timeSyncContract": True,
+                    "pipeline": f"audiotestsrc is-live=true samplesperbuffer=480 ! queue ! {sink} name=sink"})
+            if r.wait_event(ev_is("state_change", state="playing"), timeout=5) is None:
+                print(f"SKIP L — {sink} does not reach PLAYING here")
+                continue
+            time.sleep(0.3)
+            if audio:
+                check("L audio sink: a +20 ms change marks the next buffer and resyncs once",
+                      push("l1", 20_000_000) == (1, 1))
+                check("L audio sink: the same value re-pushed marks nothing", push("l2", 20_000_000) == (0, 0))
+                check("L audio sink: a decrease is applied the same way", push("l3", 0) == (1, 1))
+            else:
+                check("L video-like sink: a change marks nothing", push("l1", 20_000_000) == (0, 0))
+            check(f"L {sink}: no error", not r.has_event(ev_is("error")))
+            check(f"L {sink}: exits 0", r.stop_and_wait() == 0)
+        finally:
+            r.kill()
+            for f in os.listdir(tmp):
+                os.unlink(os.path.join(tmp, f))
+            os.rmdir(tmp)
+
+
 test_plain_pipeline()
 test_producer_edge()
 test_consumer_data_wait()
@@ -792,6 +851,7 @@ test_shed_refusals()
 test_runner_hooks()
 test_subtitle_bridge_hook()
 test_video_gates()
+test_ts_offset_resync()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

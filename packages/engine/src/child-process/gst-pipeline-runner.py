@@ -2261,12 +2261,48 @@ def handle_set_property(data):
             value = bool(value)
 
         element.set_property(prop, value)
+        if prop == "ts-offset" and value != current:
+            _resync_audio_sink(element)
         result = {"event": "property_set", "element": element_name, "property": prop, "value": value}
         if req_id:
             result["id"] = req_id
         emit_event(result)
     except Exception as e:
         emit_command_error(req_id, f"set_property failed: {e}")
+
+def _resync_audio_sink(sink):
+    """Make a live `ts-offset` CHANGE on an audio sink apply from the next buffer.
+
+    GstAudioBaseSink writes each buffer straight after the previous one while
+    the timestamps drift by less than `alignment-threshold` (40 ms), so a
+    smaller change never applied while the stream ran, and a larger one only
+    after `discont-wait` (~1 s). A DISCONT buffer is always re-positioned from
+    its own timestamp (gstaudiobasesink.c render: "resync after discont"), at
+    once: one gap or overlap, after which the leg plays where its stamps and
+    the new value put it. The move is the change minus whatever offset the
+    sink had aligned away before (skew corrections, stamp wander; < 40 ms),
+    not exactly the change (ADR-0005). Only a real change gets here, so a
+    re-push of the same value (route-D fan-out, sticky replay) marks nothing.
+
+    One-shot BUFFER probe, appended after the backlog shedder's on the same
+    pad: a buffer the shedder drops never reaches it (gstpad.c skips later
+    probes once one returns DROP), so it marks the first buffer the sink gets.
+    Flags are set in place, as the stamp probe sets PTS. Video sinks have no
+    `alignment-threshold` and apply ts-offset per buffer already: untouched.
+    """
+    if sink.find_property("alignment-threshold") is None:
+        return
+    pad = sink.get_static_pad("sink")
+    if pad is None:
+        return
+
+    def _mark_discont_once(_pad, info):
+        buf = info.get_buffer()
+        if buf is not None:
+            buf.set_flags(Gst.BufferFlags.DISCONT)
+        return Gst.PadProbeReturn.REMOVE
+
+    pad.add_probe(Gst.PadProbeType.BUFFER, _mark_discont_once)
 
 def handle_get_property(data):
     """Get a property from a named element."""

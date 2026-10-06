@@ -1104,6 +1104,143 @@ failure decision 1 exists to remove.
   the steady offset (59 ms). Measure with a second fan-out client tap, never from
   a single renderWatch line.
 
+## Implementation notes (live `ts-offset` changes on audio sinks, 2026-10-04)
+
+A live `ts-offset` push to an audio sink was either never applied or applied
+one to five seconds late, so the per-sink trims and the route head's live D
+push did not do what they said on the audio legs.
+
+- **Field, BCC Mulanje 10.37.7.24 (Translation Station, Pi 5).** Headphone 1
+  is an `audio-output-302m` leg (`pulsesink` → Shure MVX2U) behind an
+  `audio-transcoder`. During an A/B of its sink budget its `lipSyncMs` trim
+  took the sink's `ts-offset` from 0 to 160 ms in four 40 ms steps; against
+  the decoder leg (Headphone 2) it moved 121.8 ms (141.5 ms ahead → 19.7 ms
+  ahead), consistent with one step absorbed. A trim under 40 ms, which the
+  schema's "keep to tens of ms" invites, is absorbed outright (below).
+  Controls on the same leg with the stock `set_property` (2026-10-05, three
+  rounds): ±10 ms pushes never applied (watched up to 25 s); 40 ms and more
+  landed 1.1–5 s late (+40 ms: +47.0 ms after 1.1 s and +41.1 ms after 2.4 s,
+  once nothing in the 19.8 s watched; −40 ms: −41.7 ms after ~5 s; −50 ms:
+  −51.9, −44.2 and −59.4 ms after 1.1–1.3 s), except one +40 ms that applied
+  after 132 ms on a leg that was underrunning (below).
+- **Mechanism (`gstaudiobasesink.c`, GStreamer 1.28).** `render` maps a
+  buffer's timestamp plus `ts-offset` and the sink latency, through the
+  skew-slaving clock calibration, to a ring position: its *computed* position.
+  Within `alignment-threshold` (40 ms) of where the previous buffer ended it
+  writes the buffer straight after the previous one instead (`get_alignment`,
+  "align with prev sample"); a jump of 40 ms or more resyncs only after
+  `discont-wait` (1 s), unless the leg is underrunning: when aligning a later
+  position would write behind the read segment it resyncs at once, whatever
+  the size (`:1759-1761`). A live push moves every following computed
+  position by the change, so under 40 ms it was aligned away for as long as
+  the stream stayed continuous, and 40 ms or more landed 1–5 s late. A DISCONT
+  buffer skips the alignment ("always resync after a discont") and is written
+  at its computed position. The same alignment absorbs most of the sink's
+  skew-slaving corrections (each moves the clock calibration by the average
+  skew once that passes half of the 40 ms `drift-tolerance`, so ~20 ms at a
+  time; on the rig a burst of them in the first second after every start) and
+  the input stamps' wander, so a continuous leg *carries* an offset of up to
+  40 ms from its computed position (logged per buffer as `align` = previous
+  end − computed position).
+  Reproduced with both runners on the contract's sink shape (`pulsesink
+  sync=true provide-clock=false slave-method=skew`, GStreamer 1.28.2 arm64, a
+  PulseAudio null sink, 480-sample buffers), reading the sink's ring write
+  position: +20, +10 and −10 ms pushes never moved it within 1.6 s; +40 ms
+  moved it ~0.95 s later by +60 ms (the absorbed changes folded in) on the
+  native runner, and not within 1.6 s on the python one.
+- **Both runners now resync an audio sink on a real change**
+  (`handle_set_property` → `_resync_audio_sink` in `gst-pipeline-runner.py`,
+  `resync_audio_sink` in `commands.cpp`). When `set_property` gives
+  `ts-offset` a value other than the one the element holds, on an element that
+  has `alignment-threshold` (every `GstAudioBaseSink`: `pulsesink`,
+  `alsasink`, …), a one-shot BUFFER probe on its sink pad flags the next
+  buffer DISCONT and removes itself.
+  - That buffer is written at its computed position (the resync a change of
+    40 ms or more got after `discont-wait`, now at once and for every real
+    change) and the buffers after it align behind it: one gap (increase) or
+    overlap (decrease), one click.
+  - **The move heard is the change minus the offset the leg carried**, not
+    exactly the change. That offset is what the sink had aligned away since
+    the leg's last resync, and the one buffer it resyncs on adds its own stamp
+    wander. Rig, both runners, with the stamps stepped 15 ms earlier
+    (`audiotestsrc timestamp-offset`) and aligned away first: +10 ms moved
+    the write position −5 ms; with nothing carried, ±10 and ±40 ms moved it
+    by exactly the change. Field, .24 Headphone 1 (2026-10-05, three
+    verification rounds on the same native build, each move read before and
+    after inside one capture, an increase also from its exact-zero hole):
+    later pushes landed 0.0–5.7, 2.5–5.0 and 1.0–8.4 ms from the change
+    (rounds 1–3; the python twin 2.8–3.8 ms), so +10 ms moved it +5.2 to
+    +15.5 ms and +40 ms +35.1 to +47.2 ms. The first push after a start
+    landed 21.1 ms (−11.1 ms for +10), 3.8 and 9.4 ms, and 3.4 ms (+13.4 ms
+    for +10) from the change, 12.1 ms on the python twin, and 22.0 ms on the
+    decoder leg (−2.0 ms for +20). The sink's own resync scatters the same
+    way: the stock controls' 40 ms and larger moves landed 1.1–9.4 ms off.
+  - **So the value, not the history, places the leg**, deliberately. After a
+    push it plays at its computed position (`rt + ts-offset + latency`, what
+    the backlog shedder's lateness assumes), within the stamp wander of the
+    buffer it resynced on (landings at one value spread 2.3–7.9 ms on .24),
+    instead of up to 40 ms either side of it. Trims back to a value return
+    the leg to that value's position, not to where it sat before (.24: a
+    round of trims back to 200 ended 4.7–11.6 ms from where the leg began,
+    over the three rounds; once 8.7 ms, about the 9.4 ms its first push
+    dropped). Moving it by exactly the change (shifting the sink's protected
+    `next_sample`, or inserting/dropping the change in samples) would keep the
+    carried offset: the leg would stay up to 40 ms off what its setting says,
+    by an amount its history decides. It would also need libgstaudio in the
+    native runner, and `next_sample` is not writable through PyGObject.
+  - The same value re-pushed marks nothing, so the route-D fan-out to a leg
+    whose value did not move and the sticky replay on PLAYING cost nothing. A
+    replay that does differ from the pipeline string now applies at once,
+    where a sub-40 ms one was absorbed for the incarnation's life.
+  - The probe is appended after the backlog shedder's, which arms at start on
+    the same pad, and GStreamer skips later probes for a buffer an earlier one
+    dropped: a push mid-shed marks the first buffer that reaches the sink.
+  - Several changes before the next buffer mark that one buffer. A mark that
+    lands on a GAP buffer still applies: the sink renders the gap and resyncs
+    on the next buffer.
+  - Video sinks have no `alignment-threshold` and already apply `ts-offset`
+    per buffer: untouched.
+  - Every applied change is now audible, which is why the audio trims and the
+    route-head D fields are debounced (decision 4, amended 2026-10-04): a
+    slider drag or a typed value lands as one change.
+- **Verification.** `gst_ts_offset_resync_test.py` (python runner, in
+  process, with an audio-sink stand-in that records what it renders) and
+  `native_runner_protocol_test.py` case L (native runner, `alsasink` on ALSA's
+  `null` PCM, buffer flags read from the gst debug log after every probe): one
+  DISCONT and one "resync after discont/resync" per change, none for a
+  re-push, none on a `fakesink`. Both fail against the previous runners.
+  Device, .24 (2026-10-05, three rounds, before/after inside one continuous
+  capture around a write fired on the box): every real change applied after
+  the engine journaled the patch, Headphone 1 in 37–101, 33–107 and 32–112 ms
+  (rounds 1–3; 32–103 ms on the python twin) and the decoder leg in
+  116–143 ms, as one discontinuity (an exact-zero hole as long as an
+  increase, an overlap for a decrease) and nothing in the 2.5 s after it;
+  re-pushes, and decoder trims that leave its `ts-offset` at 0, moved
+  nothing; no restarts, warnings or added dropouts. Where each move landed
+  against the change is above, not to the ±1 ms an exact shift would give.
+  Compare offsets only inside one capture (see "Open" below).
+- **Still absorbed.** A branch-alignment correction under 40 ms
+  (`alignBranchesToStamps`) moves the timeline rather than `ts-offset`, and
+  the audio sink aligns it away the same way; follow-up: mark the same DISCONT
+  there. Between pushes a leg is at its computed position only to within
+  `alignment-threshold` (the carried offset above), not to the sample.
+- **Open, not from the resync.** With no `ts-offset` change, the offset
+  between the two .24 legs also stepped by 22–46 ms, mostly 1–8 s after the
+  measurement tap linked, on the a0f6f13c baseline as well as on this
+  change's installs (2026-10-05, baseline: decoder skips of +24.2 ms 3.2 s
+  and +37.0 ms 4.9 s after the link, with 15 and 170 decoder late-audio
+  holes in those captures). Cross-correlating the legs cannot tell one leg
+  moving later from the other skipping forward; a splice in each leg's own
+  waveform (LPC prediction-error spikes) can. Every step it placed was a leg
+  skipping forward, i.e. losing queued audio, never one playing later: three
+  times the decoder leg (25.7–35.0 ms), once Headphone 1 (46.4 ms). The
+  "stale audio" in the gap was the content the other leg skipped. The leg
+  that skipped had no `ts-offset` change before it, so the resync is not
+  involved, and a push on the other leg leaves the skip in place (a Headphone
+  1 push 4.2 s after a 35.0 ms decoder skip moved +6.2 ms for +10). Since
+  the baseline does it too, it is independent of this change; most likely an
+  artefact of the measurement tap (TodoNotes).
+
 ## Implementation notes (Stage 3f — the source-timeline conditioner; the .103 vMix CBR scramble)
 
 **Amends Decision 2.** Decision 2 said a producer *re-anchors* on a source

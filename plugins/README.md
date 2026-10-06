@@ -1572,6 +1572,22 @@ element from its own control loop and assumes a fresh element state after a
 restart (e.g. the audio-dynamics ducker's `volume`), re-seed explicitly in
 `onPipelinePlaying()` — the replayed value wins otherwise.
 
+**`ts-offset` on an audio sink applies at once.** When the value really
+changes on an element with `alignment-threshold` (every `GstAudioBaseSink`:
+`pulsesink`, `alsasink`…), both runners flag the next buffer DISCONT, so the
+sink re-positions on it: one audible gap or overlap, after which the leg plays
+where its stamps and the new value put it. Without that the sink aligned a
+change under 40 ms away for good and applied a bigger one 1–5 s late. The move
+heard is not exactly the change: the resync also drops whatever offset (under
+40 ms) the leg had drifted from that position (skew corrections and stamp
+wander the sink aligned away; on a Pi 5 leg 0–8.4 ms for later trims, up to
+22 ms for the first trim after a start), so a +10 ms trim can even move it
+earlier, and trims back to a value return the leg to that value's position,
+within a few ms, rather than to where it sat before. Setting an unchanged
+value does nothing, so the sticky replay and idempotent re-pushes are free;
+video sinks are untouched. See ADR-0005, "live `ts-offset` changes on audio
+sinks".
+
 #### Get Element Property
 
 Read a property value from a running element:

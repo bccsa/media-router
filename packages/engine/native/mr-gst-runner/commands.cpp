@@ -44,6 +44,23 @@ GstPadProbeReturn throughput_probe_cb(GstPad*, GstPadProbeInfo* info, gpointer u
     return GST_PAD_PROBE_OK;
 }
 
+GstPadProbeReturn mark_discont_once_cb(GstPad*, GstPadProbeInfo* info, gpointer) {
+    GstBuffer* buf = gst_buffer_make_writable(GST_PAD_PROBE_INFO_BUFFER(info));
+    GST_BUFFER_FLAG_SET(buf, GST_BUFFER_FLAG_DISCONT);
+    GST_PAD_PROBE_INFO_DATA(info) = buf;
+    return GST_PAD_PROBE_REMOVE;
+}
+
+/** A live ts-offset change on an AUDIO sink applies from the next buffer: the
+ *  twin of `_resync_audio_sink` in gst-pipeline-runner.py (why: see there). */
+void resync_audio_sink(GstElement* el) {
+    if (!g_object_class_find_property(G_OBJECT_GET_CLASS(el), "alignment-threshold")) return;
+    GstPad* pad = gst_element_get_static_pad(el, "sink");
+    if (!pad) return;
+    gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, mark_discont_once_cb, nullptr, nullptr);
+    gst_object_unref(pad);
+}
+
 }  // namespace
 
 void Runner::dispatch(JsonObject* data) {
@@ -91,7 +108,11 @@ void Runner::handle_set_property(JsonObject* data) {
         gst_object_unref(el);
         return;
     }
+    gint64 before = 0;
+    bool ts_offset = prop == "ts-offset" && ps->value_type == G_TYPE_INT64;
+    if (ts_offset) g_object_get(el, "ts-offset", &before, nullptr);
     g_object_set_property(G_OBJECT(el), prop.c_str(), &gv);
+    if (ts_offset && g_value_get_int64(&gv) != before) resync_audio_sink(el);
     g_value_unset(&gv);
     gst_object_unref(el);
 
