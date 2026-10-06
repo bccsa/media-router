@@ -221,6 +221,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                 sources,
                 output: endpoint,
                 alignment,
+                timeSyncContract: this.services?.timeSyncContract === true,
                 queueLeaky,
                 queueDepthMs,
                 videoParserBypass: config.videoParserBypass === true,

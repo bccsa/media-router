@@ -58,7 +58,7 @@
                     },
                     "default": 7,
                     "title": "TS Alignment",
-                    "description": "Keep SRT-aligned for SRT/RIST/UDP. Continuous only for v1-style byte-flow receivers."
+                    "description": "Only used with engine time sync off; otherwise every PES leaves at once and outputs size their own packets."
                 },
                 "queueLeaky": {
                     "type": "boolean",
@@ -80,7 +80,7 @@
                     "maximum": 5000,
                     "default": 500,
                     "title": "Queue Depth",
-                    "description": "Non-leaky: A/V skew absorbed before back-pressure. Leaky: backlog before shedding.",
+                    "description": "Non-leaky: backlog held before back-pressure. Leaky: backlog before shedding.",
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",

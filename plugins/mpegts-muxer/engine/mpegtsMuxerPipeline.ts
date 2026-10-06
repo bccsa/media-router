@@ -50,6 +50,7 @@ import {
     MuxerPidConflictError,
     type MuxedStreamSlot,
 } from './muxerSlots.js';
+import { muxTimingProps } from './muxTiming.js';
 
 export * from './muxerInputs.js';
 export * from './muxerSlots.js';
@@ -57,8 +58,8 @@ export * from './muxerSlots.js';
 /**
  * Per-input stall watch (5 s, in ms). A silent-but-connected input —
  * producer alive but its source dark — is otherwise invisible: unixfdsrc
- * posts no bus error, so the muxer's aggregator quietly stalls its output
- * with no signal to trigger `restartOnError`. The runner-side watch
+ * posts no bus error, so its stream (off-contract: the whole output) quietly
+ * stops with no signal to trigger `restartOnError`. The runner-side watch
  * (`PipelineDescription.inputStallWatch`, one entry per input source) turns
  * the silence into a tagged error event, so a dark source recovers via the
  * normal restart path. An input that never delivered at all is waited for,
@@ -70,18 +71,21 @@ const INPUT_STALL_TIMEOUT_MS = 5_000;
 
 /**
  * Default bound (ms) on each per-pad NON-leaky input queue (`queueLeaky`
- * off, the default). Must exceed the worst legitimate inter-stream skew the
- * aggregator waits out (audio transcode chain ~200 ms, demuxer audio pacing
- * 160 ms, B-frame DTS delay ~120 ms — measured on gate01); 500 ms covers all
- * with margin. This is a runaway safety cap, not a latency budget:
- * steady-state occupancy equals the skew, and the cap only bites when a
- * sibling input genuinely stalls — where the stall watchdog (above) is the
- * actual recovery. Operator-tunable via `queueDepthMs`.
+ * off, the default). A runaway safety cap, not a latency budget: under the
+ * contract the aggregator waits for no input (muxTiming.ts), so occupancy is
+ * ~0 and the cap bites only when the mux output stalls. Off-contract it must
+ * exceed the worst inter-stream skew the aggregator waits out (audio transcode
+ * chain ~200 ms, demuxer audio pacing 160 ms, B-frame DTS delay ~120 ms —
+ * measured on gate01; occupancy equals the skew); 500 ms covers all with
+ * margin. A sibling that genuinely stalls is the stall watchdog's (above).
+ * Operator-tunable via `queueDepthMs`.
  */
 const MUX_INPUT_QUEUE_MS = 500;
 
 /**
- * Per-use-case input queue behaviour (operator-selected via `queueLeaky`):
+ * Per-use-case input queue behaviour (operator-selected via `queueLeaky`).
+ * Under the contract no stream is held for another (muxTiming.ts), so neither
+ * shape adds latency and only an output stall fills them. Off-contract:
  *
  * - non-leaky (default) — zero frame shedding: the leading stream is held
  *   for up to `queueDepthMs` while the aggregator waits out inter-stream
@@ -132,15 +136,16 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
     // output buffer in the 6.5 s after one of two inputs was killed). With no
     // watch that stall is silent and unrecoverable. The watch turns it into a
     // tagged runner error → `restartOnError` rebuild, which is the only
-    // available recovery: the healthy inputs are already frozen by the stall,
-    // so the restart disrupts nothing that was still flowing. The restart does
-    // loop while a source that WAS flowing stays permanently dark — making the
-    // mux survive a dead input without a rebuild needs per-pad
-    // keepalive/fallback (a real feature, not a tuning knob), since mpegtsmux
-    // has no drop-dead-pad mode. An input that never delivered is different:
-    // it has no mux pad yet (pads are requested on tsdemux pad-added), so the
-    // mux runs on the fed inputs and the watch only warns (see
-    // gst_input_stall_watch.py).
+    // available recovery: the healthy inputs are already frozen by the stall.
+    // Under the contract they keep flowing past a dark input (muxTiming.ts),
+    // so the rebuild costs them a brief gap and buys the returning input a
+    // fresh branch alignment. The restart does loop while a source that WAS
+    // flowing stays permanently dark — making the mux survive a dead input
+    // without a rebuild needs per-pad keepalive/fallback (a real feature, not
+    // a tuning knob), since mpegtsmux has no drop-dead-pad mode. An input that
+    // never delivered is different: it has no mux pad yet (pads are requested
+    // on tsdemux pad-added), so the mux runs on the fed inputs and the watch
+    // only warns (see gst_input_stall_watch.py).
     // `tsdemux latency=0` removes its default 700 ms input buffer — the
     // per-pad leaky queue downstream provides flow control.
     return `${src} ! tsdemux latency=0 name=demux_${branchId}`;
@@ -155,7 +160,11 @@ export function inputBusSrcName(branchId: string): string {
 export interface MuxerPipelineInputs {
     sources: UdpInputSource[];
     output: { port: number };
+    /** The operator's `alignment` — applied only off-contract (muxTiming.ts). */
     alignment: number;
+    /** Engine-wide time-sync contract on (`services.timeSyncContract`): the
+     *  aggregator neither waits nor holds packets back (muxTiming.ts). */
+    timeSyncContract?: boolean;
     /** Input queue behaviour (defaults to false = non-leaky). See the
      *  queueLeaky doc above MUX_INPUT_QUEUE_MS. */
     queueLeaky?: boolean;
@@ -210,12 +219,12 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // Per-pad input queue shape is the operator's stability-vs-latency call —
     // see the queueLeaky doc above MUX_INPUT_QUEUE_MS for the two behaviours
     // and the gate01 measurements (leaky queues shed 11% of audio under a
-    // ~200 ms inter-stream skew, because mpegtsmux back-pressures the LEADING
-    // pad by the skew on every buffer; non-leaky lost zero). The queue sits
-    // AFTER the runner-injected parser so back-pressure/drops land on whole
-    // access units, not mid-NAL. Dead-input recovery is mode-independent: a
-    // dark source's own udpsrc timeout (above) is poll-based and fires
-    // regardless of downstream back-pressure.
+    // ~200 ms inter-stream skew, because the off-contract budget
+    // back-pressures the LEADING pad by the skew on every buffer; non-leaky
+    // lost zero). The queue sits AFTER the runner-injected parser so
+    // back-pressure/drops land on whole access units, not mid-NAL. Dead-input
+    // recovery is mode-independent: a dark source's own udpsrc timeout
+    // (above) is poll-based and fires regardless of downstream back-pressure.
     const depth = Math.max(100, Math.min(5000, input.queueDepthMs ?? MUX_INPUT_QUEUE_MS));
     // Byte cap next to the time bound (engine `queueBounds.ts`, ADR-0015):
     // these pads carry compressed ES only, and a time bound is blind to stalled
@@ -255,20 +264,12 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         slots.find((s) => s.media === 'audio') ??
         slots[0];
     const progEntries = slots.map((s) => `${muxSinkPadName(s.pid)}=(int)1`).join(',');
-    const muxProps =
-        `alignment=${input.alignment}` +
-        ` prog-map="program_map,${progEntries},PCR_1=${muxSinkPadName(pcrSlot.pid)}"`;
-
-    // TEST (2026-07-16, sporadic-drop hunt): give the aggregator a real
-    // latency budget. Measured in the live muxer: buffers arrive ~1s late vs
-    // the pipeline clock (cross-process bus hides upstream latency, so the
-    // latency query reports ~0) — with latency=0 the aggregator's deadline is
-    // always already expired, so it never waits to interleave pads by PTS and
-    // muxes by arrival; upstream jitter then lands as backward-DTS timeline
-    // jolts ("ignoring DTS going backward") and invalid PTS<DTS audio PES the
-    // receiver discards in bursts. 1.2s covers the observed ~1.07s lateness.
-    const muxer =
-        'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 ' + muxProps;
+    const progMap = `prog-map="program_map,${progEntries},PCR_1=${muxSinkPadName(pcrSlot.pid)}"`;
+    // Under the contract the aggregator waits for nothing and holds no packet
+    // back, so an audio PES never waits for the next video frame; off-contract
+    // the 2026-07-16 budget is unchanged. See muxTiming.ts.
+    const timing = muxTimingProps(input.timeSyncContract === true, input.alignment);
+    const muxer = `mpegtsmux name=mux ${timing} ${progMap}`;
     const sink = buildBusSink(input.output.port);
     // No leaky queue between mpegtsmux and the bus tee: any drop here is a
     // mid-stream TS slice (part of a frame's payload) and corrupts decode
@@ -305,10 +306,11 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             };
             if (media === 'video' && input.videoParserBypass) route.parser = 'none';
             // A cue stream has one buffer per cue: without GAP keepalive the
-            // aggregator holds the video up to latency + min-upstream-latency
-            // (2.4 s here) whenever the pad is idle, then bursts it (the .108
-            // 0.5 fps, 2026-09-16). The hook also restamps the branch to the
-            // mux position on every buffer — see MuxRoute.sparse.
+            // aggregator holds the video up to its budget (latency +
+            // min-upstream-latency, 2.4 s off-contract) whenever the pad is
+            // idle, then bursts it (the .108 0.5 fps, 2026-09-16). The hook
+            // also restamps the branch to the mux position on every buffer —
+            // see MuxRoute.sparse.
             if (media === 'klv' || media === 'subtitle') route.sparse = true;
             // An operator language appends a `taginject` whose language-code tag
             // mpegtsmux turns into the stream's ISO 639 PMT descriptor — the

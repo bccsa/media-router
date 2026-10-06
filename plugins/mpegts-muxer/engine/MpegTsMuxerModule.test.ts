@@ -791,6 +791,24 @@ describe('MpegTsMuxerModule', () => {
             });
         });
 
+        it('muxes without waiting under the engine time-sync contract, ignoring the stored alignment', () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'input-0', port: 40001 },
+                    { sinkPortId: 'input-1', port: 40002 },
+                ],
+            });
+            (module as any).config = { inputs: [{}, {}], alignment: 7 };
+            const legacy = module.buildPipeline((module as any).config)!;
+            expect(legacy.pipeline).toContain('min-upstream-latency=1200000000 alignment=7');
+            (module as any).services.timeSyncContract = true;
+            const contract = module.buildPipeline((module as any).config)!;
+            expect(contract.pipeline).toContain(
+                'mpegtsmux name=mux latency=0 alignment=0 pcr-interval=1800 prog-map=',
+            );
+            expect(contract.pipeline).not.toContain('min-upstream-latency');
+        });
+
         it('asks the runner to anchor every branch to the producers stamps and hands it one stall watch per input', () => {
             const { module } = makeModule({
                 sources: [

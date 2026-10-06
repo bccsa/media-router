@@ -1930,9 +1930,20 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription {
     const endpoint = this.services?.mediaRouter?.assignBusChannel(instanceId);
     const busSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink sync=false';
 
-    return { pipeline: `... ! mpegtsmux latency=0 alignment=7 ! ${busSink}` };
+    return { pipeline: `... ! mpegtsmux latency=0 alignment=0 ! ${busSink}` };
 }
 ```
+
+Mux with `latency=0 alignment=0`. Under the time-sync contract the egress
+coalesces each push into one bus buffer and every wire output re-slices
+(ADR-0011), so `alignment=7` only holds the tail of each PES until the next
+one arrives. On a multi-input mux, any latency budget the inputs' lateness fits
+in makes the aggregator emit in lock-step, so the earliest stream waits for
+the laggiest (the mpegts-muxer's audio waited for each video frame:
+`plugins/mpegts-muxer/engine/muxTiming.ts`). Give a multi-input mux
+`pcr-interval=1800` as well, for a PCR on every video frame. The egress
+conditioner rewrites each PCR from the lowest recent PTS of any stream, and at
+the default 40 ms interval its steps passed ISO 13818-1's 100 ms.
 
 For per-output-port allocation (e.g. MPEG-TS demuxer with N outputs), pass a `portId`:
 

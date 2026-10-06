@@ -134,7 +134,9 @@ to ride a muxed program to reach a remote site, so the muxer must carry them.
   arrival (ADR-0016), so the PES leaves the mux beside the video of the same
   instant. GAPs placed at "now − latency" were consumed at once and paced the
   video in 500 ms steps — the position is the running time, not minus the
-  aggregator's budget.
+  aggregator's budget. 2026-10-04: under the time-sync contract the muxer
+  has no budget (ADR-0005, the A/V muxer note), so an idle cue pad no longer
+  holds the video there; the keepalive stays for the off-contract budget.
 - `data` (anything tsdemux exposes that is none of the four classes) is never
   routed: `mpegtsmux` has no sink caps for it and a failed request-pad link is
   a pipeline error.

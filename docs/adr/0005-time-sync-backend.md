@@ -1193,3 +1193,122 @@ sets `start-time-selection=first`, anchoring the output at the first input
 buffer's running time — `force-live` picks the current running time on a dark
 start — so same-timeline inputs are consumed from the first buffer and the
 stamps read the house clock. Full measurement in `audio302mHelpers.ts`.
+
+## Implementation notes (the A/V muxer waits for nothing, 2026-10-04)
+
+**Replaces the mpegts-muxer's 2026-07-16 aggregation budget on the contract
+path.** At BCC Mulanje (10.37.7.21 → 10.37.7.24), the interpreters' 302M
+headphone leg lost 23.7 % of the hall audio at its ~80 ms sink budget.
+The muxed audio arrived with the video's jitter (−67/+84 ms against −82/+80),
+and 96 % of the muxer's output buffers that carried audio also started a video
+PES. The cause was `mpegtsmux latency=1200000000 min-upstream-latency=1200000000`,
+a 2026-07-16 TEST. When every input lands inside a 2.4 s deadline,
+GstAggregator emits only once EVERY pad holds data, and it emits the earliest
+first. That is lock-step: each audio PES waited for the next video frame with a
+later DTS. `alignment=7` added a second hold: the 2–3 packets of an audio PES
+waited for the next PES, which was again the video frame.
+
+- Under the contract the muxer runs `latency=0 alignment=0 pcr-interval=1800`,
+  whatever `alignment` is stored (`plugins/mpegts-muxer/engine/muxTiming.ts`).
+  - Running time ≡ house time (decision 3), and branchAlign puts each branch on
+    its producer's stamps, so every input buffer arrives after its own
+    deadline. It is muxed on arrival, and a late or dark input holds no other.
+  - The egress coalesces each push into one buffer and every wire output
+    re-slices it (ADR-0011). The encode leaves have done the same since
+    2026-09-04.
+  - A PCR on every 25/30 fps video frame (20 ms interval). mpegtsmux writes a
+    PCR only on the PCR stream's packets, once that stream's DTS is MORE than
+    the interval past the last PCR, so the default 40 ms skips every other
+    frame. Where the egress conditions the wire (latch repair on, i.e. no
+    hls-player upstream, as on .21), each PCR is rewritten as the lowest PTS
+    lately written on any stream minus 250 ms (Stage 3f). Muxed on arrival,
+    that floor also follows the audio's bursts. On .21, 20 of 2109 PCR steps
+    then exceeded ISO 13818-1's 100 ms in PCR time (max 113.4 ms; before:
+    none, max 86.4 ms). Replaying .21's measured input timing through
+    mpegtsmux and the conditioner gave a largest step of 116.9 ms at the
+    default and 84.5 ms at 20 ms. On .21 at 20 ms (2026-10-06): 0 of 3001
+    steps over 100 ms (max 86.2 ms), one PCR per video PES. On that build
+    .24's video branchAlign sat at a stable −282.3…−282.5 ms instead of
+    −250.000: a 32 ms change in the wire's PCR/PTS relation, which
+    branchAlign compensates.
+  - Off-contract the element string is byte-identical. There the bus carries
+    arrival times, and the budget answered that path's 2026-07-16 failures.
+- **Replica** (gst 1.28.2, contract clock, 25 fps video arriving N(80, 48) ms
+  late, steady AAC):
+  - Audio hold through the mux: p50/p95 110/182 ms → 22/28 ms. The 22 ms left
+    is the hook's `aacparse`, see below.
+  - With a .21-like input (60 ms capture quantum, plus the transcoder's
+    alignment-7 hold), the budget a 302M leg needs for zero late audio fell
+    from ~180–200 ms to ~62–64 ms. The late share at an 80 ms budget fell
+    from 37–53 % to 0.05 %. The device gain was smaller (below).
+  - Here the video was the laggier stream, so neither mode held it. Both modes
+    kept per-PID DTS order, no PTS<DTS, clean CC and every PES.
+  - A −80 ms branch step gave the same single "DTS going backward" + PTS<DTS
+    in both modes (a per-pad timeline matter, not the budget).
+  - A 700 ms video stall froze the audio (max hold 813 ms) only with the
+    budget.
+  - With every mux pad requested after PLAYING, as the hook does, the
+    aggregator stays live (latency 0).
+- **Measured at Mulanje** (2026-10-05, stock then this change, 120 s of .21's
+  SRT output each, with the default PCR interval):
+  - Audio-carrying SRT payloads that also start a video PES: 95.7 % → 0 %.
+  - Lateness past the stamp, p50/p95/max: audio 96/132/164 → 68.5/103/138 ms;
+    video 104/143/170 → 59/71/100 ms, its spread 77 → 20 ms. On .21 the
+    audio arrives later than the video, so lock-step had held the video too.
+    The audio now trails it by ~10 ms at the median.
+  - CC, PCR order, per-PID DTS order and PTS<DTS stayed clean. No PES arrived
+    after its PCR (minimum margin: audio 221 ms, video 250 ms).
+  - .24 Headphone1 (302M leg, budget = `lipSyncMs` + 40 ms, at least 80 ms),
+    two engine anchorings per phase: loss 32–50 % → 1.7–18 % at `lipSyncMs` 0,
+    8–16 % → 0.6–4.3 % at 80, and 0 at 120 (one anchoring). Its worst lateness
+    after stamps fell from ~180–200 ms to ~130–150 ms. Loss swings with the
+    anchors .24's stampers latch in their first 3 s; single before/after
+    samples mislead. These 60 s taps were clean from `lipSyncMs` 120, not the
+    replica's ~60 ms, but a 30-minute tap (2026-10-06) still needed ~215 ms,
+    and 200–240 ms after a .21 muxer restart re-rolled its audio/video
+    anchors, so the site keeps `lipSyncMs` 200.
+- **Rejected:**
+  - A budget sized under the contract (200 ms): lock-step again whenever the
+    video lands inside it, with an audio p50 of 109 ms.
+  - PCR on the audio PID: 44 video PES then arrived after their PCR, down to
+    −88 ms.
+  - Pacing the mux output at stamp + L: zero jitter, but L must cover the worst
+    video lateness (~250 ms), and the audio pays it too.
+  - An audio-only SRT output fed ahead of the muxer: a second timeline per
+    route, for a hop the mux no longer delays.
+- **Consequences:**
+  - Each stream now leaves the mux with its own lateness. Which one leads is a
+    property of the site: in the replica the audio led by the encoder's
+    lateness, while on .21 it trails the video by ~10 ms. PCR stays on the
+    video PID, and in steady state no PES reached a PCR-paced receiver after
+    its PCR, in the replica or on .21. The exception is an audio backlog right
+    after an audio input stall, which now trails a video that kept running.
+  - Where the egress conditions the wire, the PCR follows the lowest recent
+    PTS of either stream (Stage 3f). That is why the contract path puts a PCR
+    on every video frame (above).
+  - At start, which stream carries PCR depends on pad-link order, with or
+    without a budget. An audio-first start steps PCR back once, and the egress
+    conditioner flags that step DI.
+  - A dark input no longer freezes its siblings, so the input stall watch's one
+    rebuild now costs them a brief gap.
+  - The 302M note's follow-up "settle the branch-alignment step inside the
+    latency budget" is off the table under the contract. Holding the branches,
+    or signalling the step, remain.
+- **Next latency work: the holds left on the hall-audio path.** After this
+  change the hall audio still leaves .21 with a p95−p5 of 51 ms and a max of
+  138 ms past its stamp:
+  - .21's 60 ms capture quantum (audio-input-302m `srcBufferMs` 60), a ~60 ms
+    sawtooth.
+  - audio-input-302m (hard-coded) and audio-transcoder / audio-encoder
+    (`tsAlignment`, default 7) still mux with alignment 7, the same hold this
+    note removes from the muxer. The tail of every 302M PES, one per 60 ms
+    capture quantum on .21, waits for the next one: measured locally (gst
+    1.28.2), its completion lags its input by p50 60.4 ms at alignment 7 and
+    0.6 ms at 0. The last AAC frame of each burst waits for the next burst.
+  - The `aacparse` after a tsdemux (the muxer hook's on .21, the Hall-audio
+    transcoder's on .24) holds each ADTS frame until the next one arrives,
+    because its min-frame-size latch never resets after sync. That costs
+    +21 ms per frame, and +60 ms on the last frame of each 60 ms capture
+    burst.
+  - On .24, the Hall-audio transcoder (AAC → 302M) adds its own jitter before
+    Headphone1.
