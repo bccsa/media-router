@@ -30,13 +30,18 @@ THIS file is the lifecycle the runner drives: the contract flag, which egresses
 are armed, on which backend, and the periodic drift report. It owns all the
 mutable state, so a caller (and a test) has one place to read or pin it.
 
-Stampers arm LAZILY — on a tee's first consumer edge, disarmed on its last
-(`arm` / `release`, driven from the runner's bus_attach and teardown paths). A
-tee with no edges has nothing to stamp for, and paying a per-buffer TS scan for
-it was 83% of the contract's measured CPU cost. That also removes the old
-tree-walk for `busout_`-prefixed elements: the tee to arm is the one
-`bus_attach` names (busHelpers.busTeeName), the same string the fan-out branch
-is addressed by, so the two can no longer drift apart.
+Stampers arm LAZILY — on a tee's first consumer edge (`arm`, from the runner's
+bus_attach path). A tee that never had an edge has nothing to stamp for, and
+paying a per-buffer TS scan for it was 83% of the contract's measured CPU cost.
+That also removes the old tree-walk for `busout_`-prefixed elements: the tee to
+arm is the one `bus_attach` names (busHelpers.busTeeName), the same string the
+fan-out branch is addressed by, so the two can no longer drift apart.
+
+Once armed, a stamper stays armed until the pipeline stops (`clear`): the
+mapping it latched is the PRODUCER's, and a muxer aligns each input to its own
+producer's stamps, so a fresh latch on each consumer bounce (a muxer restart)
+re-rolled the A/V that muxer ships (ADR-0005, 2026-10-06 lazy-arm amendment).
+The sidecars (mr-tssplit, mr-bus-fanout) always stamped for their whole run.
 
 TWO BACKENDS, one contract. The native `mrtsstamp` element is preferred and the
 python probe stays as the reference implementation AND the fallback for a box
@@ -64,7 +69,7 @@ from gst_stamp_probe import _segment_warn                # noqa: E402,F401
 
 enabled = False         # the start payload's `timeSyncContract` flag
 pipeline = None         # pipeline the armed probes belong to
-armed = []              # armed stampers — one per tee that HAS consumers
+armed = []              # armed stampers — one per tee that has had a consumer
 elements = native.elements   # tee name -> inserted `mrtsstamp` element
 native_loaded = None    # None = not tried, True/False = load outcome
 drift_timer_id = None   # GLib source id of the periodic drift report
@@ -148,12 +153,13 @@ def _stop_drift_timer():
 
 
 # ---------------------------------------------------------------------------
-# Arm / disarm — driven by the runner's consumer-edge bookkeeping
+# Arm / disarm — armed from the runner's consumer-edge bookkeeping, disarmed
+# only when the pipeline stops (`clear`)
 # ---------------------------------------------------------------------------
 def _disarm(st):
     """Stop stamping for one egress — `active=False` on the native element, or
     the probe removed. Both drop the whole latch state, which is the same
-    contract either way (see `release`)."""
+    contract either way; only `clear` (pipeline stop) calls this."""
     el = st.get("element")
     if el is not None:
         native.deactivate(el)
@@ -194,7 +200,7 @@ def enable(pipe, on, repair=None, cond_step_ms=None):
     not have: measured on .42 (2026-08-12) an idle-but-flowing rist-input whose
     egress tee had NO edges attached burned 2492 ticks/min, 83% of the whole
     contract's CPU cost, stamping buffers that went nowhere. A tee with no
-    consumer has nothing to stamp FOR, so the probe follows the edges.
+    consumer has nothing to stamp FOR, so the probe waits for the first edge.
 
     The flag itself must still be recorded before PLAYING: an attach can land
     the moment the pipeline starts, and an unstamped leading buffer would sail
@@ -204,8 +210,9 @@ def enable(pipe, on, repair=None, cond_step_ms=None):
     splicing is a graph change and the graph is only safely mutable while the
     pipeline is still in NULL. Inactive they are basetransform passthrough that
     only counts bytes (`bytes-total`, one atomic add per buffer — the runner's
-    throughput source for the tee), so lazy arming is unaffected: what arms
-    per consumer edge is the `active` property, not the element's existence.
+    throughput source for the tee), so lazy arming is unaffected: what the
+    first consumer edge arms is the `active` property, not the element's
+    existence.
     """
     global enabled, pipeline, repair_latch, condition_step_ms
     clear()
@@ -235,6 +242,7 @@ def arm(tee, name):
     if not enabled or tee is None:
         return None
     if stamper_for(name) is not None:
+        _log(name, "consumer edge attached — stamper already armed, anchor kept")
         return None
 
     el = elements.get(name)
@@ -254,21 +262,12 @@ def arm(tee, name):
 
 
 def release(tee_name):
-    """Disarm `tee_name`'s stamper — the runner calls this once that tee's LAST
-    consumer edge is gone.
-
-    The whole latch state goes with the probe: a tee that gets a consumer again
-    later re-anchors from that moment, which is the established re-anchor
-    semantics (an anchor is only ever meaningful to the consumers that were
-    there when it was taken).
-    """
+    """`tee_name`'s LAST consumer edge is gone. The stamper stays armed: its
+    anchor is the producer's mapping, and the next consumer must inherit it, as
+    every consumer before it did (see the header). Only `clear` disarms."""
     st = stamper_for(tee_name)
     if st is None:
         return
-    _disarm(st)
-    armed.remove(st)
-    if not armed:
-        _stop_drift_timer()
     el = st.get("element")
     extra = native.copy_count_note(el) if el is not None else ""
-    _log(tee_name, f"last consumer edge detached — stamper disarmed{extra}")
+    _log(tee_name, f"last consumer edge detached — stamper stays armed, anchor kept{extra}")

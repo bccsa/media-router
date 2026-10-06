@@ -50,12 +50,14 @@
  * basetransform passthrough; the buffer is still handed to `transform_ip`
  * (`transform_ip_on_passthrough` on) but only for the `bytes-total` counter —
  * one size read and one atomic add — and the stamping path stays behind the
- * `active` check, so a tee with no consumer edge pays nothing for stamping.
- * The counter is the producer's egress byte counter, read by the runner's
- * throughput tracker instead of a per-buffer python probe (which cost 0.5-0.7
- * of a core per producer on a Pi 4, 2026-09-02). Activating starts a FRESH
- * latch (an anchor only ever means anything to the consumers that held it);
- * deactivating drops all state; the byte counter runs across both.
+ * `active` check, so a tee that never had a consumer edge pays nothing for
+ * stamping. The counter is the producer's egress byte counter, read by the
+ * runner's throughput tracker instead of a per-buffer python probe (which cost
+ * 0.5-0.7 of a core per producer on a Pi 4, 2026-09-02). Activating starts a
+ * FRESH latch; deactivating drops all state; the byte counter runs across
+ * both. The runner activates once per producer run — first consumer edge to
+ * pipeline stop — because the anchor is the producer's mapping, not its
+ * consumers' (ADR-0005, 2026-10-06 amendment to the lazy-arm note).
  *
  * FILE SIZE, deliberately over the repo's ~250-line guideline (CLAUDE.md): a
  * GStreamer element is one cohesive unit — GObject boilerplate, property
@@ -574,7 +576,7 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
             if (want != self->active) {
                 if (!want && self->st != NULL) {
                     /* A disarm inside the latch-repair window still reports
-                     * what the window cost — otherwise a short-lived edge's
+                     * what the window cost, or a short-lived incarnation's
                      * anchor would vanish from the tally. Collected here,
                      * posted below outside the lock like every other message. */
                     self->st->close_latch();

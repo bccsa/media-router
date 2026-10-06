@@ -5,8 +5,8 @@ Same contract as `gst_bus_stamper_test.py`, driven through the C++ element
 instead of the python probe: the runner loads
 `plugins/mpegts-core/native/mrtsstamp/libgstmrtsstamp.so` (via
 `gst_bus_stamper.py`), splices an `mrtsstamp` between each bus capsfilter and
-its `busout_*` tee, and toggles `active` from the same bus_attach / bus_detach
-paths that arm and disarm the probe. The python probe stays the reference implementation and the fallback;
+its `busout_*` tee, and sets `active` from the same first bus_attach that arms
+the probe. The python probe stays the reference implementation and the fallback;
 this file exists to prove the element is indistinguishable from it.
 
 What is pinned here:
@@ -16,8 +16,9 @@ What is pinned here:
       tee — BEFORE the fan-out, so one stamp serves every consumer edge.
   R8  Flag off => nothing spliced, timestamps untouched.
   --  Lazy arm through the real handle_bus_attach / handle_bus_detach: inactive
-      is pure passthrough, the first edge arms, the last disarms, a re-attach
-      anchors afresh.
+      is pure passthrough, the first edge arms, the last edge leaving and a
+      re-attach keep the anchor, the pipeline stop deactivates; the element
+      itself, re-activated, latches afresh.
   R2  Every output buffer carries a valid PTS, non-decreasing, staircase
       repeating across PES-less buffers; PTS *and* DTS are stamped.
   --  The stamp is anchor + PES delta exactly; a legal 2^33 wrap is continuous;
@@ -360,7 +361,7 @@ teardown()
 
 
 # ---------------------------------------------------------------------------
-print("\n--- lazy arm: `active` follows the consumer edges ---")
+print("\n--- lazy arm: `active` from the first consumer edge to the pipeline stop ---")
 LAZY_STEP = 3600                                  # 40 ms in 90 kHz ticks
 LAZY_FIRST = 8_100_000
 sockdir = tempfile.mkdtemp(prefix="mr-mrtsstamp-test-")
@@ -422,13 +423,15 @@ check("and the surviving consumer keeps its original anchor",
           for i in range(6, 9)])
 
 runner.handle_bus_detach({"socket": sock_a})
-check("the LAST consumer leaving deactivates it",
-      stamper.armed == [] and el.get_property("active") is False)
+check("the LAST consumer leaving keeps it active (the anchor is the producer's)",
+      len(stamper.armed) == 1 and el.get_property("active") is True)
 for i in range(12, 15):
     lazy_push(i, 500 + 5 * i)
 bus.wait(seen, 15)
-check("inactive is pure passthrough — arrival timestamps again, untouched",
-      [p for p, _ in seen[12:15]] == [(500 + 5 * i) * Gst.MSECOND for i in range(12, 15)])
+check("and it keeps stamping on the same anchor with no consumer attached",
+      [p for p, _ in seen[12:15]]
+      == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+          for i in range(9, 12)])
 
 sock_c = os.path.join(sockdir, "edge-c.sock")
 time.sleep(0.05)                                  # let the house clock advance
@@ -436,17 +439,38 @@ runner.handle_bus_attach({"tee": "busout_41000", "socket": sock_c})
 for i in range(15, 18):
     lazy_push(i, 1000 + 5 * i)
 bus.wait(seen, 18)
+check("a re-attach after a full detach resumes the producer's anchor — no second latch",
+      len(bus.of("timeline_restamped")) == 1 and bus.of("timeline_reanchor") == []
+      and [p for p, _ in seen[15:18]]
+      == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+          for i in range(12, 15)])
+runner.handle_bus_detach({"socket": sock_c})
+
+# The ELEMENT's own contract is unchanged — `active` off is pure passthrough and
+# on again is a FRESH latch — it is just no longer driven by the edges: only the
+# pipeline stop (`clear`) and start (`enable`) toggle it.
+el.set_property("active", False)
+for i in range(18, 21):
+    lazy_push(i, 2000 + 5 * i)
+bus.wait(seen, 21)
+check("element: inactive is pure passthrough — arrival timestamps, untouched",
+      [p for p, _ in seen[18:21]] == [(2000 + 5 * i) * Gst.MSECOND for i in range(18, 21)])
+time.sleep(0.05)
+el.set_property("active", True)
+for i in range(21, 24):
+    lazy_push(i, 3000 + 5 * i)
+bus.wait(seen, 24)
 restamps = bus.of("timeline_restamped")
-check("re-activating anchors AFRESH rather than resuming the old timeline",
+check("element: re-activating latches AFRESH (what a producer restart gets)",
       len(restamps) == 2 and restamps[1]["anchorNs"] > restamps[0]["anchorNs"]
-      and restamps[1]["refPts90k"] == LAZY_FIRST + 15 * LAZY_STEP)
-check("and the new staircase is measured from the new anchor",
-      [p for p, _ in seen[15:18]]
+      and restamps[1]["refPts90k"] == LAZY_FIRST + 21 * LAZY_STEP
+      and [p for p, _ in seen[21:24]]
       == [restamps[1]["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
           for i in range(3)])
-runner.handle_bus_detach({"socket": sock_c})
 bus.drain(pipe, src)
 teardown()
+check("the pipeline stop (`clear`) is what deactivates it",
+      stamper.armed == [] and el.get_property("active") is False)
 shutil.rmtree(sockdir, ignore_errors=True)
 
 

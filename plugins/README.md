@@ -1957,10 +1957,12 @@ directly on the producer's src, ahead of the `capssetter ! capsfilter` pair,
 where it also coalesces the mux's per-AU buffer lists (ADR-0011) — falling
 back to a python pad probe — same arithmetic, a logged warning — on a box
 where the `.so` isn't built. Arming is **lazy**: an egress starts stamping on
-its first consumer edge and stops on its last, so an enabled-but-unrouted
-output costs nothing (and while debugging, expect no stamper activity until a
-consumer attaches; a re-attach after a full detach anchors afresh). Rules for
-plugin authors:
+its first consumer edge, so an enabled-but-never-routed output costs nothing
+(while debugging, expect no stamper activity until a consumer attaches). Once
+armed it stays armed until the module stops — the anchor is the producer's, so
+a consumer that detaches and comes back (a muxer restart) gets the same
+timeline, not a fresh latch; to re-latch a producer, restart the producer.
+Rules for plugin authors:
 
 - **Don't re-stamp.** No `tsparse set-timestamps=true`, no
   `do-timestamp=true`, no arrival-based re-timing between your mux and the

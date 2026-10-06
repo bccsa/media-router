@@ -226,9 +226,11 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // TS scan for consumers it might not have: measured on .42 (2026-08-12)
         // an idle-but-flowing rist-input with NO edges attached burned 2492
         // ticks/min, 83% of the contract's whole CPU cost. `bus_attach` (this
-        // side: BusFanoutCoordinator) is therefore what arms a tee, and the
-        // last `bus_detach` is what disarms it — so the flag on its own must
-        // install nothing. The eager tree-walk must not come back.
+        // side: BusFanoutCoordinator) is therefore what arms a tee — so the
+        // flag on its own must install nothing. The last `bus_detach` is only
+        // logged: the anchor is the producer's and stays armed until the
+        // pipeline stops (ADR-0005, 2026-10-06). The eager tree-walk must not
+        // come back.
         expect(runnerProcess).not.toContain('def _install_bus_stampers');
         expect(stamperSource).toContain('def arm(tee, name)');
         expect(stamperSource).toContain('def release(tee_name)');
@@ -239,8 +241,8 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         const linkIdx = runnerSource.indexOf('tee_src = tee.request_pad_simple', attachIdx);
         expect(armIdx).toBeGreaterThan(attachIdx);
         expect(armIdx).toBeLessThan(linkIdx);
-        // ...and released from the teardown path, which is what `bus_detach`
-        // (and the stall watchdog's edge reset) funnels through.
+        // ...and the last edge reported from the teardown path, which is what
+        // `bus_detach` (and the stall watchdog's edge reset) funnels through.
         const teardownIdx = runnerSource.indexOf('def _teardown_bus_branch');
         expect(
             runnerSource.indexOf('_release_bus_stamper(entry.get("tee_name"))', teardownIdx),
