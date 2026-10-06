@@ -1234,6 +1234,14 @@ export class AudioInputModule extends GstPluginBase {
 }
 ```
 
+Labels read `<description> (<N>ch, <rate>Hz)`; the stored value is always the PipeWire
+node name. Devices of one direction that share a description (two identical USB
+interfaces, the Pi's two HDMI outputs) get a tag after it: the head of the USB serial's
+per-unit part, which is where their node names first differ, else the udev bus path,
+else the node name. Two Shure MVX2U read
+`Shure MVX2U Analog Stereo · efece7ff (2ch, 48000Hz)` for
+`alsa_output.usb-Shure_Inc_Shure_MVX2U_MVX2U_3-efece7ff…-01.analog-stereo`.
+
 A `direction: 'sink'` provider also drives **hardware sink volume normalisation**: on
 every poll the engine resets any non-`MR_PW_*` sink that isn't at unity gain back to
 100% on all channels. Gain staging is a software concern — attenuate on your own

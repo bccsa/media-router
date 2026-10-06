@@ -2,12 +2,20 @@ import { describe, it, expect, vi } from 'vitest';
 import {
     parseDeviceBlock,
     parseDeviceChannels,
+    parseDeviceProperty,
     parseDeviceSampleRate,
     parseDeviceVolumes,
     PA_VOLUME_NORM,
     AudioDeviceOps,
     DEFAULT_DEVICE_CACHE_TTL_MS,
 } from './AudioDeviceOps.js';
+import {
+    MVX2U_MIC_NAMES,
+    MVX2U_SINK_NAMES,
+    MVX2U_UNITS,
+    PACTL_SINKS,
+    pactlTwinQueue,
+} from './testing/pactlTwinMvx2u.js';
 
 describe('parseDeviceChannels', () => {
     it('reads `Channel Map: mono` as 1 channel — fixes the mono-USB-mic-as-2ch bug where the active stereo profile mis-reports the spec', () => {
@@ -85,6 +93,25 @@ describe('parseDeviceVolumes', () => {
     });
 });
 
+describe('parseDeviceProperty', () => {
+    const sink = PACTL_SINKS.split('\n\n')[0];
+
+    it('reads a two-tab-indented `key = "value"` line, keeping the `#` udev leaves in the serial', () => {
+        expect(parseDeviceProperty(sink, 'device.serial')).toBe(
+            'Shure_Inc_Shure_MVX2U_MVX2U#3-efece7ff193b505fbe969dc2c1c535bf',
+        );
+    });
+    it('matches the whole key: `device.bus` is not `device.bus_path` or `device.bus-id`', () => {
+        expect(parseDeviceProperty(sink, 'device.bus')).toBe('usb');
+    });
+    it("reads pactl's `device.bus_path`; PipeWire's `device.bus-path` spelling never reaches pactl", () => {
+        expect(parseDeviceProperty(sink, 'device.bus_path')).toBe(
+            'platform-xhci-hcd.1-usb-0:1:1.1',
+        );
+        expect(parseDeviceProperty(sink, 'device.bus-path')).toBeUndefined();
+    });
+});
+
 describe('parseDeviceBlock', () => {
     it('returns null for blocks without a `Name:` field (e.g. blank trailing block)', () => {
         expect(parseDeviceBlock('', 'source')).toBeNull();
@@ -135,6 +162,34 @@ describe('parseDeviceBlock', () => {
         // In the sink direction this name shouldn't appear, but if it
         // did we wouldn't filter it out — that's intentional.
         expect(parseDeviceBlock(block, 'sink')).not.toBeNull();
+    });
+    it("carries the card's serial and bus path; the label still comes from `Description:`", () => {
+        const dev = parseDeviceBlock(PACTL_SINKS.split('\n\n')[1], 'sink')!;
+        expect(dev).toMatchObject({
+            name: MVX2U_SINK_NAMES[1],
+            description: 'Shure MVX2U Analog Stereo', // not the card's `device.description`
+            serial: 'Shure_Inc_Shure_MVX2U_MVX2U#3-c7555f279c87c75188277333d4fadb32',
+            busPath: 'platform-xhci-hcd.0-usb-0:1:1.1',
+            channels: 2,
+        });
+    });
+    it('leaves serial and bus path unset for a device without card properties', () => {
+        const dev = parseDeviceBlock(`Name: alsa_output.foo\nChannel Map: mono`, 'sink')!;
+        expect(dev.serial).toBeUndefined();
+        expect(dev.busPath).toBeUndefined();
+    });
+});
+
+describe('AudioDeviceOps on two Shure MVX2U (.24 field listing)', () => {
+    it('lists each unit once per direction with its serial; monitors and MR_PW_ nodes stay out', () => {
+        const devices = new AudioDeviceOps(pactlTwinQueue() as never).listDevices();
+        const serials = MVX2U_UNITS.map((u) => `Shure_Inc_Shure_MVX2U_MVX2U#3-${u.hash}`);
+        expect(devices.map((d) => [d.direction, d.name, d.serial])).toEqual([
+            ['source', MVX2U_MIC_NAMES[0], serials[0]],
+            ['source', MVX2U_MIC_NAMES[1], serials[1]],
+            ['sink', MVX2U_SINK_NAMES[0], serials[0]],
+            ['sink', MVX2U_SINK_NAMES[1], serials[1]],
+        ]);
     });
 });
 
