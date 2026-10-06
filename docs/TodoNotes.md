@@ -141,6 +141,66 @@
   rist-input restart every 10 s on the PLAYING watchdog — the consumer-side
   twin of the dark-input loop fixed in `gst_input_stall_watch.py`.
 
+- [ ] **Source restart / reconnect through a conditioning producer — what is
+  left (.24 Mulanje, 2026-10-04; ADR-0005 Stage 3f amendment).** Fixed: the PCR
+  pinned at the old epoch after a BACKWARD restart (a source reboot), the
+  reconnect gap absorbed as a "step", the stale first PCR after a gap
+  (conditioner and mr-tssplit's re-injected master).
+  Left: (1) the stamper stamps the first buffers past a gap on the pre-gap
+  anchor until the watch confirms (two anomalous buffers); a running consumer
+  that re-bases its PCR mapping on one of them carries the reconnect delay
+  (+0.2–0.5 s in a replay through GStreamer 1.28.2 tsdemux) as lateness its
+  skew filter takes ~10–25 s to absorb — a short dropout on a tight sink
+  budget; (2) a PCR-only packet (no PES start) past a gap is still
+  regenerated from the pre-gap floor for one PCR interval (mpegtsmux never
+  sends one; other muxers may); (3) a FORWARD restart at a running
+  audio-decoder (next item).
+
+- [ ] **A FORWARD source-clock restart still silences a running
+  audio-decoder (.24, 2026-10-05; not fixed by the Stage 3f amendment
+  2026-10-04, not caused by it).** After a forward jump mr-tssplit's output is
+  clean (one `timeline_reanchor`, no `timeline_conditioned`), yet
+  `audio-decoder-mur0flzrqh5c` stays silent with health "ok", on a0f6f13c and
+  with the fix alike: late by the outage after a 186 s outage (sink lateness
+  185945 ms; a0f6f13c 187080 ms after 187 s), early after a 6 s outage
+  (−2662943 ms; a0f6f13c −4205483 ms). Consumer side: the decoder's running
+  `tsdemux`. Leads: the consumer-side re-anchor net ("audio legs re-anchor
+  after losing their timeline"), and DI on mr-tssplit's injected PCRs
+  (`build_pcr_packet` writes flags 0x10, never the discontinuity bit, even
+  when the conditioner flagged the source's PCR). Not rare in the field: PTS
+  wraps every 26.5 h, so a source that reboots after more than ~13.25 h of
+  uptime (modulo 26.5 h) arrives as a forward jump; .21's feed sat at ~26 h
+  on 2026-10-05. To reproduce: a muxer or engine restart on the source
+  cannot. The muxer runs on CLOCK_MONOTONIC with `base_time` 0 (ADR-0005
+  Decision 3, `runner.cpp` `apply_contract_clock`) and mpegtsmux adds a 1 h
+  base, so .21's PTS is its uptime + 1 h and a restart only adds a forward
+  gap; a reboot is the field trigger. Without one, disable .21's
+  `srt-output-muqthek2r2z5` and serve a fresh `gst-launch` feed on its port
+  :1234 with the real feed's layout and PMT (program 1; PID 250 H.264 720p25
+  high + PCR; PID 251 AAC 48 kHz stereo; `mpegtsmux` starts it at its 3600 s
+  base), then switch between the two. The 33-bit fold decides which switch is
+  backward: with the real feed at ~93,600 s, near the 95,444 s wrap,
+  real→test was forward (+1.5 h) and test→real backward.
+
+- [ ] **Seen in the 2026-10-05 source-restart A/B on .24 (ADR-0005 Stage 3f
+  amendment 2026-10-04).** (1) and (2) happened on a0f6f13c too, so they are
+  not caused by the amendment. (1) The Hall-audio transcoder's egress
+  (`audio-transcoder-muqwow34n6j4`, `busout_40006`) gap-fills through an input
+  stall and then absorbs the source's gap as a `clock: pts` step (muxer
+  restart: +5.71 s on a0f6f13c, +5.93 s with the fix). After a
+  forward-then-backward restart sequence Headphone1 (302M leg) ended ~9–11 s
+  late and silent on both builds: a0f6f13c `lateness 11421 ms`; with the fix
+  `retained 9199 ms against a 240 ms budget`, the egress having taken a
+  +9.27 s `clock: pts` step to an offset of −15.21 s. (2) The 302M leg
+  sometimes drops audio after a re-anchor: 19 gaps / 320 ms in the first
+  30 s, still 10 gaps / 253 ms at +2.5 min, cleared by the next re-anchor
+  (a0f6f13c, after an input gap: 19 gaps / 251 ms); pipewire-pulse discards
+  the late audio silently and health stays "ok". (3) Seen once, with the fix
+  only, no audible effect: after a 19.6 s input gap the transcoder egress
+  logged `latch settled: anchor pulled back 19642.216 ms`, about the gap's
+  length (a0f6f13c's same test: 63 ms; the fix's other runs: 21–120 ms); both
+  legs were clean at +10 s and +2 min. Worth a code look.
+
 - [ ] **RIST bridge is the last per-buffer python path.** On .46 the
   receiving rist-input (0.14 core) and each busy rist-output (0.10–0.12 core)
   spend almost all of it on the runner's main thread: appsink pull in python,

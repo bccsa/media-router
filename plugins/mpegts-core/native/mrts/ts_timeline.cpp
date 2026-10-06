@@ -62,6 +62,7 @@ constexpr int64_t EARLY_HOLD_NS = 10'000'000'000LL;
 // and is left to the watch.
 constexpr int64_t COND_STEP_NS = 300'000'000LL;   // default; per-egress override via set_condition_step_ns
 constexpr int64_t COND_MAX_NS = 10'000'000'000LL;
+// (COND_GAP_NS, the delivery-gap bound, is public: ts_timeline.h.)
 // How long a PID's OWN correction (a step it took alone) is carried before it
 // is released as the stream's real placement: the vMix pacer reset reverts in
 // seconds; a branch alignment never does.
@@ -669,7 +670,8 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
         if (pkt[0] != SYNC_BYTE) continue;
         const int pid = ts_pid(pkt);
         // --- PCR (adaptation field): regenerated from the conditioned PTS ---
-        int64_t pcr = read_pcr(pkt);
+        const int64_t pcr = read_pcr(pkt);
+        bool pcr_after_pes = false;
         if (pcr >= 0) {
             cond_pcr_pid_ = pid;
             if (timing_pid_ != pid) {
@@ -678,161 +680,188 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 // onto the timing PID's next PES (reported as a re-anchor).
                 timing_rebase_pending_ = anchored_ && anchor_pid_ != pid;
             }
-            if (cond_ref_pid_ >= 0) {
-                // wpts − lead, in MEDIA time: flat between frames, never advanced
-                // by arrival (a 94 KB I-frame's 350 ms of wire time is not media
-                // time, and interpolating by it stepped the PCR — measured on
-                // the .103 capture). One frame of PCR jitter is nothing to a
-                // demuxer's skew filter; a step is a discontinuity.
-                int64_t w = cond_pcr_floor_pts(house_now) * 300 - floor_div(COND_PCR_LEAD_NS * 27, 1000);
-                w %= PCR_MODULO;
-                if (w < 0) w += PCR_MODULO;
-                bool di = !cond_pcr_regen_;              // first regenerated value
-                if (cond_pcr_regen_) {                    // guard among regenerated values only
-                    const int64_t dw = fold(w - cond_last_wpcr_, PCR_MODULO);
-                    if (dw < 0) {
-                        w = cond_last_wpcr_;              // monotone guard
-                    } else if (std::llabs(floor_div(dw * 1000, 27) - (house_now - cond_last_wpcr_house_)) >
-                               COND_MAX_NS) {
-                        // The clock moved by more than the conditioner's bound past
-                        // the time that passed: a source restart, which reaches the
-                        // wire as written. NOT a delivery burst — SRT hands us
-                        // hundreds of ms in one go, and a demuxer told to reset on
-                        // each of those re-armed the keyframe gate every GOP (.103,
-                        // 2026-09-08 12:23, 61 re-arms in 4 min at a 300 ms bound).
-                        di = true;
-                    }
-                }
-                if (di) pkt[5] |= 0x80;                 // signalled discontinuity
-                write_pcr(pkt, w);
-                cond_pcr_regen_ = true;
-                cond_last_wpcr_ = w;
-                cond_last_wpcr_house_ = house_now;
-                cond_have_wpcr_ = true;
-                // One event per new deviation of the source's PCR from ours.
-                const int64_t off = fold(w - pcr, PCR_MODULO);
-                if (!cond_pcr_reported_ ||
-                    std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > cond_threshold()) {
-                    const int64_t step = cond_pcr_reported_ ? off - cond_pcr_reported_offset_ : off;
-                    cond_pcr_reported_ = true;
-                    cond_pcr_reported_offset_ = off;
-                    absorbed++;
-                    if (on_conditioned_) on_conditioned_({pid, true, floor_div(step, 300), floor_div(off, 300), house_now});
-                }
-            } else {
-                cond_last_wpcr_ = pcr;                  // raw, until a PTS exists
-                cond_have_wpcr_ = true;
-            }
+            // Past a delivery gap the floor is the pre-gap media position, and a
+            // PCR regenerated from it trails the PES that follows by the whole
+            // gap: a consumer's tsdemux re-bases on it and places that PES the gap
+            // EARLY (8.4 s replaying .24's 2026-10-04 reconnect). mpegtsmux puts
+            // every PCR on a PES start, so such a PCR is regenerated after its own
+            // packet's PES.
+            pcr_after_pes = cond_ref_pid_ >= 0 && house_now - cond_ref_house_ > COND_GAP_NS;
+            if (!pcr_after_pes) absorbed += condition_pcr(pkt, pid, pcr, house_now);
         }
         // --- PES PTS/DTS ---
-        if (!ts_pusi(pkt)) continue;
-        const int64_t pts = read_pes_pts(pkt);
-        if (pts < 0) continue;
-        const int poff = payload_offset(pkt);
-        // Which PIDs may define a clock: `timing_pes` (video/audio, or the PCR
-        // carrier's own PES). A private-data PID's PTS is not a clock — it never
-        // steps the program, never becomes the PCR's reference or floor — but it
-        // IS on the program's timeline, so it follows the program's correction
-        // like every other PID.
-        const bool timing = timing_pes(pkt, pid, timing_pid_);
-        const bool is_ref = timing && (cond_ref_pid_ < 0 || pid == cond_ref_pid_ ||
-                                       (pid == cond_pcr_pid_ && cond_ref_pid_ != pid));
-        // ONE program, ONE clock — with PIDs that may also step on their own.
-        // The reference's steps are the program's (`cond_prog_offset_`); another
-        // PID adopts the pending program correction when its own PTS jumps by
-        // the same amount (the mux restart every PID carries), keeps a step it
-        // took alone as its own (the vMix pacer reset, reverted in seconds), and
-        // has that own part released after COND_OWN_HOLD_NS if it never reverts.
-        auto it = cond_pes_.find(pid);
-        if (it == cond_pes_.end()) {
-            // First seen now: on the source's CURRENT timeline, whose image on
-            // the wire is the program correction — adopt it whole.
-            it = cond_pes_.emplace(pid, CondClock{pts, house_now, cond_prog_offset_, 0, 0,
-                                                  cond_prog_offset_, {}}).first;
-        } else {
-            CondClock& c = it->second;
-            const int64_t d_ns = pts90k_to_ns(fold(pts - c.last_raw, PTS_WRAP));
-            const int64_t a_ns = house_now - c.last_house;
-            const int64_t pending = cond_prog_offset_ - c.prog_applied;
-            const bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
-                                 std::llabs(d_ns - a_ns) > cond_threshold();
-            if (!stepped && std::llabs(d_ns) <= cond_threshold()) cond_remember(c, d_ns);   // the nominal's source
-            if (is_ref) {
-                if (stepped) {
-                    // floor_div, not `/`: `cond_step_ns` is negative on a backward
-                    // PTS step (the common case here), and C++ truncation toward
-                    // zero would round it one tick off python's `//` — the twins
-                    // must write byte-identical bytes.
-                    const int64_t step = floor_div(cond_step_ns(c, d_ns) * 9, 100000);
-                    cond_prog_offset_ -= step;
-                    c.prog_applied = cond_prog_offset_;
-                    c.offset = cond_prog_offset_ + c.own;
-                    absorbed++;
-                    if (on_conditioned_) on_conditioned_({pid, false, step, c.offset, house_now});
-                }
-            } else if (pending != 0 &&
-                       std::llabs(floor_div((d_ns - a_ns) * 9, 100000) + pending) <=
-                           floor_div(cond_threshold() * 9, 100000)) {
-                // Its PTS jumped by what the reference's did: the same clock step,
-                // adopted whole. Judged on the jump beyond the time that passed,
-                // so a PID idle across the restart (gap + step) adopts it too.
-                c.offset += pending;
-                c.prog_applied = cond_prog_offset_;
-                absorbed++;
-                if (on_conditioned_) on_conditioned_({pid, false, -pending, c.offset, house_now});
-            } else if (timing && stepped) {
+        absorbed += condition_pes(pkt, pid, house_now);
+        if (pcr_after_pes) absorbed += condition_pcr(pkt, pid, pcr, house_now);
+    }
+    return absorbed;
+}
+
+int TimelineStamper::condition_pcr(uint8_t* pkt, int pid, int64_t pcr, int64_t house_now) {
+    if (cond_ref_pid_ < 0) {
+        cond_last_wpcr_ = pcr;                  // raw, until a PTS exists
+        cond_have_wpcr_ = true;
+        return 0;
+    }
+    // wpts − lead, in MEDIA time: flat between frames, never advanced
+    // by arrival (a 94 KB I-frame's 350 ms of wire time is not media
+    // time, and interpolating by it stepped the PCR — measured on
+    // the .103 capture). One frame of PCR jitter is nothing to a
+    // demuxer's skew filter; a step is a discontinuity.
+    int64_t w = cond_pcr_floor_pts(house_now) * 300 - floor_div(COND_PCR_LEAD_NS * 27, 1000);
+    w %= PCR_MODULO;
+    if (w < 0) w += PCR_MODULO;
+    bool di = !cond_pcr_regen_;              // first regenerated value
+    if (cond_pcr_regen_) {                    // guard among regenerated values only
+        const int64_t dw = fold(w - cond_last_wpcr_, PCR_MODULO);
+        if (std::llabs(floor_div(dw * 1000, 27) - (house_now - cond_last_wpcr_house_)) >
+            COND_MAX_NS) {
+            // The clock moved by more than the conditioner's bound past
+            // the time that passed: a source restart, which reaches the
+            // wire as written — FORWARD OR BACK. NOT a delivery burst —
+            // SRT hands us hundreds of ms in one go, and a demuxer told
+            // to reset on each of those re-armed the keyframe gate every
+            // GOP (.103, 2026-09-08 12:23, 61 re-arms in 4 min at a 300 ms
+            // bound). Tested BEFORE the monotone guard: a restart onto an
+            // EARLIER epoch otherwise pinned the PCR at the old epoch's
+            // last value until the new PTS caught up — 9 h on .24
+            // (2026-10-04): every consumer's PES sat > 15 s off its PCR,
+            // tsdemux timestamped none of them, and the running audio
+            // decoder fell the outage (588 s) late and played silence.
+            di = true;
+        } else if (dw < 0) {
+            w = cond_last_wpcr_;              // monotone guard: jitter and floor moves only
+        }
+    }
+    if (di) pkt[5] |= 0x80;                 // signalled discontinuity
+    write_pcr(pkt, w);
+    cond_pcr_regen_ = true;
+    cond_last_wpcr_ = w;
+    cond_last_wpcr_house_ = house_now;
+    cond_have_wpcr_ = true;
+    // One event per new deviation of the source's PCR from ours.
+    const int64_t off = fold(w - pcr, PCR_MODULO);
+    if (!cond_pcr_reported_ ||
+        std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > cond_threshold()) {
+        const int64_t step = cond_pcr_reported_ ? off - cond_pcr_reported_offset_ : off;
+        cond_pcr_reported_ = true;
+        cond_pcr_reported_offset_ = off;
+        if (on_conditioned_) on_conditioned_({pid, true, floor_div(step, 300), floor_div(off, 300), house_now});
+        return 1;
+    }
+    return 0;
+}
+
+int TimelineStamper::condition_pes(uint8_t* pkt, int pid, int64_t house_now) {
+    if (!ts_pusi(pkt)) return 0;
+    const int64_t pts = read_pes_pts(pkt);
+    if (pts < 0) return 0;
+    int absorbed = 0;
+    const int poff = payload_offset(pkt);
+    // Which PIDs may define a clock: `timing_pes` (video/audio, or the PCR
+    // carrier's own PES). A private-data PID's PTS is not a clock — it never
+    // steps the program, never becomes the PCR's reference or floor — but it
+    // IS on the program's timeline, so it follows the program's correction
+    // like every other PID.
+    const bool timing = timing_pes(pkt, pid, timing_pid_);
+    const bool is_ref = timing && (cond_ref_pid_ < 0 || pid == cond_ref_pid_ ||
+                                   (pid == cond_pcr_pid_ && cond_ref_pid_ != pid));
+    // ONE program, ONE clock — with PIDs that may also step on their own.
+    // The reference's steps are the program's (`cond_prog_offset_`); another
+    // PID adopts the pending program correction when its own PTS jumps by
+    // the same amount (the mux restart every PID carries), keeps a step it
+    // took alone as its own (the vMix pacer reset, reverted in seconds), and
+    // has that own part released after COND_OWN_HOLD_NS if it never reverts.
+    auto it = cond_pes_.find(pid);
+    if (it == cond_pes_.end()) {
+        // First seen now: on the source's CURRENT timeline, whose image on
+        // the wire is the program correction — adopt it whole.
+        it = cond_pes_.emplace(pid, CondClock{pts, house_now, cond_prog_offset_, 0, 0,
+                                              cond_prog_offset_, {}}).first;
+    } else {
+        CondClock& c = it->second;
+        const int64_t d_ns = pts90k_to_ns(fold(pts - c.last_raw, PTS_WRAP));
+        const int64_t a_ns = house_now - c.last_house;
+        const int64_t pending = cond_prog_offset_ - c.prog_applied;
+        // Never across a delivery gap (COND_GAP_NS): past a pause, arrival no
+        // longer measures media time to the step threshold.
+        const bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
+                             std::llabs(d_ns - a_ns) > cond_threshold() && a_ns <= COND_GAP_NS;
+        if (!stepped && std::llabs(d_ns) <= cond_threshold()) cond_remember(c, d_ns);   // the nominal's source
+        if (is_ref) {
+            if (stepped) {
+                // floor_div, not `/`: `cond_step_ns` is negative on a backward
+                // PTS step (the common case here), and C++ truncation toward
+                // zero would round it one tick off python's `//` — the twins
+                // must write byte-identical bytes.
                 const int64_t step = floor_div(cond_step_ns(c, d_ns) * 9, 100000);
-                c.offset -= step;
-                c.own -= step;
-                c.own_since = c.own != 0 ? (c.own_since ? c.own_since : house_now) : 0;
+                cond_prog_offset_ -= step;
+                c.prog_applied = cond_prog_offset_;
+                c.offset = cond_prog_offset_ + c.own;
                 absorbed++;
                 if (on_conditioned_) on_conditioned_({pid, false, step, c.offset, house_now});
             }
-            if (c.own != 0 && c.own_since != 0 && house_now - c.own_since > COND_OWN_HOLD_NS) {
-                // Never reverted: not a pacer glitch but where this stream now
-                // sits (a consumer's branch alignment pulling it into step with
-                // its siblings — .103 muxer egress, 2026-09-17). Release it: the
-                // wire takes the one step it was owed instead of carrying a
-                // misplacement for the life of the stream.
-                const int64_t rel = c.own;
-                c.offset -= rel;
-                c.own = 0;
-                c.own_since = 0;
-                if (on_conditioned_) on_conditioned_({pid, false, rel, c.offset, house_now});
-            }
-            c.last_raw = pts;
-            c.last_house = house_now;
+        } else if (pending != 0 &&
+                   std::llabs(floor_div((d_ns - a_ns) * 9, 100000) + pending) <=
+                       floor_div(cond_threshold() * 9, 100000)) {
+            // Its PTS jumped by what the reference's did: the same clock step,
+            // adopted whole. Judged on the jump beyond the time that passed,
+            // so a PID idle across the restart (gap + step) adopts it too.
+            c.offset += pending;
+            c.prog_applied = cond_prog_offset_;
+            absorbed++;
+            if (on_conditioned_) on_conditioned_({pid, false, -pending, c.offset, house_now});
+        } else if (timing && stepped) {
+            const int64_t step = floor_div(cond_step_ns(c, d_ns) * 9, 100000);
+            c.offset -= step;
+            c.own -= step;
+            c.own_since = c.own != 0 ? (c.own_since ? c.own_since : house_now) : 0;
+            absorbed++;
+            if (on_conditioned_) on_conditioned_({pid, false, step, c.offset, house_now});
         }
-        const CondClock& c = it->second;
-        int64_t wpts = (pts + c.offset) % PTS_WRAP;
-        if (wpts < 0) wpts += PTS_WRAP;
-        if (timing) {
-            // The reference PID is the one carrying the PCR (its PTS is what the
-            // PCR must trail — an audio PID's PTS can lead the video's by over a
-            // second, and a PCR derived from it puts every video frame that far
-            // late: .103, 2026-09-08 11:41). Until a PES on the PCR PID is seen,
-            // the first PES PID stands in.
-            if (cond_ref_pid_ < 0 || (pid == cond_pcr_pid_ && cond_ref_pid_ != pid)) {
-                cond_ref_pid_ = pid;
-                cond_pcr_regen_ = false;          // a new reference is a new PCR epoch: flagged, unguarded
-            }
-            if (pid == cond_ref_pid_) {
-                cond_ref_wpts_ = wpts;
-                cond_ref_house_ = house_now;
-            }
-            cond_seen_[pid] = {wpts, house_now};
+        if (c.own != 0 && c.own_since != 0 && house_now - c.own_since > COND_OWN_HOLD_NS) {
+            // Never reverted: not a pacer glitch but where this stream now
+            // sits (a consumer's branch alignment pulling it into step with
+            // its siblings — .103 muxer egress, 2026-09-17). Release it: the
+            // wire takes the one step it was owed instead of carrying a
+            // misplacement for the life of the stream.
+            const int64_t rel = c.own;
+            c.offset -= rel;
+            c.own = 0;
+            c.own_since = 0;
+            if (on_conditioned_) on_conditioned_({pid, false, rel, c.offset, house_now});
         }
-        if (c.offset == 0) continue;
-        write_ts_field(pkt + poff + 9, wpts);
-        const int64_t dts = read_pes_dts(pkt);
-        if (dts >= 0) {
-            int64_t wdts = (dts + c.offset) % PTS_WRAP;
-            if (wdts < 0) wdts += PTS_WRAP;
-            // A DTS after its own PTS is not a timeline (vMix writes one while
-            // its pacer resets); decode no later than presentation.
-            if (fold(wdts - wpts, PTS_WRAP) > 0) wdts = wpts;
-            write_ts_field(pkt + poff + 14, wdts);
+        c.last_raw = pts;
+        c.last_house = house_now;
+    }
+    const CondClock& c = it->second;
+    int64_t wpts = (pts + c.offset) % PTS_WRAP;
+    if (wpts < 0) wpts += PTS_WRAP;
+    if (timing) {
+        // The reference PID is the one carrying the PCR (its PTS is what the
+        // PCR must trail — an audio PID's PTS can lead the video's by over a
+        // second, and a PCR derived from it puts every video frame that far
+        // late: .103, 2026-09-08 11:41). Until a PES on the PCR PID is seen,
+        // the first PES PID stands in.
+        if (cond_ref_pid_ < 0 || (pid == cond_pcr_pid_ && cond_ref_pid_ != pid)) {
+            cond_ref_pid_ = pid;
+            cond_pcr_regen_ = false;          // a new reference is a new PCR epoch: flagged, unguarded
         }
+        if (pid == cond_ref_pid_) {
+            cond_ref_wpts_ = wpts;
+            cond_ref_house_ = house_now;
+        }
+        cond_seen_[pid] = {wpts, house_now};
+    }
+    if (c.offset == 0) return absorbed;
+    write_ts_field(pkt + poff + 9, wpts);
+    const int64_t dts = read_pes_dts(pkt);
+    if (dts >= 0) {
+        int64_t wdts = (dts + c.offset) % PTS_WRAP;
+        if (wdts < 0) wdts += PTS_WRAP;
+        // A DTS after its own PTS is not a timeline (vMix writes one while
+        // its pacer resets); decode no later than presentation.
+        if (fold(wdts - wpts, PTS_WRAP) > 0) wdts = wpts;
+        write_ts_field(pkt + poff + 14, wdts);
     }
     return absorbed;
 }

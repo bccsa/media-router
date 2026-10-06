@@ -1131,6 +1131,53 @@ capture or file producer's bytes are never touched):
   after its own PTS (vMix writes one while its pacer resets) is clamped to the
   PTS.
 
+- **Amendment 2026-10-04 (.24 post-outage silence): a restart reaches the wire
+  in EITHER direction, an arrival gap is never a step, and no clock cached
+  across a gap reaches a consumer.** .21 rebooted during a 588 s outage. Its
+  muxer runs on the house clock (Decision 3: running time is CLOCK_MONOTONIC)
+  and mpegtsmux adds a 1 h base, so .21's PTS is its uptime + 1 h: it came
+  back on a clock 9.04 h *behind* its old one (326705954 = 3630 s, ~30 s after
+  boot). Only a reboot or a different source moves that clock back; a muxer or
+  engine restart only adds a forward gap. The PES path left that backward jump
+  to the watch as designed, but the regenerated PCR's monotone guard ran before
+  its restart test, so the PCR stayed pinned at the old epoch's last value (a
+  `timeline_conditioned` PCR event every ~0.33 s, the offset falling at exactly
+  real time): every consumer PES sat > 15 s off its PCR, `tsdemux` timestamped
+  none of them, the splitter re-injected no PCR on its audio leg, and the
+  running audio decoder fell the outage (588 s) late into silence. The restart
+  test now runs first. Separately, an 8.2 s reconnect gap whose arrival ran
+  ~0.33 s past its PTS (the reconnect's own delay) read as a 300 ms "step"; the
+  reference absorbed the whole gap and no other PID could adopt it, leaving the
+  audio 8.2 s off the video. A PES that arrives more than `COND_GAP_NS` (1 s,
+  `ts_timeline.h`) after its predecessor is now never a step. And two clocks
+  went stale across such a gap: mpegtsmux puts every PCR on a PES start, but
+  the PCR is read before its packet's PES, so past a gap it was regenerated
+  from the PRE-gap floor — 8.4 s behind its own frame — and mr-tssplit
+  re-injected its pre-gap master PCR on the first audio batch. Replaying the
+  sequence with the first two fixes, either way a consumer's `tsdemux` (which
+  re-bases on any PCR more than 1 s off its receive clock) placed the next PES
+  8.4 s early. Past a gap the PCR is now regenerated
+  after its own packet's PES, and mr-tssplit forgets the master PCR when its
+  input pauses longer than `COND_GAP_NS` (`SplitterCore::forget_master_pcr`).
+  Pinned in `ts_timeline_test.{py,cpp}` ("earlier-epoch restart …", "an input
+  gap is not a clock step …", "a PCR on the first PES past …"),
+  `ts_split_test.{py,cpp}` ("forget_master_pcr …") and `mrTssplit.test.ts`.
+  **Scope: the wire is right in both directions; a running consumer survives
+  only a BACKWARD restart.** On .24 (2026-10-05; an earlier-epoch test feed on
+  .21's SRT port stood in for the reboot) a backward restart now leaves
+  mr-tssplit with one re-anchor and no `timeline_conditioned` event and both
+  audio legs playing; before this amendment (a0f6f13c) the PCR stayed pinned
+  (the offset falling 90003 ticks/s) and the decoder fell silent with health
+  "ok". After a FORWARD restart mr-tssplit is just as clean, but the running
+  audio-decoder's `tsdemux` still loses the timeline, with or without this
+  amendment: silent with health "ok", late by the outage (185945 ms after a
+  186 s outage) or, after a short outage, early. That is consumer side. It is
+  not rare: PTS wraps every 26.5 h, so a source that reboots after more than
+  ~13.25 h of uptime (modulo 26.5 h) arrives as a forward jump.
+  Left open (TodoNotes): that forward case; the stamper still stamps the first
+  post-gap buffers on the pre-gap anchor until the watch confirms; and a
+  PCR-only packet past a gap still carries the pre-gap floor.
+
 - **It elects a TIMING PID.** The PID carrying the PCR is the timeline's
   reference; only it may move the shared anchor (the discontinuity watch, the
   late/early tiers, the drift slew all gate on it), because a muxed egress

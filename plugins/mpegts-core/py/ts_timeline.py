@@ -350,6 +350,23 @@ class TimelineStamper:
     # visible in the journal while the picture no longer pays for it.
     _COND_STEP_NS = 300_000_000         # default; a producer may lower it per egress (`condition_step_ns`)
     _COND_MAX_NS = 10_000_000_000
+    # An ARRIVAL pause longer than this is a delivery GAP — a stall, an input
+    # reconnect — and never a clock step, whatever the PTS did across it: a
+    # pacer reset never stops delivery, and across a pause arrival no longer
+    # measures media time to the step threshold's precision. On .24
+    # (2026-10-04) a reconnect's own delay put arrival ~330 ms past the PTS, so
+    # an 8.2 s outage (PTS +8.2 s, arrival +8.55 s) read as a 300 ms "step": the
+    # reference absorbed the WHOLE gap (d − nominal), no other PID could adopt
+    # it (their own jump beyond the time passed was −0.33 s, not −8.2 s), and
+    # the audio sat 8.2 s off the video and the PCR for the life of the
+    # process. Past it the gap stays a gap and the stamper's watch and level
+    # tiers own whatever mapping error the reconnect left. A clock cached
+    # across it is stale too: a PCR past it is regenerated after its own PES
+    # (see `_COND_PCR_LEAD_NS`), and mr-tssplit forgets the master PCR it
+    # re-injects. 1 s is also tsdemux's `pcr_discont_threshold` — a PCR
+    # further than that off its receive clock re-bases the consumer onto it
+    # (C++: COND_GAP_NS, public in ts_timeline.h for mr-tssplit).
+    _COND_GAP_NS = 1_000_000_000
     # How long a PID's OWN correction (a step it took alone) is carried before
     # it is released as the stream's real placement (C++: COND_OWN_HOLD_NS).
     _COND_OWN_HOLD_NS = 30_000_000_000
@@ -373,10 +390,17 @@ class TimelineStamper:
     # regenerated clock therefore runs with the pictures —
     # which is what the splitter's re-injected PCR already did for every
     # non-PCR output — and the source's PCR can do what it likes. The first
-    # regenerated value, and any genuine gap in the PTS timeline (the source
-    # dropped pictures), carry the discontinuity indicator; a monotone guard
-    # keeps it from ever stepping back. One event per new deviation of the
-    # source's PCR from ours, so the source fault stays visible.
+    # regenerated value, and a jump past `_COND_MAX_NS` beyond the time that
+    # passed (a source restart — FORWARD OR BACK), carry the discontinuity
+    # indicator and reach the wire as written; short of that a monotone guard
+    # keeps it from stepping back (jitter, floor moves). A PCR that arrives
+    # past a delivery gap (`_COND_GAP_NS`) is regenerated AFTER its own
+    # packet's PES: the floor is then the pre-gap media position, and a PCR
+    # from it trailed the next PES by the whole gap — mpegtsmux puts every PCR
+    # on a PES start, so replaying .24's 2026-10-04 8.2 s reconnect the first
+    # PCR past it sat 8.4 s behind its own frame and every consumer placed
+    # that frame 8.4 s early. One event per new deviation of the source's PCR
+    # from ours, so the source fault stays visible.
     _COND_PCR_LEAD_NS = 250_000_000
     # The PTS the regenerated PCR trails is the LOWEST recent written PTS of any
     # stream — an audio PID can lag the video's by hundreds of ms (270 ms on the
@@ -1085,6 +1109,7 @@ class TimelineStamper:
             pkt = data[off:off + PKT]
             pid = ts_pid(pkt)
             pcr = read_pcr(pkt)
+            pcr_after_pes = False
             if pcr is not None:
                 self._cond_pcr_pid = pid
                 if self._timing_pid != pid:
@@ -1093,139 +1118,174 @@ class TimelineStamper:
                     # onto the timing PID's next PES (reported as a re-anchor).
                     self._timing_rebase_pending = (self.anchor is not None
                                                    and self._anchor_pid != pid)
-                if self._cond_ref_pid is not None:
-                    # wpts − lead, in MEDIA time: flat between frames, never
-                    # advanced by arrival (a big I-frame's wire time is not media
-                    # time; interpolating by it stepped the PCR on the .103 capture).
-                    w = (self._cond_pcr_floor_pts(house_now) * 300
-                         - self._COND_PCR_LEAD_NS * 27 // 1000) % PCR_MODULO
-                    di = not self._cond_pcr_regen            # first regenerated value
-                    if self._cond_pcr_regen:                 # guard among regenerated values only
-                        dw = self._fold(w - self._cond_last_wpcr, PCR_MODULO)
-                        if dw < 0:
-                            w = self._cond_last_wpcr              # monotone guard
-                        elif abs(dw * 1000 // 27 - (house_now - self._cond_last_wpcr_house)) \
-                                > self._COND_MAX_NS:
-                            # The clock moved by more than the conditioner's bound
-                            # past the time that passed: a source restart, which
-                            # reaches the wire as written. NOT a delivery burst —
-                            # SRT hands us hundreds of ms in one go, and a demuxer
-                            # told to reset on each of those re-armed the keyframe
-                            # gate every GOP (.103, 2026-09-08 12:23).
-                            di = True
-                    if di:
-                        data[off + 5] |= 0x80                    # signalled discontinuity
-                    self._write_pcr(data, off, w)
-                    self._cond_pcr_regen = True
-                    self._cond_last_wpcr = w
-                    self._cond_last_wpcr_house = house_now
-                    # One event per new deviation of the source's PCR from ours.
-                    o = self._fold(w - pcr, PCR_MODULO)
-                    if (self._cond_pcr_reported is None
-                            or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._cond_threshold_ns):
-                        step = o if self._cond_pcr_reported is None else o - self._cond_pcr_reported
-                        self._cond_pcr_reported = o
-                        absorbed += 1
-                        if self._on_conditioned:
-                            self._on_conditioned({'pid': pid, 'clock': 'pcr',
-                                                  'stepTicks': step // 300, 'offsetTicks': o // 300,
-                                                  'houseNs': house_now})
-                else:
-                    self._cond_last_wpcr = pcr                   # raw, until a PTS exists
-            if not (pkt[1] & 0x40):
-                continue
-            pts = read_pes_pts(pkt)
-            if pts is None:
-                continue
-            poff = payload_offset(pkt)
-            # Which PIDs may define a clock: `timing_pes`. A private-data PID's
-            # PTS is not a clock — never steps the program, never the PCR's
-            # reference or floor — but it IS on the program's timeline and
-            # follows the program's correction like every other PID.
-            timing = timing_pes(pkt, pid, self._timing_pid)
-            is_ref = timing and (self._cond_ref_pid is None or pid == self._cond_ref_pid
-                                 or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid))
-            # ONE program, ONE clock — with PIDs that may also step on their
-            # own: the reference's steps are the program's; another PID adopts
-            # the pending program correction when its own PTS jumps by the same
-            # amount, keeps a step it took alone as its own (the vMix pacer
-            # reset), and has that own part released after _COND_OWN_HOLD_NS if
-            # it never reverts (a branch alignment is placement, not a clock).
-            c = self._cond_pes.get(pid)
-            if c is None:
-                c = self._cond_pes[pid] = {'last_raw': pts, 'last_house': house_now,
-                                           'offset': self._cond_prog_offset, 'own': 0, 'own_since': 0,
-                                           'prog_applied': self._cond_prog_offset, 'recent': []}
-            else:
-                d_ns = pts90k_to_ns(self._fold(pts - c['last_raw'], PTS_WRAP))
-                a_ns = house_now - c['last_house']
-                pending = self._cond_prog_offset - c['prog_applied']
-                stepped = (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
-                           and abs(d_ns - a_ns) > self._cond_threshold_ns)
-                if not stepped and abs(d_ns) <= self._cond_threshold_ns:
-                    self._cond_remember(c, d_ns)                     # the nominal's source
-                if is_ref:
-                    if stepped:
-                        step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
-                        self._cond_prog_offset -= step
-                        c['prog_applied'] = self._cond_prog_offset
-                        c['offset'] = self._cond_prog_offset + c['own']
-                        absorbed += 1
-                        if self._on_conditioned:
-                            self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
-                                                  'offsetTicks': c['offset'], 'houseNs': house_now})
-                elif pending and abs((d_ns - a_ns) * _NS_DEN // _NS_NUM + pending) \
-                        <= self._cond_threshold_ns * _NS_DEN // _NS_NUM:
-                    c['offset'] += pending
-                    c['prog_applied'] = self._cond_prog_offset
-                    absorbed += 1
-                    if self._on_conditioned:
-                        self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': -pending,
-                                              'offsetTicks': c['offset'], 'houseNs': house_now})
-                elif timing and stepped:
+                # Past a delivery gap the floor is the pre-gap media position, and
+                # a PCR regenerated from it trails the PES that follows by the
+                # whole gap: a consumer's tsdemux re-bases on it and places that
+                # PES the gap EARLY (8.4 s replaying .24's 2026-10-04 reconnect).
+                # mpegtsmux puts every PCR on a PES start, so such a PCR is
+                # regenerated after its own packet's PES (C++ parity).
+                pcr_after_pes = (self._cond_ref_pid is not None
+                                 and house_now - self._cond_ref_house > self._COND_GAP_NS)
+                if not pcr_after_pes:
+                    absorbed += self._condition_pcr(data, off, pid, pcr, house_now)
+            absorbed += self._condition_pes(data, off, pkt, pid, house_now)
+            if pcr_after_pes:
+                absorbed += self._condition_pcr(data, off, pid, pcr, house_now)
+        return absorbed
+
+    def _condition_pcr(self, data, off, pid, pcr, house_now):
+        """`condition`'s PCR half: regenerate this packet's PCR from the floor
+        (until a PTS exists, only record the raw value). Returns 1 when the
+        source's PCR deviation is reported."""
+        if self._cond_ref_pid is None:
+            self._cond_last_wpcr = pcr                   # raw, until a PTS exists
+            return 0
+        # wpts − lead, in MEDIA time: flat between frames, never
+        # advanced by arrival (a big I-frame's wire time is not media
+        # time; interpolating by it stepped the PCR on the .103 capture).
+        w = (self._cond_pcr_floor_pts(house_now) * 300
+             - self._COND_PCR_LEAD_NS * 27 // 1000) % PCR_MODULO
+        di = not self._cond_pcr_regen            # first regenerated value
+        if self._cond_pcr_regen:                 # guard among regenerated values only
+            dw = self._fold(w - self._cond_last_wpcr, PCR_MODULO)
+            if abs(dw * 1000 // 27 - (house_now - self._cond_last_wpcr_house)) \
+                    > self._COND_MAX_NS:
+                # The clock moved by more than the conditioner's bound
+                # past the time that passed: a source restart, which
+                # reaches the wire as written — FORWARD OR BACK. NOT a
+                # delivery burst — SRT hands us hundreds of ms in one
+                # go, and a demuxer told to reset on each of those
+                # re-armed the keyframe gate every GOP (.103,
+                # 2026-09-08 12:23). Tested BEFORE the monotone guard:
+                # a restart onto an EARLIER epoch otherwise pinned the
+                # PCR at the old epoch's last value until the new PTS
+                # caught up — 9 h on .24 (2026-10-04): every consumer's
+                # PES sat > 15 s off its PCR, tsdemux timestamped none
+                # of them, and the running audio decoder fell the
+                # outage (588 s) late and played silence.
+                di = True
+            elif dw < 0:
+                w = self._cond_last_wpcr              # monotone guard: jitter and floor moves only
+        if di:
+            data[off + 5] |= 0x80                    # signalled discontinuity
+        self._write_pcr(data, off, w)
+        self._cond_pcr_regen = True
+        self._cond_last_wpcr = w
+        self._cond_last_wpcr_house = house_now
+        # One event per new deviation of the source's PCR from ours.
+        o = self._fold(w - pcr, PCR_MODULO)
+        if (self._cond_pcr_reported is None
+                or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._cond_threshold_ns):
+            step = o if self._cond_pcr_reported is None else o - self._cond_pcr_reported
+            self._cond_pcr_reported = o
+            if self._on_conditioned:
+                self._on_conditioned({'pid': pid, 'clock': 'pcr',
+                                      'stepTicks': step // 300, 'offsetTicks': o // 300,
+                                      'houseNs': house_now})
+            return 1
+        return 0
+
+    def _condition_pes(self, data, off, pkt, pid, house_now):
+        """`condition`'s PES half: condition this packet's PES PTS/DTS (`pkt`
+        is its unmodified copy). Returns the steps absorbed."""
+        if not (pkt[1] & 0x40):
+            return 0
+        pts = read_pes_pts(pkt)
+        if pts is None:
+            return 0
+        absorbed = 0
+        poff = payload_offset(pkt)
+        # Which PIDs may define a clock: `timing_pes`. A private-data PID's
+        # PTS is not a clock — never steps the program, never the PCR's
+        # reference or floor — but it IS on the program's timeline and
+        # follows the program's correction like every other PID.
+        timing = timing_pes(pkt, pid, self._timing_pid)
+        is_ref = timing and (self._cond_ref_pid is None or pid == self._cond_ref_pid
+                             or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid))
+        # ONE program, ONE clock — with PIDs that may also step on their
+        # own: the reference's steps are the program's; another PID adopts
+        # the pending program correction when its own PTS jumps by the same
+        # amount, keeps a step it took alone as its own (the vMix pacer
+        # reset), and has that own part released after _COND_OWN_HOLD_NS if
+        # it never reverts (a branch alignment is placement, not a clock).
+        c = self._cond_pes.get(pid)
+        if c is None:
+            c = self._cond_pes[pid] = {'last_raw': pts, 'last_house': house_now,
+                                       'offset': self._cond_prog_offset, 'own': 0, 'own_since': 0,
+                                       'prog_applied': self._cond_prog_offset, 'recent': []}
+        else:
+            d_ns = pts90k_to_ns(self._fold(pts - c['last_raw'], PTS_WRAP))
+            a_ns = house_now - c['last_house']
+            pending = self._cond_prog_offset - c['prog_applied']
+            # Never across a delivery gap (_COND_GAP_NS): past a pause,
+            # arrival no longer measures media time to the step threshold.
+            stepped = (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
+                       and abs(d_ns - a_ns) > self._cond_threshold_ns
+                       and a_ns <= self._COND_GAP_NS)
+            if not stepped and abs(d_ns) <= self._cond_threshold_ns:
+                self._cond_remember(c, d_ns)                     # the nominal's source
+            if is_ref:
+                if stepped:
                     step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
-                    c['offset'] -= step
-                    c['own'] -= step
-                    c['own_since'] = (c['own_since'] or house_now) if c['own'] else 0
+                    self._cond_prog_offset -= step
+                    c['prog_applied'] = self._cond_prog_offset
+                    c['offset'] = self._cond_prog_offset + c['own']
                     absorbed += 1
                     if self._on_conditioned:
                         self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
                                               'offsetTicks': c['offset'], 'houseNs': house_now})
-                if c['own'] and c['own_since'] and house_now - c['own_since'] > self._COND_OWN_HOLD_NS:
-                    rel = c['own']
-                    c['offset'] -= rel
-                    c['own'] = 0
-                    c['own_since'] = 0
-                    if self._on_conditioned:
-                        self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': rel,
-                                              'offsetTicks': c['offset'], 'houseNs': house_now})
-                c['last_raw'], c['last_house'] = pts, house_now
-            wpts = (pts + c['offset']) % PTS_WRAP
-            if timing:
-                # The reference PID is the one carrying the PCR (its PTS is what
-                # the PCR must trail — an audio PID's PTS can lead the video's by
-                # over a second, and a PCR derived from it puts every video frame
-                # that far late: .103, 2026-09-08 11:41). Until a PES on the PCR
-                # PID is seen, the first PES PID stands in.
-                if self._cond_ref_pid is None or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid):
-                    self._cond_ref_pid = pid
-                    self._cond_pcr_regen = False      # a new reference is a new PCR epoch: flagged, unguarded
-                if pid == self._cond_ref_pid:
-                    self._cond_ref_wpts, self._cond_ref_house = wpts, house_now
-                self._cond_seen[pid] = (wpts, house_now)
-            if not c['offset']:
-                continue
-            self._write_ts_field(data, off + poff + 9, wpts)
-            if pkt[poff + 7] & 0x40 and poff + 19 <= PKT:
-                q = pkt[poff + 14:poff + 19]
-                dts = (((q[0] >> 1) & 0x07) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) \
-                    | (q[3] << 7) | (q[4] >> 1)
-                wdts = (dts + c['offset']) % PTS_WRAP
-                # A DTS after its own PTS is not a timeline (vMix writes one
-                # while its pacer resets): decode no later than presentation.
-                if self._fold(wdts - wpts, PTS_WRAP) > 0:
-                    wdts = wpts
-                self._write_ts_field(data, off + poff + 14, wdts)
+            elif pending and abs((d_ns - a_ns) * _NS_DEN // _NS_NUM + pending) \
+                    <= self._cond_threshold_ns * _NS_DEN // _NS_NUM:
+                c['offset'] += pending
+                c['prog_applied'] = self._cond_prog_offset
+                absorbed += 1
+                if self._on_conditioned:
+                    self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': -pending,
+                                          'offsetTicks': c['offset'], 'houseNs': house_now})
+            elif timing and stepped:
+                step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
+                c['offset'] -= step
+                c['own'] -= step
+                c['own_since'] = (c['own_since'] or house_now) if c['own'] else 0
+                absorbed += 1
+                if self._on_conditioned:
+                    self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
+                                          'offsetTicks': c['offset'], 'houseNs': house_now})
+            if c['own'] and c['own_since'] and house_now - c['own_since'] > self._COND_OWN_HOLD_NS:
+                rel = c['own']
+                c['offset'] -= rel
+                c['own'] = 0
+                c['own_since'] = 0
+                if self._on_conditioned:
+                    self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': rel,
+                                          'offsetTicks': c['offset'], 'houseNs': house_now})
+            c['last_raw'], c['last_house'] = pts, house_now
+        wpts = (pts + c['offset']) % PTS_WRAP
+        if timing:
+            # The reference PID is the one carrying the PCR (its PTS is what
+            # the PCR must trail — an audio PID's PTS can lead the video's by
+            # over a second, and a PCR derived from it puts every video frame
+            # that far late: .103, 2026-09-08 11:41). Until a PES on the PCR
+            # PID is seen, the first PES PID stands in.
+            if self._cond_ref_pid is None or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid):
+                self._cond_ref_pid = pid
+                self._cond_pcr_regen = False      # a new reference is a new PCR epoch: flagged, unguarded
+            if pid == self._cond_ref_pid:
+                self._cond_ref_wpts, self._cond_ref_house = wpts, house_now
+            self._cond_seen[pid] = (wpts, house_now)
+        if not c['offset']:
+            return absorbed
+        self._write_ts_field(data, off + poff + 9, wpts)
+        if pkt[poff + 7] & 0x40 and poff + 19 <= PKT:
+            q = pkt[poff + 14:poff + 19]
+            dts = (((q[0] >> 1) & 0x07) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) \
+                | (q[3] << 7) | (q[4] >> 1)
+            wdts = (dts + c['offset']) % PTS_WRAP
+            # A DTS after its own PTS is not a timeline (vMix writes one
+            # while its pacer resets): decode no later than presentation.
+            if self._fold(wdts - wpts, PTS_WRAP) > 0:
+                wdts = wpts
+            self._write_ts_field(data, off + poff + 14, wdts)
         return absorbed
 
     def _cond_pcr_floor_pts(self, house_now):

@@ -500,5 +500,51 @@ int main() {
     CHECK("added output re-injects PCR (it is not the source PCR pid)",
           !adaptation_only(added_out, AUDIO_PID).empty());
 
+    // --- an input gap forgets the master PCR (.24, 2026-10-04) ---
+    // ts_split_test.py parity. The field shape: a video-only stretch carried a
+    // PCR the audio output never got, then the input paused; the first audio
+    // batch after the pause was prefixed with that pre-gap PCR — 8.4 s behind
+    // its PES replaying .24's sequence, so every consumer's tsdemux placed the
+    // audio 8.4 s early. mr-tssplit calls forget_master_pcr() on an input gap
+    // (COND_GAP_NS); injection then waits for the first PCR seen after it.
+    for (const bool forget : {false, true}) {
+        SplitterCore core_f(1, {{VIDEO_PID, -1}, {AUDIO_PID, -1}});
+        uint8_t tmp[PKT];
+        Bytes psi;
+        build_pat(7, {{1, PMT_PID}}, 0, 0, tmp);
+        append_pkt(psi, tmp);
+        build_pmt(PMT_PID, 1, VIDEO_PID,
+                  {{VIDEO_PID, STREAM_TYPE_AVC, {}}, {AUDIO_PID, STREAM_TYPE_AAC, {}}}, 0, 0, tmp);
+        append_pkt(psi, tmp);
+        auto with_pcr = [&](int64_t pcr27, const Bytes& es) {
+            Bytes b;
+            build_pcr_packet(VIDEO_PID, pcr27, 0, tmp);
+            append_pkt(b, tmp);
+            b.insert(b.end(), es.begin(), es.end());
+            return b;
+        };
+        auto audio_pcrs = [&](const Bytes& in) {   // PCRs injected on the audio output
+            std::vector<int64_t> v;
+            for (const auto& bt : core_f.feed(in.data(), in.size()))
+                if (bt.pid == AUDIO_PID)
+                    for (auto& p : adaptation_only(*bt.data, AUDIO_PID)) v.push_back(read_pcr(p.data()));
+            return v;
+        };
+        audio_pcrs(psi);
+        audio_pcrs(with_pcr(27'000'000, es_packet(AUDIO_PID, 0, true)));   // the audio has 1.00 s
+        audio_pcrs(with_pcr(27'540'000, es_packet(VIDEO_PID, 0, true)));   // video only: 1.02 s
+        if (forget) core_f.forget_master_pcr();                             // ... and the input paused
+        const auto first = audio_pcrs(es_packet(AUDIO_PID, 1, false));
+        const auto next = audio_pcrs(with_pcr(254'000'000, es_packet(AUDIO_PID, 2, false)));
+        if (forget) {
+            CHECK("forget_master_pcr: the first audio batch past a gap carries no pre-gap PCR", first.empty());
+            CHECK("... injection resumes with the first PCR seen after it",
+                  next.size() == 1 && next[0] == 254'000'000);
+        } else {
+            CHECK("(without it, the first audio batch past a gap carries the pre-gap PCR)",
+                  first.size() == 1 && first[0] == 27'540'000);
+        }
+    }
+
     return test_summary("ts_split");
 }
