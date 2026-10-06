@@ -21,6 +21,7 @@ import importlib.util
 import io
 import os
 import sys
+import threading
 import time
 
 try:
@@ -120,7 +121,7 @@ def build(keyframe_aligned=True, budget_ms=BUDGET_MS, dec="identity name=vdec",
     return pipe, pipe.get_by_name("src"), arrivals
 
 
-def push(src, backlog_ms, delta=True):
+def push(src, backlog_ms, delta=True, gap=False):
     """One buffer carrying `backlog_ms` of retained latency."""
     clock = Gst.SystemClock.obtain()
     buf = Gst.Buffer.new_allocate(None, 32, None)
@@ -128,6 +129,8 @@ def push(src, backlog_ms, delta=True):
     buf.duration = 20 * Gst.MSECOND
     if delta:
         buf.set_flags(Gst.BufferFlags.DELTA_UNIT)
+    if gap:
+        buf.set_flags(Gst.BufferFlags.GAP)
     return src.emit("push-buffer", buf) == Gst.FlowReturn.OK
 
 
@@ -548,6 +551,86 @@ check("and none of its stages can ever run",
       and runner._backlog_shed["stall"].escalations == 0
       and pipe.get_bus().pop_filtered(Gst.MessageType.ERROR) is None)
 teardown(pipe)
+
+# --- playout lateness: a sink-point leg reports the audio it lost ------------
+# .24, 2026-10-04: pulsesink writes a late buffer at its timestamp's ring slot,
+# the server has already read past it, and 23.7 % of a headphone's audio was
+# silence with health "ok". Where the shed point IS the sink, every buffer
+# feeds a window (200 ms here, 10 s shipped; GAP buffers count no audio), and
+# each closed window is sent from the MAIN LOOP — never the streaming thread,
+# which must not block on a full event pipe.
+WINDOW_KEYS = ["budgetMs", "lateMs", "latencyMs", "maxLatenessMs", "mediaMs", "minLatenessMs"]
+lateness_cls = sys.modules["backlog_shed"].LatenessWindow
+
+
+def lateness_leg():
+    """An audio-shaped leg: the shed point is the sink, nothing ever sheds."""
+    pipe, src, _ = build(keyframe_aligned=False, element="sink", toleranceMs=5_000)
+    runner._backlog_shed["lateness"] = lateness_cls(window_ms=200)
+    return pipe, src
+
+
+def lateness_reports(backlog_ms, muted_after_ms=None, ms=500):
+    """Push for `ms` — every buffer GAP from `muted_after_ms` on, as a
+    `volume=0` mute does — then drain the main loop; the reports, each with the
+    thread it was emitted on."""
+    got = []
+    runner.emit_plugin_event = lambda ch, p: got.append((ch, p, threading.current_thread()))
+    pipe, src = lateness_leg()
+    start = time.monotonic()
+    while time.monotonic() - start < ms / 1000.0:
+        muted = muted_after_ms is not None and time.monotonic() - start >= muted_after_ms / 1000.0
+        push(src, backlog_ms, gap=muted)
+        time.sleep(0.02)
+    queued_unsent = got == []
+    pump_until(lambda: False, 0.3)
+    teardown(pipe)
+    reports = [(p, th) for ch, p, th in got if ch == "playout_lateness"]
+    return reports, queued_unsent
+
+
+reports, queued_unsent = lateness_reports(BUDGET_MS - 50)
+check("an on-time sink-point leg reports its windows", len(reports) >= 2)
+check("  ...from the main loop: none while only the streaming thread ran",
+      queued_unsent and all(th is threading.main_thread() for _, th in reports))
+check("  ...each with exactly the six report fields",
+      all(sorted(p) == WINDOW_KEYS for p, _ in reports))
+check("  ...nothing late, worst and floor inside the budget",
+      all(p["lateMs"] == 0.0 and p["minLatenessMs"] <= p["maxLatenessMs"] < 0 for p, _ in reports))
+check("  ...and the budget it was measured against (ts-offset + latency)",
+      all(p["budgetMs"] == BUDGET_MS + p["latencyMs"] for p, _ in reports))
+
+reports, _ = lateness_reports(BUDGET_MS + 5)
+check("5 ms late on 20 ms buffers loses part of every window",
+      reports and all(0.0 < p["lateMs"] < p["mediaMs"] for p, _ in reports))
+reports, _ = lateness_reports(BUDGET_MS + 40)
+check("past the buffer duration everything is lost, and the floor says so",
+      reports and all(p["lateMs"] == p["mediaMs"] > 0 and p["minLatenessMs"] > 0 for p, _ in reports))
+
+# GAP buffers are clock-waited by GstAudioBaseSink, never rung — their arrival
+# lateness is the sink's own throttling, not lost audio (a force-live mixer
+# with dark inputs emits nothing else). But they keep the windows closing: .24,
+# 2026-10-05, a muted leg that reported nothing kept its last late window, and
+# its warning, for the whole mute, and the window open at the mute closed only
+# after the unmute, with the stale lateness in it.
+NO_AUDIO = {"mediaMs": 0.0, "lateMs": 0.0, "maxLatenessMs": 0.0, "minLatenessMs": 0.0}
+reports, _ = lateness_reports(BUDGET_MS + 40, muted_after_ms=0)
+check("a GAP-only (muted) stream keeps closing windows, with no audio in them",
+      len(reports) >= 2 and all({k: p[k] for k in NO_AUDIO} == NO_AUDIO for p, _ in reports))
+reports, _ = lateness_reports(BUDGET_MS + 40, muted_after_ms=100)
+check("a window open at a mute closes on time, with only the audio before it",
+      len(reports) >= 2 and 0.0 < reports[0][0]["lateMs"] == reports[0][0]["mediaMs"] <= 120.0
+      and all({k: p[k] for k in NO_AUDIO} == NO_AUDIO for p, _ in reports[1:]))
+
+events = collect_plugin_events()
+pipe, src, _ = build(keyframe_aligned=True)
+push_for(src, 300, backlog_ms=BUDGET_MS + 40)
+pump_until(lambda: False, 0.3)
+check("a decoder-point (video) leg arms no lateness window",
+      runner._backlog_shed["lateness"] is None
+      and not [1 for ch, _ in events if ch == "playout_lateness"])
+teardown(pipe)
+runner.emit_plugin_event = lambda ch, payload: None
 
 print()
 if _failures:

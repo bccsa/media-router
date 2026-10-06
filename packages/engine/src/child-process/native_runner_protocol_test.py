@@ -423,6 +423,66 @@ def test_shed_refusals():
         r.kill()
 
 
+# --------------------------------------------------------------------------- F: playout lateness (sink-point legs)
+def test_playout_lateness():
+    """An audio leg whose shed point IS its sink reports `playout_lateness` once
+    per 10 s of running time, with the python twin's six fields (its own rules:
+    gst_backlog_shed_test.py). The sink is `sync=false`: a paced sink throttles
+    arrivals to just under the deadline, which would make the early arm
+    nondeterministic. `wave=silence` is all GAP buffers, which the sink
+    clock-waits instead of ringing: never counted, but they keep the windows
+    closing — as does a leg muted mid-window (`volume=0`, .24 2026-10-05)."""
+    def start(off_ms, wave):
+        r = RunnerProc()
+        r.wait_event(ev_is("ready"))
+        now_ns = Gst.SystemClock.obtain().get_time()
+        r.send({"cmd": "start", "timeSyncContract": True,
+                "pipeline": f"audiotestsrc is-live=true wave={wave} samplesperbuffer=480 timestamp-offset={now_ns}"
+                            " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! volume name=vol"
+                            f" ! fakesink name=sink sync=false ts-offset={off_ms * 1000000}",
+                "backlogShed": {"element": "sink", "sink": "sink", "keyframeAligned": False,
+                                "toleranceMs": 5000, "holdMs": 5000, "cooldownMs": 60000, "sanityMs": 10000}})
+        return r
+
+    is_report = lambda e: e.get("event") == "plugin_event" and e.get("channel") == "playout_lateness"
+    arms = [start(200, "sine"), start(-80, "sine"), start(-80, "silence"), start(-80, "sine")]
+    try:
+        # The fourth arm is muted the way audioEnabled=false does it, 3 s into
+        # its first window.
+        arms[3].wait_event(ev_is("state_change", state="playing"), timeout=10)
+        time.sleep(3)
+        arms[3].send({"cmd": "set_property", "id": "mute", "element": "vol", "property": "volume", "value": 0.0})
+        e = arms[0].wait_event(is_report, timeout=20)
+        l = arms[1].wait_event(is_report, timeout=20)
+        e, l = (e or {}).get("payload", {}), (l or {}).get("payload", {})
+        check("F one 10 s window with exactly the six report fields",
+              sorted(e) == ["budgetMs", "lateMs", "latencyMs", "maxLatenessMs", "mediaMs", "minLatenessMs"]
+              and sorted(l) == sorted(e) and 9_000 < e["mediaMs"] <= 10_100)
+        # The FLOOR is the on-time arrival: −ts-offset early, +80 late.
+        check("F early leg loses nothing; its floor is minus its headroom",
+              e.get("lateMs") == 0 and e["minLatenessMs"] <= e["maxLatenessMs"] < 0
+              and -201 < e["minLatenessMs"] < -150)
+        check("F late leg loses everything, and its floor says so",
+              l.get("mediaMs", 0) > 0 and l["lateMs"] == l["mediaMs"] and l["minLatenessMs"] > 79)
+        check("F the budget is ts-offset + latency",
+              abs(l.get("budgetMs", 0) - (-80 + l.get("latencyMs", 0))) <= 0.11)
+        no_audio = {"mediaMs": 0, "lateMs": 0, "maxLatenessMs": 0, "minLatenessMs": 0}
+        g = (arms[2].wait_event(is_report, timeout=20) or {}).get("payload", {})
+        check("F an all-GAP leg keeps closing windows, with no audio in them, however late",
+              {k: g.get(k) for k in no_audio} == no_audio)
+        m1 = arms[3].wait_event(is_report, timeout=20)
+        m2 = arms[3].wait_event(lambda ev: is_report(ev) and ev is not m1, timeout=20)
+        m1, m2 = (m1 or {}).get("payload", {}), (m2 or {}).get("payload", {})
+        check("F a window open at a mute closes on time, with only the audio before it",
+              0 < m1.get("mediaMs", 0) < 9_000 and m1.get("lateMs") == m1["mediaMs"])
+        check("F and the muted leg's next window carries no audio",
+              {k: m2.get(k) for k in no_audio} == no_audio)
+        check("F no error events", not any(r.has_event(ev_is("error")) for r in arms))
+    finally:
+        for r in arms:
+            r.kill()
+
+
 # --------------------------------------------------------------------------- G: runner hooks (native form)
 def make_klv_ts(path, n_buffers=40):
     """A TS with three KLV PES streams on PIDs 0x180, 0x181 and 0x1f0 — the
@@ -789,6 +849,7 @@ test_consumer_data_wait()
 test_refusals()
 test_presentation_leg()
 test_shed_refusals()
+test_playout_lateness()
 test_runner_hooks()
 test_subtitle_bridge_hook()
 test_video_gates()

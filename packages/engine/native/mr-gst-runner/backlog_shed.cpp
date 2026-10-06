@@ -4,6 +4,7 @@
 
 #include "gates.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -125,6 +126,40 @@ struct Policy {
     }
 };
 
+/** Late media at a sink-point leg, per window of running time — report-only,
+ *  backlog_shed.py LatenessWindow (same arithmetic, same fields). */
+constexpr double LATENESS_WINDOW_MS = 10000.0;
+struct LatenessWindow {
+    bool open = false, measured = false;
+    double start_ms = 0, media_ms = 0, late_ms = 0, max_ms = 0, min_ms = 0;
+    /** One buffer; the closed window's report (caller owns it) or nullptr. A GAP
+     *  buffer counts nothing but keeps the clock running: an all-GAP (muted)
+     *  window still closes, with mediaMs 0 and worst/floor 0. */
+    JsonObject* observe(double lateness_ms, double dur_ms, double now_ms, bool gap) {
+        if (!open) {
+            open = true;
+            measured = false;
+            start_ms = now_ms;
+            media_ms = late_ms = max_ms = min_ms = 0;
+        }
+        if (!gap) {
+            media_ms += dur_ms;
+            late_ms += std::min(std::max(lateness_ms, 0.0), dur_ms);
+            max_ms = measured ? std::max(max_ms, lateness_ms) : lateness_ms;
+            min_ms = measured ? std::min(min_ms, lateness_ms) : lateness_ms;
+            measured = true;
+        }
+        if (now_ms - start_ms < LATENESS_WINDOW_MS) return nullptr;
+        open = false;
+        JsonObject* o = json_object_new();
+        json_object_set_double_member(o, "mediaMs", round1(media_ms));
+        json_object_set_double_member(o, "lateMs", round1(late_ms));
+        json_object_set_double_member(o, "maxLatenessMs", round1(max_ms));
+        json_object_set_double_member(o, "minLatenessMs", round1(min_ms));
+        return o;
+    }
+};
+
 struct State {
     GstElement* pipe = nullptr;       // borrowed (the runner's pipeline)
     GstPad* pad = nullptr;            // owned
@@ -143,6 +178,9 @@ struct State {
     double caught_up_at = 0;
     bool keyframe_warned = false;
     double budget_ms = 0;
+    // `playout_lateness`, armed only where the shed point IS the sink.
+    bool report_lateness = false;
+    LatenessWindow lateness;
     // Written by the probe, read by the render watch on the main loop: a
     // benign race on floats that are only ever replaced (python does the same).
     std::atomic<bool> has_last{false};
@@ -219,6 +257,11 @@ void emit_shed_event(JsonObject* payload) {
     JsonNode* n = json_node_new(JSON_NODE_OBJECT);
     json_node_take_object(n, payload);
     runner().emit_plugin_event("backlog_shed", n);
+}
+
+gboolean emit_lateness_idle(gpointer node) {
+    runner().emit_plugin_event("playout_lateness", static_cast<JsonNode*>(node));
+    return G_SOURCE_REMOVE;
 }
 
 // --- post-shed stall watch -----------------------------------------------------
@@ -357,7 +400,8 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     }
     int64_t now_rt = (int64_t)gst_clock_get_time(clock) - (int64_t)gst_element_get_base_time(st.pipe);
     gst_object_unref(clock);
-    double budget_ms = ts_offset_ms(st) + sink_latency_ms(st);
+    double latency_ms = sink_latency_ms(st);
+    double budget_ms = ts_offset_ms(st) + latency_ms;
     st.budget_ms = budget_ms;
     double late_ms = (double)(now_rt - (int64_t)rt) / 1e6 - budget_ms;
     double now_ms = (double)now_rt / 1e6;
@@ -367,6 +411,23 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     // The FLOOR over the window is the retained part (a spike relaxes).
     if (!st.has_win_min.load() || late_ms < st.win_min.load()) st.win_min.store(late_ms);
     st.has_win_min.store(true);
+    // A late buffer at a sink-point leg is LOST audio (the server read past its
+    // ring slot), so it is reported (backlog_shed.py LatenessWindow). GAP counts
+    // nothing (the sink clock-waits it instead of ringing it) but keeps the
+    // window closing, so a muted leg reports no audio rather than nothing.
+    // Emitted from the main loop — ipc::emit blocks under its write lock, never
+    // on this thread.
+    if (st.report_lateness) {
+        double dur_ms = GST_BUFFER_DURATION_IS_VALID(buf) ? (double)GST_BUFFER_DURATION(buf) / 1e6 : 0.0;
+        bool gap = GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP);
+        if (JsonObject* o = st.lateness.observe(late_ms, dur_ms, now_ms, gap)) {
+            json_object_set_double_member(o, "budgetMs", round1(budget_ms));
+            json_object_set_double_member(o, "latencyMs", round1(latency_ms));
+            JsonNode* n = json_node_new(JSON_NODE_OBJECT);
+            json_node_take_object(n, o);
+            g_idle_add(emit_lateness_idle, n);
+        }
+    }
 
     if (st.shedding) {
         bool at_budget = late_ms <= 0.0;
@@ -469,6 +530,7 @@ bool start(GstElement* pipe, JsonObject* cfg) {
                         (double)json_get_int(cfg, "cooldownMs", 60000), (double)json_get_int(cfg, "sanityMs", 10000)};
     st->keyframe_aligned = json_get_bool(cfg, "keyframeAligned", true);
     st->stall.enabled = st->keyframe_aligned;   // audio legs are not watched
+    st->report_lateness = name == sink_name;    // the probed pad IS the presentation pad
     st->out_pad = gst_element_get_static_pad(el, "src");
     gst_object_unref(el);
     g_state = st;

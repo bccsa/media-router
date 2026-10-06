@@ -296,6 +296,45 @@ os.environ[bs.STALL_GRACE_ENV] = "0"
 check("and 0 cannot disable the watch", bs.stall_grace_ms() == 10_000.0)
 del os.environ[bs.STALL_GRACE_ENV]
 
+# --- LatenessWindow: late media at a sink-point leg, per window --------------
+# .24, 2026-10-04: a late buffer at pulsesink is silence, not late audio, and
+# nothing in GStreamer says so. The window is what makes it countable.
+check("the shipped window is 10 s", bs.LATENESS_WINDOW_MS == 10_000.0)
+w = bs.LatenessWindow(window_ms=100)
+check("no report before the window closes",
+      w.observe(-30.0, 20.0, 0.0) is None and w.observe(3.0, 20.0, 20.0) is None
+      and w.observe(25.0, 20.0, 40.0) is None)
+r = w.observe(-10.0, 20.0, 100.0)
+check("one report once it has: exactly the four measured fields",
+      r is not None and sorted(r) == ["lateMs", "maxLatenessMs", "mediaMs", "minLatenessMs"])
+check("a late buffer loses its late part, capped at its duration (3 + 20)",
+      r["lateMs"] == 23.0 and r["mediaMs"] == 80.0)
+check("worst and floor are the window's max and min",
+      r["maxLatenessMs"] == 25.0 and r["minLatenessMs"] == -30.0)
+r = None
+for i in range(6):
+    r = w.observe(-40.0 - i, 20.0, 120.0 + 20 * i) or r
+check("the next window starts clean: nothing carried over",
+      r is not None and r["lateMs"] == 0.0 and r["mediaMs"] == 120.0
+      and r["maxLatenessMs"] == -40.0 and r["minLatenessMs"] == -45.0)
+r = bs.LatenessWindow(window_ms=0).observe(50.0, 0.0, 0.0)
+check("an unknown duration counts nothing, but its lateness still shows",
+      r["mediaMs"] == 0.0 and r["lateMs"] == 0.0 and r["maxLatenessMs"] == 50.0
+      and r["minLatenessMs"] == 50.0)
+# .24, 2026-10-05: a muted leg (volume 0 → every buffer GAP) closed no window,
+# so its last late window stood as the present one for the whole mute, and the
+# window open at the mute closed only after the unmute, with stale lateness.
+w = bs.LatenessWindow(window_ms=100)
+r = [w.observe(25.0, 20.0, 0.0), w.observe(500.0, 20.0, 50.0, gap=True),
+     w.observe(500.0, 20.0, 100.0, gap=True)]
+check("a GAP buffer counts nothing, however late, but closes the window on time",
+      r[0] is None and r[1] is None and r[2] == {"mediaMs": 20.0, "lateMs": 20.0,
+                                                  "maxLatenessMs": 25.0, "minLatenessMs": 25.0})
+r = [w.observe(500.0, 20.0, 120.0 + 20 * i, gap=True) for i in range(6)]
+check("an all-GAP (muted) window still closes: no audio, worst and floor 0",
+      r[:5] == [None] * 5 and r[5] == {"mediaMs": 0.0, "lateMs": 0.0,
+                                       "maxLatenessMs": 0.0, "minLatenessMs": 0.0})
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

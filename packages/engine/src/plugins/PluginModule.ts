@@ -468,14 +468,16 @@ export interface PipelineDescription {
      * instantly by a live +1 s `ts-offset` and broken again by reverting it.
      *
      * WHAT THE RUNNER DOES. Measures lateness on the named element's sink pad
-     * (`now_running_time − (buffer_running_time + ts-offset)`, so the number is
-     * the excess over the route's D directly), and when that stays over
+     * (`now_running_time − (buffer_running_time + ts-offset + latency)`, so the
+     * number is the excess over the leg's budget directly), and when that stays over
      * `toleranceMs` for `holdMs` it DROPS the oldest queued data until the leg
      * is back inside D — up to the next keyframe when `keyframeAligned`, which
      * a video leg must set (a delta unit whose references were dropped is the
      * V4L2 wedge the keyframe gate exists for). One `backlog_shed` plugin event
      * per episode with before/after retained latency, and `cooldownMs` between
-     * episodes so it cannot oscillate.
+     * episodes so it cannot oscillate. Where `element` IS `sink` (an audio leg)
+     * it also reports a `playout_lateness` window every 10 s — late audio there
+     * is lost audio; `GstPluginBase` shows it (playoutLateness.ts).
      *
      * Set ONLY under the contract. Omitted, nothing is armed — which is what
      * keeps `MR_TIME_SYNC_CONTRACT=0` the legacy path byte for byte.

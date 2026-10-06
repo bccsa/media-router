@@ -26,9 +26,11 @@ The measuring and the actual dropping live in `gst-pipeline-runner.py`
 here makes it testable without a pipeline, the same split as `render_lag.py`.
 
 THE ARITHMETIC. The runner feeds one LATENESS sample per buffer at the shed
-point: `lateness = now_running_time - (buffer_running_time + ts_offset)`, i.e.
-how far past its scheduled playout slot the buffer is. `ts_offset` IS the
-route's playout offset D, so lateness is the excess over budget directly:
+point: `lateness = now_running_time - (buffer_running_time + ts_offset +
+latency)`, i.e. how far past its scheduled playout slot the buffer is.
+`ts_offset + latency` is the sink's render deadline — the route's playout
+offset D wherever ts-offset is not clamped — so lateness is the excess over
+budget directly:
 
     retained pipeline latency  =  lateness + D
 
@@ -281,3 +283,52 @@ class BacklogShedPolicy:
         self.sheds += 1
         self._last_shed_end = now_ms
         self._above_since = None
+
+
+# One `playout_lateness` report per this much running time. The engine trips
+# its warning on two late windows in a row and clears it after six clean ones
+# (playoutLateness.ts), so the hysteresis is tunable without a native build.
+LATENESS_WINDOW_MS = 10_000.0
+
+
+class LatenessWindow:
+    """Late media at a SINK-POINT leg (the shed point is the sink), per window —
+    report-only; the C++ twin is `LatenessWindow` in backlog_shed.cpp.
+
+    A buffer `late` ms past its deadline lost min(late, duration) of itself:
+    the audio sink writes it at its timestamp's ring offset and pipewire-pulse
+    has already read past that, so silence plays there with nothing in
+    GStreamer saying so (field, .24 2026-10-04: 23.7 % of a 302M headphone,
+    health "ok"). `maxLatenessMs` is the window's worst buffer and
+    `minLatenessMs` its floor — a floor past the sanity ceiling means the
+    whole leg is on a timeline it is not playing, not short of budget.
+
+    A GAP buffer carries no audio (the sink clock-waits it instead of ringing
+    it), so it counts nothing — but it keeps the window's clock running. A
+    muted (`volume=0`, all-GAP) leg still closes a window every 10 s, with
+    `mediaMs` 0, which is the engine's cue to drop the leg's timing and late
+    warning instead of freezing the last window; and a window open at the mute
+    closes on time, not at the first buffer after the unmute (.24, 2026-10-05).
+    """
+
+    def __init__(self, window_ms=LATENESS_WINDOW_MS):
+        self.window_ms = float(window_ms)
+        self._start = None
+
+    def observe(self, late_ms, duration_ms, now_ms, gap=False):
+        """One buffer. Returns the closed window's report, or None."""
+        if self._start is None:
+            self._start, self._media, self._late = now_ms, 0.0, 0.0
+            self._max = self._min = None
+        if not gap:
+            self._media += duration_ms
+            self._late += min(max(late_ms, 0.0), duration_ms)
+            self._max = late_ms if self._max is None else max(self._max, late_ms)
+            self._min = late_ms if self._min is None else min(self._min, late_ms)
+        if now_ms - self._start < self.window_ms:
+            return None
+        self._start = None
+        # An all-GAP window measured nothing: its worst and floor read 0.
+        return {"mediaMs": round(self._media, 1), "lateMs": round(self._late, 1),
+                "maxLatenessMs": round(self._max or 0.0, 1),
+                "minLatenessMs": round(self._min or 0.0, 1)}

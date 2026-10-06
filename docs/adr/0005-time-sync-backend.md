@@ -864,6 +864,45 @@ reporting healthy.
   never arms (`MR_SHED_RUNNER`): 4 ratchet assertions and 9 shedder assertions
   fail.
 
+- **2026-10-04 — the same probe reports LOST audio (`playout_lateness`).**
+  Field, .24 (BCC Mulanje): a 302M headphone lost 23.7 % of its audio (512
+  dropouts/min) with health `ok`. On a `sync=true` GstAudioBaseSink a late
+  buffer is not played late: `max-lateness` is never consulted for audio sinks,
+  pulsesink writes the buffer at its timestamp's ring offset and pipewire-pulse
+  discards what its read pointer has passed — no message, buffer counted as
+  rendered. So where the shed point IS the sink (the audio legs, never the
+  video decoder point) both runners fold every non-GAP buffer's lateness —
+  measured against `ts-offset + latency`, the sink's render deadline — into a
+  window and report it per 10 s of running time: `{mediaMs, lateMs = Σ
+  min(max(lateness, 0), duration), maxLatenessMs, minLatenessMs, budgetMs,
+  latencyMs}`, sent from the MAIN LOOP (the event write blocks on a full pipe;
+  the audio streaming thread must never wait on it). GAP buffers count no
+  audio: the sink clock-waits a GAP instead of ringing it, so arrivals read late
+  with nothing lost — a dark force-live mixer and a muted (`volume=0`) leg send
+  nothing else. They still close windows, so a muted leg reports `mediaMs` 0
+  rather than nothing (.24, 2026-10-05: reporting nothing froze a muted leg's
+  last late window and its warning for the whole mute).
+- **An estimate, judged per window.** The probe's deadline can sit ±40 ms
+  (`alignment-threshold`: absorbed skew corrections and live ts-offset pushes)
+  off the one the sink plays to, and the server reads ahead, so `GstPluginBase`
+  (`playoutLateness.ts`) only asks "late or clean": two late windows in a row
+  raise an owned `late` warning, a clean minute clears it, a window with no
+  audio clears it at once (and drops the section), every PLAYING resets it,
+  and it never takes health over an error or another writer's warning
+  (ADR-0010 rule 2). That trips on .24's 23.7 % and 2.3 % states; ~0.1 % loss
+  (a click every 10–20 s) is below its resolution. Measured on .24 (2026-10-06,
+  60 s taps against the windows at 140/120/100/80 ms budgets): 0.007 % and
+  0.09 % loss raised no late window, and latePct read ≤ 0.1 % for a real
+  0.52 % and ≤ 0.4 % for 1.84 %. Small losses read ~4–5× low, consistent with
+  the ±40 ms deadline error, yet the warning tripped at the 100 ms budget. The
+  advice is worst + 40 ms of budget — except past the sanity ceiling, which no
+  budget reaches: then the leg is on a timeline it is not playing ("N s behind
+  the house clock", the .24 decoder sat 588 s late after its source restarted),
+  which is what the window floor is reported for. A healthy leg's readings
+  saturate near −ring (back-pressure), so worst lateness is no headroom figure.
+  Not covered: the decoder leg's second PipeWire hop, and a future-stamped
+  timeline (pulsesink blocks its commit, so no window closes).
+
 ## Implementation notes (Stage 3d — per-branch zero points at a multi-input mux)
 
 The contract's stamps are the shared truth, and a multi-input mux was quietly

@@ -1037,6 +1037,10 @@ Health values: `'ok'` (green dot), `'warning'` (amber dot), `'error'` (red dot),
 
 The pipeline automatically sets health to `'ok'` when playing and `'stopped'` when null. Plugins override this for custom status (e.g. decoder with no connection → warning).
 
+The base class also raises a few warnings it withdraws itself — waiting for an upstream bus producer, UDP silence, a producer reconnect, late audio (below) — and each clears only its own: any `setHealth` from your plugin supersedes them, and they never clear yours (ADR-0010 rule 2).
+
+**A starved audio budget warns by itself (`playout_lateness`).** On a `sync=true` audio sink, audio that arrives after `stamp + ts-offset + latency` is not played late — it plays as silence, with no GStreamer error (.24, 2026-10-04: 23.7 % of a headphone, health "ok"). Any leg whose `backlogShedConfig(...)` names the sink itself as `element` (every audio presentation leg) therefore gets, from `GstPluginBase` with no plugin code: a dynamic **`timing`** status section (the last 10 s: late audio as an estimate, worst lateness, budget = ts-offset + latency, sink latency) and an owned **`late`** warning — two late 10 s windows in a row raise it, a clean minute clears it, and it advises "≥ worst + 40 ms more budget", or names a lost timeline when the audio is more than 10 s late. GAP (silent or muted) buffers are not measured; a window with no audio in it (a muted leg) drops the section and clears the warning at once. Runner side: the backlog shedder's probe in both runners (`backlog_shed.LatenessWindow`); engine side: `plugins/playoutLateness.ts`.
+
 ### Clean Self-Stop (`requestSelfStop`)
 
 A module whose media ran to a **natural end** (e.g. hls-player finishing a VOD

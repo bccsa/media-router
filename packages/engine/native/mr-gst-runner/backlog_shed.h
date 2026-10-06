@@ -19,7 +19,10 @@
 namespace mr::shed {
 
 /** `cfg` = the BacklogShedConfig object or nullptr. False on a hard error
- *  (element / sink not found) — the caller tears the pipeline down. */
+ *  (element / sink not found) — the caller tears the pipeline down. Where
+ *  `element` IS `sink` (an audio leg) every buffer also feeds a
+ *  `playout_lateness` window (GAP ones count no audio), emitted from the main
+ *  loop per 10 s of running time (backlog_shed.py LatenessWindow). */
 bool start(GstElement* pipe, JsonObject* cfg);
 
 void stop();

@@ -3998,6 +3998,13 @@ def _start_backlog_shedder(pipe, cfg):
     out, then the sink re-anchors on the new timeline. Audible as one click at
     the shed, which is the price of returning lipsync to the configured D.
 
+    AND IT REPORTS LOST AUDIO. Where the shed point IS the sink (the audio
+    legs) every buffer also feeds `backlog_shed.LatenessWindow` (GAP ones count
+    no audio), and each closed window goes out as a `playout_lateness` plugin
+    event — from the main loop, never this streaming thread. A late buffer
+    there is not late audio but silence, and nothing else in GStreamer says so;
+    GstPluginBase turns a run of late windows into the module's 'late' warning.
+
     RATE LIMITING AND SAFETY live in `backlog_shed.BacklogShedPolicy`: a
     sustained-excess floor rule, a cooldown, and the sanity ceiling that refuses
     to treat an implausible reading as a backlog (it would otherwise drop a
@@ -4022,7 +4029,7 @@ def _start_backlog_shedder(pipe, cfg):
     if not cfg:
         return True
     try:
-        from backlog_shed import BacklogShedPolicy, PostShedStallWatch
+        from backlog_shed import BacklogShedPolicy, LatenessWindow, PostShedStallWatch
     except Exception as e:  # noqa: BLE001
         emit_event({"event": "error", "message": f"backlog_shed unavailable: {e}"})
         return False
@@ -4068,7 +4075,10 @@ def _start_backlog_shedder(pipe, cfg):
           # previous stage's pending timeout instead of stacking a second one.
           "stall": PostShedStallWatch(enabled=keyframe_aligned),
           "out_pad": el.get_static_pad("src"),
-          "stall_probe_id": None, "stall_gen": 0}
+          "stall_probe_id": None, "stall_gen": 0,
+          # `playout_lateness`: lateness here is lateness at PRESENTATION only
+          # when the shed point is the sink's own pad (the audio legs).
+          "lateness": LatenessWindow() if name == sink_name else None}
     _backlog_shed = st
 
     def _log(line):
@@ -4238,7 +4248,8 @@ def _start_backlog_shedder(pipe, cfg):
         if rt == Gst.CLOCK_TIME_NONE:
             return Gst.PadProbeReturn.OK          # outside the segment
         now_rt = clock.get_time() - pipe.get_base_time()
-        budget_ms = _ts_offset_ms() + _sink_latency_ms()
+        latency_ms = _sink_latency_ms()
+        budget_ms = _ts_offset_ms() + latency_ms
         st["budget_ms"] = budget_ms
         late_ms = (now_rt - rt) / 1e6 - budget_ms
         now_ms = now_rt / 1e6
@@ -4247,6 +4258,19 @@ def _start_backlog_shedder(pipe, cfg):
         # The FLOOR over the window is the retained part (a spike relaxes; a
         # floor does not) — that is what renderWatch reports and judges on.
         st["win_min"] = late_ms if st["win_min"] is None else min(st["win_min"], late_ms)
+        # A late buffer at a sink-point leg is LOST audio (the server read past
+        # its ring slot), so it is reported — see backlog_shed.LatenessWindow.
+        # GAP counts nothing (the sink clock-waits it instead of ringing it)
+        # but keeps the window closing, so a muted leg reports no audio rather
+        # than nothing. Sent from the MAIN LOOP: emit_event blocks on a full
+        # event pipe, and this is the audio streaming thread.
+        if st["lateness"] is not None:
+            dur_ms = buf.duration / 1e6 if buf.duration != Gst.CLOCK_TIME_NONE else 0.0
+            report = st["lateness"].observe(late_ms, dur_ms, now_ms,
+                                            gap=buf.has_flags(Gst.BufferFlags.GAP))
+            if report is not None:
+                report.update(budgetMs=round(budget_ms, 1), latencyMs=round(latency_ms, 1))
+                GLib.idle_add(emit_plugin_event, "playout_lateness", report)
 
         if st["shedding"]:
             at_budget = late_ms <= 0.0

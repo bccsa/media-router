@@ -12,13 +12,21 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
+import {
+    LateAudioWatch,
+    PLAYOUT_LATENESS_EVENT,
+    PLAYOUT_TIMING_SECTION,
+    lateAudioClearedMessage,
+    readLatenessWindow,
+    timingStatus,
+} from './playoutLateness.js';
 import { effectiveLatchRepair } from './latchRepair.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
  *  this module: health stays a warning through the restart that follows. */
 const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
 /** The transient warnings a module writes and later withdraws itself. */
-type OwnedWarning = 'gate' | 'silence' | 'reconnect';
+type OwnedWarning = 'gate' | 'silence' | 'reconnect' | 'late';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
@@ -241,6 +249,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         this.childProcess.on('stateChange', (data: { state: string; kind?: string }) => {
             if (data.state === 'playing') {
+                // A new incarnation earns its own late-audio verdict.
+                this.lateAudio.reset();
                 this.running = true;
                 this.ready = true;
                 this.health = 'ok';
@@ -356,13 +366,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      *  see `handleBusGate` and `setHealth`. */
     /**
      * Which of OUR transient warnings currently holds the health text, or
-     * null. Three sources write a warning they later withdraw (the socket
-     * gate, udpsrc silence, a producer-restart reconnect); each may clear ONLY
-     * its own — any other health write (`setHealth`) supersedes the latch, so a
-     * gate opening or a feed resuming can never hide a real failure that
-     * arrived in between (ADR-0010 rule 2).
+     * null. Four sources write a warning they later withdraw (the socket
+     * gate, udpsrc silence, a producer-restart reconnect, late audio); each
+     * may clear ONLY its own — any other health write (`setHealth`) supersedes
+     * the latch, so a gate opening or a feed resuming can never hide a real
+     * failure that arrived in between (ADR-0010 rule 2).
      */
     private ownedWarning: OwnedWarning | null = null;
+    /** Late audio on a sink-point leg (`playout_lateness`) — see playoutLateness.ts. */
+    private readonly lateAudio = new LateAudioWatch();
 
     private ownWarning(kind: OwnedWarning, message: string): void {
         this.setHealth('warning', message);
@@ -670,12 +682,42 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * contract-layer guard armed on every clock-paced leg (video-player,
      * audio-decoder, any future presentation leg — see backlogShed.ts), so its
      * one line per episode has to exist for all of them without each one
-     * remembering to write it. The subclass hook still gets the event and may
-     * do more with it.
+     * remembering to write it. `playout_lateness`, the same probe's report on
+     * sink-point (audio) legs, is turned into health here for the same reason.
+     * The subclass hook still gets the event and may do more with it.
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
+        else if (channel === PLAYOUT_LATENESS_EVENT) this.onPlayoutLateness(payload);
         this.onPluginEvent(channel, payload);
+    }
+
+    /**
+     * One `playout_lateness` window (contract-layer, like `backlog_shed`): shown
+     * as the 'timing' section (dropped while the leg plays no audio); a run of
+     * late ones is the owned 'late' warning, taken only over a healthy module —
+     * never over an error or another writer's warning (ADR-0010 rule 2). One
+     * journal line on trip, one on clear.
+     */
+    private onPlayoutLateness(payload: unknown): void {
+        const w = readLatenessWindow(payload);
+        if (!w) return;
+        const timing = timingStatus(w);
+        if (timing) {
+            this.upsertStatusSection(PLAYOUT_TIMING_SECTION);
+            this.setStatusData(PLAYOUT_TIMING_SECTION.id, timing);
+        } else if (this.statusData[PLAYOUT_TIMING_SECTION.id]) {
+            this.clearStatusSection(PLAYOUT_TIMING_SECTION.id);
+        }
+        const verdict = this.lateAudio.offer(w);
+        if (verdict === 'clear') {
+            this.log.info({ playoutLateness: w }, lateAudioClearedMessage(w));
+            this.clearOwnWarning('late');
+        } else if (verdict) {
+            if (verdict.tripped) this.log.warn({ playoutLateness: w }, verdict.message);
+            if (this.health === 'ok' || this.ownedWarning === 'late')
+                this.ownWarning('late', verdict.message);
+        }
     }
 
     /**

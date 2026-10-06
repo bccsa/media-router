@@ -16,47 +16,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * raised by something else entirely (a crashed helper, a missing device) — so a
  * real failure disappeared because an unrelated gate happened to open.
  */
-// `vi.hoisted` runs before the import section, so the fake carries its own
-// minimal emitter rather than extending node's (which isn't initialised yet).
-const h = vi.hoisted(() => {
-    class FakeChildProcess {
-        static instances: FakeChildProcess[] = [];
-        isRunning = false;
-        private readonly handlers = new Map<string, Array<(data: unknown) => void>>();
-        constructor() {
-            FakeChildProcess.instances.push(this);
-        }
-        on(event: string, fn: (data: unknown) => void): this {
-            const list = this.handlers.get(event) ?? [];
-            list.push(fn);
-            this.handlers.set(event, list);
-            return this;
-        }
-        emit(event: string, data?: unknown): void {
-            for (const fn of this.handlers.get(event) ?? []) fn(data);
-        }
-        async start(): Promise<void> {
-            this.isRunning = true;
-        }
-        async stop(): Promise<void> {
-            this.isRunning = false;
-        }
-        async destroy(): Promise<void> {
-            this.isRunning = false;
-        }
-        async updatePipelineDesc(): Promise<void> {}
-    }
-    return { FakeChildProcess };
-});
-
 vi.mock('../child-process/GstChildProcess.js', async (importOriginal) => ({
     ...(await importOriginal<typeof import('../child-process/GstChildProcess.js')>()),
-    GstChildProcess: h.FakeChildProcess,
+    GstChildProcess: (await import('./testing/FakeGstChildProcess.js')).FakeGstChildProcess,
 }));
 
 import { GstPluginBase } from './GstPluginBase.js';
 import { busEdgeSocketPath } from './busHelpers.js';
 import type { PipelineDescription, ModuleServices } from './PluginModule.js';
+import { FakeGstChildProcess } from './testing/FakeGstChildProcess.js';
 
 const EDGE_A = busEdgeSocketPath(41000, 'conn-a');
 const EDGE_B = busEdgeSocketPath(41001, 'conn-b');
@@ -85,21 +53,21 @@ const busSource = (socketPath: string, sourceModuleId: string, sinkPortId: strin
 /** A started module (real busGate wiring in place) plus its fake child. */
 async function makeStarted(sources: BusSource[] | null): Promise<{
     module: TestModule;
-    child: InstanceType<typeof h.FakeChildProcess>;
+    child: FakeGstChildProcess;
 }> {
-    h.FakeChildProcess.instances = [];
+    FakeGstChildProcess.instances = [];
     const module = new TestModule();
     await module.onInit({}, {
         instanceId: 'consumer-1',
         ...(sources ? { mediaRouter: { getModuleBusSources: vi.fn(() => sources) } } : {}),
     } as unknown as ModuleServices);
     await module.onStart();
-    const child = h.FakeChildProcess.instances[0]!;
+    const child = FakeGstChildProcess.instances[0]!;
     expect(module.getState().health).toBe('ok');
     return { module, child };
 }
 
-const gate = (child: InstanceType<typeof h.FakeChildProcess>, pending: string[]): void => {
+const gate = (child: FakeGstChildProcess, pending: string[]): void => {
     child.emit('busGate', { pending });
 };
 
