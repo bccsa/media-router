@@ -129,6 +129,11 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     // audio would take seconds to fill a size batch). Packet order within an
     // output is preserved; PSI stays ahead of the ES packets it precedes.
     const int64_t now = mrbus::mono_ns();
+    // Past an input gap the master PCR is stale (mrts::COND_GAP_NS): re-injected
+    // on a non-PCR output it would put that output's next PES the whole gap
+    // early at every consumer.
+    if (last_input_ns_ && now - last_input_ns_ > mrts::COND_GAP_NS) core_->forget_master_pcr();
+    last_input_ns_ = now;
     if (stamper_ && opts_.repair_latch) {
         // Condition a private copy (the bus hands us its buffer read-only):
         // one memcpy of ≤24 KB per input buffer, well under the fan-out cost

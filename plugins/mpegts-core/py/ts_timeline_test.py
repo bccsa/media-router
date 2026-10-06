@@ -1046,6 +1046,120 @@ for i in range(400):
 check("a source restart is past the conditioner's bound and re-anchors as before",
       restart_c == [] and len(restart_re) == 1)
 
+# A source restart onto an EARLIER epoch (.24, 2026-10-04; C++ parity). .21
+# rebooted during a 588 s outage, and its muxer's PTS is the box's uptime + 1 h
+# (running time is CLOCK_MONOTONIC), so it came back on a clock 9.04 h BEHIND
+# its old one (the journal's own epochs; a muxer or engine restart only adds a
+# forward gap). The PES path leaves the jump to the watch (past the bound),
+# but the regenerated PCR's monotone guard used to run before the
+# restart test and held the PCR at the old epoch's last value until the new
+# PTS caught up — 9 h: every consumer PES > 15 s off its PCR (tsdemux
+# timestamps none of them), no PCR re-injected on the splitter's audio leg (the
+# master never changed), a PCR "step" reported every ~0.33 s. The restart must
+# reach the wire as written and flagged, with or without the outage before it.
+for outage in (588_000_000_000, 0):
+    OLD, NEW = 3256635648, 326705954
+    ee_ev = []; ee_re = []
+    ee = t.TimelineStamper(on_reanchor=ee_re.append, repair_latch=True,
+                           on_conditioned=lambda e: ee_ev.append(e) if e['clock'] == 'pcr' else None)
+    ee_raw = ee_lead = True; ee_di201 = False; ev0 = 0
+    for i in range(400):
+        after = i >= 200
+        h = HOUSE + i * STEP_NS + (outage if after else 0)
+        v = NEW + (i - 200) * STEP if after else OLD - (200 - i) * STEP
+        if i == 200:
+            ev0 = len(ee_ev)
+        buf = bytearray(_pcr_pkt(V, (v - 9000) * 300) + pes_ts_packet(V, pts=v) + pes_ts_packet(A, pts=v + 900, stream_id=0xC0))
+        ee.condition(buf, h); ee.stamp(bytes(buf), h)
+        if not after:
+            continue
+        pk = list(p.iter_packets(bytes(buf)))
+        if i == 201:
+            ee_di201 = bool(pk[0][5] & 0x80)
+        ee_raw &= p.read_pes_pts(pk[1]) == v and p.read_pes_pts(pk[2]) == v + 900
+        if i >= 201:
+            ee_lead &= abs(t.TimelineStamper._fold(p.read_pes_pts(pk[1]) - p.read_pcr(pk[0]) // 300, t.PTS_WRAP) - 22500) <= 4500
+    tag = "after an outage" if outage else "no outage"
+    check(f"earlier-epoch restart ({tag}): the PES reach the wire as written (the watch's job)",
+          ee_raw and len(ee_re) == 1)
+    check(f"... ({tag}) the regenerated PCR follows the new epoch, never pinned at the old one's last value", ee_lead)
+    check(f"... ({tag}) the restart is signalled on the first new-epoch PCR", ee_di201)
+    check(f"... ({tag}) and reported once each way, not every 300 ms for 9 h", len(ee_ev) - ev0 <= 2)
+
+# An input GAP is never a clock step (.24, 2026-10-04; C++ parity). An SRT
+# reconnect after an 8.2 s outage: the source's clock ran on (PTS +8.2 s) and
+# the reconnect's backlog flush put the first buffer 330 ms further out
+# (arrival +8.53 s). |d - a| passed the 300 ms step test, the reference absorbed
+# the WHOLE gap (d - nominal), the audio could not adopt it (its own jump
+# beyond the time passed was -0.33 s, not -8.2 s), and the splitter shipped the
+# audio 8.2 s off the video — on the wire and in its stamps — for good.
+GAP_TICKS, GAP_ARRIVE = 738000, 8_530_000_000
+gp_ev = []
+gp = t.TimelineStamper(repair_latch=True,
+                       on_conditioned=lambda e: gp_ev.append(e) if e['clock'] == 'pts' else None)
+gp_raw = gp_together = True
+for i in range(1300):                                   # 52 s: past the 30 s own-step hold
+    after = i >= 100
+    h = HOUSE + i * STEP_NS + (GAP_ARRIVE - STEP_NS if after else 0)
+    v = FIRST + i * STEP + (GAP_TICKS - STEP if after else 0)
+    buf = bytearray(_pcr_pkt(V, (v - 9000) * 300) + pes_ts_packet(V, pts=v) + pes_ts_packet(A, pts=v + 900, stream_id=0xC0))
+    gp.condition(buf, h)
+    pk = list(p.iter_packets(bytes(buf)))
+    gp_raw &= p.read_pes_pts(pk[1]) == v and p.read_pes_pts(pk[2]) == v + 900
+    vs = gp.stamp(bytes(buf[:2 * 188]), h, V)          # the splitter's legs: one stamper,
+    as_ = gp.stamp(bytes(buf[2 * 188:]), h, A)         # one stream per output PID
+    if i >= 1000:
+        gp_together &= abs(as_ - vs - 10_000_000) <= 1_000_000
+check("an input gap is not a clock step, even with the reconnect backlog past the step threshold",
+      gp_ev == [] and gp_raw)
+# (Before the fix the audio took the same "step" ALONE, held it as its own
+# correction and had it released 30 s later — the split then stays.)
+check("... and the audio leg's stamps stay with the video's, past the own-step hold (no 8.2 s split)", gp_together)
+
+# A PCR past a delivery gap is regenerated after its own PES (.24, 2026-10-04;
+# C++ parity). mpegtsmux puts every PCR on a video PES start (the .21 muxer:
+# every other frame), and a packet's PCR is read before its PES — so past a gap
+# the PCR was regenerated from the PRE-gap floor and trailed its own frame by
+# the whole gap: 8.4 s replaying the 8.2 s reconnect. Every consumer's tsdemux
+# re-based on it and placed that frame 8.4 s early, and the splitter
+# re-injected it on the audio leg. From the first post-gap PCR the wire must
+# sit on the lead: unflagged across the gap, flagged (once) across an
+# earlier-epoch restart.
+def _pes_pcr_pkt(pid, pts, pcr27):
+    """A PES start carrying the PCR in its adaptation field (mpegtsmux's layout)."""
+    b = bytearray(pes_ts_packet(pid, pts=pts, af_len=7))
+    b[5:12] = _pcr_pkt(pid, pcr27)[5:12]             # PCR flag + the 6 PCR bytes
+    return bytes(b)
+
+
+for restart in (False, True):
+    # The journal's epochs (old 3256635648, new 326705954: 9.04 h back) after
+    # the 588 s outage, or the plain ladder across the 8.2 s gap.
+    first = 3256635648 - 100 * STEP if restart else FIRST
+    arrive = 588_000_000_000 if restart else 8_530_000_000
+    media = 326705954 - (first + 100 * STEP) if restart else 738000
+    pg = t.TimelineStamper(repair_latch=True)
+    pg_raw = pg_on_lead = True; pg_di = 0
+    for i in range(200):
+        after = i >= 100
+        h = HOUSE + i * STEP_NS + (arrive - STEP_NS if after else 0)
+        v = first + i * STEP + (media - STEP if after else 0)
+        lead_pkt = pes_ts_packet(V, pts=v) if i % 2 else _pes_pcr_pkt(V, v, (v - 9000) * 300)
+        buf = bytearray(lead_pkt + pes_ts_packet(A, pts=v + 900, stream_id=0xC0))
+        pg.condition(buf, h)
+        pk = bytes(buf[:188])
+        pg_raw &= p.read_pes_pts(pk) == v
+        if not after or i % 2:
+            continue
+        pg_di += bool(pk[5] & 0x80)
+        # PTS − PCR on the PCR's own frame: the lead, plus one frame once the
+        # floor is the previous frame again.
+        lead = t.TimelineStamper._fold(p.read_pes_pts(pk) - p.read_pcr(pk) // 300, t.PTS_WRAP)
+        pg_on_lead &= 22500 <= lead <= 22500 + STEP
+    check("a PCR on the first PES past an earlier-epoch restart is that PES's, flagged once" if restart
+          else "a PCR on the first PES past an input gap is that PES's, never the pre-gap floor's",
+          pg_raw and pg_on_lead and pg_di == (1 if restart else 0))
+
 
 # --- the late tier re-anchors on the PES it stamped FROM (.103, 2026-09-08 13:02-13:15) ---
 # An audio PES ahead of the video's in every buffer, written 2 s ahead of it; the

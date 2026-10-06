@@ -174,6 +174,15 @@ class SplitterCore:
         self._enabled = pids
         self._routing = {pid: self.outputs[pid] for pid in pids}
 
+    def forget_master_pcr(self):
+        """Drop the cached master PCR (mr-tssplit: after an input pause longer
+        than COND_GAP_NS). Re-injected after a gap it trails the PES that
+        follow it by the whole gap, and a consumer's tsdemux re-bases on it
+        and places them that much early (8.4 s on the audio leg replaying
+        .24's 2026-10-04 reconnect). Injection resumes with the first PCR seen
+        afterwards."""
+        self.master_pcr = None
+
     def _apply_discovery(self):
         streams = list(self.disc.pmt["streams"])
         self.pcr_pid = self.disc.pmt["pcr_pid"]

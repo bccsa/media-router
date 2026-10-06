@@ -104,6 +104,7 @@ class App {
     // legacy upstream, its arrival jitter) instead of its own PES.
     std::unique_ptr<mrts::TimelineStamper> stamper_;
     std::vector<uint8_t> cond_buf_;      // conditioned copy of the input buffer
+    int64_t last_input_ns_ = 0;          // arrival of the previous input buffer (gap test)
 
     std::vector<Output> outputs_;
     std::map<std::string, size_t> edge_owner_;   // edge socket -> outputs_ index

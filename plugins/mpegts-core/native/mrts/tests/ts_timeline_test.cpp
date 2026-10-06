@@ -54,6 +54,25 @@ TsPacket pcr_packet(int pid, int64_t pcr27) {
     return t;
 }
 
+// A PES start carrying the PCR in its adaptation field — where mpegtsmux puts
+// every PCR (the .21 muxer's video PID, 2026-10-04).
+TsPacket pes_pcr_packet(int pid, int64_t pts, int64_t pcr27) {
+    TsPacket t = pcr_packet(pid, pcr27);
+    const TsPacket pes = pes_packet(pid, pts);
+    t.b[1] |= 0x40;                               // PUSI
+    t.b[3] = 0x30;                                // adaptation field + payload
+    t.b[4] = 7;                                   // its flags + the 6 PCR bytes
+    std::memcpy(t.b + 12, pes.b + 4, PKT - 12);   // the PES header after them
+    return t;
+}
+
+// Signed, wrap-folded difference on an N-bit counter.
+int64_t wrap_fold(int64_t d, int64_t m) {
+    d %= m;
+    if (d < 0) d += m;
+    return d > m / 2 ? d - m : d;
+}
+
 // A packet with NO PES header — continuation / null padding.
 TsPacket filler_packet(int pid = PID_NULL) {
     TsPacket t;
@@ -1481,6 +1500,133 @@ int main() {
             rs.stamp(data.data(), data.size(), HOUSE + i * STEP_NS, 0);
         }
         CHECK("a source restart is past the conditioner's bound and re-anchors as before", rc == 0 && rr == 1);
+    }
+
+    // --- a source restart onto an EARLIER epoch (.24, 2026-10-04) ---------------
+    // ts_timeline_test.py parity. .21 rebooted during a 588 s outage. Its muxer's
+    // PTS is the box's uptime + 1 h (running time is CLOCK_MONOTONIC), so it came
+    // back on a clock epoch 9.04 h BEHIND its old one (the journal's own numbers);
+    // a muxer or engine restart only adds a forward gap.
+    // The PES path rightly leaves the jump to the watch (past COND_MAX_NS), but
+    // the regenerated PCR's monotone guard used to run before the restart test
+    // and held the PCR at the old epoch's last value until the new PTS caught up
+    // — 9 h. Every consumer PES then sat > 15 s off its PCR (tsdemux timestamps
+    // none of them), the splitter's audio leg got no re-injected PCR at all (the
+    // master never changed), and a PCR "step" was reported every ~0.33 s. The
+    // restart must reach the wire as written and flagged, with or without the
+    // outage in front of it.
+    for (int64_t outage : {588'000'000'000LL, 0LL}) {
+        constexpr int V = 0x100, A = 0x140;
+        constexpr int64_t OLD = 3256635648LL, NEW = 326705954LL;
+        std::vector<TimelineStamper::Conditioned> ev;
+        std::vector<TimelineStamper::Reanchor> re;
+        TimelineStamper st(nullptr, [&](const TimelineStamper::Reanchor& r) { re.push_back(r); }, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { if (c.pcr) ev.push_back(c); });
+        size_t ev0 = 0;
+        bool raw = true, lead = true, di201 = false;
+        for (int i = 0; i < 400; i++) {
+            const bool after = i >= 200;
+            const int64_t h = HOUSE + i * STEP_NS + (after ? outage : 0);
+            const int64_t v = after ? NEW + (i - 200) * STEP : OLD - (200 - i) * STEP;
+            if (i == 200) ev0 = ev.size();
+            auto data = bytes_of({pcr_packet(V, (v - 9000) * 300), pes_packet(V, v), pes_packet(A, v + 900, 0xC0)});
+            st.condition(data.data(), data.size(), h);
+            st.stamp(data.data(), data.size(), h, 0);
+            if (!after) continue;
+            if (i == 201) di201 = (data[5] & 0x80) != 0;
+            raw &= read_pes_pts(data.data() + PKT) == v && read_pes_pts(data.data() + 2 * PKT) == v + 900;
+            if (i >= 201)
+                lead &= std::llabs(wrap_fold(read_pes_pts(data.data() + PKT) - read_pcr(data.data()) / 300, PTS_WRAP) -
+                                   22500) <= 4500;
+        }
+        const bool gap = outage != 0;
+        CHECK(gap ? "earlier-epoch restart after an outage: the PES reach the wire as written (the watch's job)"
+                  : "earlier-epoch restart, no outage: the PES reach the wire as written (the watch's job)",
+              raw && re.size() == 1);
+        CHECK(gap ? "... the regenerated PCR follows the new epoch, never pinned at the old one's last value"
+                  : "... (no outage) the regenerated PCR follows the new epoch, never pinned",
+              lead);
+        CHECK(gap ? "... the restart is signalled on the first new-epoch PCR"
+                  : "... (no outage) the restart is signalled on the first new-epoch PCR",
+              di201);
+        CHECK(gap ? "... and reported once each way, not every 300 ms for 9 h"
+                  : "... (no outage) and reported once each way, not every 300 ms",
+              ev.size() - ev0 <= 2);
+    }
+
+    // --- an input GAP is never a clock step (.24, 2026-10-04) ------------------
+    // ts_timeline_test.py parity. An SRT reconnect after an 8.2 s outage: the
+    // source's clock ran on (PTS +8.2 s) and the reconnect's backlog flush put
+    // the first buffer 330 ms further out (arrival +8.53 s). |d - a| passed the
+    // 300 ms step test, the reference absorbed the WHOLE gap (d - nominal), the
+    // audio could not adopt it (its own jump beyond the time passed was -0.33 s,
+    // not -8.2 s), and the splitter shipped the audio 8.2 s off the video — on
+    // the wire and in its stamps — for the life of the process.
+    {
+        constexpr int V = 0x100, A = 0x140;
+        constexpr int64_t GAP = 738000;                   // 8.2 s of media
+        constexpr int64_t ARRIVE = 8'530'000'000LL;       // ... arriving 8.2 s + 330 ms later
+        std::vector<TimelineStamper::Conditioned> ev;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { if (!c.pcr) ev.push_back(c); });
+        bool raw = true, together = true;
+        for (int i = 0; i < 1300; i++) {                 // 52 s: past the 30 s own-step hold
+            const bool after = i >= 100;
+            const int64_t h = HOUSE + i * STEP_NS + (after ? ARRIVE - STEP_NS : 0);
+            const int64_t v = FIRST_PES + i * STEP + (after ? GAP - STEP : 0);
+            auto data = bytes_of({pcr_packet(V, (v - 9000) * 300), pes_packet(V, v), pes_packet(A, v + 900, 0xC0)});
+            st.condition(data.data(), data.size(), h);
+            raw &= read_pes_pts(data.data() + PKT) == v && read_pes_pts(data.data() + 2 * PKT) == v + 900;
+            // The splitter's legs: one stamper, one stream per output PID.
+            const int64_t vs = st.stamp(data.data(), 2 * PKT, h, V);
+            const int64_t as = st.stamp(data.data() + 2 * PKT, PKT, h, A);
+            if (i >= 1000) together &= std::llabs(as - vs - 10'000'000) <= 1'000'000;
+        }
+        CHECK("an input gap is not a clock step, even with the reconnect backlog past the step threshold",
+              ev.empty() && raw);
+        // (Before the fix the audio took the same "step" ALONE, held it as its
+        // own correction and had it released 30 s later — the split then stays.)
+        CHECK("... and the audio leg's stamps stay with the video's, past the own-step hold (no 8.2 s split)",
+              together);
+    }
+
+    // --- a PCR past a delivery gap is regenerated after its own PES (.24, 2026-10-04) ---
+    // ts_timeline_test.py parity. mpegtsmux puts every PCR on a video PES start
+    // (the .21 muxer: every other frame), and a packet's PCR is read before its
+    // PES — so past a gap the PCR was regenerated from the PRE-gap floor and
+    // trailed its own frame by the whole gap: 8.4 s replaying the 8.2 s reconnect.
+    // Every consumer's tsdemux re-based on it and placed that frame 8.4 s early,
+    // and the splitter re-injected it on the audio leg. From the first post-gap
+    // PCR the wire must sit on the lead: unflagged across the gap, flagged
+    // (once) across an earlier-epoch restart.
+    for (const bool restart : {false, true}) {
+        constexpr int V = 0x100, A = 0x140;
+        // The journal's epochs (old 3256635648, new 326705954: 9.04 h back)
+        // after the 588 s outage, or the plain ladder across the 8.2 s gap.
+        const int64_t first = restart ? 3256635648LL - 100 * STEP : FIRST_PES;
+        const int64_t arrive = restart ? 588'000'000'000LL : 8'530'000'000LL;
+        const int64_t media = restart ? 326705954LL - (first + 100 * STEP) : 738000LL;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        bool raw = true, on_lead = true;
+        int di_after = 0;
+        for (int i = 0; i < 200; i++) {
+            const bool after = i >= 100;
+            const int64_t h = HOUSE + i * STEP_NS + (after ? arrive - STEP_NS : 0);
+            const int64_t v = first + i * STEP + (after ? media - STEP : 0);
+            auto data = bytes_of({i % 2 ? pes_packet(V, v) : pes_pcr_packet(V, v, (v - 9000) * 300),
+                                  pes_packet(A, v + 900, 0xC0)});
+            st.condition(data.data(), data.size(), h);
+            raw &= read_pes_pts(data.data()) == v;
+            if (!after || i % 2) continue;
+            di_after += (data[5] & 0x80) != 0;
+            // PTS − PCR on the PCR's own frame: the lead, plus one frame once
+            // the floor is the previous frame again.
+            const int64_t lead = wrap_fold(read_pes_pts(data.data()) - read_pcr(data.data()) / 300, PTS_WRAP);
+            on_lead &= lead >= 22500 && lead <= 22500 + STEP;
+        }
+        CHECK(restart ? "a PCR on the first PES past an earlier-epoch restart is that PES's, flagged once"
+                      : "a PCR on the first PES past an input gap is that PES's, never the pre-gap floor's",
+              raw && on_lead && di_after == (restart ? 1 : 0));
     }
 
     // --- the late tier re-anchors on the PES it stamped FROM (.103, 2026-09-08 13:02-13:15) ---

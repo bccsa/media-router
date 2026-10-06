@@ -15,7 +15,8 @@ import { STEP, ladderFixture, pesPacket, rungs, toNs } from '../../mpegts-core/t
  * clients drain each output edge, and the captured SPTS streams must be
  * byte-identical (sha256) to the python SplitterCore reference over the same
  * chunking. Also covers: wired-only gating (late attach starts with PSI),
- * make-before-break reinput continuity, and input stall events.
+ * make-before-break reinput continuity, input stall events, and the master
+ * PCR forgotten across an input gap.
  */
 
 const PLUGINS_DIR = join(__dirname, '../..');
@@ -122,6 +123,18 @@ function avLoopFixture(pre: number, post: number): Buffer {
         if (i % 4 === 3) parts.push(pesPacket(0xc9, pts + AV_SKEW));
     }
     return Buffer.concat(parts);
+}
+
+/** The PCRs (27 MHz) on `pid` in a 188-aligned TS buffer, in order. */
+function pcrsOn(ts: Buffer, pid: number): number[] {
+    const out: number[] = [];
+    for (let o = 0; o + 188 <= ts.length; o += 188) {
+        const p = ts.subarray(o, o + 188);
+        if ((((p[1] & 0x1f) << 8) | p[2]) !== pid || !(p[3] & 0x20) || p[4] < 7 || !(p[5] & 0x10)) continue;
+        const base = p[6] * 2 ** 25 + p[7] * 2 ** 17 + p[8] * 2 ** 9 + p[9] * 2 + (p[10] >> 7);
+        out.push(base * 300 + (((p[10] & 1) << 8) | p[11]));
+    }
+    return out;
 }
 
 const SHED_MSG =
@@ -579,5 +592,35 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'stream finished', 60000);
         r.send({ cmd: 'bus_detach', socket: r.edge(0x65) });
         await r.verdictOf(cap);
+    }, 120_000);
+
+    it('forgets the master PCR across an input gap (no pre-gap PCR on a non-PCR output)', async () => {
+        // .24, 2026-10-04: a video-only stretch carried a PCR the audio output
+        // never got, the input paused, and the first audio batch after the
+        // pause was prefixed with that pre-gap PCR — 8.4 s behind its PES in a
+        // replay, so every consumer's tsdemux placed the audio 8.4 s early. One
+        // packet per input buffer, paused 1.5 s (> mrts COND_GAP_NS) right
+        // after the fixture's second PCR, which the audio has not yet carried.
+        const head = readFileSync(fixture).subarray(0, 275 * 188);   // aligned: before the first desync garbage
+        const pcrAt: number[] = [];                                  // packet index of each source PCR
+        for (let i = 0; i < 275; i++) {
+            if (pcrsOn(head.subarray(i * 188, i * 188 + 188), 0x65).length) pcrAt.push(i);
+        }
+        const [first, owed, next] = pcrsOn(head, 0x65);
+        const gapTs = join(dir, 'gap.ts');
+        writeFileSync(gapTs, head);
+        const r = await rig();
+        await r.attach(0xc9);
+        const cap = await r.captureClient(0xc9, join(dir, 'cap-gap-audio.ts'));
+        const srv = server(r.inputSock, gapTs, '--chunk', '188',
+                           '--pause-after', String(pcrAt[1] + 1), '--pause-ms', '1500');
+        await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'gap stream consumed', 60000);
+        await new Promise((res) => setTimeout(res, 1000));   // the 20 ms coalescing flush
+        r.send({ cmd: 'bus_detach', socket: r.edge(0xc9) });
+        await r.verdictOf(cap);
+        const audio = pcrsOn(readFileSync(join(dir, 'cap-gap-audio.ts')), 0xc9);
+        expect(audio).toContain(first);
+        expect(audio, 'the pre-gap master PCR was re-injected after the gap').not.toContain(owed);
+        expect(audio).toContain(next);   // ... injection resumes with the first PCR past it
     }, 120_000);
 });

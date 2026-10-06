@@ -91,6 +91,13 @@ class SplitterCore {
     // serialises control verbs against routing.
     bool add_output(int pid, int stream_type = -1);
 
+    // Drop the cached master PCR (mr-tssplit: after an input pause longer than
+    // mrts::COND_GAP_NS). Re-injected after a gap it trails the PES that follow
+    // it by the whole gap, and a consumer's tsdemux re-bases on it and places
+    // them that much early (8.4 s on the audio leg replaying .24's 2026-10-04
+    // reconnect). Injection resumes with the first PCR seen afterwards.
+    void forget_master_pcr() { master_pcr_ = -1; }
+
     // Route one input buffer. Returned batches are invalidated by the next
     // feed() call. Order = first-appearance order in the buffer.
     const std::vector<Batch>& feed(const uint8_t* data, size_t len);

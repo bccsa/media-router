@@ -17,6 +17,14 @@ namespace mrts {
 
 constexpr int64_t PTS_WRAP = 1LL << 33;
 
+// An arrival pause longer than this is a delivery GAP (a stall, a reconnect),
+// and a clock cached across it is stale: the conditioner never reads a PES past
+// it as a clock step and regenerates a PCR past it after that PCR's own PES, and
+// mr-tssplit forgets the master PCR it re-injects (ADR-0005 Stage 3f, amendment
+// 2026-10-04). 1 s is also tsdemux's `pcr_discont_threshold`: a PCR further
+// than that off its receive clock re-bases the consumer onto it.
+constexpr int64_t COND_GAP_NS = 1'000'000'000LL;
+
 // 90 kHz ticks -> nanoseconds, exact in integers: ns = pts * 1e9 / 90e3.
 // Floor division, like Python's `//`, so a negative delta rounds the same way.
 int64_t pts90k_to_ns(int64_t pts);
@@ -147,8 +155,12 @@ class TimelineStamper {
     // moved by more than COND_STEP_NS while its arrival moved normally is a
     // clock step, not content: the PID's offset absorbs the difference so the
     // written cadence follows arrival. A delivery STALL (PTS normal, arrival
-    // late) and a genuine GAP (PTS and arrival moved together) are left alone;
-    // so is anything past COND_MAX_NS, which the watch re-anchors as before.
+    // late) and a genuine GAP (PTS and arrival moved together, or arrival
+    // paused past COND_GAP_NS) are left alone; so is anything past
+    // COND_MAX_NS, which the watch re-anchors as before — and the regenerated
+    // PCR follows such a restart, flagged, in either direction. A PCR past an
+    // arrival gap is regenerated after its own packet's PES, never from the
+    // pre-gap floor.
     // Call BEFORE stamp() on the same bytes; live-cadence producers only (the
     // same set that turns repair_latch on — an HLS fan-out's bursts are not a
     // cadence). Returns the number of steps absorbed.
@@ -295,6 +307,12 @@ class TimelineStamper {
     // frame is not over-corrected by that frame's wire time.
     static int64_t cond_step_ns(const CondClock& c, int64_t d_ns);
     static void cond_remember(CondClock& c, int64_t d_ns);
+    // condition()'s two halves for one packet (python's `_condition_pcr` /
+    // `_condition_pes`): regenerate its PCR from the floor (the raw value is
+    // only recorded until a PTS exists), and condition its PES PTS/DTS. Each
+    // returns the steps it absorbed or reported.
+    int condition_pcr(uint8_t* pkt, int pid, int64_t pcr, int64_t house_now);
+    int condition_pes(uint8_t* pkt, int pid, int64_t house_now);
     // The PTS the regenerated PCR must trail: the LOWEST recent written PTS of
     // any stream (an audio PID can lag the video's by hundreds of ms and must
     // not be placed before it is delivered), bounded to at most COND_PCR_FLOOR_NS
