@@ -117,8 +117,10 @@ export interface PluginModule {
      * Refine live-updatability per change. Only consulted for params already in
      * `getLiveUpdatableParams()`; returning false routes that change down the
      * pending-restart path instead. Lets a structured param be live for some
-     * edits but not others — e.g. the mpegts-muxer's stream arrays, where a
-     * rename is a live KLV push but adding/removing an entry needs a rebuild.
+     * edits but not others — e.g. the mpegts-muxer's input array, where a
+     * rename is live (a UI label) but adding/removing an entry needs a rebuild.
+     * `oldValue` is the value before this edit. Never read it from the
+     * plugin's own config: a tree or manager write is already in there.
      */
     isLiveChange?(key: string, newValue: unknown, oldValue: unknown): boolean;
     /** Apply live config changes (only for params in getLiveUpdatableParams). */

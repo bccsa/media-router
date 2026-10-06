@@ -221,8 +221,15 @@ export class ModuleInstance extends EventEmitter {
      * Apply config changes.
      * Live-updatable params are applied immediately.
      * Other params set pendingRestart flag.
+     *
+     * `previous` holds the values the changes replace, from a caller that has
+     * already written them into `this.config` (the patch router writes the
+     * shared settings object first); without it `this.config` is the old value.
      */
-    async applyConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+    async applyConfigUpdate(
+        changes: Record<string, unknown>,
+        previous?: Record<string, unknown>,
+    ): Promise<void> {
         const liveParams = this.plugin.getLiveUpdatableParams();
         const liveChanges: Record<string, unknown> = {};
         let hasNonLive = false;
@@ -231,9 +238,9 @@ export class ModuleInstance extends EventEmitter {
             // A param can opt out of live application per-change via
             // `isLiveChange` (e.g. renaming a muxer stream is live, adding
             // one is not) — see the hook's doc in PluginModule.
+            const old = previous && key in previous ? previous[key] : this.config[key];
             const live =
-                liveParams.includes(key) &&
-                (this.plugin.isLiveChange?.(key, value, this.config[key]) ?? true);
+                liveParams.includes(key) && (this.plugin.isLiveChange?.(key, value, old) ?? true);
             if (live) {
                 liveChanges[key] = value;
             } else if (key === PLAYOUT_OFFSET_KEY) {

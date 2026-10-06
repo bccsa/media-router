@@ -1482,6 +1482,8 @@ Two paths exist for marking a setting as live-updatable (changeable without rest
 
 When the two disagree, the runtime `getLiveUpdatableParams()` result wins for behaviour, but the manifest flag still controls UI affordances. Keep them aligned unless you have a runtime reason to diverge.
 
+**Per edit: `isLiveChange(key, newValue, oldValue)`** (optional). The engine asks it only about a key that is already live; return `false` and that one edit takes the pending-restart path instead. The mpegts-muxer uses it for its `inputs` array: a rename is live, but adding or removing an input, or changing its PID or language, waits for a restart. `oldValue` is the value before the edit. Never take the old value from `this.config`: the engine has already written the new value into it by the time the hook (or `onLiveConfigUpdate`) runs.
+
 ### Playout Offset D (`playoutOffsetMs`)
 
 Under the engine-wide time-sync contract, producers stamp bus buffer PTS with house-clock media time and every **presentation sink schedules at `stamped-time + D`**, where D is the *playout offset* — a configured latency budget, not a best-effort. See ADR-0005 decision 4.

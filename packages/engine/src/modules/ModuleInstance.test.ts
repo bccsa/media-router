@@ -436,6 +436,35 @@ describe('ModuleInstance', () => {
         expect(instance.getState().pendingRestart).toBe(false);
     });
 
+    // The patch router writes a change into the settings object this instance
+    // shares before it calls applyConfigUpdate, so `this.config` already holds
+    // the new value and only `previous` still knows what it replaced.
+
+    it('gives isLiveChange the value the caller says the change replaced', async () => {
+        const grown = [{ name: 'A' }, { name: 'B' }];
+        const isLiveChange = vi.fn(
+            (_key: string, next: unknown, old: unknown) =>
+                Array.isArray(old) && (next as unknown[]).length === old.length,
+        );
+        Object.assign(plugin, { isLiveChange });
+        plugin.getLiveUpdatableParams.mockReturnValue(['inputs']);
+        instance = new ModuleInstance('inst-1', 'mpegts-muxer', plugin, { inputs: grown });
+        await instance.start();
+        await instance.applyConfigUpdate({ inputs: grown }, { inputs: [{ name: 'A' }] });
+        expect(isLiveChange).toHaveBeenCalledWith('inputs', grown, [{ name: 'A' }]);
+        expect(plugin.onLiveConfigUpdate).not.toHaveBeenCalled();
+        expect(instance.getState().pendingRestart).toBe(true);
+    });
+
+    it('compares a key the change added with undefined, not with the patched config', async () => {
+        const isLiveChange = vi.fn().mockReturnValue(false);
+        Object.assign(plugin, { isLiveChange });
+        plugin.getLiveUpdatableParams.mockReturnValue(['inputs']);
+        instance = new ModuleInstance('inst-1', 'mpegts-muxer', plugin, { inputs: [{}] });
+        await instance.applyConfigUpdate({ inputs: [{}] }, { inputs: undefined });
+        expect(isLiveChange).toHaveBeenCalledWith('inputs', [{}], undefined);
+    });
+
     // ---- Delegation methods ----
 
     it('getPipeWireNodes delegates to plugin', () => {

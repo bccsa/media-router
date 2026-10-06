@@ -1859,6 +1859,8 @@ Is module running?
 
 **Mixed updates:** If a single config save includes both live-updatable and restart-required changes, the live-updatable changes are applied immediately and the restart-required changes are held as pending.
 
+**Per-edit refinement:** A plugin may narrow a live-updatable parameter per edit with `isLiveChange(key, newValue, oldValue)`; an edit it rejects is held as pending like a restart-required change. The mpegts-muxer uses it for `inputs`: a rename applies live, while an added or removed input or a changed PID or language waits for a restart. `oldValue` is the value before the edit.
+
 ### 9.4 Plugin Lifecycle
 
 ```typescript
@@ -1879,6 +1881,10 @@ interface PluginModule {
     // Called after onStart() and whenever backend selection changes.
     // Returns a subset of params marked x-liveUpdatable in the schema.
     getLiveUpdatableParams(): string[];
+
+    // Optional: narrow a live-updatable param per edit; false holds this
+    // edit as pending. oldValue is the value before the edit.
+    isLiveChange?(key: string, newValue: unknown, oldValue: unknown): boolean;
 
     // Called for live-updatable parameter changes while running.
     // Only receives changes for params listed in getLiveUpdatableParams().

@@ -222,11 +222,15 @@ export class ModuleManager extends EventEmitter {
         return count;
     }
 
-    /** Apply config update to a module. */
-    async applyConfigUpdate(instanceId: string, changes: Record<string, unknown>): Promise<void> {
+    /** Apply config update to a module (`previous`: see ModuleInstance.applyConfigUpdate). */
+    async applyConfigUpdate(
+        instanceId: string,
+        changes: Record<string, unknown>,
+        previous?: Record<string, unknown>,
+    ): Promise<void> {
         const mod = this.modules.get(instanceId);
         if (!mod) throw new Error(`Module not found: ${instanceId}`);
-        await mod.applyConfigUpdate(changes);
+        await mod.applyConfigUpdate(changes, previous);
     }
 }
 

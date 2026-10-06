@@ -6,6 +6,7 @@ interface ResolvedPatchOp extends PatchOp {
     _connId?: string;
 }
 import { settleInterlocks } from './interlocks.js';
+import { previousSettings } from './previousSettings.js';
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
 import type { LocalServer } from './comms/LocalServer.js';
@@ -62,6 +63,8 @@ export class EnginePatchRouter {
 
         // 1. Pre-resolve connection IDs from index-based paths (before applying removes them)
         const resolvedOps = this.resolveConnectionIds(withMutes, config);
+        // ...and the setting values it replaces, for the modules' `isLiveChange`.
+        const previous = previousSettings(withMutes, config);
 
         // 2. Apply to in-memory config. Whatever the batch did (several members
         // unmuted at once, a group created or its members changed), at most one
@@ -70,7 +73,7 @@ export class EnginePatchRouter {
         const { repairs, all, ours, report } = settleInterlocks(config, ops, withMutes, mutes);
 
         // 3. Detect side effects and execute
-        this.detectSideEffects([...resolvedOps, ...repairs], config);
+        this.detectSideEffects([...resolvedOps, ...repairs], config, previous);
 
         // 4. Forward: everyone sees every op, and the manager hears the mutes made here.
         if (senderType === 'manager') {
@@ -88,7 +91,11 @@ export class EnginePatchRouter {
     /**
      * Detect side effects from patch ops and execute them.
      */
-    private detectSideEffects(ops: ResolvedPatchOp[], config: Record<string, unknown>): void {
+    private detectSideEffects(
+        ops: ResolvedPatchOp[],
+        config: Record<string, unknown>,
+        previous: Map<string, Record<string, unknown>>,
+    ): void {
         // Collect settings changes per module for batched live updates
         const settingsChanges = new Map<string, Record<string, unknown>>();
 
@@ -227,7 +234,7 @@ export class EnginePatchRouter {
         // stopped module re-resolves at start).
         for (const [moduleId, changes] of settingsChanges) {
             this.moduleManager
-                .applyConfigUpdate(moduleId, changes)
+                .applyConfigUpdate(moduleId, changes, previous.get(moduleId))
                 .then(() => this.lifecycle.refreshPorts(moduleId))
                 .catch((err) => log.warn({ err, moduleId }, 'Live config update failed'));
         }
