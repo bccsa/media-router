@@ -1,6 +1,5 @@
 #include "stamper.h"
 
-#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -265,7 +264,11 @@ void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_m
 }
 
 void arm(GstElement* tee, const std::string& name) {
-    if (!g_enabled || !tee || is_armed(name)) return;
+    if (!g_enabled || !tee) return;
+    if (is_armed(name)) {
+        log_line(name, "consumer edge attached — stamper already armed, anchor kept");
+        return;
+    }
     auto it = g_elements.find(name);
     if (it == g_elements.end()) return;   // no spliced element (plugin missing / splice failed)
     GstElement* el = it->second;
@@ -280,18 +283,16 @@ void arm(GstElement* tee, const std::string& name) {
 }
 
 void release(const std::string& name) {
+    // Logged only: the anchor is the producer's, so it stays armed until `clear` (stamper.h).
     if (!is_armed(name)) return;
     auto it = g_elements.find(name);
-    if (it != g_elements.end()) g_object_set(it->second, "active", FALSE, nullptr);
-    g_armed.erase(std::remove(g_armed.begin(), g_armed.end(), name), g_armed.end());
-    if (g_armed.empty()) stop_drift_timer();
     std::string extra;
     if (it != g_elements.end()) {
         guint64 copies = 0;
         g_object_get(it->second, "copy-count", &copies, nullptr);
         extra = fmt(" (native, %llu non-writable buffers)", (unsigned long long)copies);
     }
-    log_line(name, "last consumer edge detached — stamper disarmed" + extra);
+    log_line(name, "last consumer edge detached — stamper stays armed, anchor kept" + extra);
 }
 
 void clear() {

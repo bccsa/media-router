@@ -16,11 +16,11 @@ ticks/min on a routed producer on .42, against ~18 for the same maths inside
 mr-tssplit).
 
 The elements are spliced in ONCE, before PLAYING (a graph change is only safe
-while the pipeline is in NULL) and arrive INACTIVE; `active` is the lazy arm the
-runner's bus_attach/bus_detach paths toggle. Inactive is basetransform
-passthrough; the element still sees each buffer for one atomic size add (its
-`bytes-total` counter — the producer's throughput source, see `bytes_total`),
-and nothing else.
+while the pipeline is in NULL) and arrive INACTIVE; `active` is the lazy arm,
+set on a tee's first bus_attach and cleared only by `gst_bus_stamper.clear`
+(pipeline stop). Inactive is basetransform passthrough; the element still sees
+each buffer for one atomic size add (its `bytes-total` counter — the
+producer's throughput source, see `bytes_total`), and nothing else.
 """
 import os
 import sys
@@ -122,10 +122,10 @@ def insert_elements(pipe):
     are created and destroyed at runtime anyway — and before the caps pair so
     the element sees the mux's buffer lists (`egress_head`).
 
-    Inactive on arrival: `active` is the lazy arm, toggled from the same
-    bus_attach / bus_detach paths that arm and disarm the python probe. The
-    list coalescing is NOT gated by `active`: it is a bus-format property of
-    the egress, on from the first buffer.
+    Inactive on arrival: `active` is the lazy arm, set on the same first
+    bus_attach that arms the python probe and cleared with it at pipeline stop
+    (`gst_bus_stamper.clear`). The list coalescing is NOT gated by `active`: it
+    is a bus-format property of the egress, on from the first buffer.
     """
     # Collect first, splice second: adding elements invalidates a live
     # GstIterator (RESYNC), and the walk is the only place we need it.
@@ -189,7 +189,7 @@ def activate(el, name, repair_latch=True, condition_step_ms=None):
 
 def deactivate(el):
     """Disarm one spliced element — drops the whole latch state, the same
-    contract the probe's removal has (see `gst_bus_stamper.release`)."""
+    contract the probe's removal has (pipeline stop: `gst_bus_stamper.clear`)."""
     try:
         el.set_property("active", False)
     except Exception:  # noqa: BLE001 — a disposed element is already disarmed
@@ -211,7 +211,7 @@ def drift_stats(el):
 
 
 def copy_count_note(el):
-    """Disarm-time note for the runner's log. Buffers this egress could not be
+    """Last-edge note for the runner's log. Buffers this egress could not be
     stamped in place on: expected 0 upstream of the tee (singly-owned buffer, no
     copy); anything else says something up the chain is holding a reference and
     every buffer is paying a shallow GstBuffer copy for it."""

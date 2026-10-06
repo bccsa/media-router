@@ -1826,7 +1826,7 @@ def _install_branch_stamp_align(pipe, cfg):
 # Bus egress stamper (time-sync contract) — the PRODUCER stamps the timeline
 # ---------------------------------------------------------------------------
 # The subsystem lives in `gst_bus_stamper.py` next to this file (probe install,
-# lazy arm/disarm per consumer edge, native `mrtsstamp` splice, engine events),
+# lazy arm on a tee's first edge, native `mrtsstamp` splice, engine events),
 # and the arithmetic it applies is `ts_timeline.TimelineStamper` — the one
 # python definition of the contract, shared with the sidecars. What stays here
 # is the wiring: the emitter it reports through, and the consumer-edge
@@ -1841,15 +1841,10 @@ gst_bus_stamper.set_emitter(lambda obj: emit_event(obj))
 
 
 def _release_bus_stamper(tee_name):
-    """Disarm `tee_name`'s stamper once its LAST consumer edge is gone.
-
-    Held edges keep it armed, so one consumer of several detaching changes
-    nothing. A tee that gets a consumer again later re-anchors from that
-    moment, which is the established re-anchor semantics.
-
-    Note the stall watchdog's in-place edge RESET goes through here too when
-    the stalled edge is a tee's only one: that reset EOFs the zombie consumer
-    so it respawns, and a fresh consumer wants a fresh anchor anyway.
+    """Tell the stamper `tee_name`'s LAST consumer edge is gone. It stays
+    armed (`gst_bus_stamper.release`): a consumer that comes back — a muxer
+    restart, the stall watchdog's in-place edge RESET — inherits the anchor
+    every consumer before it had, instead of re-rolling the producer's mapping.
     """
     for entry in _bus_branches.values():
         if entry.get("tee_name") == tee_name:
@@ -2701,7 +2696,8 @@ def _try_bus_attach(tee_name, socket):
     # time-sync contract is on, or the tee is already armed for an earlier
     # consumer): once linked, buffers reach the new edge immediately, and one
     # that slipped past an unarmed probe would carry an arrival time onto the
-    # wire. The structural-failure paths below release it again.
+    # wire. A structural failure below only reports the edge gone: the stamper
+    # stays armed until the pipeline stops (`_release_bus_stamper`).
     gst_bus_stamper.arm(tee, tee_name)
     _remove_stale_bus_socket(socket)
     try:
@@ -3013,10 +3009,10 @@ def _teardown_bus_branch(socket):
         return False
     globals()["_bus_topology_version"] += 1
     branch, tee, tee_src = entry["branch"], entry["tee"], entry["tee_src"]
-    # The entry is already out of `_bus_branches`, so this disarms the egress
-    # stamper exactly when the tee just lost its LAST consumer. Done here rather
-    # than in the async probe below: the edge is gone as far as bookkeeping is
-    # concerned, and stamping for a departed consumer is the cost we removed.
+    # The entry is already out of `_bus_branches`, so this tells the egress
+    # stamper exactly when the tee just lost its LAST consumer (it stays armed:
+    # `_release_bus_stamper`). Done here rather than in the async probe below:
+    # the edge is gone as far as bookkeeping is concerned.
     _release_bus_stamper(entry.get("tee_name"))
     try:
         # Drop a pending progress probe so its closure can't fire on a pad of

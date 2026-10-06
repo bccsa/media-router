@@ -60,7 +60,9 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    still fresh; the backlog fast-forwards, the stamps stay monotone, no
    consumer sees a step. The window closing is reported (`timeline_settled`,
    `repairNs`) so a burn-in can read what every anchor cost, and a disarm
-   inside the window reports it too, so short-lived edges are in the tally.
+   inside the window reports it too, so short-lived incarnations are in the
+   tally (since the 2026-10-06 lazy-arm amendment only a pipeline stop
+   disarms; an edge leaving no longer closes the window).
    **Resolved per route from the graph, not per producer**
    (`effectiveLatchRepair`, the same route-head shape as D): the assumption
    is a property of the SOURCE at the head of the chain, so the engine walks
@@ -350,6 +352,78 @@ Corrections to the above, found while building the producer side:
   three contract↔legacy pairs) and the whole contract to +526 ticks/min. A
   re-attach after a full detach anchors afresh, which is correct: an anchor only
   means anything to the consumers that held it.
+
+  **Amendment 2026-10-06 (.21 Mulanje): a stamper stays armed from its first
+  consumer edge until the pipeline stops — the anchor is the producer's, not its
+  consumers'.** The last sentence above is wrong for a consumer that takes from
+  TWO producers: it ships the relation between their anchors, because the
+  mpegts-muxer aligns each branch to its own producer's stamps (Stage 3d;
+  decision 2's 2026-09-05 note), so `stamp_A − stamp_V` for simultaneous content
+  IS the A/V of every TS it emits. On 10.37.7.21 (journal 2026-10-05 15:04 →
+  10-06 01:47) the A/V muxer is the only consumer of the camera encoder's egress
+  (`busout_40000`) and the AAC transcoder's (`busout_40007`), so every muxer
+  restart disarmed both and each re-latched alone from its next 3 s of arrivals.
+  The audio-minus-video the muxer shipped (its `branchAlign` lines) stepped
+  −48.00 / +34.46 / −18.95 ms over three restarts in one engine run and
+  +7.22 / −4.74 ms over two in another; per latch, 7 mid-run re-arms spread it
+  over a 72 ms band (−87.8 … −15.5 ms) against 17 ms (−30.6 … −13.3 ms) for 5
+  fresh engine starts. The camera's mapping is house-locked and re-latched
+  within 0.4 ms (one re-arm +11.7 ms); the AAC's is not —
+  `avenc_aac perfect-timestamp` counts samples from a USB capture ~45 ppm fast
+  against house, so its PES timeline saws down 2.7 ms/min and snaps back
+  30–40 ms, and a re-arm hours into a run catches a random phase of that (a
+  fresh encoder starts it at zero, which is why fresh latches cluster). One such
+  step reached 10.37.7.24 as late audio: 2–9 % loss on its audio-decoder leg for
+  18 min, through a .24 engine restart, until the next muxer restart. **Now:**
+  the first edge arms and only `clear` (pipeline stop) disarms. The last edge
+  leaving is only logged (`stamper stays armed, anchor kept`), and an edge that
+  comes back — however much later, the stall watchdog's edge reset included —
+  logs `stamper already armed, anchor kept` and inherits the anchor every
+  consumer before it had. An attach that fails structurally (its own `warning`
+  event) has armed by then: it logs the last-edge line for an edge that never
+  carried a buffer, and the egress stays armed. The sidecars (`mr-tssplit`,
+  `mr-bus-fanout`) always worked this way: their stamper lives as long as the
+  process. **Cost:** an egress whose consumers have all left keeps stamping
+  until its module stops — the native element's whole cost, +28 / +34 ticks/min
+  on the Pi 400 (measured below), or the python probe's +327 on a box without
+  the plugin — and keeps its drift report: one `timeline_drift` event and one
+  `anchor slewed` journal line per egress every 30 s. A producer that is never
+  routed — the case the lazy arm was measured on — still pays nothing.
+  **Rejected:** a grace timer before the disarm — a consumer gone longer than
+  the grace still re-rolls (the engine's crash-restart backoff reaches 48 and
+  60 s; a disable/enable has no bound), and it needs a timer per egress in two
+  runners plus a test-only override to reach its expiry. Parking the latch state
+  and resuming it — the stamper is blind for the gap, and the conditioner
+  regenerates the PCR from a floor cached at the pause: replaying 88 bounces of
+  0.5–1 s through `ts_timeline`, the first PCR after the resume sat more than
+  400 ms behind its PES in 43 of them (worst 1.29 s, against the normal 0.29 s),
+  which the 1 s conditioner gap rule proposed in #806 does not catch, and making
+  it safe would change both `ts_timeline` implementations to save ~30 ticks/min.
+  **Unchanged:** a PRODUCER restart is a new incarnation and latches afresh —
+  the fresh band above (20 ms, −33.3 … −13.3 ms, once the 5 fresh starts of
+  the 2026-10-06 on-device checks are added), all of it in the AAC egress's
+  latch (the camera's and the 302M input's latches moved < 0.4 ms over the
+  same starts). One measured term in it is that egress's `alignment=7` packet
+  holding inside the 3 s minimum: on a macOS bench (8 restarts each)
+  `alignment=0` narrows the band from 7.9 to 4.9 ms, but the field band is more
+  than twice the bench's, so what else sets it is still to be measured
+  (TodoNotes). An identity mapping for
+  house-timeline producers stays the separately tracked "Known residual" in the
+  302M notes below. **Operators:** restarting a consumer no longer re-rolls its
+  producers' anchors; to re-latch a producer, restart the producer.
+  **Verified** on .21 (2026-10-06, seven muxer restarts, five before the
+  drift servo engaged): per restart each egress logged one stays-armed and one
+  already-armed line and no fresh latch, and the A/V in the muxer's
+  `branchAlign` lines stepped 0.000 ms five times, then twice by the two
+  egresses' logged slew, to within 0.012 ms (a0f6f13c the same day: steps of
+  up to 37.3 ms, a 43.6 ms band over six starts). A video-encoder restart
+  re-latched only the camera's egress (mapping +0.13 ms). An earlier run of
+  the same build (six restarts) and two restarts with #799–#808 also on .21
+  gave the same result. **Not covered** (TodoNotes): .24 re-latches its own
+  ingest at every SRT reconnect, which every .21 muxer restart causes. With
+  .21's A/V held, its decoder leg was still late for 3–5.5 min after two of
+  the seven restarts (23.7 min after one in the earlier run), and a restart of
+  .21's srt-output alone, which touches no .21 anchor, did the same.
 - The probe makes **one parse pass** over each buffer (`ts_timeline.iter_pes`
   over a `memoryview`, then three walks over its 1-3 entry result) instead of
   re-scanning the bytes for the watch, the latch and the stamp. Order and
@@ -368,10 +442,12 @@ Corrections to the above, found while building the producer side:
   `GST_PLUGIN_PATH`) and splices one in front of each `busout_*` tee with the
   element API, leaving the `buildBusSink` STRING untouched so flag-off stays
   byte-identical. `active` is the lazy arm, toggled from the same
-  bus_attach/detach paths; inactive is basetransform passthrough with
-  `transform_ip_on_passthrough` off, so a disarmed egress never sees the buffer
-  at all. **The python probe stays** as the reference implementation and the
-  fallback — a box without the plugin logs a warning and runs exactly as before.
+  bus_attach/detach paths (since the 2026-10-06 lazy-arm amendment: set on the
+  first attach, cleared at pipeline stop); inactive is basetransform
+  passthrough with `transform_ip_on_passthrough` off, so a disarmed egress never
+  sees the buffer at all. **The python probe stays** as the reference
+  implementation and the fallback — a box without the plugin logs a warning and
+  runs exactly as before.
 - Measured on the same Pi 400 (10.9.1.42, 2026-08-12), 7 paired arms, 120 s
   settle + 60 s restart-free window each, on the routed producer (srt-input →
   mr-tssplit). Delta is against the mean of the two neighbouring legacy arms,

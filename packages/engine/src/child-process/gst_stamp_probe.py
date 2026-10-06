@@ -200,10 +200,10 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None):
 
 
 def remove(st):
-    """Take the probe off the pad. The latch state goes with it (see
-    `gst_bus_stamper.release`) — after the stamper has reported a repair
-    window this disarm is cutting short, so the anchor's cost is on record
-    even for an edge that lived a second."""
+    """Take the probe off the pad (pipeline stop, `gst_bus_stamper.clear`). The
+    latch state goes with it — after the stamper has reported a repair window
+    this disarm is cutting short, so the anchor's cost is on record even for a
+    producer that lived a second."""
     stamper = st.get("stamper")
     if stamper is not None:
         stamper.close_latch()

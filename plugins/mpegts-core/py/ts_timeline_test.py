@@ -636,7 +636,7 @@ for i in range(2 * JUMP_AT):
 check("a re-anchor re-opens the window and a clean cadence closes it for free",
       rer.reanchors == 1 and [s['repairNs'] for s in re_settled] == [0, 0])
 
-# A producer disarmed INSIDE the window (last consumer edge gone, module stop)
+# A producer disarmed INSIDE the window (its module stopping or restarting)
 # still reports what the window had cost so far — the short-lived incarnation
 # is exactly the one a burn-in tally must not skip. Closing twice is a no-op.
 early_settled = []

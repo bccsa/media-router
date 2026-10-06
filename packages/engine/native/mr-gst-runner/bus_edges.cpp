@@ -149,8 +149,8 @@ bool try_bus_attach(const std::string& tee_name, const std::string& socket) {
     GstElement* tee = GST_IS_BIN(r.pipeline) ? gst_bin_get_by_name(GST_BIN(r.pipeline), tee_name.c_str()) : nullptr;
     if (!tee) return false;   // tee not created yet — caller queues a retry
 
-    // Arm the egress stamper BEFORE the branch is linked: once linked, buffers
-    // reach the new edge immediately.
+    // Arm the egress stamper BEFORE the branch is linked (buffers reach a linked
+    // edge at once); a structural failure below leaves it armed (stamper.h).
     stamper::arm(tee, tee_name);
     remove_stale_bus_socket(socket);
 
@@ -448,8 +448,8 @@ bool teardown_branch(const std::string& socket) {
     if (it == g_branches.end()) return false;
     std::shared_ptr<Edge> e = it->second;
     g_branches.erase(it);
-    // The entry is out of the map, so this disarms the stamper exactly when
-    // the tee just lost its LAST consumer.
+    // The entry is out of the map, so this tells the stamper exactly when the
+    // tee just lost its LAST consumer (it stays armed: stamper.h).
     release_stamper_if_unused(e->tee_name);
     if (e->probe_id && e->sink_pad) {
         gst_pad_remove_probe(e->sink_pad, e->probe_id);

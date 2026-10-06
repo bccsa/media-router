@@ -247,8 +247,30 @@ def test_producer_edge():
         det = r.wait_event(ev_is("bus_detached", socket=edge))
         check("B bus_detach -> bus_detached", det is not None)
         if stamped:
-            check("B stamper disarmed on last edge", r.wait_log("stamper disarmed", timeout=2))
+            # Word for word: the field check greps the journal for these lines,
+            # and gst_bus_stamper_test.py pins the python runner's to the same text.
+            check("B stamper stays armed after the last edge (anchor kept)",
+                  r.wait_log("busStamp busout_40000: last consumer edge detached — "
+                             "stamper stays armed, anchor kept", timeout=2))
         check("B socket file removed after detach", not os.path.exists(edge))
+
+        # A consumer coming back (a muxer restart) inherits the producer's anchor:
+        # no second latch, however long the tee went without an edge.
+        edge2 = os.path.join(tmp, "edge2.sock")
+        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge2})
+        check("B re-attach after a full detach -> bus_attached",
+              r.wait_event(ev_is("bus_attached", socket=edge2)) is not None)
+        if stamped:
+            check("B re-attach finds the stamper armed",
+                  r.wait_log("busStamp busout_40000: consumer edge attached — "
+                             "stamper already armed, anchor kept", timeout=2))
+            time.sleep(0.5)
+            r.pump()
+            check("B re-attach does not latch a second anchor",
+                  len([e for e in r.events if e.get("event") == "timeline_restamped"]) == 1
+                  and not r.has_event(ev_is("timeline_reanchor")))
+        r.send({"cmd": "bus_detach", "socket": edge2})
+        r.wait_event(ev_is("bus_detached", socket=edge2))
 
         # Attach on a tee that does not exist stays pending, never errors.
         r.send({"cmd": "bus_attach", "tee": "busout_99999", "socket": os.path.join(tmp, "ghost.sock")})

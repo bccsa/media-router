@@ -6,9 +6,12 @@
 //
 // Elements are spliced in once, before PLAYING, at the head of every
 // `busout_*` egress and arrive inactive; `arm` (a tee's first consumer edge)
-// sets `active`, `release` (its last edge gone) clears it. Every event and log
-// line keeps the python runner's field names and wording so the engine and a
-// burn-in reading the journal cannot tell which runner stamped.
+// sets `active`, and it stays set until `clear` (pipeline stop): the anchor is
+// the producer's mapping, so a consumer that leaves and comes back (a muxer
+// restart) inherits it rather than re-rolling it (`gst_bus_stamper.py` header).
+// Every event and log line keeps the python runner's field names and wording
+// so the engine and a burn-in reading the journal cannot tell which runner
+// stamped.
 #pragma once
 
 #include <gst/gst.h>
@@ -28,7 +31,7 @@ void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_m
 /** Arm the stamper on `tee_name`'s egress (idempotent; no-op off-contract). */
 void arm(GstElement* tee, const std::string& tee_name);
 
-/** Disarm `tee_name`'s stamper — its last consumer edge is gone. */
+/** `tee_name`'s last consumer edge is gone: logged, the stamper stays armed. */
 void release(const std::string& tee_name);
 
 /** Disarm everything and forget the flag (pipeline stop). */

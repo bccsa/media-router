@@ -14,9 +14,10 @@ What is pinned here:
 
   R8  Flag off => nothing installed, timestamps untouched, byte-identical.
   --  The probe is armed LAZILY: a tee with no consumer edge is never
-      instrumented, the first attach arms it, the last detach disarms it, and a
-      re-attach anchors afresh. Driven through the real handle_bus_attach /
-      handle_bus_detach path, because that is what production calls.
+      instrumented, the first attach arms it, and it then keeps its anchor
+      through the last detach and any re-attach until the pipeline stops.
+      Driven through the real handle_bus_attach / handle_bus_detach path,
+      because that is what production calls.
   R2  Every output buffer carries a valid PTS, non-decreasing, with the
       staircase repeating across buffers that contain no PES header. A
       timestampless buffer would make the time-bounded leaky queues on the bus
@@ -223,14 +224,18 @@ check("an absent timeSyncContract key installs nothing", stamper.armed == [])
 
 
 # ---------------------------------------------------------------------------
-print("\n--- lazy arm: the probe follows the consumer edges ---")
+print("\n--- lazy arm: from the first consumer edge to the pipeline stop ---")
 # The first cut armed a probe on every busout_* tee at pipeline start, consumers
 # or not. Measured on the Pi 400 at 10.9.1.42 (2026-08-12) that cost 2492
 # ticks/min on ONE producer whose egress tee had no edges at all — 83% of the
 # contract's entire CPU bill, spent stamping buffers nobody was reading. The
-# probe now arms on a tee's first consumer edge and disarms on its last. Driven
-# here through the real handle_bus_attach / handle_bus_detach commands, because
-# that is exactly what BusFanoutCoordinator sends in production.
+# probe now arms on a tee's first consumer edge — and then STAYS armed until the
+# pipeline stops: the anchor is the producer's mapping, so a consumer that
+# leaves and comes back (a muxer restart) must find the same one (.21,
+# 2026-10-06: disarming on the last edge spread the A/V the muxer shipped over
+# 72 ms across seven restarts). Driven here through the real
+# handle_bus_attach / handle_bus_detach commands, because that is exactly what
+# BusFanoutCoordinator sends in production.
 LAZY_STEP = 3600                                  # 40 ms in 90 kHz ticks
 LAZY_FIRST = 8_100_000
 sockdir = tempfile.mkdtemp(prefix="mr-stamper-test-")
@@ -291,37 +296,57 @@ check("and the surviving consumer keeps its original anchor",
       == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
           for i in range(6, 9)])
 
-runner.handle_bus_detach({"socket": sock_a})
-check("the LAST consumer leaving disarms it", stamper.armed == [])
+# The two log lines are the field's pass signal (journal) and must read the
+# same from both runners (`native_runner_protocol_test.py` section B pins the
+# native's to this text, word for word).
+lazy_log = io.StringIO()
+with redirect_stderr(lazy_log):
+    runner.handle_bus_detach({"socket": sock_a})
+check("the LAST consumer leaving keeps it armed", len(stamper.armed) == 1)
+check("and logs that it stays armed",
+      "busStamp busout_41000: last consumer edge detached — stamper stays armed, "
+      "anchor kept" in lazy_log.getvalue())
 for i in range(12, 15):
     lazy_push(i, 500 + 5 * i)
 wait_for(seen, 15)
-check("a tee with no consumers is back to untouched arrival timestamps",
+check("and it keeps stamping on the same anchor with no consumer attached",
       [p for p, _ in seen[12:15]]
-      == [(500 + 5 * i) * Gst.MSECOND for i in range(12, 15)])
+      == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+          for i in range(9, 12)])
 
-# Re-attach on a fresh edge: a NEW anchor is the correct answer, not a resumed
-# one. An anchor only ever means anything to the consumers that were there when
-# it was taken, and the arriving consumer has no memory of the old timeline.
+# Re-attach on a fresh edge: the producer's anchor, not a new one. The muxer
+# that comes back aligns each branch to its producer's stamps (branchAlign), so
+# a fresh latch here would re-roll the A/V relation it ships; no gap length
+# changes that (there is no timer — the anchor lives as long as the pipeline).
 sock_c = os.path.join(sockdir, "edge-c.sock")
 time.sleep(0.05)                                  # let the house clock advance
-runner.handle_bus_attach({"tee": "busout_41000", "socket": sock_c})
-check("re-attaching after a full detach arms it again", len(stamper.armed) == 1)
+with redirect_stderr(lazy_log):
+    runner.handle_bus_attach({"tee": "busout_41000", "socket": sock_c})
+check("re-attaching after a full detach finds it still armed", len(stamper.armed) == 1)
+check("and logs that the anchor is kept",
+      "busStamp busout_41000: consumer edge attached — stamper already armed, "
+      "anchor kept" in lazy_log.getvalue())
 for i in range(15, 18):
     lazy_push(i, 1000 + 5 * i)
 wait_for(seen, 18)
 restamps = [e for e in events if e["event"] == "timeline_restamped"]
-check("the re-attach anchors afresh rather than resuming the old timeline",
-      len(restamps) == 2 and restamps[1]["anchorNs"] > restamps[0]["anchorNs"]
-      and restamps[1]["refPts90k"] == LAZY_FIRST + 15 * LAZY_STEP)
-check("and the new staircase is measured from the new anchor",
+check("the re-attach resumes the producer's anchor — no second latch",
+      len(restamps) == 1 and not any(e["event"] == "timeline_reanchor" for e in events))
+check("and the staircase continues from the ORIGINAL anchor",
       [p for p, _ in seen[15:18]]
-      == [restamps[1]["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-          for i in range(3)])
+      == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+          for i in range(12, 15)])
 
 runner.handle_bus_detach({"socket": sock_c})
-drain(pipe, src)
 stamper.clear()
+check("only the pipeline stop (`clear`) disarms it", stamper.armed == [])
+for i in range(18, 21):
+    lazy_push(i, 2000 + 5 * i)
+wait_for(seen, 21)
+check("and after it the tee is back to untouched arrival timestamps",
+      [p for p, _ in seen[18:21]]
+      == [(2000 + 5 * i) * Gst.MSECOND for i in range(18, 21)])
+drain(pipe, src)
 runner.pipeline = None
 shutil.rmtree(sockdir, ignore_errors=True)
 
@@ -626,8 +651,11 @@ check("and carries the cumulative correction and the margin it engaged at",
       and drifts[0]["samples"] == 10 and drifts[0]["engageNs"] < 0
       and "ppm" in drifts[0]["message"])
 stamper.release("busout_41000")
-check("the last release drops the timer with the last stamper",
-      stamper.drift_timer_id is None)
+check("the last edge leaving keeps the egress reporting (it stays armed)",
+      stamper.drift_timer_id is not None and len(stamper.armed) == 1)
+stamper.clear()
+check("the pipeline stop drops the timer with the stampers",
+      stamper.drift_timer_id is None and stamper.armed == [])
 drain(pipe, src)
 
 

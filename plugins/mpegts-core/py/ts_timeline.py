@@ -676,7 +676,7 @@ class TimelineStamper:
     def close_latch(self):
         """Close an open repair window NOW and report it. The window normally
         closes itself on the first PES past it; a producer disarmed inside it
-        (last consumer edge gone, module stop) would otherwise leave that
+        (its module stopping or restarting) would otherwise leave that
         anchor's cost unreported, and a burn-in tally of what every anchor
         cost would silently skip exactly the short-lived incarnations. No-op
         when no window is open, so a caller need not check."""
