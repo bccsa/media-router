@@ -62,6 +62,9 @@ export function planSink(
     };
 }
 
+/** The video input port; the subtitle input is `SUBTITLE_INPUT_PORT_ID`. */
+export const VIDEO_INPUT_PORT_ID = 'mpegts-in';
+
 /**
  * The video leg's sink `ts-offset`, in nanoseconds.
  *
@@ -70,7 +73,9 @@ export function planSink(
  * resolves D through the same `effectivePlayoutOffsetMs` against the same route,
  * so both legs of one route schedule off one number — which is the whole point
  * of ADR-0005 decision 4 and what an independently-set `lipSyncMs` could never
- * guarantee.
+ * guarantee. The route is the one on the VIDEO input: both inputs carry
+ * `muxed/mpegts`, and the walk to the head (transitive since 2026-10-04) must
+ * never follow the subtitle source's chain instead.
  *
  * Contract OFF: `lipSyncMs` alone — bit-for-bit the legacy value.
  */
@@ -80,6 +85,7 @@ export function videoTsOffsetNs(
 ): number {
     return effectivePlayoutOffsetNs(services, {
         trimMs: Number(config.lipSyncMs ?? 0) || 0,
+        sinkPortId: VIDEO_INPUT_PORT_ID,
     });
 }
 

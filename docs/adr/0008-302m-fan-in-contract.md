@@ -83,6 +83,14 @@ schedule off the same number. Field cause and measurements are in ADR-0005's
 "Implementation notes (302M output leg)". The kill-switch path still emits the
 legacy string byte for byte.
 
+**Since 2026-10-04 that holds behind an audio-transcoder too.** The route's D
+was resolved one hop up, so a 302M output behind a transcoder took the engine
+default whatever the splitter or ingest set (BCC Mulanje .24: 23.7 % of the
+interpreters' headphone audio discarded on an ~80 ms budget). The route head is
+now the nearest upstream producer that sets D ([[0005]] decision 4 amendment).
+The legs still cancel different sink latencies — 80 ms here, 160 ms on the
+audio-decoder — see ADR-0005's audio-leg budget note.
+
 Two consequences for the three rules above:
 
 - **Rule 1 stands.** The paced sink bounds the mixer's post-EOS free-run only

@@ -229,4 +229,11 @@ describe('plugin schemas ↔ MAX_PLAYOUT_OFFSET_MS', () => {
     it.each(schemas)('%s bounds the offset at MAX_PLAYOUT_OFFSET_MS', (_path, schema) => {
         expect((schema as { maximum?: number }).maximum).toBe(MAX_PLAYOUT_OFFSET_MS);
     });
+
+    // The settings form sends a number field on every keystroke: typing 240
+    // would push D=2, then 24, then 240 to every leg of the route — each one
+    // can re-anchor a sink. Debounced, the route moves once, to the value typed.
+    it.each(schemas)('%s debounces live edits to one push (x-debounceMs)', (_path, schema) => {
+        expect((schema as Record<string, unknown>)['x-debounceMs']).toBe(500);
+    });
 });

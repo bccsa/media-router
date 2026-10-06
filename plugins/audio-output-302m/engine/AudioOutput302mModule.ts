@@ -24,9 +24,10 @@ import { buildOutputPlacement } from './outputPlacement.js';
  * presents at `stamped-time + D` on the house clock — `sync=true`, `ts-offset`
  * = the route's playout offset (decision 4) plus the `lipSyncMs` trim,
  * `provide-clock=false`, `slave-method=skew` (decision 5), `max-lateness=-1`
- * (a late timeline — mid-stream join, restart backlog — drains instead of
- * being dropped into silence, the same disarm the audio-decoder uses), and
- * the backlog shedder armed on the sink's own pad. Field, 10.9.16.103,
+ * (inert: an audio sink never consults it — audio reaching the sink after its
+ * slot is discarded by pipewire-pulse, health still `ok`, so only budget, the
+ * route's D plus the trim, prevents loss; ADR-0005 "audio-leg budget" note),
+ * and the backlog shedder armed on the sink's own pad. Field, 10.9.16.103,
  * 2026-09-03: with the video-player paced at stamp + D and this sink on
  * `sync=false`, audio played on arrival + whatever PipeWire and the queues
  * happened to hold — 50–200 ms EARLY, re-rolled on every restart. Two legs of
@@ -127,17 +128,18 @@ export class AudioOutput302mModule extends GstPluginBase {
     }
 
     /**
-     * Push the resolved ts-offset to the running `pulsesink`. No-op on the
-     * legacy path: without the contract the sink carries no `name=sink` (the
-     * pipeline string is unchanged there), so there is nothing to address.
+     * Push the resolved ts-offset to the running `pulsesink` and keep the
+     * status on it (it kept the build value: .24 showed 0 while the sink ran
+     * 160 ms). No-op on the legacy path: without the contract the sink carries
+     * no `name=sink` (the pipeline string is unchanged there), so there is
+     * nothing to address.
      */
     private async pushSinkTsOffset(): Promise<void> {
         if (this.services?.timeSyncContract !== true) return;
-        await this.setElementProperty(
-            'sink',
-            'ts-offset',
-            audio302mTsOffsetNs(this.services, this.config, this.mixerLatencyNs),
-        );
+        const ns = audio302mTsOffsetNs(this.services, this.config, this.mixerLatencyNs);
+        await this.setElementProperty('sink', 'ts-offset', ns);
+        const output = this.statusData.output; // built with the pipeline, gone once it stops
+        if (output) this.setStatusData('output', { ...output, tsOffsetMs: Math.round(ns / 1e6) });
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {

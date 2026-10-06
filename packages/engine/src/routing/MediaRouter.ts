@@ -10,7 +10,7 @@ import { PcmAudioExecutor } from './PcmAudioExecutor.js';
 import { MpegTsBusExecutor } from './MpegTsBusExecutor.js';
 import { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
 import { busEdgeSocketPath } from '../plugins/busHelpers.js';
-import { PLAYOUT_OFFSET_KEY, parsePlayoutOffsetMs } from '../plugins/playoutOffset.js';
+import { downstreamBusConsumers, resolveRoutePlayoutOffsetMs } from './routePlayoutOffset.js';
 
 const log = createLogger('MediaRouter');
 
@@ -498,24 +498,28 @@ export class MediaRouter {
 
     // --- Playout offset D (ADR-0005 decision 4) ---
     //
-    // The route override lives on the ROUTE HEAD — the producer module a
-    // consumer takes its bus from — not on the consumer's own sink. Both legs of
-    // a split A/V route (video-player + audio-decoder off one splitter) resolve
-    // the same producer here, so they get the same D by construction rather than
-    // by a conflict rule between two independently trimmed sinks, which is the
-    // failure mode decision 4 rejects.
+    // The route override lives on the ROUTE HEAD — the nearest upstream
+    // producer that sets one, walked through re-stamping hops (amended
+    // 2026-10-04, `routePlayoutOffset.ts`) — not on the consumer's own sink.
+    // Every leg of a split A/V route (video-player + audio-decoder off one
+    // splitter, a 302M output behind an audio-transcoder off the same splitter)
+    // resolves the same head here, so they get the same D by construction
+    // rather than by a conflict rule between independently trimmed sinks, which
+    // is the failure mode decision 4 rejects.
 
     /**
-     * Playout-offset override declared by the route head feeding `moduleId`, in
-     * ms; `undefined` when this consumer has no bus source or the head declares
-     * none (⇒ the engine-wide default applies). Read straight off the producer's
-     * stored config, so an edit is visible without a restart.
+     * Playout-offset override for the route feeding `moduleId`, in ms: the
+     * nearest upstream producer that sets one, through any that don't;
+     * `undefined` ⇒ the engine-wide default applies. Read straight off stored
+     * config, so an edit is visible without a restart.
      */
     getRoutePlayoutOffsetMs(moduleId: string, sinkPortId?: string): number | undefined {
-        const source = this.getModuleBusSource(moduleId, sinkPortId);
-        if (!source) return undefined;
-        const head = this.moduleGetter?.(source.sourceModuleId);
-        return parsePlayoutOffsetMs(head?.config?.[PLAYOUT_OFFSET_KEY]);
+        return resolveRoutePlayoutOffsetMs(
+            (id, port) => this.getModuleBusSource(id, port)?.sourceModuleId,
+            (id) => this.moduleGetter?.(id)?.config,
+            moduleId,
+            sinkPortId,
+        );
     }
 
     /**
@@ -551,23 +555,18 @@ export class MediaRouter {
     }
 
     /**
-     * A route head's `playoutOffsetMs` was edited — re-anchor every consumer of
-     * that producer, together. Without the fan-out the change would sit in the
-     * producer's config until each consumer happened to rebuild, so one leg of a
-     * route could run the new D while the other still ran the old one — exactly
-     * the disagreement D exists to remove.
+     * A route head's `playoutOffsetMs` was edited — re-anchor every consumer
+     * DOWNSTREAM of it, transitively (a 302M output behind an audio-transcoder
+     * included), together. Without the fan-out the change would sit in config
+     * until each leg happened to rebuild, so one leg of a route could run the
+     * new D while another still ran the old one — the disagreement D removes.
      */
     async notifyPlayoutOffsetChanged(producerModuleId: string): Promise<void> {
-        const consumers = new Set(
+        const consumersOf = (id: string) =>
             this.getConnections()
-                .filter(
-                    (c) =>
-                        c.sourceModuleId === producerModuleId &&
-                        BUS_STREAM_TYPES.has(c.streamType),
-                )
-                .map((c) => c.sinkModuleId),
-        );
-        for (const consumerId of consumers) {
+                .filter((c) => c.sourceModuleId === id && BUS_STREAM_TYPES.has(c.streamType))
+                .map((c) => c.sinkModuleId);
+        for (const consumerId of downstreamBusConsumers(consumersOf, producerModuleId)) {
             try {
                 await this.moduleGetter?.(consumerId)?.notifyRoutePlayoutOffsetChanged();
             } catch (err) {

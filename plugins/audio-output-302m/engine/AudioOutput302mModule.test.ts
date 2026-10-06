@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 
 function makeModule(
@@ -263,7 +265,7 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 0);
     });
 
-    it('the mixer arm subtracts its declared aggregation latency, so both arms play at stamp + D', () => {
+    it('the mixer arm subtracts its declared aggregation latency, so both arms play at stamp + D above the clamp', () => {
         const { module } = makeModule({ sources: 2, contract: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', mixLatencyMs: 100 });
         // audiomixer latency=100 ms is pipeline latency a sync=true sink adds
@@ -291,6 +293,35 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
         await legacy.module.onRoutePlayoutOffsetChanged();
         await legacy.module.onLiveConfigUpdate({ lipSyncMs: 50 });
         expect(legacy.setElementProperty).not.toHaveBeenCalled();
+    });
+
+    it('the status follows every live push — the value the sink was given, clamped like it', async () => {
+        const { module, setElementProperty } = makeModule({
+            sources: 1,
+            contract: { playoutOffsetMs: 60, routeOverrideMs: 260 },
+        });
+        delete module.setStatusData; // the real one: a push must keep the rest of the section
+        module.config = { device: 'alsa_output.usb-foo', lipSyncMs: 200 };
+        module.buildPipeline(module.config);
+        expect(module.statusData.output.tsOffsetMs).toBe(360);
+        // .24, 2026-10-04: the status kept the build value while live trims moved the sink.
+        await module.onLiveConfigUpdate({ lipSyncMs: 0 });
+        expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 160_000_000);
+        expect(module.statusData.output).toMatchObject({ tsOffsetMs: 160, sources: 1 });
+        await module.onLiveConfigUpdate({ lipSyncMs: -2000 });
+        expect(module.statusData.output.tsOffsetMs).toBe(0);
+    });
+
+    it('a push with no running pipeline grows no status section', async () => {
+        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 60 } });
+        module.config = { device: 'alsa_output.usb-foo' };
+        await module.onRoutePlayoutOffsetChanged();
+        expect(module.setStatusData).not.toHaveBeenCalled();
+    });
+
+    it('debounces the live trim (x-debounceMs): a slider drag lands as one push, not one per step', () => {
+        const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
+        expect(pkg.mediaRouter.configSchema.properties.lipSyncMs['x-debounceMs']).toBe(300);
     });
 
     it('a live push through the mixer arm keeps the latency subtraction the build applied', async () => {

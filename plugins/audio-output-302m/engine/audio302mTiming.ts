@@ -28,20 +28,34 @@ export const SLAVE_METHOD_SKEW = 1;
 export const SINK_BUFFER_US = 100_000;
 
 /**
- * Scheduling latency `pulsesink` DECLARES for that ring, in ms — cancelled in
- * `ts-offset` (see `audio302mTsOffsetNs`).
+ * Scheduling latency `pulsesink` is taken to DECLARE for that ring, in ms —
+ * cancelled in `ts-offset` (see `audio302mTsOffsetNs`).
  *
  * A live GStreamer sink renders at `running-time + ts-offset + latency`, where
- * `latency` is the pipeline's min latency from the LATENCY query — for an
- * audio sink essentially its ring. Measured on the 10.9.16.103 USB DAC
- * (PipeWire 1.6, GStreamer 1.28): 151.3 ms at the 200 ms default ring,
- * 101.3 ms at 100 ms, 71.3 ms at 50 ms. The video leg's `waylandsink`
- * declares ~20 ms, so left alone the same route played audio well behind the
- * picture even with identical stamps and the same D. With the 100 ms ring and
- * this cancellation, plus `alignBranchesToStamps` on the video-player, the
- * transcoder and this module, the route on .103 was confirmed in sync BY EAR
- * (2026-09-03); the three are a tuple — change one and re-check. Slack is
- * unaffected: buffers reach the sink well before their stamp.
+ * `latency` is the pipeline's min latency from the LATENCY query: the ring
+ * PipeWire grants plus the sink's `processing-deadline`. The video leg's
+ * `waylandsink` declares ~20 ms, so left alone the same route played audio
+ * well behind the picture even with identical stamps and the same D. With the
+ * 100 ms ring and this cancellation, plus `alignBranchesToStamps` on the
+ * video-player, the transcoder and this module, the route on .103 was
+ * confirmed in sync BY EAR (2026-09-03); the three are a tuple — change one
+ * and re-check.
+ *
+ * 100 is a TEST-SOURCE calibration, not what this sink declares on the bus.
+ * The 151.3/101.3/71.3 ms measured on .103 at 200/100/50 ms rings are the
+ * granted ring (110/60/30 ms, PipeWire 1.6.3) + GStreamer's 20 ms default
+ * deadline + 21.33 ms of the live `audiotestsrc` they were measured behind.
+ * Behind the bus this sink declares 80 ms, the audio-decoder's 160 ms (its
+ * 100 ms deadline) — replica chains on BCC Mulanje's .24, 2026-10-04.
+ * RECORDED, NOT CHANGED: correcting it moves every leg above its floor and
+ * voids the .103 tuple, a by-ear decision for all three legs at once
+ * (ADR-0005, "audio-leg budget" note).
+ *
+ * Nor is the ring free slack: under `sync=true` a buffer is lost once it
+ * reaches the sink later than `ts-offset + latency` past its stamp (late audio
+ * is discarded, not played late). The .24 302M bus delivered up to ~200 ms
+ * past its stamps; at the default D (ts-offset clamped to 0, an ~80 ms budget)
+ * 23.7 % of the audio was discarded.
  */
 export const SINK_DECLARED_LATENCY_MS = 100;
 
@@ -59,21 +73,24 @@ export const SINK_DECLARED_LATENCY_MS = 100;
  * `sync=true` sink adds it to every render time. Left alone, the same route
  * would play L later through a mixer than through the single-source bypass,
  * i.e. "playout offset" would stop meaning "after the stamp". Subtracting it
- * keeps presentation at `stamp + D + trim` in both arms. The single-source arm
- * declares no latency and passes 0.
+ * keeps presentation at `stamp + D + trim` in both arms above the clamp below
+ * (at the default D the mixer arm clamps to 0 for any trim up to L + 40 ms).
+ * The single-source arm declares no latency and passes 0.
  *
  * NEVER NEGATIVE. A trim past D (or L past D) is clamped to 0, for two reasons.
  * Audio cannot be presented before it arrives, so a negative offset buys
- * nothing: the buffers are simply "late" and `max-lateness=-1` plays them on
- * arrival. And the backlog shedder reads this very `ts-offset` as the leg's
- * budget (`lateness = now − rt − ts_offset`), so a negative value makes every
- * buffer read as retained backlog — field, 10.9.16.103, 2026-09-03 11:28:53:
- * the trim slider at −2000 ms put the sink at −1700 ms, the shedder saw a
- * "1943 ms backlog" and dropped 458 buffers (~10 s of audio) chasing it.
+ * nothing: a sample due before it arrives is discarded by the pulse server,
+ * not played late (`max-lateness` is never consulted on an audio sink). And
+ * the backlog shedder measures lateness against this `ts-offset` plus the
+ * sink's latency (`now − (rt + ts-offset + latency)`), so a negative value
+ * makes every buffer read as retained backlog — field, 10.9.16.103,
+ * 2026-09-03 11:28:53: the trim slider at −2000 ms put the sink at −1700 ms,
+ * the shedder saw a "1943 ms backlog" and dropped 458 buffers (~10 s of audio)
+ * chasing it.
  *
  * TWIN: `audioTsOffsetNs` in `plugins/audio-decoder/engine/AudioDecoderModule.ts`
- * cancels the same declared ring latency and clamps the same way. Two copies on
- * purpose — see the note there.
+ * cancels the same 100 ms and clamps the same way — although that sink declares
+ * 160 ms to this one's 80 (above). Two copies on purpose — see the note there.
  */
 export function audio302mTsOffsetNs(
     services: PlayoutOffsetServices | null | undefined,

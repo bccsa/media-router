@@ -126,6 +126,46 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    With the contract off, both collapse to the trim alone and the legacy
    pipeline strings are unchanged.
 
+   **Amendment 2026-10-04 — the route head is the NEAREST upstream producer
+   that SETS D.** "The producer module both consumer legs take their bus from"
+   only ever held for one-hop routes. Field, BCC Mulanje's Translation Station
+   (10.37.7.24): srt-input → ts-splitter → { video-player, audio-decoder,
+   audio-transcoder → audio-output-302m }. The lookup was one hop, so the 302M
+   headphone resolved the audio-transcoder — a re-stamping producer with no
+   `playoutOffsetMs` — and stayed on the 60 ms default: ts-offset clamped to 0,
+   an ~80 ms sink budget against a bus delivering up to ~200 ms past its
+   stamps, 23.7 % of the audio discarded (512 dropouts/min) with health `ok`.
+   A Playout Offset on the splitter moved the picture and the decoder but never
+   that leg; only the deprecated `lipSyncMs` reached it. Now
+   (`routing/routePlayoutOffset.ts`, `MediaRouter` delegates): a route's D is
+   the value of the nearest upstream bus producer whose config sets a valid
+   `playoutOffsetMs` — 0 is a value; producers that leave it unset
+   (audio-transcoder, transcoder, mixers, muxer, an unset splitter) are walked
+   through along their first bus input, i.e. `getModuleBusSource` applied at
+   every hop. A consumer's `sinkPortId` narrows the first hop only (the
+   video-player resolves through `mpegts-in`, never `subtitles-in`). An edit
+   fans out to every bus consumer downstream, transitively, once each; a
+   module with no `onRoutePlayoutOffsetChanged` ignores it.
+   - **Behaviour change.** A leg behind an unset splitter, transcoder, mixer
+     or muxer now takes a D set further upstream, where it used to get the
+     engine default. Before a fleet release, audit stored configs for
+     `playoutOffsetMs` on any module that is not the direct bus source of every
+     presentation leg below it, and re-check each hit by ear. Routes with
+     nothing set upstream resolve exactly as before.
+   - **Rewiring.** The fan-out runs on a `playoutOffsetMs` edit. A leg whose
+     chain is rewired further up keeps the D it was built with until it is
+     rebuilt (a relaunch behind a restarted producer replays the same
+     description — `GstChildProcess.restartPipeline`); at startup the ordered
+     apply (`topoSortOrderedConns`) wires parents first, so every leg builds
+     against its whole chain.
+   - **Rejected:** `playoutOffsetMs` on the audio-transcoder — a second knob
+     per A/V route kept equal to the splitter's by hand, this decision's
+     rejected failure one level up. Because the nearest set value wins, a
+     sub-route override later would be a schema field only.
+   - The head fields and the audio legs' trims are debounced in the GUI
+     (`x-debounceMs` 500 / 300 ms): a typed 240 used to push 2, 24 and 240 to
+     every leg, each one a potential sink re-anchor.
+
 5. **House clock = CLOCK_MONOTONIC.** A plain `GstSystemClock` in every
    process; `NetTimeProvider`/`NetClientClock` distribution becomes
    unnecessary on-device; DACs slave to it via `slave-method=skew`. Open
@@ -479,7 +519,10 @@ anchor is *not* here; it is Stage 3b, below.
   (`provide-clock=false`, paced ring floor) unconditionally, which is decision 1
   applied to the leg that had never been on it. `max-lateness=-1` is what
   disarms the mid-stream-join silence trap the old `sync=false` comment
-  documents — a late timeline drains instead of being dropped.
+  documents — a late timeline drains instead of being dropped. **Falsified
+  2026-10-04:** an audio sink never consults `max-lateness`; late audio is
+  discarded by pipewire-pulse with the timeline held — see "Implementation
+  notes (audio-leg budget, BCC Mulanje .24, 2026-10-04)".
 - `name=sink` on that pulsesink is added **only** under the contract. It is what
   the live offset push addresses, and adding it unconditionally would change the
   legacy pipeline string that `MR_TIME_SYNC_CONTRACT=0` has to reproduce byte for
@@ -500,7 +543,8 @@ anchor is *not* here; it is Stage 3b, below.
   pipeline reads it, so it can never need a restart there. It reaches the
   consumers through `MediaRouter.notifyPlayoutOffsetChanged`, which walks the
   head's bus edges and calls each consumer once (a consumer holding two edges off
-  the same head is notified once, not twice).
+  the same head is notified once, not twice) — transitively since 2026-10-04,
+  every consumer downstream of the head (decision 4 amendment).
 
 ## Implementation notes (Stage 3b — the drift-slewing anchor)
 
@@ -824,11 +868,13 @@ reporting healthy.
 
 - **Where it measures is where it sheds, and that is NOT the sink.** Lateness is
   computed on the shed point's own pad (`now_running_time − (buffer_running_time
-  + ts-offset)`, so the number is the excess over D directly), because once a
-  shed starts nothing reaches the sink and a sink-pad measurement would freeze
-  mid-episode. The video leg sheds at its DECODER: the backlog is upstream of it,
-  compressed AUs drop at I/O speed where decoded frames would drain no faster
-  than the decoder runs, and `h26xparse` has already flagged every access unit.
+  + ts-offset + latency)` — the sink's declared latency joined the budget on
+  2026-09-05 — so the number is the excess over the leg's real budget), because
+  once a shed starts nothing reaches the sink and a sink-pad measurement would
+  freeze mid-episode. The video leg sheds at its DECODER: the backlog is
+  upstream of it, compressed AUs drop at I/O speed where decoded frames would
+  drain no faster than the decoder runs, and `h26xparse` has already flagged
+  every access unit.
 
 - **A video shed can only END on an IRAP.** Resuming mid-GOP would hand a
   stateless V4L2 decoder references that were dropped — the wedge the keyframe
@@ -1021,7 +1067,9 @@ failure decision 1 exists to remove.
   got it: under the contract the 302M sink is `sync=true ts-offset=D+trim
   provide-clock=false slave-method=skew max-lateness=-1 name=sink`, the
   backlog shedder is armed on its pad (whole-buffer, not keyframe-aligned), the
-  route head's live D push reaches it through `onRoutePlayoutOffsetChanged`, and
+  route head's live D push reaches it through `onRoutePlayoutOffsetChanged`
+  (until the decision-4 amendment of 2026-10-04 only when the head was its
+  direct bus source — behind an audio-transcoder it never did), and
   a `lipSyncMs` trim (live, ±1 s) covers residual DAC-chain skew — decision 4's
   legitimate per-sink use, not a sync control. The legacy string is unchanged
   under the kill-switch.
@@ -1057,7 +1105,9 @@ failure decision 1 exists to remove.
   backlog shedder reads `ts-offset` as the budget, it saw a "1943 ms backlog" and
   dropped 458 buffers (~10 s of audio) in 9.8 s. A negative offset can never
   advance audio before it arrives anyway (`max-lateness=-1` just plays it on
-  arrival), so `audio302mTsOffsetNs` floors at 0 and the schema range is ±1 s.
+  arrival — corrected 2026-10-04: audio due before it arrives is discarded,
+  not played late), so `audio302mTsOffsetNs` floors at 0 and the schema range
+  is ±1 s.
 - **The two PRESENTATION legs of the 302M route now anchor their demuxers to
   the stamps (later the same day); the transcoder does not.** Field, .103: the mpegts-muxer's
   `alignBranchesToStamps` measured its two input demuxers' zero-point errors at
@@ -1083,7 +1133,9 @@ failure decision 1 exists to remove.
   stamper change. The remaining caveat: the 302M sink (and now the
   audio-decoder) pins a 100 ms ring and cancels the 101 ms it declares (151 ms
   at the default ring); the physical output lags the declared figure by
-  ~35 ms, which is what the per-sink trim is for.
+  ~35 ms, which is what the per-sink trim is for. (Superseded 2026-10-04: the
+  101 ms was a test-source figure; behind the bus the sinks declare 80 and
+  160 ms — see the audio-leg budget note.)
 - **Measurement trap, physical audio.** A monitor recording started with
   `pw-record` begins some 150–200 ms after the process is spawned; using the
   spawn time as the recording's t0 biased every "DAC time" early by that much
@@ -1193,3 +1245,64 @@ sets `start-time-selection=first`, anchoring the output at the first input
 buffer's running time — `force-live` picks the current running time on a dark
 start — so same-timeline inputs are consumed from the first buffer and the
 stamps read the house clock. Full measurement in `audio302mHelpers.ts`.
+
+## Implementation notes (audio-leg budget, BCC Mulanje .24, 2026-10-04)
+
+Field: the Translation Station (10.37.7.24, Pi 5). The interpreters'
+Headphone1 — audio-output-302m behind an audio-transcoder — lost 23.7 % of its
+audio as 512 short dropouts a minute while every module reported `ok`;
+Headphone 2, the audio-decoder leg off the same splitter, was clean. The route
+head fix is the decision-4 amendment above. These are the corrections to this
+ADR's model of the audio legs (GStreamer 1.28.2 and PipeWire 1.6.3 sources,
+local replicas, replica chains on .24):
+
+- **Late audio is silence, not latency.** A GstAudioBaseSink never consults
+  `max-lateness`: every sample is placed by its timestamp at `running-time +
+  ts-offset + latency`, pulsesink writes it at that absolute ring position,
+  and pipewire-pulse (prebuf 0) advances its read index through underruns and
+  discards what lands behind it. Basesink counts those buffers as rendered
+  (`dropped` 0) and posts nothing, so health stays `ok`. Stage 3a's "a late
+  timeline drains instead of being dropped" and the decoder's "retained
+  latency shows up as lipsync drift" are false for audio legs. The only
+  defence is budget: a buffer plays if it reaches the sink within `ts-offset +
+  latency` of its stamp — the lateness the shed probe already computes.
+- **What the sinks declare.** `latency` is the ring PipeWire grants plus the
+  sink's `processing-deadline`. A 100 ms `buffer-time` is granted a 60 ms ring
+  (ADJUST_LATENCY), so behind the bus the 302M sink declares 80 ms (60 +
+  GStreamer's 20 ms default deadline) and the audio-decoder 160 ms (60 + its
+  own 100 ms deadline, set 2026-05-18 for the sync=false path, where it did
+  nothing). Both legs cancel `SINK_DECLARED_LATENCY_MS` = 100: the 2026-09-03
+  figures 151.3/101.3/71.3 ms are ring (110/60/30) + 20 + 21.33 ms of the live
+  `audiotestsrc` they were measured behind, a test-source calibration. So at
+  the default D = 60 both legs sit at their floors (ts-offset 0 for any trim up
+  to 40 ms, up to mixLatency + 40 in the 302M mixer arm): the 302M leg at
+  stamp + 80, the decoder at stamp + 160. Above the floors the 302M leg
+  presents at D + trim − 20 and the decoder at D + trim + 60, 80 ms apart on
+  one D. **Recorded, not changed.** Correcting either constant moves every leg
+  above its floor and voids the .103 by-ear tuple; it needs one by-ear
+  decision that covers the video leg too (its software decode rung declares
+  ~3 frames, so cancelling there needs a D floor), and the decoder's extra
+  80 ms is what keeps decoder legs clean on bursty buses today. `bufferMs`
+  does not cap the decoder's deadline: GstBaseSink cuts a deadline (bus
+  WARNING) only when it exceeds upstream max − min latency, and the 5 s leaky
+  bus-ingress queue ahead of the dejitter queue keeps that max ≥ 5 s. Measured
+  on .24 (2026-10-06): at `bufferMs` 50 (the dejitter queue at 50 ms in the
+  journal) the sink still declared 160 ms. A local replica without the ingress
+  queue does get the cut (GStreamer 1.28.2).
+- **The ring is not free slack.** The 2026-09-03 tuple note's "slack is
+  unaffected: buffers reach the sink well before their stamp" was falsified on
+  .24: the 302M bus behind the transcoder delivered audio up to ~200 ms past
+  its stamps (the sending mpegts-muxer releases audio with the video frames).
+  Loss by the 302M sink's ts-offset (budget = ts-offset + 80 ms): 0 → 23.7 %,
+  40 → 2.3 %, 80 → 0.08 %, 120 → one gap (the step's own resync), 160 → none
+  in 59 s.
+- **Live trims.** A live `ts-offset` change smaller than the sink's
+  `alignment-threshold` (40 ms) is absorbed by GstAudioBaseSink's alignment
+  while the stream is continuous; a larger one applies after `discont-wait`
+  (~1 s). Until a push forces a resync, a fine trim does nothing and a module
+  restart applies a value exactly. The audio legs' trims and the route-head
+  fields carry `x-debounceMs` (300 / 500 ms, honoured by the settings form and
+  the dashboard faders), so a slider drag or a typed value lands as one push
+  instead of one re-anchor per step.
+- **Status.** audio-output-302m's `output.tsOffsetMs` follows every live push;
+  it kept the build-time value (0 shown on .24 while the sink ran 160 ms).

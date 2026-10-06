@@ -50,6 +50,7 @@ import {
     planSink,
     resolveBuildHealth,
     resolveResumeSocket,
+    VIDEO_INPUT_PORT_ID,
     videoTsOffsetNs,
 } from './helpers/pipelinePlan.js';
 import {
@@ -102,7 +103,7 @@ type RunnerErrorEvent = { kind?: string; message?: string; element?: string };
  */
 export class VideoPlayerModule extends GstPluginBase {
     /** The video input port; the subtitle input is SUBTITLE_INPUT_PORT_ID. */
-    static readonly VIDEO_INPUT_PORT_ID = 'mpegts-in';
+    static readonly VIDEO_INPUT_PORT_ID = VIDEO_INPUT_PORT_ID;
 
     // `fallbackText` is "live" only in the *fallback* pipeline — the `nov`
     // textoverlay element doesn't exist in the live (bus → decodebin)

@@ -262,9 +262,9 @@ export class ModuleInstance extends EventEmitter {
         }
 
         // This module is a route head and its playout offset D moved — push it
-        // to every consumer of its bus so both legs of the route re-anchor
-        // together (ADR-0005 decision 4). Fire-and-forget: a consumer that can't
-        // take it self-corrects on its next rebuild.
+        // to every consumer downstream of its bus so every leg of the route
+        // re-anchors together (ADR-0005 decision 4). Fire-and-forget: a
+        // consumer that can't take it self-corrects on its next rebuild.
         if (PLAYOUT_OFFSET_KEY in changes && this.services?.mediaRouter) {
             await this.services.mediaRouter
                 .notifyPlayoutOffsetChanged(this.instanceId)

@@ -13,26 +13,30 @@ import {
 
 /**
  * `pulsesink buffer-time` (µs) this leg runs under the contract, and the
- * scheduling latency it DECLARES for that ring (ms).
+ * scheduling latency it is taken to DECLARE for that ring (ms).
  *
  * A live GStreamer sink renders at `running-time + ts-offset + latency`, where
- * `latency` is the pipeline's min latency from the LATENCY query — for an audio
- * sink essentially its ring. Measured on the 10.9.16.103 USB DAC (PipeWire 1.6,
- * GStreamer 1.28): 151.3 ms at a 200 ms ring, 101.3 ms at 100 ms, 71.3 ms at
- * 50 ms. The video leg's `waylandsink` declares ~20 ms, so a leg that ignores
- * this presents that much behind the picture on the SAME D — which is what
- * decision 4 exists to prevent.
+ * `latency` is the pipeline's min latency from the LATENCY query: the ring
+ * PipeWire grants plus the sink's `processing-deadline`. The video leg's
+ * `waylandsink` declares ~20 ms, so a leg that ignores this presents that much
+ * behind the picture on the SAME D — which is what decision 4 exists to
+ * prevent.
  *
  * So the contract pins ONE ring for both audio legs (the 302M output's
- * `SINK_BUFFER_US`) and cancels ONE number, and the two resolve D identically
- * by construction rather than by two tunings happening to agree. `sinkBufferMs`
- * still sizes the ring on every legacy path, untouched. The 100 ms floor is
- * itself field-derived: a 50 ms ring xrunned audibly on a Pi 4.
+ * `SINK_BUFFER_US`) and cancels ONE number. `sinkBufferMs` still sizes the
+ * ring on every legacy path, untouched. The 100 ms floor is itself
+ * field-derived: a 50 ms ring xrunned audibly on a Pi 4.
  *
- * Residual, deliberately left: the declared figure is ring-dependent and only
- * measured at three points, so it is a CONSTANT here rather than a model. The
- * exact fix is a runner-side LATENCY query feeding the offset back — worth it
- * only when a leg needs a ring other than this one.
+ * The number is NOT what this sink declares. 100 ms is the 302M twin's
+ * test-source calibration (see `audio302mTiming.ts`); behind the bus this sink
+ * declares 160 ms — the 60 ms ring plus its own 100 ms `processing-deadline` —
+ * and the 302M sink 80 ms (replica chains on BCC Mulanje's .24, 2026-10-04).
+ * Above their floors the two legs therefore present ~80 ms apart on one D; at
+ * the default D both sit at their floors, and the extra 80 ms is what keeps
+ * this leg clean on a bursty bus. RECORDED, NOT CHANGED: correcting it moves
+ * every leg above its floor, a by-ear decision for all three legs at once
+ * (ADR-0005, "audio-leg budget" note). The exact fix stays a runner-side
+ * LATENCY query feeding the offset back.
  */
 const CONTRACT_SINK_BUFFER_US = 100_000;
 const SINK_DECLARED_LATENCY_MS = 100;
@@ -47,15 +51,16 @@ const SINK_DECLARED_LATENCY_MS = 100;
  * agreeing. Only used when the contract is on; see `buildPipeline`.
  *
  * NEVER NEGATIVE: a D smaller than the ring clamps to 0. Audio cannot be
- * presented before it arrives (`max-lateness=-1` then plays it on arrival), and
- * the backlog shedder reads this very `ts-offset` as the leg's budget, so a
- * negative value makes every buffer read as retained backlog — field, .103,
- * 2026-09-03: a −1700 ms sink offset had the shedder drop ~10 s of audio
- * chasing a phantom 1943 ms backlog.
+ * presented before it arrives (a sample due earlier is discarded by the pulse
+ * server, not played late — `max-lateness` is never consulted on an audio
+ * sink), and the backlog shedder measures lateness against `ts-offset +
+ * latency`, so a negative value makes every buffer read as retained backlog —
+ * field, .103, 2026-09-03: a −1700 ms sink offset had the shedder drop ~10 s of
+ * audio chasing a phantom 1943 ms backlog.
  *
  * TWIN: `audio302mTsOffsetNs` in
  * `plugins/audio-output-302m/engine/audio302mTiming.ts` cancels the same
- * declared ring latency and clamps the same way. TWO COPIES ON PURPOSE: plugin
+ * 100 ms and clamps the same way. TWO COPIES ON PURPOSE: plugin
  * `dist`s are hot-deployed onto boxes whose engine `dist` may be older, so a
  * shared export from `@media-router/engine` would fail to resolve there. Keep
  * them in step — if one changes, the two legs of a route stop agreeing, which
@@ -308,14 +313,15 @@ export class AudioDecoderModule extends GstPluginBase {
         // encoder's pulsesrc re-stamps audio AFTER it (measured on gate01:
         // audio timeline 776 ms late vs video on both 1080p muxes). sync=true
         // paces rendering at PTS + ts-offset, so the anchor shift becomes the
-        // configured offset instead of "sum of all buffer fills". The
-        // mid-stream-join silence trap documented above is disarmed by
-        // `max-lateness=-1`: a late timeline (join, respawn, startup backlog)
-        // renders immediately and DRAINS instead of being silently dropped —
-        // degrading to arrival-driven behaviour, never to silence.
-        // `syncOffsetMs` (default 250) must cover the ~150-200 ms PES-burst
-        // arrival lateness of bus audio; too small ⇒ constant late-mode (no
-        // harm, just arrival-anchored), too big ⇒ that much standing latency.
+        // configured offset instead of "sum of all buffer fills".
+        // `max-lateness=-1` does NOT disarm the mid-stream-join silence trap
+        // documented above: an audio sink never consults max-lateness — it
+        // places every sample by its timestamp, and what reaches it after its
+        // slot is discarded by the pulse server (silence, health still `ok`;
+        // ADR-0005 "audio-leg budget" note, 2026-10-04). `syncOffsetMs`
+        // (default 250) must cover the ~150-200 ms PES-burst arrival lateness
+        // of bus audio; too small ⇒ the late part of every burst is lost, too
+        // big ⇒ that much standing latency.
         //
         // Under the engine-wide time-sync contract (ADR-0005) NONE of the three
         // per-module modes above decide the anchor any more: the producer stamps
@@ -324,21 +330,22 @@ export class AudioDecoderModule extends GstPluginBase {
         // That means sync=true unconditionally — a sync=false sink ignores
         // timing outright, which would make D a no-op and leave audio back on
         // arrival-anchoring while the video leg of the same route paced off the
-        // house clock. The mid-stream-join silence trap the sync=false comment
-        // above documents is disarmed the same way the paced path disarms it,
-        // with `max-lateness=-1`: a late timeline renders immediately and drains
-        // rather than going silent. `provide-clock=false` keeps pulsesink from
-        // offering the DAC clock (the runner pins a monotonic system clock via
-        // `use_clock`, so it would be ignored anyway — explicit is clearer).
+        // house clock. `max-lateness=-1` rides along but is inert (see the
+        // paced path above): a late timeline is silent until it is on time
+        // again, so this leg's guard against loss is its budget — D plus the
+        // trim, on top of the latency the sink declares. `provide-clock=false`
+        // keeps pulsesink from offering the DAC clock (the runner pins a
+        // monotonic system clock via `use_clock`, so it would be ignored
+        // anyway — explicit is clearer).
         const lowLatencySync = (config.lowLatencySync as boolean) === true && !clockSync;
         const syncOffsetMs = Math.max(0, Number(config.syncOffsetMs ?? 0));
         const sinkSync = contract || clockSync || lowLatencySync ? 'true' : 'false';
         const provideClock = contract || clockSync ? ' provide-clock=false' : '';
-        // syncOffsetMs defaults to 0: PES-cluster arrivals then render
-        // slightly "late" (immediately, thanks to max-lateness=-1), anchoring
-        // audio at arrival ≈ the smallest possible standing latency. Raise it
-        // toward the burst spacing for genuine pacing (field 2026-08-02:
-        // 250 ms plays steadily).
+        // syncOffsetMs defaults to 0: PES-cluster arrivals then have only the
+        // sink's own latency as budget, and whatever arrives later than that
+        // is discarded, not played late (max-lateness is inert on an audio
+        // sink). Raise it toward the burst spacing for genuine pacing (field
+        // 2026-08-02: 250 ms plays steadily).
         //
         // Contract on, `syncOffsetMs` is DEPRECATED as an anchor and demoted to
         // what `lipSyncMs` is on the video leg: a per-sink trim stacked on top
@@ -400,9 +407,16 @@ export class AudioDecoderModule extends GstPluginBase {
             // reservoir upstream is the dominant term). Lower only during a
             // measured tuning pass — the floor of 80 ms guards against
             // configs that would re-starve the sink. `max-lateness=200000000`
-            // drops a frame only when it arrives *already* >200 ms late
-            // (post-stall recovery, not steady state);
-            // `processing-deadline=100000000`.
+            // is inert: an audio sink never consults max-lateness.
+            // `processing-deadline=100000000` (2026-05-18, for the sync=false
+            // path, where it did nothing) is ADDED to the latency a syncing
+            // sink declares: 160 ms under the contract — the leg's floor at the
+            // default D — where `audioTsOffsetNs` cancels 100. `bufferMs` does
+            // not cap it: GstBaseSink cuts the deadline (bus WARNING) only when
+            // it exceeds upstream max − min latency, and the 5 s leaky bus
+            // ingress queue (`buildBusSrc`) keeps that max ≥ 5 s. Measured on
+            // .24 (2026-10-06): `bufferMs` 50, sink still declared 160 ms.
+            // Recorded, not changed (SINK_DECLARED_LATENCY_MS).
             // `name=sink` only under the contract: it is what the live
             // playout-offset push targets (`setElementProperty('sink', …)`),
             // and adding it unconditionally would change the legacy pipeline
@@ -419,11 +433,12 @@ export class AudioDecoderModule extends GstPluginBase {
             // leg the contract turned `sync=true` (see backlogShed.ts). Shed
             // point is the pulsesink's OWN pad: raw PCM references nothing, so
             // whole decoded buffers can be dropped anywhere, and its pad is the
-            // last place that still sees every one of them. `max-lateness=-1`
-            // makes this leg's ratchet quieter than the video leg's, never
-            // absent — the sink refuses to drop late buffers, so retained
-            // latency shows up as lipsync drift against the video leg of the
-            // same route rather than as dropped frames.
+            // last place that still sees every one of them. On an audio sink
+            // lateness never turns into lipsync drift: samples are placed by
+            // their timestamps and the pulse server discards what arrives
+            // behind its read position, so a late leg is SILENT while it is
+            // late (`max-lateness=-1` is inert) — the shed only drops what the
+            // server would discard anyway, and gets the leg back on time.
             //
             // NOT keyframe-aligned, and the shed is whole-buffer: no sample is
             // ever cut and nothing is resampled. What the sink sees is a

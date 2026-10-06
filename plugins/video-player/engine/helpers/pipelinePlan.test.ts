@@ -126,6 +126,13 @@ describe('videoTsOffsetNs', () => {
             plan({ lipSyncMs: 40 }, { ...route(500), playoutOffsetMs: 300 }).sinkElement,
         ).toContain('ts-offset=540000000');
     });
+
+    it('resolves D through the video input, never through subtitles-in', () => {
+        const getRoutePlayoutOffsetMs = vi.fn(() => 240);
+        const services = { ...route(), mediaRouter: { getRoutePlayoutOffsetMs } };
+        expect(videoTsOffsetNs(services, {})).toBe(240_000_000);
+        expect(getRoutePlayoutOffsetMs).toHaveBeenCalledWith('video-player-1', 'mpegts-in');
+    });
 });
 
 describe('resolveResumeSocket', () => {

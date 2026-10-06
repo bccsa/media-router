@@ -1489,7 +1489,7 @@ Under the engine-wide time-sync contract, producers stamp bus buffer PTS with ho
 Two knobs, and neither of them lives on the sink:
 
 - **Engine-wide default** — `EngineConfig.playoutOffsetMs` (60 ms; `MR_PLAYOUT_OFFSET_MS` is the env fallback). Reaches every module as `services.playoutOffsetMs`.
-- **Per-route override** — a `playoutOffsetMs` property on the **route head**: the producer module the consumers take their bus from. Declare it in that plugin's `configSchema` (no `default` — an absent value means "inherit the engine default") and list it in `liveUpdatableParams`. The producer itself never reads it; the engine resolves it for the consumers and fans a change out to all of them live.
+- **Per-route override** — a `playoutOffsetMs` property on the **route head**: the nearest producer upstream of the consumer whose config sets one. Producers that leave it unset — transcoders, mixers, muxers, an unset splitter — are walked through along their first bus input, so a 302M output behind an audio-transcoder takes the splitter's value like the video-player beside it (ADR-0005 decision 4, amended 2026-10-04). Declare it in that plugin's `configSchema` (no `default` — an absent value means "inherit from upstream, else the engine default"; `"x-debounceMs": 500`, so a typed value moves every leg once) and list it in `liveUpdatableParams`. The producer itself never reads it; the engine resolves it for the consumers and fans a change out live to every consumer downstream.
 
 **Consuming it.** A presentation plugin never does this arithmetic itself:
 
@@ -1497,9 +1497,11 @@ Two knobs, and neither of them lives on the sink:
 import { effectivePlayoutOffsetNs } from '@media-router/engine';
 
 // In buildPipeline: `trimMs` is the module's own per-sink trim, if it has one.
+// A consumer with several bus inputs adds `sinkPortId` of its A/V input
+// (the video-player passes 'mpegts-in', never its subtitles input).
 const tsOffsetNs = effectivePlayoutOffsetNs(this.services, { trimMs: lipSyncMs });
 // → contract OFF: just the trim (legacy behaviour, unchanged)
-// → contract ON:  route override ?? engine default ?? 300, plus the trim
+// → contract ON:  route override ?? engine default ?? 60, plus the trim
 ```
 
 Then name the sink and re-push on the hot-update path:
@@ -1513,7 +1515,7 @@ async onRoutePlayoutOffsetChanged(): Promise<void> {
 Two rules make this work:
 
 1. **One resolver.** Both legs of a route (e.g. a video-player and an audio-decoder split off one ts-splitter) call `effectivePlayoutOffsetMs` against the same route, so they get the same D by construction. Re-implementing the arithmetic in a plugin is the bug this exists to prevent.
-2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about.
+2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about. On an audio leg give the trim `"x-debounceMs": 300`: each applied value can re-anchor the sink, an audible step.
 
 ### Interacting with the GStreamer Pipeline
 
@@ -1983,14 +1985,17 @@ args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
 ```
 
 **Playout offset D on producers.** The per-route override for D lives on the
-**route head** — the producer module the consumers take their bus from — as a
-`playoutOffsetMs` config key (declared so far by `srt-input`, `rist-input`,
-`mpegts-ip-input`, `ts-splitter`, `aes67-input`). Declare it with **no schema `default`**
-(absent means "inherit the engine default": `EngineConfig.playoutOffsetMs`,
-60 ms, `MR_PLAYOUT_OFFSET_MS` env fallback) and list it in
+**route head** — the nearest producer upstream of the consumers that sets it;
+producers that don't are walked through (ADR-0005 decision 4, amended
+2026-10-04) — as a `playoutOffsetMs` config key (declared so far by
+`srt-input`, `rist-input`, `mpegts-ip-input`, `ts-splitter`, `aes67-input`).
+Declare it with **no schema `default`** (absent means "inherit from upstream,
+else the engine default": `EngineConfig.playoutOffsetMs`, 60 ms,
+`MR_PLAYOUT_OFFSET_MS` env fallback), with `"x-debounceMs": 500` and the same
+`maximum` as the others (`playoutOffset.test.ts` pins both), and list it in
 `liveUpdatableParams`; your producer never reads it — the engine resolves it
-for the consumer legs and fans a change out to them live. The consuming side
-is covered in "Playout Offset D (`playoutOffsetMs`)" above.
+for the consumer legs and fans a change out live to every consumer downstream.
+The consuming side is covered in "Playout Offset D (`playoutOffsetMs`)" above.
 
 **Latch repair (`latchRepair` / `--no-latch-repair`).** The stamper anchors on
 the first PES it sees; a live source's first PES after a (re)connect is the

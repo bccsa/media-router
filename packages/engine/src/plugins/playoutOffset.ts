@@ -8,12 +8,14 @@
  *
  * Where the override lives, and why it is not on the sink. Decision 4 rejects
  * "per-sink-only config — reproduces today's failure mode of independently
- * trimmed sinks". So the override is read off the ROUTE HEAD: the producer
- * module both consumer legs take their bus from. Every leg of a route resolves
- * the same producer and therefore the same number BY CONSTRUCTION — there is no
- * conflict rule to get wrong, and no sync-group registry (which decision 4
- * deferred). The GUI needs nothing new: a route head exposes `playoutOffsetMs`
- * in its own `configSchema` like any other module setting.
+ * trimmed sinks". So the override is read off the ROUTE HEAD: the nearest
+ * producer upstream of the consumer that sets one, walked through re-stamping
+ * hops that don't (`routing/routePlayoutOffset.ts`, amended 2026-10-04 — a
+ * 302M leg behind an audio-transcoder never saw the splitter's value). Every
+ * leg of a route resolves the same producer and therefore the same number BY
+ * CONSTRUCTION — there is no conflict rule to get wrong, and no sync-group
+ * registry (which decision 4 deferred). The GUI needs nothing new: a route head
+ * exposes `playoutOffsetMs` in its own `configSchema` like any other setting.
  *
  * `lipSyncMs` (video-player) and `syncOffsetMs` (audio-decoder) survive as
  * DEPRECATED aliases and are added ON TOP of D as a per-sink trim — their real
@@ -75,7 +77,7 @@ export function resolveEnginePlayoutOffsetMs(
 
 /** The route-lookup surface `effectivePlayoutOffsetMs` needs from `MediaRouter`. */
 export interface PlayoutOffsetRouteSource {
-    /** Override declared by the route head feeding `consumerModuleId`, if any. */
+    /** Override set by the nearest producer upstream of `consumerModuleId`, if any. */
     getRoutePlayoutOffsetMs(consumerModuleId: string, sinkPortId?: string): number | undefined;
 }
 

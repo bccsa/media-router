@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { AudioDecoderModule } from './AudioDecoderModule.js';
 
 function makeModule(
@@ -121,14 +123,14 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.clockSync).toBe(true);
     });
 
-    it('default keeps the drop-late guard (max-lateness=200ms) and no ts-offset', () => {
+    it('default keeps max-lateness=200ms (inert on an audio sink) and no ts-offset', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain('max-lateness=200000000');
         expect(desc!.pipeline).not.toContain('ts-offset');
     });
 
-    it('lowLatencySync → sync=true + floored ring + max-lateness=-1 (arrival-anchored, never-silent)', () => {
+    it('lowLatencySync → sync=true + floored ring + max-lateness=-1', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ lowLatencySync: true });
         expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=true');
@@ -264,19 +266,38 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         expect(desc!.pipeline).toContain('ts-offset=200000000');
     });
 
-    it('cancels the latency its paced ring declares, so it lands on D like the 302M leg', () => {
-        // D 300 − 100 ms declared ring = 200 ms of scheduling offset, and the
-        // ring is PINNED under the contract so both audio legs cancel the same
-        // number (ADR-0005 decision 4 — one route, one D on every leg).
+    it('cancels the same 100 ms as the 302M leg, on the same pinned ring', () => {
+        // D 300 − 100 ms = 200 ms of scheduling offset, and the ring is PINNED
+        // under the contract so both audio legs cancel the same number. (What
+        // the two sinks really declare differs — 160 vs 80 ms, recorded in
+        // ADR-0005's "audio-leg budget" note, not changed.)
         const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
         expect(module.buildPipeline({})!.pipeline).toContain('buffer-time=100000');
         expect(module.buildPipeline({ sinkBufferMs: 400 })!.pipeline).toContain(
             'buffer-time=100000',
         );
         // …and a D at or under the ring clamps to 0 rather than going negative
-        // (the shedder reads ts-offset as its budget).
+        // (the shedder's budget is ts-offset + latency).
         const tight = makeModule({ timeSyncContract: true, playoutOffsetMs: 80 });
         expect(tight.module.buildPipeline({})!.pipeline).toContain('ts-offset=0');
+    });
+
+    it('at the fleet default D = 60 it sits at its floor, with the deadline that sets it', () => {
+        // Pinned 2026-10-04: every other case here runs at D = 300, where the
+        // clamp never engages. At D = 60 a trim up to 40 ms does nothing, and
+        // the leg presents at its declared latency: 160 ms on .24, the 60 ms
+        // ring plus the 100 ms processing-deadline both strings carry.
+        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 60 });
+        for (const syncOffsetMs of [0, 40]) {
+            expect(module.buildPipeline({ syncOffsetMs })!.pipeline).toContain('ts-offset=0 ');
+        }
+        expect(module.buildPipeline({ syncOffsetMs: 100 })!.pipeline).toContain(
+            'ts-offset=60000000',
+        );
+        expect(module.buildPipeline({})!.pipeline).toContain('processing-deadline=100000000');
+        expect(makeModule().module.buildPipeline({})!.pipeline).toContain(
+            'processing-deadline=100000000',
+        );
     });
 
     it('anchors its demux branch to the producer stamps, named only on the contract path', () => {
@@ -292,7 +313,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         expect(legacyDesc!.alignBranchesToStamps).toBeUndefined();
     });
 
-    it('presents sync=true with the never-silent guard, whatever the legacy mode flags say', () => {
+    it('presents sync=true, whatever the legacy mode flags say', () => {
         // sync=false would ignore ts-offset outright and leave this leg
         // arrival-anchored while the video leg paced off the house clock.
         const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
@@ -365,6 +386,11 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 400_000_000);
     });
 
+    it('debounces the live trim (x-debounceMs): a slider drag lands as one push', () => {
+        const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
+        expect(pkg.mediaRouter.configSchema.properties.syncOffsetMs['x-debounceMs']).toBe(300);
+    });
+
     it('pushes a syncOffsetMs trim live too, resolved whole against the route', async () => {
         const { module } = makeModule({ timeSyncContract: true, routeOffsetMs: 500 });
         const setElementProperty = vi.fn();
@@ -374,10 +400,9 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     });
 
     it('arms the backlog shedder on its own sink, without keyframe alignment', () => {
-        // The contract's latency ratchet guard (backlogShed.ts). This leg's
-        // `max-lateness=-1` makes the ratchet quieter than the video leg's, not
-        // absent: the sink refuses to drop late buffers, so retained latency
-        // shows up as lipsync drift against the video leg of the SAME route.
+        // The contract's latency ratchet guard (backlogShed.ts). On an audio
+        // sink lateness is silence, not drift — the pulse server discards
+        // samples that arrive after their slot, whatever max-lateness says.
         // The shed point is the sink's own pad — raw PCM references nothing, so
         // whole decoded buffers can be dropped and no sample is ever cut.
         const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });

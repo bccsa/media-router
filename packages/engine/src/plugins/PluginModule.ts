@@ -126,9 +126,10 @@ export interface PluginModule {
     /**
      * The playout offset D of the route this module consumes changed — the
      * ROUTE HEAD's `playoutOffsetMs` was edited (ADR-0005 decision 4). Fanned
-     * out by `MediaRouter.notifyPlayoutOffsetChanged` to every consumer of that
-     * producer, so both legs of a route re-anchor together. Presentation
-     * modules re-push their sink `ts-offset`; everyone else omits it.
+     * out by `MediaRouter.notifyPlayoutOffsetChanged` to every bus consumer
+     * downstream of that producer, transitively, so every leg of a route
+     * re-anchors together. Presentation modules re-push their sink
+     * `ts-offset`; everyone else omits it.
      */
     onRoutePlayoutOffsetChanged?(): Promise<void>;
     /** Return PipeWire node names for audio routing (single-port modules). */

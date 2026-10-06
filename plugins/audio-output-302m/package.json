@@ -83,6 +83,7 @@
                     "x-step": 10,
                     "x-unit": "ms",
                     "x-live": true,
+                    "x-debounceMs": 300,
                     "title": "Lip-Sync Trim",
                     "description": "Trim on top of the route's playout offset. Positive delays audio. Keep to tens of ms."
                 },
