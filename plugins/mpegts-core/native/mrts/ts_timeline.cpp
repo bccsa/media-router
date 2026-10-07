@@ -55,11 +55,29 @@ constexpr int64_t LATE_HOLD_NS = 10'000'000'000LL;
 // MAXIMUM margin over the hold (the least-early buffer). ts_timeline.py.
 constexpr int64_t EARLY_NS = 800'000'000LL;
 constexpr int64_t EARLY_HOLD_NS = 10'000'000'000LL;
+// The TRANSPORT judges the level, both sides, when the timing PID carries a
+// PCR that tracks arrival (#816, NO-OCC-Gate01 2026-10-07; #820) — rationale
+// in full in ts_timeline.py (`_TX_FRESH_NS`). In short: the one-sided-noise
+// argument holds for the PCR (written as its packet leaves the mux) and not
+// for a video PES (it leaves AHEAD of its PTS by the encoder's buffer,
+// 0.34-1.63 s and wandering on that feed), so a level re-anchors only when the
+// source's PCR — read before the conditioner regenerates it — arrives LATE_NS
+// later (EARLY_NS earlier) than it did while the anchor was fresh, net of the
+// drift slew. Only a PCR that has tracked arrival for LATE_HOLD_NS after the
+// anchor judges (#820); one that leaps ahead of arrival or steps back hands
+// the level to the PES until the next anchor, one that stands still (vMix's
+// pacer) for good. No PCR of the timing PID within TX_FRESH_NS (ten times ISO
+// 13818-1's 100 ms): PES alone.
+constexpr int64_t TX_FRESH_NS = 1'000'000'000LL;
 
 // Timeline conditioner (ts_timeline.py `condition`, rationale there): a PES
-// PTS (or PCR) delta beyond COND_STEP_NS that its arrival did not match is a
-// clock step and is absorbed; beyond COND_MAX_NS it is a real discontinuity
-// and is left to the watch.
+// DECODE-clock delta (the DTS when the PES carries one at or before its PTS,
+// else the PTS) beyond COND_STEP_NS that its arrival did not match is a clock
+// step and is absorbed; beyond COND_MAX_NS it is a real discontinuity and is
+// left to the watch. Never the PTS of a reordered PES: B-frame reorder jumps it
+// by the reorder depth (+360 ms PES to PES on Gate01's contribution feed, #816,
+// each read as a +0.32 s step, 1.3 a second, the written timeline losing
+// 0.42 s every second).
 constexpr int64_t COND_STEP_NS = 300'000'000LL;   // default; per-egress override via set_condition_step_ns
 constexpr int64_t COND_MAX_NS = 10'000'000'000LL;
 // How long a PID's OWN correction (a step it took alone) is carried before it
@@ -457,6 +475,9 @@ void TimelineStamper::reanchor(int pid, int64_t last_pts, int64_t pts, int64_t d
     stale_since_.clear();
     late_open_ = false;
     early_open_ = false;
+    tx_have_pcr_ = tx_have_ref_ = false;  // the transport belongs to the anchor
+    tx_dead_ = tx_trusted_ = false;
+    tx_frozen_ = 0;
     // The drift estimate belongs to the old mapping too: its baseline was a
     // margin measured against an anchor that no longer exists, so carrying it
     // over would slew the fresh anchor by the dead epoch's error.
@@ -553,11 +574,13 @@ void TimelineStamper::scan_stale(int pid, int64_t pts, int64_t house_now, int st
 bool TimelineStamper::scan_late(int pid, int64_t pts, int64_t house_now, int64_t stamp) {
     // python's `_scan_late`, line for line: see ts_timeline.py for the design.
     int64_t margin = house_now - stamp;
+    int64_t tx = 0;
+    const bool have_tx = transport_dev(house_now, &tx);
     auto wl = watch_last_.find(pid);
     const int64_t last_pts = wl == watch_last_.end() ? pts : wl->second;
     // The LATE side: media behind house.
-    if (margin <= LATE_NS) {
-        late_open_ = false;               // one on-time buffer: it is jitter
+    if (margin <= LATE_NS || (have_tx && tx <= LATE_NS)) {
+        late_open_ = false;               // one on-time buffer (or transport): it is jitter
     } else {
         if (!late_open_) {
             late_open_ = true;
@@ -574,8 +597,8 @@ bool TimelineStamper::scan_late(int pid, int64_t pts, int64_t house_now, int64_t
         }
     }
     // The EARLY side: media ahead of house — live-cadence producers only.
-    if (!repair_on_ || margin >= -EARLY_NS) {
-        early_open_ = false;              // one on-time buffer: it is jitter
+    if (!repair_on_ || margin >= -EARLY_NS || (have_tx && tx >= -EARLY_NS)) {
+        early_open_ = false;              // one on-time buffer (or transport): it is jitter
     } else {
         if (!early_open_) {
             early_open_ = true;
@@ -662,6 +685,63 @@ int64_t TimelineStamper::cond_threshold() const {
     return cond_threshold_ns_ > 0 ? cond_threshold_ns_ : COND_STEP_NS;
 }
 
+void TimelineStamper::observe_transport(int64_t pcr, int64_t house_now) {
+    // python's `_observe_transport`, line for line: carried through the program
+    // correction the conditioner has written since the reference (the stamps
+    // are cut from the written timeline); the reference is the EARLIEST arrival
+    // while the anchor's repair window is open, fixed after it; the PCR is
+    // unwrapped PCR to PCR (an anchor may outlive half its 26.5 h period); it
+    // judges only once it has tracked arrival within LATE_NS for LATE_HOLD_NS
+    // (#820); a leap ahead of arrival or a step back past LATE_NS stands it
+    // down until the next anchor (a source restart steps it too), and standing
+    // still past LATE_NS (vMix's pacer) for good, each PCR adding at most
+    // LATE_NS (the first PCR back after an outage is a step, not a pause) —
+    // one-sided, so a stall, a loss or a burst never does.
+    const bool had = tx_have_pcr_;
+    const int64_t last_u = tx_pcr_u_, last_house = tx_pcr_house_;
+    const int64_t u = had ? last_u + fold(pcr - tx_pcr_raw_, PCR_MODULO) : pcr;
+    tx_have_pcr_ = true;
+    tx_pcr_raw_ = pcr;
+    tx_pcr_u_ = u;
+    tx_pcr_house_ = house_now;
+    if (!anchored_) return;
+    if (had) {
+        const int64_t d = floor_div((u - last_u) * 1000, 27);
+        const int64_t a = house_now - last_house;
+        tx_frozen_ = d <= 0 ? tx_frozen_ + std::min(a, LATE_NS) : 0;
+        if (tx_frozen_ > LATE_NS) tx_stopped_ = true;
+        if (d - a > LATE_NS || d < -LATE_NS) tx_dead_ = true;
+    }
+    if (tx_dead_ || tx_stopped_) return;
+    if (!tx_have_ref_) {
+        tx_have_ref_ = true;
+        tx_ref_u_ = u;
+        tx_ref_house_ = house_now;
+        tx_ref_offset_ = cond_prog_offset_;
+        tx_qual_ = house_now;
+    }
+    int64_t late = (house_now - tx_ref_house_) - floor_div((u - tx_ref_u_) * 1000, 27) -
+                   pts90k_to_ns(cond_prog_offset_ - tx_ref_offset_);
+    if (late < 0 && latch_open_ && house_now < latch_until_) {
+        tx_ref_u_ = u;
+        tx_ref_house_ = house_now;
+        tx_ref_offset_ = cond_prog_offset_;
+        late = 0;
+    }
+    tx_dev_ = late - slew_total_;
+    tx_house_ = house_now;
+    if (!tx_trusted_) {
+        if (std::llabs(tx_dev_) > LATE_NS) tx_qual_ = house_now;
+        else if (house_now - tx_qual_ >= LATE_HOLD_NS) tx_trusted_ = true;
+    }
+}
+
+bool TimelineStamper::transport_dev(int64_t house_now, int64_t* out) const {
+    if (!tx_trusted_ || tx_dead_ || tx_stopped_ || house_now - tx_house_ > TX_FRESH_NS) return false;
+    *out = tx_dev_;
+    return true;
+}
+
 int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
     int absorbed = 0;
     for (size_t off = 0; off + PKT <= len; off += PKT) {
@@ -677,7 +757,11 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 // Learned after the anchor was taken on another PID: re-base
                 // onto the timing PID's next PES (reported as a re-anchor).
                 timing_rebase_pending_ = anchored_ && anchor_pid_ != pid;
+                tx_have_pcr_ = tx_have_ref_ = false;   // the old PID's transport
+                tx_dead_ = tx_trusted_ = tx_stopped_ = false;
+                tx_frozen_ = 0;
             }
+            observe_transport(pcr, house_now);   // before it is regenerated
             if (cond_ref_pid_ >= 0) {
                 // wpts − lead, in MEDIA time: flat between frames, never advanced
                 // by arrival (a 94 KB I-frame's 350 ms of wire time is not media
@@ -729,6 +813,10 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
         const int64_t pts = read_pes_pts(pkt);
         if (pts < 0) continue;
         const int poff = payload_offset(pkt);
+        // The step test reads the DECODE clock (COND_STEP_NS): the DTS when the
+        // PES carries one at or before its PTS, else the PTS.
+        const int64_t dts = read_pes_dts(pkt);
+        const int64_t dec = dts < 0 || fold(pts - dts, PTS_WRAP) < 0 ? pts : dts;
         // Which PIDs may define a clock: `timing_pes` (video/audio, or the PCR
         // carrier's own PES). A private-data PID's PTS is not a clock — it never
         // steps the program, never becomes the PCR's reference or floor — but it
@@ -747,11 +835,11 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
         if (it == cond_pes_.end()) {
             // First seen now: on the source's CURRENT timeline, whose image on
             // the wire is the program correction — adopt it whole.
-            it = cond_pes_.emplace(pid, CondClock{pts, house_now, cond_prog_offset_, 0, 0,
+            it = cond_pes_.emplace(pid, CondClock{dec, house_now, cond_prog_offset_, 0, 0,
                                                   cond_prog_offset_, {}}).first;
         } else {
             CondClock& c = it->second;
-            const int64_t d_ns = pts90k_to_ns(fold(pts - c.last_raw, PTS_WRAP));
+            const int64_t d_ns = pts90k_to_ns(fold(dec - c.last_raw, PTS_WRAP));
             const int64_t a_ns = house_now - c.last_house;
             const int64_t pending = cond_prog_offset_ - c.prog_applied;
             const bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
@@ -800,7 +888,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 c.own_since = 0;
                 if (on_conditioned_) on_conditioned_({pid, false, rel, c.offset, house_now});
             }
-            c.last_raw = pts;
+            c.last_raw = dec;
             c.last_house = house_now;
         }
         const CondClock& c = it->second;
@@ -824,7 +912,6 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
         }
         if (c.offset == 0) continue;
         write_ts_field(pkt + poff + 9, wpts);
-        const int64_t dts = read_pes_dts(pkt);
         if (dts >= 0) {
             int64_t wdts = (dts + c.offset) % PTS_WRAP;
             if (wdts < 0) wdts += PTS_WRAP;

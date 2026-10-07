@@ -8,3 +8,4 @@ mrts/tests/ts_psi_test
 mrts/tests/ts_split_test
 mrts/tests/ts_video_info_test
 mrts/tests/ts_timeline_test
+mrts/tests/ts_timeline_lead_test

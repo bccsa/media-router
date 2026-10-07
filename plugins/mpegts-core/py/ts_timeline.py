@@ -93,6 +93,17 @@ def timing_pes(pkt, pid: int, timing_pid) -> bool:
     return timing_stream_id(sid) or pid == timing_pid
 
 
+def read_pes_dts(pkt):
+    """The 33-bit DTS of the PES header `read_pes_pts` found in this packet, or
+    None when it carries none (C++ `read_pes_dts`)."""
+    off = payload_offset(pkt)
+    if off + 19 > PKT or not pkt[off + 7] & 0x40:
+        return None
+    q = pkt[off + 14:off + 19]
+    return (((q[0] >> 1) & 0x07) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) \
+        | (q[3] << 7) | (q[4] >> 1)
+
+
 def iter_timing_pes(data, timing_pid, seen=None):
     """`iter_pes` restricted to timing-eligible PES (see `timing_pes`). `seen`
     (a list) gets True appended when the buffer carried ANY PES with a PTS,
@@ -316,6 +327,44 @@ class TimelineStamper:
     _EARLY_NS = 800_000_000
     _EARLY_HOLD_NS = 10_000_000_000
 
+    # THE TRANSPORT JUDGES THE LEVEL, both sides, when the timing PID carries a
+    # PCR that tracks arrival (#816, NO-OCC-Gate01 2026-10-07; #820). Both
+    # sides stand on "delivery is one-sided noise", which holds for the
+    # transport clock and not for a PES: a PCR is written as its packet leaves
+    # the mux, so it can only arrive late (within ±1 ms of arrival for 5 min on
+    # Gate01's CBR 1080i50 contribution feed), while a video PES leaves AHEAD
+    # of its PTS by the encoder's buffer — 0.34-1.63 s on that feed, wandering
+    # by over a second. The minimum PES margin over a hold is that wander's
+    # peak, not the mapping's error: the anchor sits on the highest lead of its
+    # repair window, and every time the lead's peaks sagged >100 ms for 10 s
+    # the late tier re-anchored a mapping nothing was wrong with (2 per 5 min
+    # on the capture, each a step for every consumer). So with the PCR seen
+    # (`condition` reads it before regenerating it: `_observe_transport`) a
+    # level re-anchors only when the TRANSPORT agrees — arriving `_LATE_NS`
+    # later, or `_EARLY_NS` earlier, than it did while the anchor was fresh,
+    # net of the drift slew. A late path or a wrong anchor moves the PCR's
+    # arrival with the PES; the encoder's buffering moves only the PES. Only a
+    # PCR that has SHOWN it is a transport clock judges (#820): after every
+    # anchor it must first track arrival for `_LATE_HOLD_NS`; one that then
+    # leaps ahead of arrival (vMix's pacer leaps it +1.19 s and keeps it there)
+    # or steps back hands the level back to the PES until the next anchor, and
+    # one that stands still (the same pacer stops) for good (see
+    # `_observe_transport`). This conditioner's own PTS-derived PCR, which
+    # every hop downstream sees, rides the PTS floor and never qualifies. With
+    # no PCR seen in `_TX_FRESH_NS` (ten times the 100 ms ISO 13818-1 allows
+    # between two) the PES decide alone too. Still judging until the next
+    # anchor: a qualified PCR that drifts slowly against arrival without a step
+    # past `_LATE_NS`; no source seen does that. The anchor itself is
+    # untouched: still latched and repaired on the PES, the lowest-latency
+    # mapping — moving the repair onto the PCR would add the lead's spread in
+    # its window as standing latency. The price is the ratchet: on such a feed
+    # the tier no longer walks the anchor down the lead's sags by re-anchors,
+    # so the best frame of a 10 s stretch can sit later than `_LATE_NS` (up to
+    # 132 ms on the Gate01 capture, against 97 ms with the tier's two
+    # re-anchors). A consumer presenting the egress itself budgets for its
+    # source's buffering, as the T-STD always asked of it.
+    _TX_FRESH_NS = 1_000_000_000
+
     # --- timeline conditioner (`condition`) — the vMix CBR pacer resets -------
     # A muxer that paces its output (vMix in CBR mode) periodically RESETS its
     # pacing timeline: measured 2026-09-08 on .103, every 80-100 s the audio
@@ -328,16 +377,25 @@ class TimelineStamper:
     # answer the STAMPS; none can help, because the step is written in the PES
     # bytes tsdemux reads. So this one rewrites the bytes.
     #
-    # THE RULE, per PID, PES by PES: a PTS delta beyond `_COND_STEP_NS` that the
-    # buffer's ARRIVAL did not match is a clock step, and the PID's running
-    # offset absorbs the difference so the written cadence follows arrival. The
-    # arrival test is what keeps three ordinary things out of it:
+    # THE RULE, per PID, PES by PES: a DECODE-clock delta (the DTS when the PES
+    # carries one at or before its PTS, else the PTS) beyond `_COND_STEP_NS`
+    # that the buffer's ARRIVAL did not match is a clock step, and the PID's
+    # running offset absorbs the difference so the written cadence follows
+    # arrival. The arrival test is what keeps three ordinary things out of it:
     #   a delivery STALL — PTS delta one frame, arrival a second late — is not a
     #     step (moving the timeline there would have made everything a second
     #     late for good);
     #   a genuine GAP — the source dropped 2 s of pictures, PTS and arrival both
     #     moved 2 s — is content, and stays a gap;
-    #   B-frame reorder and network jitter live well inside 300 ms.
+    #   network jitter lives well inside 300 ms.
+    # B-frame REORDER is kept out by the decode clock, never by the threshold:
+    # the PTS of a PES in decode order jumps by the reorder depth, which no
+    # bound below a second contains — Gate01's contribution feed (#816) jumps
+    # +360 ms PES to PES, and read on the PTS each was a +0.32 s "step", 1.3 a
+    # second: the written timeline lost 0.42 s every second (576 s in 23 min,
+    # PCR regenerated with it) and every stamper on the route re-anchored
+    # every ~10 s. The decode clock steps one frame. A DTS AFTER its PTS is no
+    # decode clock (vMix's marker, below), so that PES is judged on its PTS.
     # Past `_COND_MAX_NS` it is a source restart, left to the watch as before.
     # The PCR is conditioned by the same rule with its own offset, so each
     # clock follows arrival and their mutual relation is preserved. A DTS that
@@ -534,9 +592,10 @@ class TimelineStamper:
                  repair_latch=False, on_conditioned=None, condition_step_ns=None):
         self.latch = TimelineLatch()
         # The conditioner's step threshold for THIS egress. 300 ms is the
-        # default (B-frame reorder and jitter live well inside it); a producer
-        # whose egress carries one audio PID off a live capture ring can set it
-        # lower — the audio-encoder sets 100 ms (2026-09-15, #751 follow-up):
+        # default (jitter lives well inside it; reorder never reaches it, the
+        # step being judged on the decode clock); a producer whose egress
+        # carries one audio PID off a live capture ring can set it lower —
+        # the audio-encoder sets 100 ms (2026-09-15, #751 follow-up):
         # its pulsesrc re-timestamps by a whole ring (~200 ms) now and then with
         # no arrival change, and every paced consumer downstream stored that as
         # +200 ms of latency per event. There is no reorder on a single audio PID
@@ -558,8 +617,21 @@ class TimelineStamper:
         self._late_min = 0      # the smallest margin seen since (the level)
         self._early_since = None  # house time the margin went below -_EARLY_NS
         self._early_max = 0     # the largest (least early) margin since (the level)
+        # The TRANSPORT (`_observe_transport`): the timing PID's last raw PCR
+        # (raw, unwrapped, arrival); the reference (unwrapped PCR, arrival,
+        # program correction); whether the PCR has stepped against arrival
+        # since the anchor; the latest lateness, and when.
+        self._tx_pcr = None
+        self._tx_ref = None
+        self._tx_qual = None    # house time since which the PCR has tracked arrival
+        self._tx_trusted = False  # ... for `_LATE_HOLD_NS`: it may judge (#820)
+        self._tx_dead = False
+        self._tx_frozen = 0     # arrival the PCR has not advanced through (<= _LATE_NS a PCR)
+        self._tx_stopped = False  # it stood still once: a pacer clock, never trusted again
+        self._tx_dev = 0
+        self._tx_house = None
         self._on_conditioned = on_conditioned
-        # pid -> {'last_raw', 'last_house', 'offset' (total ticks written),
+        # pid -> {'last_raw' (decode clock), 'last_house', 'offset' (total ticks written),
         #         'own' (steps taken alone), 'own_since', 'prog_applied', 'recent'}
         self._cond_pes = {}
         # The PROGRAM's correction (ticks): the sum of the reference PID's
@@ -919,6 +991,9 @@ class TimelineStamper:
         self._stale_since.clear()
         self._late_since = None
         self._early_since = None
+        self._tx_pcr = self._tx_ref = None     # the transport belongs to the anchor
+        self._tx_dead = self._tx_trusted = False
+        self._tx_frozen = 0
         # The drift estimate belongs to the old mapping too: its baseline was a
         # margin measured against an anchor that no longer exists, so carrying
         # it over would slew the fresh anchor by the dead epoch's error.
@@ -1038,13 +1113,15 @@ class TimelineStamper:
         only — when even the LEAST-early buffer has arrived more than
         `_EARLY_NS` before it for `_EARLY_HOLD_NS` (early side). Returns True
         when it did, so the caller restamps this buffer on the fresh epoch.
-        See `_LATE_NS` / `_EARLY_NS`.
+        With the timing PID's PCR seen, either side also needs the TRANSPORT
+        to agree (`_TX_FRESH_NS`). See `_LATE_NS` / `_EARLY_NS`.
         """
         margin = house_now - stamp
+        tx = self._transport_dev(house_now)
         pid, pts = pes[0]
         # The LATE side: media behind house.
-        if margin <= self._LATE_NS:
-            self._late_since = None           # one on-time buffer: it is jitter
+        if margin <= self._LATE_NS or (tx is not None and tx <= self._LATE_NS):
+            self._late_since = None           # one on-time buffer (or transport): it is jitter
         else:
             if self._late_since is None:
                 self._late_since = house_now
@@ -1058,8 +1135,8 @@ class TimelineStamper:
                                -(self._late_min * _NS_DEN // _NS_NUM), house_now)
                 return True
         # The EARLY side: media ahead of house — live-cadence producers only.
-        if not self._repair_on or margin >= -self._EARLY_NS:
-            self._early_since = None          # one on-time buffer: it is jitter
+        if not self._repair_on or margin >= -self._EARLY_NS or (tx is not None and tx >= -self._EARLY_NS):
+            self._early_since = None          # one on-time buffer (or transport): it is jitter
         else:
             if self._early_since is None:
                 self._early_since = house_now
@@ -1072,6 +1149,74 @@ class TimelineStamper:
                                (-self._early_max) * _NS_DEN // _NS_NUM, house_now)
                 return True
         return False
+
+    def _observe_transport(self, pcr, house_now):
+        """One PCR of the timing PID as the SOURCE wrote it (`condition` reads
+        it before regenerating it): how much later than at the reference the
+        transport now arrives, net of the drift slew — and carried through the
+        program correction the conditioner has written since, because the
+        stamps are cut from the WRITTEN timeline: a step it absorbs moves them
+        and must move this too, or a misfiring conditioner would go unseen.
+        The reference is the EARLIEST arrival while the anchor's repair window
+        is open (a reconnect backlog drains inside it, the PES repair's own
+        assumption), fixed after it. The PCR is unwrapped PCR to PCR, so an
+        anchor may live past half its 26.5 h period.
+
+        Only a PCR that demonstrably IS a transport clock may judge (#820):
+        it must first track arrival within `_LATE_NS` for `_LATE_HOLD_NS`
+        (the tier's own hold) after the reference. One that then leaps ahead
+        of arrival (a delta more than `_LATE_NS` past the arrival delta —
+        vMix's pacer leaps its PCR +1.19 s and keeps it there while the
+        conditioner takes the PTS back) or steps back more than `_LATE_NS`
+        leaves the PES to decide alone until the next anchor — a source
+        restart steps it too — and must then qualify again; one that stands
+        still for more than `_LATE_NS` of arrival (vMix's pacer stops, and its
+        PCR lags for good: 12.6 s on .103) is a pacer clock and never judges
+        again on this egress. Each PCR adds at most `_LATE_NS` to that, so the
+        first PCR back after an outage is a step, not a pause. One-sided on
+        purpose: a stall, a loss or a burst after either moves the arrival
+        against the PCR, never the PCR ahead of it — as long as the PCRs are
+        no more than `_LATE_NS` apart, as ISO 13818-1 requires."""
+        last = self._tx_pcr
+        u = pcr if last is None else last[1] + self._fold(pcr - last[0], PCR_MODULO)
+        self._tx_pcr = (pcr, u, house_now)
+        if self.anchor is None:
+            return
+        if last is not None:
+            d = (u - last[1]) * 1000 // 27
+            a = house_now - last[2]
+            self._tx_frozen = self._tx_frozen + min(a, self._LATE_NS) if d <= 0 else 0
+            if self._tx_frozen > self._LATE_NS:
+                self._tx_stopped = True
+            if d - a > self._LATE_NS or d < -self._LATE_NS:
+                self._tx_dead = True
+        if self._tx_dead or self._tx_stopped:
+            return
+        if self._tx_ref is None:
+            self._tx_ref = (u, house_now, self._cond_prog_offset)
+            self._tx_qual = house_now
+        ref_u, ref_house, ref_off = self._tx_ref
+        late = ((house_now - ref_house) - (u - ref_u) * 1000 // 27
+                - pts90k_to_ns(self._cond_prog_offset - ref_off))
+        if late < 0 and self._latch_until is not None and house_now < self._latch_until:
+            self._tx_ref = (u, house_now, self._cond_prog_offset)
+            late = 0
+        self._tx_dev = late - self._slew_total
+        self._tx_house = house_now
+        if not self._tx_trusted:
+            if abs(self._tx_dev) > self._LATE_NS:
+                self._tx_qual = house_now
+            elif house_now - self._tx_qual >= self._LATE_HOLD_NS:
+                self._tx_trusted = True
+
+    def _transport_dev(self, house_now):
+        """The transport's lateness (`_observe_transport`), or None while the
+        PCR has not shown it tracks arrival, has stopped running as a clock, or
+        was not seen in the last `_TX_FRESH_NS`."""
+        if (not self._tx_trusted or self._tx_dead or self._tx_stopped
+                or house_now - self._tx_house > self._TX_FRESH_NS):
+            return None
+        return self._tx_dev
 
     def condition(self, data: bytearray, house_now: int) -> int:
         """Rewrite PES PTS/DTS and PCR fields IN `data` so a source clock step
@@ -1093,6 +1238,10 @@ class TimelineStamper:
                     # onto the timing PID's next PES (reported as a re-anchor).
                     self._timing_rebase_pending = (self.anchor is not None
                                                    and self._anchor_pid != pid)
+                    self._tx_pcr = self._tx_ref = None           # the old PID's transport
+                    self._tx_dead = self._tx_trusted = self._tx_stopped = False
+                    self._tx_frozen = 0
+                self._observe_transport(pcr, house_now)          # before it is regenerated
                 if self._cond_ref_pid is not None:
                     # wpts − lead, in MEDIA time: flat between frames, never
                     # advanced by arrival (a big I-frame's wire time is not media
@@ -1138,6 +1287,10 @@ class TimelineStamper:
             if pts is None:
                 continue
             poff = payload_offset(pkt)
+            # The step test reads the DECODE clock (`_COND_STEP_NS`): the DTS when
+            # the PES carries one at or before its PTS, else the PTS.
+            dts = read_pes_dts(pkt)
+            dec = pts if dts is None or self._fold(pts - dts, PTS_WRAP) < 0 else dts
             # Which PIDs may define a clock: `timing_pes`. A private-data PID's
             # PTS is not a clock — never steps the program, never the PCR's
             # reference or floor — but it IS on the program's timeline and
@@ -1153,11 +1306,11 @@ class TimelineStamper:
             # it never reverts (a branch alignment is placement, not a clock).
             c = self._cond_pes.get(pid)
             if c is None:
-                c = self._cond_pes[pid] = {'last_raw': pts, 'last_house': house_now,
+                c = self._cond_pes[pid] = {'last_raw': dec, 'last_house': house_now,
                                            'offset': self._cond_prog_offset, 'own': 0, 'own_since': 0,
                                            'prog_applied': self._cond_prog_offset, 'recent': []}
             else:
-                d_ns = pts90k_to_ns(self._fold(pts - c['last_raw'], PTS_WRAP))
+                d_ns = pts90k_to_ns(self._fold(dec - c['last_raw'], PTS_WRAP))
                 a_ns = house_now - c['last_house']
                 pending = self._cond_prog_offset - c['prog_applied']
                 stepped = (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
@@ -1199,7 +1352,7 @@ class TimelineStamper:
                     if self._on_conditioned:
                         self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': rel,
                                               'offsetTicks': c['offset'], 'houseNs': house_now})
-                c['last_raw'], c['last_house'] = pts, house_now
+                c['last_raw'], c['last_house'] = dec, house_now
             wpts = (pts + c['offset']) % PTS_WRAP
             if timing:
                 # The reference PID is the one carrying the PCR (its PTS is what
@@ -1216,10 +1369,7 @@ class TimelineStamper:
             if not c['offset']:
                 continue
             self._write_ts_field(data, off + poff + 9, wpts)
-            if pkt[poff + 7] & 0x40 and poff + 19 <= PKT:
-                q = pkt[poff + 14:poff + 19]
-                dts = (((q[0] >> 1) & 0x07) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) \
-                    | (q[3] << 7) | (q[4] >> 1)
+            if dts is not None:
                 wdts = (dts + c['offset']) % PTS_WRAP
                 # A DTS after its own PTS is not a timeline (vMix writes one
                 # while its pacer resets): decode no later than presentation.

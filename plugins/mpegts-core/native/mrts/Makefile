@@ -6,7 +6,7 @@ CXXFLAGS += -std=c++17 -Wall -Wextra
 
 OBJS  = ts_psi.o ts_split.o ts_video_info.o sps_parse.o ts_timeline.o
 TESTS = tests/ts_psi_test tests/ts_split_test tests/ts_video_info_test \
-        tests/ts_timeline_test
+        tests/ts_timeline_test tests/ts_timeline_lead_test
 
 all: libmrts.a mrts_cli
 

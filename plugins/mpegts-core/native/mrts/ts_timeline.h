@@ -213,6 +213,13 @@ class TimelineStamper {
     // EARLY_NS before it for EARLY_HOLD_NS. True when it did, so the caller
     // restamps the buffer on the fresh epoch.
     bool scan_late(int pid, int64_t pts, int64_t house_now, int64_t stamp);
+    // The TRANSPORT (python's `_observe_transport` / `_transport_dev`): one PCR
+    // of the timing PID as the source wrote it, read by condition() before it is
+    // regenerated; and its lateness against the anchor's reference, false while
+    // the PCR has not shown it tracks arrival, has stopped running as a clock,
+    // or was not seen within TX_FRESH_NS. See ts_timeline.py.
+    void observe_transport(int64_t pcr, int64_t house_now);
+    bool transport_dev(int64_t house_now, int64_t* out) const;
     // False when the buffer carries no PES header at all (`*out` untouched).
     // `*out_pid` is the PID whose PES the stamp came from (the timing PID's
     // when the buffer carries one).
@@ -239,6 +246,21 @@ class TimelineStamper {
     bool early_open_ = false;             // the margin is below -EARLY_NS (repair_on_ only)
     int64_t early_since_ = 0;             // ... since this house time
     int64_t early_max_ = 0;               // ... and the largest margin since (the level)
+    bool tx_have_pcr_ = false;            // the timing PID's last PCR (python `_tx_pcr`) ...
+    int64_t tx_pcr_raw_ = 0;              // ... raw (27 MHz)
+    int64_t tx_pcr_u_ = 0;                // ... unwrapped PCR to PCR
+    int64_t tx_pcr_house_ = 0;            // ... and its arrival
+    bool tx_have_ref_ = false;            // the transport's reference (python `_tx_ref`) ...
+    int64_t tx_ref_u_ = 0;                // ... its unwrapped PCR
+    int64_t tx_ref_house_ = 0;            // ... its arrival
+    int64_t tx_ref_offset_ = 0;           // ... and the program correction then (ticks)
+    int64_t tx_qual_ = 0;                 // house time since which the PCR has tracked arrival
+    bool tx_trusted_ = false;             // ... for LATE_HOLD_NS: it may judge (#820)
+    bool tx_dead_ = false;                // the PCR has not run as a clock since the anchor
+    int64_t tx_frozen_ = 0;               // arrival the PCR has not advanced through (<= LATE_NS a PCR)
+    bool tx_stopped_ = false;             // it stood still once: a pacer clock, never trusted again
+    int64_t tx_dev_ = 0;                  // the latest lateness against it, net of the slew
+    int64_t tx_house_ = 0;                // ... measured at this house time
     int anom_ = 0;
     long long reanchors_ = 0;
     // Drift servo (see ts_timeline.py for the design and every constant's
@@ -272,7 +294,7 @@ class TimelineStamper {
     int64_t cond_threshold_ns_ = 0;       // per-egress conditioner threshold, 0 = default
     // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
     struct CondClock {
-        int64_t last_raw;      // last raw PTS seen (90 kHz)
+        int64_t last_raw;      // last raw DECODE timestamp seen (the DTS, else the PTS; 90 kHz)
         int64_t last_house;    // house time it arrived at
         int64_t offset;        // total correction written (ticks) = program part + own part
         int64_t own;           // steps this PID took ALONE (ticks); released after COND_OWN_HOLD_NS

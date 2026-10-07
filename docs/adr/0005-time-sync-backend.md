@@ -1160,6 +1160,119 @@ capture or file producer's bytes are never touched):
   now raises a once-latched `mrtsstamp-map-failed` warning instead of shipping
   source timing in silence.
 
+- **Amendment 2026-10-07 (#816, NO-OCC-Gate01; #820): a clock step is judged on
+  the decode clock, and a level re-anchor needs the transport — a PCR that has
+  shown it tracks arrival — to agree.** Gate01 ingests a
+  CBR 1080i50 H.264 contribution feed (239.255.0.191, 28.6 Mbit/s). A 5-min
+  capture on the box: the PCR (on the video PID) within ±1 ms of arrival; each
+  video PES 0.34–1.63 s ahead of its PTS, by the encoder's buffer, wandering;
+  an 8-frame hierarchical-B GOP whose decode order jumps the PTS +360 ms from a
+  mini-GOP's last B to the next P, 1.3 times a second. With the contract on,
+  every stamper on the route re-anchored every ~10 s (821 re-anchors in 15 min
+  on Gate01, −5.6…−11.2 s on its audio egresses) and the RIST receivers
+  re-anchored every ~10 s and re-armed their decoders on the DISCONT; with the
+  contract off on Gate01 alone, none did. One cause in each half:
+  - The conditioner judged a step on the PTS delta, so it read each +360 ms as
+    a +0.32 s clock step (the delta less the 40 ms nominal) and the program
+    offset absorbed it: 1796 such steps in 23 min on 2026-10-07, the written
+    video timeline losing 0.42 s every second (offset −30.7 → −607.0 s; across
+    a mini-GOP the written PTS stood still), the regenerated PCR with it. The
+    ingest egress's late tier re-anchored every ~10 s on the video's falling
+    stamps (−0.10…−0.40 s; the single-stream floor, carried by the untouched
+    audio, kept the 5 s net quiet), mr-tssplit's per-PID video floor fell
+    behind until its 5 s net fired (−5.8 s), and every egress downstream
+    followed. A step is now judged on the DECODE clock: the DTS when the PES
+    carries one at or before its PTS, else the PTS. B-frame reorder never moves
+    it; a clock step does. vMix's marker (a DTS after its PTS) is no decode
+    clock, so that PES is judged on its PTS as before — and so is a reordered
+    PES a non-compliant mux sends without its DTS.
+  - With that fixed, the late tier still re-anchored on the lead wander (2 per
+    5 min in replay): the latch repair puts the anchor on the highest lead of
+    its first 3 s, and the tier's level, the minimum PES margin over 10 s, is
+    the lead's peak in the hold, which sags by more than 100 ms for 10 s now
+    and then. "Delivery is one-sided noise", which both sides of the tier stand
+    on, holds for the transport and not for a PES: a PCR is written as its
+    packet leaves the mux, a PES leaves ahead of its PTS by however much the
+    encoder buffers. So when the timing PID carries a PCR that is a transport
+    clock, a level re-anchor also needs the TRANSPORT to agree: the source's
+    PCR — read by `condition` before it regenerates it, unwrapped PCR to PCR
+    (an anchor may outlive half the PCR's 26.5 h period) — arriving `LATE_NS`
+    later (or `EARLY_NS` earlier) than its earliest arrival in the anchor's
+    repair window, net of the drift slew and of any program correction the
+    conditioner has written since (the stamps are cut from the written
+    timeline, so a misfiring conditioner stays visible to the tier). A late
+    path, a drifting clock or a wrong anchor moves the PCR's arrival with the
+    PES, and the tier fires as before; the encoder's buffering moves only the
+    PES. No PCR of the timing PID within 1 s (`TX_FRESH_NS`): the PES decide
+    alone.
+  - **Only a PCR that demonstrably tracks arrival judges (#820).** vMix's
+    pacer clock stops, resets and lags while its pictures run on (12.6 s
+    behind on .103; a 1.5 s freeze, then a 1.8 s leap), and an ingest timed
+    against it would be timed against a clock that stands still. So after
+    every anchor the PCR must first track arrival within `LATE_NS` for
+    `LATE_HOLD_NS` (the tier's own hold) before it may hold a re-anchor back;
+    one whose arrival bunches or drifts against it never does. One that then
+    leaps ahead of arrival (a delta more than `LATE_NS` past the arrival
+    delta: vMix's pacer leaps +1.19 s and stays) or steps back more than
+    `LATE_NS` (a reset, or a source restart, which re-anchors anyway) hands
+    the level back to the PES until the next anchor and must then qualify
+    again; one that stands still for more than `LATE_NS` of arrival — the
+    pacer's signature — never judges again on that egress (until its timing
+    PID changes). Each PCR adds at most `LATE_NS` to that, so the first PCR
+    back after an outage reads as a step, not a pause. One-sided on purpose: a
+    stall, a loss or a burst only ever moves arrival against the PCR, never
+    the PCR ahead of it, as long as PCRs are no more than 100 ms apart, as
+    ISO 13818-1 requires. PCR regeneration is unchanged for every source, so
+    such a source keeps today's handling outright.
+  - **Unchanged: the anchor**, latched and repaired on the PES (the
+    lowest-latency mapping), so every stamp of a well-behaved source is where
+    it was: **+0 ms standing latency**. Repairing on the PCR too was rejected:
+    it leaves the anchor on the first PES's lead rather than the window's
+    highest, adding the lead's spread in the window as standing latency (up to
+    664 ms on the capture). A PCR-based PTS mapping would add the whole lead
+    (0.9–1.5 s here), and no PES statistic can tell an encoder's buffering from
+    a late path. **What the gate gives up is the ratchet:** on a feed like
+    Gate01's the PES-only tier walked the anchor down the lead's sags, one
+    re-anchor at a time (2 in the 5-min replay). Without it, the best frame of
+    a 10 s stretch sits up to 132 ms past its stamp (97 ms with it), the median
+    video PES 402 ms (341 ms). Either way 88–95 % of that feed's video PES
+    land more than 100 ms past their stamps: a consumer presenting such an
+    egress itself budgets for its source's buffering, as the T-STD always
+    asked.
+  - **Scope.** Only a stamper that conditions sees the source's PCR
+    (live-cadence producers: the native element with `repair-latch`,
+    mr-tssplit). The python probe fallback has no conditioner, so no timing
+    PID, and its tiers judge the PES alone as before. A hop downstream of a
+    conditioning producer sees the regenerated PCR, which rides the written
+    PTS floor (it wanders with the encoder's lead, and its monotone guard
+    holds it still), so it never qualifies there and the PES decide as
+    before: replaying the capture through Gate01's ingest (the PCR qualified
+    10 s in and judged 97 % of the buffers) and then a splitter-like second
+    stamper (never qualified; stood down 3 times, stopped once), the second
+    re-anchored on the wander twice in 5 min (−0.10, −0.11 s; 20 times
+    before).
+  - Replay of the 5-min capture through each twin, condition then stamp as
+    `mrtsstamp` drives it, re-anchors / conditioned steps: e1ea55cd 20 / 401
+    (every ~10 s, −0.12…−0.40 s); the decode clock alone 2 / 0; the transport
+    gate alone 20 / 401; both 0 / 0 — python and C++ identical. Pinned in
+    `ts_timeline_lead_test.{py,cpp}`, 20 checks each, the same integers: a
+    synthetic copy of the feed never re-anchors in 300 s and its PES are never
+    rewritten; a 1.6 s buffer fill never trips the early side; a path 400 ms
+    slower re-anchors once, and the fresh reference keeps the next sag quiet;
+    a PCR gone for 1 s hands the level to the PES; a 520 ms path stall does
+    not; an encoder restart re-anchors once and its new PCR judges again;
+    vMix's PCR leap does not hide a later late path; a PCR that stops and lags
+    leaves every level to the PES, re-anchor for re-anchor as on e1ea55cd,
+    while one that steps back judges again after the next anchor; a PCR the
+    path delivers in 400 ms bursts never qualifies; a lead sag 13.5 h in (PCR
+    across its wrap and past half its period), a 20 ppm source with the servo
+    locked, a reconnect backlog at the anchor; and a reordered feed without
+    DTS still shows its conditioner's error to the late tier, as on e1ea55cd.
+    16 of the 20 fail on e1ea55cd (the other four pin behaviour it has: the
+    vMix leap and freeze, the bursty path, the feed without DTS); 14 with the
+    decode clock alone, 11 with the gate alone; each rule of the gate fails at
+    least one check when removed (the timing-PID-change reset aside).
+
 **Two consumer-side guards landed with it, both gated by the contract (they run
 only where the shedder is armed):**
 
