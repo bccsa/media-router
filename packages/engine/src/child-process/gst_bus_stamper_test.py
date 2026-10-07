@@ -721,6 +721,36 @@ check("and the whole run stays within a frame or two of the stamp",
       max(dev) - min(dev) < 100 * Gst.MSECOND)
 
 
+# ---------------------------------------------------------------------------
+print("\n--- a delivery gap the source's timeline ran on through keeps the anchor ---")
+# The .24 Translation Station re-latched at every SRT reconnect (2026-10-06):
+# each outage was a gap in ONE timeline (.21's PTS is its house clock + 1 h),
+# and the stamper read it as a new one. Driven directly, like the drift report
+# above (house time is an argument): 4 s of 40 ms cadence, a 6.92 s outage,
+# 2 s more, with the latch repair ON as for every producer the runner hosts.
+events = collect_events()
+stamper.repair_latch = True
+pipe, src = build_stamper_pipe()
+runner._apply_contract_clock(pipe)
+arm_stamper(pipe)
+st = stamper.stamper_for("busout_41000")
+for i in list(range(100)) + list(range(273, 323)):
+    st["stamper"].stamp(pes_packet(0x100, FIRST_PES + i * STEP, i & 0x0F), 5 * Gst.SECOND + i * 40 * Gst.MSECOND)
+stamper.repair_latch = False
+gaps = [e for e in events if e["event"] == "timeline_gap"]
+check("the probe reports the carried gap as timeline_gap, field for field the element's",
+      len(gaps) == 1
+      and set(gaps[0]) == {"event", "tee", "pid", "lastPts90k", "pts90k", "deltaTicks",
+                           "marginNs", "anchorNs", "count", "message"}
+      and gaps[0]["tee"] == "busout_41000" and gaps[0]["pid"] == 0x100
+      and gaps[0]["deltaTicks"] == 174 * STEP and gaps[0]["marginNs"] == 0
+      and gaps[0]["anchorNs"] == 5 * Gst.SECOND and "delivery gap" in gaps[0]["message"])
+check("and the anchor is kept: no timeline_reanchor",
+      not [e for e in events if e["event"] == "timeline_reanchor"])
+stamper.clear()
+drain(pipe, src)
+
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

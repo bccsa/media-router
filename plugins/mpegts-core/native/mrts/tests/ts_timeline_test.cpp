@@ -11,67 +11,11 @@
 #include "../ts_psi.h"
 #include "../ts_timeline.h"
 #include "check.h"
+#include "timeline_fixture.h"
 
 using namespace mrts;
 
 namespace {
-
-// Hand-built PES packet (ts_psi_test.cpp / gst_bus_stamper_test.py parity):
-// PUSI, payload 00 00 01 <stream_id>, then the '10' marker, PTS_DTS_flags and
-// the 5-byte PTS. `pts` < 0 = a PES with no PTS at all.
-TsPacket pes_packet(int pid, int64_t pts, uint8_t stream_id = 0xE0) {
-    TsPacket t;
-    std::memset(t.b, 0xFF, PKT);
-    t.b[0] = SYNC_BYTE;
-    t.b[1] = 0x40 | ((pid >> 8) & 0x1F);
-    t.b[2] = pid & 0xFF;
-    t.b[3] = 0x10;
-    int i = 4;
-    t.b[i++] = 0x00;
-    t.b[i++] = 0x00;
-    t.b[i++] = 0x01;
-    t.b[i++] = stream_id;
-    t.b[i++] = 0x00;
-    t.b[i++] = 0x00;
-    t.b[i++] = 0x80;
-    t.b[i++] = pts >= 0 ? 0x80 : 0x00;
-    t.b[i++] = pts >= 0 ? 0x05 : 0x00;
-    if (pts >= 0) {
-        int64_t p = pts & (PTS_WRAP - 1);
-        t.b[i++] = 0x21 | (uint8_t)(((p >> 30) & 0x07) << 1);
-        t.b[i++] = (uint8_t)((p >> 22) & 0xFF);
-        t.b[i++] = 0x01 | (uint8_t)(((p >> 15) & 0x7F) << 1);
-        t.b[i++] = (uint8_t)((p >> 7) & 0xFF);
-        t.b[i++] = 0x01 | (uint8_t)((p & 0x7F) << 1);
-    }
-    return t;
-}
-
-// A PCR-only packet (adaptation field, no payload) on `pid`.
-TsPacket pcr_packet(int pid, int64_t pcr27) {
-    TsPacket t;
-    build_pcr_packet(pid, pcr27, 0, t.b);
-    return t;
-}
-
-// A PES start carrying the PCR in its adaptation field — where mpegtsmux puts
-// every PCR (the .21 muxer's video PID, 2026-10-04).
-TsPacket pes_pcr_packet(int pid, int64_t pts, int64_t pcr27) {
-    TsPacket t = pcr_packet(pid, pcr27);
-    const TsPacket pes = pes_packet(pid, pts);
-    t.b[1] |= 0x40;                               // PUSI
-    t.b[3] = 0x30;                                // adaptation field + payload
-    t.b[4] = 7;                                   // its flags + the 6 PCR bytes
-    std::memcpy(t.b + 12, pes.b + 4, PKT - 12);   // the PES header after them
-    return t;
-}
-
-// Signed, wrap-folded difference on an N-bit counter.
-int64_t wrap_fold(int64_t d, int64_t m) {
-    d %= m;
-    if (d < 0) d += m;
-    return d > m / 2 ? d - m : d;
-}
 
 // A packet with NO PES header — continuation / null padding.
 TsPacket filler_packet(int pid = PID_NULL) {
@@ -84,23 +28,6 @@ TsPacket filler_packet(int pid = PID_NULL) {
     return t;
 }
 
-std::vector<uint8_t> bytes_of(const std::vector<TsPacket>& pkts) {
-    std::vector<uint8_t> out;
-    for (const auto& p : pkts) out.insert(out.end(), p.b, p.b + PKT);
-    return out;
-}
-
-int64_t stamp_of(TimelineStamper& s, const std::vector<TsPacket>& pkts, int64_t now,
-                 int stream = 0) {
-    auto data = bytes_of(pkts);
-    return s.stamp(data.data(), data.size(), now, stream);
-}
-
-constexpr int64_t STEP = 3600;             // 40 ms in 90 kHz ticks
-constexpr int64_t STEP_NS = 40'000'000;
-constexpr int64_t FIRST_PES = 8'100'000;   // 90 s
-constexpr int64_t HOUSE = 1'000'000'000'000;
-
 // --- drift fixture (ts_timeline_test.py parity, number for number) ---------
 constexpr int64_t D_STEP = 18000, D_STEP_NS = 200'000'000;   // 200 ms per buffer
 constexpr int D_RATE = 3600 * 5;                             // buffers per sim hour
@@ -111,13 +38,6 @@ constexpr int64_t LUMP_STEP_NS = 26'666'666LL;               // 800 ms of sawtoo
 constexpr int SLEW_MAX_PPM = 200;        // the .cpp's own constants, mirrored here
 constexpr int TREND_SLOTS = 10;
 constexpr int64_t GIVEBACK_NS = 200'000'000LL;
-
-// python's `//` — the fixture divides a negative product for a slow source.
-int64_t fdiv(int64_t a, int64_t b) {
-    int64_t q = a / b;
-    if (a % b != 0 && (a < 0) != (b < 0)) q--;
-    return q;
-}
 
 // House arrival of buffer `i` from an HLS-shaped producer: a delivery LEAD that
 // ramps to 2 s over 30 s and then holds, 800 ms of segment LUMPINESS on top,

@@ -111,6 +111,9 @@ App::App(Options opts) : opts_(std::move(opts)) {
         stamper_->set_on_conditioned([](const mrts::TimelineStamper::Conditioned& c) {
             emit(mrts::conditioned_event_json(c));
         });
+        // An input that went quiet while its source's timeline ran on (an SRT
+        // reconnect) keeps the anchor; reported once per gap, never silent.
+        stamper_->set_on_gap([](const mrts::TimelineStamper::Gap& g) { emit(mrts::gap_event_json(g)); });
     }
     refresh_gating();   // nothing wired yet -> all outputs disabled
     input_ = std::make_unique<mrbus::BusClient>(

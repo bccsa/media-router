@@ -146,8 +146,10 @@
   pinned at the old epoch after a BACKWARD restart (a source reboot), the
   reconnect gap absorbed as a "step", the stale first PCR after a gap
   (conditioner and mr-tssplit's re-injected master).
-  Left: (1) the stamper stamps the first buffers past a gap on the pre-gap
-  anchor until the watch confirms (two anomalous buffers); a running consumer
+  Left: (1) the stamper stamps the first buffers past a jump on the pre-gap
+  anchor until the watch confirms (two anomalous buffers) — not past a gap the
+  source's timeline ran on through any more, which keeps the anchor (the
+  gap-carry item below); a running consumer
   that re-bases its PCR mapping on one of them carries the reconnect delay
   (+0.2–0.5 s in a replay through GStreamer 1.28.2 tsdemux) as lateness its
   skew filter takes ~10–25 s to absorb — a short dropout on a tight sink
@@ -199,7 +201,69 @@
   only, no audible effect: after a 19.6 s input gap the transcoder egress
   logged `latch settled: anchor pulled back 19642.216 ms`, about the gap's
   length (a0f6f13c's same test: 63 ms; the fix's other runs: 21–120 ms); both
-  legs were clean at +10 s and +2 min. Worth a code look.
+  legs were clean at +10 s and +2 min. Worth a code look. — (1) and (3) are
+  the held frame and the late hold of the next item, fixed there.
+
+- [x] **A reconnect keeps the timeline when the source's timeline ran on
+  (.24 Mulanje, 2026-10-06; ADR-0005 decision 2 and Stage 3f amendments
+  2026-10-07).** Every .21 muxer restart restarts .21's srt-output and drops
+  .24's SRT session for 5–17 s inside ONE source timeline (.21's PTS is its
+  house clock + 1 h), yet .24 re-latched at every reconnect: the splitter
+  re-anchored on the forward gap (its mapping stepped −36…+46 ms per
+  reconnect), and the Hall transcoder's egress absorbed the gap as a clock
+  step behind the frame `aacparse` held across it and then re-anchored
+  (−70…+59 ms; past 16 s gaps its late hold matured during the gap) —
+  Headphone1 against Headphone 2 by up to 46 ms per reconnect, the decoder
+  leg late for 23.7 min after one. `TimelineStamper` (both twins,
+  live-cadence only): a forward jump whose PES lands within −300 ms … +1 s of
+  its arrival on the current anchor keeps the anchor (`timeline_gap`); on an
+  egress with one timing PID a frame held across a gap is judged from when it
+  was due (forward jumps only, at most 1 s of media past the last on-time PES;
+  a program keeps #806's arrival test, or its PIDs split A/V); the late hold
+  does not count the longest delivery pause inside it.
+  Local evidence: a model of the .21 → .24 route over the real python twin
+  (10 seeds, 60 reconnects) went from 57 splitter and 60 Hall re-anchors to
+  none, and the session-to-session spread of the decoder margin from 39.5 to
+  0.6 ms and of Headphone1 − Headphone 2 from 46.9 to 0.0 ms (medians); the
+  backlog head past a leg's budget is now dropped once per reconnect instead
+  of fast-forwarded. All 34 field reconnects of 2026-10-06 with a mapping
+  before them landed inside the window: 30 at −26…+160 ms, 4 at 132–169 ms
+  early on the transient a .21 producer restart serves first (a .21 engine
+  restart now shows two carried gaps; the second landed +17…+88 ms against
+  the mapping before the restart).
+- [x] Field-verified on .24, 2026-10-07. Both boxes ran the integration
+  build plus #811, first without this rule (a baseline arm) and then with it.
+  - With the rule, mr-tssplit carried all 22 reconnects and `busout_40006`
+    all 21 of its gaps, with no re-anchor; the baseline re-latched both at
+    every reconnect. Headphone1 no longer lost 1–3 s of audio at each resume.
+  - Within one tap session, Headphone1 − Headphone 2 came back within
+    ±1.4 ms at each of 7 reconnects. A separate tap per reconnect cannot
+    show this: linking the probe can splice the decoder leg by 20–54 ms.
+  - A .21 engine restart's first session was carried at −264 ms, only 36 ms
+    inside the early bound (the second at +13 ms).
+  - Headphone1's lowest zero-loss `lipSyncMs` is 160, held for 15 min. At
+    140 and 120 it lost audio at resumes and at .21's AAC snaps (#814). The
+    site stays at 200.
+  - The decoder (160 ms budget) came within 1–9 ms of its budget, closest
+    around .21's AAC snaps. After one snap it was twice 0.1 % late and
+    dropped 71 ms in small gaps (#814).
+- [ ] Gap-carry follow-ups: an identity mapping for house-timeline producers
+  at the Hall egress (the 302M "Known residual") — the per-restart draw of
+  Headphone1's level the carry cannot remove; keeping .21's SRT session up
+  through its upstream's restart (outage 5–17 s → ~1 s; a held frame's gap
+  of 320–600 ms with a head over 300 ms still reads as a clock step, ADR-0005
+  Stage 3f); carrying an srt-input/rist-input anchor across a runner restart
+  (an engine hand-off) for routes without a splitter; re-centring a carried
+  mapping that turns out early (a cut in the sender's SRT latency keeps up to
+  300 ms until a restart).
+- [ ] **The twins slew differently on a muxed buffer whose first PES is not
+  the timing PID's (pre-existing; found reviewing the gap carry, 2026-10-07).**
+  Python's `stamp` slews the anchor whenever the buffer carries a timing-PID
+  PES; C++'s only when its FIRST eligible PES is the timing PID's. With the
+  drift servo engaged, a muxed egress whose audio leads its video inside a
+  buffer diverges (first by 795 ns after ~27 min in a fuzz trace); the gap
+  carry's margin, judged on the slewed anchor, inherits it. File and fix on
+  its own.
 
 - [ ] **RIST bridge is the last per-buffer python path.** On .46 the
   receiving rist-input (0.14 core) and each busy rist-output (0.10–0.12 core)

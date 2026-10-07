@@ -494,7 +494,7 @@ def on_bus_message(bus, message):
         src_name = src.get_name() if src else None
         if name in ("mrtsstamp-anchor", "mrtsstamp-settled", "mrtsstamp-reanchor",
                     "mrtsstamp-conditioned", "mrtsstamp-segment-warning",
-                    "mrtsstamp-map-failed"):
+                    "mrtsstamp-map-failed", "mrtsstamp-gap"):
             # The native egress stamper reports through the bus (it has no other
             # way home). Translated here into the SAME engine events the python
             # probe emits — identical field names, identical message text — so

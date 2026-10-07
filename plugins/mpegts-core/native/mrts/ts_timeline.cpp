@@ -115,6 +115,18 @@ constexpr int64_t GIVEBACK_NS = 200'000'000LL;        // margin we will never co
 // producers whose delivery cadence is their media cadence.
 constexpr int64_t LATCH_REPAIR_NS = 3'000'000'000LL;
 
+// Gap carry (the .24 Translation Station, 2026-10-06) — design and rationale in
+// full in ts_timeline.py (`_GAP_LATE_NS`): for a live-cadence producer a forward
+// jump of at most GAP_MAX_TICKS whose PES lands on the CURRENT anchor within
+// [-GAP_EARLY_NS, +GAP_LATE_NS] of its own arrival is time that passed during a
+// delivery gap, not a new timeline — anchor, floors, drift epoch and conditioner
+// state are kept. Asymmetric: a kept anchor that turns out late is the late
+// tier's to correct, one that turns out early costs standing latency nothing
+// short of the early tier's 800 ms removes.
+constexpr int64_t GAP_LATE_NS = 1'000'000'000LL;
+constexpr int64_t GAP_EARLY_NS = 300'000'000LL;
+constexpr int64_t GAP_MAX_TICKS = 600LL * 90000;
+
 // Python's `//` for a positive divisor: C++ truncates toward zero, which would
 // round a negative correction the wrong way and put the two implementations a
 // nanosecond apart per step.
@@ -499,7 +511,7 @@ void TimelineStamper::scan_watch(const uint8_t* data, size_t len, int64_t house_
             continue;
         }
         int64_t last_pts = it->second;
-        if (coherent(pts, last_pts)) {
+        if (coherent(pts, last_pts) || gap(pid, last_pts, pts, house_now)) {
             it->second = pts;
             pending_.erase(pid);
             continue;
@@ -521,6 +533,23 @@ void TimelineStamper::scan_watch(const uint8_t* data, size_t len, int64_t house_
         return;
     }
     anom_ = 0;
+}
+
+bool TimelineStamper::gap(int pid, int64_t last_pts, int64_t pts, int64_t house_now) {
+    // python's `_gap`, line for line (ts_timeline.py `_GAP_LATE_NS`).
+    const int64_t d = folded_delta(pts, last_pts);
+    if (!repair_on_ || d <= 0 || d > GAP_MAX_TICKS) return false;
+    auto it = unwrapped_.find(pid);
+    const int64_t prev = it == unwrapped_.end() ? latch_.first_pts(pid, ref_) : it->second;
+    // Judged on the anchor as slew() will have moved it by the time this PES is
+    // stamped: the locked rate ran on through the gap.
+    const int64_t dt = has_slew_last_ ? house_now - slew_last_ : 0;
+    const int64_t slewed = dt > 0 ? floor_div(rate_ppb_ * (dt / 1000), 1'000'000) : 0;
+    const int64_t margin = house_now - (anchor_ + slewed + pts90k_to_ns(unwrap_near(pts, prev) - ref_));
+    if (margin < -GAP_EARLY_NS || margin > GAP_LATE_NS) return false;
+    gaps_++;
+    if (on_gap_) on_gap_({pid, last_pts, pts, d, margin, anchor_, gaps_});
+    return true;
 }
 
 void TimelineStamper::scan_stale(int pid, int64_t pts, int64_t house_now, int stream) {
@@ -556,6 +585,18 @@ bool TimelineStamper::scan_late(int pid, int64_t pts, int64_t house_now, int64_t
     int64_t margin = house_now - stamp;
     auto wl = watch_last_.find(pid);
     const int64_t last_pts = wl == watch_last_.end() ? pts : wl->second;
+    // The late hold counts DELIVERED time on a live-cadence producer: the
+    // longest pause in delivery (past COND_GAP_NS) inside an open hold is not
+    // part of it, or a hold opened just before an input gap matures during it.
+    // The longest only: a link that delivers in bursts more than 1 s apart and
+    // stays late is late, and its hold must still mature.
+    const int64_t pause = has_hold_last_ ? house_now - hold_last_ : 0;
+    has_hold_last_ = true;
+    hold_last_ = house_now;
+    if (repair_on_ && late_open_ && pause > std::max(COND_GAP_NS, hold_paused_)) {
+        late_since_ += pause - hold_paused_;
+        hold_paused_ = pause;
+    }
     // The LATE side: media behind house.
     if (margin <= LATE_NS) {
         late_open_ = false;               // one on-time buffer: it is jitter
@@ -564,6 +605,7 @@ bool TimelineStamper::scan_late(int pid, int64_t pts, int64_t house_now, int64_t
             late_open_ = true;
             late_since_ = house_now;
             late_min_ = margin;
+            hold_paused_ = 0;
         } else if (margin < late_min_) {
             late_min_ = margin;
         }
@@ -775,7 +817,7 @@ int TimelineStamper::condition_pes(uint8_t* pkt, int pid, int64_t house_now) {
     if (it == cond_pes_.end()) {
         // First seen now: on the source's CURRENT timeline, whose image on
         // the wire is the program correction — adopt it whole.
-        it = cond_pes_.emplace(pid, CondClock{pts, house_now, cond_prog_offset_, 0, 0,
+        it = cond_pes_.emplace(pid, CondClock{pts, house_now, house_now, house_now, cond_prog_offset_, 0, 0,
                                               cond_prog_offset_, {}}).first;
     } else {
         CondClock& c = it->second;
@@ -784,8 +826,15 @@ int TimelineStamper::condition_pes(uint8_t* pkt, int pid, int64_t house_now) {
         const int64_t pending = cond_prog_offset_ - c.prog_applied;
         // Never across a delivery gap (COND_GAP_NS): past a pause, arrival no
         // longer measures media time to the step threshold.
-        const bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
-                             std::llabs(d_ns - a_ns) > cond_threshold() && a_ns <= COND_GAP_NS;
+        bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
+                       std::llabs(d_ns - a_ns) > cond_threshold() && a_ns <= COND_GAP_NS;
+        if (stepped && d_ns > 0 && cond_seen_.size() <= 1) {
+            // ONE timing PID (python parity): a forward jump must also read as a
+            // step from when the previous PES was DUE (held, below). Never on a
+            // program: its PIDs decide one by one, and a veto on one split A/V.
+            const int64_t a_due = house_now - c.last_due;
+            stepped = std::llabs(d_ns - a_due) > cond_threshold() && a_due <= COND_GAP_NS;
+        }
         if (!stepped && std::llabs(d_ns) <= cond_threshold()) cond_remember(c, d_ns);   // the nominal's source
         if (is_ref) {
             if (stepped) {
@@ -830,8 +879,18 @@ int TimelineStamper::condition_pes(uint8_t* pkt, int pid, int64_t house_now) {
             c.own_since = 0;
             if (on_conditioned_) on_conditioned_({pid, false, rel, c.offset, house_now});
         }
+        // HELD (python: `last_due`): a PES that arrives more than the threshold
+        // after its in-cadence PTS said it was DUE keeps that due time, so a
+        // frame a parser held across an input gap does not make the gap read as
+        // a clock step on the next PES. Forward in-cadence deltas only, for at
+        // most COND_GAP_NS of media past the last PES that arrived on time.
+        const int64_t due = c.last_due + d_ns;
+        const bool held = d_ns >= 0 && d_ns <= cond_threshold() && house_now - due > cond_threshold() &&
+                          due - c.on_time <= COND_GAP_NS;
         c.last_raw = pts;
         c.last_house = house_now;
+        c.last_due = held ? due : house_now;
+        if (!held) c.on_time = house_now;
     }
     const CondClock& c = it->second;
     int64_t wpts = (pts + c.offset) % PTS_WRAP;
@@ -848,7 +907,7 @@ int TimelineStamper::condition_pes(uint8_t* pkt, int pid, int64_t house_now) {
         }
         if (pid == cond_ref_pid_) {
             cond_ref_wpts_ = wpts;
-            cond_ref_house_ = house_now;
+            cond_ref_house_ = c.last_due;     // when it was DUE (python parity)
         }
         cond_seen_[pid] = {wpts, house_now};
     }
@@ -1032,6 +1091,18 @@ std::string reanchor_event_json(const TimelineStamper::Reanchor& r) {
            ",\"deltaTicks\":" + std::to_string(r.delta_ticks) +
            ",\"anchorNs\":" + std::to_string(r.anchor_ns) +
            ",\"count\":" + std::to_string(r.count) + "}";
+}
+
+std::string gap_event_json(const TimelineStamper::Gap& g) {
+    // `marginNs` is the number an operator reads: how late the first PES back
+    // landed on the kept anchor — the reconnect backlog's head.
+    return "{\"event\":\"timeline_gap\",\"pid\":" + std::to_string(g.pid) +
+           ",\"lastPts90k\":" + std::to_string(g.last_pts) +
+           ",\"pts90k\":" + std::to_string(g.pts) +
+           ",\"deltaTicks\":" + std::to_string(g.delta_ticks) +
+           ",\"marginNs\":" + std::to_string(g.margin_ns) +
+           ",\"anchorNs\":" + std::to_string(g.anchor_ns) +
+           ",\"count\":" + std::to_string(g.count) + "}";
 }
 
 std::string conditioned_event_json(const TimelineStamper::Conditioned& c) {

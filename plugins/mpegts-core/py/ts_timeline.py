@@ -554,8 +554,49 @@ class TimelineStamper:
     # it on.
     _LATCH_REPAIR_NS = 3_000_000_000    # window after an anchor the repair is open
 
+    # --- gap carry (the .24 Translation Station, 2026-10-06) -----------------
+    # The watch reads any forward PES jump past `_FWD_TICKS` as a discontinuity,
+    # so an input that is merely DOWN for more than 5 s — an SRT session dropped
+    # while its sender restarts — re-anchored this egress on its first PES back:
+    # a fresh latch, repair window and drift epoch per reconnect, each settling
+    # wherever that reconnect's first 3 s of delivery put it. On .24 (one .21
+    # source, 2026-10-06) the splitter's mapping stepped -36..+46 ms
+    # per reconnect and the Hall transcoder's egress -70..+59 ms, and the two
+    # headphone legs moved against each other by up to 74 ms. The source never
+    # moved: its PTS is its house clock + mpegtsmux's 1 h, so every reconnect
+    # was a gap in ONE timeline.
+    #
+    # THE RULE, live-cadence producers only (`repair_latch`, whose argument it
+    # shares: delivery cadence IS media cadence): a forward jump of at most
+    # `_GAP_MAX_TICKS` whose PES lands on the CURRENT anchor — as the slew will
+    # have moved it — within [-_GAP_EARLY_NS, +_GAP_LATE_NS] of its own arrival
+    # is time that passed. Anchor, floors, drift epoch and conditioner state are
+    # kept, no repair window opens, and `on_gap` reports it. Anything else (a
+    # reboot's new epoch, a rewind, another source, a mapping further off)
+    # takes the watch's path as before.
+    #
+    # ASYMMETRIC on purpose. A kept anchor that turns out LATE is the late
+    # tier's to correct (`_LATE_NS`: 100 ms over 10 s of delivery); one that
+    # turns out EARLY is corrected by nothing short of the early tier's 800 ms,
+    # so the early side is the conditioner's step, 300 ms: it rides out the
+    # early transient a .21 producer restart puts on .24's first PES back
+    # (-132..-169 ms at 4 reconnects on 2026-10-06; a .21 engine restart first
+    # serves a video-only muxer instance). The late side only has to exclude
+    # what is no backlog: the first PES back is the reconnect backlog's head
+    # (-26..+160 ms at the other 30), and a bound that re-latched on a big head
+    # would hand a re-stamping producer downstream the repair window's
+    # fast-forward to re-anchor on. A level that moved EARLIER by up to 300 ms
+    # is kept as standing latency until the stamper restarts. `_GAP_MAX_TICKS`
+    # bounds what unmeasured drift across the gap can cost a kept anchor (50 ppm
+    # over 10 min is 30 ms); a longer outage re-latches. The window is judged on
+    # the first PES back and again on the one that would confirm a re-anchor.
+    _GAP_LATE_NS = 1_000_000_000
+    _GAP_EARLY_NS = 300_000_000
+    _GAP_MAX_TICKS = 600 * 90000
+
     def __init__(self, on_anchor=None, on_reanchor=None, on_settled=None,
-                 repair_latch=False, on_conditioned=None, condition_step_ns=None):
+                 repair_latch=False, on_conditioned=None, condition_step_ns=None,
+                 on_gap=None):
         self.latch = TimelineLatch()
         # The conditioner's step threshold for THIS egress. 300 ms is the
         # default (B-frame reorder and jitter live well inside it); a producer
@@ -569,6 +610,8 @@ class TimelineStamper:
         self.anchor = None      # house time (ns) latched at the first PES
         self.ref = None         # that first PES (90 kHz), the timeline's zero
         self.reanchors = 0
+        self.gaps = 0           # forward gaps carried on the anchor (`_GAP_LATE_NS`)
+        self._on_gap = on_gap
         self._repair_on = bool(repair_latch)
         self._latch_until = None    # house time the open repair window closes at
         self._repair_ns = 0         # what the window has pulled the anchor back by (<= 0)
@@ -580,11 +623,14 @@ class TimelineStamper:
         self._stale_since = {}  # stream -> house time its lag first went out of bound
         self._late_since = None # house time the egress-wide margin went past _LATE_NS
         self._late_min = 0      # the smallest margin seen since (the level)
+        self._hold_last = None  # house time of the last buffer the tiers judged
+        self._hold_paused = 0   # the delivery pause the open late hold does not count (ns)
         self._early_since = None  # house time the margin went below -_EARLY_NS
         self._early_max = 0     # the largest (least early) margin since (the level)
         self._on_conditioned = on_conditioned
-        # pid -> {'last_raw', 'last_house', 'offset' (total ticks written),
-        #         'own' (steps taken alone), 'own_since', 'prog_applied', 'recent'}
+        # pid -> {'last_raw', 'last_house', 'last_due', 'on_time', 'offset' (total
+        #         ticks written), 'own' (steps taken alone), 'own_since',
+        #         'prog_applied', 'recent'}
         self._cond_pes = {}
         # The PROGRAM's correction (ticks): the sum of the reference PID's
         # steps; every other PID adopts it when its own PTS shows the same
@@ -1015,7 +1061,7 @@ class TimelineStamper:
             if lastp is None:
                 self._watch_last[pid] = pts
                 continue
-            if self._coherent(pts, lastp):
+            if self._coherent(pts, lastp) or self._gap(pid, lastp, pts, house_now):
                 self._watch_last[pid] = pts
                 self._pending.pop(pid, None)
                 continue
@@ -1027,6 +1073,30 @@ class TimelineStamper:
                 self._reanchor(pid, lastp, pts, self._delta(pts, lastp), house_now)
             return
         self._anom = 0
+
+    def _gap(self, pid, lastp, pts, house_now):
+        """True — and reported — when the forward jump `lastp` -> `pts` is a
+        delivery gap on the CURRENT anchor (`_GAP_LATE_NS`): the source's
+        timeline ran on through the outage, so the anchor is still its
+        mapping. Called only for a jump the watch found incoherent."""
+        d = self._delta(pts, lastp)
+        if not self._repair_on or not 0 < d <= self._GAP_MAX_TICKS:
+            return False
+        prev = self._unwrapped.get(pid)
+        if prev is None:
+            prev = self.latch.first_pts.get(pid, self.ref)
+        # Judged on the anchor as `_slew` will have moved it by the time this
+        # PES is stamped: the locked rate ran on through the gap.
+        dt = house_now - self._slew_last if self._slew_last is not None else 0
+        slew = self._rate_ppb * (dt // 1000) // 1_000_000 if dt > 0 else 0
+        margin = house_now - (self.anchor + slew + pts90k_to_ns(unwrap_near(pts, prev) - self.ref))
+        if not -self._GAP_EARLY_NS <= margin <= self._GAP_LATE_NS:
+            return False
+        self.gaps += 1
+        if self._on_gap:
+            self._on_gap({'pid': pid, 'lastPts90k': lastp, 'pts90k': pts, 'deltaTicks': d,
+                          'marginNs': margin, 'anchorNs': self.anchor, 'count': self.gaps})
+        return True
 
     def _scan_stale(self, pes, house_now, stream):
         """Force a re-anchor when `stream`'s stamps have fallen — and STAYED —
@@ -1066,6 +1136,22 @@ class TimelineStamper:
         """
         margin = house_now - stamp
         pid, pts = pes[0]
+        # The late hold counts DELIVERED time on a live-cadence producer: the
+        # longest pause in delivery (past `_COND_GAP_NS`) inside an open hold is
+        # not part of it. Counted in house time, a hold opened on the last
+        # buffers before an input gap matured DURING the gap and re-anchored on
+        # the first buffer delivered after it (the .24 Hall egress, 2026-10-06
+        # 14:15 and 14:17: "-0.11s" re-anchors past 16-17 s gaps). The longest
+        # only: a link that delivers in bursts more than 1 s apart and stays
+        # late is late, and with every pause taken out its hold never matured
+        # (newest frame 300 ms late, bursts every 1.2-2 s: no re-anchor in 60 s,
+        # where house time re-anchored in ~12 s).
+        pause = house_now - self._hold_last if self._hold_last is not None else 0
+        self._hold_last = house_now
+        if (self._repair_on and self._late_since is not None
+                and pause > max(self._COND_GAP_NS, self._hold_paused)):
+            self._late_since += pause - self._hold_paused
+            self._hold_paused = pause
         # The LATE side: media behind house.
         if margin <= self._LATE_NS:
             self._late_since = None           # one on-time buffer: it is jitter
@@ -1073,6 +1159,7 @@ class TimelineStamper:
             if self._late_since is None:
                 self._late_since = house_now
                 self._late_min = margin
+                self._hold_paused = 0
             elif margin < self._late_min:
                 self._late_min = margin
             if house_now - self._late_since >= self._LATE_HOLD_NS:
@@ -1210,9 +1297,9 @@ class TimelineStamper:
         # it never reverts (a branch alignment is placement, not a clock).
         c = self._cond_pes.get(pid)
         if c is None:
-            c = self._cond_pes[pid] = {'last_raw': pts, 'last_house': house_now,
-                                       'offset': self._cond_prog_offset, 'own': 0, 'own_since': 0,
-                                       'prog_applied': self._cond_prog_offset, 'recent': []}
+            c = self._cond_pes[pid] = {'last_raw': pts, 'last_house': house_now, 'last_due': house_now,
+                                       'on_time': house_now, 'offset': self._cond_prog_offset, 'own': 0,
+                                       'own_since': 0, 'prog_applied': self._cond_prog_offset, 'recent': []}
         else:
             d_ns = pts90k_to_ns(self._fold(pts - c['last_raw'], PTS_WRAP))
             a_ns = house_now - c['last_house']
@@ -1222,6 +1309,13 @@ class TimelineStamper:
             stepped = (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
                        and abs(d_ns - a_ns) > self._cond_threshold_ns
                        and a_ns <= self._COND_GAP_NS)
+            if stepped and d_ns > 0 and len(self._cond_seen) <= 1:
+                # ONE timing PID: a forward jump must also read as a step from
+                # when the previous PES was DUE (held, below), so the gap behind
+                # a held frame stays a gap. Never on a program: its PIDs decide
+                # one by one, and a veto on one of them split A/V.
+                a_due = house_now - c['last_due']
+                stepped = abs(d_ns - a_due) > self._cond_threshold_ns and a_due <= self._COND_GAP_NS
             if not stepped and abs(d_ns) <= self._cond_threshold_ns:
                 self._cond_remember(c, d_ns)                     # the nominal's source
             if is_ref:
@@ -1259,7 +1353,22 @@ class TimelineStamper:
                 if self._on_conditioned:
                     self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': rel,
                                           'offsetTicks': c['offset'], 'houseNs': house_now})
-            c['last_raw'], c['last_house'] = pts, house_now
+            # HELD: a PES that arrives more than the threshold after its
+            # in-cadence PTS said it was DUE keeps that due time beside its
+            # arrival (C++ `CondClock::last_due`). The Hall transcoder's
+            # aacparse holds the last frame before an input gap and releases it
+            # WITH the first one after it (.24, 2026-10-06): from that arrival
+            # the gap read as a clock step ("absorbed a +6.95s PTS step").
+            # Forward in-cadence deltas only (a B-frame's negative delta must
+            # not walk it back), for at most `_COND_GAP_NS` of media past the
+            # last PES that arrived on time: a stream that STAYS late is late.
+            due = c['last_due'] + d_ns
+            held = (0 <= d_ns <= self._cond_threshold_ns
+                    and house_now - due > self._cond_threshold_ns
+                    and due - c['on_time'] <= self._COND_GAP_NS)
+            c['last_raw'], c['last_house'], c['last_due'] = pts, house_now, (due if held else house_now)
+            if not held:
+                c['on_time'] = house_now
         wpts = (pts + c['offset']) % PTS_WRAP
         if timing:
             # The reference PID is the one carrying the PCR (its PTS is what
@@ -1271,7 +1380,9 @@ class TimelineStamper:
                 self._cond_ref_pid = pid
                 self._cond_pcr_regen = False      # a new reference is a new PCR epoch: flagged, unguarded
             if pid == self._cond_ref_pid:
-                self._cond_ref_wpts, self._cond_ref_house = wpts, house_now
+                # When it was DUE (above), so a PCR on the PES after a frame
+                # held across a gap is regenerated after its own PES too.
+                self._cond_ref_wpts, self._cond_ref_house = wpts, c['last_due']
             self._cond_seen[pid] = (wpts, house_now)
         if not c['offset']:
             return absorbed

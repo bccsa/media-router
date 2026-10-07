@@ -389,6 +389,29 @@ void handle_message(const char* src_name, const char* kind, const GstStructure* 
                           -repair / 1e6, window / 1e9, (long long)anchor));
         return;
     }
+    if (std::strcmp(kind, "mrtsstamp-gap") == 0) {
+        gint64 pid = s_int(s, "pid"), delta = s_int(s, "deltaTicks"), margin = s_int(s, "marginNs");
+        gint64 anchor = s_int(s, "anchorNs"), count = s_int(s, "count");
+        JsonObject* ev = ipc::event("timeline_gap");
+        json_object_set_string_member(ev, "tee", tee.c_str());
+        json_object_set_int_member(ev, "pid", pid);
+        json_object_set_int_member(ev, "lastPts90k", s_int(s, "lastPts90k"));
+        json_object_set_int_member(ev, "pts90k", s_int(s, "pts90k"));
+        json_object_set_int_member(ev, "deltaTicks", delta);
+        json_object_set_int_member(ev, "marginNs", margin);
+        json_object_set_int_member(ev, "anchorNs", anchor);
+        json_object_set_int_member(ev, "count", count);
+        json_object_set_string_member(
+            ev, "message",
+            fmt("egress %s carried a %.2fs delivery gap on pid 0x%llx: the source timeline ran on, first PES "
+                "%+.1f ms on the kept anchor",
+                tee.c_str(), delta / 90000.0, (unsigned long long)pid, margin / 1e6).c_str());
+        ipc::emit(ev);
+        log_line(tee, fmt("gap carried on pid 0x%llx: %+.2fs, first PES %+.1f ms on the kept anchor (anchor=%lld, #%lld)",
+                          (unsigned long long)pid, delta / 90000.0, margin / 1e6, (long long)anchor,
+                          (long long)count));
+        return;
+    }
     gint64 pid = s_int(s, "pid"), anchor = s_int(s, "anchorNs"), ref = s_int(s, "refPts90k");
     if (std::strcmp(kind, "mrtsstamp-anchor") == 0) {
         JsonObject* ev = ipc::event("timeline_restamped");

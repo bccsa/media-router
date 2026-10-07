@@ -2013,6 +2013,23 @@ names no plugin itself, ADR-0007) and leave the repair off in your own sidecar
 segment head will be stamped late by a segment. The native element exposes
 the same switch as `repair-latch` (read at arm).
 
+**Gap carry (the same switch).** With the repair on, a forward PES jump whose
+PES lands within −300 ms … +1 s of its own arrival on the current anchor is a
+delivery gap the source's timeline ran on through (an SRT reconnect), not a new
+timeline: the anchor is kept and the stamper reports `timeline_gap { pid,
+lastPts90k, pts90k, deltaTicks, marginNs, anchorNs, count }` instead of
+re-anchoring (ADR-0005 decision 2, amendment 2026-10-07). The bound is judged
+on the first PES back and again on the one that would confirm a re-anchor, so a
+first PES a little past +1 s whose successor lands inside is carried and
+`marginNs` reports the successor. It is one event per outage where the stamper
+knows the timing PID (it conditions first, learning it from the PCR: the
+`mrtsstamp` element, mr-tssplit); a stamper that only stamps (the runner's
+python probe) judges every PID — one event per PID, and a PID whose PES sit
+more than 300 ms ahead of the anchored PID's (or 1 s behind) still re-anchors.
+A sidecar that wires the stamper's events must forward this one too
+(`set_on_gap` → `mrts::gap_event_json`, as mr-tssplit does), or a carry leaves
+no trace.
+
 **A consumer on a dark bus waits, it does not restart.** `unixfdsrc` is not a
 live source, so a consumer whose producer is connected but silent (interlocked
 off, peer down) never prerolls. The runner arms its 10 s "reached PLAYING"

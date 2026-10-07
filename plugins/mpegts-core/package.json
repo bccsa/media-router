@@ -18,6 +18,6 @@
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "cd py && python3 ts_psi_test.py && python3 ts_split_test.py && python3 ts_video_info_test.py && python3 ts_timeline_test.py"
+        "test:py": "cd py && python3 ts_psi_test.py && python3 ts_split_test.py && python3 ts_video_info_test.py && python3 ts_timeline_test.py && python3 ts_timeline_gap_test.py"
     }
 }
