@@ -2098,15 +2098,17 @@ rebuild genuinely helps — mpegts-ip-input and aes67-input do for MULTICAST
 all this is `gst_source_gate.py`.
 
 **Conditioner step threshold (`conditionStepMs`).** The stamper's wire
-conditioner rewrites a PES PTS step that the buffer's arrival did not match
-(a source clock step, not content) out of the wire — 300 ms default, which
-B-frame reorder and jitter sit well inside. A producer whose egress is ONE
-audio PID off a live capture ring can put a lower threshold on its description
-(`conditionStepMs`); the audio-encoder sets 100 because its pulsesrc
-re-timestamps by a whole ~200 ms ring now and then with no arrival change, and
-every paced consumer downstream stored that as +200 ms of latency per event
-(#751 follow-up, 2026-09-15). Do NOT lower it on a video egress (reorder reads
-as a step). The runner passes it to the stampers as `condition-step-ms`
+conditioner rewrites a PES decode-clock step (the DTS when the PES carries one
+at or before its PTS, else the PTS) that the buffer's arrival did not match (a
+source clock step, not content) out of the wire — 300 ms default, which jitter
+sits well inside. B-frame reorder never reaches it: it moves the PTS of a PES
+in decode order by the reorder depth (+360 ms on #816's contribution feed),
+never its decode clock. A producer whose egress is ONE audio PID off a live
+capture ring can put a lower threshold on its description (`conditionStepMs`);
+the audio-encoder sets 100 because its pulsesrc re-timestamps by a whole
+~200 ms ring now and then with no arrival change, and every paced consumer
+downstream stored that as +200 ms of latency per event (#751 follow-up,
+2026-09-15). The runner passes it to the stampers as `condition-step-ms`
 (native, read at arm) / `condition_step_ns` (python probe).
 
 **Where stamper events come from (debugging).** Anchor / settled / re-anchor /
