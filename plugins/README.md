@@ -783,6 +783,8 @@ Your module class extends `GstPluginBase` which handles GStreamer child process 
 onInit(config, services) → onStart() → [running] → onStop() → onDestroy()
 ```
 
+The engine never overlaps these for one instance. A stop or destroy that arrives while `onStart` is still running waits for it, then calls `onStop`, so whatever `onStart` brought up (processes, timers, a bound port) is always released. Keep every wait inside `onStart` bounded: a stop has to wait for it.
+
 ### Plugin Architecture Variants
 
 Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three architectural patterns. Pick the one that fits, then copy the matching starter (see "Picking a Starting Point" above).
