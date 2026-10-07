@@ -948,6 +948,44 @@ check("the conditioned event carries the probe's field names verbatim, houseNs i
       and isinstance(conditioned[0]["houseNs"], int)
       and conditioned[0]["houseNs"] > 0)
 
+
+print("\n--- a delivery gap the source's timeline ran on through keeps the anchor ---")
+# The .24 Translation Station re-latched at every SRT reconnect (2026-10-06):
+# each outage was a gap in ONE timeline, and the stamper read it as a new one.
+# In real time through the element: 1 s of 40 ms cadence, a 6 s outage whose
+# PTS ran on with the clock, 1 s more. Paced against a fixed origin, so sleep
+# overshoot never accumulates into a level.
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe, repair_latch=True)
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+seen = tap_timestamps(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+GAP_AT, GAP_TICKS = 25, 6 * 90000
+t0 = time.monotonic()
+for i in range(2 * GAP_AT):
+    gap = GAP_TICKS if i >= GAP_AT else 0
+    time.sleep(max(0.0, t0 + (i * STEP + gap) / 90000 - time.monotonic()))
+    push(src, pes_packet(0x100, FIRST_PES + i * STEP + gap, i & 0x0F), 0, 0)
+bus.wait(seen, 2 * GAP_AT, timeout_s=10.0)
+bus.drain(pipe, src)
+teardown()
+gaps = bus.of("timeline_gap")
+check("a 6 s delivery gap through the element is reported once as timeline_gap, "
+      f"the first PES back on the kept anchor (margin {[g['marginNs'] / 1e6 for g in gaps]} ms)",
+      len(gaps) == 1 and gaps[0]["tee"] == "busout_41000" and gaps[0]["pid"] == 0x100
+      and gaps[0]["deltaTicks"] == STEP + GAP_TICKS
+      and -100 * Gst.MSECOND <= gaps[0]["marginNs"] <= 100 * Gst.MSECOND)
+check("and it is not a re-anchor: no timeline_reanchor, no second latch window",
+      not bus.of("timeline_reanchor") and len(bus.of("timeline_settled")) == 1)
+check("the stamps step across the gap by exactly the media that passed, then on at the "
+      "source's 40 ms (the anchor kept, no fresh latch one PES later)",
+      len(seen) == 2 * GAP_AT and seen[GAP_AT][0] - seen[GAP_AT - 1][0]
+      == (STEP + GAP_TICKS) * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+      and all(seen[i][0] - seen[i - 1][0] == STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+              for i in range(GAP_AT + 1, 2 * GAP_AT)))
+
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")
     sys.exit(1)

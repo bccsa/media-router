@@ -310,6 +310,80 @@ def test_consumer_data_wait():
         os.rmdir(tmp)
 
 
+# --------------------------------------------------------------------------- M: a delivery gap keeps the anchor
+def _pes(pid, pts90k, cc=0):
+    """One TS packet starting a video PES with `pts90k` (gst_mrtsstamp_element_test.py's fixture)."""
+    p = pts90k & ((1 << 33) - 1)
+    hdr = bytes([0x47, 0x40 | ((pid >> 8) & 0x1F), pid & 0xFF, 0x10 | (cc & 0x0F)])
+    pts = bytes([0x21 | (((p >> 30) & 0x07) << 1), (p >> 22) & 0xFF, 0x01 | (((p >> 15) & 0x7F) << 1),
+                 (p >> 7) & 0xFF, 0x01 | ((p & 0x7F) << 1)])
+    pkt = hdr + b"\x00\x00\x01\xe0\x00\x00\x80\x80\x05" + pts
+    return pkt + b"\xff" * (188 - len(pkt))
+
+
+def test_delivery_gap():
+    """.24 Translation Station, 2026-10-06: a producer whose input went quiet for
+    seconds while the source's timeline ran on (an SRT reconnect) re-latched its
+    egress at every reconnect. The native runner must report the carried gap —
+    `timeline_gap` plus the journal line — and no re-anchor."""
+    if Gst.ElementFactory.find("unixfdsink") is None:
+        print("SKIP M — unixfdsink unavailable")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    sock, edge = os.path.join(tmp, "src.sock"), os.path.join(tmp, "edge.sock")
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    producer = Gst.parse_launch(f"appsrc name=src is-live=true format=time caps=\"{caps}\""
+                                f" ! unixfdsink socket-path={sock} sync=false async=false wait-for-connection=false")
+    producer.set_state(Gst.State.PLAYING)
+    src = producer.get_by_name("src")
+    time.sleep(0.3)
+    r = RunnerProc()
+
+    def push(i, pts):
+        buf = Gst.Buffer.new_wrapped(_pes(0x100, pts, i))
+        buf.pts = i * 40 * Gst.MSECOND
+        src.emit("push-buffer", buf)
+
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start",
+                "pipeline": f"unixfdsrc socket-path={sock} ! capssetter caps=\"{caps}\" replace=true"
+                            f" ! capsfilter caps=\"{caps}\" ! tee name=busout_40000 allow-not-linked=true",
+                "timeSyncContract": True, "latchRepair": True})
+        deadline, i = time.monotonic() + 8, 0
+        while time.monotonic() < deadline and not r.has_event(ev_is("state_change", state="playing")):
+            push(i, 8_100_000 + i * 3600)      # data, so the dark-bus gate lets it reach PLAYING
+            i += 1
+            time.sleep(0.04)
+        check("M PLAYING", r.has_event(ev_is("state_change", state="playing")))
+        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+        check("M edge attached, stamper armed", r.wait_event(ev_is("bus_attached", socket=edge)) is not None
+              and r.wait_log("armed on busout_40000", timeout=2))
+        # 1 s of 40 ms cadence, a 6 s outage whose PTS ran on with the clock, 1 s
+        # more — paced against a fixed origin so sleep overshoot never accumulates.
+        t0, first = time.monotonic(), 9_000_000
+        for i in range(50):
+            gap = 6 * 90000 if i >= 25 else 0
+            time.sleep(max(0.0, t0 + (i * 3600 + gap) / 90000 - time.monotonic()))
+            push(i, first + i * 3600 + gap)
+        ev = r.wait_event(ev_is("timeline_gap"), timeout=5)
+        check("M the native runner reports the carried gap as timeline_gap",
+              ev is not None and ev.get("tee") == "busout_40000" and ev.get("pid") == 0x100
+              and ev.get("deltaTicks") == 3600 + 6 * 90000 and ev.get("lastPts90k") == first + 24 * 3600
+              and abs(ev.get("marginNs", 1 << 40)) <= 100_000_000 and "delivery gap" in ev.get("message", ""))
+        check("M and the journal line the field check greps for",
+              r.wait_log("busStamp busout_40000: gap carried on pid 0x100: +6.04s, first PES ", timeout=2))
+        check("M no re-anchor", not r.has_event(ev_is("timeline_reanchor")))
+        code = r.stop_and_wait()
+        check("M exits 0 after stop", code == 0)
+    finally:
+        r.kill()
+        producer.set_state(Gst.State.NULL)
+        for f in os.listdir(tmp):
+            os.unlink(os.path.join(tmp, f))
+        os.rmdir(tmp)
+
+
 # --------------------------------------------------------------------------- D: refusals and lifecycle errors
 def test_refusals():
     r = RunnerProc()
@@ -786,6 +860,7 @@ def test_video_gates():
 test_plain_pipeline()
 test_producer_edge()
 test_consumer_data_wait()
+test_delivery_gap()
 test_refusals()
 test_presentation_leg()
 test_shed_refusals()

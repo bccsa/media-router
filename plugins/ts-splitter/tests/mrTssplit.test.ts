@@ -15,8 +15,8 @@ import { STEP, ladderFixture, pesPacket, rungs, toNs } from '../../mpegts-core/t
  * clients drain each output edge, and the captured SPTS streams must be
  * byte-identical (sha256) to the python SplitterCore reference over the same
  * chunking. Also covers: wired-only gating (late attach starts with PSI),
- * make-before-break reinput continuity, input stall events, and the master
- * PCR forgotten across an input gap.
+ * make-before-break reinput continuity, input stall events, the master PCR
+ * forgotten across an input gap, and the anchor kept across one.
  */
 
 const PLUGINS_DIR = join(__dirname, '../..');
@@ -622,5 +622,40 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         expect(audio).toContain(first);
         expect(audio, 'the pre-gap master PCR was re-injected after the gap').not.toContain(owed);
         expect(audio).toContain(next);   // ... injection resumes with the first PCR past it
+    }, 120_000);
+
+    it('keeps its anchor across an input gap the source timeline ran on through', async () => {
+        // .24, 2026-10-06: every .21 muxer restart dropped the SRT session for
+        // 5-17 s inside ONE source timeline (.21's PTS is its house clock + 1 h),
+        // and the splitter re-anchored on the first PES back — a fresh latch, and
+        // a fresh A/V placement for every leg, per reconnect. A ladder whose PTS
+        // runs on through a 6 s input pause must keep the anchor: one
+        // `timeline_gap`, no `timeline_reanchor`, latch repair ON (the default).
+        const PRE = 25, POST = 25, GAP = 6n * 90000n + STEP;
+        const ladder = join(dir, 'gap-ladder.ts');
+        writeFileSync(ladder, Buffer.concat([
+            ladderFixture(rungs(PRE, 8_100_000n), { pids: [0x65] }),
+            ladderFixture(rungs(POST, 8_100_000n + BigInt(PRE - 1) * STEP + GAP), { pids: [0x65] }),
+        ]));
+        const r = await rig(['--stamp-timeline', '--flush-ms', '0']);
+        await r.attach(0x65);
+        const video = await r.ladderClient(0x65, PRE + POST);
+        const srv = server(r.inputSock, ladder, '--chunk', '188',
+                           '--pause-after', String(PRE), '--pause-ms', '6000');
+        await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'gap ladder consumed', 60000);
+        const stamps = await r.stampsOf(video);
+        expect(shedCount(r.events), SHED_MSG).toBe(0);
+        expect(r.events.filter((e) => e.event === 'timeline_reanchor')).toHaveLength(0);
+        const gaps = r.events.filter((e) => e.event === 'timeline_gap');
+        expect(gaps).toHaveLength(1);
+        expect(gaps[0]).toMatchObject({ pid: 0x65, deltaTicks: Number(GAP), count: 1 });
+        // The pause was 6.000 s against 6.04 s of media: the first PES back sits
+        // on the kept anchor within scheduling noise.
+        expect(Math.abs(Number(gaps[0].marginNs))).toBeLessThan(300_000_000);
+        // ...and the anchor every buffer implies is the same on both sides of it.
+        expect(stamps).toHaveLength(PRE + POST);
+        const implied = stamps.slice(PRE - 1).map((s) => s.pts - toNs(s.firstPes));
+        expect(new Set(implied.map(String)).size, 'the gap moved the anchor').toBe(1);
+        r.send({ cmd: 'bus_detach', socket: r.edge(0x65) });
     }, 120_000);
 });

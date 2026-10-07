@@ -2,11 +2,12 @@
 """Engine events for the bus egress stamper — ONE builder per event for BOTH
 backends.
 
-The stamper reports four moments and one condition: it anchored, its
+The stamper reports five moments and one condition: it anchored, its
 latch-repair window settled (and what it cost the anchor), it re-anchored on a
-source discontinuity, it has a drift measurement to publish, and it saw a
-segment its stamp cannot be mapped through. Those events reach the engine over
-the runner's event fd; this module is where their SHAPE is decided.
+source discontinuity, it kept its anchor across a delivery gap, it has a drift
+measurement to publish, and it saw a segment its stamp cannot be mapped
+through. Those events reach the engine over the runner's event fd; this module
+is where their SHAPE is decided.
 
 `ev` is the payload each backend reports with. The python `TimelineStamper`
 callbacks and the native `mrtsstamp` element's bus message carry the SAME field
@@ -89,6 +90,28 @@ def reanchor_event(tee, ev):
                         f" ({ev['lastPts90k']} -> {ev['refPts90k']}, "
                         f"{delta / 90000.0:+.2f}s) — "
                         f"re-anchored egress {tee} in place")}
+
+
+def gap_event(tee, ev):
+    """The `timeline_gap` engine event: a forward PTS jump was a delivery gap
+    the source's timeline ran on through, so the anchor was KEPT — no
+    re-anchor, no repair window (ts_timeline.py `_GAP_LATE_NS`). `marginNs` is
+    how late (+) the first PES back landed on it: the reconnect's backlog."""
+    return {"event": "timeline_gap", "tee": tee, "pid": ev["pid"],
+            "lastPts90k": ev["lastPts90k"], "pts90k": ev["pts90k"],
+            "deltaTicks": ev["deltaTicks"], "marginNs": ev["marginNs"],
+            "anchorNs": ev["anchorNs"], "count": ev["count"],
+            "message": (f"egress {tee} carried a {ev['deltaTicks'] / 90000.0:.2f}s delivery gap "
+                        f"on pid 0x{ev['pid']:x}: the source timeline ran on, first PES "
+                        f"{ev['marginNs'] / 1e6:+.1f} ms on the kept anchor")}
+
+
+def gap_moment(tee, ev):
+    """Report a carried gap: engine event + runner log (see `log_line`)."""
+    emit(gap_event(tee, ev))
+    log_line(tee, f"gap carried on pid 0x{ev['pid']:x}: {ev['deltaTicks'] / 90000.0:+.2f}s, "
+                  f"first PES {ev['marginNs'] / 1e6:+.1f} ms on the kept anchor "
+                  f"(anchor={ev['anchorNs']}, #{ev['count']})")
 
 
 def conditioned_event(tee, ev):
@@ -205,12 +228,18 @@ def handle_message(src_name, kind, structure):
                              "repairNs": structure.get_value("repairNs"),
                              "windowNs": structure.get_value("windowNs")})
         return
+    if kind == "mrtsstamp-gap":
+        gap_moment(tee, {k: structure.get_value(k) for k in
+                         ("pid", "lastPts90k", "pts90k", "deltaTicks", "marginNs", "anchorNs", "count")})
+        return
     ev = {"pid": structure.get_value("pid"),
           "anchorNs": structure.get_value("anchorNs"),
           "refPts90k": structure.get_value("refPts90k")}
     if kind == "mrtsstamp-anchor":
         anchor_moment(tee, ev)
         return
+    if kind != "mrtsstamp-reanchor":
+        return              # a kind this runner does not know is never reported as a re-anchor
     ev["lastPts90k"] = structure.get_value("lastPts90k")
     ev["deltaTicks"] = structure.get_value("deltaTicks")
     ev["count"] = structure.get_value("count")

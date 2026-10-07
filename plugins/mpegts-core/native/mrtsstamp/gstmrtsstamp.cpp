@@ -76,7 +76,7 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.4.0"
+#define MRTSSTAMP_VERSION "2.5.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -109,9 +109,10 @@ struct MrTsStampPending {
     gint64 step_ticks;           /* conditioned: the step taken out of the wire */
     gint64 offset_ticks;         /* conditioned: the PID's cumulative correction */
     gint64 house_ns;             /* conditioned: house time of the step */
+    gint64 margin_ns;            /* gap: the first PES back, late (+) on the kept anchor */
 };
 enum { MRTSSTAMP_PENDING_ANCHOR = 0, MRTSSTAMP_PENDING_REANCHOR, MRTSSTAMP_PENDING_SETTLED,
-       MRTSSTAMP_PENDING_CONDITIONED };
+       MRTSSTAMP_PENDING_CONDITIONED, MRTSSTAMP_PENDING_GAP };
 
 /* One factory per kind, naming every field it fills: the struct is positional
  * and three kinds share it, so a brace-init with padding zeros would let a
@@ -143,6 +144,18 @@ static MrTsStampPending mrtsstamp_pending_conditioned(const mrts::TimelineStampe
     p.step_ticks = c.step_ticks;
     p.offset_ticks = c.offset_ticks;
     p.house_ns = c.house_ns;
+    return p;
+}
+static MrTsStampPending mrtsstamp_pending_gap(const mrts::TimelineStamper::Gap &g) {
+    MrTsStampPending p{};
+    p.kind = MRTSSTAMP_PENDING_GAP;
+    p.pid = g.pid;
+    p.last_pts = g.last_pts;
+    p.ref_pts = g.pts;
+    p.delta_ticks = g.delta_ticks;
+    p.margin_ns = g.margin_ns;
+    p.anchor_ns = g.anchor_ns;
+    p.count = (gint64)g.count;
     return p;
 }
 static MrTsStampPending mrtsstamp_pending_settled(const mrts::TimelineStamper::Settled &s) {
@@ -235,6 +248,11 @@ static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
      * cadence, which an HLS fan-out's bursts are not. */
     self->st->set_on_conditioned([pending](const mrts::TimelineStamper::Conditioned &c) {
         pending->push_back(mrtsstamp_pending_conditioned(c));
+    });
+    /* A delivery gap the anchor was kept across (live-cadence only, like the
+     * conditioner): reported, so the journal shows every carry. */
+    self->st->set_on_gap([pending](const mrts::TimelineStamper::Gap &g) {
+        pending->push_back(mrtsstamp_pending_gap(g));
     });
     self->st->set_condition_step_ns((int64_t)self->condition_step_ms * 1000000LL);
 }
@@ -380,6 +398,15 @@ static void gst_mrtsstamp_post(GstMrTsStamp *self, const MrTsStampPending &p) {
                               "stepTicks", G_TYPE_INT64, p.step_ticks,
                               "offsetTicks", G_TYPE_INT64, p.offset_ticks,
                               "houseNs", G_TYPE_INT64, p.house_ns, NULL);
+    } else if (p.kind == MRTSSTAMP_PENDING_GAP) {
+        s = gst_structure_new("mrtsstamp-gap",
+                              "pid", G_TYPE_INT, p.pid,
+                              "lastPts90k", G_TYPE_INT64, p.last_pts,
+                              "pts90k", G_TYPE_INT64, p.ref_pts,
+                              "deltaTicks", G_TYPE_INT64, p.delta_ticks,
+                              "marginNs", G_TYPE_INT64, p.margin_ns,
+                              "anchorNs", G_TYPE_INT64, p.anchor_ns,
+                              "count", G_TYPE_INT64, p.count, NULL);
     } else if (p.kind == MRTSSTAMP_PENDING_SETTLED) {
         s = gst_structure_new("mrtsstamp-settled",
                               "anchorNs", G_TYPE_INT64, p.anchor_ns,

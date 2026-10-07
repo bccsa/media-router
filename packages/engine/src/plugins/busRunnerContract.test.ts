@@ -285,6 +285,22 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerProcess.match(/"event": "timeline_reanchor"/g)).toHaveLength(1);
     });
 
+    it('a carried delivery gap reaches the engine from both backends', () => {
+        // The stamper keeps its anchor across a gap the source's timeline ran
+        // on through (ts_timeline `_GAP_LATE_NS`, the .24 reconnects of
+        // 2026-10-06) and reports it instead of re-anchoring. The python probe
+        // wires `on_gap`, the native element's `mrtsstamp-gap` message is on
+        // the runner's whitelist, ONE builder shapes the event for both — and a
+        // message kind the runner does not know is never reported as a
+        // re-anchor (the old fallthrough).
+        expect(stamperSource).toContain('on_gap=on_gap');
+        expect(stamperSource).toContain('def gap_event(tee, ev)');
+        expect(runnerProcess.match(/"event": "timeline_gap"/g)).toHaveLength(1);
+        expect(runnerSource).toContain('"mrtsstamp-gap"');
+        expect(stamperSource).toContain('if kind == "mrtsstamp-gap":');
+        expect(stamperSource).toContain('if kind != "mrtsstamp-reanchor":');
+    });
+
     it('the runner-side probe runs ts_timeline.TimelineStamper, not its own copy', () => {
         // The probe used to re-implement the contract's arithmetic as closures
         // over a state dict WHILE importing the module that defines it — two

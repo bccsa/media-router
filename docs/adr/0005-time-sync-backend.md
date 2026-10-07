@@ -80,6 +80,82 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    branch left as-is raises a `warning` engine event instead of a journal
    line nobody was reading.
 
+   **Amendment 2026-10-07 (the .24 Translation Station, BCC Mulanje): a
+   (re)connect latches afresh only when the source's timeline did not
+   continue.** The note above treats every (re)connect as a new timeline. On
+   10.37.7.24 none was: .21's wire PTS is its house clock plus mpegtsmux's 1 h
+   base, and each .21 mpegts-muxer restart restarted its srt-output and so
+   dropped .24's SRT session for 5–17 s inside that one timeline. Three .24
+   stampers re-latched at every reconnect anyway: the srt-input's (a new
+   runner process; its stamps reach no leg, because mr-tssplit's `BusClient`
+   drops the bus PTS and the splitter stamps at flush), the splitter's (the
+   watch read the > 5 s jump as a discontinuity) and the Hall transcoder's
+   egress (Stage 3f below: it absorbed the gap as a clock step, then its
+   staleness net or its late tier re-anchored). Measured 2026-10-06: the
+   splitter's mapping stepped −36…+46 ms per reconnect and the Hall's −70…+59
+   ms; Headphone1 moved against Headphone 2 by up to 46 ms per reconnect (+74
+   / −65 ms in the integration run), and the decoder leg was late for 23.7 min
+   after one reconnect (127 of 141 lateness windows, worst +66 ms against its
+   160 ms budget). **Rule**, for live-cadence stampers only (`repair_latch`,
+   the same argument): a forward PES jump of at most 10 min whose PES lands
+   within −300 ms … +1 s of its own arrival on the CURRENT anchor — as the
+   drift slew will have moved it — is time that passed. Anchor, floors, drift
+   epoch and conditioner state are kept, no repair window opens, and
+   `timeline_gap` reports it (`marginNs`: how late the first PES back landed
+   on the kept mapping). The bound is judged on the first PES back and again
+   on the PES that would confirm a re-anchor, so a first PES a little past +1
+   s whose successor lands inside is carried (`marginNs` then reports the
+   successor). Anything else takes the watch's path as before: a reboot's new
+   epoch, a rewind, another source, a mapping further off. The window is
+   ASYMMETRIC: a kept anchor that turns out late is the late tier's to correct
+   (100 ms over 10 s of delivery); one that turns out early is corrected by
+   nothing short of the early tier's 800 ms, so the early bound is the
+   conditioner's step, 300 ms. **What .24's splitter saw on 2026-10-06** (36
+   reconnects; the first PES back against the mapping in force before the
+   gap, drift-corrected): every one with a mapping before it landed inside the
+   window. At 30 it landed −26…+160 ms off — the reconnect backlog's head, gone
+   in a second (a fresh latch settled within −36…+65 ms of it). At 4 it landed
+   132–169 ms EARLY on a transient, each the first reconnect after a .21
+   producer restart (three engine restarts, whose first muxer instance carries
+   video only, and a video-encoder restart): a fresh latch settled 188–248 ms
+   early on it, and the next reconnect 15–18 s later (or the late tier, 12 s
+   later) took that back — +205…+283 ms against the transient's latch, but
+   +17…+88 ms against the mapping before the restart. The early bound is
+   sized to ride those transients out; a .21 engine restart now shows two
+   carried gaps and no re-anchor. (The day's first engine restart, 13:14, has
+   no earlier mapping in the journals.) On 2026-10-07 the transient was
+   deeper: .24 carried it at −264 ms, only 36 ms inside the bound, and the
+   second session at +13 ms. A transient past −300 ms is latched as before
+   (the late-tier case below). **Consequences:** the backlog head now reaches
+   the consumers late and a leg drops what is past its budget, once per
+   reconnect, instead of being fast-forwarded by a fresh repair window. A
+   level that really moves is no longer re-rolled at the reconnect (none did
+   on 2026-10-06 or 2026-10-07): later by 100 ms–1 s, the late tier moves it
+   after 10 s of delivery, and until then the timing PID's media arrives that
+   much behind its stamps (a leg whose budget that exceeds drops it); later by
+   under 100 ms, it stays; EARLIER by up to 300 ms — a cut in the sender's SRT
+   latency, say — it is kept as standing latency until the stamper's process
+   restarts (the ts-splitter, or the Hall transcoder for its egress). The
+   late-tier case also follows an early transient past −300 ms: that one is
+   latched as today, and the correction at the next reconnect is then carried
+   and left to the late tier. The ingest's own stamper still latches per
+   runner process (carrying it across runners needs an engine hand-off,
+   deferred); the repair note above still holds for every FRESH anchor. One
+   `timeline_gap` per outage holds where the timing PID is known (the
+   `mrtsstamp` element and mr-tssplit condition first and learn it from the
+   PCR); the python probe, which does not condition, judges every PID: it
+   reports one `timeline_gap` per PID, and a PID whose PES sit more than 300
+   ms ahead of the anchored PID's (or 1 s behind; a muxed egress's audio)
+   re-anchors after the gap was reported, as it would have without the carry.
+   Pinned in `ts_timeline_gap_test.{py,cpp}`, the runner suites and
+   `mrTssplit.test.ts`. **Verified on .24 on 2026-10-07**, with the
+   integration build plus #811 on .21 and .24 and a baseline arm without
+   this rule. With the rule, the splitter carried all 22 reconnects and the
+   Hall egress all 21 of its gaps, and neither re-anchored; the baseline
+   re-latched both at every reconnect. Within one tap session, Headphone1 −
+   Headphone 2 came back to the same value within ±1.4 ms at each of 7
+   reconnects, and Headphone1 no longer lost 1–3 s of audio at each resume.
+
 3. **Running-time ≡ house-clock time.** Bus-attached synced pipelines pin
    `base_time=0`, `start_time=NONE`, so running-time equals house-clock time
    in every process and stamped PTS schedule correctly everywhere. Rejected:
@@ -1177,6 +1253,63 @@ capture or file producer's bytes are never touched):
   Left open (TodoNotes): that forward case; the stamper still stamps the first
   post-gap buffers on the pre-gap anchor until the watch confirms; and a
   PCR-only packet past a gap still carries the pre-gap floor.
+
+- **Amendment 2026-10-07 (.24 Hall transcoder egress): a frame held across a
+  gap is judged from when it was due, and the late hold counts delivered
+  time.** The Hall transcoder's `aacparse` holds the last AAC frame before an
+  input gap and releases it WITH the first frame after it (GStreamer 1.28.2:
+  240 of 241 frames leave before the gap), so on its egress the gap arrived as
+  a PTS jump with no arrival change — under 1 s apart, past the arrival-gap
+  rule above — and was absorbed as a clock step ("absorbed a +6.95s PTS step",
+  every stamp after it the gap late until the staleness net re-anchored 1 s
+  later). An in-cadence PES that arrives more than the step threshold after it
+  was DUE (the previous PES's due time plus its PTS delta) is HELD: its due
+  time is kept beside its arrival, for at most `COND_GAP_NS` of media past the
+  last PES that arrived on time (a stream that STAYS late is late, not held,
+  and a pacer reset after it is still a step; unbounded, a genuine ±1.1 s
+  reset after a stall that delivery never caught up from went unabsorbed). On
+  an egress with ONE timing PID (the Hall's 302M; an audio encoder's egress),
+  a FORWARD jump is then a clock step only if it reads as one from the held
+  PES's arrival AND from its due time — the jump against the time that
+  passed, and the delivery-gap bound — so a gap of 700 ms or more behind a
+  held frame stays a gap whatever its backlog head (up to the carry's +1 s).
+  On .24 on 2026-10-07 the Hall egress absorbed no step at any of its 21 gaps
+  under this rule (first PES +18…+134 ms on the kept anchor). The baseline
+  arm, without the rule, absorbed a step and re-anchored at all 9 of its gaps.
+  A program (two or more timing PIDs) keeps the arrival-only test: its PIDs
+  decide one by one, and earlier drafts that read the due time per PID split
+  A/V when a program step landed in a stall — the reference missed it while
+  its partner took it, or the partner booked it as its own step and released
+  it 30 s later (`COND_OWN_HOLD_NS`): ±1.19 s for good on the vMix
+  pacer-reset fixture under a 1.5 s stall. With one timing PID nothing else
+  decides (a PID that is no clock, KLV or private-data audio, only follows
+  the reference's correction). The PCR-after-gap rule reads the due time on
+  every egress. **The blind spot** (one timing PID): a genuine FORWARD step
+  that lands while the PES before it is held is read as time that passed and
+  not absorbed when it is within the threshold of the delivery's lateness, or
+  when that lateness is over `COND_GAP_NS` — any forward step in the first
+  second of a stall of 1 s or more. Its stamps then carry the step until the
+  early tier (a step over 800 ms, after 10 s), a restart, or a later
+  reconnect that lands past the carry's early bound moves them; #806 absorbed
+  those. A backward step is never vetoed. The other way, a held frame's gap of
+  320–600 ms with a backlog head of 300–600 ms (together under 1 s) still
+  reads as a clock step and costs a re-anchor: keeping .21's SRT session up
+  through its sender's restart (a follow-up, outages of about 1 s) makes
+  sub-second gaps common, so it must keep their heads under 300 ms or revisit
+  this. And the late tier's hold no longer counts the longest pause in
+  delivery (past `COND_GAP_NS`) inside it (live-cadence producers only): at
+  14:15:04 and 14:17:51 the Hall's late hold had opened on the last buffers
+  before a 16–17 s gap, matured in house time while nothing arrived, and
+  re-anchored ("−0.11s jump") on the first frame back. The longest only, once
+  per hold: a link that delivers in bursts more than 1 s apart and stays late
+  is late, and with every pause taken out its hold never matured (newest
+  frame 300 ms late, bursts every 1.2–2 s: no re-anchor in 60 s, where house
+  time took ~12 s). The early hold still counts house time: a carried gap's
+  early bound (300 ms) is far inside the early tier's 800 ms, so no early
+  hold outlives one. (A gap the source's timeline ran on through is no longer
+  a jump for the watch at all — decision 2's amendment of the same date — so
+  the "first post-gap buffers on the pre-gap anchor" left open above now only
+  applies to a jump it does not carry.)
 
 - **It elects a TIMING PID.** The PID carrying the PCR is the timeline's
   reference; only it may move the shared anchor (the discontinuity watch, the

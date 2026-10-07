@@ -124,6 +124,19 @@ class TimelineStamper {
         int64_t house_ns;
     };
     using OnConditioned = std::function<void(const Conditioned&)>;
+    // A forward PES jump was a delivery gap on the current anchor and the
+    // anchor was KEPT (python's `on_gap`, ts_timeline.py `_GAP_LATE_NS`):
+    // `margin_ns` is how late (+) or early (-) the first PES back landed on it
+    // — the reconnect backlog's head. `count` = gaps carried so far.
+    struct Gap {
+        int pid;
+        int64_t last_pts, pts;     // 90 kHz, the jump
+        int64_t delta_ticks;       // signed, wrap-folded
+        int64_t margin_ns;
+        int64_t anchor_ns;         // the anchor kept
+        long long count;
+    };
+    using OnGap = std::function<void(const Gap&)>;
 
     // `repair_latch` is the OPT-IN for the latch-repair window (ts_timeline.py,
     // "latch repair"): only for a producer whose delivery cadence IS its media
@@ -166,6 +179,10 @@ class TimelineStamper {
     // cadence). Returns the number of steps absorbed.
     int condition(uint8_t* data, size_t len, int64_t house_now);
     void set_on_conditioned(OnConditioned cb) { on_conditioned_ = std::move(cb); }
+    // Gap carry (python's `on_gap`): live-cadence producers only, like the
+    // latch repair — a forward jump the source's timeline ran on through keeps
+    // the anchor and is reported here instead of re-anchoring.
+    void set_on_gap(OnGap cb) { on_gap_ = std::move(cb); }
 
     // Close an open latch-repair window NOW and report it (python's
     // `close_latch`): for a disarm inside the window, so a short-lived
@@ -176,6 +193,7 @@ class TimelineStamper {
     int64_t anchor_ns() const { return anchor_; }
     int64_t ref_pts() const { return ref_; }
     long long reanchors() const { return reanchors_; }
+    long long gaps() const { return gaps_; }
 
     // Drift-servo state for the producers' periodic stats line — python's
     // `drift_stats()`, field for field. `ppm` is the rate the servo has locked
@@ -214,6 +232,10 @@ class TimelineStamper {
     // Apply the locked rate to the anchor for the elapsed house time.
     void slew(int64_t house_now);
     void scan_watch(const uint8_t* data, size_t len, int64_t house_now);
+    // A forward jump the watch found incoherent that lands on the CURRENT
+    // anchor within the gap window of its own arrival (python's `_gap`): true,
+    // and reported, when it is a delivery gap the anchor is kept across.
+    bool gap(int pid, int64_t last_pts, int64_t pts, int64_t house_now);
     // The bounded-staleness net: forces a re-anchor when `stream`'s stamps have
     // fallen and STAYED further behind house time than the sanity bound. See
     // ts_timeline.py for the constants' rationale.
@@ -251,8 +273,12 @@ class TimelineStamper {
     bool early_open_ = false;             // the margin is below -EARLY_NS (repair_on_ only)
     int64_t early_since_ = 0;             // ... since this house time
     int64_t early_max_ = 0;               // ... and the largest margin since (the level)
+    bool has_hold_last_ = false;          // the tiers have judged a buffer (python's `_hold_last`)
+    int64_t hold_last_ = 0;               // ... at this house time
+    int64_t hold_paused_ = 0;             // the delivery pause the open late hold does not count (ns)
     int anom_ = 0;
     long long reanchors_ = 0;
+    long long gaps_ = 0;
     // Drift servo (see ts_timeline.py for the design and every constant's
     // rationale, including the field failure that produced them).
     int64_t env_min_ = 0;         // running minimum of the open 2 s bucket
@@ -280,12 +306,15 @@ class TimelineStamper {
     OnReanchor on_reanchor_;
     OnSettled on_settled_;
     OnConditioned on_conditioned_;
+    OnGap on_gap_;
     bool repair_on_ = false;
     int64_t cond_threshold_ns_ = 0;       // per-egress conditioner threshold, 0 = default
     // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
     struct CondClock {
         int64_t last_raw;      // last raw PTS seen (90 kHz)
         int64_t last_house;    // house time it arrived at
+        int64_t last_due;      // ... or was DUE, when it was held (condition_pes); else last_house
+        int64_t on_time;       // house time of the last PES that was not held (bounds the due chain)
         int64_t offset;        // total correction written (ticks) = program part + own part
         int64_t own;           // steps this PID took ALONE (ticks); released after COND_OWN_HOLD_NS
         int64_t own_since;     // house time `own` became non-zero (0 = none)
@@ -347,6 +376,7 @@ class TimelineStamper {
 };
 
 std::string conditioned_event_json(const TimelineStamper::Conditioned& c);
+std::string gap_event_json(const TimelineStamper::Gap& g);
 
 // The stamper's two engine events as JSON lines — ONE definition for every
 // native producer (mr-bus-fanout, mr-tssplit), field for field what

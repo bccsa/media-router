@@ -133,6 +133,9 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None):
     def on_settled(ev):
         events.settled_moment(name, ev)
 
+    def on_gap(ev):
+        events.gap_moment(name, ev)
+
     # The contract's arithmetic, verbatim from the module every other producer
     # runs (`unixfd-fanout.py`, and `mrts::TimelineStamper` for the native
     # sidecars): per-buffer watch, epoch-consistent latch, monotone staircase,
@@ -143,6 +146,7 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None):
     stamper = ts_timeline.TimelineStamper(on_anchor=on_anchor,
                                           on_reanchor=on_reanchor,
                                           on_settled=on_settled,
+                                          on_gap=on_gap,
                                           repair_latch=repair_latch,
                                           condition_step_ns=(int(condition_step_ms) * 1_000_000
                                                              if condition_step_ms else None))
