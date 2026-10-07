@@ -407,8 +407,11 @@ export class ModuleLifecycle {
             await this.mediaRouter.removeConnection(conn.id, true);
         }
 
+        // Not gated on `running`: a module whose start is still in flight
+        // reads not-running, and would come up after the disable. stop()
+        // waits for that start and is a resource sweep on a stopped module.
         const instance = this.moduleManager.get(moduleId);
-        if (instance?.running) {
+        if (instance) {
             await instance.stop();
         }
 

@@ -27,6 +27,13 @@ export class ModuleInstance extends EventEmitter {
     private _running = false;
     private _pendingRestart = false;
     private _initialized = false;
+    /** Set by destroy(): a destroyed instance is out of the module map — never start it again. */
+    private destroyed = false;
+    /**
+     * Tail of this instance's start/stop/destroy queue — see `serialize`.
+     * Never rejects, so a failed step doesn't block the next one.
+     */
+    private transitions: Promise<void> = Promise.resolve();
     private services: ModuleServices | null = null;
     /** Bound listener refs for cleanup — prevents EventEmitter leaks across start/stop cycles. */
     private pluginListeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
@@ -112,9 +119,34 @@ export class ModuleInstance extends EventEmitter {
         };
     }
 
+    /**
+     * Run start/stop/destroy one at a time, in call order. A stop that lands
+     * while a start is still in flight would otherwise see `_running` false,
+     * skip `onStop`, and leave whatever that start brought up afterwards — a
+     * pipeline, timers, a bound port — owned by nobody. Field, 2026-10-07,
+     * NG-ON-Return01 (#821): a Restart clicked while a connection bounce was
+     * restarting ClarioCast deleted the instance mid-start; the orphan kept
+     * 127.0.0.1:2000 and its pipeline, so the new instance could never bind.
+     * Every engine-side wait inside `onStart` is bounded (IPC request,
+     * PipeWire sink wait, stream probes), so a queued stop is delayed, not stuck.
+     */
+    private serialize(step: () => Promise<void>): Promise<void> {
+        const run = this.transitions.then(step);
+        this.transitions = run.catch(() => undefined);
+        return run;
+    }
+
     /** Initialise and start the module. */
     async start(): Promise<void> {
+        return this.serialize(() => this.doStart());
+    }
+
+    private async doStart(): Promise<void> {
         if (this._running) return;
+        if (this.destroyed) {
+            log.debug({ instanceId: this.instanceId }, 'Start after destroy ignored');
+            return;
+        }
         try {
             if (!this._initialized) {
                 await this.plugin.onInit(this.config, this.services ?? undefined);
@@ -159,9 +191,14 @@ export class ModuleInstance extends EventEmitter {
      * release runs unconditionally: a module can own live processes while
      * `_running` is false (a start that threw part-way, or a plugin that
      * spawned before its own guard flipped), and skipping the release there
-     * left those processes orphaned past every subsequent stop.
+     * left those processes orphaned past every subsequent stop. A stop issued
+     * while a start is in flight waits for it, then stops it (`serialize`).
      */
     async stop(): Promise<void> {
+        return this.serialize(() => this.doStop());
+    }
+
+    private async doStop(): Promise<void> {
         const wasRunning = this._running;
         if (wasRunning) {
             try {
@@ -211,15 +248,18 @@ export class ModuleInstance extends EventEmitter {
 
     /** Stop and destroy the module (final cleanup). */
     async destroy(): Promise<void> {
-        await this.stop();
-        try {
-            await this.plugin.onDestroy();
-        } catch (err) {
-            log.error({ err, instanceId: this.instanceId }, 'Module destroy failed');
-        }
-        this._initialized = false;
-        this.detachPluginListeners();
-        this.removeAllListeners();
+        this.destroyed = true;
+        return this.serialize(async () => {
+            await this.doStop();
+            try {
+                await this.plugin.onDestroy();
+            } catch (err) {
+                log.error({ err, instanceId: this.instanceId }, 'Module destroy failed');
+            }
+            this._initialized = false;
+            this.detachPluginListeners();
+            this.removeAllListeners();
+        });
     }
 
     /**
