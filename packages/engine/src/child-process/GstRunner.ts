@@ -729,6 +729,15 @@ export class GstRunner {
             this.python.stop();
             this.python = null;
         }
+        // Nothing is PLAYING until the new launch says so. The retired
+        // process's late `null` is dropped (dispatchPythonEvent), so without
+        // this a `restartPipeline` of a PLAYING pipeline left the state at
+        // 'playing' and swallowed the relaunch's own PLAYING edge — the edge
+        // that re-attaches this module's consumers' fan-out branches
+        // (BusFanoutCoordinator.reattachProducer). A relaunched mid-chain
+        // module (muxer, transcoder) then stranded every consumer in
+        // "Waiting for producer bus socket(s)" until restarted by hand (#798).
+        this.currentState = 'stopped';
 
         this.lastStart = opts;
         const epoch = ++this.startEpoch;
