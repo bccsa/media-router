@@ -13,6 +13,7 @@
  * restart), non-zero = error (auto-restart with backoff).
  */
 import type { ExtractorOptions } from 'hls-pipe';
+import { klvSubtitleCarrier } from './klvSubtitleCarrier.js';
 import { buildExtractorOverrides, type RunnerConfig } from './runnerOptions.js';
 import { WorkerPacedTsSink } from './workerPacedSink.js';
 
@@ -75,6 +76,9 @@ async function main(): Promise<void> {
         sink,
         signal: abort.signal,
         outputMode: makeOutputMode('ts-canonical'),
+        // Subtitle languages go out as the fleet's KLV cue PIDs (0x180+),
+        // not hls-pipe's own "VTT " private PES, which no gst consumer sees.
+        subtitleCarrier: klvSubtitleCarrier(),
         ...buildExtractorOverrides(cfg, {
             default: DEFAULT_ABR_CONFIG,
             unstable: UNSTABLE_NETWORK_ABR_CONFIG,

@@ -406,6 +406,9 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-subtitle-core':
+        specifier: workspace:*
+        version: link:../subtitle-core
       '@media-router/plugin-unixfdbus-core':
         specifier: workspace:*
         version: link:../unixfdbus-core

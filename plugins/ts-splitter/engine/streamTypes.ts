@@ -60,18 +60,26 @@ export function streamTypeInfo(streamType: number, esInfoHex?: string): StreamTy
 /**
  * Identity of a stream_type 0x06 (private PES) ES from its descriptor loop —
  * the PMT names these only there. DVB teletext (tag 0x56) and DVB subtitling
- * (tag 0x59) are subtitle streams; a KLVA registration (tag 0x05) is KLV
+ * (tag 0x59) are subtitle streams. A KLVA registration (tag 0x05) is KLV
  * metadata — what mpegtsmux writes for the fleet's own name carousel and
- * subtitle cue streams; Opus by registration / DVB extension. Anything else
- * stays generic private data.
+ * subtitle cue streams, never with a language; a KLVA stream that ALSO
+ * carries an ISO 639 language descriptor (tag 0x0a) is a subtitle cue stream
+ * the HLS player wrote (its KLV carrier tags each language), labelled
+ * subtitle/webvtt so the port reads as what to wire into a Subtitles In.
+ * Opus by registration / DVB extension. Anything else stays generic private
+ * data.
  */
 function privateStreamIdentity(esInfoHex: string | undefined): StreamTypeInfo | undefined {
+    let klva = false;
+    let language = false;
     for (const { tag, data } of descriptorsFromEsInfo(esInfoHex)) {
         if (tag === 0x56) return { media: 'subtitle', codec: 'teletext' };
         if (tag === 0x59) return { media: 'subtitle', codec: 'dvbsub' };
-        if (tag === 0x05 && data.subarray(0, 4).toString('latin1') === 'KLVA') {
-            return { media: 'metadata', codec: 'klv' };
-        }
+        if (tag === 0x05 && data.subarray(0, 4).toString('latin1') === 'KLVA') klva = true;
+        if (tag === 0x0a) language = true;
+    }
+    if (klva) {
+        return language ? { media: 'subtitle', codec: 'webvtt' } : { media: 'metadata', codec: 'klv' };
     }
     return isOpusEsInfo(esInfoHex) ? { media: 'audio', codec: 'opus' } : undefined;
 }

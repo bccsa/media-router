@@ -93,3 +93,31 @@ conditioner correction (ADR-0018) — it is on the program's timeline, it just
 never sets it. A private-data PID (0xBD: KLV cues, teletext, DVB
 subtitles) rides the media's anchor untouched; an egress with nothing but
 private PES and no PCR never anchors and stamps every buffer at arrival.
+
+## Amendment 2026-10-07 — the HLS player speaks the carrier
+
+hls-pipe's `"VTT "` private PES (the first considered option above) is retired
+from the fleet. hls-pipe gained a carrier seam (`ExtractorOptions.subtitleCarrier`:
+PES payload per cue, PMT stream_type + descriptors, PID base, re-send cadence)
+and the hls-player plugin passes subtitle-core's KLV encoder through it
+(`plugins/hls-player/engine/klvSubtitleCarrier.ts`): stream_type 0x06 + KLVA
+registration — byte for byte what mpegtsmux writes — plus hls-pipe's ISO 639
+language descriptor, PIDs from 0x180, one KLV triplet per PES with the block
+relative to the carrying PES, re-sent every 2 s while live, text Pango-escaped.
+hls-pipe's library default stays the `"VTT "` carrier (standalone CLI users).
+
+Timing: hls-pipe now writes each cue PES at the cue's START position in the
+paced stream and holds the cues the subtitle playlist delivered early (it is
+fetched independently of video, so a VOD track arrives all at once). Every hop
+re-stamps a private-only PES at arrival (splitter leg, muxer sparse route) and
+the renderer keeps one cue, so a cue sent early would have shown early or been
+overwritten before it showed. A past-due cue goes out at once with its
+remaining span; an ended one is dropped. Every subtitle PID is listed in every
+PMT from the first batch on, so the program's stream list never flaps (a PMT
+change tears consumer pads down).
+
+The splitter labels a KLVA PID that also carries a language descriptor
+`Subtitle <lang> (webvtt, PID …)` — mpegtsmux never writes a language on KLV,
+so the fleet's own KLV PIDs stay `Metadata (klv)`. Consequence: an HLS subtitle
+language is wired exactly like a teletext page — splitter `pid-0x180` →
+`subtitles-in` (burn-in) or → a muxer input (mux on).

@@ -121,9 +121,17 @@ describe('streamTypeInfo — subtitle and metadata identities on stream_type 0x0
         expect(streamTypeInfo(0x06, DVB_SUB)).toEqual({ media: 'subtitle', codec: 'dvbsub' });
     });
 
-    it('KLVA registration → metadata/klv (name carousel, subtitle cue streams)', () => {
+    it('KLVA registration → metadata/klv (name carousel, teletext cue streams)', () => {
         expect(streamTypeInfo(0x06, KLVA)).toEqual({ media: 'metadata', codec: 'klv' });
-        expect(streamTypeInfo(0x06, '0a04656e6700' + KLVA)).toEqual({ media: 'metadata', codec: 'klv' });
+    });
+
+    it('KLVA + ISO 639 language → subtitle/webvtt (the HLS player\'s cue PIDs), labelled by language', () => {
+        const info = streamTypeInfo(0x06, '0a04656e6700' + KLVA);
+        expect(info).toEqual({ media: 'subtitle', codec: 'webvtt' });
+        expect(streamTypeInfo(0x06, KLVA + '0a046e6f7200')).toEqual({ media: 'subtitle', codec: 'webvtt' });
+        expect(streamLabel(0x180, info, languageFromEsInfo('0a04656e6700' + KLVA))).toBe(
+            'Subtitle eng (webvtt, PID 0x180)',
+        );
     });
 
     it('a truncated descriptor loop is still private, never a throw', () => {

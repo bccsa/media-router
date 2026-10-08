@@ -172,7 +172,7 @@ speaks: that is A.
 | S6 | Rendering = `textoverlay` fed by a small **depay** (`meta/x-klv → text/x-raw,format=pango-markup`), `wait-text=false`. Position/size = `halignment/valignment/xpos/ypos/font-desc/auto-resize/shaded-background`, all `x-live`. | Player already ships textoverlay for the fallback caption; live element props already exist. `wait-text=false` so a sparse/absent subtitle input never stalls video. |
 | S7 | Pay/depay live as **native elements in `plugins/mpegts-core/native`** (`mrklvtextpay`, `mrklvtextdepay`), ADR-0013 style, loaded by path. Spike may use a runner-side python appsink/appsrc bridge first (cue rate is ~1/s, so CPU is irrelevant); the native pair is for clean pipeline strings and no runner special-casing. | Consistent with ADR-0001/0013; the mux/demux side needs nothing custom. |
 | S8 | **DVB-sub output (option E) is a later, separate output mode** of the transcoder ("also emit DVB subtitles" per page), not part of the first cut. | Needed only when a downstream is a third-party receiver; bitmap path has its own tuning. |
-| S9 | hls-pipe's `"VTT "` private-PES writer is migrated to S1 when the player dot exists, so HLS subtitle languages become visible to the same renderer. | Removes the dead format; one carrier fleet-wide. |
+| S9 | **Done 2026-10-07** (ADR-0016 amendment): hls-pipe gained a `subtitleCarrier` seam; the hls-player plugin passes subtitle-core's KLV encoder, cues are written at their start and re-sent every 2 s. | Removes the dead format; one carrier fleet-wide. |
 
 ## 4. Architecture
 
@@ -246,7 +246,7 @@ Consumers:
    splitter descriptor labels. Field test: transcoder → muxer → RIST → far
    box → player dot.
 7. **Later / optional**: DVB-sub output mode (option E) for third-party
-   receivers; hls-pipe migration (S9); a "raw page dump" debug view.
+   receivers; a "raw page dump" debug view. (hls-pipe migration S9: done 2026-10-07.)
 
 ## 6. Open questions for the owner
 

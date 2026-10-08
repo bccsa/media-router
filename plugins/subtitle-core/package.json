@@ -9,6 +9,10 @@
         ".": {
             "types": "./dist/index.d.ts",
             "default": "./dist/index.js"
+        },
+        "./cue": {
+            "types": "./dist/subtitleCue.d.ts",
+            "default": "./dist/subtitleCue.js"
         }
     },
     "dependencies": {
