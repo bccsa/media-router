@@ -380,6 +380,39 @@ describe('GstRunner — Python event routing', () => {
         logged.mockRestore();
     });
 
+    it('a relaunched PLAYING pipeline re-announces PLAYING (the edge that re-attaches its consumers, #798)', () => {
+        const internals = runner as unknown as {
+            python: unknown;
+            lastStart: unknown;
+            dispatchPythonEvent: (from: unknown, e: Record<string, unknown>) => void;
+        };
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const retired = { stop: vi.fn() };
+        internals.python = retired;
+        internals.lastStart = { pipeline: 'fakesrc ! fakesink' };
+        internals.dispatchPythonEvent(retired, { event: 'state_change', state: 'playing' });
+
+        runner.handleControlMessage({
+            id: 'rpc-rl',
+            type: 'request',
+            action: 'restartPipeline',
+            data: { reason: 'producer relaunched' },
+        });
+        const relaunched = internals.python;
+        expect(retired.stop).toHaveBeenCalled();
+        expect(relaunched).not.toBe(retired);
+        // The retired process's teardown null is dropped…
+        internals.dispatchPythonEvent(retired, { event: 'state_change', state: 'null' });
+        // …so the relaunch's own PLAYING must cross the edge by itself.
+        internals.dispatchPythonEvent(relaunched, { event: 'state_change', state: 'playing' });
+        expect(sent.filter((m) => m.action === 'stateChange').map((m) => m.data)).toEqual([
+            { state: 'playing' },
+            { state: 'playing' },
+        ]);
+        runner.shutdown('test done');
+        logged.mockRestore();
+    });
+
     it("a retired predecessor's reply still answers the request it was sent", () => {
         const internals = runner as unknown as {
             python: unknown;
