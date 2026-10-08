@@ -183,8 +183,7 @@ describe('start payload', () => {
         // its auto-selected clock with a per-start base-time, which is exactly
         // the drift the contract exists to remove — and nothing would report it.
         expect(
-            payloadFor({ pipeline: 'fakesrc ! fakesink', timeSyncContract: true })
-                .timeSyncContract,
+            payloadFor({ pipeline: 'fakesrc ! fakesink', timeSyncContract: true }).timeSyncContract,
         ).toBe(true);
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).timeSyncContract).toBe(false);
     });
@@ -196,8 +195,7 @@ describe('start payload', () => {
         // the aggregator mux releases video in GOP-sized ~2.3 s bursts (Pi4 +
         // ATEM): the pipeline string is unchanged and nothing reports it.
         expect(
-            payloadFor({ pipeline: 'fakesrc ! fakesink', liveCaptureClock: true })
-                .liveCaptureClock,
+            payloadFor({ pipeline: 'fakesrc ! fakesink', liveCaptureClock: true }).liveCaptureClock,
         ).toBe(true);
         // Omitted → false, not undefined: every bus-fed producer keeps the
         // pinned timeline its branch alignment is built on.
@@ -218,7 +216,9 @@ describe('start payload', () => {
         ).toEqual(alignBranchesToStamps);
         // Absent on the legacy path (applyTimeSync drops it there) — must stay
         // absent rather than arming probes on elements that may not exist.
-        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).alignBranchesToStamps).toBeUndefined();
+        expect(
+            payloadFor({ pipeline: 'fakesrc ! fakesink' }).alignBranchesToStamps,
+        ).toBeUndefined();
     });
 });
 
@@ -228,14 +228,26 @@ describe('start payload (the wire to the runner)', () => {
     // repair flag was dropped exactly this way once (review, 2026-09-06).
     it('carries udpSilenceRestartMs (multicast re-join bound), and omits it when unset', () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        expect(child.startPayload({ pipeline: 'x', udpSilenceRestartMs: 60000 }).udpSilenceRestartMs).toBe(60000);
+        expect(
+            child.startPayload({ pipeline: 'x', udpSilenceRestartMs: 60000 }).udpSilenceRestartMs,
+        ).toBe(60000);
         expect(child.startPayload({ pipeline: 'x' }).udpSilenceRestartMs).toBeUndefined();
     });
 
     it('carries a producer conditionStepMs, and omits it when unset', () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        expect(child.startPayload({ pipeline: 'x', conditionStepMs: 100 }).conditionStepMs).toBe(100);
+        expect(child.startPayload({ pipeline: 'x', conditionStepMs: 100 }).conditionStepMs).toBe(
+            100,
+        );
         expect(child.startPayload({ pipeline: 'x' }).conditionStepMs).toBeUndefined();
+    });
+
+    it('carries houseTimelineEgress (identity stamps for a transform producer), and omits it when unset', () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        expect(
+            child.startPayload({ pipeline: 'x', houseTimelineEgress: true }).houseTimelineEgress,
+        ).toBe(true);
+        expect(child.startPayload({ pipeline: 'x' }).houseTimelineEgress).toBeUndefined();
     });
 
     it('carries latchRepair as resolved, and omits it when unresolved', () => {
@@ -284,7 +296,11 @@ describe('start payload (the wire to the runner)', () => {
 
         child.pipelineDesc = { pipeline: 'fakesrc ! fakesink' };
         await child.restartPipeline('producer p relaunched');
-        expect(sendRequest).toHaveBeenCalledWith('restartPipeline', { reason: 'producer p relaunched' }, 5000);
+        expect(sendRequest).toHaveBeenCalledWith(
+            'restartPipeline',
+            { reason: 'producer p relaunched' },
+            5000,
+        );
 
         sendRequest.mockResolvedValueOnce({ error: 'No pipeline to restart' });
         await expect(child.restartPipeline('again')).rejects.toThrow('No pipeline to restart');
@@ -292,8 +308,15 @@ describe('start payload (the wire to the runner)', () => {
 
     it('carries runnerHooks verbatim — plugin python the runner must install', () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        const hooks = [{ module: 'subtitle_bridge', config: { pay: [{ appsink: 'a', appsrc: 'b', holdMs: 8000 }] } }];
-        expect(child.startPayload({ pipeline: 'x', runnerHooks: hooks }).runnerHooks).toEqual(hooks);
+        const hooks = [
+            {
+                module: 'subtitle_bridge',
+                config: { pay: [{ appsink: 'a', appsrc: 'b', holdMs: 8000 }] },
+            },
+        ];
+        expect(child.startPayload({ pipeline: 'x', runnerHooks: hooks }).runnerHooks).toEqual(
+            hooks,
+        );
         expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('runnerHooks', undefined);
     });
 });

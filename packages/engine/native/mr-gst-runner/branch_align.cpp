@@ -14,6 +14,7 @@
 #include "json_util.h"
 #include "mrts/ts_psi.h"
 #include "mrts/ts_timeline.h"
+#include "branch_retime.h"
 
 namespace mr::align {
 
@@ -26,8 +27,6 @@ constexpr double SETTLE_MS = 3000.0;
 constexpr size_t SAMPLES = 9;
 constexpr double GIVEUP_MS = 15000.0;
 constexpr int64_t MIN_NS = 2'000'000LL;
-constexpr size_t HISTORY = 4096;
-constexpr size_t KEY_BYTES = 64;
 
 struct OpenAu {
     int64_t pts = -1;
@@ -74,18 +73,6 @@ std::string fmt(const char* f, ...) {
     std::vsnprintf(buf, sizeof buf, f, ap);
     va_end(ap);
     return buf;
-}
-
-/** tsdemux names pads `<media>_<programhex>_<pidhex>`; the PID is the last field. */
-int pid_from_pad_name(const gchar* name) {
-    if (!name) return -1;
-    std::string s = name;
-    size_t us = s.rfind('_');
-    std::string tail = us == std::string::npos ? s : s.substr(us + 1);
-    if (tail.empty()) return -1;
-    char* end = nullptr;
-    long v = std::strtol(tail.c_str(), &end, 16);
-    return (end && *end == 0) ? (int)v : -1;
 }
 
 const char* verdict(int64_t off_ns) {
@@ -367,11 +354,25 @@ void pad_added_cb(GstElement*, GstPad* pad, gpointer user) {
 
 }  // namespace
 
+/** tsdemux names pads `<media>_<programhex>_<pidhex>`; the PID is the last field. */
+int pid_from_pad_name(const gchar* name) {
+    if (!name) return -1;
+    std::string s = name;
+    size_t us = s.rfind('_');
+    std::string tail = us == std::string::npos ? s : s.substr(us + 1);
+    if (tail.empty()) return -1;
+    char* end = nullptr;
+    long v = std::strtol(tail.c_str(), &end, 16);
+    return (end && *end == 0) ? (int)v : -1;
+}
+
 void install(GstElement* pipe, JsonObject* cfg) {
     clear();
     if (!cfg || !GST_IS_BIN(pipe)) return;
     JsonArray* names = json_get_array(cfg, "demuxes");
     if (!names) return;
+    // A transform producer's input demux is retimed per access unit instead (`rt`).
+    bool producer = json_get_bool(cfg, "transformProducer");
     guint n = json_array_get_length(names);
     for (guint i = 0; i < n; i++) {
         JsonNode* node = json_array_get_element(names, i);
@@ -386,6 +387,10 @@ void install(GstElement* pipe, JsonObject* cfg) {
         GstPad* sink = gst_element_get_static_pad(demux, "sink");
         if (!sink) {
             gst_object_unref(demux);
+            continue;
+        }
+        if (producer) {
+            rt::install(name, demux, sink);
             continue;
         }
         auto st = std::make_shared<State>();
@@ -429,6 +434,7 @@ void clear() {
         st->demux = nullptr;
     }
     g_states.clear();
+    rt::clear();
 }
 
 }  // namespace mr::align

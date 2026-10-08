@@ -721,6 +721,51 @@ check("and the whole run stays within a frame or two of the stamp",
       max(dev) - min(dev) < 100 * Gst.MSECOND)
 
 
+# ---------------------------------------------------------------------------
+print("\n--- house-timeline egress: the stamp is PES − 1 h, nothing is anchored ---")
+# ADR-0005 amendment 2026-10-08: a transform producer (transcoder, audio-
+# transcoder, mpegts-muxer) declares `houseTimelineEgress`; its mpegtsmux has
+# already written house running time + 1 h into every PES, so the probe reads
+# that back instead of anchoring at its own egress (and baking the hop's transit
+# in). Arrival timestamps are irrelevant to the result; the PES are built off
+# the pipeline's own house clock exactly as the mux would write them.
+import ts_timeline as _tl  # noqa: E402
+events = collect_events()
+pipe, src = build_stamper_pipe()
+runner.pipeline = pipe
+runner._apply_contract_clock(pipe)
+stamper.enable(pipe, True, None, None, True)
+check("the start payload's flag is recorded on the subsystem", stamper.house_timeline is True)
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+seen = tap_timestamps(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+house0 = pipe.get_pipeline_clock().get_time() - pipe.get_base_time()
+c0 = house0 * 9 // 100000 + 90000                 # content: house + 1 s, in 90 kHz ticks
+for i in range(6):
+    push(src, pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i),
+         (500 + i * 40 + (i % 3) * 7) * Gst.MSECOND, 0)
+push(src, filler_packet(cc=6), 900 * Gst.MSECOND, 0)
+wait_for(seen, 7)
+drain(pipe, src)
+want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(6)]
+check("every stamp is the content's house time, exactly, regardless of arrival",
+      [pts for pts, _ in seen[:6]] == want)
+check("DTS rides with it (tsdemux reads DTS first)", [dts for _, dts in seen[:6]] == want)
+check("a PES-less buffer repeats the staircase", len(seen) == 7 and seen[6][0] == want[-1])
+anchors = [e for e in events if e["event"] == "timeline_restamped"]
+check("one anchor event names the identity mapping",
+      len(anchors) == 1 and anchors[0]["anchorNs"] == want[0]
+      and anchors[0]["refPts90k"] == (_tl.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
+check("nothing re-anchors and nothing is conditioned",
+      not any(e["event"] in ("timeline_reanchor", "timeline_conditioned") for e in events))
+stamper.clear()
+check("enable() without the flag leaves the subsystem anchored (the default)",
+      (stamper.enable(pipe, True), stamper.house_timeline)[1] is False)
+stamper.clear()
+runner.pipeline = None
+
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

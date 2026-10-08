@@ -10,9 +10,19 @@ import { PcmAudioExecutor } from './PcmAudioExecutor.js';
 import { MpegTsBusExecutor } from './MpegTsBusExecutor.js';
 import { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
 import { busEdgeSocketPath } from '../plugins/busHelpers.js';
-import { PLAYOUT_OFFSET_KEY, parsePlayoutOffsetMs } from '../plugins/playoutOffset.js';
+import {
+    DEFAULT_PLAYOUT_OFFSET_MS,
+    PLAYOUT_OFFSET_KEY,
+    parsePlayoutOffsetMs,
+} from '../plugins/playoutOffset.js';
+import type { ReanchorRaiseRequest, ReanchorRebaseReport } from '../plugins/playoutReanchor.js';
+import { PlayoutRaises, type PlayoutHead } from './PlayoutRaises.js';
 
 const log = createLogger('MediaRouter');
+
+/** The playout offset a module declares in its config, if any (a route head). */
+const declaredPlayoutOffsetMs = (m: ModuleInstance | undefined): number | undefined =>
+    parsePlayoutOffsetMs(m?.config?.[PLAYOUT_OFFSET_KEY]);
 
 /**
  * Stream types carried on the inter-module bus (unixfd fan-out).
@@ -56,6 +66,15 @@ export class MediaRouter {
     /** The bus executor, kept for its live-branch verbs (channel-map replace). */
     private busExecutor: MpegTsBusExecutor | null = null;
     private moduleGetter: ((id: string) => ModuleInstance | undefined) | null = null;
+    /** Display names for warning texts (the Engine passes its resolver). */
+    private displayName: (id: string) => string = (id) => id;
+    /** Runtime raise per route head (ADR-0005 2026-10-08) — memory only. */
+    private readonly playoutRaises = new PlayoutRaises({
+        head: (moduleId, sinkPortId) => this.getRoutePlayoutHead(moduleId, sinkPortId),
+        displayName: (id) => this.displayName(id),
+        module: (id) => this.moduleGetter?.(id),
+        fanOut: (headId) => this.notifyPlayoutOffsetChanged(headId),
+    });
 
     readonly portRegistry = new PortRegistry();
     readonly busChannels = new BusChannelManager();
@@ -119,6 +138,7 @@ export class MediaRouter {
         displayNameResolver?: (id: string) => string,
     ): void {
         this.moduleGetter = moduleGetter;
+        if (displayNameResolver) this.displayName = displayNameResolver;
         const connLabel = makeConnLabel(displayNameResolver);
         const resolveProducerPort = (moduleId: string, portId?: string) =>
             this.busChannels.get(this.channelKey(moduleId, portId)) ??
@@ -506,24 +526,94 @@ export class MediaRouter {
 
     // --- Playout offset D (ADR-0005 decision 4) ---
     //
-    // The route override lives on the ROUTE HEAD — the producer module a
-    // consumer takes its bus from — not on the consumer's own sink. Both legs of
+    // The route override lives on the ROUTE HEAD — the nearest producer upstream
+    // of a consumer that DECLARES one — not on the consumer's own sink. Producers
+    // declaring nothing (transcoders, muxers) are transparent: D passes through
+    // them, and the edit fan-out below follows the same path. Both legs of
     // a split A/V route (video-player + audio-decoder off one splitter) resolve
     // the same producer here, so they get the same D by construction rather than
     // by a conflict rule between two independently trimmed sinks, which is the
     // failure mode decision 4 rejects.
 
     /**
-     * Playout-offset override declared by the route head feeding `moduleId`, in
-     * ms; `undefined` when this consumer has no bus source or the head declares
-     * none (⇒ the engine-wide default applies). Read straight off the producer's
-     * stored config, so an edit is visible without a restart.
+     * The route head feeding `moduleId`: the nearest bus producer upstream that
+     * declares a playout offset, else the top-most producer (no bus input of
+     * its own). Read straight off the stored configs, so an edit is visible
+     * without a restart. `undefined` for a module with no bus source.
+     */
+    getRoutePlayoutHead(moduleId: string, sinkPortId?: string): PlayoutHead | undefined {
+        const seen = new Set<string>([moduleId]);
+        let source = this.getModuleBusSource(moduleId, sinkPortId);
+        let top: string | undefined;
+        while (source && !seen.has(source.sourceModuleId)) {
+            const producerId = source.sourceModuleId;
+            seen.add(producerId);
+            top = producerId;
+            const declared = declaredPlayoutOffsetMs(this.moduleGetter?.(producerId));
+            if (declared !== undefined) {
+                return {
+                    headId: producerId,
+                    label: this.displayName(producerId),
+                    declaredMs: declared,
+                };
+            }
+            // Transparent (nothing or nonsense declared): follow its first bus input.
+            source = this.getModuleBusSource(producerId);
+        }
+        return top === undefined ? undefined : { headId: top, label: this.displayName(top) };
+    }
+
+    /**
+     * Playout-offset override of the route head feeding `moduleId`, in ms.
+     * `undefined` when no producer declares one (⇒ the engine-wide default).
      */
     getRoutePlayoutOffsetMs(moduleId: string, sinkPortId?: string): number | undefined {
-        const source = this.getModuleBusSource(moduleId, sinkPortId);
-        if (!source) return undefined;
-        const head = this.moduleGetter?.(source.sourceModuleId);
-        return parsePlayoutOffsetMs(head?.config?.[PLAYOUT_OFFSET_KEY]);
+        return this.getRoutePlayoutHead(moduleId, sinkPortId)?.declaredMs;
+    }
+
+    // --- Playout re-anchor (ADR-0005 amendment 2026-10-08) ---
+    // The bookkeeping is `PlayoutRaises`; these are its public surface.
+
+    /** Engine wiring: on only with the contract on and `MR_PLAYOUT_REANCHOR` not 0. */
+    setPlayoutReanchor(enabled: boolean, defaultOffsetMs = DEFAULT_PLAYOUT_OFFSET_MS): void {
+        this.playoutRaises.configure(enabled, defaultOffsetMs);
+    }
+
+    /** The runtime raise on the route head feeding `moduleId`, in ms (0 when none). */
+    getRoutePlayoutRaiseMs(moduleId: string, sinkPortId?: string): number {
+        return this.playoutRaises.raiseMs(moduleId, sinkPortId);
+    }
+
+    /**
+     * A leg below `moduleId`'s route head asks for more budget. Raised ⇒ every
+     * consumer of the head re-pushes D (incl. through transparent producers),
+     * then the head is told. `covered` = a raise landed inside the settle
+     * window; `ceiling` = the headroom is spent (alarm only); `off` = disabled.
+     */
+    requestPlayoutRaise(
+        moduleId: string,
+        sinkPortId: string | undefined,
+        req: ReanchorRaiseRequest,
+    ): Promise<'raised' | 'covered' | 'ceiling' | 'off'> {
+        return this.playoutRaises.request(moduleId, sinkPortId, req);
+    }
+
+    /**
+     * Drop `headId`'s raise — an operator edit of its D took ownership. Called
+     * BEFORE that edit's fan-out, so the fan-out pushes the edited value alone.
+     * The head is told `null`; each leg that asked, a zero raise.
+     */
+    clearPlayoutRaise(headId: string): void {
+        this.playoutRaises.clear(headId);
+    }
+
+    /** A leg rebased itself onto an implausible timeline — tell its route head. */
+    notePlayoutRebase(
+        moduleId: string,
+        sinkPortId: string | undefined,
+        report: ReanchorRebaseReport,
+    ): void {
+        this.playoutRaises.noteRebase(moduleId, sinkPortId, report);
     }
 
     /**
@@ -560,28 +650,36 @@ export class MediaRouter {
 
     /**
      * A route head's `playoutOffsetMs` was edited — re-anchor every consumer of
-     * that producer, together. Without the fan-out the change would sit in the
+     * that producer, together, including those behind transparent producers
+     * (each notified once). Without the fan-out the change would sit in the
      * producer's config until each consumer happened to rebuild, so one leg of a
      * route could run the new D while the other still ran the old one — exactly
      * the disagreement D exists to remove.
      */
     async notifyPlayoutOffsetChanged(producerModuleId: string): Promise<void> {
-        const consumers = new Set(
-            this.getConnections()
-                .filter(
-                    (c) =>
-                        c.sourceModuleId === producerModuleId && BUS_STREAM_TYPES.has(c.streamType),
-                )
-                .map((c) => c.sinkModuleId),
-        );
-        for (const consumerId of consumers) {
-            try {
-                await this.moduleGetter?.(consumerId)?.notifyRoutePlayoutOffsetChanged();
-            } catch (err) {
-                log.warn(
-                    { err, producerModuleId, consumerId },
-                    'Playout-offset fan-out to consumer failed',
-                );
+        const seen = new Set<string>([producerModuleId]);
+        const queue = [producerModuleId];
+        while (queue.length > 0) {
+            const id = queue.shift() as string;
+            for (const conn of this.getConnections()) {
+                if (conn.sourceModuleId !== id || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
+                const consumerId = conn.sinkModuleId;
+                if (seen.has(consumerId)) continue;
+                seen.add(consumerId);
+                const consumer = this.moduleGetter?.(consumerId);
+                try {
+                    await consumer?.notifyRoutePlayoutOffsetChanged();
+                } catch (err) {
+                    log.warn(
+                        { err, producerModuleId, consumerId },
+                        'Playout-offset fan-out to consumer failed',
+                    );
+                }
+                // A consumer declaring its own D heads its own subtree; a
+                // transparent one passes this D on to its consumers.
+                if (declaredPlayoutOffsetMs(consumer) === undefined) {
+                    queue.push(consumerId);
+                }
             }
         }
     }

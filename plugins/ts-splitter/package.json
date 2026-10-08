@@ -34,7 +34,7 @@
                     "x-unit": "ms",
                     "x-live": true,
                     "title": "Playout Offset",
-                    "description": "Route latency budget: how far behind the house clock players present. Empty = engine default (60 ms)."
+                    "description": "Route latency budget behind the house clock (empty = 60 ms); an edit resets any engine auto-raise."
                 }
             }
         },

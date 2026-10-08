@@ -189,6 +189,53 @@ check(
 )
 pipe.set_state(Gst.State.NULL)
 
+print("\n--- a mux-written PES timeline is house running time + exactly 1 h ---")
+# The house-timeline egress (ts_timeline.MUX_CLOCK_BASE_90K, ADR-0005 amendment
+# 2026-10-08) inverts mpegtsmux's CLOCK_BASE. Pinned against the real element so
+# a GStreamer upgrade that moves it fails here instead of shifting every
+# transform hop's timeline by the difference.
+if Gst.ElementFactory.find("mpegtsmux") is None or Gst.ElementFactory.find("avenc_aac") is None:
+    print("SKIP mpegtsmux / avenc_aac unavailable")
+else:
+    sys.path.insert(0, os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "plugins", "mpegts-core", "py")))
+    import ts_psi  # noqa: E402
+    import ts_timeline  # noqa: E402
+    mp = Gst.parse_launch("audiotestsrc num-buffers=120 ! audioconvert ! avenc_aac ! aacparse "
+                          "! mpegtsmux latency=0 alignment=7 ! appsink name=s sync=false")
+    runner._apply_contract_clock(mp)
+    s = mp.get_by_name("s")
+    mp.set_state(Gst.State.PLAYING)
+    pairs = []
+    while len(pairs) < 40:
+        smp = s.emit("pull-sample")
+        if smp is None:
+            break
+        buf = smp.get_buffer()
+        if buf.pts == Gst.CLOCK_TIME_NONE:
+            continue
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        data = bytes(mi.data)
+        buf.unmap(mi)
+        for pkt in ts_psi.iter_packets(data):
+            if not (pkt[1] & 0x40):
+                continue
+            pts = ts_psi.read_pes_pts(pkt)
+            if pts is None:
+                continue
+            pairs.append((pts, buf.pts))
+            break
+    mp.set_state(Gst.State.NULL)
+    want = ts_timeline.pts90k_to_ns(ts_timeline.MUX_CLOCK_BASE_90K)
+    diffs = sorted(ts_timeline.pts90k_to_ns(pts) - rt for pts, rt in pairs)
+    median = diffs[len(diffs) // 2] if diffs else 0
+    check(f"PES PTS − running time is 1 h ({len(pairs)} buffers, median off by {(median - want) / 1e3:.1f} µs)",
+          len(pairs) >= 20 and abs(median - want) < 20_000)
+    check("... on every buffer, within the mux's own rounding",
+          all(abs(d - want) < 50 * Gst.MSECOND for d in diffs))
+    check("and house_from_mux_pts hands the running time back",
+          all(abs(ts_timeline.house_from_mux_pts(pts, rt) - rt) < 50 * Gst.MSECOND for pts, rt in pairs))
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

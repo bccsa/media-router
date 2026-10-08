@@ -1,4 +1,11 @@
 import type { BacklogShedConfig } from './PluginModule.js';
+import {
+    REANCHOR_HOLD_MS,
+    REANCHOR_RETRY_MS,
+    REANCHOR_TOLERANCE_MS,
+    REBASE_COOLDOWN_MS,
+    REBASE_HOLD_MS,
+} from './playoutReanchor.js';
 
 /**
  * Backlog shedding — the time-sync contract's latency RATCHET guard (ADR-0005).
@@ -37,6 +44,11 @@ import type { BacklogShedConfig } from './PluginModule.js';
  * (measurement and dropping) plus `backlog_shed.py` (the sustained-excess and
  * rate-limit policy). The values below are the single source of truth for the
  * numbers; the runner's own fallbacks only exist so an older config still runs.
+ *
+ * RE-ANCHOR MODE (ADR-0005 2026-10-08, `services.playoutReanchor`): the same
+ * probe never drops on lateness — it asks the engine to raise the route's D.
+ * Its numbers live in `playoutReanchor.ts`; `MR_PLAYOUT_REANCHOR=0` leaves the
+ * config below exactly as it was, so both runners shed as before.
  */
 
 /**
@@ -83,6 +95,8 @@ export const BACKLOG_SHED_SANITY_MS = 10_000;
 /** The slice of `ModuleServices` the gate reads. */
 export interface BacklogShedServices {
     timeSyncContract?: boolean;
+    /** Re-anchor instead of shed (`EngineServices.playoutReanchor`). */
+    playoutReanchor?: boolean;
 }
 
 export interface BacklogShedOptions {
@@ -139,5 +153,16 @@ export function backlogShedConfig(
         holdMs: BACKLOG_SHED_HOLD_MS,
         cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
         sanityMs: BACKLOG_SHED_SANITY_MS,
+        // Absent = shed, byte for byte (the kill-switch path).
+        ...(services.playoutReanchor === true
+            ? {
+                  onLateness: 'reanchor' as const,
+                  reanchorToleranceMs: REANCHOR_TOLERANCE_MS,
+                  reanchorHoldMs: REANCHOR_HOLD_MS,
+                  reanchorRetryMs: REANCHOR_RETRY_MS,
+                  rebaseHoldMs: REBASE_HOLD_MS,
+                  rebaseCooldownMs: REBASE_COOLDOWN_MS,
+              }
+            : {}),
     };
 }

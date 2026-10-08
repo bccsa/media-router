@@ -65,7 +65,7 @@
                 },
                 "mixLatencyMs": {
                     "type": "number",
-                    "default": 200,
+                    "default": 20,
                     "minimum": 20,
                     "maximum": 2000,
                     "x-widget": "slider",

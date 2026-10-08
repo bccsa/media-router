@@ -26,6 +26,11 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    disagreement; two-class routes as a permanent design — free-run survives
    only as a transition state.
 
+   **Amendment 2026-10-08 — never drop on lateness.** The budget is one the
+   engine may RAISE, never drop against: a leg late past D asks for more and
+   the route's D is raised for every leg at once (decision 4 amendment). No
+   automatic shed remains (Stage 3c note, 2026-10-08).
+
 2. **Producer-stamped timeline contract.** A producer latches its source's
    PES timeline once (the existing TimelineLatch machinery, moved to the
    producer side) and stamps bus buffer PTS with the mapped house-clock media
@@ -125,6 +130,31 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    actually for (residual display- and DAC-chain skew that D cannot know about).
    With the contract off, both collapse to the trim alone and the legacy
    pipeline strings are unchanged.
+
+   **Amendment 2026-10-08 — transparent producers.** D comes from the nearest
+   producer upstream that DECLARES one; a producer declaring nothing (transcoder,
+   audio-transcoder, a muxer via its first bus input) passes it through, and the
+   edit fan-out follows the same path. 302M output `mixLatencyMs` default
+   200 → 20 ms (at D=300, 200 clamped the sink `ts-offset` to 0).
+
+   **Amendment 2026-10-08 — the runtime raise overlay.** A leg whose lateness
+   floor sits > 40 ms past its budget for 15 s sends `playout_reanchor
+   {kind:"raise"}`; `MediaRouter.requestPlayoutRaise` raises the ROUTE HEAD's D
+   by the excess + 40 ms on a 20 ms grid and pushes it through the edit
+   fan-out, so lipsync holds by construction. With no declaring producer the
+   head is the top-most one. Up to +2000 ms per head (never past
+   `MAX_PLAYOUT_OFFSET_MS`); at that ceiling the engine stops raising and both
+   ends carry an error-class warning — it never sheds. Kill-switch
+   `MR_PLAYOUT_REANCHOR=0` (`EngineConfig.playoutReanchor`): no `onLateness`
+   reaches the runners and they shed exactly as before.
+   `MR_LATCH_REPAIR=0` turns latch repair and its wire conditioner off box-wide.
+
+   | layer | owns | changes how |
+   |---|---|---|
+   | operator / manager | `playoutOffsetMs` on the route head (stored config) | an edit fans out and clears the raise first |
+   | engine (`MediaRouter`) | `raiseMs` per head, memory only | `requestPlayoutRaise`; forgotten on engine restart |
+   | `effectivePlayoutOffsetMs` | `min(base + raise, MAX) + trim` | unchanged call sites in the legs |
+   | runner | nothing — measures against the live `ts-offset` | receives D pushes as before |
 
 5. **House clock = CLOCK_MONOTONIC.** A plain `GstSystemClock` in every
    process; `NetTimeProvider`/`NetClientClock` distribution becomes
@@ -864,6 +894,29 @@ reporting healthy.
   never arms (`MR_SHED_RUNNER`): 4 ratchet assertions and 9 shedder assertions
   fail.
 
+- **Amendment 2026-10-08 — re-anchor, never drop (`onLateness: "reanchor"`).**
+  Operator requirement: no drops when out of sync. The same probe now decides
+  only the CAUSE — `backlog` when ≥ 40 ms sits in the upstream queues at
+  maturity, else `timeline` (how a transcoder hop's transit arrives under the
+  house-timeline egress: late, queues empty) — and asks for a raise (decision
+  4 amendment). Numbers (`playoutReanchor.ts`): tolerance 40 ms (the audio
+  `alignment-threshold`), hold 15 s (> the producer stamper's 10 s late hold,
+  so a producer that can fix its anchor does so first), retry 30 s, step 20 ms,
+  margin 40 ms, headroom +2000 ms, settle 2 s. The 250 ms / 5 s shed survives
+  only behind the kill-switch.
+  Lateness past 10 s is not a budget problem: the leg REBASES itself onto
+  arrival + D with one pad offset on the shed pad — future stamps at once (the
+  first would otherwise park the sink), past stamps after 3 s, one per 60 s —
+  and warns on the leg and the head. The rebase runs IN the streaming thread
+  (offset + a de-offset SEGMENT re-send under the stream lock the probe holds),
+  not as a main-loop flush pair: a flush at the shed pad returns FLUSHING to the
+  upstream task (queue or source), which then stays paused (measured, gst
+  1.28.2). In-thread nothing is flushed or lost. Verified by the ladder in
+  `gst_backlog_shed_test.py` (zero drops through two raises and two rebases;
+  three `MR_SHED_RUNNER` mutants fail it), ratchet arms E (raised 400/800/1200
+  ms, zero drops, zero queue overruns) and F (capped at +200 ms: refused past the
+  cap, never shed), and native parity case N.
+
 ## Implementation notes (Stage 3d — per-branch zero points at a multi-input mux)
 
 The contract's stamps are the shared truth, and a multi-input mux was quietly
@@ -1193,3 +1246,145 @@ sets `start-time-selection=first`, anchoring the output at the first input
 buffer's running time — `force-live` picks the current running time on a dark
 start — so same-timeline inputs are consumed from the first buffer and the
 stamps read the house clock. Full measurement in `audio302mHelpers.ts`.
+
+## Implementation notes (house-timeline egress — transform producers, 2026-10-08)
+
+**Amends Decision 2 for transform producers.** The producer-side anchor
+(`anchor = house time of the first egress PES`) is right for a NETWORK
+INGEST, whose PES timeline is a foreign clock that has to be mapped onto
+ours once. It is wrong for a producer whose output is an `mpegtsmux` running
+on bus-fed, house-stamped input — the transcoder, the audio-transcoder, the
+mpegts-muxer — because that mux already writes every PES PTS/DTS and PCR as
+house running time + 1 h (GStreamer's basetsmux CLOCK_BASE; measured
+3600.000 s on gst 1.28.2 and pinned by `gst_time_sync_contract_test.py`).
+Anchoring such an egress at its own first PES discarded the source's time
+and replaced it with "when my first packet happened to leave": the hop's
+decode/encode transit was baked into the timeline and re-drawn on every
+re-anchor.
+
+- **Field, OCC gate (2026-10-08).** Legacy path (contract off): the
+  transcoded video branch entered the transcode mux with its timeline 653 ms
+  behind the passthrough audio branch and nothing realigned them (branch
+  alignment is contract-only and the muxer's per-input Audio Offset was
+  removed on 2026-09-28). Contract path, same morning, production chain: the
+  muxer's branch align read the transcoded video at −270 ms and the
+  passthrough AAC at +1080 ms, the AAC branches then failed to join access
+  units in two of three incarnations and were left un-anchored (audio ~1.3 s
+  ahead), and each transcoder egress re-anchored every ~11 s with −0.10 to
+  −0.21 s jumps (the late-level tier chasing a transit that is not an
+  error). On 10.9.1.211 the audio-transcoder's anchor dropped the HLS
+  player's 2 s delivery lead, so the 302M leg played on arrival while the
+  video leg paced; a private-stream (s302m, stream_id 0xBD) egress with the
+  conditioner off never learned its PCR PID and was stamped at arrival
+  outright.
+
+- **The stamp is the identity, `PES − 1 h`** (`TimelineStamper
+  house_timeline` / `mrts::TimelineStamper::set_house_timeline`, element
+  property `house-timeline`, description field `houseTimelineEgress`,
+  start-payload key of the same name in both runners). Unwrapped to the
+  2^33 period nearest the house clock (`house_from_mux_pts`; the 33-bit
+  field wraps every 26.5 h of uptime, the house clock does not). Nothing of
+  the anchored mode runs: no watch, no net, no slew, no latch repair, no
+  conditioner — there is no estimate to defend. Kept: timing eligibility (a
+  KLV cue PES carries the cue's time, not the buffer's), the PCR-PID rule for
+  private-stream egresses (learned by the house mode itself, since the
+  conditioner that learns it for the anchored mode never runs here), the
+  arrival fallback for a private-only buffer, the staircase for a PES-less
+  one, and the monotone floor. One `timeline_restamped` event still reports
+  the egress coming up, with `anchorNs` = the first stamp and `refPts90k` =
+  its PES — the identity.
+
+- **Who declares it:** transcoder, audio-transcoder, mpegts-muxer, on the
+  contract path only (`applyTimeSync` drops the field off-contract, so the
+  legacy start payload is byte-identical). Not the audio-encoder or the
+  video-encoder (capture-fed; the former's pulsesrc ring re-timestamps are
+  exactly what its conditioner exists for), not the network ingests, not the
+  sidecars.
+
+- **What changes for a route.** The hop becomes timeline-transparent: the
+  mux after a transcoder sees the same content time on the transcoded leg as
+  on the splitter's passthrough leg, so its branch alignment measures its own
+  demuxer's zero point and nothing else; a 302M output after an
+  audio-transcoder presents at the same stamp + D as the video-player. The
+  hop's transit is therefore VISIBLE to D for the first time — a route
+  through a transcoder needs a playout offset that covers decode + encode
+  (170 ms measured for 1080i50 → HEVC on the gate), which is the configured
+  budget decision 1 always promised rather than a hidden re-anchor.
+
+- **Residual, deliberately left.** The transform producer's own input
+  `tsdemux` still locks its zero point off one input buffer, ~80 ms ahead of
+  the stamps on these edges (the PTS−PCR lead; Stage 3d), and on B-frame
+  input the upstream stamps carry the monotone-floor clamp spread. Branch
+  alignment on the transform producer's INPUT demux is now safe (it was
+  skipped only because the egress re-anchored) and closes that; it lands as
+  a follow-up with its own field check, because it steps the running time
+  under a live encoder once at start.
+
+- **Verification.** Parity fixture in both twins (`ts_timeline_test.{py,cpp}`,
+  the same integers out of both, including across the 2^33 wrap); the python
+  probe and the `mrtsstamp` element each stamp a ladder built off the
+  pipeline's own house clock as the mux would write it, arrival deliberately
+  late and jittery (`gst_bus_stamper_test.py`, `gst_mrtsstamp_element_test.py`);
+  the native runner end to end over a real `unixfdsink` edge — every wire
+  timestamp equals the mux's PES PTS − 1 h to the tick
+  (`native_runner_protocol_test.py` B2); the engine side pins the field on the
+  start payload, the contract-only drop and the three declarations.
+
+- **Amendment (2026-10-08, later): the input demux is retimed per access unit.**
+  The residual above was the input's whole PTS−PCR lead (0.9–1.36 s at the gate),
+  not 80 ms. A first cut (hold the branch, then one pad offset) left the video
+  −30…−140 ms off the passthrough AAC at the gate, walking −0.6…−2 ms/s within each
+  427 s loop and stepping ~100 ms at every rewind: tsdemux's skew estimator keeps
+  re-deriving its PCR mapping after any one-time correction. So
+  `alignBranchesToStamps.transformProducer` (transcoder, audio-transcoder) now
+  REPLACES tsdemux's timestamps: every buffer leaving an audio/video pad gets
+  `PTS = K + ns(PES PTS)`, `DTS = K + ns(PES DTS)`, the PES found by the payload-
+  tail join (ties between repeated tails broken by tsdemux's own PTS, so an AU it
+  discarded after a continuity gap is skipped), `K = stamp − ns(PES)` the
+  producer's mapping. K is read exactly, not as a minimum: a stamp that differs
+  from the previous buffer's escaped the monotone floor and maps its stamping PES
+  (the first timing-eligible PES, or the first PCR-PID PES on a conditioned
+  egress — learned from the candidates that agree); K is the lower of the last two
+  such readings, so a lone high one (a clamped stamp after a bus drop) never
+  lands. Readings are kept per stamp EPOCH (a PES discontinuous with its PID's
+  last, −1 s … +5 s): a rewind opens a fresh epoch predicted to continue the old
+  timeline until its first exact reading. Until the first exact reading exists
+  the bus input is held at the demux sink pad and then re-chained (≤ 6 buffers
+  in the fixture, bounded at 1 s of stamps): nothing is dropped and the first AU
+  out is on its stamp. Fixture (`transform_input_fixture.py`, both runners): first
+  AU and every AU within 0.06 ms, 64–70 s under a 0.9–1.4 s VBR lead swing with
+  ±40 ppm skew and no trend, continuous across the 427 s rewind, B-frame DTS
+  order and PTS−DTS intact; six mutants each fail their check
+  (`gst_branch_align_test.py` §6–7, `native_runner_protocol_test.py` M). Residual:
+  the retime follows the producer's stamps exactly, so a producer that re-anchors
+  at a discontinuity (anchored egress: at arrival, +229 ms off continuity in a
+  real-stamper simulation with the swing) or repairs its latch steps the output
+  with it — the passthrough legs carry the same stamps. `tsdemux ignore-pcr` was
+  refuted (`gst_tsdemux_slave_test.py`): first-PES latch lottery, free-runs on the
+  source clock, a source rewind steps it back 427 s.
+
+- **Amendment (2026-10-08, evening): the mpegts-muxer's inputs are retimed too.**
+  With the transcoders retimed, the OCC gate's muxer output (15:25Z, content-based
+  skew tool) held its video 51–87 ms ahead of the audio — constant to the frame
+  over 2 min and across a loop restart, the three passthrough AAC tracks ~32 ms
+  apart: the mux-mode one-time corrections (audio −43.7 / −41.0 / −2.1 ms at one
+  start, +22 / +23 / +42 ms at another, video −125 ms) freezing tsdemux re-slaving
+  errors at settle. The muxer now declares `transformProducer` on every input
+  demux, each on its own producer's stamps — K, hold, epochs and join per demux in
+  both runners. Presentation legs (video-player, audio-decoder, 302M output) stay
+  in mux mode. Fixture (`mux_inputs`): a splitter's AAC leg (anchored, lead
+  swinging 0.25–0.75 s, 427 s rewind, −40 ppm) and a transcoder's identity egress
+  (K = −3600 s, B-frames) into the module's live mux, both runners: every AU within
+  0.011 ms of its content time over 69 s, each PID continuous, no `ignoring DTS
+  going backward`; mux mode on the same feed 351 ms apart with 17 of those
+  warnings; a state shared between the demuxes fails it in either runner
+  (`native_runner_protocol_test.py` P, `gst_branch_align_test.py` §8). **Limit:**
+  `unixfdsrc` is a live source, so the muxer's mpegtsmux aggregates live: it waits
+  for an empty input until its earliest queued running time + 2.4 s (`latency` +
+  `min-upstream-latency`, 1.2 s each — the "1.2 s latency fill" of the mux-mode
+  comments counts the first alone). Measured on the module's properties: an input
+  2.3 s behind its running time muxes in order; 2.6 s behind, every PES of it
+  lands behind a later one of its sibling. Retimed, an input's running time IS its
+  content time, so a leg whose data reaches the muxer more than 2.4 s after its
+  stamps (a transcoded leg: its transit plus its own input's lag) is muxed late.
+  The latency is unchanged.

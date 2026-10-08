@@ -78,7 +78,6 @@ describe('planSink', () => {
         // Contract off (no services): the trim is the whole offset, unchanged.
         expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=40000000');
     });
-
 });
 
 /**
@@ -283,7 +282,10 @@ describe('planLivePipeline', () => {
         expect(withSubs.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
         expect(withSubs.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
         expect(withSubs.runnerHooks).toEqual([
-            { module: 'subtitle_bridge', config: { overlay: { demux: 'subdemux', overlay: 'subov' } } },
+            {
+                module: 'subtitle_bridge',
+                config: { overlay: { demux: 'subdemux', overlay: 'subov' } },
+            },
         ]);
         // everything else about the description is untouched
         expect(withSubs.tsProbe).toEqual(plain.tsProbe);
@@ -426,6 +428,42 @@ describe('planLivePipeline', () => {
                     ...base,
                     decoder: explicitDec,
                     services: { timeSyncContract: false },
+                }).backlogShed,
+            ).toBeUndefined();
+        });
+
+        // Never drop on lateness (ADR-0005 amendment 2026-10-08): with the
+        // engine's re-anchor switch on, the same pad asks to RAISE the route's
+        // D; off (MR_PLAYOUT_REANCHOR=0) the config is exactly as before.
+        it('re-anchor on: carries onLateness and the five re-anchor numbers', () => {
+            expect(
+                planLivePipeline({
+                    ...base,
+                    decoder: explicitDec,
+                    services: { timeSyncContract: true, playoutReanchor: true },
+                }).backlogShed,
+            ).toMatchObject({
+                element: VIDEO_DECODER_NAME,
+                sink: 'sink',
+                keyframeAligned: true,
+                onLateness: 'reanchor',
+                reanchorToleranceMs: 40,
+                reanchorHoldMs: 15000,
+                reanchorRetryMs: 30000,
+                rebaseHoldMs: 3000,
+                rebaseCooldownMs: 60000,
+            });
+        });
+
+        it('re-anchor off: none of the keys; contract off: nothing at all', () => {
+            expect(
+                planLivePipeline({ ...base, decoder: explicitDec, services: contract }).backlogShed,
+            ).not.toHaveProperty('onLateness');
+            expect(
+                planLivePipeline({
+                    ...base,
+                    decoder: explicitDec,
+                    services: { timeSyncContract: false, playoutReanchor: true },
                 }).backlogShed,
             ).toBeUndefined();
         });

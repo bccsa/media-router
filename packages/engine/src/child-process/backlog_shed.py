@@ -74,6 +74,17 @@ DEFAULT_COOLDOWN_MS = 60_000.0
 # reach. So it is reported, never acted on. 10 s is `MAX_PLAYOUT_OFFSET_MS`.
 DEFAULT_SANITY_MS = 10_000.0
 
+# Re-anchor mode (`onLateness: "reanchor"`, ADR-0005 2026-10-08): a late leg asks
+# the engine to raise the route's D and never drops. The shipped numbers live in
+# `plugins/playoutReanchor.ts`; these are only an older config's fallbacks.
+DEFAULT_REANCHOR_TOLERANCE_MS = 40.0
+DEFAULT_REANCHOR_HOLD_MS = 15_000.0
+DEFAULT_REANCHOR_RETRY_MS = 30_000.0
+DEFAULT_REBASE_HOLD_MS = 3_000.0
+DEFAULT_REBASE_COOLDOWN_MS = 60_000.0
+# A live budget change smaller than this is float noise, not a D push.
+BUDGET_EPSILON_MS = 0.5
+
 # How long a VIDEO leg has to prove its decoder survived the shed, per stage.
 # Field (Pi 400, 2026-08-18): a shed completed normally ("retained
 # 611 ms against a 300 ms budget for 5000 ms") and the stateless V4L2 HEVC
@@ -216,10 +227,19 @@ class BacklogShedPolicy:
 
     `now_ms` is any monotonic millisecond count; the runner passes the pipeline
     clock's running time, so the policy and the measurement share one time base.
+
+    `mode="reanchor"` NEVER sheds. Sustained excess over `reanchor_tolerance_ms`
+    for `reanchor_hold_ms` returns "reanchor" (`.level_ms` = the floor over the
+    hold, `.cause` from `queued_ms`); an implausible reading returns "rebase"
+    once it is due. `mode="shed"` leaves every path above untouched.
     """
 
     def __init__(self, tolerance_ms=DEFAULT_TOLERANCE_MS, hold_ms=DEFAULT_HOLD_MS,
-                 cooldown_ms=DEFAULT_COOLDOWN_MS, sanity_ms=DEFAULT_SANITY_MS):
+                 cooldown_ms=DEFAULT_COOLDOWN_MS, sanity_ms=DEFAULT_SANITY_MS,
+                 mode="shed", reanchor_tolerance_ms=DEFAULT_REANCHOR_TOLERANCE_MS,
+                 reanchor_hold_ms=DEFAULT_REANCHOR_HOLD_MS, retry_ms=DEFAULT_REANCHOR_RETRY_MS,
+                 rebase_hold_ms=DEFAULT_REBASE_HOLD_MS,
+                 rebase_cooldown_ms=DEFAULT_REBASE_COOLDOWN_MS):
         self.tolerance_ms = float(tolerance_ms)
         self.hold_ms = float(hold_ms)
         self.cooldown_ms = float(cooldown_ms)
@@ -230,6 +250,26 @@ class BacklogShedPolicy:
         self._last_shed_end = None    # cooldown anchor; None = never shed
         self._implausible = False     # latched so it is reported once, not per buffer
         self._timeline = False        # latched: "timeline" reported once per episode
+        # Re-anchor mode only (all unused under mode="shed").
+        self.mode = "reanchor" if mode == "reanchor" else "shed"
+        self.reanchor_tolerance_ms = float(reanchor_tolerance_ms)
+        self.reanchor_hold_ms = float(reanchor_hold_ms)
+        self.retry_ms = float(retry_ms)
+        self.rebase_hold_ms = float(rebase_hold_ms)
+        self.rebase_cooldown_ms = float(rebase_cooldown_ms)
+        self.requests = 0
+        self.rebases = 0
+        self.level_ms = None          # floor over the matured hold (the raise asked for)
+        self.worst_ms = None          # peak over the same hold
+        self.cause = None             # "backlog" | "timeline"
+        self.queued_ms = None         # upstream queue level at maturity
+        self.implausible_since = None
+        self.last_implausible_ms = None
+        self._floor = None
+        self._worst = None
+        self._request_at = None       # retry gate; None = no request open
+        self._budget = None           # budget the last request / sample was measured against
+        self._last_rebase = None
 
     def reset(self):
         """Drop the streak (not the counters): a flush/re-anchor makes the
@@ -237,10 +277,15 @@ class BacklogShedPolicy:
         self._above_since = None
         self._implausible = False
         self._timeline = False
+        self._floor = None
+        self._worst = None
+        self.implausible_since = None
 
     def observe(self, lateness_ms, now_ms, queued_ms=None):
         if lateness_ms is None or lateness_ms != lateness_ms:   # NaN
             return None
+        if self.mode == "reanchor":
+            return self._observe_reanchor(lateness_ms, now_ms, queued_ms)
         if abs(lateness_ms) > self.sanity_ms:
             # Not a backlog — see DEFAULT_SANITY_MS. The streak is dropped too:
             # a timeline mismatch must never accumulate toward a shed.
@@ -281,3 +326,73 @@ class BacklogShedPolicy:
         self.sheds += 1
         self._last_shed_end = now_ms
         self._above_since = None
+
+    def _observe_reanchor(self, lateness_ms, now_ms, queued_ms):
+        if abs(lateness_ms) > self.sanity_ms:
+            # Not a budget problem (no budget is 10 s): never a raise, a rebase.
+            self._above_since = None
+            if self.implausible_since is None:
+                self.implausible_since = now_ms
+            self.last_implausible_ms = lateness_ms
+            cooling = (self._last_rebase is not None
+                       and now_ms - self._last_rebase < self.rebase_cooldown_ms)
+            # A future stamp parks the sink on its first buffer, so no later
+            # sample can confirm it: it is due at once. A past one must hold.
+            if not cooling and (lateness_ms < 0
+                                or now_ms - self.implausible_since >= self.rebase_hold_ms):
+                return "rebase"
+            if self._implausible:
+                return None
+            self._implausible = True
+            return "implausible"
+        self._implausible = False
+        self.implausible_since = None
+        if lateness_ms <= self.reanchor_tolerance_ms:
+            self._above_since = None
+            return None
+        if self._above_since is None:
+            self._above_since = now_ms
+            self._floor = self._worst = lateness_ms
+            return None
+        self._floor = min(self._floor, lateness_ms)
+        self._worst = max(self._worst, lateness_ms)
+        if now_ms - self._above_since < self.reanchor_hold_ms:
+            return None
+        if self._request_at is not None and now_ms - self._request_at < self.retry_ms:
+            return None
+        queued = queued_ms() if callable(queued_ms) else queued_ms
+        self.level_ms = self._floor
+        self.worst_ms = self._worst
+        self.queued_ms = 0.0 if queued is None else float(queued)
+        self.cause = ("timeline" if queued is not None and queued < self.reanchor_tolerance_ms
+                      else "backlog")
+        # Once per episode: a re-ask needs a fresh hold (and the retry gate).
+        self._above_since = now_ms
+        self._floor = self._worst = lateness_ms
+        return "reanchor"
+
+    def request_sent(self, now_ms, budget_ms):
+        """A raise request went out: no re-ask for `retry_ms` unless the budget moves."""
+        self.requests += 1
+        self._request_at = now_ms
+        self._budget = budget_ms
+
+    def budget_moved(self, budget_ms):
+        """Per sample. True when the live budget changed (a raise landed, D was
+        edited): the streak and the retry gate restart against the new one."""
+        if self._budget is None:
+            self._budget = budget_ms
+            return False
+        if abs(budget_ms - self._budget) < BUDGET_EPSILON_MS:
+            return False
+        self._budget = budget_ms
+        self._above_since = None
+        self._floor = self._worst = None
+        self._request_at = None
+        return True
+
+    def rebased(self, now_ms):
+        """The runner re-anchored the leg: the rebase cooldown starts, streaks restart."""
+        self.rebases += 1
+        self._last_rebase = now_ms
+        self.reset()

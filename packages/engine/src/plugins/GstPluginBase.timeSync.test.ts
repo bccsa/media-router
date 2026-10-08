@@ -131,14 +131,32 @@ describe('GstPluginBase time-sync mode resolution', () => {
             expect(sent!.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
         });
 
+        it('keeps houseTimelineEgress — the identity stamp rides the contract stamps too', async () => {
+            // A transform producer's output PES are house time + 1 h only
+            // because its INPUT carried house stamps; the flag means nothing
+            // without them and everything with them.
+            const sent = await resolve(
+                {
+                    pipeline:
+                        'unixfdsrc ! tsdemux ! avdec_aac ! avenc_s302m ! mpegtsmux ! tee name=busout_1',
+                    houseTimelineEgress: true,
+                },
+                { timeSyncContract: true },
+            );
+            expect(sent!.houseTimelineEgress).toBe(true);
+        });
+
         it('never resolves a net clock for a non-clockSync pipeline either', async () => {
             // Widening the gate must not widen what the contract COSTS: still no
             // daemon, still nothing waited on, for any pipeline.
             const clockAuthority = authority({ host: '127.0.0.1', port: 5000 });
-            const sent = await resolve({ pipeline: 'fakesrc ! fakesink' }, {
-                timeSyncContract: true,
-                clockAuthority: clockAuthority as unknown as ModuleServices['clockAuthority'],
-            });
+            const sent = await resolve(
+                { pipeline: 'fakesrc ! fakesink' },
+                {
+                    timeSyncContract: true,
+                    clockAuthority: clockAuthority as unknown as ModuleServices['clockAuthority'],
+                },
+            );
             expect(sent!.timeSyncContract).toBe(true);
             expect(clockAuthority.getClockConfig).not.toHaveBeenCalled();
         });
@@ -200,6 +218,18 @@ describe('GstPluginBase time-sync mode resolution', () => {
             expect(sent!.alignBranchesToStamps).toBeUndefined();
         });
 
+        it('drops houseTimelineEgress — nothing stamps on the legacy path', async () => {
+            const sent = await resolve(
+                {
+                    pipeline:
+                        'unixfdsrc ! tsdemux ! avdec_aac ! avenc_s302m ! mpegtsmux ! tee name=busout_1',
+                    houseTimelineEgress: true,
+                },
+                {},
+            );
+            expect(sent!.houseTimelineEgress).toBeUndefined();
+        });
+
         it('an explicit `timeSyncContract: false` keeps the legacy path', async () => {
             const clockAuthority = authority({ host: '127.0.0.1', port: 46008 });
             const sent = await resolve(clockSyncDesc(), {
@@ -212,9 +242,12 @@ describe('GstPluginBase time-sync mode resolution', () => {
 
         it('a non-sync pipeline never touches the authority', async () => {
             const clockAuthority = authority({ host: '127.0.0.1', port: 46008 });
-            const sent = await resolve({ pipeline: 'fakesrc ! fakesink' }, {
-                clockAuthority: clockAuthority as unknown as ModuleServices['clockAuthority'],
-            });
+            const sent = await resolve(
+                { pipeline: 'fakesrc ! fakesink' },
+                {
+                    clockAuthority: clockAuthority as unknown as ModuleServices['clockAuthority'],
+                },
+            );
             expect(sent!.clock).toBeUndefined();
             expect(clockAuthority.getClockConfig).not.toHaveBeenCalled();
         });
@@ -248,6 +281,25 @@ describe('latch repair (ADR-0005 note 2026-09-05)', () => {
             } as never,
         });
         expect(sent!.latchRepair).toBe(false);
+    });
+
+    it('MR_LATCH_REPAIR=0 turns it OFF for every producer (operator kill-switch for the conditioner)', async () => {
+        const prev = process.env.MR_LATCH_REPAIR;
+        process.env.MR_LATCH_REPAIR = '0';
+        try {
+            const sent = await resolve(
+                { pipeline: 'udpsrc ! tee name=busout_1' },
+                {
+                    timeSyncContract: true,
+                    instanceId: 'mpegts-ip-input-1',
+                    mediaRouter: { getUpstreamBusProducers: () => [] } as any,
+                },
+            );
+            expect(sent!.latchRepair).toBe(false);
+        } finally {
+            if (prev === undefined) delete process.env.MR_LATCH_REPAIR;
+            else process.env.MR_LATCH_REPAIR = prev;
+        }
     });
 
     it('is not set at all on the legacy path (nothing stamps there)', async () => {

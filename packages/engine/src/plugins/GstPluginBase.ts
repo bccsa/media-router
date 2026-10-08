@@ -13,12 +13,23 @@ import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { effectiveLatchRepair } from './latchRepair.js';
+import {
+    DEFAULT_PLAYOUT_OFFSET_MS,
+    PLAYOUT_OFFSET_KEY,
+    parsePlayoutOffsetMs,
+} from './playoutOffset.js';
+import {
+    PLAYOUT_REANCHOR_EVENT,
+    type PlayoutRaise,
+    type PlayoutRebaseNote,
+} from './playoutReanchor.js';
+import { PlayoutReanchorState, type PlayoutWarningKind } from './playoutReanchorState.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
  *  this module: health stays a warning through the restart that follows. */
 const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
 /** The transient warnings a module writes and later withdraws itself. */
-type OwnedWarning = 'gate' | 'silence' | 'reconnect' | 'input-lost';
+type OwnedWarning = 'gate' | 'silence' | 'reconnect' | 'input-lost' | 'reanchor' | 'rebase';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -213,6 +224,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                     clockSync: desc.clockSync === true,
                     liveCaptureClock,
                     latchRepair: desc.latchRepair,
+                    // A transform producer stamps by identity (PES − 1 h):
+                    // which hops carry their source's time through is the
+                    // first thing to establish when a route's A/V is off.
+                    houseTimelineEgress: desc.houseTimelineEgress === true,
                 },
                 liveCaptureClock
                     ? 'Time-sync contract: monotonic house clock, base_time=natural (live capture), producer-stamped bus PTS'
@@ -225,6 +240,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // measurement the runner would take is noise. Drop it here (rather than
         // gating in each plugin) so the legacy dataflow is byte-identical.
         delete desc.alignBranchesToStamps;
+        // Likewise the identity stamp of a transform producer: without the
+        // contract nothing stamps, and the legacy start payload stays what it
+        // was byte for byte.
+        delete desc.houseTimelineEgress;
         if (!desc.clockSync) return;
         if (this.services?.clockAuthority) {
             const clock = await this.services.clockAuthority.getClockConfig();
@@ -282,6 +301,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 if (this.services?.instanceId) {
                     this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
                 }
+                this.playout.reassert();
                 // Fires on EVERY playing transition, including a runner-internal
                 // crash-restart (which rebuilds the pipeline from the original
                 // string, dropping any live element state). Subclasses re-seed
@@ -718,6 +738,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
+        if (channel === PLAYOUT_REANCHOR_EVENT) {
+            this.playout
+                .onEvent(payload)
+                .catch((err) => this.log.warn({ err }, 'Playout re-anchor request failed'));
+        }
         this.onPluginEvent(channel, payload);
     }
 
@@ -760,6 +785,50 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             { backlogShed: payload },
             'Backlog shed — retained latency returned to the playout budget',
         );
+    }
+
+    // --- Playout re-anchor (ADR-0005 amendment 2026-10-08) ---
+    // Both ends live in `PlayoutReanchorState`, so every leg and route head gets them free.
+
+    private readonly playout = new PlayoutReanchorState({
+        services: () => this.services,
+        log: () => this.log,
+        configuredOffsetMs: () =>
+            parsePlayoutOffsetMs(this.config[PLAYOUT_OFFSET_KEY]) ??
+            this.services?.playoutOffsetMs ??
+            DEFAULT_PLAYOUT_OFFSET_MS,
+        showSection: (section, status) => {
+            this.upsertStatusSection(section);
+            this.setStatusData(section.id, status);
+        },
+        clearSection: (id) => {
+            if (this.dynamicStatusSections.some((sec) => sec.id === id)) {
+                this.clearStatusSection(id);
+            }
+        },
+        setBadge: (id, badge) => (badge ? this.setBadge(id, badge) : this.clearBadge(id)),
+        warn: (kind, text) => this.ownReanchorWarning(kind, text),
+        clearWarnings: () => {
+            this.clearOwnWarning('reanchor');
+            this.clearOwnWarning('rebase');
+        },
+    });
+
+    /** Head: this route's raise (`null` = cleared). Leg: its route's raise reset to 0. */
+    onRoutePlayoutRaised(raise: PlayoutRaise | null): void {
+        this.playout.onRouteRaised(raise);
+    }
+
+    /** Head: a leg below it rebased itself — a producer timeline fault. */
+    onRoutePlayoutRebased(note: PlayoutRebaseNote): void {
+        this.playout.onRouteRebased(note);
+    }
+
+    /** Taken only over `ok` or our own re-anchor/rebase text (ADR-0010 rule 2). */
+    private ownReanchorWarning(kind: PlayoutWarningKind, text: string): void {
+        const ours = this.ownedWarning === 'reanchor' || this.ownedWarning === 'rebase';
+        if (this.health !== 'ok' && !ours) return;
+        this.ownWarning(kind, text);
     }
 
     /**

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 
 function makeModule(
@@ -196,6 +198,28 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         );
     });
 
+    it('re-anchor on (ADR-0005 2026-10-08): the shed config asks to raise, never shed', () => {
+        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 300 } });
+        module.services.playoutReanchor = true;
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' })!.backlogShed).toMatchObject({
+            element: 'sink',
+            sink: 'sink',
+            keyframeAligned: false,
+            onLateness: 'reanchor',
+            reanchorToleranceMs: 40,
+            reanchorHoldMs: 15000,
+            reanchorRetryMs: 30000,
+            rebaseHoldMs: 3000,
+            rebaseCooldownMs: 60000,
+        });
+    });
+
+    it('re-anchor off: the shed config has none of the re-anchor keys', () => {
+        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 300 } });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
+        expect(desc!.backlogShed).not.toHaveProperty('onLateness');
+    });
+
     it('contract OFF: no backlog shedder, no named sink — the legacy string is untouched', () => {
         const { module } = makeModule({ sources: 1 });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', lipSyncMs: 80 });
@@ -271,6 +295,14 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
         expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true latency=100000000');
         expect(desc!.pipeline).toContain('identity name=mixin_out sync=true');
         expect(desc!.pipeline).toContain('ts-offset=100000000');
+    });
+
+    it('mix latency defaults to 20 ms, in the manifest and the code fallback alike', () => {
+        const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+        expect(manifest.mediaRouter.configSchema.properties.mixLatencyMs.default).toBe(20);
+        const { module } = makeModule({ sources: 2, contract: { playoutOffsetMs: 300 } });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
+        expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true latency=20000000');
     });
 
     it('re-pushes ts-offset live when the route D or the trim changes; never on the legacy path', async () => {

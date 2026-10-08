@@ -19,7 +19,7 @@ import {
     SUBTITLE_OVERLAY_NAME,
     applySubtitleLiveUpdates,
 } from '@media-router/plugin-subtitle-core';
-import { buildPipeline, DEMUX_NAME } from './transcoderPipeline.js';
+import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
 import { renditionSummary, throughputSection } from './transcoderStatus.js';
 import {
     buildDynamicPorts,
@@ -92,7 +92,8 @@ export class TranscoderModule extends GstPluginBase {
             changes,
             this.config,
             (property, value) => this.setElementProperty(SUBTITLE_OVERLAY_NAME, property, value),
-            (err, property) => this.log.debug({ err, property }, 'Failed to update subtitle overlay'),
+            (err, property) =>
+                this.log.debug({ err, property }, 'Failed to update subtitle overlay'),
         );
     }
 
@@ -240,6 +241,8 @@ export class TranscoderModule extends GstPluginBase {
             bufferMs,
             decodeThreads,
             deinterlace,
+            // Host CPU decides yadif vs greedyl, at build time (#817).
+            deinterlaceMethod: deinterlaceMethodForArch(process.arch),
             hwScalers: TranscoderModule.probed.hwScalers,
             subtitles: subtitleSource
                 ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }
@@ -285,6 +288,13 @@ export class TranscoderModule extends GstPluginBase {
             ...(config.preserveSourceTimeline === false
                 ? {}
                 : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
+            // CONTRACT PATH: output PES already carry house time + 1 h, so the
+            // egress stamps by identity; the hop's transit is the route's D to cover.
+            houseTimelineEgress: true,
+            // Input demux retimed to the bus stamps per access unit (it otherwise
+            // runs the input's PTS−PCR lead late, ~1.1 s at the OCC gate, and
+            // walks), so the identity egress is content-correct. Contract only.
+            alignBranchesToStamps: { demuxes: [DEMUX_NAME], transformProducer: true },
         };
     }
 

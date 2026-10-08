@@ -34,6 +34,8 @@ export class ModuleManager extends EventEmitter {
     private timeSyncContract = false;
     /** Engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
     private playoutOffsetMs: number | undefined;
+    /** Re-anchor instead of shed — see `EngineConfig.playoutReanchor`. */
+    private playoutReanchor = false;
 
     constructor(
         pluginLoader: PluginLoader,
@@ -44,6 +46,7 @@ export class ModuleManager extends EventEmitter {
         clockAuthority?: ClockAuthority,
         timeSyncContract?: boolean,
         playoutOffsetMs?: number,
+        playoutReanchor?: boolean,
     ) {
         super();
         this.pluginLoader = pluginLoader;
@@ -54,6 +57,7 @@ export class ModuleManager extends EventEmitter {
         this.clockAuthority = clockAuthority ?? null;
         this.timeSyncContract = timeSyncContract === true;
         this.playoutOffsetMs = playoutOffsetMs;
+        this.playoutReanchor = playoutReanchor === true;
     }
 
     /** Create a new module instance. Does NOT start it. */
@@ -119,6 +123,7 @@ export class ModuleManager extends EventEmitter {
                       ...(this.playoutOffsetMs !== undefined
                           ? { playoutOffsetMs: this.playoutOffsetMs }
                           : {}),
+                      ...(this.playoutReanchor ? { playoutReanchor: true } : {}),
                       instanceId,
                   }
                 : undefined;

@@ -23,6 +23,7 @@ GstElement* g_pipeline = nullptr;
 int g_native_loaded = -1;          // -1 not tried, 0 failed, 1 loaded
 bool g_repair_latch = true;
 gint64 g_condition_step_ms = 0;
+bool g_house_timeline = false;     // the payload's `houseTimelineEgress`
 guint g_drift_timer_id = 0;
 std::map<std::string, GstElement*> g_elements;   // tee name -> spliced mrtsstamp (owned ref)
 std::vector<std::string> g_armed;                 // tee names armed
@@ -252,7 +253,8 @@ void stop_drift_timer() {
 
 // ---------------------------------------------------------------------------
 
-void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_ms) {
+void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_ms,
+            bool house_timeline) {
     clear();
     g_enabled = on;
     g_pipeline = on ? pipe : nullptr;
@@ -261,6 +263,7 @@ void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_m
         g_repair_latch = t == G_TYPE_BOOLEAN ? json_node_get_boolean(repair) : json_node_get_int(repair) != 0;
     }
     g_condition_step_ms = condition_step_ms > 0 ? condition_step_ms : 0;
+    g_house_timeline = house_timeline;
     if (g_enabled && load_native()) insert_elements(pipe);
 }
 
@@ -272,9 +275,14 @@ void arm(GstElement* tee, const std::string& name) {
     g_object_set(el, "repair-latch", (gboolean)g_repair_latch, nullptr);
     if (g_condition_step_ms > 0 && g_object_class_find_property(G_OBJECT_GET_CLASS(el), "condition-step-ms"))
         g_object_set(el, "condition-step-ms", (gint)g_condition_step_ms, nullptr);
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(el), "house-timeline"))
+        g_object_set(el, "house-timeline", (gboolean)g_house_timeline, nullptr);
+    else if (g_house_timeline)
+        ipc::log(fmt("busStamp: %s declares a house-timeline egress but this mrtsstamp predates the "
+                     "property - anchored stamps instead", name.c_str()));
     g_object_set(el, "active", TRUE, nullptr);
-    ipc::log(fmt("busStamp: producer-stamped timeline armed on %s (first consumer edge, native mrtsstamp)",
-                 name.c_str()));
+    ipc::log(fmt("busStamp: producer-stamped timeline armed on %s (%s, native mrtsstamp)", name.c_str(),
+                 g_house_timeline ? "house-timeline egress: PES - 1 h, no anchor" : "first consumer edge"));
     g_armed.push_back(name);
     start_drift_timer();
 }

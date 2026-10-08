@@ -21,6 +21,8 @@ two are the field condition, a presentation chain with almost none:
     B  contract `sync=true`,  spare rate    → gives the budget up, for ever
     C  contract `sync=true`,  media-rate    → the ratchet, unfixed (control)
     D  contract `sync=true`,  media-rate, shedder ON → sheds, returns to D
+    E  as D in re-anchor mode, the test applying each raise → back inside D, zero drops
+    F  as E with raises capped at +200 ms → refused past the cap, never shed
 
 Arms A and B are the mechanism: the only difference between them is that a
 `sync=true` sink WAITS for each buffer's slot, so it can never claw back the
@@ -47,6 +49,7 @@ Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run:  python3 gst_latency_ratchet_test.py
 """
 import importlib.util
+import math
 import os
 import sys
 import threading
@@ -99,6 +102,10 @@ GLASS_US = 19_000               # 19 ms/frame ⇒ ~52 fps ceiling against 50 fps
 # one.
 HOLD_MS = 800
 COOLDOWN_MS = 2_500
+# Re-anchor arms (E/F), same compression: the real 40 ms tolerance, a short hold
+# and retry. The test plays the ENGINE: a raise request is applied to ts-offset.
+REANCHOR = {"onLateness": "reanchor", "reanchorToleranceMs": 40, "reanchorHoldMs": HOLD_MS,
+            "reanchorRetryMs": 1_500, "rebaseHoldMs": 3_000, "rebaseCooldownMs": 60_000}
 
 
 def check(name, cond):
@@ -107,12 +114,15 @@ def check(name, cond):
         _failures.append(name)
 
 
-def run(sync, shed, glass_us=0):
-    """One arm. Returns (samples, shed_events, sink_dropped).
+def run(sync, shed, glass_us=0, engine=None, stalls=STALLS, stall_ms=STALL_MS, settle_s=GAP_S):
+    """One arm. Returns (samples, shed_events, sink_dropped, extra).
 
     `samples` are (t_s, lateness_ms) at the SINK pad — positive means the buffer
     reached the sink past its scheduled playout slot, i.e. retained latency over
-    the budget.
+    the budget (the LIVE one: a re-anchor arm's raises move it).
+
+    `engine` (arms E/F) = {"cap_ms": None | ms}: every raise request is applied
+    to `ts-offset` up to the cap; past it the request is refused.
     """
     pipe = Gst.parse_launch(
         "appsrc name=src is-live=true format=time do-timestamp=false "
@@ -140,13 +150,12 @@ def run(sync, shed, glass_us=0):
     clock = pipe.get_pipeline_clock()
 
     events = []
-    runner.emit_event = lambda obj: None
-    runner.emit_plugin_event = lambda ch, payload: events.append((ch, payload))
+    extra = {"raises": [], "refused": 0, "overruns": 0}
     if shed:
         assert runner._start_backlog_shedder(pipe, {
             "element": "vdec", "sink": "sink", "keyframeAligned": True,
             "toleranceMs": 250, "holdMs": HOLD_MS, "cooldownMs": COOLDOWN_MS,
-            "sanityMs": 10_000})
+            "sanityMs": 10_000, **(REANCHOR if engine is not None else {})})
     else:
         runner._start_backlog_shedder(pipe, None)
     runner.pipeline = pipe
@@ -154,16 +163,47 @@ def run(sync, shed, glass_us=0):
     src = pipe.get_by_name("src")
     stall = pipe.get_by_name("stall")
     sink = pipe.get_by_name("sink")
+    # A leaky queue signals `overrun` before it leaks: 0 means nothing was lost there.
+    pipe.get_by_name("q").connect(
+        "overrun", lambda _q: extra.__setitem__("overruns", extra["overruns"] + 1))
+    # Buffers into vs out of the shed point: the shedder's own drops, which the
+    # sink's `dropped` counter (downstream of it) can never see.
+    flow = {"in": 0, "out": 0}
+
+    def _count(key):
+        def _probe(_pad, _info):
+            flow[key] += 1
+            return Gst.PadProbeReturn.OK
+        return _probe
+
+    stall.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _count("in"))
+    pipe.get_by_name("vdec").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _count("out"))
 
     samples = []
-    state = {"t0": None, "stop": False}
+    state = {"t0": None, "stop": False, "budget_ns": BUDGET_MS * 1000000, "raise_ms": 0}
+
+    def on_event(ch, payload):
+        events.append((ch, payload))
+        if engine is None or ch != "playout_reanchor" or payload.get("kind") != "raise":
+            return
+        cap = engine.get("cap_ms")
+        if cap is not None and state["raise_ms"] >= cap:
+            extra["refused"] += 1
+            return
+        raised = state["raise_ms"] + 20 * math.ceil((payload["excessMs"] + 40) / 20)
+        state["raise_ms"] = raised if cap is None else min(cap, raised)
+        extra["raises"].append(state["raise_ms"])
+        state["budget_ns"] = (BUDGET_MS + state["raise_ms"]) * 1000000
+        sink.set_property("ts-offset", state["budget_ns"])
+
+    runner.emit_plugin_event = on_event
 
     def on_sink_buffer(_pad, info):
         buf = info.get_buffer()
         if buf is None or buf.pts == Gst.CLOCK_TIME_NONE:
             return Gst.PadProbeReturn.OK
         # base_time is 0 under the contract, so the clock IS running time.
-        late = clock.get_time() - (buf.pts + BUDGET_MS * 1000000)
+        late = clock.get_time() - (buf.pts + state["budget_ns"])
         samples.append(((buf.pts - state["t0"]) / Gst.SECOND, late / 1e6))
         return Gst.PadProbeReturn.OK
 
@@ -189,16 +229,16 @@ def run(sync, shed, glass_us=0):
             time.sleep(1.0 / FPS)
 
     def stall_cycle():
-        for _ in range(STALLS):
+        for _ in range(stalls):
             time.sleep(GAP_S)
             if state["stop"]:
                 return
-            # Every buffer takes `STALL_MS` extra for one stall's worth of
-            # buffers, so ~STALL_MS of data backs up behind the sink.
-            stall.set_property("sleep-time", STALL_MS * 1000)
-            time.sleep(STALL_MS / 1000.0)
+            # Every buffer takes `stall_ms` extra for one stall's worth of
+            # buffers, so ~stall_ms of data backs up behind the sink.
+            stall.set_property("sleep-time", stall_ms * 1000)
+            time.sleep(stall_ms / 1000.0)
             stall.set_property("sleep-time", 0)
-        time.sleep(GAP_S)            # settle: the recovery has to be observable
+        time.sleep(settle_s)         # settle: the recovery has to be observable
         state["stop"] = True
 
     threading.Thread(target=push, daemon=True).start()
@@ -217,7 +257,9 @@ def run(sync, shed, glass_us=0):
     runner._stop_backlog_shedder()
     pipe.set_state(Gst.State.NULL)
     runner.pipeline = None
-    return samples, [p for ch, p in events if ch == "backlog_shed"], dropped
+    extra["reanchor"] = [p for ch, p in events if ch == "playout_reanchor"]
+    extra["shed_point_drops"] = flow["in"] - flow["out"]
+    return samples, [p for ch, p in events if ch == "backlog_shed"], dropped, extra
 
 
 def floor_of(samples, lo_s, hi_s):
@@ -236,7 +278,7 @@ def span(samples):
 
 
 # --- arm A: the legacy leg keeps its whole budget ----------------------------
-samples, events, dropped = run(sync=False, shed=False)
+samples, events, dropped, _ = run(sync=False, shed=False)
 check("legacy arm produced a usable trace", len(samples) > 200)
 a_start, a_end = floor_of(samples, 0, 2.0), floor_of(samples, span(samples) - 2.0,
                                                      span(samples) + 1)
@@ -247,7 +289,7 @@ check("a legacy leg keeps its whole playout budget in hand", a_end < -0.5 * BUDG
 check("nothing is shed on a leg that has no shedder", events == [])
 
 # --- arm B: the one-way property, on the same chain --------------------------
-samples, events, dropped = run(sync=True, shed=False)
+samples, events, dropped, _ = run(sync=True, shed=False)
 check("paced arm produced a usable trace", len(samples) > 200)
 b_start, b_end = floor_of(samples, 0, 2.0), floor_of(samples, span(samples) - 2.0,
                                                      span(samples) + 1)
@@ -260,7 +302,7 @@ check("the SAME chain gave the legacy sink its budget back and this one not",
       b_end - a_end > 0.7 * BUDGET_MS)
 
 # --- arm C: the ratchet, unfixed, on a real presentation chain ---------------
-samples, events, dropped = run(sync=True, shed=False, glass_us=GLASS_US)
+samples, events, dropped, _ = run(sync=True, shed=False, glass_us=GLASS_US)
 check("unfixed contract arm produced a usable trace", len(samples) > 200)
 c_start, c_end = floor_of(samples, 0, 2.0), floor_of(samples, span(samples) - 2.0,
                                                      span(samples) + 1)
@@ -272,7 +314,7 @@ check("and it climbs past the shed threshold and stays there", c_end > 250)
 check("nothing else drained it — the sink never dropped a buffer", dropped == 0)
 
 # --- arm D: the shedder returns the leg to D ---------------------------------
-samples, events, dropped = run(sync=True, shed=True, glass_us=GLASS_US)
+samples, events, dropped, _ = run(sync=True, shed=True, glass_us=GLASS_US)
 check("fixed contract arm produced a usable trace", len(samples) > 200)
 d_start, d_end = floor_of(samples, 0, 2.0), floor_of(samples, span(samples) - 2.0,
                                                      span(samples) + 1)
@@ -303,6 +345,41 @@ if over:
           bool(back) and back[0] - over[0] < 5.0)
 else:
     check("recovery lands within seconds of the excess appearing", False)
+
+# --- arm E: re-anchor mode — the same chain raised, never shed ---------------
+samples, events, dropped, extra = run(sync=True, shed=True, glass_us=GLASS_US,
+                                      engine={"cap_ms": None})
+check("re-anchor arm produced a usable trace", len(samples) > 200)
+e_end = floor_of(samples, span(samples) - 2.0, span(samples) + 1)
+print(f"    E reanchor floor → {e_end:+.0f} ms vs the raised D, raises {extra['raises']}, "
+      f"{len(events)} shed events, {dropped} sink drops, {extra['overruns']} queue overruns")
+check("the leg asked for a raise, and asked again after a second stall",
+      len(extra["raises"]) >= 2 and extra["raises"] == sorted(extra["raises"]))
+check("every request is a raise request, cause and level attached",
+      all(p.get("kind") == "raise" and p.get("excessMs", 0) > 40 and p.get("cause") in ("backlog", "timeline")
+          for p in extra["reanchor"]))
+check("the floor is back inside the (raised) budget by raising alone",
+      e_end is not None and e_end <= 50)
+check("ZERO drops: no shed episode, none at the shed point, no sink drop, no queue leak",
+      events == [] and extra["shed_point_drops"] == 0 and dropped == 0 and extra["overruns"] == 0)
+check("and the latency it now holds is what the stalls cost, not more",
+      0 < extra["raises"][-1] <= STALLS * (STALL_MS + 100) if extra["raises"] else False)
+
+# --- arm F: the ceiling — raises refused past +200 ms, nothing shed ----------
+# One long stall that +200 ms cannot cover. At the ceiling the engine stops
+# raising and warns; the leg never sheds (ADR-0005 2026-10-08).
+samples, events, dropped, extra = run(sync=True, shed=True, glass_us=GLASS_US,
+                                      engine={"cap_ms": 200}, stalls=1, stall_ms=700,
+                                      settle_s=4.0)
+f_end = floor_of(samples, span(samples) - 1.0, span(samples) + 1)
+print(f"    F ceiling  floor → {f_end:+.0f} ms, raises {extra['raises']}, refused "
+      f"{extra['refused']}, {len(events)} shed events")
+check("the raise stops at the +200 ms cap and a later request is refused",
+      extra["raises"] == [200] and extra["refused"] >= 1)
+check("ZERO drops at the ceiling: no shed episode, none at the shed point, no sink drop",
+      events == [] and extra["shed_point_drops"] == 0 and dropped == 0)
+check("the leg stays over the capped budget (nothing gave it back)",
+      f_end is not None and f_end > 50)
 
 print()
 if _failures:

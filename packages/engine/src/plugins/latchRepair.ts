@@ -40,6 +40,9 @@ export interface LatchRepairServices {
  * a router resolves to the live default.
  */
 export function effectiveLatchRepair(services: LatchRepairServices | null | undefined): boolean {
+    // Kill-switch (ADR-0005): `MR_LATCH_REPAIR=0` turns latch repair and its wire
+    // conditioner off box-wide — interim for feeds the conditioner misreads (OCC 1080i).
+    if (process.env.MR_LATCH_REPAIR === '0') return false;
     const upstream = services?.instanceId
         ? (services.mediaRouter?.getUpstreamBusProducers?.(services.instanceId) ?? [])
         : [];

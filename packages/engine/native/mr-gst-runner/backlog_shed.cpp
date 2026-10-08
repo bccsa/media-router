@@ -21,6 +21,8 @@ namespace {
 constexpr double KEYFRAME_WARN_MS = 3000.0;
 constexpr double STALE_MS = 4000.0;
 constexpr double DEFAULT_STALL_GRACE_MS = 10000.0;
+// A live budget change smaller than this is float noise, not a D push.
+constexpr double BUDGET_EPSILON_MS = 0.5;
 
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
 std::string fmt(const char* f, ...) {
@@ -80,15 +82,34 @@ struct Policy {
     double last_shed_end = 0;
     bool implausible = false;
     bool timeline = false;
+    // Re-anchor mode only (all unused when `reanchor` is false).
+    bool reanchor = false;
+    double reanchor_tolerance_ms = 40, reanchor_hold_ms = 15000, retry_ms = 30000;
+    double rebase_hold_ms = 3000, rebase_cooldown_ms = 60000;
+    int requests = 0, rebases = 0;
+    double level_ms = 0, worst_ms = 0, queued_ms = 0;   // the last matured hold
+    const char* cause = "backlog";
+    bool has_implausible_since = false;
+    double implausible_since = 0, last_implausible_ms = 0;
+    double floor_ms = 0, peak_ms = 0;                    // over the running hold
+    bool has_request_at = false;
+    double request_at = 0;
+    bool has_budget = false;
+    double budget = 0;
+    bool has_last_rebase = false;
+    double last_rebase = 0;
     void reset() {
         has_above_since = false;
         implausible = false;
         timeline = false;
+        has_implausible_since = false;
     }
-    /** nullptr, "shed", "implausible" or "timeline". `queued` is lazy. */
+    /** nullptr, "shed", "implausible" or "timeline" — or, re-anchoring,
+     *  "reanchor" / "rebase" / "implausible". `queued` is lazy. */
     template <typename Queued>
     const char* observe(double lateness_ms, double now_ms, Queued queued) {
         if (std::isnan(lateness_ms)) return nullptr;
+        if (reanchor) return observe_reanchor(lateness_ms, now_ms, queued);
         if (std::fabs(lateness_ms) > sanity_ms) {
             has_above_since = false;
             if (implausible) return nullptr;
@@ -123,6 +144,79 @@ struct Policy {
         last_shed_end = now_ms;
         has_above_since = false;
     }
+    template <typename Queued>
+    const char* observe_reanchor(double lateness_ms, double now_ms, Queued queued) {
+        if (std::fabs(lateness_ms) > sanity_ms) {
+            // Not a budget problem (no budget is 10 s): never a raise, a rebase.
+            has_above_since = false;
+            if (!has_implausible_since) {
+                has_implausible_since = true;
+                implausible_since = now_ms;
+            }
+            last_implausible_ms = lateness_ms;
+            bool cooling = has_last_rebase && now_ms - last_rebase < rebase_cooldown_ms;
+            // A future stamp parks the sink on its first buffer, so no later
+            // sample can confirm it: it is due at once. A past one must hold.
+            if (!cooling && (lateness_ms < 0 || now_ms - implausible_since >= rebase_hold_ms)) return "rebase";
+            if (implausible) return nullptr;
+            implausible = true;
+            return "implausible";
+        }
+        implausible = false;
+        has_implausible_since = false;
+        if (lateness_ms <= reanchor_tolerance_ms) {
+            has_above_since = false;
+            return nullptr;
+        }
+        if (!has_above_since) {
+            has_above_since = true;
+            above_since = now_ms;
+            floor_ms = peak_ms = lateness_ms;
+            return nullptr;
+        }
+        floor_ms = std::min(floor_ms, lateness_ms);
+        peak_ms = std::max(peak_ms, lateness_ms);
+        if (now_ms - above_since < reanchor_hold_ms) return nullptr;
+        if (has_request_at && now_ms - request_at < retry_ms) return nullptr;
+        double q = queued();
+        level_ms = floor_ms;
+        worst_ms = peak_ms;
+        queued_ms = q;
+        cause = q < reanchor_tolerance_ms ? "timeline" : "backlog";
+        // Once per episode: a re-ask needs a fresh hold (and the retry gate).
+        above_since = now_ms;
+        floor_ms = peak_ms = lateness_ms;
+        return "reanchor";
+    }
+    /** A raise request went out: no re-ask for `retry_ms` unless the budget moves. */
+    void request_sent(double now_ms, double budget_ms) {
+        requests++;
+        has_request_at = true;
+        request_at = now_ms;
+        has_budget = true;
+        budget = budget_ms;
+    }
+    /** Per sample. True when the live budget changed (a raise landed, D was
+     *  edited): the streak and the retry gate restart against the new one. */
+    bool budget_moved(double budget_ms) {
+        if (!has_budget) {
+            has_budget = true;
+            budget = budget_ms;
+            return false;
+        }
+        if (std::fabs(budget_ms - budget) < BUDGET_EPSILON_MS) return false;
+        budget = budget_ms;
+        has_above_since = false;
+        has_request_at = false;
+        return true;
+    }
+    /** The runner re-anchored the leg: the rebase cooldown starts, streaks restart. */
+    void rebased(double now_ms) {
+        rebases++;
+        has_last_rebase = true;
+        last_rebase = now_ms;
+        reset();
+    }
 };
 
 struct State {
@@ -134,7 +228,7 @@ struct State {
     gulong probe_id = 0;
     GstSegment* segment = nullptr;
     bool keyframe_aligned = true;
-    bool shedding = false;
+    std::atomic<bool> shedding{false};   // read by the render watch on the main loop
     int64_t dropped = 0;
     int sheds = 0;
     double shed_at = 0;
@@ -155,6 +249,12 @@ struct State {
     GstPad* out_pad = nullptr;        // owned or nullptr
     gulong stall_probe_id = 0;
     std::atomic<int> stall_gen{0};
+    // Re-anchor mode. `segment_offset` is the pad offset the stored SEGMENT
+    // arrived under.
+    bool reanchor = false;
+    std::atomic<bool> raise_pending{false};
+    int rebases = 0;
+    gint64 segment_offset = 0;
 };
 
 std::shared_ptr<State> g_state;
@@ -221,6 +321,27 @@ void emit_shed_event(JsonObject* payload) {
     runner().emit_plugin_event("backlog_shed", n);
 }
 
+gboolean emit_reanchor_idle(gpointer node) {
+    runner().emit_plugin_event("playout_reanchor", static_cast<JsonNode*>(node));
+    return G_SOURCE_REMOVE;
+}
+
+/** `playout_reanchor` from the main loop, never the streaming thread. */
+void emit_reanchor(JsonObject* payload) {
+    JsonNode* n = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(n, payload);
+    g_idle_add(emit_reanchor_idle, n);
+}
+
+/** The stored SEGMENT without the pad offset it arrived under — re-sent as
+ *  stored, the pad would apply that offset twice. False when none is stored. */
+bool raw_segment(State& st, GstSegment* out) {
+    if (!st.segment) return false;
+    gst_segment_copy_into(st.segment, out);
+    if (st.segment_offset) gst_segment_offset_running_time(out, GST_FORMAT_TIME, -st.segment_offset);
+    return true;
+}
+
 // --- post-shed stall watch -----------------------------------------------------
 
 void stall_disarm(State& st) {
@@ -270,7 +391,8 @@ gboolean stall_timeout_cb(gpointer user) {
         // because the contract pins running time to the house clock.
         gst_pad_send_event(st->pad, gst_event_new_flush_start());
         gst_pad_send_event(st->pad, gst_event_new_flush_stop(FALSE));
-        if (st->segment) gst_pad_send_event(st->pad, gst_event_new_segment(st->segment));
+        GstSegment raw;
+        if (raw_segment(*st, &raw)) gst_pad_send_event(st->pad, gst_event_new_segment(&raw));
         // A flushed decoder needs a self-contained frame again.
         gate_kf::reclose(st->element);
     } else if (action && std::string(action) == "error") {
@@ -330,6 +452,56 @@ void finish_episode(const std::shared_ptr<State>& sp, double late_ms, double now
     stall_arm(sp);
 }
 
+/** Ask the engine to raise the route's D — the leg drops nothing. */
+void request_raise(State& st, double budget_ms, double now_ms) {
+    Policy& p = st.policy;
+    p.request_sent(now_ms, budget_ms);
+    st.raise_pending.store(true);
+    JsonObject* o = json_object_new();
+    json_object_set_string_member(o, "kind", "raise");
+    json_object_set_string_member(o, "element", st.element.c_str());
+    json_object_set_double_member(o, "excessMs", round1(p.level_ms));
+    json_object_set_double_member(o, "worstMs", round1(p.worst_ms));
+    json_object_set_string_member(o, "cause", p.cause);
+    json_object_set_double_member(o, "queuedMs", round1(p.queued_ms));
+    json_object_set_double_member(o, "budgetMs", round1(budget_ms));
+    json_object_set_double_member(o, "tsOffsetMs", round1(ts_offset_ms(st)));
+    json_object_set_double_member(o, "latencyMs", round1(sink_latency_ms(st)));
+    json_object_set_int_member(o, "holdMs", (gint64)p.reanchor_hold_ms);
+    log_line(st, fmt("arrived %.0f ms past a %.0f ms budget for %.0f ms (%s) — asking the engine to re-anchor the "
+                     "route, nothing dropped",
+                     p.level_ms, budget_ms, p.reanchor_hold_ms, p.cause));
+    emit_reanchor(o);
+}
+
+/** Re-anchor THIS leg onto arrival + D with one offset on the shed pad.
+ *  In-thread: the segment re-send rides the stream lock this probe holds, so
+ *  nothing is flushed and no buffer is lost. */
+void rebase_leg(State& st, GstPad* pad, double late_ms, double budget_ms, double now_ms) {
+    gint64 late_ns = (gint64)std::floor(late_ms * 1e6 + 0.5);
+    GstSegment raw;
+    bool has_raw = raw_segment(st, &raw);
+    gint64 pad_ns = gst_pad_get_offset(pad) + late_ns;
+    gst_pad_set_offset(pad, pad_ns);
+    if (has_raw) gst_pad_send_event(pad, gst_event_new_segment(&raw));
+    st.policy.rebased(now_ms);
+    st.rebases++;
+    JsonObject* o = json_object_new();
+    json_object_set_string_member(o, "kind", "rebase");
+    json_object_set_string_member(o, "element", st.element.c_str());
+    json_object_set_double_member(o, "latenessMs", round1(late_ms));
+    json_object_set_int_member(o, "appliedOffsetNs", late_ns);
+    json_object_set_int_member(o, "padOffsetNs", pad_ns);
+    json_object_set_boolean_member(o, "flushed", FALSE);
+    json_object_set_int_member(o, "sanityMs", (gint64)st.policy.sanity_ms);
+    json_object_set_double_member(o, "budgetMs", round1(budget_ms));
+    json_object_set_int_member(o, "count", st.rebases);
+    log_line(st, fmt("timeline %.1f s %s the house clock — re-anchored onto arrival + D (pad offset %+.3f s, rebase #%d)",
+                     std::fabs(late_ms) / 1000.0, late_ms > 0 ? "behind" : "ahead of", (double)pad_ns / 1e9,
+                     st.rebases));
+    emit_reanchor(o);
+}
+
 GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     std::shared_ptr<State> sp = *static_cast<std::shared_ptr<State>*>(user);
     State& st = *sp;
@@ -340,6 +512,7 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
             gst_event_parse_segment(ev, &seg);
             if (st.segment) gst_segment_free(st.segment);
             st.segment = seg ? gst_segment_copy(seg) : nullptr;
+            st.segment_offset = gst_pad_get_offset(pad);
             // Either side of a new segment the running times are not comparable.
             st.policy.reset();
         }
@@ -367,6 +540,8 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     // The FLOOR over the window is the retained part (a spike relaxes).
     if (!st.has_win_min.load() || late_ms < st.win_min.load()) st.win_min.store(late_ms);
     st.has_win_min.store(true);
+    // A raise landed (or D was edited): the streak restarts against it.
+    if (st.reanchor && st.policy.budget_moved(budget_ms)) st.raise_pending.store(false);
 
     if (st.shedding) {
         bool at_budget = late_ms <= 0.0;
@@ -400,6 +575,14 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     const char* verdict = st.policy.observe(late_ms, now_ms, [pad] { return upstream_queued_ms(pad); });
     if (!verdict) return GST_PAD_PROBE_OK;
     std::string v = verdict;
+    if (v == "reanchor") {
+        request_raise(st, budget_ms, now_ms);
+        return GST_PAD_PROBE_OK;
+    }
+    if (v == "rebase") {
+        rebase_leg(st, pad, late_ms, budget_ms, now_ms);
+        return GST_PAD_PROBE_OK;
+    }
     if (v == "timeline") {
         log_line(st, fmt("retained %.0f ms against a %.0f ms budget for %.0f ms, but the queues upstream are empty "
                          "— the timeline is late, not backlogged; nothing to shed (the producer's stamper owns this)",
@@ -467,6 +650,15 @@ bool start(GstElement* pipe, JsonObject* cfg) {
     st->sink = sink;
     st->policy = Policy{(double)json_get_int(cfg, "toleranceMs", 250), (double)json_get_int(cfg, "holdMs", 5000),
                         (double)json_get_int(cfg, "cooldownMs", 60000), (double)json_get_int(cfg, "sanityMs", 10000)};
+    // `onLateness: "reanchor"`: ask the engine to raise D, never drop. Absent =
+    // "shed", today's path byte for byte.
+    st->reanchor = json_get_string(cfg, "onLateness") == "reanchor";
+    st->policy.reanchor = st->reanchor;
+    st->policy.reanchor_tolerance_ms = (double)json_get_int(cfg, "reanchorToleranceMs", 40);
+    st->policy.reanchor_hold_ms = (double)json_get_int(cfg, "reanchorHoldMs", 15000);
+    st->policy.retry_ms = (double)json_get_int(cfg, "reanchorRetryMs", 30000);
+    st->policy.rebase_hold_ms = (double)json_get_int(cfg, "rebaseHoldMs", 3000);
+    st->policy.rebase_cooldown_ms = (double)json_get_int(cfg, "rebaseCooldownMs", 60000);
     st->keyframe_aligned = json_get_bool(cfg, "keyframeAligned", true);
     st->stall.enabled = st->keyframe_aligned;   // audio legs are not watched
     st->out_pad = gst_element_get_static_pad(el, "src");
@@ -486,8 +678,9 @@ void window_into(double now_ms, JsonObject* into) {
     json_object_set_double_member(into, "latenessMs", round1(floor));
     json_object_set_double_member(into, "retainedMs", round1(floor + st->budget_ms));
     json_object_set_double_member(into, "budgetMs", round1(st->budget_ms));
-    json_object_set_boolean_member(into, "shedding", st->shedding);
+    json_object_set_boolean_member(into, "shedding", st->shedding.load());
     json_object_set_int_member(into, "shedCount", st->sheds);
+    if (st->reanchor) json_object_set_boolean_member(into, "raiseRequested", st->raise_pending.load());
 }
 
 void stop() {

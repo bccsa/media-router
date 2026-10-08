@@ -114,9 +114,15 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         expect(desc!.preserveSourceTimeline).toEqual({ demux: 'demux' });
-        // A producer never asks for branch alignment: its egress stamper has
-        // anchored by the time the correction would land (see buildPipeline).
-        expect(desc!.alignBranchesToStamps).toBeUndefined();
+        // Its input demux is retimed to the bus stamps as a transform producer
+        // (per access unit), so the identity egress is content-correct.
+        expect(desc!.alignBranchesToStamps).toEqual({
+            demuxes: ['demux'],
+            transformProducer: true,
+        });
+        // ... and under the contract the egress stamper reads the mux-written
+        // house time back (identity) rather than anchoring at this egress.
+        expect(desc!.houseTimelineEgress).toBe(true);
     });
 
     it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {

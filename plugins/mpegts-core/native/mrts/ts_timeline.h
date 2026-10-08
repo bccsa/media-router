@@ -17,6 +17,17 @@ namespace mrts {
 
 constexpr int64_t PTS_WRAP = 1LL << 33;
 
+// GStreamer's mpegtsmux (basetsmux CLOCK_BASE) writes every PES PTS/DTS and the
+// PCR as the buffer's running time plus ONE HOUR. Under the contract running
+// time IS house time, so a mux-fed egress carries `house + 1 h` on the wire and
+// the house-timeline stamp (`TimelineStamper::set_house_timeline`) reads it
+// back. Python: ts_timeline.MUX_CLOCK_BASE_90K.
+constexpr int64_t MUX_CLOCK_BASE_90K = 3600LL * 90000;
+
+// House time (ns) a mux-written PES PTS encodes: `pts - 1 h`, unwrapped to the
+// 2^33 period nearest `house_now` (python's house_from_mux_pts).
+int64_t house_from_mux_pts(int64_t pts, int64_t house_now);
+
 // 90 kHz ticks -> nanoseconds, exact in integers: ns = pts * 1e9 / 90e3.
 // Floor division, like Python's `//`, so a negative delta rounds the same way.
 int64_t pts90k_to_ns(int64_t pts);
@@ -140,6 +151,12 @@ class TimelineStamper {
     // unable to measure their own level.
     int64_t stamp(const uint8_t* data, size_t len, int64_t house_now, int stream = 0);
 
+    // HOUSE-TIMELINE egress (ADR-0005 2026-10-08, python `house_timeline=True`):
+    // the PES already carry house time + 1 h, so every stamp is `PES − 1 h` —
+    // no anchor, re-anchor, repair, servo or conditioner.
+    void set_house_timeline(bool on) { house_timeline_ = on; }
+    bool house_timeline() const { return house_timeline_; }
+
     // TIMELINE CONDITIONER (python's `condition`) — rewrites the PES PTS/DTS and
     // PCR fields IN `data` so that a clock step at the source (a muxer that
     // resets its pacing timeline: vMix CBR, −1.1 s then +1.1 s every ~90 s)
@@ -223,6 +240,8 @@ class TimelineStamper {
     // back and leaves as the arrival; the first PES past it closes and reports.
     void open_latch(int64_t house_now);
     int64_t repair(int64_t house_now, int64_t stamp);
+    // The house-timeline stamp (python's `_stamp_house`): identity, floor only.
+    int64_t stamp_house(const uint8_t* data, size_t len, int64_t house_now, int stream);
 
     TimelineLatch latch_;
     bool anchored_ = false;
@@ -269,6 +288,7 @@ class TimelineStamper {
     OnSettled on_settled_;
     OnConditioned on_conditioned_;
     bool repair_on_ = false;
+    bool house_timeline_ = false;         // set_house_timeline: identity stamps, nothing anchored
     int64_t cond_threshold_ns_ = 0;       // per-egress conditioner threshold, 0 = default
     // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
     struct CondClock {

@@ -388,6 +388,33 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         });
     });
 
+    // Never drop on lateness (ADR-0005 amendment 2026-10-08): with the engine's
+    // re-anchor switch on, the same shed point asks the runner to RAISE the
+    // route's D instead; off (MR_PLAYOUT_REANCHOR=0) the config is as before.
+    it('re-anchor on: the shedder config carries onLateness and the five numbers', () => {
+        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        module.services.playoutReanchor = true;
+        expect(module.buildPipeline({})!.backlogShed).toMatchObject({
+            element: 'sink',
+            sink: 'sink',
+            keyframeAligned: false,
+            onLateness: 'reanchor',
+            reanchorToleranceMs: 40,
+            reanchorHoldMs: 15000,
+            reanchorRetryMs: 30000,
+            rebaseHoldMs: 3000,
+            rebaseCooldownMs: 60000,
+        });
+    });
+
+    it('re-anchor off: none of the re-anchor keys, and nothing at all without the contract', () => {
+        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        expect(module.buildPipeline({})!.backlogShed).not.toHaveProperty('onLateness');
+        const legacy = makeModule();
+        legacy.module.services.playoutReanchor = true;
+        expect(legacy.module.buildPipeline({})!.backlogShed).toBeUndefined();
+    });
+
     it('never arms the shedder on the legacy path', () => {
         // Nothing to guard: a `sync=false` sink presents on arrival and drains
         // its own backlog. `MR_TIME_SYNC_CONTRACT=0` must reproduce the legacy

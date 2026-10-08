@@ -51,6 +51,22 @@ def pts90k_to_ns(pts: int) -> int:
     return pts * _NS_NUM // _NS_DEN
 
 
+# GStreamer's mpegtsmux (basetsmux CLOCK_BASE) writes every PES PTS/DTS and the
+# PCR as the buffer's running time plus ONE HOUR. Under the contract running
+# time IS house time, so a mux-fed egress carries `house + 1 h` on the wire and
+# a house-timeline stamp (`TimelineStamper(house_timeline=True)`) reads it back.
+# Measured 3600.000 s on gst 1.28.2 and pinned by gst_time_sync_contract_test.py.
+MUX_CLOCK_BASE_90K = 3600 * 90000
+
+
+def house_from_mux_pts(pts: int, house_now: int) -> int:
+    """House time (ns) a mux-written PES PTS encodes: `pts − 1 h`, unwrapped to
+    the 2^33 period nearest `house_now` (the 33-bit field wraps every 26.5 h of
+    uptime; the house clock does not)."""
+    raw = (pts - MUX_CLOCK_BASE_90K) % PTS_WRAP
+    return pts90k_to_ns(unwrap_near(raw, house_now * _NS_DEN // _NS_NUM))
+
+
 def iter_pes(data):
     """`(pid, PES PTS)` for every PES header in `data`, in wire order.
 
@@ -531,8 +547,14 @@ class TimelineStamper:
     _LATCH_REPAIR_NS = 3_000_000_000    # window after an anchor the repair is open
 
     def __init__(self, on_anchor=None, on_reanchor=None, on_settled=None,
-                 repair_latch=False, on_conditioned=None, condition_step_ns=None):
+                 repair_latch=False, on_conditioned=None, condition_step_ns=None,
+                 house_timeline=False):
         self.latch = TimelineLatch()
+        # HOUSE-TIMELINE egress (ADR-0005 amendment 2026-10-08): the producer's
+        # own mpegtsmux wrote its PES off house running time (+1 h), so every
+        # stamp is that value read back (`_stamp_house`) — no anchor, no
+        # re-anchor, no repair, no servo, no conditioner. See `stamp`.
+        self._house_timeline = bool(house_timeline)
         # The conditioner's step threshold for THIS egress. 300 ms is the
         # default (B-frame reorder and jitter live well inside it); a producer
         # whose egress carries one audio PID off a live capture ring can set it
@@ -824,6 +846,8 @@ class TimelineStamper:
         because a timestampless buffer leaves the time-bounded leaky queues on
         the bus unable to measure their own level.
         """
+        if self._house_timeline:
+            return self._stamp_house(data, house_now, stream)
         # ONE parse pass, then three walks over its result: the watch, the latch
         # and the stamp all want the same PES headers, and re-parsing the buffer
         # for each was the whole per-buffer cost. Order and arithmetic are
@@ -892,6 +916,46 @@ class TimelineStamper:
             # zero out of the floors — a zero floor reads to the staleness net
             # as a stream frozen since the epoch.
             stamp = self._floors.get(stream, house_now)
+        floor = self._floors.get(stream, 0)
+        if stamp < floor:
+            stamp = floor                       # monotone non-decreasing staircase
+        self._floors[stream] = stamp
+        return stamp
+
+    def _stamp_house(self, data, house_now, stream):
+        """The house-timeline egress (`house_timeline=True`): a transform
+        producer's PES PTS are house running time + 1 h by construction
+        (`MUX_CLOCK_BASE_90K`), so the stamp is the IDENTITY `PES − 1 h` and the
+        hop carries its SOURCE's content time through.
+
+        Nothing of the anchored mode runs here (no watch, net, slew, latch
+        repair or conditioner). Kept: timing eligibility (a KLV cue PES carries
+        the CUE's time), the arrival fallback for a private-only buffer, the
+        staircase for a PES-less one, and the monotone floor.
+        """
+        view = memoryview(data) if not isinstance(data, memoryview) else data
+        if self._timing_pid is None:
+            # The PCR carrier may define the timeline even when its PES are
+            # private data (an s302m or Opus egress is stream_id 0xBD). The
+            # anchored mode learns it in `condition`, which never runs here.
+            for pkt in iter_packets(view):
+                if read_pcr(pkt) is not None:
+                    self._timing_pid = ts_pid(pkt)
+                    break
+        seen = []
+        stamp = None
+        for pid, pts in iter_timing_pes(view, self._timing_pid, seen):
+            stamp = house_from_mux_pts(pts, house_now)
+            if self.anchor is None:
+                # Reported once, the way the anchored mode reports its anchor,
+                # so a journal reader sees the egress come up: anchorNs IS the
+                # first stamp and refPts90k its PES — the identity mapping.
+                self.anchor, self.ref, self._anchor_pid = stamp, pts, pid
+                if self._on_anchor:
+                    self._on_anchor({'pid': pid, 'anchorNs': stamp, 'refPts90k': pts})
+            break
+        if stamp is None:
+            stamp = house_now if seen else self._floors.get(stream, house_now)
         floor = self._floors.get(stream, 0)
         if stamp < floor:
             stamp = floor                       # monotone non-decreasing staircase
@@ -1078,6 +1142,8 @@ class TimelineStamper:
         never reaches a consumer as a discontinuity — see `_COND_STEP_NS`.
         Call BEFORE `stamp` on the same bytes. Returns the steps absorbed.
         """
+        if self._house_timeline:
+            return 0                            # the wire IS the house timeline
         absorbed = 0
         for off in range(0, len(data) - PKT + 1, PKT):
             if data[off] != SYNC:

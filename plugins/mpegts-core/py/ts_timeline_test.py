@@ -1221,3 +1221,55 @@ pes_ev = [e for e in lev if e['clock'] == 'pts']
 check("lone step: one step event, one release event, nothing on the reference",
       [e['pid'] for e in pes_ev] == [R, R] and pes_ev[0]['offsetTicks'] != 0 and pes_ev[1]['offsetTicks'] == 0)
 print("all conditioner program/lone-step checks passed")
+
+
+# --- house-timeline egress (ADR-0005 amendment 2026-10-08) ---------------------
+# A transform producer's mpegtsmux writes PES PTS = house running time + 1 h;
+# the identity stamp reads it back. Exact, anchor-free, no re-anchor, no
+# conditioning — the same integers out of the C++ twin (ts_timeline_test.cpp
+# "house-timeline egress").
+HOUSE_H = 10_000_000_000                    # 10 s of house time
+MUX = t.MUX_CLOCK_BASE_90K
+check("house_from_mux_pts inverts the mux's 1 h offset exactly",
+      t.house_from_mux_pts(MUX + 900000, HOUSE_H) == HOUSE_H)
+check("... to the 2^33 period nearest the house clock (the field wraps, uptime does not)",
+      t.house_from_mux_pts((MUX + 900000 + 3 * W) % W, 3 * W * 100000 // 9 + HOUSE_H)
+      == t.pts90k_to_ns(3 * W + 900000))
+hev = []
+hs = t.TimelineStamper(on_anchor=lambda ev: hev.append(('anchor', ev)),
+                       on_reanchor=lambda ev: hev.append(('reanchor', ev)),
+                       repair_latch=True, house_timeline=True)
+hladder = []
+for i in range(10):
+    # content 10 s + i*40 ms as the mux wrote it (+1 h); ARRIVAL late and jittery
+    hladder.append(hs.stamp(pes_ts_packet(0x41, pts=(MUX + 900000 + i * 3600) % W),
+                            HOUSE_H + i * 40_000_000 + 170_000_000 + (i % 3) * 7_000_000))
+check("house-timeline stamps are the content's house time, arrival-independent",
+      hladder == [HOUSE_H + i * 40_000_000 for i in range(10)])
+check("one anchor event, the identity mapping (anchorNs = first stamp, refPts90k = its PES)",
+      [e for e in hev if e[0] == 'anchor']
+      == [('anchor', {'pid': 0x41, 'anchorNs': HOUSE_H, 'refPts90k': MUX + 900000})])
+check("a PES-less buffer repeats the staircase",
+      hs.stamp(p.null_packet(), HOUSE_H + 10 * 40_000_000) == hladder[-1])
+hback = hs.stamp(pes_ts_packet(0x41, pts=(MUX + 900000 + 10 * 3600 - 90000) % W),
+                 HOUSE_H + 11 * 40_000_000)
+check("a backward step is clamped by the floor, never answered (no re-anchor, ever)",
+      hback == hladder[-1] and hs.reanchors == 0
+      and not any(e[0] == 'reanchor' for e in hev))
+hraw = bytearray(pes_ts_packet(0x41, pts=(MUX + 900000 + 20 * 3600) % W))
+hbefore = bytes(hraw)
+check("the conditioner never touches a house-timeline egress",
+      hs.condition(hraw, HOUSE_H + 20 * 40_000_000) == 0 and bytes(hraw) == hbefore)
+check("nothing is measured for the servo either (samples 0)",
+      hs.drift_stats()['samples'] == 0 and hs.drift_stats()['ppb'] == 0)
+# A private-stream egress (s302m, stream_id 0xBD) is eligible through its PCR
+# PID, which the house mode learns itself — the conditioner never runs here.
+hp = t.TimelineStamper(house_timeline=True)
+check("a private PES with no PCR seen yet is stamped at arrival",
+      hp.stamp(pes_ts_packet(0x101, pts=(MUX + 900000) % W, stream_id=0xBD),
+               HOUSE_H + 5_000_000) == HOUSE_H + 5_000_000)
+check("once its PID carries the PCR, the private PES defines the house time",
+      hp.stamp(p.build_pcr_packet(0x101, (MUX + 900000 + 3600) * 300)
+               + pes_ts_packet(0x101, pts=(MUX + 900000 + 3600) % W, stream_id=0xBD),
+               HOUSE_H + 200_000_000) == HOUSE_H + 40_000_000)
+print("all house-timeline egress checks passed")

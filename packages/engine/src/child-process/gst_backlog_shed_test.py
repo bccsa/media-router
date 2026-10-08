@@ -80,7 +80,7 @@ runner._upstream_queued_ms = (
     lambda pad: _real_upstream_queued_ms(pad) if QUEUED["ms"] is None else QUEUED["ms"])
 
 
-def build(keyframe_aligned=True, budget_ms=BUDGET_MS, dec="identity name=vdec",
+def build(keyframe_aligned=True, budget_ms=BUDGET_MS, dec="identity name=vdec", sync=False,
           **policy):
     """A contract-clocked leg: appsrc → `vdec` (the shed point) → sink.
 
@@ -91,12 +91,14 @@ def build(keyframe_aligned=True, budget_ms=BUDGET_MS, dec="identity name=vdec",
     `ts-offset` and never asks it to pace anything.
 
     `dec` swaps that stand-in: the stall-watch case needs a `valve`, i.e. a
-    decoder that takes the resume and emits nothing.
+    decoder that takes the resume and emits nothing. `sync=True` (the re-anchor
+    ladder) paces the sink, so a future stamp would park it.
     """
     pipe = Gst.parse_launch(
         "appsrc name=src is-live=true format=time do-timestamp=false "
         f"! {dec} "
-        f"! fakesink name=sink sync=false async=false ts-offset={budget_ms * 1000000}")
+        f"! fakesink name=sink sync={'true' if sync else 'false'} async=false "
+        f"ts-offset={budget_ms * 1000000}")
     # The contract's clock: monotonic, base_time 0, so running time IS clock
     # time and a buffer stamped `now − backlog` is exactly `backlog` late.
     runner._apply_contract_clock(pipe)
@@ -548,6 +550,173 @@ check("and none of its stages can ever run",
       and runner._backlog_shed["stall"].escalations == 0
       and pipe.get_bus().pop_filtered(Gst.MessageType.ERROR) is None)
 teardown(pipe)
+
+# --- re-anchor mode: the ladder (ADR-0005 2026-10-08) ------------------------
+# `onLateness: "reanchor"` never drops on lateness. A sustained floor asks the
+# engine to raise the route's D (`playout_reanchor {kind:"raise"}`); an
+# implausible timeline re-anchors THIS leg (`{kind:"rebase"}`) with one pad
+# offset, in-thread — nothing flushed, nothing lost. The test plays the engine
+# (it applies each raise to `ts-offset`). Test scale: D 300, tolerance 40,
+# hold 600 ms, retry 1500 ms, rebase hold 300 ms, rebase cooldown 500 ms.
+REANCHOR_CFG = {"onLateness": "reanchor", "reanchorToleranceMs": 40, "reanchorHoldMs": 600,
+                "reanchorRetryMs": 1_500, "rebaseHoldMs": 300, "rebaseCooldownMs": 500,
+                "holdMs": 600}
+
+
+def ladder(keyframe_aligned, reanchor=True):
+    """One run of the ladder; returns its observations for the checks below."""
+    events = collect_plugin_events()
+    pipe, src, arrivals = build(keyframe_aligned=keyframe_aligned, sync=True,
+                                **(REANCHOR_CFG if reanchor else {"holdMs": 600}))
+    sink = pipe.get_by_name("sink")
+    vpad = pipe.get_by_name("vdec").get_static_pad("sink")
+    o = {"pushed": 0}
+
+    def raises():
+        return [p for ch, p in events if ch == "playout_reanchor" and p.get("kind") == "raise"]
+
+    def rebases():
+        return [p for ch, p in events if ch == "playout_reanchor" and p.get("kind") == "rebase"]
+
+    def step(ms, backlog, delta=True):
+        o["pushed"] += push_for(src, ms, backlog_ms=backlog, delta=delta)
+        pump_until(lambda: False, 0.05)     # main-loop emissions (idle_add)
+
+    def one(backlog, delta=True):
+        o["pushed"] += 1
+        push(src, backlog_ms=backlog, delta=delta)
+
+    QUEUED["ms"] = 10_000.0
+    step(400, 320)                                   # 1. excess 20 < 40
+    o["s1"] = len(raises())
+    step(550, 420)                                   # 2. excess 120, queued
+    o["s2_early"] = len(raises())
+    step(250, 420)
+    o["s2"] = raises()
+    o["drops_s2"] = o["pushed"] - len(arrivals)
+    if not reanchor:
+        o["sheds"] = runner._backlog_shed["sheds"] + int(runner._backlog_shed["shedding"])
+        o["window"] = runner._backlog_shed_window(runner._now_running_ms())
+        o["all_reanchor"] = [p for ch, p in events if ch == "playout_reanchor"]
+        teardown(pipe)
+        return o
+    o["pending_s2"] = runner._backlog_shed_window(runner._now_running_ms())
+    # 3. The engine's answer: D 300 → 300 + ceil20(excess + 40).
+    raise_ms = 20 * math.ceil((o["s2"][0]["excessMs"] + 40) / 20) if o["s2"] else 160
+    sink.set_property("ts-offset", int((BUDGET_MS + raise_ms) * Gst.MSECOND))
+    o["d3"] = BUDGET_MS + raise_ms
+    step(1_500, 420)
+    o["s3"] = len(raises())
+    o["pending_s3"] = runner._backlog_shed_window(runner._now_running_ms())
+    o["drops_s3"] = o["pushed"] - len(arrivals)
+    QUEUED["ms"] = 0.0
+    step(550, o["d3"] + 100)                         # 4. excess ≈100, nothing queued
+    o["s4_early"] = len(raises())
+    step(250, o["d3"] + 100)
+    o["s4"] = raises()
+    o["drops_s4"] = o["pushed"] - len(arrivals)
+    o["base4"] = (o["pushed"], len(arrivals))
+    # 6. Future stamps (20 s ahead) on a paced sink: re-anchored at the first one.
+    t6 = time.monotonic()
+    step(300, -20_000)
+    o["s6"] = rebases()
+    o["s6_offset"] = vpad.get_offset()
+    o["s6_rendered"] = pump_until(
+        lambda: len(arrivals) - o["base4"][1] == o["pushed"] - o["base4"][0], 0.2)
+    o["s6_took"] = time.monotonic() - t6
+    # 7. ONE buffer 15 s late against the re-anchored timeline, then in range.
+    off_ms = vpad.get_offset() / 1e6
+    one(15_000 + off_ms + o["d3"])
+    step(400, -40 + off_ms + o["d3"])
+    o["s7"] = rebases()
+    o["s7_offset"] = vpad.get_offset()
+    # 8. Past stamps (20 s late) that keep flowing: re-anchored after the hold.
+    step(600, 20_000 + off_ms + o["d3"])
+    o["s8"] = rebases()
+    o["s8_offset"] = vpad.get_offset()
+    pump_until(lambda: len(arrivals) - o["base4"][1] == o["pushed"] - o["base4"][0], 0.3)
+    o["drops_after4"] = (o["pushed"] - o["base4"][0]) - (len(arrivals) - o["base4"][1])
+    o["all_backlog"] = [p for ch, p in events if ch == "backlog_shed"]
+    teardown(pipe)
+    QUEUED["ms"] = 10_000.0
+    return o
+
+
+import math  # noqa: E402
+
+for aligned in (True, False):
+    arm = "video" if aligned else "audio"
+    o = ladder(aligned)
+    check(f"{arm} ladder 1: an excess under 40 ms asks for nothing", o["s1"] == 0)
+    check(f"{arm} ladder 2: nothing before the 600 ms hold has passed", o["s2_early"] == 0)
+    r2 = o["s2"][0] if len(o["s2"]) == 1 else {}
+    check(f"{arm} ladder 2: one raise, the floor's excess, cause backlog, against D 300",
+          len(o["s2"]) == 1 and near(r2.get("excessMs"), 120, 15) and r2.get("cause") == "backlog"
+          and r2.get("tsOffsetMs") == BUDGET_MS and r2.get("element") == "vdec")
+    check(f"{arm} ladder 2: the request carries the design's whole field set",
+          sorted(r2) == sorted(["kind", "element", "excessMs", "worstMs", "cause", "queuedMs",
+                                "budgetMs", "tsOffsetMs", "latencyMs", "holdMs"])
+          and r2.get("holdMs") == 600 and r2.get("worstMs", 0) >= r2.get("excessMs", 1)
+          and near(r2.get("budgetMs"), r2.get("tsOffsetMs", 0) + r2.get("latencyMs", 0), 0.11))
+    check(f"{arm} ladder 2: renderWatch is told a raise is on its way",
+          (o["pending_s2"] or {}).get("raiseRequested") is True)
+    check(f"{arm} ladder 1–4: not one buffer dropped on lateness",
+          o["drops_s2"] == 0 and o["drops_s3"] == 0 and o["drops_s4"] == 0)
+    # ceil20(120 + 40) = 160; a floor read a hair over 120 rounds to the next step.
+    check(f"{arm} ladder 3: once the raise lands the leg is inside budget — no re-ask",
+          o["s3"] == 1 and o["d3"] in (BUDGET_MS + 160, BUDGET_MS + 180))
+    check(f"{arm} ladder 3: and the landed raise clears renderWatch's flag",
+          (o["pending_s3"] or {}).get("raiseRequested") is False)
+    check(f"{arm} ladder 4: a fresh hold, not the retry window, before the next ask",
+          o["s4_early"] == 1)
+    r4 = o["s4"][1] if len(o["s4"]) == 2 else {}
+    check(f"{arm} ladder 4: a late TIMELINE (nothing queued) asks too, against the raised D",
+          len(o["s4"]) == 2 and near(r4.get("excessMs"), 100, 15) and r4.get("cause") == "timeline"
+          and r4.get("tsOffsetMs") == o["d3"] and r4.get("queuedMs") == 0.0)
+    r6 = o["s6"][0] if len(o["s6"]) == 1 else {}
+    check(f"{arm} ladder 6: future stamps re-anchor the leg at once, unflushed",
+          len(o["s6"]) == 1 and near(r6.get("latenessMs"), -20_000 - o["d3"], 100)
+          and r6.get("flushed") is False and r6.get("count") == 1
+          and r6.get("appliedOffsetNs") == r6.get("padOffsetNs"))
+    check(f"{arm} ladder 6: the rebase carries the design's whole field set",
+          sorted(r6) == sorted(["kind", "element", "latenessMs", "appliedOffsetNs", "padOffsetNs",
+                                "flushed", "sanityMs", "budgetMs", "count"]))
+    check(f"{arm} ladder 6: the shed pad carries the offset (≈ −20 s)",
+          near(o["s6_offset"] / 1e6, -20_000 - o["d3"], 100) and o["s6_offset"] == r6.get("padOffsetNs"))
+    check(f"{arm} ladder 6: every buffer renders — none parked, none lost", o["s6_rendered"])
+    check(f"{arm} ladder 7: one implausible buffer then in-range cancels the hold",
+          len(o["s7"]) == 1 and o["s7_offset"] == o["s6_offset"])
+    r8 = o["s8"][1] if len(o["s8"]) == 2 else {}
+    check(f"{arm} ladder 8: past stamps that keep flowing re-anchor after the hold",
+          len(o["s8"]) == 2 and near(r8.get("appliedOffsetNs", 0) / 1e6, 20_000, 100)
+          and r8.get("flushed") is False and r8.get("count") == 2
+          and r8.get("padOffsetNs") == o["s8_offset"])
+    check(f"{arm} ladder 6–8: zero drops across both rebases", o["drops_after4"] == 0)
+    check(f"{arm} ladder 7–8: the implausible readings are still reported, once per episode",
+          sum(1 for p in o["all_backlog"] if p.get("outcome") == "implausible") == 2)
+
+# Falsification arm: the SAME ladder with `onLateness` absent is today's shedder —
+# it sheds (drops) at ≈1.0 s and never says a word on `playout_reanchor`.
+o = ladder(True, reanchor=False)
+check("shed mode (onLateness absent): the same excess sheds, with drops",
+      o["sheds"] >= 1 and o["drops_s2"] > 0)
+check("shed mode: never a playout_reanchor event", o["all_reanchor"] == [])
+check("shed mode: renderWatch's reading has no raiseRequested key (payload unchanged)",
+      o["window"] is not None and "raiseRequested" not in o["window"])
+
+# The raw-segment helper behind the rebase and the stall flush: no stored
+# segment is None (never a crash), and the arrival offset comes back off.
+seg = Gst.Segment()
+seg.init(Gst.Format.TIME)
+check("raw segment: none stored gives None, with or without an offset",
+      runner._segment_without_offset(None, 0) is None
+      and runner._segment_without_offset(None, 5 * Gst.SECOND) is None)
+check("raw segment: no offset hands back the stored segment itself",
+      runner._segment_without_offset(seg, 0) is seg)
+raw = runner._segment_without_offset(seg, 2 * Gst.SECOND)
+check("raw segment: the arrival offset is taken back off a copy",
+      raw is not seg and raw.to_running_time(Gst.Format.TIME, 3 * Gst.SECOND) == Gst.SECOND
+      and seg.to_running_time(Gst.Format.TIME, 3 * Gst.SECOND) == 3 * Gst.SECOND)
 
 print()
 if _failures:

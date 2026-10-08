@@ -326,7 +326,8 @@ void Runner::handle_start(JsonObject* data) {
     // The producer half of the time-sync contract — recorded before PLAYING so
     // an attach landing the moment the pipeline starts owns its first buffer.
     JsonNode* repair = json_has(data, "latchRepair") ? json_object_get_member(data, "latchRepair") : nullptr;
-    stamper::enable(pipeline, contract, repair, json_get_int(data, "conditionStepMs", 0));
+    stamper::enable(pipeline, contract, repair, json_get_int(data, "conditionStepMs", 0),
+                    json_get_bool(data, "houseTimelineEgress"));
 
     // Plugin-owned runner hooks in their native form (mr_hook.h, ADR-0020),
     // handed the pipeline before PLAYING like the python runner imports theirs.

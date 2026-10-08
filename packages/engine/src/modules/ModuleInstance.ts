@@ -10,6 +10,7 @@ import type {
 } from '../child-process/UnixFdFanoutController.js';
 import type { LiveInputBranch } from '../plugins/PluginModule.js';
 import { PLAYOUT_OFFSET_KEY } from '../plugins/playoutOffset.js';
+import type { PlayoutRaise, PlayoutRebaseNote } from '../plugins/playoutReanchor.js';
 
 const log = createLogger('ModuleInstance');
 
@@ -271,6 +272,9 @@ export class ModuleInstance extends EventEmitter {
         // together (ADR-0005 decision 4). Fire-and-forget: a consumer that can't
         // take it self-corrects on its next rebuild.
         if (PLAYOUT_OFFSET_KEY in changes && this.services?.mediaRouter) {
+            // The operator took ownership of D: any runtime re-anchor raise goes
+            // FIRST, so the fan-out below pushes the edited value alone.
+            this.services.mediaRouter.clearPlayoutRaise?.(this.instanceId);
             await this.services.mediaRouter
                 .notifyPlayoutOffsetChanged(this.instanceId)
                 .catch((err: unknown) => {
@@ -291,6 +295,16 @@ export class ModuleInstance extends EventEmitter {
      */
     async notifyRoutePlayoutOffsetChanged(): Promise<void> {
         await this.plugin.onRoutePlayoutOffsetChanged?.();
+    }
+
+    /** This module's route raise changed (re-anchor, ADR-0005 2026-10-08). */
+    notifyRoutePlayoutRaised(raise: PlayoutRaise | null): void {
+        this.plugin.onRoutePlayoutRaised?.(raise);
+    }
+
+    /** A leg below this route head rebased itself. */
+    notifyRoutePlayoutRebased(note: PlayoutRebaseNote): void {
+        this.plugin.onRoutePlayoutRebased?.(note);
     }
 
     /** Get PipeWire node names for audio routing (single-port modules). */
