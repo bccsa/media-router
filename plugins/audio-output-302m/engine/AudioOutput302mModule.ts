@@ -177,7 +177,8 @@ export class AudioOutput302mModule extends GstPluginBase {
             ignorePcr: false,
             sources,
             channels,
-            latencyMs: Number(config.mixLatencyMs ?? 200),
+            // 20, not 200: at D=300 a 200 ms mixer latency would clamp the sink offset back to 0.
+            latencyMs: Number(config.mixLatencyMs ?? 20),
         });
         this.mixerLatencyNs = mixerLatencyNs ?? 0;
 

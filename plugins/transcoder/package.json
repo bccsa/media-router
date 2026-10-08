@@ -380,6 +380,8 @@
     },
     "scripts": {
         "build": "tsc",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc --noEmit",
+        "test": "pnpm run test:py",
+        "test:py": "cd py && python3 deinterlace_guard_test.py"
     }
 }

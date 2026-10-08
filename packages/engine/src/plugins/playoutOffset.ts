@@ -22,6 +22,9 @@
  *
  * With the contract OFF this whole file resolves to the trim alone, i.e. exactly
  * the legacy numbers (decision 10's kill-switch: `MR_TIME_SYNC_CONTRACT=0`).
+ *
+ * The engine may RAISE a route's D at runtime, never drop against it (ADR-0005
+ * 2026-10-08, `playoutReanchor.ts`): that overlay is added here, capped at MAX.
  */
 
 /** Engine-wide default playout offset when nothing else says otherwise (ADR-0005 decision 4; lowered from the original ~300 ms to 60 ms on 2026-09-03 after measured LAN arrival jitter of -19/+14 ms p10/p90 — see the decision-4 amendment). */
@@ -77,6 +80,8 @@ export function resolveEnginePlayoutOffsetMs(
 export interface PlayoutOffsetRouteSource {
     /** Override declared by the route head feeding `consumerModuleId`, if any. */
     getRoutePlayoutOffsetMs(consumerModuleId: string, sinkPortId?: string): number | undefined;
+    /** The engine's runtime raise on that route's head, in ms (0 when none). */
+    getRoutePlayoutRaiseMs(consumerModuleId: string, sinkPortId?: string): number;
 }
 
 /** The slice of `ModuleServices` the resolution reads. */
@@ -100,7 +105,8 @@ export interface PlayoutOffsetOptions {
 }
 
 /**
- * The one definition of a presentation sink's `ts-offset`, in milliseconds.
+ * The one definition of a presentation sink's `ts-offset`, in milliseconds:
+ * `min(base + raise, MAX_PLAYOUT_OFFSET_MS) + trim`.
  *
  * Both consumer legs of a route call THIS — not their own arithmetic — which is
  * what makes "the same route resolves to the same D on every leg" a property of
@@ -124,7 +130,16 @@ export function effectivePlayoutOffsetMs(
         parsePlayoutOffsetMs(routeOverride) ??
         parsePlayoutOffsetMs(services.playoutOffsetMs) ??
         DEFAULT_PLAYOUT_OFFSET_MS;
-    return base + trim;
+    // The runtime re-anchor overlay on the same head (0 when none).
+    const raise = services.instanceId
+        ? Number(
+              services.mediaRouter?.getRoutePlayoutRaiseMs?.(
+                  services.instanceId,
+                  opts.sinkPortId,
+              ) ?? 0,
+          )
+        : 0;
+    return Math.min(base + (raise > 0 ? raise : 0), MAX_PLAYOUT_OFFSET_MS) + trim;
 }
 
 /** `effectivePlayoutOffsetMs` in nanoseconds — the unit `ts-offset` takes. */

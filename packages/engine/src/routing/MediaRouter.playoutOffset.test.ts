@@ -58,6 +58,43 @@ async function wireBothLegs(router: MediaRouter): Promise<void> {
     await router.createConnection('splitter', 'audio-out', 'audio-decoder', 'mpegts-in');
 }
 
+/**
+ * Free-form bus graph for the upstream walk: each module gets bus inputs `in` /
+ * `in-b` and one output `out`, muxed TS unless listed in `pcm` (`audio/302m`).
+ */
+function busGraph(configs: Record<string, Record<string, unknown>>, pcm: string[] = []) {
+    const router = new MediaRouter();
+    const notified: string[] = [];
+    const modules: Record<string, ModuleInstance> = {};
+    for (const [id, config] of Object.entries(configs)) {
+        router.registerPorts(id, [
+            { id: 'in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
+            { id: 'in-b', direction: 'input', streamType: 'muxed/mpegts', label: 'In B' },
+            {
+                id: 'out',
+                direction: 'output',
+                streamType: pcm.includes(id) ? 'audio/302m' : 'muxed/mpegts',
+                label: 'Out',
+            },
+        ]);
+        modules[id] = {
+            instanceId: id,
+            config,
+            running: false,
+            start: vi.fn(),
+            stop: vi.fn(),
+            notifyRoutePlayoutOffsetChanged: vi.fn(async () => {
+                notified.push(id);
+            }),
+        } as unknown as ModuleInstance;
+    }
+    router.setDependencies({} as never, (id: string) => modules[id]);
+    for (const id of Object.keys(configs)) router.assignBusChannel(id, 'out');
+    const wire = (from: string, to: string, sinkPortId = 'in') =>
+        router.createConnection(from, 'out', to, sinkPortId);
+    return { router, modules, notified, wire };
+}
+
 describe('MediaRouter.getRoutePlayoutOffsetMs', () => {
     let ctx: ReturnType<typeof splitRoute>;
 
@@ -93,6 +130,65 @@ describe('MediaRouter.getRoutePlayoutOffsetMs', () => {
         const bad = splitRoute({ playoutOffsetMs: 'soon' });
         await wireBothLegs(bad.router);
         expect(bad.router.getRoutePlayoutOffsetMs('audio-decoder')).toBeUndefined();
+    });
+
+    it('resolves through a transparent transcoder: the 302M leg gets the video leg D', async () => {
+        // The .108 route: the audio-transcoder declares no D and passes the splitter's through.
+        const g = busGraph(
+            {
+                splitter: { playoutOffsetMs: 300 },
+                'video-player': {},
+                'audio-transcoder': {},
+                'audio-output-302m': {},
+            },
+            ['audio-transcoder'],
+        );
+        await g.wire('splitter', 'video-player');
+        await g.wire('splitter', 'audio-transcoder');
+        await g.wire('audio-transcoder', 'audio-output-302m');
+        expect(g.router.getRoutePlayoutOffsetMs('audio-output-302m')).toBe(300);
+        expect(g.router.getRoutePlayoutOffsetMs('video-player')).toBe(300);
+    });
+
+    it('the nearest DECLARING producer wins over the head above it', async () => {
+        const g = busGraph(
+            {
+                'rist-input': { playoutOffsetMs: 500 },
+                splitter: { playoutOffsetMs: 200 },
+                'audio-transcoder': {},
+                'audio-output-302m': {},
+            },
+            ['audio-transcoder'],
+        );
+        await g.wire('rist-input', 'splitter');
+        await g.wire('splitter', 'audio-transcoder');
+        await g.wire('audio-transcoder', 'audio-output-302m');
+        expect(g.router.getRoutePlayoutOffsetMs('audio-output-302m')).toBe(200);
+        // With the splitter declaring nothing, the walk carries on to the head.
+        delete g.modules.splitter.config.playoutOffsetMs;
+        expect(g.router.getRoutePlayoutOffsetMs('audio-output-302m')).toBe(500);
+    });
+
+    it('follows a multi-input muxer through its FIRST bus input', async () => {
+        const g = busGraph({
+            'splitter-a': { playoutOffsetMs: 400 },
+            'splitter-b': { playoutOffsetMs: 700 },
+            muxer: {},
+            'video-player': {},
+        });
+        await g.wire('splitter-a', 'muxer');
+        await g.wire('splitter-b', 'muxer', 'in-b');
+        await g.wire('muxer', 'video-player');
+        expect(g.router.getRoutePlayoutOffsetMs('video-player')).toBe(400);
+    });
+
+    it('terminates on a cycle in the bus graph — nothing declares, so undefined', async () => {
+        const g = busGraph({ a: {}, b: {}, c: {} });
+        await g.wire('a', 'b');
+        await g.wire('b', 'a');
+        await g.wire('b', 'c');
+        expect(g.router.getRoutePlayoutOffsetMs('a')).toBeUndefined();
+        expect(g.router.getRoutePlayoutOffsetMs('c')).toBeUndefined();
     });
 });
 
@@ -131,5 +227,53 @@ describe('MediaRouter.notifyPlayoutOffsetChanged', () => {
         ).mockRejectedValue(new Error('sink gone'));
         await expect(ctx.router.notifyPlayoutOffsetChanged('splitter')).resolves.toBeUndefined();
         expect(ctx.notified).toEqual(['audio-decoder']);
+    });
+
+    it('reaches a consumer two hops down through a transparent producer, exactly once', async () => {
+        // The 302M output mixes two PCM renditions of the edited splitter's audio.
+        const g = busGraph(
+            {
+                splitter: { playoutOffsetMs: 300 },
+                'video-player': {},
+                'transcoder-a': {},
+                'transcoder-b': {},
+                'audio-output-302m': {},
+            },
+            ['transcoder-a', 'transcoder-b'],
+        );
+        await g.wire('splitter', 'video-player');
+        await g.wire('splitter', 'transcoder-a');
+        await g.wire('splitter', 'transcoder-b');
+        await g.wire('transcoder-a', 'audio-output-302m');
+        await g.wire('transcoder-b', 'audio-output-302m', 'in-b');
+        await g.router.notifyPlayoutOffsetChanged('splitter');
+        expect(g.notified.filter((id) => id === 'audio-output-302m')).toHaveLength(1);
+        expect([...g.notified].sort()).toEqual([
+            'audio-output-302m',
+            'transcoder-a',
+            'transcoder-b',
+            'video-player',
+        ]);
+    });
+
+    it('stops at a consumer that declares its own D — its subtree has its own head', async () => {
+        const g = busGraph({
+            'rist-input': { playoutOffsetMs: 500 },
+            splitter: { playoutOffsetMs: 200 },
+            'video-player': {},
+        });
+        await g.wire('rist-input', 'splitter');
+        await g.wire('splitter', 'video-player');
+        await g.router.notifyPlayoutOffsetChanged('rist-input');
+        expect(g.notified).toEqual(['splitter']);
+    });
+
+    it('terminates on a cycle in the bus graph, notifying each module once', async () => {
+        const g = busGraph({ a: {}, b: {}, c: {} });
+        await g.wire('a', 'b');
+        await g.wire('b', 'a');
+        await g.wire('b', 'c');
+        await g.router.notifyPlayoutOffsetChanged('a');
+        expect([...g.notified].sort()).toEqual(['b', 'c']);
     });
 });

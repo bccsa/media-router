@@ -17,9 +17,22 @@ import type { RunnerHook } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
 
 /** `name=` of the input tsdemux — the target of `preserveSourceTimeline`
- *  (the runner latches source PES PTS on its sink pad and shifts its media
- *  src pads onto the source timeline). */
+ *  (legacy: the runner latches source PES PTS on its sink pad and shifts its
+ *  media src pads onto the source timeline) and of `alignBranchesToStamps`
+ *  (contract: the same pads, onto the bus stamps). */
 export const DEMUX_NAME = 'demux';
+
+/** `name=` of the shared deinterlacer — the `deinterlace_guard` runner hook's target (#817). */
+export const DEINTERLACER_NAME = 'deint';
+
+export type DeinterlaceMethod = 'yadif' | 'greedyl';
+
+/** Method per `process.arch` (#817): never the default `linear` bob (burnt-in text jumps a
+ *  line at 25 Hz). yadif has x86 SIMD (2.1 ms/frame on the gate) but none on ARM
+ *  (15.6 ms/frame), so ARM — and anything unknown — gets greedyl. */
+export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
+    return arch === 'x64' ? 'yadif' : 'greedyl';
+}
 
 export interface TranscoderPipelineInputs {
     input: { port: number; socketPath?: string };
@@ -50,6 +63,9 @@ export interface TranscoderPipelineInputs {
      *  fields through (only sensible when renditions keep the source
      *  resolution — the encoder flag for that case is handled per branch). */
     deinterlace?: 'auto' | 'force' | 'off';
+    /** The deinterlacer's `method` (the module passes `deinterlaceMethodForArch(process.arch)`);
+     *  default 'greedyl'. */
+    deinterlaceMethod?: DeinterlaceMethod;
     /** Hardware scaler availability, probed by the module at manifest init.
      *  When a rendition's encoder impl has its hardware scaler available, the
      *  leaf's software `videoscale ! videoconvert` stage is replaced by the
@@ -67,7 +83,8 @@ export interface TranscoderPipelineInputs {
 
 export interface TranscoderPipelineResult {
     pipeline: string;
-    /** Subtitle bridge hook when a subtitle source is wired — put on the description verbatim. */
+    /** The deinterlace guard (with a deinterlacer) and the subtitle bridge (with a subtitle
+     *  source) — put on the description verbatim. */
     runnerHooks?: RunnerHook[];
     /** Bus-egress tee names (one per rendition, `busout_<port>`) — the module
      *  polls these for per-rendition output throughput. Single source of truth
@@ -243,13 +260,13 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // the decoded buffers' interlace flags itself — interlaced content is
     // deinterlaced, progressive passes through untouched. 'off' omits the
     // element entirely (interlaced pass-through; the x264 branches then flag
-    // their output via interlacedOutput above).
+    // their output via interlacedOutput above). The method is explicit (see
+    // deinterlaceMethodForArch) and the element named for the guard hook below.
+    const method = input.deinterlaceMethod ?? 'greedyl';
     const deinterlacer =
         deinterlaceMode === 'off'
             ? ''
-            : deinterlaceMode === 'force'
-              ? 'deinterlace mode=interlaced ! '
-              : 'deinterlace mode=auto ! ';
+            : `deinterlace name=${DEINTERLACER_NAME} mode=${deinterlaceMode === 'force' ? 'interlaced' : 'auto'} method=${method} ! `;
 
     const teeBranches = input.outputs.map((o, i) => `t. ! ${leaf(o, i)}`).join(' ');
     // Shared pre-tee path: demux → decode → raw buffer (thread boundary) →
@@ -276,5 +293,13 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         `${deinterlacer}videorate drop-only=true ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 
-    return { pipeline, sinkNames, ...(subs ? { runnerHooks: subs.runnerHooks } : {}) };
+    // `deinterlace` re-sends already-output fields after every DISCONT (the raw
+    // queue's sheds): the guard drops them before mpegtsmux sees DTS go back (#817).
+    const runnerHooks: RunnerHook[] = [
+        ...(deinterlacer
+            ? [{ module: 'deinterlace_guard', config: { element: DEINTERLACER_NAME } }]
+            : []),
+        ...(subs ? subs.runnerHooks : []),
+    ];
+    return { pipeline, sinkNames, ...(runnerHooks.length > 0 ? { runnerHooks } : {}) };
 }

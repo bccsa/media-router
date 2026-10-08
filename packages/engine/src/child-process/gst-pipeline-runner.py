@@ -1386,6 +1386,8 @@ def _install_preserve_timeline(pipe, cfg):
 # config when the contract is off): with arrival-timed bus buffers there is no
 # house mapping to anchor to, `K` would be noise, and the legacy path must stay
 # byte-identical.
+import branch_retime                                              # noqa: E402
+
 _branch_align = {}      # demux element name -> per-branch state
 
 
@@ -1455,7 +1457,7 @@ _BRANCH_ALIGN_MIN_NS = 2_000_000
 # demuxer to hand back. The join is normally the first few; the live video
 # branch had discarded five buffers' worth before it emitted. This is the
 # memory bound, not an expectation.
-_BRANCH_ALIGN_HISTORY = 4096
+_BRANCH_ALIGN_HISTORY = branch_retime.HISTORY
 
 
 def _branch_align_join(st, pid, tail):
@@ -1511,17 +1513,20 @@ def _branch_align_join(st, pid, tail):
 # which no two frames share (an access unit's HEAD is codec boilerplate every
 # frame repeats: measured on the live H.264 leg, a head join landed whole frames
 # out). Same key the rig's analysis tool joins access units on.
-_BRANCH_ALIGN_KEY_BYTES = 64
+_BRANCH_ALIGN_KEY_BYTES = branch_retime.KEY_BYTES
 
 
 def _install_branch_stamp_align(pipe, cfg):
-    """cfg = {"demuxes": ["demux_0", ...]} from the pipeline description."""
+    """cfg = {"demuxes": ["demux_0", ...], "transformProducer"?: bool} from the
+    pipeline description. `transformProducer` retimes every access unit instead
+    (`branch_retime.install`); without it, this mux-branch path."""
     _clear_branch_align()
     if not cfg:
         return
     names = [n for n in (cfg.get("demuxes") or []) if n]
     if not names:
         return
+    producer = bool(cfg.get("transformProducer"))
     import ts_psi          # lazy, pure stdlib (embedded-core pattern)
     import ts_timeline
 
@@ -1534,6 +1539,9 @@ def _install_branch_stamp_align(pipe, cfg):
             continue
         sink_pad = demux.get_static_pad("sink")
         if sink_pad is None:
+            continue
+        if producer:
+            branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name)
             continue
         state = {
             "name": name,
@@ -2113,7 +2121,7 @@ def handle_start(data):
     # per tee as consumers attach. Gated on the same flag as the clock, because
     # the stamp is only meaningful once base_time is pinned to 0.
     gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"),
-                           data.get("conditionStepMs"))
+                           data.get("conditionStepMs"), data.get("houseTimelineEgress"))
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
@@ -4107,6 +4115,16 @@ def _upstream_queued_ms(pad):
     return total_ns / 1e6
 
 
+def _segment_without_offset(segment, offset_ns):
+    """`segment` without the pad offset it arrived under — re-sent as stored,
+    the pad would apply that offset twice. None when no segment is stored."""
+    if segment is None or not offset_ns:
+        return segment
+    raw = segment.copy()
+    raw.offset_running_time(Gst.Format.TIME, -offset_ns)
+    return raw
+
+
 def _start_backlog_shedder(pipe, cfg):
     """Give a clock-paced leg its retained backlog back (`backlogShed` config).
 
@@ -4175,6 +4193,10 @@ def _start_backlog_shedder(pipe, cfg):
     second grace posts a bus ERROR and lets the parent's existing restart policy
     take it from there. Nothing of this exists until a shed fires.
 
+    RE-ANCHOR MODE (`onLateness: "reanchor"`, ADR-0005 2026-10-08) never drops:
+    a sustained floor past `reanchorToleranceMs` asks the engine to raise the
+    route's D (`playout_reanchor`), and an implausible timeline rebases this leg.
+
     A missing element the module explicitly named is a hard error (matches
     tsProbe / renderWatch / keyframeGate).
     """
@@ -4207,11 +4229,20 @@ def _start_backlog_shedder(pipe, cfg):
                     "message": f"backlogShed: sink not found: {sink_name!r}"})
         return False
 
+    # `onLateness: "reanchor"` (ADR-0005 2026-10-08): ask the engine to raise the
+    # route's D and never drop. Absent = "shed", today's path byte for byte.
+    reanchor = cfg.get("onLateness") == "reanchor"
     policy = BacklogShedPolicy(
         tolerance_ms=cfg.get("toleranceMs", 250),
         hold_ms=cfg.get("holdMs", 5_000),
         cooldown_ms=cfg.get("cooldownMs", 60_000),
         sanity_ms=cfg.get("sanityMs", 10_000),
+        mode="reanchor" if reanchor else "shed",
+        reanchor_tolerance_ms=cfg.get("reanchorToleranceMs", 40),
+        reanchor_hold_ms=cfg.get("reanchorHoldMs", 15_000),
+        retry_ms=cfg.get("reanchorRetryMs", 30_000),
+        rebase_hold_ms=cfg.get("rebaseHoldMs", 3_000),
+        rebase_cooldown_ms=cfg.get("rebaseCooldownMs", 60_000),
     )
     # Every field below except `probe_id` is written ONLY by the probe callback
     # (one streaming thread) — the same single-writer discipline as the keyframe
@@ -4231,7 +4262,11 @@ def _start_backlog_shedder(pipe, cfg):
           # previous stage's pending timeout instead of stacking a second one.
           "stall": PostShedStallWatch(enabled=keyframe_aligned),
           "out_pad": el.get_static_pad("src"),
-          "stall_probe_id": None, "stall_gen": 0}
+          "stall_probe_id": None, "stall_gen": 0,
+          # Re-anchor mode. `segment_offset` is the pad offset the stored
+          # SEGMENT arrived under.
+          "reanchor": reanchor, "raise_pending": False, "rebases": 0,
+          "segment_offset": 0}
     _backlog_shed = st
 
     def _log(line):
@@ -4309,8 +4344,9 @@ def _start_backlog_shedder(pipe, cfg):
             # back: without it the decoder's next buffer arrives on no timeline.
             pad.send_event(Gst.Event.new_flush_start())
             pad.send_event(Gst.Event.new_flush_stop(False))
-            if st["segment"] is not None:
-                pad.send_event(Gst.Event.new_segment(st["segment"]))
+            raw = _raw_segment()
+            if raw is not None:
+                pad.send_event(Gst.Event.new_segment(raw))
             # A flushed decoder needs a self-contained frame again, and nothing
             # in the stream will say so.
             _reclose_keyframe_gate(name)
@@ -4381,11 +4417,61 @@ def _start_backlog_shedder(pipe, cfg):
         # whatever the decoder then does.
         _stall_arm()
 
+    def _raw_segment():
+        return _segment_without_offset(st["segment"], st["segment_offset"])
+
+    def _emit_reanchor(payload):
+        emit_plugin_event("playout_reanchor", payload)
+        return False
+
+    def _request_raise(budget_ms, now_ms):
+        """Ask the engine to raise the route's D — the leg drops nothing. Sent
+        from the main loop, never this streaming thread."""
+        policy.request_sent(now_ms, budget_ms)
+        st["raise_pending"] = True
+        payload = {"kind": "raise", "element": name,
+                   "excessMs": round(policy.level_ms, 1),
+                   "worstMs": round(policy.worst_ms, 1),
+                   "cause": policy.cause,
+                   "queuedMs": round(policy.queued_ms, 1),
+                   "budgetMs": round(budget_ms, 1),
+                   "tsOffsetMs": round(_ts_offset_ms(), 1),
+                   "latencyMs": round(_sink_latency_ms(), 1),
+                   "holdMs": int(policy.reanchor_hold_ms)}
+        _log(f"arrived {policy.level_ms:.0f} ms past a {budget_ms:.0f} ms budget for "
+             f"{policy.reanchor_hold_ms:.0f} ms ({policy.cause}) — asking the engine "
+             "to re-anchor the route, nothing dropped")
+        GLib.idle_add(_emit_reanchor, payload)
+
+    def _rebase(late_ms, budget_ms, now_ms):
+        """Re-anchor THIS leg onto arrival + D with one offset on the shed pad.
+        In-thread: the segment re-send rides the stream lock this probe holds,
+        so nothing is flushed and no buffer is lost."""
+        late_ns = int(math.floor(late_ms * 1e6 + 0.5))
+        raw = _raw_segment()
+        pad_ns = pad.get_offset() + late_ns
+        pad.set_offset(pad_ns)
+        if raw is not None:
+            pad.send_event(Gst.Event.new_segment(raw))
+        policy.rebased(now_ms)
+        st["rebases"] += 1
+        payload = {"kind": "rebase", "element": name,
+                   "latenessMs": round(late_ms, 1),
+                   "appliedOffsetNs": late_ns, "padOffsetNs": pad_ns,
+                   "flushed": False, "sanityMs": int(policy.sanity_ms),
+                   "budgetMs": round(budget_ms, 1), "count": st["rebases"]}
+        _log(f"timeline {abs(late_ms) / 1000.0:.1f} s "
+             f"{'behind' if late_ms > 0 else 'ahead of'} the house clock — "
+             f"re-anchored onto arrival + D (pad offset {pad_ns / 1e9:+.3f} s, rebase "
+             f"#{st['rebases']})")
+        GLib.idle_add(_emit_reanchor, payload)
+
     def _on_probe(_pad, info):
         if info.type & Gst.PadProbeType.EVENT_DOWNSTREAM:
             ev = info.get_event()
             if ev is not None and ev.type == Gst.EventType.SEGMENT:
                 st["segment"] = ev.parse_segment()
+                st["segment_offset"] = pad.get_offset()
                 # Either side of a new segment the running times are not
                 # comparable — start the streak over rather than carry it.
                 policy.reset()
@@ -4410,6 +4496,9 @@ def _start_backlog_shedder(pipe, cfg):
         # The FLOOR over the window is the retained part (a spike relaxes; a
         # floor does not) — that is what renderWatch reports and judges on.
         st["win_min"] = late_ms if st["win_min"] is None else min(st["win_min"], late_ms)
+        # A raise landed (or D was edited): the streak restarts against it.
+        if st["reanchor"] and policy.budget_moved(budget_ms):
+            st["raise_pending"] = False
 
         if st["shedding"]:
             at_budget = late_ms <= 0.0
@@ -4444,6 +4533,12 @@ def _start_backlog_shedder(pipe, cfg):
         # matured (at most once per `hold_ms`), never per buffer.
         verdict = policy.observe(late_ms, now_ms,
                                  queued_ms=lambda: _upstream_queued_ms(pad))
+        if verdict == "reanchor":
+            _request_raise(budget_ms, now_ms)
+            return Gst.PadProbeReturn.OK
+        if verdict == "rebase":
+            _rebase(late_ms, budget_ms, now_ms)
+            return Gst.PadProbeReturn.OK
         if verdict == "timeline":
             _log(f"retained {late_ms + budget_ms:.0f} ms against a {budget_ms:.0f} ms "
                  f"budget for {policy.hold_ms:.0f} ms, but the queues upstream are "
@@ -4492,11 +4587,14 @@ def _backlog_shed_window(now_ms):
         return None
     floor = st["win_min"]
     st["win_min"] = None
-    return {"latenessMs": round(floor, 1),
-            "retainedMs": round(floor + st["budget_ms"], 1),
-            "budgetMs": round(st["budget_ms"], 1),
-            "shedding": st["shedding"],
-            "shedCount": st["sheds"]}
+    reading = {"latenessMs": round(floor, 1),
+               "retainedMs": round(floor + st["budget_ms"], 1),
+               "budgetMs": round(st["budget_ms"], 1),
+               "shedding": st["shedding"],
+               "shedCount": st["sheds"]}
+    if st["reanchor"]:
+        reading["raiseRequested"] = st["raise_pending"]     # a raise is on its way
+    return reading
 
 
 def _stop_backlog_shedder():

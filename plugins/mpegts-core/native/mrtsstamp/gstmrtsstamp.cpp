@@ -76,7 +76,7 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.4.0"
+#define MRTSSTAMP_VERSION "2.5.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -159,6 +159,7 @@ enum {
     PROP_ACTIVE,
     PROP_REPAIR_LATCH,
     PROP_CONDITION_STEP_MS,
+    PROP_HOUSE_TIMELINE,
     PROP_COPY_COUNT,
     PROP_DRIFT,
     PROP_BYTES_TOTAL,
@@ -181,6 +182,11 @@ struct _GstMrTsStamp {
      * ts_timeline.py `condition_step_ns`); read at the next arm like
      * `repair-latch`. */
     gint condition_step_ms;
+    /* HOUSE-TIMELINE egress (`house-timeline`, ts_timeline.py `house_timeline`):
+     * this producer's own mpegtsmux wrote its PES off house running time (+1 h),
+     * so the stamper reads that back instead of anchoring at this egress. Read at
+     * the next arm like `repair-latch`; it also keeps the conditioner off. */
+    gboolean house_timeline;
     gboolean checked;            /* one-shot clock/segment diagnostics per arm */
     gboolean seg_warned;         /* one-shot unmappable-segment report per arm */
     gint map_warned;             /* one-shot buffer-map-failure report (atomic, pre-lock) */
@@ -237,6 +243,7 @@ static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
         pending->push_back(mrtsstamp_pending_conditioned(c));
     });
     self->st->set_condition_step_ns((int64_t)self->condition_step_ms * 1000000LL);
+    self->st->set_house_timeline(self->house_timeline != FALSE);
 }
 
 /* Running-time, which under the contract IS house-clock time. Written as
@@ -417,7 +424,7 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
      * (live-cadence producers, `repair-latch`); otherwise READ — the stamp is
      * the buffer's PTS/DTS, never its bytes. In-place basetransform hands us a
      * writable buffer (prepare_output_buffer counts the copies that costs). */
-    const gboolean conditioning = self->repair_latch != FALSE;
+    const gboolean conditioning = self->repair_latch != FALSE && self->house_timeline == FALSE;
     if (!gst_buffer_map(buf, &mi, conditioning ? GST_MAP_READWRITE : GST_MAP_READ)) {
         gst_mrtsstamp_post_map_warning(self, conditioning);
         return GST_FLOW_OK;
@@ -610,6 +617,11 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
             self->condition_step_ms = g_value_get_int(value);
             g_mutex_unlock(&self->lock);
             break;
+        case PROP_HOUSE_TIMELINE:
+            g_mutex_lock(&self->lock);
+            self->house_timeline = g_value_get_boolean(value);
+            g_mutex_unlock(&self->lock);
+            break;
         case PROP_COALESCE:
             self->coalesce.store(g_value_get_boolean(value) ? 1 : 0, std::memory_order_relaxed);
             break;
@@ -636,6 +648,11 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
         case PROP_CONDITION_STEP_MS:
             g_mutex_lock(&self->lock);
             g_value_set_int(value, self->condition_step_ms);
+            g_mutex_unlock(&self->lock);
+            break;
+        case PROP_HOUSE_TIMELINE:
+            g_mutex_lock(&self->lock);
+            g_value_set_boolean(value, self->house_timeline);
             g_mutex_unlock(&self->lock);
             break;
         case PROP_COALESCE:
@@ -695,6 +712,7 @@ static void gst_mrtsstamp_init(GstMrTsStamp *self) {
      * path does not go through this element at all. */
     self->repair_latch = TRUE;
     self->condition_step_ms = 300;
+    self->house_timeline = FALSE;
     self->checked = FALSE;
     self->seg_warned = FALSE;
     self->map_warned = 0;
@@ -755,6 +773,17 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
                          "now and then). Read at the next arm.",
                          20, 10000, 300,
                          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        gobject_class, PROP_HOUSE_TIMELINE,
+        g_param_spec_boolean("house-timeline", "House-timeline egress",
+                             "This producer's own mpegtsmux wrote its PES off house "
+                             "running time (+1 h): stamp every buffer with that value "
+                             "read back (PES - 1 h) instead of anchoring at this egress, "
+                             "so a transform producer carries its source's content time "
+                             "through (ADR-0005 amendment 2026-10-08). No anchor, no "
+                             "re-anchor, no repair, no conditioner. Read at the next arm.",
+                             FALSE,
+                             (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
         gobject_class, PROP_COPY_COUNT,
         g_param_spec_uint64("copy-count", "Copy count",

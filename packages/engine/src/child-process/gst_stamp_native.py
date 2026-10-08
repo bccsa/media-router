@@ -173,17 +173,25 @@ def insert_elements(pipe):
         sys.stderr.flush()
 
 
-def activate(el, name, repair_latch=True, condition_step_ms=None):
+def activate(el, name, repair_latch=True, condition_step_ms=None, house_timeline=False):
     """Arm one spliced element. Setting `active` IS the whole arm: it resets the
     latch and takes the element out of passthrough, in that order. The
     latch-repair policy (and a per-egress conditioner threshold, when the
-    producer set one) is set first so the fresh latch is built with it."""
+    producer set one) is set first so the fresh latch is built with it; so is
+    `house-timeline` (a transform producer: identity stamps, PES − 1 h)."""
     el.set_property("repair-latch", bool(repair_latch))
     if condition_step_ms and el.find_property("condition-step-ms") is not None:
         el.set_property("condition-step-ms", int(condition_step_ms))
+    if el.find_property("house-timeline") is not None:
+        el.set_property("house-timeline", bool(house_timeline))
+    elif house_timeline:
+        sys.stderr.write(f"[gst-runner.py] busStamp: {name} declares a house-timeline egress "
+                         "but this mrtsstamp predates the property — anchored stamps instead\n")
     el.set_property("active", True)
+    mode = ("house-timeline egress: PES − 1 h, no anchor" if house_timeline
+            else "first consumer edge")
     sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "
-                     f"armed on {name} (first consumer edge, native mrtsstamp)\n")
+                     f"armed on {name} ({mode}, native mrtsstamp)\n")
     sys.stderr.flush()
 
 

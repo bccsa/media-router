@@ -6,6 +6,7 @@ import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 import type { ClockAuthority } from '../child-process/ClockAuthority.js';
+import type { PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
 
 /**
  * A dynamically resolved module port — the one shared shape every plugin's
@@ -71,6 +72,10 @@ export interface EngineServices {
      *  absent (test harnesses, older engines) falls back to the 60 ms
      *  default. */
     playoutOffsetMs?: number;
+    /** Never drop on lateness — raise the route's D instead (ADR-0005
+     *  2026-10-08, `EngineConfig.playoutReanchor`). Only read with the
+     *  contract on; absent reads as off (shed, as before). */
+    playoutReanchor?: boolean;
 }
 
 /**
@@ -131,6 +136,15 @@ export interface PluginModule {
      * modules re-push their sink `ts-offset`; everyone else omits it.
      */
     onRoutePlayoutOffsetChanged?(): Promise<void>;
+    /**
+     * This module's route raise changed (ADR-0005 2026-10-08): the head gets
+     * its record (`null` = cleared); a leg that asked gets one with
+     * `raiseMs: 0` when an edit of the head's D reset it. `GstPluginBase`
+     * implements both ends (warning, status section, head badge).
+     */
+    onRoutePlayoutRaised?(raise: PlayoutRaise | null): void;
+    /** A leg below this route head rebased itself onto an implausible timeline. */
+    onRoutePlayoutRebased?(note: PlayoutRebaseNote): void;
     /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
@@ -334,6 +348,11 @@ export interface PipelineDescription {
      * (#751 follow-up, 2026-09-15). Only read on the contract path.
      */
     conditionStepMs?: number;
+    /**
+     * Egress PES already carry house time + 1 h (a transform producer's mux on
+     * house-stamped input): stamp by identity, not by anchoring (ADR-0005 2026-10-08).
+     */
+    houseTimelineEgress?: boolean;
     /**
      * udpsrc silence past this many ms errors the pipeline out (`udp_timeout`)
      * so the restart path re-joins the group — MULTICAST inputs only, where a
@@ -602,6 +621,14 @@ export interface PreserveSourceTimelineConfig {
 export interface AlignBranchesToStampsConfig {
     /** `name=`s of the input-branch tsdemux elements to anchor. */
     demuxes: string[];
+    /**
+     * The demux is a TRANSFORM PRODUCER's input (transcoder, audio-transcoder,
+     * each mpegts-muxer input — K, hold and epochs per demux): every access unit
+     * is retimed to its producer's stamp mapping (PTS/DTS = K + its PES),
+     * continuously and across source rewinds, from the first one. Presentation
+     * legs stay on the one-offset path (unset).
+     */
+    transformProducer?: boolean;
 }
 
 /** TS video-info probe config — see PipelineDescription.tsProbe. */
@@ -642,6 +669,14 @@ export interface BacklogShedConfig {
     cooldownMs: number;
     /** Lateness past which a reading is a timeline mismatch, not a backlog. */
     sanityMs: number;
+    /** `reanchor`: never drop on lateness, ask the engine to raise D
+     *  (`playoutReanchor.ts`). Absent = `shed`, exactly as before. */
+    onLateness?: 'reanchor' | 'shed';
+    reanchorToleranceMs?: number;
+    reanchorHoldMs?: number;
+    reanchorRetryMs?: number;
+    rebaseHoldMs?: number;
+    rebaseCooldownMs?: number;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

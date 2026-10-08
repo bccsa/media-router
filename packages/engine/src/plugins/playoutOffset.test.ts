@@ -173,6 +173,58 @@ describe('effectivePlayoutOffsetMs — contract ON', () => {
     });
 });
 
+/**
+ * The runtime re-anchor raise (ADR-0005 amendment 2026-10-08): an overlay the
+ * engine holds per route head and adds HERE, so every leg of the route — and
+ * only with the contract on — sees `min(base + raise, MAX) + trim`.
+ */
+describe('effectivePlayoutOffsetMs — the re-anchor raise overlay', () => {
+    const raised = (overrideMs: number | undefined, raiseMs: number) => ({
+        getRoutePlayoutOffsetMs: () => overrideMs,
+        getRoutePlayoutRaiseMs: vi.fn(() => raiseMs),
+    });
+    const on = { instanceId: 'm1', timeSyncContract: true, playoutOffsetMs: 60 } as const;
+
+    it('adds the raise to the base, under the trim', () => {
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, 180) })).toBe(480);
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(undefined, 200) })).toBe(260);
+        expect(
+            effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, 180) }, { trimMs: -20 }),
+        ).toBe(460);
+    });
+
+    it('caps base + raise at MAX_PLAYOUT_OFFSET_MS (the trim still stacks)', () => {
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(9_500, 2_000) })).toBe(
+            MAX_PLAYOUT_OFFSET_MS,
+        );
+        expect(
+            effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(9_500, 2_000) }, { trimMs: 10 }),
+        ).toBe(MAX_PLAYOUT_OFFSET_MS + 10);
+    });
+
+    it('resolves the raise through the same consumer and sink port', () => {
+        const router = raised(300, 40);
+        effectivePlayoutOffsetMs({ ...on, mediaRouter: router }, { sinkPortId: 'in' });
+        expect(router.getRoutePlayoutRaiseMs).toHaveBeenCalledWith('m1', 'in');
+    });
+
+    it('ignores a nonsense raise rather than running it', () => {
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, -50) })).toBe(300);
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, Number.NaN) })).toBe(300);
+    });
+
+    it('is never consulted with the contract off — the trim alone, as ever', () => {
+        const router = raised(300, 180);
+        expect(
+            effectivePlayoutOffsetMs(
+                { instanceId: 'm1', timeSyncContract: false, mediaRouter: router },
+                { trimMs: 40 },
+            ),
+        ).toBe(40);
+        expect(router.getRoutePlayoutRaiseMs).not.toHaveBeenCalled();
+    });
+});
+
 describe('effectivePlayoutOffsetNs', () => {
     it('converts to whole nanoseconds', () => {
         expect(effectivePlayoutOffsetNs({ instanceId: 'm1' }, { trimMs: 40 })).toBe(40_000_000);

@@ -9,17 +9,30 @@
 // units in flight); each demuxed src pad, once the branch has settled, joins
 // its buffers back by tail, takes the median error over a window and applies
 // it as a pad offset. Every constant, verdict and log line is the python's.
+// `transformProducer` instead retimes every access unit to K + its PES
+// (branch_retime.cpp).
 #pragma once
+
+#include <cstddef>
 
 #include <gst/gst.h>
 #include <json-glib/json-glib.h>
 
 namespace mr::align {
 
-/** `cfg` = {"demuxes": ["demux_0", …]} or nullptr. Armed before PLAYING. */
+/** `cfg` = {"demuxes": ["demux_0", …], "transformProducer"?: bool} or nullptr.
+ *  Armed before PLAYING. A transform producer's demux is retimed per access unit
+ *  (bus input held until the first exact stamp reading), not offset once. */
 void install(GstElement* pipe, JsonObject* cfg);
 
 /** Drop every probe and handler (pipeline stop / restart). */
 void clear();
+
+// Shared with branch_retime.cpp.
+constexpr size_t KEY_BYTES = 64;   // payload-tail join key, as the python's
+constexpr size_t HISTORY = 4096;   // indexed access units kept per PID
+
+/** tsdemux names pads `<media>_<programhex>_<pidhex>`; the PID is the last field. */
+int pid_from_pad_name(const gchar* name);
 
 }  // namespace mr::align

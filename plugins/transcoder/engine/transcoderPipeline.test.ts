@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildPipeline, DEMUX_NAME } from './transcoderPipeline.js';
+import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -31,7 +31,11 @@ const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
     ...over,
 });
 
-const out = (i: number, rendition: Rendition, encode: ResolvedEncode = enc()): TranscoderOutput => ({
+const out = (
+    i: number,
+    rendition: Rendition,
+    encode: ResolvedEncode = enc(),
+): TranscoderOutput => ({
     portId: outputPortId(i),
     port: 41000 + i,
     rendition,
@@ -54,7 +58,9 @@ describe('readRenditions', () => {
 
     it('falls back to one provisional rendition when the key is absent (pre-start)', () => {
         // Empty/unconfigured config → one default rendition so a port shows on add.
-        expect(readRenditions({})).toEqual([{ name: '720p', width: 1280, height: 720, bitrate: 2500 }]);
+        expect(readRenditions({})).toEqual([
+            { name: '720p', width: 1280, height: 720, bitrate: 2500 },
+        ]);
         expect(readRenditions({ renditions: 'nope' })).toHaveLength(1);
     });
 
@@ -152,7 +158,11 @@ describe('buildDynamicPorts', () => {
         // the video input plus the (optional) subtitle input — no outputs yet
         expect(ports).toHaveLength(2);
         expect(ports[0]).toMatchObject({ id: 'mpegts-in', direction: 'input', maxConnections: 1 });
-        expect(ports[1]).toMatchObject({ id: 'subtitles-in', direction: 'input', maxConnections: 1 });
+        expect(ports[1]).toMatchObject({
+            id: 'subtitles-in',
+            direction: 'input',
+            maxConnections: 1,
+        });
     });
 
     it('adds one ordered-apply output per rendition with a label', () => {
@@ -228,7 +238,9 @@ describe('buildPipeline', () => {
         // Capsfilter must sit directly on the tsdemux output (before any queue),
         // restricting to video codecs — otherwise an A/V source links its audio
         // pad into videoconvert and dies with "Internal data stream error".
-        expect(res.pipeline).toMatch(/tsdemux name=demux latency=0 ! capsfilter caps="video\/x-h264"/);
+        expect(res.pipeline).toMatch(
+            /tsdemux name=demux latency=0 ! capsfilter caps="video\/x-h264"/,
+        );
     });
 
     it('passes the GOP frame count straight through as key-int-max', () => {
@@ -236,18 +248,27 @@ describe('buildPipeline', () => {
         expect(res.pipeline).toContain('key-int-max=60');
     });
 
-    it('applies each rendition\'s own rate control', () => {
-        const cbr = buildPipeline({ ...base, outputs: [out(0, r(), enc({ rateControl: 'cbr' }))] })!;
+    it("applies each rendition's own rate control", () => {
+        const cbr = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ rateControl: 'cbr' }))],
+        })!;
         expect(cbr.pipeline).toContain('nal-hrd=cbr');
-        const vbr = buildPipeline({ ...base, outputs: [out(0, r(), enc({ rateControl: 'vbr' }))] })!;
+        const vbr = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ rateControl: 'vbr' }))],
+        })!;
         expect(vbr.pipeline).not.toContain('nal-hrd=cbr');
         expect(vbr.pipeline).toContain('vbv-maxrate'); // VBV-capped VBR
     });
 
-    it('applies each rendition\'s own speed preset', () => {
+    it("applies each rendition's own speed preset", () => {
         const def = buildPipeline({ ...base, outputs: [out(0, r())] })!;
         expect(def.pipeline).toContain('speed-preset=ultrafast');
-        const med = buildPipeline({ ...base, outputs: [out(0, r(), enc({ speedPreset: 'medium' }))] })!;
+        const med = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ speedPreset: 'medium' }))],
+        })!;
         expect(med.pipeline).toContain('speed-preset=medium');
         expect(med.pipeline).not.toContain('speed-preset=ultrafast');
     });
@@ -263,7 +284,7 @@ describe('buildPipeline', () => {
         expect(baseline.pipeline).toMatch(/profile=baseline ! h264parse/);
     });
 
-    it('applies each rendition\'s own scenecut (incl. 0 = off)', () => {
+    it("applies each rendition's own scenecut (incl. 0 = off)", () => {
         const def = buildPipeline({ ...base, outputs: [out(0, r())] })!;
         expect(def.pipeline).toContain('scenecut=40');
         const off = buildPipeline({ ...base, outputs: [out(0, r(), enc({ sceneCut: 0 }))] })!;
@@ -310,18 +331,53 @@ describe('deinterlacing', () => {
         const p = buildPipeline({ ...base, outputs: [out(0, r())] })!.pipeline;
         // mode=auto self-detects from decoded buffer flags: interlaced content is
         // deinterlaced, progressive passes through — the "auto by default" contract.
-        expect(p).toMatch(/! deinterlace mode=auto ! videorate drop-only=true ! video\/x-raw,framerate=50\/1/);
+        // Never the default `linear` method: a bob, burnt-in text jumps a line (#817).
+        expect(p).toMatch(
+            /! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true ! video\/x-raw,framerate=50\/1/,
+        );
     });
 
     it('force mode deinterlaces unconditionally', () => {
-        const p = buildPipeline({ ...base, deinterlace: 'force', outputs: [out(0, r())] })!.pipeline;
-        expect(p).toContain('deinterlace mode=interlaced ! videorate drop-only=true');
+        const p = buildPipeline({
+            ...base,
+            deinterlace: 'force',
+            outputs: [out(0, r())],
+        })!.pipeline;
+        expect(p).toContain(
+            'deinterlace name=deint mode=interlaced method=greedyl ! videorate drop-only=true',
+        );
         expect(p).not.toContain('mode=auto');
     });
 
+    it('uses the method the module resolved', () => {
+        const p = buildPipeline({
+            ...base,
+            deinterlaceMethod: 'yadif',
+            outputs: [out(0, r())],
+        })!.pipeline;
+        expect(p).toContain('deinterlace name=deint mode=auto method=yadif ! ');
+    });
+
+    it('picks yadif on x86-64 and greedyl everywhere else (#817)', () => {
+        expect(deinterlaceMethodForArch('x64')).toBe('yadif');
+        expect(deinterlaceMethodForArch('arm64')).toBe('greedyl');
+        expect(deinterlaceMethodForArch('arm')).toBe('greedyl');
+        expect(deinterlaceMethodForArch('ia32')).toBe('greedyl');
+    });
+
+    it('guards the deinterlacer against its re-sent frames (#817)', () => {
+        const guard = [{ module: 'deinterlace_guard', config: { element: 'deint' } }];
+        expect(buildPipeline({ ...base, outputs: [out(0, r())] })!.runnerHooks).toEqual(guard);
+        expect(
+            buildPipeline({ ...base, deinterlace: 'force', outputs: [out(0, r())] })!.runnerHooks,
+        ).toEqual(guard);
+    });
+
     it('off omits the deinterlacer entirely (interlaced pass-through)', () => {
-        const p = buildPipeline({ ...base, deinterlace: 'off', outputs: [out(0, r())] })!.pipeline;
-        expect(p).not.toContain('deinterlace');
+        const res = buildPipeline({ ...base, deinterlace: 'off', outputs: [out(0, r())] })!;
+        expect(res.pipeline).not.toContain('deinterlace');
+        // ... and with it the guard: no element to guard.
+        expect(res.runnerHooks).toBeUndefined();
     });
 
     it('off flags interlaced output on the software x264 branch only', () => {
@@ -437,13 +493,17 @@ describe('subtitle burn-in', () => {
     it('is absent unless a subtitle source is wired', () => {
         const r = buildPipeline(base)!;
         expect(r.pipeline).not.toContain('textoverlay');
-        expect(r.runnerHooks).toBeUndefined();
+        expect(r.runnerHooks?.map((h) => h.module)).toEqual(['deinterlace_guard']);
     });
 
     it('draws once on the shared frame ahead of the tee and reads cues from its own bus edge', () => {
         const r = buildPipeline({
             ...base,
-            subtitles: { port: 5600, socketPath: '/tmp/mr-bus-5600-edge.sock', config: { subtitleAlign: 'left' } },
+            subtitles: {
+                port: 5600,
+                socketPath: '/tmp/mr-bus-5600-edge.sock',
+                config: { subtitleAlign: 'left' },
+            },
         })!;
         expect(r.pipeline).toContain(
             'videorate drop-only=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
@@ -452,10 +512,16 @@ describe('subtitle burn-in', () => {
         expect(r.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
         expect(r.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
         expect(r.runnerHooks).toEqual([
-            { module: 'subtitle_bridge', config: { overlay: { demux: 'subdemux', overlay: 'subov' } } },
+            { module: 'deinterlace_guard', config: { element: 'deint' } },
+            {
+                module: 'subtitle_bridge',
+                config: { overlay: { demux: 'subdemux', overlay: 'subov' } },
+            },
         ]);
         // the plain string is a strict prefix-with-insertion: nothing else moved
         const plain = buildPipeline(base)!.pipeline;
-        expect(r.pipeline.replace(/textoverlay[^!]*! /, '').replace(/ unixfdsrc .*$/, '')).toBe(plain);
+        expect(r.pipeline.replace(/textoverlay[^!]*! /, '').replace(/ unixfdsrc .*$/, '')).toBe(
+            plain,
+        );
     });
 });

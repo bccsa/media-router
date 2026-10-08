@@ -76,6 +76,9 @@ drift_timer_id = None   # GLib source id of the periodic drift report
 # backlog flush) can pin it off, the way `native_loaded` pins the backend.
 repair_latch = True
 condition_step_ms = None   # the start payload's `conditionStepMs` — a producer's own threshold, else the stamper default
+# The start payload's `houseTimelineEgress` (ADR-0005 2026-10-08): a transform
+# producer's PES already carry house time + 1 h, so its egress stamps by identity.
+house_timeline = False
 
 # How often each armed egress reports its drift loop. 30 s is a compromise:
 # the loop's own estimator window is 32 s, so anything faster reports the same
@@ -175,9 +178,14 @@ def clear():
     elements.clear()
 
 
-def enable(pipe, on, repair=None, cond_step_ms=None):
+def enable(pipe, on, repair=None, cond_step_ms=None, house=None):
     """Record the contract flag. Stampers arm LAZILY, per tee, on that tee's
     FIRST consumer edge (`arm`, from the runner's bus_attach path).
+
+    `house` is the start payload's `houseTimelineEgress` (see the module-level
+    `house_timeline`): on, every stamper this runner arms is an identity
+    stamper. A test sets the module variable directly after `enable`, the way
+    it pins `repair_latch`.
 
     `repair` is the start payload's `latchRepair` — the engine's answer to
     whether this pipeline's producers deliver at their media cadence
@@ -207,13 +215,14 @@ def enable(pipe, on, repair=None, cond_step_ms=None):
     throughput source for the tee), so lazy arming is unaffected: what arms
     per consumer edge is the `active` property, not the element's existence.
     """
-    global enabled, pipeline, repair_latch, condition_step_ms
+    global enabled, pipeline, repair_latch, condition_step_ms, house_timeline
     clear()
     enabled = bool(on)
     pipeline = pipe if enabled else None
     if repair is not None:
         repair_latch = bool(repair)
     condition_step_ms = int(cond_step_ms) if cond_step_ms else None
+    house_timeline = bool(house)
     if enabled and load_native():
         insert_elements(pipe)
 
@@ -239,14 +248,17 @@ def arm(tee, name):
 
     el = elements.get(name)
     if el is not None:
-        native.activate(el, name, repair_latch, condition_step_ms)
+        native.activate(el, name, repair_latch, condition_step_ms, house_timeline)
         st = {"tee": name, "element": el, "pad": None, "probe_id": None}
     else:
-        st = probe.install(tee, name, pipeline, repair_latch, condition_step_ms)
+        st = probe.install(tee, name, pipeline, repair_latch, condition_step_ms,
+                           house_timeline)
         if st is None:
             return None
+        mode = ("house-timeline egress: PES − 1 h, no anchor" if house_timeline
+                else "first consumer edge")
         sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "
-                         f"armed on {name} (first consumer edge)\n")
+                         f"armed on {name} ({mode})\n")
         sys.stderr.flush()
     armed.append(st)
     _start_drift_timer()

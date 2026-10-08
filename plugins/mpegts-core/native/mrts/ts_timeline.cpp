@@ -274,6 +274,12 @@ void TimelineStamper::reset_drift(int64_t house_now, bool have_now) {
     slew_total_ = 0;
 }
 
+int64_t house_from_mux_pts(int64_t pts, int64_t house_now) {
+    // `% PTS_WRAP` of a negative value: C++ keeps the sign, python does not.
+    int64_t raw = ((pts - MUX_CLOCK_BASE_90K) % PTS_WRAP + PTS_WRAP) % PTS_WRAP;
+    return pts90k_to_ns(unwrap_near(raw, house_now * 9 / 100000));
+}
+
 TimelineStamper::Drift TimelineStamper::drift() const {
     // `ppm` truncates toward zero (C division), the same as python's
     // `_trunc_div`, so a sub-ppm rate reads 0 ppm in either direction.
@@ -663,6 +669,7 @@ int64_t TimelineStamper::cond_threshold() const {
 }
 
 int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
+    if (house_timeline_) return 0;           // the wire IS the house timeline
     int absorbed = 0;
     for (size_t off = 0; off + PKT <= len; off += PKT) {
         uint8_t* pkt = data + off;
@@ -892,8 +899,51 @@ bool TimelineStamper::scan_stamp(const uint8_t* data, size_t len, int64_t house_
     return have;
 }
 
+int64_t TimelineStamper::stamp_house(const uint8_t* data, size_t len, int64_t house_now,
+                                     int stream) {
+    // python's `_stamp_house`, line for line: see ts_timeline.py for the why.
+    if (timing_pid_ < 0) {
+        // The PCR carrier may define the timeline even when its PES are
+        // private data (an s302m or Opus egress is stream_id 0xBD). The
+        // anchored mode learns it in `condition`, which never runs here.
+        for (size_t off = 0; off + PKT <= len; off += PKT) {
+            const uint8_t* pkt = data + off;
+            if (pkt[0] != SYNC_BYTE) continue;
+            if (read_pcr(pkt) >= 0) {
+                timing_pid_ = ts_pid(pkt);
+                break;
+            }
+        }
+    }
+    int pid = 0;
+    int64_t pts = 0;
+    int64_t s;
+    if (first_pes(data, len, &pid, &pts, timing_pid_)) {
+        s = house_from_mux_pts(pts, house_now);
+        if (!anchored_) {
+            // Reported once, the way the anchored mode reports its anchor:
+            // anchorNs IS the first stamp and refPts90k its PES — the identity.
+            anchored_ = true;
+            anchor_ = s;
+            ref_ = pts;
+            anchor_pid_ = pid;
+            if (on_anchor_) on_anchor_({pid, s, pts});
+        }
+    } else if (any_pes(data, len)) {
+        s = house_now;                       // private-only buffer: arrival
+    } else {
+        auto fl = floors_.find(stream);      // PES-less: the staircase
+        s = fl == floors_.end() ? house_now : fl->second;
+    }
+    int64_t& floor = floors_[stream];
+    if (s < floor) s = floor;                // monotone non-decreasing staircase
+    floor = s;
+    return s;
+}
+
 int64_t TimelineStamper::stamp(const uint8_t* data, size_t len, int64_t house_now,
                                int stream) {
+    if (house_timeline_) return stamp_house(data, len, house_now, stream);
     // The buffer's first PES, found once for every mechanism below — python's
     // `pes[0]` and its `if pes` gate.
     int pes_pid = 0;

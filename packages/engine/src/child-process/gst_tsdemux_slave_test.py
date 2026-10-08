@@ -209,6 +209,75 @@ if samples:
     check("consumer timeline error stays inside the shedder's tolerance",
           abs(db) < 250)
 
+# ---------------------------------------------------------------------------
+# A TRANSFORM PRODUCER's input (transcoder, audio-transcoder; OCC gate,
+# 2026-10-08). Its tsdemux maps the PCR onto the bus stamp, so every access unit
+# runs at stamp + (PTS − PCR): ~1.1 s late on the gate's 1080i feed, which the
+# identity egress then exports. `ignore-pcr=true` was the candidate cure and is
+# pinned here as NOT one; the fix is `alignBranchesToStamps.transformProducer`
+# (gst_branch_align_test.py, native_runner_protocol_test.py M).
+# ---------------------------------------------------------------------------
+sys.path.insert(0, _HERE)
+import transform_input_fixture as fx  # noqa: E402
+import ts_timeline  # noqa: E402
+
+print("\n--- transform-producer input: the PCR lead, and why ignore-pcr is not the fix ---")
+H0 = 200_000 * 10**9
+
+
+def tp_run(start_s, ignore_pcr, skew_ppm=0.0, **kw):
+    """Errors (ms) of every demuxed access unit against its content time, by PID."""
+    bufs, targets = fx.stamp(fx.build_packets(12, dts_lead_ms=1100.0, **kw), start_s, H0, skew_ppm)
+    out = {}
+    for pid, serial, err in fx.run_demux(Gst, bufs, targets, ignore_pcr=ignore_pcr):
+        out.setdefault(pid, []).append((serial, err / 1e6))
+    return out
+
+
+# The fixture's stamps are the contract's: what the egress stamper writes once
+# its conditioner has learned the PCR PID.
+pk = fx.build_packets(6, dts_lead_ms=1100.0)
+stamper, same, bufs0 = ts_timeline.TimelineStamper(), 0, fx.stamp(pk, 0.0, H0)[0]
+for i, (data, stamp) in enumerate(bufs0):
+    house = H0 + fx.ns(pk[min(i * 7 + 6, len(pk) - 1)][0] - pk[0][0]) + 5_000_000
+    b = bytearray(data)
+    stamper.condition(b, house)
+    same += stamper.stamp(bytes(b), house) == stamp
+check(f"the fixture stamps exactly as the conditioned TimelineStamper ({same}/{len(bufs0)})",
+      same == len(bufs0))
+
+pcr = tp_run(2.2, False)
+check("PCR mode (the bug): every access unit of BOTH PIDs runs > 1 s behind its content time",
+      len(pcr) == 2 and all(e > 1000 for v in pcr.values() for _, e in v))
+
+# ignore-pcr latches ONCE, on whichever PES it converts first, against that
+# buffer's stamp: a B-frame/P-frame join lands a reorder late, an audio-first
+# join the whole video lead late (that buffer's stamp is the video's).
+joins = [tp_run(2.2, True), tp_run(2.013, True)]
+firsts = [v[fx.VIDEO_PID][0][1] for v in joins]
+print(f"    ignore-pcr: video-first join {firsts[0]:+.1f} ms, audio-first join {firsts[1]:+.1f} ms")
+check("ignore-pcr: a constant per join (it latches once)",
+      all(max(e for _, e in v) - min(e for _, e in v) < 1 for j in joins for v in j.values()))
+check("ignore-pcr: the latch is a lottery on the first PES — up to the whole lead",
+      max(firsts) > 900 and min(firsts) < 150)
+
+# It never re-slaves: under a skewed source it free-runs on the PES clock
+# (the PCR mode re-slaves — the suite above).
+sk = tp_run(2.2, True, skew_ppm=SKEW_PPM)[fx.AUDIO_PID]
+(m0, e0), (m1, e1) = sk[0], sk[-1]
+rate_ppm = (e1 - e0) / 1e3 / ((m1 - m0) * fx.AAC_TICKS / 90000) * 1e6
+print(f"    ignore-pcr under {SKEW_PPM:.0f} ppm skew: error {e0:+.0f} → {e1:+.0f} ms ({rate_ppm:.0f} ppm)")
+check("ignore-pcr: free-runs on the source clock under skew", rate_ppm > 0.8 * SKEW_PPM)
+
+# A source rewind (the sim loops every 427 s) passes straight into its running
+# time; the PCR mode re-slaves across it and keeps the timeline.
+rew_ip = [e for v in tp_run(2.2, True, jump_at_s=6.0).values() for _, e in v]
+rew_pcr = [e for v in tp_run(2.2, False, jump_at_s=6.0).values() for _, e in v]
+check("ignore-pcr: a 427 s rewind steps the running time back 427 s (demux keeps flowing)",
+      sum(1 for e in rew_ip if e < -400_000) > 100)
+check("PCR mode: the same rewind keeps the timeline (within 2 s) and flowing",
+      len(rew_pcr) > 400 and all(abs(e) < 2000 for e in rew_pcr))
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

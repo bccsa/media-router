@@ -296,6 +296,153 @@ os.environ[bs.STALL_GRACE_ENV] = "0"
 check("and 0 cannot disable the watch", bs.stall_grace_ms() == 10_000.0)
 del os.environ[bs.STALL_GRACE_ENV]
 
+# --- re-anchor mode (onLateness "reanchor", ADR-0005 2026-10-08) -------------
+# The leg never drops: a FLOOR past 40 ms for 15 s asks the engine to raise the
+# route's D ("reanchor"), and an implausible timeline re-anchors the leg itself
+# ("rebase"). Absent the mode, every path above is the shed path, unchanged.
+check("the default mode is shed — onLateness absent changes nothing",
+      bs.BacklogShedPolicy().mode == "shed"
+      and bs.BacklogShedPolicy(mode="nonsense").mode == "shed")
+
+
+def rp(**kw):
+    args = dict(mode="reanchor", reanchor_tolerance_ms=40, reanchor_hold_ms=15_000,
+                retry_ms=30_000, rebase_hold_ms=3_000, rebase_cooldown_ms=60_000)
+    args.update(kw)
+    return bs.BacklogShedPolicy(**args)
+
+
+def feed_r(policy, lateness, t0, ms, step=20.0, queued_ms=0.0):
+    """Like `feed`, with `lateness` a number or f(t) and a queue level."""
+    out = []
+    t = t0
+    while t <= t0 + ms:
+        v = policy.observe(lateness(t) if callable(lateness) else lateness, t,
+                           queued_ms=queued_ms)
+        if v:
+            out.append((v, t))
+        t += step
+    return out, t
+
+
+# A floor of 41 ms (one past tolerance) under a lateness that wanders above it.
+wobble = lambda t: 41.0 + (t % 700) / 10.0              # 41 … 110.9 ms
+p = rp()
+verdicts, t = feed_r(p, wobble, 0.0, 14_900)
+check("re-anchor: 15 s is the hold — nothing inside it", verdicts == [])
+verdicts, t = feed_r(p, wobble, t, 400)
+check("re-anchor: a 41 ms floor held 15 s asks once",
+      [v for v, _ in verdicts] == ["reanchor"] and verdicts[0][1] >= 15_000)
+check("re-anchor: the level asked for is the FLOOR — the minimum sample",
+      p.level_ms == 41.0 and p.worst_ms > 100.0)
+check("re-anchor: nothing queued means the cause is a late timeline",
+      p.cause == "timeline" and p.queued_ms == 0.0)
+
+# One sample back inside tolerance resets the streak, like the shed rule.
+p = rp()
+verdicts, t = feed_r(p, 60.0, 0.0, 14_900)
+check("re-anchor: one sample at tolerance resets the hold",
+      p.observe(40.0, t) is None)
+verdicts, t = feed_r(p, 60.0, t + 20, 14_900)
+check("re-anchor: and the hold restarts from zero", verdicts == [])
+
+# The cause comes from the queue walk at maturity (lazily, once).
+calls = []
+def _q():
+    calls.append(1)
+    return 180.0
+p = rp()
+verdicts, t = feed_r(p, 120.0, 0.0, 15_100, queued_ms=_q)
+check("re-anchor: data parked upstream makes the cause a backlog",
+      [v for v, _ in verdicts] == ["reanchor"] and p.cause == "backlog"
+      and p.queued_ms == 180.0 and len(calls) == 1)
+check("re-anchor: an unknown queue reads as a backlog (the shed rule's convention)",
+      (lambda q: (feed_r(q, 120.0, 0.0, 15_100, queued_ms=None), q.cause)[1])(rp()) == "backlog")
+
+# No second request until the retry gate opens or the budget moves.
+p = rp()
+verdicts, t = feed_r(p, 120.0, 0.0, 15_100)
+first_at = verdicts[0][1]
+p.request_sent(first_at, 60.0)
+check("re-anchor: request_sent counts the request", p.requests == 1)
+verdicts, t = feed_r(p, 120.0, t, first_at + 29_800 - t)
+check("re-anchor: still late, but no re-ask inside the 30 s retry window", verdicts == [])
+verdicts, t = feed_r(p, 120.0, t, 600)
+check("re-anchor: the retry window over, a still-late leg asks again",
+      [v for v, _ in verdicts] == ["reanchor"] and verdicts[0][1] >= first_at + 30_000)
+
+# A budget change (the engine's raise landing) restarts both the streak and
+# the gate, so a still-late leg re-asks after one fresh hold, not 30 s.
+p = rp()
+check("re-anchor: the first budget seen is a baseline, not a move",
+      p.budget_moved(60.0) is False and p.budget_moved(60.2) is False)
+verdicts, t = feed_r(p, 120.0, 0.0, 15_100)
+p.request_sent(verdicts[0][1], 60.0)
+moved_at = t
+check("re-anchor: a raise landing is a budget move", p.budget_moved(220.0) is True)
+check("re-anchor: the same budget again is not", p.budget_moved(220.0) is False)
+verdicts, t = feed_r(p, 50.0, t, 14_800)
+check("re-anchor: after the move the hold is paid again from scratch", verdicts == [])
+verdicts, t = feed_r(p, 50.0, t, 400)
+check("re-anchor: and a still-late leg re-asks then, the retry gate cleared",
+      [v for v, _ in verdicts] == ["reanchor"] and verdicts[0][1] < moved_at + 16_000)
+
+# Implausible readings: never a raise. A PAST one (buffers keep flowing) holds
+# 3 s on in-range-free samples; one in-range sample cancels the hold.
+p = rp()
+check("re-anchor: an implausible reading is reported once",
+      p.observe(21_000.0, 0.0) == "implausible" and p.implausible_since == 0.0
+      and p.last_implausible_ms == 21_000.0)
+verdicts, t = feed_r(p, 21_000.0, 20.0, 2_900)
+check("re-anchor: and latched — nothing more inside the 3 s rebase hold", verdicts == [])
+check("re-anchor: the first in-range sample clears it",
+      p.observe(10.0, t) is None and p.implausible_since is None)
+verdicts, t = feed_r(p, 21_000.0, t + 20, 2_900)
+check("re-anchor: so a past-stamped hold restarts after a good sample",
+      [v for v, _ in verdicts] == ["implausible"])
+verdicts, t = feed_r(p, 21_000.0, t, 200)
+check("re-anchor: 3 s of past-stamped samples are due a rebase",
+      [v for v, _ in verdicts][:1] == ["rebase"])
+p.rebased(t)
+check("re-anchor: rebased() counts it and clears the episode",
+      p.rebases == 1 and p.implausible_since is None)
+# A FUTURE stamp parks a sync=true sink on its first buffer — no later sample
+# can confirm it, so it is due at once.
+p = rp()
+check("re-anchor: a future-stamped reading is due a rebase at once",
+      p.observe(-20_000.0, 0.0) == "rebase" and p.last_implausible_ms == -20_000.0)
+p.rebased(0.0)
+check("re-anchor: inside the rebase cooldown it is only reported",
+      p.observe(-20_000.0, 30_000.0) == "implausible"
+      and p.observe(-20_000.0, 30_020.0) is None)
+check("re-anchor: and due again once the minute is up",
+      p.observe(-20_000.0, 60_000.0) == "rebase")
+
+# Whatever it is fed, re-anchor mode never asks for a shed and never reports a
+# shed-mode "timeline" refusal.
+import random
+rng = random.Random(7)
+p = rp(reanchor_hold_ms=200, retry_ms=300, rebase_hold_ms=100, rebase_cooldown_ms=500)
+seen = set()
+t = 0.0
+for _ in range(20_000):
+    v = p.observe(rng.choice([-30_000.0, -500.0, 0.0, 39.0, 41.0, 900.0, 5_000.0, 30_000.0])
+                  if rng.random() < 0.05 else rng.uniform(-100.0, 2_000.0), t,
+                  queued_ms=rng.choice([0.0, 500.0]))
+    if v == "rebase":
+        p.rebased(t)
+    if v:
+        seen.add(v)
+    t += 20.0
+check("re-anchor: never 'shed', never 'timeline' — only its own verdicts",
+      seen <= {"reanchor", "rebase", "implausible"} and "reanchor" in seen and "rebase" in seen)
+# A SEGMENT (reset) drops the re-anchor streak too.
+p = rp()
+feed_r(p, 120.0, 0.0, 14_000)
+p.reset()
+verdicts, _ = feed_r(p, 120.0, 14_020, 14_000)
+check("re-anchor: reset() drops the streak (a new segment is a new timeline)", verdicts == [])
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

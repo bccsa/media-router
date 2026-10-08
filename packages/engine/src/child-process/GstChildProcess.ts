@@ -253,6 +253,7 @@ export class GstChildProcess extends EventEmitter {
             latchRepair: desc.latchRepair,
             // A producer's own conditioner threshold (undefined = stamper default).
             conditionStepMs: desc.conditionStepMs,
+            houseTimelineEgress: desc.houseTimelineEgress,
             // Multicast re-join bound for udpsrc silence (undefined = never restart on silence).
             udpSilenceRestartMs: desc.udpSilenceRestartMs,
             inputStallWatch: desc.inputStallWatch,

@@ -339,7 +339,8 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(r2.pid).toBe(0x200);
             expect(r3.pid).toBe(0x108); // next free after 0x100; 0x200 is taken
             for (const rule of [r0, r2, r3]) {
-                for (const route of Object.values(rule.routes)) expect('padName' in route!).toBe(false);
+                for (const route of Object.values(rule.routes))
+                    expect('padName' in route!).toBe(false);
             }
             expect(result.slots).toEqual([
                 { sinkPortId: 'input-0', demux: 'demux_0', pid: 0x100, automatic: true },
@@ -537,7 +538,9 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 );
                 expect(
                     buildPipeline({ sources: twoSources, output, alignment: 7 })!.pipeline,
-                ).toContain('prog-map="program_map,sink_256=(int)1,sink_264=(int)1,PCR_1=sink_256"');
+                ).toContain(
+                    'prog-map="program_map,sink_256=(int)1,sink_264=(int)1,PCR_1=sink_256"',
+                );
             });
             it('seeds PCR_1 with the first audio slot on a legacy audio-only mux, as before', () => {
                 expect(
@@ -800,7 +803,13 @@ describe('MpegTsMuxerModule', () => {
             });
             (module as any).config = { alignment: 7, inputs: [{}, {}] };
             const desc = module.buildPipeline((module as any).config)!;
-            expect(desc.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
+            // Every input retimed per access unit, as a transform producer's input.
+            expect(desc.alignBranchesToStamps).toEqual({
+                demuxes: ['demux_0', 'demux_1'],
+                transformProducer: true,
+            });
+            // Retimed branches make the mux output house time (+1 h): stamped by identity.
+            expect(desc.houseTimelineEgress).toBe(true);
             expect(desc.inputStallWatch).toEqual([
                 { element: 'busin_0', timeoutMs: 5000 },
                 { element: 'busin_1', timeoutMs: 5000 },
@@ -823,7 +832,11 @@ describe('MpegTsMuxerModule', () => {
             expect(module.isLiveChange('inputs', [{}, {}], [{}])).toBe(false);
             expect(module.isLiveChange('inputs', [{}], undefined)).toBe(false);
             expect(
-                module.isLiveChange('inputs', [{ name: 'ENG', pid: 300 }], [{ name: 'ENG', pid: 256 }]),
+                module.isLiveChange(
+                    'inputs',
+                    [{ name: 'ENG', pid: 300 }],
+                    [{ name: 'ENG', pid: 256 }],
+                ),
             ).toBe(false);
             expect(
                 module.isLiveChange(
@@ -856,7 +869,9 @@ describe('MpegTsMuxerModule', () => {
             const desc = module.buildPipeline((module as any).config)!;
             const [r0, r1] = hookInputs(desc).map((r) => r.routes);
             expect(r0.audio!.branch).not.toContain('taginject');
-            expect(r1.audio!.branch).toContain('taginject name=lang_demux_1_audio tags=language-code=deu');
+            expect(r1.audio!.branch).toContain(
+                'taginject name=lang_demux_1_audio tags=language-code=deu',
+            );
             expect(r1.video!.branch).not.toContain('taginject');
         });
 
@@ -915,7 +930,13 @@ describe('MpegTsMuxerModule', () => {
             (module as any).config = { inputs: [{}, {}], alignment: 7 };
             module.buildPipeline((module as any).config);
             const ev = (demux: string, media: string, outPid: number, caps: string) =>
-                (module as any).onPluginEvent('mux:routed', { demux, media, outPid, srcPid: 1, caps });
+                (module as any).onPluginEvent('mux:routed', {
+                    demux,
+                    media,
+                    outPid,
+                    srcPid: 1,
+                    caps,
+                });
             ev('demux_0', 'video', 0x100, 'video/x-h264, stream-format=(string)byte-stream');
             ev('demux_1', 'klv', 0x108, 'meta/x-klv, parsed=(boolean)true');
             ev('demux_1', 'klv', 0x108, 'meta/x-klv, parsed=(boolean)true'); // duplicate report
@@ -1050,11 +1071,13 @@ describe('operator PID (one PID per input) + duplicate checking', () => {
     });
 
     it('configPidConflicts checks every CONFIGURED input, wired or not — only genuine duplicates', () => {
-        expect(configPidConflicts(inputEntries({ inputs: [{ pid: 0x200 }, {}, { pid: 0x200 }] }))).toEqual([
-            'PID 0x200 is set on input-0 and input-2',
-        ]);
+        expect(
+            configPidConflicts(inputEntries({ inputs: [{ pid: 0x200 }, {}, { pid: 0x200 }] })),
+        ).toEqual(['PID 0x200 is set on input-0 and input-2']);
         // An operator value on an automatic PID is not a clash: the automatic input moves on.
-        expect(configPidConflicts(inputEntries({ inputs: [{}, { pid: 0x100 }, { pid: 0x200 }] }))).toEqual([]);
+        expect(
+            configPidConflicts(inputEntries({ inputs: [{}, { pid: 0x100 }, { pid: 0x200 }] })),
+        ).toEqual([]);
     });
 
     it('assignInputPids keeps set values and fills blanks with the next free PID, in order', () => {
@@ -1124,17 +1147,25 @@ describe('operator PID (one PID per input) + duplicate checking', () => {
             (module as any).config = { inputs: [{}, {}], alignment: 7 };
             expect(module.buildPipeline((module as any).config)).toBeNull();
             expect(emitConfigUpdate).toHaveBeenCalledWith({
-                inputs: [{ key: 0, pid: 0x100 }, { key: 1, pid: 0x108 }],
+                inputs: [
+                    { key: 0, pid: 0x100 },
+                    { key: 1, pid: 0x108 },
+                ],
             });
         });
 
         it('muxes a freshly added input on the PID it writes back — even when an earlier, unconnected input holds a lower PID', () => {
             // input-0 (pid 256) is configured but NOT wired; input-1 is blank and wired.
-            const { module, emitConfigUpdate } = makeModule([{ sinkPortId: 'input-1', port: 40002 }]);
+            const { module, emitConfigUpdate } = makeModule([
+                { sinkPortId: 'input-1', port: 40002 },
+            ]);
             (module as any).config = { inputs: [{ pid: 0x100, key: 0 }, {}], alignment: 7 };
             const desc = module.buildPipeline((module as any).config)!;
             expect(emitConfigUpdate).toHaveBeenCalledWith({
-                inputs: [{ pid: 0x100, key: 0 }, { key: 1, pid: 0x108 }],
+                inputs: [
+                    { pid: 0x100, key: 0 },
+                    { key: 1, pid: 0x108 },
+                ],
             });
             // The wire follows the field: 0x108, not the lowest free PID among wired sources.
             expect(hookInputs(desc)[0].pid).toBe(0x108);
@@ -1145,7 +1176,10 @@ describe('operator PID (one PID per input) + duplicate checking', () => {
             const { module, emitConfigUpdate } = makeModule([]);
             await module.onInit({ inputs: [{ name: 'A' }, { name: 'B', key: 4 }], alignment: 7 });
             expect(emitConfigUpdate).toHaveBeenCalledWith({
-                inputs: [{ name: 'A', key: 0, pid: 0x100 }, { name: 'B', key: 4, pid: 0x108 }],
+                inputs: [
+                    { name: 'A', key: 0, pid: 0x100 },
+                    { name: 'B', key: 4, pid: 0x108 },
+                ],
             });
             // Legacy configs are left alone.
             const legacy = makeModule([]);
@@ -1155,8 +1189,16 @@ describe('operator PID (one PID per input) + duplicate checking', () => {
 
         it('isLiveChange: the key seed is live; a removed entry (shorter list) is not', () => {
             const { module } = makeModule([]);
-            expect(module.isLiveChange('inputs', [{ key: 0, pid: 0x100 }], [{ pid: 0x100 }])).toBe(true);
-            expect(module.isLiveChange('inputs', [{ key: 0 }, { key: 2 }], [{ key: 0 }, { key: 1 }, { key: 2 }])).toBe(false);
+            expect(module.isLiveChange('inputs', [{ key: 0, pid: 0x100 }], [{ pid: 0x100 }])).toBe(
+                true,
+            );
+            expect(
+                module.isLiveChange(
+                    'inputs',
+                    [{ key: 0 }, { key: 2 }],
+                    [{ key: 0 }, { key: 1 }, { key: 2 }],
+                ),
+            ).toBe(false);
         });
 
         it('refuses to start with a health error when configured PIDs clash — even before the second input is wired', () => {

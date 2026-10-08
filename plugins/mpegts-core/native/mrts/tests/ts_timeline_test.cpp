@@ -1605,5 +1605,60 @@ int main() {
               read_pes_pts(d.data()) == 8128801);
     }
 
+    // --- house-timeline egress (ADR-0005 amendment 2026-10-08): the identity
+    // stamp `PES - 1 h` for a transform producer. Python parity, integer for
+    // integer (ts_timeline_test.py "house-timeline egress").
+    {
+        const int64_t H = 10'000'000'000LL;          // 10 s of house time
+        const int64_t MUX = MUX_CLOCK_BASE_90K;
+        CHECK("house_from_mux_pts inverts the mux's 1 h offset exactly",
+              house_from_mux_pts(MUX + 900000, H) == H);
+        CHECK("... to the 2^33 period nearest the house clock",
+              house_from_mux_pts((MUX + 900000 + 3 * PTS_WRAP) % PTS_WRAP,
+                                 3 * PTS_WRAP * 100000 / 9 + H)
+              == pts90k_to_ns(3 * PTS_WRAP + 900000));
+        int anchors = 0, reanchors = 0;
+        TimelineStamper::Anchored last{};
+        TimelineStamper st([&](const TimelineStamper::Anchored& a) { anchors++; last = a; },
+                           [&](const TimelineStamper::Reanchor&) { reanchors++; },
+                           nullptr, true);
+        st.set_house_timeline(true);
+        bool exact = true;
+        int64_t prev = 0;
+        for (int i = 0; i < 10; i++) {
+            // content 10 s + i*40 ms as the mux wrote it (+1 h); arrival late and jittery
+            int64_t s = stamp_of(st, {pes_packet(0x41, (MUX + 900000 + i * STEP) % PTS_WRAP)},
+                                 H + i * STEP_NS + 170'000'000 + (i % 3) * 7'000'000);
+            if (s != H + i * STEP_NS) exact = false;
+            prev = s;
+        }
+        CHECK("house-timeline stamps are the content's house time, arrival-independent", exact);
+        CHECK("one anchor event, the identity mapping",
+              anchors == 1 && last.pid == 0x41 && last.anchor_ns == H && last.ref_pts == MUX + 900000);
+        CHECK("a PES-less buffer repeats the staircase",
+              stamp_of(st, {filler_packet()}, H + 10 * STEP_NS) == prev);
+        CHECK("a backward step is clamped by the floor, never answered (no re-anchor, ever)",
+              stamp_of(st, {pes_packet(0x41, (MUX + 900000 + 10 * STEP - 90000) % PTS_WRAP)},
+                       H + 11 * STEP_NS) == prev
+              && st.reanchors() == 0 && reanchors == 0);
+        auto d = bytes_of({pes_packet(0x41, (MUX + 900000 + 20 * STEP) % PTS_WRAP)});
+        auto before = d;
+        CHECK("the conditioner never touches a house-timeline egress",
+              st.condition(d.data(), d.size(), H + 20 * STEP_NS) == 0 && d == before);
+        CHECK("nothing is measured for the servo either (samples 0)",
+              st.drift().samples == 0 && st.drift().ppb == 0);
+        // A private-stream egress (s302m, stream_id 0xBD) is eligible through
+        // its PCR PID, which the house mode learns itself.
+        TimelineStamper sp(nullptr, nullptr, nullptr, true);
+        sp.set_house_timeline(true);
+        CHECK("a private PES with no PCR seen yet is stamped at arrival",
+              stamp_of(sp, {pes_packet(0x101, (MUX + 900000) % PTS_WRAP, 0xBD)}, H + 5'000'000)
+              == H + 5'000'000);
+        CHECK("once its PID carries the PCR, the private PES defines the house time",
+              stamp_of(sp, {pcr_packet(0x101, (MUX + 900000 + STEP) * 300),
+                            pes_packet(0x101, (MUX + 900000 + STEP) % PTS_WRAP, 0xBD)},
+                       H + 200'000'000) == H + STEP_NS);
+    }
+
     return test_summary("ts_timeline");
 }

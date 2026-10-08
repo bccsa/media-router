@@ -26,7 +26,11 @@ function makeModule(opts: { upstream?: { port: number; socketPath: string } | un
 }
 
 beforeEach(() => {
-    TranscoderModule.setAvailableImpls({ h264: ['software'], h265: ['software'], av1: ['software'] });
+    TranscoderModule.setAvailableImpls({
+        h264: ['software'],
+        h265: ['software'],
+        av1: ['software'],
+    });
 });
 
 describe('getDynamicPorts', () => {
@@ -84,7 +88,10 @@ describe('buildPipeline', () => {
     it('errors when no encoder impl is available for the codec', () => {
         TranscoderModule.setAvailableImpls({ h264: [], h265: [], av1: [] });
         const { module } = makeModule();
-        (module as any).config = { codec: 'h264', renditions: [{ width: 1280, height: 720, bitrate: 2500 }] };
+        (module as any).config = {
+            codec: 'h264',
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        };
         expect(module.buildPipeline((module as any).config)).toBeNull();
         expect((module as any).setHealth).toHaveBeenCalledWith(
             'error',
@@ -121,6 +128,23 @@ describe('buildPipeline', () => {
             renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
         })!;
         expect(desc.preserveSourceTimeline).toEqual({ demux: 'demux' });
+    });
+
+    it('declares a house-timeline egress — the contract stamps its output by identity', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        expect(desc.houseTimelineEgress).toBe(true);
+    });
+
+    it('aligns its input demux to the bus stamps as a transform producer', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        // Only the media demux: the subtitle leg's `subdemux` is not a timeline.
+        expect(desc.alignBranchesToStamps).toEqual({ demuxes: ['demux'], transformProducer: true });
     });
 
     it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {
@@ -174,7 +198,9 @@ describe('buildPipeline', () => {
         });
         expect((module as any).setStatusData).toHaveBeenCalledWith(
             'encoder',
-            expect.objectContaining({ renditions: '1920x1080@5000k, 854x480@1200k [h265, medium]' }),
+            expect.objectContaining({
+                renditions: '1920x1080@5000k, 854x480@1200k [h265, medium]',
+            }),
         );
     });
 
@@ -231,13 +257,67 @@ describe('buildPipeline', () => {
         expect(
             module.buildPipeline({
                 codec: 'h264',
-                renditions: [{ name: 'HiQ', width: 1920, height: 1080, bitrate: 5000, codec: 'av1' }],
+                renditions: [
+                    { name: 'HiQ', width: 1920, height: 1080, bitrate: 5000, codec: 'av1' },
+                ],
             }),
         ).toBeNull();
         expect((module as any).setHealth).toHaveBeenCalledWith(
             'error',
             expect.stringContaining('No av1 encoder available for rendition "HiQ"'),
         );
+    });
+});
+
+describe('deinterlacer (#817)', () => {
+    const arch = Object.getOwnPropertyDescriptor(process, 'arch')!;
+    const setArch = (value: string) => Object.defineProperty(process, 'arch', { ...arch, value });
+    afterEach(() => Object.defineProperty(process, 'arch', arch));
+
+    const build = (config: Record<string, unknown> = {}) =>
+        makeModule().module.buildPipeline({
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+            ...config,
+        })!;
+
+    it.each([
+        ['x64', 'yadif'],
+        ['arm64', 'greedyl'],
+        ['arm', 'greedyl'],
+        ['riscv64', 'greedyl'],
+    ])('on %s deinterlaces with method=%s', (value, method) => {
+        setArch(value);
+        expect(build().pipeline).toContain(
+            `! deinterlace name=deint mode=auto method=${method} ! `,
+        );
+    });
+
+    it('reads process.arch at build time, not at import', () => {
+        const { module } = makeModule();
+        const config = { renditions: [{ width: 1280, height: 720, bitrate: 2500 }] };
+        setArch('x64');
+        expect(module.buildPipeline(config)!.pipeline).toContain('method=yadif');
+        setArch('arm64');
+        expect(module.buildPipeline(config)!.pipeline).toContain('method=greedyl');
+    });
+
+    it('force keeps mode=interlaced with the same method', () => {
+        setArch('x64');
+        expect(build({ deinterlace: 'force' }).pipeline).toContain(
+            'deinterlace name=deint mode=interlaced method=yadif ! ',
+        );
+    });
+
+    it('declares the deinterlace_guard runner hook on the deinterlacer', () => {
+        const guard = { module: 'deinterlace_guard', config: { element: 'deint' } };
+        expect(build().runnerHooks).toEqual([guard]);
+        expect(build({ deinterlace: 'force' }).runnerHooks).toEqual([guard]);
+    });
+
+    it('off: no deinterlacer, so no guard', () => {
+        const desc = build({ deinterlace: 'off' });
+        expect(desc.pipeline).not.toContain('deinterlace');
+        expect(desc.runnerHooks).toBeUndefined();
     });
 });
 
@@ -293,7 +373,11 @@ describe('TranscoderModule throughput (multi-counter ThroughputPoller)', () => {
         );
         // Face badge stays the aggregate headline.
         expect(module.setBadge).toHaveBeenCalledWith('bitrate', bitrateBadge(3300));
-        expect(bitrateBadge(3300)).toEqual({ icon: 'activity', text: '3.3 Mbps', color: '#10b981' });
+        expect(bitrateBadge(3300)).toEqual({
+            icon: 'activity',
+            text: '3.3 Mbps',
+            color: '#10b981',
+        });
     });
 
     it('skips the tick when a sink counter is unavailable (idle / not playing)', async () => {

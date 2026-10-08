@@ -381,6 +381,48 @@ describe('ModuleInstance', () => {
         expect(notifyPlayoutOffsetChanged).toHaveBeenCalledWith('inst-1');
     });
 
+    // Re-anchor (ADR-0005 2026-10-08): an operator edit of the head's D takes
+    // ownership, so the runtime raise must be gone BEFORE the fan-out pushes D
+    // — otherwise the legs would re-push the old overlay on top of the new D.
+    it('clears the runtime re-anchor raise BEFORE the fan-out', async () => {
+        const order: string[] = [];
+        const clearPlayoutRaise = vi.fn(() => {
+            order.push('clear');
+        });
+        const notifyPlayoutOffsetChanged = vi.fn(async () => {
+            order.push('fan-out');
+        });
+        instance = new ModuleInstance(
+            'inst-1',
+            'srt-input',
+            plugin,
+            {},
+            createMockServices({
+                mediaRouter: { notifyPlayoutOffsetChanged, clearPlayoutRaise } as any,
+            }),
+        );
+        await instance.start();
+        await instance.applyConfigUpdate({ playoutOffsetMs: 500 });
+        expect(clearPlayoutRaise).toHaveBeenCalledWith('inst-1');
+        expect(order).toEqual(['clear', 'fan-out']);
+        // Any other edit leaves the raise alone.
+        await instance.applyConfigUpdate({ latency: 200 });
+        expect(clearPlayoutRaise).toHaveBeenCalledTimes(1);
+    });
+
+    it('forwards the re-anchor hooks to the plugin when it has them', async () => {
+        const hooks = {
+            onRoutePlayoutRaised: vi.fn(),
+            onRoutePlayoutRebased: vi.fn(),
+        };
+        Object.assign(plugin as unknown as PluginModule, hooks);
+        instance.notifyRoutePlayoutRaised(null);
+        const note = { moduleId: 'vp', label: 'vp', element: 'vdec', latenessMs: 21000, at: 0 };
+        instance.notifyRoutePlayoutRebased(note);
+        expect(hooks.onRoutePlayoutRaised).toHaveBeenCalledWith(null);
+        expect(hooks.onRoutePlayoutRebased).toHaveBeenCalledWith(note);
+    });
+
     it('does not fan out for unrelated config changes', async () => {
         const notifyPlayoutOffsetChanged = vi.fn().mockResolvedValue(undefined);
         instance = new ModuleInstance(

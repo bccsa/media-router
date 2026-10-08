@@ -1037,6 +1037,8 @@ Health values: `'ok'` (green dot), `'warning'` (amber dot), `'error'` (red dot),
 
 The pipeline automatically sets health to `'ok'` when playing and `'stopped'` when null. Plugins override this for custom status (e.g. decoder with no connection → warning).
 
+Playout re-anchor (ADR-0005, 2026-10-08) is base-class behaviour, nothing to write: a late presentation leg and its route head both show an owned `warning` (taken only over `ok`, re-asserted on PLAYING), a `playout` status section, and on the head a `re-anchored +N ms` badge; an edit of the head's Playout Offset clears it.
+
 ### Clean Self-Stop (`requestSelfStop`)
 
 A module whose media ran to a **natural end** (e.g. hls-player finishing a VOD
@@ -1577,6 +1579,10 @@ Two rules make this work:
 1. **One resolver.** Both legs of a route (e.g. a video-player and an audio-decoder split off one ts-splitter) call `effectivePlayoutOffsetMs` against the same route, so they get the same D by construction. Re-implementing the arithmetic in a plugin is the bug this exists to prevent.
 2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about.
 
+**Runtime raise — playout re-anchor (`EngineServices.playoutReanchor`).** With the contract on and `MR_PLAYOUT_REANCHOR` not `0`, a late leg never drops: it asks the engine to raise its route head's D (in memory, up to +2000 ms), and `effectivePlayoutOffsetMs` already includes that raise, so `onRoutePlayoutOffsetChanged` is all a leg needs. An edit of the head's `playoutOffsetMs` clears the raise. ADR-0005 decision 4 amendment 2026-10-08.
+
+**Hooks `onRoutePlayoutRaised(raise | null)` / `onRoutePlayoutRebased(note)`.** The engine tells a route head its current raise (`null` = cleared) and a leg that asked a zero raise when an edit reset it; a head also hears when a leg below it rebased itself onto an implausible timeline. `GstPluginBase` implements both (warning, `playout` section, head badge) — override only to add to them.
+
 ### Interacting with the GStreamer Pipeline
 
 Media Router uses a **Python GStreamer runner** (`gst-pipeline-runner.py`) instead of `gst-launch`. This gives plugins programmatic access to the running pipeline via `GstPluginBase` methods.
@@ -2073,7 +2079,8 @@ you write a producer whose delivery deliberately runs ahead of real time**
 names no plugin itself, ADR-0007) and leave the repair off in your own sidecar
 (`TimelineStamper(..., repair_latch=False)`, the default), or every later
 segment head will be stamped late by a segment. The native element exposes
-the same switch as `repair-latch` (read at arm).
+the same switch as `repair-latch` (read at arm). `MR_LATCH_REPAIR=0` turns
+latch repair and its wire conditioner off box-wide.
 
 **A consumer on a dark bus waits, it does not restart.** `unixfdsrc` is not a
 live source, so a consumer whose producer is connected but silent (interlocked
@@ -2108,6 +2115,32 @@ every paced consumer downstream stored that as +200 ms of latency per event
 (#751 follow-up, 2026-09-15). Do NOT lower it on a video egress (reorder reads
 as a step). The runner passes it to the stampers as `condition-step-ms`
 (native, read at arm) / `condition_step_ns` (python probe).
+
+**House-timeline egress (`houseTimelineEgress`).** A transform producer —
+an `mpegtsmux` on bus-fed, house-stamped input (transcoder, audio-transcoder,
+mpegts-muxer) — already writes house time + 1 h into its PES. Setting
+`houseTimelineEgress: true` on the description makes its egress stamp by
+identity (`PES − 1 h`) instead of anchoring, so the source's time passes
+through and the hop's transit is left for the route's D to cover. Dropped
+with the contract off.
+
+**Transform-producer inputs (`alignBranchesToStamps.transformProducer`).**
+Set it with `alignBranchesToStamps` on a transform producer's input demuxes:
+instead of one pad offset per branch, every access unit leaving the demux is
+retimed to its producer's stamp mapping (PTS/DTS = K + its PES), across
+source rewinds, with the bus input held until the first exact reading.
+Presentation legs leave it unset.
+
+**Never drop on lateness (`BacklogShedConfig.onLateness`).**
+`backlogShedConfig()` sets `onLateness: "reanchor"` when
+`services.playoutReanchor` is on: the runner then asks for a raise
+(`playout_reanchor {kind:"raise"}`) instead of shedding, and rebases an
+implausible leg in-thread. Its five keys: `reanchorToleranceMs` (40, floor
+excess that counts as late), `reanchorHoldMs` (15 000, how long it must
+hold), `reanchorRetryMs` (30 000, re-ask gap unless the budget moved),
+`rebaseHoldMs` (3 000, how long a past-stamped implausible reading holds
+before a rebase) and `rebaseCooldownMs` (60 000, at most one rebase per
+leg). Numbers live in `playoutReanchor.ts`; absent `onLateness` = shed.
 
 **Where stamper events come from (debugging).** Anchor / settled / re-anchor /
 segment-warning events and the periodic `timeline_drift` report (per armed

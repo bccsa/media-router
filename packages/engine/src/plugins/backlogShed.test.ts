@@ -8,6 +8,13 @@ import {
     BACKLOG_SHED_TOLERANCE_MS,
 } from './backlogShed.js';
 import { MAX_PLAYOUT_OFFSET_MS } from './playoutOffset.js';
+import {
+    REANCHOR_HOLD_MS,
+    REANCHOR_RETRY_MS,
+    REANCHOR_TOLERANCE_MS,
+    REBASE_COOLDOWN_MS,
+    REBASE_HOLD_MS,
+} from './playoutReanchor.js';
 
 const VIDEO = { element: 'vpdec', sink: 'sink', keyframeAligned: true };
 
@@ -65,6 +72,46 @@ describe('backlogShedConfig — the contract gate', () => {
             element: '',
             keyframeAligned: false,
         });
+    });
+});
+
+// Never drop on lateness (ADR-0005 amendment 2026-10-08): with the re-anchor
+// switch on, the SAME config asks the runner to raise instead of shed, and
+// carries the numbers from playoutReanchor.ts. Off (MR_PLAYOUT_REANCHOR=0), the
+// config is byte-identical to the shed-only one — both runners shed as before.
+describe('backlogShedConfig — re-anchor mode', () => {
+    it('carries onLateness and the five re-anchor numbers when on', () => {
+        expect(backlogShedConfig({ timeSyncContract: true, playoutReanchor: true }, VIDEO)).toEqual(
+            {
+                element: 'vpdec',
+                sink: 'sink',
+                keyframeAligned: true,
+                toleranceMs: BACKLOG_SHED_TOLERANCE_MS,
+                holdMs: BACKLOG_SHED_HOLD_MS,
+                cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
+                sanityMs: BACKLOG_SHED_SANITY_MS,
+                onLateness: 'reanchor',
+                reanchorToleranceMs: REANCHOR_TOLERANCE_MS,
+                reanchorHoldMs: REANCHOR_HOLD_MS,
+                reanchorRetryMs: REANCHOR_RETRY_MS,
+                rebaseHoldMs: REBASE_HOLD_MS,
+                rebaseCooldownMs: REBASE_COOLDOWN_MS,
+            },
+        );
+    });
+
+    it('off, or not literally true, the config has none of the keys', () => {
+        for (const flag of [false, undefined, 1 as unknown as boolean]) {
+            const cfg = backlogShedConfig({ timeSyncContract: true, playoutReanchor: flag }, VIDEO);
+            expect(cfg).toEqual(backlogShedConfig({ timeSyncContract: true }, VIDEO));
+            expect(cfg).not.toHaveProperty('onLateness');
+        }
+    });
+
+    it('with the contract off nothing is armed, re-anchor or not', () => {
+        expect(
+            backlogShedConfig({ timeSyncContract: false, playoutReanchor: true }, VIDEO),
+        ).toBeUndefined();
     });
 });
 

@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(_RUNNER)))
 _spec = importlib.util.spec_from_file_location("gst_pipeline_runner", _RUNNER)
 runner = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(runner)
+rt = runner.branch_retime          # the transformProducer retime (branch_retime.py)
 
 import ts_psi  # noqa: E402
 import ts_timeline  # noqa: E402
@@ -606,6 +607,347 @@ check("a length-bearing PES is joined the moment it is complete (no give-up)",
       "joined only" not in _log)
 check("both single-AU branches reached a verdict",
       _log.count("median of") == 2)
+
+print("\n--- 6. a transform producer's input demux: every access unit retimed ---")
+# Its tsdemux runs each access unit at stamp + (PTS − PCR): ~1.1 s late at the OCC
+# gate, walking with the VBR lead (gst_tsdemux_slave_test.py). `transformProducer`
+# rewrites every buffer to K + its PES, so the identity egress exports content time.
+import re  # noqa: E402
+
+import transform_input_fixture as fx  # noqa: E402
+PRODUCER = {"demuxes": ["demux"], "transformProducer": True}
+H0 = 200_000 * 10**9
+SWING = {"dts_lead_ms": 900.0, "lead_swing_ms": 500.0, "swing_period_s": 20.0}
+
+
+def tp_run(cfg, seconds=8, start_s=2.2, skew_ppm=0.0, drop=None, **kw):
+    """Every AU that LEFT the demux, in sink order — (pid, serial, PTS error ms,
+    running PTS, running DTS, DTS error ms) — and the runner log. `drop(bufs)`
+    names bus buffers lost upstream (a leaky queue)."""
+    dts_t = {}
+    kw.setdefault("dts_lead_ms", 1100.0)
+    bufs, targets = fx.stamp(fx.build_packets(seconds, **kw), start_s, H0, skew_ppm,
+                             dts_targets=dts_t)
+    if drop:
+        lost = drop(bufs)
+        check(f"    (the fixture has a buffer to lose: {sorted(lost)})", len(lost) == 1)
+        bufs = [b for i, b in enumerate(bufs) if i not in lost]
+    cap, old = _io.StringIO(), sys.stderr
+    sys.stderr = cap
+    try:
+        rows = fx.run_demux(Gst, bufs, targets, detail=True, install=(
+            (lambda p: runner._install_branch_stamp_align(p, cfg)) if cfg else None))
+    finally:
+        sys.stderr = old
+        runner._clear_branch_align()
+    return [(pid, s, e / 1e6, rp, rd, None if rd is None else (rd - dts_t[(pid, s)]) / 1e6)
+            for pid, s, e, rp, rd in rows], cap.getvalue()
+
+
+def worst(rows):
+    return max(abs(r[2]) for r in rows) if rows else float("inf")
+
+
+def firsts_ok(rows):
+    """The FIRST access unit out on each of the two PIDs is on its content time."""
+    first = {}
+    for r in rows:
+        first.setdefault(r[0], r[2])
+    return len(first) == 2 and all(abs(e) <= 20 for e in first.values())
+
+
+def back_step(rows):
+    """Largest backward step (ms) of a PID's running DTS (PTS where none), sink order."""
+    last, back = {}, 0.0
+    for pid, _s, _e, rp, rd, _de in rows:
+        t = rp if rd is None else rd
+        if pid in last:
+            back = max(back, (last[pid] - t) / 1e6)
+        last[pid] = t
+    return back
+
+
+def trend_ms_per_s(rows):
+    """Least-squares slope of the PTS error against media time."""
+    t = [(r[3] - rows[0][3]) / 1e9 for r in rows]
+    e = [r[2] for r in rows]
+    mt, me = sum(t) / len(t), sum(e) / len(e)
+    return sum((a - mt) * (b - me) for a, b in zip(t, e)) / sum((a - mt) ** 2 for a in t)
+
+
+def lost_floor_raiser(bufs):
+    """A buffer whose stamp moved on an I/P video PES, followed by one clamped to
+    it: lose it and the follower's stamp reads as moved — K + its clamp."""
+    def heads(data):
+        return [(ts_psi.ts_pid(p), p[ts_psi.payload_offset(p) + 7] & 0xC0 == 0xC0)
+                for p in ts_psi.iter_packets(data) if ts_psi.read_pes_pts(p) is not None]
+    for i in range(100, len(bufs) - 1):
+        video = [dts for pid, dts in heads(bufs[i][0]) if pid == fx.VIDEO_PID]
+        if (bufs[i][1] != bufs[i - 1][1] and video and video[0]
+                and bufs[i + 1][1] == bufs[i][1] and heads(bufs[i + 1][0])):
+            return {i}
+    return set()
+
+
+# (a) From the FIRST access unit, wherever the feed is cut: the bus input is held
+# until a stamp moves (≤ 250 ms here) and re-chained, so nothing is lost.
+STARTS = (2.2, 2.013, 2.697, 3.91, 2.597, 1.3, 4.267, 5.015)
+cuts = {}
+for s in STARTS:
+    rows, log = tp_run(PRODUCER, start_s=s)
+    alone, _ = tp_run(None, start_s=s)
+    m = re.search(r"\((\d+) bus buffers held\)", log)
+    cuts[s] = (rows, alone, log, int(m.group(1)) if m else None)
+print("    bus buffers held per cut: " + ", ".join(f"{s} s→{v[3]}" for s, v in cuts.items()))
+check("(a) the FIRST access unit out is on its content time on both PIDs (±20 ms), every cut",
+      all(firsts_ok(v[0]) for v in cuts.values()))
+check(f"(a) every access unit leaves on its content time (worst "
+      f"{max(worst(v[0]) for v in cuts.values()):.3f} ms)",
+      all(worst(v[0]) <= 20 for v in cuts.values()))
+check("(a) no media dropped: exactly the access units tsdemux emits alone, in its order",
+      all(len(v[0]) > 300 and [r[:2] for r in v[0]] == [r[:2] for r in v[1]]
+          for v in cuts.values()))
+check("(a) every hold ended on an exact stamp reading, never on its bound",
+      all("released on the first exact stamp reading" in v[2] for v in cuts.values()))
+
+# (b) 64 s, the video lead swinging 0.9–1.4 s, the source clock 40 ppm SLOW: K
+# rises 2.6 ms over the run, which only exact readings can follow (a bound cannot).
+vbr, vbr_log = tp_run(PRODUCER, seconds=64, skew_ppm=-40.0, **SWING)
+vbr_alone, _ = tp_run(None, seconds=64, skew_ppm=-40.0, **SWING)
+print(f"    tsdemux alone under the swing: {min(r[2] for r in vbr_alone):+.0f} … "
+      f"{max(r[2] for r in vbr_alone):+.0f} ms off content time")
+check("(b) the fixture's swing reaches tsdemux (its own error walks > 100 ms)",
+      max(r[2] for r in vbr_alone) - min(r[2] for r in vbr_alone) > 100)
+_t0 = vbr[0][3]
+_early = [r[2] for r in vbr if r[3] - _t0 < 10e9]
+_late = [r[2] for r in vbr if r[3] - _t0 > 54e9]
+_slope = trend_ms_per_s(vbr)
+check(f"(b) 64 s under the swing: worst {worst(vbr):.3f} ms, trend {_slope * 1e3:+.4f} ms per "
+      f"1000 s, first vs last 10 s {sum(_late) / len(_late) - sum(_early) / len(_early):+.4f} ms",
+      worst(vbr) <= 20 and abs(_slope) < 0.001
+      and abs(sum(_late) / len(_late) - sum(_early) / len(_early)) < 1)
+check("(b) nothing dropped over the run",
+      len(vbr) > 4000 and [r[:2] for r in vbr] == [r[:2] for r in vbr_alone])
+
+# (c) A 427 s source rewind mid-feed (the gate's replay loops every 427 s).
+rew, rew_log = tp_run(PRODUCER, seconds=40, jump_at_s=20.0, skew_ppm=40.0, **SWING)
+check(f"(c) across the rewind the timeline is continuous (largest backward step "
+      f"{back_step(rew):.3f} ms) and on content time (worst {worst(rew):.3f} ms)",
+      len(rew) > 2500 and back_step(rew) <= 20 and worst(rew) <= 20)
+check("(c) the rewind opened a fresh stamp epoch, predicted, then put on its own stamps",
+      "PTS discontinuity -42" in rew_log and "epoch #1 on its stamps" in rew_log)
+
+# (d) B-frames: decode order and every PTS−DTS distance survive the rewrite.
+vid = [r for r in vbr if r[0] == fx.VIDEO_PID]
+_reordered = sum(1 for r in vid if r[3] - r[4] >= 40_000_000)
+_kept = max(abs(r[2] - r[5]) for r in vid)
+check(f"(d) B-frames: DTS strictly increasing, on content time, PTS−DTS kept "
+      f"(worst change {_kept * 1e3:.1f} µs over {_reordered} reordered AUs)",
+      all(b[4] > a[4] for a, b in zip(vid, vid[1:])) and _reordered > 300 and _kept < 0.1
+      and max(abs(r[5]) for r in vid) <= 20)
+
+# (e) The mux path is untouched: same verdict, same bound, no retime.
+mux, mux_log = tp_run({"demuxes": ["demux"]}, seconds=12)
+check("(e) mux mode unchanged: a transform input's −1.1 s correction is still REJECTED "
+      "(1 s mux bound) and the branch left as-is",
+      "REJECTED" in mux_log and "retime" not in mux_log and all(r[2] > 1000 for r in mux))
+
+# A bus buffer lost upstream: the next stamp may be the lost one's floor, read as
+# moved (the two-reading minimum keeps K), and tsdemux discards the PES after the
+# gap, which the join must skip although every tail here repeats (timed join).
+lost, _ = tp_run(PRODUCER, seconds=12, drop=lost_floor_raiser)
+check(f"a bus buffer lost upstream costs only its own access units — K holds, the join "
+      f"stays in step (worst {worst(lost):.3f} ms over {len(lost)} AUs)",
+      worst(lost) <= 20 and len(lost) > 800)
+
+
+# (f) Mutations: each disables one mechanism and must FAIL the check that pins it.
+def mutated(patch, fn):
+    saved = {k: getattr(rt, k) for k in patch}
+    for k, v in patch.items():
+        setattr(rt, k, v)
+    try:
+        return fn()
+    finally:
+        for k, v in saved.items():
+            setattr(rt, k, v)
+
+
+_read, _sample, _join = rt.read, rt.sample, rt.join
+
+
+def _read_latest(st, e, s):
+    e.last_read = None                  # K = this reading alone
+    _read(st, e, s)
+
+
+def _join_by_order(st, ps, tail, ts):
+    ps["off"] = None                    # no tsdemux timing: order alone
+    return _join(st, ps, tail, ts)
+
+
+def _sample_never_moved(st, stamp, a, b):
+    st["prev_stamp"] = None             # no stamp ever reads as moved
+    _sample(st, stamp, a, b)
+
+
+m1 = mutated({"k_for": lambda au: None}, lambda: tp_run(PRODUCER)[0])
+check(f"(f) mutant, retime off: (a) fails — access units on tsdemux's PCR lead "
+      f"(worst {worst(m1):.0f} ms)", not worst(m1) <= 20)
+m2 = mutated({"HOLD_MS": 0.0},
+             lambda: [tp_run(PRODUCER, start_s=s)[0] for s in (2.697, 3.91, 2.597, 1.3)])
+check("(f) mutant, no start-up hold: the first access units ride the upper bound, (a) fails",
+      not all(firsts_ok(r) and worst(r) <= 20 for r in m2))
+m3 = mutated({"BACK_TICKS": 1 << 40, "FWD_TICKS": 1 << 40},
+             lambda: tp_run(PRODUCER, seconds=40, jump_at_s=20.0, skew_ppm=40.0, **SWING)[0])
+check(f"(f) mutant, no stamp epochs: (c) fails across the rewind (worst {worst(m3):.0f} ms)",
+      not (back_step(m3) <= 20 and worst(m3) <= 20))
+m4 = mutated({"read": _read_latest},
+             lambda: tp_run(PRODUCER, seconds=12, drop=lost_floor_raiser)[0])
+check(f"(f) mutant, K = the latest reading: the lost-buffer check fails (worst {worst(m4):.0f} ms)",
+      not worst(m4) <= 20)
+m6 = mutated({"join": _join_by_order},
+             lambda: tp_run(PRODUCER, seconds=12, drop=lost_floor_raiser)[0])
+check(f"(f) mutant, join by order alone: after the loss every repeated tail locks one AU "
+      f"off and the lost-buffer check fails (worst {worst(m6):.0f} ms)", not worst(m6) <= 20)
+m5 = mutated({"sample": _sample_never_moved},
+             lambda: tp_run(PRODUCER, seconds=64, skew_ppm=-40.0, **SWING)[0])
+check(f"(f) mutant, no exact readings (K = the stamps' upper bound): (b) fails — the bound "
+      f"cannot follow a slow source clock (trend {trend_ms_per_s(m5) * 1e3:+.2f} ms per 1000 s)",
+      not abs(trend_ms_per_s(m5)) < 0.001)
+
+print("\n--- 7. the retime estimator, pure: readings, rule, epochs, wrap ---")
+NS = ts_timeline.pts90k_to_ns
+K0, P, J, W = 7_000 * 10**9, 1_000 * 90000, 427 * 90000, 1 << 33
+_cap7, _old7 = _io.StringIO(), sys.stderr
+sys.stderr = _cap7
+try:
+    s7 = rt.new_state("pure")
+    i0 = rt.on_pes(s7, 0x100, P, P - 3600)
+    rt.sample(s7, K0 + NS(P), i0, i0)            # first buffer: no previous stamp
+    first_bound = i0.e.k is None and i0.e.ub == K0
+    p1 = rt.on_pes(s7, 0x100, P + 10800, P)
+    rt.sample(s7, K0 + NS(P + 10800), p1, p1)    # moved: exact
+    exact = p1.e.k == K0 and p1.e.reads == 1
+    b1 = rt.on_pes(s7, 0x100, P + 3600, None)       # B, 80 ms back: same epoch
+    rt.sample(s7, K0 + NS(P + 10800), b1, b1)    # clamped to the P's stamp
+    clamped = b1.e is p1.e and b1.e.k == K0 and b1.e.reads == 1
+    e = p1.e
+    steps = []
+    for r in (K0 + 300_000_000, K0, K0 + 200_000_000, K0 + 200_000_000, K0 + 150_000_000):
+        rt.read(s7, e, r)
+        steps.append(e.k - K0)
+    s8 = rt.new_state("pure-rule")
+    s8["pcr_pid"] = 0x100
+    for n in range(3):                                      # audio PES first, stamped by the video
+        au = rt.on_pes(s8, 0x101, P - 90000 + n * 1920, None)
+        v = rt.on_pes(s8, 0x100, P + n * 3600, P + n * 3600 - 3600)
+        rt.sample(s8, K0 + NS(P + n * 3600), au, v)
+    rule = s8["rule"] == "pcr" and v.e.k == K0
+    s9 = rt.new_state("pure-epoch")
+    for n in range(10):
+        a9 = rt.on_pes(s9, 0x101, P - 90000 + n * 1920, None)
+        v9 = rt.on_pes(s9, 0x100, P + n * 3600 + 3600, P + n * 3600)
+        rt.sample(s9, K0 + NS(P + n * 3600 + 3600), v9, v9)
+    old = v9
+    jv = rt.on_pes(s9, 0x100, P + 40 * 900 + 3600 - J, P + 40 * 900 - J)
+    ja = rt.on_pes(s9, 0x101, P - 90000 + 10 * 1920 - J, None)
+    fresh = jv.e is not old.e and jv.e.seq == 1 and jv.e.pred == K0 + NS(J) and ja.e is jv.e
+    rt.sample(s9, K0 + NS(J) + NS(P + 40 * 900 + 3600 - J), jv, jv)
+    epoch_k = jv.e.k == K0 + NS(J) and rt.k_for(old) == K0 and s9["seq"] == 2
+    s10 = rt.new_state("pure-wrap")
+    w1 = rt.on_pes(s10, 0x100, W - 3600, W - 7200)
+    w2 = rt.on_pes(s10, 0x100, 0, W - 3600)
+    wrap = w2.e is w1.e and w2.u == W and w2.du == W - 3600
+    _pk = fx._pes(0x100, 0xE0, P + 7200, P, 1, 1, {0x100: 0}, False)[0]
+    dts_parse = rt.pes_dts(_pk[4:]) == P
+finally:
+    sys.stderr = _old7
+check("a buffer with no previous stamp only bounds K; a moved stamp reads it exactly",
+      first_bound and exact)
+check("a stamp clamped to the floor (B-frame, 80 ms back, same epoch) only bounds K",
+      clamped)
+check(f"K = the lower of the last two readings: a lone +300 ms reading never lands, a real "
+      f"+200 ms step lands on its second reading, a drop at once (K−K0 per reading, ms: "
+      f"{[x // 1_000_000 for x in steps]})", steps == [0, 0, 0, 200_000_000, 150_000_000])
+check("an audio-first buffer stamped by its video PES: the PCR-PID rule is learned from the "
+      "candidates that agree, and read exactly", rule)
+check("a −427 s rewind opens epoch #1 predicted at K + 427 s; the other PID joins it",
+      fresh)
+check("the new epoch's first moved stamp replaces the prediction; old access units keep "
+      "the old K", epoch_k)
+check("a 33-bit PTS wrap stays in its epoch, unwrapped past 2^33 (DTS too)", wrap)
+check("the PES DTS is read from the header", dts_parse)
+
+print("\n--- 8. an mpegts-muxer's inputs: one retime per demux, different producers ---")
+# The muxer's inputs are N demuxes in ONE pipeline, each on its own producer's
+# stamps — a splitter's AAC leg (anchored, swinging, rewinding) beside a
+# transcoder's identity egress (K = −3600 s). K, epochs, hold and join are per demux.
+MUX = {"demuxes": ["demux_0", "demux_1"], "transformProducer": True}
+_p8 = Gst.parse_launch("appsrc ! tsdemux name=demux_0  appsrc ! tsdemux name=demux_1")
+runner._install_branch_stamp_align(_p8, MUX)
+s0, s1 = runner._branch_align["demux_0"], runner._branch_align["demux_1"]
+_shared = [k for k, v in s0.items() if not callable(v) and v is s1[k]
+           and isinstance(v, (list, dict, set, bytearray, _collections.deque))]
+for n in range(4):                      # demux_0's stamp never moves, demux_1's does
+    a8 = rt.on_pes(s0, 0x101, P + n * 1920, None)
+    rt.sample(s0, K0 + NS(P), a8, a8)
+    v8 = rt.on_pes(s1, 0x100, P + n * 3600, None)
+    rt.sample(s1, -3600 * 10**9 + NS(P + n * 3600), v8, v8)
+runner._clear_branch_align()
+check(f"(a) two demuxes, two retime states, nothing mutable shared ({_shared or 'none'}); "
+      f"readings stay per demux: demux_1 exact at K = −3600 s, demux_0 still holding on a bound",
+      s0 is not s1 and not _shared and s1["exact"] and v8.e.k == -3600 * 10**9
+      and not s0["exact"] and a8.e.k is None and a8.e.ub is not None)
+
+MUX_FEED, MUX_TARGETS, K_SPLITTER = fx.mux_inputs(70, jump_at_s=40.0)
+
+
+def mux_run(cfg):
+    """The two-input feed through two demuxes in one pipeline: per-PID errors (ms) and the log."""
+    cap, old = _io.StringIO(), sys.stderr
+    sys.stderr = cap
+    try:
+        rows = fx.run_demuxes(Gst, MUX_FEED, MUX_TARGETS,
+                              install=lambda p: runner._install_branch_stamp_align(p, cfg))
+    finally:
+        sys.stderr = old
+        runner._clear_branch_align()
+    err = {}
+    for pid, _s, e in rows:
+        err.setdefault(pid, []).append(e / 1e6)
+    return err, cap.getvalue()
+
+
+def av_ok(err):
+    every = [e for v in err.values() for e in v]
+    return (len(err) == 2 and min(map(len, err.values())) > 1500
+            and max(map(abs, every)) <= 5 and max(every) - min(every) <= 10)
+
+
+def av_spread(err):
+    every = [e for v in err.values() for e in v]
+    return max(every) - min(every) if every else float("inf")
+
+
+mux8, mux8_log = mux_run(MUX)
+_k = {d: re.search(rf"{d} retime: released .*?K=(-?\d+)", mux8_log) for d in ("demux_0", "demux_1")}
+check(f"(b) every access unit of both inputs on its content time, audio and video agree "
+      f"(A/V spread {av_spread(mux8):.3f} ms over {sum(map(len, mux8.values()))} AUs, 70 s, a rewind)",
+      av_ok(mux8))
+check("(b) each demux read its own K — demux_0 the splitter's, demux_1 −3600 s exactly — and only "
+      "demux_0 opened a stamp epoch",
+      all(_k.values()) and abs(int(_k["demux_0"].group(1)) - K_SPLITTER) < 1_000_000
+      and int(_k["demux_1"].group(1)) == -3600 * 10**9
+      and "demux_0 retime: epoch #1 on its stamps" in mux8_log
+      and not re.search(r"demux_1 retime: .*discontinuity", mux8_log))
+ctl8, _ = mux_run({"demuxes": ["demux_0", "demux_1"]})
+check(f"(c) mux mode on the same inputs: audio and video {av_spread(ctl8):.0f} ms apart, (b) fails",
+      not av_ok(ctl8))
+_rs, _one = rt.new_state, {}
+m8, _ = mutated({"new_state": lambda name: _one or _one.update(_rs(name)) or _one}, lambda: mux_run(MUX))
+check(f"(d) mutant, one retime state for both demuxes: (b) fails (A/V spread {av_spread(m8):.0f} ms)",
+      not av_ok(m8))
 
 print()
 if _failures:

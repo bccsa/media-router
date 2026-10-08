@@ -241,16 +241,13 @@ export class AudioTranscoderModule extends GstPluginBase {
             ...(config.preserveSourceTimeline === false
                 ? {}
                 : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
-            // NO `alignBranchesToStamps` here, on purpose. This module is a
-            // PRODUCER: its egress stamper anchors on its first output PES
-            // ~0.5 s in, and a branch correction lands ~3 s in as a step on
-            // the demux branch — AFTER the anchor is latched — so the egress
-            // stamps shift by the whole correction and the output timeline
-            // moves (measured on .103, 2026-09-03: +12 ms → −71 ms against the
-            // source, twice). A correction only helps a PRESENTATION leg, whose
-            // sink reads the corrected running time directly. Making this hop
-            // timeline-exact needs the egress stamper to anchor on the INPUT
-            // timeline (ADR-0005 follow-up), not a branch offset.
+            // CONTRACT PATH: output PES already carry house time + 1 h, so the
+            // egress stamps by identity instead of anchoring here (ADR-0005 2026-10-08).
+            houseTimelineEgress: true,
+            // Input demux retimed to the bus stamps per access unit (it otherwise
+            // runs the input's PTS−PCR lead late, ~1.1 s at the OCC gate, and
+            // walks), so the identity egress is content-correct. Contract only.
+            alignBranchesToStamps: { demuxes: [DEMUX_NAME], transformProducer: true },
         };
     }
 

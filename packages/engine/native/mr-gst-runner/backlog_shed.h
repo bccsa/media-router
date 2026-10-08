@@ -9,7 +9,9 @@
 // budget (and, on a keyframe-aligned leg, is an IRAP). Rate-limited by
 // `cooldownMs`; a reading past `sanityMs` is a timeline mismatch and is
 // reported, never acted on. Video sheds arm a post-shed stall watch on the
-// decoder's output (flush, then bus ERROR). Events, log lines and every
+// decoder's output (flush, then bus ERROR). `onLateness: "reanchor"` (ADR-0005
+// 2026-10-08) never drops: it asks the engine to raise D (`playout_reanchor`)
+// and rebases an implausible leg in-thread. Events, log lines and every
 // number are the python's.
 #pragma once
 

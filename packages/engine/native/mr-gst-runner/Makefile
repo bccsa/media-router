@@ -26,11 +26,11 @@ MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 SRCS = main.cpp ipc.cpp json_util.cpp runner.cpp commands.cpp stamper.cpp \
-       bus_edges.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp backlog_shed.cpp hooks.cpp \
+       bus_edges.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp branch_retime.cpp backlog_shed.cpp hooks.cpp \
        pad_link.cpp gates.cpp paths.cpp \
        $(MRTS)/ts_psi.cpp $(MRTS)/ts_timeline.cpp $(MRTS)/ts_video_info.cpp $(MRTS)/sps_parse.cpp
 HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h bus_inputs.h source_gate.h \
-       branch_align.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h
+       branch_align.h branch_retime.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h
 PKGS = gstreamer-1.0 gstreamer-base-1.0 glib-2.0 gio-2.0 json-glib-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)

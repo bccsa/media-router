@@ -54,9 +54,11 @@ established — plugin-owned, config-driven, engine ignorant of the domain
 
 ## Consequences
 
-- `plugins/mpegts-muxer/native/mux-routing/` (`mux_routing`) and
+- `plugins/mpegts-muxer/native/mux-routing/` (`mux_routing`),
   `plugins/subtitle-core/native/subtitle-bridge/` (`subtitle_bridge`, with a
-  header-only twin of the KLV cue codec) are the two native hooks; the
+  header-only twin of the KLV cue codec) and
+  `plugins/transcoder/native/deinterlace-guard/` (`deinterlace_guard`, #817)
+  are the three native hooks; the
   mpegts-muxer and teletext-subtitles moved to the native runner with them,
   transcoder and video-player with ADR-0019's Stage 3 (the video gates,
   same day).

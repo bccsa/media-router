@@ -948,6 +948,45 @@ check("the conditioned event carries the probe's field names verbatim, houseNs i
       and isinstance(conditioned[0]["houseNs"], int)
       and conditioned[0]["houseNs"] > 0)
 
+# ---------------------------------------------------------------------------
+print("\n--- house-timeline egress: the element reads PES − 1 h back, no anchor ---")
+# The runner's arm sets `house-timeline` from the start payload's
+# `houseTimelineEgress` (a transform producer); the element then stamps by
+# identity — the python probe's section in gst_bus_stamper_test.py, buffer for
+# buffer, with the PES built off the pipeline's own house clock as the mux would.
+import ts_timeline as _tl  # noqa: E402
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe)
+stamper.house_timeline = True
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+el = pipe.get_by_name(STAMP_EL)
+check("the arm sets the element's house-timeline property", el.get_property("house-timeline") is True)
+seen = tap_timestamps(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+house0 = pipe.get_pipeline_clock().get_time() - pipe.get_base_time()
+c0 = house0 * 9 // 100000 + 90000
+for i in range(6):
+    push(src, pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i),
+         (500 + i * 40 + (i % 3) * 7) * Gst.MSECOND, 0)
+push(src, filler_packet(cc=6), 900 * Gst.MSECOND, 0)
+bus.wait(seen, 7)
+bus.drain(pipe, src)
+want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(6)]
+check("every stamp is the content's house time, exactly, regardless of arrival",
+      [pts for pts, _ in seen[:6]] == want)
+check("DTS rides with it", [dts for _, dts in seen[:6]] == want)
+check("a PES-less buffer repeats the staircase", len(seen) == 7 and seen[6][0] == want[-1])
+anchors = bus.of("timeline_restamped")
+check("one anchor event names the identity mapping",
+      len(anchors) == 1 and anchors[0]["anchorNs"] == want[0]
+      and anchors[0]["refPts90k"] == (_tl.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
+check("nothing re-anchors and nothing is conditioned",
+      not bus.of("timeline_reanchor") and not bus.of("timeline_conditioned"))
+stamper.house_timeline = False
+teardown()
+
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")
     sys.exit(1)

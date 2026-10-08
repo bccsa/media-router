@@ -117,11 +117,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
             const keyUnchanged =
                 normalizeKey(entry.key) === normalizeKey(prev.key) ||
                 (normalizeKey(prev.key) === undefined && entry.key === prevEntries[i]?.key);
-            return (
-                (entry.language ?? '') === (prev.language ?? '') &&
-                pidUnchanged &&
-                keyUnchanged
-            );
+            return (entry.language ?? '') === (prev.language ?? '') && pidUnchanged && keyUnchanged;
         });
     }
 
@@ -247,11 +243,15 @@ export class MpegTsMuxerModule extends GstPluginBase {
             pipeline: result.pipeline,
             runnerHooks: result.runnerHooks,
             restartOnError: true,
-            // Anchor every input branch to its producer's house stamps, so the
-            // branches' private zero points stop showing up as A/V skew at the
-            // mux output (and stop being re-rolled on every restart). Dropped by
-            // `applyTimeSync` when the time-sync contract is off.
-            alignBranchesToStamps: { demuxes: result.demuxes },
+            // Retime every input's access units onto their producer's stamps (K +
+            // PES), so no branch keeps tsdemux's zero point or skew walk as A/V
+            // skew at the output. Dropped by `applyTimeSync` off-contract.
+            alignBranchesToStamps: { demuxes: result.demuxes, transformProducer: true },
+            // ... and with the branches on house time, the mux's own output PES
+            // ARE house time (+1 h): the egress stamper reads them back instead
+            // of anchoring at this egress and baking the aggregator's latency
+            // into every consumer's timeline (ADR-0005 amendment 2026-10-08).
+            houseTimelineEgress: true,
             // Dark-input detection (see INPUT_STALL_TIMEOUT_MS): runner-side,
             // one entry per input source, no `watchdog` element in the branch.
             inputStallWatch: result.inputStallWatch,

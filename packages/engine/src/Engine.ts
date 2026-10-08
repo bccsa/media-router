@@ -66,6 +66,13 @@ export interface EngineConfig {
      * 0–10000 ms) is ignored and falls through to the default.
      */
     playoutOffsetMs?: number;
+    /**
+     * Never drop on lateness (ADR-0005 amendment 2026-10-08, on by default): a
+     * late presentation leg asks the engine to raise its route's D instead of
+     * shedding. Only meaningful with the contract on. Omitted →
+     * `MR_PLAYOUT_REANCHOR` decides (`'0'` restores today's shedding exactly).
+     */
+    playoutReanchor?: boolean;
 }
 
 /**
@@ -96,6 +103,8 @@ export class Engine {
     readonly timeSyncContract: boolean;
     /** Resolved engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
     readonly playoutOffsetMs: number;
+    /** Resolved never-drop re-anchor switch — see `EngineConfig.playoutReanchor`. */
+    readonly playoutReanchor: boolean;
 
     private apiServer: FastifyInstance | null = null;
     private config: EngineConfig;
@@ -145,6 +154,8 @@ export class Engine {
             config.playoutOffsetMs,
             process.env.MR_PLAYOUT_OFFSET_MS,
         );
+        // Re-anchor instead of shed — same precedence shape (config → env → on).
+        this.playoutReanchor = config.playoutReanchor ?? process.env.MR_PLAYOUT_REANCHOR !== '0';
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
@@ -156,6 +167,11 @@ export class Engine {
             this.deviceProviders,
             this.clockAuthority,
             this.timeSyncContract,
+            this.playoutOffsetMs,
+            this.playoutReanchor,
+        );
+        this.mediaRouter.setPlayoutReanchor(
+            this.timeSyncContract && this.playoutReanchor,
             this.playoutOffsetMs,
         );
         this.managerConnection = new ManagerConnection();
@@ -176,8 +192,13 @@ export class Engine {
             managerConnection: this.managerConnection,
             localChanges: this.localChanges,
             patch: (senderId, ops) => this.enginePatchRouter?.onPatch(senderId, 'local', ops),
-            device: { ips: this.deviceIps, hostname: this.deviceHostname, buildNumber: this.deviceBuildNumber },
-            build: () => `${Math.round(fs.statSync(__filename).mtimeMs)}-${this.localServer.dashboardBuild()}`,
+            device: {
+                ips: this.deviceIps,
+                hostname: this.deviceHostname,
+                buildNumber: this.deviceBuildNumber,
+            },
+            build: () =>
+                `${Math.round(fs.statSync(__filename).mtimeMs)}-${this.localServer.dashboardBuild()}`,
         });
 
         this.mediaRouter.setDependencies(
@@ -363,6 +384,7 @@ export class Engine {
             clockAuthority: this.clockAuthority,
             timeSyncContract: this.timeSyncContract,
             playoutOffsetMs: this.playoutOffsetMs,
+            playoutReanchor: this.playoutReanchor,
         });
         log.info({ pluginCount }, 'Loaded plugins');
         warnDuplicatePyModules();
@@ -493,22 +515,17 @@ export class Engine {
         const { execFile } = await import('child_process');
         try {
             await new Promise<void>((resolve, reject) => {
-                execFile(
-                    'systemctl',
-                    ['reboot'],
-                    { timeout: 10000 },
-                    (err, _stdout, stderr) => {
-                        if (err) {
-                            // `err.message` is just "Command failed: systemctl
-                            // reboot"; the actionable reason ("Interactive
-                            // authentication required.", etc.) lives in stderr.
-                            const detail = (stderr || '').trim() || err.message;
-                            reject(new Error(detail));
-                        } else {
-                            resolve();
-                        }
-                    },
-                );
+                execFile('systemctl', ['reboot'], { timeout: 10000 }, (err, _stdout, stderr) => {
+                    if (err) {
+                        // `err.message` is just "Command failed: systemctl
+                        // reboot"; the actionable reason ("Interactive
+                        // authentication required.", etc.) lives in stderr.
+                        const detail = (stderr || '').trim() || err.message;
+                        reject(new Error(detail));
+                    } else {
+                        resolve();
+                    }
+                });
             });
         } catch (err) {
             this.managerConnection.send(
