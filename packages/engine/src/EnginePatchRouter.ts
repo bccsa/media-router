@@ -108,15 +108,21 @@ export class EnginePatchRouter {
                 settingsChanges.get(moduleId)![key] = op.value;
             }
 
-            // Module enabled/disabled → lifecycle operation
+            // Module enabled/disabled → lifecycle operation. A stopped engine
+            // starts nothing: Enable there only marks the module (the patch
+            // already did) and the next Start brings it up. The intent is read
+            // when the step runs, so a Stop landing while it waits wins.
             if (parts[0] === 'modules' && parts[2] === 'enabled' && op.op === 'replace') {
                 const moduleId = parts[1];
                 this.lifecycleLock = this.lifecycleLock
-                    .then(() =>
-                        op.value
-                            ? this.lifecycle.enable(moduleId)
-                            : this.lifecycle.disable(moduleId),
-                    )
+                    .then(() => {
+                        if (!op.value) return this.lifecycle.disable(moduleId);
+                        if (this.getModulesRunning()) return this.lifecycle.enable(moduleId);
+                        log.info(
+                            { moduleId },
+                            'Module enabled while engine stopped — starts with the engine',
+                        );
+                    })
                     .catch((err) => log.error({ err, moduleId }, 'Enable/disable failed'));
             }
 

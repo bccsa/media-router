@@ -96,7 +96,8 @@ export function buildModuleMenuItems(mod: ModuleState | undefined, isFocused: bo
                   label: 'Enable',
                   action: 'enable',
                   icon: icons.enable,
-                  tooltip: 'Start the module and reconnect links',
+                  tooltip:
+                      'Start the module and reconnect links; on a stopped router, at its next Start',
               },
         divider,
         isFocused
@@ -142,7 +143,7 @@ export function buildGroupMenuItems(mods: ModuleState[], allFocused: boolean): M
             action: 'enable',
             icon: icons.enable,
             disabled: mods.every((m) => m.enabled !== false),
-            tooltip: 'Start every selected module',
+            tooltip: 'Start every selected module; on a stopped router, at its next Start',
         },
         {
             label: 'Disable all',

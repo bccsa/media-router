@@ -429,6 +429,50 @@ describe('EnginePatchRouter', () => {
             await new Promise((r) => setTimeout(r, 10));
             expect(lifecycle.disable).toHaveBeenCalledWith('mod-1');
         });
+
+        it('does NOT call lifecycle.enable when module enabled while engine stopped', async () => {
+            const { router, lifecycle, config } = createMocks({ modulesRunning: false });
+            router.onPatch('manager', 'manager', [
+                { op: 'replace', path: '/modules/mod-1/enabled', value: true },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(lifecycle.enable).not.toHaveBeenCalled();
+            // Marked enabled all the same: the engine's next start brings it up.
+            expect((config.modules as any)['mod-1'].enabled).toBe(true);
+        });
+
+        it('still calls lifecycle.disable when module disabled while engine stopped', async () => {
+            const { router, lifecycle } = createMocks({ modulesRunning: false });
+            router.onPatch('manager', 'manager', [
+                { op: 'replace', path: '/modules/mod-1/enabled', value: false },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(lifecycle.disable).toHaveBeenCalledWith('mod-1');
+        });
+
+        it('reads the run intent when its turn comes: a Stop meanwhile wins', async () => {
+            const run = { modulesRunning: true };
+            const { router, lifecycle } = createMocks(run);
+            let started!: () => void;
+            lifecycle.startSingle.mockReturnValueOnce(new Promise<void>((r) => (started = r)));
+            // A module add still starting holds the lifecycle lock...
+            router.onPatch('manager', 'manager', [
+                { op: 'add', path: '/modules/mod-new', value: { pluginId: 'test', settings: {} } },
+            ]);
+            await new Promise((r) => setTimeout(r, 0));
+            // ...the Enable queues behind it, then the operator stops the engine.
+            router.onPatch('manager', 'manager', [
+                { op: 'replace', path: '/modules/mod-1/enabled', value: true },
+            ]);
+            run.modulesRunning = false;
+            started();
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(lifecycle.startSingle).toHaveBeenCalledWith('mod-new');
+            expect(lifecycle.enable).not.toHaveBeenCalled();
+        });
     });
 
     describe('side effects — module add/remove', () => {

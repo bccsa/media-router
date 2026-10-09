@@ -371,7 +371,7 @@ When a router goes offline:
 | `/engines/<id>/modules/<mid>` | add | module object with `pluginId` | new module; the rest of the batch may write inside it unchecked |
 | `/engines/<id>/modules/<mid>` | remove | — | removes the module; its connections and interlock memberships go with it |
 | `/engines/<id>/modules/<mid>/settings/<key>` | replace / add | per descriptor (§8) | only keys the schema declares; `x-readOnly` keys and display widgets are read-only |
-| `/engines/<id>/modules/<mid>/enabled` | replace | boolean | |
+| `/engines/<id>/modules/<mid>/enabled` | replace | boolean | `true` on a stopped router only marks the module; it starts with the router's next Start |
 | `…/modules/<mid>/displayName` | replace | string | |
 | `…/modules/<mid>/position`, `…/size` | replace | `{ x, y }` / `{ width, height }` | graph layout |
 | `…/modules/<mid>/focused` | replace | boolean | |
@@ -479,7 +479,8 @@ A router takes **values only**; its structure belongs to the manager.
 | `/info/running` | replace | boolean |
 
 - **Where it goes.** An accepted write is applied live, the same way an LCP
-  control is. It goes to the manager with guaranteed delivery.
+  control is (`enabled: true` on a stopped router only marks the module; it
+  starts with the next Start). It goes to the manager with guaranteed delivery.
 - **While the manager link is down**, writes are kept on the router and
   merged when the link returns: the value set on site wins (ADR-0025).
 - **Rejections.** Anything else is rejected with `not writable on a router`.
