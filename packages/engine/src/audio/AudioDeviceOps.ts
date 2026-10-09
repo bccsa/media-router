@@ -73,6 +73,21 @@ export function parseDeviceVolumes(block: string): number[] {
 }
 
 /**
+ * Read one `key = "value"` line of a block's `Properties:` list. pipewire-pulse
+ * folds the owning card's udev properties into every ALSA sink and source
+ * (monitors included) and prints a few under their PulseAudio spelling
+ * (`props_key_map`): the card's `device.bus-path` arrives as `device.bus_path`.
+ */
+export function parseDeviceProperty(block: string, key: string): string | undefined {
+    const prefix = `${key} = "`;
+    const line = block
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith(prefix));
+    return line?.slice(prefix.length, -1);
+}
+
+/**
  * Parse one `pactl list sources/sinks` block into an `AudioDevice`. Returns
  * `null` only when the block has no `Name:` field (i.e. it's not a real
  * device entry — e.g. the trailing blank between blocks).
@@ -101,6 +116,8 @@ export function parseDeviceBlock(
         channels: parseDeviceChannels(block),
         sampleRate: parseDeviceSampleRate(block),
         volumes: parseDeviceVolumes(block),
+        serial: parseDeviceProperty(block, 'device.serial'),
+        busPath: parseDeviceProperty(block, 'device.bus_path'),
     };
 }
 

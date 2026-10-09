@@ -26,6 +26,12 @@ export interface AudioDevice {
     /** Raw per-channel volumes (`PA_VOLUME_NORM` = 65536 = unity). Empty when
      *  pactl reported no volume line for the device. */
     volumes?: number[];
+    /** Owning card's udev `ID_SERIAL` (`device.serial`). WirePlumber builds
+     *  `name` from it, so for USB units with a serial it is per unit. */
+    serial?: string;
+    /** Owning card's udev `ID_PATH` (`device.bus_path`): the port or platform
+     *  device it hangs off. */
+    busPath?: string;
 }
 
 /**
