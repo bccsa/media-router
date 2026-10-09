@@ -215,8 +215,10 @@ export interface SubtitleOverlayRunnerConfig {
 export interface SubtitlePayRunnerConfig {
     /** appsink delivering `text/x-raw` cue text (one buffer per cue; empty = clear). */
     appsink: string;
-    /** appsrc (`meta/x-klv,parsed=true`) feeding the mux for this subtitle stream. */
+    /** appsrc (`video/mpegts`) the bridge pushes this stream's packed TS into. */
     appsrc: string;
+    /** TS PID of the KLV stream (subtitleStreamPid(i)); the PCR rides it too. */
+    pid: number;
     /** How long a cue stays up when the source never sends a clear (ms). */
     holdMs: number;
     /** Operator label for status events (page number, language). */
@@ -228,10 +230,14 @@ export const SUBTITLE_RUNNER_MODULE = 'subtitle_bridge';
 
 /**
  * The `PipelineDescription.runnerHooks` entry that installs the subtitle
- * bridge on a pipeline: producers pass `pay`, renderers pass `overlay`.
+ * bridge on a pipeline: producers pass `pay` (and `sourceDemux`, the tsdemux
+ * their cue text comes from, so cues start at content time), renderers pass
+ * `overlay`.
  */
 export function subtitleRunnerHook(config: {
     pay?: SubtitlePayRunnerConfig[];
+    /** tsdemux whose private pads the bridge retimes onto the bus stamps. */
+    sourceDemux?: string;
     overlay?: SubtitleOverlayRunnerConfig;
 }): RunnerHook {
     return { module: SUBTITLE_RUNNER_MODULE, config };

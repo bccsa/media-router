@@ -734,110 +734,6 @@ def test_runner_hooks():
         r.kill()
 
 
-# --------------------------------------------------------------------------- H: subtitle bridge hook (native form)
-def test_subtitle_bridge_hook():
-    so = os.path.join(_PLUGINS, "subtitle-core", "native", "subtitle-bridge", "libmrhook_subtitle_bridge.so")
-    if not os.path.exists(so):
-        print(f"SKIP H — {so} not built")
-        return
-    for el in ("tsdemux", "mpegtsmux", "textoverlay", "appsink", "appsrc"):
-        if Gst.ElementFactory.find(el) is None:
-            print(f"SKIP H — {el} unavailable")
-            return
-    sys.path.insert(0, os.path.join(_PLUGINS, "subtitle-core", "py"))
-    import subtitle_klv
-    from gi.repository import GLib
-    tmp = tempfile.mkdtemp(prefix="mrtest-")
-
-    # --- pay: cue text in → KLV cue out on the mux, reported on subtitle:cue
-    txt = os.path.join(tmp, "cue.txt")
-    with open(txt, "wb") as f:
-        f.write(b"Hello\r\nWorld  \n\n\x00")
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start",
-                # Every real pay pipeline is live; this file-fed rig is not, so
-                # its sinks are `async=false` (else the mux waits to preroll on a
-                # cue the appsink only delivers, as `new-sample`, once PLAYING).
-                "pipeline": f"filesrc location={txt} ! text/x-raw,format=utf8 ! appsink name=txtsink async=false "
-                            'appsrc name=klvsrc is-live=true format=time caps="meta/x-klv,parsed=true" ! mpegtsmux name=mux '
-                            "! fakesink name=out sync=false async=false",
-                "timeSyncContract": True,
-                "runnerHooks": [{"module": "subtitle_bridge",
-                                 "config": {"pay": [{"appsink": "txtsink", "appsrc": "klvsrc", "holdMs": 8000,
-                                                     "label": "p1"}]}}]})
-        check("H pay: hook installed", r.wait_log("runner hook 'subtitle_bridge' installed", timeout=5))
-        cue = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "subtitle:cue", timeout=8)
-        check("H pay: cue reported on subtitle:cue with cleaned text",
-              cue is not None and cue["payload"].get("text") == "Hello\nWorld" and cue["payload"].get("label") == "p1"
-              and cue["payload"].get("count") == 1)
-        r.send({"cmd": "track_throughput", "id": "tt", "element": "mux", "pad": "src"})
-        r.wait_event(ev_is("tracking", id="tt"))
-        time.sleep(2.6)   # one re-send tick (2 s) later the mux has emitted KLV
-        r.send({"cmd": "get_throughput", "id": "gt"})
-        tp = r.wait_event(ev_is("throughput", id="gt"))
-        check("H pay: KLV cue reached the mux (and was re-sent)",
-              tp is not None and tp["data"].get("mux", {}).get("total_bytes", 0) > 0)
-        check("H pay: no error", not r.has_event(ev_is("error")))
-        code = r.stop_and_wait()
-        check("H pay: exits 0", code == 0)
-    finally:
-        r.kill()
-
-    # --- overlay: KLV cues from a TS drive the textoverlay text from the video path
-    ts = os.path.join(tmp, "cues.ts")
-    pipe = Gst.parse_launch(
-        'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_384=(int)1,PCR_1=sink_384" '
-        f"! filesink location={ts} "
-        'appsrc name=a format=time caps="meta/x-klv,parsed=true" ! mux.sink_384')
-    src = pipe.get_by_name("a")
-    loop = GLib.MainLoop()
-    bus = pipe.get_bus()
-    bus.add_signal_watch()
-    bus.connect("message", lambda _b, msg: loop.quit() if msg.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR) else None)
-
-    def push():
-        for i in range(3):
-            buf = Gst.Buffer.new_wrapped(subtitle_klv.encode_cue(0, 3800, "Hi there"))
-            buf.pts = buf.dts = i * 500 * Gst.MSECOND
-            src.emit("push-buffer", buf)
-        src.emit("end-of-stream")
-        return False
-
-    GLib.idle_add(push)
-    GLib.timeout_add_seconds(10, lambda: (loop.quit(), False)[1])
-    pipe.set_state(Gst.State.PLAYING)
-    loop.run()
-    pipe.set_state(Gst.State.NULL)
-    check("H overlay: cue TS generated", os.path.getsize(ts) > 188 * 5)
-
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start",
-                "pipeline": "videotestsrc is-live=true ! video/x-raw,width=64,height=48,framerate=25/1 "
-                            '! textoverlay name=ov wait-text=false text="" ! fakesink sync=false '
-                            f"filesrc location={ts} ! tsdemux name=subdemux latency=0",
-                "timeSyncContract": True,
-                "runnerHooks": [{"module": "subtitle_bridge",
-                                 "config": {"overlay": {"demux": "subdemux", "overlay": "ov"}}}]})
-        check("H overlay: hook installed", r.wait_log("runner hook 'subtitle_bridge' installed", timeout=5))
-        check("H overlay: cue shown from the video path", r.wait_log("[subtitle_bridge] show 'Hi there'", timeout=8))
-        r.send({"cmd": "get_property", "id": "gp", "element": "ov", "property": "text"})
-        gp = r.wait_event(ev_is("property", id="gp"))
-        check("H overlay: textoverlay text is the cue", gp is not None and gp.get("value") == "Hi there")
-        check("H overlay: cue cleared after its span", r.wait_log("[subtitle_bridge] clear", timeout=8))
-        check("H overlay: no error", not r.has_event(ev_is("error")))
-        code = r.stop_and_wait()
-        check("H overlay: exits 0", code == 0)
-    finally:
-        r.kill()
-        for f in os.listdir(tmp):
-            os.unlink(os.path.join(tmp, f))
-        os.rmdir(tmp)
-
-
 # --------------------------------------------------------------------------- O: deinterlace guard hook (native form, #817)
 def make_gdp_frames(path, n=40, discont_at=10, reanchor_at=25):
     """Raw 64x48 25 fps frames from 10 s as GDP (which keeps PTS, duration and
@@ -1549,7 +1445,6 @@ test_presentation_leg()
 test_shed_refusals()
 test_reanchor_parity()
 test_runner_hooks()
-test_subtitle_bridge_hook()
 test_deinterlace_guard_hook()
 test_video_gates()
 test_live_input_branches()

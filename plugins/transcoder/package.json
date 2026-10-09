@@ -287,6 +287,17 @@
                     "title": "Preserve Source Timeline",
                     "description": "Keep source timestamps so muxers align video with audio and lip-sync survives restarts."
                 },
+                "subtitleDelayMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1800,
+                    "default": 0,
+                    "x-widget": "slider",
+                    "x-step": 50,
+                    "x-unit": "ms",
+                    "title": "Subtitle Sync Delay",
+                    "description": "Holds video so late subtitles land on their frame; adds the same delay to the output."
+                },
                 "subtitlePosition": {
                     "type": "string",
                     "enum": ["bottom", "top", "center"],

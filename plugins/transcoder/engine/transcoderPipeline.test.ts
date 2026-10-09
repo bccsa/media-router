@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
+import { SUBTITLE_HOLD_MAX_BYTES, SUBTITLE_HOLD_NAME } from './transcoderSubtitles.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -523,5 +524,35 @@ describe('subtitle burn-in', () => {
         expect(r.pipeline.replace(/textoverlay[^!]*! /, '').replace(/ unixfdsrc .*$/, '')).toBe(
             plain,
         );
+    });
+
+    describe('subtitle sync hold', () => {
+        const subtitles = { port: 5600, socketPath: '/tmp/mr-bus-5600-edge.sock', config: {} };
+        const HOLD_1400 =
+            `capsfilter caps="video/x-h264" ! queue name=${SUBTITLE_HOLD_NAME} max-size-buffers=0 ` +
+            `max-size-bytes=${SUBTITLE_HOLD_MAX_BYTES} ` +
+            'max-size-time=2400000000 min-threshold-time=1400000000 ! h264parse ! avdec_h264';
+
+        it('delay 0 leaves the subtitle pipeline unchanged', () => {
+            const plain = buildPipeline({ ...base, subtitles })!.pipeline;
+            expect(buildPipeline({ ...base, subtitles, subtitleDelayMs: 0 })!.pipeline).toBe(plain);
+            expect(plain).not.toContain(SUBTITLE_HOLD_NAME);
+        });
+
+        it('holds the compressed video ahead of h264parse: 1 s time headroom, 16 MB runaway cap', () => {
+            const r = buildPipeline({ ...base, subtitles, subtitleDelayMs: 1400 })!;
+            expect(r.pipeline).toContain(HOLD_1400);
+            expect(r.pipeline.split(`name=${SUBTITLE_HOLD_NAME} `)).toHaveLength(2);
+            // nothing else moved: removing the hold gives the undelayed string
+            const plain = buildPipeline({ ...base, subtitles })!.pipeline;
+            expect(
+                r.pipeline.replace(new RegExp(`queue name=${SUBTITLE_HOLD_NAME} [^!]*! `), ''),
+            ).toBe(plain);
+        });
+
+        it('no hold without a subtitle source', () => {
+            const r = buildPipeline({ ...base, subtitleDelayMs: 1400 })!;
+            expect(r.pipeline).toBe(buildPipeline(base)!.pipeline);
+        });
     });
 });

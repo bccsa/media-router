@@ -82,4 +82,13 @@ describe('transcoderPipeline golden strings (pre-refactor capture)', () => {
         expect(res!.pipeline).toBe(GOLDEN_VA_SCALER);
         expect(res!.sinkNames).toEqual(['busout_40100', 'busout_40101']);
     });
+
+    it('subtitle delay without a subtitle source: byte-identical (no hold queue)', () => {
+        const res = buildPipeline({
+            ...base,
+            hwScalers: { va: false, v4l2: true },
+            subtitleDelayMs: 1400,
+        });
+        expect(res!.pipeline).toBe(GOLDEN_V4L2_SCALER);
+    });
 });

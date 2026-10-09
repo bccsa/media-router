@@ -38,13 +38,11 @@ describe('teletext pipeline', () => {
             't. ! queue ! teletextdec name=ttx_0 page=888 subtitles-mode=true subtitles-template="%s\n" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_0',
         );
         expect(p).toContain('teletextdec name=ttx_1 page=692');
-        // one KLV appsrc + mux + bus egress per page, on the subtitle PID range
+        // one bridge-packed TS appsrc + bus egress per page; no mpegtsmux
         expect(p).toContain(
-            'appsrc name=subsrc_0 is-live=false format=time block=false caps="meta/x-klv,parsed=true" ! mux_0.sink_384',
+            'appsrc name=subsrc_0 is-live=false format=time block=false caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! capssetter',
         );
-        expect(p).toContain(
-            'mpegtsmux name=mux_1 alignment=7 prog-map="program_map,sink_385=(int)1,PCR_1=sink_385"',
-        );
+        expect(p).not.toContain('mpegtsmux');
         expect(p).toContain('tee name=busout_40300 allow-not-linked=true');
         expect(p).toContain('tee name=busout_40301 allow-not-linked=true');
         // the pipeline string must never re-stamp bus timing (time-sync contract)
@@ -55,8 +53,14 @@ describe('teletext pipeline', () => {
     it('describes each appsink→appsrc pair for the runner bridge', () => {
         const r = buildPipeline({ input: { port: 5004 }, outputs, cueHoldMs: 4500 })!;
         expect(r.subtitlePay).toEqual([
-            { appsink: 'ttxsink_0', appsrc: 'subsrc_0', holdMs: 4500, label: 'eng 888' },
-            { appsink: 'ttxsink_1', appsrc: 'subsrc_1', holdMs: 4500, label: 'Norsk' },
+            {
+                appsink: 'ttxsink_0',
+                appsrc: 'subsrc_0',
+                pid: 0x180,
+                holdMs: 4500,
+                label: 'eng 888',
+            },
+            { appsink: 'ttxsink_1', appsrc: 'subsrc_1', pid: 0x181, holdMs: 4500, label: 'Norsk' },
         ]);
         expect(r.sinkNames).toEqual(['busout_40300', 'busout_40301']);
     });

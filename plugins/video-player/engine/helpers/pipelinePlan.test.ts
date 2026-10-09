@@ -287,6 +287,9 @@ describe('planLivePipeline', () => {
                 config: { overlay: { demux: 'subdemux', overlay: 'subov' } },
             },
         ]);
+        // python-only hook by decision (ADR-0016 2026-10-09), not a temporary measure
+        expect(withSubs.runner).toBe('python');
+        expect(plain.runner).toBeUndefined();
         // everything else about the description is untouched
         expect(withSubs.tsProbe).toEqual(plain.tsProbe);
         expect(withSubs.alignBranchesToStamps).toEqual(plain.alignBranchesToStamps);

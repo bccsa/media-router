@@ -1936,7 +1936,9 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription {
     const endpoint = this.services?.mediaRouter?.assignBusChannel(instanceId);
     const busSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink sync=false';
 
-    return { pipeline: `... ! mpegtsmux latency=0 alignment=7 ! ${busSink}` };
+    // alignment=0: a sparse stream (a cue, a data PID) must not wait for 7 packets
+    // to fill a buffer; the egress coalesces per-packet buffers anyway (ADR-0011).
+    return { pipeline: `... ! mpegtsmux latency=0 alignment=0 ! ${busSink}` };
 }
 ```
 
@@ -2332,15 +2334,33 @@ learns nothing about subtitles and plugins only describe elements.
 
 **Producing a subtitle stream** (reference: `teletext-subtitles`): end each
 subtitle branch in an `appsink` that receives one `text/x-raw` buffer per cue
-(empty = clear), add `buildSubtitlePayTail({appsrcName, muxName, pid:
-subtitleStreamPid(i), port})` for its bus egress, and put the pairs on the
-description as `runnerHooks: [subtitleRunnerHook({ pay: [{appsink, appsrc,
-holdMs, label}] })]`. The
-bridge stamps each cue at the house time it arrives, pushes the KLV buffer,
-re-sends live cues every 2 s for late joiners, and reports each cue on the
-`subtitle:cue` plugin-event channel (`{label, text, startMs, count}`) for
-status. Give the output port `streamInfo: { media: 'subtitle', codec: 'webvtt',
+(empty = clear), add `buildSubtitlePayTail({appsrcName, port})` for its bus
+egress (a `video/mpegts` appsrc — the bridge packs each cue's TS itself, no
+mpegtsmux), and put the pairs on the description as `runnerHooks:
+[subtitleRunnerHook({ pay: [{appsink, appsrc, pid: subtitleStreamPid(i),
+holdMs, label}], sourceDemux })]` plus `houseTimelineEgress: true` and
+`runner: 'python'` (the bridge is a python-only hook by decision). The
+bridge starts each cue at its CONTENT time — the text buffer's PTS, which
+`sourceDemux` (the tsdemux the text comes from) has had retimed onto the bus
+chunk stamps; house-now when that PTS is missing or > 10 s off — and puts
+every send (first + a re-send every 2 s for late joiners) on PES PTS = cue
+start with a `0 --> hold` block, so the identity egress stamp IS the content
+time (ADR-0016 amendment 2026-10-09). It reports each cue on the
+`subtitle:cue` plugin-event channel (`{label, text, startMs, lateMs, count}`)
+for status. Give the output port `streamInfo: { media: 'subtitle', codec: 'webvtt',
 language }`.
+
+The `sourceDemux` retime walks every bus chunk of the source program, so that
+walk is native: `py/subtitle_native.py` loads `libgstmrpeshouse.so`
+(`mpegts-core/native/mrpeshouse`: the plugins tree first, then
+`$MR_LIBEXEC_DIR` or `/usr/libexec/media-router` + `/mpegts-core/`, once per
+process), splices `mrpeshouse` between the tsdemux and its upstream peer and
+fills the join index from its `pes-house(pid, pts90k, sha1, house_ns)`
+signal. Without the `.so` (or on a failed load/splice, or with
+`MR_SUBTITLE_NATIVE_RETIME=0`) the python chunk probe — the element's spec —
+runs instead. Journal: `[subtitle_bridge] retime source: native mrpeshouse`
+or `… python probe`; the element's `hits` / `misses` / `resyncs` properties
+count placed PES, unplaced PES and dropped mappings.
 
 **Rendering subtitles** (reference: `video-player`, `transcoder`): copy
 `SUBTITLE_INPUT_PORT` into your ports (a `subtitles-in` bus input), copy
@@ -2348,14 +2368,21 @@ language }`.
 `SUBTITLE_OVERLAY_LIVE_KEYS` in `liveUpdatableParams` (pin both with a test —
 see `video-player/engine/subtitleManifest.test.ts`). In `buildPipeline`, when
 `getModuleBusSource(instanceId, SUBTITLE_INPUT_PORT_ID)` returns a source,
-splice `buildSubtitleOverlayElement(name, config)` into your video path AFTER
-`videoconvert`, append `buildSubtitleInput({port, socketPath, demuxName})` as
-a separate fragment, and add `runnerHooks: [subtitleRunnerHook({ overlay:
-{ demux, overlay } })]` to the description. Live look changes: `subtitleOverlayLiveUpdates(changes, config)`
+take `subtitleRenderPlan(source, config)`: splice its `overlayElement` into
+your video path AFTER `videoconvert`, append its `inputFragment` as a separate
+fragment, and put its `runnerHooks` and `runner` (`'python'` — the bridge is
+python-only by decision, ADR-0016) on the description. Live look
+changes: `subtitleOverlayLiveUpdates(changes, config)`
 → `setElementProperty(overlayName, property, value)`. Do NOT link the
 textoverlay text pad — the bridge sets the element's `text` property from a
 probe on its video sink pad, frame-accurate against the stamped timeline (the
-text pad's window semantics flash or block; see the ADR).
+text pad's window semantics flash or block; see the ADR). A cue anchors on the
+house time the bus chunk stamps give its PES (`subtitle_stamp_model.StampModel`,
+read on the demux sink pad), not on tsdemux's PTS, which wanders on a sparse
+KLV-only TS; journal lines `[subtitle_bridge] show '…' cueLate=… cueLag=…
+frameLag=… t0src=chunk|pts|now`. `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
+environment adds an `egress <label> start= src=+ms tee=+ms` line per produced
+cue (wall-clock probes on the pay appsrc and the bus tee; off by default).
 
 Always look up your VIDEO input with an explicit port id
 (`getModuleBusSource(instanceId, 'mpegts-in')`) once you have two bus inputs —
@@ -2374,7 +2401,8 @@ and the module's plugin-event channel, the two things the hook cannot own. A
 hook that fails to import or install is reported as a warning and skipped;
 it must never take the media pipeline down. Module names must be unique
 across plugins (one flat python namespace). References: `subtitle-core/py/
-subtitle_bridge.py` (+ its GStreamer-free unit test beside it) and
+subtitle_bridge.py` (split into `subtitle_pay` / `subtitle_overlay` over pure
+modules, with five GStreamer-free suites and a real-stamper test beside it) and
 `mpegts-muxer/py/mux_routing.py` — a hook that owns dynamic-pad linking end
 to end (classify → parse → request pad → PCR pin → sparse keepalive), the
 shape to copy when a plugin's demuxer needs more than the positional rules.
@@ -2390,7 +2418,9 @@ events and log lines. Built by the plugin's own `Makefile` (see
 python module remains the reference and keeps its suite; the native one is
 pinned through the runner protocol suite. A pipeline whose hooks all have a
 native form is eligible for the native runner; one that names a python-only
-hook is hosted on the python runner, automatically.
+hook is hosted on the python runner, automatically. `subtitle_bridge` is
+python-only by design (ADR-0016 2026-10-09): its descriptions pin
+`runner: 'python'` to say so explicitly.
 
 ## Available Services (`this.services`)
 

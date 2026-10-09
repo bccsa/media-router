@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-subtitle-core",
     "version": "2.0.0",
     "private": true,
-    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): subtitle domain base code. The KLV-wrapped WebVTT cue carrier every subtitle producer/consumer speaks (TS + python twins, byte-pinned against each other), the shared overlay config schema and textoverlay property mapping the video-player and transcoder both render with, and the pipeline fragments for a subtitle bus input.",
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): subtitle domain base code. The KLV-wrapped WebVTT cue carrier every subtitle producer/consumer speaks (cue codec twins engine/subtitleCue.ts and py/subtitle_klv.py, byte-pinned against each other; the runner hook py/subtitle_bridge.py is python-only), the shared overlay config schema and textoverlay property mapping the video-player and transcoder both render with, and the pipeline fragments for a subtitle bus input.",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
@@ -12,12 +12,13 @@
         }
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-mpegts-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "cd py && python3 subtitle_klv_test.py && python3 subtitle_bridge_test.py"
+        "test:py": "cd py && python3 subtitle_klv_test.py && python3 subtitle_pack_test.py && python3 subtitle_cues_test.py && python3 subtitle_ts_test.py && python3 subtitle_bridge_test.py && python3 subtitle_native_test.py && python3 subtitle_peshouse_gst_test.py"
     }
 }
