@@ -113,7 +113,12 @@ describe('EnginePatchRouter', () => {
             expect(localServer.configChanged).toHaveBeenCalledWith([mute]);
             // The manager: the ops, then the whole group as it stands.
             expect(localChanges.config).toHaveBeenCalledWith([mute, unmute, mute, unmute]);
-            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mic-a', expect.objectContaining({ audioEnabled: false }));
+            // The module hears the mute, and the value it replaced.
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith(
+                'mic-a',
+                expect.objectContaining({ audioEnabled: false }),
+                { audioEnabled: true },
+            );
         });
 
         it('applies them to the manager’s writes too, and reports the group back', () => {
@@ -157,12 +162,16 @@ describe('EnginePatchRouter', () => {
     });
 
     describe('side effects', () => {
-        it('applies live config update for settings change', () => {
+        it('applies live config update for settings change, with the value it replaces', () => {
             const { router, moduleManager } = createMocks();
             router.onPatch('manager', 'manager', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
-            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', { volume: 80 });
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith(
+                'mod-1',
+                { volume: 80 },
+                { volume: 100 },
+            );
         });
 
         it('triggers connection creation for connection add', async () => {
@@ -471,10 +480,11 @@ describe('EnginePatchRouter', () => {
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
                 { op: 'replace', path: '/modules/mod-1/settings/mute', value: true },
             ]);
-            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', {
-                volume: 80,
-                mute: true,
-            });
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith(
+                'mod-1',
+                { volume: 80, mute: true },
+                { volume: 100, mute: undefined },
+            );
         });
 
         it('handles add op for settings', () => {
@@ -482,9 +492,11 @@ describe('EnginePatchRouter', () => {
             router.onPatch('manager', 'manager', [
                 { op: 'add', path: '/modules/mod-1/settings/newProp', value: 'hello' },
             ]);
-            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', {
-                newProp: 'hello',
-            });
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith(
+                'mod-1',
+                { newProp: 'hello' },
+                { newProp: undefined },
+            );
         });
     });
 
