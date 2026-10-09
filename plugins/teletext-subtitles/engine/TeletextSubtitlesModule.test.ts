@@ -76,6 +76,9 @@ describe('buildPipeline', () => {
         expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
         expect(desc.pipeline).not.toContain('tsdemux');
         expect(desc.runnerHooks).toBeUndefined();
+        expect(desc.houseTimelineEgress).toBeUndefined();
+        expect(desc.runner).toBeUndefined();
+        expect(desc.alignBranchesToStamps).toBeUndefined();
         expect((module as any).setHealth).toHaveBeenLastCalledWith(
             'warning',
             expect.stringContaining('No pages selected'),
@@ -112,9 +115,30 @@ describe('buildPipeline', () => {
         expect(desc.runnerHooks).toHaveLength(1);
         expect(desc.runnerHooks![0].module).toBe('subtitle_bridge');
         expect((desc.runnerHooks![0].config as any).pay).toEqual([
-            { appsink: 'ttxsink_0', appsrc: 'subsrc_0', holdMs: 5000, label: 'eng 888' },
-            { appsink: 'ttxsink_1', appsrc: 'subsrc_1', holdMs: 5000, label: 'nor 692' },
+            {
+                appsink: 'ttxsink_0',
+                appsrc: 'subsrc_0',
+                pid: 0x180,
+                holdMs: 5000,
+                label: 'eng 888',
+            },
+            {
+                appsink: 'ttxsink_1',
+                appsrc: 'subsrc_1',
+                pid: 0x181,
+                holdMs: 5000,
+                label: 'nor 692',
+            },
         ]);
+        // Cues start at content time: the bridge retimes the teletext pad off the
+        // bus stamps, and the KLV egress stamps by identity (PES - 1 h).
+        expect((desc.runnerHooks![0].config as any).sourceDemux).toBe('demux');
+        expect(desc.pipeline).toContain('tsdemux name=demux ');
+        expect(desc.houseTimelineEgress).toBe(true);
+        // python-only hook by decision (ADR-0016 2026-10-09), not a temporary measure
+        expect(desc.runner).toBe('python');
+        // branchAlign retimes only audio_/video_ pads — nothing here to align.
+        expect(desc.alignBranchesToStamps).toBeUndefined();
         expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
         expect((module as any).setStatusData).toHaveBeenCalledWith('input', { channel: 5004 });
     });
@@ -149,6 +173,23 @@ describe('cue status', () => {
             pages: 'eng 888 (2)',
             total: 2,
             last: 'eng 888: Hello / World',
+        });
+    });
+
+    it('shows how late the last cue was made against its content time', () => {
+        const { module } = makeModule();
+        module.buildPipeline({ pages: [{ page: 888, language: 'eng' }] });
+        (module as any).onPluginEvent('subtitle:cue', {
+            label: 'eng 888',
+            text: 'Hi',
+            count: 1,
+            lateMs: 412,
+        });
+        expect((module as any).setStatusData).toHaveBeenLastCalledWith('cues', {
+            pages: 'eng 888 (1)',
+            total: 1,
+            last: 'eng 888: Hi',
+            lateMs: 412,
         });
     });
 

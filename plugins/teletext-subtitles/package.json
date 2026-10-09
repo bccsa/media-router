@@ -89,7 +89,8 @@
                 "fields": [
                     { "key": "pages", "type": "string", "label": "Pages" },
                     { "key": "total", "type": "number", "label": "Cues decoded" },
-                    { "key": "last", "type": "string", "label": "Last cue" }
+                    { "key": "last", "type": "string", "label": "Last cue" },
+                    { "key": "lateMs", "type": "number", "label": "Last cue late", "unit": "ms" }
                 ]
             }
         ],

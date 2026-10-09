@@ -4,11 +4,12 @@
  *   bus TS ─ tee in_t ┬ tsdemux ─ application/x-teletext ─ tee ┬ teletextdec page=888 ─ appsink ttxsink_0
  *                     │                                        └ teletextdec page=692 ─ appsink ttxsink_1
  *                     └ leaky queue ─ appsink tsprobe   (engine tsProbe → `tsprobe:pmt`)
- *   appsrc subsrc_0 (KLV) ─ mpegtsmux ─ bus out 0
- *   appsrc subsrc_1 (KLV) ─ mpegtsmux ─ bus out 1
+ *   appsrc subsrc_0 (cue TS, packed by the bridge) ─ bus out 0
+ *   appsrc subsrc_1 (cue TS, packed by the bridge) ─ bus out 1
  *
  * subtitle-core's runner hook (`pay` entries) joins each appsink to its
- * appsrc: page text in, KLV-wrapped WebVTT cue out, stamped with house time.
+ * appsrc: page text in, KLV-wrapped WebVTT cue out, stamped with the page's
+ * content time (the hook retimes the teletext pad of `DEMUX_NAME` off the bus stamps).
  *
  * `teletextdec` decodes ONE page per instance, so the teletext ES is tee'd to
  * one decoder per configured page — decode cost is text, negligible. The
@@ -88,14 +89,7 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
         .join(' ');
 
     const tails = input.outputs
-        .map((o, i) =>
-            buildSubtitlePayTail({
-                appsrcName: appsrcName(i),
-                muxName: `mux_${i}`,
-                pid: subtitleStreamPid(i),
-                port: o.port,
-            }),
-        )
+        .map((o, i) => buildSubtitlePayTail({ appsrcName: appsrcName(i), port: o.port }))
         .join(' ');
 
     const pipeline =
@@ -108,6 +102,7 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
         subtitlePay: input.outputs.map((o, i) => ({
             appsink: appsinkName(i),
             appsrc: appsrcName(i),
+            pid: subtitleStreamPid(i),
             holdMs: input.cueHoldMs,
             label: pageLabel(o.page),
         })),

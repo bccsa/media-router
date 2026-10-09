@@ -147,6 +147,39 @@ describe('buildPipeline', () => {
         expect(desc.alignBranchesToStamps).toEqual({ demuxes: ['demux'], transformProducer: true });
     });
 
+    it('clamps subtitleDelayMs to 0–1800 ms (NaN → 0) and passes it to the hold', () => {
+        const { module, getModuleBusSource } = makeModule();
+        getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
+            portId === 'subtitles-in'
+                ? { port: 5600, socketPath: '/tmp/mr-bus-5600-sub.sock' }
+                : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+        );
+        const hold = (subtitleDelayMs: unknown) =>
+            module
+                .buildPipeline({
+                    renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+                    subtitleDelayMs,
+                })!
+                .pipeline.match(/min-threshold-time=(\d+)/)?.[1];
+        expect(hold(1400)).toBe('1400000000');
+        expect(hold(5000)).toBe('1800000000');
+        expect(hold(-10)).toBeUndefined();
+        expect(hold('abc')).toBeUndefined();
+        expect(hold(undefined)).toBeUndefined();
+    });
+
+    it('pins the python runner only while a subtitle source is wired (python-only hook, ADR-0016 2026-10-09)', () => {
+        const { module, getModuleBusSource } = makeModule();
+        const config = { renditions: [{ width: 1280, height: 720, bitrate: 2500 }] };
+        expect(module.buildPipeline(config)!.runner).toBeUndefined();
+        getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
+            portId === 'subtitles-in'
+                ? { port: 5600, socketPath: '/tmp/mr-bus-5600-sub.sock' }
+                : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+        );
+        expect(module.buildPipeline(config)!.runner).toBe('python');
+    });
+
     it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({

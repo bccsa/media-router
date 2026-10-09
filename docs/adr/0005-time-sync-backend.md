@@ -1388,3 +1388,27 @@ re-anchor.
   content time, so a leg whose data reaches the muxer more than 2.4 s after its
   stamps (a transcoded leg: its transit plus its own input's lag) is muxed late.
   The latency is unchanged.
+
+- **Amendment (2026-10-09): the transcoder's subtitle sync hold.** On the OCC feed
+  the video PES leads the PCR by 0.9–1.5 s (median 1.1 s), the DVB teletext PES by
+  52 ms, so a frame's cue reaches the gate ~1.05 s after the frame; the burn-in
+  `textoverlay` had long passed it. `subtitleDelayMs` (0–1800 ms, default 0, rebuild
+  key) inserts a non-leaky `queue name=subhold` on the compressed video between the
+  `video/x-h264` capsfilter and `h264parse` (`min-threshold-time` = the delay,
+  `max-size-time` 1 s above it, `max-size-bytes` 16 MB as a runaway cap), only when
+  a subtitle source is wired; the retime
+  probes on the input demux pads are upstream of it and unchanged. The egress still
+  stamps by identity, so the hold delays this transcoder's output by
+  `subtitleDelayMs` against its stamps: downstream legs see that much more arrival
+  lag. Per the **Limit** above, the mpegts-muxer muxes an input in order only while
+  it arrives within 2.4 s of its stamps, so transit + hold should stay under that.
+  The 1800 ms cap is a budget, not a guarantee: 2.4 s − the measured transit to the
+  gate's muxer (~0.1–0.5 s) − ~0.1 s margin; the gate's 1100–1400 ms setting leaves
+  about 0.5–1.2 s, and a slower hop can still overrun it. Remote consumers absorb
+  the lag through the route-wide re-anchor.
+  The queue's time level is computed from the buffer stamps, which the retime
+  rewrites, so a re-anchor step on the demux pads moves the level by the step: a
+  forward step reads as "full" and releases a burst (about the step's worth),
+  a backward step reads as "empty" and holds that much longer before it drains. The
+  hold re-settles at its threshold within one delay; the byte cap (≈ 12 s at
+  10 Mbit/s) bounds a level the stamps mis-state from growing without limit.

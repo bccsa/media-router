@@ -499,6 +499,9 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-mpegts-core':
+        specifier: workspace:*
+        version: link:../mpegts-core
 
   plugins/teletext-subtitles:
     dependencies:

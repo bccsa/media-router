@@ -34,6 +34,9 @@ export interface SubtitleRenderPlan {
     inputFragment: string;
     /** Put on the PipelineDescription verbatim. */
     runnerHooks: RunnerHook[];
+    /** Put on the PipelineDescription verbatim: subtitle_bridge is a python-only hook by
+     *  decision (ADR-0016 2026-10-09), not a temporary measure. */
+    runner: 'python';
 }
 
 /** Everything a renderer adds to its description for a wired subtitle source. */
@@ -53,6 +56,7 @@ export function subtitleRenderPlan(
                 overlay: { demux: SUBTITLE_DEMUX_NAME, overlay: SUBTITLE_OVERLAY_NAME },
             }),
         ],
+        runner: 'python',
     };
 }
 

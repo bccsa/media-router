@@ -10,6 +10,7 @@ import {
     subtitleRunnerHook,
 } from './subtitleOverlay.js';
 import { buildSubtitlePayTail } from './subtitlePay.js';
+import { subtitleRenderPlan } from './subtitleRender.js';
 
 describe('subtitle overlay schema', () => {
     it('every key is live-updatable and has a default', () => {
@@ -98,21 +99,18 @@ describe('pipeline fragments', () => {
         expect(s).toMatch(/! tsdemux name=subdemux latency=0$/);
     });
 
-    it('pay tail muxes the KLV appsrc as the sole, PCR-carrying stream', () => {
-        expect(
-            buildSubtitlePayTail({
-                appsrcName: 'subsrc_0',
-                muxName: 'mux_0',
-                pid: 0x180,
-                port: 40200,
-            }),
-        ).toBe(
-            'appsrc name=subsrc_0 is-live=false format=time block=false caps="meta/x-klv,parsed=true" ! mux_0.sink_384 ' +
-                'mpegtsmux name=mux_0 alignment=7 prog-map="program_map,sink_384=(int)1,PCR_1=sink_384" ! ' +
+    it('pay tail: the bridge-packed TS appsrc straight onto the bus, no mux', () => {
+        expect(buildSubtitlePayTail({ appsrcName: 'subsrc_0', port: 40200 })).toBe(
+            'appsrc name=subsrc_0 is-live=false format=time block=false ' +
+                'caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                 'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'tee name=busout_40200 allow-not-linked=true',
         );
+    });
+
+    it('render plan pins the python runner (python-only hook by decision, ADR-0016 2026-10-09)', () => {
+        expect(subtitleRenderPlan({ port: 5600 }, {}).runner).toBe('python');
     });
 
     it('declares the shared subtitle input port', () => {

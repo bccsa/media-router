@@ -224,7 +224,9 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
                   keyframeAligned: true,
               })
             : undefined;
-    const subs = input.subtitles ? subtitleRenderPlan(input.subtitles, input.subtitles.config) : undefined;
+    const subs = input.subtitles
+        ? subtitleRenderPlan(input.subtitles, input.subtitles.config)
+        : undefined;
     return {
         pipeline:
             buildLivePipeline(
@@ -286,6 +288,6 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // re-rolled on every restart (−85 ms measured on .103's video edge).
         // `applyTimeSync` drops it when the contract is off.
         alignBranchesToStamps: { demuxes: [VP_DEMUX_NAME] },
-        ...(subs ? { runnerHooks: subs.runnerHooks } : {}),
+        ...(subs ? { runnerHooks: subs.runnerHooks, runner: subs.runner } : {}),
     };
 }

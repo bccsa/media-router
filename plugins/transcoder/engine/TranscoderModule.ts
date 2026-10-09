@@ -226,6 +226,11 @@ export class TranscoderModule extends GstPluginBase {
         const framerate = (config.framerate as number) ?? 50;
         const gopFrames = (config.gopFrames as number) ?? 50;
         const bufferMs = (config.bufferMs as number) ?? 200;
+        // Rebuild key, not live: the hold is a queue in the pipeline string.
+        const rawDelay = Math.round(Number(config.subtitleDelayMs));
+        const subtitleDelayMs = Number.isFinite(rawDelay)
+            ? Math.min(1800, Math.max(0, rawDelay))
+            : 0;
         const decodeThreads = config.cpuDecodeThreading === 'single' ? 'single' : 'multi';
         // Validated against the known set like the encoder enums above, so a
         // malformed config can't splice into the gst-launch string.
@@ -247,6 +252,7 @@ export class TranscoderModule extends GstPluginBase {
             subtitles: subtitleSource
                 ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }
                 : undefined,
+            subtitleDelayMs,
         });
         if (!result) return null;
 
@@ -276,6 +282,7 @@ export class TranscoderModule extends GstPluginBase {
             pipeline: result.pipeline,
             restartOnError: true,
             ...(result.runnerHooks ? { runnerHooks: result.runnerHooks } : {}),
+            ...(result.runner ? { runner: result.runner } : {}),
             // Restart-proof lipsync (default on): output PES PTS/PCR carry the
             // SOURCE timeline instead of a fresh per-incarnation rebase, so
             // downstream muxers align this video with its sibling audio by real

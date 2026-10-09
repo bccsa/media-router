@@ -7,7 +7,7 @@ import {
     sameAnnounced,
     type AnnouncedPage,
 } from './teletextDescriptor.js';
-import { PROBE_SINK_NAME, buildPipeline } from './teletextPipeline.js';
+import { DEMUX_NAME, PROBE_SINK_NAME, buildPipeline } from './teletextPipeline.js';
 import {
     INPUT_PORT_ID,
     MAX_PAGES,
@@ -31,6 +31,8 @@ interface CueEvent {
     label?: string;
     text?: string;
     count?: number;
+    /** House-now minus the cue's content-time start (ms). */
+    lateMs?: number;
 }
 
 interface PmtEvent {
@@ -52,6 +54,8 @@ export class TeletextSubtitlesModule extends GstPluginBase {
     private pages: TeletextPage[] = [];
     private cueCounts = new Map<string, number>();
     private lastCue = '';
+    /** House-now minus the last cue's content time (bridge `lateMs`). */
+    private lastLateMs: number | null = null;
     private noCueTimer: ReturnType<typeof setTimeout> | null = null;
     private noCueWarned = false;
     private sawPmt = false;
@@ -102,6 +106,7 @@ export class TeletextSubtitlesModule extends GstPluginBase {
         this.overflow = wanted.length - pages.length;
         this.cueCounts = new Map(pages.map((p) => [pageLabel(p), 0]));
         this.lastCue = '';
+        this.lastLateMs = null;
         this.noCueWarned = false;
         this.sawPmt = false;
         this.setStatusData('input', { channel: upstream.port });
@@ -114,7 +119,18 @@ export class TeletextSubtitlesModule extends GstPluginBase {
             restartOnError: true,
             tsProbe: { appsink: PROBE_SINK_NAME },
             ...(result.subtitlePay.length
-                ? { runnerHooks: [subtitleRunnerHook({ pay: result.subtitlePay })] }
+                ? {
+                      runnerHooks: [
+                          subtitleRunnerHook({ pay: result.subtitlePay, sourceDemux: DEMUX_NAME }),
+                      ],
+                      // Cue PES carry content time + 1 h; identity egress keeps it. No
+                      // alignBranchesToStamps (A/V pads only): the bridge retimes the
+                      // teletext pad itself (ADR-0016 2026-10-09).
+                      houseTimelineEgress: true,
+                      // subtitle_bridge is a python-only hook by decision (ADR-0016
+                      // 2026-10-09), not a temporary measure.
+                      runner: 'python' as const,
+                  }
                 : {}),
         };
     }
@@ -151,6 +167,8 @@ export class TeletextSubtitlesModule extends GstPluginBase {
         if (!ev.label) return;
         this.cueCounts.set(ev.label, (this.cueCounts.get(ev.label) ?? 0) + 1);
         if (ev.text) this.lastCue = `${ev.label}: ${ev.text.replace(/\n/g, ' / ')}`;
+        if (typeof ev.lateMs === 'number' && Number.isFinite(ev.lateMs))
+            this.lastLateMs = ev.lateMs;
         if (this.noCueWarned) {
             this.noCueWarned = false;
             this.setHealth('ok');
@@ -190,6 +208,7 @@ export class TeletextSubtitlesModule extends GstPluginBase {
             pages: (listed || '—') + capped,
             total,
             last: this.lastCue || '—',
+            ...(this.lastLateMs !== null ? { lateMs: this.lastLateMs } : {}),
         });
     }
 

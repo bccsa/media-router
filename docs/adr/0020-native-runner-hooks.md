@@ -54,14 +54,13 @@ established — plugin-owned, config-driven, engine ignorant of the domain
 
 ## Consequences
 
-- `plugins/mpegts-muxer/native/mux-routing/` (`mux_routing`),
-  `plugins/subtitle-core/native/subtitle-bridge/` (`subtitle_bridge`, with a
-  header-only twin of the KLV cue codec) and
+- `plugins/mpegts-muxer/native/mux-routing/` (`mux_routing`) and
   `plugins/transcoder/native/deinterlace-guard/` (`deinterlace_guard`, #817)
-  are the three native hooks; the
-  mpegts-muxer and teletext-subtitles moved to the native runner with them,
-  transcoder and video-player with ADR-0019's Stage 3 (the video gates,
+  are the native hooks; the mpegts-muxer moved to the native runner with
+  them, transcoder and video-player with ADR-0019's Stage 3 (the video gates,
   same day).
+- 2026-10-09: `subtitle_bridge` is the first python-only hook by design; its
+  C++ twin was deleted and its descriptions pin `runner: 'python'` (ADR-0016).
 - A new hook ships both forms or accepts staying on python; the README's
   hook section says so.
 

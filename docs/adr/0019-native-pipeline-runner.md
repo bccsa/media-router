@@ -86,7 +86,8 @@ log). The plugin ships in every image and is resolved the same way
   installed through the same plain-make contract and discovery as plugin
   native code.
 - Runner hooks have a native form since ADR-0020 (mux_routing,
-  subtitle_bridge); a pipeline naming a hook without one stays on python.
+  deinterlace_guard); a pipeline naming a hook without one (subtitle_bridge,
+  python-only by design) stays on python.
   Since Stage 3 every module's description is eligible unless it carries one
   of the refused fields above; the python runner remains the reference
   implementation and the rollback, not a feature tier.
