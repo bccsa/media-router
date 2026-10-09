@@ -34,12 +34,18 @@
  * `create` drains whatever is already released (zero-timeout reads, up to
  * `read-batch`) into ONE 188-aligned buffer. No added latency: it never waits
  * for more than the first packet.
+ *
+ * RESOLVE: every link host (caller and listener) is resolved here before peer
+ * creation — librist's rist_create_socket returns silently on an unresolvable
+ * host and never retries; listeners too, since librist's teardown then closes
+ * fd 0. The element error lets the runner relaunch until DNS is up; every link
+ * must resolve or the element fails as a whole.
  */
 #include "mrrist_common.h"
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRRIST_VERSION "1.0.0"
+#define MRRIST_VERSION "1.1.0"
 
 /* ------------------------------------------------------------------------- */
 

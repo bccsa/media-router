@@ -17,6 +17,9 @@ A paced fakesrc feeds `mrristsink` (caller) over 127.0.0.1 to `mrristsrc`
       with the sender's cname (lifted from librist's log): the RIST input's
       per-peer row label.
   --  Tearing both pipelines down does not hang (src `unlock` works).
+  --  A caller or listener whose host does not resolve posts an element ERROR
+      naming the host (librist alone would go PLAYING silently, never
+      re-resolving); IP-literal callers and listeners start without error.
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable or the plugin has
 not been built (`make native`).
@@ -24,8 +27,13 @@ not been built (`make native`).
 Run:  python3 gst_mrrist_element_test.py
 """
 import os
+import socket
 import sys
 import time
+
+# Bound glibc's resolver (read at first lookup) so an unreachable nameserver
+# cannot stall the unresolvable-host case below.
+os.environ.setdefault("RES_OPTIONS", "timeout:1 attempts:1")
 
 try:
     import gi
@@ -171,4 +179,60 @@ if TX_CNAME not in stats["peer_names"]:
     fail(f"receiver posted no mrrist-peer message naming the sender '{TX_CNAME}' (got {stats['peer_names']})")
 if teardown > 3.0:
     fail(f"teardown took {teardown:.1f} s — src unlock not honoured")
+
+
+def free_udp_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def start_and_watch(desc, seconds):
+    """PLAYING, then the first bus ERROR within `seconds` (None if none)."""
+    p = Gst.parse_launch(desc)
+    bus = p.get_bus()
+    t0 = time.time()
+    p.set_state(Gst.State.PLAYING)
+    msg = bus.timed_pop_filtered(int(seconds * Gst.SECOND), Gst.MessageType.ERROR)
+    took = time.time() - t0
+    p.set_state(Gst.State.NULL)
+    if msg is None:
+        return None, took
+    err, dbg = msg.parse_error()
+    return f"{err.message} ({dbg})", took
+
+
+# .invalid never resolves (RFC 6761), but glibc still asks the configured
+# nameservers: it fails fast only when they answer NXDOMAIN. Offline it waits
+# out RES_OPTIONS above, so the timing is reported, never asserted.
+BAD_HOST = "nonexistent.invalid"
+t0 = time.time()
+try:
+    socket.getaddrinfo(BAD_HOST, None)
+except OSError:
+    pass
+probe = time.time() - t0
+for el, desc in (
+        ("mrristsrc caller", f'mrristsrc urls="rist://{BAD_HOST}:5004" ! fakesink'),
+        ("mrristsink caller", f'fakesrc is-live=true ! mrristsink urls="rist://{BAD_HOST}:5004"'),
+        ("mrristsrc listener", f'mrristsrc urls="rist://@{BAD_HOST}:{free_udp_port()}" ! fakesink'),
+        ("mrristsink listener",
+         f'fakesrc is-live=true ! mrristsink urls="rist://@{BAD_HOST}:{free_udp_port()}"')):
+    err, took = start_and_watch(desc, 15.0)
+    if err is None:
+        fail(f"{el}: unresolvable host gave no ERROR within 15 s")
+    if BAD_HOST not in err:
+        fail(f"{el}: ERROR does not name the host: {err}")
+    note = f" (slow resolver: probe lookup took {probe:.1f} s)" if took > 5.0 or probe > 3.0 else ""
+    print(f"{el} unresolvable -> ERROR in {took * 1000:.0f} ms{note}: {err}")
+
+for el, desc in (
+        ("mrristsrc caller IP", 'mrristsrc urls="rist://127.0.0.1:5004" ! fakesink'),
+        ("mrristsrc listener", f'mrristsrc urls="rist://@127.0.0.1:{free_udp_port()}" ! fakesink'),
+        ("mrristsink caller IP", 'fakesrc is-live=true ! mrristsink urls="rist://127.0.0.1:5004"'),
+        ("mrristsink listener", f'fakesrc is-live=true ! mrristsink urls="rist://@127.0.0.1:{free_udp_port()}"')):
+    err, _ = start_and_watch(desc, 1.0)
+    if err is not None:
+        fail(f"{el}: unexpected ERROR: {err}")
+    print(f"{el}: started, no ERROR")
 print("OK gst_mrrist_element_test.py")

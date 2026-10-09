@@ -132,6 +132,9 @@ export class RistInputModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            // An unresolvable caller host is a durable, looping element error
+            // (mrrist); retry every 5-10 s like SRT until DNS is up.
+            restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
             busReports: [
                 { element: RIST_SRC, structure: RIST_STATS_STRUCTURE },
                 { element: RIST_SRC, structure: RIST_PEER_STRUCTURE },

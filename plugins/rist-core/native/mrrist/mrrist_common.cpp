@@ -1,6 +1,7 @@
 /* mrrist — shared librist context: URL/peer setup, log + stats callbacks,
  * common properties. Design notes live in gstmrrist.cpp. */
 #include "mrrist_common.h"
+#include <librist/udpsocket.h>
 #include <dlfcn.h>
 #include <unistd.h>
 #include <string>
@@ -179,6 +180,24 @@ gboolean mrrist_common_open(GstElement *el, MrRistCommon *c, gboolean sender) {
         struct rist_peer_config *cfg = nullptr;
         if (rist_parse_address2(full.c_str(), &cfg) < 0 || !cfg) {
             GST_ELEMENT_ERROR(el, RESOURCE, SETTINGS, ("rist_parse_address2 failed for %s", u.c_str()), (nullptr));
+            return FALSE;
+        }
+        /* An unresolvable host works for neither role; librist swallows it, never
+         * re-resolves, and a listener's teardown then closes fd 0 (the runner's command
+         * pipe). Same resolver as librist: a black-holed resolver blocks here as there. */
+        std::vector<char> ubuf(cfg->address, cfg->address + strlen(cfg->address) + 1);
+        char host[256];
+        uint16_t port = 0;
+        int local = 0;  /* unused, but udpsocket_parse_url requires it (NULL crashes) */
+        if (udpsocket_parse_url(ubuf.data(), host, sizeof host, &port, &local) != 0) {
+            rist_peer_config_free2(&cfg);
+            GST_ELEMENT_ERROR(el, RESOURCE, SETTINGS, ("cannot parse address %s", u.c_str()), (nullptr));
+            return FALSE;
+        }
+        struct sockaddr_storage ss;
+        if (udpsocket_resolve_host(host, port, (struct sockaddr *)&ss) < 0) {
+            rist_peer_config_free2(&cfg);
+            GST_ELEMENT_ERROR(el, RESOURCE, NOT_FOUND, ("cannot resolve host %s", host), (nullptr));
             return FALSE;
         }
         struct rist_peer *peer = nullptr;
