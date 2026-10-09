@@ -45,3 +45,8 @@ stats JSON as `mrrist-stats` bus messages that the module subscribes to via
   delivers a stats report on every loop iteration (per packet). The element
   also registers a no-op legacy `rist_sender_stats_callback_set()` (via
   `dlsym`, older headers lack it) purely to set that interval.
+- librist quirk handled in the element: `rist_create_socket()` returns
+  silently on a host that does not resolve and never retries, so the element
+  resolves every link host (caller and listener) first (librist's own
+  resolver) and posts an error the runner relaunches on. Listeners are
+  included because librist's teardown of such a peer closes fd 0.
