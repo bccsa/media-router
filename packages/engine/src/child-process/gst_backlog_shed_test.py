@@ -695,6 +695,55 @@ for aligned in (True, False):
     check(f"{arm} ladder 7–8: the implausible readings are still reported, once per episode",
           sum(1 for p in o["all_backlog"] if p.get("outcome") == "implausible") == 2)
 
+# --- re-anchor: an input gap ends a hold; an overshooting rebase is undone -----
+# Field 2026-10-09 (a 302M leg): a burst armed the past-stamped rebase hold, the
+# outage after it "paid" the hold, and the stale first buffer after the outage
+# was rebased on — the leg then sat ~2 min in the future for the whole cooldown.
+def gap_and_undo(keyframe_aligned):
+    events = collect_plugin_events()
+    pipe, src, arrivals = build(keyframe_aligned=keyframe_aligned, sync=True,
+                                **dict(REANCHOR_CFG, rebaseCooldownMs=5_000))
+    o = {"pushed": 0}
+
+    def rebases():
+        return [p for ch, p in events if ch == "playout_reanchor" and p.get("kind") == "rebase"]
+
+    def step(ms, backlog):
+        o["pushed"] += push_for(src, ms, backlog_ms=backlog)
+        pump_until(lambda: False, 0.05)
+
+    step(300, BUDGET_MS - 40)                    # in range
+    step(150, 26_000)                            # a past-stamped burst, under the 300 ms hold
+    time.sleep(1.3)                              # an input gap
+    o["pushed"] += 1
+    push(src, backlog_ms=114_000)                # the stale first buffer after it
+    step(300, BUDGET_MS - 40)                    # in range again
+    o["gap"] = rebases()
+    o["gap_implausible"] = sum(1 for ch, p in events
+                               if ch == "backlog_shed" and p.get("outcome") == "implausible")
+    step(500, 20_000 + BUDGET_MS)                # past stamps that keep flowing
+    o["past"] = rebases()
+    base = (o["pushed"], len(arrivals))
+    step(300, BUDGET_MS - 40)                    # the producer's own timeline is back
+    o["undo"] = rebases()
+    o["flowing"] = pump_until(lambda: len(arrivals) - base[1] == o["pushed"] - base[0], 0.5)
+    teardown(pipe)
+    return o
+
+
+for aligned in (True, False):
+    arm = "video" if aligned else "audio"
+    o = gap_and_undo(aligned)
+    check(f"{arm} gap: a burst under the hold, an input gap, one stale buffer — no rebase",
+          o["gap"] == [])
+    check(f"{arm} gap: the stale buffer is reported as a new episode", o["gap_implausible"] == 2)
+    check(f"{arm} undo: past stamps that keep flowing are rebased after the hold",
+          len(o["past"]) == 1 and near(o["past"][0].get("latenessMs"), 20_000, 150))
+    check(f"{arm} undo: the producer's timeline back inside the cooldown undoes it at once",
+          len(o["undo"]) == 2 and o["undo"][1].get("latenessMs", 0) < -10_000
+          and o["undo"][1].get("count") == 2)
+    check(f"{arm} undo: and the leg keeps flowing — nothing parked", o["flowing"])
+
 # Falsification arm: the SAME ladder with `onLateness` absent is today's shedder —
 # it sheds (drops) at ≈1.0 s and never says a word on `playout_reanchor`.
 o = ladder(True, reanchor=False)

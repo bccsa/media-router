@@ -23,6 +23,9 @@ constexpr double STALE_MS = 4000.0;
 constexpr double DEFAULT_STALL_GRACE_MS = 10000.0;
 // A live budget change smaller than this is float noise, not a D push.
 constexpr double BUDGET_EPSILON_MS = 0.5;
+// No sample for this long is an input gap: every hold restarts on its far side
+// (backlog_shed.py GAP_RESET_MS).
+constexpr double GAP_RESET_MS = 1000.0;
 
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
 std::string fmt(const char* f, ...) {
@@ -98,6 +101,9 @@ struct Policy {
     double budget = 0;
     bool has_last_rebase = false;
     double last_rebase = 0;
+    double last_rebase_late = 0;   // lateness the last rebase was taken on
+    bool has_last_seen = false;
+    double last_seen = 0;
     void reset() {
         has_above_since = false;
         implausible = false;
@@ -109,6 +115,13 @@ struct Policy {
     template <typename Queued>
     const char* observe(double lateness_ms, double now_ms, Queued queued) {
         if (std::isnan(lateness_ms)) return nullptr;
+        // A hold is evidence only while buffers keep arriving: across an input
+        // gap the streak is stale (field 2026-10-09: a 3 s rebase hold armed by
+        // a brief burst was "paid" by the 88 s outage after it, and the first,
+        // stale buffer after the outage was rebased on).
+        if (has_last_seen && now_ms - last_seen >= GAP_RESET_MS) reset();
+        has_last_seen = true;
+        last_seen = now_ms;
         if (reanchor) return observe_reanchor(lateness_ms, now_ms, queued);
         if (std::fabs(lateness_ms) > sanity_ms) {
             has_above_since = false;
@@ -155,9 +168,16 @@ struct Policy {
             }
             last_implausible_ms = lateness_ms;
             bool cooling = has_last_rebase && now_ms - last_rebase < rebase_cooldown_ms;
+            // Future stamps after a rebase that moved this leg LATER: that
+            // rebase overshot. Undo it now, cooldown or not — a minute of
+            // future stamps parks a video sink, and on pulsesink overflows
+            // PipeWire's buffer, whose read pointer then stays ahead of every
+            // later write: the leg is silent until it is rebuilt.
+            bool undo = cooling && lateness_ms < 0 && last_rebase_late > 0;
             // A future stamp parks the sink on its first buffer, so no later
             // sample can confirm it: it is due at once. A past one must hold.
-            if (!cooling && (lateness_ms < 0 || now_ms - implausible_since >= rebase_hold_ms)) return "rebase";
+            if (undo || (!cooling && (lateness_ms < 0 || now_ms - implausible_since >= rebase_hold_ms)))
+                return "rebase";
             if (implausible) return nullptr;
             implausible = true;
             return "implausible";
@@ -215,6 +235,7 @@ struct Policy {
         rebases++;
         has_last_rebase = true;
         last_rebase = now_ms;
+        last_rebase_late = last_implausible_ms;
         reset();
     }
 };

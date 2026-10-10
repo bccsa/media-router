@@ -418,6 +418,53 @@ check("re-anchor: inside the rebase cooldown it is only reported",
 check("re-anchor: and due again once the minute is up",
       p.observe(-20_000.0, 60_000.0) == "rebase")
 
+# A hold is evidence only while samples keep arriving (field 2026-10-09): a brief
+# burst armed the past-stamped hold, an 88 s outage followed, and the first —
+# stale — buffer after it was rebased on, the outage having "paid" the 3 s.
+p = rp()
+verdicts, t = feed_r(p, 26_600.0, 0.0, 2_000)
+check("gap: a 2 s implausible burst is reported and held",
+      [v for v, _ in verdicts] == ["implausible"])
+check("gap: the first sample after an 88 s gap opens a NEW episode, no rebase",
+      p.observe(114_300.0, t + 87_900.0) == "implausible")
+check("gap: and the next, in-range, sample ends it",
+      p.observe(-1_900.0, t + 87_927.0) is None and p.implausible_since is None)
+verdicts, t = feed_r(p, 21_000.0, t + 90_000.0, 2_900)
+check("gap: a fresh past-stamped run still needs its own 3 s",
+      [v for v, _ in verdicts] == ["implausible"])
+verdicts, _ = feed_r(p, 21_000.0, t, 200)
+check("gap: and is rebased once it has them", [v for v, _ in verdicts][:1] == ["rebase"])
+p = rp()
+verdicts, t = feed_r(p, 21_000.0, 0.0, 1_500)
+verdicts, _ = feed_r(p, 21_000.0, t + 900.0, 1_500)
+check("gap: a pause under GAP_RESET_MS is jitter — the hold survives it",
+      [v for v, _ in verdicts][:1] == ["rebase"])
+p = rp()
+feed_r(p, 120.0, 0.0, 14_000)
+verdicts, _ = feed_r(p, 120.0, 15_000.0, 2_000)
+check("gap: the raise hold restarts across a gap too", verdicts == [])
+
+# Future stamps right after a rebase that moved the leg LATER: that rebase
+# overshot. It is undone at once, cooldown or not — a minute of future stamps
+# parks a video sink and, on pulsesink, overflows PipeWire's buffer for good.
+p = rp()
+verdicts, _ = feed_r(p, 25_000.0, 0.0, 2_980)
+check("undo: a past-stamped run is reported, then rebased after its hold",
+      [v for v, _ in verdicts] == ["implausible"] and p.observe(25_000.0, 3_000.0) == "rebase")
+p.rebased(3_000.0)
+check("undo: future stamps right after it are rebased at once, inside the cooldown",
+      p.observe(-25_000.0, 3_020.0) == "rebase")
+p.rebased(3_020.0)
+check("undo: only once — future stamps after the undo are only reported",
+      p.observe(-25_000.0, 3_040.0) == "implausible" and p.observe(-25_000.0, 3_060.0) is None)
+p = rp()
+feed_r(p, 25_000.0, 0.0, 2_980)
+p.observe(25_000.0, 3_000.0)
+p.rebased(3_000.0)
+verdicts, _ = feed_r(p, 25_000.0, 3_020.0, 10_000)
+check("undo: PAST stamps after a past rebase still wait out the cooldown",
+      [v for v, _ in verdicts] == ["implausible"])
+
 # Whatever it is fed, re-anchor mode never asks for a shed and never reports a
 # shed-mode "timeline" refusal.
 import random

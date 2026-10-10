@@ -84,6 +84,11 @@ DEFAULT_REBASE_HOLD_MS = 3_000.0
 DEFAULT_REBASE_COOLDOWN_MS = 60_000.0
 # A live budget change smaller than this is float noise, not a D push.
 BUDGET_EPSILON_MS = 0.5
+# No sample for this long is an input gap, and every hold restarts on its far
+# side: a hold is evidence only while buffers keep arriving. Field 2026-10-09: a
+# brief burst armed the 3 s rebase hold, the 88 s outage after it "paid" the hold,
+# and the leg was rebased on the first — stale — buffer after the outage.
+GAP_RESET_MS = 1_000.0
 
 # How long a VIDEO leg has to prove its decoder survived the shed, per stage.
 # Field (Pi 400, 2026-08-18): a shed completed normally ("retained
@@ -231,7 +236,12 @@ class BacklogShedPolicy:
     `mode="reanchor"` NEVER sheds. Sustained excess over `reanchor_tolerance_ms`
     for `reanchor_hold_ms` returns "reanchor" (`.level_ms` = the floor over the
     hold, `.cause` from `queued_ms`); an implausible reading returns "rebase"
-    once it is due. `mode="shed"` leaves every path above untouched.
+    once it is due — a future one at once, a past one after `rebase_hold_ms`,
+    one per `rebase_cooldown_ms`, except that future stamps right after a
+    rebase that moved the leg later undo it at once. `mode="shed"` leaves every
+    path above untouched.
+
+    In both modes a gap of `GAP_RESET_MS` between samples restarts every hold.
     """
 
     def __init__(self, tolerance_ms=DEFAULT_TOLERANCE_MS, hold_ms=DEFAULT_HOLD_MS,
@@ -270,6 +280,8 @@ class BacklogShedPolicy:
         self._request_at = None       # retry gate; None = no request open
         self._budget = None           # budget the last request / sample was measured against
         self._last_rebase = None
+        self._last_rebase_late = None  # lateness the last rebase was taken on
+        self._last_seen = None         # time of the last sample (input-gap detection)
 
     def reset(self):
         """Drop the streak (not the counters): a flush/re-anchor makes the
@@ -284,6 +296,9 @@ class BacklogShedPolicy:
     def observe(self, lateness_ms, now_ms, queued_ms=None):
         if lateness_ms is None or lateness_ms != lateness_ms:   # NaN
             return None
+        if self._last_seen is not None and now_ms - self._last_seen >= GAP_RESET_MS:
+            self.reset()                 # an input gap: the streak is stale
+        self._last_seen = now_ms
         if self.mode == "reanchor":
             return self._observe_reanchor(lateness_ms, now_ms, queued_ms)
         if abs(lateness_ms) > self.sanity_ms:
@@ -336,10 +351,17 @@ class BacklogShedPolicy:
             self.last_implausible_ms = lateness_ms
             cooling = (self._last_rebase is not None
                        and now_ms - self._last_rebase < self.rebase_cooldown_ms)
+            # Future stamps after a rebase that moved this leg LATER: that
+            # rebase overshot. Undo it now, cooldown or not — a minute of future
+            # stamps parks a video sink, and on pulsesink overflows PipeWire's
+            # buffer, whose read pointer then stays ahead of every later write:
+            # the leg is silent until it is rebuilt.
+            undo = (cooling and lateness_ms < 0
+                    and self._last_rebase_late is not None and self._last_rebase_late > 0)
             # A future stamp parks the sink on its first buffer, so no later
             # sample can confirm it: it is due at once. A past one must hold.
-            if not cooling and (lateness_ms < 0
-                                or now_ms - self.implausible_since >= self.rebase_hold_ms):
+            if undo or (not cooling and (lateness_ms < 0
+                                         or now_ms - self.implausible_since >= self.rebase_hold_ms)):
                 return "rebase"
             if self._implausible:
                 return None
@@ -395,4 +417,5 @@ class BacklogShedPolicy:
         """The runner re-anchored the leg: the rebase cooldown starts, streaks restart."""
         self.rebases += 1
         self._last_rebase = now_ms
+        self._last_rebase_late = self.last_implausible_ms
         self.reset()
