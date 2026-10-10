@@ -597,6 +597,82 @@ def test_reanchor_parity():
             r.kill()
 
 
+def test_reanchor_gap_and_undo_parity():
+    """Field 2026-10-09 on BOTH runners. N 9: a past-stamped run shorter than the
+    rebase hold, an input gap (the valve closed), then the same lateness again —
+    the gap must restart the hold, so nothing is rebased. N 10: a rebase that
+    moved the leg later, then the producer's own timeline back inside the
+    cooldown — the overshoot is undone at once and the paced sink never parks.
+    Lateness is set live with the sink's `ts-offset` (case N's idiom)."""
+    shed = {"element": "sink", "sink": "sink", "keyframeAligned": False, "toleranceMs": 100,
+            "holdMs": 600, "cooldownMs": 60000, "sanityMs": 10000, "onLateness": "reanchor",
+            "reanchorToleranceMs": 40, "reanchorHoldMs": 600, "reanchorRetryMs": 1500,
+            "rebaseHoldMs": 1500, "rebaseCooldownMs": 30000}
+    pipeline = ("audiotestsrc is-live=true samplesperbuffer=480"
+                " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! valve name=v drop=false ! level"
+                " ! fakesink name=sink sync=true ts-offset=0")
+    runs = {}
+
+    def each(cmd):
+        for r in runs.values():
+            r.send(cmd)
+
+    def rebases(r):
+        r.pump()
+        return [e["payload"] for e in r.events if e.get("event") == "plugin_event"
+                and e.get("channel") == "playout_reanchor" and e["payload"].get("kind") == "rebase"]
+
+    def ts_offset(ms):
+        each({"cmd": "set_property", "id": "o", "element": "sink", "property": "ts-offset",
+              "value": int(ms * 1e6)})
+
+    try:
+        runs = {"py": RunnerProc(_PY_RUNNER), "native": RunnerProc()}
+        for r in runs.values():
+            r.wait_event(ev_is("ready"))
+        each({"cmd": "start", "timeSyncContract": True, "pipeline": pipeline, "backlogShed": shed})
+        time.sleep(1.5)
+        # 9. 0.5 s of 25 s-late buffers, a 2 s gap, the same lateness again, then in range.
+        ts_offset(-25000)
+        time.sleep(0.5)
+        each({"cmd": "set_property", "id": "v", "element": "v", "property": "drop", "value": True})
+        time.sleep(2.0)
+        each({"cmd": "set_property", "id": "v", "element": "v", "property": "drop", "value": False})
+        time.sleep(0.6)
+        ts_offset(0)
+        time.sleep(1.0)
+        gap = {k: rebases(r) for k, r in runs.items()}
+        check(f"N 9 an input gap restarts the rebase hold on both — no rebase ({ {k: len(v) for k, v in gap.items()} })",
+              all(v == [] for v in gap.values()))
+        # 10. A held past-stamped run is rebased; then the producer's timeline is back.
+        ts_offset(-25000)
+        past = {k: r.wait_event(lambda e: e.get("event") == "plugin_event"
+                                and e.get("channel") == "playout_reanchor"
+                                and e["payload"].get("kind") == "rebase", timeout=5.0)
+                for k, r in runs.items()}
+        check("N 10 a held past-stamped run is rebased on both", all(past.values()))
+        ts_offset(0)
+        time.sleep(0.5)
+        for r in runs.values():
+            r.pump()
+        vu0 = {k: sum(1 for e in r.events if e.get("event") == "vu_data") for k, r in runs.items()}
+        time.sleep(3.0)
+        for r in runs.values():
+            r.pump()
+        vu1 = {k: sum(1 for e in r.events if e.get("event") == "vu_data") for k, r in runs.items()}
+        undo = {k: rebases(r) for k, r in runs.items()}
+        check("N 10 the overshoot is undone at once on both, inside the 30 s cooldown",
+              all(len(v) == 2 and v[1].get("latenessMs", 0) < -10000 and v[1].get("count") == 2
+                  for v in undo.values()))
+        # A sink parked on a 25 s-future buffer blocks `level`: no vu_data at all.
+        check(f"N 10 and the paced sink never parks (vu_data {vu0} -> {vu1})",
+              all(vu1[k] - vu0[k] >= 3 for k in runs))
+        check("N 9-10 no lifecycle error on either runner", not any(r.has_event(ev_is("error")) for r in runs.values()))
+    finally:
+        for r in runs.values():
+            r.kill()
+
+
 # --------------------------------------------------------------------------- G: runner hooks (native form)
 def make_klv_ts(path, n_buffers=40):
     """A TS with three KLV PES streams on PIDs 0x180, 0x181 and 0x1f0 — the
@@ -1444,6 +1520,7 @@ test_refusals()
 test_presentation_leg()
 test_shed_refusals()
 test_reanchor_parity()
+test_reanchor_gap_and_undo_parity()
 test_runner_hooks()
 test_deinterlace_guard_hook()
 test_video_gates()

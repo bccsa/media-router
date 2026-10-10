@@ -907,7 +907,16 @@ reporting healthy.
   Lateness past 10 s is not a budget problem: the leg REBASES itself onto
   arrival + D with one pad offset on the shed pad — future stamps at once (the
   first would otherwise park the sink), past stamps after 3 s, one per 60 s —
-  and warns on the leg and the head. The rebase runs IN the streaming thread
+  and warns on the leg and the head.
+  *Amended 2026-10-10:* a hold is evidence only while buffers keep arriving —
+  no sample for 1 s (an input gap) restarts every hold, so a hold armed by a
+  short burst cannot be "paid" by the outage after it and spent on the first,
+  stale, buffer that follows. And future stamps right after a rebase that moved
+  the leg LATER undo it at once, inside the 60 s: that rebase overshot, and a
+  minute of future stamps parks a video sink and, on pulsesink, overflows
+  PipeWire's 4 MB stream buffer — the server's read pointer then stays ahead
+  of every later write and the leg is silent until it is rebuilt (field,
+  2026-10-09). The rebase runs IN the streaming thread
   (offset + a de-offset SEGMENT re-send under the stream lock the probe holds),
   not as a main-loop flush pair: a flush at the shed pad returns FLUSHING to the
   upstream task (queue or source), which then stays paused (measured, gst
