@@ -42,7 +42,7 @@ Media Router is a distributed broadcast media routing system for BCC South Afric
   - Short title under 70 chars
   - Body with bullet points for each change
   - Test count at the end: "200 tests passing across 20 files."
-  - Co-author: `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`
+  - Co-author: `Co-Authored-By: <model> <noreply@anthropic.com>`, where `<model>` is the Claude model running the current session (e.g. `Claude Opus 5.5`) — never copy a model name from an earlier commit
   - Use HEREDOC format: `git commit -m "$(cat <<'EOF' ... EOF)"`
 - **Never force push, amend, or use destructive git operations** unless I explicitly ask.
 
