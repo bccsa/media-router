@@ -94,6 +94,64 @@ export interface PacedMixerOpts {
     pacerName: string;
     /** Name the capsfilter too, when a caller needs to address it. */
     capsName?: string;
+    /** Let the output run up to this far AHEAD of the clock before the pacer
+     *  holds it (`identity ts-offset=-<ns>`). Unset = no slack: the pacer holds
+     *  every buffer to its running time. */
+    aheadSlackNs?: number;
+}
+
+/**
+ * How far ahead of the house clock a RETIMED fan-in (`AudioMixInputOpts.retimed`)
+ * may run before its pacer holds it.
+ *
+ * Retimed, a branch's running time is its CONTENT time, and a route can carry
+ * content stamped ahead of the clock: a source whose audio PES lead its PCR by
+ * seconds is mapped that far into the future by the ingest, and every
+ * content-exact hop keeps it there (measured 2026-10-10: an MPEG-TS whose audio
+ * PTS led its PCR by 8.26 s reached a mixer 7.6–8.3 s before its stamps). A
+ * pacer that holds such content to its stamps needs that much buffering, and
+ * the bus input queue holds 5 s (`buildBusSrc`) — the excess is dropped oldest-
+ * first, so the mix comes out in fragments. With the slack the mix passes it
+ * at arrival pace, as a transform producer's mux does (it has no pacer), and
+ * the stamps still say when it is due: holding it is the presentation leg's
+ * job, against its D.
+ *
+ * The pacer's own job is unchanged: after every input has gone EOS, a
+ * `force-live` mixer generates silence as fast as the CPU allows. With the
+ * slack it can run at most this far ahead before it is paced to the clock — a
+ * bounded burst of silence once, instead of the unbounded flood the pacer was
+ * added for.
+ */
+export const RETIMED_PACER_SLACK_MS = 10_000;
+
+/** The aggregation latency a fan-in actually runs with, ms — `latencyMs`
+ *  clamped to what `buildAudioMixInput` accepts (20–2000). Exported so a
+ *  module pushing a new budget live sets exactly what a rebuild would. */
+export function clampMixLatencyMs(latencyMs: number | undefined): number {
+    return Math.max(20, Math.min(2000, latencyMs ?? 200));
+}
+
+/**
+ * A RETIMED fan-in's lateness budget, ms: the configured `mixLatencyMs`, and
+ * never less than the route's playout offset D (`routeOffsetMs`).
+ *
+ * Retimed, an input reaches the aggregator as late as its route delivers it —
+ * the source's delivery jitter plus every hop's transit — because nothing
+ * re-anchors it on the way any more. That is exactly the lateness D is the
+ * route's configured budget for (ADR-0005 decision 1): a presentation leg
+ * plays at stamp + D, so an aggregation point that waits up to D for its
+ * late inputs makes nothing late downstream, and one that waits less drops
+ * what the route's own budget covers. Measured 2026-10-10 on a RIST-fed
+ * mixer: the processed programme reached it 185 ms (p50) to 561 ms after its
+ * content time, and at the 20 ms default every one of its buffers was
+ * discarded as late — the mix carried the sibling input alone. Waiting costs
+ * nothing while every input is on time: the aggregator only waits on a pad
+ * that has no data.
+ */
+export function retimedMixLatencyMs(mixLatencyMs: number, routeOffsetMs: number): number {
+    const own = Number.isFinite(mixLatencyMs) ? mixLatencyMs : 20;
+    const d = Number.isFinite(routeOffsetMs) ? routeOffsetMs : 0;
+    return clampMixLatencyMs(Math.max(own, d));
 }
 
 /**
@@ -106,13 +164,14 @@ export interface PacedMixerOpts {
  */
 export function pacedMixer(opts: PacedMixerOpts): string {
     const caps = opts.capsName ? `capsfilter name=${opts.capsName} caps="${opts.caps}"` : opts.caps;
+    const slack = opts.aheadSlackNs ? ` ts-offset=-${Math.round(opts.aheadSlackNs)}` : '';
     return (
         // No `min-upstream-latency`: the branches report none, and forcing it
         // doubled the pacer hold (2× latency, measured .103 2026-10-05).
         `audiomixer name=${opts.name} force-live=true latency=${opts.latencyNs}` +
         ' start-time-selection=first' +
         ` ! ${caps}` +
-        ` ! identity name=${opts.pacerName} sync=true`
+        ` ! identity name=${opts.pacerName} sync=true${slack}`
     );
 }
 
@@ -137,10 +196,33 @@ export interface AudioMixInputOpts {
      *  `sink_<i>` pad, mixer arm even for ONE source (ADR-0008 addendum).
      *  Default off — classic callers keep byte-identical strings. */
     liveInputs?: boolean;
-    /** `tsdemux ignore-pcr` on every branch (default true). mpegtsmux writes PES
-     *  PTS ~250 ms ahead of the PCR and a sync element downstream honours that
-     *  lead (measured .103). Off only for stamp-aligned (presentation) callers. */
+    /** `tsdemux ignore-pcr` on every branch (default true; false when
+     *  `retimed`). mpegtsmux writes PES PTS ~250 ms ahead of the PCR and a sync
+     *  element downstream honours that lead (measured .103). Off only for
+     *  stamp-aligned (presentation) callers. */
     ignorePcr?: boolean;
+    /**
+     * The caller retimes every branch's `tsdemux` (the returned `demuxes`) to
+     * its producer's stamps — `alignBranchesToStamps` with `transformProducer`,
+     * as the transcoders and the mpegts-muxer do (ADR-0005, house-timeline
+     * egress). Every access unit then leaves its demuxer at the content time
+     * its producer stamped, so the branches mix content-aligned whatever hop
+     * each came through, and the output is content time too (the caller
+     * stamps its egress by identity, `houseTimelineEgress`).
+     *
+     * Changes the string in two places: no `ignore-pcr` (the retime replaces
+     * tsdemux's timestamps; the transform producers' input demuxes run without
+     * it), and the pacer gets `RETIMED_PACER_SLACK_MS` of ahead slack. Default
+     * off — every other caller keeps its string byte for byte.
+     */
+    retimed?: boolean;
+}
+
+/** The `ignorePcr` a branch is built with: explicit wins, else off when the
+ *  fan-in is retimed (see `AudioMixInputOpts.retimed`), else the default. */
+export function branchIgnorePcr(opts: { ignorePcr?: boolean; retimed?: boolean }): boolean | undefined {
+    if (opts.ignorePcr !== undefined) return opts.ignorePcr;
+    return opts.retimed ? false : undefined;
 }
 
 /**
@@ -326,17 +408,19 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
      * (ADR-0005 Stage 3c). Without it a `tsdemux` keeps the zero-point error of
      * the one bus buffer it locked on for the pipeline's whole life — measured
      * on the .103 muxer's branches at −73…−85 ms, re-rolled on every restart —
-     * and a `sync=true` sink presents that error as lipsync. Empty only when
-     * there are no sources.
+     * and a `sync=true` sink presents that error as lipsync. A `retimed`
+     * fan-in passes the same names with `transformProducer` instead. Empty
+     * only when there are no sources.
      */
     demuxes: string[];
 } {
     const channels = opts.channels ?? 2;
-    const latencyNs = Math.max(20, Math.min(2000, opts.latencyMs ?? 200)) * 1_000_000;
+    const latencyNs = clampMixLatencyMs(opts.latencyMs) * 1_000_000;
     const mixerName = opts.mixerName ?? 'mixin';
     const branchQueueMs = opts.branchQueueMs;
     const branchQueueNs = Math.max(20, Math.min(2000, branchQueueMs ?? 100)) * 1_000_000;
     const live = opts.liveInputs === true;
+    const ignorePcr = branchIgnorePcr(opts);
 
     const outName = `${mixerName}_out`;
     const caps = `audio/x-raw,rate=48000,channels=${channels}`;
@@ -356,7 +440,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
             ? mixMatrixClause(s.channelMap, normalize302mChannels(s.sourceChannels ?? 2), channels)
             : '';
         return (
-            `${src} ! tsdemux name=${demuxName(s, i)} latency=0${ignorePcrClause(opts.ignorePcr)}` +
+            `${src} ! tsdemux name=${demuxName(s, i)} latency=0${ignorePcrClause(ignorePcr)}` +
             ` ! audio/x-smpte-302m ! avdec_s302m` +
             ` ! audioconvert${matrix} ! audioresample`
         );
@@ -383,12 +467,13 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         caps,
         capsName: `${mixerName}_caps`,
         pacerName: outName,
+        aheadSlackNs: opts.retimed ? RETIMED_PACER_SLACK_MS * 1_000_000 : undefined,
     });
 
     // Live-input mode: each branch is a named bin on an explicit request pad,
     // the exact string a hot add sends — so a later live remove finds it.
     const branches = opts.sources.map((s, i) => {
-        const branchOpts = { channels, branchQueueMs, ignorePcr: opts.ignorePcr };
+        const branchOpts = { channels, branchQueueMs, ignorePcr };
         if (!live) {
             const text = build302mMixBranch(s, { ...branchOpts, demuxName: demuxName(s, i) });
             return `${text} ! ${mixerName}.`;

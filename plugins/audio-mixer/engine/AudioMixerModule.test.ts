@@ -101,3 +101,66 @@ describe('AudioMixerModule.getLiveInputBranch (#787)', () => {
         expect(module.getLiveInputBranch('audio-out', 'c-0')).toBeNull();
     });
 });
+
+describe('AudioMixerModule — time-sync contract (transform producer)', () => {
+    it('declares the per-AU retime on every input demux and the identity egress', () => {
+        const { module } = makeModule(2);
+        module.services.timeSyncContract = true;
+        const desc = module.buildPipeline({})!;
+        expect(desc.houseTimelineEgress).toBe(true);
+        expect(desc.alignBranchesToStamps).toEqual({
+            demuxes: [expect.stringMatching(/^mixin_demux_/), expect.stringMatching(/^mixin_demux_/)],
+            transformProducer: true,
+        });
+        for (const d of desc.alignBranchesToStamps!.demuxes)
+            expect(desc.pipeline).toContain(`tsdemux name=${d} latency=0 !`);
+        expect(desc.pipeline).not.toContain('ignore-pcr');
+    });
+
+    it('a live add under the contract hands the engine the retimed branch text', () => {
+        const { module } = makeModule(2);
+        module.services.timeSyncContract = true;
+        module.config = { channels: 2 };
+        const b = module.getLiveInputBranch('audio-in', 'c-1');
+        expect(b.description).not.toContain('ignore-pcr');
+        expect(module.buildPipeline({})!.pipeline).toContain(`( name=${b.name} ${b.description} )`);
+    });
+
+    it('off-contract the string is the legacy one (the engine drops both fields there)', () => {
+        const { module } = makeModule(2);
+        const desc = module.buildPipeline({})!;
+        expect(desc.pipeline).toContain('ignore-pcr=true');
+        expect(desc.pipeline).not.toContain('ts-offset');
+    });
+});
+
+describe('AudioMixerModule — lateness budget follows the route D (contract)', () => {
+    function contractModule(routeD: number | undefined) {
+        const made = makeModule(2);
+        made.module.services.timeSyncContract = true;
+        made.module.services.mediaRouter.getRoutePlayoutOffsetMs = vi.fn(() => routeD);
+        made.module.services.mediaRouter.getRoutePlayoutRaiseMs = vi.fn(() => 0);
+        return made;
+    }
+
+    it('waits at least D for a late input: latency = max(mixLatencyMs, D)', () => {
+        const { module } = contractModule(700);
+        expect(module.buildPipeline({ mixLatencyMs: 20 })!.pipeline).toContain('latency=700000000');
+        expect(module.buildPipeline({ mixLatencyMs: 900 })!.pipeline).toContain('latency=900000000');
+    });
+
+    it('off-contract the configured budget alone', () => {
+        const { module } = makeModule(2);
+        module.services.mediaRouter.getRoutePlayoutOffsetMs = vi.fn(() => 700);
+        expect(module.buildPipeline({ mixLatencyMs: 20 })!.pipeline).toContain('latency=20000000');
+    });
+
+    it('a D change is pushed into the running aggregator, not a rebuild', async () => {
+        const { module } = contractModule(700);
+        module.config = { mixLatencyMs: 20 };
+        module.running = true;
+        module.setElementProperty = vi.fn(async () => {});
+        await module.onRoutePlayoutOffsetChanged();
+        expect(module.setElementProperty).toHaveBeenCalledWith('mixin', 'latency', 700_000_000);
+    });
+});

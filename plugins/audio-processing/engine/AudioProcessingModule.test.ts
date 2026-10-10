@@ -446,3 +446,44 @@ describe('AudioProcessingModule — ducker wiring', () => {
         expect(comp.setProperty).not.toHaveBeenCalled();
     });
 });
+
+describe('AudioProcessingModule — time-sync contract (transform producer)', () => {
+    it('retimes the programme AND the key demux and stamps its egress by identity', async () => {
+        const { module } = await createModule({ mode: 'ducker' }, [
+            mkSource('program-in'),
+            mkSource('sidechain-in', 1),
+        ]);
+        (module as any).services.timeSyncContract = true;
+        await startModule(module);
+        const desc = module.buildPipeline((module as any).config)!;
+        expect(desc.houseTimelineEgress).toBe(true);
+        expect(desc.alignBranchesToStamps).toEqual({
+            demuxes: ['progmix_demux0', 'scmix_demux0'],
+            transformProducer: true,
+        });
+        expect(desc.pipeline).toContain('tsdemux name=progmix_demux0 latency=0 !');
+        expect(desc.pipeline).toContain('tsdemux name=scmix_demux0 latency=0 !');
+        expect(desc.pipeline).not.toContain('ignore-pcr');
+        await module.onStop();
+    });
+
+    it('an unconsumed sidechain edge is not built, so not aligned', async () => {
+        const { module } = await createModule({ mode: 'none' }, [
+            mkSource('program-in'),
+            mkSource('sidechain-in', 1),
+        ]);
+        (module as any).services.timeSyncContract = true;
+        await startModule(module);
+        const desc = module.buildPipeline((module as any).config)!;
+        expect(desc.alignBranchesToStamps?.demuxes).toEqual(['progmix_demux0']);
+        await module.onStop();
+    });
+
+    it('off-contract the programme branch keeps ignore-pcr (legacy string)', async () => {
+        const { module } = await createModule({ mode: 'ducker' }, [mkSource('program-in')]);
+        await startModule(module);
+        const desc = module.buildPipeline((module as any).config)!;
+        expect(desc.pipeline).toContain('tsdemux name=progmix_demux0 latency=0 ignore-pcr=true');
+        await module.onStop();
+    });
+});

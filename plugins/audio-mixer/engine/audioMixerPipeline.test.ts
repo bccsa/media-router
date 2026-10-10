@@ -181,3 +181,27 @@ describe('mixerInputBranch — the live-input branch handed to the engine (#787)
         expect(r.pipeline).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
     });
 });
+
+describe('buildMixerPipeline — retimed (time-sync contract)', () => {
+    const sources = [
+        { port: 40001, connectionId: 'c1' },
+        { port: 40002, connectionId: 'c2' },
+    ];
+    const base = { sources, outputPort: 41000, channels: 2, volume: 1, latencyMs: 20 };
+
+    it('returns every start-time demux and renders the retimed branches', () => {
+        const r = buildMixerPipeline({ ...base, retimed: true })!;
+        expect(r.demuxes).toHaveLength(2);
+        expect(r.pipeline).not.toContain('ignore-pcr');
+        expect(r.pipeline).toContain('sync=true ts-offset=-');
+    });
+
+    it('the live branch for an edge equals its retimed start-time branch', () => {
+        const r = buildMixerPipeline({ ...base, retimed: true })!;
+        const b = mixerInputBranch('c2', sources[1], 2, true);
+        expect(r.pipeline).toContain(`( name=${b.name} ${b.description} )`);
+        // …and a non-retimed live branch would NOT match it (ignore-pcr differs).
+        const legacy = mixerInputBranch('c2', sources[1], 2);
+        expect(r.pipeline).not.toContain(`( name=${legacy.name} ${legacy.description} )`);
+    });
+});

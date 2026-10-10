@@ -28,6 +28,18 @@ void install(GstElement* pipe, JsonObject* cfg);
 /** Drop every probe and handler (pipeline stop / restart). */
 void clear();
 
+/** A live input add (`bus_input_add`) into a pipeline whose alignment is
+ *  `transformProducer`: retime every tsdemux inside `bin` exactly as `install`
+ *  retimes the start payload's demuxes — the branch's access units leave at
+ *  their producer's content time like its siblings'. Call after linking, before
+ *  the bin plays (the bus input is held at the demux until the first exact
+ *  stamp reading). No-op for any other pipeline: a mux-mode branch is offset
+ *  once off a settle window the live add never had. */
+void install_live(GstBin* bin);
+
+/** The live branch `bin` is going (already NULL): forget its demuxes' retimes. */
+void forget_live(GstBin* bin);
+
 // Shared with branch_retime.cpp.
 constexpr size_t KEY_BYTES = 64;   // payload-tail join key, as the python's
 constexpr size_t HISTORY = 4096;   // indexed access units kept per PID

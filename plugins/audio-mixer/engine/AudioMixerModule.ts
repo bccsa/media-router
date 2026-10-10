@@ -2,11 +2,17 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
+    effectivePlayoutOffsetMs,
     type LiveInputBranch,
     type PipelineDescription,
     type ThroughputSample,
 } from '@media-router/engine';
-import { probe302mSupport, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
+import {
+    probe302mSupport,
+    retimedMixLatencyMs,
+    s302mFormatFor,
+} from '@media-router/plugin-audio-302m-core';
+import { MIXER_NAME } from './audioMixerPipeline.js';
 import { buildMixerPipeline, mixerInputBranch } from './audioMixerPipeline.js';
 
 const INPUT_PORT_ID = 'audio-in';
@@ -25,6 +31,11 @@ const OUTPUT_PORT_ID = 'audio-out';
  * wiring changes are live branch add/remove (`getLiveInputBranch`); only the
  * last input leaving idles the module. Per-connection channel maps give
  * per-source routing + gain; `volume` is the master fader (live, VU from `level`).
+ *
+ * Under the time-sync contract it is a transform producer: inputs retimed to
+ * their producers' stamps (live-added ones too — the runner retimes every
+ * tsdemux a live add brings into a pipeline started with `transformProducer`),
+ * egress stamped by identity. See `audioMixerPipeline.ts`.
  */
 export class AudioMixerModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
@@ -41,10 +52,42 @@ export class AudioMixerModule extends GstPluginBase {
                 (s: { sinkPortId: string; connectionId: string }) =>
                     s.sinkPortId === INPUT_PORT_ID && s.connectionId === connectionId,
             );
-        return mixerInputBranch(connectionId, source, (this.config.channels as number) ?? 2);
+        return mixerInputBranch(
+            connectionId,
+            source,
+            (this.config.channels as number) ?? 2,
+            this.retimed(),
+        );
     }
 
     private sinkName: string | null = null;
+
+    /** Contract path: branches retimed, egress by identity. Off-contract the
+     *  pipeline string stays what it was. */
+    private retimed(): boolean {
+        return this.services?.timeSyncContract === true;
+    }
+
+    /** The aggregator's lateness budget, ms: `mixLatencyMs`, and on the contract
+     *  path never less than the route's D (see `retimedMixLatencyMs`). */
+    private latencyMs(config: Record<string, unknown>): number {
+        const own = Number(config.mixLatencyMs ?? 20);
+        if (!this.retimed()) return own;
+        return retimedMixLatencyMs(
+            own,
+            effectivePlayoutOffsetMs(this.services, { sinkPortId: INPUT_PORT_ID }),
+        );
+    }
+
+    /**
+     * The route's D moved (an edit on its head, or the engine's raise) — carry
+     * it into the running aggregator's budget. `latency` is writable in PLAYING;
+     * the aggregator re-announces its latency. No-op off-contract.
+     */
+    async onRoutePlayoutOffsetChanged(): Promise<void> {
+        if (!this.retimed() || !this.running) return;
+        await this.setElementProperty(MIXER_NAME, 'latency', this.latencyMs(this.config) * 1_000_000);
+    }
 
     /** gst runtime support for 302M-in-TS, probed once at plugin load. */
     private static s302mSupported = false;
@@ -119,8 +162,9 @@ export class AudioMixerModule extends GstPluginBase {
             outputPort: ep.port,
             channels: (config.channels as number) ?? 2,
             volume: volumePct / 100,
-            latencyMs: Number(config.mixLatencyMs ?? 20),
+            latencyMs: this.latencyMs(config),
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
+            retimed: this.retimed(),
         });
         if (!result) return null;
 
@@ -135,6 +179,12 @@ export class AudioMixerModule extends GstPluginBase {
             // mix never completes the EOS drain — a stop would stall the 6 s
             // timeout and EOS every consumer first.
             eosDrain: false,
+            // CONTRACT PATH (`applyTimeSync` drops both off-contract): every
+            // input demux retimed to its producer's stamps — the mix is
+            // content-aligned across hops — and the mux's PES already carry
+            // house time + 1 h, so the egress stamps by identity.
+            alignBranchesToStamps: { demuxes: result.demuxes, transformProducer: true },
+            houseTimelineEgress: true,
         };
     }
 }
