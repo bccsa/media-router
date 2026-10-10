@@ -14,16 +14,6 @@
  * nothing is enabled. PTS-preservation contract as for every 302M module: no
  * `pulsesrc`, no `do-timestamp`, no `tsparse set-timestamps` — the 302M PES PTS
  * is the timeline, and none of the stages here re-stamp.
- *
- * Under the time-sync contract (`retimed`) the module is a transform producer
- * like the audio-transcoder: every input demux (program and sidechain) is
- * retimed to its producer's stamps and the egress stamps by identity, so the
- * processed programme leaves on the content time it came in on. Before, the
- * egress re-anchored at its own first PES, throwing that time away — measured
- * 2026-10-10: the output sat 8.04 s off its input's timeline, and a mixer that
- * took it beside an unprocessed sibling put the two 7.99 s apart. The keyed
- * gate gains the same way: `interleave` joins programme and key by running
- * time, which is now content time on both.
  */
 
 import { buildBusSink, busTeeName, type BusReport } from '@media-router/engine';
@@ -44,9 +34,6 @@ export interface ProcessingPipelineInputs {
     outputPort: number;
     /** Per-input mix latency budget (ms) — the wait for lagging SOURCES. */
     latencyMs: number;
-    /** Input demuxes retimed to their producers' stamps (contract path) — see
-     *  `AudioMixInputOpts.retimed`. */
-    retimed?: boolean;
     config: Record<string, unknown>;
     stages: ChainStages;
 }
@@ -56,15 +43,10 @@ export interface ProcessingPipelineResult {
     /** Throughput counter element on the output (bus fan-out tee). */
     sinkName: string;
     busReports?: BusReport[];
-    /** Every built input branch's tsdemux (programme, then sidechain), for
-     *  `alignBranchesToStamps`. */
-    demuxes: string[];
 }
 
-/** Name prefixes of the two fan-ins; also the `audiomixer` names in their
- *  mixer arms (two or more sources on a pin), which a live budget push targets. */
-export const PROGRAM_MIXER = 'progmix';
-export const SIDECHAIN_MIXER = 'scmix';
+const PROGRAM_MIXER = 'progmix';
+const SIDECHAIN_MIXER = 'scmix';
 
 /** F32LE stereo with an explicit mask — `deinterleave` needs positioned
  *  channels, and the LSP elements are F32LE-only. */
@@ -92,9 +74,7 @@ export function buildProcessingPipeline(
         channels: 2,
         latencyMs: input.latencyMs,
         mixerName: PROGRAM_MIXER,
-        retimed: input.retimed,
     });
-    const demuxes = [...program.demuxes];
     parts.push(program.fragment);
 
     // A sidechain edge is consumed ONLY by a mode that keys off it. Under any
@@ -108,10 +88,8 @@ export function buildProcessingPipeline(
             channels: 2,
             latencyMs: input.latencyMs,
             mixerName: SIDECHAIN_MIXER,
-            retimed: input.retimed,
         });
         parts.push(sidechain.fragment);
-        demuxes.push(...sidechain.demuxes);
         sidechainName = sidechain.continuationName;
     }
 
@@ -190,6 +168,5 @@ export function buildProcessingPipeline(
         pipeline: parts.join(' '),
         sinkName: busTeeName(input.outputPort),
         busReports: busReports.length > 0 ? busReports : undefined,
-        demuxes,
     };
 }

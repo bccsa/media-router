@@ -64,8 +64,6 @@ struct State {
 };
 
 std::vector<std::shared_ptr<State>> g_states;
-/** The running pipeline's alignment is `transformProducer`: live adds are retimed too. */
-bool g_live_retime = false;
 
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
 std::string fmt(const char* f, ...) {
@@ -375,8 +373,6 @@ void install(GstElement* pipe, JsonObject* cfg) {
     if (!names) return;
     // A transform producer's input demux is retimed per access unit instead (`rt`).
     bool producer = json_get_bool(cfg, "transformProducer");
-    // As the python twin: an empty list arms nothing, live adds included.
-    g_live_retime = producer && json_array_get_length(names) > 0;
     guint n = json_array_get_length(names);
     for (guint i = 0; i < n; i++) {
         JsonNode* node = json_array_get_element(names, i);
@@ -412,65 +408,7 @@ void install(GstElement* pipe, JsonObject* cfg) {
     }
 }
 
-namespace {
-
-/** Every `tsdemux` inside `bin`, at any depth (refs owned by the caller). */
-std::vector<GstElement*> demuxes_in(GstBin* bin) {
-    std::vector<GstElement*> out;
-    GstIterator* it = gst_bin_iterate_recurse(bin);
-    GValue v = G_VALUE_INIT;
-    bool done = false;
-    while (!done) {
-        switch (gst_iterator_next(it, &v)) {
-            case GST_ITERATOR_OK: {
-                GstElement* e = GST_ELEMENT(g_value_get_object(&v));
-                GstElementFactory* f = gst_element_get_factory(e);
-                if (f && g_strcmp0(GST_OBJECT_NAME(f), "tsdemux") == 0)
-                    out.push_back(GST_ELEMENT(gst_object_ref(e)));
-                g_value_reset(&v);
-                break;
-            }
-            case GST_ITERATOR_RESYNC:
-                for (GstElement* e : out) gst_object_unref(e);
-                out.clear();
-                gst_iterator_resync(it);
-                break;
-            default:
-                done = true;
-                break;
-        }
-    }
-    g_value_unset(&v);
-    gst_iterator_free(it);
-    return out;
-}
-
-}  // namespace
-
-void install_live(GstBin* bin) {
-    if (!g_live_retime || !bin) return;
-    for (GstElement* demux : demuxes_in(bin)) {
-        GstPad* sink = gst_element_get_static_pad(demux, "sink");
-        if (!sink) {
-            gst_object_unref(demux);
-            continue;
-        }
-        std::string name = GST_OBJECT_NAME(demux);
-        ipc::log(fmt("branchAlign: %s retime: armed on a live input add", name.c_str()));
-        rt::install(name.c_str(), demux, sink);   // owns demux and sink
-    }
-}
-
-void forget_live(GstBin* bin) {
-    if (!bin) return;
-    for (GstElement* demux : demuxes_in(bin)) {
-        rt::forget(demux);
-        gst_object_unref(demux);
-    }
-}
-
 void clear() {
-    g_live_retime = false;
     for (auto& st : g_states) {
         std::vector<std::pair<GstPad*, gulong>> probes;
         {

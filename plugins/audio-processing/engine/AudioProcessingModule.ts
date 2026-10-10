@@ -1,19 +1,6 @@
-import {
-    GstPluginBase,
-    effectivePlayoutOffsetMs,
-    findLadspaElement,
-    type PipelineDescription,
-} from '@media-router/engine';
-import {
-    probe302mSupport,
-    retimedMixLatencyMs,
-    type AudioMixSource,
-} from '@media-router/plugin-audio-302m-core';
-import {
-    PROGRAM_MIXER,
-    SIDECHAIN_MIXER,
-    buildProcessingPipeline,
-} from './audioProcessingPipeline.js';
+import { GstPluginBase, findLadspaElement, type PipelineDescription } from '@media-router/engine';
+import { probe302mSupport, type AudioMixSource } from '@media-router/plugin-audio-302m-core';
+import { buildProcessingPipeline } from './audioProcessingPipeline.js';
 import {
     chainSummary,
     partitionBusSources,
@@ -111,28 +98,6 @@ export class AudioProcessingModule extends GstPluginBase {
                 AudioMixSource & { sinkPortId: string }
             >,
         );
-    }
-
-    /** The fan-ins' lateness budget, ms: `mixLatencyMs`, and on the contract
-     *  path never less than the programme route's D (`retimedMixLatencyMs`).
-     *  Only a pin with two or more sources has an aggregator to spend it. */
-    private fanInLatencyMs(config: Record<string, unknown>): number {
-        const own = Number(config.mixLatencyMs ?? 200);
-        if (this.services?.timeSyncContract !== true) return own;
-        return retimedMixLatencyMs(
-            own,
-            effectivePlayoutOffsetMs(this.services, { sinkPortId: 'program-in' }),
-        );
-    }
-
-    /** The route's D moved — carry it into whichever fan-in aggregators run
-     *  (a single-source pin has none; the push to it is a logged no-op). */
-    async onRoutePlayoutOffsetChanged(): Promise<void> {
-        if (this.services?.timeSyncContract !== true || !this.running) return;
-        const ns = this.fanInLatencyMs(this.config) * 1_000_000;
-        const sources = this.partitionSources();
-        if (sources.program.length > 1) await this.setElementProperty(PROGRAM_MIXER, 'latency', ns);
-        if (sources.sidechain.length > 1) await this.setElementProperty(SIDECHAIN_MIXER, 'latency', ns);
     }
 
     private async requireLadspa(suffix: string): Promise<string> {
@@ -245,10 +210,9 @@ export class AudioProcessingModule extends GstPluginBase {
             programSources,
             sidechainSources,
             outputPort: ep.port,
-            latencyMs: this.fanInLatencyMs(config),
+            latencyMs: Number(config.mixLatencyMs ?? 200),
             config,
             stages: this.stages,
-            retimed: this.services?.timeSyncContract === true,
         });
         if (!result) return null;
 
@@ -267,12 +231,6 @@ export class AudioProcessingModule extends GstPluginBase {
             pipeline: result.pipeline,
             restartOnError: true,
             busReports: result.busReports,
-            // CONTRACT PATH (`applyTimeSync` drops both off-contract): a
-            // transform producer like the audio-transcoder — inputs retimed to
-            // their producers' stamps, the egress mux's PES already house time
-            // + 1 h, stamped by identity. See `audioProcessingPipeline.ts`.
-            alignBranchesToStamps: { demuxes: result.demuxes, transformProducer: true },
-            houseTimelineEgress: true,
         };
     }
 }

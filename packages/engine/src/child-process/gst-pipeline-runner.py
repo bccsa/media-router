@@ -1389,15 +1389,10 @@ def _install_preserve_timeline(pipe, cfg):
 import branch_retime                                              # noqa: E402
 
 _branch_align = {}      # demux element name -> per-branch state
-# The running pipeline's alignment is `transformProducer`: a live input add
-# retimes the tsdemux elements it brings (`_retime_live_branch`).
-_branch_align_live_retime = False
 
 
 def _clear_branch_align():
-    global _branch_align_live_retime
     _branch_align.clear()
-    _branch_align_live_retime = False
 
 
 # How far a branch may be moved, each way. These are what the MUX can absorb,
@@ -1532,8 +1527,6 @@ def _install_branch_stamp_align(pipe, cfg):
     if not names:
         return
     producer = bool(cfg.get("transformProducer"))
-    global _branch_align_live_retime
-    _branch_align_live_retime = producer
     import ts_psi          # lazy, pure stdlib (embedded-core pattern)
     import ts_timeline
 
@@ -3180,40 +3173,6 @@ def handle_bus_reinput(data):
     emit_event({"event": "bus_reinput_done", "id": req_id})
 
 
-def _tsdemuxes_in(bin_):
-    """Every `tsdemux` inside `bin_`, at any depth."""
-    out = []
-    for e in bin_.iterate_recurse():
-        f = e.get_factory()
-        if f is not None and f.get_name() == "tsdemux":
-            out.append(e)
-    return out
-
-
-def _retime_live_branch(bin_):
-    """A live input add into a pipeline whose alignment is `transformProducer`:
-    retime every tsdemux the branch brings exactly as `_install_branch_stamp_align`
-    retimes the start payload's — its access units leave at their producer's
-    content time like the siblings'. Called after linking, before the bin plays.
-    No-op for any other pipeline (a mux-mode branch is offset once off a settle
-    window a live add never had)."""
-    if not _branch_align_live_retime:
-        return
-    for demux in _tsdemuxes_in(bin_):
-        sink_pad = demux.get_static_pad("sink")
-        if sink_pad is None:
-            continue
-        name = demux.get_name()
-        sys.stderr.write(f"[gst-runner.py] branchAlign: {name} retime: armed on a live input add\n")
-        branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name)
-
-
-def _forget_live_retime(bin_):
-    """The live branch `bin_` is going (already NULL): forget its demuxes' retimes."""
-    for demux in _tsdemuxes_in(bin_):
-        _branch_align.pop(demux.get_name(), None)
-
-
 def _remove_live_bin(bin_, agg=None):
     """Stop the branch (the pushing side — NULL ends its thread; no pad probe,
     one on its own src pad would deadlock the NULL join), unlink it, release
@@ -3222,7 +3181,6 @@ def _remove_live_bin(bin_, agg=None):
     # polled socket may fire for a branch that is being taken away.
     source_gate.forget_sources_in(bin_)
     bin_.set_state(Gst.State.NULL)
-    _forget_live_retime(bin_)
     src = bin_.get_static_pad("src")
     agg_pad = src.get_peer() if src is not None else None
     if src is not None and agg_pad is not None:
@@ -3318,9 +3276,6 @@ def handle_bus_input_add(data):
         parent.remove(bin_)
         emit_command_error(req_id, f"bus_input_add: link failed ({link})")
         return
-    # A transform producer's live input is retimed like its start-time ones
-    # (armed before it plays — the retime holds the first bus buffers).
-    _retime_live_branch(bin_)
     # Link first, then run: a source-headed branch pushes the moment it is
     # PLAYING, and its sticky events need the peer to exist.
     bin_.sync_state_with_parent()

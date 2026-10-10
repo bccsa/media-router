@@ -7,10 +7,6 @@
  * on `@media-router/engine`, and nothing in `packages/engine` imports it back.
  */
 export {
-    RETIMED_PACER_SLACK_MS,
-    branchIgnorePcr,
-    clampMixLatencyMs,
-    retimedMixLatencyMs,
     buildAudioMixInput,
     build302mEncodeBranch,
     build302mMixBranch,

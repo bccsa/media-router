@@ -3,7 +3,6 @@
 #include <set>
 #include <string>
 
-#include "branch_align.h"
 #include "ipc.h"
 #include "json_util.h"
 #include "runner.h"
@@ -39,7 +38,6 @@ void emit_done(const char* event, const std::string& name, const std::string& re
 void remove_bin(GstElement* bin, GstElement* agg_or_null) {
     gate::forget_sources_in(bin);
     gst_element_set_state(bin, GST_STATE_NULL);
-    if (GST_IS_BIN(bin)) align::forget_live(GST_BIN(bin));
     GstPad* src = gst_element_get_static_pad(bin, "src");
     GstPad* agg_pad = src ? gst_pad_get_peer(src) : nullptr;
     if (src && agg_pad) gst_pad_unlink(src, agg_pad);
@@ -181,9 +179,6 @@ void handle_bus_input_add(JsonObject* data) {
     if (parent_obj) gst_object_unref(parent_obj);
     gst_object_unref(agg);
 
-    // A transform producer's live input is retimed like its start-time ones
-    // (armed before it plays — the retime holds the first bus buffers).
-    align::install_live(GST_BIN(bin));
     // Link first, then run: a source-headed branch pushes as soon as it plays.
     gst_element_sync_state_with_parent(bin);
     g_live.insert(name);
