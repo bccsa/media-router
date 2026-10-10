@@ -603,25 +603,41 @@ void install(const gchar* name, GstElement* demux, GstPad* sink) {
     g_retime.push_back(st);
 }
 
+namespace {
+
+/** Release what one state holds: held buffers, the pad-added handler, refs. */
+void release(State& st) {
+    std::vector<GstBuffer*> held;
+    {
+        std::lock_guard<std::mutex> lock(st.m);
+        held.swap(st.held);
+    }
+    for (GstBuffer* b : held) gst_buffer_unref(b);
+    if (st.pad_added_id && st.demux) g_signal_handler_disconnect(st.demux, st.pad_added_id);
+    st.pad_added_id = 0;
+    if (st.sink_pad) gst_object_unref(st.sink_pad);
+    st.sink_pad = nullptr;
+    if (st.demux) gst_object_unref(st.demux);
+    st.demux = nullptr;
+}
+
+}  // namespace
+
 /** Drop the registry and every ref a state holds. The probes stay on their pads
  *  (they hold the state) until the pipeline goes, so the drain at stop still
  *  retimes what tsdemux flushes — as the python twin's probes do. */
 void clear() {
-    for (auto& st : g_retime) {
-        std::vector<GstBuffer*> held;
-        {
-            std::lock_guard<std::mutex> lock(st->m);
-            held.swap(st->held);
-        }
-        for (GstBuffer* b : held) gst_buffer_unref(b);
-        if (st->pad_added_id && st->demux) g_signal_handler_disconnect(st->demux, st->pad_added_id);
-        st->pad_added_id = 0;
-        if (st->sink_pad) gst_object_unref(st->sink_pad);
-        st->sink_pad = nullptr;
-        if (st->demux) gst_object_unref(st->demux);
-        st->demux = nullptr;
-    }
+    for (auto& st : g_retime) release(*st);
     g_retime.clear();
+}
+
+void forget(GstElement* demux) {
+    for (auto it = g_retime.begin(); it != g_retime.end(); ++it) {
+        if ((*it)->demux != demux) continue;
+        release(**it);
+        g_retime.erase(it);
+        return;
+    }
 }
 
 }  // namespace mr::align::rt

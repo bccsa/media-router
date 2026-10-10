@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+    RETIMED_PACER_SLACK_MS,
+    branchIgnorePcr,
+    clampMixLatencyMs,
+    retimedMixLatencyMs,
     buildAudioMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
@@ -431,5 +435,73 @@ describe('fan-in hop latency — the hop costs mixLatencyMs, not a PTS lead', ()
         expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).mixerLatencyNs).toBe(
             20_000_000,
         );
+    });
+});
+
+describe('buildAudioMixInput — retimed (transform-producer) fan-in', () => {
+    it('the pacer keeps its sync but gets the ahead slack (content stamped ahead passes at arrival pace)', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], retimed: true });
+        expect(fragment).toContain(
+            `identity name=mixin_out sync=true ts-offset=-${RETIMED_PACER_SLACK_MS * 1_000_000}`,
+        );
+        expect(RETIMED_PACER_SLACK_MS).toBeGreaterThanOrEqual(9_000); // covers the 8.3 s lead measured
+    });
+
+    it('drops ignore-pcr on every branch: the retime replaces tsdemux timestamps', () => {
+        const { fragment, demuxes } = buildAudioMixInput({
+            sources: [SRC, SRC2],
+            retimed: true,
+            liveInputs: true,
+        });
+        expect(fragment).not.toContain('ignore-pcr');
+        expect(demuxes).toEqual([liveDemuxName('mixin', 'c1'), liveDemuxName('mixin', 'c2')]);
+        for (const d of demuxes) expect(fragment).toContain(`tsdemux name=${d} latency=0 !`);
+    });
+
+    it('a single-source retimed fan-in is the direct branch, no pacer', () => {
+        const { fragment, demuxes } = buildAudioMixInput({ sources: [SRC], retimed: true });
+        expect(fragment).not.toContain('identity');
+        expect(fragment).not.toContain('ignore-pcr');
+        expect(demuxes).toEqual(['mixin_demux0']);
+    });
+
+    it('a live add renders the same branch text as the retimed start-time branch', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC], retimed: true, liveInputs: true });
+        const live = liveMixInputBranch('mixin', SRC, { ignorePcr: branchIgnorePcr({ retimed: true }) });
+        expect(fragment).toContain(`( name=${live.name} ${live.description} )`);
+    });
+
+    it('off by default — every other caller keeps its string byte for byte', () => {
+        const a = buildAudioMixInput({ sources: [SRC, SRC2] }).fragment;
+        expect(a).toContain('ignore-pcr=true');
+        expect(a).toMatch(/identity name=mixin_out sync=true(?! ts-offset)/);
+        expect(pacedMixer({ name: 'm', latencyNs: 1, caps: 'c', pacerName: 'p' })).toMatch(
+            /identity name=p sync=true$/,
+        );
+    });
+
+    it('branchIgnorePcr: explicit wins, else off when retimed, else the default', () => {
+        expect(branchIgnorePcr({})).toBeUndefined();
+        expect(branchIgnorePcr({ retimed: true })).toBe(false);
+        expect(branchIgnorePcr({ retimed: true, ignorePcr: true })).toBe(true);
+        expect(branchIgnorePcr({ ignorePcr: false })).toBe(false);
+    });
+});
+
+describe('retimedMixLatencyMs — a retimed fan-in waits at least the route D', () => {
+    it('the larger of the configured budget and D, clamped like the fan-in', () => {
+        expect(retimedMixLatencyMs(20, 600)).toBe(600);
+        expect(retimedMixLatencyMs(800, 60)).toBe(800);
+        expect(retimedMixLatencyMs(20, 5000)).toBe(2000);
+        expect(retimedMixLatencyMs(20, 0)).toBe(20);
+        expect(retimedMixLatencyMs(Number.NaN, Number.NaN)).toBe(20);
+    });
+
+    it('clampMixLatencyMs is the clamp buildAudioMixInput applies', () => {
+        expect(clampMixLatencyMs(undefined)).toBe(200);
+        expect(clampMixLatencyMs(5)).toBe(20);
+        expect(clampMixLatencyMs(9000)).toBe(2000);
+        const { mixerLatencyNs } = buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9000 });
+        expect(mixerLatencyNs).toBe(clampMixLatencyMs(9000) * 1_000_000);
     });
 });

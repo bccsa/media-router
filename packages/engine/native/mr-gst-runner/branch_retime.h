@@ -16,4 +16,9 @@ void install(const gchar* name, GstElement* demux, GstPad* sink);
 /** Drop the registry and every ref a state holds (pipeline stop / restart). */
 void clear();
 
+/** Forget the retime of `demux` — its live input branch is being removed (the
+ *  branch is already NULL, so no callback runs): handler, held buffers and refs
+ *  go; the pad probes go with the pads. No-op for a demux that is not retimed. */
+void forget(GstElement* demux);
+
 }  // namespace mr::align::rt

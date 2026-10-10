@@ -1421,3 +1421,39 @@ re-anchor.
   a backward step reads as "empty" and holds that much longer before it drains. The
   hold re-settles at its threshold within one delay; the byte cap (≈ 12 s at
   10 Mbit/s) bounds a level the stamps mis-state from growing without limit.
+
+- **Amendment (2026-10-10): the 302M Audio Mixer and Audio Processing are transform
+  producers too.** Both still anchored their egress at their own first PES and left
+  their input demuxes on tsdemux's one-buffer zero points. Field, a RIST-fed box: a
+  ducker (Audio Processing) fed an Audio Mixer beside its own sidechain source. The
+  ducker's egress landed 8.04 s off its input's timeline (the route then carried an
+  8 s lead — see below), so the mixer put the two inputs 7.99 s apart. At its 20 ms
+  budget it discarded the ducked programme as late and the over-early sibling
+  overflowed the 5 s bus input queue: 73 % of the mix was silence-fill. Now, on the
+  contract path:
+  - Both declare `houseTimelineEgress` and `alignBranchesToStamps.transformProducer`
+    on every input demux (programme and sidechain; every mixer input). Their branch
+    `tsdemux` runs without `ignore-pcr`, as the transcoders' do.
+  - **Live adds are retimed.** The mixer takes inputs on and off live (ADR-0008
+    addendum), which bypassed the start payload's demux list. A pipeline started with
+    `transformProducer` now retimes every `tsdemux` a `bus_input_add` brings, before
+    the bin plays, and forgets it on `bus_input_remove` (both runners;
+    `native_runner_protocol_test.py` R, with a mux-mode control). Pipelines started
+    without it are untouched (the n1-mixer).
+  - **The pacer gets ahead slack** (`RETIMED_PACER_SLACK_MS`, 10 s, as `identity
+    ts-offset`). Retimed, running time is content time, and content can be stamped
+    ahead of the clock; holding it to its stamps needs more than the 5 s the bus
+    input queue holds. With the slack the mix passes it at arrival pace, as the
+    mpegts-muxer does. A post-EOS free-run is still paced, after at most the slack.
+  - **The lateness budget is never less than the route's D**
+    (`retimedMixLatencyMs`, and live on `onRoutePlayoutOffsetChanged`). Retimed
+    inputs arrive as late as the route delivers them. Measured on the same box with
+    the timeline fixed, the ducked programme arrived 185 ms (p50) to 561 ms after its
+    content time, and at 20 ms it was dropped entirely. D is the budget the route
+    already has for that lateness, and waiting costs nothing while every input is on
+    time. With the route head's D set to 800 ms: no silence-fill in 90 s, the
+    programme sample-exact at its content time, the sibling within the aggregator's
+    40 ms alignment threshold of its own.
+  - **Not fixed here:** the 8 s lead itself. A RIST ingest's conditioner absorbed
+    sender restarts as clock steps on the reference (PCR) PID, and the audio PIDs
+    never adopted them.
