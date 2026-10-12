@@ -3,12 +3,12 @@
 | Field        | Value |
 |--------------|-------|
 | Document     | DES-MR-TIMING |
-| Version      | 0.3 — for implementation planning |
+| Version      | 0.4 — for implementation planning |
 | Date         | 2026-10-12 |
 | Organisation | BCC South Africa |
 | Design owner | Ivan Slabbert. Decides the open questions in §13.2. |
 | Related      | ADR-0005 (architecture decision record: time-sync backend), ADR-0008, ADR-0011, ADR-0016, ADR-0017, ADR-0018 |
-| Status       | The concept is decided (§13.1) and handed to engineering for implementation planning. Sixteen questions are still open (§13.2). Once they are settled, an ADR records the design and supersedes ADR-0005 decisions 2 and 4 (with their amendments) and ADR-0018. |
+| Status       | The concept is decided (§13.1) and handed to engineering for implementation planning. Fifteen questions are still open (§13.2). Once they are settled, an ADR records the design and supersedes ADR-0005 decisions 2 and 4 (with their amendments) and ADR-0018. |
 | Baseline     | Verified against the code at `2bbd57e7` (v2.0) and the GStreamer 1.28 transport-stream demuxer and muxer sources (`tsdemux`, `mpegtsmux`) |
 
 > **New to MPEG-TS?** Appendix A has a one-minute primer on how timing works
@@ -19,7 +19,7 @@
 > - §13.1 lists what the design owner has decided. Don't reopen these without
 >   the owner.
 > - **Needs owner input (Qn)** marks a point the design owner still has to
->   decide. §13.2 lists all sixteen questions, each with a recommendation and
+>   decide. §13.2 lists the open questions, each with a recommendation and
 >   the migration phase it blocks. Work that doesn't depend on an open
 >   question can go ahead.
 > - §13.3 lists the choices left to the engineer. Record them in the ADR.
@@ -90,7 +90,7 @@ The main risks are:
 - higher latency on some routes, and today's timing settings, which don't
   carry over one-to-one.
 
-They are covered in §12. Sixteen questions still need the design owner's
+They are covered in §12. Fifteen questions still need the design owner's
 decision. §13.2 lists them in the order the migration phases need them.
 
 ## 2. Why the current model keeps producing new faults
@@ -222,9 +222,9 @@ This is the same measurement `aes67-output` already makes for its RTP
 (Real-time Transport Protocol) `timestamp-offset` (`aes67-core/py/aes67_clock.py`),
 raised from one module to the whole engine.
 
-**Needs owner input (Q4).** TAI as the network timescale, with E applied only at
-the network boundary (§4.5), is the recommendation until the design owner
-confirms it.
+**Decided (§13.1).** TAI is the network timescale, and E is applied only at the
+network boundary (§4.5). §4.3 sets out what that makes identical between
+engines.
 
 ### 4.3 Representations
 
@@ -235,6 +235,30 @@ confirms it.
 
 The two representations differ by a constant 33-bit addition, `E − 1 h`. It is
 applied at network egress and at a trusted network ingest, and nowhere else.
+
+**What is identical between engines.**
+- **On the network, PTS are identical.** E is in effect the TAI time at which
+  the engine booted, so `MONO + E` cancels each engine's boot time. Two engines
+  write the same PTS for content that lands at the same instant, to within the
+  clock error between them: microseconds with PTP, milliseconds with NTP.
+- **On the bus, PTS differ between engines.** They count from each engine's
+  boot. If engine A booted 2 h ago and engine B 9 h ago, one instant is 3 h on
+  A's bus and 10 h on B's. This is never visible, because bus PTS never leave
+  an engine unconverted. Content from A lands on B's bus at B's own time for
+  that instant, where B's local content for the same instant sits.
+
+Network PTS are identical only while all of these hold:
+- Both engines latched E while synchronised, and no clock step has happened
+  since (§10.3).
+- Both kernels have the TAI−UTC offset set (37 s in 2026). Without it,
+  `CLOCK_TAI` equals UTC and that engine's PTS are 37 s off. The engine checks
+  the offset before it latches E, as `aes67_clock.py` already does.
+- The content landed at the same instant. With Restamp, content lands at its
+  arrival plus the source's lead, so one source reaching two engines over
+  different delays gets different PTS. Only Trust keeps the origin's PTS.
+- The egress writer (Phase 5) is in place. Until then, network egress forwards
+  the bus bytes unchanged, so the wire carries boot-based PTS. That is
+  harmless, because receivers restamp them.
 
 ### 4.4 The 33-bit wrap
 
@@ -898,6 +922,7 @@ mitigation.
 | 2026-10-11 | **The concept, P1–P6.** Each ingest restamps PTS/DTS from the house clock, locked to the source PCR. Processing keeps PTS, and aligners wait for their slowest input. Egress keeps PTS and writes a new PCR from the house clock. PTS between engines is absolute. The ingest offset is the only content-time control. |
 | 2026-10-11 | **Trust is an operator selection per network ingest.** Restamp is the default, and there is no automatic mode. A trusted remote stream makes every local aligner wait for its transit, which is wrong for most live feeds from other sites. |
 | 2026-10-12 | **Each network egress writes its own PCR from the emission clock,** `PCR = H(emission) − D_e` (§7). Computing the PCR once upstream and only translating it at egress was considered and rejected. |
+| 2026-10-12 | **The network timescale is TAI, applied only at the network boundary** (was Q4). On the network, PTS = `H mod 2^33` with `H = MONO + E`, identical between engines for content that lands at the same instant (§4.3). Inside an engine, the bus keeps boot-based PTS (`MONO + 1 h`), so bus PTS differ between engines; a network egress and a Trust ingest convert. Running every pipeline on TAI was considered and rejected (§4.5). |
 
 ### 13.2 Needs the design owner's input
 
@@ -910,7 +935,7 @@ is marked **Needs owner input (Qn)**.
 | Q1 | Release scope and order: which phases ship in which release? | Phases 0–4 in order: they remove the in-engine faults. Phase 5 once a route needs origin alignment and Phase 0's time sync is deployed. Phase 6 after phases 0–5 have run for a release cycle in the field. | Planning |
 | Q2 | What is still fixed in the current model while the migration runs? Open examples: #830, #836, and the stale statements in §11.6. | Only faults that are on air now and can't wait for the phase that removes the mechanism. Correct the stale statements now; they cost little. | Now |
 | Q3 | The image's time source. Why was htpdate chosen? | chrony replaces systemd-timesyncd and disciplines the clock continuously. htpdate stays for the boot step if some sites block outbound NTP. PTP where the site supports it. | Phase 0 |
-| Q4 | The network timescale, and where E applies | TAI, with E applied only at the network boundary (§4.2, §4.5). | Phase 0 |
+| Q4 | The network timescale, and where E applies | **Decided on 2026-10-12** as recommended: TAI, with E applied only at the network boundary (§13.1). | — |
 | Q5 | The default landing for PCR-locked sources | Source-natural (§5.1), which is deterministic. Show the measured lead, so an operator can set a negative O no larger than the minimum lead (R12). | Phase 1 |
 | Q6 | A per-PID trim at ingest | Allow it, bounded (e.g. ±500 ms), for sources with a fixed internal A/V error. | Phase 1 |
 | Q7 | Why was #837 reverted? | None: only the owner knows. Phase 2 repeats #837's approach for the mixers and audio processing, so the reason must be known first (R15). | Phase 2 |
@@ -950,7 +975,7 @@ questions a phase needs answered before it starts.
 
 | Phase | Delivers | Makes possible | Owner input first |
 |---|---|---|---|
-| 0 | Time-sync status in the engine; chrony in the image; epoch E with step detection; lateness telemetry on every bus input | Measuring everything that follows | Q3, Q4 |
+| 0 | Time-sync status in the engine; chrony in the image; epoch E with step detection; lateness telemetry on every bus input | Measuring everything that follows | Q3 |
 | 1 | Ingest restamp (virtual STC) writing house time into the bytes; capture producers on identity egress; video-encoder on house time; ASRC at captures | Every bus edge carries house time in-band. Existing consumers keep working, because their K becomes constant. | Q5, Q6 |
 | 2 | Splitter pass-through; mixers and audio processing on identity egress (as #837); muxer keeps sparse-PID PTS; ducking in the pipeline | P3 on every internal hop | Q7, Q8, Q9 |
 | 3 | Formula demux on every consumer; ASRC at decode and at outputs | Removal of retime, branch alignment and K learning | — |
