@@ -3,12 +3,12 @@
 | Field        | Value |
 |--------------|-------|
 | Document     | DES-MR-TIMING |
-| Version      | 0.4 — for implementation planning |
+| Version      | 0.5 — for implementation planning |
 | Date         | 2026-10-12 |
 | Organisation | BCC South Africa |
 | Design owner | Ivan Slabbert. Decides the open questions in §13.2. |
 | Related      | ADR-0005 (architecture decision record: time-sync backend), ADR-0008, ADR-0011, ADR-0016, ADR-0017, ADR-0018 |
-| Status       | The concept is decided (§13.1) and handed to engineering for implementation planning. Fifteen questions are still open (§13.2). Once they are settled, an ADR records the design and supersedes ADR-0005 decisions 2 and 4 (with their amendments) and ADR-0018. |
+| Status       | The concept is decided (§13.1) and handed to engineering for implementation planning. Sixteen questions are still open (§13.2). Once they are settled, an ADR records the design and supersedes ADR-0005 decisions 2 and 4 (with their amendments) and ADR-0018. |
 | Baseline     | Verified against the code at `2bbd57e7` (v2.0) and the GStreamer 1.28 transport-stream demuxer and muxer sources (`tsdemux`, `mpegtsmux`) |
 
 > **New to MPEG-TS?** Appendix A has a one-minute primer on how timing works
@@ -23,7 +23,7 @@
 >   the migration phase it blocks. Work that doesn't depend on an open
 >   question can go ahead.
 > - §13.3 lists the choices left to the engineer. Record them in the ADR.
-> - Risks are in §12. The text cites them (R1–R20) where they arise.
+> - Risks are in §12. The text cites them (R1–R21) where they arise.
 
 ---
 
@@ -52,6 +52,11 @@ clock exactly once, by the ingest that brings it into the engine:
 
 The ingest offset is the only adjustment of content time anywhere in the system.
 
+After ingest there are no deadlines. Content leaves each node as soon as
+processing and alignment allow, and nothing is discarded for being late. Every
+module shows the latency it adds, and how late its output is against the house
+clock, in ms (§9.5).
+
 This replaces the current model. Today the TS bytes carry the source's
 timeline, and house time travels beside them on the buffers of the engine's
 internal bus (the transport between modules). Every hop re-estimates the
@@ -70,9 +75,9 @@ Verification found six refinements, and they are part of this design:
    explicitly, and the fallback raises an alarm (§5).
 3. **Audio is rate-matched at every clock boundary.** Restamping fixes the
    labels, not the sample counts (§5, §8).
-4. **Every latency has an owner.** An aligner owns its window W, an output owns
-   its presentation delay D, and a network egress owns its egress delay D_e
-   (all defined in §4.6). Lateness is measured everywhere (§9).
+4. **Latency is measured, not enforced.** An aligner's wait limit W, an output's
+   presentation delay D and a network egress's delay D_e (all defined in §4.6)
+   follow measured lateness. None of them is a deadline (§9).
 5. **Trust between engines is an operator choice, and it is verified.** It is
    never automatic, because a trusted remote stream makes every local aligner
    wait for its transit. A Trust selection is checked against the stream's
@@ -90,7 +95,7 @@ The main risks are:
 - higher latency on some routes, and today's timing settings, which don't
   carry over one-to-one.
 
-They are covered in §12. Fifteen questions still need the design owner's
+They are covered in §12. Sixteen questions still need the design owner's
 decision. §13.2 lists them in the order the migration phases need them.
 
 ## 2. Why the current model keeps producing new faults
@@ -130,7 +135,7 @@ How the current model (ADR-0005 and its amendments) works:
   never reach the wire: the PCR a receiver sees is whatever the producer wrote,
   and every receiving engine re-anchors the stream as if it were foreign.
 
-Seven root causes recur:
+Eight root causes recur:
 
 1. **Two timelines travel together, and every hop must re-join them.** The bytes
    carry source time and the buffer carries house time. Consumers reconcile them
@@ -167,6 +172,10 @@ Seven root causes recur:
 7. **The house clock has no meaning between devices.** Engine-to-engine streams
    are re-anchored like any external feed. Inter-engine lipsync is a chain of
    per-hop estimates, not a property of the system.
+8. **Late content is discarded.** Outputs shed what misses the playout contract
+   (the backlog shedder, seen on the 302M audio outputs), leaky queues drop what
+   they cannot hold, and GStreamer sinks and decoders drop late buffers by
+   default. A passing delay therefore becomes lost content.
 
 **What it costs.** The app holds about 12,000 lines of timing-specific source
 and 11,600 lines of tests. That is about a third of each pipeline runner: roughly
@@ -176,8 +185,8 @@ defend or repair the relation between the two timelines.
 
 ## 3. The concept as principles
 
-Principles P1–P6 state the concept. P7–P10 are refinements this design adds so
-that P1–P6 hold in practice.
+Principles P1–P6 and P11 state the design owner's concept. P7–P10 are
+refinements this design adds so that the concept holds in practice.
 
 | # | Principle |
 |---|-----------|
@@ -188,9 +197,10 @@ that P1–P6 hold in practice.
 | P5 | **Egress keeps PTS and writes a new PCR from the house clock.** |
 | P6 | **An ingest trusts another engine's PTS only when the operator selects it and the stream qualifies.** Qualifying means both house clocks are disciplined to one reference, and a descriptor in the stream's PMT declares house time and the sender's sync state (§7, §10.4). By default, and whenever a stream does not qualify, the ingest restamps. |
 | P7 | **Audio is rate-matched at every clock-domain boundary:** at capture, at the first decode of a foreign-clocked stream, and at the output device. On the bus, sample count and PTS agree. |
-| P8 | **Latency has owners.** An aligner owns its window W, an output its presentation delay D, a network egress its egress delay D_e. Each is sized from measured lateness, never inherited through the graph. |
+| P8 | **Latency is measured, never enforced.** An aligner's wait limit W, an output's presentation delay D and a network egress's delay D_e follow the measured lateness of what passes through, and grow when it grows. None of them is a deadline, and none is inherited through the graph. |
 | P9 | **Demux by formula.** A consumer's running time is a fixed function of the in-band PES PTS. |
 | P10 | **House time on the network is TAI.** It is derived from the monotonic house clock by an epoch offset latched once. |
+| P11 | **Nothing is discarded for being late.** After ingest there is no deadline: content leaves each node as soon as processing and alignment allow. Every module measures and shows the latency it adds, and how late its output is against the house clock, in ms. |
 
 ## 4. Time bases
 
@@ -293,10 +303,11 @@ ingest.
 |---|---|
 | content time | A PTS on the house timescale: when the content "happened" as far as the engine is concerned. |
 | lateness λ | House time when data reaches a point, minus its PTS. Because PTS is house time, it can be measured directly at any node. Negative means early. |
+| added latency | The lateness a module adds: lateness at its output minus lateness at its input. For an aligner it includes the wait for its slowest input. |
 | ingest offset O | The per-ingest shift of content time (P4). |
-| W | Alignment window: the aggregator `latency` of a mux, mixer or compositor. |
-| D | Presentation delay. An output renders at `PTS + D`. |
-| D_e | Egress delay. It sets `PTS − PCR` for third-party receivers. |
+| W | Wait limit of an aligner (mux, mixer or compositor; the aggregator `latency`): how long it waits for an input that delivers neither data nor a gap. It sits well above that input's measured lateness, so it fires only when the input has failed. It is not a deadline. |
+| D | Presentation delay. An output renders at `PTS + D`, where D is the lateness of content reaching the output plus a margin for jitter. Late content raises D; it is never dropped. |
+| D_e | Egress delay. It sets `PTS − PCR` for third-party receivers and follows the lateness at the egress. The egress itself sends everything as it arrives. |
 | E | The engine's epoch offset, TAI − MONOTONIC. |
 | H | House time on the network timescale, `MONO + E`. |
 
@@ -353,6 +364,9 @@ A source restart, PCR discontinuity or rewind re-locks the virtual STC. House
 time does not jump, so downstream sees a *gap*: no content for the length of the
 outage.
 
+- **The gap is signalled.** The ingest sends a gap (a GStreamer gap event) for
+  the missing time as soon as it knows of it, so aligners downstream don't wait
+  for content that will not come (§6).
 - **Overlap.** If new content would land before content already emitted, the
   ingest drops the overlap, so PTS stays monotonic per elementary stream.
 - **A PES that straddles a re-lock** is mapped by whichever mapping's STC range
@@ -463,11 +477,20 @@ so the voice lands `D_monitor + reaction` after the content it answers.
 3. **Codecs keep frame PTS.** Audio encoders that derive timestamps from sample
    counts (`perfect-timestamp`) are correct only on house-rate PCM (P7).
 4. **Aligners** (`mpegtsmux`, `audiomixer`, a future compositor) hold every input
-   until the slowest has delivered data up to time T, then emit T.
-   - In GStreamer terms the aggregator's latency is W. W is at least the largest
-     input lateness plus a margin. How W is sized **needs owner input (Q8)**;
-     risk R9.
-   - A dark input becomes silence (mixer) or is left out (mux) once W expires.
+   until the slowest has delivered data, or a gap, up to time T, then emit T.
+   - **A late input is waited for, never dropped (P11).** The aligner emits as
+     soon as every input has caught up, so in normal operation its added latency
+     is the wait for its slowest input.
+   - **Absence is signalled, not guessed.** An ingest that has lost its source
+     sends a gap (§5.2), and a module that stops ends its stream. A sparse input,
+     such as subtitles, signals gaps between its cues, so the aligner knows how
+     far it is complete. The mixer fills a gap with silence; the mux leaves it
+     out.
+   - **W is a fault limit, not a deadline.** In GStreamer terms the aggregator's
+     latency is W: how long it waits for an input that delivers neither data nor
+     a gap. W sits well above that input's measured lateness, so it fires only
+     when the input has failed, with an alarm (R21). How W is set **needs owner
+     input (Q8)**.
    - Nothing is placed by arrival. The elements that still do are listed in
      §11.3 (R10).
 5. **Mux.** `mpegtsmux` writes `PES PTS = running time + 1 h`, which is the bus
@@ -495,6 +518,9 @@ so the voice lands `D_monitor + reaction` after the content it answers.
   - Changing D_e is a PCR discontinuity, flagged with `discontinuity_indicator`
     (the TS flag that tells receivers the PCR jumped).
   - The PCR's frequency is exactly the house clock's.
+- **Nothing is dropped for lateness (P11).** The egress sends everything as it
+  arrives. When the lateness at the egress grows past D_e, D_e is raised. Each
+  raise is a flagged PCR discontinuity, so D_e starts with a margin (Q8).
 - **Why the mux PCR is not kept.** It is house-locked, but it rides on the mux's
   output timing:
   - a third-party decoder would slave to our lateness jitter and get only 125 ms
@@ -536,21 +562,32 @@ so the voice lands `D_monitor + reaction` after the content it answers.
 - **When an output renders.** At `PTS + D`. The sink's `ts-offset` (its fixed
   render delay) is D, minus the pipeline latency the sink adds, plus a device
   trim.
+- **D follows lateness (P8, P11).** D is the lateness of content reaching the
+  output, plus a margin for jitter. It is measured, not a deadline: content that
+  arrives after `PTS + D` raises D and is played. Nothing is dropped. This
+  replaces today's backlog shedder and rebase, which discard what misses the
+  playout contract (§2, cause 8).
 - **Who owns D.** The output, or a *presentation group*: the video and audio legs
-  seen and heard together share one D. There is one engine-wide default. D is
-  never resolved through the graph. How groups are formed **needs owner input
-  (Q10)**.
+  seen and heard together share one D, the largest their members need. D starts
+  from one engine-wide default and is never resolved through the graph. How
+  groups are formed **needs owner input (Q10)**.
+- **Lowering D.** A raised D stays raised until a gap in the content, where it
+  can come down without losing anything, or until an operator starts an explicit
+  catch-up, which skips content and reports how much. **Needs owner input
+  (Q17)**; see S10.
+- **No element drops late data.** Video sinks' `max-lateness`, QoS
+  (quality-of-service) frame skipping in decoders, audio sinks' skipping of late
+  samples, and leaky queues are switched off or replaced (§11.3, R10).
 - **Queues.** A leg's queues must hold what the leg is told to hold: the largest
-  earliness plus D plus bursts. Queue sizing follows D (#830, R9).
-- **Late content.** Lateness beyond D is measured directly (`now − PTS`) and
-  alarmed. The policy is per output or group: drop late content, or raise the
-  group's D (today's "never drop" requirement). D is lowered only by an explicit,
-  controlled catch-up. The late policy **needs owner input (Q10)**.
+  earliness plus D plus bursts. Queue sizing follows D (#830, R9). A full queue
+  is a resource fault and is alarmed as one; it is not a lateness policy.
 - **Leaving the house clock.**
   - Audio leaves through ASRC to the device clock. ASRC replaces skew slaving,
     which drops or inserts samples at the drift tolerance (R5).
-  - Video leaves through frame repeat or drop, or through genlock (locking the
-    output's timing to an external reference) where the hardware has it.
+  - Video leaves through frame repeat or drop to match the display's rate, or
+    through genlock (locking the output's timing to an external reference) where
+    the hardware has it. This is rate matching between clocks, not a lateness
+    policy.
 
 ## 9. Lipsync and latency
 
@@ -618,16 +655,16 @@ Lateness is measured, not inferred. It grows through four contributions:
 - processing;
 - every aligner's wait.
 
-Each owner sizes from what it measures:
-- **Aligner window W:** at least the spread between its latest and earliest
-  input, plus a margin.
-- **Presentation delay D:** at least the lateness at the output, plus device
-  latency, plus a margin.
-- **Egress delay D_e:** at least the lateness at the egress, plus the receiver's
-  buffer.
+Each follows what it measures:
+- **Aligner wait limit W:** well above the spread between its latest and
+  earliest input, so it fires only on a failed input.
+- **Presentation delay D:** the lateness at the output, plus device latency,
+  plus a margin.
+- **Egress delay D_e:** the lateness at the egress, plus the receiver's buffer.
 
-Each may be configured with an alarm, or raised automatically within limits.
-Which, and the limits, **need owner input (Q8, Q10)**; risk R9.
+D and D_e are raised automatically when lateness grows past them; nothing is
+dropped instead (P11). Alarm thresholds, and how W is set, **need owner input
+(Q8, Q10)**; risk R9.
 
 Two consequences need stating:
 - **Source-natural landing (§5.1) costs the source's own PTS−PCR lead.** That is
@@ -637,6 +674,24 @@ Two consequences need stating:
 - **Aligning with a remote stream costs its transit.** A local route that aligns
   with a trusted remote stream inherits that transit, which can be seconds over a
   WAN. Alignment cannot avoid this, which is why Trust is opt-in (§10.4).
+
+### 9.5 Lateness on every module
+
+Lateness is measured, not enforced, so it has to be visible. Every module shows,
+in ms:
+
+- **Output lateness:** how late its output is against the house clock
+  (`now − PTS` as content leaves). An ingest shows a negative value: its content
+  is early by the source's lead.
+- **Added latency:** output lateness minus input lateness, for each input. An
+  aligner also shows which input it is waiting for. An output also shows its D
+  and its device latency, so the total says when the content is actually seen
+  or heard.
+- **Alarms** at thresholds the operator sets. They warn; they never drop
+  content.
+
+Modules in the PipeWire graph carry no PTS; they show the latency PipeWire
+reports for them.
 
 ## 10. Clock discipline and trust
 
@@ -762,7 +817,7 @@ used:
 | teletext-subtitles | Processing | Identity egress. K learned from stamp rises (`mrpeshouse`, `StampModel`). | Formula demux; no learning. |
 | rist-output, srt-output, mpegts-ip-output | Egress | Byte pass-through, unpaced (`sync=false`). The wire PCR is whatever the producer wrote. | PTS translated to TAI; new PCR `H − D_e`; descriptor. |
 | aes67-output | Egress | Remuxes to RTP. RTP time = TAI when `ptpSync`, with the offset measured per module at start. Its `tsdemux` is unaligned. | Formula demux; engine-wide E. |
-| video-player, audio-decoder, audio-output-302m | Presentation | `sync=true` at stamp + D (route-head walk, runtime raise, rebase). One-shot branch alignment. Audio skew-slaved. | `PTS + D`, owned by the output or its group. Formula demux; queues sized from D; ASRC to the device. |
+| video-player, audio-decoder, audio-output-302m | Presentation | `sync=true` at stamp + D (route-head walk, runtime raise, rebase). One-shot branch alignment. Audio skew-slaved. Late data shed (backlog shedder) or dropped by the sink. | `PTS + D`, with D following lateness, owned by the output or its group. Nothing dropped for lateness. Formula demux; queues sized from D; ASRC to the device. |
 
 **Outside the bus.** audio-input, audio-output, n1-mixer and audio-dynamics live
 in the PipeWire graph and carry no PTS. They are deprecated or VU-only (VU: a
@@ -786,7 +841,7 @@ decision 9 (PipeWire removal).
 - **PTP** (linuxptp) is packaged, hardened after the 2026-08 clock incident, and
   validated on a two-box bench.
 
-### 11.3 What stands between today's code and P3
+### 11.3 What stands between today's code and this design
 
 1. **The splitter is a second ingest.** It discards the wire PTS and re-anchors
    on its own arrival.
@@ -814,6 +869,12 @@ decision 9 (PipeWire removal).
 
 6. **video-encoder's PES are not house time.** They carry running time since
    PLAYING.
+7. **Late data is discarded (P11):**
+   - the backlog shedder and rebase on presentation legs, seen on the 302M audio
+     outputs;
+   - leaky queues (the 1 s player ES queue, the 5 s edge queues);
+   - sink and decoder defaults that drop late buffers (`max-lateness`, QoS);
+   - aggregators that time out on a slow input and then drop its late data.
 
 ### 11.4 Mechanisms and their fate
 
@@ -823,7 +884,7 @@ decision 9 (PipeWire removal).
 | Wire conditioner: step absorption, program-wide steps (ADR-0018), PCR at `PTS − 250 ms` | Same files | (included above) | Removed. A source discontinuity becomes an ingest re-lock. |
 | Branch alignment and per-AU retime | `gst-pipeline-runner.py`, `branch_retime.{py,cpp}`, `branch_align.cpp` | 2,100 | Replaced by formula demux. |
 | Subtitle K recovery | `mrpeshouse`, `subtitle_stamp_model.py`, `subtitle_native.py` | 700 | Replaced by formula demux. |
-| Lateness handling: shedder, raise, rebase | `backlog_shed.{py,cpp}`, runners, `backlogShed.ts`, `playoutReanchor*.ts`, `PlayoutRaises.ts` | 2,600 | Reduced to `now − PTS` against an output-owned D, with an optional raise of the group's D. |
+| Lateness handling: shedder, raise, rebase | `backlog_shed.{py,cpp}`, runners, `backlogShed.ts`, `playoutReanchor*.ts`, `PlayoutRaises.ts` | 2,600 | Shedder and rebase removed: nothing is discarded for lateness. What remains is `now − PTS`, shown on every module, with D raised to follow it. |
 | Route-head D, latch-repair resolution | `playoutOffset.ts`, `latchRepair.ts`, `MediaRouter` head walk | 300 | Replaced by output-owned D. |
 | Render keep-up | `render_lag.py`, runners, `renderLag.ts` | 570 | Kept (diagnostic). |
 | Scheduling clock | Both runners | — | Kept. |
@@ -847,13 +908,18 @@ decision 9 (PipeWire removal).
 5. **Engine clock state:**
    - the engine epoch E, time-sync status and step detection;
    - a continuous time source in the image: chrony, or PTP where available.
-6. **Lateness telemetry** on every bus input, with W, D and D_e sized from it.
+6. **Lateness on every module** (§9.5): output lateness and added latency in ms,
+   with D and D_e following it.
 7. **Ducking in the pipeline,** on a PTS-aligned key, and a PTS-aligned
    interleave.
 8. **Manager work:** settings for the ingest offset, the timing mode (Trust or
-   Restamp), D and presentation groups, and D_e. The measured lead, transit,
-   lateness and sync state are shown beside them, with their alarms (R14).
+   Restamp), presentation groups and lateness alarms. Every module's lateness and
+   added latency (§9.5), and the measured lead, transit and sync state, are shown
+   beside them (R14).
 9. **Migration of today's timing settings** to the new ones (Q9, R13).
+10. **No late drops:** remove the shedder and rebase; switch off late-drop
+    settings in sinks, decoders and queues; signal gaps from ingests and sparse
+    producers (§6).
 
 ### 11.6 Stale statements found during verification
 
@@ -869,9 +935,10 @@ code. Whether to correct them now is part of Q2.
 
 ## 12. Shortcomings and risks
 
-### 12.1 Shortcomings — limits of the concept itself
+Levels: H = high, M = medium, L = low. Rows are in level order. Numbers stay
+stable between versions, so a later addition can sit out of sequence.
 
-Levels: H = high, M = medium, L = low.
+### 12.1 Shortcomings — limits of the concept itself
 
 | # | Level | Shortcoming | Consequence and handling |
 |---|---|---|---|
@@ -881,6 +948,7 @@ Levels: H = high, M = medium, L = low.
 | S4 | M | **Latency follows the slowest aligned input.** | Source-natural landing adds the source's PTS−PCR lead. Aligning with a remote stream adds its transit. Content cannot be aligned without waiting for it. |
 | S5 | M | **Bad source clocks still need estimation.** | A broken PCR, no PCR, or bursty delivery (vMix CBR, some software encoders, HLS) cannot be locked. The degraded fallback is a smaller arrival-based estimator, confined to ingest. |
 | S6 | M | **Trust is a per-link operator decision.** | Trust where it isn't needed adds the link's transit to every local route that aligns with it. Restamp where origin alignment is needed loses that alignment. The module should show the link's measured transit and whether the stream qualifies, so the choice is informed. |
+| S10 | M | **Latency comes down only at gaps.** | Because nothing is discarded for being late, a stall that delays content raises D and D_e, and they stay raised until a gap in the content or an operator's catch-up (Q17). The output stays that much later meanwhile, and its lateness display shows it. |
 | S7 | L | **Talent feedback loops tie an ingest offset to an output's D.** | An interpreter microphone's O must follow its monitor's D. A D raise without a matching O shifts the interpretation. |
 | S8 | L | **Changing content time at ingest is lossy.** | A live offset edit, a re-lock or a trust-mode switch produces a gap, or drops the overlap. Content cannot move without a discontinuity. |
 | S9 | L | **The absolute PTS wraps at the same instant fleet-wide.** | It happens every 26.5 h. Any consumer with a wrap bug fails everywhere at once, not at random per device as today. |
@@ -900,14 +968,15 @@ mitigation.
 | R6 | M | **Clock steps after start.** Late boot sync, a timesyncd step above 0.4 s, a manual change or a leap second leaves E stale, and trust is degraded until a re-latch. | Wait for sync at start; slew-only policy; step detection; explicit re-epoch (§10.3). | Q15 |
 | R7 | M | **House-clock frequency excursions.** A daemon correcting an offset by slewing changes MONOTONIC's rate, by up to the kernel's 500 ppm slew limit; at that rate, a 50 ms correction lasts 100 s. Every output and every ingest loop must follow. | Bound the slew rate: chrony `maxslewrate`; PTP is already clamped to 100 ppm. | Q3 |
 | R8 | M | **Trusting a wrong upstream.** A buggy or misconfigured engine's PTS propagates with no local correction. | Trust is opt-in per ingest. The declaration and PCR checks run continuously and drop a stream that stops qualifying to restamp, with an alarm. Mode switches happen only at gaps. | Q14 |
-| R9 | M | **Budget sizing.** W, D or D_e too small means late or dropped content; too large means latency and queue memory (5 s edge queues, ADR-0015 byte caps, Pi memory). Automatic raises interact with queue sizing (#830). | Size from measured lateness; queues follow D; ceilings with alarms. | Q8, Q10 |
-| R10 | M | **Hidden arrival and sample-count behaviour in elements.** Examples: `interleave`, the wall-clock ducker, encoder `perfect-timestamp` tolerance, `audiomixer` thresholds, `videorate`'s grid from segment start. | The §11.3 list becomes an audit checklist, each item replaced or pinned by a fixture. | — |
+| R9 | M | **Queue memory.** D and D_e rise with lateness and come down only at gaps (S10), so queues must hold the largest lateness seen (5 s edge queues, ADR-0015 byte caps, Pi memory). Automatic raises interact with queue sizing (#830). | Queues follow D; memory limits with alarms; a full queue is reported as a resource fault. | Q8, Q10, Q17 |
+| R10 | M | **Hidden arrival, sample-count and late-drop behaviour in elements.** Examples: `interleave`, the wall-clock ducker, encoder `perfect-timestamp` tolerance, `audiomixer` thresholds, `videorate`'s grid from segment start, sinks' `max-lateness`, decoder QoS, leaky queues, aggregator timeouts. | The §11.3 list becomes an audit checklist, each item replaced or pinned by a fixture. | — |
 | R11 | M | **Egress processing cost.** Every network egress now parses the TS, rewrites each PES header and inserts PCR packets, where today it forwards the bytes unchanged. That is new CPU per packet, on every egress of a Pi. | Native code that rewrites headers in place. Measure on a Pi 4 at the largest egress count and bitrate expected, in Phase 5. The per-egress PCR is decided (§13.1), so the cost stays at the egress. | — |
 | R12 | M | **Latency change at cut-over.** With source-natural landing, routes fed by contribution encoders get later than today by the encoder's PTS−PCR lead, about 1 s. Operators and talent will notice. | The ingest shows its measured lead, and a negative O recovers it (§5.5). Release notes explain the change. | Q5 |
 | R13 | M | **Today's timing settings don't map one-to-one.** `playoutOffsetMs`, `lipSyncMs`, `syncOffsetMs`, `mixLatencyMs` and `subtitleDelayMs` have no direct equivalent. A blind migration can count a delay twice, or drop a compensation a site relies on. | An explicit mapping per setting, applied in Phases 2 and 4, with an alarm that names any removed value that was not the default. | Q9 |
-| R14 | M | **More settings for operators.** The ingest offset, Trust or Restamp, D per output or group, and D_e are new. Wrong values give late, dropped or needlessly delayed content. | Defaults that need no setting on a single engine. The measured lead, transit and lateness shown beside each setting (§11.5). Alarms. | Q5, Q10 |
+| R14 | M | **More settings for operators.** The ingest offset, Trust or Restamp, presentation groups and lateness alarms are new. Wrong values give misaligned or needlessly delayed content. | Defaults that need no setting on a single engine. Lateness, lead and transit shown beside each setting (§9.5). | Q5, Q10 |
 | R15 | M | **The reason #837 was reverted is not recorded.** Phase 2 repeats its approach for the mixers and audio processing, and could repeat its problem. | The design owner states the reason before Phase 2 starts. | Q7 |
 | R16 | M | **The current model still needs field fixes during the migration.** Each fix to a mechanism this design removes is effort spent twice, and both models run side by side behind the flag for several releases. | Fix in the current model only what can't wait for the phase that replaces it. | Q2 |
+| R21 | M | **A wedged input stalls an aligner.** With no lateness deadline, an input that stops delivering without signalling a gap holds every aligner it feeds, and every output after them. | Ingests and sparse producers signal gaps (§5.2, §6), and a module that stops ends its stream. A fault limit W, well above the input's measured lateness, declares a wedged input failed, with an alarm, and the aligner continues without it. Content the failed input then delivers for time already emitted is lost, as a fault, not as a lateness policy. | Q8 |
 | R17 | L | **Third-party receivers.** `PCR = H − D_e` needs D_e ≥ lateness. A large D_e can overflow a hardware decoder's buffer (bitrate × D_e). Unpaced egress makes PCR jitter visible to strict TR 101 290 checks (the ETSI guideline monitoring probes use to check transport streams). | Bound D_e per egress; optional paced egress for hardware IRDs (integrated receiver-decoders: hardware broadcast decoders). | Q16 |
 | R18 | L | **Monotonicity at ingest.** A re-lock or offset edit that emits a backward PTS would revive #824-class faults. | A per-ES monotonic guard at ingest, with fixtures. | — |
 | R19 | L | **Wrap handling bugs** in our own unwrap code or in third-party consumers (S9). | Wrap fixtures; a test mode that places a wrap minutes after start. | — |
@@ -923,6 +992,7 @@ mitigation.
 | 2026-10-11 | **Trust is an operator selection per network ingest.** Restamp is the default, and there is no automatic mode. A trusted remote stream makes every local aligner wait for its transit, which is wrong for most live feeds from other sites. |
 | 2026-10-12 | **Each network egress writes its own PCR from the emission clock,** `PCR = H(emission) − D_e` (§7). Computing the PCR once upstream and only translating it at egress was considered and rejected. |
 | 2026-10-12 | **The network timescale is TAI, applied only at the network boundary** (was Q4). On the network, PTS = `H mod 2^33` with `H = MONO + E`, identical between engines for content that lands at the same instant (§4.3). Inside an engine, the bus keeps boot-based PTS (`MONO + 1 h`), so bus PTS differ between engines; a network egress and a Trust ingest convert. Running every pipeline on TAI was considered and rejected (§4.5). |
+| 2026-10-12 | **Nothing after ingest is discarded for being late (P11).** There is no deadline after ingest: content leaves each node as soon as processing and alignment allow. D and D_e follow measured lateness. Every module measures and shows the latency it adds, and how late its output is against the house clock, in ms (§9.5). The backlog shedder, rebase and late-drop settings go. |
 
 ### 13.2 Needs the design owner's input
 
@@ -939,10 +1009,11 @@ is marked **Needs owner input (Qn)**.
 | Q5 | The default landing for PCR-locked sources | Source-natural (§5.1), which is deterministic. Show the measured lead, so an operator can set a negative O no larger than the minimum lead (R12). | Phase 1 |
 | Q6 | A per-PID trim at ingest | Allow it, bounded (e.g. ±500 ms), for sources with a fixed internal A/V error. | Phase 1 |
 | Q7 | Why was #837 reverted? | None: only the owner knows. Phase 2 repeats #837's approach for the mixers and audio processing, so the reason must be known first (R15). | Phase 2 |
-| Q8 | How W and D_e are sized | Automatically from measured lateness, between a floor and a ceiling per module, with an alarm at the ceiling. The mux ceiling starts at today's 2.4 s window. D_e's ceiling is bounded by receivers' buffers (R17). | Phase 2 (W), Phase 5 (D_e) |
-| Q9 | What becomes of today's timing settings | `lipSyncMs` and `syncOffsetMs` become the output's device trim. `mixLatencyMs` and `subtitleDelayMs` become the floor of that module's W. `playoutOffsetMs` is removed, as #830 intends, because D becomes the output's. An alarm names any removed value that was not the default (R13). | Phase 2 (W), Phase 4 (D) |
-| Q10 | D ownership, presentation groups and the late policy | Groups are set in the manager; an output outside a group uses the engine default D on its own. Late policy per group: raise D up to a ceiling, which keeps today's "never drop". Queues sized from D. | Phase 4 |
+| Q8 | How W and D_e are set, given that neither may drop content | W: a fault limit well above each input's measured lateness (e.g. 5 s, today's edge-queue depth), which declares a wedged input failed with an alarm (R21). D_e: follows the lateness at the egress, from a starting margin; each raise is a flagged PCR discontinuity; an alarm above a threshold, because receivers' buffers are finite (R17). | Phase 2 (W), Phase 5 (D_e) |
+| Q9 | What becomes of today's timing settings | `lipSyncMs` and `syncOffsetMs` become the output's device trim. `mixLatencyMs` and `subtitleDelayMs` are removed, because aligners wait for data or a gap (§6). `playoutOffsetMs` is removed, as #830 intends, because D follows the lateness at the output. An alarm names any removed value that was not the default (R13). | Phase 2 (W), Phase 4 (D) |
+| Q10 | Presentation groups, and D's starting value | Groups are set in the manager; an output outside a group has its own D. D starts from one engine default and follows lateness, with an alarm threshold per output or group. Queues sized from D. | Phase 4 |
 | Q11 | Talent loops (§5.5) | A per-ingest option that ties O to a named output's D. | Phase 4 |
+| Q17 | Bringing latency back down after a stall (S10) | Automatically at a gap in the content, where nothing is lost. Otherwise only by an operator's explicit catch-up, which skips content and reports how much. No automatic catch-up. | Phase 4 |
 | Q12 | The minimum time discipline for Trust | chrony or PTP. SNTP only if it reports an error estimate within the route's tolerance. | Phase 5 |
 | Q13 | An ingest offset on a trusted stream | Not allowed: trust means untouched. Switch the ingest to Restamp if compensation is needed. | Phase 5 |
 | Q14 | A Trust-selected stream that stops qualifying | Restamp it with an alarm, and return to trust once it qualifies again (one gap or dropped overlap each way). Keeping trust with only an alarm would carry a bad clock into every aligner. | Phase 5 |
@@ -975,11 +1046,11 @@ questions a phase needs answered before it starts.
 
 | Phase | Delivers | Makes possible | Owner input first |
 |---|---|---|---|
-| 0 | Time-sync status in the engine; chrony in the image; epoch E with step detection; lateness telemetry on every bus input | Measuring everything that follows | Q3 |
-| 1 | Ingest restamp (virtual STC) writing house time into the bytes; capture producers on identity egress; video-encoder on house time; ASRC at captures | Every bus edge carries house time in-band. Existing consumers keep working, because their K becomes constant. | Q5, Q6 |
-| 2 | Splitter pass-through; mixers and audio processing on identity egress (as #837); muxer keeps sparse-PID PTS; ducking in the pipeline | P3 on every internal hop | Q7, Q8, Q9 |
+| 0 | Time-sync status in the engine; chrony in the image; epoch E with step detection; lateness and added latency shown on every module (§9.5) | Measuring everything that follows | Q3 |
+| 1 | Ingest restamp (virtual STC) writing house time into the bytes; ingests signal gaps; capture producers on identity egress; video-encoder on house time; ASRC at captures | Every bus edge carries house time in-band. Existing consumers keep working, because their K becomes constant. | Q5, Q6 |
+| 2 | Splitter pass-through; mixers and audio processing on identity egress (as #837); aligners wait for data or a gap and never drop; muxer keeps sparse-PID PTS; ducking in the pipeline | P3 on every internal hop | Q7, Q8, Q9 |
 | 3 | Formula demux on every consumer; ASRC at decode and at outputs | Removal of retime, branch alignment and K learning | — |
-| 4 | Output-owned D, presentation groups, queue sizing from D | Removal of the route-head walk, shedder and rebase | Q9, Q10, Q11 |
+| 4 | Output-owned D that follows lateness, presentation groups, queue sizing from D; late-drop settings off in sinks, decoders and queues | Removal of the route-head walk, shedder and rebase: nothing is discarded for lateness | Q9, Q10, Q11, Q17 |
 | 5 | Egress writer (TAI translation, PCR, descriptor); operator-selected Trust at network ingests, verified by the descriptor and the PCR check | Inter-engine lipsync by construction, where Trust is selected | Q8, Q12–Q16 |
 | 6 | Delete the anchored stamper, conditioner and their twins; supersede ADR-0005 decisions 2 and 4 and ADR-0018 | Complexity paid down | — |
 
@@ -1057,6 +1128,7 @@ the same time (§1).
 | ppm / ppb | Parts per million / per billion. A clock 1 ppm fast gains 86 ms a day. |
 | PTP | Precision Time Protocol (IEEE 1588): clock synchronisation on a LAN, to within microseconds |
 | PTS | Presentation time stamp (A.1) |
+| QoS | Quality of service: here, GStreamer's feedback from sinks that makes decoders skip frames when output runs late |
 | RIST | Reliable Internet Stream Transport: carries a TS over the internet, with retransmission of lost packets |
 | RTP | Real-time Transport Protocol |
 | SMPTE ST 302M ("302M") | A Society of Motion Picture and Television Engineers standard for carrying uncompressed PCM audio in a TS; the engine's internal PCM bus format |
@@ -1069,7 +1141,7 @@ the same time (§1).
 | UTC | Coordinated Universal Time: civil time, which is TAI minus the leap seconds (37 s in 2026) |
 | V4L2 | Video4Linux2, the Linux video-capture interface |
 | VU | Volume unit: a level meter |
-| P1–P10, S1–S9, R1–R20, Q1–Q16 | This document's principles (§3), shortcomings (§12.1), risks (§12.2) and questions for the design owner (§13.2) |
+| P1–P11, S1–S10, R1–R21, Q1–Q17 | This document's principles (§3), shortcomings (§12.1), risks (§12.2) and questions for the design owner (§13.2) |
 | #NNN | An issue or pull request in the media-router GitHub repository |
 
 ### A.3 Terms
@@ -1078,12 +1150,14 @@ the same time (§1).
 |---|---|
 | aggregator | A GStreamer element that combines several inputs on one timeline (mux, mixer, compositor) and waits a set latency for late inputs |
 | bus | The engine's internal transport between modules: TS carried over Unix sockets (`unixfdsink` / `unixfdsrc`) |
-| content time, lateness, O, W, D, D_e, E, H | See §4.6 |
+| catch-up | Bringing a raised D back down by skipping content; an explicit operator action in this design (Q17) |
+| content time, lateness, added latency, O, W, D, D_e, E, H | See §4.6 |
 | demux / mux | Demultiplexer / multiplexer: splits a TS into its streams, or combines streams into one TS |
 | descriptor | A small tagged record inside a TS table such as the PMT. Receivers skip tags they don't know. |
 | ducker | Audio processing that lowers one signal (the programme) while another (the key, e.g. an interpreter) is active |
 | egress | A module that sends a stream out of the engine (RIST, SRT, UDP or AES67 output) |
 | epoch | The zero point of a timescale |
+| gap | A stretch of time with no content. An ingest or a sparse producer signals it with a GStreamer gap event, so elements waiting for that stream can move on. |
 | genlock | Locking a video output's timing to an external reference |
 | house clock, house time | The engine's single clock, and readings of it (§4) |
 | ingest | A module that brings a stream into the engine: a network input, a capture, a file or an HLS player |
