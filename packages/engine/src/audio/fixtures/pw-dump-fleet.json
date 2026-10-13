@@ -1,5 +1,14 @@
 [
   {
+    "id": 0,
+    "type": "PipeWire:Interface:Core",
+    "info": {
+      "props": {
+        "clock.power-of-two-quantum": true
+      }
+    }
+  },
+  {
     "id": 32,
     "type": "PipeWire:Interface:Metadata",
     "version": 3,
@@ -190,6 +199,17 @@
     }
   },
   {
+    "id": 90,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 84,
+      "input-node-id": 87,
+      "output-port-id": 85,
+      "input-port-id": 88,
+      "state": "active"
+    }
+  },
+  {
     "id": 93,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -313,6 +333,17 @@
           }
         ]
       }
+    }
+  },
+  {
+    "id": 99,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 93,
+      "input-node-id": 96,
+      "output-port-id": 94,
+      "input-port-id": 97,
+      "state": "active"
     }
   },
   {
@@ -443,6 +474,17 @@
     }
   },
   {
+    "id": 108,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 102,
+      "input-node-id": 105,
+      "output-port-id": 103,
+      "input-port-id": 106,
+      "state": "active"
+    }
+  },
+  {
     "id": 111,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -570,6 +612,17 @@
     }
   },
   {
+    "id": 117,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 111,
+      "input-node-id": 114,
+      "output-port-id": 112,
+      "input-port-id": 115,
+      "state": "active"
+    }
+  },
+  {
     "id": 120,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -694,6 +747,17 @@
           }
         ]
       }
+    }
+  },
+  {
+    "id": 126,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 120,
+      "input-node-id": 123,
+      "output-port-id": 121,
+      "input-port-id": 124,
+      "state": "active"
     }
   },
   {
@@ -1105,6 +1169,846 @@
     }
   },
   {
+    "id": 177,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-13",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_0"
+      }
+    }
+  },
+  {
+    "id": 178,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-13",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_1"
+      }
+    }
+  },
+  {
+    "id": 180,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 177,
+      "input-node-id": 153,
+      "output-port-id": 175,
+      "input-port-id": 151,
+      "state": "active"
+    }
+  },
+  {
+    "id": 181,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 177,
+      "input-node-id": 153,
+      "output-port-id": 179,
+      "input-port-id": 154,
+      "state": "active"
+    }
+  },
+  {
+    "id": 186,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 135,
+      "input-node-id": 178,
+      "output-port-id": 137,
+      "input-port-id": 182,
+      "state": "active"
+    }
+  },
+  {
+    "id": 187,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 135,
+      "input-node-id": 178,
+      "output-port-id": 138,
+      "input-port-id": 183,
+      "state": "active"
+    }
+  },
+  {
+    "id": 190,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-14",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_0"
+      }
+    }
+  },
+  {
+    "id": 191,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-14",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_2"
+      }
+    }
+  },
+  {
+    "id": 193,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 190,
+      "input-node-id": 153,
+      "output-port-id": 188,
+      "input-port-id": 151,
+      "state": "active"
+    }
+  },
+  {
+    "id": 194,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 190,
+      "input-node-id": 153,
+      "output-port-id": 192,
+      "input-port-id": 154,
+      "state": "active"
+    }
+  },
+  {
+    "id": 199,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 141,
+      "input-node-id": 191,
+      "output-port-id": 143,
+      "input-port-id": 195,
+      "state": "active"
+    }
+  },
+  {
+    "id": 200,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 141,
+      "input-node-id": 191,
+      "output-port-id": 144,
+      "input-port-id": 196,
+      "state": "active"
+    }
+  },
+  {
+    "id": 203,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-15",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_0"
+      }
+    }
+  },
+  {
+    "id": 204,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-15",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_3"
+      }
+    }
+  },
+  {
+    "id": 206,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 203,
+      "input-node-id": 153,
+      "output-port-id": 201,
+      "input-port-id": 151,
+      "state": "active"
+    }
+  },
+  {
+    "id": 207,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 203,
+      "input-node-id": 153,
+      "output-port-id": 205,
+      "input-port-id": 154,
+      "state": "active"
+    }
+  },
+  {
+    "id": 212,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 147,
+      "input-node-id": 204,
+      "output-port-id": 149,
+      "input-port-id": 208,
+      "state": "active"
+    }
+  },
+  {
+    "id": 213,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 147,
+      "input-node-id": 204,
+      "output-port-id": 150,
+      "input-port-id": 209,
+      "state": "active"
+    }
+  },
+  {
+    "id": 216,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-16",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_1"
+      }
+    }
+  },
+  {
+    "id": 217,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-16",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_0"
+      }
+    }
+  },
+  {
+    "id": 219,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 216,
+      "input-node-id": 159,
+      "output-port-id": 214,
+      "input-port-id": 157,
+      "state": "active"
+    }
+  },
+  {
+    "id": 220,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 216,
+      "input-node-id": 159,
+      "output-port-id": 218,
+      "input-port-id": 160,
+      "state": "active"
+    }
+  },
+  {
+    "id": 225,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 129,
+      "input-node-id": 217,
+      "output-port-id": 131,
+      "input-port-id": 221,
+      "state": "active"
+    }
+  },
+  {
+    "id": 226,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 129,
+      "input-node-id": 217,
+      "output-port-id": 132,
+      "input-port-id": 222,
+      "state": "active"
+    }
+  },
+  {
+    "id": 229,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-17",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_1"
+      }
+    }
+  },
+  {
+    "id": 230,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-17",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_2"
+      }
+    }
+  },
+  {
+    "id": 232,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 229,
+      "input-node-id": 159,
+      "output-port-id": 227,
+      "input-port-id": 157,
+      "state": "active"
+    }
+  },
+  {
+    "id": 233,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 229,
+      "input-node-id": 159,
+      "output-port-id": 231,
+      "input-port-id": 160,
+      "state": "active"
+    }
+  },
+  {
+    "id": 238,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 141,
+      "input-node-id": 230,
+      "output-port-id": 143,
+      "input-port-id": 234,
+      "state": "active"
+    }
+  },
+  {
+    "id": 239,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 141,
+      "input-node-id": 230,
+      "output-port-id": 144,
+      "input-port-id": 235,
+      "state": "active"
+    }
+  },
+  {
+    "id": 242,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-18",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_1"
+      }
+    }
+  },
+  {
+    "id": 243,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-18",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_3"
+      }
+    }
+  },
+  {
+    "id": 245,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 242,
+      "input-node-id": 159,
+      "output-port-id": 240,
+      "input-port-id": 157,
+      "state": "active"
+    }
+  },
+  {
+    "id": 246,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 242,
+      "input-node-id": 159,
+      "output-port-id": 244,
+      "input-port-id": 160,
+      "state": "active"
+    }
+  },
+  {
+    "id": 251,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 147,
+      "input-node-id": 243,
+      "output-port-id": 149,
+      "input-port-id": 247,
+      "state": "active"
+    }
+  },
+  {
+    "id": 252,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 147,
+      "input-node-id": 243,
+      "output-port-id": 150,
+      "input-port-id": 248,
+      "state": "active"
+    }
+  },
+  {
+    "id": 254,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-19",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_2"
+      }
+    }
+  },
+  {
+    "id": 256,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-19",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_0"
+      }
+    }
+  },
+  {
+    "id": 258,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 254,
+      "input-node-id": 165,
+      "output-port-id": 253,
+      "input-port-id": 163,
+      "state": "active"
+    }
+  },
+  {
+    "id": 259,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 254,
+      "input-node-id": 165,
+      "output-port-id": 257,
+      "input-port-id": 166,
+      "state": "active"
+    }
+  },
+  {
+    "id": 265,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 129,
+      "input-node-id": 256,
+      "output-port-id": 131,
+      "input-port-id": 261,
+      "state": "active"
+    }
+  },
+  {
+    "id": 266,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 129,
+      "input-node-id": 256,
+      "output-port-id": 132,
+      "input-port-id": 262,
+      "state": "active"
+    }
+  },
+  {
+    "id": 268,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-20",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_2"
+      }
+    }
+  },
+  {
+    "id": 269,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-20",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_1"
+      }
+    }
+  },
+  {
+    "id": 271,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 268,
+      "input-node-id": 165,
+      "output-port-id": 260,
+      "input-port-id": 163,
+      "state": "active"
+    }
+  },
+  {
+    "id": 272,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 268,
+      "input-node-id": 165,
+      "output-port-id": 270,
+      "input-port-id": 166,
+      "state": "active"
+    }
+  },
+  {
+    "id": 277,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 135,
+      "input-node-id": 269,
+      "output-port-id": 137,
+      "input-port-id": 273,
+      "state": "active"
+    }
+  },
+  {
+    "id": 278,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 135,
+      "input-node-id": 269,
+      "output-port-id": 138,
+      "input-port-id": 274,
+      "state": "active"
+    }
+  },
+  {
+    "id": 281,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-21",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_2"
+      }
+    }
+  },
+  {
+    "id": 282,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-21",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_3"
+      }
+    }
+  },
+  {
+    "id": 284,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 281,
+      "input-node-id": 165,
+      "output-port-id": 279,
+      "input-port-id": 163,
+      "state": "active"
+    }
+  },
+  {
+    "id": 285,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 281,
+      "input-node-id": 165,
+      "output-port-id": 283,
+      "input-port-id": 166,
+      "state": "active"
+    }
+  },
+  {
+    "id": 290,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 147,
+      "input-node-id": 282,
+      "output-port-id": 149,
+      "input-port-id": 286,
+      "state": "active"
+    }
+  },
+  {
+    "id": 291,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 147,
+      "input-node-id": 282,
+      "output-port-id": 150,
+      "input-port-id": 287,
+      "state": "active"
+    }
+  },
+  {
+    "id": 294,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-22",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_3"
+      }
+    }
+  },
+  {
+    "id": 295,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-22",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_0"
+      }
+    }
+  },
+  {
+    "id": 297,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 294,
+      "input-node-id": 171,
+      "output-port-id": 292,
+      "input-port-id": 169,
+      "state": "active"
+    }
+  },
+  {
+    "id": 298,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 294,
+      "input-node-id": 171,
+      "output-port-id": 296,
+      "input-port-id": 172,
+      "state": "active"
+    }
+  },
+  {
+    "id": 303,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 129,
+      "input-node-id": 295,
+      "output-port-id": 131,
+      "input-port-id": 299,
+      "state": "active"
+    }
+  },
+  {
+    "id": 304,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 129,
+      "input-node-id": 295,
+      "output-port-id": 132,
+      "input-port-id": 300,
+      "state": "active"
+    }
+  },
+  {
+    "id": 307,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-23",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_3"
+      }
+    }
+  },
+  {
+    "id": 308,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-23",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_1"
+      }
+    }
+  },
+  {
+    "id": 310,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 307,
+      "input-node-id": 171,
+      "output-port-id": 305,
+      "input-port-id": 169,
+      "state": "active"
+    }
+  },
+  {
+    "id": 311,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 307,
+      "input-node-id": 171,
+      "output-port-id": 309,
+      "input-port-id": 172,
+      "state": "active"
+    }
+  },
+  {
+    "id": 316,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 135,
+      "input-node-id": 308,
+      "output-port-id": 137,
+      "input-port-id": 312,
+      "state": "active"
+    }
+  },
+  {
+    "id": 317,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 135,
+      "input-node-id": 308,
+      "output-port-id": 138,
+      "input-port-id": 313,
+      "state": "active"
+    }
+  },
+  {
+    "id": 320,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-24",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_out_3"
+      }
+    }
+  },
+  {
+    "id": 321,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 93,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-24",
+        "target.object": "MR_PW_n1-mixer-mr5g8qqnkas7_in_2"
+      }
+    }
+  },
+  {
+    "id": 323,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 320,
+      "input-node-id": 171,
+      "output-port-id": 318,
+      "input-port-id": 169,
+      "state": "active"
+    }
+  },
+  {
+    "id": 324,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 320,
+      "input-node-id": 171,
+      "output-port-id": 322,
+      "input-port-id": 172,
+      "state": "active"
+    }
+  },
+  {
+    "id": 329,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 141,
+      "input-node-id": 321,
+      "output-port-id": 143,
+      "input-port-id": 325,
+      "state": "active"
+    }
+  },
+  {
+    "id": 330,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 141,
+      "input-node-id": 321,
+      "output-port-id": 144,
+      "input-port-id": 326,
+      "state": "active"
+    }
+  },
+  {
     "id": 333,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -1513,6 +2417,846 @@
     }
   },
   {
+    "id": 381,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-25",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_0"
+      }
+    }
+  },
+  {
+    "id": 382,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-25",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_1"
+      }
+    }
+  },
+  {
+    "id": 385,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 381,
+      "input-node-id": 357,
+      "output-port-id": 383,
+      "input-port-id": 355,
+      "state": "active"
+    }
+  },
+  {
+    "id": 386,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 381,
+      "input-node-id": 357,
+      "output-port-id": 384,
+      "input-port-id": 358,
+      "state": "active"
+    }
+  },
+  {
+    "id": 390,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 339,
+      "input-node-id": 382,
+      "output-port-id": 341,
+      "input-port-id": 379,
+      "state": "active"
+    }
+  },
+  {
+    "id": 391,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 339,
+      "input-node-id": 382,
+      "output-port-id": 342,
+      "input-port-id": 387,
+      "state": "active"
+    }
+  },
+  {
+    "id": 394,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-26",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_0"
+      }
+    }
+  },
+  {
+    "id": 395,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-26",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_2"
+      }
+    }
+  },
+  {
+    "id": 397,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 394,
+      "input-node-id": 357,
+      "output-port-id": 392,
+      "input-port-id": 355,
+      "state": "active"
+    }
+  },
+  {
+    "id": 398,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 394,
+      "input-node-id": 357,
+      "output-port-id": 396,
+      "input-port-id": 358,
+      "state": "active"
+    }
+  },
+  {
+    "id": 403,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 345,
+      "input-node-id": 395,
+      "output-port-id": 347,
+      "input-port-id": 399,
+      "state": "active"
+    }
+  },
+  {
+    "id": 404,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 345,
+      "input-node-id": 395,
+      "output-port-id": 348,
+      "input-port-id": 400,
+      "state": "active"
+    }
+  },
+  {
+    "id": 407,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-27",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_0"
+      }
+    }
+  },
+  {
+    "id": 408,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-27",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_3"
+      }
+    }
+  },
+  {
+    "id": 410,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 407,
+      "input-node-id": 357,
+      "output-port-id": 405,
+      "input-port-id": 355,
+      "state": "active"
+    }
+  },
+  {
+    "id": 411,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 407,
+      "input-node-id": 357,
+      "output-port-id": 409,
+      "input-port-id": 358,
+      "state": "active"
+    }
+  },
+  {
+    "id": 416,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 351,
+      "input-node-id": 408,
+      "output-port-id": 353,
+      "input-port-id": 412,
+      "state": "active"
+    }
+  },
+  {
+    "id": 417,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 351,
+      "input-node-id": 408,
+      "output-port-id": 354,
+      "input-port-id": 413,
+      "state": "active"
+    }
+  },
+  {
+    "id": 420,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-28",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_1"
+      }
+    }
+  },
+  {
+    "id": 421,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-28",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_0"
+      }
+    }
+  },
+  {
+    "id": 423,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 420,
+      "input-node-id": 363,
+      "output-port-id": 418,
+      "input-port-id": 361,
+      "state": "active"
+    }
+  },
+  {
+    "id": 424,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 420,
+      "input-node-id": 363,
+      "output-port-id": 422,
+      "input-port-id": 364,
+      "state": "active"
+    }
+  },
+  {
+    "id": 429,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 333,
+      "input-node-id": 421,
+      "output-port-id": 335,
+      "input-port-id": 425,
+      "state": "active"
+    }
+  },
+  {
+    "id": 430,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 333,
+      "input-node-id": 421,
+      "output-port-id": 336,
+      "input-port-id": 426,
+      "state": "active"
+    }
+  },
+  {
+    "id": 433,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-29",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_1"
+      }
+    }
+  },
+  {
+    "id": 434,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-29",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_2"
+      }
+    }
+  },
+  {
+    "id": 436,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 433,
+      "input-node-id": 363,
+      "output-port-id": 431,
+      "input-port-id": 361,
+      "state": "active"
+    }
+  },
+  {
+    "id": 437,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 433,
+      "input-node-id": 363,
+      "output-port-id": 435,
+      "input-port-id": 364,
+      "state": "active"
+    }
+  },
+  {
+    "id": 442,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 345,
+      "input-node-id": 434,
+      "output-port-id": 347,
+      "input-port-id": 438,
+      "state": "active"
+    }
+  },
+  {
+    "id": 443,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 345,
+      "input-node-id": 434,
+      "output-port-id": 348,
+      "input-port-id": 439,
+      "state": "active"
+    }
+  },
+  {
+    "id": 446,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-30",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_1"
+      }
+    }
+  },
+  {
+    "id": 447,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-30",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_3"
+      }
+    }
+  },
+  {
+    "id": 449,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 446,
+      "input-node-id": 363,
+      "output-port-id": 444,
+      "input-port-id": 361,
+      "state": "active"
+    }
+  },
+  {
+    "id": 450,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 446,
+      "input-node-id": 363,
+      "output-port-id": 448,
+      "input-port-id": 364,
+      "state": "active"
+    }
+  },
+  {
+    "id": 456,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 351,
+      "input-node-id": 447,
+      "output-port-id": 353,
+      "input-port-id": 452,
+      "state": "active"
+    }
+  },
+  {
+    "id": 457,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 351,
+      "input-node-id": 447,
+      "output-port-id": 354,
+      "input-port-id": 453,
+      "state": "active"
+    }
+  },
+  {
+    "id": 459,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-31",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_2"
+      }
+    }
+  },
+  {
+    "id": 460,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-31",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_0"
+      }
+    }
+  },
+  {
+    "id": 462,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 459,
+      "input-node-id": 369,
+      "output-port-id": 451,
+      "input-port-id": 367,
+      "state": "active"
+    }
+  },
+  {
+    "id": 463,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 459,
+      "input-node-id": 369,
+      "output-port-id": 461,
+      "input-port-id": 370,
+      "state": "active"
+    }
+  },
+  {
+    "id": 468,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 333,
+      "input-node-id": 460,
+      "output-port-id": 335,
+      "input-port-id": 464,
+      "state": "active"
+    }
+  },
+  {
+    "id": 469,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 333,
+      "input-node-id": 460,
+      "output-port-id": 336,
+      "input-port-id": 465,
+      "state": "active"
+    }
+  },
+  {
+    "id": 472,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-32",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_2"
+      }
+    }
+  },
+  {
+    "id": 473,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-32",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_1"
+      }
+    }
+  },
+  {
+    "id": 475,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 472,
+      "input-node-id": 369,
+      "output-port-id": 470,
+      "input-port-id": 367,
+      "state": "active"
+    }
+  },
+  {
+    "id": 476,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 472,
+      "input-node-id": 369,
+      "output-port-id": 474,
+      "input-port-id": 370,
+      "state": "active"
+    }
+  },
+  {
+    "id": 481,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 339,
+      "input-node-id": 473,
+      "output-port-id": 341,
+      "input-port-id": 477,
+      "state": "active"
+    }
+  },
+  {
+    "id": 482,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 339,
+      "input-node-id": 473,
+      "output-port-id": 342,
+      "input-port-id": 478,
+      "state": "active"
+    }
+  },
+  {
+    "id": 485,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-33",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_2"
+      }
+    }
+  },
+  {
+    "id": 486,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-33",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_3"
+      }
+    }
+  },
+  {
+    "id": 488,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 485,
+      "input-node-id": 369,
+      "output-port-id": 483,
+      "input-port-id": 367,
+      "state": "active"
+    }
+  },
+  {
+    "id": 489,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 485,
+      "input-node-id": 369,
+      "output-port-id": 487,
+      "input-port-id": 370,
+      "state": "active"
+    }
+  },
+  {
+    "id": 494,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 351,
+      "input-node-id": 486,
+      "output-port-id": 353,
+      "input-port-id": 490,
+      "state": "active"
+    }
+  },
+  {
+    "id": 495,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 351,
+      "input-node-id": 486,
+      "output-port-id": 354,
+      "input-port-id": 491,
+      "state": "active"
+    }
+  },
+  {
+    "id": 498,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-34",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_3"
+      }
+    }
+  },
+  {
+    "id": 499,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-34",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_0"
+      }
+    }
+  },
+  {
+    "id": 501,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 498,
+      "input-node-id": 375,
+      "output-port-id": 496,
+      "input-port-id": 373,
+      "state": "active"
+    }
+  },
+  {
+    "id": 502,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 498,
+      "input-node-id": 375,
+      "output-port-id": 500,
+      "input-port-id": 376,
+      "state": "active"
+    }
+  },
+  {
+    "id": 507,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 333,
+      "input-node-id": 499,
+      "output-port-id": 335,
+      "input-port-id": 503,
+      "state": "active"
+    }
+  },
+  {
+    "id": 508,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 333,
+      "input-node-id": 499,
+      "output-port-id": 336,
+      "input-port-id": 504,
+      "state": "active"
+    }
+  },
+  {
+    "id": 511,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-35",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_3"
+      }
+    }
+  },
+  {
+    "id": 512,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-35",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_1"
+      }
+    }
+  },
+  {
+    "id": 514,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 511,
+      "input-node-id": 375,
+      "output-port-id": 509,
+      "input-port-id": 373,
+      "state": "active"
+    }
+  },
+  {
+    "id": 515,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 511,
+      "input-node-id": 375,
+      "output-port-id": 513,
+      "input-port-id": 376,
+      "state": "active"
+    }
+  },
+  {
+    "id": 520,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 339,
+      "input-node-id": 512,
+      "output-port-id": 341,
+      "input-port-id": 516,
+      "state": "active"
+    }
+  },
+  {
+    "id": 521,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 339,
+      "input-node-id": 512,
+      "output-port-id": 342,
+      "input-port-id": 517,
+      "state": "active"
+    }
+  },
+  {
+    "id": 524,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "output.loopback-668-36",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_3"
+      }
+    }
+  },
+  {
+    "id": 525,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Input/Audio",
+        "node.driver-id": 84,
+        "node.latency": "80/48000",
+        "node.name": "input.loopback-668-36",
+        "target.object": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_2"
+      }
+    }
+  },
+  {
+    "id": 527,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 524,
+      "input-node-id": 375,
+      "output-port-id": 522,
+      "input-port-id": 373,
+      "state": "active"
+    }
+  },
+  {
+    "id": 528,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 524,
+      "input-node-id": 375,
+      "output-port-id": 526,
+      "input-port-id": 376,
+      "state": "active"
+    }
+  },
+  {
+    "id": 533,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 345,
+      "input-node-id": 525,
+      "output-port-id": 347,
+      "input-port-id": 529,
+      "state": "active"
+    }
+  },
+  {
+    "id": 534,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 345,
+      "input-node-id": 525,
+      "output-port-id": 348,
+      "input-port-id": 530,
+      "state": "active"
+    }
+  },
+  {
     "id": 537,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -1640,6 +3384,17 @@
     }
   },
   {
+    "id": 543,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 537,
+      "input-node-id": 540,
+      "output-port-id": 538,
+      "input-port-id": 541,
+      "state": "active"
+    }
+  },
+  {
     "id": 74,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -1691,6 +3446,39 @@
     }
   },
   {
+    "id": 552,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 74,
+      "input-node-id": 333,
+      "output-port-id": 76,
+      "input-port-id": 331,
+      "state": "active"
+    }
+  },
+  {
+    "id": 553,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 74,
+      "input-node-id": 333,
+      "output-port-id": 75,
+      "input-port-id": 334,
+      "state": "active"
+    }
+  },
+  {
+    "id": 554,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 74,
+      "input-node-id": 84,
+      "output-port-id": 76,
+      "input-port-id": 82,
+      "state": "active"
+    }
+  },
+  {
     "id": 80,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -1739,6 +3527,28 @@
       "params": {
         "Latency": []
       }
+    }
+  },
+  {
+    "id": 556,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 80,
+      "input-node-id": 147,
+      "output-port-id": 81,
+      "input-port-id": 145,
+      "state": "active"
+    }
+  },
+  {
+    "id": 557,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 80,
+      "input-node-id": 147,
+      "output-port-id": 81,
+      "input-port-id": 148,
+      "state": "active"
     }
   },
   {
@@ -1819,6 +3629,17 @@
     }
   },
   {
+    "id": 558,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 555,
+      "input-node-id": 80,
+      "output-port-id": 559,
+      "input-port-id": 550,
+      "state": "active"
+    }
+  },
+  {
     "id": 43,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -1867,6 +3688,28 @@
       "params": {
         "Latency": []
       }
+    }
+  },
+  {
+    "id": 562,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 43,
+      "input-node-id": 141,
+      "output-port-id": 42,
+      "input-port-id": 139,
+      "state": "active"
+    }
+  },
+  {
+    "id": 563,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 43,
+      "input-node-id": 141,
+      "output-port-id": 42,
+      "input-port-id": 142,
+      "state": "active"
     }
   },
   {
@@ -1921,6 +3764,28 @@
     }
   },
   {
+    "id": 565,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 71,
+      "input-node-id": 345,
+      "output-port-id": 69,
+      "input-port-id": 343,
+      "state": "active"
+    }
+  },
+  {
+    "id": 566,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 71,
+      "input-node-id": 345,
+      "output-port-id": 69,
+      "input-port-id": 346,
+      "state": "active"
+    }
+  },
+  {
     "id": 546,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -1969,6 +3834,83 @@
       "params": {
         "Latency": []
       }
+    }
+  },
+  {
+    "id": 568,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 546,
+      "input-node-id": 129,
+      "output-port-id": 548,
+      "input-port-id": 127,
+      "state": "active"
+    }
+  },
+  {
+    "id": 569,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 546,
+      "input-node-id": 129,
+      "output-port-id": 547,
+      "input-port-id": 130,
+      "state": "active"
+    }
+  },
+  {
+    "id": 570,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 153,
+      "input-node-id": 120,
+      "output-port-id": 155,
+      "input-port-id": 118,
+      "state": "active"
+    }
+  },
+  {
+    "id": 571,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 165,
+      "input-node-id": 93,
+      "output-port-id": 167,
+      "input-port-id": 91,
+      "state": "active"
+    }
+  },
+  {
+    "id": 572,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 357,
+      "input-node-id": 102,
+      "output-port-id": 359,
+      "input-port-id": 100,
+      "state": "active"
+    }
+  },
+  {
+    "id": 573,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 369,
+      "input-node-id": 111,
+      "output-port-id": 371,
+      "input-port-id": 109,
+      "state": "active"
+    }
+  },
+  {
+    "id": 574,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 171,
+      "input-node-id": 537,
+      "output-port-id": 173,
+      "input-port-id": 535,
+      "state": "active"
     }
   },
   {
@@ -2049,6 +3991,28 @@
     }
   },
   {
+    "id": 575,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 567,
+      "input-node-id": 74,
+      "output-port-id": 576,
+      "input-port-id": 551,
+      "state": "active"
+    }
+  },
+  {
+    "id": 577,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 567,
+      "input-node-id": 74,
+      "output-port-id": 578,
+      "input-port-id": 77,
+      "state": "active"
+    }
+  },
+  {
     "id": 579,
     "type": "PipeWire:Interface:Node",
     "version": 3,
@@ -2123,6 +4087,28 @@
           }
         ]
       }
+    }
+  },
+  {
+    "id": 580,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 579,
+      "input-node-id": 546,
+      "output-port-id": 581,
+      "input-port-id": 564,
+      "state": "active"
+    }
+  },
+  {
+    "id": 582,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 579,
+      "input-node-id": 546,
+      "output-port-id": 583,
+      "input-port-id": 549,
+      "state": "active"
     }
   }
 ]
