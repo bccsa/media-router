@@ -109,9 +109,8 @@ export class LatenessReporter {
         const all = [...this.taps.entries()].sort(([a], [b]) => a.localeCompare(b));
         const render = this.taps.get('lat_render')?.window;
         const sinkSide = all.filter(([t]) => t === 'lat_render' || t === 'lat_egress');
-        const outSide = sinkSide.length
-            ? sinkSide
-            : all.filter(([t]) => t.startsWith(LAT_OUT_PREFIX));
+        const busOut = all.filter(([t]) => t.startsWith(LAT_OUT_PREFIX));
+        const outSide = sinkSide.length ? sinkSide : busOut;
         const output = merge(outSide.map(([, e]) => e.window));
         const inputs: ModuleTimingInput[] = all
             .filter(([t]) => t.startsWith(LAT_IN_PREFIX))
@@ -127,6 +126,14 @@ export class LatenessReporter {
         );
         const summary: ModuleTimingSummary = { inputs, instrument: this.instrument };
         if (output) summary.output = output;
+        // The merge hides each output's own lateness, which is what its consumers' inputs read.
+        if (busOut.length >= 2) {
+            summary.outputs = busOut.map(([tap, e]) => ({
+                tap,
+                port: tap.slice(LAT_OUT_PREFIX.length + 1),
+                lateness: e.window,
+            }));
+        }
         if (inputs.length >= 2 && slowestIn) summary.slowest = slowestIn.label;
         if (render) {
             if (slowestIn) summary.decodeMs = render.meanMs - slowestIn.lateness.meanMs;

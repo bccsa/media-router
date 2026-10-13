@@ -10,6 +10,12 @@ const input = (tap: string, meanMs: number, outMs?: number) => ({
     lateness: lat(meanMs),
     ...(outMs !== undefined ? { addedMs: outMs - meanMs } : {}),
 });
+/** A bus output as LatenessReporter lists it, with two or more. */
+const output = (port: number, meanMs: number, minMs = meanMs, maxMs = meanMs) => ({
+    tap: `lat_busout_${port}`,
+    port: String(port),
+    lateness: lat(meanMs, minMs, maxMs),
+});
 
 describe('timingPublication', () => {
     it('single-input transform: output, its range and added latency = out − in', () => {
@@ -105,6 +111,35 @@ describe('timingPublication', () => {
             instrument: 'lateness instrument missing',
         });
     });
+
+    it('two or more bus outputs: one section each after the inputs, the rest as with one', () => {
+        const s: ModuleTimingSummary = {
+            instrument: true,
+            output: lat(109, 60, 140),
+            outputs: [output(41000, 129, 120, 140), output(41001, 69, 60, 80)],
+            inputs: [input('lat_busin', 100, 109)],
+        };
+        const pub = timingPublication(s);
+        expect(pub.sections.map((x) => [x.id, x.label])).toEqual([
+            ['timing', 'Timing'],
+            ['timing-in-1', 'Input 1 timing: busin'],
+            ['timing-out-1', 'Output 1 timing: 41000'],
+            ['timing-out-2', 'Output 2 timing: 41001'],
+        ]);
+        expect(pub.sections[2].fields).toEqual([
+            { key: 'latenessMs', label: 'Lateness', unit: 'ms' },
+            { key: 'latenessRange', label: 'Lateness min – max', unit: 'ms' },
+        ]);
+        expect(pub.data['timing-out-1']).toEqual({ latenessMs: 129, latenessRange: '120 – 140' });
+        expect(pub.data['timing-out-2']).toEqual({ latenessMs: 69, latenessRange: '60 – 80' });
+        // The merged output, added latency and badge are what one output would show.
+        expect(pub.data.timing).toEqual({ outputMs: 109, outputRange: '60 – 140', addedMs: 9 });
+        const one = timingPublication({ ...s, outputs: undefined });
+        expect(pub.sections.slice(0, 2)).toEqual(one.sections);
+        expect(Object.keys(one.data)).toEqual(['timing', 'timing-in-1']);
+        expect(pub.data).toMatchObject(one.data);
+        expect(pub.badge).toEqual(one.badge);
+    });
 });
 
 describe('timingChanged (R-P0-6)', () => {
@@ -123,5 +158,24 @@ describe('timingChanged (R-P0-6)', () => {
                 inputs: [input('lat_busin', 40, 50)],
             }),
         ).toBe(true);
+    });
+
+    it('a per-output row moving 1 ms is a change, though the merged output holds', () => {
+        const outs = (...o: ReturnType<typeof output>[]): ModuleTimingSummary => ({
+            instrument: true,
+            output: lat(100),
+            outputs: o,
+            inputs: [],
+        });
+        const a = outs(output(41000, 129, 120), output(41001, 69));
+        expect(timingChanged(a, outs(output(41000, 129.6, 120.4), output(41001, 68.5)))).toBe(
+            false,
+        );
+        expect(timingChanged(a, outs(output(41000, 129, 120), output(41001, 70)))).toBe(true);
+        expect(timingChanged(a, outs(output(41000, 129, 119), output(41001, 69)))).toBe(true);
+        // The list coming or going (a second output, or one left) is a change too.
+        const merged: ModuleTimingSummary = { instrument: true, output: lat(100), inputs: [] };
+        expect(timingChanged(merged, a)).toBe(true);
+        expect(timingChanged(a, merged)).toBe(true);
     });
 });

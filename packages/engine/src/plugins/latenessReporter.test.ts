@@ -13,6 +13,7 @@ const win = (meanMs: number, minMs = meanMs, maxMs = meanMs, count = 100) => ({
     'interval-ns': 2000 * MS,
     reference: 'house',
 });
+const lat = (meanMs: number, minMs: number, maxMs: number) => ({ meanMs, minMs, maxMs });
 
 describe('LatenessReporter', () => {
     it('parses a window, and ignores one that carried only untimed buffers', () => {
@@ -94,5 +95,32 @@ describe('LatenessReporter', () => {
         // Raw mux PTS before the first consumer arms the stamper: ~uptime late.
         r.onEvent('mrlateness:lat_busout_41000', win(2_108_445_230));
         expect(r.summary().output).toBeUndefined();
+    });
+
+    it('two or more bus outputs: each listed by tap name, and merged as before', () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_busin', win(100));
+        r.onEvent('mrlateness:lat_busout_41001', win(69, 60, 80, 50));
+        r.onEvent('mrlateness:lat_busout_41000', win(129, 120, 140));
+        const s = r.summary();
+        // Count-weighted: (129 × 100 + 69 × 50) / 150.
+        expect(s.output).toEqual({ meanMs: 109, minMs: 60, maxMs: 140 });
+        expect(s.inputs[0].addedMs).toBe(9);
+        expect(s.outputs).toMatchObject([
+            { tap: 'lat_busout_41000', port: '41000', lateness: lat(129, 120, 140) },
+            { tap: 'lat_busout_41001', port: '41001', lateness: lat(69, 60, 80) },
+        ]);
+    });
+
+    it('one bus output, or one left when another goes quiet, is not listed', () => {
+        const r = new LatenessReporter({ intervalMs: 2000 });
+        r.onEvent('mrlateness:lat_busout_41000', win(88), 0);
+        expect(r.summary(0).outputs).toBeUndefined();
+        r.onEvent('mrlateness:lat_busout_41001', win(90), 0);
+        expect(r.summary(0).outputs).toHaveLength(2);
+        r.onEvent('mrlateness:lat_busout_41001', win(90), 7000);
+        const s = r.summary(7000);
+        expect(s.outputs).toBeUndefined();
+        expect(s.output?.meanMs).toBe(90);
     });
 });
