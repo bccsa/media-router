@@ -13,28 +13,11 @@
 #include <utility>
 #include <vector>
 
+// PTS_WRAP, MUX_CLOCK_BASE_90K, house_from_mux_pts, pts90k_to_ns and
+// unwrap_near live in ts_house.h now (WI-S0-1), under the same names.
+#include "ts_house.h"
+
 namespace mrts {
-
-constexpr int64_t PTS_WRAP = 1LL << 33;
-
-// GStreamer's mpegtsmux (basetsmux CLOCK_BASE) writes every PES PTS/DTS and the
-// PCR as the buffer's running time plus ONE HOUR. Under the contract running
-// time IS house time, so a mux-fed egress carries `house + 1 h` on the wire and
-// the house-timeline stamp (`TimelineStamper::set_house_timeline`) reads it
-// back. Python: ts_timeline.MUX_CLOCK_BASE_90K.
-constexpr int64_t MUX_CLOCK_BASE_90K = 3600LL * 90000;
-
-// House time (ns) a mux-written PES PTS encodes: `pts - 1 h`, unwrapped to the
-// 2^33 period nearest `house_now` (python's house_from_mux_pts).
-int64_t house_from_mux_pts(int64_t pts, int64_t house_now);
-
-// 90 kHz ticks -> nanoseconds, exact in integers: ns = pts * 1e9 / 90e3.
-// Floor division, like Python's `//`, so a negative delta rounds the same way.
-int64_t pts90k_to_ns(int64_t pts);
-
-// `pts` shifted by the 2^33 period that lands it nearest `ref` (`ref` may
-// itself already be unwrapped, i.e. outside 33 bits).
-int64_t unwrap_near(int64_t pts, int64_t ref);
 
 // Per-PID first-PES-PTS recorder over a TS byte stream. EPOCH-CONSISTENT: the
 // first PID to latch defines the epoch and every later PID's first PTS is

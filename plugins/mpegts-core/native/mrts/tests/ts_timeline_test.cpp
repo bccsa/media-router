@@ -1609,14 +1609,9 @@ int main() {
     // stamp `PES - 1 h` for a transform producer. Python parity, integer for
     // integer (ts_timeline_test.py "house-timeline egress").
     {
+        // The formula itself (house_from_mux_pts) is pinned by ts_house_test.
         const int64_t H = 10'000'000'000LL;          // 10 s of house time
         const int64_t MUX = MUX_CLOCK_BASE_90K;
-        CHECK("house_from_mux_pts inverts the mux's 1 h offset exactly",
-              house_from_mux_pts(MUX + 900000, H) == H);
-        CHECK("... to the 2^33 period nearest the house clock",
-              house_from_mux_pts((MUX + 900000 + 3 * PTS_WRAP) % PTS_WRAP,
-                                 3 * PTS_WRAP * 100000 / 9 + H)
-              == pts90k_to_ns(3 * PTS_WRAP + 900000));
         int anchors = 0, reanchors = 0;
         TimelineStamper::Anchored last{};
         TimelineStamper st([&](const TimelineStamper::Anchored& a) { anchors++; last = a; },

@@ -4,6 +4,8 @@
 *.a
 *.so
 mrts/mrts_cli
+mrts/tests/ts_house_test
+mrts/tests/ts_packet_test
 mrts/tests/ts_psi_test
 mrts/tests/ts_split_test
 mrts/tests/ts_video_info_test

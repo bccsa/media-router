@@ -4,16 +4,18 @@ CXX      ?= c++
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++17 -Wall -Wextra
 
-OBJS  = ts_psi.o ts_split.o ts_video_info.o sps_parse.o ts_timeline.o lateness.o
-TESTS = tests/ts_psi_test tests/ts_split_test tests/ts_video_info_test \
-        tests/ts_timeline_test tests/lateness_test
+OBJS  = ts_house.o ts_packet.o ts_psi.o ts_split.o ts_video_info.o sps_parse.o ts_timeline.o \
+        lateness.o
+TESTS = tests/ts_house_test tests/ts_packet_test tests/ts_psi_test tests/ts_split_test \
+        tests/ts_video_info_test tests/ts_timeline_test tests/lateness_test
 
 all: libmrts.a mrts_cli
 
 libmrts.a: $(OBJS)
 	$(AR) rcs $@ $(OBJS)
 
-%.o: %.cpp ts_psi.h ts_split.h ts_video_info.h sps_parse.h ts_timeline.h lateness.h
+%.o: %.cpp ts_house.h ts_packet.h ts_psi.h ts_split.h ts_video_info.h sps_parse.h ts_timeline.h \
+          lateness.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 mrts_cli: mrts_cli.cpp libmrts.a

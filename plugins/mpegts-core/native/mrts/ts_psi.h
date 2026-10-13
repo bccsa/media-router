@@ -9,10 +9,13 @@
 #include <utility>
 #include <vector>
 
+// PKT, SYNC_BYTE and the packet header helpers moved to ts_packet.h, PCR_HZ and
+// PCR_MODULO to ts_house.h; included here so every caller compiles unchanged.
+#include "ts_house.h"
+#include "ts_packet.h"
+
 namespace mrts {
 
-constexpr int PKT = 188;
-constexpr uint8_t SYNC_BYTE = 0x47;
 constexpr int PID_PAT = 0x0000;
 constexpr int PID_NULL = 0x1FFF;
 constexpr int TABLE_PAT = 0x00;
@@ -25,9 +28,6 @@ constexpr int STREAM_TYPE_KLV = 0x15;
 constexpr int STREAM_TYPE_AVC = 0x1B;
 constexpr int STREAM_TYPE_HEVC = 0x24;
 
-constexpr int64_t PCR_HZ = 27000000;            // 90 kHz base * 300 + 9-bit ext
-constexpr int64_t PCR_MODULO = 300LL << 33;     // full PCR wrap
-
 // One retained 188-byte packet (PSI reassembly buffers hold copies).
 struct TsPacket {
     uint8_t b[PKT];
@@ -35,15 +35,6 @@ struct TsPacket {
 
 // CRC-32/MPEG-2: poly 0x04C11DB7, init 0xFFFFFFFF, no reflection/xorout.
 uint32_t crc32_mpeg(const uint8_t* data, size_t n);
-
-inline int ts_pid(const uint8_t* p) { return ((p[1] & 0x1F) << 8) | p[2]; }
-inline bool ts_pusi(const uint8_t* p) { return (p[1] & 0x40) != 0; }
-inline bool ts_has_payload(const uint8_t* p) { return (p[3] & 0x10) != 0; }
-inline int payload_offset(const uint8_t* p) {
-    int off = 4;
-    if (p[3] & 0x20) off += 1 + p[4];
-    return off;
-}
 
 // 27 MHz PCR carried in the packet's adaptation field, or -1.
 int64_t read_pcr(const uint8_t* pkt);

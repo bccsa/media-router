@@ -134,23 +134,11 @@ int64_t median(std::vector<int64_t> v) {
     return v[v.size() / 2];
 }
 
-// Python's `%` on a positive modulus: always non-negative.
-int64_t mod_wrap(int64_t v) {
-    int64_t m = v % PTS_WRAP;
-    return m < 0 ? m + PTS_WRAP : m;
-}
-
-// Signed, wrap-folded PES delta — the watch's whole wrap immunity.
-int64_t folded_delta(int64_t pts, int64_t last) {
-    int64_t d = mod_wrap(pts - last);
-    return d > PTS_WRAP / 2 ? d - PTS_WRAP : d;
-}
-
 // `pts` is a plausible continuation of `last`. BOTH halves of the watch ask
 // it: once of the pre-jump reference (is this a discontinuity at all?) and
 // once of the proposed new epoch (is the stream continuing from it?).
 bool coherent(int64_t pts, int64_t last) {
-    int64_t d = folded_delta(pts, last);
+    int64_t d = fold33(pts - last);   // the watch's whole wrap immunity
     return d >= -BACK_TICKS && d <= FWD_TICKS;
 }
 
@@ -207,20 +195,6 @@ bool first_pes(const uint8_t* data, size_t len, int* pid, int64_t* pts, int timi
 
 }  // namespace
 
-int64_t pts90k_to_ns(int64_t pts) {
-    int64_t num = pts * 100000;
-    int64_t q = num / 9;
-    // Floor, like Python's `//`: C++ truncates toward zero, which would round a
-    // negative delta the wrong way and put the two implementations one ns apart.
-    if (num < 0 && num % 9 != 0) q--;
-    return q;
-}
-
-int64_t unwrap_near(int64_t pts, int64_t ref) {
-    int64_t base = ref - mod_wrap(ref - pts);
-    return (ref - base) <= PTS_WRAP / 2 ? base : base + PTS_WRAP;
-}
-
 void TimelineLatch::feed(const uint8_t* data, size_t len, int timing_pid) {
     for (size_t off = 0; off + PKT <= len; off += PKT) {
         const uint8_t* pkt = data + off;
@@ -272,12 +246,6 @@ void TimelineStamper::reset_drift(int64_t house_now, bool have_now) {
     slew_last_ = house_now;
     has_slew_last_ = have_now;
     slew_total_ = 0;
-}
-
-int64_t house_from_mux_pts(int64_t pts, int64_t house_now) {
-    // `% PTS_WRAP` of a negative value: C++ keeps the sign, python does not.
-    int64_t raw = ((pts - MUX_CLOCK_BASE_90K) % PTS_WRAP + PTS_WRAP) % PTS_WRAP;
-    return pts90k_to_ns(unwrap_near(raw, house_now * 9 / 100000));
 }
 
 TimelineStamper::Drift TimelineStamper::drift() const {
@@ -522,7 +490,7 @@ void TimelineStamper::scan_watch(const uint8_t* data, size_t len, int64_t house_
         bool same_pid = cand != pending_.end() && coherent(pts, cand->second);
         pending_[pid] = pts;
         if (same_pid || anom_ >= ANOM_CONFIRM)
-            reanchor(pid, last_pts, pts, folded_delta(pts, last_pts), house_now);
+            reanchor(pid, last_pts, pts, fold33(pts - last_pts), house_now);
         return;
     }
     anom_ = 0;
@@ -600,7 +568,8 @@ bool TimelineStamper::scan_late(int pid, int64_t pts, int64_t house_now, int64_t
 }
 
 namespace {
-// Signed, wrap-folded difference on an N-bit counter.
+// Signed, wrap-folded difference on a counter of `modulo`. Only the 27 MHz PCR
+// uses it now: fold33 (ts_house.h) is the same arithmetic for the 33-bit PTS.
 int64_t fold(int64_t d, int64_t modulo) {
     d %= modulo;
     if (d < 0) d += modulo;
@@ -657,8 +626,8 @@ int64_t TimelineStamper::cond_pcr_floor_pts(int64_t house_now) const {
     int64_t floor = cond_ref_wpts_;
     for (const auto& kv : cond_seen_) {
         if (kv.first == cond_ref_pid_ || house_now - kv.second.second > COND_PCR_RECENT_NS) continue;
-        const int64_t d = fold(kv.second.first - cond_ref_wpts_, PTS_WRAP);
-        if (d < 0 && pts90k_to_ns(-d) <= COND_PCR_FLOOR_NS && fold(kv.second.first - floor, PTS_WRAP) < 0)
+        const int64_t d = fold33(kv.second.first - cond_ref_wpts_);
+        if (d < 0 && pts90k_to_ns(-d) <= COND_PCR_FLOOR_NS && fold33(kv.second.first - floor) < 0)
             floor = kv.second.first;
     }
     return floor;
@@ -758,7 +727,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                                                   cond_prog_offset_, {}}).first;
         } else {
             CondClock& c = it->second;
-            const int64_t d_ns = pts90k_to_ns(fold(pts - c.last_raw, PTS_WRAP));
+            const int64_t d_ns = pts90k_to_ns(fold33(pts - c.last_raw));
             const int64_t a_ns = house_now - c.last_house;
             const int64_t pending = cond_prog_offset_ - c.prog_applied;
             const bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
@@ -837,7 +806,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
             if (wdts < 0) wdts += PTS_WRAP;
             // A DTS after its own PTS is not a timeline (vMix writes one while
             // its pacer resets); decode no later than presentation.
-            if (fold(wdts - wpts, PTS_WRAP) > 0) wdts = wpts;
+            if (fold33(wdts - wpts) > 0) wdts = wpts;
             write_ts_field(pkt + poff + 14, wdts);
         }
     }
