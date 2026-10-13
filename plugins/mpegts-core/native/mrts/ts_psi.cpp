@@ -45,6 +45,59 @@ bool wrap_section(int pid, const uint8_t* body, int blen, int cc, uint8_t out[PK
     return true;
 }
 
+// The PMT section up to its CRC (ISO 13818-1 2.4.4.8), section_length set. One
+// body for build_pmt and build_pmt_section, so the two cannot drift apart.
+std::vector<uint8_t> pmt_body(int program_number, int pcr_pid,
+                              const std::vector<uint8_t>& program_info,
+                              const std::vector<PmtStream>& streams, int version) {
+    std::vector<uint8_t> body = {TABLE_PMT, 0x00, 0x00,
+                                 (uint8_t)((program_number >> 8) & 0xFF),
+                                 (uint8_t)(program_number & 0xFF),
+                                 (uint8_t)(0xC1 | ((version & 0x1F) << 1)),
+                                 0x00, 0x00,
+                                 (uint8_t)(0xE0 | ((pcr_pid >> 8) & 0x1F)),
+                                 (uint8_t)(pcr_pid & 0xFF),
+                                 (uint8_t)(0xF0 | ((program_info.size() >> 8) & 0x0F)),
+                                 (uint8_t)(program_info.size() & 0xFF)};
+    body.insert(body.end(), program_info.begin(), program_info.end());
+    for (const auto& s : streams) {
+        body.push_back(s.stream_type & 0xFF);
+        body.push_back(0xE0 | ((s.pid >> 8) & 0x1F));
+        body.push_back(s.pid & 0xFF);
+        body.push_back(0xF0 | ((s.es_info.size() >> 8) & 0x0F));
+        body.push_back(s.es_info.size() & 0xFF);
+        body.insert(body.end(), s.es_info.begin(), s.es_info.end());
+    }
+    section_length_field((int)(body.size() - 3) + 4, &body[1], &body[2]);
+    return body;
+}
+
+// The section starting in `pkt` when its header (table_id .. last_section_number)
+// is in this packet, else null.
+const uint8_t* section_head(const uint8_t* pkt) {
+    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return nullptr;
+    int off = payload_offset(pkt);
+    if (off >= PKT) return nullptr;
+    int start = off + 1 + pkt[off];              // pointer_field -> section start
+    if (start + 8 > PKT) return nullptr;         // need table_id .. last_section
+    return pkt + start;
+}
+
+// A current `table_id` section past the first, of program `ext` when ext >= 0:
+// what unsupported_sections() counts.
+bool later_section(const uint8_t* pkt, int table_id, int ext) {
+    const uint8_t* s = section_head(pkt);
+    return s && s[0] == table_id && (s[1] & 0x80) && (s[5] & 0x01) && s[6] != 0 &&
+           (ext < 0 || ((s[3] << 8) | s[4]) == ext);
+}
+
+// What feed() has always compared, so its callers see no version- or
+// program_info-only change.
+bool same_stream_map(const Pmt& a, const Pmt& b) {
+    return a.program_number == b.program_number && a.pcr_pid == b.pcr_pid &&
+           a.streams == b.streams;
+}
+
 }  // namespace
 
 uint32_t crc32_mpeg(const uint8_t* data, size_t n) {
@@ -106,24 +159,39 @@ bool build_pat(int ts_id, const std::vector<std::pair<int, int>>& programs,
 bool build_pmt(int pmt_pid, int program_number, int pcr_pid,
                const std::vector<PmtStream>& streams, int cc, int version,
                uint8_t out[PKT]) {
-    std::vector<uint8_t> body = {TABLE_PMT, 0x00, 0x00,
-                                 (uint8_t)((program_number >> 8) & 0xFF),
-                                 (uint8_t)(program_number & 0xFF),
-                                 (uint8_t)(0xC1 | ((version & 0x1F) << 1)),
-                                 0x00, 0x00,
-                                 (uint8_t)(0xE0 | ((pcr_pid >> 8) & 0x1F)),
-                                 (uint8_t)(pcr_pid & 0xFF),
-                                 0xF0, 0x00};   // program_info_length = 0
-    for (const auto& s : streams) {
-        body.push_back(s.stream_type & 0xFF);
-        body.push_back(0xE0 | ((s.pid >> 8) & 0x1F));
-        body.push_back(s.pid & 0xFF);
-        body.push_back(0xF0 | ((s.es_info.size() >> 8) & 0x0F));
-        body.push_back(s.es_info.size() & 0xFF);
-        body.insert(body.end(), s.es_info.begin(), s.es_info.end());
-    }
-    section_length_field((int)(body.size() - 3) + 4, &body[1], &body[2]);
+    std::vector<uint8_t> body = pmt_body(program_number, pcr_pid, {}, streams, version);
     return wrap_section(pmt_pid, body.data(), (int)body.size(), cc, out);
+}
+
+std::vector<uint8_t> build_pmt_section(int program_number, int pcr_pid,
+                                       const std::vector<uint8_t>& program_info,
+                                       const std::vector<PmtStream>& streams,
+                                       int version) {
+    std::vector<uint8_t> sec = pmt_body(program_number, pcr_pid, program_info, streams,
+                                        version);
+    if (sec.size() + 4 > 1024) return {};       // section_length <= 1021
+    uint32_t crc = crc32_mpeg(sec.data(), sec.size());
+    for (int sh = 24; sh >= 0; sh -= 8) sec.push_back((uint8_t)(crc >> sh));
+    return sec;
+}
+
+void packetise_section(int pid, const std::vector<uint8_t>& section, uint8_t& cc,
+                       std::vector<uint8_t>& out) {
+    for (size_t i = 0; i < section.size();) {
+        const size_t at = out.size();
+        out.resize(at + PKT, 0xFF);             // the last packet's tail stays stuffing
+        uint8_t* p = out.data() + at;
+        p[0] = SYNC_BYTE;
+        p[1] = (i == 0 ? 0x40 : 0x00) | ((pid >> 8) & 0x1F);
+        p[2] = pid & 0xFF;
+        p[3] = 0x10 | (cc & 0x0F);              // payload only
+        int k = 4;
+        if (i == 0) p[k++] = 0x00;              // pointer_field: the section starts here
+        size_t n = std::min(section.size() - i, (size_t)(PKT - k));
+        std::memcpy(p + k, section.data() + i, n);
+        i += n;
+        cc = (cc + 1) & 0x0F;
+    }
 }
 
 bool first_section(const std::deque<TsPacket>& packets, int pid,
@@ -172,12 +240,9 @@ std::vector<std::pair<int, int>> parse_pat(const std::deque<TsPacket>& packets) 
 }
 
 bool section_signature(const uint8_t* pkt, SectionSig* out) {
-    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return false;
-    int off = payload_offset(pkt);
-    if (off >= PKT) return false;
-    int start = off + 1 + pkt[off];              // pointer_field -> section start
-    if (start + 8 > PKT) return false;           // need table_id .. last_section
-    const uint8_t* s = pkt + start;
+    const uint8_t* s = section_head(pkt);
+    if (!s) return false;
+    const int start = (int)(s - pkt);
     if (!(s[1] & 0x80)) return false;            // no section_syntax: no version/CRC
     if (!(s[5] & 0x01)) return false;            // current_next_indicator = 0
     if (s[6] != 0) return false;                 // only section 0 is ever parsed
@@ -206,8 +271,12 @@ std::optional<Pmt> parse_pmt(const std::deque<TsPacket>& packets, int pmt_pid) {
     int section_length = ((sec[1] & 0x0F) << 8) | sec[2];
     int end = 3 + section_length - 4;
     r.program_number = (sec[3] << 8) | sec[4];
+    r.version = (sec[5] >> 1) & 0x1F;
     r.pcr_pid = ((sec[8] & 0x1F) << 8) | sec[9];
     int program_info_length = ((sec[10] & 0x0F) << 8) | sec[11];
+    // Stops at the CRC; es_info below may run into it (python parity).
+    int pi_end = std::min(12 + program_info_length, end);
+    if (pi_end > 12) r.program_info.assign(sec.begin() + 12, sec.begin() + pi_end);
     int i = 12 + program_info_length;
     while (i + 5 <= end && i + 5 <= (int)sec.size()) {
         PmtStream s;
@@ -220,6 +289,41 @@ std::optional<Pmt> parse_pmt(const std::deque<TsPacket>& packets, int pmt_pid) {
         i += 5 + es_info_len;
     }
     return r;
+}
+
+uint32_t registration_format(const std::vector<uint8_t>& es_info) {
+    uint32_t fmt = 0;
+    for_each_descriptor(es_info.data(), (int)es_info.size(), [&](const Descriptor& d) {
+        if (d.tag != 0x05) return true;
+        if (d.len >= 4)
+            fmt = ((uint32_t)d.data[0] << 24) | ((uint32_t)d.data[1] << 16) |
+                  ((uint32_t)d.data[2] << 8) | d.data[3];
+        return false;                           // the first one decides
+    });
+    return fmt;
+}
+
+bool has_descriptor(const std::vector<uint8_t>& es_info, uint8_t tag) {
+    bool found = false;
+    for_each_descriptor(es_info.data(), (int)es_info.size(), [&](const Descriptor& d) {
+        found = d.tag == tag;
+        return !found;
+    });
+    return found;
+}
+
+void PsiDiscovery::select_program(int program_number) {
+    if (program_number < 0) program_number = -1;
+    if (program_number == select_) return;
+    select_ = program_number;
+    // The PMT state is the old program's; with pmt_pid_ < 0 the next feed
+    // re-reads the retained PAT for the new one.
+    pmt_pid_ = -1;
+    program_ = -1;
+    pmt_pkts_.clear();
+    pmt_sig_ = pmt_new_sig_ = SectionSig();
+    pmt_resync_ = false;
+    pmt_.reset();
 }
 
 bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
@@ -236,6 +340,7 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
                 pat_new_sig_ = sig;
                 pat_resync_ = true;
             }
+            if (later_section(p.b, TABLE_PAT, -1)) unsupported_++;
             pat_pkts_.push_back(p);
             if ((int)pat_pkts_.size() > max_) pat_pkts_.pop_front();
         } else if (pmt_pid_ >= 0 && pid == pmt_pid_) {
@@ -248,6 +353,7 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
                 pmt_new_sig_ = sig;
                 pmt_resync_ = true;
             }
+            if (later_section(p.b, TABLE_PMT, program_)) unsupported_++;
             pmt_pkts_.push_back(p);
             if ((int)pmt_pkts_.size() > max_) pmt_pkts_.pop_front();
         }
@@ -255,6 +361,12 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
     n_++;
     if (pmt_pid_ < 0 || pat_resync_) {
         auto pat = parse_pat(pat_pkts_);
+        if (select_ >= 0)
+            pat.erase(std::remove_if(pat.begin(), pat.end(),
+                                     [&](const std::pair<int, int>& e) {
+                                         return e.first != select_;
+                                     }),
+                      pat.end());
         if (!pat.empty()) {
             if (pat_resync_) {
                 pat_sig_ = pat_new_sig_;
@@ -279,8 +391,9 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
             pmt_resync_ = false;
         }
         if (pmt && (!pmt_ || !(*pmt == *pmt_))) {
+            changed = !pmt_ || !same_stream_map(*pmt, *pmt_);
             pmt_ = std::move(pmt);
-            changed = true;
+            generation_++;
         }
     }
     return changed;
