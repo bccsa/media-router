@@ -1,12 +1,6 @@
-/**
- * LatenessReporter (house-clock design §9.5, plan WI-P0-9): turns the
- * `mrlateness` windows a module's taps post, plus sidecar windows, into the
- * module's timing summary. Display only: no threshold, no alarm (OQ-8).
- *
- * Taps are classified by name (`latenessTap.ts`): `lat_busin…` are inputs;
- * `lat_render`/`lat_egress` are an output module's output; `lat_busout…`
- * (bus egress, sidecar outputs) are a producer's output.
- */
+// LatenessReporter (design §9.5, WI-P0-9): the `mrlateness` windows a module's taps and
+// sidecars post, as its timing summary. Display only: no threshold, no alarm (OQ-8). Taps are
+// classified by name: `lat_busin…` inputs; `lat_render`/`lat_egress`/`lat_busout…` output.
 import type {
     LatenessStatsMs,
     ModuleTimingInput,
@@ -26,11 +20,8 @@ interface Entry {
 /** A tap that has not reported for this many windows is gone (input removed or dark). */
 const STALE_WINDOWS = 3;
 const NS_PER_MS = 1_000_000;
-/**
- * Past this a window is not on the house timeline at all: a producer egress
- * reads raw mux PTS until its first consumer arms the stamper (measured: ~24
- * days, the uptime). Such a window is not shown rather than shown as lateness.
- */
+// Past this a window is off the house timeline: a producer egress reads raw mux PTS until its
+// first consumer arms the stamper (measured ~24 days, the uptime), so it is hidden, not shown.
 const OFF_TIMELINE_MS = 3_600_000;
 
 /** One `mrlateness` message payload (ns fields) as a ms window; null when it carried no samples. */

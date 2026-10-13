@@ -1,12 +1,6 @@
-"""Loader for the `mrlateness` tap (plugins/mpegts-core/native/mrlateness/
-libgstmrlateness.so, house-clock plan WI-P0-8).
-
-Loaded unconditionally at runner start: bus fragments name the element
-whenever the engine found the .so, and dynamic `bus_input_add` branches may
-name it later, so there is no pipeline string to gate on. Resolution mirrors
-`gst_stamp_native.so_paths` and nativeBinaries.ts `resolveNativeAsset`:
-plugins tree first, then the packaged install root. Never GST_PLUGIN_PATH.
-"""
+"""Loads the `mrlateness` tap (libgstmrlateness.so, WI-P0-8) by path, never GST_PLUGIN_PATH:
+plugins tree first, then the packaged root, as nativeBinaries.ts `resolveNativeAsset` does.
+Loaded at runner start: a later `bus_input_add` may name it, so no pipeline string gates it."""
 import os
 import sys
 

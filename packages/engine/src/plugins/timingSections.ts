@@ -1,8 +1,6 @@
-/**
- * A module's timing summary as status sections and a face badge (ADR-0007:
- * the plugin computes, the UI renders). Every row is labelled with its unit,
- * so the operator reads a number, not a colour. House-clock plan WI-P0-9.
- */
+// A module's timing summary as status sections and a face badge (ADR-0007: the plugin
+// computes, the UI renders). Every row is labelled with its unit, so the operator reads a
+// number, not a colour. House-clock plan WI-P0-9.
 import type { ModuleBadge, ModuleTimingSummary, StatusValue } from '@media-router/shared-types';
 
 export const TIMING_SECTION = 'timing';
@@ -119,10 +117,8 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     return v;
 }
 
-/**
- * True when a displayed value moved by ≥ `minMs` or a row came or went: the
- * throttle that bounds manager traffic with many modules (R-P0-6).
- */
+/** True when a displayed value moved by ≥ `minMs` or a row came or went: the throttle that
+ *  bounds manager traffic with many modules (R-P0-6). */
 export function timingChanged(
     prev: ModuleTimingSummary | null,
     next: ModuleTimingSummary,

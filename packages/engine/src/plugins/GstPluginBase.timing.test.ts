@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-/**
- * The lateness display (WI-P0-9) lives in the base class: `mrlateness:<tap>`
- * events never reach a subclass, the timing sections survive a subclass
- * replacing its own dynamic sections, and stop clears them.
- */
+// The lateness display (WI-P0-9) lives in the base class: `mrlateness:<tap>` events never
+// reach a subclass, the timing sections survive a subclass replacing its own dynamic
+// sections, and stop clears them.
 const h = vi.hoisted(() => {
     class FakeChildProcess {
         static instances: FakeChildProcess[] = [];

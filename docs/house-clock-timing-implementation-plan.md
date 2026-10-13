@@ -2153,7 +2153,7 @@ one engineer who knows the codebase.
   - Throttle: state is emitted only when a displayed value changes by
     ≥ 1 ms. This bounds manager traffic with 30 modules (R-P0-6).
 - **Acceptance.**
-  - `latenessReporter.test.ts` covers:
+  - `latenessReporter.test.ts`, `timingSections.test.ts` and `moduleTiming.test.ts` cover:
     - single-input transform: added latency = out − in;
     - a 3-input muxer: slowest input named;
     - an output with D = 60 ms and λ = 20 ms gives render 60 + device;
@@ -2378,12 +2378,12 @@ deleted here. Those mechanisms go in Phases 2-4.
 | `gst_mrlateness_element_test.py` | GStreamer dataflow | 300 ms injected lateness read back ± 5 ms; lists kept intact; `house` vs `running-time` with `base_time` 0 and ≠ 0 | `packages/engine/src/child-process/` |
 | `houseClockPolicy.test.ts`, `HouseClock.test.ts` | Vitest | The decision table in WI-P0-4; sidecar restart keeps E; 30 s timeout with fake timers | `packages/engine/src/clock/` |
 | `Engine.test.ts` (extended) | Vitest | Module start awaits `ready()`; API up during the wait | `packages/engine/src/` |
-| `latenessReporter.test.ts` | Vitest | Added latency, slowest input, render formula, labels, throttling | `packages/engine/src/plugins/` |
+| `latenessReporter.test.ts`, `timingSections.test.ts`, `moduleTiming.test.ts` | Vitest | Added latency, slowest input, render formula (reporter); labels, badge, change test (sections); publication tick, sink reads, PipeWire latency (ModuleTiming) | `packages/engine/src/plugins/` |
 | `busRunnerContract.test.ts` (extended) | Vitest | `lat_*` names and the `mrlateness` branch present in both runner sources | `packages/engine/src/plugins/` |
 | Protocol, native runner | Black-box | `mrlateness:<tap>` events from static and dynamic inputs; plugin loaded by path | `packages/engine/src/child-process/native_runner_protocol_test.py` |
 | Protocol, python runner | Black-box | The same cases through `gst-pipeline-runner.py` (new `gst_lateness_protocol_test.py`) | `packages/engine/src/child-process/` |
 | `unixfdFanout.test.ts`, `mr-tssplit` tests (extended) | Conformance | `lateness` key in stats lines | existing locations under `plugins/unixfdbus-core`, `plugins/ts-splitter` |
-| `pipeWireLatency.test.ts` | Vitest | Parse a captured `pw-dump` | `packages/engine/src/audio/` |
+| `pipeWireLatency.test.ts` | Vitest | Parse a fleet `pw-dump` (MR_PW null sinks, runner streams; `fixtures/fixture-reduce.py`) | `packages/engine/src/audio/` |
 | `aes67Helpers.test.ts` (extended) | Vitest | `rtpTimestampOffset()` against the deleted Python's vectors | `packages/engine/src/plugins/` (WI-P0-6) |
 | `PtpConfig.spec.ts`, `TimeStatus.spec.ts`, `TimeConfig.spec.ts` | Vitest (DM) | One-daemon switch; `chronyc -c` and `--once` parsing; server-list rendering and validation | device-manager `api/src/config/` |
 | `EngineListItem.test.ts` (extended) | Vitest | 4 clock states, old engine | `packages/manager-ui/src/components/common/` |

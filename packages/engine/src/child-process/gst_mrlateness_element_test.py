@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""Self-checking dataflow tests for the native lateness tap (`mrlateness`,
-plugins/mpegts-core/native/mrlateness, house-clock plan WI-P0-7).
-
-What is pinned here:
-
-  --  appsrc with PTS = mono - 300 ms reads back mean 300 ms +- 5 ms (house),
-      and a DTS-only buffer is measured off its DTS.
-  --  A GstBufferList of 7 stays ONE list downstream (chain_list, ADR-0011),
-      and counts as one sample.
-  --  With base_time = 0 on the monotonic system clock, `running-time` and
-      `house` agree; with base_time != 0, `house` stays right.
-  --  Buffers with no timestamp count as untimed, not as samples.
-  --  post-messages=false posts nothing but still fills `stats`; events (EOS)
-      pass through.
-
-The window maths itself is pinned by mrts/tests/lateness_test.
-
-Skips (exit 0) where GStreamer / PyGObject is unavailable or the plugin has
-not been built (`make native`).
-
-Run:  python3 gst_mrlateness_element_test.py
-"""
+"""Dataflow tests for the native `mrlateness` tap (WI-P0-7): house/running-time lateness, DTS
+fallback, chain_list (ADR-0011), untimed buffers, post-messages, EOS. The window maths is
+pinned by mrts/tests/lateness_test. Skips (exit 0) without GStreamer or the built plugin."""
 import os
 import sys
 import time
@@ -157,7 +138,7 @@ check(f"DTS-only buffers measured (got {m and m / MS:.2f} ms)",
       m is not None and abs(m - 120 * MS) <= 5 * MS)
 stop(pipe)
 
-# --- a list of 7 stays one list (chain_list) --------------------------------
+# --- a list of 7 stays ONE list downstream (chain_list, ADR-0011), one sample --
 seen = {"lists": [], "buffers": 0}
 
 
@@ -190,7 +171,7 @@ ws = windows(pipe, settle_s=0)
 check("the list is one sample", sum(s.get_value("count") for s in ws) == 2)
 stop(pipe)
 
-# --- running-time vs house --------------------------------------------------
+# --- running-time vs house: agree at base_time 0; house stays right otherwise --
 TAPS = ["mrlateness name=h reference=house interval-ms=200",
         "mrlateness name=r reference=running-time interval-ms=200"]
 
@@ -218,7 +199,7 @@ check("base_time != 0: running-time is off by the base time (so the case is real
       mh is not None and mr is not None and abs(mr - mh) > Gst.SECOND)
 stop(pipe)
 
-# --- untimed buffers --------------------------------------------------------
+# --- buffers with no timestamp count as untimed, not as samples --------------
 # basesrc stamps an untimed FIRST buffer with DTS 0, so lead with a timed one.
 pipe, src = build(["mrlateness name=lat interval-ms=50 reference=running-time"])
 feed(src, 1, 10 * MS)
@@ -235,7 +216,7 @@ check("untimed buffers counted, not sampled",
       and sum(s.get_value("count") for s in ws) == 2)
 stop(pipe)
 
-# --- post-messages=false, empty windows, EOS passes -------------------------
+# --- post-messages=false still fills stats; idle posts nothing; EOS passes ----
 pipe, src = build(["mrlateness name=lat interval-ms=50 post-messages=false"])
 feed(src, 10, 10 * MS)
 check("post-messages=false posts nothing", windows(pipe) == [])

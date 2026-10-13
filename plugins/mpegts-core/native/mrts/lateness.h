@@ -1,7 +1,6 @@
-// Lateness window (house-clock design §9.5): the one accumulator behind every
-// module's lateness reading. The `mrlateness` element, mr-tssplit and
-// mr-bus-fanout all feed it, so a window means the same thing everywhere.
-// Lateness λ = now − PTS on the house clock; negative means early.
+// Lateness window (design §9.5): the one accumulator behind every module's lateness reading.
+// The `mrlateness` element, mr-tssplit and mr-bus-fanout all feed it, so a window means the
+// same thing everywhere. Lateness λ = now − PTS on the house clock; negative means early.
 #pragma once
 #include <cstdint>
 #include <string>

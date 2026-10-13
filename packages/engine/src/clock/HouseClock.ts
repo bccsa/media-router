@@ -38,14 +38,9 @@ export interface HouseClockOptions {
 
 const ms = (ns: bigint): string => (Number(ns) / 1e6).toFixed(3);
 
-/**
- * The engine's one owner of the house epoch E = TAI − MONOTONIC and of its
- * time-sync state (house-clock design §4.2, §10.3). mr-clockstate measures,
- * this decides, so a sidecar restart never re-epochs on its own.
- *
- * Events: `epoch` (HouseEpoch) on every (re-)latch, `state` (TimeSyncState)
- * on any change.
- */
+/** The engine's one owner of the house epoch E = TAI − MONOTONIC and its time-sync state
+ *  (design §4.2, §10.3): mr-clockstate measures, this decides, so a sidecar restart never
+ *  re-epochs on its own. Emits `epoch` on every (re-)latch and `state` on any change. */
 export class HouseClock extends EventEmitter {
     private proc: ManagedProcess | null = null;
     private current: HouseEpoch | null = null;

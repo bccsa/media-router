@@ -1,8 +1,6 @@
-/**
- * Pure decisions behind the engine's house epoch E (house-clock design §10.3):
- * when to latch, when to re-latch, when traceability flips. No I/O and no
- * timers, so the whole table is unit-tested; `HouseClock` does the plumbing.
- */
+// Pure decisions behind the house epoch E (design §10.3): when to latch, when to re-latch,
+// when traceability flips. No I/O and no timers, so the whole table is unit-tested;
+// `HouseClock` does the plumbing.
 
 /** One `sample` line from mr-clockstate, parsed. */
 export interface ClockSample {

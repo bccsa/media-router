@@ -1,11 +1,6 @@
-/* mrlateness — a pass-through tap that measures lateness λ = now − PTS
- * (house-clock design §9.5) and posts one `mrlateness` element message per
- * window. The accumulator is mrts::LatenessWindow, shared with the sidecars.
- *
- * A plain GstElement, not a GstBaseTransform: basetransform has no chain_list,
- * so it would dismantle the per-access-unit lists `mpegtsmux alignment=7`
- * emits (ADR-0011, the COALESCE note in gstmrtsstamp.cpp). Lists pass intact.
- */
+/* mrlateness: a pass-through tap measuring lateness λ = now − PTS (design §9.5), one
+ * `mrlateness` message per mrts::LatenessWindow (shared with the sidecars). A plain GstElement:
+ * GstBaseTransform has no chain_list and would split mpegtsmux's AU lists (ADR-0011). */
 #include <gst/gst.h>
 
 #include <atomic>

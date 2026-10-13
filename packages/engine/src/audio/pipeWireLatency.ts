@@ -1,9 +1,6 @@
-/**
- * The latency PipeWire reports for a module's node (house-clock design §9.5,
- * plan WI-P0-10). PipeWire-graph modules carry no PTS, so they show this
- * instead of lateness: one graph cycle (quantum / rate) plus whatever the
- * node's own `Latency` param adds.
- */
+// The latency PipeWire reports for a module's node (design §9.5, WI-P0-10). PipeWire-graph
+// modules carry no PTS, so instead of lateness they show one graph cycle (quantum / rate)
+// plus whatever the node's own `Latency` param adds.
 import { pwDump } from './streamPortLinks.js';
 
 export interface NodeLatency {

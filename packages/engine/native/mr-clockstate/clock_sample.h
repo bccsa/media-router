@@ -1,7 +1,6 @@
-// The measuring half of the engine's house epoch E = TAI - MONOTONIC
-// (house-clock design §4.2, §10.3): a tight clock sample, the kernel's sync
-// state, and the JSON lines mr-clockstate streams. Readers are injectable so
-// the selection, decoding and formatting are unit-tested without a real clock.
+// The measuring half of the house epoch E = TAI - MONOTONIC (design §4.2, §10.3): a tight
+// clock sample, the kernel's sync state and the JSON lines mr-clockstate streams. Readers are
+// injectable so selection, decoding and formatting are unit-tested without a real clock.
 #pragma once
 #include <sys/timex.h>
 #include <time.h>

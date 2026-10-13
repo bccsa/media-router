@@ -1,10 +1,6 @@
-// mr-clockstate — the engine's clock sidecar (house-clock design §4.2, §10.3).
-// Streams one `sample` JSON line per second (E = TAI - MONO plus the kernel's
-// adjtimex sync state) and a `step` line the moment the kernel steps REALTIME.
-// Stateless: it reports, the engine's HouseClock latches and decides.
-//
-//   mr-clockstate          stream until SIGTERM or stdout closes
-//   mr-clockstate --once   print one sample and exit 0 (Device Manager, tests)
+// mr-clockstate, the engine's stateless clock sidecar (design §4.2, §10.3): one `sample` JSON
+// line per second (E = TAI - MONO plus the kernel's adjtimex sync state) and a `step` line when
+// REALTIME is stepped; HouseClock latches and decides. `--once` prints one sample and exits.
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>

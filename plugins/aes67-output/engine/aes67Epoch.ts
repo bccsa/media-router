@@ -11,11 +11,8 @@ export interface Aes67Epoch {
 
 type ClockView = Pick<HouseClock, 'epoch' | 'state'>;
 
-/**
- * Why this box may not claim the PTP epoch, or '' when it may. A free-running
- * sender is honest; one announcing a media clock it does not have is
- * undetectable at the receiver.
- */
+/** Why this box may not claim the PTP epoch, or '' when it may. A free-running sender is
+ *  honest; one announcing a media clock it does not have is undetectable at the receiver. */
 export function epochRefusal(clock: ClockView | undefined): string {
     const tail = ' — RTP timestamps free-run';
     if (!clock) return `no engine house clock${tail}`;
@@ -39,11 +36,9 @@ export function claimEpoch(ep: HouseEpoch): Aes67Epoch {
     };
 }
 
-/**
- * Does a house-clock change move what this sender should stamp? A re-latch
- * moves E; gaining traceability makes a claim possible. Losing it does not:
- * E is still right (no step), so the claim stays and the face warns.
- */
+/** Does a house-clock change move what this sender should stamp? A re-latch moves E; gaining
+ *  traceability makes a claim possible. Losing it does not: E is still right (no step), so
+ *  the claim stays and the face warns. */
 export function epochChangeNeedsRestart(
     claimed: Aes67Epoch | null,
     ep: HouseEpoch | null,

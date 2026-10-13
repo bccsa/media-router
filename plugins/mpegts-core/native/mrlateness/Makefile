@@ -1,8 +1,6 @@
-# mrlateness — GStreamer pass-through tap reporting lateness per window, built
-# on mrts::LatenessWindow (house-clock plan WI-P0-7). Linux/GStreamer only.
-#
-# Like mrtsstamp, the mrts source it needs is compiled INTO the .so (libmrts.a
-# is built without -fPIC), so it has no build-order dependency on mrts.
+# mrlateness: GStreamer pass-through tap reporting lateness per window on mrts::LatenessWindow
+# (WI-P0-7). Like mrtsstamp it compiles the mrts source INTO the .so (libmrts.a has no -fPIC),
+# so it has no build-order dependency on mrts. Linux/GStreamer only.
 CXX        ?= c++
 CXXFLAGS   ?= -O2
 CXXFLAGS   += -std=c++17 -Wall -Wextra -fPIC

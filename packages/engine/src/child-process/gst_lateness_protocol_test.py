@@ -1,28 +1,7 @@
 #!/usr/bin/env python3
-"""Black-box protocol test for the bus-ingress lateness taps (house-clock plan
-WI-P0-8), run against the python runner (`gst-pipeline-runner.py`).
-`native_runner_protocol_test.py` runs the same `lateness_case` against
-mr-gst-runner.
-
-What is pinned here:
-
-  --  The runner loads `libgstmrlateness.so` by path (MR_PLUGINS_DIR), not via
-      GST_PLUGIN_PATH, and parses the `buildBusSrc` fragment that names it.
-  --  A producer stamping PTS = mono - 200 ms on its unixfdsink makes the
-      runner emit `plugin_event` `mrlateness:lat_busin` with mean-ns 200 ms
-      +- 10 ms, with no `busReports` subscription.
-  --  A branch added at runtime (`bus_input_add`) reports the same way, from
-      its own tap.
-  --  On a producer, the native stamper still splices into the `buildBusSink`
-      egress with the tap in it, and the egress tap reports.
-
-`BUS_SRC` is `buildBusSrc({ name, port, socketPath })` and `BUS_SINK` is
-`buildBusSink(41000)`, verbatim; the TS side pins both in busRunnerContract.test.ts.
-
-Skips (exit 0) where GStreamer, unixfdsink or the plugin is unavailable.
-
-Run:  python3 gst_lateness_protocol_test.py
-"""
+"""Protocol test for the bus lateness taps (WI-P0-8) against the python runner; the native
+runner reuses `lateness_case` via native_runner_protocol_test.py. Skips (exit 0) without
+GStreamer, unixfdsink or the built plugin.  Run: python3 gst_lateness_protocol_test.py"""
 import json
 import os
 import shutil
@@ -49,11 +28,11 @@ _PLUGINS = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins
 _SO = os.path.join(_PLUGINS, "mpegts-core", "native", "mrlateness", "libgstmrlateness.so")
 PY_RUNNER = [sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
 TS_CAPS = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
-# buildBusSrc({ name: '{name}', port: {port}, socketPath: '{socket}' }) — pinned TS-side.
+# buildBusSrc({ name, port, socketPath }) verbatim; busRunnerContract.test.ts pins it TS-side.
 BUS_SRC = ("unixfdsrc name={name} socket-path={socket}"
            " ! mrlateness name=lat_{name} reference=house"
            " ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000")
-# buildBusSink(41000) — pinned TS-side.
+# buildBusSink(41000) verbatim; busRunnerContract.test.ts pins it TS-side.
 BUS_SINK = (f"capssetter caps=\"{TS_CAPS}\" replace=true ! capsfilter caps=\"{TS_CAPS}\""
             " ! mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true")
 
@@ -185,10 +164,12 @@ def lateness_case(argv, tag, check):
         check(f"{tag} the buildBusSrc fragment parses and plays",
               r.wait_event(lambda e: e.get("event") == "state_change" and e.get("state") == "playing")
               is not None)
-        check(f"{tag} mrlateness loaded by path (no missing-plugin line)",
+        check(f"{tag} mrlateness loaded by path from MR_PLUGINS_DIR, not GST_PLUGIN_PATH "
+              "(no missing-plugin line)",
               not any("no libgstmrlateness.so found" in l for l in r.logs))
         ev = r.wait_event(lateness_event("lat_busin"), timeout=6)
-        check(f"{tag} static input: mrlateness:lat_busin mean 200 ms +- 10 ms "
+        check(f"{tag} static input, PTS = mono - 200 ms: plugin_event mrlateness:lat_busin "
+              f"mean 200 ms +- 10 ms with no busReports subscription "
               f"(got {((ev or {}).get('payload') or {}).get('mean-ns')})", near(ev, 200 * MS, 10 * MS))
 
         dyn = BUS_SRC.format(name="busin_dyn", socket=socks[1])
@@ -198,8 +179,9 @@ def lateness_case(argv, tag, check):
               r.wait_event(lambda e: e.get("event") == "bus_input_add_done" and e.get("id") == "d1")
               is not None)
         ev = r.wait_event(lateness_event("lat_busin_dyn"), timeout=6)
-        check(f"{tag} dynamic input: mrlateness:lat_busin_dyn mean 350 ms +- 10 ms "
-              f"(got {((ev or {}).get('payload') or {}).get('mean-ns')})", near(ev, 350 * MS, 10 * MS))
+        check(f"{tag} bus_input_add branch reports from its own tap: mrlateness:lat_busin_dyn "
+              f"mean 350 ms +- 10 ms (got {((ev or {}).get('payload') or {}).get('mean-ns')})",
+              near(ev, 350 * MS, 10 * MS))
         check(f"{tag} no pipeline error",
               not any(e.get("event") == "error" for e in r.events))
     finally:

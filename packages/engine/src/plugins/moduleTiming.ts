@@ -1,10 +1,6 @@
-/**
- * Per-module lateness display (house-clock plan WI-P0-9): the reporter, the
- * 2 s publication tick with its change throttle, and the sink reads for
- * presentation delay and device latency. GstPluginBase owns one and merges
- * its publication into `getState()`, so a subclass replacing its own dynamic
- * sections never wipes the timing ones.
- */
+// Per-module lateness display (WI-P0-9): the reporter, the 2 s publication tick with its
+// change throttle, and the sink reads for D and device latency. GstPluginBase owns one and
+// merges its publication into `getState()`, so a subclass replacing its own sections keeps it.
 import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
@@ -106,11 +102,8 @@ export class ModuleTiming {
         this.reporter.addWindow(tap, window);
     }
 
-    /**
-     * PipeWire-graph modules (WI-P0-10): no PTS, so they show the latency
-     * PipeWire reports for their nodes, the worst of them, polled every 10 s.
-     * Call after the module's start (start() clears it).
-     */
+    /** PipeWire-graph modules (WI-P0-10) have no PTS: show the worst latency PipeWire reports
+     *  for their nodes, polled every 10 s. Call after the module's start (start() clears it). */
     watchPipeWire(nodeNames: string[], read = readNodeLatency): void {
         this.stopPipeWire();
         const gen = this.pwGen;

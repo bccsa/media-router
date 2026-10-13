@@ -20,10 +20,8 @@ export function sourceFromUnits(stdout: string): TimeSyncSource {
     return 'none';
 }
 
-/**
- * `chronyc -c tracking`: ref id, name, stratum, ref time, system offset, last
- * offset, rms, freq, residual, skew, root delay, root dispersion, interval, leap.
- */
+/** `chronyc -c tracking` fields: ref id, name, stratum, ref time, system offset, last offset,
+ *  rms, freq, residual, skew, root delay, root dispersion, interval, leap. */
 export function parseChronyTracking(csv: string): ChronyTracking | null {
     const f = csv.trim().split('\n')[0]?.split(',') ?? [];
     if (f.length < 14) return null;

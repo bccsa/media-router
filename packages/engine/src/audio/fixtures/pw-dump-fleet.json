@@ -1,0 +1,2128 @@
+[
+  {
+    "id": 32,
+    "type": "PipeWire:Interface:Metadata",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x"
+    ],
+    "props": {
+      "metadata.name": "settings",
+      "object.serial": 32
+    },
+    "metadata": [
+      {
+        "subject": 0,
+        "key": "log.level",
+        "type": "",
+        "value": 2
+      },
+      {
+        "subject": 0,
+        "key": "clock.rate",
+        "type": "",
+        "value": 48000
+      },
+      {
+        "subject": 0,
+        "key": "clock.allowed-rates",
+        "type": "",
+        "value": "[ 44100, 48000, 96000 ]"
+      },
+      {
+        "subject": 0,
+        "key": "clock.quantum",
+        "type": "",
+        "value": 1024
+      },
+      {
+        "subject": 0,
+        "key": "clock.min-quantum",
+        "type": "",
+        "value": 512
+      },
+      {
+        "subject": 0,
+        "key": "clock.max-quantum",
+        "type": "",
+        "value": 4096
+      },
+      {
+        "subject": 0,
+        "key": "clock.force-quantum",
+        "type": "",
+        "value": 0
+      },
+      {
+        "subject": 0,
+        "key": "clock.force-rate",
+        "type": "",
+        "value": 0
+      }
+    ]
+  },
+  {
+    "id": 84,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 83,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-encoder-825",
+        "node.driver": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-encoder-825",
+        "object.id": 84,
+        "object.serial": 110,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870920
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 87,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 815,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 86,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Record Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 84,
+        "node.latency": "480/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 87,
+        "object.register": false,
+        "object.serial": 116,
+        "port.group": "stream.0",
+        "pulse.attr.fragsize": 960,
+        "pulse.attr.maxlength": 19200,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.capture.sink": true,
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-encoder-825"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Output",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 93,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 92,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-encoder-2426",
+        "node.driver": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-encoder-2426",
+        "object.id": 93,
+        "object.serial": 122,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870921
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 96,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 850,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 95,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Record Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 93,
+        "node.latency": "480/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 96,
+        "object.register": false,
+        "object.serial": 128,
+        "port.group": "stream.0",
+        "pulse.attr.fragsize": 960,
+        "pulse.attr.maxlength": 19200,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.capture.sink": true,
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-encoder-2426"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Output",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 102,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 101,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-encoder-4043",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-encoder-4043",
+        "object.id": 102,
+        "object.serial": 134,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870922
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 105,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 866,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 104,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Record Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 84,
+        "node.latency": "480/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 105,
+        "object.register": false,
+        "object.serial": 140,
+        "port.group": "stream.0",
+        "pulse.attr.fragsize": 960,
+        "pulse.attr.maxlength": 19200,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.capture.sink": true,
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-encoder-4043"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Output",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 111,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 110,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-encoder-6055",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-encoder-6055",
+        "object.id": 111,
+        "object.serial": 146,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870923
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 114,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 878,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 113,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Record Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 84,
+        "node.latency": "480/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 114,
+        "object.register": false,
+        "object.serial": 152,
+        "port.group": "stream.0",
+        "pulse.attr.fragsize": 960,
+        "pulse.attr.maxlength": 19200,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.capture.sink": true,
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-encoder-6055"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Output",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 120,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 119,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-encoder-7421",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-encoder-7421",
+        "object.id": 120,
+        "object.serial": 158,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870924
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 123,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 890,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 122,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Record Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 93,
+        "node.latency": "480/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 123,
+        "object.register": false,
+        "object.serial": 164,
+        "port.group": "stream.0",
+        "pulse.attr.fragsize": 960,
+        "pulse.attr.maxlength": 19200,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.capture.sink": true,
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-encoder-7421"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Output",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 129,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 128,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_in_0",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_in_0",
+        "object.id": 129,
+        "object.serial": 170,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870925
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 135,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 134,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_in_1",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_in_1",
+        "object.id": 135,
+        "object.serial": 178,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870926
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 141,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 140,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_in_2",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_in_2",
+        "object.id": 141,
+        "object.serial": 186,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870927
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 147,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 146,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_in_3",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_in_3",
+        "object.id": 147,
+        "object.serial": 194,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870928
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 153,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 152,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_out_0",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_out_0",
+        "object.id": 153,
+        "object.serial": 204,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870929
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 159,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 158,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_out_1",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_out_1",
+        "object.id": 159,
+        "object.serial": 212,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870930
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 165,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 164,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_out_2",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_out_2",
+        "object.id": 165,
+        "object.serial": 220,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870931
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 171,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 170,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5g8qqnkas7_out_3",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5g8qqnkas7_out_3",
+        "object.id": 171,
+        "object.serial": 228,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870932
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 333,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 332,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_0",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_0",
+        "object.id": 333,
+        "object.serial": 416,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870945
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 339,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 337,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_1",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_1",
+        "object.id": 339,
+        "object.serial": 428,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870946
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 345,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 344,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_2",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_2",
+        "object.id": 345,
+        "object.serial": 436,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870947
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 351,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 350,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_3",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_in_3",
+        "object.id": 351,
+        "object.serial": 444,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870948
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 357,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 356,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_0",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_0",
+        "object.id": 357,
+        "object.serial": 452,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870949
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 363,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 362,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_1",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_1",
+        "object.id": 363,
+        "object.serial": 460,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870950
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 369,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 368,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_2",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_2",
+        "object.id": 369,
+        "object.serial": 472,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870951
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 375,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 374,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_3",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_n1-mixer-mr5ggtoyw2xr_out_3",
+        "object.id": 375,
+        "object.serial": 480,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870952
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 537,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 536,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-encoder-mtn6zlqygfrw",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-encoder-mtn6zlqygfrw",
+        "object.id": 537,
+        "object.serial": 668,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870965
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 540,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 1214,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 539,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Input/Audio",
+        "media.name": "Record Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 93,
+        "node.latency": "480/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 540,
+        "object.register": false,
+        "object.serial": 674,
+        "port.group": "stream.0",
+        "pulse.attr.fragsize": 960,
+        "pulse.attr.maxlength": 19200,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.capture.sink": true,
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-encoder-mtn6zlqygfrw"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Output",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 74,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 73,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-decoder-5600",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-decoder-5600",
+        "object.id": 74,
+        "object.serial": 696,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870918
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 80,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 79,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-decoder-6965",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-decoder-6965",
+        "object.id": 80,
+        "object.serial": 724,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870919
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 555,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 0,
+      "max-output-ports": 129,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 0,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 1299,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 78,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Output/Audio",
+        "media.name": "Playback Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 93,
+        "node.latency": "1920/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 555,
+        "object.register": false,
+        "object.serial": 743,
+        "port.group": "stream.0",
+        "pulse.attr.maxlength": 4194304,
+        "pulse.attr.minreq": 960,
+        "pulse.attr.prebuf": 0,
+        "pulse.attr.tlength": 5760,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-decoder-6965"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Input",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 43,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 44,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-decoder-4137",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-decoder-4137",
+        "object.id": 43,
+        "object.serial": 755,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870917
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 71,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 1,
+      "n-output-ports": 1,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 1,
+        "audio.position": "[ MONO ]",
+        "audio.rate": 48000,
+        "client.id": 70,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-decoder-3212",
+        "node.driver": true,
+        "node.driver-id": 84,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-decoder-3212",
+        "object.id": 71,
+        "object.serial": 775,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870916
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 546,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 129,
+      "max-output-ports": 0,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 2,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]",
+        "audio.rate": 48000,
+        "client.id": 545,
+        "clock.quantum-limit": 4096,
+        "factory.id": 19,
+        "factory.name": "support.null-audio-sink",
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Audio/Sink",
+        "monitor.channel-volumes": true,
+        "monitor.passthrough": true,
+        "node.description": "MR_PW_audio-decoder-mto04ial3ew6",
+        "node.driver": true,
+        "node.driver-id": 93,
+        "node.loop.name": "data-loop.0",
+        "node.name": "MR_PW_audio-decoder-mto04ial3ew6",
+        "object.id": 546,
+        "object.serial": 799,
+        "port.group": "stream.0",
+        "pulse.module.id": 536870966
+      },
+      "params": {
+        "Latency": []
+      }
+    }
+  },
+  {
+    "id": 567,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 0,
+      "max-output-ports": 129,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 0,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 1251,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 72,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Output/Audio",
+        "media.name": "Playback Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 84,
+        "node.latency": "1920/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 567,
+        "object.register": false,
+        "object.serial": 863,
+        "port.group": "stream.0",
+        "pulse.attr.maxlength": 4194304,
+        "pulse.attr.minreq": 1920,
+        "pulse.attr.prebuf": 0,
+        "pulse.attr.tlength": 11520,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-decoder-5600"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Input",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 579,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": [
+      "r",
+      "w",
+      "x",
+      "m"
+    ],
+    "info": {
+      "max-input-ports": 0,
+      "max-output-ports": 129,
+      "change-mask": [
+        "input-ports",
+        "output-ports",
+        "state",
+        "props",
+        "params"
+      ],
+      "n-input-ports": 0,
+      "n-output-ports": 2,
+      "state": "running",
+      "error": null,
+      "props": {
+        "adapt.follower.spa-node": "",
+        "application.language": "C",
+        "application.name": "mr-gst-runner",
+        "application.process.binary": "mr-gst-runner",
+        "application.process.host": "mr",
+        "application.process.id": 1560,
+        "application.process.machine-id": "ea016265999f45499f0dd97807a800d5",
+        "application.process.user": "mrstation",
+        "client.api": "pipewire-pulse",
+        "client.id": 544,
+        "clock.quantum-limit": 4096,
+        "factory.id": 7,
+        "library.name": "audioconvert/libspa-audioconvert",
+        "media.class": "Stream/Output/Audio",
+        "media.name": "Playback Stream",
+        "node.autoconnect": true,
+        "node.dont-fallback": true,
+        "node.driver-id": 93,
+        "node.latency": "1920/48000",
+        "node.linger": true,
+        "node.loop.name": "data-loop.0",
+        "node.name": "mr-gst-runner",
+        "node.rate": "1/48000",
+        "node.want-driver": true,
+        "object.id": 579,
+        "object.register": false,
+        "object.serial": 167329,
+        "port.group": "stream.0",
+        "pulse.attr.maxlength": 4194304,
+        "pulse.attr.minreq": 1920,
+        "pulse.attr.prebuf": 0,
+        "pulse.attr.tlength": 11520,
+        "pulse.corked": false,
+        "pulse.server.type": "unix",
+        "stream.is-live": true,
+        "target.object": "MR_PW_audio-decoder-mto04ial3ew6"
+      },
+      "params": {
+        "Latency": [
+          {
+            "direction": "Input",
+            "minQuantum": 0.0,
+            "maxQuantum": 0.0,
+            "minRate": 0,
+            "maxRate": 0,
+            "minNs": 0,
+            "maxNs": 0
+          }
+        ]
+      }
+    }
+  }
+]

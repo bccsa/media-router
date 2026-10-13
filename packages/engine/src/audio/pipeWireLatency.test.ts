@@ -3,11 +3,20 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { nodeLatencyFromDump, readNodeLatency } from './pipeWireLatency.js';
 
-// Captured with `pw-dump` on the dev Pi 5 (PipeWire 1.2.7): a stream node
-// asking for 1024/48000, which PipeWire reports reduced as `8/375`.
+// `pw-dump` of a fleet Pi 5 running audio-decoder, audio-encoder and n1-mixer (PipeWire 1.6.3),
+// cut by fixtures/fixture-reduce.py to the objects this module reads.
+type Node = { id: number; type: string; info?: { props?: Record<string, unknown> } };
 const dump = JSON.parse(
-    readFileSync(join(__dirname, 'fixtures', 'pw-dump-dev.json'), 'utf8'),
-) as unknown[];
+    readFileSync(join(__dirname, 'fixtures', 'pw-dump-fleet.json'), 'utf8'),
+) as Node[];
+const nodes = dump.filter((o) => o.type === 'PipeWire:Interface:Node');
+const named = (name: string) => nodes.filter((o) => o.info?.props?.['node.name'] === name);
+const mrNodes = nodes
+    .map((o) => String(o.info?.props?.['node.name']))
+    .filter((n) => n.startsWith('MR_PW_'));
+
+/** No request, empty `Latency` param: the graph cycle, clock.quantum 1024 / clock.rate 48000. */
+const GRAPH_CYCLE = { quantum: 1024, rate: 48000, latencyMs: 21.333333333333332 };
 
 const settings = (entries: Record<string, number>) => ({
     id: 1,
@@ -26,17 +35,51 @@ const node = (
 });
 
 describe('nodeLatencyFromDump', () => {
-    it('reads the requested quantum off a captured node (node.latency, node.rate)', () => {
-        expect(nodeLatencyFromDump(dump, 'MR_PW_out-1')).toEqual({
+    it('an MR_PW null sink (audio-decoder, audio-encoder, n1-mixer in/out) asks no latency: graph cycle 1024 / 48000 = 21.333 ms', () => {
+        for (const name of [
+            'MR_PW_audio-decoder-5600',
+            'MR_PW_audio-encoder-825',
+            'MR_PW_n1-mixer-mr5g8qqnkas7_in_0',
+            'MR_PW_n1-mixer-mr5g8qqnkas7_out_0',
+        ]) {
+            expect(nodeLatencyFromDump(dump, name), name).toEqual(GRAPH_CYCLE);
+        }
+    });
+
+    it('all 27 MR_PW nodes in the capture read that same graph cycle', () => {
+        expect(mrNodes).toHaveLength(27);
+        for (const name of mrNodes)
+            expect(nodeLatencyFromDump(dump, name), name).toEqual(GRAPH_CYCLE);
+    });
+
+    it('a runner stream asking node.latency 1920/48000 at node.rate 1/48000 runs 1920 samples = 40 ms; of nine same-named streams the newest (id 579) wins over the six asking 480', () => {
+        const runners = named('mr-gst-runner');
+        const asked = runners.map((o) => o.info?.props?.['node.latency']);
+        expect(asked.filter((a) => a === '480/48000')).toHaveLength(6);
+        expect(asked.filter((a) => a === '1920/48000')).toHaveLength(3);
+        const newest = runners.reduce((a, b) => (b.id > a.id ? b : a));
+        expect([newest.id, newest.info?.props?.['node.latency']]).toEqual([579, '1920/48000']);
+        expect(nodeLatencyFromDump(dump, 'mr-gst-runner')).toEqual({
+            quantum: 1920,
+            rate: 48000,
+            latencyMs: 40,
+        });
+    });
+
+    it('a request PipeWire 1.2.7 (dev Pi 5) reports reduced, 1024/48000 as 8/375, still reads 1024', () => {
+        const g = [
+            settings({ 'clock.rate': 48000, 'clock.quantum': 4096 }),
+            node(71, {
+                'node.name': 'MR_PW_out-1',
+                'node.latency': '8/375',
+                'node.rate': '1/48000',
+            }),
+        ];
+        expect(nodeLatencyFromDump(g, 'MR_PW_out-1')).toEqual({
             quantum: 1024,
             rate: 48000,
             latencyMs: (1024 / 48000) * 1000,
         });
-    });
-
-    it('a node without a request runs at the graph quantum from the settings metadata', () => {
-        const l = nodeLatencyFromDump(dump, 'Dummy-Driver');
-        expect(l).toEqual({ quantum: 4096, rate: 48000, latencyMs: (4096 / 48000) * 1000 });
     });
 
     it('a forced quantum wins over the request', () => {
@@ -78,8 +121,11 @@ describe('nodeLatencyFromDump', () => {
 
 describe('readNodeLatency', () => {
     it('one dump, every node that exists', async () => {
-        const m = await readNodeLatency(['MR_PW_out-1', 'MR_PW_gone'], async () => dump);
-        expect([...m.keys()]).toEqual(['MR_PW_out-1']);
-        expect(m.get('MR_PW_out-1')?.quantum).toBe(1024);
+        const m = await readNodeLatency(
+            ['MR_PW_audio-decoder-5600', 'MR_PW_gone'],
+            async () => dump,
+        );
+        expect([...m.keys()]).toEqual(['MR_PW_audio-decoder-5600']);
+        expect(m.get('MR_PW_audio-decoder-5600')).toEqual(GRAPH_CYCLE);
     });
 });

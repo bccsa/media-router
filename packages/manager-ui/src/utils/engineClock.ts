@@ -30,10 +30,8 @@ function levelAndLabel(t: TimeSyncState): [ClockLevel, string] {
     return ['error', 'Time not synchronised'];
 }
 
-/**
- * The engine's time-sync indicator (house-clock design §10.3), or null for an
- * engine that does not announce `house-clock`: older engines show nothing.
- */
+/** The engine's time-sync indicator (design §10.3), or null for an engine that does not
+ *  announce `house-clock`: older engines show nothing. */
 export function engineClockIndicator(engine: EngineState): ClockIndicator | null {
     const t = engine.system?.timeSync;
     if (!t || !engine.features?.includes('house-clock')) return null;
