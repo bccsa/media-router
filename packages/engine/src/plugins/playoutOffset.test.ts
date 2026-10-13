@@ -15,10 +15,8 @@ import {
  * Playout offset D — ADR-0005 decision 4.
  *
  * The invariants worth pinning are (a) the resolution ORDER: route head beats
- * engine config beats env beats 60 ms, (b) that the deprecated per-sink trims
- * stack ON TOP rather than replacing anything, and (c) that with the contract
- * off the whole mechanism collapses to the trim alone, which is what the legacy
- * pipelines already emitted.
+ * engine config beats env beats 60 ms, and (b) that the deprecated per-sink
+ * trims stack ON TOP rather than replacing anything.
  */
 
 const route = (overrideMs: number | undefined): PlayoutOffsetServices['mediaRouter'] => ({
@@ -73,24 +71,8 @@ describe('resolveEnginePlayoutOffsetMs', () => {
     });
 });
 
-describe('effectivePlayoutOffsetMs — contract OFF', () => {
-    it('is the per-sink trim alone, so legacy pipelines are unchanged', () => {
-        expect(effectivePlayoutOffsetMs(null)).toBe(0);
-        expect(effectivePlayoutOffsetMs({ instanceId: 'm1' }, { trimMs: 40 })).toBe(40);
-    });
-
-    it('never consults the route — off means off', () => {
-        const getRoutePlayoutOffsetMs = vi.fn(() => 500);
-        effectivePlayoutOffsetMs(
-            { instanceId: 'm1', playoutOffsetMs: 300, mediaRouter: { getRoutePlayoutOffsetMs } },
-            { trimMs: 40 },
-        );
-        expect(getRoutePlayoutOffsetMs).not.toHaveBeenCalled();
-    });
-});
-
-describe('effectivePlayoutOffsetMs — contract ON', () => {
-    const base = { instanceId: 'm1', timeSyncContract: true } as const;
+describe('effectivePlayoutOffsetMs', () => {
+    const base = { instanceId: 'm1' } as const;
 
     it('uses the engine-wide default when no route override exists', () => {
         expect(
@@ -103,9 +85,10 @@ describe('effectivePlayoutOffsetMs — contract ON', () => {
     });
 
     it('falls back to 60 ms when the engine reports no default either', () => {
-        // Older engines and test harnesses pass no `playoutOffsetMs`; the
-        // budget must still be a real number, never 0-by-accident.
+        // Test harnesses pass no `playoutOffsetMs` (or no services at all);
+        // the budget must still be a real number, never 0-by-accident.
         expect(effectivePlayoutOffsetMs(base)).toBe(DEFAULT_PLAYOUT_OFFSET_MS);
+        expect(effectivePlayoutOffsetMs(null)).toBe(DEFAULT_PLAYOUT_OFFSET_MS);
     });
 
     it('lets the route head override WIN over the engine default', () => {
@@ -157,13 +140,11 @@ describe('effectivePlayoutOffsetMs — contract ON', () => {
         const shared = { getRoutePlayoutOffsetMs: () => 500 };
         const videoLeg: PlayoutOffsetServices = {
             instanceId: 'video-player-1',
-            timeSyncContract: true,
             playoutOffsetMs: 300,
             mediaRouter: shared,
         };
         const audioLeg: PlayoutOffsetServices = {
             instanceId: 'audio-decoder-1',
-            timeSyncContract: true,
             playoutOffsetMs: 300,
             mediaRouter: shared,
         };
@@ -175,15 +156,15 @@ describe('effectivePlayoutOffsetMs — contract ON', () => {
 
 /**
  * The runtime re-anchor raise (ADR-0005 amendment 2026-10-08): an overlay the
- * engine holds per route head and adds HERE, so every leg of the route — and
- * only with the contract on — sees `min(base + raise, MAX) + trim`.
+ * engine holds per route head and adds HERE, so every leg of the route sees
+ * `min(base + raise, MAX) + trim`.
  */
 describe('effectivePlayoutOffsetMs — the re-anchor raise overlay', () => {
     const raised = (overrideMs: number | undefined, raiseMs: number) => ({
         getRoutePlayoutOffsetMs: () => overrideMs,
         getRoutePlayoutRaiseMs: vi.fn(() => raiseMs),
     });
-    const on = { instanceId: 'm1', timeSyncContract: true, playoutOffsetMs: 60 } as const;
+    const on = { instanceId: 'm1', playoutOffsetMs: 60 } as const;
 
     it('adds the raise to the base, under the trim', () => {
         expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, 180) })).toBe(480);
@@ -212,25 +193,12 @@ describe('effectivePlayoutOffsetMs — the re-anchor raise overlay', () => {
         expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, -50) })).toBe(300);
         expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, Number.NaN) })).toBe(300);
     });
-
-    it('is never consulted with the contract off — the trim alone, as ever', () => {
-        const router = raised(300, 180);
-        expect(
-            effectivePlayoutOffsetMs(
-                { instanceId: 'm1', timeSyncContract: false, mediaRouter: router },
-                { trimMs: 40 },
-            ),
-        ).toBe(40);
-        expect(router.getRoutePlayoutRaiseMs).not.toHaveBeenCalled();
-    });
 });
 
 describe('effectivePlayoutOffsetNs', () => {
     it('converts to whole nanoseconds', () => {
-        expect(effectivePlayoutOffsetNs({ instanceId: 'm1' }, { trimMs: 40 })).toBe(40_000_000);
-        expect(
-            effectivePlayoutOffsetNs({ instanceId: 'm1', timeSyncContract: true }, { trimMs: 0.5 }),
-        ).toBe(60_500_000);
+        expect(effectivePlayoutOffsetNs({ instanceId: 'm1' }, { trimMs: 40 })).toBe(100_000_000);
+        expect(effectivePlayoutOffsetNs({ instanceId: 'm1' }, { trimMs: 0.5 })).toBe(60_500_000);
     });
 });
 

@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "ipc.h"
+#include "lateness_tap.h"
 #include "runner.h"
 
 namespace {
@@ -45,6 +46,8 @@ int main(int argc, char** argv) {
     g_unix_signal_add(SIGINT, on_signal, nullptr);
     signal(SIGPIPE, SIG_IGN);
 
+    // By path, before any pipeline: every bus fragment may name `mrlateness`.
+    mr::lateness::load_plugin();
     mr::ipc::emit(mr::ipc::event("ready"));
     mr::ipc::start_reader(dispatch_command, on_command_eof);
 

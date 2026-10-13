@@ -4,6 +4,7 @@ import {
     buildTsRechunk,
     buildNetUdpSink,
     buildBackpressureQueue,
+    withLatenessTap,
     isMulticastAddr,
     formatBytes,
     bitrateBadge,
@@ -122,7 +123,10 @@ export class MpegTsIpOutputModule extends GstPluginBase {
 
         let pipeline: string;
         if (destinations.length === 1) {
-            pipeline = [...head, makeSink(destinations[0], 'netsink')].join(' ! ');
+            pipeline = [
+                ...head,
+                withLatenessTap('lat_egress', makeSink(destinations[0], 'netsink')),
+            ].join(' ! ');
         } else {
             // tee → one queued udpsink branch per destination.
             const branches = destinations
@@ -130,7 +134,8 @@ export class MpegTsIpOutputModule extends GstPluginBase {
                     (d, i) => `t. ! ${buildBackpressureQueue(200)} ! ${makeSink(d, `netsink${i}`)}`,
                 )
                 .join(' ');
-            pipeline = `${head.join(' ! ')} ! tee name=t ${branches}`;
+            // One tap ahead of the fan-out: every destination leaves at once.
+            pipeline = `${head.join(' ! ')} ! ${withLatenessTap('lat_egress', `tee name=t ${branches}`)}`;
         }
 
         return {

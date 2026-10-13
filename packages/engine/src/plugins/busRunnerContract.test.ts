@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+    BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
     buildBusSink,
     buildBusSrc,
     busStallWatch,
     busTeeName,
+    latInName,
+    latOutName,
 } from './busHelpers.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 
@@ -157,14 +160,13 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('Gst.PadProbeReturn.DROP');
     });
 
-    it('the runner implements the timeSyncContract start option', () => {
-        // GstPluginBase stamps `timeSyncContract: true` on a clockSync
-        // description when the engine runs the contract (PipelineDescription →
-        // GstChildProcess startPayload → runner). The runner must read that
-        // exact key and define the installer, or the contract is silently lost
-        // (the decoderThreadType trap) and pipelines drift as before.
-        expect(runnerSource).toContain('data.get("timeSyncContract")');
+    it('the runner puts every pipeline on the house clock', () => {
+        // §4.1: `base_time = 0` on a monotonic clock in every process, with no
+        // flag to read and no other arm, so `now − PTS` is house lateness.
         expect(runnerSource).toContain('def _apply_contract_clock');
+        expect(runnerSource).toContain(
+            '    _apply_contract_clock(pipeline, data.get("liveCaptureClock"))\n',
+        );
         // The three moves that make running-time ≡ house-clock time (ADR-0005):
         // a fixed monotonic system clock and a pinned timeline.
         expect(runnerSource).toContain('Gst.ClockType.MONOTONIC');
@@ -175,20 +177,17 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // either one the flag reads as implemented and changes nothing, which
         // is exactly the mis-schedule it exists to fix (video-encoder's
         // `v4l2src ! … ! mpegtsmux` bursting on a Pi4 + ATEM).
-        expect(runnerSource).toContain(
-            'if live_capture_clock:\n        return\n    pipe.set_start_time(Gst.CLOCK_TIME_NONE)',
+        const skipIdx = runnerSource.indexOf('    if live_capture_clock:\n');
+        expect(skipIdx).toBeGreaterThan(0);
+        expect(skipIdx).toBeLessThan(
+            runnerSource.indexOf('pipe.set_start_time(Gst.CLOCK_TIME_NONE)'),
         );
+        expect(skipIdx).toBeLessThan(runnerSource.indexOf('pipe.set_base_time(0)'));
     });
 
-    it('the contract and the legacy net clock are mutually exclusive', () => {
-        // Contract mode must never reach the clock authority: an else-branch,
-        // not two independent ifs. `_apply_net_clock` is the only path that can
-        // block a start (2 s wait_for_sync) and the only one that relaxes the
-        // sink to sync=false — neither belongs on the contract path.
-        expect(runnerSource).toContain(
-            '        _apply_contract_clock(pipeline, data.get("liveCaptureClock"))\n    else:\n',
-        );
-        expect(runnerSource).toContain('_apply_net_clock(pipeline, data.get("clock"))');
+    it('there is no net clock arm left in the runner', () => {
+        expect(runnerSource).not.toContain('_apply_net_clock');
+        expect(runnerSource).not.toContain('GstNet');
     });
 
     it('the egress stamper arms the tee that bus_attach names (busTeeName contract)', () => {
@@ -206,13 +205,11 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerProcess).not.toContain('_BUS_TEE_PREFIX');
     });
 
-    it('the stamper is enabled by the same flag as the contract clock, before PLAYING', () => {
-        // The stamp only means house-clock media time if base_time is pinned to
-        // 0, so the two halves must be gated together — and the flag must be
-        // recorded before the first buffer moves, because an attach can land
+    it('the stamper is enabled on every pipeline, before PLAYING', () => {
+        // Enabled before the first buffer moves, because an attach can land
         // the moment the pipeline starts.
         expect(runnerSource).toContain(
-            'gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"),\n' +
+            'gst_bus_stamper.enable(pipeline, data.get("latchRepair"),\n' +
                 '                           data.get("conditionStepMs"), data.get("houseTimelineEgress"))',
         );
         const armIdx = runnerSource.indexOf('gst_bus_stamper.enable(pipeline,');
@@ -227,7 +224,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // an idle-but-flowing rist-input with NO edges attached burned 2492
         // ticks/min, 83% of the contract's whole CPU cost. `bus_attach` (this
         // side: BusFanoutCoordinator) is therefore what arms a tee, and the
-        // last `bus_detach` is what disarms it — so the flag on its own must
+        // last `bus_detach` is what disarms it — so `enable` on its own must
         // install nothing. The eager tree-walk must not come back.
         expect(runnerProcess).not.toContain('def _install_bus_stampers');
         expect(stamperSource).toContain('def arm(tee, name)');
@@ -306,14 +303,13 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
     });
 
     it('the native stamper is spliced by element API, leaving the pipeline strings alone', () => {
-        // `buildBusSink` is untouched: with the contract off a producer builds
-        // exactly the graph it built before this existed. The element is added
-        // between the capsfilter and the tee — BEFORE the fan-out, so one stamp
-        // serves every consumer edge and no branch pays a copy for a shared
-        // buffer.
+        // `buildBusSink` is untouched. The element is added between the
+        // capsfilter and the tee — BEFORE the fan-out, so one stamp serves
+        // every consumer edge and no branch pays a copy for a shared buffer.
         expect(buildBusSink(41000)).toBe(
             'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                 'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'mrlateness name=lat_busout_41000 reference=house ! ' +
                 'tee name=busout_41000 allow-not-linked=true',
         );
         expect(runnerProcess).not.toContain('mrtsstamp !');
@@ -397,5 +393,85 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         );
         expect(sidecarSource).toContain("'bus_attach'");
         expect(sidecarSource).toContain("'bus_detach'");
+    });
+
+    describe('lateness taps (house-clock WI-P0-8)', () => {
+        const nativeDir = join(__dirname, '..', '..', 'native', 'mr-gst-runner');
+        const native = ['runner.cpp', 'main.cpp', 'lateness_tap.cpp', 'stamper.cpp']
+            .map((f) => readFileSync(join(nativeDir, f), 'utf8'))
+            .join('\n');
+        const pyLoader = readFileSync(
+            join(__dirname, '..', 'child-process', 'gst_lateness_native.py'),
+            'utf8',
+        );
+
+        it('tap names: ingress lat_busin…, egress after the tee the runners address', () => {
+            expect(latInName('busin')).toBe('lat_busin');
+            expect(latOutName(41000)).toBe(`lat_${busTeeName(41000)}`);
+            expect(buildBusSrc({ port: 41000, name: 'busin_3' })).toContain(
+                'mrlateness name=lat_busin_3 reference=house',
+            );
+            expect(buildBusSink(41000)).toContain(`mrlateness name=${latOutName(41000)}`);
+        });
+
+        it('both runners forward mrlateness unsubscribed, as mrlateness:<tap>', () => {
+            expect(runnerSource).toContain('elif name == "mrlateness" and src_name:');
+            expect(runnerSource).toContain(
+                'emit_plugin_event(f"mrlateness:{src_name}", gst_structure_to_dict(structure))',
+            );
+            expect(native).toContain('std::strcmp(name, lateness::MESSAGE) == 0');
+            expect(native).toContain('emit_plugin_event(std::string("mrlateness:") + src_name');
+            // Ahead of the busReports branch: no subscription is consulted.
+            expect(runnerSource.indexOf('elif name == "mrlateness"')).toBeLessThan(
+                runnerSource.indexOf('(src_name, name) in bus_reports'),
+            );
+        });
+
+        it('both runners load libgstmrlateness.so by path at start, never GST_PLUGIN_PATH', () => {
+            expect(runnerSource).toContain('    gst_lateness_native.load_plugin()\n');
+            expect(pyLoader).toContain('Gst.Plugin.load_file(path)');
+            expect(pyLoader).toContain('"mpegts-core", "native", "mrlateness", SO_NAME');
+            expect(native).toContain('mr::lateness::load_plugin();');
+            expect(native).toContain('paths::asset_candidates("mpegts-core", "mrlateness", so)');
+            expect(native).toContain('gst_plugin_load_file(path.c_str(), &err)');
+            expect(pyLoader).not.toMatch(/GST_PLUGIN_PATH["']\]/);
+        });
+
+        it('the loader ships with the runner in the engine build', () => {
+            // dist/child-process is what runs on a box; a module the runner
+            // imports but the build does not copy kills every python runner.
+            const pkg = readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8');
+            for (const m of runnerSource.matchAll(/^import (gst_\w+)/gm)) {
+                expect(pkg).toContain(`src/child-process/${m[1]}.py`);
+            }
+            expect(pkg).toContain('src/child-process/gst_lateness_native.py');
+        });
+
+        it('the stamp splices in front of the egress tap, so the tap reads stamped PTS', () => {
+            expect(stamperSource).toContain('("capssetter", "capsfilter", "mrlateness")');
+            expect(native).toContain('fname != "mrlateness"');
+        });
+
+        it('the protocol test drives the exact buildBusSrc and buildBusSink fragments', () => {
+            const py = readFileSync(
+                join(__dirname, '..', 'child-process', 'gst_lateness_protocol_test.py'),
+                'utf8',
+            );
+            const template = /BUS_SRC = \(((?:"[^"]*"\s*)+)\)/.exec(py)?.[1] ?? '';
+            const literal = [...template.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join('');
+            const socket = '/tmp/mrlat/a.sock';
+            expect(literal.replace(/\{name\}/g, 'busin').replace('{socket}', socket)).toBe(
+                buildBusSrc({ name: 'busin', port: 41000, socketPath: socket }),
+            );
+            // BUS_SINK: an f-string over TS_CAPS with escaped quotes, one literal per line.
+            const sinkBlock = /BUS_SINK = \(([\s\S]*?)\)\n/.exec(py)?.[1] ?? '';
+            const sinkLiteral = sinkBlock
+                .split('\n')
+                .map((l) => /f?"(.*)"\s*$/.exec(l.trim())?.[1] ?? '')
+                .join('')
+                .replace(/\\"/g, '"')
+                .replace(/\{TS_CAPS\}/g, BUS_TS_CAPS);
+            expect(sinkLiteral).toBe(buildBusSink(41000));
+        });
     });
 });

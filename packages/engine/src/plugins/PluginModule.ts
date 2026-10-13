@@ -5,8 +5,8 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
-import type { ClockAuthority } from '../child-process/ClockAuthority.js';
 import type { PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
+import type { HouseClock } from '../clock/HouseClock.js';
 
 /**
  * A dynamically resolved module port — the one shared shape every plugin's
@@ -53,29 +53,19 @@ export interface EngineServices {
     mediaRouter: MediaRouter;
     processManager: ProcessManager;
     deviceProviders: DeviceProviderRegistry;
-    /** Shared net-clock for cross-pipeline A/V sync (see `PipelineDescription.clockSync`).
-     *  Optional: absent in test harnesses and on engines built before this; a
-     *  `clockSync` pipeline then simply runs unsynced. */
-    clockAuthority?: ClockAuthority;
-    /** Engine-wide time-sync contract (see `EngineConfig.timeSyncContract` and
-     *  `PipelineDescription.timeSyncContract`). When on it SUPERSEDES the
-     *  per-module `clockSync` opt-in: `GstPluginBase` marks the description for
-     *  the contract instead of resolving a net clock, so `clockAuthority` is
-     *  never contacted. Off → the legacy `clockSync` path, unchanged. The
-     *  engine resolves it on by default; absent here (test harnesses, engines
-     *  built before this) reads as off. */
-    timeSyncContract?: boolean;
     /** Engine-wide default playout offset D in ms (ADR-0005 decision 4, see
      *  `EngineConfig.playoutOffsetMs`). Presentation modules resolve their sink
      *  `ts-offset` from it via `effectivePlayoutOffsetMs`, which also consults
-     *  the route head's override. Only read when `timeSyncContract` is on;
-     *  absent (test harnesses, older engines) falls back to the 60 ms
-     *  default. */
+     *  the route head's override. Absent (test harnesses) falls back to the
+     *  60 ms default. */
     playoutOffsetMs?: number;
     /** Never drop on lateness — raise the route's D instead (ADR-0005
-     *  2026-10-08, `EngineConfig.playoutReanchor`). Only read with the
-     *  contract on; absent reads as off (shed, as before). */
+     *  2026-10-08, `EngineConfig.playoutReanchor`). Absent reads as off
+     *  (shed, as before). */
     playoutReanchor?: boolean;
+    /** The engine's house epoch E and time-sync state (house-clock design §4.2):
+     *  `epoch()`, `ready()`, events `epoch` and `state`. Absent in test harnesses. */
+    houseClock?: HouseClock;
 }
 
 /**
@@ -245,6 +235,12 @@ export interface LiveInputBranch {
  * Pipeline description returned by GstPluginBase.buildPipeline().
  * Phase 3 (gst-runner) will consume this to spawn GStreamer.
  */
+/** See `PipelineDescription.timingSink`. `video` sinks add one display refresh. */
+export interface TimingSink {
+    element: string;
+    kind: 'audio' | 'video';
+}
+
 export interface PipelineDescription {
     /** GStreamer pipeline string (for gst-launch style). */
     pipeline: string;
@@ -299,41 +295,11 @@ export interface PipelineDescription {
      */
     env?: Record<string, string>;
     /**
-     * Shared net-clock for cross-pipeline A/V sync. When set, the runner slaves
-     * this pipeline to the given clock so it presents on the same timeline as
-     * its sibling pipelines (e.g. video-player ↔ audio-decoder fed from one
-     * source), eliminating the drift two independent pipelines get from their
-     * own clocks. Plugins don't build this themselves — they set
-     * `clockSync: true` and `GstPluginBase` resolves it from the engine's clock
-     * authority. Off by default → today's per-pipeline behaviour.
-     */
-    clock?: ClockConfig;
-    /**
-     * Opt into cross-pipeline sync: `GstPluginBase.onStart` resolves the shared
-     * clock from the engine's clock authority and fills `clock` before handing
-     * the description to the runner. Requires the pipeline's sinks to be
-     * `sync=true` and the buffers to carry the shared source PTS (no
-     * per-consumer re-anchoring) for the lock to hold.
-     */
-    clockSync?: boolean;
-    /**
-     * Run this pipeline under the time-sync contract (engine-wide, on by
-     * default — see `EngineConfig.timeSyncContract`). The runner puts the
-     * pipeline on a plain monotonic `GstSystemClock` and PINS the timeline —
-     * `set_start_time(CLOCK_TIME_NONE)` + `set_base_time(0)` — so running-time
-     * ≡ clock time and every pipeline on the box shares one time base without
-     * any clock daemon to reach. Plugins don't set this themselves:
-     * `GstPluginBase` stamps it on a `clockSync` description when the engine
-     * runs the contract, INSTEAD of resolving a net clock. Never blocks
-     * playback (there is nothing external to wait for).
-     */
-    timeSyncContract?: boolean;
-    /**
      * Whether this pipeline's egress stampers may run the latch-repair window
      * (ADR-0005 note 2026-09-05). Resolved by `GstPluginBase.applyTimeSync`
      * from the graph via `effectiveLatchRepair` — ON unless a delivery-lead
-     * source (hls-player) sits anywhere upstream — and read by the runner only
-     * on the contract path. Plugins do not set it themselves.
+     * source (hls-player) sits anywhere upstream. Plugins do not set it
+     * themselves.
      */
     latchRepair?: boolean;
     /**
@@ -345,7 +311,7 @@ export interface PipelineDescription {
      * it lower — the audio-encoder sets 100: its pulsesrc re-timestamps by a
      * whole ~200 ms ring now and then with no arrival change, and every paced
      * consumer downstream stored that as +200 ms of latency per event
-     * (#751 follow-up, 2026-09-15). Only read on the contract path.
+     * (#751 follow-up, 2026-09-15).
      */
     conditionStepMs?: number;
     /**
@@ -388,12 +354,10 @@ export interface PipelineDescription {
      * one fixed monotonic `GstSystemClock` per pipeline, shared by every process
      * on the box — is untouched. Consumers therefore see an identical timeline.
      *
-     * SCOPE. Read ONLY on the contract path (`timeSyncContract`); the legacy
-     * net-clock path never zeroed base-time, so this is a no-op there. It is a
-     * property of the PIPELINE, not of the plugin: bus-fed producers (transcoder,
-     * mpegts-muxer) take their buffers from already-stamped bus input, not from a
-     * live capture device, and MUST NOT set it — their branch alignment is built
-     * on running-time ≡ house time.
+     * SCOPE. It is a property of the PIPELINE, not of the plugin: bus-fed
+     * producers (transcoder, mpegts-muxer) take their buffers from
+     * already-stamped bus input, not from a live capture device, and MUST NOT
+     * set it — their branch alignment is built on running-time ≡ house time.
      *
      * Do not set this speculatively on other live-source modules. It is a
      * targeted fix for a measured aggregator mis-schedule; without the burst
@@ -467,6 +431,12 @@ export interface PipelineDescription {
      */
     renderWatch?: RenderWatchRunnerConfig;
     /**
+     * The output's final sink (named), read by the `timing` status section for
+     * presentation delay (`ts-offset`) and device latency. Engine-side only;
+     * never sent to the runner. House-clock plan WI-P0-9.
+     */
+    timingSink?: TimingSink;
+    /**
      * Hold the named decoder shut until the first KEYFRAME of the stream.
      *
      * WHY. A live TS join lands mid-GOP: the first access units to reach the
@@ -523,8 +493,7 @@ export interface PipelineDescription {
      * per episode with before/after retained latency, and `cooldownMs` between
      * episodes so it cannot oscillate.
      *
-     * Set ONLY under the contract. Omitted, nothing is armed — which is what
-     * keeps `MR_TIME_SYNC_CONTRACT=0` the legacy path byte for byte.
+     * Omitted, nothing is armed (a `sync=false` leg drains its own backlog).
      */
     backlogShed?: BacklogShedConfig;
     /**
@@ -541,9 +510,7 @@ export interface PipelineDescription {
      */
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
     /**
-     * Anchor a multi-branch pipeline's input branches to the PRODUCER'S STAMPS
-     * (time-sync contract only — `GstPluginBase.applyTimeSync` drops it when the
-     * contract is off, so the legacy path stays byte-identical).
+     * Anchor a multi-branch pipeline's input branches to the PRODUCER'S STAMPS.
      *
      * WHY. Each named `tsdemux` works out its own zero point: it slaves the PES
      * timeline it emits to the timestamp of the bus buffer it locked on. That
@@ -713,17 +680,6 @@ export interface BusReport {
     element: string;
     /** Structure name to match (e.g. `level`, `spectrum`). Channel is `<structure>:<element>`. */
     structure: string;
-}
-
-/**
- * Where to reach the shared net clock for cross-pipeline A/V sync — the single
- * source of truth for this shape (the runner protocol + ClockAuthority import
- * it). No base-time: pipelines anchor naturally on the shared clock (same rate
- * ⇒ no drift, small constant start offset).
- */
-export interface ClockConfig {
-    host: string;
-    port: number;
 }
 
 export interface PadLinkRule {

@@ -119,7 +119,6 @@ async function makeStarted(id: string, router = makeRouter()) {
     const log = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
     await module.onInit({}, {
         instanceId: id,
-        timeSyncContract: true,
         playoutOffsetMs: 60,
         mediaRouter: router,
     } as unknown as ModuleServices);

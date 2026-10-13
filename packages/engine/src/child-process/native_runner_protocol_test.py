@@ -142,8 +142,11 @@ def test_plain_pipeline():
                 "pipeline": "audiotestsrc is-live=true wave=sine ! volume name=vol volume=0.5"
                             " ! level post-messages=true interval=100000000 ! fakesink name=sink sync=false",
                 "useStdioForData": False, "linkOnPadAdded": [], "busReports": [],
-                "timeSyncContract": True, "decoderThreadType": "auto"})
+                "decoderThreadType": "auto"})
         check("A started event", r.wait_event(ev_is("started")) is not None)
+        # No flag in the payload: every pipeline runs on the house clock.
+        check("A logs the contract clock with no flag in the payload",
+              r.wait_log("contract clock: monotonic, base_time=0"))
         check("A reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
         vu = r.wait_event(ev_is("vu_data"), timeout=3)
         check("A vu_data from level", vu is not None and isinstance(vu.get("peak"), list) and len(vu["peak"]) >= 1)
@@ -204,7 +207,7 @@ def test_producer_edge():
                             " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
                             f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
                             " ! tee name=busout_40000 allow-not-linked=true",
-                "timeSyncContract": True, "latchRepair": True, "conditionStepMs": 100})
+                "latchRepair": True, "conditionStepMs": 100})
         check("B reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
         stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
         check("B mrtsstamp spliced in front of the busout tee", stamped)
@@ -292,7 +295,7 @@ def test_house_timeline_egress():
                             " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
                             f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
                             " ! tee name=busout_40000 allow-not-linked=true",
-                "timeSyncContract": True, "latchRepair": False, "houseTimelineEgress": True})
+                "latchRepair": False, "houseTimelineEgress": True})
         check("B2 reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
         stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
         check("B2 mrtsstamp spliced in front of the busout tee", stamped)
@@ -372,7 +375,7 @@ def test_consumer_data_wait():
     try:
         r.wait_event(ev_is("ready"))
         r.send({"cmd": "start", "pipeline": f"unixfdsrc socket-path={sock} ! queue ! fakesink sync=false",
-                "timeSyncContract": True, "playingTimeoutMs": 500})
+                "playingTimeoutMs": 500})
         check("C started", r.wait_event(ev_is("started")) is not None)
         wfd = r.wait_event(ev_is("waiting_for_data"), timeout=2)
         check("C dark bus -> waiting_for_data after the watchdog period", wfd is not None and wfd.get("sockets") == [sock])
@@ -450,7 +453,7 @@ def test_presentation_leg():
                                " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
                                f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
                                " ! tee name=busout_40100 allow-not-linked=true",
-                   "timeSyncContract": True, "latchRepair": True})
+                   "latchRepair": True})
         check("E producer PLAYING", prod.wait_event(ev_is("state_change", state="playing")) is not None)
         prod.send({"cmd": "bus_attach", "tee": "busout_40100", "socket": edge})
         check("E edge attached", prod.wait_event(ev_is("bus_attached", socket=edge)) is not None)
@@ -464,7 +467,6 @@ def test_presentation_leg():
                                " ! tsdemux name=mixin_demux0 latency=0 ! audio/x-smpte-302m ! avdec_s302m"
                                " ! audioconvert ! audioresample ! queue ! fakesink name=sink sync=true"
                                " ts-offset=-400000000 max-lateness=-1",
-                   "timeSyncContract": True,
                    "alignBranchesToStamps": {"demuxes": ["mixin_demux0"]},
                    "backlogShed": {"element": "sink", "sink": "sink", "keyframeAligned": False,
                                    "toleranceMs": 100, "holdMs": 1000, "cooldownMs": 60000,
@@ -534,7 +536,7 @@ def test_reanchor_parity():
     def start(argv, ts_ms, queue=""):
         r = RunnerProc(argv)
         r.wait_event(ev_is("ready"))
-        cmd = {"cmd": "start", "timeSyncContract": True,
+        cmd = {"cmd": "start",
                "pipeline": "audiotestsrc is-live=true samplesperbuffer=480"
                            f" ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! level{queue}"
                            f" ! fakesink name=sink sync=true ts-offset={int(ts_ms * 1e6)}",
@@ -630,7 +632,7 @@ def test_reanchor_gap_and_undo_parity():
         runs = {"py": RunnerProc(_PY_RUNNER), "native": RunnerProc()}
         for r in runs.values():
             r.wait_event(ev_is("ready"))
-        each({"cmd": "start", "timeSyncContract": True, "pipeline": pipeline, "backlogShed": shed})
+        each({"cmd": "start", "pipeline": pipeline, "backlogShed": shed})
         time.sleep(1.5)
         # 9. 0.5 s of 25 s-late buffers, a 2 s gap, the same lateness again, then in range.
         ts_offset(-25000)
@@ -731,7 +733,6 @@ def test_runner_hooks():
                 "pipeline": f"filesrc location={ts} ! tsdemux name=demux_0 latency=0 "
                             'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_384=(int)1,PCR_1=sink_384" '
                             "! fakesink name=out sync=false",
-                "timeSyncContract": True,
                 "runnerHooks": [{"module": "mux_routing", "config": {"inputs": [{
                     "demux": "demux_0", "linkTo": "mux",
                     "routes": {"klv": {"padName": "sink_384", "branch": "queue", "sparse": True},
@@ -769,7 +770,6 @@ def test_runner_hooks():
                 "pipeline": f"filesrc location={ts} ! tsdemux name=demux_0 latency=0 "
                             'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" '
                             "! fakesink name=out sync=false",
-                "timeSyncContract": True,
                 "runnerHooks": [{"module": "mux_routing", "config": {"inputs": [{
                     "demux": "demux_0", "linkTo": "mux", "pid": 300,
                     "routes": {"video": {"branch": "queue"}, "audio": {"branch": "queue"},
@@ -960,7 +960,6 @@ def test_video_gates():
         r.wait_event(ev_is("ready"))
         r.send({"cmd": "start",
                 "pipeline": f"filesrc location={ts} ! tsdemux name=demux latency=0",
-                "timeSyncContract": True,
                 "linkOnPadAdded": [{"from": "demux", "media": "video",
                                     "branches": ["queue ! fakesink name=vs sync=false"]}]})
         disc = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "stream:discovered", timeout=8)
@@ -983,7 +982,7 @@ def test_video_gates():
         r.send({"cmd": "start",
                 "pipeline": f"filesrc location={ts} ! tsdemux name=demux latency=0 ! h264parse "
                             "! identity name=dec ! fakesink name=vs sync=false",
-                "timeSyncContract": True, "keyframeGate": {"decoder": "dec"}})
+                "keyframeGate": {"decoder": "dec"}})
         check("I keyframe gate opened on the first keyframe",
               r.wait_log("keyframe gate: dec opened on first keyframe (0 delta unit(s) dropped)", timeout=8))
         check("I gated pipeline ran to EOS", r.wait_event(ev_is("eos"), timeout=15) is not None)
@@ -1002,7 +1001,7 @@ def test_video_gates():
                 # misaligned file block yields nothing, on either runner.
                 "pipeline": f"filesrc location={ts} blocksize=1316 ! tee name=t ! queue ! fakesink sync=false "
                             "t. ! queue ! appsink name=tap",
-                "timeSyncContract": True, "tsProbe": {"appsink": "tap"}})
+                "tsProbe": {"appsink": "tap"}})
         first = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "tsprobe:videoinfo", timeout=8)
         check("J probe reports the video ES codec from the PMT",
               first is not None and first["payload"].get("codec") == "h264" and first["payload"].get("pid", 0) > 0)
@@ -1031,7 +1030,7 @@ def test_video_gates():
         r.send({"cmd": "start",
                 "pipeline": "videotestsrc is-live=true ! video/x-raw,width=64,height=48,framerate=50/1 "
                             "! identity sleep-time=40000 ! fakesink name=vsink sync=false",
-                "timeSyncContract": True, "renderWatch": {"sink": "vsink"}})
+                "renderWatch": {"sink": "vsink"}})
         check("K PLAYING", r.wait_event(ev_is("state_change", state="playing"), timeout=5) is not None)
         lag = r.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "renderwatch:lag", timeout=12)
         check("K render watch reports lag after three slow windows",
@@ -1154,7 +1153,7 @@ def test_live_input_branches():
     r = RunnerProc()
     try:
         r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": producer, "timeSyncContract": True})
+        r.send({"cmd": "start", "pipeline": producer})
         check("L control reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
         time.sleep(1.0)
         t0 = time.monotonic()
@@ -1199,7 +1198,7 @@ def _retime_run(argv, bufs, tag, align, fx, ts_psi):
                             ' demux. ! audio/mpeg ! capssetter caps="audio/mpeg,framed=(boolean)true" ! queue ! mux.'
                             f' mpegtsmux name=mux latency=0 alignment=7 ! capssetter caps="{caps}" replace=true'
                             " ! tee name=busout_41200 allow-not-linked=true",
-                "timeSyncContract": True, "alignBranchesToStamps": align})
+                "alignBranchesToStamps": align})
         check(f"M {tag} runner reaches PLAYING",
               r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
         r.send({"cmd": "bus_attach", "tee": "busout_41200", "socket": edge})
@@ -1373,7 +1372,7 @@ def _mux_run(argv, feed, tag, align, fx, ts_psi):
                             ' demux_1. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.'
                             " mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7"
                             f' ! capssetter caps="{caps}" replace=true ! tee name=busout_41300 allow-not-linked=true',
-                "timeSyncContract": True, "alignBranchesToStamps": align, "houseTimelineEgress": True})
+                "alignBranchesToStamps": align, "houseTimelineEgress": True})
         check(f"P {tag} runner reaches PLAYING",
               r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
         r.send({"cmd": "bus_attach", "tee": "busout_41300", "socket": edge})
@@ -1512,6 +1511,15 @@ def test_mux_inputs_retime():
           len(every0) > 3000 and max(every0) - min(every0) > 10 and back0 > 0)
 
 
+# --------------------------------------------------------------------------- Q: lateness taps (WI-P0-8)
+def test_lateness_taps():
+    """Static and `bus_input_add` bus inputs report `mrlateness:<tap>`
+    unsubscribed; the scenario is shared with the python runner's test."""
+    sys.path.insert(0, _HERE)
+    from gst_lateness_protocol_test import lateness_case
+    lateness_case([_BIN], "Q native", check)
+
+
 test_plain_pipeline()
 test_producer_edge()
 test_house_timeline_egress()
@@ -1527,6 +1535,7 @@ test_video_gates()
 test_live_input_branches()
 test_transform_producer_align()
 test_mux_inputs_retime()
+test_lateness_taps()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

@@ -38,7 +38,7 @@ describe('RistInputModule.buildPipeline', () => {
         expect(desc.pipeline).toContain('queue leaky=downstream max-size-bytes=4194304');
         expect(desc.pipeline).toContain(
             'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                'tee name=busout_41000 allow-not-linked=true',
+                'mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc.pipeline).not.toContain('udpsink');
         expect(desc.rist).toBeUndefined();

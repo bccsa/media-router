@@ -1,5 +1,6 @@
 import { createLogger } from '@media-router/shared-types';
 import type { ModuleLifecycle } from './ModuleLifecycle.js';
+import type { HouseClock } from '../clock/HouseClock.js';
 
 const log = createLogger('ModuleRunController');
 
@@ -21,11 +22,15 @@ const log = createLogger('ModuleRunController');
  */
 export class ModuleRunController {
     private _running = false;
+    /** Bumped by every start/stop, so a start parked on the clock wait can tell it was overtaken. */
+    private generation = 0;
 
     constructor(
         private lifecycle: ModuleLifecycle,
         /** Fired after each transition — wire to LCP broadcast etc. */
         private onChange: (running: boolean) => void,
+        /** Modules wait for the house epoch (sync or the 30 s start wait, §10.3). */
+        private houseClock?: Pick<HouseClock, 'ready'>,
     ) {}
 
     get isRunning(): boolean {
@@ -57,11 +62,17 @@ export class ModuleRunController {
      *    zero modules actually running. Better to drop the claim, let the
      *    manager re-issue `start` on the next reconnect, and re-attempt
      *    startAll from a clean slate.
+     *  - Modules start only after `houseClock.ready()` (the wait runs from
+     *    engine start, so a later start is not delayed). A stop or a newer
+     *    start during the wait wins: this one then starts nothing.
      */
     async start(): Promise<void> {
+        const gen = ++this.generation;
         this._running = true;
         this.onChange(true);
         try {
+            await this.houseClock?.ready();
+            if (gen !== this.generation) return;
             await this.lifecycle.startAll();
         } catch (err) {
             this._running = false;
@@ -77,6 +88,7 @@ export class ModuleRunController {
      * keeps the stopped intent — the broadcast already matches it.
      */
     async stop(): Promise<void> {
+        this.generation++;
         this._running = false;
         this.onChange(false);
         await this.lifecycle.stopAll();

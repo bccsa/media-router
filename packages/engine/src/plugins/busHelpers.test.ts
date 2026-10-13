@@ -9,7 +9,11 @@ import {
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
     quoteGstString,
+    latInName,
+    latOutName,
+    shortHash,
 } from './busHelpers.js';
+import { setLatenessTapAvailable } from './latenessTap.js';
 
 describe('quoteGstString', () => {
     it('wraps a value in double quotes', () => {
@@ -63,6 +67,7 @@ describe('buildBusSrc', () => {
         // its upstream producer and the stall cascades through the graph.
         expect(buildBusSrc({ name: 'busin', port: 40001 })).toBe(
             'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
+                ' ! mrlateness name=lat_busin reference=house' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
@@ -70,6 +75,7 @@ describe('buildBusSrc', () => {
     it('omits the name clause when no name is given', () => {
         expect(buildBusSrc({ port: 40001 })).toBe(
             'unixfdsrc socket-path=/tmp/mr-bus-40001.sock' +
+                ' ! mrlateness name=lat_busin_40001 reference=house' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
@@ -78,6 +84,7 @@ describe('buildBusSrc', () => {
         const edge = '/tmp/mr-bus-40001-ab12cd.sock';
         expect(buildBusSrc({ port: 40001, socketPath: edge })).toBe(
             `unixfdsrc socket-path=${edge}` +
+                ` ! mrlateness name=lat_busin_40001_${shortHash(edge)} reference=house` +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
         // Falls back to the channel socket when no edge socket is given.
@@ -94,6 +101,7 @@ describe('buildBusSrc', () => {
         expect(buildBusSrc({ name: 'busin', port: 40001, stallTimeoutMs: 4000 })).toBe(
             'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
                 ' ! watchdog name=buswd_busin timeout=4000' +
+                ' ! mrlateness name=lat_busin reference=house' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
@@ -113,6 +121,7 @@ describe('buildBusSrc', () => {
         expect(buildBusSrc({ name: 'busin', port: 40001, socketPath: edge, stallTimeoutMs: 5000 })).toBe(
             `unixfdsrc name=busin socket-path=${edge}` +
                 ' ! watchdog name=buswd_busin timeout=5000' +
+                ' ! mrlateness name=lat_busin reference=house' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
@@ -128,6 +137,7 @@ describe('buildBusSink', () => {
         expect(buildBusSink(40001)).toBe(
             `capssetter caps="${BUS_TS_CAPS}" replace=true ! ` +
                 `capsfilter caps="${BUS_TS_CAPS}" ! ` +
+                'mrlateness name=lat_busout_40001 reference=house ! ' +
                 'tee name=busout_40001 allow-not-linked=true',
         );
     });
@@ -151,5 +161,34 @@ describe('buildBusSink', () => {
         // consumer cannot tell which produced its edge.
         expect(BUS_TS_CAPS).toBe('video/mpegts, systemstream=(boolean)true, packetsize=(int)188');
         expect(buildBusSink(40001)).toContain(BUS_TS_CAPS);
+    });
+});
+
+describe('bus lateness taps', () => {
+    afterEach(() => setLatenessTapAvailable(true));
+
+    it('names ingress taps lat_busin… and egress taps after the tee', () => {
+        expect(latInName('busin')).toBe('lat_busin');
+        expect(latInName('busin_2')).toBe('lat_busin_2');
+        expect(latInName('in0')).toBe('lat_busin_in0');
+        expect(latInName(40001)).toBe('lat_busin_40001');
+        expect(latOutName(40001)).toBe('lat_busout_40001');
+    });
+
+    it('two edges of one channel in one pipeline get distinct taps', () => {
+        const a = buildBusSrc({ port: 40001, socketPath: busEdgeSocketPath(40001, 'a') });
+        const b = buildBusSrc({ port: 40001, socketPath: busEdgeSocketPath(40001, 'b') });
+        const tap = (f: string) => /mrlateness name=(\S+)/.exec(f)?.[1];
+        expect(tap(a)).not.toBe(tap(b));
+    });
+
+    it('omits every tap when the instrument is missing, so the pipeline still parses', () => {
+        setLatenessTapAvailable(false);
+        expect(buildBusSrc({ name: 'busin', port: 40001, stallTimeoutMs: 4000 })).toBe(
+            'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
+                ' ! watchdog name=buswd_busin timeout=4000' +
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
+        );
+        expect(buildBusSink(40001)).not.toContain('mrlateness');
     });
 });

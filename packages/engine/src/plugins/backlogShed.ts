@@ -26,11 +26,10 @@ import {
  * WHY THIS LIVES AT THE CONTRACT LAYER. It is not a video-player problem and
  * not a queue-sizing problem — it is a property of every `sync=true` bus
  * consumer the contract creates (video-player, audio-decoder, and any future
- * presentation leg). So the knobs, the defaults and the gate on
- * `services.timeSyncContract` are defined ONCE here, exactly as
- * `effectivePlayoutOffsetMs` defines D once for both legs of a route. A leg
- * supplies only the two element names that are genuinely its own: where to
- * measure/shed, and which sink carries the route's `ts-offset`.
+ * presentation leg). So the knobs and the defaults are defined ONCE here,
+ * exactly as `effectivePlayoutOffsetMs` defines D once for both legs of a
+ * route. A leg supplies only the two element names that are genuinely its
+ * own: where to measure/shed, and which sink carries the route's `ts-offset`.
  *
  * WHAT IT IS NOT. Not a queue resize — the ES/jitter queues stay exactly as
  * they are, because their depth is field-measured IDR-burst absorption and
@@ -94,7 +93,6 @@ export const BACKLOG_SHED_SANITY_MS = 10_000;
 
 /** The slice of `ModuleServices` the gate reads. */
 export interface BacklogShedServices {
-    timeSyncContract?: boolean;
     /** Re-anchor instead of shed (`EngineServices.playoutReanchor`). */
     playoutReanchor?: boolean;
 }
@@ -131,20 +129,11 @@ export interface BacklogShedOptions {
     keyframeAligned: boolean;
 }
 
-/**
- * The `backlogShed` runner config for a clock-paced consumer leg, or
- * `undefined` when the contract is off.
- *
- * `undefined` is the whole legacy story: with `MR_TIME_SYNC_CONTRACT=0` no
- * module sends this config, the runner arms nothing, and the leg behaves
- * exactly as it did — which it must, because a `sync=false` sink drains its own
- * backlog and has no ratchet to guard against.
- */
+/** The `backlogShed` runner config for a clock-paced consumer leg. */
 export function backlogShedConfig(
     services: BacklogShedServices | null | undefined,
     opts: BacklogShedOptions,
-): BacklogShedConfig | undefined {
-    if (services?.timeSyncContract !== true) return undefined;
+): BacklogShedConfig {
     return {
         element: opts.element,
         sink: opts.sink,
@@ -153,8 +142,8 @@ export function backlogShedConfig(
         holdMs: BACKLOG_SHED_HOLD_MS,
         cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
         sanityMs: BACKLOG_SHED_SANITY_MS,
-        // Absent = shed, byte for byte (the kill-switch path).
-        ...(services.playoutReanchor === true
+        // Absent = shed, byte for byte (the MR_PLAYOUT_REANCHOR=0 path).
+        ...(services?.playoutReanchor === true
             ? {
                   onLateness: 'reanchor' as const,
                   reanchorToleranceMs: REANCHOR_TOLERANCE_MS,

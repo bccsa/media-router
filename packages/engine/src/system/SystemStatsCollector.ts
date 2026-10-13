@@ -1,6 +1,7 @@
 import * as os from 'os';
 import * as fs from 'fs';
 import { createLogger } from '@media-router/shared-types';
+import type { TimeSyncState } from '@media-router/shared-types';
 import { getAllIps, findBuildNumber, getHostname } from './deviceInfo.js';
 
 const log = createLogger('SystemStats');
@@ -24,6 +25,8 @@ export interface SystemStats {
     features?: string[];
     /** Manager paths connected vs configured — filled in by the engine, not the collector (issue #692). */
     managerPaths?: { connected: number; total: number };
+    /** The engine's time sync and house epoch — filled in by the engine (HouseClock). */
+    timeSync?: TimeSyncState;
 }
 
 // Thermal-zone `type` values that correspond to a real CPU/SoC sensor,
@@ -39,8 +42,9 @@ const PREFERRED_ZONE_TYPES = [
     'coretemp',
 ];
 
-/** What this router announces: `dashboards` it serves at :8081/d (ADR-0026); `interlocks` it keeps itself (ADR-0028). */
-const ENGINE_FEATURES = ['dashboards', 'interlocks'];
+/** What this router announces: `dashboards` it serves at :8081/d (ADR-0026); `interlocks` it
+ *  keeps itself (ADR-0028); `house-clock`: it reports `timeSync` (house-clock design §10.3). */
+const ENGINE_FEATURES = ['dashboards', 'interlocks', 'house-clock'];
 
 const isCoreLabel = (label: string): boolean => /^core\b/i.test(label);
 

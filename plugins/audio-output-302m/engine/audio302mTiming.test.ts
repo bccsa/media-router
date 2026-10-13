@@ -7,10 +7,9 @@ import {
 } from './audio302mTiming.js';
 
 /** Services shaped as `effectivePlayoutOffsetNs` reads them. */
-function services(opts: { contract?: boolean; engineMs?: number; routeMs?: number } = {}) {
+function services(opts: { engineMs?: number; routeMs?: number } = {}) {
     return {
         instanceId: 'aout-1',
-        ...(opts.contract === false ? {} : { timeSyncContract: true }),
         playoutOffsetMs: opts.engineMs ?? 300,
         mediaRouter: { getRoutePlayoutOffsetMs: vi.fn(() => opts.routeMs) },
     };
@@ -44,16 +43,6 @@ describe('audio302mTsOffsetNs', () => {
         expect(audio302mTsOffsetNs(services(), { lipSyncMs: -2000 })).toBe(0);
         expect(audio302mTsOffsetNs(services(), {}, 5000 * MS)).toBe(0);
         expect(audio302mTsOffsetNs(services({ engineMs: 50 }), {})).toBe(0);
-    });
-
-    it('off the contract D collapses to the trim alone (the module then never consults it)', () => {
-        // Legacy resolution: no D, just the trim — the ring is still taken off
-        // and the floor still holds. AudioOutput302mModule only calls this on
-        // the contract path; off it the sink is `sync=false` with no ts-offset.
-        expect(audio302mTsOffsetNs(services({ contract: false }), { lipSyncMs: 400 })).toBe(
-            300 * MS,
-        );
-        expect(audio302mTsOffsetNs(services({ contract: false }), { lipSyncMs: 40 })).toBe(0);
     });
 
     it('pins the ring and the skew slaving the field tuning was measured against', () => {

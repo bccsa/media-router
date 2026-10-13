@@ -111,6 +111,12 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
     pad = tee.get_static_pad("sink")
     if pad is None:
         return None
+    # Stamp in front of the egress lateness tap, so it reads what consumers get.
+    peer = pad.get_peer()
+    tap = peer.get_parent_element() if peer is not None else None
+    if tap is not None and tap.get_factory() is not None \
+            and tap.get_factory().get_name() == "mrlateness":
+        pad = tap.get_static_pad("sink")
 
     st = {"tee": name, "pad": pad, "probe_id": None,
           "segment": None, "seg_identity": False, "seg_warned": False}

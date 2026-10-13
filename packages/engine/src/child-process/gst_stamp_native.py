@@ -88,9 +88,9 @@ def load_plugin():
 
 def egress_head(tee):
     """The link at the HEAD of `tee`'s egress chain, as (upstream src pad,
-    downstream sink pad): walk upstream from the tee through the caps-only
-    elements `buildBusSink` puts in front of it (capssetter, capsfilter) and
-    stop at the first element that is neither — the mux. The stamper splices in
+    downstream sink pad): walk upstream from the tee through the elements
+    `buildBusSink` puts in front of it (capssetter, capsfilter, the mrlateness
+    tap, which must read the stamp) and stop at the first other one — the mux. The stamper splices in
     THERE, not at the tee, so it is handed the mux's per-access-unit buffer
     LISTS intact: a GstBaseTransform (capssetter and capsfilter both are) has no
     chain_list, so the core dismantles a list into single buffers before the
@@ -105,7 +105,7 @@ def egress_head(tee):
         el = peer.get_parent_element()
         factory = el.get_factory() if el is not None else None
         fname = factory.get_name() if factory is not None else ""
-        if fname not in ("capssetter", "capsfilter"):
+        if fname not in ("capssetter", "capsfilter", "mrlateness"):
             return peer, sink
         sink = el.get_static_pad("sink")
     return None, None
@@ -115,12 +115,11 @@ def insert_elements(pipe):
     """Splice an inactive `mrtsstamp` at the head of every `busout_*` egress.
 
     Element API, not pipeline strings: the TS-side `buildBusSink` fragment stays
-    byte-identical, so with the contract off the graph a producer builds is the
-    same graph it built before this existed. Inserted BEFORE the tee so one
-    stamp fans out to every consumer edge — on a tee branch each branch would
-    see a shared (non-writable) buffer and pay its own copy, and the branches
-    are created and destroyed at runtime anyway — and before the caps pair so
-    the element sees the mux's buffer lists (`egress_head`).
+    byte-identical. Inserted BEFORE the tee so one stamp fans out to every
+    consumer edge — on a tee branch each branch would see a shared
+    (non-writable) buffer and pay its own copy, and the branches are created
+    and destroyed at runtime anyway — and before the caps pair so the element
+    sees the mux's buffer lists (`egress_head`).
 
     Inactive on arrival: `active` is the lazy arm, toggled from the same
     bus_attach / bus_detach paths that arm and disarm the python probe. The

@@ -196,8 +196,8 @@ def push(src, payload, pts, dts):
     return src.emit("push-buffer", buf) == Gst.FlowReturn.OK
 
 
-def start(pipe, contract=True, native=True, repair_latch=False):
-    """What handle_start does for a contract pipeline: contract clock, then the
+def start(pipe, native=True, repair_latch=False):
+    """What handle_start does for every pipeline: contract clock, then the
     stamping backend — which is where the element gets spliced in.
 
     `repair_latch` is OFF for the ladders (they are pushed as fast as the
@@ -208,9 +208,8 @@ def start(pipe, contract=True, native=True, repair_latch=False):
     runner.pipeline = pipe
     stamper.native_loaded = None if native else False
     stamper.repair_latch = repair_latch
-    if contract:
-        runner._apply_contract_clock(pipe)
-    stamper.enable(pipe, contract)
+    runner._apply_contract_clock(pipe)
+    stamper.enable(pipe)
 
 
 def teardown():
@@ -228,26 +227,6 @@ check("and the element factory is registered",
 check("the resolver looks in the plugin's own folder first, install root second",
       [os.path.basename(os.path.dirname(p)) for p in stamper.so_paths()]
       == ["mrtsstamp", "mpegts-core"])
-
-
-# ---------------------------------------------------------------------------
-print("\n--- R8: contract OFF splices nothing at all ---")
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe, contract=False)
-check("no stamper element is inserted with the flag off",
-      pipe.get_by_name(STAMP_EL) is None and stamper.elements == {})
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-sent = [(i * 10 * Gst.MSECOND, i * 10 * Gst.MSECOND + 7) for i in range(5)]
-for i, (pts, dts) in enumerate(sent):
-    push(src, pes_packet(0x100, 900000 + i * 3600, i), pts, dts)
-bus.wait(seen, 5)
-bus.drain(pipe, src)
-check("every buffer reaches downstream untouched", seen == sent)
-check("the flag-off path emits nothing at all", bus.events == [])
-teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +280,27 @@ check("no upstream at all → (None, None), never an exception",
       stamper.native.egress_head(p4.get_by_name("busout_41003")) == (None, None))
 for p in (p2, p3, p4):
     p.set_state(Gst.State.NULL)
+
+# The egress lateness tap (buildBusSink, WI-P0-8) sits between the caps pair
+# and the tee: both stampers must still stamp AHEAD of it, so it reads the stamp.
+import gst_lateness_native  # noqa: E402
+import gst_stamp_probe  # noqa: E402
+if gst_lateness_native.load_plugin():
+    p5 = Gst.parse_launch(
+        f"appsrc name=src5 caps={TS_CAPS} ! capssetter caps=\"{TS_CAPS}\" replace=true "
+        f"! capsfilter caps={TS_CAPS} ! mrlateness name=lat_busout_41004 reference=house "
+        f"! tee name=busout_41004 allow-not-linked=true")
+    peer5, sink5 = stamper.native.egress_head(p5.get_by_name("busout_41004"))
+    check("egress_head walks past the lateness tap to the producer",
+          peer5 is not None and peer5.get_parent_element().get_name() == "src5"
+          and sink5.get_parent_element().get_factory().get_name() == "capssetter")
+    st5 = gst_stamp_probe.install(p5.get_by_name("busout_41004"), "busout_41004", p5)
+    check("the python probe stamps on the tap's sink pad, not the tee's",
+          st5 is not None and st5["pad"].get_parent_element().get_name() == "lat_busout_41004")
+    gst_stamp_probe.remove(st5)
+    p5.set_state(Gst.State.NULL)
+else:
+    print("SKIP lateness-tap splice checks — libgstmrlateness.so not built")
 
 
 # ---------------------------------------------------------------------------

@@ -509,6 +509,34 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
             'slewNs',
             'window',
         ]);
+        // Lateness of what each output writes (WI-P0-8): one window per output,
+        // keyed by its tee, every stamped buffer counted once across the lines.
+        type Win = { count: number; untimed: number; min: number; mean: number; max: number };
+        const counted = await waitFor(
+            () => {
+                const c: Record<string, number> = {};
+                for (const e of r.events) {
+                    const lat = (e.stats as { lateness?: Record<string, Win> } | undefined)
+                        ?.lateness;
+                    for (const [tee, w] of Object.entries(lat ?? {})) {
+                        expect(Object.keys(w).sort()).toEqual([
+                            'count',
+                            'max',
+                            'mean',
+                            'min',
+                            'untimed',
+                        ]);
+                        c[tee] = (c[tee] ?? 0) + w.count;
+                    }
+                }
+                return c.busout_101 === LADDER_RUNGS && c.busout_201 === LADDER_RUNGS
+                    ? c
+                    : undefined;
+            },
+            'a lateness window per output',
+            8000,
+        );
+        expect(Object.keys(counted).sort()).toEqual(['busout_101', 'busout_201']);
         // ...and the mapping is the contract's, not a constant offset that
         // happens to match: the A/V lead the source encoded survives exactly.
         expect(stamps[1][0].pts - stamps[0][0].pts).toBe(

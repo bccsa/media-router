@@ -267,6 +267,7 @@ describe('buildAudioMixInput — live-input mode (#787)', () => {
         const branch = build302mMixBranch(SRC, { channels: 2, demuxName: 'd1' });
         expect(branch).toBe(
             'unixfdsrc socket-path=/tmp/mr-bus-40001.sock' +
+                ' ! mrlateness name=lat_busin_40001 reference=house' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
                 ' ! tsdemux name=d1 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m' +
                 ' ! audioconvert ! audioresample' +

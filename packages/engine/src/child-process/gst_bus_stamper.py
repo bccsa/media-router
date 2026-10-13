@@ -26,7 +26,7 @@ three ways because they change for unrelated reasons:
   `gst_stamp_events`  — what the engine is told, in ONE builder per event so
                         the two backends are indistinguishable downstream.
 
-THIS file is the lifecycle the runner drives: the contract flag, which egresses
+THIS file is the lifecycle the runner drives: enable at start, which egresses
 are armed, on which backend, and the periodic drift report. It owns all the
 mutable state, so a caller (and a test) has one place to read or pin it.
 
@@ -62,7 +62,7 @@ from gst_stamp_events import (                 # noqa: E402,F401
 from gst_stamp_native import insert_elements, so_paths   # noqa: E402,F401
 from gst_stamp_probe import _segment_warn                # noqa: E402,F401
 
-enabled = False         # the start payload's `timeSyncContract` flag
+enabled = False         # set by `enable` at pipeline start, cleared on stop
 pipeline = None         # pipeline the armed probes belong to
 armed = []              # armed stampers — one per tee that HAS consumers
 elements = native.elements   # tee name -> inserted `mrtsstamp` element
@@ -165,7 +165,7 @@ def _disarm(st):
 
 
 def clear():
-    """Disarm every stamper and forget the flag (pipeline stop / re-start)."""
+    """Disarm every stamper and forget the pipeline (stop / re-start)."""
     global armed, enabled, pipeline
     _stop_drift_timer()
     for st in armed:
@@ -178,9 +178,10 @@ def clear():
     elements.clear()
 
 
-def enable(pipe, on, repair=None, cond_step_ms=None, house=None):
-    """Record the contract flag. Stampers arm LAZILY, per tee, on that tee's
-    FIRST consumer edge (`arm`, from the runner's bus_attach path).
+def enable(pipe, repair=None, cond_step_ms=None, house=None):
+    """Enable stamping for `pipe` (every pipeline). Stampers arm LAZILY, per
+    tee, on that tee's FIRST consumer edge (`arm`, from the runner's
+    bus_attach path).
 
     `house` is the start payload's `houseTimelineEgress` (see the module-level
     `house_timeline`): on, every stamper this runner arms is an identity
@@ -193,10 +194,6 @@ def enable(pipe, on, repair=None, cond_step_ms=None, house=None):
     the module-level `repair_latch` as it is, which is how a suite that pins
     it off keeps its pin across `enable`.
 
-    `on` is the start payload's `timeSyncContract` flag. Off → nothing is
-    imported, no probe is ever installed and the dataflow is byte-identical;
-    this function's whole cost is one falsy test.
-
     Arming eagerly here — one probe per `busout_*` tee at start, as the first
     cut did — made every producer pay a per-buffer TS scan for consumers it may
     not have: measured on .42 (2026-08-12) an idle-but-flowing rist-input whose
@@ -204,7 +201,7 @@ def enable(pipe, on, repair=None, cond_step_ms=None, house=None):
     contract's CPU cost, stamping buffers that went nowhere. A tee with no
     consumer has nothing to stamp FOR, so the probe follows the edges.
 
-    The flag itself must still be recorded before PLAYING: an attach can land
+    Enabling must still happen before PLAYING: an attach can land
     the moment the pipeline starts, and an unstamped leading buffer would sail
     onto the wire carrying an arrival time.
 
@@ -217,13 +214,13 @@ def enable(pipe, on, repair=None, cond_step_ms=None, house=None):
     """
     global enabled, pipeline, repair_latch, condition_step_ms, house_timeline
     clear()
-    enabled = bool(on)
-    pipeline = pipe if enabled else None
+    enabled = True
+    pipeline = pipe
     if repair is not None:
         repair_latch = bool(repair)
     condition_step_ms = int(cond_step_ms) if cond_step_ms else None
     house_timeline = bool(house)
-    if enabled and load_native():
+    if load_native():
         insert_elements(pipe)
 
 
@@ -236,7 +233,7 @@ def stamper_for(tee_name):
 
 def arm(tee, name):
     """Arm the egress stamper on one `busout_*` tee. Idempotent, and a no-op
-    unless the contract flag is on.
+    before `enable`.
 
     Native element where one was spliced in (`insert_elements`), python probe
     otherwise — same arm point, same semantics, same events.

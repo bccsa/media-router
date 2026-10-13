@@ -8,6 +8,8 @@ export { MODULE_HEALTH, type ModuleHealth } from './health.js';
 export { VU_BLOCKS, vuBlockDbfs } from './vu.js';
 export { carriesAudio } from './carriesAudio.js';
 export * from './script.js';
+export type * from './timeSync.js';
+export type * from './moduleTiming.js';
 export {
     TREE_PROTOCOL,
     TREE_EVENTS,

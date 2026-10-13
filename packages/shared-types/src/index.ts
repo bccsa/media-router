@@ -12,6 +12,8 @@ export * from './dashboard.js';
 export * from './scriptRun.js';
 export * from './scriptRuns.js';
 export * from './tree/index.js';
+export type * from './timeSync.js';
+export type * from './moduleTiming.js';
 export {
     PatchOpSchema,
     PatchOpsSchema,

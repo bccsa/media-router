@@ -75,7 +75,7 @@ function pickUnambiguous(name: string, matches: Map<string, string>): string | n
 /**
  * Locate a native helper binary (e.g. mr-tssplit, mr-bus-fanout — built by
  * `make native`). Order: `MR_NATIVE_BIN_DIR` (authoritative) → the calling
- * plugin's own folder → cross-plugin scan of the installed tree
+ * plugin's own folder (`engine`: `packages/engine/native/<name>/`) → cross-plugin scan of the installed tree
  * (`/usr/libexec/media-router/<plugin>/<name>`) and the repo tree
  * (`plugins/<plugin>/native/<name>/<name>`). Returns null when nothing is
  * found — callers surface a health error pointing at plugins/README.md.
@@ -86,10 +86,12 @@ export function resolveNativeBinary(name: string, pluginId?: string): string | n
         return existsSync(p) ? p : null;
     }
     if (pluginId) {
-        for (const p of [
-            join(pluginsRoot(), pluginId, 'native', name, name),
-            join(installedRoot(), pluginId, name),
-        ]) {
+        // The engine's own tools live in packages/engine/native, not under plugins/.
+        const own =
+            pluginId === 'engine'
+                ? join(__dirname, '..', '..', 'native', name, name)
+                : join(pluginsRoot(), pluginId, 'native', name, name);
+        for (const p of [own, join(installedRoot(), pluginId, name)]) {
             if (existsSync(p)) return p;
         }
     }
@@ -99,6 +101,23 @@ export function resolveNativeBinary(name: string, pluginId?: string): string | n
             : join(root, plugin, 'native', name, name),
     );
     return pickUnambiguous(name, matches);
+}
+
+/**
+ * Locate a non-executable native asset a plugin builds, e.g. a GStreamer
+ * plugin `.so` (`resolveNativeAsset('mpegts-core', 'mrlateness',
+ * 'libgstmrlateness.so')`). Owner-scoped only: `plugins/<plugin>/native/<tool>/<file>`,
+ * then `/usr/libexec/media-router/<plugin>/<file>` — the same two roots as the
+ * runners' `paths::asset_candidates` and `gst_stamp_native.so_paths`.
+ */
+export function resolveNativeAsset(pluginId: string, tool: string, file: string): string | null {
+    for (const p of [
+        join(pluginsRoot(), pluginId, 'native', tool, file),
+        join(installedRoot(), pluginId, file),
+    ]) {
+        if (existsSync(p)) return p;
+    }
+    return null;
 }
 
 /**

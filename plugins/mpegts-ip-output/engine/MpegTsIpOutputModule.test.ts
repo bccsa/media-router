@@ -52,6 +52,9 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('tsparse alignment=7 set-timestamps=false');
         expect(desc!.pipeline).not.toContain('set-timestamps=true');
         expect(desc!.pipeline).toContain('udpsink name=netsink host=239.1.1.1 port=5000');
+        expect(desc!.pipeline).toContain(
+            'mrlateness name=lat_egress reference=running-time ! udpsink',
+        );
         expect(desc!.pipeline).toContain('multicast-iface=eth0');
         expect(desc!.pipeline).toContain('ttl-mc=8');
         expect(desc!.pipeline).not.toContain('tee');
@@ -81,6 +84,11 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
             ],
         });
         expect(desc!.pipeline).toContain('tee name=t');
+        // One egress tap ahead of the fan-out, not one per destination.
+        expect(desc!.pipeline).toContain(
+            'mrlateness name=lat_egress reference=running-time ! tee name=t',
+        );
+        expect(desc!.pipeline.match(/mrlateness name=lat_egress/g)).toHaveLength(1);
         expect(desc!.pipeline).toContain('udpsink name=netsink0 host=10.0.0.1 port=5000');
         expect(desc!.pipeline).toContain('udpsink name=netsink1 host=10.0.0.2 port=5001');
         expect((desc!.pipeline.match(/t\. ! /g) ?? []).length).toBe(2);

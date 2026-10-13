@@ -180,10 +180,10 @@ def collect_events():
 
 def arm_stamper(pipe, tee="busout_41000"):
     """What a tee's first consumer attach does, without the bus-edge machinery:
-    turn the contract on, then arm that tee. The lazy-arm path itself is driven
+    enable the stamper, then arm that tee. The lazy-arm path itself is driven
     end to end through handle_bus_attach in its own section below; the dataflow
     sections here are about the stamping, so they arm directly."""
-    stamper.enable(pipe, True)
+    stamper.enable(pipe)
     stamper.arm(pipe.get_by_name(tee), tee)
 
 
@@ -193,33 +193,6 @@ def wait_for(seen, n, timeout_s=5.0):
     while len(seen) < n and time.time() < deadline:
         time.sleep(0.005)
     return len(seen)
-
-
-# ---------------------------------------------------------------------------
-print("\n--- R8: contract OFF is byte-identical (no probe, no rewrite) ---")
-events = collect_events()
-pipe, src = build_stamper_pipe()
-stamper.enable(pipe, False)
-check("no stamper is armed with the flag off", stamper.armed == [])
-stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-check("and an attach cannot arm one either with the flag off",
-      stamper.armed == [])
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-sent = [(i * 10 * Gst.MSECOND, i * 10 * Gst.MSECOND + 7) for i in range(5)]
-for i, (pts, dts) in enumerate(sent):
-    push(src, pes_packet(0x100, 900000 + i * 3600, i), pts, dts)
-drain(pipe, src)
-check("every buffer reaches downstream untouched", seen == sent)
-check("the flag-off path emits nothing at all", events == [])
-
-# The flag-off promise is also a *code* one: an `enabled` that is None (the key
-# simply absent from the start payload, i.e. every pipeline today) must behave
-# exactly like False.
-stamper.enable(pipe, None)
-stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-check("an absent timeSyncContract key installs nothing", stamper.armed == [])
 
 
 # ---------------------------------------------------------------------------
@@ -238,8 +211,8 @@ events = collect_events()
 pipe, src = build_stamper_pipe()
 runner.pipeline = pipe                            # what handle_bus_attach resolves on
 runner._apply_contract_clock(pipe)
-stamper.enable(pipe, True)
-check("the flag alone arms nothing — no consumer edge, no probe",
+stamper.enable(pipe)
+check("enabling alone arms nothing — no consumer edge, no probe",
       stamper.armed == [])
 seen = tap_timestamps(pipe)
 pipe.set_state(Gst.State.PLAYING)
@@ -734,7 +707,7 @@ events = collect_events()
 pipe, src = build_stamper_pipe()
 runner.pipeline = pipe
 runner._apply_contract_clock(pipe)
-stamper.enable(pipe, True, None, None, True)
+stamper.enable(pipe, None, None, True)
 check("the start payload's flag is recorded on the subsystem", stamper.house_timeline is True)
 stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
 seen = tap_timestamps(pipe)
@@ -761,7 +734,7 @@ check("nothing re-anchors and nothing is conditioned",
       not any(e["event"] in ("timeline_reanchor", "timeline_conditioned") for e in events))
 stamper.clear()
 check("enable() without the flag leaves the subsystem anchored (the default)",
-      (stamper.enable(pipe, True), stamper.house_timeline)[1] is False)
+      (stamper.enable(pipe), stamper.house_timeline)[1] is False)
 stamper.clear()
 runner.pipeline = None
 

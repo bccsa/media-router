@@ -4,6 +4,7 @@ import {
     buildBusSrc,
     effectivePlayoutOffsetNs,
     pulsePinnedStreamProps,
+    withLatenessTap,
     type PipelineDescription,
     type ModuleServices,
     type PlayoutOffsetServices,
@@ -12,7 +13,7 @@ import {
 } from '@media-router/engine';
 
 /**
- * `pulsesink buffer-time` (µs) this leg runs under the contract, and the
+ * `pulsesink buffer-time` (µs) this leg runs, and the
  * scheduling latency it DECLARES for that ring (ms).
  *
  * A live GStreamer sink renders at `running-time + ts-offset + latency`, where
@@ -25,9 +26,9 @@ import {
  *
  * So the contract pins ONE ring for both audio legs (the 302M output's
  * `SINK_BUFFER_US`) and cancels ONE number, and the two resolve D identically
- * by construction rather than by two tunings happening to agree. `sinkBufferMs`
- * still sizes the ring on every legacy path, untouched. The 100 ms floor is
- * itself field-derived: a 50 ms ring xrunned audibly on a Pi 4.
+ * by construction rather than by two tunings happening to agree. A stored
+ * `sinkBufferMs` is ignored. The 100 ms floor is itself field-derived: a 50 ms
+ * ring xrunned audibly on a Pi 4.
  *
  * Residual, deliberately left: the declared figure is ring-dependent and only
  * measured at three points, so it is a CONSTANT here rather than a model. The
@@ -44,7 +45,7 @@ const SINK_DECLARED_LATENCY_MS = 100;
  * computes its own through `videoTsOffsetNs`, which calls the same
  * `effectivePlayoutOffsetNs` against the same route — so one route resolves to
  * one D on both legs, by construction rather than by two implementations
- * agreeing. Only used when the contract is on; see `buildPipeline`.
+ * agreeing.
  *
  * NEVER NEGATIVE: a D smaller than the ring clamps to 0. Audio cannot be
  * presented before it arrives (`max-lateness=-1` then plays it on arrival), and
@@ -77,17 +78,12 @@ export function audioTsOffsetNs(
 /**
  * `pulsesink slave-method` (GstAudioBaseSink): 1 = skew — the sink corrects the
  * DAC's drift against the pipeline clock by nudging its own timestamps, leaving
- * the samples alone. ADR-0005 decision 5 makes this the contract's slaving mode
- * (see `buildPipeline`); 0 = resample, the legacy default, is what it replaces.
+ * the samples alone. ADR-0005 decision 5 makes this the slaving mode (see
+ * `buildPipeline`); 0 = resample is what it replaces.
  */
 const SLAVE_METHOD_SKEW = 1;
 
-/**
- * `name=` of this leg's `tsdemux` under the contract — what
- * `alignBranchesToStamps` addresses (see `buildPipeline`). Named ONLY on the
- * contract path: the legacy pipeline string has to stay byte-identical under
- * `MR_TIME_SYNC_CONTRACT=0`.
- */
+/** `name=` of this leg's `tsdemux` — what `alignBranchesToStamps` addresses. */
 const DEMUX_NAME = 'addemux';
 
 /**
@@ -187,14 +183,8 @@ export class AudioDecoderModule extends GstPluginBase {
         await this.pushSinkTsOffset();
     }
 
-    /**
-     * Push the resolved ts-offset to the running `pulsesink`. No-op on the
-     * legacy path: without the contract the sink carries no `name=sink` (the
-     * pipeline string is unchanged there), so there is nothing to address —
-     * `setElementProperty` swallows the miss.
-     */
+    /** Push the resolved ts-offset to the running `pulsesink`. */
     private async pushSinkTsOffset(): Promise<void> {
-        if (this.services?.timeSyncContract !== true) return;
         await this.setElementProperty(
             'sink',
             'ts-offset',
@@ -259,112 +249,20 @@ export class AudioDecoderModule extends GstPluginBase {
                 break; // fallback for unknown
         }
 
-        const contract = this.services?.timeSyncContract === true;
-
-        // pulsesink slave-method: 0=resample (absorbs clock drift), 1=skew (adjusts timestamps)
-        // Resample prevents latency buildup over hours — proven stable in v1 over 12+ hour sessions.
+        // The sink presents against the house clock (ADR-0005): `sync=true` at
+        // `stamped-time + D`, where D is the route's playout offset (decision 4)
+        // plus the deprecated `syncOffsetMs` trim, from the same
+        // `effectivePlayoutOffsetMs` call the video leg of the route makes.
+        // `max-lateness=-1` disarms the mid-stream-join silence trap: a late
+        // timeline renders immediately and drains rather than going silent.
+        // `provide-clock=false` keeps pulsesink from offering the DAC clock.
         //
-        // Under the contract this is NOT a per-module setting: ADR-0005 decision
-        // 5 makes the house clock the master and has DACs slave to it via
-        // `slave-method=skew`. Resample would fight it — it absorbs the DAC/house
-        // rate difference by rewriting the SAMPLES, so the sink stops presenting
-        // at the time it was told to and D quietly stops meaning what the route
-        // configured, on this leg only. Skew answers the same drift by moving the
-        // sink's own timestamps, which is a correction the contract can see.
-        //
-        // The pin is contract-path ONLY, and deliberately ignores the stored
-        // value rather than defaulting off it: `add /modules/<id>` materialises
-        // schema defaults, so fleet configs carry explicit `slaveMethod: 0`s that
-        // were never a choice. Reading them here would silently put every one of
-        // those routes back on resample. On the legacy path they stay exactly
-        // what they are — the kill-switch (`MR_TIME_SYNC_CONTRACT=0`) has to
-        // reproduce the old pipeline string byte for byte.
-        const slaveMethod = contract ? SLAVE_METHOD_SKEW : ((config.slaveMethod as number) ?? 0);
-
-        // `sync=false` is LOAD-BEARING on this path — do NOT switch to
-        // sync=true for jitter/drift reasons. Measured on gate01 (2026-07-16):
-        // a sync=true sink plays only when the decoder starts together with its
-        // producer; on any MID-STREAM join (demuxer restart, decoder
-        // restartOnError respawn — i.e. routine production events) tsdemux's
-        // segment start no longer matches the in-progress TS timeline, every
-        // buffer arrives "late" beyond max-lateness, and the sink SILENTLY
-        // drops all of them — decoders output pure silence with zero errors
-        // (live A/B on the bus edge: sync=true peak=0, sync=false peak=6359).
-        // Burst smoothing is instead handled arrival-driven: the non-leaky
-        // dejitter queue above + the 200 ms pa ring below.
-        //
-        // Cross-pipeline A/V sync (opt-in, plan: shared net clock). When on, the
-        // sink honours PTS against the engine's shared clock so this pipeline
-        // presents on the same timeline as the video-player. `provide-clock=false`
-        // stops pulsesink imposing the DAC clock over the shared net clock the
-        // engine sets, and `sync=true` makes it present at PTS. The input chain
-        // is already `tsdemux` with no `tsparse set-timestamps`, so the source
-        // PTS is preserved (required for the lock). Off → sync=false (default).
-        const clockSync = (config.clockSync as boolean) === true;
-        // Low-latency deterministic anchor (opt-in) — the lipsync fix for
-        // re-encoded audio paths (decoder → PipeWire loop → encoder → mux).
-        // With sync=false every buffer in the loop FILLS and stays full: the
-        // startup backlog is trapped forever as standing latency, and the
-        // encoder's pulsesrc re-stamps audio AFTER it (measured on gate01:
-        // audio timeline 776 ms late vs video on both 1080p muxes). sync=true
-        // paces rendering at PTS + ts-offset, so the anchor shift becomes the
-        // configured offset instead of "sum of all buffer fills". The
-        // mid-stream-join silence trap documented above is disarmed by
-        // `max-lateness=-1`: a late timeline (join, respawn, startup backlog)
-        // renders immediately and DRAINS instead of being silently dropped —
-        // degrading to arrival-driven behaviour, never to silence.
-        // `syncOffsetMs` (default 250) must cover the ~150-200 ms PES-burst
-        // arrival lateness of bus audio; too small ⇒ constant late-mode (no
-        // harm, just arrival-anchored), too big ⇒ that much standing latency.
-        //
-        // Under the engine-wide time-sync contract (ADR-0005) NONE of the three
-        // per-module modes above decide the anchor any more: the producer stamps
-        // house-clock media time into the bus PTS and this sink presents at
-        // `stamped-time + D`, where D is the route's playout offset (decision 4).
-        // That means sync=true unconditionally — a sync=false sink ignores
-        // timing outright, which would make D a no-op and leave audio back on
-        // arrival-anchoring while the video leg of the same route paced off the
-        // house clock. The mid-stream-join silence trap the sync=false comment
-        // above documents is disarmed the same way the paced path disarms it,
-        // with `max-lateness=-1`: a late timeline renders immediately and drains
-        // rather than going silent. `provide-clock=false` keeps pulsesink from
-        // offering the DAC clock (the runner pins a monotonic system clock via
-        // `use_clock`, so it would be ignored anyway — explicit is clearer).
-        const lowLatencySync = (config.lowLatencySync as boolean) === true && !clockSync;
-        const syncOffsetMs = Math.max(0, Number(config.syncOffsetMs ?? 0));
-        const sinkSync = contract || clockSync || lowLatencySync ? 'true' : 'false';
-        const provideClock = contract || clockSync ? ' provide-clock=false' : '';
-        // syncOffsetMs defaults to 0: PES-cluster arrivals then render
-        // slightly "late" (immediately, thanks to max-lateness=-1), anchoring
-        // audio at arrival ≈ the smallest possible standing latency. Raise it
-        // toward the burst spacing for genuine pacing (field 2026-08-02:
-        // 250 ms plays steadily).
-        //
-        // Contract on, `syncOffsetMs` is DEPRECATED as an anchor and demoted to
-        // what `lipSyncMs` is on the video leg: a per-sink trim stacked on top
-        // of D, for residual DAC-chain skew this side can't know about. The
-        // route's D itself comes from `effectivePlayoutOffsetMs` — the same
-        // call, against the same route, that the video-player makes.
-        const sinkTiming = contract
-            ? ` ts-offset=${audioTsOffsetNs(this.services, config)} max-lateness=-1`
-            : lowLatencySync
-              ? `${syncOffsetMs > 0 ? ` ts-offset=${syncOffsetMs * 1_000_000}` : ''} max-lateness=-1`
-              : ' max-lateness=200000000';
-
-        // pa ring size (µs). Clamped 80–1000 ms; the paced (lowLatencySync)
-        // path floors it at 100 ms — an earlier hardcoded 50 ms ring xrunned
-        // audibly on the field Pi 4 (pw-top ERR incrementing, dropouts "here
-        // and there"): with sync=true the anchor is ts-offset, so ring depth
-        // is scheduling margin against pw-pulse quantum jitter, not
-        // proportional standing latency.
-        const sinkBufferUs =
-            Math.max(80, Math.min(1000, Number(config.sinkBufferMs ?? 200))) * 1000;
-        // CONTRACT: the one ring both audio legs run, so both cancel the one
-        // declared latency (see CONTRACT_SINK_BUFFER_US). `lowLatencySync` (a
-        // legacy mode) keeps its own floor over the operator's `sinkBufferMs`.
-        const pacedSinkBufferUs = contract
-            ? CONTRACT_SINK_BUFFER_US
-            : Math.max(100_000, sinkBufferUs);
+        // `slave-method=skew` (decision 5): the house clock is the master and
+        // the DAC slaves to it by moving the sink's own timestamps. Resample
+        // would rewrite the SAMPLES instead, and D would quietly stop meaning
+        // what the route configured on this leg only. A stored `slaveMethod`
+        // is ignored: fleet configs carry materialised `0`s nobody chose.
+        const sinkTiming = ` ts-offset=${audioTsOffsetNs(this.services, config)} max-lateness=-1`;
 
         const parts = [
             // Post-tsdemux dejitter buffer — NON-LEAKY (leaky=0), sized to at
@@ -390,33 +288,25 @@ export class AudioDecoderModule extends GstPluginBase {
             // (the encoder re-stamps at capture). Operators tuning latency
             // must be able to shrink it; the old hard 300 ms floor was
             // demuxer-burst-era protection.
-            `${udpSrc} ! tsdemux${contract ? ` name=${DEMUX_NAME}` : ''} latency=0 ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            `${udpSrc} ! tsdemux name=${DEMUX_NAME} latency=0 ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            // `sinkBufferMs` (default 200 ms) — the DAC ring the sink drains
-            // at 48 kHz. 50 ms was too shallow to bridge PES-burst spacing;
-            // 200 ms gives the slaving headroom without material latency (the
-            // reservoir upstream is the dominant term). Lower only during a
-            // measured tuning pass — the floor of 80 ms guards against
-            // configs that would re-starve the sink. `max-lateness=200000000`
-            // drops a frame only when it arrives *already* >200 ms late
-            // (post-stall recovery, not steady state);
-            // `processing-deadline=100000000`.
-            // `name=sink` only under the contract: it is what the live
-            // playout-offset push targets (`setElementProperty('sink', …)`),
-            // and adding it unconditionally would change the legacy pipeline
-            // string that MR_TIME_SYNC_CONTRACT=0 must reproduce byte for byte.
-            `pulsesink${contract ? ' name=sink' : ''} device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${contract || lowLatencySync ? pacedSinkBufferUs : sinkBufferUs}${sinkTiming} ${pulsePinnedStreamProps()}`,
+            // The DAC ring is CONTRACT_SINK_BUFFER_US (see there). `name=sink`
+            // is what the live playout-offset push targets.
+            withLatenessTap(
+                'lat_render',
+                `pulsesink name=sink device=${this.pwNodeName} sync=true provide-clock=false slave-method=${SLAVE_METHOD_SKEW} processing-deadline=100000000 buffer-time=${CONTRACT_SINK_BUFFER_US}${sinkTiming} ${pulsePinnedStreamProps()}`,
+            ),
         ];
         const pipeline = parts.join(' ! ');
 
         return {
             pipeline,
             restartOnError: true,
-            ...(clockSync ? { clockSync: true } : {}),
-            // Backlog shedder — the contract's latency ratchet guard, on the
-            // leg the contract turned `sync=true` (see backlogShed.ts). Shed
+            timingSink: { element: 'sink', kind: 'audio' },
+            // Backlog shedder — the latency ratchet guard on this `sync=true`
+            // leg (see backlogShed.ts). Shed
             // point is the pulsesink's OWN pad: raw PCM references nothing, so
             // whole decoded buffers can be dropped anywhere, and its pad is the
             // last place that still sees every one of them. `max-lateness=-1`
@@ -432,23 +322,18 @@ export class AudioDecoderModule extends GstPluginBase {
             // plays out, then the sink re-anchors on the new timeline. One
             // click, rate-limited to at most one a minute, in exchange for the
             // route's configured D.
-            ...(contract
-                ? {
-                      backlogShed: backlogShedConfig(this.services, {
-                          element: 'sink',
-                          sink: 'sink',
-                          keyframeAligned: false,
-                      }),
-                      // Anchor this branch's running time to the producer's
-                      // house stamps (ADR-0005 Stage 3c — the same correction
-                      // the mpegts-muxer and the 302M output apply). A tsdemux
-                      // keeps the zero-point error of the one bus buffer it
-                      // locked on for its whole life (−73…−125 ms measured on
-                      // .103's edges, re-rolled per restart); on a sync=true
-                      // leg that error IS lipsync against the video leg.
-                      alignBranchesToStamps: { demuxes: [DEMUX_NAME] },
-                  }
-                : {}),
+            backlogShed: backlogShedConfig(this.services, {
+                element: 'sink',
+                sink: 'sink',
+                keyframeAligned: false,
+            }),
+            // Anchor this branch's running time to the producer's house stamps
+            // (ADR-0005 Stage 3c — the same correction the mpegts-muxer and the
+            // 302M output apply). A tsdemux keeps the zero-point error of the
+            // one bus buffer it locked on for its whole life (−73…−125 ms
+            // measured on .103's edges, re-rolled per restart); on a sync=true
+            // leg that error IS lipsync against the video leg.
+            alignBranchesToStamps: { demuxes: [DEMUX_NAME] },
         };
     }
 }

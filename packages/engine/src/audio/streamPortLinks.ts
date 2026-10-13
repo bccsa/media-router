@@ -105,14 +105,17 @@ export function portsFromDump(
         .sort((a, b) => a.index - b.index);
 }
 
+/** The whole PipeWire graph as `pw-dump` prints it, parsed. */
+export async function pwDump(): Promise<unknown[]> {
+    const { stdout } = await execFileAsync('pw-dump', [], {
+        timeout: 5000,
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    return JSON.parse(stdout) as unknown[];
+}
+
 const defaultDeps: StreamLinkDeps = {
-    dump: async () => {
-        const { stdout } = await execFileAsync('pw-dump', [], {
-            timeout: 5000,
-            maxBuffer: 64 * 1024 * 1024,
-        });
-        return JSON.parse(stdout) as unknown[];
-    },
+    dump: pwDump,
     link: async (outputPortId, inputPortId) => {
         try {
             await execFileAsync('pw-link', [String(outputPortId), String(inputPortId)], {

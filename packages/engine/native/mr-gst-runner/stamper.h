@@ -20,21 +20,20 @@ namespace mr::stamper {
 
 constexpr const char* ELEMENT_PREFIX = "mrstamp_";
 
-/** Record the contract flag and splice the elements (contract on). `repair`
+/** Enable stamping for `pipe` and splice the elements. `repair`
  *  is the payload's `latchRepair` (nullptr = keep the module default),
  *  `condition_step_ms` 0 = the element's default, `house_timeline` the
  *  payload's `houseTimelineEgress` (a transform producer: identity stamps,
  *  PES - 1 h, ADR-0005 amendment 2026-10-08). */
-void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_ms,
-            bool house_timeline);
+void enable(GstElement* pipe, JsonNode* repair, gint64 condition_step_ms, bool house_timeline);
 
-/** Arm the stamper on `tee_name`'s egress (idempotent; no-op off-contract). */
+/** Arm the stamper on `tee_name`'s egress (idempotent; no-op before `enable`). */
 void arm(GstElement* tee, const std::string& tee_name);
 
 /** Disarm `tee_name`'s stamper — its last consumer edge is gone. */
 void release(const std::string& tee_name);
 
-/** Disarm everything and forget the flag (pipeline stop). */
+/** Disarm everything and forget the pipeline (pipeline stop). */
 void clear();
 
 /** The `mrtsstamp` spliced in front of `tee_name`, or nullptr. Borrowed. */

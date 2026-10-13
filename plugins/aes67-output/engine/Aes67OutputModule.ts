@@ -6,6 +6,7 @@ import {
     aes67RawCaps,
     buildBusSrc,
     buildBackpressureQueue,
+    withLatenessTap,
     clampChannels,
     clampPayloadType,
     clampPtime,
@@ -21,7 +22,12 @@ import {
     type EngineServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { spawn } from 'node:child_process';
+import {
+    claimEpoch,
+    epochChangeNeedsRestart,
+    epochRefusal,
+    type Aes67Epoch,
+} from './aes67Epoch.js';
 
 /**
  * AES67 / SMPTE ST 2110-30 output (ADR-0005 decision 7).
@@ -42,35 +48,42 @@ import { spawn } from 'node:child_process';
  *
  *     timestamp-offset = ((CLOCK_TAI - CLOCK_MONOTONIC) x 48000 / 1e9) mod 2^32
  *
- * measured once at start by `aes67-core/py/aes67_clock.py`. It stays valid
- * because CLOCK_MONOTONIC carries the same NTP/PTP frequency discipline as
- * CLOCK_REALTIME (`man 2 clock_gettime`), so their difference moves only on a
- * clock STEP — which the module re-measures for, rather than pretending it
- * cannot happen. NO TAI pipeline clock is needed, and the house clock stays
- * the house clock: nothing about the contract changes for this pipeline.
+ * i.e. the engine's house epoch E (`services.houseClock`, house-clock design
+ * §4.2), the one E every egress on the box shares. E is constant under slew
+ * and moves only on a clock step; the engine re-latches it then, and this
+ * module restarts on the `epoch` event so the new offset lands (one flagged
+ * discontinuity, §10.3). NO TAI pipeline clock is needed.
  *
- * `ptpSync` is off by default and REFUSES to claim the epoch on a box whose
- * kernel TAI offset is unset (no ptp4l/phc2sys): the payloader then keeps its
- * random RFC 3550 offset, the SDP carries no `ts-refclk`/`mediaclk`, and the
- * face says so. A free-running sender is honest; a sender announcing a PTP
- * media clock it does not have is undetectable at the receiver.
+ * `ptpSync` is off by default and REFUSES to claim the epoch while the engine's
+ * epoch is untraceable (no sync, or the kernel TAI offset unset): the payloader
+ * then keeps its random RFC 3550 offset, the SDP carries no
+ * `ts-refclk`/`mediaclk`, and the face says so. A free-running sender is
+ * honest; a sender announcing a PTP media clock it does not have is
+ * undetectable at the receiver.
  */
 export class Aes67OutputModule extends GstPluginBase {
     private statsTimer: ReturnType<typeof setInterval> | null = null;
-    /** Epoch measurement from the last start; null = free-running timestamps. */
-    private epoch: { rtpTimestampOffset: number; taiOffsetS: number } | null = null;
+    /** The house epoch this run claims; null = free-running timestamps. */
+    private epoch: Aes67Epoch | null = null;
     private epochError = '';
+    /** A house-clock restart in flight, plus at most one queued behind it. */
+    private epochRestart: Promise<void> | null = null;
+    private epochRestartQueued = false;
+    private selfRestarting = false;
+    private externalStop = false;
 
     static registerServices(services: EngineServices): void {
         registerNetworkInterfaceDeviceProvider(services);
     }
 
     async onStart(): Promise<void> {
-        // Measured BEFORE the pipeline is built (same shape as mpegts-ip-input's
-        // encapsulation sniff): buildPipeline is synchronous and needs the number.
-        await this.measureEpoch();
+        this.externalStop = false;
+        // Resolved BEFORE the pipeline is built: buildPipeline is synchronous.
+        await this.resolveEpoch();
         await super.onStart();
         this.startSapAnnouncer();
+        this.services?.houseClock?.on('epoch', this.onClockChange);
+        this.services?.houseClock?.on('state', this.onClockChange);
 
         this.childProcess?.on('stateChange', (data: { state: string }) => {
             if (data.state === 'stopped' || data.state === 'error') {
@@ -83,6 +96,9 @@ export class Aes67OutputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        if (!this.selfRestarting) this.externalStop = true;
+        this.services?.houseClock?.off('epoch', this.onClockChange);
+        this.services?.houseClock?.off('state', this.onClockChange);
         if (this.statsTimer) {
             clearInterval(this.statsTimer);
             this.statsTimer = null;
@@ -92,43 +108,49 @@ export class Aes67OutputModule extends GstPluginBase {
         await super.onStop();
     }
 
-    /**
-     * Read the TAI↔monotonic relationship through the shared python helper, so
-     * the epoch arithmetic has ONE definition (in `aes67-core`) rather than a
-     * TypeScript copy that can drift from the one the tests pin.
-     */
-    private async measureEpoch(): Promise<void> {
+    /** Claim the engine's E when `ptpSync` asks for it and the epoch is traceable. */
+    private async resolveEpoch(): Promise<void> {
         this.epoch = null;
         this.epochError = '';
         if (this.config.ptpSync !== true) return;
-        if (!this.services?.timeSyncContract) {
-            // Without the contract, running time is a per-start base time and
-            // the offset would map onto an arbitrary origin — a wrong epoch, not
-            // a missing one.
-            this.epochError = 'time-sync contract is off — RTP timestamps free-run';
+        const clock = this.services?.houseClock;
+        // Modules start after ready() already; the latest epoch may be newer.
+        await clock?.ready();
+        this.epochError = epochRefusal(clock);
+        if (!this.epochError) this.epoch = claimEpoch(clock!.epoch()!);
+        else this.log.warn({ reason: this.epochError }, 'AES67 epoch alignment off');
+    }
+
+    /** A re-latch (or newly traceable epoch) restarts the sender so the new offset lands. */
+    private readonly onClockChange = (): void => {
+        if (!this.running || this.config.ptpSync !== true) return;
+        if (!epochChangeNeedsRestart(this.epoch, this.services?.houseClock?.epoch() ?? null)) {
+            this.updateStatusData();
             return;
         }
-        const script = resolvePythonScript('aes67_clock.py', 'aes67-core');
-        if (!script) {
-            this.epochError = 'aes67_clock.py not found — RTP timestamps free-run';
+        if (this.epochRestart) {
+            this.epochRestartQueued = true;
             return;
         }
-        try {
-            const state = await runJson(script);
-            if (state.disciplined && typeof state.rtpTimestampOffset === 'number') {
-                this.epoch = {
-                    rtpTimestampOffset: state.rtpTimestampOffset,
-                    taiOffsetS: Number(state.taiOffsetS ?? 0),
-                };
-            } else {
-                this.epochError =
-                    'system clock is not PTP/TAI disciplined — RTP timestamps free-run';
+        this.epochRestart = this.restartForEpoch()
+            .catch((err: unknown) => this.log.error({ err }, 'AES67 epoch restart failed'))
+            .finally(() => (this.epochRestart = null));
+    };
+
+    private async restartForEpoch(): Promise<void> {
+        do {
+            this.epochRestartQueued = false;
+            this.log.info('House epoch changed — restarting so the new timestamp-offset lands');
+            this.selfRestarting = true;
+            try {
+                await this.onStop();
+            } finally {
+                this.selfRestarting = false;
             }
-        } catch (err) {
-            this.epochError = `clock probe failed (${String(err)}) — RTP timestamps free-run`;
-        }
-        if (this.epochError)
-            this.log.warn({ reason: this.epochError }, 'AES67 epoch alignment off');
+            // Stopped by the engine meanwhile: do not revive it.
+            if (this.externalStop) return;
+            await this.onStart();
+        } while (this.epochRestartQueued);
     }
 
     /** SAP announcement sidecar — announces while the module runs, deletes on stop. */
@@ -241,12 +263,9 @@ export class Aes67OutputModule extends GstPluginBase {
         // offset D: delaying an AES67 egress by D would spend the RECEIVER's
         // link-offset budget on our side of the wire, while the RTP timestamps
         // (which carry the alignment) stay unchanged either way.
-        const contract = this.services?.timeSyncContract === true;
         const senderLatencyNs =
             Math.max(0, Math.min(500, Number(config.senderLatencyMs ?? 20))) * 1_000_000;
-        const sinkSync = contract
-            ? `sync=true max-lateness=-1 ts-offset=${senderLatencyNs}`
-            : 'sync=false';
+        const sinkSync = `sync=true max-lateness=-1 ts-offset=${senderLatencyNs}`;
 
         const dscp = Math.max(-1, Math.min(63, Number(config.dscp ?? AES67_DEFAULT_DSCP)));
         const multicast = isMulticastAddr(p.address);
@@ -254,7 +273,7 @@ export class Aes67OutputModule extends GstPluginBase {
         const ifaceClause = multicast && iface ? ` multicast-iface=${iface}` : '';
         const ttlClause = multicast ? ` auto-multicast=true ttl-mc=${p.ttl}` : ` ttl=${p.ttl}`;
 
-        // timestamp-offset is only pinned when the epoch was really measured;
+        // timestamp-offset is only pinned when the epoch is really claimed;
         // otherwise the payloader keeps its random RFC 3550 offset.
         const tsOffsetClause = this.epoch
             ? ` timestamp-offset=${this.epoch.rtpTimestampOffset}`
@@ -271,8 +290,11 @@ export class Aes67OutputModule extends GstPluginBase {
             aes67RawCaps(p.encoding, p.channels),
             `${aes67PayloaderElement(p.encoding)} name=pay pt=${p.payloadType} mtu=${mtu}` +
                 ` ${aes67PtimeClauses(p.ptimeMs)}${tsOffsetClause}`,
-            `udpsink name=netsink host=${p.address} port=${p.port}${ifaceClause}${ttlClause}` +
-                ` qos-dscp=${dscp} ${sinkSync}`,
+            withLatenessTap(
+                'lat_egress',
+                `udpsink name=netsink host=${p.address} port=${p.port}${ifaceClause}${ttlClause}` +
+                    ` qos-dscp=${dscp} ${sinkSync}`,
+            ),
         ].join(' ! ');
 
         if (config.ptpSync === true && !this.epoch) {
@@ -321,32 +343,17 @@ export class Aes67OutputModule extends GstPluginBase {
             packetTime: `${p.ptimeMs} ms`,
             multicast: isMulticastAddr(p.address) ? 'Yes' : 'No',
         });
+        const clock = this.services?.houseClock;
+        const lost = this.epoch && clock?.epoch()?.traceable === false;
         this.setStatusData('clock', {
             epoch: this.epoch
-                ? `PTP epoch (TAI-UTC ${this.epoch.taiOffsetS}s, offset ${this.epoch.rtpTimestampOffset})`
+                ? `PTP epoch (TAI-UTC ${this.epoch.taiOffsetS}s, offset ${this.epoch.rtpTimestampOffset})` +
+                  (lost ? ' — sync lost since, E kept' : '')
                 : this.config.ptpSync === true
                   ? `Free-running — ${this.epochError}`
                   : 'Free-running (PTP sync off)',
+            epochSeq: this.epoch?.seq ?? clock?.epoch()?.seq ?? 0,
+            timeSource: clock?.state().source ?? 'none',
         });
     }
-}
-
-/** Run a python helper that prints one JSON object, and parse it. */
-async function runJson(script: string): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-        const child = spawn('python3', [script, '--json'], { stdio: ['ignore', 'pipe', 'pipe'] });
-        let out = '';
-        let err = '';
-        child.stdout.on('data', (d: Buffer) => (out += d.toString()));
-        child.stderr.on('data', (d: Buffer) => (err += d.toString()));
-        child.on('error', reject);
-        child.on('close', (code) => {
-            if (code !== 0) return reject(new Error(err.trim() || `exit ${code}`));
-            try {
-                resolve(JSON.parse(out) as Record<string, unknown>);
-            } catch (e) {
-                reject(e instanceof Error ? e : new Error(String(e)));
-            }
-        });
-    });
 }

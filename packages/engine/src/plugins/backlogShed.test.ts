@@ -18,10 +18,9 @@ import {
 
 const VIDEO = { element: 'vpdec', sink: 'sink', keyframeAligned: true };
 
-describe('backlogShedConfig — the contract gate', () => {
-    it('is armed under the time-sync contract', () => {
-        const cfg = backlogShedConfig({ timeSyncContract: true }, VIDEO);
-        expect(cfg).toEqual({
+describe('backlogShedConfig', () => {
+    it('is armed on every clock-paced leg, services or not', () => {
+        const want = {
             element: 'vpdec',
             sink: 'sink',
             keyframeAligned: true,
@@ -29,32 +28,19 @@ describe('backlogShedConfig — the contract gate', () => {
             holdMs: BACKLOG_SHED_HOLD_MS,
             cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
             sanityMs: BACKLOG_SHED_SANITY_MS,
-        });
-    });
-
-    // The whole legacy story: with the contract off nothing is sent, so the
-    // runner arms nothing and a `sync=false` leg — which drains its own backlog
-    // and has no ratchet — behaves exactly as it always did.
-    it('is NOT armed with the contract off, absent, or services missing', () => {
-        expect(backlogShedConfig({ timeSyncContract: false }, VIDEO)).toBeUndefined();
-        expect(backlogShedConfig({}, VIDEO)).toBeUndefined();
-        expect(backlogShedConfig(null, VIDEO)).toBeUndefined();
-        expect(backlogShedConfig(undefined, VIDEO)).toBeUndefined();
-    });
-
-    it('only a literal true arms it — a truthy value is not a contract', () => {
-        expect(
-            backlogShedConfig({ timeSyncContract: 1 as unknown as boolean }, VIDEO),
-        ).toBeUndefined();
+        };
+        expect(backlogShedConfig({}, VIDEO)).toEqual(want);
+        expect(backlogShedConfig(null, VIDEO)).toEqual(want);
+        expect(backlogShedConfig(undefined, VIDEO)).toEqual(want);
     });
 
     it('carries the leg-specific names through untouched', () => {
         const audio = backlogShedConfig(
-            { timeSyncContract: true },
+            {},
             { element: 'sink', sink: 'sink', keyframeAligned: false },
         );
-        expect(audio?.element).toBe('sink');
-        expect(audio?.keyframeAligned).toBe(false);
+        expect(audio.element).toBe('sink');
+        expect(audio.keyframeAligned).toBe(false);
     });
 
     // Both legs of a route resolve their numbers from THIS module, which is the
@@ -62,9 +48,9 @@ describe('backlogShedConfig — the contract gate', () => {
     // than by two implementations agreeing (the same reason D lives in
     // playoutOffset.ts).
     it('gives every leg the same policy numbers', () => {
-        const video = backlogShedConfig({ timeSyncContract: true }, VIDEO);
+        const video = backlogShedConfig({}, VIDEO);
         const audio = backlogShedConfig(
-            { timeSyncContract: true },
+            {},
             { element: 'sink', sink: 'sink', keyframeAligned: false },
         );
         expect({ ...video, element: '', keyframeAligned: false }).toEqual({
@@ -81,37 +67,29 @@ describe('backlogShedConfig — the contract gate', () => {
 // config is byte-identical to the shed-only one — both runners shed as before.
 describe('backlogShedConfig — re-anchor mode', () => {
     it('carries onLateness and the five re-anchor numbers when on', () => {
-        expect(backlogShedConfig({ timeSyncContract: true, playoutReanchor: true }, VIDEO)).toEqual(
-            {
-                element: 'vpdec',
-                sink: 'sink',
-                keyframeAligned: true,
-                toleranceMs: BACKLOG_SHED_TOLERANCE_MS,
-                holdMs: BACKLOG_SHED_HOLD_MS,
-                cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
-                sanityMs: BACKLOG_SHED_SANITY_MS,
-                onLateness: 'reanchor',
-                reanchorToleranceMs: REANCHOR_TOLERANCE_MS,
-                reanchorHoldMs: REANCHOR_HOLD_MS,
-                reanchorRetryMs: REANCHOR_RETRY_MS,
-                rebaseHoldMs: REBASE_HOLD_MS,
-                rebaseCooldownMs: REBASE_COOLDOWN_MS,
-            },
-        );
+        expect(backlogShedConfig({ playoutReanchor: true }, VIDEO)).toEqual({
+            element: 'vpdec',
+            sink: 'sink',
+            keyframeAligned: true,
+            toleranceMs: BACKLOG_SHED_TOLERANCE_MS,
+            holdMs: BACKLOG_SHED_HOLD_MS,
+            cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
+            sanityMs: BACKLOG_SHED_SANITY_MS,
+            onLateness: 'reanchor',
+            reanchorToleranceMs: REANCHOR_TOLERANCE_MS,
+            reanchorHoldMs: REANCHOR_HOLD_MS,
+            reanchorRetryMs: REANCHOR_RETRY_MS,
+            rebaseHoldMs: REBASE_HOLD_MS,
+            rebaseCooldownMs: REBASE_COOLDOWN_MS,
+        });
     });
 
     it('off, or not literally true, the config has none of the keys', () => {
         for (const flag of [false, undefined, 1 as unknown as boolean]) {
-            const cfg = backlogShedConfig({ timeSyncContract: true, playoutReanchor: flag }, VIDEO);
-            expect(cfg).toEqual(backlogShedConfig({ timeSyncContract: true }, VIDEO));
+            const cfg = backlogShedConfig({ playoutReanchor: flag }, VIDEO);
+            expect(cfg).toEqual(backlogShedConfig({}, VIDEO));
             expect(cfg).not.toHaveProperty('onLateness');
         }
-    });
-
-    it('with the contract off nothing is armed, re-anchor or not', () => {
-        expect(
-            backlogShedConfig({ timeSyncContract: false, playoutReanchor: true }, VIDEO),
-        ).toBeUndefined();
     });
 });
 

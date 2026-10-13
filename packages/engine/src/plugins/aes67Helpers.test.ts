@@ -11,6 +11,7 @@ import {
     clampChannels,
     clampPayloadType,
     clampPtime,
+    rtpTimestampOffset,
     AES67_DEFAULT_DSCP,
     AES67_SAMPLE_RATE,
     AES67_SAP_GROUP,
@@ -134,5 +135,38 @@ describe('bounds on operator input', () => {
         expect(clampPayloadType(10)).toBe(96); // static PTs are 44.1 kHz — never AES67
         expect(clampPayloadType(200)).toBe(127);
         expect(clampPayloadType(Number.NaN)).toBe(96);
+    });
+});
+
+/**
+ * The PTP-epoch `timestamp-offset`. Vectors copied from the deleted
+ * `aes67-core/py/aes67_clock_test.py`, and its outputs for real-sized E.
+ */
+describe('rtpTimestampOffset', () => {
+    const GS = 1_000_000_000n;
+    const MOD = 2n ** 32n;
+
+    it('one second of offset is one second of samples, truncated not rounded', () => {
+        expect(rtpTimestampOffset(GS)).toBe(48000);
+        expect(rtpTimestampOffset(GS + 1n)).toBe(48000);
+        expect(rtpTimestampOffset(0n)).toBe(0);
+    });
+
+    it('wraps a real E into the 32-bit RTP field, modular not saturating', () => {
+        const big = 1_786_464_746n * GS;
+        expect(rtpTimestampOffset(big)).toBe(1285743360);
+        expect(rtpTimestampOffset(big)).toBe(Number(((big * 48000n) / GS) % MOD));
+        expect(rtpTimestampOffset(1789775770559436728n)).toBe(1301132260);
+        expect(rtpTimestampOffset(1789775770559436728n, 90000n)).toBe(1365881165);
+    });
+
+    it('advancing by whole wraps is a no-op', () => {
+        // 2^32 samples is 2^32 x 62500/3 ns: whole only in threes.
+        const big = 1_786_464_746n * GS;
+        expect(rtpTimestampOffset(big + MOD * 62500n)).toBe(rtpTimestampOffset(big));
+    });
+
+    it('rejects a zero clock rate', () => {
+        expect(() => rtpTimestampOffset(GS, 0n)).toThrow(RangeError);
     });
 });

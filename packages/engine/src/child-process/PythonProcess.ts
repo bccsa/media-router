@@ -9,7 +9,6 @@ import type {
     BacklogShedConfig,
     PreserveSourceTimelineConfig,
 } from '../plugins/PluginModule.js';
-import type { ClockConfig } from './ClockAuthority.js';
 import { pluginPythonPaths, pluginsRoot } from './nativeBinaries.js';
 import { selectRunner } from './nativeRunner.js';
 import { runnerEnv } from './runnerEnv.js';
@@ -47,10 +46,8 @@ export interface RunnerStartOptions {
     readKlvNames?: boolean;
     /** Applied at fork (spawn env), not sent in the start command. */
     env?: Record<string, string>;
-    clock?: ClockConfig;
-    timeSyncContract?: boolean;
-    /** Contract clock WITHOUT the base-time zeroing — see
-     *  `PipelineDescription.liveCaptureClock`. Only read under the contract. */
+    /** House clock WITHOUT the base-time zeroing — see
+     *  `PipelineDescription.liveCaptureClock`. */
     liveCaptureClock?: boolean;
     decoderThreadType?: 'auto' | 'frame';
     busReports?: BusReport[];

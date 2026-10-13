@@ -368,6 +368,65 @@ describe.skipIf(!havePython || !haveNative)('mr-bus-fanout (native) protocol', (
 });
 
 /**
+ * Lateness of what the native sidecar writes (house-clock plan WI-P0-8): one
+ * `mrts::LatenessWindow` over the stamped buffers, reported in the 2 s stats
+ * line. Native only — no python twin for new native code.
+ */
+describe.skipIf(!havePython || !haveNative)('mr-bus-fanout lateness window', () => {
+    const cleanups: Array<() => void> = [];
+    afterEach(() => {
+        cleanups.splice(0).forEach((fn) => fn());
+    });
+
+    /** Every stats line from the write up to the first one after delivery: the
+     *  ladder's window is in exactly one of them. */
+    const statsOf = async (extra: string[]) => {
+        const ladder = rungs(12, 8_100_000n);
+        const r = await rig(cleanups, nativeSidecar, ladder.length, extra);
+        const p = await producer(r.ingest);
+        cleanups.push(() => p.destroy());
+        const from = r.sidecarEvents.length;
+        p.write(ladder128(ladder));
+        await waitFor(
+            () =>
+                r.clientEvents.filter((e) => e.result).length === ladder.length ? true : undefined,
+            'the ladder delivered',
+            15000,
+        );
+        const after = r.sidecarEvents.length;
+        await waitFor(
+            () => r.sidecarEvents.slice(after).find((e) => e.stats),
+            'a stats line after data',
+            15000,
+        );
+        return r.sidecarEvents
+            .slice(from)
+            .filter((e) => e.stats)
+            .map((e) => e.stats as Record<string, unknown>);
+    };
+
+    it('reports count/untimed/min/mean/max in ms for the stamped buffers', async () => {
+        const windows = (await statsOf(['--stamp-timeline'])).filter((st) => st.lateness);
+        expect(windows).toHaveLength(1);
+        const lat = windows[0].lateness as Record<string, number>;
+        expect(Object.keys(lat).sort()).toEqual(['count', 'max', 'mean', 'min', 'untimed']);
+        expect(lat.count).toBe(12);
+        expect(lat.untimed).toBe(0);
+        // Written in one go, a 40 ms/rung ladder is early by up to 11 rungs.
+        expect(lat.min).toBeLessThan(-400);
+        expect(lat.min).toBeLessThanOrEqual(lat.mean);
+        expect(lat.mean).toBeLessThanOrEqual(lat.max);
+        expect(lat.max).toBeLessThan(50);
+    }, 30000);
+
+    it('leaves the key out with the contract off (send-time pts are not measured)', async () => {
+        const stats = await statsOf([]);
+        expect(stats.length).toBeGreaterThan(0);
+        expect(stats.every((st) => st.lateness === undefined)).toBe(true);
+    }, 30000);
+});
+
+/**
  * R6, the divergence risk: one contract, two sidecar implementations (plus the
  * runner's gst probe). Feeding the SAME ladder to both must produce the same
  * timeline buffer for buffer — only the anchor may differ, since that is the

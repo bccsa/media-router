@@ -577,6 +577,10 @@ Badges auto-clear when the module stops. Use them for:
 - Stream health warnings
 - Any quick-glance module state
 
+The id `lateness` is the engine's: every module on the bus gets a grey
+lateness badge from the `timing` display (see "Lateness on every module" in
+the time-sync contract chapter). Pick any other id for yours.
+
 ---
 
 ## Module Face — Declarative Widgets (`faceWidgets`)
@@ -770,6 +774,13 @@ Dynamic status sections (`setDynamicSections()`, e.g. one per SRT caller)
 can be bound while the module reports them; a widget on one shows *Missing*
 when that section goes away, so put whole-module totals in a declared
 section (SRT listener mode fills `stats` for that).
+
+The engine adds two dynamic sections of its own to every module:
+`timing` and one `timing-in-<n>` per input (lateness and added latency in
+ms, house-clock design §9.5 — "Lateness on every module" below). They are
+merged into `getState()` beside yours, so `setDynamicSections()` never
+clears them; dashboards bind to them like any other section. Do not reuse
+the ids.
 
 ---
 
@@ -1780,7 +1791,7 @@ export class MyEncoderModule extends GstPluginBase {
 The poller owns the timing so every plugin gets the same correct behaviour:
 
 - **Idle skip** — when `getBytes` returns `undefined` (pipeline not playing yet), the tick is skipped and nothing is published, so an idle module stops emitting spurious "0 kbps" updates.
-- **Where the bytes are counted.** For a producer's `busout_*` tee under the time-sync contract, the runner reads the native `mrtsstamp` element's `bytes-total` property (it is spliced at the head of every egress — directly on the producer's src, ahead of the caps pair and the tee — and counts in C, armed or in passthrough). Everything else — including every producer when the time-sync contract is OFF (no element spliced) — falls back to a pad probe that is buffer-LIST aware, which does not help on that tee: the lists are already dismantled there, so the per-buffer cost returns whenever the contract is off. Never add a per-buffer python probe on an egress path: `capssetter`/`capsfilter` dismantle the mux's buffer lists into ~1170 single buffers/s at 12 Mbps, and the old BUFFER-only probe there cost 0.5–0.7 of a core PER PRODUCER (a Pi 4 at 60 % busy fell to 26 % without it, 2026-09-02).
+- **Where the bytes are counted.** For a producer's `busout_*` tee under the time-sync contract, the runner reads the native `mrtsstamp` element's `bytes-total` property (it is spliced at the head of every egress — directly on the producer's src, ahead of the caps pair and the tee — and counts in C, armed or in passthrough). Everything else — including a producer on a box without the `mrtsstamp` plugin (no element spliced) — falls back to a pad probe that is buffer-LIST aware, which does not help on that tee: the lists are already dismantled there, so the per-buffer cost returns there. Never add a per-buffer python probe on an egress path: `capssetter`/`capsfilter` dismantle the mux's buffer lists into ~1170 single buffers/s at 12 Mbps, and the old BUFFER-only probe there cost 0.5–0.7 of a core PER PRODUCER (a Pi 4 at 60 % busy fell to 26 % without it, 2026-09-02).
 - **Counter-reset guard** — if a byte counter drops below its previous sample (the child was re-spawned via `restartOnError` and `udpsink` reset `bytes-served` to 0), that counter's delta clamps to 0 instead of reporting a negative rate. Guarded per counter.
 - **Multiple counters** — `getBytes` may return a `Record<name, bytes>` instead of one number (one entry per sink); `publish` then receives `(total, counters)` with a per-counter `ThroughputSample` breakdown alongside the aggregate. Read the counters with `Promise.all` and return `undefined` if *any* is unavailable (a partial read would misreport rates). Real example: the transcoder publishes one bitrate row per rendition plus a Total from a single poller.
 
@@ -2013,11 +2024,10 @@ identical timing by construction, and presentation sinks schedule at
 design and the rejected alternatives:
 [`docs/adr/0005`](../docs/adr/0005-time-sync-backend.md).
 
-**On by default; one whole-engine kill-switch.** `MR_TIME_SYNC_CONTRACT=0`
-turns the contract off (`'1'` pins it on); flag-off reproduces the legacy
-pipeline strings byte for byte. There is deliberately no per-module opt-out —
-timing is a system property, and one legacy channel would put a producer back
-on a per-start base-time for every consumer downstream of it.
+**Always on; no switch.** Both runners put every pipeline on the house clock
+and there is no flag, per engine or per module — timing is a system property,
+and one legacy channel would put a producer back on a per-start base-time for
+every consumer downstream of it.
 
 **What a gst producer gets for free.** If your `buildPipeline` ends in
 `buildBusSink(...)`, stamping needs zero plugin work: the runner splices the
@@ -2036,21 +2046,75 @@ plugin authors:
   `do-timestamp=true`, no arrival-based re-timing between your mux and the
   bus sink — the contract's whole point is that the producer's stamp survives
   to the consumer (a regression test pins that it survives `tsdemux`).
-- `preserveSourceTimeline` is dropped from the description while the contract
-  is on (the stamper's in-place re-anchor replaces its error-out-and-relatch).
-  Keep declaring it — it is the legacy behaviour under the kill-switch.
+- `preserveSourceTimeline` is dropped from every description (the stamper's
+  in-place re-anchor replaces its error-out-and-relatch); it is deleted with
+  the stamper rework.
 
 **Sidecar/native producers stamp too (`--stamp-timeline`).** A module that
 publishes through its own child instead of a gst pipeline passes
-`--stamp-timeline`, gated on `services.timeSyncContract` — flag off means
-argv and wire bytes are unchanged. `unixfd-fanout.py`, `mr-bus-fanout` and
+`--stamp-timeline`, always. `unixfd-fanout.py`, `mr-bus-fanout` and
 `mr-tssplit` implement it already, all through the one shared
 `TimelineStamper` (`mpegts-core/py/ts_timeline.py` ↔ `native/mrts/`, pinned
 against each other by the conformance suite). Pattern, from hls-player:
 
 ```typescript
-args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
+args: [..., '--stamp-timeline'],
 ```
+
+**Lateness on every module (`mrlateness` → the `timing` section).** Because
+every pipeline runs on the house clock with `base_time=0`, `now − PTS` on a
+bus buffer is how late that content is against house time, and the engine
+measures it at every edge for you (house-clock design §9.5,
+[`docs/adr/0029`](../docs/adr/0029-house-clock-timing.md)). The native
+pass-through `mrlateness` (`mpegts-core/native/mrlateness`, a plain
+`GstElement` with a `chain_list`, so the mux's buffer lists stay intact —
+ADR-0011) is named in the `buildBusSrc` string ahead of the ingress queue
+(`lat_busin…`, arrival) and in `buildBusSink` after the caps pair, before the
+`busout_*` tee (`lat_busout_<port>`, the stamped PTS every consumer receives),
+both `reference=house` (raw PTS against `CLOCK_MONOTONIC`, correct even in a
+`liveCaptureClock` pipeline). Each tap posts one `mrlateness` element message
+per 2 s window (count, untimed, min/mean/max/last ns); both runners forward it
+as the plugin event `mrlateness:<tap name>` with no `busReports` subscription,
+so dynamic inputs report too, and `GstPluginBase` consumes those events before
+`dispatchPluginEvent` reaches your module. What it publishes, every row with
+its label and unit and re-sent only when a value moves by ≥ 1 ms: a `timing`
+section (Output lateness mean and min–max; Added latency = output mean − the
+slowest input's mean; Slowest input, with two or more inputs; and for outputs
+Decode, Presentation delay, Device latency and Render lateness), one
+`timing-in-<n>` section per input (Lateness, Added), and a grey `lateness`
+face badge with the mean in ms. Display only: no threshold and no warning
+(OQ-8, deferred until the fleet has numbers). Three things a plugin author
+does:
+
+- **Output modules** wrap their final sink in
+  `withLatenessTap('lat_render' | 'lat_egress', sink)`
+  (`packages/engine/src/plugins/latenessTap.ts`; `lat_render` for something
+  seen or heard, `lat_egress` for the wire). That tap is
+  `reference=running-time`, because a sink renders on its pipeline clock. Set
+  `timingSink: { element, kind: 'audio' | 'video' }` on the description too, so
+  the engine reads the sink's `ts-offset` (D) and device latency
+  (`buffer-time` on audio base sinks; one 60 Hz refresh stands in for video)
+  through `get_property`. Render lateness is `max(λ, D) + device` while sinks
+  still wait for D; it becomes `λ + device` in Phase 4.
+- **Sidecar producers** keep one `mrts::LatenessWindow` per output at their
+  stamping point and add `"lateness": {count, untimed, min, mean, max}` (ms,
+  `mrts::lateness_json_ms`) to their 2 s stats line — `mr-bus-fanout` and
+  `mr-tssplit` do — and the module hands it to
+  `this.timing.addSidecarWindow(latOutName(port), stats.lateness)` (hls-player,
+  ts-splitter).
+- **PipeWire-graph modules** carry no PTS: call
+  `this.timing.watchPipeWire([nodeName, …])` after start and the section shows
+  the worst `PipeWire latency` of those nodes (one graph cycle plus the node's
+  `Latency` param, from `pw-dump`, polled every 10 s) — audio-input,
+  audio-output, n1-mixer and audio-dynamics do.
+
+Reading the numbers in Phase 0: ingests read near 0 (their stamps are still
+arrival-anchored) and outputs are D-dominated; they turn source-natural in
+Phase 1 and D-free in Phase 4. A box without `libgstmrlateness.so` gets no
+taps — the fragments omit the element, so nothing fails to parse — and the
+module's `timing` section reads `lateness instrument missing`. Pipeline-string
+tests pin the instrument present (`vitest.setup.ts`,
+`setLatenessTapAvailable`), so they do not depend on `make native` having run.
 
 **Playout offset D on producers.** The per-route override for D lives on the
 **route head** — the producer module the consumers take their bus from — as a
@@ -2123,8 +2187,7 @@ an `mpegtsmux` on bus-fed, house-stamped input (transcoder, audio-transcoder,
 mpegts-muxer) — already writes house time + 1 h into its PES. Setting
 `houseTimelineEgress: true` on the description makes its egress stamp by
 identity (`PES − 1 h`) instead of anchoring, so the source's time passes
-through and the hop's transit is left for the route's D to cover. Dropped
-with the contract off.
+through and the hop's transit is left for the route's D to cover.
 
 **Transform-producer inputs (`alignBranchesToStamps.transformProducer`).**
 Set it with `alignBranchesToStamps` on a transform producer's input demuxes:
@@ -2147,8 +2210,8 @@ leg). Numbers live in `playoutReanchor.ts`; absent `onLateness` = shed.
 **Where stamper events come from (debugging).** Anchor / settled / re-anchor /
 segment-warning events and the periodic `timeline_drift` report (per armed
 egress, every 30 s) originate in the runner's stamping subsystem —
-`packages/engine/src/child-process/gst_bus_stamper.py` (lifecycle: contract
-flag, lazy arming, drift timer) plus its `gst_stamp_probe.py` /
+`packages/engine/src/child-process/gst_bus_stamper.py` (lifecycle: lazy
+arming, drift timer) plus its `gst_stamp_probe.py` /
 `gst_stamp_native.py` / `gst_stamp_events.py` split; the sidecars publish the
 same `timeline` block in their 2 s stats line. If wire timing looks wrong,
 read those runner log lines before suspecting your own pipeline.
@@ -2430,6 +2493,7 @@ python-only by design (ADR-0016 2026-10-09): its descriptions pin
 | `mediaRouter` | `MediaRouter` | Assign/release bus channels (`assignBusChannel` / `releaseBusChannel`), look up upstream bus sources (`getModuleBusSource`) |
 | `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
 | `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |
+| `houseClock` | `HouseClock` | The engine's one house epoch E = TAI − MONOTONIC (house-clock design §4.2): `epoch()` (`HouseEpoch`, bigint `eNs`, `traceable`), `ready()`, events `epoch` (re-latch after a step) and `state`. Apply E only at a network egress; `aes67-output` is the reader |
 | `instanceId` | `string` | Unique module instance ID |
 
 ### ProcessManager — Spawning External Processes
@@ -2575,15 +2639,17 @@ worth copying:
 - **A route head like any other.** `aes67-input` ends in `buildBusSink`, so the
   engine's stamper anchors it onto the house clock with no plugin work, and it
   declares `playoutOffsetMs` (no schema `default`) for the players it feeds.
-- **The epoch is one integer, and it is measured, not assumed.** GStreamer's
+- **The epoch is one integer: the engine's E.** GStreamer's
   payloader computes `rtptime = timestamp-offset + running_time x rate / 1e9`
   from ABSOLUTE running time (pinned against real elements in
   `aes67-core/tests/aes67Gst.test.ts`), and under the time-sync contract
   running time IS CLOCK_MONOTONIC — so setting `timestamp-offset` to
   `(CLOCK_TAI - CLOCK_MONOTONIC) x rate / 1e9 mod 2^32` makes the wire
   timestamps PTP-epoch media time. No TAI pipeline clock, no change to the
-  contract. `aes67_clock.py` measures it and REFUSES on a box whose kernel TAI
-  offset is unset (no ptp4l/phc2sys): the payloader then keeps its random
+  contract. That difference is the engine's house epoch E
+  (`services.houseClock`, house-clock design §4.2); the module restarts on its
+  `epoch` event, and REFUSES while E is untraceable (no sync, or the kernel TAI
+  offset unset): the payloader then keeps its random
   RFC 3550 offset and the SDP carries no `ts-refclk`/`mediaclk`, because
   announcing a PTP media clock you do not have is undetectable at the receiver.
 - **Pacing is not playout offset D.** The AES67 egress sink syncs against the

@@ -14,7 +14,7 @@ Also covers the `liveCaptureClock` variant, which keeps the house clock and
 drops ONLY the pinning (live capture head into an aggregator muxer), and pins
 the two halves of the contract's "never blocks playback" promise:
 the clock is the monotonic system clock (no daemon to reach), and applying it
-never pulls in GstNet.
+never pulls in GstNet. Every pipeline takes this path; there is no other arm.
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable.
 
@@ -75,7 +75,7 @@ check(
 )
 check(
     "GstNet was never imported — nothing external is contacted",
-    runner._GstNet is None,
+    "gi.repository.GstNet" not in sys.modules,
 )
 pipe.set_state(Gst.State.PLAYING)
 pipe.get_state(2 * Gst.SECOND)
@@ -173,21 +173,6 @@ pipe.get_state(2 * Gst.SECOND)
 check("a missing flag (None) pins the timeline like the default", pipe.get_base_time() == 0)
 pipe.set_state(Gst.State.NULL)
 
-
-print("\n--- the legacy path is untouched ---")
-pipe = build()
-# _apply_net_clock with no config is the no-clock case every non-sync pipeline
-# takes: it must leave the pipeline on its own auto-selected clock.
-runner._apply_net_clock(pipe, None)
-check(
-    "no clock config → the clock is NOT pinned (auto-selection intact)",
-    not (pipe.flags & Gst.PipelineFlags.FIXED_CLOCK),
-)
-check(
-    "no clock config → start-time untouched (0, not NONE)",
-    pipe.get_start_time() == 0,
-)
-pipe.set_state(Gst.State.NULL)
 
 print("\n--- a mux-written PES timeline is house running time + exactly 1 h ---")
 # The house-timeline egress (ts_timeline.MUX_CLOCK_BASE_90K, ADR-0005 amendment

@@ -77,7 +77,7 @@ bool load_native() {
 }
 
 /** The link at the head of `tee`'s egress chain (upstream src pad, downstream
- *  sink pad), walking up through capssetter/capsfilter. Both returned refs are
+ *  sink pad), walking up through capssetter/capsfilter/mrlateness. Both returned refs are
  *  owned by the caller; (nullptr, nullptr) when the tee has no upstream. */
 std::pair<GstPad*, GstPad*> egress_head(GstElement* tee) {
     GstPad* sink = gst_element_get_static_pad(tee, "sink");
@@ -89,7 +89,8 @@ std::pair<GstPad*, GstPad*> egress_head(GstElement* tee) {
         }
         GstElement* el = gst_pad_get_parent_element(peer);
         std::string fname = factory_name(el);
-        if (fname != "capssetter" && fname != "capsfilter") {
+        // The lateness tap sits behind the stamp too: it must read stamped PTS.
+        if (fname != "capssetter" && fname != "capsfilter" && fname != "mrlateness") {
             if (el) gst_object_unref(el);
             return {peer, sink};
         }
@@ -253,18 +254,17 @@ void stop_drift_timer() {
 
 // ---------------------------------------------------------------------------
 
-void enable(GstElement* pipe, bool on, JsonNode* repair, gint64 condition_step_ms,
-            bool house_timeline) {
+void enable(GstElement* pipe, JsonNode* repair, gint64 condition_step_ms, bool house_timeline) {
     clear();
-    g_enabled = on;
-    g_pipeline = on ? pipe : nullptr;
+    g_enabled = true;
+    g_pipeline = pipe;
     if (repair && JSON_NODE_HOLDS_VALUE(repair)) {
         GType t = json_node_get_value_type(repair);
         g_repair_latch = t == G_TYPE_BOOLEAN ? json_node_get_boolean(repair) : json_node_get_int(repair) != 0;
     }
     g_condition_step_ms = condition_step_ms > 0 ? condition_step_ms : 0;
     g_house_timeline = house_timeline;
-    if (g_enabled && load_native()) insert_elements(pipe);
+    if (load_native()) insert_elements(pipe);
 }
 
 void arm(GstElement* tee, const std::string& name) {

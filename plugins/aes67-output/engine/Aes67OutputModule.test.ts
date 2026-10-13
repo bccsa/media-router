@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'events';
+import type { HouseEpoch, TimeSyncState } from '@media-router/engine';
 import { Aes67OutputModule } from './Aes67OutputModule.js';
 
 // `as any` reaches private fields/methods without re-declaring them in a typed
 // intersection (TS collapses such intersections to `never` over privates).
-function makeModule(opts: { source?: boolean; contract?: boolean } = {}) {
+function makeModule(opts: { source?: boolean } = {}) {
     const module = new Aes67OutputModule() as any;
     const source =
         opts.source === false ? undefined : { port: 41000, socketPath: '/run/mr/edge.sock' };
     module.services = {
         instanceId: 'aes67-out-1',
-        timeSyncContract: opts.contract ?? true,
         mediaRouter: { getModuleBusSource: vi.fn(() => source) },
     };
     module.config = {};
@@ -55,6 +56,10 @@ describe('Aes67OutputModule.buildPipeline', () => {
         );
         expect(desc!.pipeline).toContain('rtpL24pay name=pay pt=96 mtu=1452');
         expect(desc!.pipeline).toContain('udpsink name=netsink host=239.69.0.1 port=5004');
+        // Egress lateness is read right before the wire (WI-P0-8).
+        expect(desc!.pipeline).toContain(
+            'mrlateness name=lat_egress reference=running-time ! udpsink name=netsink',
+        );
         expect(desc!.restartOnError).toBe(true);
     });
 
@@ -107,10 +112,10 @@ describe('Aes67OutputModule.buildPipeline', () => {
     });
 
     describe('pacing', () => {
-        it('paces against the house clock under the contract', () => {
+        it('paces against the house clock', () => {
             // The payloader emits one buffer per packet time; without a syncing
             // sink they leave in decode-sized bursts.
-            const module = makeModule({ contract: true });
+            const module = makeModule();
             const desc = module.buildPipeline({ ...DEST, senderLatencyMs: 15 });
             expect(desc!.pipeline).toContain('sync=true max-lateness=-1 ts-offset=15000000');
         });
@@ -119,15 +124,8 @@ describe('Aes67OutputModule.buildPipeline', () => {
             // D would delay the egress by ~300 ms, spending the receiver's link
             // offset on our side of the wire while the RTP timestamps (which
             // carry the alignment) stay unchanged. Default is 20 ms, not 300.
-            const module = makeModule({ contract: true });
+            const module = makeModule();
             expect(module.buildPipeline(DEST)!.pipeline).toContain('ts-offset=20000000');
-        });
-
-        it('free-runs with the contract off (no house clock to pace against)', () => {
-            const module = makeModule({ contract: false });
-            const desc = module.buildPipeline(DEST);
-            expect(desc!.pipeline).toContain('sync=false');
-            expect(desc!.pipeline).not.toContain('ts-offset');
         });
     });
 
@@ -138,9 +136,9 @@ describe('Aes67OutputModule.buildPipeline', () => {
             expect(module.buildPipeline(DEST)!.pipeline).not.toContain('timestamp-offset');
         });
 
-        it('pins timestamp-offset to the measured TAI↔monotonic offset', () => {
+        it("pins timestamp-offset to the claimed epoch's offset", () => {
             const module = makeModule();
-            module.epoch = { rtpTimestampOffset: 123456789, taiOffsetS: 37 };
+            module.epoch = { rtpTimestampOffset: 123456789, taiOffsetS: 37, seq: 1, source: 'ptp' };
             expect(module.buildPipeline(DEST)!.pipeline).toContain('timestamp-offset=123456789');
         });
 
@@ -149,50 +147,171 @@ describe('Aes67OutputModule.buildPipeline', () => {
             // clock we do not have is undetectable at the receiver.
             const module = makeModule();
             module.epoch = null;
-            module.epochError = 'system clock is not PTP/TAI disciplined';
+            module.epochError = 'kernel TAI offset unset, epoch untraceable';
             module.buildPipeline({ ...DEST, ptpSync: true });
             expect(module.setHealth).toHaveBeenCalledWith(
                 'warning',
-                expect.stringContaining('disciplined'),
+                expect.stringContaining('untraceable'),
             );
         });
     });
 });
 
-describe('Aes67OutputModule.measureEpoch', () => {
+/** A house clock the test drives: the engine's E, its traceability and events. */
+function fakeClock(ep: Partial<HouseEpoch> | null, state: Partial<TimeSyncState> = {}) {
+    const clock = new EventEmitter() as EventEmitter & {
+        current: HouseEpoch | null;
+        st: Partial<TimeSyncState>;
+        ready: () => Promise<HouseEpoch | null>;
+        epoch: () => HouseEpoch | null;
+        state: () => TimeSyncState;
+    };
+    clock.current = ep
+        ? {
+              eNs: E,
+              seq: 1,
+              latchedAtMonoNs: 1n,
+              traceable: true,
+              reason: 'start',
+              source: 'ptp',
+              taiOffsetS: 37,
+              ...ep,
+          }
+        : null;
+    clock.st = { sidecar: true, source: 'ptp', taiOffsetS: 37, ...state };
+    clock.ready = async () => clock.current;
+    clock.epoch = () => clock.current;
+    clock.state = () => clock.st as TimeSyncState;
+    return clock;
+}
+
+const E = 1_789_775_770_559_436_728n;
+
+describe('Aes67OutputModule — the engine house epoch', () => {
     beforeEach(() => vi.clearAllMocks());
 
     it('does nothing at all when ptpSync is off', async () => {
         const module = makeModule();
+        module.services.houseClock = fakeClock({});
         module.config = { ptpSync: false };
-        await module.measureEpoch();
+        await module.resolveEpoch();
         expect(module.epoch).toBeNull();
         expect(module.epochError).toBe('');
     });
 
-    it('refuses the epoch when the time-sync contract is off', async () => {
-        // Without the contract, running time is a per-start base time — the
-        // offset would map onto an arbitrary origin, i.e. a WRONG epoch.
-        const module = makeModule({ contract: false });
+    it("claims the engine's E as timestamp-offset when the epoch is traceable", async () => {
+        const module = makeModule();
+        module.services.houseClock = fakeClock({ seq: 3, source: 'chrony' });
         module.config = { ptpSync: true };
-        await module.measureEpoch();
-        expect(module.epoch).toBeNull();
-        expect(module.epochError).toContain('time-sync contract is off');
+        await module.resolveEpoch();
+        expect(module.epoch).toMatchObject({
+            rtpTimestampOffset: 1301132260,
+            seq: 3,
+            source: 'chrony',
+        });
+        expect(module.buildPipeline(DEST)!.pipeline).toContain('timestamp-offset=1301132260');
     });
 
-    it('reads the real clock helper end to end (and refuses on an undisciplined box)', async () => {
-        // Runs plugins/aes67-core/py/aes67_clock.py for real: on a box with no
-        // ptp4l/phc2sys the kernel TAI offset is 0, so this asserts the REFUSAL
-        // path on CI and the accept path on a disciplined box — both correct.
-        const module = makeModule({ contract: true });
-        module.config = { ptpSync: true };
-        await module.measureEpoch();
-        if (module.epoch) {
-            expect(module.epoch.rtpTimestampOffset).toBeGreaterThanOrEqual(0);
-            expect(module.epoch.rtpTimestampOffset).toBeLessThan(2 ** 32);
-            expect(module.epochError).toBe('');
-        } else {
-            expect(module.epochError).toMatch(/disciplined|not found|failed/);
+    it('free-runs, and says why, when the epoch is untraceable', async () => {
+        const cases: Array<[Partial<TimeSyncState>, RegExp]> = [
+            [{ source: 'none' }, /source none/],
+            [{ taiOffsetS: 0 }, /TAI offset unset/],
+            [{}, /not synchronised/],
+        ];
+        for (const [state, why] of cases) {
+            const module = makeModule();
+            module.services.houseClock = fakeClock({ traceable: false }, state);
+            module.config = { ptpSync: true };
+            await module.resolveEpoch();
+            expect(module.epoch).toBeNull();
+            expect(module.epochError).toMatch(why);
+            expect(module.buildPipeline({ ...DEST, ptpSync: true })!.pipeline).not.toContain(
+                'timestamp-offset',
+            );
         }
+    });
+
+    it('free-runs with no epoch at all (mr-clockstate missing, or no house clock)', async () => {
+        const module = makeModule();
+        module.config = { ptpSync: true };
+        module.services.houseClock = fakeClock(null, { sidecar: false });
+        await module.resolveEpoch();
+        expect(module.epochError).toMatch(/mr-clockstate missing/);
+        delete module.services.houseClock;
+        await module.resolveEpoch();
+        expect(module.epochError).toMatch(/no engine house clock/);
+    });
+
+    it("restarts on an 'epoch' event so the new timestamp-offset lands", async () => {
+        const module = makeModule();
+        const clock = fakeClock({});
+        module.services.houseClock = clock;
+        module.config = { ptpSync: true };
+        await module.resolveEpoch();
+        module.running = true;
+        module.onStop = vi.fn(async () => {});
+        module.onStart = vi.fn(async () => {});
+        clock.on('epoch', module.onClockChange);
+
+        clock.current = { ...clock.current!, eNs: E + 2_000_000_000n, seq: 2, reason: 'step' };
+        clock.emit('epoch', clock.current);
+        await module.epochRestart;
+        expect(module.onStop).toHaveBeenCalledOnce();
+        expect(module.onStart).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the claim when sync is lost (E unchanged), and restarts when sync arrives', async () => {
+        const module = makeModule();
+        const clock = fakeClock({});
+        module.services.houseClock = clock;
+        module.config = { ptpSync: true };
+        await module.resolveEpoch();
+        module.running = true;
+        module.onStop = vi.fn(async () => {});
+        module.onStart = vi.fn(async () => {});
+
+        clock.current = { ...clock.current!, traceable: false };
+        module.onClockChange();
+        expect(module.onStop).not.toHaveBeenCalled();
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'clock',
+            expect.objectContaining({ epoch: expect.stringContaining('sync lost'), epochSeq: 1 }),
+        );
+
+        // Free-running sender (untraceable start), then sync arrives: claim it.
+        module.epoch = null;
+        clock.current = { ...clock.current!, traceable: true };
+        module.onClockChange();
+        await module.epochRestart;
+        expect(module.onStart).toHaveBeenCalledOnce();
+    });
+
+    it('does not revive a module the engine stopped during the restart', async () => {
+        const module = makeModule();
+        const clock = fakeClock({});
+        module.services.houseClock = clock;
+        module.config = { ptpSync: true };
+        await module.resolveEpoch();
+        module.running = true;
+        module.onStart = vi.fn(async () => {});
+        module.onStop = vi.fn(async () => {
+            module.externalStop = true; // the engine's own stop landed meanwhile
+        });
+        clock.current = { ...clock.current!, eNs: E + 5_000_000n, seq: 2 };
+        module.onClockChange();
+        await module.epochRestart;
+        expect(module.onStart).not.toHaveBeenCalled();
+    });
+
+    it('shows seq and source in the clock section', async () => {
+        const module = makeModule();
+        module.services.houseClock = fakeClock({ seq: 4 }, { source: 'chrony' });
+        module.config = { ...DEST, ptpSync: true };
+        await module.resolveEpoch();
+        module.updateStatusData();
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'clock',
+            expect.objectContaining({ epochSeq: 4, timeSource: 'chrony' }),
+        );
     });
 });

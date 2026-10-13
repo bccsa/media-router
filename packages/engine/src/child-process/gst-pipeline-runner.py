@@ -516,6 +516,9 @@ def on_bus_message(bus, message):
             # probe emits — identical field names, identical message text — so
             # which backend stamped is invisible to everything downstream.
             gst_bus_stamper.handle_message(src_name, name, structure)
+        elif name == "mrlateness" and src_name:
+            # Lateness taps report unsubscribed, so inputs added at runtime do too.
+            emit_plugin_event(f"mrlateness:{src_name}", gst_structure_to_dict(structure))
         elif name and src_name and (src_name, name) in bus_reports:
             # Subscribed via `busReports` — forward the whole structure on the
             # generic `<structure>:<element>` channel (e.g. `level:sclevel`).
@@ -1185,10 +1188,8 @@ def _install_preserve_timeline(pipe, cfg):
     # nothing but the cross-PID count to confirm with — which is exactly the
     # 2026-08-13 field bug fixed in the stamper: a single-PID source that loops
     # reports one anomaly, comes back coherent from the epoch it jumped to, and
-    # never fires. Under the time-sync contract this whole feature is dropped
-    # (GstPluginBase.applyTimeSync), so what is fixed here is the LEGACY
-    # transcoder path — which is precisely where a stale offset still costs a
-    # re-rolled lipsync.
+    # never fires. `GstPluginBase.applyTimeSync` now drops this whole feature
+    # from every description; it is deleted with `preserveSourceTimeline`.
     _WATCH_STRIDE = 8
     _CONFIRM = ts_timeline.TimelineStamper._CONFIRM
 
@@ -1381,11 +1382,6 @@ def _install_preserve_timeline(pipe, cfg):
 # NOTHING IS APPLIED ON A GUESS. No join, or a payload head that two PES of this
 # branch share (so the join would be a coin toss), leaves the branch exactly as
 # it is today — logged, no offset.
-#
-# CONTRACT-ONLY, and gated one layer up (`GstPluginBase.applyTimeSync` drops the
-# config when the contract is off): with arrival-timed bus buffers there is no
-# house mapping to anchor to, `K` would be noise, and the legacy path must stay
-# byte-identical.
 import branch_retime                                              # noqa: E402
 
 _branch_align = {}      # demux element name -> per-branch state
@@ -1841,6 +1837,7 @@ def _install_branch_stamp_align(pipe, cfg):
 # bookkeeping only this file knows about (`_bus_branches`).
 import gst_bus_stamper                                            # noqa: E402
 import gst_rist_native                                            # noqa: E402
+import gst_lateness_native                                        # noqa: E402
 
 # A lambda, not the function object: the emitter is resolved on every event, so
 # a test (or a future indirection) that replaces this module's `emit_event`
@@ -1865,89 +1862,11 @@ def _release_bus_stamper(tee_name):
     gst_bus_stamper.release(tee_name)
 
 
-# GstNet is optional: only sync-enabled pipelines carry a `clock` config. If
-# the typelib is missing we log once and run on the default clock (unsynced) —
-# never fatal, so a box without GstNet still plays, just without cross-pipeline
-# lock.
-_GstNet = None
-_net_clock_warned = False
-
-
-def _apply_net_clock(pipe, clock_cfg):
-    """Slave `pipe` to the shared net clock for cross-pipeline A/V sync.
-
-    `clock_cfg` = {host, port} from the engine's clock authority. None / falsy
-    → no-op (the pipeline keeps its auto-selected clock, today's behaviour).
-    Every pipeline in a sync group gets the SAME host/port; sharing the clock
-    (same rate) removes the drift. Base-time is anchored naturally at PLAYING
-    (no shared base-time), leaving a small constant start offset. Buffers must
-    carry the shared source PTS (no per-consumer re-anchoring) for the
-    running-times to line up.
-    """
-    global _GstNet, _net_clock_warned
-    if not clock_cfg:
-        return
-    host = clock_cfg.get("host")
-    port = clock_cfg.get("port")
-    if not host or not port:
-        return
-    if _GstNet is None:
-        try:
-            gi.require_version("GstNet", "1.0")
-            from gi.repository import GstNet
-            _GstNet = GstNet
-        except (ValueError, ImportError):
-            if not _net_clock_warned:
-                _net_clock_warned = True
-                emit_event({"event": "warning",
-                            "message": "GstNet unavailable — pipeline runs unsynced (no cross-pipeline clock)"})
-            return
-    clock = _GstNet.NetClientClock.new(None, host, int(port), 0)
-    # Block briefly for the first clock sync so the first buffers are stamped
-    # against a settled clock; a slow sync just means a short startup delay.
-    #
-    # CRITICAL: sync is best-effort and must NEVER block playback. If the clock
-    # authority is unreachable (daemon down, stale/ephemeral port, cross-host),
-    # `wait_for_sync` returns False. Force-attaching an unsynced NetClientClock
-    # is what wedges the pipeline: a `sync=true` sink then waits on a clock that
-    # never advances, so the pipeline never reaches PLAYING, its source task
-    # never runs, and the upstream socket backs up until everything stalls.
-    # When sync fails we leave the auto-selected clock in place and run unsynced
-    # — degraded sync beats no playback. `_net_clock_warned` throttles the log.
-    if not clock.wait_for_sync(2 * Gst.SECOND):
-        if not _net_clock_warned:
-            _net_clock_warned = True
-            emit_event({"event": "warning",
-                        "message": f"net clock {host}:{port} did not sync — running unsynced (auto clock)"})
-        # The pipeline was built for the synced case: its sink is `sync=true` so
-        # it would present each frame at its (shared-clock) PTS. With no shared
-        # clock that sink waits on timestamps it can't honour and stalls. Relax
-        # the named `sink` to `sync=false` so it renders frames as they arrive —
-        # the same low-latency behaviour the unsynced (SRT/RIST) path uses, which
-        # plays reliably. Best-effort: skip silently if there's no such element.
-        sink = pipe.get_by_name("sink")
-        if sink is not None:
-            try:
-                sink.set_property("sync", False)
-            except (TypeError, AttributeError, GLib.Error):
-                pass
-        return
-    pipe.use_clock(clock)
-    # Sharing the clock (same rate) is what kills the DRIFT — that's the whole
-    # point. Base-time is left to anchor naturally at PLAYING: every pipeline
-    # lands within a moment of the others on the SAME clock, so the residual is
-    # a small CONSTANT offset (trim with a sink ts-offset if needed), never
-    # growing. We deliberately do NOT force a shared base-time — coordinating
-    # one in this clock's time domain across processes is fragile and a stale
-    # value would make every buffer "late" and break playback.
-
-
 def _apply_contract_clock(pipe, live_capture_clock=False):
-    """Put `pipe` on the time-sync contract's clock and PIN its timeline.
+    """Put `pipe` on the house clock and PIN its timeline (every pipeline).
 
-    The contract (engine-wide `timeSyncContract`) replaces the net-clock dance
-    with the one time base every process on the box already agrees on: the
-    monotonic system clock. Two moves:
+    The one time base every process on the box agrees on is the monotonic
+    system clock (§4.1). Two moves:
 
       * `use_clock(SystemClock)` — a fixed, explicitly MONOTONIC clock (that is
         already GstSystemClock's default clock-type; set for clarity), so no
@@ -1980,17 +1899,18 @@ def _apply_contract_clock(pipe, live_capture_clock=False):
     (transcoder, mpegts-muxer) must NOT use it — their branch alignment is built
     on running-time being house time. See `PipelineDescription.liveCaptureClock`.
 
-    Nothing external is contacted or waited for, so unlike `_apply_net_clock`
-    this can neither delay nor wedge a start — there is no timeout case and no
-    sink to relax to `sync=false`.
+    Nothing external is contacted or waited for, so this can neither delay nor
+    wedge a start.
     """
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     pipe.use_clock(clock)
     if live_capture_clock:
+        sys.stderr.write("[gst-runner.py] contract clock: monotonic, base_time=natural (live capture)\n")
         return
     pipe.set_start_time(Gst.CLOCK_TIME_NONE)
     pipe.set_base_time(0)
+    sys.stderr.write("[gst-runner.py] contract clock: monotonic, base_time=0\n")
 
 
 def _now_running_ms():
@@ -2084,20 +2004,10 @@ def handle_start(data):
         emit_event({"event": "error", "message": f"Pipeline parse error: {e.message}"})
         return
 
-    # Time sync (opt-in), applied before PLAYING so the pipeline never runs on
-    # its own auto-selected clock first. The engine sends exactly one of these:
-    # under the time-sync contract, a monotonic system clock with a pinned
-    # timeline (no daemon involved); otherwise the legacy shared net clock that
-    # slaves this pipeline to its siblings (video-player ↔ audio-decoder).
-    # `liveCaptureClock` is read HERE AND ONLY HERE, inside the contract branch:
-    # it selects the contract variant that keeps the house clock but lets
-    # base-time anchor naturally (live capture head into an aggregator mux — see
-    # `_apply_contract_clock`). With the contract off the legacy path below is
-    # byte-identical to what it was.
-    if data.get("timeSyncContract"):
-        _apply_contract_clock(pipeline, data.get("liveCaptureClock"))
-    else:
-        _apply_net_clock(pipeline, data.get("clock"))
+    # The house clock, applied before PLAYING so the pipeline never runs on its
+    # own auto-selected clock first. `liveCaptureClock` keeps the clock but lets
+    # base-time anchor naturally (live capture head into an aggregator mux).
+    _apply_contract_clock(pipeline, data.get("liveCaptureClock"))
 
     # Reset per-run pad counters and install dynamic-pad-link rules
     _pad_link_counts = {}
@@ -2115,12 +2025,11 @@ def handle_start(data):
     _start_input_stall_watch(pipeline, data.get("inputStallWatch"))
 
     # The producer half of the time-sync contract: stamp every bus egress with
-    # house-clock media time. The FLAG is recorded here, before PLAYING, for the
-    # same reason as above — an attach can land the moment the pipeline starts
-    # and the probe must own that edge's first buffer. The probes themselves arm
-    # per tee as consumers attach. Gated on the same flag as the clock, because
-    # the stamp is only meaningful once base_time is pinned to 0.
-    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"),
+    # house-clock media time. Enabled here, before PLAYING, for the same reason
+    # as above — an attach can land the moment the pipeline starts and the
+    # probe must own that edge's first buffer. The probes themselves arm per
+    # tee as consumers attach.
+    gst_bus_stamper.enable(pipeline, data.get("latchRepair"),
                            data.get("conditionStepMs"), data.get("houseTimelineEgress"))
 
     # Install stream discovery on every distinct demux element the rules
@@ -4135,10 +4044,9 @@ def _start_backlog_shedder(pipe, cfg):
     the sink asks its upstream for) it costs nearly every frame — .42 measured
     50 fps decoded and 2.5 fps on the glass after ~16 h.
 
-    NOT report-only: it DROPS buffers. It is armed on the same pipelines the
-    contract paces and nowhere else — with the contract off no module sends this
-    config and nothing here runs (the legacy `sync=false` sink drains its own
-    backlog, which is the behaviour the queues were sized against).
+    NOT report-only: it DROPS buffers. It is armed on the clock-paced legs and
+    nowhere else (a `sync=false` sink drains its own backlog, which is the
+    behaviour the queues were sized against).
 
     WHERE IT MEASURES. On the sink pad of `element`, per buffer:
 
@@ -4698,6 +4606,8 @@ def main():
         cmd_fd = sys.stdin
         event_fd = None  # Will use sys.stderr
 
+    # By path, before any pipeline: every bus fragment may name `mrlateness`.
+    gst_lateness_native.load_plugin()
     emit_event({"event": "ready"})
 
     # Start command reader in background thread

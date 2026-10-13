@@ -1,12 +1,15 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import type { EngineState } from '@/stores/engines';
 import { statColorClass } from '@/composables/useStatColor';
 import { getLucideIcon } from '@/composables/useLucideIcons';
+import { engineClockIndicator } from '@/utils/engineClock';
 
-defineProps<{ engine: EngineState }>();
+const props = defineProps<{ engine: EngineState }>();
 const emit = defineEmits<{ contextmenu: [ev: MouseEvent, engineId: string] }>();
 const route = useRoute();
+const clock = computed(() => engineClockIndicator(props.engine));
 </script>
 
 <template>
@@ -55,6 +58,14 @@ const route = useRoute();
                 aria-label="Under-voltage detected"
             >
                 <component :is="getLucideIcon('zap')" :size="11" />
+            </span>
+            <span
+                v-if="clock"
+                class="engine-clock shrink-0 inline-flex items-center"
+                :class="clock.colorClass"
+                :aria-label="clock.label"
+            >
+                <component :is="getLucideIcon('clock')" :size="11" />
             </span>
         </div>
     </RouterLink>

@@ -4,8 +4,6 @@ import { AudioDecoderModule } from './AudioDecoderModule.js';
 function makeModule(
     opts: {
         upstream?: { port: number; socketPath?: string } | null;
-        /** Engine-wide time-sync contract (ADR-0005). Off in the legacy tests. */
-        timeSyncContract?: boolean;
         /** Engine-wide default playout offset D. */
         playoutOffsetMs?: number;
         /** Override declared by the route head feeding this decoder. */
@@ -35,7 +33,6 @@ function makeModule(
     module.services = {
         instanceId: 'dec-1',
         mediaRouter: { getModuleBusSource, getRoutePlayoutOffsetMs },
-        ...(opts.timeSyncContract ? { timeSyncContract: true } : {}),
         ...(opts.playoutOffsetMs !== undefined ? { playoutOffsetMs: opts.playoutOffsetMs } : {}),
     };
     module.config = {};
@@ -63,7 +60,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'opus' };
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain(
-            'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux',
+            'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock ! mrlateness name=lat_busin_41000_676b67 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux',
         );
         expect(desc!.pipeline).not.toContain('udpsrc');
     });
@@ -104,55 +101,6 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('decodebin');
     });
 
-    it('plays sync=false by default — sync=true silently drops ALL audio on any mid-stream join (demuxer restart / decoder respawn)', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=false');
-        expect(desc!.pipeline).not.toContain('provide-clock=false');
-        expect(desc!.clockSync).toBeUndefined();
-    });
-
-    it('clockSync=true → sync=true + provide-clock=false + clockSync flag (shared engine clock)', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ clockSync: true });
-        expect(desc!.pipeline).toContain(
-            'pulsesink device=MR_PW_dec-1 sync=true provide-clock=false',
-        );
-        expect(desc!.clockSync).toBe(true);
-    });
-
-    it('default keeps the drop-late guard (max-lateness=200ms) and no ts-offset', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('max-lateness=200000000');
-        expect(desc!.pipeline).not.toContain('ts-offset');
-    });
-
-    it('lowLatencySync → sync=true + floored ring + max-lateness=-1 (arrival-anchored, never-silent)', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ lowLatencySync: true });
-        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=true');
-        expect(desc!.pipeline).not.toContain('provide-clock=false');
-        expect(desc!.pipeline).toContain('buffer-time=200000');
-        expect(desc!.pipeline).not.toContain('ts-offset');
-        expect(desc!.pipeline).toContain('max-lateness=-1');
-        expect(desc!.clockSync).toBeUndefined();
-    });
-
-    it('lowLatencySync honors syncOffsetMs', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ lowLatencySync: true, syncOffsetMs: 400 });
-        expect(desc!.pipeline).toContain('ts-offset=400000000');
-    });
-
-    it('clockSync wins over lowLatencySync (no ts-offset in shared-clock mode)', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ clockSync: true, lowLatencySync: true });
-        expect(desc!.pipeline).toContain('provide-clock=false');
-        expect(desc!.pipeline).not.toContain('ts-offset');
-        expect(desc!.pipeline).toContain('max-lateness=200000000');
-    });
-
     it('uses the configured volume (volume=100% → gst volume=1.00)', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
@@ -174,28 +122,10 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('volume name=vol volume=1.00');
     });
 
-    it('uses configurable slave-method on pulsesink (default 0 = resample)', () => {
-        const { module } = makeModule();
-        module.probeResult = { codec: 'opus' };
-        expect(module.buildPipeline({})!.pipeline).toContain('slave-method=0');
-        expect(module.buildPipeline({ slaveMethod: 1 })!.pipeline).toContain('slave-method=1');
-    });
-
-    it('honours a stored slave-method verbatim on the legacy path', () => {
-        // The contract pins skew (below). Off the contract the stored value is
-        // the whole answer — including the explicit 0s that `add /modules/<id>`
-        // materialised onto the fleet from the schema default, which the
-        // kill-switch (MR_TIME_SYNC_CONTRACT=0) has to keep reproducing.
-        const { module } = makeModule();
-        module.probeResult = { codec: 'opus' };
-        expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).toContain('slave-method=0');
-        expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).not.toContain('slave-method=1');
-    });
-
-    it('pins the playback stream to its own null-sink (#736) on the legacy and the contract sink', () => {
-        const legacy = makeModule().module.buildPipeline({});
-        expect(legacy!.pipeline).toMatch(
-            /pulsesink device=MR_PW_dec-1 [^!]*stream-properties="props,node.dont-fallback=\(string\)true,node.linger=\(string\)true"/,
+    it('pins the playback stream to its own null-sink (#736)', () => {
+        const desc = makeModule().module.buildPipeline({});
+        expect(desc!.pipeline).toMatch(
+            /pulsesink name=sink device=MR_PW_dec-1 [^!]*stream-properties="props,node.dont-fallback=\(string\)true,node.linger=\(string\)true"/,
         );
     });
 
@@ -203,7 +133,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1');
+        expect(desc!.pipeline).toContain('pulsesink name=sink device=MR_PW_dec-1');
     });
 
     it('sets restartOnError so transient stream blips auto-recover', () => {
@@ -230,93 +160,78 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const raised = module.buildPipeline({ bufferMs: 1500 });
         expect(raised!.pipeline).toContain('queue leaky=0 max-size-time=1500000000');
     });
-
-    it('sinkBufferMs sizes the pa ring (default 200 ms, clamped to 80 ms floor)', () => {
-        const { module } = makeModule();
-        expect(module.buildPipeline({})!.pipeline).toContain('buffer-time=200000');
-        expect(module.buildPipeline({ sinkBufferMs: 100 })!.pipeline).toContain(
-            'buffer-time=100000',
-        );
-        expect(module.buildPipeline({ sinkBufferMs: 10 })!.pipeline).toContain('buffer-time=80000');
-        // lowLatencySync honours sinkBufferMs with a 100 ms floor — the old
-        // hardcoded 50 ms ring xrunned on the field Pi 4 (audible dropouts).
-        const lls = module.buildPipeline({ lowLatencySync: true, sinkBufferMs: 500 });
-        expect(lls!.pipeline).toContain('buffer-time=500000');
-        const llsThin = module.buildPipeline({ lowLatencySync: true, sinkBufferMs: 80 });
-        expect(llsThin!.pipeline).toContain('buffer-time=100000');
-    });
 });
 
 /**
- * Playout offset D on the audio leg (ADR-0005 decision 4). Under the contract
- * this sink stops choosing its own anchor: it presents at stamped-time + D, D
- * comes from the route (not from this module's settings), and `syncOffsetMs`
- * demotes to a per-sink trim on top. Every legacy shape above is untouched —
- * those tests build with no `timeSyncContract` in services, which is the
- * MR_TIME_SYNC_CONTRACT=0 kill-switch state.
+ * Playout offset D on the audio leg (ADR-0005 decision 4). This sink does not
+ * choose its own anchor: it presents at stamped-time + D, D comes from the
+ * route (not from this module's settings), and `syncOffsetMs` demotes to a
+ * per-sink trim on top.
  */
-describe('AudioDecoderModule playout offset (time-sync contract)', () => {
+describe('AudioDecoderModule playout offset', () => {
     beforeEach(() => vi.clearAllMocks());
 
     it('paces at the engine default D with no route override', () => {
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain('ts-offset=200000000');
     });
 
     it('cancels the latency its paced ring declares, so it lands on D like the 302M leg', () => {
         // D 300 − 100 ms declared ring = 200 ms of scheduling offset, and the
-        // ring is PINNED under the contract so both audio legs cancel the same
+        // ring is PINNED so both audio legs cancel the same
         // number (ADR-0005 decision 4 — one route, one D on every leg).
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         expect(module.buildPipeline({})!.pipeline).toContain('buffer-time=100000');
         expect(module.buildPipeline({ sinkBufferMs: 400 })!.pipeline).toContain(
             'buffer-time=100000',
         );
         // …and a D at or under the ring clamps to 0 rather than going negative
         // (the shedder reads ts-offset as its budget).
-        const tight = makeModule({ timeSyncContract: true, playoutOffsetMs: 80 });
+        const tight = makeModule({ playoutOffsetMs: 80 });
         expect(tight.module.buildPipeline({})!.pipeline).toContain('ts-offset=0');
     });
 
-    it('anchors its demux branch to the producer stamps, named only on the contract path', () => {
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+    it('anchors its demux branch to the producer stamps', () => {
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain('tsdemux name=addemux latency=0');
         expect(desc!.alignBranchesToStamps).toEqual({ demuxes: ['addemux'] });
-
-        const legacy = makeModule({});
-        const legacyDesc = legacy.module.buildPipeline({});
-        expect(legacyDesc!.pipeline).toContain('tsdemux latency=0');
-        expect(legacyDesc!.pipeline).not.toContain('name=addemux');
-        expect(legacyDesc!.alignBranchesToStamps).toBeUndefined();
     });
 
-    it('presents sync=true with the never-silent guard, whatever the legacy mode flags say', () => {
+    it('presents sync=true with the never-silent guard, whatever the stored mode flags say', () => {
         // sync=false would ignore ts-offset outright and leave this leg
         // arrival-anchored while the video leg paced off the house clock.
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain(
             'pulsesink name=sink device=MR_PW_dec-1 sync=true provide-clock=false',
         );
+        // Render lateness right before the sink, which the timing section reads D from.
+        expect(desc!.pipeline).toContain(
+            'mrlateness name=lat_render reference=running-time ! pulsesink name=sink',
+        );
+        expect(desc!.timingSink).toEqual({ element: 'sink', kind: 'audio' });
         expect(desc!.pipeline).toContain('max-lateness=-1');
         expect(desc!.pipeline).not.toContain('max-lateness=200000000');
-        // Paced ⇒ the ring takes the 100 ms floor, as on lowLatencySync.
-        expect(module.buildPipeline({ sinkBufferMs: 80 })!.pipeline).toContain(
-            'buffer-time=100000',
-        );
+        // Stored legacy modes are ignored: the paced ring is pinned.
+        for (const stored of [{ sinkBufferMs: 80 }, { lowLatencySync: true, syncOffsetMs: 0 }]) {
+            const p = module.buildPipeline(stored)!.pipeline;
+            expect(p).toContain('sync=true provide-clock=false');
+            expect(p).toContain('buffer-time=100000');
+            expect(p).toContain('ts-offset=200000000');
+        }
     });
 
     it('slaves the DAC to the house clock with slave-method=skew, whatever is stored', () => {
-        // ADR-0005 decision 5: under the contract the house clock is the master
+        // ADR-0005 decision 5: the house clock is the master
         // and the DAC slaves to it by SKEW. Resample would absorb the rate
         // difference by rewriting samples, so this sink would drift off the time
         // it was told to present at and D would stop meaning what the route
         // configured — on this leg only, while the video leg held the clock.
         // The stored value is ignored rather than defaulted from: fleet configs
         // carry materialised `slaveMethod: 0`s nobody chose.
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         module.probeResult = { codec: 'opus' };
         expect(module.buildPipeline({})!.pipeline).toContain('slave-method=1');
         expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).toContain('slave-method=1');
@@ -324,13 +239,12 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     });
 
     it('names the sink so the offset can be pushed live', () => {
-        const { module } = makeModule({ timeSyncContract: true });
+        const { module } = makeModule();
         expect(module.buildPipeline({})!.pipeline).toContain('pulsesink name=sink');
     });
 
     it('lets the route head override win over the engine default', () => {
         const { module } = makeModule({
-            timeSyncContract: true,
             playoutOffsetMs: 300,
             routeOffsetMs: 500,
         });
@@ -339,7 +253,6 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
 
     it('adds syncOffsetMs on top of D as a deprecated per-sink trim', () => {
         const { module } = makeModule({
-            timeSyncContract: true,
             playoutOffsetMs: 300,
             routeOffsetMs: 500,
         });
@@ -349,7 +262,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     });
 
     it('resolves the offset through the route this decoder consumes', () => {
-        const { module } = makeModule({ timeSyncContract: true, routeOffsetMs: 250 });
+        const { module } = makeModule({ routeOffsetMs: 250 });
         module.buildPipeline({});
         expect(module.services.mediaRouter.getRoutePlayoutOffsetMs).toHaveBeenCalledWith(
             'dec-1',
@@ -358,7 +271,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     });
 
     it('pushes a route offset change to the live sink without a rebuild', async () => {
-        const { module } = makeModule({ timeSyncContract: true, routeOffsetMs: 500 });
+        const { module } = makeModule({ routeOffsetMs: 500 });
         const setElementProperty = vi.fn();
         module.setElementProperty = setElementProperty;
         await module.onRoutePlayoutOffsetChanged();
@@ -366,7 +279,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     });
 
     it('pushes a syncOffsetMs trim live too, resolved whole against the route', async () => {
-        const { module } = makeModule({ timeSyncContract: true, routeOffsetMs: 500 });
+        const { module } = makeModule({ routeOffsetMs: 500 });
         const setElementProperty = vi.fn();
         module.setElementProperty = setElementProperty;
         await module.onLiveConfigUpdate({ syncOffsetMs: 40 });
@@ -374,13 +287,13 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     });
 
     it('arms the backlog shedder on its own sink, without keyframe alignment', () => {
-        // The contract's latency ratchet guard (backlogShed.ts). This leg's
+        // The latency ratchet guard (backlogShed.ts). This leg's
         // `max-lateness=-1` makes the ratchet quieter than the video leg's, not
         // absent: the sink refuses to drop late buffers, so retained latency
         // shows up as lipsync drift against the video leg of the SAME route.
         // The shed point is the sink's own pad — raw PCM references nothing, so
         // whole decoded buffers can be dropped and no sample is ever cut.
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         expect(module.buildPipeline({})!.backlogShed).toMatchObject({
             element: 'sink',
             sink: 'sink',
@@ -392,7 +305,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     // re-anchor switch on, the same shed point asks the runner to RAISE the
     // route's D instead; off (MR_PLAYOUT_REANCHOR=0) the config is as before.
     it('re-anchor on: the shedder config carries onLateness and the five numbers', () => {
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         module.services.playoutReanchor = true;
         expect(module.buildPipeline({})!.backlogShed).toMatchObject({
             element: 'sink',
@@ -407,31 +320,9 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         });
     });
 
-    it('re-anchor off: none of the re-anchor keys, and nothing at all without the contract', () => {
-        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+    it('re-anchor off: none of the re-anchor keys', () => {
+        const { module } = makeModule({ playoutOffsetMs: 300 });
         expect(module.buildPipeline({})!.backlogShed).not.toHaveProperty('onLateness');
-        const legacy = makeModule();
-        legacy.module.services.playoutReanchor = true;
-        expect(legacy.module.buildPipeline({})!.backlogShed).toBeUndefined();
-    });
-
-    it('never arms the shedder on the legacy path', () => {
-        // Nothing to guard: a `sync=false` sink presents on arrival and drains
-        // its own backlog. `MR_TIME_SYNC_CONTRACT=0` must reproduce the legacy
-        // description exactly.
-        const { module } = makeModule();
-        expect(module.buildPipeline({})!.backlogShed).toBeUndefined();
-        expect(module.buildPipeline({ lowLatencySync: true })!.backlogShed).toBeUndefined();
-        expect(module.buildPipeline({ clockSync: true })!.backlogShed).toBeUndefined();
-    });
-
-    it('never pushes on the legacy path — that sink has no name to address', async () => {
-        const { module } = makeModule();
-        const setElementProperty = vi.fn();
-        module.setElementProperty = setElementProperty;
-        await module.onRoutePlayoutOffsetChanged();
-        await module.onLiveConfigUpdate({ syncOffsetMs: 40 });
-        expect(setElementProperty).not.toHaveBeenCalledWith('sink', 'ts-offset', expect.anything());
     });
 });
 

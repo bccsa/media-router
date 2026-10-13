@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils';
 import { createRouter, createMemoryHistory } from 'vue-router';
 import EngineListItem from './EngineListItem.vue';
 import type { EngineState } from '@/stores/engines';
+import type { TimeSyncState } from '@media-router/shared-types';
 
 function makeEngine(over: Partial<EngineState> = {}): EngineState {
     return {
@@ -124,5 +125,73 @@ describe('EngineListItem', () => {
 
         expect(sibling.find('.engine-row').classes()).not.toContain('text-accent-fg');
         expect(active.find('.engine-row').classes()).toContain('text-accent-fg');
+    });
+
+    describe('time-sync clock indicator', () => {
+        const base: TimeSyncState = {
+            source: 'chrony',
+            synced: true,
+            traceable: true,
+            taiOffsetS: 37,
+            estErrorUs: 800,
+            maxErrorUs: 9000,
+            freqPpm: 3.5,
+            waitingForSync: false,
+            epochSeq: 1,
+            epochLatchedAt: '2026-10-13T08:00:00.000Z',
+            epochReason: 'start',
+            sidecar: true,
+        };
+        function clockOf(timeSync: Partial<TimeSyncState>, features = ['house-clock']) {
+            const wrapper = mount(EngineListItem, {
+                props: {
+                    engine: makeEngine({
+                        features,
+                        system: { cpu: 1, mem: 2, temp: 40, timeSync: { ...base, ...timeSync } },
+                    }),
+                },
+                global: { plugins: [withRouter()] },
+            });
+            return wrapper.find('.engine-clock');
+        }
+
+        it('green when traceable', () => {
+            const el = clockOf({});
+            expect(el.classes()).toContain('text-ok');
+            expect(el.attributes('aria-label')).toBe('Time traceable');
+        });
+
+        it('amber while waiting for sync, with the time left', () => {
+            const el = clockOf({
+                synced: false,
+                traceable: false,
+                waitingForSync: true,
+                waitRemainingS: 21,
+                epochSeq: 0,
+            });
+            expect(el.classes()).toContain('text-warning');
+            expect(el.attributes('aria-label')).toBe('Waiting for time sync (21 s)');
+        });
+
+        it('amber when synced but untraceable (kernel TAI offset unset)', () => {
+            const el = clockOf({ traceable: false, taiOffsetS: 0, epochReason: 'timeout' });
+            expect(el.classes()).toContain('text-warning');
+            expect(el.attributes('aria-label')).toMatch(/TAI offset unset/);
+        });
+
+        it('red when not synchronised after the start wait', () => {
+            const el = clockOf({ synced: false, traceable: false, epochReason: 'timeout' });
+            expect(el.classes()).toContain('text-error');
+            expect(el.attributes('aria-label')).toBe('Time not synchronised');
+        });
+
+        it('shows nothing for an older engine without the house-clock feature', () => {
+            expect(clockOf({}, ['dashboards', 'interlocks']).exists()).toBe(false);
+            const noStats = mount(EngineListItem, {
+                props: { engine: makeEngine({ system: { cpu: 1, mem: 2, temp: 40 } }) },
+                global: { plugins: [withRouter()] },
+            });
+            expect(noStats.find('.engine-clock').exists()).toBe(false);
+        });
     });
 });

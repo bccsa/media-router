@@ -172,20 +172,9 @@ describe('start payload', () => {
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink', backlogShed }).backlogShed).toEqual(
             backlogShed,
         );
-        // Absent on the legacy path — must stay absent, not become a shedder on
+        // Absent on an unpaced leg — must stay absent, not become a shedder on
         // elements that may not exist (a hard start error).
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).backlogShed).toBeUndefined();
-    });
-
-    it('forwards timeSyncContract — dropping it silently reverts to the net clock', () => {
-        // The flag is the ONLY thing telling the runner to pin the timeline
-        // (monotonic clock, base_time 0). Lost here, the pipeline would run on
-        // its auto-selected clock with a per-start base-time, which is exactly
-        // the drift the contract exists to remove — and nothing would report it.
-        expect(
-            payloadFor({ pipeline: 'fakesrc ! fakesink', timeSyncContract: true }).timeSyncContract,
-        ).toBe(true);
-        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).timeSyncContract).toBe(false);
     });
 
     it('forwards liveCaptureClock — dropping it puts a live capture head back on the pinned timeline', () => {

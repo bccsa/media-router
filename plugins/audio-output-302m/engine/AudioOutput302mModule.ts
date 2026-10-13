@@ -2,6 +2,7 @@ import {
     GstPluginBase,
     backlogShedConfig,
     pulsePinnedStreamProps,
+    withLatenessTap,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -31,10 +32,6 @@ import { buildOutputPlacement } from './outputPlacement.js';
  * `sync=false`, audio played on arrival + whatever PipeWire and the queues
  * happened to hold — 50–200 ms EARLY, re-rolled on every restart. Two legs of
  * one route can only agree if both schedule off the same number.
- *
- * With the contract off the pipeline string is byte-for-byte what it was
- * (`pulsesink device=… sync=false`): the kill-switch has to reproduce the
- * legacy behaviour exactly.
  *
  * CHANNEL PLACEMENT. `channels` is the mix width (1–8), `firstChannel` where
  * on the device it lands (X32 outputs 1–32 = four instances at 8 from
@@ -126,13 +123,8 @@ export class AudioOutput302mModule extends GstPluginBase {
         await this.pushSinkTsOffset();
     }
 
-    /**
-     * Push the resolved ts-offset to the running `pulsesink`. No-op on the
-     * legacy path: without the contract the sink carries no `name=sink` (the
-     * pipeline string is unchanged there), so there is nothing to address.
-     */
+    /** Push the resolved ts-offset to the running `pulsesink`. */
     private async pushSinkTsOffset(): Promise<void> {
-        if (this.services?.timeSyncContract !== true) return;
         await this.setElementProperty(
             'sink',
             'ts-offset',
@@ -182,26 +174,16 @@ export class AudioOutput302mModule extends GstPluginBase {
         });
         this.mixerLatencyNs = mixerLatencyNs ?? 0;
 
-        const contract = this.services?.timeSyncContract === true;
-        const tsOffsetNs = contract
-            ? audio302mTsOffsetNs(this.services, config, this.mixerLatencyNs)
-            : 0;
+        const tsOffsetNs = audio302mTsOffsetNs(this.services, config, this.mixerLatencyNs);
 
-        // CONTRACT: present at stamped time + D on the house clock — see the
-        // class comment. `name=sink` is what the live offset push and the
-        // backlog shedder address; it is added only here so the legacy string
-        // below stays byte-identical.
-        //
-        // LEGACY (contract off): sync=false — the force-live mixer already paces
-        // output in real time, and a syncing sink would only add the
-        // decoder-era mid-stream-join silence trap on top. audioconvert/
-        // audioresample let pulsesink negotiate whatever format/rate the device
-        // wants.
-        const sink = contract
-            ? `pulsesink name=sink device=${device} sync=true provide-clock=false` +
-              ` slave-method=${SLAVE_METHOD_SKEW} max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
-              ` ts-offset=${tsOffsetNs} ${pulsePinnedStreamProps()}`
-            : `pulsesink device=${device} sync=false ${pulsePinnedStreamProps()}`;
+        // Present at stamped time + D on the house clock — see the class
+        // comment. `name=sink` is what the live offset push and the backlog
+        // shedder address. audioconvert/audioresample let pulsesink negotiate
+        // whatever format/rate the device wants.
+        const sink =
+            `pulsesink name=sink device=${device} sync=true provide-clock=false` +
+            ` slave-method=${SLAVE_METHOD_SKEW} max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
+            ` ts-offset=${tsOffsetNs} ${pulsePinnedStreamProps()}`;
         // Placement (if any) sits between the VU and the sink: the level meter
         // reads the mix, the sink receives the device-wide spread.
         const pipeline =
@@ -209,7 +191,7 @@ export class AudioOutput302mModule extends GstPluginBase {
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
             (placement.fragment ? ` ! ${placement.fragment}` : '') +
-            ` ! ${sink}`;
+            ` ! ${withLatenessTap('lat_render', sink)}`;
 
         this.setStatusData('output', {
             device,
@@ -218,38 +200,35 @@ export class AudioOutput302mModule extends GstPluginBase {
             firstChannel,
             lastChannel: firstChannel - 1 + channels,
             ...(deviceChannels ? { deviceChannels } : {}),
-            timing: contract ? 'house clock, playout offset' : 'on arrival',
-            ...(contract ? { tsOffsetMs: Math.round(tsOffsetNs / 1_000_000) } : {}),
+            timing: 'house clock, playout offset',
+            tsOffsetMs: Math.round(tsOffsetNs / 1_000_000),
         });
         this.setHealth('ok');
 
         return {
             pipeline,
             restartOnError: true,
-            // Backlog shedder — the contract's latency ratchet guard, on the leg
-            // the contract turned `sync=true` (see backlogShed.ts). Shed point is
+            timingSink: { element: 'sink', kind: 'audio' },
+            // Backlog shedder — the latency ratchet guard on this `sync=true`
+            // leg (see backlogShed.ts). Shed point is
             // the pulsesink's OWN pad: raw PCM references nothing, so whole
             // decoded buffers can be dropped anywhere, and its pad is the last
             // place that still sees every one of them. Not keyframe-aligned;
             // the shed is whole-buffer, so the sink sees a timestamp gap and
             // resyncs its ring — one click, at most once a minute, in exchange
             // for the route's configured D. Same shape as the audio-decoder's.
-            ...(contract
-                ? {
-                      backlogShed: backlogShedConfig(this.services, {
-                          element: 'sink',
-                          sink: 'sink',
-                          keyframeAligned: false,
-                      }),
-                      // Anchor every branch's running time to the producer's
-                      // house stamps (ADR-0005 Stage 3c — the same correction the
-                      // mpegts-muxer applies to its inputs). A tsdemux keeps the
-                      // zero-point error of the one bus buffer it locked on for
-                      // its whole life (−73…−85 ms measured on .103, re-rolled per
-                      // restart); on a sync=true leg that error IS lipsync.
-                      alignBranchesToStamps: { demuxes },
-                  }
-                : {}),
+            backlogShed: backlogShedConfig(this.services, {
+                element: 'sink',
+                sink: 'sink',
+                keyframeAligned: false,
+            }),
+            // Anchor every branch's running time to the producer's house stamps
+            // (ADR-0005 Stage 3c — the same correction the mpegts-muxer applies
+            // to its inputs). A tsdemux keeps the zero-point error of the one
+            // bus buffer it locked on for its whole life (−73…−85 ms measured
+            // on .103, re-rolled per restart); on a sync=true leg that error IS
+            // lipsync.
+            alignBranchesToStamps: { demuxes },
         };
     }
 }

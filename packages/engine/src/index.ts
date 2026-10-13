@@ -15,6 +15,7 @@ export type {
     ModuleServices,
     DynamicPort,
     LiveInputBranch,
+    TimingSink,
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
@@ -112,8 +113,17 @@ export {
     busStallWatch,
     quoteGstString,
     shortHash,
+    latInName,
+    latOutName,
 } from './plugins/busHelpers.js';
 export type { BusSrcOpts } from './plugins/busHelpers.js';
+export {
+    buildLatenessTap,
+    withLatenessTap,
+    latenessTapAvailable,
+    LATENESS_EVENT,
+} from './plugins/latenessTap.js';
+export type { OutputTapName } from './plugins/latenessTap.js';
 export {
     buildNetUdpSrc,
     buildNetUdpSink,
@@ -133,6 +143,7 @@ export {
     aes67RawFormat,
     aes67RtpCaps,
     aes67SamplesPerPacket,
+    rtpTimestampOffset,
     clampChannels,
     clampPayloadType,
     clampPtime,
@@ -146,6 +157,9 @@ export type { Aes67Encoding, Aes67RtpCapsOpts } from './plugins/aes67Helpers.js'
 // Re-exported for plugins (per-connection channel maps on mix inputs) —
 // plugin packages depend on @media-router/engine only, not shared-types.
 export type { ChannelMapEntry } from '@media-router/shared-types';
+// The engine's house epoch E (`services.houseClock`, house-clock design §4.2).
+export type { HouseEpoch, TimeSyncState } from '@media-router/shared-types';
+export type { HouseClock } from './clock/HouseClock.js';
 // The `graph` status-field contract — a plugin computes its own plots and
 // publishes them with `setStatusGraph`; the UI only renders.
 export type {
@@ -243,7 +257,11 @@ export type {
     LiveInputBranchTarget,
     LiveSwapTarget,
 } from './child-process/UnixFdFanoutController.js';
-export { resolveNativeBinary, resolvePythonScript } from './child-process/nativeBinaries.js';
+export {
+    resolveNativeAsset,
+    resolveNativeBinary,
+    resolvePythonScript,
+} from './child-process/nativeBinaries.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export { probeMpegTsStream, classifyCaps, registerCodecClassifier } from './routing/MpegTsProbe.js';
 export type { ProbeResult, CodecClassifier } from './routing/MpegTsProbe.js';

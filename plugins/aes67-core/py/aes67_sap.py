@@ -21,7 +21,7 @@ Wire shapes, both of which the round-trip tests pin:
                 `a=mediaclk:direct=0`. Announcing that pair on a box whose
                 RTP timestamps are free-running is the one thing a receiver
                 cannot detect, so it is gated on the sender's real state
-                rather than on the operator's intent (see `aes67_clock`).
+                rather than on the operator's intent (the engine's house epoch).
 
 Not implemented, deliberately: SAP authentication (RFC 2974 §8 — its PGP/CMS
 signatures are unused in AES67 practice, and an unverified auth block is worse
@@ -146,7 +146,7 @@ def build_sdp(session_name, source_ip, stream_address, stream_port,
         lines.append("a=ts-refclk:%s" % ts_refclk_attr(ptp_gmid, ptp_domain))
         # `direct=0` says the RTP timestamp IS the PTP-epoch media clock with no
         # further offset — true exactly when the sender's timestamp-offset was
-        # derived from the TAI epoch (aes67_clock.rtp_timestamp_offset).
+        # derived from the engine's house epoch E (aes67Helpers.rtpTimestampOffset).
         lines.append("a=mediaclk:direct=0")
     return "\r\n".join(lines) + "\r\n"
 

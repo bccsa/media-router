@@ -18,6 +18,7 @@
 #include "pad_link.h"
 #include "ipc.h"
 #include "json_util.h"
+#include "lateness_tap.h"
 #include "source_gate.h"
 #include "stamper.h"
 
@@ -56,7 +57,6 @@ const char* unsupported_field(JsonObject* data) {
         if (json_has(data, fields[i]) && json_get_object(data, fields[i]) != nullptr) return fields[i];
     if (json_get_bool(data, "readKlvNames")) return "readKlvNames";
     if (json_get_bool(data, "useStdioForData")) return "useStdioForData";
-    if (!json_get_bool(data, "timeSyncContract") && json_get_object(data, "clock")) return "clock";
     return nullptr;
 }
 
@@ -204,9 +204,13 @@ void Runner::apply_contract_clock(GstElement* pipe, bool live_capture_clock) {
     g_object_set(clock, "clock-type", GST_CLOCK_TYPE_MONOTONIC, nullptr);
     gst_pipeline_use_clock(GST_PIPELINE(pipe), clock);
     gst_object_unref(clock);
-    if (live_capture_clock) return;
+    if (live_capture_clock) {
+        ipc::log("contract clock: monotonic, base_time=natural (live capture)");
+        return;
+    }
     gst_element_set_start_time(pipe, GST_CLOCK_TIME_NONE);
     gst_element_set_base_time(pipe, 0);
+    ipc::log("contract clock: monotonic, base_time=0");
 }
 
 // ---------------------------------------------------------------------------
@@ -310,15 +314,15 @@ void Runner::handle_start(JsonObject* data) {
     }
     pipeline = pipe;
 
-    bool contract = json_get_bool(data, "timeSyncContract");
-    if (contract) apply_contract_clock(pipeline, json_get_bool(data, "liveCaptureClock"));
+    // Every pipeline runs on the house clock (§4.1): there is no other arm.
+    apply_contract_clock(pipeline, json_get_bool(data, "liveCaptureClock"));
 
     // Dynamic-pad-link rules (+ stream discovery on their demuxers).
     padlink::install(pipeline, json_get_array(data, "linkOnPadAdded"));
     // Live input branch bins (error containment).
     inputs::declare(json_get_array(data, "liveInputBranches"));
 
-    // Multi-branch stamp alignment (contract-only): armed before PLAYING so
+    // Multi-branch stamp alignment: armed before PLAYING so
     // the first TS bytes carry the mapping every branch is anchored to.
     align::install(pipeline, json_get_object(data, "alignBranchesToStamps"));
     stall::start(pipeline, json_get_array(data, "inputStallWatch"));
@@ -326,7 +330,7 @@ void Runner::handle_start(JsonObject* data) {
     // The producer half of the time-sync contract — recorded before PLAYING so
     // an attach landing the moment the pipeline starts owns its first buffer.
     JsonNode* repair = json_has(data, "latchRepair") ? json_object_get_member(data, "latchRepair") : nullptr;
-    stamper::enable(pipeline, contract, repair, json_get_int(data, "conditionStepMs", 0),
+    stamper::enable(pipeline, repair, json_get_int(data, "conditionStepMs", 0),
                     json_get_bool(data, "houseTimelineEgress"));
 
     // Plugin-owned runner hooks in their native form (mr_hook.h, ADR-0020),
@@ -521,6 +525,9 @@ void Runner::on_bus_message(GstMessage* msg) {
             if (!name) break;
             if (stamper::is_stamper_message(name)) {
                 stamper::handle_message(src_name, name, s);
+            } else if (src_name && std::strcmp(name, lateness::MESSAGE) == 0) {
+                // Lateness taps report unsubscribed, so inputs added at runtime do too.
+                emit_plugin_event(std::string("mrlateness:") + src_name, gst_structure_to_json(s));
             } else if (src_name && bus_reports.count({src_name, name})) {
                 emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));
             } else if (std::strcmp(name, "level") == 0) {

@@ -59,13 +59,11 @@ describe('planSink', () => {
         expect(sink).toMatchObject({ sinkPaced: true });
     });
 
-    it('ignores the retired qos / clockSync keys an old profile may still carry', () => {
-        // Removed 2026-09-08: neither is a setting any more. A paced sink is
-        // always qos=false; pacing follows `sync` alone.
+    it('ignores the retired qos key an old profile may still carry', () => {
+        // Removed 2026-09-08: not a setting any more. A paced sink is always
+        // qos=false; pacing follows `sync` alone.
         expect(plan({ qos: true }).sinkElement).toContain('qos=false');
         expect(plan({ sync: false, qos: false }).sinkElement).toContain('qos=true');
-        expect(plan({ sync: false, clockSync: true }).sinkPaced).toBe(false);
-        expect(plan({ sync: false, clockSync: true }).sinkElement).toContain('sync=false');
     });
 
     it('sync=false drops the pacing (and with it the tsparse chain)', () => {
@@ -74,27 +72,20 @@ describe('planSink', () => {
         expect(sink.sinkPaced).toBe(false);
     });
 
-    it('converts lipSyncMs to a nanosecond ts-offset on the named sink', () => {
-        // Contract off (no services): the trim is the whole offset, unchanged.
-        expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=40000000');
+    it('converts D + lipSyncMs to a nanosecond ts-offset on the named sink', () => {
+        // No services: the 60 ms default D plus the trim.
+        expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=100000000');
     });
 });
 
 /**
  * Playout offset D on the video leg (ADR-0005 decision 4). `lipSyncMs` stops
- * being the anchor and becomes a trim stacked on top of the ROUTE's D; with the
- * contract off nothing about the legacy numbers moves.
+ * being the anchor and becomes a trim stacked on top of the ROUTE's D.
  */
 describe('videoTsOffsetNs', () => {
     const route = (overrideMs?: number) => ({
         instanceId: 'video-player-1',
-        timeSyncContract: true,
         mediaRouter: { getRoutePlayoutOffsetMs: () => overrideMs },
-    });
-
-    it('is the bare lipSyncMs trim when the contract is off', () => {
-        expect(videoTsOffsetNs(null, { lipSyncMs: 40 })).toBe(40_000_000);
-        expect(videoTsOffsetNs({ instanceId: 'v1' }, {})).toBe(0);
     });
 
     it('uses the engine-wide default when the route declares no override', () => {
@@ -276,7 +267,8 @@ describe('planLivePipeline', () => {
         // overlay sits between the convert stage and the sink, driven by config
         expect(withSubs.pipeline).toContain(
             '! videoconvert ! videoscale ! textoverlay name=subov wait-text=false text="" valignment=top ' +
-                'halignment=center font-desc="Sans Bold 48" ypad=40 shaded-background=true shading-value=153 ! kmssink name=sink',
+                'halignment=center font-desc="Sans Bold 48" ypad=40 shaded-background=true shading-value=153 ! ' +
+                'mrlateness name=lat_render reference=running-time ! kmssink name=sink',
         );
         // the subtitle TS comes in on its own bus edge into a named demux
         expect(withSubs.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
@@ -301,6 +293,17 @@ describe('planLivePipeline', () => {
         // would fail the element lookup.
         expect(
             planLivePipeline({ ...base, sinkElement: 'autovideosink' }).renderWatch,
+        ).toBeUndefined();
+    });
+
+    it('taps render lateness before the sink and names it for the timing section', () => {
+        const desc = planLivePipeline(base);
+        expect(desc.pipeline).toContain(
+            'mrlateness name=lat_render reference=running-time ! kmssink name=sink',
+        );
+        expect(desc.timingSink).toEqual({ element: 'sink', kind: 'video' });
+        expect(
+            planLivePipeline({ ...base, sinkElement: 'autovideosink' }).timingSink,
         ).toBeUndefined();
     });
 
@@ -388,11 +391,10 @@ describe('planLivePipeline', () => {
     });
 
     describe('backlog shedder', () => {
-        // The time-sync contract's latency ratchet guard: a `sync=true` sink
-        // drains at media rate, so backlog the leaky queues absorb is never
-        // handed back (field .42: 50 fps decoded, 2.5 fps on the glass after
-        // ~16 h). Armed by the contract, on the same pad and the same rungs as
-        // the keyframe gate.
+        // The latency ratchet guard: a `sync=true` sink drains at media rate,
+        // so backlog the leaky queues absorb is never handed back (field .42:
+        // 50 fps decoded, 2.5 fps on the glass after ~16 h). Armed on the same
+        // pad and the same rungs as the keyframe gate.
         const explicitDec: DecoderSelection = {
             id: 'v4l2slh265dec',
             chain: `h265parse ! v4l2slh265dec name=${VIDEO_DECODER_NAME}`,
@@ -400,13 +402,13 @@ describe('planLivePipeline', () => {
             hardware: true,
             explicit: true,
         };
-        const contract = { timeSyncContract: true };
+        const services = {};
 
         it('sheds at the DECODER, measured against the sink that carries D', () => {
             const desc = planLivePipeline({
                 ...base,
                 decoder: explicitDec,
-                services: contract,
+                services,
             });
             expect(desc.backlogShed).toMatchObject({
                 element: VIDEO_DECODER_NAME,
@@ -421,20 +423,6 @@ describe('planLivePipeline', () => {
             expect(desc.pipeline).toContain('name=sink');
         });
 
-        it('is NOT armed with the contract off — the legacy leg is untouched', () => {
-            expect(planLivePipeline({ ...base, decoder: explicitDec }).backlogShed).toBeUndefined();
-            expect(
-                planLivePipeline({ ...base, decoder: explicitDec, services: null }).backlogShed,
-            ).toBeUndefined();
-            expect(
-                planLivePipeline({
-                    ...base,
-                    decoder: explicitDec,
-                    services: { timeSyncContract: false },
-                }).backlogShed,
-            ).toBeUndefined();
-        });
-
         // Never drop on lateness (ADR-0005 amendment 2026-10-08): with the
         // engine's re-anchor switch on, the same pad asks to RAISE the route's
         // D; off (MR_PLAYOUT_REANCHOR=0) the config is exactly as before.
@@ -443,7 +431,7 @@ describe('planLivePipeline', () => {
                 planLivePipeline({
                     ...base,
                     decoder: explicitDec,
-                    services: { timeSyncContract: true, playoutReanchor: true },
+                    services: { playoutReanchor: true },
                 }).backlogShed,
             ).toMatchObject({
                 element: VIDEO_DECODER_NAME,
@@ -458,24 +446,17 @@ describe('planLivePipeline', () => {
             });
         });
 
-        it('re-anchor off: none of the keys; contract off: nothing at all', () => {
+        it('re-anchor off: none of the keys', () => {
             expect(
-                planLivePipeline({ ...base, decoder: explicitDec, services: contract }).backlogShed,
+                planLivePipeline({ ...base, decoder: explicitDec, services }).backlogShed,
             ).not.toHaveProperty('onLateness');
-            expect(
-                planLivePipeline({
-                    ...base,
-                    decoder: explicitDec,
-                    services: { timeSyncContract: false, playoutReanchor: true },
-                }).backlogShed,
-            ).toBeUndefined();
         });
 
         it('never arms on the decodebin3 rung — there is no decoder to name', () => {
             // Same constraint as the gate: the bin plugs its own decoder. That
             // rung only carries the stream for the second or two before the TS
             // probe names the codec, far short of the hold window anyway.
-            expect(planLivePipeline({ ...base, services: contract }).backlogShed).toBeUndefined();
+            expect(planLivePipeline({ ...base, services }).backlogShed).toBeUndefined();
         });
 
         it('never arms on an unnamed sink (autovideosink, dev)', () => {
@@ -486,7 +467,7 @@ describe('planLivePipeline', () => {
                     ...base,
                     sinkElement: 'autovideosink sync=true',
                     decoder: explicitDec,
-                    services: contract,
+                    services,
                 }).backlogShed,
             ).toBeUndefined();
         });

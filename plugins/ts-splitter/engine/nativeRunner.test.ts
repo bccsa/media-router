@@ -16,6 +16,7 @@ describe('buildSpawnArgs', () => {
             '--input', '/tmp/mr-bus-40000-abc.sock',
             '--caps', BUS_TS_CAPS,
             '--ts-id', '7',
+            '--stamp-timeline',
             '--out', '0x65:busout_41000:0x1b',
             '--out', '0x1f0:busout_41001',
         ]);
@@ -26,34 +27,17 @@ describe('buildSpawnArgs', () => {
         expect(args).not.toContain('--flush-ms');
     });
 
-    it('adds --stamp-timeline only under the time-sync contract', () => {
+    it('always stamps, and adds --no-latch-repair only for an explicit false', () => {
+        expect(buildSpawnArgs({ inputSocketPath: '/s', outputs: [] })).toEqual([
+            '--input', '/s', '--caps', BUS_TS_CAPS, '--stamp-timeline',
+        ]);
         expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true }),
-        ).toEqual(expect.arrayContaining(['--stamp-timeline']));
-        // Flag off ⇒ argv byte-identical to before the contract existed, for
-        // both the explicit false and the absent case.
-        const off = ['--input', '/s', '--caps', BUS_TS_CAPS];
-        expect(buildSpawnArgs({ inputSocketPath: '/s', outputs: [] })).toEqual(off);
-        expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: false }),
-        ).toEqual(off);
-    });
-
-    it('adds --no-latch-repair only under the contract and only for an explicit false', () => {
-        expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true, latchRepair: false }),
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], latchRepair: false }),
         ).toEqual(expect.arrayContaining(['--stamp-timeline', '--no-latch-repair']));
         // The runner's own default is ON: absent and true are both argv-silent.
         expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true }),
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], latchRepair: true }),
         ).not.toContain('--no-latch-repair');
-        expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true, latchRepair: true }),
-        ).not.toContain('--no-latch-repair');
-        // Contract off ⇒ nothing stamps, so nothing to repair: argv untouched.
-        expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: false, latchRepair: false }),
-        ).toEqual(['--input', '/s', '--caps', BUS_TS_CAPS]);
     });
 
     it('passes busBatchMs through as --flush-ms, including 0 (batching off)', () => {

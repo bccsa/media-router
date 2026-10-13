@@ -169,6 +169,8 @@ export class AudioOutputModule extends GstPluginBase {
             await this.services.pipeWire.setSinkVolume(this.pwNodeName, vol);
         }
         await super.onStart();
+        // A PipeWire-graph module: its timing is the latency PipeWire reports (§9.5).
+        if (this.services?.pipeWire) this.timing.watchPipeWire([this.pwNodeName]);
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -220,5 +220,21 @@ describe('SystemStatsCollector under-voltage debounce + latch', () => {
         expect(step(c, true)).toBe(false);
         expect(step(c, null)).toBe(false); // gap breaks the streak
         expect(step(c, true)).toBe(false); // only 1 consecutive again
+    });
+});
+
+describe('SystemStatsCollector features', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("announces 'house-clock' so a manager can tell engines that report timeSync", () => {
+        vi.useFakeTimers();
+        const onStats = vi.fn();
+        const c = new SystemStatsCollector(onStats, 1000);
+        c.start();
+        vi.advanceTimersByTime(1000);
+        c.stop();
+        expect(onStats.mock.calls[0][0].features).toEqual(
+            expect.arrayContaining(['dashboards', 'interlocks', 'house-clock']),
+        );
     });
 });

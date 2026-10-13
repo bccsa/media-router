@@ -230,6 +230,7 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
      alternatives are worse: a device left with NO time source after PTP is
      switched off, or two daemons slew-fighting one clock after it is switched
      on.
+     Superseded by ADR-0029 (Phase 0): chronyd is the only other daemon; nothing is recorded.
    - **`PTP_HWTS_FILTER` is an unexposed escape hatch.** It is the second half
      of the Pi 5 hardware-timestamping workaround (`hwts_filter full` takes the
      version-sensitive classifier out of the path entirely, covering the case
@@ -264,6 +265,7 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    - **The disable path's default, when no displaced-services record exists, is
      restore htpdate only** — the fleet's baseline time source — rather than
      guess at what PTP might have stopped.
+     Superseded by ADR-0029 (Phase 0): disable starts chronyd; htpdate is not in the image.
 
 7. **AES67 scope.** First deliverable: RX plugin (`udpsrc` →
    `rtpjitterbuffer` RFC 7273 sync → L24 depay → bus), TX plugin (PTP-epoch

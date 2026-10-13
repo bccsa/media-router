@@ -108,7 +108,6 @@ export function nativeRunnerIneligibility(
     }
     if (opts.readKlvNames) return 'readKlvNames';
     if (opts.useStdioForData) return 'useStdioForData';
-    if (!opts.timeSyncContract && opts.clock) return 'clock';
     return null;
 }
 

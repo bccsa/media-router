@@ -40,8 +40,7 @@ export type OutputPlacement =
  *
  * The DEFAULT range — stereo or mono from channel 1 — deliberately keeps the
  * legacy positioned stream: every existing profile's pipeline string stays
- * byte-identical (the contract kill-switch relies on that), and FL/FR on a
- * stereo DAC is exactly right there.
+ * byte-identical, and FL/FR on a stereo DAC is exactly right there.
  */
 export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
     const channels = Math.max(1, Math.min(8, Math.trunc(o.channels) || 2));

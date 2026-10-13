@@ -2306,8 +2306,6 @@ describe('VideoPlayerModule helpers', () => {
     describe('onLiveConfigUpdate', () => {
         function makeRunningModule(opts: {
             hasSource: boolean;
-            /** Engine-wide time-sync contract (ADR-0005). Off ⇒ legacy path. */
-            timeSyncContract?: boolean;
             /** Engine-wide default playout offset D. */
             playoutOffsetMs?: number;
             /** Override declared by the route head feeding this player. */
@@ -2325,7 +2323,6 @@ describe('VideoPlayerModule helpers', () => {
                     ),
                     getRoutePlayoutOffsetMs: vi.fn(() => opts.routeOffsetMs),
                 },
-                ...(opts.timeSyncContract ? { timeSyncContract: true } : {}),
                 ...(opts.playoutOffsetMs !== undefined
                     ? { playoutOffsetMs: opts.playoutOffsetMs }
                     : {}),
@@ -2371,22 +2368,14 @@ describe('VideoPlayerModule helpers', () => {
 
         /**
          * Playout offset D on the video leg (ADR-0005 decision 4). The
-         * `lipSyncMs` live push predates D and must keep working — but under
-         * the contract what goes on the wire is the WHOLE offset (D + trim),
-         * not the raw trim, or a lip-sync nudge would silently throw the route
-         * offset away.
+         * `lipSyncMs` live push predates D and must keep working — but what
+         * goes on the wire is the WHOLE offset (D + trim), not the raw trim,
+         * or a lip-sync nudge would silently throw the route offset away.
          */
         describe('playout offset', () => {
-            it('pushes the bare lipSyncMs trim with the contract off', async () => {
-                const { module, setProperty } = makeRunningModule({ hasSource: true });
-                await module.onLiveConfigUpdate({ lipSyncMs: 40 });
-                expect(setProperty).toHaveBeenCalledWith('sink', 'ts-offset', 40_000_000);
-            });
-
-            it('pushes D + trim with the contract on, not the trim alone', async () => {
+            it('pushes D + trim, not the trim alone', async () => {
                 const { module, setProperty } = makeRunningModule({
                     hasSource: true,
-                    timeSyncContract: true,
                     playoutOffsetMs: 300,
                     routeOffsetMs: 500,
                 });
@@ -2397,7 +2386,6 @@ describe('VideoPlayerModule helpers', () => {
             it('re-pushes when the route head moves D, with no config change at all', async () => {
                 const { module, setProperty } = makeRunningModule({
                     hasSource: true,
-                    timeSyncContract: true,
                     playoutOffsetMs: 300,
                     routeOffsetMs: 500,
                 });

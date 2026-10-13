@@ -7,6 +7,7 @@ import { useEngineStore } from '@/stores/engines';
 import { statColorClass } from '@/composables/useStatColor';
 import { getLucideIcon } from '@/composables/useLucideIcons';
 import MrTooltip from '@/components/common/MrTooltip.vue';
+import { engineClockIndicator } from '@/utils/engineClock';
 
 const route = useRoute();
 const socket = useSocketStore();
@@ -17,6 +18,9 @@ const activeEngine = computed(() => {
     const id = route.params.engineId as string | undefined;
     return id ? engineStore.getEngine(id) : undefined;
 });
+const clock = computed(() =>
+    activeEngine.value ? engineClockIndicator(activeEngine.value) : null,
+);
 </script>
 
 <template>
@@ -66,6 +70,15 @@ const activeEngine = computed(() => {
                     width="w-64"
                 >
                     <component :is="getLucideIcon('zap')" :size="14" class="text-warning" />
+                </MrTooltip>
+                <MrTooltip v-if="clock" :text="clock.detail" width="w-72">
+                    <span class="engine-clock inline-flex" :aria-label="clock.label">
+                        <component
+                            :is="getLucideIcon('clock')"
+                            :size="14"
+                            :class="clock.colorClass"
+                        />
+                    </span>
                 </MrTooltip>
             </div>
 

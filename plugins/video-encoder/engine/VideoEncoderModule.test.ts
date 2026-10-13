@@ -351,7 +351,7 @@ describe('VideoEncoderModule', () => {
             expect(desc!.pipeline).toContain(
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                     'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                    'tee name=busout_5000 allow-not-linked=true',
+                    'mrlateness name=lat_busout_5000 reference=house ! tee name=busout_5000 allow-not-linked=true',
             );
             expect(desc!.pipeline).not.toContain('udpsink');
             expect((module as any).busSinkName).toBe('busout_5000');

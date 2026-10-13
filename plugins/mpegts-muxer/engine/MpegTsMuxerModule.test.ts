@@ -254,6 +254,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(s).toBe(
                 'unixfdsrc name=busin_0 socket-path=/tmp/mr-bus-40000-abc123.sock' +
+                    ' ! mrlateness name=lat_busin_0 reference=house' +
                     ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
                     ' ! tsdemux latency=0 name=demux_0',
             );
@@ -304,7 +305,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(result.pipeline).toContain(
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                     'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                    'tee name=busout_40010 allow-not-linked=true',
+                    'mrlateness name=lat_busout_40010 reference=house ! tee name=busout_40010 allow-not-linked=true',
             );
             expect(result.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
             expect(result.pipeline.match(/unixfdsrc name=busin_/g)).toHaveLength(2);

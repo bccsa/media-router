@@ -129,6 +129,11 @@ export class N1MixerModule extends GstPluginBase {
             status: 'Active',
         });
 
+        // A PipeWire-graph module: its timing is the latency PipeWire reports (§9.5).
+        this.timing.watchPipeWire(
+            Array.from({ length: this.pairCount }, (_, i) => `MR_PW_${instanceId}_out_${i}`),
+        );
+
         this.log.info({ pairCount: this.pairCount, loopbackCount }, 'N-1 mixer started');
     }
 

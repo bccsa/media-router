@@ -14,7 +14,7 @@ import { effectivePlayoutOffsetNs, type PlayoutOffsetServices } from '@media-rou
  * `pulsesink slave-method` (GstAudioBaseSink): 1 = skew — the sink corrects the
  * DAC's drift against the pipeline clock by nudging its own timestamps, leaving
  * the samples alone. ADR-0005 decision 5 makes this the contract's slaving mode;
- * 0 = resample (the legacy default) absorbs the drift by rewriting samples, i.e.
+ * 0 = resample absorbs the drift by rewriting samples, i.e.
  * by drifting off the time it was told to present at, which makes D approximate
  * on this leg alone. Same pin as the audio-decoder.
  */

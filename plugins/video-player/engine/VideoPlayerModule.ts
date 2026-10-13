@@ -1090,10 +1090,10 @@ export class VideoPlayerModule extends GstPluginBase {
         }
         if ('lipSyncMs' in changes) {
             // Live lip-sync trim — push the new ts-offset to the running video
-            // `sink` (no rebuild). Only bites when the sink is sync=true. Under
-            // the time-sync contract the trim rides ON TOP of the route's
-            // playout offset D, so the pushed value has to be re-resolved
-            // whole rather than sent as the raw trim.
+            // `sink` (no rebuild). Only bites when the sink is sync=true. The
+            // trim rides ON TOP of the route's playout offset D, so the pushed
+            // value has to be re-resolved whole rather than sent as the raw
+            // trim.
             await this.pushSinkTsOffset();
         }
         // Subtitle look: live on the overlay element (present only while a
@@ -1232,7 +1232,7 @@ export class VideoPlayerModule extends GstPluginBase {
             bufferMs: config.bufferMs,
             cpuDecodeThreading: config.cpuDecodeThreading,
             sinkPaced: sink.sinkPaced,
-            // Read only for the time-sync contract gate on the backlog shedder.
+            // Read only for the backlog shedder's re-anchor switch.
             services: this.services,
             subtitles: subtitleSource
                 ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }

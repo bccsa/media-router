@@ -41,7 +41,7 @@ def run(name, desc_file, drop=(), bus_debug=False, window=10):
         d['pipeline'] = d['pipeline'].replace(old, new)
         print(f'    pipeline edit: {old!r} -> {new!r}')
     start = {'cmd': 'start', 'pipeline': d['pipeline'], 'useStdioForData': False, 'restartOnError': False,
-             'linkOnPadAdded': d['linkOnPadAdded'], 'timeSyncContract': True,
+             'linkOnPadAdded': d['linkOnPadAdded'],
              'alignBranchesToStamps': {'demuxes': d['demuxes']}, 'inputStallWatch': d['inputStallWatch']}
     for k in drop: start.pop(k, None)
     env = dict(os.environ, PYTHONPATH=f'{MR}/plugins/mpegts-core/py:{MR}/plugins/unixfdbus-core/py', MR_PLUGINS_DIR=f'{MR}/plugins')

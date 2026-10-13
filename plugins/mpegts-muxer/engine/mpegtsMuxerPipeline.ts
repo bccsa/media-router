@@ -114,8 +114,7 @@ const MUX_INPUT_QUEUE_MS = 500;
  * that one stamp can be up to the reorder depth late (the producer's monotone
  * floor), so the branches leave the mux 100–121 ms apart from inputs 0.001 ms
  * apart — re-drawn on every restart. The runner anchors each branch to the
- * producer's stamped house timeline instead; the option is dropped when the
- * time-sync contract is off, where there are no house stamps to anchor to.
+ * producer's stamped house timeline instead.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
     const src = buildBusSrc({

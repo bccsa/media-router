@@ -31,6 +31,7 @@
  */
 import type { InputStallWatch } from './PluginModule.js';
 import { tsQueueByteCap } from './queueBounds.js';
+import { busLatenessTap, LAT_IN_PREFIX } from './latenessTap.js';
 
 export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
@@ -63,6 +64,18 @@ export function busSocketPath(port: number): string {
  */
 export function busTeeName(port: number): string {
     return `busout_${port}`;
+}
+
+/** The ingress lateness tap of bus source `busin` (its unixfdsrc name, or a
+ *  port-derived key). Always `lat_busin…`, the prefix the reporter reads as an input. */
+export function latInName(busin: string | number): string {
+    const key = String(busin);
+    return key.startsWith('busin') ? `lat_${key}` : `${LAT_IN_PREFIX}_${key}`;
+}
+
+/** The egress lateness tap in front of `busTeeName(port)`. */
+export function latOutName(port: number): string {
+    return `lat_${busTeeName(port)}`;
 }
 
 /** 32-bit FNV-1a → 6 hex chars. Keeps per-edge socket paths short (AF_UNIX
@@ -148,7 +161,12 @@ export interface BusSrcOpts {
 
 /**
  * Bus ingress for one consumer edge:
- *   unixfdsrc [! watchdog] ! queue leaky=2 (5 s, 40 MB byte cap — ADR-0015)
+ *   unixfdsrc [! watchdog] ! mrlateness ! queue leaky=2 (5 s, 40 MB byte cap — ADR-0015)
+ *
+ * The lateness tap (`latInName`) sits before the queue so it reads arrival,
+ * and dynamic `bus_input_add` branches built here get it too. An unnamed
+ * source is keyed by its edge socket, so two edges of one channel never
+ * collide on a tap name.
  *
  * Caps arrive over the socket from the producer, so no caps/buffer sizing
  * applies here. A dead producer surfaces as a connection error (which trips
@@ -188,8 +206,10 @@ export function buildBusSrc(opts: BusSrcOpts): string {
     const watchdogClause = opts.stallTimeoutMs
         ? ` ! watchdog name=${BUS_WATCHDOG_PREFIX}_${opts.name ?? opts.port} timeout=${opts.stallTimeoutMs}`
         : '';
+    const tapKey = opts.name ?? (opts.socketPath ? `${opts.port}_${shortHash(socket)}` : opts.port);
     return (
         `unixfdsrc${nameClause} socket-path=${socket}${watchdogClause}` +
+        busLatenessTap(latInName(tapKey)) +
         ` ! queue leaky=2 max-size-time=${BUS_INGRESS_QUEUE_MS * 1_000_000}` +
         ` max-size-buffers=0 max-size-bytes=${BUS_INGRESS_QUEUE_BYTES}`
     );
@@ -197,7 +217,10 @@ export function buildBusSrc(opts: BusSrcOpts): string {
 
 /**
  * Bus egress (fan-out point) for a producer:
- *   capssetter (replace) ! capsfilter (pinned TS caps) ! tee busout_<port>
+ *   capssetter (replace) ! capsfilter (pinned TS caps) ! mrlateness ! tee busout_<port>
+ *
+ * The runners splice `mrtsstamp` in before the capssetter, so the lateness
+ * tap (`latOutName`) reads the stamped PTS every consumer receives.
  *
  * The actual `unixfdsink` branches are attached one per consumer at runtime
  * via `bus_attach` (`gst-pipeline-runner.py`), each
@@ -228,7 +251,7 @@ export function buildBusSrc(opts: BusSrcOpts): string {
 export function buildBusSink(port: number): string {
     return (
         `capssetter caps="${BUS_TS_CAPS}" replace=true ! ` +
-        `capsfilter caps="${BUS_TS_CAPS}" ! ` +
+        `capsfilter caps="${BUS_TS_CAPS}"${busLatenessTap(latOutName(port))} ! ` +
         `tee name=${busTeeName(port)} allow-not-linked=true`
     );
 }

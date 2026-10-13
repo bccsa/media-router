@@ -11,6 +11,7 @@
 
 #include "libmrbus/bus_client.h"
 #include "libmrbus/fanout_server.h"
+#include "mrts/lateness.h"
 #include "mrts/ts_split.h"
 #include "mrts/ts_timeline.h"
 
@@ -80,12 +81,14 @@ class App {
         // (flush_ns 0 = no coalescing, see Options).
         std::vector<uint8_t> pending;
         int64_t pending_since_ns = 0;
+        // now − stamp of what this output writes (§9.5), one window per stats line.
+        mrts::LatenessWindow lateness;
     };
 
     void on_input_buffer(const uint8_t* data, size_t len);
     // Wire pts for one output buffer: -1 (send time) with the contract off,
-    // else the payload's mapped media time.
-    int64_t stamp_for(const Output& o, const uint8_t* data, size_t len);
+    // else the payload's mapped media time (and its lateness is recorded).
+    int64_t stamp_for(Output& o, const uint8_t* data, size_t len);
     void flush_output(Output& o);
     void flush_due(int64_t now_ns);
     void refresh_gating();

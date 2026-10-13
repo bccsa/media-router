@@ -30,23 +30,19 @@ export function buildSpawnArgs(opts: {
      *  splitter batch immediately (ultra-low-latency; per-buffer fan-out
      *  costs return). Omitted = the runner's built-in 20 ms default. */
     busBatchMs?: number;
-    /** Engine-wide time-sync contract (`services.timeSyncContract`): stamp
-     *  each output with its payload's mapped media time instead of send time,
-     *  all outputs sharing one anchor. Off ⇒ argv identical to before. */
-    stampTimeline?: boolean;
     /** The stamper's latch-repair window (`effectiveLatchRepair`, ADR-0005
      *  note 2026-09-05): OFF when a delivery-lead source (hls-player) sits
-     *  anywhere upstream. Only meaningful with `stampTimeline`; the runner's
-     *  own default is ON, so only an explicit `false` reaches argv. */
+     *  anywhere upstream. The runner's own default is ON, so only an explicit
+     *  `false` reaches argv. */
     latchRepair?: boolean;
 }): string[] {
     const args = ['--input', opts.inputSocketPath, '--caps', BUS_TS_CAPS];
     if (opts.tsId !== undefined) args.push('--ts-id', String(opts.tsId));
     if (opts.busBatchMs !== undefined) args.push('--flush-ms', String(opts.busBatchMs));
-    if (opts.stampTimeline) {
-        args.push('--stamp-timeline');
-        if (opts.latchRepair === false) args.push('--no-latch-repair');
-    }
+    // Producer half of the time-sync contract: every output PID is stamped
+    // from its own payload against ONE shared anchor.
+    args.push('--stamp-timeline');
+    if (opts.latchRepair === false) args.push('--no-latch-repair');
     for (const o of opts.outputs) {
         const stype = o.streamType !== undefined ? `:0x${o.streamType.toString(16)}` : '';
         args.push('--out', `0x${o.pid.toString(16)}:${busTeeName(o.port)}${stype}`);
@@ -54,11 +50,18 @@ export function buildSpawnArgs(opts: {
     return args;
 }
 
+/** mr-tssplit's 2 s stats line; `lateness` is one window per output tee (ms). */
+export interface SplitterStats {
+    clients?: number;
+    in_kbps?: number;
+    lateness?: Record<string, unknown>;
+}
+
 export interface RunnerEventHandlers {
     onPluginEvent(channel: string, payload: unknown): void;
     onInputStalled(silentMs: number): void;
     onInputResumed(): void;
-    onStats(stats: { clients?: number; in_kbps?: number }): void;
+    onStats(stats: SplitterStats): void;
 }
 
 /**
@@ -77,6 +80,6 @@ export function dispatchRunnerEvent(
     } else if (msg.event === 'input_resumed') {
         handlers.onInputResumed();
     } else if (msg.stats && typeof msg.stats === 'object') {
-        handlers.onStats(msg.stats as { clients?: number; in_kbps?: number });
+        handlers.onStats(msg.stats as SplitterStats);
     }
 }

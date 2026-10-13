@@ -25,13 +25,12 @@ const audioMatrix: RunnerStartOptions = {
     pipeline: 'unixfdsrc socket-path=/tmp/mr-bus-40000-abc.sock ! queue ! tsdemux ! avdec_s302m ! fakesink',
     linkOnPadAdded: [],
     busReports: [],
-    timeSyncContract: true,
     latchRepair: true,
     decoderThreadType: 'auto',
 } as RunnerStartOptions;
 
 describe('nativeRunnerEligible', () => {
-    it('accepts the audio-matrix / SRT shape (contract, no python-only feature)', () => {
+    it('accepts the audio-matrix / SRT shape (no python-only feature)', () => {
         expect(nativeRunnerIneligibility(audioMatrix)).toBeNull();
         expect(nativeRunnerEligible(audioMatrix)).toBe(true);
     });
@@ -56,13 +55,6 @@ describe('nativeRunnerEligible', () => {
         expect(nativeRunnerIneligibility({ ...audioMatrix, useStdioForData: true })).toBe('useStdioForData');
         expect(nativeRunnerIneligibility({ ...audioMatrix, rist: { role: 'sender' } } as never)).toBe('rist');
         expect(nativeRunnerIneligibility({ ...audioMatrix, pipeline: 'mrristsrc ! fakesink' })).toBeNull();
-    });
-
-    it('refuses the legacy net clock but not the contract clock', () => {
-        const legacy = { ...audioMatrix, timeSyncContract: false, clock: { host: '127.0.0.1', port: 1 } };
-        expect(nativeRunnerIneligibility(legacy)).toBe('clock');
-        const contract = { ...audioMatrix, timeSyncContract: true, clock: { host: '127.0.0.1', port: 1 } };
-        expect(nativeRunnerIneligibility(contract)).toBeNull();
     });
 
     it('treats null / empty python-only fields as absent', () => {

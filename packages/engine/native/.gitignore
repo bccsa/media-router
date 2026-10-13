@@ -2,3 +2,5 @@
 # dev binaries come from make / build-native-dev.sh.
 *.o
 mr-gst-runner/mr-gst-runner
+mr-clockstate/mr-clockstate
+mr-clockstate/tests/clock_sample_test

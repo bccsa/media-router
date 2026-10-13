@@ -15,7 +15,6 @@ import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
 import { requirePwLink } from './audio/PwLinkOps.js';
 import { ProcessManager } from './child-process/ProcessManager.js';
-import { ClockAuthority } from './child-process/ClockAuthority.js';
 import { PaCommandQueue } from './audio/PaCommandQueue.js';
 import { createApiServer } from './api/server.js';
 import { LogForwarder } from './logging/LogForwarder.js';
@@ -29,6 +28,7 @@ import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
 import { retireConnectionsOnPorts } from './modules/portPrune.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
 import { resolveEnginePlayoutOffsetMs } from './plugins/playoutOffset.js';
+import { HouseClock } from './clock/HouseClock.js';
 import type { RouterTree } from './tree/RouterTree.js';
 import { createRouterTree } from './tree/createRouterTree.js';
 import * as fs from 'fs';
@@ -42,35 +42,21 @@ export interface EngineConfig {
     pluginsDir?: string;
     profilesPath?: string;
     /**
-     * Engine-wide time-sync contract (on by default). Every pipeline that would
-     * have asked for `clockSync` instead runs on a plain monotonic system clock
-     * with a pinned timeline (running-time ≡ clock time) — one time base for the
-     * whole box, no clock daemon to reach. Supersedes the per-module `clockSync`
-     * path, which stays as the legacy escape hatch when this is off.
-     *
-     * Omitted → `MR_TIME_SYNC_CONTRACT` decides — `'0'` forces it off, `'1'`
-     * forces it on — so the fleet can kill (or pin) it from the unit file
-     * without a code change (same pattern as MR_PLUGINS_DIR etc.); an explicit
-     * value always wins.
-     */
-    timeSyncContract?: boolean;
-    /**
      * Engine-wide default playout offset D, in ms (ADR-0005 decision 4).
-     * Presentation sinks under the time-sync contract schedule at
-     * `stamped-time + D`; a route can override it on its route head (see
-     * `plugins/playoutOffset.ts`). Ignored entirely when the contract is off.
+     * Presentation sinks schedule at `stamped-time + D`; a route can override
+     * it on its route head (see `plugins/playoutOffset.ts`).
      *
-     * Omitted → `MR_PLAYOUT_OFFSET_MS` decides, else 60 ms — same precedence
-     * shape as `timeSyncContract` above, so the fleet can retune the budget from
-     * the unit file without a code change. An unparseable value (or one outside
-     * 0–10000 ms) is ignored and falls through to the default.
+     * Omitted → `MR_PLAYOUT_OFFSET_MS` decides, else 60 ms, so the fleet can
+     * retune the budget from the unit file without a code change. An
+     * unparseable value (or one outside 0–10000 ms) is ignored and falls
+     * through to the default.
      */
     playoutOffsetMs?: number;
     /**
      * Never drop on lateness (ADR-0005 amendment 2026-10-08, on by default): a
      * late presentation leg asks the engine to raise its route's D instead of
-     * shedding. Only meaningful with the contract on. Omitted →
-     * `MR_PLAYOUT_REANCHOR` decides (`'0'` restores today's shedding exactly).
+     * shedding. Omitted → `MR_PLAYOUT_REANCHOR` decides (`'0'` restores
+     * today's shedding exactly).
      */
     playoutReanchor?: boolean;
 }
@@ -98,9 +84,8 @@ export class Engine {
     readonly processManager: ProcessManager;
     readonly paQueue: PaCommandQueue;
     readonly deviceProviders: DeviceProviderRegistry;
-    readonly clockAuthority: ClockAuthority;
-    /** Resolved engine-wide time-sync contract — see `EngineConfig.timeSyncContract`. */
-    readonly timeSyncContract: boolean;
+    /** The one owner of the house epoch E and of time-sync state (house-clock design §10.3). */
+    readonly houseClock: HouseClock;
     /** Resolved engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
     readonly playoutOffsetMs: number;
     /** Resolved never-drop re-anchor switch — see `EngineConfig.playoutReanchor`. */
@@ -143,13 +128,8 @@ export class Engine {
         this.pipeWire = new PipeWireManager(this.paQueue);
         this.processManager = new ProcessManager();
         this.deviceProviders = new DeviceProviderRegistry();
-        this.clockAuthority = new ClockAuthority(this.processManager);
-        // Precedence, highest first: an explicit config value (either way) →
-        // the MR_TIME_SYNC_CONTRACT kill-switch ('0' off, '1' on) → on. Any
-        // other env value is ignored and falls through to the default.
-        this.timeSyncContract =
-            config.timeSyncContract ?? process.env.MR_TIME_SYNC_CONTRACT !== '0';
-        // Playout offset D (ADR-0005 decision 4) — same precedence shape.
+        this.houseClock = new HouseClock({ processManager: this.processManager });
+        // Playout offset D (ADR-0005 decision 4): config → env → default.
         this.playoutOffsetMs = resolveEnginePlayoutOffsetMs(
             config.playoutOffsetMs,
             process.env.MR_PLAYOUT_OFFSET_MS,
@@ -165,15 +145,11 @@ export class Engine {
             this.mediaRouter,
             this.processManager,
             this.deviceProviders,
-            this.clockAuthority,
-            this.timeSyncContract,
             this.playoutOffsetMs,
             this.playoutReanchor,
+            this.houseClock,
         );
-        this.mediaRouter.setPlayoutReanchor(
-            this.timeSyncContract && this.playoutReanchor,
-            this.playoutOffsetMs,
-        );
+        this.mediaRouter.setPlayoutReanchor(this.playoutReanchor, this.playoutOffsetMs);
         this.managerConnection = new ManagerConnection();
         this.localChanges = new LocalChanges(this.managerConnection);
         this.localServer = new LocalServer(config.localPort ?? LOCAL_PORT);
@@ -312,8 +288,10 @@ export class Engine {
         };
 
         // Single source of truth for module run state.
-        this.runController = new ModuleRunController(this.lifecycle, (running) =>
-            this.localServer.runningChanged(running),
+        this.runController = new ModuleRunController(
+            this.lifecycle,
+            (running) => this.localServer.runningChanged(running),
+            this.houseClock,
         );
 
         // System stats
@@ -321,6 +299,7 @@ export class Engine {
             stats.processCount =
                 this.moduleManager.gstProcessCount + this.processManager.activeCount;
             stats.managerPaths = this.managerConnection.pathStatus;
+            stats.timeSync = this.houseClock.state();
             this.routerTree.system(stats as unknown as Record<string, unknown>);
             this.managerConnection.send('system', stats);
         });
@@ -363,6 +342,8 @@ export class Engine {
 
     async start(): Promise<void> {
         log.info('Starting...');
+        // First: the 30 s sync wait runs from here, while the API and UI come up.
+        this.houseClock.start();
         await requirePwLink();
         // The inter-module bus is unixfd-only — fail fast with a clear error
         // instead of every consumer hanging on a socket that will never bind
@@ -381,10 +362,9 @@ export class Engine {
             mediaRouter: this.mediaRouter,
             processManager: this.processManager,
             deviceProviders: this.deviceProviders,
-            clockAuthority: this.clockAuthority,
-            timeSyncContract: this.timeSyncContract,
             playoutOffsetMs: this.playoutOffsetMs,
             playoutReanchor: this.playoutReanchor,
+            houseClock: this.houseClock,
         });
         log.info({ pluginCount }, 'Loaded plugins');
         warnDuplicatePyModules();
@@ -417,6 +397,7 @@ export class Engine {
         this.systemStats.stop();
         this.deviceProviders.stopPolling();
         await this.lifecycle.stopAll();
+        await this.houseClock.stop();
         await this.processManager.killAll();
         this.managerConnection.disconnect();
         this.managerConnection.removeAllListeners();

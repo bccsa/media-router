@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     buildBusSrc,
+    withLatenessTap,
     formatBitrate,
     quoteGstString,
     type PipelineDescription,
@@ -95,7 +96,7 @@ export class RistOutputModule extends GstPluginBase {
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),
-            `mrristsink name=${RIST_SINK} ${props.join(' ')}`,
+            withLatenessTap('lat_egress', `mrristsink name=${RIST_SINK} ${props.join(' ')}`),
         ].join(' ! ');
 
         return {

@@ -38,8 +38,10 @@ describe('RistOutputModule.buildPipeline', () => {
         expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock');
         // The queue between unixfdsrc and the sink is buildBusSrc's drain
         // contract — presence matters here, its tuning is the builder's test.
-        expect(desc.pipeline).toMatch(/unixfdsrc[^!]+! queue /);
-        expect(desc.pipeline).toContain('mrristsink name=ristsink');
+        expect(desc.pipeline).toMatch(/unixfdsrc[^!]+! mrlateness [^!]+! queue /);
+        expect(desc.pipeline).toContain(
+            'mrlateness name=lat_egress reference=running-time ! mrristsink name=ristsink',
+        );
         expect(desc.pipeline).not.toContain('appsink');
         expect(desc.pipeline).not.toContain('udpsrc');
         expect(desc.rist).toBeUndefined();

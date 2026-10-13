@@ -4,6 +4,7 @@ import {
     UnixFdFanoutController,
     busIngestSocketPath,
     formatBytes,
+    latOutName,
     resolveNativeBinary,
     resolvePythonScript,
     type BusAttachTarget,
@@ -158,6 +159,8 @@ export class HlsPlayerModule extends GstPluginBase {
         // per-consumer edge sockets, and consumers gate their start on
         // connecting to them (busSocketGate).
         if (!this.startFanout(endpoint.port)) return;
+        // No gst pipeline, so the base class never starts the timing display.
+        this.timing.start(null);
 
         this.running = true;
         this.ready = true;
@@ -244,24 +247,28 @@ export class HlsPlayerModule extends GstPluginBase {
                 '--caps', BUS_TS_CAPS,
                 // Producer half of the time-sync contract: the sidecar stamps
                 // the payload's mapped media time instead of send time. Both
-                // implementations take the same flag; off ⇒ argv unchanged.
-                ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : []),
+                // implementations take the same flag.
+                '--stamp-timeline',
             ],
             autoRestart: true,
             stdin: true,
-            onStdout: (line) => this.handleFanoutLine(line),
+            onStdout: (line) => this.handleFanoutLine(line, port),
             onStderr: (line) => this.log.warn({ src: fanout.label }, line),
         });
         return true;
     }
 
-    private handleFanoutLine(line: string): void {
+    private handleFanoutLine(line: string, port: number): void {
         const msg = this.fanoutController?.handleLine(line);
         if (!msg) return;
-        const stats = msg.stats as { clients?: number; drops?: Record<string, number> } | undefined;
+        const stats = msg.stats as
+            | { clients?: number; drops?: Record<string, number>; lateness?: unknown }
+            | undefined;
         if (stats) {
             const drops = Object.values(stats.drops ?? {}).reduce((a, b) => a + b, 0);
             this.setStatusData('bus', { consumers: stats.clients ?? 0, 'shed buffers': drops });
+            // mr-bus-fanout's window over what it writes: this module's output.
+            if (stats.lateness) this.timing.addSidecarWindow(latOutName(port), stats.lateness);
         } else if (msg.event === 'error' || msg.event === 'warning') {
             this.log.warn({ src: 'bus-fanout' }, String(msg.message ?? ''));
         }

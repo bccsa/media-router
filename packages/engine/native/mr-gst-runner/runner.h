@@ -15,11 +15,11 @@
 //   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020).
 // A start payload naming what it does NOT implement — the legacy python RIST
 // drain (`rist`), `preserveSourceTimeline`, `readKlvNames`/`set_klv_payload`,
-// `useStdioForData`, the legacy net `clock` without the contract, or a hook
-// with no native form — is refused with an `error` event (`unsupported_field`
-// in runner.cpp, mirrored by `nativeRunnerIneligibility` in the engine): the
-// engine only selects this runner for descriptions inside that set, so the
-// refusal is a loud misconfiguration signal, not a fallback.
+// `useStdioForData`, or a hook with no native form — is refused with an
+// `error` event (`unsupported_field` in runner.cpp, mirrored by
+// `nativeRunnerIneligibility` in the engine): the engine only selects this
+// runner for descriptions inside that set, so the refusal is a loud
+// misconfiguration signal, not a fallback.
 #pragma once
 
 #include <gst/gst.h>

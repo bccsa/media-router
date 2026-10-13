@@ -156,9 +156,13 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     }
 }
 
-int64_t App::stamp_for(const Output& o, const uint8_t* data, size_t len) {
+int64_t App::stamp_for(Output& o, const uint8_t* data, size_t len) {
     if (!stamper_) return -1;   // send time, exactly as before the contract
-    return stamper_->stamp(data, len, mrbus::mono_ns(), o.pid);
+    const int64_t now = mrbus::mono_ns();
+    const int64_t pts = stamper_->stamp(data, len, now, o.pid);
+    if (pts >= 0) o.lateness.add(now - pts);
+    else o.lateness.add_untimed();
+    return pts;
 }
 
 void App::flush_output(Output& o) {
@@ -274,8 +278,16 @@ void App::emit_stats(int64_t now_ns) {
     // one object for the whole splitter and not one per branch.
     std::string timeline =
         stamper_ ? ",\"timeline\":" + mrts::drift_stats_json(stamper_->drift()) : "";
+    // One window per output, keyed by the tee the engine addresses it with.
+    std::string lateness;
+    for (auto& o : outputs_) {
+        if (o.lateness.empty()) continue;
+        if (!lateness.empty()) lateness += ",";
+        lateness += "\"" + json_escape(o.tee) + "\":" + mrts::lateness_json_ms(o.lateness.take(now_ns));
+    }
+    if (!lateness.empty()) lateness = ",\"lateness\":{" + lateness + "}";
     emit("{\"stats\":{\"clients\":" + std::to_string(clients) + ",\"drops\":{" + drops +
-         "}" + timeline + ",\"in_kbps\":" + std::to_string(kbps) + "}}");
+         "}" + timeline + lateness + ",\"in_kbps\":" + std::to_string(kbps) + "}}");
 }
 
 void App::tick(int64_t now_ns) {

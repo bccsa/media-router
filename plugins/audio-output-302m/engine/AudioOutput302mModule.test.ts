@@ -6,9 +6,8 @@ import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 function makeModule(
     opts: {
         sources?: number;
-        /** Turn the engine-wide time-sync contract on, with the engine default D
-         *  (ms) and an optional route-head override. */
-        contract?: { playoutOffsetMs?: number; routeOverrideMs?: number };
+        /** The engine default D (ms) and an optional route-head override. */
+        playout?: { playoutOffsetMs?: number; routeOverrideMs?: number };
         /** Provide a PipeWire service whose getDeviceInfo reports this width
          *  (null = device not enumerated). Absent = no PipeWire service at all. */
         deviceChannels?: number | null;
@@ -24,13 +23,11 @@ function makeModule(
         streamType: 'audio/302m',
         socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
     }));
-    const getRoutePlayoutOffsetMs = vi.fn(() => opts.contract?.routeOverrideMs);
+    const getRoutePlayoutOffsetMs = vi.fn(() => opts.playout?.routeOverrideMs);
     module.services = {
         instanceId: 'aout-1',
         mediaRouter: { getModuleBusSources: vi.fn(() => sources), getRoutePlayoutOffsetMs },
-        ...(opts.contract
-            ? { timeSyncContract: true, playoutOffsetMs: opts.contract.playoutOffsetMs ?? 300 }
-            : {}),
+        ...(opts.playout ? { playoutOffsetMs: opts.playout.playoutOffsetMs ?? 300 } : {}),
         ...(opts.deviceChannels !== undefined
             ? {
                   pipeWire: {
@@ -74,13 +71,14 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true');
         expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
-        // `pulsesink sync=false` paces nothing, so the mixer carries its own
-        // clock pacer — without it a force-live mixer whose inputs have all
-        // gone EOS generates silence at CPU speed.
+        // The mixer carries its own clock pacer — without it a force-live
+        // mixer whose inputs have all gone EOS generates silence at CPU speed.
         expect(desc!.pipeline).toContain('identity name=mixin_out sync=true');
         expect(desc!.pipeline).toContain('volume name=vol volume=0.80');
         expect(desc!.pipeline).toContain('level post-messages=true');
-        expect(desc!.pipeline).toContain('pulsesink device=alsa_output.usb-foo sync=false');
+        expect(desc!.pipeline).toContain(
+            'pulsesink name=sink device=alsa_output.usb-foo sync=true',
+        );
         expect(desc!.restartOnError).toBe(true);
     });
 
@@ -104,7 +102,9 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).not.toContain('latency=400000000');
         expect(desc!.pipeline).toContain('capsfilter name=mixin_out');
         expect(desc!.pipeline).toContain('mixin_out. ! audioconvert ! audioresample');
-        expect(desc!.pipeline).toContain('pulsesink device=alsa_output.usb-foo sync=false');
+        expect(desc!.pipeline).toContain(
+            'pulsesink name=sink device=alsa_output.usb-foo sync=true',
+        );
     });
 
     it('consumes the per-connection unixfd edge sockets', () => {
@@ -113,14 +113,14 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40100-x.sock');
     });
 
-    it('default stereo range keeps the legacy string byte-for-byte, even on a 32-channel card', () => {
-        const legacy = makeModule({ sources: 1 }).module.buildPipeline({
+    it('default stereo range keeps the string byte-for-byte, even on a 32-channel card', () => {
+        const narrow = makeModule({ sources: 1 }).module.buildPipeline({
             device: 'alsa_output.usb-foo',
         });
         const wide = makeModule({ sources: 1, deviceChannels: 32 }).module.buildPipeline({
             device: 'alsa_output.usb-foo',
         });
-        expect(wide!.pipeline).toBe(legacy!.pipeline);
+        expect(wide!.pipeline).toBe(narrow!.pipeline);
         expect(wide!.pipeline).not.toContain('mix-matrix');
         expect(wide!.pipeline).not.toContain('channel-mask');
     });
@@ -137,7 +137,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         // The mix is 8 wide; VU reads it before the spread.
         expect(p).toContain('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8"');
         expect(p).toMatch(
-            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! pulsesink device=alsa_output\.usb-foo sync=false stream-properties="[^"]*"$/,
+            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=16,channel-mask=\(bitmask\)0x0 ! mrlateness name=lat_render reference=running-time ! pulsesink name=sink device=alsa_output\.usb-foo sync=true [^!]*stream-properties="[^"]*"$/,
         );
         // 16 wide — up to the last channel used, never the card's 32.
         // Row 8 (device channel 9) carries mix channel 0: the first lit cell.
@@ -157,11 +157,11 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         );
     });
 
-    it('placement leaves the contract sink and its timing properties exactly as before', () => {
+    it('placement leaves the sink and its timing properties exactly as before', () => {
         const { module } = makeModule({
             sources: 1,
             deviceChannels: 32,
-            contract: { playoutOffsetMs: 300 },
+            playout: { playoutOffsetMs: 300 },
         });
         const desc = module.buildPipeline({
             device: 'alsa_output.usb-foo',
@@ -169,7 +169,8 @@ describe('AudioOutput302mModule.buildPipeline', () => {
             firstChannel: 3,
         });
         expect(desc!.pipeline).toContain(
-            'channel-mask=(bitmask)0x0 ! pulsesink name=sink device=alsa_output.usb-foo sync=true' +
+            'channel-mask=(bitmask)0x0 ! mrlateness name=lat_render reference=running-time' +
+                ' ! pulsesink name=sink device=alsa_output.usb-foo sync=true' +
                 ' provide-clock=false slave-method=1 max-lateness=-1 buffer-time=100000 ts-offset=200000000',
         );
         expect(desc!.backlogShed).toMatchObject({ element: 'sink', sink: 'sink' });
@@ -199,7 +200,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
     });
 
     it('re-anchor on (ADR-0005 2026-10-08): the shed config asks to raise, never shed', () => {
-        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         module.services.playoutReanchor = true;
         expect(module.buildPipeline({ device: 'alsa_output.usb-foo' })!.backlogShed).toMatchObject({
             element: 'sink',
@@ -215,32 +216,22 @@ describe('AudioOutput302mModule.buildPipeline', () => {
     });
 
     it('re-anchor off: the shed config has none of the re-anchor keys', () => {
-        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.backlogShed).not.toHaveProperty('onLateness');
     });
-
-    it('contract OFF: no backlog shedder, no named sink — the legacy string is untouched', () => {
-        const { module } = makeModule({ sources: 1 });
-        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', lipSyncMs: 80 });
-        expect(desc!.pipeline).toContain('! pulsesink device=alsa_output.usb-foo sync=false');
-        expect(desc!.pipeline).not.toContain('name=sink');
-        expect(desc!.pipeline).not.toContain('ts-offset');
-        expect(desc!.backlogShed).toBeUndefined();
-        expect(desc!.alignBranchesToStamps).toBeUndefined();
-    });
 });
 
-describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)', () => {
+describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-0005)', () => {
     it('presents at stamp + D on the house clock: sync=true, ts-offset=D minus the ring it declares, skew-slaved, never drops late', () => {
-        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.pipeline).toContain(
             '! pulsesink name=sink device=alsa_output.usb-foo sync=true provide-clock=false' +
                 ' slave-method=1 max-lateness=-1 buffer-time=100000 ts-offset=200000000',
         );
         expect(desc!.pipeline).not.toContain('sync=false');
-        // The contract's latency-ratchet guard, on the sink's own pad, whole-buffer.
+        // The latency-ratchet guard, on the sink's own pad, whole-buffer.
         expect(desc!.backlogShed).toMatchObject({
             element: 'sink',
             sink: 'sink',
@@ -254,7 +245,7 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
     it('the route head override replaces the engine default — resolved for THIS consumer', () => {
         const { module, getRoutePlayoutOffsetMs } = makeModule({
             sources: 1,
-            contract: { playoutOffsetMs: 300, routeOverrideMs: 500 },
+            playout: { playoutOffsetMs: 300, routeOverrideMs: 500 },
         });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.pipeline).toContain('ts-offset=400000000');
@@ -262,7 +253,7 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
     });
 
     it('lipSyncMs is a per-sink trim on top of D — positive delays audio, negative advances it', () => {
-        const { module } = makeModule({ sources: 1, contract: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         expect(
             module.buildPipeline({ device: 'alsa_output.usb-foo', lipSyncMs: -110 })!.pipeline,
         ).toContain('ts-offset=90000000');
@@ -274,7 +265,7 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
     it('never emits a negative ts-offset: a trim past D clamps to 0 (audio cannot play before it arrives)', async () => {
         const { module, setElementProperty } = makeModule({
             sources: 1,
-            contract: { playoutOffsetMs: 300 },
+            playout: { playoutOffsetMs: 300 },
         });
         expect(
             module.buildPipeline({ device: 'alsa_output.usb-foo', lipSyncMs: -2000 })!.pipeline,
@@ -288,7 +279,7 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
     });
 
     it('the mixer arm subtracts its declared aggregation latency, so both arms play at stamp + D', () => {
-        const { module } = makeModule({ sources: 2, contract: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', mixLatencyMs: 100 });
         // audiomixer latency=100 ms is pipeline latency a sync=true sink adds
         // to every render time; the offset gives it back (300 − 100 mixer − 100 ring).
@@ -300,15 +291,15 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
     it('mix latency defaults to 20 ms, in the manifest and the code fallback alike', () => {
         const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
         expect(manifest.mediaRouter.configSchema.properties.mixLatencyMs.default).toBe(20);
-        const { module } = makeModule({ sources: 2, contract: { playoutOffsetMs: 300 } });
+        const { module } = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true latency=20000000');
     });
 
-    it('re-pushes ts-offset live when the route D or the trim changes; never on the legacy path', async () => {
+    it('re-pushes ts-offset live when the route D or the trim changes', async () => {
         const { module, setElementProperty } = makeModule({
             sources: 1,
-            contract: { playoutOffsetMs: 300 },
+            playout: { playoutOffsetMs: 300 },
         });
         module.config = { device: 'alsa_output.usb-foo', lipSyncMs: 0 };
         module.buildPipeline(module.config);
@@ -316,19 +307,12 @@ describe('AudioOutput302mModule.buildPipeline — time-sync contract (ADR-0005)'
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 200000000);
         await module.onLiveConfigUpdate({ lipSyncMs: 50 });
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 250000000);
-
-        const legacy = makeModule({ sources: 1 });
-        legacy.module.config = { device: 'alsa_output.usb-foo' };
-        legacy.module.buildPipeline(legacy.module.config);
-        await legacy.module.onRoutePlayoutOffsetChanged();
-        await legacy.module.onLiveConfigUpdate({ lipSyncMs: 50 });
-        expect(legacy.setElementProperty).not.toHaveBeenCalled();
     });
 
     it('a live push through the mixer arm keeps the latency subtraction the build applied', async () => {
         const { module, setElementProperty } = makeModule({
             sources: 2,
-            contract: { playoutOffsetMs: 300 },
+            playout: { playoutOffsetMs: 300 },
         });
         module.config = { device: 'alsa_output.usb-foo', mixLatencyMs: 100 };
         module.buildPipeline(module.config);

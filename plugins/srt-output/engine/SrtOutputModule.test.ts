@@ -55,6 +55,7 @@ describe('SrtOutputModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain(
             'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock' +
+                ' ! mrlateness name=lat_busin_41000_676b67 reference=house' +
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
         expect(desc!.pipeline).not.toContain('udpsrc');
@@ -63,7 +64,7 @@ describe('SrtOutputModule.buildPipeline', () => {
         // measured 2026-09-02, full rate, no datagram over 1316 B.
         expect(desc!.pipeline).not.toContain('tsparse');
         expect(desc!.pipeline).toContain(
-            'srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"',
+            'mrlateness name=lat_egress reference=running-time ! srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"',
         );
     });
 

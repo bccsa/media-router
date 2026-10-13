@@ -119,7 +119,7 @@ describe('buildN1Pipeline', () => {
         expect(pipeline.match(/avenc_s302m/g)).toHaveLength(4);
         expect(pipeline.match(/avdec_s302m/g)).toHaveLength(4);
         expect(pipeline).toContain(
-            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_40200 allow-not-linked=true',
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_40200 reference=house ! tee name=busout_40200 allow-not-linked=true',
         );
         expect(pipeline.match(/tee name=busout_/g)).toHaveLength(4);
     });

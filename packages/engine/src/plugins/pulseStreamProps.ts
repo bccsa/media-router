@@ -16,9 +16,6 @@
  * stream alive, silent and unlinked, until its target exists — WirePlumber then
  * links it on the next rescan, and re-links it after the target is recycled.
  * Verified on WirePlumber 0.5.14 / PipeWire 1.6.3 (see the #736 write-up).
- *
- * Deliberately NOT applied to the net-clock daemon's bare `pulsesrc`, which
- * has no target and relies on the default source.
  */
 export const PULSE_PINNED_STREAM_PROPS: Readonly<Record<string, string>> = {
     'node.dont-fallback': 'true',

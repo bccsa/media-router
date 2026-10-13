@@ -24,6 +24,7 @@ import {
     type PlayoutRebaseNote,
 } from './playoutReanchor.js';
 import { PlayoutReanchorState, type PlayoutWarningKind } from './playoutReanchorState.js';
+import { ModuleTiming } from './moduleTiming.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
  *  this module: health stays a warning through the restart that follows. */
@@ -68,6 +69,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     protected paModuleId: number | null = null;
     /** Per-instance logger — initialized in onInit with the instance ID. */
     protected log: ReturnType<typeof createLogger> = defaultLog;
+    /** Lateness display (§9.5). Kept apart from statusData and merged in getState(). */
+    protected readonly timing = new ModuleTiming({
+        emit: () => this.emit('stateChange', this.getState()),
+        getProperty: (element, property) => this.getElementProperty(element, property),
+        busSources: () =>
+            this.services?.instanceId
+                ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
+                : [],
+    });
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */
     abstract buildPipeline(config: Record<string, unknown>): PipelineDescription | null;
@@ -114,7 +124,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (!this.childProcess) return false;
         const desc = this.buildPipeline(this.config);
         if (!desc) return false;
-        await this.applyTimeSync(desc);
+        this.applyTimeSync(desc);
         this.annotateLiveInputBranches(desc);
         await this.childProcess.updatePipelineDesc(desc);
         this.reassertLostInputs();
@@ -142,113 +152,36 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /**
-     * Resolve how a pipeline gets its timeline, in precedence order.
-     *
-     * 1. Engine-wide time-sync contract (`services.timeSyncContract`): mark the
-     *    description and stop. The runner then puts the pipeline on a plain
-     *    monotonic system clock with a pinned timeline — nothing to resolve, no
-     *    clock authority to spawn or reach, so this can never delay a start.
-     *
-     *    This applies to EVERY pipeline, not just `clockSync` ones. The contract
-     *    is producer-stamped (ADR-0005 decisions 2+3): a producer's bus buffer
-     *    PTS only means house-clock media time if that producer's running-time
-     *    IS house-clock time, i.e. `base_time=0`. Gating on `clockSync` pinned
-     *    the consumers (audio-decoder, video-player) and left every producer on
-     *    a per-start base-time, so the wire carried `stamp + base_time` and the
-     *    contract was silently a no-op end to end. `clockSync` stays a
-     *    per-module opt-in for the LEGACY net clock below, which really is
-     *    opt-in (it costs a daemon and a sync wait).
-     *    It also DROPS `preserveSourceTimeline` — see below.
-     * 2. Legacy (contract off): cross-pipeline A/V sync via the shared net
-     *    clock. Resolve it from the engine's clock authority and stamp it onto
-     *    the description. Best-effort — if the authority can't be brought up the
-     *    pipeline runs unsynced (today's behaviour) rather than failing to start.
-     *
-     * The two `delete`s below are what makes the arm you are NOT in
-     * byte-identical to what it was: contract on drops the legacy latch, contract
-     * off drops the contract-only branch alignment.
+     * Prepare a description for the house clock. Both runners put EVERY
+     * pipeline on a monotonic system clock with `base_time = 0` (§4.1), so the
+     * producer-stamped bus PTS is house time and `now − PTS` is lateness.
+     * Nothing is resolved or waited for here, so this can never delay a start.
      */
-    private async applyTimeSync(desc: PipelineDescription): Promise<void> {
-        if (this.services?.timeSyncContract) {
-            desc.timeSyncContract = true;
-            // `preserveSourceTimeline` is the mechanism the contract REPLACED
-            // (ADR-0005 decision 2 rejects consumer-side pad offsets), and the
-            // two do not compose:
-            //
-            //  * It cannot change what a SINGLE-BRANCH consumer's own consumers
-            //    see. Every module that asks for it (transcoder,
-            //    audio-transcoder) emits through `buildBusSink`, i.e. a
-            //    `busout_*` tee, and the egress stamper rewrites those buffers'
-            //    PTS/DTS to `anchor + (PES − firstPES)`. One branch means one
-            //    pad offset, which shifts every PES value in that egress by the
-            //    same amount, so it cancels in that delta: the wire ladder is
-            //    identical with the latch on or off.
-            //
-            //    That cancellation is a property of the SINGLE branch, not of
-            //    pad offsets, and it does not extend to a multi-input mux: there
-            //    each input branch has its own zero point, so a per-branch offset
-            //    changes the PES values of one stream RELATIVE to another and
-            //    cannot cancel. Cross-branch alignment is therefore a real,
-            //    separate job — `alignBranchesToStamps` below, which anchors
-            //    every branch to the producers' stamps (the 100–121 ms A/V skew
-            //    measured across the .202 X-Chain mux, 2026-08-14).
-            //  * It answers a source discontinuity by ERRORING OUT so the
-            //    pipeline restarts and re-latches (its offsets are baked into
-            //    pad offsets and go stale). The contract answers the same event
-            //    with an in-place re-anchor — one PTS step, no restart. Leaving
-            //    both armed means the destructive one wins: the pipeline is
-            //    already tearing down before the re-anchor can matter, and a
-            //    transcoder restart rebuilds its encoders and interrupts every
-            //    consumer over an event the contract handles for free.
-            //
-            // What is lost with it off is the ABSOLUTE PES/PCR values in the
-            // transcoded TS (they rebase per incarnation again). No consumer
-            // under the contract reads those as a timeline — tsdemux takes its
-            // basis from the stamped DTS/PTS (ADR-0005's named regression) and
-            // its frame spacing from PES deltas, both preserved. Modules keep
-            // declaring it: with the contract off (MR_TIME_SYNC_CONTRACT=0) the
-            // legacy behaviour is exactly what it was.
-            delete desc.preserveSourceTimeline;
-            // Name the VARIANT, not just the contract: `liveCaptureClock` keeps
-            // the house clock but lets base-time anchor naturally, and which of
-            // the two a module got is the first thing to establish when its
-            // egress is bursting — invisible from anywhere else.
-            const liveCaptureClock = desc.liveCaptureClock === true;
-            // The egress stamper's latch-repair window is a property of the
-            // SOURCE at the head of this module's bus chain (an hls-player
-            // anywhere upstream turns it off), resolved here from the graph
-            // the way the playout offset is, never hard-coded per producer.
-            desc.latchRepair = effectiveLatchRepair(this.services);
-            this.log.info(
-                {
-                    clockSync: desc.clockSync === true,
-                    liveCaptureClock,
-                    latchRepair: desc.latchRepair,
-                    // A transform producer stamps by identity (PES − 1 h):
-                    // which hops carry their source's time through is the
-                    // first thing to establish when a route's A/V is off.
-                    houseTimelineEgress: desc.houseTimelineEgress === true,
-                },
-                liveCaptureClock
-                    ? 'Time-sync contract: monotonic house clock, base_time=natural (live capture), producer-stamped bus PTS'
-                    : 'Time-sync contract: monotonic house clock, base_time=0, producer-stamped bus PTS',
-            );
-            return;
-        }
-        // Contract off: the bus buffers carry arrival times, not a house
-        // mapping, so there is nothing for a branch to be anchored TO — the
-        // measurement the runner would take is noise. Drop it here (rather than
-        // gating in each plugin) so the legacy dataflow is byte-identical.
-        delete desc.alignBranchesToStamps;
-        // Likewise the identity stamp of a transform producer: without the
-        // contract nothing stamps, and the legacy start payload stays what it
-        // was byte for byte.
-        delete desc.houseTimelineEgress;
-        if (!desc.clockSync) return;
-        if (this.services?.clockAuthority) {
-            const clock = await this.services.clockAuthority.getClockConfig();
-            if (clock) desc.clock = clock;
-        }
+    private applyTimeSync(desc: PipelineDescription): void {
+        // `preserveSourceTimeline` is the mechanism the producer stamps
+        // replaced, and the two do not compose: its pad offset cancels in the
+        // egress stamper's `anchor + (PES − firstPES)`, and it answers a
+        // source discontinuity by erroring out to re-latch, where the stamper
+        // re-anchors in place. Modules still declare it until it is deleted.
+        delete desc.preserveSourceTimeline;
+        // The stamper's latch-repair window is a property of the SOURCE at the
+        // head of this module's bus chain (an hls-player anywhere upstream
+        // turns it off), resolved from the graph like the playout offset.
+        desc.latchRepair = effectiveLatchRepair(this.services);
+        // Which clock variant a module got is the first thing to establish
+        // when its egress bursts, and whether it stamps by identity the first
+        // thing when a route's A/V is off; invisible from anywhere else.
+        const liveCaptureClock = desc.liveCaptureClock === true;
+        this.log.info(
+            {
+                liveCaptureClock,
+                latchRepair: desc.latchRepair,
+                houseTimelineEgress: desc.houseTimelineEgress === true,
+            },
+            liveCaptureClock
+                ? 'House clock: monotonic, base_time=natural (live capture), producer-stamped bus PTS'
+                : 'House clock: monotonic, base_time=0, producer-stamped bus PTS',
+        );
     }
 
     /** PipeWire node name for this module instance. */
@@ -272,15 +205,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
 
         const desc = this.buildPipeline(this.config);
+        this.timing.start(desc);
 
         if (!desc) {
             // No pipeline needed (e.g. decoder with no connection) — module is idle
             return;
         }
 
-        // Time sync (opt-in): either mark the description for the engine-wide
-        // contract or resolve the legacy shared net clock — see applyTimeSync.
-        await this.applyTimeSync(desc);
+        // House clock and stamper policy — see applyTimeSync.
+        this.applyTimeSync(desc);
         this.annotateLiveInputBranches(desc);
 
         // Spawn child process
@@ -302,6 +235,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                     this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
                 }
                 this.playout.reassert();
+                this.timing.onPlaying();
                 // Fires on EVERY playing transition, including a runner-internal
                 // crash-restart (which rebuilds the pipeline from the original
                 // string, dropping any live element state). Subclasses re-seed
@@ -500,6 +434,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.badges.clear();
         this.statusData = {};
         this.dynamicStatusSections = [];
+        this.timing.stop(false);
         this.emit('stateChange', this.getState());
     }
 
@@ -547,6 +482,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     protected fieldOptions: Record<string, Array<{ value: string; label: string }>> = {};
 
     getState(): ModuleRuntimeState {
+        const timing = this.timing.publication;
         return {
             running: this.running,
             ready: this.ready,
@@ -561,9 +497,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // key vanishes for undefined and per-field mergers (manager-ui
             // socket store) keep the stale text forever.
             error: this.error ?? null,
-            statusData: this.statusData,
-            dynamicStatusSections: this.dynamicStatusSections,
-            badges: Array.from(this.badges.values()),
+            statusData: { ...this.statusData, ...timing.data },
+            dynamicStatusSections: [...this.dynamicStatusSections, ...timing.sections],
+            badges: [...this.badges.values(), ...(timing.badge ? [timing.badge] : [])],
             ...(Object.keys(this.fieldOptions).length ? { fieldOptions: this.fieldOptions } : {}),
         };
     }
@@ -737,6 +673,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * do more with it.
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
+        // Lateness windows are the base class's alone (WI-P0-9): no subclass hook.
+        if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
         if (channel === PLAYOUT_REANCHOR_EVENT) {
             this.playout

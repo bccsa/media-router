@@ -19,6 +19,7 @@
 #include "../libmrbus/control.h"
 #include "../libmrbus/fanout_server.h"
 #include "../libmrbus/ingest.h"
+#include "mrts/lateness.h"
 #include "mrts/ts_timeline.h"
 
 using namespace mrbus;
@@ -75,10 +76,19 @@ int main(int argc, char** argv) {
                 emit(mrts::reanchor_event_json(r));
             });
     }
+    // Lateness of what we write (§9.5): now − stamp. Send-time pts (contract
+    // off) are not measured, so that stats line stays as it was.
+    mrts::LatenessWindow lateness(STATS_INTERVAL_NS);
     Ingest ingest(ingest_path,
-                  [&server, &stamper](const uint8_t* d, size_t n) {
-                      server.broadcast(d, n,
-                                       stamper ? stamper->stamp(d, n, mono_ns()) : -1);
+                  [&server, &stamper, &lateness](const uint8_t* d, size_t n) {
+                      int64_t pts = -1;
+                      if (stamper) {
+                          const int64_t now = mono_ns();
+                          pts = stamper->stamp(d, n, now);
+                          if (pts >= 0) lateness.add(now - pts);
+                          else lateness.add_untimed();
+                      }
+                      server.broadcast(d, n, pts);
                   },
                   emit);
     if (!ingest.start()) return 1;
@@ -143,8 +153,11 @@ int main(int argc, char** argv) {
             // which is python's `drift_stats()` key for key.
             std::string timeline =
                 stamper ? ",\"timeline\":" + mrts::drift_stats_json(stamper->drift()) : "";
+            std::string lat = lateness.empty()
+                                  ? ""
+                                  : ",\"lateness\":" + mrts::lateness_json_ms(lateness.take(now));
             emit("{\"stats\":{\"clients\":" + std::to_string(server.client_count()) +
-                 ",\"drops\":{" + drops + "}" + timeline + "}}");
+                 ",\"drops\":{" + drops + "}" + timeline + lat + "}}");
         }
     }
     server.detach_all();

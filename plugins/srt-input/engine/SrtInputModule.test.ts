@@ -43,7 +43,7 @@ describe('SrtInputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('srtsrc name=src uri="srt://0.0.0.0:9000?mode=listener&latency=125"');
         expect(desc!.pipeline).toContain(
             'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                'tee name=busout_41000 allow-not-linked=true',
+                'mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc!.pipeline).not.toContain('udpsink');
     });

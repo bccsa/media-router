@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import {
     backlogShedConfig,
     effectivePlayoutOffsetNs,
+    withLatenessTap,
     type BacklogShedServices,
     type PipelineDescription,
     type PlayoutOffsetServices,
@@ -43,8 +44,7 @@ export function planSink(
     config: Record<string, unknown>,
     /**
      * Sink `ts-offset` in ns, already resolved by `videoTsOffsetNs` — the
-     * playout offset D plus the deprecated `lipSyncMs` trim under the time-sync
-     * contract, or the bare `lipSyncMs` trim on the legacy path. Passed in
+     * playout offset D plus the deprecated `lipSyncMs` trim. Passed in
      * rather than derived here because the SAME resolution has to serve the live
      * update path and the audio leg of the route.
      */
@@ -65,14 +65,12 @@ export function planSink(
 /**
  * The video leg's sink `ts-offset`, in nanoseconds.
  *
- * Contract ON: playout offset D for this module's ROUTE (engine default, or the
- * route head's override) plus `lipSyncMs` as a per-sink trim. The audio leg
+ * Playout offset D for this module's ROUTE (engine default, or the route
+ * head's override) plus `lipSyncMs` as a per-sink trim. The audio leg
  * resolves D through the same `effectivePlayoutOffsetMs` against the same route,
  * so both legs of one route schedule off one number — which is the whole point
  * of ADR-0005 decision 4 and what an independently-set `lipSyncMs` could never
  * guarantee.
- *
- * Contract OFF: `lipSyncMs` alone — bit-for-bit the legacy value.
  */
 export function videoTsOffsetNs(
     services: PlayoutOffsetServices | null | undefined,
@@ -189,9 +187,8 @@ export interface LivePlanInput {
     cpuDecodeThreading: unknown;
     sinkPaced: boolean;
     /**
-     * Module services, read ONLY for the time-sync contract gate — the backlog
-     * shedder is armed by the same switch that paces the sink, because the
-     * ratchet it guards is a property of pacing (see `backlogShedConfig`).
+     * Module services, read only for the backlog shedder's re-anchor switch
+     * (see `backlogShedConfig`).
      */
     services?: BacklogShedServices | null;
     /**
@@ -206,7 +203,7 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
     // The sink is only addressable when it carries `name=sink` — autovideosink
     // (dev) is a bin without one, the same condition renderWatch is gated on.
     const namedSink = input.sinkElement.includes('name=sink');
-    // Backlog shedder — the contract's latency ratchet guard. EXPLICIT rungs
+    // Backlog shedder — the latency ratchet guard. EXPLICIT rungs
     // only, and for the same reason the keyframe gate is: it sheds on the
     // decoder's sink pad (where the backlog actually is, and where `h26xparse`
     // has already flagged every access unit), and the `decodebin3` bootstrap
@@ -230,7 +227,8 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
     return {
         pipeline:
             buildLivePipeline(
-                input.sinkElement,
+                // Render lateness is read right before the sink (§9.5).
+                withLatenessTap('lat_render', input.sinkElement),
                 input.udpSource,
                 input.waylandFullscreen,
                 Number(input.bufferMs ?? 200),
@@ -260,7 +258,9 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // Only the wayland/kms sinks are named — autovideosink (dev) is a
         // bin without `name=sink`, so the runner would fail the lookup.
         ...(namedSink ? { renderWatch: { sink: 'sink' } } : {}),
-        // See `backlogShed` above — armed only under the time-sync contract.
+        // The timing section reads D (`ts-offset`) off the same named sink.
+        ...(namedSink ? { timingSink: { element: 'sink', kind: 'video' as const } } : {}),
+        // See `backlogShed` above — explicit rungs with a named sink only.
         ...(backlogShed ? { backlogShed } : {}),
         // EXPLICIT rungs only. A live TS join lands mid-GOP, and feeding a
         // stateless V4L2 decoder delta units before its first keyframe leaves
@@ -286,7 +286,6 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // it locked on for the pipeline's whole life; with a sync=true sink
         // that error is where the picture sits against the route's audio leg,
         // re-rolled on every restart (−85 ms measured on .103's video edge).
-        // `applyTimeSync` drops it when the contract is off.
         alignBranchesToStamps: { demuxes: [VP_DEMUX_NAME] },
         ...(subs ? { runnerHooks: subs.runnerHooks, runner: subs.runner } : {}),
     };

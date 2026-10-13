@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     buildBackpressureQueue,
+    withLatenessTap,
     buildBusSrc,
     buildTsRechunk,
     tsQueueByteCap,
@@ -130,7 +131,10 @@ export class SrtOutputModule extends GstPluginBase {
             // Byte-capped (ADR-0015): a time-only bound is blind to stalled stamps.
             buildBackpressureQueue(200, tsQueueByteCap(200)),
             ...repack,
-            `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
+            withLatenessTap(
+                'lat_egress',
+                `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
+            ),
         ].join(' ! ');
 
         return {

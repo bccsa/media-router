@@ -121,6 +121,8 @@ export class AudioDynamicsModule extends GstPluginBase {
         }
 
         await super.onStart();
+        // A PipeWire-graph module: its timing is the latency PipeWire reports (§9.5).
+        this.timing.watchPipeWire([`MR_PW_${instanceId}_out`]);
         if (this.mode !== 'ducker') this.startMeterPoll();
     }
 

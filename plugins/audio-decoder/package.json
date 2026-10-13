@@ -107,17 +107,11 @@
                     "title": "Sink Buffer",
                     "description": "200 bridges PES-burst spacing. Lower only while measuring."
                 },
-                "clockSync": {
-                    "type": "boolean",
-                    "default": false,
-                    "title": "Clock Sync",
-                    "description": "Lock to the engine clock. Turn on with the matching video player when splitting one stream."
-                },
                 "lowLatencySync": {
                     "type": "boolean",
                     "default": false,
                     "title": "Low-Latency Sync",
-                    "description": "Render at PTS plus the sync trim instead of on arrival. Ignored when Clock sync is on."
+                    "description": "Render at PTS plus the sync trim instead of on arrival."
                 },
                 "syncOffsetMs": {
                     "type": "number",

@@ -20,9 +20,6 @@
  * job is trimming residual display/DAC-chain skew, which is genuinely per-sink
  * and which D cannot know about.
  *
- * With the contract OFF this whole file resolves to the trim alone, i.e. exactly
- * the legacy numbers (decision 10's kill-switch: `MR_TIME_SYNC_CONTRACT=0`).
- *
  * The engine may RAISE a route's D at runtime, never drop against it (ADR-0005
  * 2026-10-08, `playoutReanchor.ts`): that overlay is added here, capped at MAX.
  */
@@ -59,8 +56,7 @@ export function parsePlayoutOffsetMs(raw: unknown): number | undefined {
 }
 
 /**
- * Engine-wide default D, in the same precedence shape as
- * `EngineConfig.timeSyncContract`: an explicit config value wins, else the
+ * Engine-wide default D: an explicit config value wins, else the
  * `MR_PLAYOUT_OFFSET_MS` env var (so the fleet can retune from the unit file
  * without a code change), else `DEFAULT_PLAYOUT_OFFSET_MS`. An unparseable env
  * value is ignored and falls through to the default.
@@ -87,7 +83,6 @@ export interface PlayoutOffsetRouteSource {
 /** The slice of `ModuleServices` the resolution reads. */
 export interface PlayoutOffsetServices {
     instanceId?: string;
-    timeSyncContract?: boolean;
     /** Engine-wide default — see `EngineServices.playoutOffsetMs`. */
     playoutOffsetMs?: number;
     mediaRouter?: Partial<PlayoutOffsetRouteSource>;
@@ -96,8 +91,7 @@ export interface PlayoutOffsetServices {
 export interface PlayoutOffsetOptions {
     /**
      * Per-sink trim added on top of D — the deprecated `lipSyncMs` /
-     * `syncOffsetMs` aliases. Applied in BOTH modes, so with the contract off
-     * the result is the trim alone and the legacy pipeline string is unchanged.
+     * `syncOffsetMs` aliases.
      */
     trimMs?: number;
     /** Sink port to resolve the route through (multi-input consumers). */
@@ -111,16 +105,13 @@ export interface PlayoutOffsetOptions {
  * Both consumer legs of a route call THIS — not their own arithmetic — which is
  * what makes "the same route resolves to the same D on every leg" a property of
  * the code rather than of two implementations that happen to agree today.
- *
- * Contract off ⇒ the trim alone (byte-identical legacy behaviour).
  */
 export function effectivePlayoutOffsetMs(
     services: PlayoutOffsetServices | null | undefined,
     opts: PlayoutOffsetOptions = {},
 ): number {
     const trim = Number(opts.trimMs ?? 0) || 0;
-    if (!services?.timeSyncContract) return trim;
-    const routeOverride = services.instanceId
+    const routeOverride = services?.instanceId
         ? services.mediaRouter?.getRoutePlayoutOffsetMs?.(services.instanceId, opts.sinkPortId)
         : undefined;
     // The override REPLACES the engine default for this route (it is that
@@ -128,10 +119,10 @@ export function effectivePlayoutOffsetMs(
     // stacks.
     const base =
         parsePlayoutOffsetMs(routeOverride) ??
-        parsePlayoutOffsetMs(services.playoutOffsetMs) ??
+        parsePlayoutOffsetMs(services?.playoutOffsetMs) ??
         DEFAULT_PLAYOUT_OFFSET_MS;
     // The runtime re-anchor overlay on the same head (0 when none).
-    const raise = services.instanceId
+    const raise = services?.instanceId
         ? Number(
               services.mediaRouter?.getRoutePlayoutRaiseMs?.(
                   services.instanceId,

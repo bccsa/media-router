@@ -96,7 +96,6 @@ async function splitRoute() {
 const legD = (router: MediaRouter, id: string) =>
     effectivePlayoutOffsetMs({
         instanceId: id,
-        timeSyncContract: true,
         playoutOffsetMs: 60,
         mediaRouter: router,
     });

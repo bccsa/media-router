@@ -133,4 +133,46 @@ describe('ModuleRunController', () => {
             expect(onChange).toHaveBeenCalledExactlyOnceWith(false);
         });
     });
+
+    describe('house-clock start wait', () => {
+        function gated() {
+            let release!: () => void;
+            const ready = new Promise<null>((r) => (release = () => r(null)));
+            const startAll = vi.fn(async () => {});
+            const stopAll = vi.fn(async () => {});
+            const lifecycle = { startAll, stopAll } as unknown as ModuleLifecycle;
+            const controller = new ModuleRunController(lifecycle, vi.fn(), { ready: () => ready });
+            return { controller, startAll, stopAll, release };
+        }
+
+        it('starts modules only once the clock is ready, intent shown at once', async () => {
+            const { controller, startAll, release } = gated();
+            const started = controller.start();
+            await Promise.resolve();
+            expect(controller.isRunning).toBe(true);
+            expect(startAll).not.toHaveBeenCalled();
+            release();
+            await started;
+            expect(startAll).toHaveBeenCalledOnce();
+        });
+
+        it('a stop during the wait wins: nothing starts when the clock comes ready', async () => {
+            const { controller, startAll, release } = gated();
+            const started = controller.start();
+            await controller.stop();
+            release();
+            await started;
+            expect(startAll).not.toHaveBeenCalled();
+            expect(controller.isRunning).toBe(false);
+        });
+
+        it('two starts during the wait start the modules once', async () => {
+            const { controller, startAll, release } = gated();
+            const a = controller.start();
+            const b = controller.start();
+            release();
+            await Promise.all([a, b]);
+            expect(startAll).toHaveBeenCalledOnce();
+        });
+    });
 });

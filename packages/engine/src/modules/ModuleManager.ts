@@ -8,7 +8,7 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
-import type { ClockAuthority } from '../child-process/ClockAuthority.js';
+import type { HouseClock } from '../clock/HouseClock.js';
 import { ModuleInstance } from './ModuleInstance.js';
 
 const log = createLogger('ModuleManager');
@@ -30,12 +30,11 @@ export class ModuleManager extends EventEmitter {
     private mediaRouter: MediaRouter | null = null;
     private processManager: ProcessManager | null = null;
     private deviceProviders: DeviceProviderRegistry | null = null;
-    private clockAuthority: ClockAuthority | null = null;
-    private timeSyncContract = false;
     /** Engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
     private playoutOffsetMs: number | undefined;
     /** Re-anchor instead of shed — see `EngineConfig.playoutReanchor`. */
     private playoutReanchor = false;
+    private houseClock: HouseClock | null = null;
 
     constructor(
         pluginLoader: PluginLoader,
@@ -43,10 +42,9 @@ export class ModuleManager extends EventEmitter {
         mediaRouter?: MediaRouter,
         processManager?: ProcessManager,
         deviceProviders?: DeviceProviderRegistry,
-        clockAuthority?: ClockAuthority,
-        timeSyncContract?: boolean,
         playoutOffsetMs?: number,
         playoutReanchor?: boolean,
+        houseClock?: HouseClock,
     ) {
         super();
         this.pluginLoader = pluginLoader;
@@ -54,10 +52,9 @@ export class ModuleManager extends EventEmitter {
         this.mediaRouter = mediaRouter ?? null;
         this.processManager = processManager ?? null;
         this.deviceProviders = deviceProviders ?? null;
-        this.clockAuthority = clockAuthority ?? null;
-        this.timeSyncContract = timeSyncContract === true;
         this.playoutOffsetMs = playoutOffsetMs;
         this.playoutReanchor = playoutReanchor === true;
+        this.houseClock = houseClock ?? null;
     }
 
     /** Create a new module instance. Does NOT start it. */
@@ -118,12 +115,11 @@ export class ModuleManager extends EventEmitter {
                       mediaRouter: this.mediaRouter,
                       processManager: this.processManager,
                       deviceProviders: this.deviceProviders,
-                      ...(this.clockAuthority ? { clockAuthority: this.clockAuthority } : {}),
-                      ...(this.timeSyncContract ? { timeSyncContract: true } : {}),
                       ...(this.playoutOffsetMs !== undefined
                           ? { playoutOffsetMs: this.playoutOffsetMs }
                           : {}),
                       ...(this.playoutReanchor ? { playoutReanchor: true } : {}),
+                      ...(this.houseClock ? { houseClock: this.houseClock } : {}),
                       instanceId,
                   }
                 : undefined;

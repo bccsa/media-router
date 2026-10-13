@@ -11,6 +11,7 @@ import type {
     PatchOp,
     ResizableBounds,
     StatusValue,
+    TimeSyncState,
 } from '@media-router/shared-types';
 const { applyTreeOp, coerceArray, getAt, splitPath } = shared;
 
@@ -153,6 +154,7 @@ export interface SystemStats {
     temp: number | null; // CPU temperature °C
     undervoltage?: boolean; // Pi under-voltage warning (latched true; omitted otherwise)
     processCount?: number; // Spawned child processes
+    timeSync?: TimeSyncState; // Engines announcing the 'house-clock' feature
 }
 
 /** Exclusive-mute group: only one member may have settings.audioEnabled=true. */
@@ -177,6 +179,8 @@ export interface EngineState {
     ips?: string[];
     hostname?: string;
     buildNumber?: string;
+    /** What the engine announces it supports (e.g. 'house-clock'). */
+    features?: string[];
     /** dgram-comms paths connected vs configured on the engine (issue #692). */
     managerPaths?: ManagerPathStatus;
     /** Live paths with the manager listener port each one uses (issue #692). */

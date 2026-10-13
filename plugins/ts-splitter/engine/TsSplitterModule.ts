@@ -219,12 +219,9 @@ export class TsSplitterModule extends GstPluginBase {
                 // Fan-out coalescing window; 0 disables batching for
                 // ultra-low-latency chains (see the schema description).
                 busBatchMs: this.config.busBatchMs as number | undefined,
-                // Producer half of the time-sync contract: every output PID is
-                // stamped from its own payload against ONE shared anchor.
-                stampTimeline: this.services?.timeSyncContract === true,
-                // ...and whether its stamper may repair a late first PES: a
-                // property of the SOURCE upstream (an hls-player anywhere
-                // above this splitter turns it off), resolved from the graph.
+                // Whether its stamper may repair a late first PES: a property
+                // of the SOURCE upstream (an hls-player anywhere above this
+                // splitter turns it off), resolved from the graph.
                 latchRepair: effectiveLatchRepair(this.services),
             }),
             autoRestart: true,
@@ -263,6 +260,10 @@ export class TsSplitterModule extends GstPluginBase {
                     consumers: stats.clients ?? 0,
                     inKbps: stats.in_kbps ?? 0,
                 });
+                // Keyed by tee (`busout_<port>`): the same name as a bus egress tap.
+                for (const [tee, w] of Object.entries(stats.lateness ?? {})) {
+                    this.timing.addSidecarWindow(`lat_${tee}`, w);
+                }
             },
         });
     }

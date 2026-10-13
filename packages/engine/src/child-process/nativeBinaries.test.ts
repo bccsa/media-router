@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveNativeBinary, resolvePythonScript, pluginPythonPaths } from './nativeBinaries.js';
+import {
+    resolveNativeAsset,
+    resolveNativeBinary,
+    resolvePythonScript,
+    pluginPythonPaths,
+} from './nativeBinaries.js';
 
 /** Fake plugins tree: <root>/<plugin>/native/<tool>/<tool> + <plugin>/py/<script>. */
 function addTool(root: string, plugin: string, tool: string): string {
@@ -65,6 +70,31 @@ describe('nativeBinaries resolution', () => {
 
     it('returns null for unknown tools', () => {
         expect(resolveNativeBinary('does-not-exist')).toBeNull();
+    });
+
+    it("'engine' resolves the engine's own native tree, then its libexec install", () => {
+        // packages/engine/native/<tool>/<tool>, as the root Makefile builds it.
+        const engineTree = join(__dirname, '..', '..', 'native', 'mr-clockstate', 'mr-clockstate');
+        const installed = join(root, 'libexec', 'engine', 'mr-clockstate');
+        mkdirSync(join(root, 'libexec', 'engine'), { recursive: true });
+        writeFileSync(installed, '#!/bin/sh\n');
+        const expected = existsSync(engineTree) ? engineTree : installed;
+        expect(resolveNativeBinary('mr-clockstate', 'engine')).toBe(expected);
+    });
+
+    it('resolveNativeAsset: owner tool dir first, then its libexec install, never a scan', () => {
+        const so = 'libgstmrlateness.so';
+        expect(resolveNativeAsset('mpegts-core', 'mrlateness', so)).toBeNull();
+        const installed = join(root, 'libexec', 'mpegts-core', so);
+        mkdirSync(join(root, 'libexec', 'mpegts-core'), { recursive: true });
+        writeFileSync(installed, '');
+        expect(resolveNativeAsset('mpegts-core', 'mrlateness', so)).toBe(installed);
+        const dir = join(root, 'mpegts-core', 'native', 'mrlateness');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, so), '');
+        expect(resolveNativeAsset('mpegts-core', 'mrlateness', so)).toBe(join(dir, so));
+        // Another plugin's copy is never found for this owner.
+        expect(resolveNativeAsset('ts-splitter', 'mrlateness', so)).toBeNull();
     });
 
     it('resolvePythonScript: own plugin first, then unambiguous scan', () => {
