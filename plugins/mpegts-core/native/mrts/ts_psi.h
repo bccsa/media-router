@@ -10,9 +10,11 @@
 #include <vector>
 
 // PKT, SYNC_BYTE and the packet header helpers moved to ts_packet.h, PCR_HZ and
-// PCR_MODULO to ts_house.h; included here so every caller compiles unchanged.
+// PCR_MODULO to ts_house.h, read_pcr and build_pcr_packet to ts_pcr.h; included
+// here so every caller compiles unchanged.
 #include "ts_house.h"
 #include "ts_packet.h"
+#include "ts_pcr.h"
 
 namespace mrts {
 
@@ -36,15 +38,8 @@ struct TsPacket {
 // CRC-32/MPEG-2: poly 0x04C11DB7, init 0xFFFFFFFF, no reflection/xorout.
 uint32_t crc32_mpeg(const uint8_t* data, size_t n);
 
-// 27 MHz PCR carried in the packet's adaptation field, or -1.
-int64_t read_pcr(const uint8_t* pkt);
-
 // 33-bit 90 kHz PTS of the PES header starting in this packet, or -1.
 int64_t read_pes_pts(const uint8_t* pkt);
-
-// PCR-only packet (adaptation field, no payload) on `pid`; cc is stamped from
-// the PID's last payload packet (adaptation-only never advances CC).
-void build_pcr_packet(int pid, int64_t pcr27, int cc, uint8_t out[PKT]);
 
 void null_packet(int cc, uint8_t out[PKT]);
 

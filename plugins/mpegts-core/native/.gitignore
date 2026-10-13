@@ -11,4 +11,5 @@ mrts/tests/ts_split_test
 mrts/tests/ts_video_info_test
 mrts/tests/ts_timeline_test
 mrts/tests/lateness_test
+mrts/tests/ts_pcr_test
 mrpeshouse/tests/stamp_model_test

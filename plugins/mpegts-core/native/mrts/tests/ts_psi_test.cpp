@@ -256,14 +256,7 @@ int main() {
     auto big = parse_pmt({pkt_of(bigpmt)}, 0x1100);
     CHECK("24-ES PMT round-trips", big && big->streams == maxes);
 
-    // PCR read/build round-trip.
-    const int64_t pcr = 1234567890123LL;
-    uint8_t pk[PKT];
-    build_pcr_packet(0x00cc, pcr, 7, pk);
-    CHECK("PCR packet is adaptation-only (no payload)", (pk[3] & 0x30) == 0x20);
-    CHECK("PCR packet keeps the PID's cc", (pk[3] & 0x0F) == 7);
-    CHECK("read_pcr round-trips build_pcr_packet", read_pcr(pk) == pcr);
-    CHECK("read_pcr is -1 on a payload-only packet", read_pcr(nullp) == -1);
+    // The PCR read/build cases moved to ts_pcr_test (WI-S0-4).
 
     // PES PTS extraction.
     const int64_t big_pts = 0x123456789LL & 0x1FFFFFFFFLL;   // exercises PTS[32]

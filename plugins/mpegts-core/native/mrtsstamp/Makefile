@@ -21,7 +21,8 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 # The filename is load-bearing: GStreamer derives the plugin entry symbol
 # (gst_plugin_mrtsstamp_get_desc) from `libgst<name>.so`.
 SO   = libgstmrtsstamp.so
-SRCS = gstmrtsstamp.cpp $(MRTS)/ts_timeline.cpp $(MRTS)/ts_psi.cpp $(MRTS)/ts_house.cpp
+SRCS = gstmrtsstamp.cpp $(MRTS)/ts_timeline.cpp $(MRTS)/ts_psi.cpp $(MRTS)/ts_house.cpp \
+       $(MRTS)/ts_pcr.cpp
 PKGS = gstreamer-1.0 gstreamer-base-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
@@ -31,7 +32,8 @@ GST_LIBS   := $(shell pkg-config --libs $(PKGS))
 
 all: $(SO)
 
-$(SO): $(SRCS) $(MRTS)/ts_timeline.h $(MRTS)/ts_psi.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h
+$(SO): $(SRCS) $(MRTS)/ts_timeline.h $(MRTS)/ts_psi.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
+       $(MRTS)/ts_pcr.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(GST_LIBS) -o $@
 
 test:

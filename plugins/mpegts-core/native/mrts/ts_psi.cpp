@@ -54,16 +54,6 @@ uint32_t crc32_mpeg(const uint8_t* data, size_t n) {
     return crc;
 }
 
-int64_t read_pcr(const uint8_t* pkt) {
-    if (!(pkt[3] & 0x20)) return -1;            // no adaptation field
-    int af_len = pkt[4];
-    if (af_len < 7 || !(pkt[5] & 0x10)) return -1;   // need flags + 6 PCR bytes
-    int64_t base = ((int64_t)pkt[6] << 25) | ((int64_t)pkt[7] << 17) |
-                   ((int64_t)pkt[8] << 9) | ((int64_t)pkt[9] << 1) | (pkt[10] >> 7);
-    int64_t ext = ((pkt[10] & 0x01) << 8) | pkt[11];
-    return base * 300 + ext;
-}
-
 // Stream ids whose PES packets carry no optional header, hence never a PTS
 // (ISO 13818-1 §2.4.3.7).
 static bool pes_no_header_id(uint8_t sid) {
@@ -87,24 +77,6 @@ int64_t read_pes_pts(const uint8_t* pkt) {
     if (!(p[7] & 0x80)) return -1;              // PTS absent
     return ((int64_t)((p[9] >> 1) & 0x07) << 30) | ((int64_t)p[10] << 22) |
            ((int64_t)(p[11] >> 1) << 15) | ((int64_t)p[12] << 7) | (p[13] >> 1);
-}
-
-void build_pcr_packet(int pid, int64_t pcr27, int cc, uint8_t out[PKT]) {
-    int64_t base = (pcr27 / 300) & 0x1FFFFFFFFLL;   // 33-bit 90 kHz base
-    int ext = (int)(pcr27 % 300);                   // 9-bit 27 MHz remainder
-    std::memset(out, 0xFF, PKT);
-    out[0] = SYNC_BYTE;
-    out[1] = (pid >> 8) & 0x1F;                     // no PUSI
-    out[2] = pid & 0xFF;
-    out[3] = 0x20 | (cc & 0x0F);                    // adaptation only, no payload
-    out[4] = 183;                                   // fills the packet
-    out[5] = 0x10;                                  // PCR_flag
-    out[6] = (base >> 25) & 0xFF;
-    out[7] = (base >> 17) & 0xFF;
-    out[8] = (base >> 9) & 0xFF;
-    out[9] = (base >> 1) & 0xFF;
-    out[10] = ((base & 0x01) << 7) | 0x7E | ((ext >> 8) & 0x01);
-    out[11] = ext & 0xFF;
 }
 
 void null_packet(int cc, uint8_t out[PKT]) {

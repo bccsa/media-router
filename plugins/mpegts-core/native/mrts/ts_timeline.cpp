@@ -594,16 +594,6 @@ void write_ts_field(uint8_t* f, int64_t v) {
     f[3] = (uint8_t)((v >> 7) & 0xFF);
     f[4] = (uint8_t)(((v & 0x7F) << 1) | 0x01);
 }
-void write_pcr(uint8_t* pkt, int64_t pcr27) {
-    int64_t base = pcr27 / 300;
-    int ext = (int)(pcr27 % 300);
-    pkt[6] = (uint8_t)(base >> 25);
-    pkt[7] = (uint8_t)(base >> 17);
-    pkt[8] = (uint8_t)(base >> 9);
-    pkt[9] = (uint8_t)(base >> 1);
-    pkt[10] = (uint8_t)(((base & 1) << 7) | 0x7E | ((ext >> 8) & 1));
-    pkt[11] = (uint8_t)(ext & 0xFF);
-}
 }  // namespace
 
 namespace {

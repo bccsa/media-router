@@ -17,8 +17,8 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 # libgst<name>.so: GStreamer derives the entry symbol from the filename.
 SO    = libgstmrpeshouse.so
-CORE  = pes_walk.cpp stamp_model.cpp $(MRTS)/ts_psi.cpp
-HDRS  = pes_walk.h stamp_model.h $(MRTS)/ts_psi.h
+CORE  = pes_walk.cpp stamp_model.cpp $(MRTS)/ts_psi.cpp $(MRTS)/ts_pcr.cpp
+HDRS  = pes_walk.h stamp_model.h $(MRTS)/ts_psi.h $(MRTS)/ts_pcr.h
 SRCS  = gstmrpeshouse.cpp $(CORE)
 TESTS = tests/stamp_model_test
 PKGS  = gstreamer-1.0 gstreamer-base-1.0
