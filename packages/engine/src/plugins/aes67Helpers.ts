@@ -138,12 +138,9 @@ export function aes67PayloadBytes(
     return aes67SamplesPerPacket(ptimeMs) * clampChannels(channels) * bytesPerSample;
 }
 
-/**
- * The payloader `timestamp-offset` that puts house-clock running time on the PTP
- * epoch: `rtptime = offset + running_time x rate / 1e9`, and running time is
- * CLOCK_MONOTONIC, so the offset is E = TAI − MONOTONIC in media-clock units,
- * mod 2^32. Integer maths: E (~1.8e18 ns) as a float would lose whole samples.
- */
+/** Payloader `timestamp-offset` for the PTP epoch: `rtptime = offset + running_time x rate / 1e9`
+ *  and running time is CLOCK_MONOTONIC, so the offset is E = TAI − MONOTONIC in media-clock
+ *  units, mod 2^32. Integer maths: E (~1.8e18 ns) as a float would lose whole samples. */
 export function rtpTimestampOffset(eNs: bigint, rate = 48000n): number {
     if (rate <= 0n) throw new RangeError('clock rate must be positive');
     return Number(((eNs * rate) / 1_000_000_000n) % 2n ** 32n);

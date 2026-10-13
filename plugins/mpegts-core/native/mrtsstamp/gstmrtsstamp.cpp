@@ -21,11 +21,11 @@
  *
  * PLACEMENT: at the HEAD of the bus egress — directly after the mux, before the
  * `capssetter ! capsfilter` pair and the `busout_*` tee (the runner inserts it
- * there via the element API — the pipeline STRINGS are untouched). Upstream of
- * the tee the buffer is normally singly-owned, so basetransform hands it to us
- * in place with no copy at all; downstream of the tee every branch would see
- * a shared buffer and pay a (shallow) copy each. `copy-count` counts exactly
- * that case so the claim stays measured rather than assumed.
+ * there via the element API — the pipeline STRINGS are untouched). Upstream of the tee the
+ * buffer is normally singly-owned, so basetransform hands it to us in place with no copy
+ * at all; downstream of the tee every branch would see a shared buffer and pay
+ * a (shallow) copy each. `copy-count` counts exactly that case so the claim
+ * stays measured rather than assumed.
  *
  * COALESCE (ADR-0011): `mpegtsmux alignment=7` emits every access unit as a
  * GstBufferList of 1316-byte buffers, and a GstBaseTransform — capssetter,

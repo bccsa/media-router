@@ -47,9 +47,8 @@ export interface EngineConfig {
      * it on its route head (see `plugins/playoutOffset.ts`).
      *
      * Omitted → `MR_PLAYOUT_OFFSET_MS` decides, else 60 ms, so the fleet can
-     * retune the budget from the unit file without a code change. An
-     * unparseable value (or one outside 0–10000 ms) is ignored and falls
-     * through to the default.
+     * retune the budget from the unit file without a code change. An unparseable
+     * value (or one outside 0–10000 ms) is ignored and falls through to the default.
      */
     playoutOffsetMs?: number;
     /**

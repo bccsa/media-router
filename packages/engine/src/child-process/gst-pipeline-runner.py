@@ -2025,10 +2025,10 @@ def handle_start(data):
     _start_input_stall_watch(pipeline, data.get("inputStallWatch"))
 
     # The producer half of the time-sync contract: stamp every bus egress with
-    # house-clock media time. Enabled here, before PLAYING, for the same reason
-    # as above — an attach can land the moment the pipeline starts and the
-    # probe must own that edge's first buffer. The probes themselves arm per
-    # tee as consumers attach.
+    # house-clock media time. Enabled here, before PLAYING, for the
+    # same reason as above — an attach can land the moment the pipeline starts
+    # and the probe must own that edge's first buffer. The probes themselves arm
+    # per tee as consumers attach.
     gst_bus_stamper.enable(pipeline, data.get("latchRepair"),
                            data.get("conditionStepMs"), data.get("houseTimelineEgress"))
 

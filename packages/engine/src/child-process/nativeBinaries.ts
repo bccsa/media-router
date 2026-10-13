@@ -103,13 +103,9 @@ export function resolveNativeBinary(name: string, pluginId?: string): string | n
     return pickUnambiguous(name, matches);
 }
 
-/**
- * Locate a non-executable native asset a plugin builds, e.g. a GStreamer
- * plugin `.so` (`resolveNativeAsset('mpegts-core', 'mrlateness',
- * 'libgstmrlateness.so')`). Owner-scoped only: `plugins/<plugin>/native/<tool>/<file>`,
- * then `/usr/libexec/media-router/<plugin>/<file>` — the same two roots as the
- * runners' `paths::asset_candidates` and `gst_stamp_native.so_paths`.
- */
+/** Locate a non-executable native asset a plugin builds (e.g. a GStreamer `.so`). Owner-scoped
+ *  only: plugins tree, then install root, the same two roots as the runners'
+ *  `paths::asset_candidates` and `gst_stamp_native.so_paths`. */
 export function resolveNativeAsset(pluginId: string, tool: string, file: string): string | null {
     for (const p of [
         join(pluginsRoot(), pluginId, 'native', tool, file),

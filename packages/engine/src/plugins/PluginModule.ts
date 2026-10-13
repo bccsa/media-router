@@ -354,10 +354,10 @@ export interface PipelineDescription {
      * one fixed monotonic `GstSystemClock` per pipeline, shared by every process
      * on the box — is untouched. Consumers therefore see an identical timeline.
      *
-     * SCOPE. It is a property of the PIPELINE, not of the plugin: bus-fed
-     * producers (transcoder, mpegts-muxer) take their buffers from
-     * already-stamped bus input, not from a live capture device, and MUST NOT
-     * set it — their branch alignment is built on running-time ≡ house time.
+     * SCOPE. It is a property of the PIPELINE, not of the plugin: bus-fed producers (transcoder,
+     * mpegts-muxer) take their buffers from already-stamped bus input, not from a
+     * live capture device, and MUST NOT set it — their branch alignment is built
+     * on running-time ≡ house time.
      *
      * Do not set this speculatively on other live-source modules. It is a
      * targeted fix for a measured aggregator mis-schedule; without the burst
@@ -430,11 +430,8 @@ export interface PipelineDescription {
      * in render_lag.py. Never affects routing.
      */
     renderWatch?: RenderWatchRunnerConfig;
-    /**
-     * The output's final sink (named), read by the `timing` status section for
-     * presentation delay (`ts-offset`) and device latency. Engine-side only;
-     * never sent to the runner. House-clock plan WI-P0-9.
-     */
+    /** The output's final (named) sink, read by the `timing` status section for presentation
+     *  delay (`ts-offset`) and device latency (WI-P0-9). Engine-side, never sent to the runner. */
     timingSink?: TimingSink;
     /**
      * Hold the named decoder shut until the first KEYFRAME of the stream.

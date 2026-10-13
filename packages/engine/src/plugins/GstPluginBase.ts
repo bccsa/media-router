@@ -151,18 +151,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.lostInputs.size) this.ownWarning('input-lost', this.lostInputs.warning());
     }
 
-    /**
-     * Prepare a description for the house clock. Both runners put EVERY
-     * pipeline on a monotonic system clock with `base_time = 0` (§4.1), so the
-     * producer-stamped bus PTS is house time and `now − PTS` is lateness.
-     * Nothing is resolved or waited for here, so this can never delay a start.
-     */
+    /** Prepare a description for the house clock. Both runners put EVERY pipeline on a monotonic
+     *  system clock with `base_time = 0` (§4.1), so producer-stamped bus PTS is house time and
+     *  `now − PTS` is lateness. Nothing is resolved or awaited, so this never delays a start. */
     private applyTimeSync(desc: PipelineDescription): void {
-        // `preserveSourceTimeline` is the mechanism the producer stamps
-        // replaced, and the two do not compose: its pad offset cancels in the
-        // egress stamper's `anchor + (PES − firstPES)`, and it answers a
-        // source discontinuity by erroring out to re-latch, where the stamper
-        // re-anchors in place. Modules still declare it until it is deleted.
+        // Modules still declare `preserveSourceTimeline`, which the producer stamps replaced and
+        // which does not compose with them: its pad offset cancels in `anchor + (PES − firstPES)`,
+        // and on a discontinuity it errors out to re-latch where the stamper re-anchors in place.
         delete desc.preserveSourceTimeline;
         // The stamper's latch-repair window is a property of the SOURCE at the
         // head of this module's bus chain (an hls-player anywhere upstream

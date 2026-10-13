@@ -176,10 +176,9 @@ export class AudioOutput302mModule extends GstPluginBase {
 
         const tsOffsetNs = audio302mTsOffsetNs(this.services, config, this.mixerLatencyNs);
 
-        // Present at stamped time + D on the house clock — see the class
-        // comment. `name=sink` is what the live offset push and the backlog
-        // shedder address. audioconvert/audioresample let pulsesink negotiate
-        // whatever format/rate the device wants.
+        // Present at stamped time + D on the house clock (see the class comment). `name=sink` is
+        // what the live offset push and the backlog shedder address; audioconvert/audioresample
+        // let pulsesink negotiate whatever format/rate the device wants.
         const sink =
             `pulsesink name=sink device=${device} sync=true provide-clock=false` +
             ` slave-method=${SLAVE_METHOD_SKEW} max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
@@ -222,12 +221,9 @@ export class AudioOutput302mModule extends GstPluginBase {
                 sink: 'sink',
                 keyframeAligned: false,
             }),
-            // Anchor every branch's running time to the producer's house stamps
-            // (ADR-0005 Stage 3c — the same correction the mpegts-muxer applies
-            // to its inputs). A tsdemux keeps the zero-point error of the one
-            // bus buffer it locked on for its whole life (−73…−85 ms measured
-            // on .103, re-rolled per restart); on a sync=true leg that error IS
-            // lipsync.
+            // Anchor every branch to the producer's house stamps (ADR-0005 Stage 3c, as the muxer
+            // does for its inputs): a tsdemux keeps the zero-point error of the bus buffer it
+            // locked on for life (−73…−85 ms on .103, re-rolled per restart); that IS lipsync.
             alignBranchesToStamps: { demuxes },
         };
     }

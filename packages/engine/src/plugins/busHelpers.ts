@@ -162,11 +162,8 @@ export interface BusSrcOpts {
 /**
  * Bus ingress for one consumer edge:
  *   unixfdsrc [! watchdog] ! mrlateness ! queue leaky=2 (5 s, 40 MB byte cap — ADR-0015)
- *
- * The lateness tap (`latInName`) sits before the queue so it reads arrival,
- * and dynamic `bus_input_add` branches built here get it too. An unnamed
- * source is keyed by its edge socket, so two edges of one channel never
- * collide on a tap name.
+ * The tap (`latInName`) sits before the queue to read arrival, on `bus_input_add` branches too;
+ * an unnamed source keys it by edge socket, so two edges of one channel never collide.
  *
  * Caps arrive over the socket from the producer, so no caps/buffer sizing
  * applies here. A dead producer surfaces as a connection error (which trips
@@ -218,9 +215,8 @@ export function buildBusSrc(opts: BusSrcOpts): string {
 /**
  * Bus egress (fan-out point) for a producer:
  *   capssetter (replace) ! capsfilter (pinned TS caps) ! mrlateness ! tee busout_<port>
- *
- * The runners splice `mrtsstamp` in before the capssetter, so the lateness
- * tap (`latOutName`) reads the stamped PTS every consumer receives.
+ * The runners splice `mrtsstamp` in before the capssetter, so the lateness tap (`latOutName`)
+ * reads the stamped PTS every consumer receives.
  *
  * The actual `unixfdsink` branches are attached one per consumer at runtime
  * via `bus_attach` (`gst-pipeline-runner.py`), each

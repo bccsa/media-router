@@ -367,11 +367,8 @@ describe.skipIf(!havePython || !haveNative)('mr-bus-fanout (native) protocol', (
     conformanceSuite(nativeSidecar);
 });
 
-/**
- * Lateness of what the native sidecar writes (house-clock plan WI-P0-8): one
- * `mrts::LatenessWindow` over the stamped buffers, reported in the 2 s stats
- * line. Native only — no python twin for new native code.
- */
+/** Lateness of what the native sidecar writes (WI-P0-8): one `mrts::LatenessWindow` over the
+ *  stamped buffers, in the 2 s stats line. Native only: no python twin for new native code. */
 describe.skipIf(!havePython || !haveNative)('mr-bus-fanout lateness window', () => {
     const cleanups: Array<() => void> = [];
     afterEach(() => {

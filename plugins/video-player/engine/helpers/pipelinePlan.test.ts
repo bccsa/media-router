@@ -391,10 +391,9 @@ describe('planLivePipeline', () => {
     });
 
     describe('backlog shedder', () => {
-        // The latency ratchet guard: a `sync=true` sink drains at media rate,
-        // so backlog the leaky queues absorb is never handed back (field .42:
-        // 50 fps decoded, 2.5 fps on the glass after ~16 h). Armed on the same
-        // pad and the same rungs as the keyframe gate.
+        // The latency ratchet guard: a `sync=true` sink drains at media rate, so backlog the leaky
+        // queues absorb is never handed back (field .42: 50 fps decoded, 2.5 fps on the glass
+        // after ~16 h). Armed on the same pad and the same rungs as the keyframe gate.
         const explicitDec: DecoderSelection = {
             id: 'v4l2slh265dec',
             chain: `h265parse ! v4l2slh265dec name=${VIDEO_DECODER_NAME}`,

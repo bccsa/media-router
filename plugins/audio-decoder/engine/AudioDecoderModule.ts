@@ -249,19 +249,9 @@ export class AudioDecoderModule extends GstPluginBase {
                 break; // fallback for unknown
         }
 
-        // The sink presents against the house clock (ADR-0005): `sync=true` at
-        // `stamped-time + D`, where D is the route's playout offset (decision 4)
-        // plus the deprecated `syncOffsetMs` trim, from the same
-        // `effectivePlayoutOffsetMs` call the video leg of the route makes.
-        // `max-lateness=-1` disarms the mid-stream-join silence trap: a late
-        // timeline renders immediately and drains rather than going silent.
-        // `provide-clock=false` keeps pulsesink from offering the DAC clock.
-        //
-        // `slave-method=skew` (decision 5): the house clock is the master and
-        // the DAC slaves to it by moving the sink's own timestamps. Resample
-        // would rewrite the SAMPLES instead, and D would quietly stop meaning
-        // what the route configured on this leg only. A stored `slaveMethod`
-        // is ignored: fleet configs carry materialised `0`s nobody chose.
+        // Presents at `stamped-time + D` (ADR-0005); `max-lateness=-1` drains a late timeline
+        // rather than going silent. Skew, not resample (decision 5): resample rewrites SAMPLES and
+        // D drifts. A stored `slaveMethod` is ignored: fleet configs carry `0`s nobody chose.
         const sinkTiming = ` ts-offset=${audioTsOffsetNs(this.services, config)} max-lateness=-1`;
 
         const parts = [
@@ -327,12 +317,9 @@ export class AudioDecoderModule extends GstPluginBase {
                 sink: 'sink',
                 keyframeAligned: false,
             }),
-            // Anchor this branch's running time to the producer's house stamps
-            // (ADR-0005 Stage 3c — the same correction the mpegts-muxer and the
-            // 302M output apply). A tsdemux keeps the zero-point error of the
-            // one bus buffer it locked on for its whole life (−73…−125 ms
-            // measured on .103's edges, re-rolled per restart); on a sync=true
-            // leg that error IS lipsync against the video leg.
+            // Anchor to the producer's house stamps (ADR-0005 Stage 3c, as the muxer and 302M
+            // output do): a tsdemux keeps the zero-point error of the bus buffer it locked on for
+            // life (−73…−125 ms on .103, re-rolled per restart); at sync=true that IS lipsync.
             alignBranchesToStamps: { demuxes: [DEMUX_NAME] },
         };
     }

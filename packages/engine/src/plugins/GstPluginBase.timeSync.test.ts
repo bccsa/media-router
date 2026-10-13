@@ -3,11 +3,9 @@ import { GstPluginBase } from './GstPluginBase.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { ModuleServices, PipelineDescription } from './PluginModule.js';
 
-/**
- * What `GstPluginBase.applyTimeSync` does to a description on both the start
- * and the refresh path. Every pipeline runs on the house clock (§4.1); the
- * runners need no flag for it, so nothing clock-related is added here.
- */
+/** What `GstPluginBase.applyTimeSync` does to a description on both the start and the refresh
+ *  path. Every pipeline runs on the house clock (§4.1); the runners need no flag for it, so
+ *  nothing clock-related is added here. */
 class TestModule extends GstPluginBase {
     constructor(private readonly desc: PipelineDescription | null) {
         super();
@@ -52,11 +50,9 @@ describe('GstPluginBase time-sync resolution', () => {
     });
 
     it('drops preserveSourceTimeline — the mechanism the producer stamps replaced', async () => {
-        // Both are timeline mechanisms and they do not compose. The latch
-        // cannot change what a consumer sees (its constant pad offset cancels
-        // in the egress stamper's `anchor + (PES − firstPES)`), but it DOES
-        // answer a source discontinuity by erroring the pipeline out to
-        // re-latch, where the stamper re-anchors in place.
+        // The two timeline mechanisms do not compose: the latch's constant pad offset cancels in
+        // the stamper's `anchor + (PES − firstPES)`, and it answers a source discontinuity by
+        // erroring out to re-latch, where the stamper re-anchors in place.
         const sent = await resolve(
             {
                 pipeline: 'unixfdsrc ! tsdemux name=demux ! fakesink',
