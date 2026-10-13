@@ -163,10 +163,9 @@ describe('AudioDecoderModule.buildPipeline', () => {
 });
 
 /**
- * Playout offset D on the audio leg (ADR-0005 decision 4). This sink does not
- * choose its own anchor: it presents at stamped-time + D, D comes from the
- * route (not from this module's settings), and `syncOffsetMs` demotes to a
- * per-sink trim on top.
+ * Playout offset D on the audio leg (ADR-0005 decision 4). This sink does not choose its own
+ * anchor: it presents at stamped-time + D, D comes from the route (not from this module's
+ * settings), and `syncOffsetMs` demotes to a per-sink trim on top.
  */
 describe('AudioDecoderModule playout offset', () => {
     beforeEach(() => vi.clearAllMocks());

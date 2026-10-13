@@ -26,10 +26,10 @@ import {
  * WHY THIS LIVES AT THE CONTRACT LAYER. It is not a video-player problem and
  * not a queue-sizing problem — it is a property of every `sync=true` bus
  * consumer the contract creates (video-player, audio-decoder, and any future
- * presentation leg). So the knobs and the defaults are defined ONCE here,
- * exactly as `effectivePlayoutOffsetMs` defines D once for both legs of a
- * route. A leg supplies only the two element names that are genuinely its
- * own: where to measure/shed, and which sink carries the route's `ts-offset`.
+ * presentation leg). So the knobs and the defaults are defined ONCE here, exactly as
+ * `effectivePlayoutOffsetMs` defines D once for both legs of a route. A leg
+ * supplies only the two element names that are genuinely its own: where to
+ * measure/shed, and which sink carries the route's `ts-offset`.
  *
  * WHAT IT IS NOT. Not a queue resize — the ES/jitter queues stay exactly as
  * they are, because their depth is field-measured IDR-burst absorption and

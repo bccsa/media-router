@@ -1,10 +1,10 @@
-// The latency PipeWire reports for a module's node (design §9.5, WI-P0-10). PipeWire-graph
-// modules carry no PTS, so instead of lateness they show one graph cycle (quantum / rate)
-// plus whatever the node's own `Latency` param adds.
+// The latency PipeWire reports for a module's node (design §9.5, WI-P0-10): one cycle of the
+// node's driver group, which runs the smallest request among its nodes (an MR_PW null sink asks
+// for nothing itself), plus whatever the node's own `Latency` param adds.
 import { pwDump } from './streamPortLinks.js';
 
 export interface NodeLatency {
-    /** Samples per graph cycle for this node. */
+    /** Samples per graph cycle of the node's driver group. */
     quantum: number;
     rate: number;
     latencyMs: number;
@@ -20,6 +20,12 @@ interface DumpObject {
 
 const isObj = (o: unknown): o is DumpObject =>
     typeof o === 'object' && o !== null && typeof (o as DumpObject).id === 'number';
+const prop = (o: DumpObject | undefined, key: string): unknown => o?.info?.props?.[key];
+/** A driver carries no `node.driver-id`: its own id names its group (alone, if none follow). */
+const driverOf = (o: DumpObject): number => {
+    const id = Number(prop(o, 'node.driver-id') ?? NaN);
+    return Number.isInteger(id) ? id : o.id;
+};
 
 /** "1024/48000" or a reduced "8/375" → [num, den]. */
 function fraction(v: unknown): [number, number] | null {
@@ -27,8 +33,8 @@ function fraction(v: unknown): [number, number] | null {
     return m && Number(m[2]) > 0 ? [Number(m[1]), Number(m[2])] : null;
 }
 
-/** Graph quantum and rate from the `settings` metadata; a forced value wins. */
-function graphClock(objects: DumpObject[]): { quantum: number; rate: number; forced: boolean } {
+/** Clock settings from the `settings` metadata, and the core's power-of-two rounding. */
+function graphClock(objects: DumpObject[]) {
     const settings = objects.find(
         (o) => o.type.endsWith(':Metadata') && o.props?.['metadata.name'] === 'settings',
     );
@@ -36,11 +42,33 @@ function graphClock(objects: DumpObject[]): { quantum: number; rate: number; for
         const v = Number(settings?.metadata?.find((m) => m.key === key)?.value);
         return Number.isFinite(v) && v > 0 ? v : 0;
     };
+    const core = objects.find((o) => o.type.endsWith(':Core'));
     return {
-        quantum: get('clock.force-quantum') || get('clock.quantum') || 1024,
+        quantum: get('clock.quantum') || 1024,
+        minQuantum: get('clock.min-quantum') || 32,
+        maxQuantum: get('clock.max-quantum') || 8192,
+        forceQuantum: get('clock.force-quantum'),
         rate: get('clock.force-rate') || get('clock.rate') || 48000,
-        forced: get('clock.force-quantum') > 0,
+        // pipewire.conf(5) documents it on by default.
+        powerOfTwo: prop(core, 'clock.power-of-two-quantum') !== false,
     };
+}
+
+type GraphClock = ReturnType<typeof graphClock>;
+
+/** The quantum the driver group of `node` runs: its smallest request, clamped and rounded. */
+function groupQuantum(objects: DumpObject[], node: DumpObject, graph: GraphClock): number {
+    if (graph.forceQuantum) return graph.forceQuantum;
+    const group = driverOf(node);
+    const asks = objects
+        .filter((o) => o.type.endsWith(':Node') && driverOf(o) === group)
+        .map((o) => fraction(prop(o, 'node.latency')))
+        .map((f) => (f ? Math.round((f[0] / f[1]) * graph.rate) : 0))
+        .filter((q) => q > 0);
+    const wanted = asks.length ? Math.min(...asks) : graph.quantum;
+    const q = Math.min(Math.max(wanted, graph.minQuantum), graph.maxQuantum);
+    // Requests and the final quantum both round down; rounding only the final one is the same.
+    return graph.powerOfTwo ? 2 ** Math.floor(Math.log2(q)) : q;
 }
 
 /** Extra latency from the node's `Latency` params, in samples and ns (the worst direction). */
@@ -66,20 +94,12 @@ export function nodeLatencyFromDump(dump: unknown[], nodeName: string): NodeLate
     }
     if (!node) return null;
     const graph = graphClock(objects);
-    const props = node.info?.props ?? {};
-    const rate = fraction(props['node.rate'])?.[1] ?? graph.rate;
-    // A node that asks for a latency (`node.latency`, seconds as a fraction)
-    // runs at that quantum unless the graph forces one.
-    const asked = fraction(props['node.latency']);
-    const quantum =
-        asked && !graph.forced
-            ? Math.round((asked[0] / asked[1]) * rate) || graph.quantum
-            : graph.quantum;
+    const quantum = groupQuantum(objects, node, graph);
     const extra = paramLatency(node.info?.params, quantum);
     return {
         quantum,
-        rate,
-        latencyMs: ((quantum + extra.samples) / rate) * 1000 + extra.ns / 1e6,
+        rate: graph.rate,
+        latencyMs: ((quantum + extra.samples) / graph.rate) * 1000 + extra.ns / 1e6,
     };
 }
 

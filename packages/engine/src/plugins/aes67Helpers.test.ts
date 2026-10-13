@@ -138,10 +138,8 @@ describe('bounds on operator input', () => {
     });
 });
 
-/**
- * The PTP-epoch `timestamp-offset`. Vectors copied from the deleted
- * `aes67-core/py/aes67_clock_test.py`, and its outputs for real-sized E.
- */
+/** The PTP-epoch `timestamp-offset`. Vectors copied from the deleted
+ *  `aes67-core/py/aes67_clock_test.py`, and its outputs for real-sized E. */
 describe('rtpTimestampOffset', () => {
     const GS = 1_000_000_000n;
     const MOD = 2n ** 32n;

@@ -48,18 +48,15 @@ import {
  *
  *     timestamp-offset = ((CLOCK_TAI - CLOCK_MONOTONIC) x 48000 / 1e9) mod 2^32
  *
- * i.e. the engine's house epoch E (`services.houseClock`, house-clock design
- * §4.2), the one E every egress on the box shares. E is constant under slew
- * and moves only on a clock step; the engine re-latches it then, and this
- * module restarts on the `epoch` event so the new offset lands (one flagged
- * discontinuity, §10.3). NO TAI pipeline clock is needed.
+ * i.e. the engine's house epoch E (`services.houseClock`, design §4.2), one E for every egress
+ * on the box. E moves only on a clock step; this module then restarts on `epoch` so the new
+ * offset lands (one flagged discontinuity, §10.3). NO TAI pipeline clock is needed.
  *
- * `ptpSync` is off by default and REFUSES to claim the epoch while the engine's
- * epoch is untraceable (no sync, or the kernel TAI offset unset): the payloader
- * then keeps its random RFC 3550 offset, the SDP carries no
- * `ts-refclk`/`mediaclk`, and the face says so. A free-running sender is
- * honest; a sender announcing a PTP media clock it does not have is
- * undetectable at the receiver.
+ * `ptpSync` is off by default and REFUSES to claim the epoch while the engine's epoch is
+ * untraceable (no sync, or the kernel TAI offset unset): the payloader then keeps its
+ * random RFC 3550 offset, the SDP carries no `ts-refclk`/`mediaclk`, and the
+ * face says so. A free-running sender is honest; a sender announcing a PTP
+ * media clock it does not have is undetectable at the receiver.
  */
 export class Aes67OutputModule extends GstPluginBase {
     private statsTimer: ReturnType<typeof setInterval> | null = null;

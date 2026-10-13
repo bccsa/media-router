@@ -117,9 +117,9 @@ def insert_elements(pipe):
     Element API, not pipeline strings: the TS-side `buildBusSink` fragment stays
     byte-identical. Inserted BEFORE the tee so one stamp fans out to every
     consumer edge — on a tee branch each branch would see a shared
-    (non-writable) buffer and pay its own copy, and the branches are created
-    and destroyed at runtime anyway — and before the caps pair so the element
-    sees the mux's buffer lists (`egress_head`).
+    (non-writable) buffer and pay its own copy, and the branches
+    are created and destroyed at runtime anyway — and before the caps pair so
+    the element sees the mux's buffer lists (`egress_head`).
 
     Inactive on arrival: `active` is the lazy arm, toggled from the same
     bus_attach / bus_detach paths that arm and disarm the python probe. The

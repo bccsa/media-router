@@ -1,7 +1,12 @@
 // A module's timing summary as status sections and a face badge (ADR-0007: the plugin
 // computes, the UI renders). Every row is labelled with its unit, so the operator reads a
 // number, not a colour. House-clock plan WI-P0-9.
-import type { ModuleBadge, ModuleTimingSummary, StatusValue } from '@media-router/shared-types';
+import type {
+    LatenessStatsMs,
+    ModuleBadge,
+    ModuleTimingSummary,
+    StatusValue,
+} from '@media-router/shared-types';
 
 export const TIMING_SECTION = 'timing';
 export const TIMING_BADGE = 'lateness';
@@ -33,6 +38,12 @@ function section(id: string, label: string, rows: Row[], pub: TimingPublication)
     });
     pub.data[id] = Object.fromEntries(rows.map(([key, , value]) => [key, value]));
 }
+
+/** The rows an input or output section opens with. */
+const latenessRows = (l: LatenessStatsMs): Row[] => [
+    ['latenessMs', 'Lateness', ms(l.meanMs), 'ms'],
+    ['latenessRange', 'Lateness min – max', range(l.minMs, l.maxMs), 'ms'],
+];
 
 export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     const pub: TimingPublication = { sections: [], data: {}, badge: null };
@@ -66,15 +77,7 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
     s.inputs.forEach((input, n) => {
-        const inRows: Row[] = [
-            ['latenessMs', 'Lateness', ms(input.lateness.meanMs), 'ms'],
-            [
-                'latenessRange',
-                'Lateness min – max',
-                range(input.lateness.minMs, input.lateness.maxMs),
-                'ms',
-            ],
-        ];
+        const inRows = latenessRows(input.lateness);
         if (input.addedMs !== undefined) inRows.push(['addedMs', 'Added', ms(input.addedMs), 'ms']);
         section(
             `${TIMING_SECTION}-in-${n + 1}`,
@@ -82,6 +85,10 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
             inRows,
             pub,
         );
+    });
+    s.outputs?.forEach((output, n) => {
+        const label = `Output ${n + 1} timing: ${output.port}`;
+        section(`${TIMING_SECTION}-out-${n + 1}`, label, latenessRows(output.lateness), pub);
     });
 
     // Grey, never coloured: Phase 0 shows the number and sets no threshold (OQ-8).
@@ -113,6 +120,11 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
         put(`${i.tap}.min`, i.lateness.minMs);
         put(`${i.tap}.max`, i.lateness.maxMs);
         put(`${i.tap}.added`, i.addedMs);
+    }
+    for (const o of s.outputs ?? []) {
+        put(`${o.tap}.mean`, o.lateness.meanMs);
+        put(`${o.tap}.min`, o.lateness.minMs);
+        put(`${o.tap}.max`, o.lateness.maxMs);
     }
     return v;
 }

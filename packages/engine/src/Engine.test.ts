@@ -131,10 +131,8 @@ describe('Engine — default playout offset', () => {
     });
 });
 
-/**
- * The house-clock start wait (house-clock design §10.3): modules wait for the
- * epoch, the engine's API, UI and manager link do not.
- */
+/** The house-clock start wait (design §10.3): modules wait for the epoch; the engine's API, UI
+ *  and manager link do not. */
 describe('Engine — house-clock start wait', () => {
     let tmpDir: string;
     let engine: Engine;
