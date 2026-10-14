@@ -49,9 +49,6 @@ class RestampCore {
     static constexpr int64_t DEGRADED_PCR_LEAD_NS = 250000000;
     static constexpr int64_t DEGRADED_RECENT_NS = 500000000;
     static constexpr int64_t DEGRADED_FLOOR_NS = 1000000000;
-    // VirtualStc::map key of a program's PCR (past the 13-bit PID space): the PCR
-    // takes the one mapping its PES take, epoch choice included.
-    static constexpr int PCR_MAP_PID = 0x2000;
 
     struct Range {
         const uint8_t* data;
@@ -140,6 +137,8 @@ class RestampCore {
         // The guard and the gap: the last emitted PES's key, the spacing before it.
         bool have_last = false, clean = false;   // clean: no drop since the last emitted
         int64_t last_key = 0, interval = 0, last_h = 0;
+        bool have_src = false;            // the previous PES's guard key on source time
+        int64_t last_src = 0;
         uint32_t max_epoch = 0, last_epoch = 0;   // the newest it emitted under; the last PES's
         bool outage = false;              // an outage since its last PES
         // Packets: the open PES's fate, CC renumbering, duplicates, a held header.

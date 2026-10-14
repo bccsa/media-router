@@ -170,6 +170,8 @@ struct Run {
     int relocks = 0, oob = 0;
     const char* why = "";
     int64_t relock_at_ns = -1, jump_ns = 0, event_jump_ns = 0, oob_ppb = 0;
+    int64_t event_drop_ns = 0;               // the last relock's overlap dropped (its event)
+    uint64_t dropped = 0;                    // input frames the servo said to skip
     int64_t ratio_lo = INT64_MAX, ratio_hi = INT64_MIN, ratio_end = 0;
     int64_t dratio_max = 0;                  // largest ratio change between buffers from late_s on
     int64_t ratio_dev_late = 0;              // max |ratio - device rate| from late_s on
@@ -196,6 +198,21 @@ Run run(const Scenario& sc) {
         dev.gap_x = gap_frame * SUB;
         dev.gap_ns = sc.gap_ns;
     }
+    // Skipped frames never reach the resampler: (its frame count at the drop, frames
+    // skipped up to then) maps a resampler position back to the captured frame.
+    int64_t n_res = 0;
+    std::vector<std::pair<int64_t, int64_t>> drops;
+    auto captured = [&](int64_t x) {
+        int64_t d = 0;
+        for (const auto& q : drops)
+            if (x >= q.first * SUB) d = q.second;
+        return x + d * SUB;
+    };
+    auto near_drop = [&](int64_t x) {
+        for (const auto& q : drops)
+            if (iabs(x - q.first * SUB) < near) return true;
+        return false;
+    };
     const int64_t total = sc.secs * sc.in_hz;
     Lcg g(sc.seed);
     Fnv f;
@@ -223,20 +240,29 @@ Run run(const Scenario& sc) {
             rs->update(c.in_rate, c.out_rate);
             cur = c.in_rate;
         }
-        const int64_t k = rs->out_frames(b), label = sv.next_pts(), x = rs->position();
+        const int64_t fed = b - c.skip;
+        if (c.skip > 0) {
+            if (drops.empty() || drops.back().first != n_res)
+                drops.push_back({n_res, (drops.empty() ? 0 : drops.back().second) + c.skip});
+            else
+                drops.back().second += c.skip;
+            r.dropped += c.skip;
+        }
+        const int64_t k = rs->out_frames(fed), label = sv.next_pts(), x = rs->position(), xc = captured(x);
         if (c.relock) {
             r.jump_ns = label - expect;
             r.relock_at_ns = t;
         } else if (n > 0 && label != expect) {
             r.contiguous = false;
         }
-        r.model_ok = r.model_ok && rs->resample(b, k);
+        r.model_ok = r.model_ok && rs->resample(fed, k);
+        n_res += fed;
         sv.produced((uint32_t)k);
         expect = sv.next_pts();
         r.model_out += (uint64_t)k;
         r.pushed += (uint64_t)b;
-        if (k > 0 && (!has_gap || x < dev.gap_x - near || x > dev.gap_x + near)) {
-            const int64_t e = label - dev.house(x);
+        if (k > 0 && (!has_gap || xc < dev.gap_x - near || xc > dev.gap_x + near) && !near_drop(x)) {
+            const int64_t e = label - dev.house(xc);
             if (!in_frame(e, sc.out_hz)) r.last_bad_ns = t;
             if (t >= late) r.err_max_late = std::max(r.err_max_late, iabs(e));
             while (mark < NMARK && t >= MARKS[mark]) r.err_at[mark++] = e;
@@ -260,22 +286,25 @@ Run run(const Scenario& sc) {
             f.add(e.house_ns);
             f.add(e.value);
             if (e.kind == AsrcEvent::Kind::relock) {
+                if (e.dropped_ns) f.add(e.dropped_ns);   // so a run without a drop sums as before
                 r.relocks++;
                 r.why = e.reason;
                 r.event_jump_ns = e.value;
+                r.event_drop_ns = e.dropped_ns;
             } else {
                 r.oob++;
                 r.oob_ppb = e.value;
             }
         }
         f.add(c.in_rate);
+        if (c.skip) f.add(c.skip);
         f.add(label);
         f.add(k);
         f.add(st.phase_err_ns);
         n += b;
         r.buffers++;
     }
-    const int64_t he = dev.house(rs->position());
+    const int64_t he = dev.house(captured(rs->position()));
     const AsrcServo::Stats st = sv.stats();
     r.err_end = sv.next_pts() - he;
     r.m_end = sv.epoch_frames();
@@ -347,20 +376,42 @@ void test_basics() {
     const std::vector<AsrcEvent> back = sv.take_events();
     CHECK("a DISCONT stepping back: T0 is the end of the last output, jump 0 (never overlap)",
           c.relock && back.size() == 1 && sv.t0() == end2 && back[0].value == 0);
-    CHECK("... and the ratio slows to let the lock catch up, clamped at -1000 ppm",
-          sv.stats().phase_err_ns < -50 * MS && sv.stats().ratio_ppb == -1000000 &&
-              c.in_rate == (int32_t)((2 * 48000LL * 1000 * S + (S - 1000000)) / (2 * (S - 1000000))));
+    // The next output's content (half a frame before this buffer) up to end2 overlaps.
+    const int64_t over = end2 - (5 * S - FRAME_NS / 2);
+    CHECK("... the input up to that end is dropped as overlap: this buffer whole, the event carries it",
+          c.skip == 1024 && iabs(back[0].dropped_ns - over) <= FRAME_NS && sv.stats().dropped_frames == 1024);
+    CHECK("... so the labels stay capture time: phase within a frame, the ratio not chasing it",
+          iabs(sv.stats().phase_err_ns) <= FRAME_NS && iabs(sv.stats().ratio_ppb) <= 1000 &&
+              iabs(c.in_rate - 47999999) <= 50);
+    uint32_t skips[3];
+    for (int i = 0; i < 3; i++) {
+        skips[i] = sv.push(5 * S + (i + 1) * 21333333LL, 1024, false).skip;
+        sv.produced(i == 2 ? 64 : 0);
+    }
+    const int64_t want = over * 48000 / S;   // the overlap in input frames, at the nominal rate
+    const int64_t dropped = (int64_t)sv.stats().dropped_frames;
+    CHECK("... the drop runs on across buffers until the overlap is gone, then nothing more",
+          skips[0] == 1024 && skips[1] == 1024 && 3072 + skips[2] == dropped && iabs(dropped - want) <= 1 &&
+              sv.push(5 * S + 4 * 21333333LL, 1024, false).skip == 0);
+    AsrcServo far(48000, 48000);
+    far.push(10 * S, 1024, true);
+    far.produced(1024);
+    far.push(5 * S, 1024, true);   // a DISCONT 5 s back: no capture latency moves that far
+    const std::vector<AsrcEvent> fev = far.take_events();
+    CHECK("a DISCONT 5 s back drops at most DROP_MAX_NS (1 s); the ratio slews what is left",
+          fev.size() == 1 && iabs(fev[0].dropped_ns - AsrcServo::DROP_MAX_NS) <= FRAME_NS &&
+              far.stats().ratio_ppb == -1000000 && far.stats().phase_err_ns < -3 * S);
     CHECK("names", !std::strcmp(asrc_event_name(AsrcEvent::Kind::relock), "relock") &&
                        !std::strcmp(asrc_event_name(AsrcEvent::Kind::ratio_out_of_bounds), "ratio-out-of-bounds") &&
                        !std::strcmp(asrc_state_name(AsrcServo::State::locked), "locked") &&
                        !std::strcmp(asrc_state_name(AsrcServo::State::acquiring), "acquiring"));
     const ClockLockConfig lc = asrc_lock_config(), stc;
-    CHECK("lock constants: the STC's (part 4.3) but the 50 ms re-lock step (part 4.5)",
-          lc.step_ns == 50 * MS && lc.rate_buckets_min == stc.rate_buckets_min && lc.bucket_ns == stc.bucket_ns &&
-              lc.rate_buckets_max == stc.rate_buckets_max && lc.rate_tau_ns == stc.rate_tau_ns &&
-              lc.offset_buckets == stc.offset_buckets && lc.acquire_ns == stc.acquire_ns &&
-              lc.slew_track_ppm == stc.slew_track_ppm && lc.step_hold_ns == stc.step_hold_ns &&
-              lc.rate_max_ppm == 1000);
+    CHECK("lock constants: the STC's (part 4.3) but the 50 ms re-lock step (part 4.5), two-sided (the STC's is not)",
+          lc.step_ns == 50 * MS && lc.step_falls && !stc.step_falls && lc.rate_buckets_min == stc.rate_buckets_min &&
+              lc.bucket_ns == stc.bucket_ns && lc.rate_buckets_max == stc.rate_buckets_max &&
+              lc.rate_tau_ns == stc.rate_tau_ns && lc.offset_buckets == stc.offset_buckets &&
+              lc.acquire_ns == stc.acquire_ns && lc.slew_track_ppm == stc.slew_track_ppm &&
+              lc.step_hold_ns == stc.step_hold_ns && lc.rate_max_ppm == 1000);
     const AsrcServoConfig dc;
     CHECK("servo constants: phase loop 10 s, ratio clamp +-1000 ppm (part 4.5)",
           dc.phase_tau_ns == 10 * S && dc.ratio_max_ppm == 1000);
@@ -502,15 +553,17 @@ void test_xrun() {
     }
 }
 
-// --- re-lock on the envelope, and only on a rise past 50 ms ---------------------------
+// --- re-lock on the envelope: either way past 50 ms -------------------------------------
 
+// A capture's PTS steps with its latency (a PipeWire quantum change): a rise past step_ns
+// leaves a forward gap, a fall drops the overlap; both re-lock once on the step's floor.
 void test_envelope() {
     std::printf("\n  PTS steps at 600 s with no DISCONT (1 ms jitter, +50 ppm)\n");
     struct Row {
         int64_t step;
         const char* name;
     };
-    const Row rows[] = {{60 * MS, "+60 ms"}, {30 * MS, "+30 ms"}, {-60 * MS, "-60 ms"}};
+    const Row rows[] = {{60 * MS, "+60 ms"}, {30 * MS, "+30 ms"}, {-60 * MS, "-60 ms"}, {-200 * MS, "-200 ms"}};
     for (const Row& w : rows) {
         Scenario sc;
         sc.ppb = 50000;
@@ -519,22 +572,43 @@ void test_envelope() {
         sc.gap_ns = w.step;
         sc.gap_discont = false;
         const Run r = run(sc);
-        std::printf("  %-34s relocks %d '%s' %.2f s after the step, jump %.3f ms, ratio %+.3f..%+.3f ppm,"
-                    " contiguous %s, e end %+.1f us\n", w.name, r.relocks, r.why,
-                    r.relock_at_ns < 0 ? -1.0 : (r.relock_at_ns - 600 * S) / 1e9, r.jump_ns / 1e6, r.ratio_lo / 1e3,
-                    r.ratio_hi / 1e3, yes(r.contiguous), r.err_end / 1e3);
+        std::printf("  %-34s relocks %d '%s' %.2f s after the step, jump %.3f ms, dropped %.3f ms (%llu frames),"
+                    " ratio %+.3f..%+.3f ppm, contiguous %s, e end %+.1f us, |e| > 1 fr last %.2f s after,"
+                    " total frames %+.3f fr\n", w.name, r.relocks, r.why,
+                    r.relock_at_ns < 0 ? -1.0 : (r.relock_at_ns - 600 * S) / 1e9, r.jump_ns / 1e6,
+                    r.event_drop_ns / 1e6, (unsigned long long)r.dropped, r.ratio_lo / 1e3, r.ratio_hi / 1e3,
+                    yes(r.contiguous), r.err_end / 1e3, (r.last_bad_ns - 600 * S) / 1e9, r.total_err_mf / 1000.0);
         g_all.add((int64_t)r.sum);
+        char name[200];
         if (w.step == 60 * MS) {
             CHECK("+60 ms step: one relock, reason envelope-step, step_hold (10 s) after it",
                   r.relocks == 1 && !std::strcmp(r.why, "envelope-step") && r.relock_at_ns >= 610 * S &&
                       r.relock_at_ns <= 612 * S && r.discont_in == 0);
             CHECK("+60 ms step: the output PTS jumps forward by the step (+-1 ms jitter), labels right after",
-                  r.jump_ns >= 59 * MS && r.jump_ns <= 61 * MS && in_frame(r.err_end, 48000));
+                  r.jump_ns >= 59 * MS && r.jump_ns <= 61 * MS && in_frame(r.err_end, 48000) && r.dropped == 0);
+        } else if (w.step > 0) {
+            CHECK("+30 ms step: no relock (not past 50 ms), one contiguous PTS counter, ratio in bounds",
+                  r.relocks == 0 && r.contiguous && r.ratio_lo >= -1000000 && r.ratio_hi <= 1000000);
         } else {
-            char name[160];
-            std::snprintf(name, sizeof name, "%s step: no relock (%s), one contiguous PTS counter, ratio in bounds",
-                          w.name, w.step > 0 ? "not past 50 ms" : "a fall is slewed");
-            CHECK(name, r.relocks == 0 && r.contiguous && r.ratio_lo >= -1000000 && r.ratio_hi <= 1000000);
+            // The bucket holding the step opens the run, so the hold ends 9..10 s after it.
+            const int64_t fall = -w.step;
+            std::snprintf(name, sizeof name, "%s step: one relock, reason envelope-step, step_hold (10 s) after it,"
+                          " no DISCONT", w.name);
+            CHECK(name, r.relocks == 1 && !std::strcmp(r.why, "envelope-step") && r.relock_at_ns >= 609 * S &&
+                            r.relock_at_ns <= 611 * S && r.discont_in == 0);
+            // The labels' slew during the hold (<= 20 ppm x 10 s) comes off the overlap.
+            std::snprintf(name, sizeof name, "%s step: no PTS jump (T0 = the end of the last output), the overlap"
+                          " dropped instead: the fall less the hold's slew, to 1 ms", w.name);
+            CHECK(name, r.jump_ns == 0 && r.event_jump_ns == 0 && r.contiguous &&
+                            iabs(r.event_drop_ns - fall) <= 1 * MS &&
+                            iabs((int64_t)r.dropped * S / 48000 - r.event_drop_ns) <= FRAME_NS);
+            std::snprintf(name, sizeof name, "%s step: labels within 1 frame of capture time by step_hold + 10 s"
+                          " after the step and to the end; the ratio never near its clamp", w.name);
+            CHECK(name, r.last_bad_ns < 620 * S && in_frame(r.err_end, 48000) && r.ratio_lo > -200000 &&
+                            r.ratio_hi < 200000);
+            std::snprintf(name, sizeof name, "%s step: frames out = house seconds x 48,000 +-1 frame (the overlap"
+                          " is not output twice)", w.name);
+            CHECK(name, iabs(r.total_err_mf) <= 1000 && iabs(r.count_err_mf) <= 1000);
         }
     }
 }

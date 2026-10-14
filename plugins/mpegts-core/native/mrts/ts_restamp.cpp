@@ -388,16 +388,14 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
             for (int pid : g.es)
                 if (pids_[pid]) pids_[pid]->unwrap.reset();
         pull_events(g);
+        // The one mapping its PES take, epoch choice included, outside the lead row.
         VirtualStc::Mapping m;
-        int64_t b = 0;
         if (!g.degraded) {
-            b = g.stc.source_stc_90k();
-            m = g.stc.map(PCR_MAP_PID, b, arrival_);
+            m = g.stc.map_pcr(arrival_);
             pull_events(g);
         }
         if (m.valid) {
-            // map() takes 90 kHz: the PCR's 27 MHz remainder is added back.
-            out_ns = m.house_ns + (pcr27_to_ns(b * 300 + pcr % 300) - pts90k_to_ns(b)) + g.pcr_shift;
+            out_ns = m.house_ns + g.pcr_shift;
         } else {
             out_ns = degraded_pcr(g);
             regen = true;
@@ -483,6 +481,12 @@ void RestampCore::on_es(Pid& p, PacketView& v, CcTracker::Result cc) {
     const bool payload = v.payload_off < PKT;
     const bool dup = cc == CcTracker::Result::Duplicate;
     if (payload && span_.held(v.pid)) {
+        if (dup && v.pusi) {
+            // A copy of the held packet (2.4.3.3): the decoder keeps the first, which
+            // waits for its continuation, so the copy alone goes.
+            drop_es(p, v.p, true);
+            return;
+        }
         // A header held for this PID's next payload packet: rewritten across both,
         // released in order (other PIDs passed meanwhile).
         uint8_t first[PKT];
@@ -615,8 +619,15 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
            trace_flags(di, p.cls), arrival);
     const int64_t arrival_h = arrival + base_;
     // house: the PTS on house time; key_house: what the guard compares (video: DTS).
-    int64_t house, key_house, out_pts, d = 0;
+    int64_t house, key_house, out_pts, d = 0, own = 0;
     uint32_t epoch = 0;
+    // The PES's own spacing from the PID's previous one, on source time (an edit or an
+    // epoch moves only the mapping): its length while the PID has no interval yet.
+    auto spacing = [&](int64_t src) {
+        own = p.have_src && src > p.last_src && src - p.last_src <= OUTAGE_NS ? src - p.last_src : 0;
+        p.have_src = true;
+        p.last_src = src;
+    };
     if (cfg_.mode == RestampConfig::Mode::fixed) {
         // house = PES - 1 h as received (+ the base time), moved by a constant in
         // ticks so the bytes keep the mux's exact spacing (part 4.2).
@@ -626,6 +637,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         d = h.dts >= 0 && sane ? d90 : 0;
         out_pts = floor_mod(h.pts + ns_to_pts90k(base_ + p.shift), PTS_WRAP);
         key_house = house + (p.cls == StreamClass::video ? pts90k_to_ns(d) : 0);
+        spacing(key_house);
     } else {
         const int64_t pu = unwrap_pes(p, h.pts);
         const int64_t du = p.unwrap.feed_dts(h.dts, pu);
@@ -634,6 +646,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         // epoch switch never takes a P frame onto the new mapping ahead of its B frames.
         const bool by_dts = p.cls == StreamClass::video && du != Unwrapper::NO_DTS;
         const int64_t s90 = by_dts ? du : pu;
+        spacing(pts90k_to_ns(s90));
         if (p.pid == g.ref_pid) {         // the warm reference lock of degraded mode
             g.stc.feed_ref_pes(p.pid, s90, arrival);
             pull_events(g);
@@ -661,13 +674,14 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     if (p.have_last && key <= p.last_key) {
         // Overlap (R18): what the bus already carries is not written again, so no
         // PID's time steps back. Video compares DTS, the rest PTS.
+        const int64_t len = p.interval > 0 ? p.interval : own;
         p.unit = Pid::Unit::drop;
         p.clean = false;
         p.run_pes++;
-        p.run_ns += p.interval;
+        p.run_ns += len;
         p.dropped_pes++;
         g.dropped_pes++;
-        g.dropped_ns += p.interval;
+        g.dropped_ns += len;
         return false;
     }
     const char* why = nullptr;

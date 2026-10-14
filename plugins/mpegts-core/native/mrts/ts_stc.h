@@ -27,6 +27,7 @@ struct ClockLockConfig {
     int64_t slew_track_ppm = 20;
     int64_t step_ns = 20000000;                // envelope step: the minimum delay rose this much
     int64_t step_hold_ns = 10000000000LL;      // ... for this long
+    bool step_falls = false;                   // ... or fell this much (mrasrc: two-sided)
     int64_t lost_ns = 5000000000LL;            // no sample this long: phase lost
     int64_t residual_window_ns = 2000000000;   // residual stats window (stats-interval-ms)
 };
@@ -75,19 +76,29 @@ class ClockLock {
     Residual residual() const;
     // β travel since the phase became locked: how far the minimum delay wandered.
     int64_t offset_drift_ns() const { return locked_ ? travel_ns_ - travel_at_lock_ : 0; }
-    // One-sided: a rise of the minimum delay makes content late, so it re-locks;
-    // a fall only adds latency and is slewed (no overlap, nothing dropped).
+    // A rise of the minimum delay makes content late, so it re-locks; a fall only adds
+    // latency and is slewed (no overlap, nothing dropped), unless step_falls: a capture
+    // labelled on its floor is late by any fall.
     bool envelope_step() const { return step_fired_; }
     int64_t step_size_ns() const { return step_size_; }
     // New epoch from the next sample; ε stays as the starting guess with keep_rate.
     void relock(bool keep_rate);
+    // After a step: the mapping onto the floor the step's buckets measured, at once,
+    // keeping ε and the phase (mrasrc). A program's STC never steps; it relocks.
+    void step_to_floor();
     const ClockLockConfig& config() const { return cfg_; }
 
   private:
+    // The rate fit runs on one floor level: a bucket off it by more than step_ns is a
+    // candidate level, which replaces the fit's after step_hold_ns or is left out.
+    enum class Level : uint8_t { fit, candidate, out };
     struct Point {
         int64_t sigma, house;
+        Level level;
+        int64_t eps = 0;   // the rate in force when it closed: what judges against it
     };
     void close_bucket(int64_t sigma_now, int64_t house_now);
+    void classify(int64_t house_now);
     bool fit(int64_t* ppb, int* n) const;
     int64_t eps_ppb() const;
 
@@ -96,8 +107,10 @@ class ClockLock {
     StcLine line_;
     int64_t origin_h_ = 0;            // bucket grid of this epoch
     int64_t bucket_ = 0;              // index of the open bucket
-    Point cur_{0, 0};                 // its min-d sample
+    Point cur_{0, 0, Level::fit};     // its min-d sample
     std::deque<Point> hist_;          // closed buckets, newest last
+    bool cand_ = false;               // a candidate level is open since cand_h_
+    int64_t cand_h_ = 0;
     bool rate_known_ = false;
     int64_t eps_q16_ = 0;             // ε applied, ppb * 2^16
     int rate_n_ = 0;                  // buckets behind the ε in force
@@ -106,7 +119,8 @@ class ClockLock {
     int64_t fit_ppb_ = 0;
     int64_t epoch_h_ = 0;
     bool locked_ = false;
-    bool run_ = false;                // buckets above step_ns since run_start_h_
+    bool run_ = false;                // buckets past step_ns since run_start_h_
+    bool run_fall_ = false;           // ... below the line (step_falls)
     int64_t run_start_h_ = 0;
     int64_t run_min_ = 0;
     bool step_fired_ = false;
@@ -256,6 +270,10 @@ class VirtualStc {
     // its arrival in degraded mode.
     void feed_ref_pes(int pid, int64_t pts90k_unwrapped, int64_t arrival_ns);
     Mapping map(int pid, int64_t pts90k_unwrapped, int64_t arrival_ns);
+    // The PCR last fed, mapped as a PES is (the straddle rule, on a lead history of its
+    // own) but outside the lead row: its lag is minus the delay above the floor, which
+    // the envelope step judges, not a PTS-PCR lead (part 4.3). Invalid before a PCR.
+    Mapping map_pcr(int64_t arrival_ns);
     void tick(int64_t now_ns);
     void relock();   // external trigger (the PMT's PCR PID changed): the next PCR opens an epoch
     State state() const;
@@ -273,16 +291,19 @@ class VirtualStc {
         bool live;
         StcLine line;           // frozen copy once superseded
         int64_t lo, hi, last_h;
+        bool stepped = false;   // closed by an envelope step: the floor moved, not the timeline
     };
     struct PidLeads {
         std::deque<std::pair<int64_t, int64_t>> w;   // (arrival, lead) under the output mapping
         bool has_before = false;
         int64_t before = 0;                         // median at the last epoch switch
     };
+    static constexpr int PCR_KEY = -1;   // map_pcr's lead history: no PID is negative
     const ClockLock& lock_of(Src s) const { return s == Src::pcr ? pcr_ : ref_; }
+    Mapping map_sigma(int pid, int64_t sigma, int64_t h, bool lead_row);
     int64_t house_in(const Epoch& e, int64_t sigma) const;
     void freeze_current();
-    void open_epoch(Src src, int64_t sigma, int64_t h);
+    void open_epoch(Src src, int64_t sigma, int64_t h, bool step = false);
     void grow_epoch(Src src, int64_t sigma, int64_t h);
     void check_failure(int64_t h);
     void enter_degraded(int64_t h);

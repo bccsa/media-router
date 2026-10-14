@@ -33,6 +33,7 @@ int64_t half_frames_ns(int64_t h, int64_t hz) {
 ClockLockConfig asrc_lock_config() {
     ClockLockConfig c;
     c.step_ns = 50000000;
+    c.step_falls = true;
     return c;
 }
 
@@ -54,7 +55,16 @@ int64_t AsrcServo::pts_at(uint64_t m) const { return t0_ + half_frames_ns(2 * (i
 // The resampler emits every output its input allows, so the next one sits within a frame
 // of N - delay: its mean, N - delay - 1/2 (GStreamer's cubic table centres it 1/8 frame
 // earlier still, 2.6 us at 48 kHz). Before the first output it is the epoch's first.
-int64_t AsrcServo::next_pos2() const { return std::max(2 * (n_in_ - delay_) - 1, start2_); }
+int64_t AsrcServo::next_pos2() const {
+    // A drop still to come counts as made: the frames held back before it are the splice.
+    return std::max(2 * (n_in_ + drop_left_ - delay_) - 1, start2_);
+}
+
+// Input frames spanning `ns` of house time at the lock's rate, rounded down so the next
+// output's content lies at most a frame before the end of the last.
+int64_t AsrcServo::frames_over(int64_t ns) const {
+    return clamp64(ns, 0, DROP_MAX_NS) * in_hz_ / (E9 + lock_.ppb());
+}
 
 int64_t AsrcServo::measure_phase() const {
     return sat_sub(lock_.house_of(half_frames_ns(next_pos2(), in_hz_)), next_pts());
@@ -74,15 +84,21 @@ AsrcServo::State AsrcServo::state() const {
     return lock_.phase() == ClockLock::Phase::locked ? State::locked : State::acquiring;
 }
 
-// The new T0 is where the lock now puts the next output, never before the end of the
-// last one: the output PTS only jumps forward (a gap downstream).
+// The new T0 is where the lock puts the next output, never before the end of the last:
+// the PTS only jumps forward (a gap downstream). Input captured before that end overlaps
+// what left (the floor fell) and is dropped, as the ingest guard does (R18).
 void AsrcServo::open_epoch(const char* why) {
     const int64_t end = next_pts();
+    const int64_t at = lock_.house_of(half_frames_ns(next_pos2(), in_hz_));
+    if (at < end) drop_left_ += frames_over(sat_sub(end, at));
     start2_ = next_pos2();
     m_ = 0;
-    t0_ = std::max(end, lock_.house_of(half_frames_ns(start2_, in_hz_)));
+    const int64_t first = lock_.house_of(half_frames_ns(start2_, in_hz_));
+    t0_ = std::max(end, first);
     relocks_++;
-    events_.push_back(AsrcEvent{AsrcEvent::Kind::relock, why, t0_, t0_ - end});
+    AsrcEvent e{AsrcEvent::Kind::relock, why, t0_, t0_ - end};
+    e.dropped_ns = first - at;
+    events_.push_back(e);
 }
 
 // Judged on the device rate fit, not on ε_cmd: acquisition and a relock's catch-up
@@ -114,8 +130,9 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
         }
         lock_.feed(sigma, pts_ns);
         if (!why && lock_.envelope_step()) {
-            lock_.relock(true);
-            lock_.feed(sigma, pts_ns);
+            // step_hold_ns of the new floor is measured: the lock moves onto it, where a
+            // relock would start from this one PTS and its jitter.
+            lock_.step_to_floor();
             why = "envelope-step";
         }
         if (why) {
@@ -128,8 +145,11 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
     const int64_t lim = cfg_.ratio_max_ppm * 1000;
     const int64_t p = clamp64(phase_err_, -9 * E9, 9 * E9);   // far past the clamp either way
     eps_cmd_ = clamp64(lock_.ppb() + floor_div(p * E9, cfg_.phase_tau_ns), -lim, lim);
+    const uint32_t skip = (uint32_t)std::min<int64_t>(drop_left_, frames);
+    drop_left_ -= skip;
+    dropped_ += skip;
     n_in_ += frames;
-    return Command{in_rate(), (int32_t)(out_hz_ * 1000), relocked};
+    return Command{in_rate(), (int32_t)(out_hz_ * 1000), relocked, skip};
 }
 
 void AsrcServo::produced(uint32_t frames) {
@@ -147,6 +167,7 @@ AsrcServo::Stats AsrcServo::stats() const {
     s.in_frames = (uint64_t)n_in_;
     s.out_frames = n_out_;
     s.discont_in = discont_in_;
+    s.dropped_frames = dropped_;
     return s;
 }
 

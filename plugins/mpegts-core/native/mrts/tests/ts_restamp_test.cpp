@@ -92,7 +92,8 @@ struct Gen {
     int64_t pmt_change_at = -1;           // PMT v1: teletext out of the table (still sent), audio-3 in
     int64_t pcr_move_at = -1;             // PMT v2: the PCR on a PID of its own
     int split_every = 0;                  // every n-th audio-2 header split over two packets
-    int dup_every = 0;                    // every n-th audio-1 packet sent twice
+    int dup_every = 0;                    // every n-th packet of dup_pid sent twice
+    int dup_pid = PID_A1;
     bool dup_cont = false;                // each split header's continuation sent twice
     bool program2 = false;                // PROGRAM2 in the PAT, on its own clock
     int64_t gap_from = -1, gap_to = -1;   // audio-2 PES of these slots never made
@@ -318,7 +319,7 @@ Stream generate(const Gen& g) {
         int n = 0;
         for (const Pkt& p : raw) {
             out.push_back(p);
-            if (p.pid == PID_A1 && ++n % g.dup_every == 0) {
+            if (p.pid == g.dup_pid && ++n % g.dup_every == 0) {
                 out.push_back(p);
                 out.back().copy = true;
             }
@@ -556,8 +557,8 @@ Ana analyze(const Case& c, const Out& o, bool strict_cc) {
     }
     for (size_t i = 0; i < st.pk.size(); i++) {
         if (!st.pk[i].held || pos[i] < 0) continue;
-        size_t k = i + 1;
-        while (k < st.pk.size() && !(st.pk[k].pid == st.pk[i].pid && (st.pk[k].b[3] & 0x10))) k++;
+        size_t k = i + 1;   // its continuation: the PID's next payload packet that is no copy
+        while (k < st.pk.size() && !(st.pk[k].pid == st.pk[i].pid && (st.pk[k].b[3] & 0x10) && !st.pk[k].copy)) k++;
         if (k == st.pk.size() || pos[k] != pos[i] + 1) a.ordered = false;
     }
 
@@ -716,7 +717,7 @@ std::vector<Mapped> replay_mapping(const Case& c, int pcr_pid, int ref_pid) {
                 if (!have_pcr)
                     for (auto& kv : uw) kv.second.reset();
                 have_pcr = true;
-                vs.map(RestampCore::PCR_MAP_PID, vs.source_stc_90k(), d.arrival);
+                vs.map_pcr(d.arrival);
             }
             if (p.pes < 0 || !ts_pusi(p.b.data())) continue;
             const PesInfo& in = c.st.pes[(size_t)p.pes];
@@ -1520,9 +1521,30 @@ void test_discontinuity_straddle(const char* label, int64_t jump, bool flag, con
     CHECK("discontinuity: CC intact, bytes as the input's", aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
 }
 
+// The path's floor delay at a datagram's send time, as datagrams() makes it.
+int64_t floor_at(const Gen& g, int64_t send) {
+    if (g.delay_from < 0 || send < g.delay_from) return 0;
+    const int64_t at = (send - g.delay_from) / US, len = std::max<int64_t>(1, g.delay_ramp / US);
+    return g.delay_ramp > 0 && at < len ? g.delay_rise * at / len : g.delay_rise;
+}
+
+// Each output PES against its source-natural landing on the floor in force when the PCR
+// equal to its PTS was sent: house - that, ns (negative: it lands before that floor's
+// arrival, so content arrives after its house time).
+std::vector<std::pair<int64_t, int64_t>> landing(const Case& c, const Gen& g, const Out& o, const Ana& a) {
+    std::vector<std::pair<int64_t, int64_t>> v;   // (arrival of the PES, error)
+    for (const OutPes& p : a.pes) {
+        if (p.pes < 0) continue;
+        const PesInfo& in = c.st.pes[(size_t)p.pes];
+        const int64_t want = model(c, in.slot_pts) + floor_at(g, in.slot_pts);
+        v.push_back({o.arrival_of_out[p.at], house_from_mux_pts(p.pts, want) - want});
+    }
+    return v;
+}
+
 // The path's floor delay rises by `rise` at 30 s for good (over `ramp`; 0: at once): a
 // re-route. The program re-locks for it (an envelope step after its 10 s hold, a leap at
-// once above 250 ms), never degrades, drops nothing, and lands later by about the rise.
+// once above 250 ms), never degrades, drops nothing, and lands later by the rise.
 void test_reroute(const char* label, int64_t rise, int64_t ramp, const char* reason) {
     Gen g;
     g.secs = 75;
@@ -1553,75 +1575,115 @@ void test_reroute(const char* label, int64_t rise, int64_t ramp, const char* rea
     CHECK("re-route: nothing dropped; one epoch gap per PID, before the PES that shows it",
           a.stats.programs[0].dropped_pes == 0 && one_each(n, {PID_V, PID_A1, PID_A2, PID_T}) && epoch_only &&
               gaps_placed(a, aa));
-    CHECK("re-route: ... the gaps of one size (one mapping moves the program), about the rise",
-          ghi - glo <= 1 * MS && glo >= rise / 2 && ghi <= rise + 10 * MS);
-    // Once the old range is gone (4 s after its last PCR) every PES takes the new floor.
+    // Every PID leaves the old epoch at the relock: one gap, the rise plus the delay of the
+    // new epoch's first PCR above the floor (where its acquisition starts).
+    CHECK("re-route: ... the gaps of one size, the rise to 10 ms",
+          ghi - glo <= 1 * MS && iabs(glo - rise) <= 10 * MS && iabs(ghi - rise) <= 10 * MS);
     int after = 0, near = 0;
     int64_t worst = 0;
-    for (const OutPes& p : aa.pes) {
-        if (p.pes < 0 || a.arrival_of_out[p.at] < relock_h + 5 * S) continue;
-        const int64_t want = model(c, c.st.pes[(size_t)p.pes].slot_pts) + rise;
-        const int64_t e = house_from_mux_pts(p.pts, want) - want;
+    for (const auto& x : landing(c, g, a, aa)) {
+        if (x.first < relock_h + 5 * S) continue;
         after++;
-        near += iabs(e) < rise / 2;
-        if (iabs(e) > iabs(worst)) worst = e;
+        near += iabs(x.second) <= 1 * MS;
+        if (iabs(x.second) > iabs(worst)) worst = x.second;
     }
-    // PTS - PCR, which a consumer's tsdemux places by: never under the source's (the PCR
-    // takes its PES's epoch) but for the acquisition slew over the lead (1.2 ms); the rise
-    // over it while the PES moved and the PCR not yet, for under the video's 600 ms lead.
+    // PTS - PCR, which a consumer's tsdemux places by: the PCR moves with its PES, so the
+    // source's but for the acquisition slew over the lead (1.2 ms).
     int64_t mlo = INT64_MAX, mhi = INT64_MIN;
-    int wider = 0;
     for (const auto& x : pts_pcr_moves(c, a, aa)) {
         mlo = std::min(mlo, x.second);
         mhi = std::max(mhi, x.second);
-        wider += x.second > rise / 2;
     }
     std::printf("  re-route: gaps %.3f..%.3f ms; from 5 s after the relock %d/%d PES on the new floor (worst "
-                "%+.3f ms); PTS - PCR moved %+.3f..%+.3f ms (%d video PES over half the rise)\n",
-                glo / 1e6, ghi / 1e6, near, after, worst / 1e6, mlo / 1e6, mhi / 1e6, wider);
-    CHECK("re-route: from 5 s after the relock every PES on the new floor", after > 3000 && near == after);
-    if (!step)   // a leap re-locks at once: nothing of the rise is in the rate fit
-        CHECK("re-route (leap): ... at its source-natural place, within 1 ms", iabs(worst) <= 1 * MS);
-    CHECK("re-route: PTS - PCR never under the source's, at most the rise over it, for under the video's lead",
-          mlo >= -1250 * US && mhi <= rise + 1250 * US && wider <= 17);
+                "%+.3f ms); PTS - PCR moved %+.3f..%+.3f ms\n",
+                glo / 1e6, ghi / 1e6, near, after, worst / 1e6, mlo / 1e6, mhi / 1e6);
+    CHECK("re-route: from 5 s after the relock every PES at its source-natural place on the new floor, within 1 ms",
+          after > 3000 && near == after);
+    CHECK("re-route: PTS - PCR the source's, to the acquisition slew (1.25 ms)", mlo >= -1250 * US && mhi <= 1250 * US);
     CHECK("re-route: monotonic, CC intact, bytes as the input's",
           monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
 }
 
-// A queue builds up: the floor delay rises 200 ms over 20 s from 30 s, so the program
-// re-locks by envelope steps while the delay still moves. The straddle tie-break then
-// flips PIDs between the two epochs (VirtualStc, open): what the core owns is checked,
-// the drops accounted at each PID's PES length and every marker in its place.
-void test_queue_ramp() {
+// A queue builds up: the floor delay rises by `rise` over `ramp` from 30 s, so the program
+// re-locks by envelope steps while the delay still moves. Each relock moves every PID to
+// the new epoch at once: nothing dropped, one gap per PID per relock, PTS - PCR kept.
+void test_queue_ramp(const char* label, int64_t rise, int64_t ramp, int64_t secs) {
     Gen g;
-    g.secs = 75;
+    g.secs = secs;
     g.delay_from = 30 * S;
-    g.delay_rise = 200 * MS;
-    g.delay_ramp = 20 * S;
+    g.delay_rise = rise;
+    g.delay_ramp = ramp;
     const Case c = make_case(g);
     const Out a = run(c, stc_cfg());
-    const Ana aa = analyze(c, a, false);
-    uint64_t dropped = 0;
-    for (const RestampCore::PidStats& s : a.stats.pids) dropped += s.dropped_pes;
-    std::printf("  queue +200 ms over 20 s: %d relocks, %llu PES dropped by the epoch flips, %zu gaps\n",
-                count_events(a, Ev::Kind::relock), (unsigned long long)dropped, a.gaps.size());
-    CHECK("queue ramp: re-locked by envelope steps, never degraded",
-          count_events(a, Ev::Kind::relock) >= 1 &&
-              count_events(a, Ev::Kind::relock) == count_events(a, Ev::Kind::relock, "envelope-step") &&
-              count_events(a, Ev::Kind::degraded) == 0);
-    // The mapped PES length is the source's to the clock's rate (clamped at 0.1 %).
-    bool acct = dropped > 0;
-    for (const int pid : kPids) {
-        const RestampCore::PidStats* s = pid_stats(a, pid);
-        int64_t ev = 0;
-        for (const Ev& e : a.events)
-            if (e.kind == Ev::Kind::overlap && e.pid == pid) ev += e.dropped_ns;
-        const int64_t want = s ? (int64_t)s->dropped_pes * period_of(pid) : -1;
-        acct &= s && iabs(ev - want) <= want / 1000 + 50 * US;
+    const Ana aa = analyze(c, a, true);
+    print_events(label, a, c);
+    const int relocks = count_events(a, Ev::Kind::relock);
+    int64_t last_relock = 0;
+    for (const Ev& e : a.events)
+        if (e.kind == Ev::Kind::relock) last_relock = e.house_ns;
+    std::map<int, int> n;
+    bool epoch_only = true;
+    for (const RestampCore::Gap& gp : a.gaps) {
+        n[gp.pid]++;
+        epoch_only &= !std::strcmp(gp.reason, "epoch");
     }
-    CHECK("queue ramp: drops accounted at the PID's PES length (never a jump between epochs)", acct);
-    CHECK("queue ramp: every marker right before the PES that shows it; monotonic, CC intact",
-          gaps_placed(a, aa) && monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.ordered);
+    int after = 0, near = 0;
+    for (const auto& x : landing(c, g, a, aa)) {
+        if (x.first < last_relock + 5 * S) continue;
+        after++;
+        near += iabs(x.second) <= 1 * MS;
+    }
+    int64_t mlo = INT64_MAX, mhi = INT64_MIN;
+    for (const auto& x : pts_pcr_moves(c, a, aa)) {
+        mlo = std::min(mlo, x.second);
+        mhi = std::max(mhi, x.second);
+    }
+    std::printf("  queue: %d relocks, %llu PES dropped, %zu gaps; after the last relock %d/%d PES on the floor; "
+                "PTS - PCR moved %+.3f..%+.3f ms\n",
+                relocks, (unsigned long long)a.stats.programs[0].dropped_pes, a.gaps.size(), near, after, mlo / 1e6,
+                mhi / 1e6);
+    CHECK("queue ramp: re-locked by envelope steps, never degraded",
+          relocks >= 1 && relocks == count_events(a, Ev::Kind::relock, "envelope-step") &&
+              count_events(a, Ev::Kind::degraded) == 0);
+    bool per_relock = epoch_only && n.size() == 4;
+    for (const int pid : kPids) per_relock &= n[pid] == relocks;
+    CHECK("queue ramp: nothing dropped; per relock one epoch gap per PID, right before the PES that shows it",
+          a.stats.programs[0].dropped_pes == 0 && per_relock && gaps_placed(a, aa));
+    CHECK("queue ramp: from 5 s after the last relock every PES on the floor within 1 ms; PTS - PCR the source's",
+          after > 1000 && near == after && mlo >= -1250 * US && mhi <= 1250 * US);
+    CHECK("queue ramp: monotonic, CC intact, bytes as the input's",
+          monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
+}
+
+// The floor falls by `fall` at 30 s (over `ramp`; 0: at once), inside the first rate
+// fit's window: a faster path, or a queue draining. One-sided (P1-1): no relock, the
+// mapping slews down, so content lands later than it could but never late.
+void test_floor_fall(const char* label, int64_t fall, int64_t ramp) {
+    Gen g;
+    g.secs = 120;
+    g.delay_from = 30 * S;
+    g.delay_rise = fall;
+    g.delay_ramp = ramp;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, true);
+    print_events(label, a, c);
+    int64_t lo = INT64_MAX, hi = INT64_MIN;
+    for (const auto& x : landing(c, g, a, aa)) {
+        lo = std::min(lo, x.second);
+        hi = std::max(hi, x.second);
+    }
+    const VirtualStc::Stats& k = a.stats.programs[0].clock;
+    std::printf("  fall: state %d epoch %u ppb %lld; house - floor landing %+.3f..%+.3f ms\n", (int)k.state, k.epoch,
+                (long long)k.ppb, lo / 1e6, hi / 1e6);
+    CHECK("floor fall: never degraded (the rate row), no relock, the source's rate kept",
+          a.events.size() == (size_t)count_events(a, Ev::Kind::psi_change) && k.state == VirtualStc::State::locked &&
+              k.epoch == 1 && iabs(k.ppb - 30000) <= 20000);
+    CHECK("floor fall: no PES lands before its floor's arrival (never late), none more than the fall later",
+          lo >= -1 * MS && hi <= iabs(fall) + 6 * MS);
+    CHECK("floor fall: nothing dropped, no gap, monotonic, CC intact, bytes as the input's",
+          a.stats.programs[0].dropped_pes == 0 && a.gaps.empty() && monotonic(aa) && aa.cc_lost == 0 && aa.matched &&
+              aa.atomic && aa.ordered);
 }
 
 void test_outage() {
@@ -1957,6 +2019,68 @@ void test_trace_mid_stream() {
                                                                               v.back().arrival_ns > c.dg[c.dg.size() / 2].arrival);
 }
 
+// Every 4th audio-2 packet sent twice with every 3rd header split, so some copies are of
+// a held header's first packet: the original waits for its continuation, the copy goes.
+void test_dup_split_held() {
+    Gen g;
+    g.split_every = 3;
+    const Case base = make_case(g);
+    g.dup_every = 4;
+    g.dup_pid = PID_A2;
+    const Case c = make_case(g);
+    const Out a0 = run(base, stc_cfg()), a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, true);
+    int held = 0, held_gone = 0;
+    for (size_t i = 0; i < c.st.pk.size(); i++) {
+        if (!c.st.pk[i].copy || !c.st.pk[i].held) continue;
+        held++;
+        held_gone += aa.removed[i] != 0;
+    }
+    auto a2_out = [](const Case& k, const Ana& x) {   // distinct PES: a kept copy repeats its header
+        int n = 0;
+        for (size_t i = 0; i < k.st.pes.size(); i++) n += k.st.pes[i].pid == PID_A2 && x.out_of_pes[i] >= 0;
+        return n;
+    };
+    const int n0 = a2_out(base, analyze(base, a0, true)), n1 = a2_out(c, aa);
+    std::map<int, int64_t> last;   // per PID over distinct PES (a kept copy repeats its key)
+    bool forward = true;
+    for (const OutPes& q : aa.pes) {
+        if (q.in >= 0 && c.st.pk[(size_t)q.in].copy) continue;
+        if (last.count(q.pid)) forward &= fold33(key33(q) - last[q.pid]) > 0;
+        last[q.pid] = key33(q);
+    }
+    std::printf("  held split headers sent twice: %d copies, %d removed; audio-2 PES out %d (%d without copies),"
+                " %llu headers rewritten across the split (%llu), broken %llu\n",
+                held, held_gone, n1, n0, (unsigned long long)a.stats.header_spans,
+                (unsigned long long)a0.stats.header_spans, (unsigned long long)a.stats.broken_spans);
+    CHECK("dup of a held split header: every copy removed, the original joined to its continuation (none broken)",
+          held > 100 && held_gone == held && a.stats.broken_spans == 0);
+    CHECK("dup of a held split header: every audio-2 PES out as without the copies, every split header rewritten",
+          n1 == n0 && n0 > 2500 && a.stats.header_spans == a0.stats.header_spans &&
+              a.stats.programs[0].dropped_pes == 0);
+    CHECK("dup of a held split header: CC continuous, monotonic, no copy that differs, bytes as the input's",
+          aa.cc_lost == 0 && aa.dup_differ == 0 && forward && aa.matched && aa.atomic && aa.ordered);
+}
+
+// O -300 ms at 60 ms, after each PID's first mapped PES and before its second: the first
+// overlap run comes before any interval is learned, so its length is the PES's own spacing.
+void test_first_overlap() {
+    const Case c = make_case(Gen());
+    const Out m = run(c, stc_cfg(), at(60 * MS, [](RestampCore& rc) { rc.set_offset(-300 * MS); }));
+    std::map<int, int64_t> ev;
+    for (const Ev& e : m.events)
+        if (e.kind == Ev::Kind::overlap) ev[e.pid] += e.dropped_ns;
+    std::printf("  O -300 ms at 60 ms: dropped video %llu (%.0f ms), audio-1 %llu (%.0f ms), audio-2 %llu (%.0f ms),"
+                " teletext %llu (%.0f ms)\n",
+                (unsigned long long)pid_stats(m, PID_V)->dropped_pes, ev[PID_V] / 1e6,
+                (unsigned long long)pid_stats(m, PID_A1)->dropped_pes, ev[PID_A1] / 1e6,
+                (unsigned long long)pid_stats(m, PID_A2)->dropped_pes, ev[PID_A2] / 1e6,
+                (unsigned long long)pid_stats(m, PID_T)->dropped_pes, ev[PID_T] / 1e6);
+    CHECK("first overlap run: 300 ms dropped per PID (to one PES), the events' length the PES spacing, not 0",
+          dropped_about(m, 300 * MS, {PID_V, PID_A1, PID_A2, PID_T}) &&
+              m.stats.programs[0].dropped_ns_total == ev[PID_V] + ev[PID_A1] + ev[PID_A2] + ev[PID_T]);
+}
+
 void test_dup_split_cont() {
     // Each split header's continuation sent twice. The core rewrote the first copy across
     // the split, which the second cannot match, so the second goes (a copy never advances CC).
@@ -1998,10 +2122,17 @@ int main() {
     // audio PES's forward, so only the PCR's period lands them on house time.
     test_discontinuity_straddle("flagged jump 2^32 ticks - 30 ms at 30 s, audio-1 straddling",
                                 pts90k_to_ns(1LL << 32) - 30 * MS, true, "discontinuity");
-    // Re-routes: a rise the envelope step re-locks after its hold, and a leap (> 250 ms).
+    // Re-routes: rises the envelope step re-locks after its hold, also past the lead row's
+    // -200 ms (a PCR's lag is no lead), a queue building up as fast, and a leap (> 250 ms).
     test_reroute("re-route +150 ms at 30 s", 150 * MS, 0, "envelope-step");
+    test_reroute("re-route +230 ms at 30 s", 230 * MS, 0, "envelope-step");
+    test_reroute("queue +240 ms over 3 s from 30 s", 240 * MS, 3 * S, "envelope-step");
     test_reroute("re-route +300 ms at 30 s (a leap)", 300 * MS, 0, "leap");
-    test_queue_ramp();
+    // Queues building at 10 and 20 ms/s: at 20 ms/s the relocks' epochs lie ~290 ms apart.
+    test_queue_ramp("queue +200 ms over 20 s from 30 s", 200 * MS, 20 * S, 75);
+    test_queue_ramp("queue +600 ms over 30 s from 30 s", 600 * MS, 30 * S, 100);
+    test_floor_fall("floor -100 ms at 30 s", -100 * MS, 0);
+    test_floor_fall("queue drains 100 ms over 30 s from 30 s", -100 * MS, 30 * S);
     test_outage();
     test_degraded();
     test_duplicates();
@@ -2010,5 +2141,7 @@ int main() {
     test_no_pts_edit();
     test_gap_position();
     test_dup_split_cont();
+    test_dup_split_held();
+    test_first_overlap();
     return test_summary("ts_restamp");
 }

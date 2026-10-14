@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstddef>
+#include <cstring>
 
 namespace mrts {
 namespace {
@@ -140,7 +141,7 @@ void ClockLock::feed(int64_t sigma, int64_t h) {
         line_ = StcLine{sigma, h, eps_ppb(), 0, 0};
         origin_h_ = epoch_h_ = h;
         bucket_ = 0;
-        cur_ = Point{sigma, h};
+        cur_ = Point{sigma, h, Level::fit};
         last_sample_h_ = last_seen_h_ = h;
         resid_.push_back({h, 0});
         return;
@@ -154,20 +155,23 @@ void ClockLock::feed(int64_t sigma, int64_t h) {
     if (k > bucket_) {
         close_bucket(sigma, h);
         bucket_ = k;
-        cur_ = Point{sigma, h};
+        cur_ = Point{sigma, h, Level::fit};
     } else if (sat_sub(h, sigma) < sat_sub(cur_.house, cur_.sigma)) {
-        cur_ = Point{sigma, h};
+        cur_ = Point{sigma, h, Level::fit};
     }
 }
 
 bool ClockLock::fit(int64_t* ppb, int* n_out) const {
-    if ((int)hist_.size() < cfg_.rate_buckets_min) return false;
-    const Point& z = hist_.back();
+    size_t zi = hist_.size();
+    while (zi > 0 && hist_[zi - 1].level != Level::fit) zi--;
+    if (zi == 0) return false;
+    const Point& z = hist_[zi - 1];
     const int64_t dz = sat_sub(z.house, z.sigma);
     const int64_t span = std::min(cfg_.rate_buckets_max * cfg_.bucket_ns, FIT_X_LIM);
     std::vector<int64_t> X, Y;
-    for (size_t i = hist_.size(); i-- > 0 && (int)X.size() < cfg_.rate_buckets_max;) {
+    for (size_t i = zi; i-- > 0 && (int)X.size() < cfg_.rate_buckets_max;) {
         const Point& p = hist_[i];
+        if (p.level != Level::fit) continue;
         if (sat_sub(z.house, p.house) > span) break;   // an outage must not stretch the window
         const int64_t dx = sat_sub(p.sigma, z.sigma);
         if (dx < -FIT_X_LIM || dx > FIT_X_LIM) continue;
@@ -192,6 +196,61 @@ bool ClockLock::fit(int64_t* ppb, int* n_out) const {
     return true;
 }
 
+// A bucket joins the fit's level within step_ns of the level's bucket `lag` before it,
+// at that bucket's rate. lag: the most buckets in which no rate error within the clamps
+// (2 x rate_max) reaches step_ns, so no fit is locked out and a step or faster drift shows.
+void ClockLock::classify(int64_t house_now) {
+    Point& b = hist_.back();
+    const int64_t step = cfg_.step_ns;
+    const int64_t drift = 2 * cfg_.rate_max_ppm * cfg_.bucket_ns / 1000000;   // per bucket
+    const int lag = (int)clamp64(step / std::max<int64_t>(drift, 1), 1, cfg_.rate_buckets_max);
+    const Point* ref = nullptr;
+    int seen = 0;
+    for (size_t i = hist_.size() - 1; i-- > 0 && seen < lag;)
+        if (hist_[i].level == Level::fit) {
+            ref = &hist_[i];
+            seen++;
+        }
+    // Its own rate, so a ramp's first buckets cannot bend the fit that judges the rest.
+    const int64_t eps = ref ? ref->eps : 0;
+    auto u = [&](const Point& p) {   // minimum delay at b's σ along that rate
+        return sat_sub(sat_sub(p.house, p.sigma), mul_ppb(sat_sub(p.sigma, b.sigma), eps));
+    };
+    auto set = [this](Level from, Level to) {
+        for (Point& p : hist_)
+            if (p.level == from) p.level = to;
+    };
+    int64_t cmin = INT64_MAX, cmax = INT64_MIN;
+    for (const Point& p : hist_)
+        if (p.level == Level::candidate) {
+            cmin = std::min(cmin, u(p));
+            cmax = std::max(cmax, u(p));
+        }
+    const int64_t ub = u(b);
+    if (!ref || (sat_sub(ub, u(*ref)) <= step && sat_sub(u(*ref), ub) <= step)) {
+        b.level = Level::fit;   // the first bucket opens the level
+        if (cand_) set(Level::candidate, Level::out);   // a burst, or a dip, that passed
+        cand_ = false;
+        return;
+    }
+    // A candidate is a level only while its buckets lie within step_ns of each other.
+    if (!cand_ || sat_sub(ub, cmin) > step || sat_sub(cmax, ub) > step) {
+        set(Level::candidate, Level::out);
+        cand_ = true;
+        cand_h_ = sat_add(origin_h_, bucket_ * cfg_.bucket_ns);   // start of this bucket
+    }
+    b.level = Level::candidate;
+    // Held step_hold_ns, the floor moved (a re-route either way): the fit restarts at
+    // this bucket, as the candidate may open on the tail of a ramp.
+    if (sat_sub(house_now, cand_h_) >= cfg_.step_hold_ns) {
+        set(Level::fit, Level::out);
+        set(Level::candidate, Level::out);
+        b.level = Level::fit;
+        cand_ = false;
+        fit_valid_ = false;   // the last fit was of the old level: none until this one has its own
+    }
+}
+
 void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
     hist_.push_back(cur_);
     const size_t cap = (size_t)std::max(cfg_.rate_buckets_max, cfg_.offset_buckets);
@@ -202,6 +261,8 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
     line_.house_ref = line_.house_of(sigma_now);
     line_.sigma_ref = sigma_now;
     line_.slew_ppb = line_.slew_ns = 0;
+    hist_.back().eps = eps_ppb();
+    classify(house_now);   // before the fit
 
     int64_t f;
     int n;
@@ -253,13 +314,15 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
         run_ = false;
         return;
     }
-    if (rb > cfg_.step_ns) {
-        if (!run_) {
+    const bool fall = cfg_.step_falls && rb < -cfg_.step_ns;
+    if (rb > cfg_.step_ns || fall) {
+        if (!run_ || run_fall_ != fall) {   // a run keeps one direction
             run_ = true;
+            run_fall_ = fall;
             run_start_h_ = sat_add(origin_h_, bucket_ * cfg_.bucket_ns);   // start of that bucket
             run_min_ = rb;
         }
-        run_min_ = std::min(run_min_, rb);
+        run_min_ = std::min(run_min_, rb);   // delay is one-sided: the new floor either way
         if (sat_sub(house_now, run_start_h_) >= cfg_.step_hold_ns) {
             step_fired_ = true;
             step_size_ = run_min_;
@@ -288,6 +351,7 @@ ClockLock::Residual ClockLock::residual() const {
 void ClockLock::relock(bool keep_rate) {
     started_ = false;
     hist_.clear();
+    cand_ = false;
     resid_.clear();
     fit_valid_ = false;
     locked_ = false;
@@ -299,6 +363,25 @@ void ClockLock::relock(bool keep_rate) {
         eps_q16_ = 0;
         rate_n_ = 0;
     }
+}
+
+// β* over the step's own buckets, not the last M (which may span both levels): the
+// floor to bucket-minimum precision, where a relock starts from one sample's delay.
+void ClockLock::step_to_floor() {
+    if (!step_fired_) return;
+    while (!hist_.empty() && hist_.front().house < run_start_h_) hist_.pop_front();   // the old level
+    int64_t e = INT64_MAX;
+    for (const Point& p : hist_) e = std::min(e, sat_sub(p.house, line_.house_of(p.sigma)));
+    if (e != INT64_MAX) {
+        e = clamp64(e, -DELTA_LIM, DELTA_LIM);
+        line_.house_ref = sat_add(line_.house_ref, e);
+        travel_ns_ += e;
+    }
+    line_.slew_ppb = line_.slew_ns = 0;
+    resid_.clear();   // against the old floor
+    fit_valid_ = false;   // as at a level adoption: the fit was of the buckets just gone
+    run_ = step_fired_ = false;
+    step_size_ = 0;
 }
 
 // --- PcrValidator ---------------------------------------------------------------
@@ -493,8 +576,9 @@ void VirtualStc::freeze_current() {
     epochs_.back().live = false;
 }
 
-void VirtualStc::open_epoch(Src src, int64_t sigma, int64_t h) {
+void VirtualStc::open_epoch(Src src, int64_t sigma, int64_t h, bool step) {
     freeze_current();
+    if (step && !epochs_.empty()) epochs_.back().stepped = true;
     for (auto& kv : leads_) {   // the straddle tie-break compares against these
         PidLeads& p = kv.second;
         while (!p.w.empty() && p.w.front().first < sat_sub(h, LEAD_WINDOW_NS)) p.w.pop_front();
@@ -577,7 +661,7 @@ void VirtualStc::feed_pcr(int64_t pcr27, bool discontinuity, int64_t h) {
     }
     if (!degraded_) {
         if (epochs_.empty() || pcr_pending_) {
-            open_epoch(Src::pcr, sigma, h);
+            open_epoch(Src::pcr, sigma, h, pcr_pending_ && !std::strcmp(pcr_why_, "envelope-step"));
             if (pcr_pending_) {
                 relocks_++;
                 emit(StcEvent::Kind::relock, pcr_why_, h, 0);
@@ -636,7 +720,7 @@ void VirtualStc::feed_ref_pes(int pid, int64_t pts90k_unwrapped, int64_t h) {
     }
     if (!degraded_) return;
     if (pending || ref_pending_) {
-        open_epoch(Src::ref, sigma, h);
+        open_epoch(Src::ref, sigma, h, pending && !std::strcmp(why, "envelope-step"));
         if (pending) {
             relocks_++;
             emit(StcEvent::Kind::relock, why, h, 0);
@@ -648,12 +732,24 @@ void VirtualStc::feed_ref_pes(int pid, int64_t pts90k_unwrapped, int64_t h) {
 }
 
 VirtualStc::Mapping VirtualStc::map(int pid, int64_t pts90k_unwrapped, int64_t h) {
+    return map_sigma(pid, pts90k_to_ns(pts90k_unwrapped), h, true);
+}
+
+VirtualStc::Mapping VirtualStc::map_pcr(int64_t h) {
+    if (!have_pcr_) {
+        Mapping m;
+        m.house_ns = h;
+        return m;
+    }
+    return map_sigma(PCR_KEY, pcr27_to_ns(pcr_unwrapped_), h, false);
+}
+
+VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, bool lead_row) {
     val_.feed_activity(h);
     pcr_.tick(h);
     ref_.tick(h);
-    const int64_t sigma = pts90k_to_ns(pts90k_unwrapped);
     // The lead row judges the PCR mapping, also while degraded (recovery needs it).
-    if (pcr_.started()) val_.feed_lead(pid, sat_sub(pcr_.house_of(sigma), h));
+    if (lead_row && pcr_.started()) val_.feed_lead(pid, sat_sub(pcr_.house_of(sigma), h));
     check_failure(h);
 
     for (size_t i = 0; i + 1 < epochs_.size();) {
@@ -666,20 +762,36 @@ VirtualStc::Mapping VirtualStc::map(int pid, int64_t pts90k_unwrapped, int64_t h
 
     // Straddle (OQ-11): the one range holding σ; none, the newest; several, the
     // lead closest to this PID's median lead before the re-lock (ties: newer).
+    // The tie-break tells timelines apart, so one timeline's older ranges give way.
+    const int64_t same = pcr_.config().step_ns;
+    auto holds = [&](const Epoch& e) { return sigma >= e.lo && sigma <= e.hi; };
+    // One timeline: closed by an envelope step, or mapping σ within step_ns of a newer
+    // range (a same-clock PCR PID); left to the tie-break, jitter would flip PIDs.
+    auto candidate = [&](size_t i) {
+        if (epochs_[i].stepped || !holds(epochs_[i])) return false;
+        const int64_t at = house_in(epochs_[i], sigma);
+        for (size_t j = i + 1; j < epochs_.size(); j++) {
+            if (!holds(epochs_[j])) continue;
+            const int64_t d = sat_sub(house_in(epochs_[j], sigma), at);
+            if (d <= same && d >= -same) return false;
+        }
+        return true;
+    };
     PidLeads& pl = leads_[pid];
     const Epoch* pick = nullptr;
     int hits = 0;
-    for (const Epoch& e : epochs_) {
-        if (sigma < e.lo || sigma > e.hi) continue;
+    for (size_t i = 0; i < epochs_.size(); i++) {
+        if (!candidate(i)) continue;
         hits++;
-        pick = &e;
+        pick = &epochs_[i];
     }
     if (hits == 0) {
         pick = &epochs_.back();
     } else if (hits > 1 && pl.has_before) {
         int64_t best = INT64_MAX;
-        for (const Epoch& e : epochs_) {
-            if (sigma < e.lo || sigma > e.hi) continue;
+        for (size_t i = 0; i < epochs_.size(); i++) {
+            if (!candidate(i)) continue;
+            const Epoch& e = epochs_[i];
             const int64_t d = sat_sub(sat_sub(house_in(e, sigma), h), pl.before);
             const int64_t ad = d < 0 ? sat_sub(0, d) : d;
             if (ad <= best) {

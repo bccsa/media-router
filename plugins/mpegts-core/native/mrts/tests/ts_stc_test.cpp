@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <map>
 #include <vector>
 
 #include "../ts_house.h"
@@ -214,18 +215,21 @@ void test_convergence() {
     CHECK("determinism: the same run twice gives the same mapping sequence", a.sum == b.sum);
 }
 
-// Envelope step: the floor delay moves by `step` at 300 s; the caller relocks.
+// Envelope step: the floor delay moves by `step` at 300 s; the caller relocks, or with
+// `to_floor` steps the mapping onto the new floor (mrasrc).
 struct StepRun {
     int fires = 0;
     int64_t fire_after = -1;       // since the first stepped arrival
     int64_t relock_locked = -1;    // phase locked again, since the fire
     int64_t ppb_at_fire = 0, ppb_after_relock = 0, ppb_end = 0;
+    int64_t step_size = 0;
     int64_t rmin_after = INT64_MAX;
+    int64_t rmin_10s = INT64_MAX;  // over the 10 s after the fire: where the mapping landed
     int64_t drift_100s = 0;        // offset drift over the 100 s after the step
 };
 
-StepRun step_run(int64_t step) {
-    ClockLock lk;
+StepRun step_run(int64_t step, const ClockLockConfig& cfg = ClockLockConfig(), bool to_floor = false) {
+    ClockLock lk(cfg);
     Lcg g(5);
     StepRun s;
     int64_t step_h = -1, fire_h = -1, drift0 = 0;
@@ -239,14 +243,20 @@ StepRun step_run(int64_t step) {
             drift0 = lk.offset_drift_ns();
         }
         if (fire_h >= 0 && lk.phase() == ClockLock::Phase::locked) s.rmin_after = std::min(s.rmin_after, h - lk.house_of(sigma));
+        if (fire_h >= 0 && h - fire_h <= 10 * S) s.rmin_10s = std::min(s.rmin_10s, h - lk.house_of(sigma));
         lk.feed(sigma, h);
         if (lk.envelope_step()) {
             s.fires++;
             fire_h = h;
             s.fire_after = h - step_h;
             s.ppb_at_fire = lk.ppb();
-            lk.relock(true);
-            lk.feed(sigma, h);
+            s.step_size = lk.step_size_ns();
+            if (to_floor) {
+                lk.step_to_floor();
+            } else {
+                lk.relock(true);
+                lk.feed(sigma, h);
+            }
             s.ppb_after_relock = lk.ppb();
         }
         if (fire_h >= 0 && s.relock_locked < 0 && lk.phase() == ClockLock::Phase::locked) s.relock_locked = h - fire_h;
@@ -278,6 +288,226 @@ void test_envelope_step() {
     CHECK("step -30 ms: no relock, the lock slews (one-sided rule)", down.fires == 0);
     CHECK("step -30 ms: ... down at the track slew, 20 ppm (2 ms in 100 s)",
           down.drift_100s <= -1900 * 1000 && down.drift_100s >= -2100 * 1000);
+
+    // Two-sided (mrasrc's lock): a fall fires as a rise does, and step_to_floor puts the
+    // mapping on the new floor at once, from the step's buckets: still locked, ε kept.
+    ClockLockConfig two;
+    two.step_falls = true;
+    for (const int64_t step : {-30 * MS, 30 * MS}) {
+        const StepRun r = step_run(step, two, true);
+        std::printf("  two-sided %+lld ms: fired %d time(s) %.2f s after it, step %.3f ms, still locked %s, ppb %lld"
+                    " -> %lld, residual min in the 10 s after %.3f ms, after %.3f ms\n",
+                    (long long)(step / MS), r.fires, r.fire_after / 1e9, r.step_size / 1e6,
+                    r.relock_locked == 0 ? "yes" : "no", (long long)r.ppb_at_fire, (long long)r.ppb_after_relock,
+                    r.rmin_10s / 1e6, r.rmin_after / 1e6);
+        char name[200];
+        std::snprintf(name, sizeof name, "two-sided %+lld ms: fires once, step_hold_ns after it, the step's size",
+                      (long long)(step / MS));
+        CHECK(name, r.fires == 1 && r.fire_after >= 9 * S && r.fire_after <= 11 * S + 100 * MS &&
+                        iabs(r.step_size - step) <= 1 * MS);
+        std::snprintf(name, sizeof name, "two-sided %+lld ms: step_to_floor lands on the new floor at once (residual"
+                      " min within 1 ms over the next 10 s), locked throughout, ε kept", (long long)(step / MS));
+        CHECK(name, r.relock_locked == 0 && iabs(r.rmin_10s) <= 1 * MS && r.rmin_after >= -1 * MS &&
+                        r.ppb_after_relock == r.ppb_at_fire && iabs(r.ppb_end - 50000) <= 1000);
+    }
+    // With M past the hold, the last M buckets still span the old level: the floor comes
+    // from the step's own buckets, else a rise would land on the old one.
+    ClockLockConfig wide = two;
+    wide.offset_buckets = 30;
+    const StepRun w = step_run(30 * MS, wide, true);
+    std::printf("  two-sided +30 ms, 30 offset buckets: residual min in the 10 s after %.3f ms, after %.3f ms\n",
+                w.rmin_10s / 1e6, w.rmin_after / 1e6);
+    CHECK("two-sided +30 ms, 30 offset buckets: still on the new floor at once and after (the step's own buckets)",
+          w.fires == 1 && iabs(w.rmin_10s) <= 1 * MS && iabs(w.rmin_after) <= 1 * MS);
+    ClockLock idle(two);
+    idle.feed(0, H0);
+    idle.step_to_floor();
+    CHECK("step_to_floor without a step moves nothing", idle.house_of(0) == H0 && !idle.envelope_step());
+
+    // A run keeps one direction: 5 s at +60 ms, then 60 ms under the old floor. The fall's
+    // hold counts from its own first bucket, so a rise and a fall never make one step.
+    ClockLock dir(two);
+    Lcg gd(6);
+    int64_t fired = -1, fsize = 0;
+    for (int64_t t = 0; t <= 400 * S && fired < 0; t += 100 * MS) {
+        const int64_t f = t < 300 * S ? 0 : t < 305 * S ? 60 * MS : -60 * MS;
+        dir.feed(7200 * S + t, H0 + t + at_ppb(t, 50000) + 20 * MS + f + net_delay(gd));
+        if (dir.envelope_step()) {
+            fired = t;
+            fsize = dir.step_size_ns();
+        }
+    }
+    std::printf("  two-sided, 5 s at +60 ms then -60 ms: fired at %.1f s, step %.3f ms\n", fired / 1e9, fsize / 1e6);
+    CHECK("two-sided: a run keeps its direction (5 s up, then down): fires step_hold after the fall began, for it",
+          fired >= 314 * S && fired <= 316 * S && iabs(fsize + 60 * MS) <= 1 * MS);
+}
+
+// The rate fit runs on one floor level: a re-route, a queue building up or draining
+// moves the floor by floor(t) at send time t; the caller re-locks on an envelope step.
+// Against the source's true rate and floor arrival: fit error, landing, lateness.
+struct LevelRun {
+    std::vector<int64_t> fire_t, fire_ppb;   // send time and ε at each envelope step
+    int64_t fit_err = 0;                     // max |raw fit - true rate| once fitted
+    int64_t late = INT64_MAX;                // min house(σ) - floor arrival while locked
+    int64_t land = 0;                        // max |house(σ) - floor arrival| from `settle`
+    int64_t ppb_end = 0;
+};
+
+// The source runs at +50 ppm, at `eps2` from `t2` on.
+template <class Floor>
+LevelRun level_run(int64_t secs, Floor floor, int64_t settle, int64_t eps2 = 50000, int64_t t2 = INT64_MAX,
+                   uint64_t seed = 9) {
+    ClockLock lk;
+    Lcg g(seed);
+    LevelRun r;
+    for (int64_t t = 0; t <= secs * S; t += 100 * MS) {
+        const int64_t drift = t < t2 ? at_ppb(t, 50000) : at_ppb(t2, 50000) + at_ppb(t - t2, eps2);
+        const int64_t sigma = 7200 * S + t, at_floor = H0 + t + drift + 20 * MS + floor(t);
+        const int64_t h = at_floor + net_delay(g);
+        if (lk.phase() == ClockLock::Phase::locked) {
+            const int64_t e = lk.house_of(sigma) - at_floor;
+            r.late = std::min(r.late, e);
+            if (t >= settle) r.land = std::max(r.land, iabs(e));
+        }
+        lk.feed(sigma, h);
+        if (lk.envelope_step()) {
+            r.fire_t.push_back(t);
+            r.fire_ppb.push_back(lk.ppb());
+            lk.relock(true);
+            lk.feed(sigma, h);
+        }
+        if (lk.has_fit() && t < t2) r.fit_err = std::max(r.fit_err, iabs(lk.fit_ppb() - 50000));
+    }
+    r.ppb_end = lk.ppb();
+    return r;
+}
+
+auto step_at = [](int64_t at, int64_t by) { return [=](int64_t t) { return t >= at ? by : (int64_t)0; }; };
+auto ramp_at = [](int64_t at, int64_t by, int64_t over) {   // in us steps: no 64-bit overflow
+    return [=](int64_t t) {
+        return t < at ? (int64_t)0 : t >= at + over ? by : by / 1000 * ((t - at) / MS) / (over / MS) * 1000;
+    };
+};
+
+void print_level(const char* label, const LevelRun& r) {
+    std::printf("  %s: %zu envelope step(s)", label, r.fire_t.size());
+    for (size_t i = 0; i < r.fire_t.size(); i++)
+        std::printf(" [@%.1f s eps %.3f ppm]", r.fire_t[i] / 1e9, r.fire_ppb[i] / 1000.0);
+    std::printf("; fit off the true rate <= %.3f ppm, eps end %.3f ppm; landing <= %.3f ms after; "
+                "min house - floor %.3f ms\n",
+                r.fit_err / 1000.0, r.ppb_end / 1000.0, r.land / 1e6, r.late / 1e6);
+}
+
+void test_fit_levels() {
+    // The first rate fit is made at 30 s: a step right after it lands in a young window.
+    const LevelRun rise = level_run(90, step_at(30 * S, 150 * MS), 50 * S);
+    print_level("+150 ms at 30 s (young fit window)", rise);
+    // Locked from 35 s, so the step's 10 s hold counts from there; ε within the track
+    // slew of the source's, as the fit never saw the step.
+    CHECK("fit level: a +150 ms step at 30 s re-locks once, its ε kept the source's (the fit never saw it)",
+          rise.fire_t.size() == 1 && rise.fire_t[0] >= 44 * S && rise.fire_t[0] <= 46 * S &&
+              iabs(rise.fire_ppb[0] - 50000) <= 20000 && rise.fit_err <= 20000);
+    CHECK("fit level: ... the new epoch lands on the new floor within 1 ms from 5 s after the relock",
+          rise.land <= 1 * MS && iabs(rise.ppb_end - 50000) <= 20000);
+    const LevelRun fall = level_run(120, step_at(30 * S, -100 * MS), 120 * S);
+    print_level("-100 ms at 30 s (young fit window)", fall);
+    CHECK("fit level: a -100 ms fall at 30 s: no relock (one-sided), the fit unbent (the rate row stays clean)",
+          fall.fire_t.empty() && fall.fit_err <= 20000 && iabs(fall.ppb_end - 50000) <= 20000);
+    CHECK("fit level: ... and content never late (the mapping stays above the new floor)", fall.late >= -1 * MS);
+    const LevelRun drain = level_run(240, ramp_at(120 * S, -100 * MS, 30 * S), 240 * S);
+    print_level("queue drains 100 ms over 30 s from 120 s", drain);
+    // Its first buckets, inside step_ns, enter the fit (the onset): a transient bend only.
+    CHECK("fit level: a draining queue is no rate: the fit bent < 50 ppm, no relock, content never late",
+          drain.fire_t.empty() && drain.fit_err <= 50000 && iabs(drain.ppb_end - 50000) <= 2000 &&
+              drain.late >= -1 * MS);
+    const LevelRun up = level_run(240, ramp_at(120 * S, 100 * MS, 30 * S), 175 * S);
+    print_level("queue builds 100 ms over 30 s from 120 s", up);
+    bool kept = !up.fire_t.empty();
+    for (int64_t e : up.fire_ppb) kept &= iabs(e - 50000) <= 10000;
+    CHECK("fit level: a queue building up re-locks by envelope steps, each keeping the source's ε, then lands within 1 ms",
+          kept && up.land <= 1 * MS && iabs(up.ppb_end - 50000) <= 10000);
+    auto burst_at = [](int64_t t) { return t >= 120 * S && t < 124 * S ? 50 * MS : (int64_t)0; };
+    const LevelRun burst = level_run(240, burst_at, 130 * S);
+    print_level("a 4 s burst of +50 ms at 120 s", burst);
+    CHECK("fit level: a 4 s burst passes: no relock, fit unbent, back on the floor",
+          burst.fire_t.empty() && burst.fit_err <= 20000 && burst.land <= 1 * MS);
+    // 9 s, under the hold, in a young fit: a quarter of its buckets, more than the refit
+    // above the line can drop, so a burst's buckets stay out once it has passed.
+    auto long_at = [](int64_t t) { return t >= 36 * S && t < 45 * S ? 50 * MS : (int64_t)0; };
+    const LevelRun lng = level_run(150, long_at, 60 * S);
+    print_level("a 9 s burst of +50 ms at 36 s (young fit)", lng);
+    CHECK("fit level: a 9 s burst in a young fit passes: no relock, fit unbent, back on the floor",
+          lng.fire_t.empty() && lng.fit_err <= 20000 && lng.land <= 1 * MS);
+
+    // 2.2 ms/s, just over what the level absorbs, 10 s after the first fit: judged at its
+    // reference's rate, the drain's first buckets cannot bend the young fit judging the rest.
+    int clean = 0;
+    for (uint64_t seed = 1; seed <= 9; seed++) {
+        const LevelRun d = level_run(160, ramp_at(40 * S, -66 * MS, 30 * S), 160 * S, 50000, INT64_MAX, seed);
+        clean += d.fire_t.empty() && iabs(d.ppb_end - 50000) <= 20000 && d.late >= -1 * MS;
+    }
+    std::printf("  queue drains 66 ms over 30 s from 40 s: %d/9 seeds unbent at the end and never late\n", clean);
+    CHECK("fit level: a 2.2 ms/s drain in a young fit, 9 seeds: ε back within 20 ppm, content never late",
+          clean == 9);
+    // Before the first fit: the level moved, and the fit restarts after the ramp's tail.
+    const LevelRun early = level_run(120, ramp_at(10 * S, 100 * MS, 30 * S), 120 * S);
+    print_level("queue builds 100 ms over 30 s from 10 s", early);
+    CHECK("fit level: a queue building up before the first fit leaves it unbent (fit within 20 ppm)",
+          early.fit_err <= 20000 && iabs(early.ppb_end - 50000) <= 20000);
+    // After a fall the fit follows the source again: the source's rate moves +20 ppm.
+    const LevelRun moved = level_run(240, step_at(30 * S, -100 * MS), 240 * S, 70000, 60 * S);
+    print_level("-100 ms at 30 s, then the source +20 ppm at 60 s", moved);
+    CHECK("fit level: after a fall the fit runs on the new floor: it follows the source to +70 ppm +-3",
+          moved.fire_t.empty() && iabs(moved.ppb_end - 70000) <= 3000);
+
+    // A +900 ppm source: buckets are judged along its rate, else its 9 ms of drift over the
+    // lag would hide most of a -25 ms fall, which would then enter the fit.
+    const LevelRun fast = level_run(300, step_at(120 * S, -25 * MS), 300 * S, 900000, 0);
+    print_level("-25 ms at 120 s on a +900 ppm source", fast);
+    CHECK("fit level: a -25 ms fall on a +900 ppm source stays out of the fit (its ε +-5 ppm throughout)",
+          fast.fire_t.empty() && iabs(fast.ppb_end - 900000) <= 5000 && fast.late >= -1 * MS);
+
+    // No lock-out: a re-lock keeps an ε 1800 ppm off the source (+900 to -900 ppm behind one
+    // PCR PID); every rate error within the clamps passes the level, so the fit re-learns it.
+    ClockLock lk;
+    Lcg g(13);
+    int64_t drift = 0, ppb = 900000, fit_at = -1;
+    for (int64_t t = 0; t <= 300 * S; t += 100 * MS) {
+        if (t == 200 * S) {
+            lk.relock(true);
+            ppb = -900000;
+        }
+        const int64_t h = H0 + t + drift + 20 * MS + net_delay(g);
+        drift += ppb / 10;   // 100 ms at ppb
+        lk.feed(7200 * S + t, h);
+        if (t > 200 * S && fit_at < 0 && lk.has_fit()) fit_at = t - 200 * S;
+    }
+    std::printf("  re-lock on a source 1800 ppm off the kept eps: first fit %.1f s after, eps %.3f ppm at 100 s\n",
+                fit_at / 1e9, lk.ppb() / 1000.0);
+    CHECK("fit level: an ε kept 1800 ppm off is re-learned (first fit within 32 s, -900 ppm +-5 at 100 s)",
+          fit_at >= 0 && fit_at <= 32 * S && iabs(lk.ppb() + 900000) <= 5000);
+
+    // An adopted level ends the old one's fit: has_fit() stays false (the validator's rate
+    // row and mrasrc's bounds read no stale fit) until the new level has rate_buckets_min.
+    ClockLock ad;
+    Lcg ga(21);
+    int64_t off = -1, on = -1, ppb_on = 0;
+    bool before = false;
+    for (int64_t t = 0; t <= 240 * S; t += 100 * MS) {
+        const int64_t h = H0 + t + at_ppb(t, 50000) + 20 * MS - (t >= 120 * S ? 100 * MS : 0) + net_delay(ga);
+        ad.feed(7200 * S + t, h);
+        if (t == 119 * S) before = ad.has_fit();
+        if (t > 120 * S && off < 0 && !ad.has_fit()) off = t;
+        if (off >= 0 && on < 0 && ad.has_fit()) {
+            on = t;
+            ppb_on = ad.fit_ppb();
+        }
+    }
+    std::printf("  -100 ms fall at 120 s: no fit from %.1f s (the adoption) to %.1f s, then %.3f ppm\n", off / 1e9,
+                on / 1e9, ppb_on / 1000.0);
+    CHECK("fit level: an adopted level clears the fit until 30 buckets of its own (none stale), then the source's",
+          before && off >= 129 * S && off <= 131 * S && on >= off + 29 * S && on <= off + 31 * S &&
+              iabs(ppb_on - 50000) <= 20000);
 }
 
 // --- PcrValidator, row by row ------------------------------------------------------
@@ -465,6 +695,7 @@ struct Pkt {
 struct Shape {
     int64_t pcr_ns = 0, pts_ns = 0;   // added to the PCR value / the PTS (source time)
     int64_t mux_ns = 0;               // the packet leaves the mux this much later
+    int64_t net_ns = 0;               // the path's floor delay moves this much (FIFO: none overtakes)
     bool di = false, drop = false;
 };
 
@@ -490,7 +721,7 @@ std::vector<Pkt> program(int64_t secs, int64_t eps_ppb, uint64_t seed, F shape, 
             const int64_t m = t + sh.mux_ns;
             const int64_t lead = kind == 1 ? 500 * MS : 800 * MS;
             const int64_t v = kind == 0 ? ns_to_pcr27(sigma0 + m + sh.pcr_ns) : ns_to_pts90k(sigma0 + t + lead + sh.pts_ns);
-            raw.push_back(Raw{m, delay, Pkt{0, pid, v, sh.di, t}});
+            raw.push_back(Raw{m, delay + sh.net_ns, Pkt{0, pid, v, sh.di, t}});
         }
     }
     std::stable_sort(raw.begin(), raw.end(), [](const Raw& a, const Raw& b) { return a.m < b.m; });
@@ -675,21 +906,31 @@ void test_vstc_relocks() {
         CHECK("vstc outage: continuous PCR resumes the epoch without a relock",
               fold_events(v, f).empty() && v.stats().epoch == 1 && v.state() == VirtualStc::State::locked);
     }
-    {   // External relock (the PMT's PCR PID changed).
+    {   // External relock (the PMT's PCR PID changed), the same clock behind it.
         VirtualStc v;
         Fnv f;
         bool done = false;
+        std::map<int, uint32_t> last;
+        std::map<int, int> switches;
         for (const Pkt& p : program(40, 0, 34, plain)) {
             if (!done && p.t >= 30 * S) {
                 v.relock();
                 done = true;
             }
-            if (p.pid == PCR_PID) v.feed_pcr(p.v, p.di, p.h);
-            else v.map(p.pid, p.v, p.h);
+            if (p.pid == PCR_PID) {
+                v.feed_pcr(p.v, p.di, p.h);
+                continue;
+            }
+            const VirtualStc::Mapping m = v.map(p.pid, p.v, p.h);
+            if (last.count(p.pid) && m.epoch != last[p.pid]) switches[p.pid]++;
+            last[p.pid] = m.epoch;
         }
         const std::vector<StcEvent> ev = fold_events(v, f);
         CHECK("vstc external relock: one relock, reason external, epoch 2",
               kinds_are(ev, {StcEvent::Kind::relock}) && !std::strcmp(ev[0].reason, "external") && v.stats().epoch == 2);
+        std::printf("  external relock: epoch switches audio %d, video %d\n", switches[PID_A], switches[PID_V]);
+        CHECK("vstc external relock: each PID switches once (one timeline: no tie-break flips)",
+              switches.size() == 2 && switches[PID_A] == 1 && switches[PID_V] == 1);
     }
 }
 
@@ -815,6 +1056,144 @@ uint64_t straddle_scenario(bool report) {
 
 void test_vstc_straddle() { g_all.add((int64_t)straddle_scenario(true)); }
 
+// The restamp maps the PCR too (part 4.2 step 3). map_pcr gives it its PES's epoch
+// choice but keeps it out of the lead row: a PCR's lag behind its mapping is minus the
+// delay above the floor, so a 230 ms re-route re-locks by the envelope step, where the
+// same lag fed as a PID's lead (map) trips the -200 ms row and degrades the program.
+void test_vstc_map_pcr() {
+    auto reroute = [](int pid, int64_t t) {   // the path's floor rises 230 ms at 30 s
+        Shape s;
+        s.mux_ns = t >= 30 * S ? 230 * MS : 0;
+        if (pid == PCR_PID) s.pcr_ns = -s.mux_ns;
+        return s;
+    };
+    const std::vector<Pkt> pk = program(70, 50000, 36, reroute);
+    for (const bool own : {true, false}) {
+        VirtualStc v;
+        Fnv f;
+        int behind = 0, pcrs = 0;         // audio PES on an older epoch than a PCR before them
+        uint32_t pcr_epoch = 0;
+        int64_t lag_min = INT64_MAX, lag_max = INT64_MIN;   // house - arrival, before the re-route
+        for (const Pkt& p : pk) {
+            if (p.pid != PCR_PID) {
+                if (p.pid == PID_A) v.feed_ref_pes(p.pid, p.v, p.h);
+                const VirtualStc::Mapping m = v.map(p.pid, p.v, p.h);
+                if (p.pid == PID_A) behind += m.valid && m.epoch < pcr_epoch;
+                continue;
+            }
+            v.feed_pcr(p.v, p.di, p.h);
+            const VirtualStc::Mapping m = own ? v.map_pcr(p.h) : v.map(0x2000, v.source_stc_90k(), p.h);
+            if (!m.valid || v.state() == VirtualStc::State::degraded) continue;
+            pcrs++;
+            pcr_epoch = std::max(pcr_epoch, m.epoch);
+            if (p.t >= 10 * S && p.t < 30 * S) {
+                lag_min = std::min(lag_min, m.house_ns - p.h);
+                lag_max = std::max(lag_max, m.house_ns - p.h);
+            }
+        }
+        const std::vector<StcEvent> ev = fold_events(v, f);
+        print_events(own ? "re-route +230 ms at 30 s, PCR by map_pcr" : "... the PCR by map (a PID's lead)", ev);
+        if (!own) {
+            CHECK("vstc map_pcr: the PCR's lag fed as a PID's lead degrades the program (lead row)",
+                  std::any_of(ev.begin(), ev.end(), [](const StcEvent& e) {
+                      return e.kind == StcEvent::Kind::degraded && !std::strcmp(e.reason, "lead");
+                  }));
+            continue;
+        }
+        std::printf("  map_pcr: %d PCRs mapped, house - arrival %.3f..%.3f ms before the re-route, %d audio PES "
+                    "behind a PCR's epoch\n",
+                    pcrs, lag_min / 1e6, lag_max / 1e6, behind);
+        CHECK("vstc map_pcr: the re-route re-locks by the envelope step, never degraded",
+              kinds_are(ev, {StcEvent::Kind::envelope_step, StcEvent::Kind::relock}) &&
+                  !std::strcmp(ev[1].reason, "envelope-step") && v.state() == VirtualStc::State::locked);
+        CHECK("vstc map_pcr: the PCR at its floor arrival (house - arrival = minus its delay above it)",
+              pcrs > 600 && lag_max <= 1 * MS && lag_min >= -51 * MS);
+        CHECK("vstc map_pcr: no audio PES on an older epoch than a PCR before it (PTS - PCR never shrinks)",
+              behind == 0 && pcr_epoch == 2);
+    }
+    CHECK("vstc map_pcr: invalid before the first PCR", !VirtualStc().map_pcr(H0).valid);
+}
+
+// Per PID (the PCR: key -1): epoch switches, those back onto an older epoch, and house
+// PTS stepping back.
+struct Switches {
+    std::map<int, int> n, back, steps_back;
+    std::map<int, uint32_t> last;
+    std::map<int, int64_t> last_h;
+    void note(int key, const VirtualStc::Mapping& m) {
+        if (!m.valid) return;
+        if (last.count(key) && m.epoch != last[key]) {
+            n[key]++;
+            back[key] += m.epoch < last[key];
+        }
+        if (key >= 0 && last_h.count(key) && m.house_ns <= last_h[key]) steps_back[key]++;
+        last[key] = m.epoch;
+        last_h[key] = m.house_ns;
+    }
+    int total(const std::map<int, int>& m) const {
+        int t = 0;
+        for (const auto& kv : m) t += kv.second;
+        return t;
+    }
+};
+
+void test_vstc_floor_moves() {
+    {   // The floor falls 100 ms at 30 s, inside the first rate fit's window.
+        VirtualStc v;
+        Fnv f;
+        Switches w;
+        auto fall = [](int, int64_t t) {
+            Shape s;
+            s.net_ns = t < 30 * S ? 100 * MS : 0;
+            return s;
+        };
+        drive(v, program(120, 50000, 37, fall), f, [&](const Pkt& p, const VirtualStc::Mapping& m) { w.note(p.pid, m); });
+        const std::vector<StcEvent> ev = fold_events(v, f);
+        print_events("floor -100 ms at 30 s", ev);
+        const VirtualStc::Stats s = v.stats();
+        std::printf("  floor -100 ms: state %s ppb %lld, house PTS steps back %d\n", state_name(s.state),
+                    (long long)s.ppb, w.total(w.steps_back));
+        CHECK("vstc fall: -100 ms at 30 s never degrades (the rate row) nor re-locks, the rate the source's",
+              ev.empty() && s.state == VirtualStc::State::locked && iabs(s.ppb - 50000) <= 5000);
+        CHECK("vstc fall: ... house PTS never steps back", w.total(w.steps_back) == 0);
+        g_all.add((int64_t)f.h);
+    }
+    {   // A queue builds up 200 ms over 20 s from 30 s: re-locks while the delay still moves.
+        VirtualStc v;
+        Fnv f;
+        Switches w;
+        auto queue = [](int, int64_t t) {
+            Shape s;
+            s.net_ns = t < 30 * S ? 0 : t >= 50 * S ? 200 * MS : 200 * MS / 1000 * ((t - 30 * S) / MS) / 20000 * 1000;
+            return s;
+        };
+        for (const Pkt& p : program(90, 50000, 38, queue)) {
+            if (p.pid == PCR_PID) {
+                v.feed_pcr(p.v, p.di, p.h);
+                w.note(-1, v.map_pcr(p.h));
+                continue;
+            }
+            if (p.pid == PID_A) v.feed_ref_pes(p.pid, p.v, p.h);
+            w.note(p.pid, v.map(p.pid, p.v, p.h));
+        }
+        const std::vector<StcEvent> ev = fold_events(v, f);
+        print_events("queue +200 ms over 20 s", ev);
+        int relocks = 0;
+        for (const StcEvent& e : ev) relocks += e.kind == StcEvent::Kind::relock;
+        std::printf("  queue: %d relock(s); switches audio %d video %d pcr %d, back onto an older epoch %d\n", relocks,
+                    w.n[PID_A], w.n[PID_V], w.n[-1], w.total(w.back));
+        CHECK("vstc queue: re-locked by envelope steps, never degraded",
+              relocks >= 1 && std::all_of(ev.begin(), ev.end(), [](const StcEvent& e) {
+                  return e.kind == StcEvent::Kind::envelope_step ||
+                         (e.kind == StcEvent::Kind::relock && !std::strcmp(e.reason, "envelope-step"));
+              }));
+        CHECK("vstc queue: every PID and the PCR leave the old epoch once per relock, never back, house PTS forward",
+              w.n[PID_A] == relocks && w.n[PID_V] == relocks && w.n[-1] == relocks && w.total(w.back) == 0 &&
+                  w.total(w.steps_back) == 0);
+        g_all.add((int64_t)f.h);
+    }
+}
+
 void test_determinism() {
     const uint64_t d1 = degraded_scenario(false), d2 = degraded_scenario(false);
     const uint64_t s1 = straddle_scenario(false), s2 = straddle_scenario(false);
@@ -858,11 +1237,14 @@ int main(int argc, char** argv) {
     test_line_and_lock_basics();
     test_convergence();
     test_envelope_step();
+    test_fit_levels();
     test_validator();
     test_vstc_clean_and_wrap();
     test_vstc_relocks();
     test_vstc_degraded();
     test_vstc_straddle();
+    test_vstc_map_pcr();
+    test_vstc_floor_moves();
     test_determinism();
     std::printf("\n  CHECKSUM ts_stc %016llx (compare across machines)\n", (unsigned long long)g_all.h);
     return test_summary("ts_stc");

@@ -9,7 +9,8 @@
 
 namespace mrts {
 
-// The STC's constants (part 4.3) with part 4.5's 50 ms re-lock step.
+// The STC's constants (part 4.3) with part 4.5's 50 ms re-lock step, two-sided: a fall
+// of the capture latency (a PipeWire quantum change) makes labels late, as a rise early.
 ClockLockConfig asrc_lock_config();
 
 struct AsrcServoConfig {
@@ -24,13 +25,14 @@ struct AsrcEvent {
     const char* reason;   // relock: "discont" or "envelope-step"; static, "" otherwise
     int64_t house_ns;     // relock: the new T0; out of bounds: the buffer's PTS
     int64_t value;        // relock: the output PTS jump (ns); out of bounds: the device rate fit (ppb)
+    int64_t dropped_ns = 0;   // relock: input dropped as overlap with what already left
 };
 
 const char* asrc_event_name(AsrcEvent::Kind k);
 
-// Per input buffer: push() before resampling it (it returns the rates), produced() after.
-// The resampler is never reset, so across a relock the frames it holds back are the
-// first output under the new T0. Nothing here drops or inserts samples: only the ratio moves.
+// Per buffer: push() before resampling (rates, frames to drop), produced() after. The
+// resampler is never reset: what it holds back is a new T0's first output. Steering only
+// moves the ratio; a relock onto a floor below the last output drops that overlap.
 class AsrcServo {
   public:
     // The lock's phase. Its lost needs a tick without samples, and the servo only
@@ -40,6 +42,7 @@ class AsrcServo {
         int32_t in_rate;    // gst_audio_resampler_update(in_rate, out_rate) when in_rate changed
         int32_t out_rate;
         bool relock;        // this buffer opened an epoch: its first output is at T0, DISCONT
+        uint32_t skip;      // frames to drop from the buffer's head, unresampled: a relock's overlap
     };
     struct Stats {
         State state = State::acquiring;
@@ -48,7 +51,12 @@ class AsrcServo {
         uint64_t relocks = 0;
         uint64_t in_frames = 0, out_frames = 0;
         uint64_t discont_in = 0;    // DISCONT flags after the first buffer
+        uint64_t dropped_frames = 0;   // input frames skipped as relock overlap
     };
+
+    // A relock drops at most this much: a fall past it is no capture-latency change,
+    // and what is left over is slewed by the ratio.
+    static constexpr int64_t DROP_MAX_NS = 1000000000;
 
     // Rates in Hz, clamped to [1000, 768000] so every product fits 64 bits.
     AsrcServo(int32_t in_hz, int32_t out_hz, const AsrcServoConfig& cfg = AsrcServoConfig());
@@ -71,6 +79,7 @@ class AsrcServo {
 
   private:
     int64_t next_pos2() const;   // input position of the next output, in half frames
+    int64_t frames_over(int64_t ns) const;
     int64_t measure_phase() const;
     int32_t in_rate() const;
     void open_epoch(const char* why);
@@ -82,6 +91,8 @@ class AsrcServo {
     bool started_ = false;
     int64_t delay_ = 0;
     int64_t n_in_ = 0;           // input frames pushed
+    int64_t drop_left_ = 0;      // of the overlap, frames still to skip
+    uint64_t dropped_ = 0;       // frames skipped so far
     uint64_t n_out_ = 0;         // output frames produced
     int64_t t0_ = 0;
     uint64_t m_ = 0;
