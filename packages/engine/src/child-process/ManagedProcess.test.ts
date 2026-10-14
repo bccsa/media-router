@@ -66,6 +66,30 @@ describe('ManagedProcess', () => {
         expect(lines).toContain('err2');
     });
 
+    it('logs each stdout line at debug by default', async () => {
+        const proc = create({ label: 'stdout-log', command: '/bin/sh', args: ['-c', 'echo x'] });
+        const debug = vi.spyOn(proc['log'], 'debug');
+        proc.start();
+        await vi.waitFor(() => expect(debug).toHaveBeenCalledWith({ stream: 'stdout' }, 'x'));
+    });
+
+    it('logStdout: false still delivers stdout and logs stderr, but logs no stdout line', async () => {
+        const lines: string[] = [];
+        const proc = create({
+            label: 'stdout-quiet',
+            command: '/bin/sh',
+            args: ['-c', 'echo sample; echo oops >&2'],
+            logStdout: false,
+            onStdout: (line) => lines.push(line),
+        });
+        const debug = vi.spyOn(proc['log'], 'debug');
+        const warn = vi.spyOn(proc['log'], 'warn');
+        proc.start();
+        await vi.waitFor(() => expect(warn).toHaveBeenCalledWith({ stream: 'stderr' }, 'oops'));
+        await vi.waitFor(() => expect(lines).toEqual(['sample']));
+        expect(debug).not.toHaveBeenCalled();
+    });
+
     it('emits started event with pid', async () => {
         const proc = create({ label: 'started-test', command: 'sleep', args: ['10'] });
         const startedPid = await new Promise<number>((resolve) => {

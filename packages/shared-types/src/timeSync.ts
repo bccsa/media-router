@@ -33,6 +33,7 @@ export interface ChronyTracking {
 /** `SystemStats.timeSync`: JSON-safe, carried to `/system/timeSync` and the manager. */
 export interface TimeSyncState {
     source: TimeSyncSource;
+    /** STA_UNSYNC clear and maxerror under 1 s: the flag alone flips at a linuxptp start. */
     synced: boolean;
     traceable: boolean;
     taiOffsetS: number;

@@ -11,9 +11,11 @@ import type { ManagedProcess } from '../child-process/ManagedProcess.js';
 import { resolveNativeBinary } from '../child-process/nativeBinaries.js';
 import { pollClockSource, type ExecStdout } from './clockSource.js';
 import {
+    SETTLE_MAX_MS,
     START_WAIT_MS,
     decide,
     deltaNs,
+    isSynced,
     parseClockLine,
     qualifies,
     type ClockSample,
@@ -46,6 +48,8 @@ export class HouseClock extends EventEmitter {
     private current: HouseEpoch | null = null;
     private last: ClockSample | null = null;
     private stepped = false;
+    // Untraceable: a moved E latches once, on sync or after SETTLE_MAX_MS. Traceable: at once.
+    private settle: { timer: ReturnType<typeof setTimeout>; stepped: boolean } | null = null;
     private waitExpired = false;
     private startedAt = 0;
     private source: TimeSyncSource = 'none';
@@ -97,6 +101,8 @@ export class HouseClock extends EventEmitter {
             command: bin,
             autoRestart: true,
             backoff: { baseDelayMs: delay, maxDelayMs: 30 * delay, maxAttempts: 0 },
+            // 1 Hz samples would flood the journal; every decision they drive is logged instead.
+            logStdout: false,
             onStdout: (line) => (this.held ? this.held.push(line) : this.onLine(line)),
         });
         this.proc.on('error', (message: string) =>
@@ -108,6 +114,7 @@ export class HouseClock extends EventEmitter {
         if (this.waitTimer) clearTimeout(this.waitTimer);
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.waitTimer = this.pollTimer = null;
+        this.endSettle();
         if (this.proc) await this.opts.processManager.kill(OWNER, this.proc);
         this.proc = null;
     }
@@ -128,7 +135,7 @@ export class HouseClock extends EventEmitter {
         const waitMs = this.opts.startWaitMs ?? START_WAIT_MS;
         return {
             source: this.source,
-            synced: s?.synced ?? false,
+            synced: s ? isSynced(s) : false,
             traceable: e?.traceable ?? false,
             taiOffsetS: s?.taiOffsetS ?? 0,
             estErrorUs: s?.estErrorUs ?? 0,
@@ -161,13 +168,12 @@ export class HouseClock extends EventEmitter {
         }
         const prev = this.last;
         this.last = msg.sample;
-        const stepped = this.stepped;
+        // A step seen during a settle still names the epoch the settle latches.
+        const stepped = this.stepped || (this.settle?.stepped ?? false);
         this.stepped = false;
-        this.apply(
-            decide(this.current, msg.sample, { waitExpired: this.waitExpired, stepped }),
-            msg.sample,
-        );
-        if (!prev || prev.synced !== msg.sample.synced || prev.taiOffsetS !== msg.sample.taiOffsetS)
+        this.decideAndApply(msg.sample, stepped, false);
+        const syncChanged = prev && isSynced(prev) !== isSynced(msg.sample);
+        if (!prev || syncChanged || prev.taiOffsetS !== msg.sample.taiOffsetS)
             this.emit('state', this.state());
     }
 
@@ -175,24 +181,60 @@ export class HouseClock extends EventEmitter {
         this.waitTimer = null;
         this.waitExpired = true;
         const s = this.last;
+        const synced = s ? isSynced(s) : 'unknown';
         log.warn(
             `clock: no time sync after ${Math.round((this.opts.startWaitMs ?? START_WAIT_MS) / 1000)} s ` +
-                `(source=${this.source}, synced=${s?.synced ?? 'unknown'}, tai=${s?.taiOffsetS ?? 'unknown'}) ` +
+                `(source=${this.source}, synced=${synced}, tai=${s?.taiOffsetS ?? 'unknown'}) ` +
                 '— starting untraceable',
         );
-        this.apply(decide(this.current, s, { waitExpired: true, stepped: false }), s);
+        if (s) this.decideAndApply(s, false, false);
         this.markReady(); // no sample yet: modules still go, the first sample latches
     }
 
-    private apply(d: Decision, s: ClockSample | null): void {
+    private decideAndApply(s: ClockSample, stepped: boolean, settleExpired: boolean): void {
+        const d = decide(this.current, s, {
+            waitExpired: this.waitExpired,
+            stepped,
+            settleExpired,
+        });
+        if (d.kind === 'settle') {
+            this.holdForSync(s, stepped);
+            return;
+        }
+        this.endSettle();
+        this.apply(d, s);
+    }
+
+    /** Starts (or carries the step flag of) a settle; at the cap the latest sample latches. */
+    private holdForSync(s: ClockSample, stepped: boolean): void {
+        if (this.settle) {
+            this.settle.stepped = stepped;
+            return;
+        }
+        const dE = ms(s.eNs - this.current!.eNs);
+        log.info(
+            `clock: E moved ${dE} ms while untraceable${stepped ? ' (step)' : ''} — holding ` +
+                `the epoch up to ${SETTLE_MAX_MS / 1000} s for sync`,
+        );
+        const onCap = () => {
+            if (this.last) this.decideAndApply(this.last, !!this.settle?.stepped, true);
+        };
+        this.settle = { timer: setTimeout(onCap, SETTLE_MAX_MS), stepped };
+    }
+
+    private endSettle(): void {
+        if (this.settle) clearTimeout(this.settle.timer);
+        this.settle = null;
+    }
+
+    private apply(d: Exclude<Decision, { kind: 'settle' }>, s: ClockSample): void {
         if (d.kind === 'none') {
-            if (d.stepIgnored && s && this.current)
+            if (d.stepIgnored && this.current)
                 log.info(
                     `clock: realtime step, E unchanged (ΔE=${(Number(deltaNs(s.eNs, this.current.eNs)) / 1e3).toFixed(1)} µs)`,
                 );
             return;
         }
-        if (!s) return;
         if (d.kind === 'traceable') {
             this.current = { ...this.current!, traceable: d.traceable, taiOffsetS: s.taiOffsetS };
             if (d.traceable)

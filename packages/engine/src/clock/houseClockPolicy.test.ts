@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     decide,
+    isSynced,
     parseClockLine,
     qualifies,
     type ClockSample,
@@ -26,8 +27,9 @@ function sample(over: Partial<ClockSample> = {}): ClockSample {
     };
 }
 
-const running = { waitExpired: false, stepped: false };
-const expired = { waitExpired: true, stepped: false };
+const running = { waitExpired: false, stepped: false, settleExpired: false };
+const expired = { waitExpired: true, stepped: false, settleExpired: false };
+const stepped = { ...expired, stepped: true };
 const traceable: Latched = { eNs: E0, traceable: true };
 const untraceable: Latched = { eNs: E0, traceable: false };
 
@@ -40,6 +42,17 @@ describe('qualifies', () => {
         expect(qualifies(sample({ taiOffsetS: 10 }))).toBe(true);
         expect(qualifies(sample({ taiOffsetS: 38 }))).toBe(true);
         expect(qualifies(sample({ taiOffsetS: 9 }))).toBe(false);
+    });
+
+    it('a daemon-asserted bound too: STA_UNSYNC clear at maxerror 16 s is not sync', () => {
+        // linuxptp's set_leap(0) at ptp4l/phc2sys start, measured on .108 and .103.
+        const falseWindow = sample({ synced: true, maxErrorUs: 16_000_000 });
+        expect(isSynced(falseWindow)).toBe(false);
+        expect(qualifies(falseWindow)).toBe(false);
+        expect(qualifies(sample({ maxErrorUs: 999_999 }))).toBe(true);
+        expect(qualifies(sample({ maxErrorUs: 1_000_000 }))).toBe(false);
+        expect(isSynced(sample({ maxErrorUs: 0 }))).toBe(true); // locked phc2sys resets it to 0
+        expect(isSynced(sample({ synced: false, maxErrorUs: 0 }))).toBe(false);
     });
 });
 
@@ -70,7 +83,7 @@ describe('decide — the epoch decision table', () => {
 
     it('step +2 s → relatch(step)', () => {
         const after = sample({ eNs: E0 + 2n * S });
-        expect(decide(traceable, after, { waitExpired: true, stepped: true })).toEqual({
+        expect(decide(traceable, after, stepped)).toEqual({
             kind: 'relatch',
             reason: 'step',
         });
@@ -79,7 +92,7 @@ describe('decide — the epoch decision table', () => {
     it('REALTIME step with E unchanged (leap insert) → none', () => {
         // REALTIME repeats a second and the TAI offset goes 37 → 38; TAI, so E, does not move.
         const leap = sample({ eNs: E0 + 2_000n, taiOffsetS: 38 });
-        expect(decide(traceable, leap, { waitExpired: true, stepped: true })).toEqual({
+        expect(decide(traceable, leap, stepped)).toEqual({
             kind: 'none',
             stepIgnored: true,
         });
@@ -109,12 +122,29 @@ describe('decide — the epoch decision table', () => {
         });
     });
 
-    it('a step while untraceable and still unsynced re-latches as a step', () => {
+    it('a move while untraceable and unsynced settles; at the cap it re-latches', () => {
         const after = sample({ eNs: E0 + 2n * S, synced: false });
-        expect(decide(untraceable, after, { waitExpired: true, stepped: true })).toEqual({
+        expect(decide(untraceable, after, stepped)).toEqual({ kind: 'settle' });
+        expect(decide(untraceable, after, expired)).toEqual({ kind: 'settle' });
+        const capped = { ...stepped, settleExpired: true };
+        expect(decide(untraceable, after, capped)).toEqual({ kind: 'relatch', reason: 'step' });
+        // TAI written by hand with no daemon: no step line, so a divergence.
+        const tai = sample({ eNs: E0 + 37n * S, synced: false });
+        expect(decide(untraceable, tai, { ...expired, settleExpired: true })).toEqual({
             kind: 'relatch',
-            reason: 'step',
+            reason: 'divergence',
         });
+    });
+
+    it('a settle ends on sync: relatch(step) when a step began it, else relatch(sync)', () => {
+        const synced = sample({ eNs: E0 + 37n * S });
+        expect(decide(untraceable, synced, stepped)).toEqual({ kind: 'relatch', reason: 'step' });
+        expect(decide(untraceable, synced, expired)).toEqual({ kind: 'relatch', reason: 'sync' });
+    });
+
+    it('a move while traceable never settles: it re-latches at once', () => {
+        const after = sample({ eNs: E0 + 2n * S, synced: false });
+        expect(decide(traceable, after, stepped)).toEqual({ kind: 'relatch', reason: 'step' });
     });
 });
 
