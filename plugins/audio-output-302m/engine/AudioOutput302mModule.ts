@@ -8,6 +8,7 @@ import {
 import { buildAudioMixInput } from '@media-router/plugin-audio-302m-core';
 import { SINK_BUFFER_US, SLAVE_METHOD_SKEW, audio302mTsOffsetNs } from './audio302mTiming.js';
 import { buildOutputPlacement } from './outputPlacement.js';
+import { TimelineSettleRestart } from './timelineSettleRestart.js';
 
 /**
  * Audio Output (302M) plugin.
@@ -60,6 +61,11 @@ export class AudioOutput302mModule extends GstPluginBase {
      * only changes with a rebuild (source count is not live).
      */
     private mixerLatencyNs = 0;
+    /** FF9: relaunch this pipeline once its source settles after a rebase or stall-resume. */
+    private readonly settleRestart = new TimelineSettleRestart({
+        pipeline: () => this.childProcess,
+        log: () => this.log,
+    });
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -86,8 +92,32 @@ export class AudioOutput302mModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        this.settleRestart.cancel();
         await this.stopDeviceWatchdog();
         await super.onStop();
+    }
+
+    async onDestroy(): Promise<void> {
+        this.settleRestart.cancel();
+        await super.onDestroy();
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        this.settleRestart.onPluginEvent(channel, payload);
+    }
+
+    /**
+     * Stall-resumes count on the contract only: a legacy sink is sync=false with no shedder,
+     * so a relaunch there would only add silence.
+     */
+    protected setVuData(data: number[]): void {
+        super.setVuData(data);
+        if (this.services?.timeSyncContract === true) this.settleRestart.onVu(data);
+    }
+
+    /** Every PLAYING is a fresh pipeline (no rebase pad offset): nothing left to relaunch. */
+    protected onPipelinePlaying(): void {
+        this.settleRestart.cancel();
     }
 
     protected getWatchedDeviceName(): string | null {
@@ -96,6 +126,7 @@ export class AudioOutput302mModule extends GstPluginBase {
 
     /** Device unplugged — tear down the pipeline (pulsesink is gone). */
     protected async onDeviceDisconnected(): Promise<void> {
+        this.settleRestart.cancel();
         try {
             await super.onStop();
         } catch {
