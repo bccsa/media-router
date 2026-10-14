@@ -283,3 +283,109 @@ verifiable on a development host:
   the gate goes here.
 - The dispatcher variable name `DHCP4_NTP_SERVERS` on a lease carrying
   option 42.
+
+## Phase 1 (building, 2026-10-14) — ingest restamp, captures on house time, ASRC at captures
+
+Phase 1 is being built with the shared TS module on `feat/house-clock-s0`
+(plan chapters 3 and 5). This section records the choices made so far;
+WI-P1-6 adds the tuned constants and the sweep, and WI-P1-17 completes it
+when the phase lands. The plan's register (chapter 15.4, rows B-1 to B-16)
+holds the same records with their work items.
+
+### The virtual STC (`mrts::ClockLock`, `VirtualStc`; plan part 4.3)
+
+- **The two stages as planned, at the plan's initial constants**
+  (`ClockLockConfig`, `PcrValidatorConfig`): bucket minima per second, a
+  least-squares rate fit refit once without the points more than 2 MAD
+  above the line, a first-order follower, and a lower-envelope offset with
+  an acquire and a track slew. Integer arithmetic, so a replay is
+  bit-exact on every machine. WI-P1-6 tunes the constants by replay.
+- **The rate fit runs on one floor level.** A bucket more than `step_ns`
+  off the fit's level opens a candidate level; a candidate held for
+  `step_hold_ns` replaces it and the fit restarts there; one that ends
+  sooner (a burst or a dip) stays out. The rule has no constant of its
+  own. A level adoption clears the fit until the new level has
+  `rate_buckets_min` buckets (about 30 s), so neither the validator's rate
+  row nor `mrasrc` reads a fit of the old level. Why: a delay step inside
+  the window bent ε; a −100 ms fall degraded the program on the rate row
+  for good, and a +150 ms rise left ε near 1,000 ppm.
+- **The envelope step is one-sided at a TS ingest.** The minimum delay
+  rising past `step_ns` (20 ms) for `step_hold_ns` (10 s) re-locks; a fall
+  is slewed at the track slew. Why: a rise makes content late, while a
+  fall only leaves content earlier than needed, and stepping onto it would
+  drop the overlap with what already left. The direction is a per-lock
+  constant, `ClockLockConfig::step_falls`: false here, true for `mrasrc`
+  (below). The plan's draft wrote the step as `|β* − β_applied|`.
+- **Convergence.** The draft's acceptance, ±0.5 ppm within 60 s, cannot be
+  met under its own delay model (exponential, mean 5 ms, cut at 50 ms) by
+  any estimator tried, a maximum-likelihood envelope estimator included.
+  The built fit has a median error of 1.8 ppm at 60 s and reaches
+  ±0.5 ppm by 300 s at the median and by 600 s at worst. That is now
+  WI-P1-1's acceptance and WI-P1-6's sweep criterion.
+- **The residual's sign.** `r = arrival − house(σ)`. A negative r is a
+  mapping later than the arrival: added latency, not lateness. A PES
+  arrives after its house PTS only when r exceeds its source lead.
+
+### The straddle rule (OQ-11, refined 2026-10-14)
+
+The decided tie-break (a PES in two epochs' ranges takes the epoch whose
+lead is closest to the PID's median lead before the re-lock) applies to
+real timeline jumps only. An epoch closed by an envelope step is no
+candidate, because the floor moved, not the timeline; and a range that
+maps the PES within `step_ns` of a newer range holding it gives way to the
+newer one (one timeline, such as a same-clock PCR PID change). Why: left to
+the tie-break, delay jitter flipped PIDs between such epochs, and a
++100 ms delay ramp over 30 s dropped 1.3 s of audio. The design's §5.2
+keeps the general rule.
+
+### ASRC at PCM captures (`mrts::AsrcServo`; plan part 4.5)
+
+- **A two-sided 50 ms step.** `asrc_lock_config()` is the STC's constants
+  with `step_ns` = 50 ms and `step_falls` = true. A capture labelled on
+  its floor is late by any fall of its latency (a PipeWire quantum change)
+  and early by any rise; under the one-sided rule a −60 ms fall left
+  labels 54 ms late for about 50 min.
+- **A relock lands on the measured floor.** On an envelope step the lock
+  moves onto the floor of the step's own buckets
+  (`ClockLock::step_to_floor`) and stays locked. Re-acquiring from one
+  jittered PTS misses the one-frame target under 1 ms of jitter.
+- **T0 never goes back, so a fall drops its overlap.** The new T0 is never
+  before the end of the last output. A rise leaves a forward PTS jump (a
+  gap downstream). A fall, or a DISCONT whose PTS steps back, drops the
+  input captured before that end (`Command::skip`, at most `DROP_MAX_NS`
+  = 1 s; the rest is slewed), so labels stay the capture time. Steering
+  moves only the ratio; the drop is a relock action, like the ingest's
+  overlap rule (R18). Why: inside the ±1,000 ppm ratio clamp a slew takes
+  about 2 min for 60 ms and 5 min for 200 ms, with late labels throughout.
+  Measured: −60 and −200 ms falls give one relock 9–10 s after the step,
+  no PTS jump, 59.935 and 199.928 ms dropped, and labels within one frame
+  from the relock. The rule covers every relock; limiting the drop to
+  envelope steps is a one-line change.
+- **Measured against the plan, constants unchanged until WI-P1-6.** The
+  lock takes 35.01–36.01 s (plan 30 s: the STC's 30-bucket first fit plus
+  the 5 s acquire). Over 1 h the frame count is within 0.70 frames at 0
+  and ±50 ppm and 1.19 frames at ±500 ppm (plan ±1; the jitter of the
+  bucket minima). A device past the ratio clamp now relocks on falls as
+  well.
+
+### Identity egress (`mrtsstamp` and the Python probe; plan parts 4.6–4.7)
+
+- **Base-aware identity.** `house_now` is the clock time and a stamp maps
+  to running time `max(stamp − base_time, 0)`, so wire = PES − 1 h under
+  any base time (video-encoder's natural one). Base-0 pipelines are
+  unchanged.
+- **Gap markers pass.** A GAP-flagged buffer (OQ-12) leaves an identity
+  egress untouched. Anchored egresses are frozen (Q2) and get no markers in
+  Phase 1.
+- **An exception to ADR-0011.** At an identity egress a buffer list
+  holding a GAP member is chained member by member, not coalesced:
+  merging would hand the marker's flags and PTS to the whole access unit,
+  or bury the marker in a data buffer. `MRTSSTAMP_VERSION` is 2.6.0.
+
+### Operator settings (plan WI-P1-14)
+
+The Ingest Offset and the per-PID trims apply on change only (Enter, blur
+or a spinner step), never per keystroke, because every live write is a gap
+or a drop on the stream (§5.5). Each box keeps a draft of its uncommitted
+text, so a re-render of the settings form, which any engine's store patch
+causes, never resets what is being typed.
