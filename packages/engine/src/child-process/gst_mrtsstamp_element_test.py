@@ -987,6 +987,176 @@ check("nothing re-anchors and nothing is conditioned",
 stamper.house_timeline = False
 teardown()
 
+
+# ---------------------------------------------------------------------------
+print("\n--- base-aware identity (WI-P1-7): base time 10 h and 14 h, wire = PES − 1 h ---")
+# video-encoder keeps a natural base time (liveCaptureClock) and its restamp
+# writes PES = capture time on the house timescale + 1 h. 14 h is past half a
+# 2^33 period, where unwrapping against running time folds a whole period.
+
+
+def uptime_clock(at_ns):
+    """A monotonic clock of its own reading `at_ns` now, whatever this box's
+    uptime; the process-wide system clock is left alone."""
+    clock = Gst.SystemClock(clock_type=Gst.ClockType.MONOTONIC)
+    clock.set_calibration(clock.get_internal_time(), at_ns, 1, 1)
+    return clock
+
+
+for hours in (10, 14):
+    base = hours * 3600 * Gst.SECOND
+    pipe, src = build_pipe()
+    bus = Bus(pipe)
+    start(pipe)
+    pipe.use_clock(uptime_clock(base + Gst.SECOND))
+    pipe.set_base_time(base)                     # start time is NONE: it survives PLAYING
+    stamper.house_timeline = True
+    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+    seen = tap_timestamps(pipe)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(3 * Gst.SECOND)
+    c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000   # content: now + 1 s
+    for i in range(6):
+        push(src, pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i),
+             i * 40 * Gst.MSECOND, 0)
+    bus.wait(seen, 6)
+    tap = pipe.get_by_name("tap")
+    seg = tap.get_static_pad("sink").get_sticky_event(Gst.EventType.SEGMENT, 0).parse_segment()
+    tap_base = tap.get_base_time()
+    bus.drain(pipe, src)
+    stamper.house_timeline = False
+    teardown()
+    # The wire is what unixfdsink sends: running time + base time.
+    wire = [seg.to_running_time(Gst.Format.TIME, p) + tap_base for p, _ in seen[:6]]
+    want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(6)]
+    check(f"base {hours} h: the egress really runs on that base time", tap_base == base)
+    check(f"base {hours} h: wire = PES − 1 h exactly, every buffer "
+          f"(first off by {(wire[0] - want[0]) / 1e9 if wire else None} s)",
+          len(seen) == 6 and wire == want)
+    check(f"base {hours} h: DTS rides with PTS", all(d == p for p, d in seen[:6]))
+    anchors = bus.of("timeline_restamped")
+    check(f"base {hours} h: the anchor event names the content's house time, not running time",
+          len(anchors) == 1 and anchors[0]["anchorNs"] == want[0])
+
+
+# ---------------------------------------------------------------------------
+print("\n--- a GAP buffer (the bus gap marker, OQ-12) leaves an identity egress untouched ---")
+# Its PTS is the gap's end and its packets' private data the gap's length; a
+# stamp would replace that PTS with the staircase. OQ-12's form has no duration;
+# the second marker carries one to show a duration is never touched either.
+# Anchored mode is frozen (Q2), pinned as it was: no anchored egress carries one.
+GAP_FLAGS = int(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
+
+
+def gap_marker(pid, length_ns, cc=0):
+    """OQ-12's marker packet: adaptation-only, the gap length in the adaptation
+    field's transport_private_data."""
+    af = bytes([0x02, 8]) + length_ns.to_bytes(8, "big")
+    return (bytes([ts_psi.SYNC, (pid >> 8) & 0x1F, pid & 0xFF, 0x20 | (cc & 0x0F), 183])
+            + af + b"\xff" * (183 - len(af)))
+
+
+def tap_buffers(pipe, name="tap"):
+    seen = []
+
+    def _on_buffer(_pad, info):
+        b = info.get_buffer()
+        seen.append((b.pts, b.dts, b.duration, int(b.get_flags()),
+                     b.extract_dup(0, b.get_size())))
+        return Gst.PadProbeReturn.OK
+
+    pipe.get_by_name(name).get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _on_buffer)
+    return seen
+
+
+for house in (True, False):
+    mode = "identity" if house else "anchored"
+    pipe, src = build_pipe()
+    bus = Bus(pipe)
+    start(pipe)
+    stamper.house_timeline = house
+    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+    seen = tap_buffers(pipe)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(3 * Gst.SECOND)
+    c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
+    pes = [pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i) for i in range(4)]
+    markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE),
+               (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 300 * Gst.MSECOND)]
+    push(src, pes[0], 0, 0)
+    push(src, pes[1], 40 * Gst.MSECOND, 0)
+    for data, pts, duration in markers:
+        mb = Gst.Buffer.new_wrapped(data)
+        mb.pts, mb.dts, mb.duration = pts, Gst.CLOCK_TIME_NONE, duration
+        mb.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
+        src.emit("push-buffer", mb)
+    push(src, pes[2], 80 * Gst.MSECOND, 0)
+    push(src, pes[3], 120 * Gst.MSECOND, 0)
+    bus.wait(seen, 6)
+    bus.drain(pipe, src)
+    stamper.house_timeline = False
+    teardown()
+    got = seen[2:4]
+    check(f"{mode}: its GAP|DISCONT flags and bytes are intact",
+          len(seen) == 6 and all(g[3] & GAP_FLAGS == GAP_FLAGS for g in got)
+          and [g[4] for g in got] == [d for d, _p, _u in markers])
+    data = [s for s in seen if not s[3] & int(Gst.BufferFlags.GAP)]
+    if house:
+        check("identity: each marker leaves with its own PTS and duration, DTS still unset",
+              len(seen) == 6
+              and [(g[0], g[1], g[2]) for g in got]
+              == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, duration in markers])
+        want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(4)]
+        check("identity: the data on either side is stamped PES − 1 h as usual",
+              [(s[0], s[1]) for s in data] == [(w, w) for w in want])
+    else:
+        check("anchored (frozen, Q2): each marker is stamped like any PES-less buffer, as before",
+              len(seen) == 6
+              and [(g[0], g[1], g[2]) for g in got]
+              == [(seen[1][0], seen[1][0], duration) for _d, _p, duration in markers])
+        check("anchored: the data on either side keeps its 40 ms staircase",
+              len(data) == 4 and {data[i + 1][0] - data[i][0] for i in range(3)} == {40_000_000}
+              and all(s[1] == s[0] for s in data))
+
+# A marker inside a buffer list must not be merged into the access unit; an
+# anchored egress coalesces such a list as it always did (frozen, Q2).
+for house in (True, False):
+    pipe, src = build_pipe()
+    bus = Bus(pipe)
+    start(pipe)
+    stamper.house_timeline = house
+    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+    el = pipe.get_by_name(STAMP_EL)
+    seen = tap_buffers(pipe)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(3 * Gst.SECOND)
+    c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
+    lst = Gst.BufferList.new()
+    for data, flags, pts in ((gap_marker(0x41, 200 * Gst.MSECOND), True, 5 * Gst.SECOND),
+                             (pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0, 0), False, 0),
+                             (filler_packet(cc=1), False, 0)):
+        b = Gst.Buffer.new_wrapped(data)
+        b.pts = b.dts = pts
+        if flags:
+            b.dts = Gst.CLOCK_TIME_NONE
+            b.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
+        lst.insert(-1, b)
+    src.emit("push-buffer-list", lst)
+    bus.wait(seen, 3 if house else 1)
+    bus.drain(pipe, src)
+    stamper.house_timeline = False
+    teardown()
+    if house:
+        check("identity: a list holding a marker is handed on member by member, not merged",
+              len(seen) == 3 and el.get_property("coalesced-lists") == 0)
+        check("identity: the marker keeps its PTS and flags; the AU behind it is stamped",
+              len(seen) == 3 and seen[0][0] == 5 * Gst.SECOND
+              and seen[0][1] == Gst.CLOCK_TIME_NONE and seen[0][3] & GAP_FLAGS == GAP_FLAGS
+              and seen[1][0] == seen[1][1] == _tl.pts90k_to_ns(c0) and seen[2][0] == seen[1][0])
+    else:
+        check("anchored (frozen, Q2): the same list still coalesces into one buffer",
+              len(seen) == 1 and el.get_property("coalesced-lists") == 1)
+
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")
     sys.exit(1)

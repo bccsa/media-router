@@ -1891,8 +1891,9 @@ def _apply_contract_clock(pipe, live_capture_clock=False):
     live consumer frozen on one frame).
 
     The contract survives that: the producer stamp is base-time independent by
-    construction — both stamping backends read house time as `clock - base_time`
-    (`gst_stamp_probe.house_now`, `gst_mrtsstamp_house_now`) and `unixfdsink`
+    construction — the anchored backends read house time as `clock - base_time`,
+    the identity ones map a stamp to running time `stamp - base_time`
+    (`gst_stamp_probe.house_now`, `gst_mrtsstamp_clock_now`), and `unixfdsink`
     transmits `segment_to_running_time(pts) + base_time`, so the base-time
     cancels and the wire carries the same absolute house time either way. Only
     the pinning is skipped; the clock half is identical. Bus-fed producers

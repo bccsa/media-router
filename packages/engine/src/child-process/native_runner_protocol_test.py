@@ -358,6 +358,121 @@ def test_house_timeline_egress():
         os.rmdir(tmp)
 
 
+# --------------------------------------------------------------------------- identity-base-time (WI-P1-7)
+def test_identity_base_time():
+    """A house-timeline egress on a natural base time (`liveCaptureClock`, as
+    video-encoder runs) whose PES carry house time + 1 h: the wire is PES − 1 h
+    exactly, on both runners. The base is this box's uptime, so unwrapping against
+    running time would miss by the base and by whole 2^33 periods."""
+    for el in ("unixfdsink", "unixfdsrc", "udpsrc", "capssetter"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP identity-base-time — {el} unavailable")
+            return
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    import ts_timeline  # noqa: E402
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    py = ["env", "PYTHONPATH=" + os.path.join(_PLUGINS, "mpegts-core", "py"), sys.executable,
+          os.path.join(_HERE, "gst-pipeline-runner.py")]
+
+    def pes_packet(pid, pts90k, cc):
+        p = pts90k & ((1 << 33) - 1)
+        pts = bytes([0x21 | (((p >> 30) & 0x07) << 1), (p >> 22) & 0xFF,
+                     0x01 | (((p >> 15) & 0x7F) << 1), (p >> 7) & 0xFF, 0x01 | ((p & 0x7F) << 1)])
+        pkt = (bytes([ts_psi.SYNC, 0x40 | (pid >> 8), pid & 0xFF, 0x10 | (cc & 0x0F)])
+               + b"\x00\x00\x01\xe0\x00\x00\x80\x80\x05" + pts)
+        return pkt + b"\xff" * (ts_psi.PKT - len(pkt))
+
+    anchors = {}
+    for tag, argv in (("native", None), ("py", py)):
+        label = f"identity-base-time {tag}"
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        edge = os.path.join(tmp, "edge.sock")
+        free = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        free.bind(("127.0.0.1", 0))
+        port = free.getsockname()[1]
+        free.close()
+        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        r = RunnerProc(argv)
+        consumer = None
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start",
+                    "pipeline": f"udpsrc address=127.0.0.1 port={port} caps=\"{caps}\""
+                                f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
+                                " ! tee name=busout_40000 allow-not-linked=true",
+                    "latchRepair": False, "houseTimelineEgress": True, "liveCaptureClock": True})
+            check(f"{label}: reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+            check(f"{label}: the pipeline keeps its natural base time",
+                  r.wait_log("contract clock: monotonic, base_time=natural"))
+            r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            check(f"{label}: bus_attach -> bus_attached",
+                  r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
+            check(f"{label}: the native element is armed as a house-timeline egress",
+                  r.wait_log("house-timeline egress", timeout=2) and r.wait_log("native mrtsstamp"))
+
+            consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
+            # Base 0 on the house clock, as the runner pins a contract pipeline:
+            # the buffer timestamp is then the wire's absolute house time.
+            consumer.use_clock(clock)
+            consumer.set_start_time(Gst.CLOCK_TIME_NONE)
+            consumer.set_base_time(0)
+            got = []
+
+            def on_buf(_pad, info):
+                buf = info.get_buffer()
+                pts = ts_psi.read_pes_pts(buf.extract_dup(0, ts_psi.PKT))
+                if pts is not None:
+                    got.append((pts, buf.pts))
+                return Gst.PadProbeReturn.OK
+
+            consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+            consumer.set_state(Gst.State.PLAYING)
+            consumer.get_state(3 * Gst.SECOND)
+            # Content = house now + 1 s on a 40 ms cadence, one PES per datagram.
+            c0 = clock.get_time() * 9 // 100000 + 90000
+            want = {}
+            for i in range(40):
+                pes = ts_timeline.MUX_CLOCK_BASE_90K + c0 + i * 3600
+                want[pes % (1 << 33)] = ts_timeline.pts90k_to_ns(c0 + i * 3600)
+                tx.sendto(pes_packet(0x41, pes, i), ("127.0.0.1", port))
+                time.sleep(0.04)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and len(got) < 30:
+                time.sleep(0.05)
+            check(f"{label}: the consumer receives the stamped PES over the edge", len(got) >= 30)
+            off = [wire - want.get(pts, 0) for pts, wire in got]
+            worst = max(off, key=abs) if off else None
+            check(f"{label}: every wire timestamp is PES − 1 h exactly, under a "
+                  f"~{clock.get_time() / 3.6e12:.0f} h base (worst {worst} ns)",
+                  bool(got) and all(o == 0 for o in off))
+            anchor = r.wait_event(ev_is("timeline_restamped"), timeout=3)
+            anchors[tag] = anchor
+            check(f"{label}: the anchor event names the first PES's house time, not running time",
+                  anchor is not None
+                  and anchor.get("anchorNs") == ts_timeline.pts90k_to_ns(c0)
+                  and anchor.get("refPts90k") == (ts_timeline.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
+            check(f"{label}: nothing re-anchors", not r.has_event(ev_is("timeline_reanchor")))
+            consumer.set_state(Gst.State.NULL)
+            r.send({"cmd": "bus_detach", "socket": edge})
+            r.wait_event(ev_is("bus_detached", socket=edge))
+            check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+        finally:
+            if consumer is not None:
+                consumer.set_state(Gst.State.NULL)
+            tx.close()
+            r.kill()
+            for f in os.listdir(tmp):
+                os.unlink(os.path.join(tmp, f))
+            os.rmdir(tmp)
+    check("identity-base-time: both runners report the anchor with the same fields",
+          all(anchors.get(t) for t in ("native", "py"))
+          and set(anchors["native"]) == set(anchors["py"]))
+
+
 # --------------------------------------------------------------------------- C: gated consumer (data wait)
 def test_consumer_data_wait():
     if Gst.ElementFactory.find("unixfdsink") is None:
@@ -1523,6 +1638,7 @@ def test_lateness_taps():
 test_plain_pipeline()
 test_producer_edge()
 test_house_timeline_egress()
+test_identity_base_time()
 test_consumer_data_wait()
 test_refusals()
 test_presentation_leg()

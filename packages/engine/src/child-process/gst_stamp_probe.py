@@ -122,13 +122,16 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
           "segment": None, "seg_identity": False, "seg_warned": False}
 
     def house_now():
-        # Running-time, which under the contract IS house-clock time. Written
-        # as clock − base_time rather than clock.get_time() so a pipeline that
-        # somehow missed `_apply_contract_clock` still gets a self-consistent
-        # timeline instead of one offset by its base-time.
         clock = pipe.get_pipeline_clock()
         if clock is None:
             return 0
+        if house_timeline:
+            # Identity reads PES − 1 h, absolute house time even under a natural
+            # base (liveCaptureClock): unwrap against the clock; `on_buffer`
+            # takes the base off the position instead.
+            return clock.get_time()
+        # Anchored: running time, self-consistent even on a pipeline that missed
+        # `_apply_contract_clock` instead of offset by its base time.
         return max(0, clock.get_time() - pipe.get_base_time())
 
     def on_anchor(ev):
@@ -170,6 +173,10 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
         buf = info.get_buffer()
         if buf is None:
             return Gst.PadProbeReturn.OK
+        if house_timeline and buf.has_flags(Gst.BufferFlags.GAP):
+            # An identity egress hands a gap marker (OQ-12) on as it came: its PTS
+            # is the gap's end, its packets' private data the gap's length.
+            return Gst.PadProbeReturn.OK
         if st["segment"] is None:
             # Armed mid-stream: the SEGMENT event went by before the probe
             # existed, so take it off the pad's sticky store instead.
@@ -194,6 +201,8 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
             # own no-PES path (repeat the staircase, or house time before the
             # anchor), so the fallback is the contract's, not a second one.
             stamp = stamper.stamp(b"", house_now())
+        if house_timeline:
+            stamp = max(0, stamp - pipe.get_base_time())   # the wire adds it back
         pos = _position_for(st, stamp)
         buf.pts = pos
         # DTS is LOAD-BEARING here, not tidiness. The consumer's tsdemux takes

@@ -75,7 +75,7 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.5.0"
+#define MRTSSTAMP_VERSION "2.6.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -245,18 +245,15 @@ static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
     self->st->set_house_timeline(self->house_timeline != FALSE);
 }
 
-/* Running-time, which under the contract IS house-clock time. Written as
- * clock − base_time rather than clock.get_time() (the python probe's exact
- * expression) so a pipeline that somehow missed the contract clock still gets a
- * self-consistent timeline instead of one offset by its base-time. */
-static gint64 gst_mrtsstamp_house_now(GstMrTsStamp *self) {
+/* The pipeline clock's time, 0 without one. Anchored mode subtracts the base
+ * time (running time, self-consistent even off the contract clock); identity
+ * keeps clock time, see `transform_ip`. */
+static gint64 gst_mrtsstamp_clock_now(GstMrTsStamp *self) {
     GstClock *clock = gst_element_get_clock(GST_ELEMENT_CAST(self));
     if (clock == NULL) return 0;
     GstClockTime now = gst_clock_get_time(clock);
     gst_object_unref(clock);
-    if (!GST_CLOCK_TIME_IS_VALID(now)) return 0;
-    gint64 v = (gint64)now - (gint64)gst_element_get_base_time(GST_ELEMENT_CAST(self));
-    return v > 0 ? v : 0;
+    return GST_CLOCK_TIME_IS_VALID(now) ? (gint64)now : 0;
 }
 
 static gboolean gst_mrtsstamp_identity_segment(const GstSegment *seg) {
@@ -271,8 +268,8 @@ static gboolean gst_mrtsstamp_identity_segment(const GstSegment *seg) {
 static void gst_mrtsstamp_check_env(GstMrTsStamp *self) {
     const gchar *name = GST_OBJECT_NAME(self);
 
-    /* House clock. The contract pins a monotonic GstSystemClock with
-     * base_time=0; anything else and `house_now` is not house time. */
+    /* House clock. The contract pins a monotonic GstSystemClock; anything
+     * else and `clock_now` is not house time. */
     GstClock *clock = gst_element_get_clock(GST_ELEMENT_CAST(self));
     if (clock == NULL) {
         g_printerr("[mrtsstamp] %s: no pipeline clock at arm — the anchor will be 0\n", name);
@@ -418,6 +415,10 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
      * one size read and one atomic add, no map, no lock. */
     self->bytes_total.fetch_add(gst_buffer_get_size(buf), std::memory_order_relaxed);
     if (!self->active) return GST_FLOW_OK;
+    /* An identity egress hands a gap marker (OQ-12) on as it came: its PTS is the
+     * gap's end, its packets' private data the gap's length. Anchored is frozen (Q2). */
+    if (self->house_timeline && GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP))
+        return GST_FLOW_OK;
 
     /* READWRITE only when the timeline conditioner may rewrite PES/PCR fields
      * (live-cadence producers, `repair-latch`); otherwise READ — the stamp is
@@ -429,7 +430,8 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
         return GST_FLOW_OK;
     }
 
-    gint64 now = gst_mrtsstamp_house_now(self);
+    const gint64 clock_now = gst_mrtsstamp_clock_now(self);
+    const gint64 base_time = (gint64)gst_element_get_base_time(GST_ELEMENT_CAST(self));
     std::vector<MrTsStampPending> posts;
     gint64 stamp;
 
@@ -445,6 +447,11 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
         self->checked = TRUE;
         gst_mrtsstamp_check_env(self);
     }
+    /* Identity reads PES − 1 h, absolute house time even under a natural base
+     * (liveCaptureClock), so it unwraps against the clock and takes the base
+     * off the position instead. */
+    const bool identity = self->st->house_timeline();
+    const gint64 now = identity ? clock_now : MAX(clock_now - base_time, 0);
     /* ONE egress, so ONE stream: every branch of this producer shares the
      * anchor and the monotone floor, which is what keeps A/V paired. */
     /* Condition first: a source clock step is taken out of the PES/PCR bytes
@@ -455,7 +462,8 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
     /* Segment mapping under the lock only for the one-shot warn latch; the
      * segment itself is owned by this (the streaming) thread. */
     const gchar *seg_why = NULL;
-    GstClockTime pos = gst_mrtsstamp_position(self, stamp, &seg_why);
+    GstClockTime pos = gst_mrtsstamp_position(
+        self, identity ? MAX(stamp - base_time, 0) : stamp, &seg_why);
     if (seg_why != NULL && self->seg_warned) seg_why = NULL;
     else if (seg_why != NULL) self->seg_warned = TRUE;
     g_mutex_unlock(&self->lock);
@@ -498,6 +506,14 @@ static GstFlowReturn gst_mrtsstamp_prepare_output_buffer(GstBaseTransform *base,
 
 /* --- coalesce (ADR-0011) ------------------------------------------------- */
 
+/* Merging would hand a gap marker's flags and PTS to the whole AU, or bury the
+ * marker in a data buffer, so an identity egress takes such a list member by member. */
+static gboolean gst_mrtsstamp_list_has_gap(GstBufferList *list) {
+    for (guint i = 0; i < gst_buffer_list_length(list); i++)
+        if (GST_BUFFER_FLAG_IS_SET(gst_buffer_list_get(list, i), GST_BUFFER_FLAG_GAP)) return TRUE;
+    return FALSE;
+}
+
 /* Sink-pad chain_list. GstBaseTransform installs a chain function but no
  * chain_list, so without this the core's default would split every list into
  * single chain() calls before the element ran — and the 1316-byte members of
@@ -507,7 +523,8 @@ static GstFlowReturn gst_mrtsstamp_prepare_output_buffer(GstBaseTransform *base,
  * per-message kernel work it removes) into a single buffer carrying the first
  * member's timestamps and flags, and THAT goes down the base chain: stamping,
  * byte accounting and everything downstream see one buffer per AU. Lists of
- * one, or `coalesce=false`, take the original path member by member. */
+ * one, lists holding a gap marker at an identity egress, or `coalesce=false`,
+ * take the original path member by member. */
 static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *parent,
                                                    GstBufferList *list) {
     GstMrTsStamp *self = GST_MRTSSTAMP(parent);
@@ -519,7 +536,8 @@ static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *paren
      * on this pad still fires for list input; calling the base chain function
      * directly would skip it. The stream lock is recursive, so re-entering
      * the pad from inside its chain_list is legal. */
-    if (self->coalesce.load(std::memory_order_relaxed) && n >= 2) {
+    if (self->coalesce.load(std::memory_order_relaxed) && n >= 2
+        && !(self->house_timeline && gst_mrtsstamp_list_has_gap(list))) {
         gsize total = 0;
         GstClockTime duration = 0;
         gboolean all_durations = TRUE;
