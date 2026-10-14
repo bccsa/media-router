@@ -234,6 +234,83 @@ describe('PluginRegistry', () => {
         });
     });
 
+    describe('ingest timing settings (house-clock WI-P1-9)', () => {
+        const PORT = { type: 'number', default: 9000 };
+        const OFFSET = {
+            type: 'number',
+            default: 0,
+            minimum: -10000,
+            maximum: 10000,
+            'x-unit': 'ms',
+            'x-live': true,
+            title: 'Ingest Offset',
+            description:
+                'Moves this input on the house timeline: positive later, negative earlier. A live edit leaves a gap or drops overlap.',
+        };
+        const TRIMS = {
+            type: 'object',
+            additionalProperties: { type: 'number', minimum: -2000, maximum: 2000 },
+            default: {},
+            'x-widget': 'pidTrim',
+            'x-optionsFrom': 'pids',
+            'x-live': true,
+            'x-unit': 'ms',
+            title: 'Per-PID Trim',
+            description:
+                "Shifts one stream against the others, on top of Ingest Offset, to correct a source's fixed A/V error.",
+        };
+        const manifest = (id: string, timing?: unknown) => ({
+            pluginId: id,
+            displayName: id,
+            engine: './engine/TestModule.ts',
+            ports: [],
+            configSchema: { type: 'object', properties: { port: PORT } },
+            ...(timing ? { timing } : {}),
+        });
+
+        it('only the manifests declaring `timing` get them; the trim only with pidTrims', () => {
+            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }));
+            createPlugin('cap', manifest('cap', { role: 'ingest', pidTrims: false }));
+            createPlugin('out', manifest('out', { role: 'egress' }));
+            createPlugin('plain', manifest('plain'));
+
+            const schemas = Object.fromEntries(
+                new PluginRegistry(tmpDir).getAll().map((p) => [p.pluginId, p.configSchema]),
+            );
+
+            expect(schemas).toEqual({
+                net: {
+                    type: 'object',
+                    properties: { port: PORT, ingestOffsetMs: OFFSET, pidTrimsMs: TRIMS },
+                },
+                cap: { type: 'object', properties: { port: PORT, ingestOffsetMs: OFFSET } },
+                out: { type: 'object', properties: { port: PORT } },
+                plain: { type: 'object', properties: { port: PORT } },
+            });
+        });
+
+        it('a module gets them through overlayManifest, and initManifest sees them', async () => {
+            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }));
+            const dist = path.join(tmpDir, 'net', 'dist');
+            fs.mkdirSync(dist);
+            fs.writeFileSync(
+                path.join(dist, 'TestModule.js'),
+                `export class TestModule {
+                    static initManifest(m) {
+                        m.description = Object.keys(m.configSchema.properties).join(',');
+                    }
+                }`,
+            );
+            const registry = new PluginRegistry(tmpDir);
+            await registry.init();
+            expect(registry.find('net')!.description).toBe('port,ingestOffsetMs,pidTrimsMs');
+
+            const mod: Record<string, unknown> = { pluginId: 'net' };
+            registry.overlayManifest(mod);
+            expect((mod.configSchema as any).properties.pidTrimsMs).toEqual(TRIMS);
+        });
+    });
+
     describe('refresh', () => {
         it('clears cache so next getAll rescans', () => {
             createPlugin('plugin-a', {

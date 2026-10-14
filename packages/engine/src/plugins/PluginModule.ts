@@ -315,8 +315,9 @@ export interface PipelineDescription {
      */
     conditionStepMs?: number;
     /**
-     * Egress PES already carry house time + 1 h (a transform producer's mux on
-     * house-stamped input): stamp by identity, not by anchoring (ADR-0005 2026-10-08).
+     * Egress PES already carry house time + 1 h, so the stamper stamps by identity. Every producer
+     * sets it except the Phase 2 set (mixers, audio-processing, splitter, HLS fan-out), which
+     * anchor until Phase 2 deletes the anchored stamper (house-clock plan ch. 5 part 4.1).
      */
     houseTimelineEgress?: boolean;
     /**
@@ -346,9 +347,10 @@ export interface PipelineDescription {
      * running time back next to the source's own timeline and the egress is flat.
      *
      * WHY THE CONTRACT STILL HOLDS. The producer stamp is base-time INDEPENDENT
-     * by construction: both stamping backends read house time as
-     * `clock − base_time` (`gst_stamp_probe.house_now`,
-     * `gst_mrtsstamp_house_now`) and `unixfdsink` transmits
+     * by construction: the anchored backends read house time as
+     * `clock − base_time`, the identity ones map a stamp to running time
+     * `stamp − base_time` (`gst_stamp_probe.house_now`,
+     * `gst_mrtsstamp_clock_now`), and `unixfdsink` transmits
      * `segment_to_running_time(pts) + base_time`, so the base-time cancels and
      * the wire carries the same absolute house time either way. The clock half —
      * one fixed monotonic `GstSystemClock` per pipeline, shared by every process

@@ -124,6 +124,30 @@ export {
     LATENESS_EVENT,
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
+// Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O and trims, the card.
+export {
+    INGEST_OFFSET_KEY,
+    PID_TRIMS_KEY,
+    RESTAMP_ELEMENT,
+    ASRC_ELEMENT,
+    buildRestamp,
+    buildAsrc,
+    restampBusReports,
+    asrcBusReports,
+    applyIngestTimingLiveUpdate,
+} from './plugins/ingestTiming.js';
+export type { RestampMode, RestampOptions, RestampControl } from './plugins/ingestTiming.js';
+export {
+    IngestTimingReporter,
+    isIngestTimingSection,
+    CLOCK_SECTION,
+    CLOCK_BADGE,
+    PIDS_OPTIONS,
+} from './plugins/ingestTimingReporter.js';
+export type {
+    IngestTimingHost,
+    IngestTimingReporterOptions,
+} from './plugins/ingestTimingReporter.js';
 export {
     buildNetUdpSrc,
     buildNetUdpSink,

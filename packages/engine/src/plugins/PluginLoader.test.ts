@@ -206,4 +206,77 @@ describe('PluginLoader', () => {
         const loader = new PluginLoader(tmpDir);
         expect(await loader.load()).toBe(0);
     });
+
+    describe('ingest timing settings (house-clock WI-P1-9)', () => {
+        const PORT = { type: 'number', default: 9000 };
+        const OFFSET = {
+            type: 'number',
+            default: 0,
+            minimum: -10000,
+            maximum: 10000,
+            'x-unit': 'ms',
+            'x-live': true,
+            title: 'Ingest Offset',
+            description:
+                'Moves this input on the house timeline: positive later, negative earlier. A live edit leaves a gap or drops overlap.',
+        };
+        const TRIMS = {
+            type: 'object',
+            additionalProperties: { type: 'number', minimum: -2000, maximum: 2000 },
+            default: {},
+            'x-widget': 'pidTrim',
+            'x-optionsFrom': 'pids',
+            'x-live': true,
+            'x-unit': 'ms',
+            title: 'Per-PID Trim',
+            description:
+                "Shifts one stream against the others, on top of Ingest Offset, to correct a source's fixed A/V error.",
+        };
+        const manifest = (id: string, timing?: unknown) => ({
+            pluginId: id,
+            displayName: id,
+            engine: './engine/TestModule.js',
+            configSchema: { type: 'object', properties: { port: PORT } },
+            ...(timing ? { timing } : {}),
+        });
+
+        it('only the manifests declaring `timing` get them; the trim only with pidTrims', async () => {
+            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }));
+            createPlugin('cap', manifest('cap', { role: 'ingest', pidTrims: false }));
+            createPlugin('out', manifest('out', { role: 'egress' }));
+            createPlugin('plain', manifest('plain'));
+
+            const loader = new PluginLoader(tmpDir);
+            await loader.load();
+
+            expect(loader.getPluginSchemas()).toEqual({
+                net: {
+                    type: 'object',
+                    properties: { port: PORT, ingestOffsetMs: OFFSET, pidTrimsMs: TRIMS },
+                },
+                cap: { type: 'object', properties: { port: PORT, ingestOffsetMs: OFFSET } },
+                out: { type: 'object', properties: { port: PORT } },
+                plain: { type: 'object', properties: { port: PORT } },
+            });
+        });
+
+        it('injects them before initManifest, which sees them', async () => {
+            // initManifest narrows a schema per host; it must see the injected settings too.
+            const engineCode = `
+                export class TestModule {
+                    onInit() {}
+                    onStart() {}
+                    static initManifest(m) {
+                        m.description = Object.keys(m.configSchema.properties).join(',');
+                    }
+                }
+            `;
+            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }), engineCode);
+
+            const loader = new PluginLoader(tmpDir);
+            await loader.load();
+
+            expect(loader.get('net')!.manifest.description).toBe('port,ingestOffsetMs,pidTrimsMs');
+        });
+    });
 });

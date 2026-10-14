@@ -14,6 +14,7 @@ export * from './scriptRuns.js';
 export * from './tree/index.js';
 export type * from './timeSync.js';
 export type * from './moduleTiming.js';
+export * from './ingestTimingSettings.js';
 export {
     PatchOpSchema,
     PatchOpsSchema,

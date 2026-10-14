@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { overlayManifest, type ResizableBounds, type UploadsPolicy } from '@media-router/shared-types';
+import {
+    overlayManifest,
+    parseManifestTiming,
+    withIngestTimingSettings,
+    type ResizableBounds,
+    type UploadsPolicy,
+} from '@media-router/shared-types';
 
 export interface PluginManifest {
     pluginId: string;
@@ -171,6 +177,9 @@ export class PluginRegistry {
             try {
                 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
                 if (pkg.mediaRouter) {
+                    // The settings the engine's PluginLoader injects too (house-clock WI-P1-9).
+                    const timing = parseManifestTiming(pkg.mediaRouter.timing);
+                    const schema = pkg.mediaRouter.configSchema ?? {};
                     plugins.push({
                         pluginId: pkg.mediaRouter.pluginId,
                         displayName: pkg.mediaRouter.displayName,
@@ -179,7 +188,7 @@ export class PluginRegistry {
                         color: pkg.mediaRouter.color,
                         icon: pkg.mediaRouter.icon,
                         ports: pkg.mediaRouter.ports ?? [],
-                        configSchema: pkg.mediaRouter.configSchema ?? {},
+                        configSchema: timing ? withIngestTimingSettings(schema, timing) : schema,
                         statusSections: pkg.mediaRouter.statusSections,
                         faceWidgets: pkg.mediaRouter.faceWidgets,
                         interlock: pkg.mediaRouter.interlock === true,

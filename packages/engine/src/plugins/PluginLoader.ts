@@ -1,7 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { PluginManifest } from '@media-router/shared-types';
-import { createLogger } from '@media-router/shared-types';
+import {
+    createLogger,
+    parseManifestTiming,
+    withIngestTimingSettings,
+} from '@media-router/shared-types';
 import type { PluginConstructor, EngineServices } from './PluginModule.js';
 
 const log = createLogger('PluginLoader');
@@ -84,6 +88,11 @@ export class PluginLoader {
                 // Ensure ports is an array
                 if (!manifest.ports) manifest.ports = [];
                 if (!manifest.configSchema) manifest.configSchema = {};
+                // An ingest's timing settings, declared by `"timing"` (house-clock WI-P1-9).
+                const timing = parseManifestTiming(pkg.mediaRouter.timing);
+                if (timing) {
+                    manifest.configSchema = withIngestTimingSettings(manifest.configSchema, timing);
+                }
 
                 // Try to load the engine module class via dynamic import()
                 // Each plugin is isolated — one bad import doesn't break others
