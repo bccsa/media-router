@@ -28,6 +28,17 @@ function mountField(props: Record<string, unknown> = {}) {
     return mount(PidTrimField, { props: { field: FIELD, options: PIDS, ...props } });
 }
 
+/** Mounted as the form uses it: each emitted map comes back as the stored value. */
+function mountBound(props: Record<string, unknown> = {}) {
+    const wrapper = mountField({
+        ...props,
+        'onUpdate:modelValue': (map: Record<string, number>): void => {
+            void wrapper.setProps({ modelValue: map });
+        },
+    });
+    return wrapper;
+}
+
 const row = (wrapper: ReturnType<typeof mountField>, pid: string) =>
     wrapper.get(`[data-pid="${pid}"]`);
 const trimInput = (wrapper: ReturnType<typeof mountField>, pid: string) =>
@@ -72,13 +83,17 @@ describe('PidTrimField', () => {
     });
 
     it('clamps a typed trim to ±2000 ms in whole ms', async () => {
-        const wrapper = mountField({ modelValue: {} });
+        const wrapper = mountBound({ modelValue: {} });
 
         await trimInput(wrapper, '256').setValue('2500');
         await trimInput(wrapper, '257').setValue('-9999');
         await trimInput(wrapper, '257').setValue('12.6');
 
-        expect(emitted(wrapper)).toEqual([{ '256': 2000 }, { '257': -2000 }, { '257': 13 }]);
+        expect(emitted(wrapper)).toEqual([
+            { '256': 2000 },
+            { '256': 2000, '257': -2000 },
+            { '256': 2000, '257': 13 },
+        ]);
         expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('2000');
     });
 
@@ -134,16 +149,92 @@ describe('PidTrimField', () => {
         ]);
     });
 
-    it('commits on change, never per keystroke', async () => {
+    it('commits on change, never per keystroke: typing "1500" emits once', async () => {
         const wrapper = mountField({ modelValue: {} });
         const input = trimInput(wrapper, '256');
 
-        (input.element as HTMLInputElement).value = '20';
-        await input.trigger('input');
+        for (const typed of ['1', '15', '150', '1500']) {
+            (input.element as HTMLInputElement).value = typed;
+            await input.trigger('input');
+        }
         expect(emitted(wrapper)).toEqual([]);
 
         await input.trigger('change');
-        expect(emitted(wrapper)).toEqual([{ '256': 20 }]);
+        expect(emitted(wrapper)).toEqual([{ '256': 1500 }]);
+    });
+
+    it('keeps uncommitted trim text through a new O, a trim echo and a PMT update', async () => {
+        const wrapper = mountField({ modelValue: { '257': 120 }, offsetMs: -40 });
+        const box = () => trimInput(wrapper, '256').element as HTMLInputElement;
+
+        for (const typed of ['1', '15']) {
+            box().value = typed;
+            await trimInput(wrapper, '256').trigger('input');
+        }
+        for (const props of [
+            { offsetMs: -20 },
+            { modelValue: { '257': 130 } },
+            { options: [...PIDS] },
+        ]) {
+            await wrapper.setProps(props);
+            expect(box().value).toBe('15');
+        }
+        // The rows not being typed in follow the store.
+        expect((trimInput(wrapper, '257').element as HTMLInputElement).value).toBe('130');
+        expect(emitted(wrapper)).toEqual([]);
+
+        await trimInput(wrapper, '256').trigger('change');
+        expect(emitted(wrapper)).toEqual([{ '256': 15, '257': 130 }]);
+    });
+
+    it('a trim box typed back to its stored value and left follows the store again', async () => {
+        const wrapper = mountField({ modelValue: {} });
+        const input = trimInput(wrapper, '256');
+
+        // Back at the text it had on focus, so leaving the box fires blur but no change.
+        for (const typed of ['5', '0']) {
+            (input.element as HTMLInputElement).value = typed;
+            await input.trigger('input');
+        }
+        await input.trigger('blur');
+        await wrapper.setProps({ modelValue: { '256': 40 } });
+
+        expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('40');
+        expect(emitted(wrapper)).toEqual([]);
+    });
+
+    it('uncommitted trim text outlasts a switch to another window or tab', async () => {
+        const wrapper = mount(PidTrimField, {
+            props: { field: FIELD, options: PIDS, modelValue: {} },
+            attachTo: document.body,
+        });
+        const input = trimInput(wrapper, '256');
+        const el = input.element as HTMLInputElement;
+        el.focus();
+
+        el.value = '15';
+        await input.trigger('input');
+        // The window losing focus blurs the box, which stays document.activeElement.
+        await input.trigger('blur');
+        await wrapper.setProps({ offsetMs: -20 });
+
+        expect(document.activeElement).toBe(el);
+        expect(el.value).toBe('15');
+        expect(emitted(wrapper)).toEqual([]);
+        wrapper.unmount();
+    });
+
+    it('text the browser cannot parse keeps the last good trim', async () => {
+        const wrapper = mountField({ modelValue: { '257': 120 } });
+        const el = trimInput(wrapper, '257').element as HTMLInputElement;
+
+        // A number box reads "-" or "1e" back as '' with badInput set (a cleared box has none).
+        el.value = '';
+        Object.defineProperty(el, 'validity', { configurable: true, value: { badInput: true } });
+        await trimInput(wrapper, '257').trigger('change');
+
+        expect(emitted(wrapper)).toEqual([]);
+        expect(el.value).toBe('120');
     });
 
     it('shows "Waiting for the stream\'s PMT" until the plugin publishes PIDs', () => {

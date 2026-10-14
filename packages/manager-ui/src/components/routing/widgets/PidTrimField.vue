@@ -3,7 +3,11 @@
 // stored as one map (decimal PID → ms) and emitted whole. Rows come from the PIDs the plugin
 // publishes (ADR-0007); a trim whose PID left the stream stays in the map, greyed.
 import { computed } from 'vue';
-import type { FormField } from '@/composables/useModuleSettingsForm';
+import {
+    commitNumberBox,
+    useNumberBoxDrafts,
+    type FormField,
+} from '@/composables/useModuleSettingsForm';
 
 const props = defineProps<{
     field: FormField;
@@ -72,18 +76,19 @@ const offset = computed(() =>
 );
 const formatMs = (ms: number): string => String(Math.round(ms * 1000) / 1000);
 
-/** Whole steps inside the schema's per-entry bounds. */
-function clampTrim(ms: number): number {
-    const { minimum = -Infinity, maximum = Infinity } = props.field.additionalProperties ?? {};
-    return Math.min(maximum, Math.max(minimum, Math.round(ms / step.value) * step.value));
-}
+// Drafts by PID: a new O, another PID's trim or a PMT update can re-render this widget mid-typing.
+const drafts = useNumberBoxDrafts();
 
 // On change only (Enter, blur, a spinner step): each live trim edit is a gap or a drop on the
 // engine (§5.5), so a half-typed value must never reach it.
 function commit(row: Row, event: Event): void {
-    const el = event.target as HTMLInputElement;
-    const next = clampTrim(Number(el.value)); // a cleared box reads '' → 0, no trim
-    el.value = String(next);
+    drafts.close(row.pid);
+    const { minimum: min, maximum: max } = props.field.additionalProperties ?? {};
+    const next = commitNumberBox(event.target as HTMLInputElement, row.trim, {
+        min,
+        max,
+        step: step.value,
+    });
     if (next === row.trim) return;
     const map = { ...trims.value };
     // A zero trim leaves the map, so clearing a stale row removes it.
@@ -127,7 +132,7 @@ function onWheel(event: WheelEvent): void {
                 </div>
                 <input
                     type="number"
-                    :value="row.trim"
+                    :value="drafts.shown(row.pid, row.trim)"
                     :min="field.additionalProperties?.minimum"
                     :max="field.additionalProperties?.maximum"
                     :step="step"
@@ -136,7 +141,9 @@ function onWheel(event: WheelEvent): void {
                     :aria-label="`Trim for PID ${row.hex}`"
                     class="w-20 px-2 py-1 text-sm rounded-md outline-none transition-colors bg-input border border-border text-foreground tabular-nums"
                     :class="{ 'cursor-not-allowed': disabled }"
+                    @input="drafts.onInput(row.pid, $event)"
                     @change="commit(row, $event)"
+                    @blur="drafts.onBlur(row.pid, $event)"
                     @wheel="onWheel"
                 />
                 <span class="w-14 text-right text-xs tabular-nums text-subtle" data-test="shift">

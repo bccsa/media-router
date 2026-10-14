@@ -268,3 +268,52 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         applyAll,
     };
 }
+
+/** Where a number box's committed value may land; `step` rounds it to whole steps. */
+export interface NumberBoxBounds {
+    min?: number;
+    max?: number;
+    step?: number;
+}
+
+/**
+ * The value a number box commits on change, clamped and written back into the box. Text the
+ * browser cannot parse ("-", "1e") reads as '' with `badInput` set and keeps `last`, the last
+ * good value; a cleared box commits 0.
+ */
+export function commitNumberBox(
+    el: HTMLInputElement,
+    last: number,
+    { min = -Infinity, max = Infinity, step }: NumberBoxBounds = {},
+): number {
+    const typed = el.validity.badInput ? NaN : Number(el.value);
+    const next = Number.isFinite(typed)
+        ? Math.min(max, Math.max(min, step ? Math.round(typed / step) * step : typed))
+        : last;
+    el.value = String(next);
+    return next;
+}
+
+/**
+ * Text typed into change-only number boxes and not yet committed, by box id. A box binds
+ * `shown(id, stored)`: Vue resets a bound box to its bound value whenever the box's owner
+ * re-renders, which would silently drop the typing.
+ */
+export function useNumberBoxDrafts() {
+    const drafts = ref<Record<string, string>>({});
+    return {
+        shown: (id: string, stored: unknown): unknown => drafts.value[id] ?? stored,
+        onInput(id: string, event: Event): void {
+            drafts.value[id] = (event.target as HTMLInputElement).value;
+        },
+        /** Ends the edit, on commit or by the owner: the box shows its stored value again. */
+        close(id: string): void {
+            delete drafts.value[id];
+        },
+        // Focus moving elsewhere in the page ends the edit. A switch to another window or tab
+        // blurs the box too, with no change event, but leaves it document.activeElement: keep it.
+        onBlur(id: string, event: FocusEvent): void {
+            if (document.activeElement !== event.target) delete drafts.value[id];
+        },
+    };
+}

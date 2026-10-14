@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+import { nextTick } from 'vue';
 
 const mockCloneModule = vi.fn();
 const mockModuleSetting = vi.fn();
@@ -165,11 +166,36 @@ function settingBlock(wrapper: VueWrapper, title: string): DOMWrapper<Element> {
 const shiftOf = (block: DOMWrapper<Element>, pid: string) =>
     block.get(`[data-pid="${pid}"] [data-test="shift"]`).text();
 
+// Looked up afresh each time, so a replaced element cannot pass for the box on screen.
+const offsetBox = (wrapper: VueWrapper) => settingBlock(wrapper, 'Ingest Offset').get('input');
+const trimBox = (wrapper: VueWrapper, pid: string) =>
+    settingBlock(wrapper, 'Per-PID Trim').get(`[data-pid="${pid}"] input`);
+
+/** Types `text` one keystroke at a time, an input event each, as an operator would. */
+async function typeKeys(
+    input: Pick<DOMWrapper<Element>, 'element' | 'trigger'>,
+    text: string,
+): Promise<void> {
+    for (let i = 1; i <= text.length; i++) {
+        (input.element as HTMLInputElement).value = text.slice(0, i);
+        await input.trigger('input');
+    }
+}
+
+/** What a number box holds after text it cannot parse ("-", "1e"): '' with badInput set. */
+function enterUnparseable(el: HTMLInputElement): void {
+    el.value = '';
+    Object.defineProperty(el, 'validity', { configurable: true, value: { badInput: true } });
+}
+
 describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
     beforeEach(() => {
         setActivePinia(createPinia());
         mockModuleSetting.mockReset();
         mockModuleSettings.mockReset();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it('renders Ingest Offset as a number in ms and Per-PID Trim as the trim widget', () => {
@@ -237,6 +263,226 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         const trims = settingBlock(wrapper, 'Per-PID Trim');
         expect(shiftOf(trims, '256')).toBe('-100');
         expect(shiftOf(trims, '257')).toBe('20');
+    });
+
+    it('typing "1500" into Ingest Offset writes once, on change, not per keystroke', async () => {
+        vi.useFakeTimers();
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+        const input = settingBlock(wrapper, 'Ingest Offset').get('input');
+
+        await typeKeys(input, '1500');
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+
+        await input.trigger('change');
+        // Past the live-update throttle, so a trailing write would show here too.
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'ingestOffsetMs', 1500],
+        ]);
+    });
+
+    it('typing "1500" into a trim writes the map once, on change', async () => {
+        vi.useFakeTimers();
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+        const input = settingBlock(wrapper, 'Per-PID Trim').get('[data-pid="256"] input');
+
+        await typeKeys(input, '1500');
+        await input.trigger('change');
+        vi.advanceTimersByTime(1000);
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'pidTrimsMs', { '256': 1500, '257': 120, '300': 15 }],
+        ]);
+    });
+
+    // Each re-renders the form; Vue then resets a bound box's text to the bound value.
+    it.each<[string, () => void]>([
+        [
+            'an info patch on its engine',
+            () => useEngineStore().patchInfo('eng-1', { online: true }),
+        ],
+        [
+            'a structural patch on another engine',
+            () =>
+                useEngineStore().applyEnginePatch('eng-2', [
+                    { op: 'add', path: '/connections/-', value: { id: 'c1', from: 'a', to: 'b' } },
+                ]),
+        ],
+        [
+            'an echo of another setting of the module',
+            () =>
+                useEngineStore().applyEnginePatch('eng-1', [
+                    { op: 'replace', path: '/modules/srt-input-1/settings/mode', value: 'caller' },
+                ]),
+        ],
+    ])('uncommitted Ingest Offset text survives %s', async (_, storeUpdate) => {
+        seedSrtInput();
+        useEngineStore().addEngine({ engine_id: 'eng-2', display_name: 'Other', modules: {} });
+        const wrapper = mountPanel('srt-input-1');
+
+        await typeKeys(offsetBox(wrapper), '15');
+        storeUpdate();
+        await nextTick();
+
+        expect(offsetBox(wrapper).element.value).toBe('15');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        await offsetBox(wrapper).trigger('change');
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'ingestOffsetMs', 15],
+        ]);
+    });
+
+    it('an Ingest Offset typed back to its stored text and left follows the store', async () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        // Back at the text it had on focus, so leaving the box fires blur but no change.
+        await typeKeys(offsetBox(wrapper), '15');
+        await typeKeys(offsetBox(wrapper), '-40');
+        await offsetBox(wrapper).trigger('blur');
+        useEngineStore().applyEnginePatch('eng-1', [
+            { op: 'replace', path: '/modules/srt-input-1/settings/ingestOffsetMs', value: -20 },
+        ]);
+        await nextTick();
+
+        expect(offsetBox(wrapper).element.value).toBe('-20');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+    });
+
+    it('uncommitted Ingest Offset text outlasts a switch to another window or tab', async () => {
+        seedSrtInput();
+        const wrapper = mount(ModuleSettingsPanel, {
+            props: { engineId: 'eng-1', moduleId: 'srt-input-1' },
+            attachTo: document.body,
+        });
+        offsetBox(wrapper).element.focus();
+
+        await typeKeys(offsetBox(wrapper), '15');
+        // The window losing focus blurs the box, which stays document.activeElement.
+        await offsetBox(wrapper).trigger('blur');
+        useEngineStore().patchInfo('eng-1', { online: true });
+        await nextTick();
+
+        expect(document.activeElement).toBe(offsetBox(wrapper).element);
+        expect(offsetBox(wrapper).element.value).toBe('15');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        wrapper.unmount();
+    });
+
+    it('uncommitted Ingest Offset text never shows in the next module opened', async () => {
+        seedSrtInput();
+        useEngineStore().applyEnginePatch('eng-1', [
+            {
+                op: 'add',
+                path: '/modules/srt-input-2',
+                value: {
+                    pluginId: 'srt-input',
+                    configSchema: SRT_INPUT_SCHEMA,
+                    settings: { ingestOffsetMs: 25 },
+                },
+            },
+        ]);
+        const wrapper = mountPanel('srt-input-1');
+
+        await typeKeys(offsetBox(wrapper), '15');
+        // Removed by another operator: the box goes away with no blur, so nothing commits.
+        useEngineStore().applyEnginePatch('eng-1', [
+            { op: 'remove', path: '/modules/srt-input-1' },
+        ]);
+        await nextTick();
+        expect(wrapper.text()).toContain('No configurable settings.');
+        await wrapper.setProps({ moduleId: 'srt-input-2' });
+
+        expect(offsetBox(wrapper).element.value).toBe('25');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+    });
+
+    it("uncommitted trim text survives an echo of another PID's trim", async () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        await typeKeys(trimBox(wrapper, '256'), '15');
+        useEngineStore().applyEnginePatch('eng-1', [
+            {
+                op: 'replace',
+                path: '/modules/srt-input-1/settings/pidTrimsMs',
+                value: { '257': 130, '300': 15 },
+            },
+        ]);
+        await nextTick();
+
+        expect((trimBox(wrapper, '256').element as HTMLInputElement).value).toBe('15');
+        expect((trimBox(wrapper, '257').element as HTMLInputElement).value).toBe('130');
+        await trimBox(wrapper, '256').trigger('change');
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'pidTrimsMs', { '256': 15, '257': 130, '300': 15 }],
+        ]);
+    });
+
+    it('clamps the Ingest Offset to ±10,000 ms when it commits', async () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+        const input = settingBlock(wrapper, 'Ingest Offset').get('input');
+
+        await input.setValue('-25000');
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'ingestOffsetMs', -10000],
+        ]);
+        expect((input.element as HTMLInputElement).value).toBe('-10000');
+    });
+
+    it('Ingest Offset text the browser cannot parse keeps the last good value', async () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+        const input = settingBlock(wrapper, 'Ingest Offset').get('input');
+        const el = input.element as HTMLInputElement;
+
+        enterUnparseable(el);
+        await input.trigger('change');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(el.value).toBe('-40');
+
+        // A cleared box, without badInput, commits 0, the default.
+        Reflect.deleteProperty(el, 'validity');
+        el.value = '';
+        await input.trigger('change');
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'ingestOffsetMs', 0],
+        ]);
+    });
+
+    it('a stored Ingest Offset that is not a number counts as 0, the default', async () => {
+        // O alone, as on a capture (OQ-15), so no trim widget is handed the bad value too.
+        seedSrtInput({
+            configSchema: {
+                properties: { ingestOffsetMs: SRT_INPUT_SCHEMA.properties.ingestOffsetMs },
+            },
+            settings: { ingestOffsetMs: 'x' },
+        });
+        const wrapper = mountPanel('srt-input-1');
+        const input = settingBlock(wrapper, 'Ingest Offset').get('input');
+        const el = input.element as HTMLInputElement;
+
+        enterUnparseable(el);
+        await input.trigger('change');
+
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(el.value).toBe('0');
+    });
+
+    it('shows the unit beside Ingest Offset only, not beside a plain number field', () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        expect(settingBlock(wrapper, 'Ingest Offset').get('[data-test="unit"]').text()).toBe('ms');
+        // Playout Offset declares x-unit ms as well and keeps the bare MrInput.
+        const playout = settingBlock(wrapper, 'Playout Offset');
+        expect(playout.find('[data-test="unit"]').exists()).toBe(false);
+        expect(playout.text()).not.toContain('ms');
     });
 
     it('Save writes the trim map whole beside the offset', async () => {

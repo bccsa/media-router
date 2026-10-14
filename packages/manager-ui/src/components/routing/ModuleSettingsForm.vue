@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue';
+import { INGEST_OFFSET_KEY } from '@media-router/shared-types';
 import MrInput from '@/components/common/MrInput.vue';
 import MrSelect from '@/components/common/MrSelect.vue';
 import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
@@ -9,7 +10,11 @@ import MrArrayField from '@/components/common/MrArrayField.vue';
 import MrHelpTip from '@/components/common/MrHelpTip.vue';
 import GraphField from '@/components/routing/widgets/GraphField.vue';
 import PidTrimField from '@/components/routing/widgets/PidTrimField.vue';
-import type { FormField } from '@/composables/useModuleSettingsForm';
+import {
+    commitNumberBox,
+    useNumberBoxDrafts,
+    type FormField,
+} from '@/composables/useModuleSettingsForm';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
 
@@ -43,8 +48,23 @@ function onUpdate(key: string, value: unknown): void {
     emit('update', key, value);
 }
 
-// The ingest offset O every per-PID trim sits on (§5.5); shared-types' INGEST_OFFSET_KEY.
-const INGEST_OFFSET_KEY = 'ingestOffsetMs';
+// Any engine's patch re-renders this form, so the Ingest Offset box binds its draft while typed in.
+const offsetDrafts = useNumberBoxDrafts();
+// The panel reuses this form for the next module it opens; a draft belongs to one module.
+watch([() => props.engineId, () => props.moduleId], () => offsetDrafts.close(INGEST_OFFSET_KEY));
+
+// Each live write of the Ingest Offset is a gap or a drop on the stream (§5.5), so its box
+// commits on change only. A stored value that is not a finite number counts as 0, the default.
+function commitOffset(field: FormField, event: Event): void {
+    offsetDrafts.close(field.key);
+    const stored = Number(props.settings[field.key]);
+    const last = Number.isFinite(stored) ? stored : 0;
+    const next = commitNumberBox(event.target as HTMLInputElement, last, {
+        min: field.minimum,
+        max: props.getMax(field),
+    });
+    if (next !== last) onUpdate(field.key, next);
+}
 
 /**
  * Plugin id for the current module. Needed so the upload widget can scope
@@ -399,18 +419,33 @@ function clearUpload(field: FormField): void {
                     />
                 </label>
             </div>
-            <!-- Plain number input, with its x-unit beside it -->
-            <div v-else-if="field.type === 'number'" class="flex items-center gap-1.5">
-                <MrInput
+            <!-- Ingest Offset: MrInput emits per keystroke, so this box commits on change (Enter,
+                 blur, a spinner step); it drops focus on wheel so a scroll cannot spin it. -->
+            <div v-else-if="field.key === INGEST_OFFSET_KEY" class="flex items-center gap-1.5">
+                <input
                     type="number"
-                    class="flex-1 min-w-0"
-                    :model-value="settings[field.key] as number"
+                    :value="offsetDrafts.shown(field.key, settings[field.key])"
                     :min="field.minimum"
                     :max="getMax(field)"
-                    @update:model-value="onUpdate(field.key, $event)"
+                    class="flex-1 min-w-0 px-2.5 py-1.5 text-sm rounded-md outline-none transition-colors bg-input border border-border text-foreground"
+                    @input="offsetDrafts.onInput(field.key, $event)"
+                    @change="commitOffset(field, $event)"
+                    @blur="offsetDrafts.onBlur(field.key, $event)"
+                    @wheel="($event.target as HTMLElement).blur()"
                 />
-                <span v-if="field.unit" class="text-xs text-muted">{{ field.unit }}</span>
+                <span v-if="field.unit" class="text-xs text-muted" data-test="unit">
+                    {{ field.unit }}
+                </span>
             </div>
+            <!-- Plain number input -->
+            <MrInput
+                v-else-if="field.type === 'number'"
+                type="number"
+                :model-value="settings[field.key] as number"
+                :min="field.minimum"
+                :max="getMax(field)"
+                @update:model-value="onUpdate(field.key, $event)"
+            />
             <!-- Text input (default) -->
             <MrInput
                 v-else
