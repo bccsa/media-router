@@ -6,6 +6,7 @@ import type {
     ModuleTimingInput,
     ModuleTimingSummary,
 } from '@media-router/shared-types';
+import type { TimingInputRef } from './PluginModule.js';
 import { LAT_IN_PREFIX, LAT_OUT_PREFIX, LATENESS_EVENT } from './latenessTap.js';
 
 export interface LatenessWindowMs extends LatenessStatsMs {
@@ -49,9 +50,19 @@ function merge(windows: LatenessWindowMs[]): LatenessStatsMs | undefined {
     };
 }
 
+/** Each live input tap's place and label: its entry in the module's inputs, the only input when
+ *  the module has one (a tap named per module), else after them by tap name. */
+function placeInputs(taps: string[], known: TimingInputRef[]): TimingInputRef[] {
+    const byTap = new Map(known.map((k) => [k.tap, k]));
+    const only = known.length === 1 && taps.length === 1 ? known[0] : undefined;
+    let next = Math.max(0, ...known.map((k) => k.n));
+    return taps.map((tap) => byTap.get(tap) ?? only ?? { tap, n: ++next, label: tap.slice(4) });
+}
+
 export interface LatenessReporterOptions {
-    /** Human label for an input tap (its upstream module, when known). */
-    labelFor?: (tap: string) => string;
+    /** The module's inputs in their fixed order, read only while an input tap reports: a dark
+     *  input keeps its number, so a dashboard bound to `timing-in-<n>` never switches input. */
+    inputs?: () => TimingInputRef[];
     /** Window length the taps run at; staleness is measured in these. */
     intervalMs?: number;
 }
@@ -60,6 +71,7 @@ export class LatenessReporter {
     private readonly taps = new Map<string, Entry>();
     private presentationDelayMs: number | undefined;
     private deviceLatencyMs: number | undefined;
+    private deviceLatencyNote: string | undefined;
     private pipeWireLatencyMs: number | undefined;
     private instrument = true;
     private readonly intervalMs: number;
@@ -83,9 +95,14 @@ export class LatenessReporter {
         this.taps.set(tap, { window, at: now });
     }
 
-    setPresentation(p: { presentationDelayMs?: number; deviceLatencyMs?: number }): void {
+    setPresentation(p: {
+        presentationDelayMs?: number;
+        deviceLatencyMs?: number;
+        deviceLatencyNote?: string;
+    }): void {
         this.presentationDelayMs = p.presentationDelayMs;
         this.deviceLatencyMs = p.deviceLatencyMs;
+        this.deviceLatencyNote = p.deviceLatencyNote;
     }
 
     setPipeWireLatency(ms: number | undefined): void {
@@ -99,6 +116,7 @@ export class LatenessReporter {
     reset(): void {
         this.taps.clear();
         this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
+        this.deviceLatencyNote = undefined;
         this.instrument = true;
     }
 
@@ -112,14 +130,22 @@ export class LatenessReporter {
         const busOut = all.filter(([t]) => t.startsWith(LAT_OUT_PREFIX));
         const outSide = sinkSide.length ? sinkSide : busOut;
         const output = merge(outSide.map(([, e]) => e.window));
-        const inputs: ModuleTimingInput[] = all
-            .filter(([t]) => t.startsWith(LAT_IN_PREFIX))
-            .map(([tap, e]) => ({
+        const inTaps = all.filter(([t]) => t.startsWith(LAT_IN_PREFIX));
+        const placed = inTaps.length
+            ? placeInputs(
+                  inTaps.map(([t]) => t),
+                  this.opts.inputs?.() ?? [],
+              )
+            : [];
+        const inputs: ModuleTimingInput[] = inTaps
+            .map(([tap, e], i) => ({
                 tap,
-                label: this.opts.labelFor?.(tap) ?? tap.slice(4),
+                n: placed[i].n,
+                label: placed[i].label,
                 lateness: e.window,
                 ...(output ? { addedMs: output.meanMs - e.window.meanMs } : {}),
-            }));
+            }))
+            .sort((a, b) => a.n - b.n);
         const slowestIn = inputs.reduce<ModuleTimingInput | undefined>(
             (s, i) => (!s || i.lateness.meanMs > s.lateness.meanMs ? i : s),
             undefined,
@@ -141,6 +167,7 @@ export class LatenessReporter {
             const device = this.deviceLatencyMs ?? 0;
             if (d !== undefined) summary.presentationDelayMs = d;
             if (this.deviceLatencyMs !== undefined) summary.deviceLatencyMs = device;
+            if (this.deviceLatencyNote) summary.deviceLatencyNote = this.deviceLatencyNote;
             // Phase 0: sinks still wait for D, so render is max(λ, D) + device.
             summary.renderMs = Math.max(render.meanMs, d ?? 0) + device;
         }

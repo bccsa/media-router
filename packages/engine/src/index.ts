@@ -16,6 +16,7 @@ export type {
     DynamicPort,
     LiveInputBranch,
     TimingSink,
+    TimingInputRef,
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
@@ -124,6 +125,7 @@ export {
     LATENESS_EVENT,
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
+export { busInputLabel } from './plugins/moduleTiming.js';
 export {
     buildNetUdpSrc,
     buildNetUdpSink,

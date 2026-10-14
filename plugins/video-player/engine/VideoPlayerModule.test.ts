@@ -1598,6 +1598,33 @@ describe('VideoPlayerModule helpers', () => {
             });
         });
 
+        it('hands the timing section the refresh of the mode the output is driven at', () => {
+            // KMS path: the connector's EDID preferred timing, here CEA 1080p50 (VIC 31).
+            const sysfs = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-edid-'));
+            const edid = Buffer.alloc(128);
+            edid.set([0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00], 0);
+            edid.set([0x02, 0x3a, 0x80, 0xd0, 0x72, 0x38, 0x2d, 0x40], 54);
+            fs.writeFileSync(path.join(sysfs, 'edid'), edid);
+            const hdmi = {
+                name: 'HDMI-A-1',
+                label: 'HDMI-A-1 (connected)',
+                meta: { status: 'connected', sysfsPath: sysfs, connectorId: 42 },
+            };
+            try {
+                (listDrmConnectors as unknown as ReturnType<typeof vi.fn>).mockReturnValue([hdmi]);
+                (firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+                    'HDMI-A-1',
+                );
+                expect(build(makeModule()).timingSink).toEqual({
+                    element: 'sink',
+                    kind: 'video',
+                    refreshHz: 50,
+                });
+            } finally {
+                fs.rmSync(sysfs, { recursive: true, force: true });
+            }
+        });
+
         describe('codec change', () => {
             it('rebuilds with the new codec’s chain on h265 → h264', () => {
                 const module = makeModule();

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { LatenessReporter, parseLatenessPayload } from './latenessReporter.js';
 
 const MS = 1_000_000;
@@ -42,14 +42,81 @@ describe('LatenessReporter', () => {
     });
 
     it('a 3-input muxer names its slowest input and merges nothing across inputs', () => {
-        const r = new LatenessReporter({ labelFor: (t) => t.replace('lat_', '') });
+        const r = new LatenessReporter({
+            inputs: () => [
+                { tap: 'lat_busin_0', n: 1, label: 'srt-a (input-0)' },
+                { tap: 'lat_busin_1', n: 2, label: 'srt-b (input-1)' },
+                { tap: 'lat_busin_2', n: 3, label: 'srt-c (input-2)' },
+            ],
+        });
         r.onEvent('mrlateness:lat_busin_0', win(20));
         r.onEvent('mrlateness:lat_busin_1', win(140));
         r.onEvent('mrlateness:lat_busin_2', win(65));
         r.onEvent('mrlateness:lat_busout_40010', win(300));
         const s = r.summary();
-        expect(s.slowest).toBe('busin_1');
+        expect(s.slowest).toBe('srt-b (input-1)');
         expect(s.inputs.map((i) => i.addedMs)).toEqual([280, 160, 235]);
+    });
+
+    it('a dark input keeps every number: inputs A, B, C, then A goes stale, B stays 2', () => {
+        const r = new LatenessReporter({
+            intervalMs: 2000,
+            inputs: () => [
+                { tap: 'lat_busin_41000_aaaaaa', n: 1, label: 'A' },
+                { tap: 'lat_busin_41001_bbbbbb', n: 2, label: 'B' },
+                { tap: 'lat_busin_41002_cccccc', n: 3, label: 'C' },
+            ],
+        });
+        r.onEvent('mrlateness:lat_busin_41000_aaaaaa', win(5), 0);
+        r.onEvent('mrlateness:lat_busin_41001_bbbbbb', win(9), 0);
+        r.onEvent('mrlateness:lat_busin_41002_cccccc', win(7), 0);
+        expect(r.summary(0).inputs.map((i) => [i.n, i.label])).toEqual([
+            [1, 'A'],
+            [2, 'B'],
+            [3, 'C'],
+        ]);
+        r.onEvent('mrlateness:lat_busin_41001_bbbbbb', win(9), 7000);
+        r.onEvent('mrlateness:lat_busin_41002_cccccc', win(7), 7000);
+        expect(r.summary(7000).inputs.map((i) => [i.n, i.label])).toEqual([
+            [2, 'B'],
+            [3, 'C'],
+        ]);
+    });
+
+    it('a module with one input names its tap whatever it is called; unknown taps come after', () => {
+        const one = new LatenessReporter({
+            inputs: () => [{ tap: 'lat_busin_41000_abcdef', n: 1, label: 'srt-1 (in)' }],
+        });
+        one.onEvent('mrlateness:lat_busin', win(5));
+        expect(one.summary().inputs).toMatchObject([
+            { tap: 'lat_busin', n: 1, label: 'srt-1 (in)' },
+        ]);
+
+        const r = new LatenessReporter({
+            inputs: () => [
+                { tap: 'lat_busin_0', n: 1, label: 'A' },
+                { tap: 'lat_busin_1', n: 3, label: 'C' },
+            ],
+        });
+        r.onEvent('mrlateness:lat_busin_1', win(5));
+        r.onEvent('mrlateness:lat_busin_9', win(5));
+        r.onEvent('mrlateness:lat_busin_7', win(5));
+        expect(r.summary().inputs.map((i) => [i.tap, i.n, i.label])).toEqual([
+            ['lat_busin_1', 3, 'C'],
+            ['lat_busin_7', 4, 'busin_7'],
+            ['lat_busin_9', 5, 'busin_9'],
+        ]);
+    });
+
+    it('asks for the inputs only while an input tap reports', () => {
+        const inputs = vi.fn(() => []);
+        const r = new LatenessReporter({ inputs });
+        r.onEvent('mrlateness:lat_busout_41000', win(12));
+        r.summary();
+        expect(inputs).not.toHaveBeenCalled();
+        r.onEvent('mrlateness:lat_busin', win(5));
+        expect(r.summary().inputs).toMatchObject([{ n: 1, label: 'busin' }]);
+        expect(inputs).toHaveBeenCalledTimes(1);
     });
 
     it('an output with D = 60 ms and λ = 20 ms renders at 60 + device', () => {
@@ -68,6 +135,20 @@ describe('LatenessReporter', () => {
         r.onEvent('mrlateness:lat_render', win(150));
         r.setPresentation({ presentationDelayMs: 60, deviceLatencyMs: 100 });
         expect(r.summary().renderMs).toBe(250);
+    });
+
+    it('carries the note of a stand-in device latency, and clears it on reset', () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_render', win(20));
+        r.setPresentation({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });
+        expect(r.summary().deviceLatencyNote).toBe('60 Hz assumed');
+        r.setPresentation({ deviceLatencyMs: 20 });
+        expect(r.summary().deviceLatencyNote).toBeUndefined();
+        r.setPresentation({ deviceLatencyMs: 1000 / 60, deviceLatencyNote: '60 Hz assumed' });
+        r.reset();
+        r.onEvent('mrlateness:lat_render', win(20));
+        r.setPresentation({ deviceLatencyMs: 20 });
+        expect(r.summary().deviceLatencyNote).toBeUndefined();
     });
 
     it('a network output reads lat_egress as its output and shows no render rows', () => {

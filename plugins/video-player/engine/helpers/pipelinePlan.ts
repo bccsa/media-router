@@ -6,6 +6,7 @@ import {
     type BacklogShedServices,
     type PipelineDescription,
     type PlayoutOffsetServices,
+    type TimingSink,
 } from '@media-router/engine';
 import {
     buildFallbackOnlyPipeline,
@@ -186,6 +187,9 @@ export interface LivePlanInput {
     /** Raw `cpuDecodeThreading` config value; normalised here. */
     cpuDecodeThreading: unknown;
     sinkPaced: boolean;
+    /** Refresh of the output's mode (`resolveOutputRefreshHz`), when known: the timing
+     *  section's device latency is one refresh of it. */
+    refreshHz?: number;
     /**
      * Module services, read only for the backlog shedder's re-anchor switch
      * (see `backlogShedConfig`).
@@ -198,6 +202,12 @@ export interface LivePlanInput {
      */
     subtitles?: { port: number; socketPath?: string; config: Record<string, unknown> };
 }
+
+const videoTimingSink = (refreshHz: number | undefined): TimingSink => ({
+    element: 'sink',
+    kind: 'video',
+    ...(refreshHz ? { refreshHz } : {}),
+});
 
 export function planLivePipeline(input: LivePlanInput): PipelineDescription {
     // The sink is only addressable when it carries `name=sink` — autovideosink
@@ -259,7 +269,7 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // bin without `name=sink`, so the runner would fail the lookup.
         ...(namedSink ? { renderWatch: { sink: 'sink' } } : {}),
         // The timing section reads D (`ts-offset`) off the same named sink.
-        ...(namedSink ? { timingSink: { element: 'sink', kind: 'video' as const } } : {}),
+        ...(namedSink ? { timingSink: videoTimingSink(input.refreshHz) } : {}),
         // See `backlogShed` above — explicit rungs with a named sink only.
         ...(backlogShed ? { backlogShed } : {}),
         // EXPLICIT rungs only. A live TS join lands mid-GOP, and feeding a

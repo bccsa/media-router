@@ -60,6 +60,7 @@ import {
     waylandRestartTargets,
 } from './helpers/waylandRestartWatch.js';
 import { cogNeedingRestack } from './helpers/cogRestack.js';
+import { resolveOutputRefreshHz } from './helpers/outputRefresh.js';
 import { pollResumeSignal } from './helpers/busResume.js';
 import { classifyDecoderFailure, planCodecReport } from './helpers/decoderRuntime.js';
 import {
@@ -1231,6 +1232,7 @@ export class VideoPlayerModule extends GstPluginBase {
             bufferMs: config.bufferMs,
             cpuDecodeThreading: config.cpuDecodeThreading,
             sinkPaced: sink.sinkPaced,
+            refreshHz: resolveOutputRefreshHz(target.renderConnector, target.waylandFullscreen),
             // Read only for the backlog shedder's re-anchor switch.
             services: this.services,
             subtitles: subtitleSource

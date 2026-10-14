@@ -2,18 +2,22 @@ import {
     DEFAULT_MPEGTS_ALIGNMENT,
     GstPluginBase,
     ThroughputPoller,
+    busInputLabel,
     busTeeName,
     capsStreamInfo,
+    latInName,
     type PipelineDescription,
     type ModuleServices,
     type StreamCapsInfo,
     type ThroughputSample,
+    type TimingInputRef,
 } from '@media-router/engine';
 import {
     buildDynamicPorts,
     buildPipeline,
     assignInputPids,
     configPidConflicts,
+    inputBusSrcName,
     inputEntries,
     normalizeKey,
     isInputPort,
@@ -184,6 +188,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                     sinkPortId: s.sinkPortId,
                     port: s.port,
                     socketPath: s.socketPath,
+                    sourceModuleId: s.sourceModuleId,
                     language: entry?.language,
                     ...(entry?.pid !== undefined ? { pid: entry.pid } : {}),
                 };
@@ -255,6 +260,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
             // Dark-input detection (see INPUT_STALL_TIMEOUT_MS): runner-side,
             // one entry per input source, no `watchdog` element in the branch.
             inputStallWatch: result.inputStallWatch,
+            timingInputs: timingInputs(sources, entries),
         };
     }
 
@@ -362,4 +368,17 @@ export class MpegTsMuxerModule extends GstPluginBase {
 /** Input entry for a sink port id (`input-2`, or a legacy `video-0` / `audio-2`). */
 function entryForPort(entries: InputEntry[], sinkPortId: string): InputEntry | undefined {
     return entries.find((e) => e.id === sinkPortId);
+}
+
+/** Branch i's tap reads sources[i]: its timing section is numbered like its pin (`Input n`), so
+ *  an unwired or dark pin leaves a gap, and labelled by its feeding module. */
+function timingInputs(sources: UdpInputSource[], entries: InputEntry[]): TimingInputRef[] {
+    return sources.map((s, i) => {
+        const pin = entries.findIndex((e) => e.id === s.sinkPortId);
+        return {
+            tap: latInName(inputBusSrcName(String(i))),
+            n: pin >= 0 ? pin + 1 : entries.length + i + 1,
+            label: busInputLabel(s),
+        };
+    });
 }

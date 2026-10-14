@@ -788,6 +788,11 @@ describe('MpegTsMuxerModule', () => {
             expect(hookInputs(desc)).toHaveLength(2);
             expect(hookInputs(desc)[0].routes.audio!.padName).toBe('sink_320');
             expect(hookInputs(desc)[1].routes.video!.padName).toBe('sink_256');
+            // Branches sort audio first; their timing sections keep the pin order.
+            expect(desc.timingInputs!.map((i) => [i.tap, i.n, i.label])).toEqual([
+                ['lat_busin_0', 2, 'enc-audio-0 (audio-0)'],
+                ['lat_busin_1', 1, 'enc-video-0 (video-0)'],
+            ]);
             expect((module as any).setStatusData).toHaveBeenCalledWith('inputs', {
                 connected: 2,
                 streams: 0,
@@ -816,6 +821,31 @@ describe('MpegTsMuxerModule', () => {
                 { element: 'busin_1', timeoutMs: 5000 },
             ]);
             expect(desc.pipeline).not.toContain('watchdog');
+        });
+
+        it('labels each input timing section by its feeding module and numbers it like its pin', () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'input-2', port: 40003 },
+                    { sinkPortId: 'input-0', port: 40001 },
+                ],
+            });
+            // Pin 2 (input-1) is not wired: branch 1 is pin 3, and number 2 stays free.
+            (module as any).config = { inputs: [{}, {}, {}], alignment: 7 };
+            const desc = module.buildPipeline((module as any).config)!;
+            expect(desc.timingInputs).toEqual([
+                { tap: 'lat_busin_0', n: 1, label: 'enc-input-0 (input-0)' },
+                { tap: 'lat_busin_1', n: 3, label: 'enc-input-2 (input-2)' },
+            ]);
+            // Each declared tap is the one its branch's bus source carries.
+            expect(desc.pipeline).toContain(
+                'unixfdsrc name=busin_0 socket-path=/tmp/mr-bus-40001-edge.sock' +
+                    ' ! mrlateness name=lat_busin_0 reference=house',
+            );
+            expect(desc.pipeline).toContain(
+                'unixfdsrc name=busin_1 socket-path=/tmp/mr-bus-40003-edge.sock' +
+                    ' ! mrlateness name=lat_busin_1 reference=house',
+            );
         });
 
         it('declares the input arrays (generic and legacy) as live-updatable, so a legacy rename stays live', () => {

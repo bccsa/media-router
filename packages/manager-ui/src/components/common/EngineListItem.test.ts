@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { createRouter, createMemoryHistory } from 'vue-router';
 import EngineListItem from './EngineListItem.vue';
 import type { EngineState } from '@/stores/engines';
@@ -183,6 +183,36 @@ describe('EngineListItem', () => {
             const el = clockOf({ synced: false, traceable: false, epochReason: 'timeout' });
             expect(el.classes()).toContain('text-error');
             expect(el.attributes('aria-label')).toBe('Time not synchronised');
+        });
+
+        it('the card tooltip carries source, error, TAI−UTC and the epoch, not only a colour', async () => {
+            const router = withRouter();
+            await router.push('/');
+            await router.isReady();
+            const wrapper = mount(EngineListItem, {
+                props: {
+                    engine: makeEngine({
+                        features: ['house-clock'],
+                        system: { cpu: 1, mem: 2, temp: 40, timeSync: base },
+                    }),
+                },
+                global: { plugins: [router] },
+            });
+            const trigger = wrapper.find('[role="button"]');
+            expect(trigger.find('.engine-clock').exists()).toBe(true);
+            await trigger.trigger('mouseenter');
+            const tip = document.body.querySelector('[role="tooltip"]')?.textContent ?? '';
+            expect(tip).toContain('Time traceable');
+            expect(tip).toContain('source chrony');
+            expect(tip).toContain('error ±800 µs');
+            expect(tip).toContain('TAI−UTC 37 s');
+            expect(tip).toContain('epoch #1 (start) at 2026-10-13T08:00:00.000Z');
+            // A click pins the tip and must not follow the row's link.
+            await trigger.trigger('click');
+            await flushPromises();
+            expect(document.body.querySelector('[role="tooltip"]')).not.toBeNull();
+            expect(router.currentRoute.value.fullPath).toBe('/');
+            wrapper.unmount();
         });
 
         it('shows nothing for an older engine without the house-clock feature', () => {

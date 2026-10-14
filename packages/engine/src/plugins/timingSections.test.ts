@@ -3,9 +3,10 @@ import type { ModuleTimingSummary } from '@media-router/shared-types';
 import { timingChanged, timingPublication } from './timingSections.js';
 
 const lat = (meanMs: number, minMs = meanMs, maxMs = meanMs) => ({ meanMs, minMs, maxMs });
-/** An input as LatenessReporter reports it: label from the tap, `addedMs` = output − input. */
-const input = (tap: string, meanMs: number, outMs?: number) => ({
+/** An input as LatenessReporter reports it: input `n`, label from the tap, `addedMs` = out − in. */
+const input = (tap: string, meanMs: number, outMs?: number, n = 1) => ({
     tap,
+    n,
     label: tap.slice(4),
     lateness: lat(meanMs),
     ...(outMs !== undefined ? { addedMs: outMs - meanMs } : {}),
@@ -36,9 +37,9 @@ describe('timingPublication', () => {
             instrument: true,
             output: lat(300),
             inputs: [
-                input('lat_busin_0', 20, 300),
-                input('lat_busin_1', 140, 300),
-                input('lat_busin_2', 65, 300),
+                input('lat_busin_0', 20, 300, 1),
+                input('lat_busin_1', 140, 300, 2),
+                input('lat_busin_2', 65, 300, 3),
             ],
             slowest: 'busin_1',
         };
@@ -52,6 +53,45 @@ describe('timingPublication', () => {
             'timing-in-3',
         ]);
         expect(pub.data['timing-in-2']).toMatchObject({ latenessMs: 140, addedMs: 160 });
+    });
+
+    it('an input section keeps its number when an earlier input goes dark: a gap, no renumber', () => {
+        const s: ModuleTimingSummary = {
+            instrument: true,
+            output: lat(300),
+            inputs: [input('lat_busin_1', 140, 300, 2), input('lat_busin_2', 65, 300, 3)],
+            slowest: 'busin_1',
+        };
+        const pub = timingPublication(s);
+        expect(pub.sections.map((x) => [x.id, x.label])).toEqual([
+            ['timing', 'Timing'],
+            ['timing-in-2', 'Input 2 timing: busin_1'],
+            ['timing-in-3', 'Input 3 timing: busin_2'],
+        ]);
+        expect(pub.data['timing-in-2']).toMatchObject({ latenessMs: 140 });
+        expect(pub.data['timing-in-1']).toBeUndefined();
+    });
+
+    it('says when the device latency is a stand-in, and the number stays a number', () => {
+        const s: ModuleTimingSummary = {
+            instrument: true,
+            output: lat(20),
+            inputs: [],
+            deviceLatencyMs: 1000 / 60,
+            deviceLatencyNote: '60 Hz assumed',
+            renderMs: 37,
+        };
+        const field = (sum: ModuleTimingSummary) =>
+            timingPublication(sum).sections[0].fields.find((f) => f.key === 'deviceLatencyMs');
+        expect(field(s)).toEqual({
+            key: 'deviceLatencyMs',
+            label: 'Device latency (60 Hz assumed)',
+            unit: 'ms',
+        });
+        expect(timingPublication(s).data.timing.deviceLatencyMs).toBe(17);
+        const known = { ...s, deviceLatencyMs: 20, deviceLatencyNote: undefined };
+        expect(field(known)?.label).toBe('Device latency');
+        expect(timingChanged(s, known)).toBe(true);
     });
 
     it('the badge is the render lateness in ms, grey: no threshold (OQ-8)', () => {
@@ -76,7 +116,7 @@ describe('timingPublication', () => {
         const s: ModuleTimingSummary = {
             instrument: true,
             output: lat(20),
-            inputs: [input('lat_busin_0', 5, 20), input('lat_busin_1', 9, 20)],
+            inputs: [input('lat_busin_0', 5, 20, 1), input('lat_busin_1', 9, 20, 2)],
             slowest: 'busin_1',
             decodeMs: 11,
             presentationDelayMs: 60,
@@ -157,6 +197,10 @@ describe('timingChanged (R-P0-6)', () => {
                 output: lat(50),
                 inputs: [input('lat_busin', 40, 50)],
             }),
+        ).toBe(true);
+        // The same tap under another number moves its section: a change.
+        expect(
+            timingChanged(a, { instrument: true, inputs: [input('lat_busin', 40, undefined, 2)] }),
         ).toBe(true);
     });
 
