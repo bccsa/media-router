@@ -75,6 +75,33 @@ describe('IngestTimingReporter: what the card follows', () => {
         expect(card.badges.clock).toMatchObject({ text: 'Locked' });
     });
 
+    it('withdraws the badge once no program reports, and shows it again when one does', () => {
+        const { rep, card } = setup();
+        run(rep, 2000, 2000);
+        expect(card.badges.clock).toMatchObject({ text: 'Locked' });
+        // The PIDs report on without their program: it leaves, and the badge with it.
+        for (let t = 4000; t <= 10_000; t += 2000) {
+            rep.onEvent(CH.pid, pidMsg(256, 0x1b, LEAD), t);
+            rep.tick(t);
+        }
+        expect(card.sections.map((s) => s.id)).toEqual(['pid-256']);
+        expect(card.badges).toEqual({});
+        run(rep, 12_000, 12_000);
+        expect(card.badges.clock).toMatchObject({ text: 'Locked' });
+    });
+
+    it('a program heard of only through events leaves like the others', () => {
+        const { rep, card } = setup();
+        // Program 2 is named by an event and sends no stats; program 1 reports on.
+        rep.onEvent(CH.event, event('relock', { program: 2, reason: 'leap' }), 2000);
+        run(rep, 2000, 10_000);
+        expect(card.sections.map((s) => s.id)).toEqual(['clock', 'pid-256', 'pid-257']);
+        // When it does report, its card starts clean: the old event left with it.
+        rep.onEvent(CH.stats, stats({ program: 2 }), 12_000);
+        run(rep, 12_000, 12_000);
+        expect(card.data['clock-2'].lastEvent).toBe('—');
+    });
+
     it('counts dropped PES over the last 10 min, and from 0 after an element restart', () => {
         const { rep, card } = setup();
         const drop = (t: number, n: number) => {
@@ -203,6 +230,17 @@ describe('IngestTimingReporter: the warnings of part 10', () => {
         );
         run(rep, 24_000, 24_000, at(14_000));
         expect(card.warning).toBeNull();
+    });
+
+    it('an element restart inside a rising streak keeps the errors it counted', () => {
+        const { rep, card } = setup();
+        for (let t = 2000; t <= 14_000; t += 2000) run(rep, t, t, { 'cc-lost': t / 1000 - 2 });
+        expect(card.warning).toBe('Transport errors: 10 continuity errors in 10 s');
+        // The element restarts and counts from 0: the errors before it stay in the window.
+        run(rep, 16_000, 16_000, { 'cc-lost': 0 });
+        expect(card.warning).toBe('Transport errors: 8 continuity errors in 10 s');
+        run(rep, 18_000, 18_000, { 'cc-lost': 5 });
+        expect(card.warning).toBe('Transport errors: 11 continuity errors in 10 s');
     });
 
     it('several at once share the health text', () => {

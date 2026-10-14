@@ -37,6 +37,8 @@ export interface IngestTimingHost {
     setDynamicSections(sections: TimingSection[]): void;
     setStatusData(sectionId: string, data: Record<string, StatusValue>): void;
     setBadge(id: string, badge: Omit<ModuleBadge, 'id'>): void;
+    /** Withdraw it: no program reports any more. */
+    clearBadge(id: string): void;
     setFieldOptions(key: string, options: Array<{ value: string; label: string }>): void;
     /** The module's own warning: raise it, or replace its text. */
     warn(text: string): void;
@@ -155,8 +157,9 @@ export class IngestTimingReporter {
         for (const { id, rows } of view.sections) {
             this.host.setStatusData(id, Object.fromEntries(rows.map((r) => [r.key, r.value])));
         }
-        if (view.badge && JSON.stringify(view.badge) !== JSON.stringify(prev.badge)) {
-            this.host.setBadge(CLOCK_BADGE, view.badge);
+        if (JSON.stringify(view.badge) !== JSON.stringify(prev.badge)) {
+            if (view.badge) this.host.setBadge(CLOCK_BADGE, view.badge);
+            else this.host.clearBadge(CLOCK_BADGE);
         }
         if (this.mode === 'stc' && JSON.stringify(view.options) !== JSON.stringify(prev.options)) {
             this.host.setFieldOptions(PIDS_OPTIONS, view.options);

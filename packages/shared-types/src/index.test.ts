@@ -9,7 +9,7 @@ import type {
     ControlIpcMessage,
     PluginManifest,
 } from './index';
-import { applyJsonPatch, coerceArray, streamTypesCompatible } from './index';
+import { applyJsonPatch, coerceArray, parseManifestTiming, streamTypesCompatible } from './index';
 
 describe('shared-types', () => {
     it('StreamType accepts valid values', () => {
@@ -63,6 +63,22 @@ describe('shared-types', () => {
             engine: './engine/NoteModule.ts',
         };
         expect(manifest.pluginId).toBe('note');
+    });
+
+    it("PluginManifest declares an ingest's timing, as the loader parses it", () => {
+        // The check is the build's: a literal with an undeclared `timing` does not compile.
+        const manifest: PluginManifest = {
+            pluginId: 'srt-input',
+            displayName: 'SRT Input',
+            description: 'A network ingest fixture',
+            category: 'input',
+            architectures: ['arm64', 'x86_64'],
+            ports: [],
+            configSchema: {},
+            engine: './engine/SrtInputModule.ts',
+            timing: { role: 'ingest', pidTrims: true },
+        };
+        expect(parseManifestTiming(manifest.timing)).toEqual({ role: 'ingest', pidTrims: true });
     });
 });
 

@@ -106,6 +106,7 @@ export function fakeHost(): { host: IngestTimingHost; card: Card } {
         setDynamicSections: (s) => void ((card.sections = s), card.emits++),
         setStatusData: (id, d) => void ((card.data[id] = d), card.emits++),
         setBadge: (id, b) => void ((card.badges[id] = b), card.emits++),
+        clearBadge: (id) => void (delete card.badges[id], card.emits++),
         setFieldOptions: (k, o) => void ((card.options[k] = o), card.emits++),
         warn: (t) => void ((card.warning = t), card.warns++, card.emits++),
         clearWarning: () => void ((card.warning = null), card.clears++, card.emits++),

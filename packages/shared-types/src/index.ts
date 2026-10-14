@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { ModuleHealth } from './health.js';
+import type { ManifestTiming } from './ingestTimingSettings.js';
 
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
@@ -353,7 +354,13 @@ export interface ChannelMapEntry {
 export { MODULE_HEALTH, type ModuleHealth } from './health.js';
 export { VU_BLOCKS, vuBlockDbfs } from './vu.js';
 export { carriesAudio } from './carriesAudio.js';
-export { audioEnabledTargets, groupStates, interlockRepairs, unmuteCascade, withInterlockMutes } from './interlockMutes.js';
+export {
+    audioEnabledTargets,
+    groupStates,
+    interlockRepairs,
+    unmuteCascade,
+    withInterlockMutes,
+} from './interlockMutes.js';
 
 /** Runtime state of a module instance, reported by the engine. */
 export interface ModuleRuntimeState {
@@ -740,6 +747,11 @@ export interface PluginManifest {
      * registry. Absent ⇒ the plugin can't upload (the service rejects).
      */
     uploads?: UploadsPolicy;
+    /**
+     * An ingest's timing (house-clock WI-P1-9): the engine's loader and the manager's registry
+     * inject Ingest Offset, and Per-PID Trim when `pidTrims` is set, into `configSchema`.
+     */
+    timing?: ManifestTiming;
 }
 
 /**

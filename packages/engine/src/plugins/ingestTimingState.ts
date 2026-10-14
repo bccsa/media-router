@@ -17,17 +17,23 @@ export type ClockState = 'acquiring' | 'locked' | 'degraded' | 'lost';
 const CLOCK_STATES = new Set<string>(['acquiring', 'locked', 'degraded', 'lost']);
 
 /** A cumulative counter: its rise over a trailing window, and how long it has kept rising
- *  (rises less than a window apart). A fall means the element restarted, counting from 0. */
+ *  (rises less than a window apart). A fall means the element restarted from 0: the count goes
+ *  on from the total, so a window across the restart keeps what was counted before it. */
 export class Counter {
     private samples: Array<[at: number, value: number]> = [];
+    /** The element's last value, and the total it had reached at its last restart. */
+    private lastRaw = 0;
+    private carried = 0;
     private since: number | undefined;
     private lastRise: number | undefined;
 
     constructor(private readonly windowMs: number) {}
 
-    add(at: number, value: number): void {
-        if (value < (this.samples[this.samples.length - 1]?.[1] ?? 0)) this.samples = [[at, 0]];
+    add(at: number, raw: number): void {
         const last = this.samples[this.samples.length - 1];
+        if (last && raw < this.lastRaw) this.carried = last[1];
+        this.lastRaw = raw;
+        const value = this.carried + raw;
         if (last && value > last[1]) {
             if (this.lastRise === undefined || at - this.lastRise >= this.windowMs) this.since = at;
             this.lastRise = at;
@@ -192,11 +198,14 @@ export class IngestClock {
     }
 
     /** Drop what is behind the newest report by `staleMs` (gone from the stream; a silent
-     *  stream keeps its last values) and what left part 10's windows. */
+     *  stream keeps its last values) and what left part 10's windows. A program heard of only
+     *  through events (a PAT change names program -1) goes by its last event. */
     expire(now: number, staleMs: number): void {
         for (const [n, p] of this.programs) {
-            if (p.at !== undefined && this.newest - p.at > staleMs) this.programs.delete(n);
-            else p.relockLog = p.relockLog.filter((r) => now - r.at <= RELOCK_WINDOW_MS);
+            const at = p.at ?? p.lastEvent?.at;
+            if (at !== undefined && this.newest - at <= staleMs) {
+                p.relockLog = p.relockLog.filter((r) => now - r.at <= RELOCK_WINDOW_MS);
+            } else this.programs.delete(n);
         }
         for (const [pid, c] of this.pids) if (this.newest - c.at > staleMs) this.pids.delete(pid);
         for (const [pid, at] of this.leadClamps) {
