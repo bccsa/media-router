@@ -577,9 +577,10 @@ Badges auto-clear when the module stops. Use them for:
 - Stream health warnings
 - Any quick-glance module state
 
-The id `lateness` is the engine's: every module on the bus gets a grey
-lateness badge from the `timing` display (see "Lateness on every module" in
-the time-sync contract chapter). Pick any other id for yours.
+The id `lateness` is the engine's: every module with a `timing` display gets
+a grey lateness badge — render lateness on outputs, PipeWire latency on
+PipeWire-graph modules, output lateness otherwise (see "Lateness on every
+module" in the time-sync contract chapter). Pick any other id for yours.
 
 ---
 
@@ -775,12 +776,16 @@ can be bound while the module reports them; a widget on one shows *Missing*
 when that section goes away, so put whole-module totals in a declared
 section (SRT listener mode fills `stats` for that).
 
-The engine adds two dynamic sections of its own to every module:
-`timing` and one `timing-in-<n>` per input (lateness and added latency in
-ms, house-clock design §9.5 — "Lateness on every module" below). They are
-merged into `getState()` beside yours, so `setDynamicSections()` never
-clears them; dashboards bind to them like any other section. Do not reuse
-the ids.
+The engine adds dynamic sections of its own to every module: `timing`, one
+`timing-in-<n>` per input and, on a module with two or more bus outputs, one
+`timing-out-<n>` per output (lateness and added latency in ms, house-clock
+design §9.5 — "Lateness on every module" below). An input's `n` is its fixed
+place among the module's inputs, so a widget bound to `timing-in-2` never
+switches input and a dark input's section goes, leaving a gap; an output's
+`n` counts only the outputs reporting, so it shifts when an earlier one goes
+dark. They are merged into `getState()` beside yours, so
+`setDynamicSections()` never clears them; dashboards bind to them like any
+other section. Do not reuse the ids.
 
 ---
 
@@ -835,8 +840,8 @@ interface PipelineDescription {
      * ELIGIBLE description runs native by default and the rest stay on
      * python, silently (`MR_GST_RUNNER_NATIVE=0` rolls a whole engine back). Not
      * eligible: a description naming `rist`, `preserveSourceTimeline`,
-     * `readKlvNames`, `useStdioForData`, the legacy net `clock` without the
-     * contract, or a runner hook with no native form (ADR-0020). Ask
+     * `readKlvNames`, `useStdioForData`, or a runner hook with no native
+     * form (ADR-0020). Ask
      * `nativeRunnerIneligibility()` (`child-process/nativeRunner.ts`) before
      * pinning `'native'`; a pinned request that cannot be honoured is logged.
      */
@@ -1573,8 +1578,7 @@ import { effectivePlayoutOffsetNs } from '@media-router/engine';
 
 // In buildPipeline: `trimMs` is the module's own per-sink trim, if it has one.
 const tsOffsetNs = effectivePlayoutOffsetNs(this.services, { trimMs: lipSyncMs });
-// → contract OFF: just the trim (legacy behaviour, unchanged)
-// → contract ON:  route override ?? engine default ?? 300, plus the trim
+// → route override ?? engine default ?? 60, plus the engine's runtime raise, plus the trim
 ```
 
 Then name the sink and re-push on the hot-update path:
@@ -1590,7 +1594,7 @@ Two rules make this work:
 1. **One resolver.** Both legs of a route (e.g. a video-player and an audio-decoder split off one ts-splitter) call `effectivePlayoutOffsetMs` against the same route, so they get the same D by construction. Re-implementing the arithmetic in a plugin is the bug this exists to prevent.
 2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about.
 
-**Runtime raise — playout re-anchor (`EngineServices.playoutReanchor`).** With the contract on and `MR_PLAYOUT_REANCHOR` not `0`, a late leg never drops: it asks the engine to raise its route head's D (in memory, up to +2000 ms), and `effectivePlayoutOffsetMs` already includes that raise, so `onRoutePlayoutOffsetChanged` is all a leg needs. An edit of the head's `playoutOffsetMs` clears the raise. ADR-0005 decision 4 amendment 2026-10-08.
+**Runtime raise — playout re-anchor (`EngineServices.playoutReanchor`).** With `MR_PLAYOUT_REANCHOR` not `0`, a late leg never drops: it asks the engine to raise its route head's D (in memory, up to +2000 ms), and `effectivePlayoutOffsetMs` already includes that raise, so `onRoutePlayoutOffsetChanged` is all a leg needs. An edit of the head's `playoutOffsetMs` clears the raise. ADR-0005 decision 4 amendment 2026-10-08.
 
 **Hooks `onRoutePlayoutRaised(raise | null)` / `onRoutePlayoutRebased(note)`.** The engine tells a route head its current raise (`null` = cleared) and a leg that asked a zero raise when an edit reset it; a head also hears when a leg below it rebased itself onto an implausible timeline. `GstPluginBase` implements both (warning, `playout` section, head badge) — override only to add to them.
 
@@ -2080,10 +2084,16 @@ so dynamic inputs report too, and `GstPluginBase` consumes those events before
 its label and unit and re-sent only when a value moves by ≥ 1 ms: a `timing`
 section (Output lateness mean and min–max; Added latency = output mean − the
 slowest input's mean; Slowest input, with two or more inputs; and for outputs
-Decode, Presentation delay, Device latency and Render lateness), one
-`timing-in-<n>` section per input (Lateness, Added), and a grey `lateness`
-face badge with the mean in ms. Display only: no threshold and no warning
-(OQ-8, deferred until the fleet has numbers). Three things a plugin author
+Decode, Presentation delay, Device latency and Render lateness); one
+`timing-in-<n>` section per input (Lateness, Added), labelled
+`<source module> (<sink port>)` and numbered by the input's fixed place — bus
+inputs by sink port, numeric-aware, then connection id — so a dark input
+leaves a gap rather than renumbering the rest; on a module with two or more
+bus outputs, one `timing-out-<n>` section per output tee (Lateness, min–max;
+the `timing` section keeps their count-weighted merge); and a grey `lateness`
+face badge: render lateness on outputs, PipeWire latency on PipeWire-graph
+modules, the output lateness mean otherwise. Display only: no threshold and
+no warning (OQ-8, deferred until the fleet has numbers). What a plugin author
 does:
 
 - **Output modules** wrap their final sink in
@@ -2091,22 +2101,34 @@ does:
   (`packages/engine/src/plugins/latenessTap.ts`; `lat_render` for something
   seen or heard, `lat_egress` for the wire). That tap is
   `reference=running-time`, because a sink renders on its pipeline clock. Set
-  `timingSink: { element, kind: 'audio' | 'video' }` on the description too, so
-  the engine reads the sink's `ts-offset` (D) and device latency
-  (`buffer-time` on audio base sinks; one 60 Hz refresh stands in for video)
-  through `get_property`. Render lateness is `max(λ, D) + device` while sinks
-  still wait for D; it becomes `λ + device` in Phase 4.
+  `timingSink: { element, kind: 'audio' | 'video', refreshHz? }` on the
+  description too, so the engine reads the sink's `ts-offset` (D) and, on
+  audio base sinks, `buffer-time` through `get_property`. A video sink's
+  device latency is one refresh at `refreshHz`, the rate of the mode the
+  output is driven at (video-player resolves it in
+  `engine/helpers/outputRefresh.ts` from weston.ini or the EDID); leave it
+  out when unknown and the row reads `Device latency (60 Hz assumed)`. Render
+  lateness is `max(λ, D) + device` while sinks still wait for D; it becomes
+  `λ + device` in Phase 4.
+- **Inputs whose taps are named per branch** (a source given its own name in
+  `buildBusSrc({ name })` gets a tap named after it — `lat_busin_<i>` in
+  mpegts-muxer — which the router's edge list cannot map to a source) are
+  declared on the description as `timingInputs: [{ tap, n, label }]`
+  (engine-side, read at module start): `n` the input's fixed number,
+  `label` from the engine's `busInputLabel(source)` so it reads like
+  everyone else's. mpegts-muxer does, with `n` its pin number.
 - **Sidecar producers** keep one `mrts::LatenessWindow` per output at their
   stamping point and add `"lateness": {count, untimed, min, mean, max}` (ms,
   `mrts::lateness_json_ms`) to their 2 s stats line — `mr-bus-fanout` and
-  `mr-tssplit` do — and the module hands it to
-  `this.timing.addSidecarWindow(latOutName(port), stats.lateness)` (hls-player,
-  ts-splitter).
+  `mr-tssplit` do — and the module hands each window to
+  `this.timing.addSidecarWindow(tap, window)` under the egress tap name it
+  stands for: `latOutName(port)` in hls-player, `lat_<tee>` per output tee in
+  ts-splitter.
 - **PipeWire-graph modules** carry no PTS: call
   `this.timing.watchPipeWire([nodeName, …])` after start and the section shows
-  the worst `PipeWire latency` of those nodes (one graph cycle plus the node's
-  `Latency` param, from `pw-dump`, polled every 10 s) — audio-input,
-  audio-output, n1-mixer and audio-dynamics do.
+  the worst `PipeWire latency` of those nodes (one cycle of the node's driver
+  group plus the node's own `Latency` param, from `pw-dump`, polled every
+  10 s) — audio-input, audio-output, n1-mixer and audio-dynamics do.
 
 Reading the numbers in Phase 0: ingests read near 0 (their stamps are still
 arrival-anchored) and outputs are D-dominated; they turn source-natural in
@@ -2493,7 +2515,7 @@ python-only by design (ADR-0016 2026-10-09): its descriptions pin
 | `mediaRouter` | `MediaRouter` | Assign/release bus channels (`assignBusChannel` / `releaseBusChannel`), look up upstream bus sources (`getModuleBusSource`) |
 | `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
 | `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |
-| `houseClock` | `HouseClock` | The engine's one house epoch E = TAI − MONOTONIC (house-clock design §4.2): `epoch()` (`HouseEpoch`, bigint `eNs`, `traceable`), `ready()`, events `epoch` (re-latch after a step) and `state`. Apply E only at a network egress; `aes67-output` is the reader |
+| `houseClock` | `HouseClock` | The engine's one house epoch E = TAI − MONOTONIC (house-clock design §4.2): `epoch()` (`HouseEpoch`, bigint `eNs`, `traceable`), `ready()`, events `epoch` (each latch and re-latch: a step, a divergence, or sync after an untraceable start) and `state`. Apply E only at a network egress; `aes67-output` is the reader |
 | `instanceId` | `string` | Unique module instance ID |
 
 ### ProcessManager — Spawning External Processes
@@ -2652,6 +2674,8 @@ worth copying:
   offset unset): the payloader then keeps its random
   RFC 3550 offset and the SDP carries no `ts-refclk`/`mediaclk`, because
   announcing a PTP media clock you do not have is undetectable at the receiver.
+  The `clock` status section names the reason, kept current as the clock
+  changes.
 - **Pacing is not playout offset D.** The AES67 egress sink syncs against the
   house clock with a small `senderLatencyMs` (default 20 ms) so 1 ms packets
   leave evenly instead of in decode-sized bursts. D is deliberately NOT applied

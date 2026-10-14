@@ -261,18 +261,18 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
       named above:** every pipeline pins `base_time=0` (running-time ≡ house
       clock) and the PRODUCER stamps bus buffer PTS with house-clock media
       time, so the sink never sees the raw PES epoch and the first frame
-      schedules now, not 19.2 h out. The per-module `clockSync` toggle is
-      superseded by the engine-level contract flag (on by default;
-      `MR_TIME_SYNC_CONTRACT=0` reverts to the legacy path — where this
-      freeze still exists, so keep the toggle OFF there). Fleet release
-      gated on the burn-in soak (see the feature-freeze note in
-      `TodoNotes.md`).
+      schedules now, not 19.2 h out. The per-module `clockSync` toggle was
+      superseded by the engine-level contract flag (on by default; with the
+      flag off, the legacy path kept this freeze). Fleet release gated on
+      the burn-in soak (see the feature-freeze note in `TodoNotes.md`).
       **REMOVED 2026-09-08 (at the operator's request):** the per-module
       `clockSync` toggle is now deleted from the video-player, not just
-      superseded — the engine-wide contract flag is the only control. The
-      legacy `MR_TIME_SYNC_CONTRACT=0` path still passes source PES timestamps
-      through, so that path is unsupported for the video player rather than
+      superseded. The legacy path, which still passed source PES timestamps
+      through, was unsupported for the video player rather than
       toggle-gated. See the video-player settings-trim note in `TodoNotes.md`.
+      **GONE 2026-10-13 (house-clock Phase 0, ADR-0029):** the contract flag
+      and the legacy path are deleted; every pipeline runs on the house
+      clock, so the path to this freeze no longer exists.
 
 - [ ] renderWatch expected-fps fallback: streams without VUI timing negotiate
       `framerate=0/1` and the watch stays silent; fall back to the ts-probe

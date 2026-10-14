@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Cuts a full `pw-dump` to what pipeWireLatency.ts reads: the `settings` metadata, the core's
-CORE_PROPS, the MR_PW_* and mr-gst-runner nodes (params cut to `Latency`) and the other nodes in
-an MR_PW node's driver group (n1-mixer loopbacks, props cut to PEER_PROPS). The Links between
-kept nodes (LINK_INFO only) stay for reading the topology; the module does not read them.
-pw-dump-fleet.json was cut from pw-dump-10.9.16.22.json: `pw-dump` on 10.9.16.22 (Pi 5, PipeWire
-1.6.3: audio-decoder, audio-encoder, n1-mixer), 2026-10-13 12:42, 1826560 bytes, sha256
-f84535d8cb97871cc4fc6c5ca35d2fd2b6c29cfcb58dd938f94ff3f48edc9b4a.  Usage: IN OUT."""
+"""Cuts a full `pw-dump` to the objects pipeWireLatency.ts reads and the links between them;
+usage: IN OUT. pw-dump-fleet.json: `pw-dump` on 10.9.16.22 (Pi 5, PipeWire 1.6.3), 2026-10-13 12:42,
+1826560 bytes, sha256 f84535d8cb97871cc4fc6c5ca35d2fd2b6c29cfcb58dd938f94ff3f48edc9b4a."""
 import json
 import sys
 
