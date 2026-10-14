@@ -14,8 +14,10 @@ describe('sourceFromUnits', () => {
         expect(sourceFromUnits('inactive\nactive\n')).toBe('ptp');
         expect(sourceFromUnits('inactive\ninactive\n')).toBe('none');
         expect(sourceFromUnits('')).toBe('none');
-        // Mid-switch both can be up: PTP is taking the clock.
-        expect(sourceFromUnits('active\nactive\n')).toBe('ptp');
+        // A PTP grandmaster runs both: chronyd disciplines the clock ptp4l serves.
+        expect(sourceFromUnits('active\nactive\n')).toBe('chrony');
+        // Revoked: ptp4l steers while chronyd stops.
+        expect(sourceFromUnits('deactivating\nactive\n')).toBe('ptp');
     });
 });
 
@@ -63,6 +65,17 @@ describe('pollClockSource', () => {
         const r = await pollClockSource(exec);
         expect(r.source).toBe('chrony');
         expect(r.chrony?.stratum).toBe(2);
+        expect(exec).toHaveBeenLastCalledWith('chronyc', ['-c', 'tracking']);
+    });
+
+    it('asks chronyc on a PTP grandmaster, where chronyd and ptp4l both run', async () => {
+        const exec = vi.fn(async (cmd: string) =>
+            cmd === 'systemctl' ? 'active\nactive\n' : SYNCED,
+        );
+        expect(await pollClockSource(exec)).toMatchObject({
+            source: 'chrony',
+            chrony: { reference: 'ntp1.example.org', stratum: 2 },
+        });
         expect(exec).toHaveBeenLastCalledWith('chronyc', ['-c', 'tracking']);
     });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HouseEpoch, TimeSyncState } from '@media-router/shared-types';
+import { setLogTap, type HouseEpoch, type TimeSyncState } from '@media-router/shared-types';
 import { HouseClock, type HouseClockOptions } from './HouseClock.js';
 import { SETTLE_MAX_MS, START_WAIT_MS, deltaNs } from './houseClockPolicy.js';
 import { ProcessManager } from '../child-process/ProcessManager.js';
@@ -42,7 +42,9 @@ function fakeSidecar(opts: Partial<HouseClockOptions> = {}) {
         }),
         kill: vi.fn(async () => {}),
     };
-    const exec = vi.fn(async (cmd: string) => (cmd === 'systemctl' ? 'active\ninactive\n' : ''));
+    const exec = vi.fn(
+        async (cmd: string): Promise<string> => (cmd === 'systemctl' ? 'active\ninactive\n' : ''),
+    );
     const clock = new HouseClock({
         processManager,
         resolveBinary: () => '/usr/libexec/media-router/engine/mr-clockstate',
@@ -243,6 +245,80 @@ describe('HouseClock', () => {
             traceable: false,
             epochSeq: 0,
         });
+    });
+
+    it('a step re-polls the clock owner at once, not at the next 10 s poll', async () => {
+        vi.useFakeTimers();
+        const h = fakeSidecar();
+        clock = h.clock;
+        h.clock.start();
+        await vi.advanceTimersByTimeAsync(0);
+        h.emit(line());
+        const polls = () => h.exec.mock.calls.filter(([cmd]) => cmd === 'systemctl').length;
+        expect(polls()).toBe(1);
+        // The grandmaster loses the election: chronyd revoked, then linuxptp steps REALTIME.
+        h.exec.mockImplementation(async (cmd: string) =>
+            cmd === 'systemctl' ? 'inactive\nactive\n' : '',
+        );
+        h.emit(STEP);
+        expect(polls()).toBe(2);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.clock.state().source).toBe('ptp');
+        expect(h.states.at(-1)?.source).toBe('ptp');
+    });
+
+    it("an older poll's late answer never overwrites a step's newer one", async () => {
+        vi.useFakeTimers();
+        const answer: Array<(stdout: string) => void> = [];
+        const h = fakeSidecar({
+            exec: (cmd) =>
+                cmd === 'systemctl' ? new Promise((r) => answer.push(r)) : Promise.resolve(''),
+        });
+        clock = h.clock;
+        h.clock.start();
+        answer[0]('active\ninactive\n');
+        await vi.advanceTimersByTimeAsync(10_000); // the periodic poll asks before the handover
+        h.emit(STEP); // and the step's poll after it
+        answer[2]('inactive\nactive\n');
+        await vi.advanceTimersByTimeAsync(0);
+        answer[1]('active\ninactive\n');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(answer).toHaveLength(3);
+        expect(h.clock.state().source).toBe('ptp');
+    });
+
+    it('warns of an unreadable sidecar line at most once a minute, with an excerpt', async () => {
+        vi.useFakeTimers();
+        const warned: string[] = [];
+        setLogTap((l) => {
+            const { name, msg } = JSON.parse(l) as { name: string; msg: string };
+            if (name === 'clock' && msg.includes('unreadable')) warned.push(msg);
+        });
+        try {
+            const h = fakeSidecar();
+            clock = h.clock;
+            h.clock.start();
+            await vi.advanceTimersByTimeAsync(0);
+            const cut = line().slice(0, -1); // a sample cut short
+            h.emit(cut);
+            h.emit('not json');
+            expect(warned).toEqual([
+                `clock: ignored an unreadable mr-clockstate line: ${cut.slice(0, 120)}…`,
+            ]);
+            // The minute is monotonic: a REALTIME step back of a day does not stretch it.
+            vi.setSystemTime(Date.now() - 86_400_000);
+            await vi.advanceTimersByTimeAsync(59_999);
+            h.emit('not json');
+            expect(warned).toHaveLength(1);
+            await vi.advanceTimersByTimeAsync(1);
+            h.emit('not json');
+            expect(warned).toEqual([
+                warned[0],
+                'clock: ignored an unreadable mr-clockstate line: not json',
+            ]);
+        } finally {
+            setLogTap(null);
+        }
     });
 
     it('carries chrony tracking into the state when chrony owns the clock', async () => {

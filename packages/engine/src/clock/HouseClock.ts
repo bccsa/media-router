@@ -26,6 +26,8 @@ const log = createLogger('clock');
 
 const OWNER = '__house_clock__';
 const SOURCE_POLL_MS = 10_000;
+/** The sidecar's stdout is not logged, so an unparseable line is warned, at most this often. */
+const UNREADABLE_WARN_MS = 60_000;
 
 export interface HouseClockOptions {
     processManager: Pick<ProcessManager, 'spawn' | 'kill'>;
@@ -54,7 +56,11 @@ export class HouseClock extends EventEmitter {
     private startedAt = 0;
     private source: TimeSyncSource = 'none';
     private chrony: ChronyTracking | undefined;
+    // A step's poll can overlap the periodic one: an older answer never overwrites a newer one.
+    private pollSeq = 0;
+    private sourceSeq = 0;
     private sidecar = true;
+    private unreadableWarnedAt = -Infinity;
     private latchedAt: string | undefined;
     private waitTimer: ReturnType<typeof setTimeout> | null = null;
     private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -161,9 +167,14 @@ export class HouseClock extends EventEmitter {
 
     private onLine(line: string): void {
         const msg = parseClockLine(line);
-        if (!msg) return;
+        if (!msg) {
+            this.warnUnreadable(line);
+            return;
+        }
         if (msg.type === 'step') {
             this.stepped = true;
+            // A PTP handover can step the clock: report the new owner now, not at the next poll.
+            void this.pollSource();
             return;
         }
         const prev = this.last;
@@ -175,6 +186,14 @@ export class HouseClock extends EventEmitter {
         const syncChanged = prev && isSynced(prev) !== isSynced(msg.sample);
         if (!prev || syncChanged || prev.taiOffsetS !== msg.sample.taiOffsetS)
             this.emit('state', this.state());
+    }
+
+    private warnUnreadable(line: string): void {
+        const now = performance.now(); // monotonic, so a REALTIME step back cannot mute it
+        if (now - this.unreadableWarnedAt < UNREADABLE_WARN_MS) return;
+        this.unreadableWarnedAt = now;
+        const excerpt = line.length > 120 ? `${line.slice(0, 120)}…` : line;
+        log.warn(`clock: ignored an unreadable mr-clockstate line: ${excerpt}`);
     }
 
     private onWaitExpired(): void {
@@ -279,8 +298,11 @@ export class HouseClock extends EventEmitter {
     }
 
     private async pollSource(): Promise<void> {
+        const seq = ++this.pollSeq;
         try {
             const { source, chrony } = await pollClockSource(this.opts.exec);
+            if (seq < this.sourceSeq) return;
+            this.sourceSeq = seq;
             const changed = source !== this.source;
             this.source = source;
             this.chrony = chrony;

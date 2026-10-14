@@ -1,6 +1,8 @@
 // The engine's house epoch E and time-sync state (house-clock design §4.2, §10.3).
 
-/** Who disciplines the clock: chronyd, ptp4l (PTP setup), or nothing found. */
+/** Who disciplines the clock: `chrony`, also on a PTP grandmaster (chronyd disciplines the clock
+ *  it serves); `ptp`, linuxptp steers (slave-only boxes, and a master-capable box while it
+ *  follows a better grandmaster); `none`, neither daemon runs. */
 export type TimeSyncSource = 'chrony' | 'ptp' | 'none';
 
 /** Why E was latched (`start`/`timeout`) or re-latched (`sync`/`step`/`divergence`). */

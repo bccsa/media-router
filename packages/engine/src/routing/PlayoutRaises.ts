@@ -44,7 +44,7 @@ export class PlayoutRaises {
 
     constructor(private readonly deps: PlayoutRaisesDeps) {}
 
-    /** Engine wiring: on only with the contract on and `MR_PLAYOUT_REANCHOR` not 0. */
+    /** Engine wiring: `EngineConfig.playoutReanchor`, else on unless `MR_PLAYOUT_REANCHOR=0`. */
     configure(enabled: boolean, defaultOffsetMs = DEFAULT_PLAYOUT_OFFSET_MS): void {
         this.enabled = enabled;
         this.defaultOffsetMs = defaultOffsetMs;
