@@ -5,6 +5,16 @@ import { matchShowWhen } from '@/utils/showWhen';
 import { stripDisplayFields, type GraphSource } from '@/utils/displayWidgets';
 import { fieldLabel } from '@/utils/fieldLabel';
 
+/** `x-widget` values a manifest may declare; anything else renders by the field's type. */
+export type SettingsWidget = 'slider' | 'textarea' | 'imageUpload' | 'graph' | 'pidTrim';
+
+/** The per-entry schema of an object (map) field, e.g. the `pidTrim` widget's ms bounds. */
+export interface MapEntrySchema {
+    type?: string;
+    minimum?: number;
+    maximum?: number;
+}
+
 /** JSON Schema property shape with media-router extensions. */
 interface SchemaProperty {
     type?: string;
@@ -16,11 +26,12 @@ interface SchemaProperty {
     enum?: unknown[];
     minimum?: number;
     maximum?: number;
+    additionalProperties?: boolean | MapEntrySchema;
     'x-live'?: boolean;
     'x-liveUpdatable'?: boolean;
     'x-deviceType'?: string;
     'x-optionsFrom'?: string;
-    'x-widget'?: string;
+    'x-widget'?: SettingsWidget;
     'x-graph'?: GraphSource;
     'x-step'?: number;
     'x-maxFrom'?: string;
@@ -45,9 +56,11 @@ export interface FormField {
     enumLabels?: Record<string, string>;
     liveUpdatable: boolean;
     deviceType?: string;
-    /** Key into the module's pushed `fieldOptions` for a discovery-driven multi-select. */
+    /** Key into the module's pushed `fieldOptions`: a multi-select's choices, a `pidTrim`'s rows. */
     optionsFrom?: string;
-    widget?: string;
+    widget?: SettingsWidget;
+    /** An object field's per-entry schema; apart from `items` so a map never takes the array path. */
+    additionalProperties?: MapEntrySchema;
     /** `x-graph` — where a `graph` widget reads its plot data from. */
     graph?: GraphSource;
     minimum?: number;
@@ -120,6 +133,10 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
             unit: prop['x-unit'],
             debounceMs: prop['x-debounceMs'],
             items: prop.items as FormField['items'],
+            additionalProperties:
+                prop.additionalProperties && typeof prop.additionalProperties === 'object'
+                    ? prop.additionalProperties
+                    : undefined,
         }));
     });
 

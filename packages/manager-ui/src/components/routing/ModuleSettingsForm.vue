@@ -8,6 +8,7 @@ import MrToggle from '@/components/common/MrToggle.vue';
 import MrArrayField from '@/components/common/MrArrayField.vue';
 import MrHelpTip from '@/components/common/MrHelpTip.vue';
 import GraphField from '@/components/routing/widgets/GraphField.vue';
+import PidTrimField from '@/components/routing/widgets/PidTrimField.vue';
 import type { FormField } from '@/composables/useModuleSettingsForm';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
@@ -42,6 +43,9 @@ function onUpdate(key: string, value: unknown): void {
     emit('update', key, value);
 }
 
+// The ingest offset O every per-PID trim sits on (§5.5); shared-types' INGEST_OFFSET_KEY.
+const INGEST_OFFSET_KEY = 'ingestOffsetMs';
+
 /**
  * Plugin id for the current module. Needed so the upload widget can scope
  * the generic `plugin:upload` RPC by plugin (each plugin gets its own
@@ -57,7 +61,9 @@ function modulePluginId(): string {
  * stream). Empty until the engine has probed the source.
  */
 function optionsFromState(key: string): Array<{ value: string; label: string }> {
-    return engineStore.getEngine(props.engineId)?.modules[props.moduleId]?.fieldOptions?.[key] ?? [];
+    return (
+        engineStore.getEngine(props.engineId)?.modules[props.moduleId]?.fieldOptions?.[key] ?? []
+    );
 }
 
 /**
@@ -221,12 +227,7 @@ function clearUpload(field: FormField): void {
     <div v-if="fields.length === 0" class="text-sm py-4 text-center text-muted">
         No configurable settings.
     </div>
-    <div
-        v-for="field in fields"
-        :key="field.key"
-        v-show="isVisible(field)"
-        class="space-y-1.5"
-    >
+    <div v-for="field in fields" :key="field.key" v-show="isVisible(field)" class="space-y-1.5">
         <label class="flex items-center gap-1.5 text-xs font-medium text-subtle">
             {{ field.label }}
             <MrHelpTip
@@ -245,6 +246,16 @@ function clearUpload(field: FormField): void {
             :field="field"
             :engine-id="engineId"
             :module-id="moduleId"
+        />
+        <!-- Per-PID trims: an object value, so ahead of the array-valued x-optionsFrom
+             multi-select that would otherwise claim it. -->
+        <PidTrimField
+            v-else-if="field.widget === 'pidTrim'"
+            :field="field"
+            :model-value="settings[field.key]"
+            :options="field.optionsFrom ? optionsFromState(field.optionsFrom) : []"
+            :offset-ms="settings[INGEST_OFFSET_KEY] as number | undefined"
+            @update:model-value="onUpdate(field.key, $event)"
         />
         <!-- Read-only field (auto-detected values) -->
         <div
@@ -285,8 +296,7 @@ function clearUpload(field: FormField): void {
                 v-else-if="field.optionsFrom"
                 :model-value="
                     ((settings[field.key] as unknown[]) ?? []).filter(
-                        (v): v is string | number =>
-                            typeof v === 'string' || typeof v === 'number',
+                        (v): v is string | number => typeof v === 'string' || typeof v === 'number',
                     )
                 "
                 :options="optionsFromState(field.optionsFrom)"
@@ -315,9 +325,7 @@ function clearUpload(field: FormField): void {
                 :model-value="Number(settings[field.key] ?? field.defaultValue ?? 0)"
                 :min="field.minimum"
                 :max="
-                    field.maxFrom
-                        ? Number(settings[field.maxFrom] ?? field.maximum)
-                        : field.maximum
+                    field.maxFrom ? Number(settings[field.maxFrom] ?? field.maximum) : field.maximum
                 "
                 :step="field.step"
                 :editable="true"
@@ -325,10 +333,7 @@ function clearUpload(field: FormField): void {
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Image upload widget (file picker + preview + clear) -->
-            <div
-                v-else-if="field.widget === 'imageUpload'"
-                class="space-y-2"
-            >
+            <div v-else-if="field.widget === 'imageUpload'" class="space-y-2">
                 <div
                     v-if="settings[field.key]"
                     class="relative rounded-md border border-border-alt bg-surface-alt overflow-hidden"
@@ -350,8 +355,13 @@ function clearUpload(field: FormField): void {
                     >
                         Loading preview…
                     </div>
-                    <div class="px-2 py-1 flex items-center justify-between border-t border-border-alt">
-                        <span class="text-[10px] truncate text-muted" :title="String(settings[field.key])">
+                    <div
+                        class="px-2 py-1 flex items-center justify-between border-t border-border-alt"
+                    >
+                        <span
+                            class="text-[10px] truncate text-muted"
+                            :title="String(settings[field.key])"
+                        >
                             {{ String(settings[field.key]).split('/').pop() }}
                         </span>
                         <button
@@ -389,15 +399,18 @@ function clearUpload(field: FormField): void {
                     />
                 </label>
             </div>
-            <!-- Plain number input -->
-            <MrInput
-                v-else-if="field.type === 'number'"
-                type="number"
-                :model-value="settings[field.key] as number"
-                :min="field.minimum"
-                :max="getMax(field)"
-                @update:model-value="onUpdate(field.key, $event)"
-            />
+            <!-- Plain number input, with its x-unit beside it -->
+            <div v-else-if="field.type === 'number'" class="flex items-center gap-1.5">
+                <MrInput
+                    type="number"
+                    class="flex-1 min-w-0"
+                    :model-value="settings[field.key] as number"
+                    :min="field.minimum"
+                    :max="getMax(field)"
+                    @update:model-value="onUpdate(field.key, $event)"
+                />
+                <span v-if="field.unit" class="text-xs text-muted">{{ field.unit }}</span>
+            </div>
             <!-- Text input (default) -->
             <MrInput
                 v-else
