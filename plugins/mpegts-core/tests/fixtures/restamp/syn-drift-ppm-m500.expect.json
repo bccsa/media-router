@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --ppm -500 --duration 610 --pids v --seed 14",
+  "note": "A source 500 ppm slow for 10 min (part 7.2 syn-drift-ppm): the rate converges to within 0.5 ppm by 300 s (part 4.3's revised criterion, chapter 15.4 B-5) and holds, residual floor at most 1 ms below the mapping, the mapping slewing at most 20 ppm (one bucket of quantisation allowed). ppm is the clock's epsilon: a fast source reads negative.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "ppmAfterS": 300,
+  "ppm": [499.5, 500.5],
+  "residualMinMs": -1,
+  "mappingPpmMax": 21,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

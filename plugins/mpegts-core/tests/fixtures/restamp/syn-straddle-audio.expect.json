@@ -1,0 +1,14 @@
+{
+  "source": "fixture_gen --trace --jump 60:-1000:di --late a1:59.8:120:300 --duration 120 --seed 23",
+  "note": "A flagged 1 s rewind at 60 s with MPEG audio (PID 257) sent 300 ms late from 59.8 s on, so its old-timeline PES arrive after the new epoch's first PCR (part 7.2): they stay on the old mapping, which shows as nothing dropped and no PID stepping back (on the new epoch they would land 1 s late and the new audio would be dropped).",
+  "relocks": 1,
+  "relockReasons": ["discontinuity"],
+  "epochs": 2,
+  "degraded": 0,
+  "events": [{"kind": "relock", "reason": "discontinuity", "atS": [59.9, 60.3]}],
+  "droppedPes": 0,
+  "gapsPerPid": [0, 1],
+  "gapMs": [0, 20],
+  "monotonic": true,
+  "faithful": true
+}

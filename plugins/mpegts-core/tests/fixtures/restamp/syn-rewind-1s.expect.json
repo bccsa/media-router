@@ -1,0 +1,14 @@
+{
+  "source": "fixture_gen --trace --jump 60:-1000 --late a1:59.7:60:300 --duration 120 --seed 22",
+  "note": "PCR and PTS rewind 1 s at 60 s, unflagged, the last 300 ms of old-timeline MPEG audio (PID 257) sent 300 ms late, interleaved with the new timeline (part 7.2): the leap check relocks at the jump; the straddle tie-break (OQ-11) keeps those PES on the old epoch, where the new-timeline audio already overtook them, so the guard drops them (R18) and only them; no PID steps back.",
+  "relocks": 1,
+  "relockReasons": ["leap"],
+  "epochs": 2,
+  "degraded": 0,
+  "events": [{"kind": "relock", "reason": "leap", "atS": [59.9, 60.3]}, {"kind": "overlap", "pid": 257}],
+  "droppedPes": [1, 13],
+  "droppedMs": [24, 312],
+  "gapsPerPid": [0, 1],
+  "monotonic": true,
+  "faithful": true
+}

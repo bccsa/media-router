@@ -1,0 +1,12 @@
+{
+  "source": "fixture_gen --trace --pcr-ms 150,600@60 --duration 120 --seed 25",
+  "note": "PCR every 150 ms, then every 600 ms from 60 s (part 7.2): the cadence warning (p99 over 150 ms) from the start, then degraded on the cadence row once three intervals over 500 ms fall in 60 s, and no recovery while the PCR stays sparse. Not pinned: the overlap the move onto the reference PID's floor drops (its lead, about 600 ms per PID).",
+  "relocks": 0,
+  "degraded": 1,
+  "recovered": 0,
+  "events": [{"kind": "degraded", "reason": "cadence", "atS": [60, 64]}],
+  "cadenceWarning": true,
+  "finalState": "degraded",
+  "monotonic": true,
+  "faithful": true
+}

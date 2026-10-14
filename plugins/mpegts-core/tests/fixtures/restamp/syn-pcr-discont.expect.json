@@ -1,0 +1,14 @@
+{
+  "source": "fixture_gen --trace --jump 60:30000:di --duration 120 --seed 21",
+  "note": "PCR and PTS jump +30 s at 60 s with discontinuity_indicator on the first PCR after it (part 7.2): one relock for the flag at the jump, house time continuous (at most a small gap per PID while the new epoch acquires), nothing dropped.",
+  "relocks": 1,
+  "relockReasons": ["discontinuity"],
+  "epochs": 2,
+  "degraded": 0,
+  "events": [{"kind": "relock", "reason": "discontinuity", "atS": [59.9, 60.3]}],
+  "gapsPerPid": [0, 1],
+  "gapMs": [0, 20],
+  "droppedPes": 0,
+  "monotonic": true,
+  "faithful": true
+}

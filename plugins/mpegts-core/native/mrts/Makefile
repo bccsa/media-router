@@ -15,6 +15,8 @@ TESTS = tests/ts_house_test tests/ts_packet_test tests/ts_psi_test tests/ts_spli
         tests/ts_trace_test tests/ts_restamp_test tests/asrc_servo_test tests/ts_gap_test
 # Built with the tests so it keeps compiling; run by hand (WI-S0-11), never by `test`.
 BENCH = tests/mrts_bench
+# Built with the tests for trace_cli_test.sh; never run as one (no arguments: exit 2).
+GEN = tests/fixture_gen
 
 all: libmrts.a mrts_cli
 
@@ -28,14 +30,15 @@ libmrts.a: $(OBJS)
 mrts_cli: mrts_cli.cpp libmrts.a
 	$(CXX) $(CXXFLAGS) $< libmrts.a -o $@
 
-tests/%: tests/%.cpp tests/check.h libmrts.a
+tests/%: tests/%.cpp tests/check.h tests/trace_gen.h libmrts.a
 	$(CXX) $(CXXFLAGS) $< libmrts.a -o $@
 
-test: $(TESTS) $(BENCH)
+test: $(TESTS) $(BENCH) $(GEN) mrts_cli
 	@for t in $(TESTS); do ./$$t || exit 1; done
+	@sh tests/trace_cli_test.sh
 
 clean:
-	rm -f $(OBJS) libmrts.a mrts_cli $(TESTS) $(BENCH)
+	rm -f $(OBJS) libmrts.a mrts_cli $(TESTS) $(BENCH) $(GEN)
 
 install:
 	@# mrts ships no standalone binaries; mrts_cli is a test harness only.

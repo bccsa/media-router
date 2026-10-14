@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --delay-ms 20,50@300,20@450 --duration 600 --pids v,a1 --seed 24",
+  "note": "The path's floor delay rises 30 ms at 5 min and falls back at 7.5 min (part 7.2): the rise is an envelope step that relocks after its 10 s hold, one gap of about the rise per PID; the fall is slewed (one-sided at a TS ingest, chapter 15.4 B-3), so no second relock, the mapping never faster than 20 ppm.",
+  "relocks": 1,
+  "relockReasons": ["envelope-step"],
+  "envelopeSteps": 1,
+  "epochs": 2,
+  "degraded": 0,
+  "events": [{"kind": "envelope-step", "atS": [309, 312]}, {"kind": "relock", "reason": "envelope-step", "atS": [309, 312]}],
+  "gapsPerPid": 1,
+  "gapMs": [25, 45],
+  "droppedPes": 0,
+  "mappingPpmMax": 21,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

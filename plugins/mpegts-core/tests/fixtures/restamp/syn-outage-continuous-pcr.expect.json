@@ -1,0 +1,14 @@
+{
+  "source": "fixture_gen --trace --outage 60:3000 --duration 120 --seed 26",
+  "note": "Nothing arrives for 3 s from 60 s while the source clock runs on, a sending engine restarting its link (part 7.2): the first PCR after it passes the leap check, so the epoch is kept (section 5.2) and each PID gets one gap of the outage.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "events": [{"kind": "gap", "reason": "outage", "atS": [62.9, 63.2]}],
+  "gapsPerPid": 1,
+  "gapMs": [2990, 3020],
+  "droppedPes": 0,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

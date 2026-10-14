@@ -1,0 +1,11 @@
+{
+  "source": "fixture_gen --trace --wrap-at 5 --duration 60 --seed 27",
+  "note": "The PCR's 33-bit base wraps 5 s in, the PES a little before it by their lead, B-frame DTS behind PTS across it (part 7.2, the arrivals of syn-wrap-33bit; R19): no relock, no gap, no backward PTS or DTS on any PID.",
+  "relocks": 0,
+  "epochs": 1,
+  "gaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "monotonic": true,
+  "faithful": true
+}
