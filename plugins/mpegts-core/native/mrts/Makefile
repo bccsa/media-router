@@ -3,11 +3,17 @@
 CXX      ?= c++
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++17 -Wall -Wextra
+# PIC under a command-line CXXFLAGS too (build-native-dev.sh): the GStreamer plugins
+# link this archive into a .so, and a non-PIC one left by such a build fails their
+# next host link ("recompile with -fPIC") while make still sees it as up to date.
+override CXXFLAGS += -fPIC
 
 OBJS  = ts_house.o ts_packet.o ts_psi.o ts_split.o ts_video_info.o sps_parse.o ts_timeline.o \
         lateness.o ts_pcr.o ts_pes.o ts_stc.o
 TESTS = tests/ts_house_test tests/ts_packet_test tests/ts_psi_test tests/ts_split_test \
         tests/ts_video_info_test tests/ts_timeline_test tests/lateness_test tests/ts_pcr_test tests/ts_pes_test tests/ts_stc_test
+# Built with the tests so it keeps compiling; run by hand (WI-S0-11), never by `test`.
+BENCH = tests/mrts_bench
 
 all: libmrts.a mrts_cli
 
@@ -24,11 +30,11 @@ mrts_cli: mrts_cli.cpp libmrts.a
 tests/%: tests/%.cpp tests/check.h libmrts.a
 	$(CXX) $(CXXFLAGS) $< libmrts.a -o $@
 
-test: $(TESTS)
+test: $(TESTS) $(BENCH)
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f $(OBJS) libmrts.a mrts_cli $(TESTS)
+	rm -f $(OBJS) libmrts.a mrts_cli $(TESTS) $(BENCH)
 
 install:
 	@# mrts ships no standalone binaries; mrts_cli is a test harness only.

@@ -17,17 +17,23 @@ MR_PLUGINS_DIR ?= ../../..
 MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
+MRTS_HDRS = $(addprefix $(MRTS)/,lateness.h ts_timeline.h ts_house.h)
+
 ifeq ($(shell uname -s),Linux)
 
 all: mr-bus-fanout
 
-../libmrbus/libmrbus.a:
+# Each library decides whether its archive is stale, whatever order the root
+# Makefile reaches the directories in; mr-bus-fanout relinks only when one changed.
+../libmrbus/libmrbus.a: FORCE
 	$(MAKE) -C ../libmrbus
 
-$(MRTS)/libmrts.a:
+$(MRTS)/libmrts.a: FORCE
 	$(MAKE) -C $(MRTS) libmrts.a
 
-mr-bus-fanout: main.cpp ../libmrbus/libmrbus.a $(MRTS)/libmrts.a
+FORCE:
+
+mr-bus-fanout: main.cpp $(MRTS_HDRS) ../libmrbus/libmrbus.a $(MRTS)/libmrts.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) main.cpp ../libmrbus/libmrbus.a $(MRTS)/libmrts.a -o $@
 
 test:

@@ -18,21 +18,20 @@ MR_PLUGIN  ?= engine
 
 BIN  = mr-gst-runner
 # The branch aligner and the TS video-info probe read TS the way the python
-# runner does, through mpegts-core's `ts_psi`/`ts_timeline`/`ts_video_info`:
-# the same sources are compiled in, exactly as mrtsstamp does — one
-# definition, no TS arithmetic of the runner's own (ADR-0002 exception 3).
+# runner does, through mpegts-core's `ts_psi`/`ts_timeline`/`ts_video_info`,
+# linked from its archive libmrts.a — no TS arithmetic of the runner's own
+# (ADR-0002 exception 3).
 MR_PLUGINS_DIR ?= ../../../../plugins
 MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 SRCS = main.cpp ipc.cpp json_util.cpp runner.cpp commands.cpp stamper.cpp \
        bus_edges.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp branch_retime.cpp backlog_shed.cpp hooks.cpp \
-       pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp \
-       $(MRTS)/ts_house.cpp $(MRTS)/ts_packet.cpp $(MRTS)/ts_pcr.cpp \
-       $(MRTS)/ts_psi.cpp $(MRTS)/ts_timeline.cpp $(MRTS)/ts_video_info.cpp $(MRTS)/sps_parse.cpp
+       pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp
 HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h bus_inputs.h source_gate.h \
-       branch_align.h branch_retime.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h \
-       $(MRTS)/ts_house.h $(MRTS)/ts_packet.h $(MRTS)/ts_pcr.h
+       branch_align.h branch_retime.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h \
+       $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
+       $(MRTS)/ts_pcr.h $(MRTS)/ts_pes.h $(MRTS)/ts_video_info.h $(MRTS)/sps_parse.h
 PKGS = gstreamer-1.0 gstreamer-base-1.0 glib-2.0 gio-2.0 json-glib-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
@@ -42,8 +41,14 @@ PKG_LIBS   := $(shell pkg-config --libs $(PKGS)) -ldl
 
 all: $(BIN)
 
-$(BIN): $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PKG_CFLAGS) $(SRCS) $(PKG_LIBS) -o $@
+$(BIN): $(SRCS) $(HDRS) $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PKG_CFLAGS) $(SRCS) $(MRTS)/libmrts.a $(PKG_LIBS) -o $@
+
+# mrts decides whether its archive is stale, whatever order the root Makefile
+# reaches the directories in; the runner relinks only when the archive changed.
+$(MRTS)/libmrts.a: FORCE
+	$(MAKE) -C $(MRTS) libmrts.a
+FORCE:
 
 test:
 	@# Protocol conformance runs from the python gst suite

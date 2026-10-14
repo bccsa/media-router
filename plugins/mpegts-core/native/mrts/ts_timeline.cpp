@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <algorithm>
 
+#include "ts_pes.h"
 #include "ts_psi.h"
 
 namespace mrts {
@@ -575,25 +576,6 @@ int64_t fold(int64_t d, int64_t modulo) {
     if (d < 0) d += modulo;
     return d > modulo / 2 ? d - modulo : d;
 }
-int64_t read_pes_dts(const uint8_t* pkt) {
-    // Caller has already established a PES header with a PTS at payload_offset.
-    int off = payload_offset(pkt);
-    if (off + 19 > PKT) return -1;
-    const uint8_t* p = pkt + off;
-    if (!(p[7] & 0x40)) return -1;
-    return ((int64_t)((p[14] >> 1) & 0x07) << 30) | ((int64_t)p[15] << 22) |
-           ((int64_t)(p[16] >> 1) << 15) | ((int64_t)p[17] << 7) | (p[18] >> 1);
-}
-// Rewrite the 33-bit value of a 5-byte PES timestamp field in place, keeping
-// its 4-bit prefix ('0010' PTS-only, '0011' PTS of a pair, '0001' DTS) and the
-// three marker bits exactly as the mux wrote them.
-void write_ts_field(uint8_t* f, int64_t v) {
-    f[0] = (uint8_t)((f[0] & 0xF0) | (((v >> 30) & 0x07) << 1) | 0x01);
-    f[1] = (uint8_t)((v >> 22) & 0xFF);
-    f[2] = (uint8_t)((((v >> 15) & 0x7F) << 1) | 0x01);
-    f[3] = (uint8_t)((v >> 7) & 0xFF);
-    f[4] = (uint8_t)(((v & 0x7F) << 1) | 0x01);
-}
 }  // namespace
 
 namespace {
@@ -789,15 +771,17 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
             cond_seen_[pid] = {wpts, house_now};
         }
         if (c.offset == 0) continue;
-        write_ts_field(pkt + poff + 9, wpts);
-        const int64_t dts = read_pes_dts(pkt);
-        if (dts >= 0) {
-            int64_t wdts = (dts + c.offset) % PTS_WRAP;
+        PesHeader h;
+        parse_pes_header(pkt + poff, PKT - poff, &h);   // holds: read_pes_pts found the PTS
+        write_pes_ts_field(pkt + poff + h.pts_off, wpts);
+        // Frozen (Q2): the old 19-byte DTS rule, kept: a 14-18 byte payload moves its PTS only.
+        if (h.dts >= 0 && poff + 19 <= PKT) {
+            int64_t wdts = (h.dts + c.offset) % PTS_WRAP;
             if (wdts < 0) wdts += PTS_WRAP;
             // A DTS after its own PTS is not a timeline (vMix writes one while
             // its pacer resets); decode no later than presentation.
             if (fold33(wdts - wpts) > 0) wdts = wpts;
-            write_ts_field(pkt + poff + 14, wdts);
+            write_pes_ts_field(pkt + poff + h.dts_off, wdts);
         }
     }
     return absorbed;

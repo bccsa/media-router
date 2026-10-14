@@ -100,6 +100,7 @@ struct PesUnit {
     int pid = -1;
     PesHeader hdr;
     std::vector<uint8_t> payload;         // empty when keep_payload=false
+    size_t size = 0;                      // payload bytes, kept or not
     bool discont = false;                 // the PID lost or skipped data just before it
     uint64_t seq = 0;                     // per-PID count of PES starts: a gap = drops
 };

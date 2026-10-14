@@ -275,6 +275,7 @@ void PesAssembler::close(Pid& s, std::vector<PesUnit>& out) {
 }
 
 void PesAssembler::emit(Pid& s, std::vector<PesUnit>& out) {
+    s.unit.size = s.bytes;
     out.push_back(std::move(s.unit));
     s.unit = PesUnit();
     s.open = false;

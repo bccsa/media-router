@@ -1,6 +1,6 @@
 # mrlateness: GStreamer pass-through tap reporting lateness per window on mrts::LatenessWindow
-# (WI-P0-7). Like mrtsstamp it compiles the mrts source INTO the .so (libmrts.a has no -fPIC),
-# so it has no build-order dependency on mrts. Linux/GStreamer only.
+# (WI-P0-7). Links the mrts core as the PIC archive libmrts.a, like every mrts user
+# (WI-S0-6). Linux/GStreamer only.
 CXX        ?= c++
 CXXFLAGS   ?= -O2
 CXXFLAGS   += -std=c++17 -Wall -Wextra -fPIC
@@ -14,7 +14,7 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 # libgst<name>.so: GStreamer derives the entry symbol from the filename.
 SO   = libgstmrlateness.so
-SRCS = gstmrlateness.cpp $(MRTS)/lateness.cpp
+SRCS = gstmrlateness.cpp
 PKGS = gstreamer-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
@@ -24,8 +24,14 @@ GST_LIBS   := $(shell pkg-config --libs $(PKGS))
 
 all: $(SO)
 
-$(SO): $(SRCS) $(MRTS)/lateness.h
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(GST_LIBS) -o $@
+$(SO): $(SRCS) $(MRTS)/lateness.h $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(MRTS)/libmrts.a $(GST_LIBS) -o $@
+
+# mrts decides whether its archive is stale, whatever order the root Makefile
+# reaches the directories in; the .so relinks only when the archive changed.
+$(MRTS)/libmrts.a: FORCE
+	$(MAKE) -C $(MRTS) libmrts.a
+FORCE:
 
 test:
 	@# The window maths is pinned by mrts/tests/lateness_test; dataflow by

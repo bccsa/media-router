@@ -77,6 +77,7 @@ struct RunResult {
     std::vector<std::vector<std::pair<int, Bytes>>> es_info;
     std::map<int, Bytes> out;
     long long desync_bytes = 0;
+    std::vector<long long> desync_events;   // on_desync's argument, per call
 };
 
 RunResult run_core(const Bytes& source, size_t chunk,
@@ -89,6 +90,7 @@ RunResult run_core(const Bytes& source, size_t chunk,
         r.discovered.push_back(s);
         r.es_info.push_back(e);
     };
+    cb.on_desync = [&](long long dropped) { r.desync_events.push_back(dropped); };
     SplitterCore core(1, specs, cb);
     for (size_t off = 0; off < source.size(); off += chunk) {
         size_t n = std::min(chunk, source.size() - off);
@@ -305,6 +307,8 @@ int main() {
     CHECK("desync: garbage dropped, ES intact",
           es_only(d.out[VIDEO_PID], VIDEO_PID) == es_only(source, VIDEO_PID) &&
               d.desync_bytes > 0);
+    CHECK("desync: one on_desync for the resyncing feed, its 14 bytes = desync_bytes()",
+          d.desync_events == std::vector<long long>({14}) && d.desync_bytes == 14);
 
     // --- unknown pid ignored, empty feed fine ---
     SplitterCore core_e(1, {{0x999, -1}});
@@ -499,6 +503,41 @@ int main() {
               added_pmt->streams[0].stream_type == STREAM_TYPE_AAC);
     CHECK("added output re-injects PCR (it is not the source PCR pid)",
           !adaptation_only(added_out, AUDIO_PID).empty());
+
+    // --- the first-PAT re-scan on the walker's carry (WI-S0-6): it reads offsets
+    // 0, 188, ... of carry + data, as ts_split.py does, so a PMT packet joined from
+    // two feeds counts and one a resync moved off that grid does not.
+    {
+        uint8_t pmt[PKT], pat[PKT];
+        build_pmt(PMT_PID, 1, VIDEO_PID, {{VIDEO_PID, STREAM_TYPE_AVC, {}}}, 0, 0, pmt);
+        build_pat(7, {{1, PMT_PID}}, 0, 0, pat);
+        Bytes s;
+        append_pkt(s, pmt);
+        append_pkt(s, pat);
+        const Bytes es = es_packet(VIDEO_PID, 0, true);
+        s.insert(s.end(), es.begin(), es.end());
+        // The feed (1 or 2) whose call fired on_discovered first; 0 = neither.
+        auto discovered_in = [](const Bytes& src, size_t cut) {
+            int feed_no = 0, fired = 0;
+            SplitterCallbacks cb;
+            cb.on_discovered = [&](const std::vector<std::pair<int, int>>&, int,
+                                   const std::vector<std::pair<int, Bytes>>&) {
+                if (!fired) fired = feed_no;
+            };
+            SplitterCore core(1, {{VIDEO_PID, -1}}, cb);
+            feed_no = 1;
+            core.feed(src.data(), cut);
+            feed_no = 2;
+            core.feed(src.data() + cut, src.size() - cut);
+            return fired;
+        };
+        CHECK("re-scan: a PMT joined across feeds before the PAT discovers in the PAT's feed",
+              discovered_in(s, 100) == 2);
+        Bytes g = {0x00};                 // the PMT now sits at 1: the resync's offset
+        g.insert(g.end(), s.begin(), s.end());
+        CHECK("re-scan: after a resync the PMT off the 188 grid waits (python parity)",
+              discovered_in(g, 101) == 0);
+    }
 
     return test_summary("ts_split");
 }

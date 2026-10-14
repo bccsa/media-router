@@ -14,18 +14,24 @@ MR_PLUGINS_DIR ?= ../../..
 MRBUS = $(MR_PLUGINS_DIR)/unixfdbus-core/native/libmrbus
 MRTS  = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/unixfdbus-core/native -I$(MR_PLUGINS_DIR)/mpegts-core/native
+MRTS_HDRS = $(addprefix $(MRTS)/,lateness.h ts_split.h ts_psi.h ts_house.h ts_packet.h ts_pcr.h \
+              ts_pes.h ts_video_info.h sps_parse.h ts_timeline.h)
 
 ifeq ($(shell uname -s),Linux)
 
 all: mr-tssplit
 
-$(MRBUS)/libmrbus.a:
+# Each library decides whether its archive is stale, whatever order the root
+# Makefile reaches the directories in; mr-tssplit relinks only when one changed.
+$(MRBUS)/libmrbus.a: FORCE
 	$(MAKE) -C $(MRBUS)
 
-$(MRTS)/libmrts.a:
+$(MRTS)/libmrts.a: FORCE
 	$(MAKE) -C $(MRTS) libmrts.a
 
-mr-tssplit: main.cpp app.cpp app.h $(MRBUS)/libmrbus.a $(MRTS)/libmrts.a
+FORCE:
+
+mr-tssplit: main.cpp app.cpp app.h $(MRTS_HDRS) $(MRBUS)/libmrbus.a $(MRTS)/libmrts.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) main.cpp app.cpp $(MRBUS)/libmrbus.a $(MRTS)/libmrts.a -o $@
 
 test:

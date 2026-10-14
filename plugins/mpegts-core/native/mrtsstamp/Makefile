@@ -1,10 +1,6 @@
 # mrtsstamp — GStreamer plugin wrapping mrts::TimelineStamper (the time-sync
 # contract's producer-side egress stamper, ADR-0005). Linux/GStreamer only.
-#
-# The mrts sources are compiled INTO the .so rather than linked from
-# libmrts.a: the archive is built without -fPIC (it only ever goes into
-# executables), and pulling non-PIC objects into a shared object fails to link
-# on aarch64. Same source files, one extra compile.
+# Links the mrts core as the PIC archive libmrts.a, like every mrts user (WI-S0-6).
 CXX        ?= c++
 CXXFLAGS   ?= -O2
 CXXFLAGS   += -std=c++17 -Wall -Wextra -fPIC
@@ -21,8 +17,8 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 # The filename is load-bearing: GStreamer derives the plugin entry symbol
 # (gst_plugin_mrtsstamp_get_desc) from `libgst<name>.so`.
 SO   = libgstmrtsstamp.so
-SRCS = gstmrtsstamp.cpp $(MRTS)/ts_timeline.cpp $(MRTS)/ts_psi.cpp $(MRTS)/ts_house.cpp \
-       $(MRTS)/ts_pcr.cpp
+SRCS = gstmrtsstamp.cpp
+HDRS = $(MRTS)/ts_timeline.h $(MRTS)/ts_house.h
 PKGS = gstreamer-1.0 gstreamer-base-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
@@ -32,9 +28,14 @@ GST_LIBS   := $(shell pkg-config --libs $(PKGS))
 
 all: $(SO)
 
-$(SO): $(SRCS) $(MRTS)/ts_timeline.h $(MRTS)/ts_psi.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
-       $(MRTS)/ts_pcr.h
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(GST_LIBS) -o $@
+$(SO): $(SRCS) $(HDRS) $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(MRTS)/libmrts.a $(GST_LIBS) -o $@
+
+# mrts decides whether its archive is stale, whatever order the root Makefile
+# reaches the directories in; the .so relinks only when the archive changed.
+$(MRTS)/libmrts.a: FORCE
+	$(MAKE) -C $(MRTS) libmrts.a
+FORCE:
 
 test:
 	@# Dataflow coverage runs from the python gst suite

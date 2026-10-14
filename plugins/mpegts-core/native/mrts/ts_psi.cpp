@@ -107,31 +107,6 @@ uint32_t crc32_mpeg(const uint8_t* data, size_t n) {
     return crc;
 }
 
-// Stream ids whose PES packets carry no optional header, hence never a PTS
-// (ISO 13818-1 §2.4.3.7).
-static bool pes_no_header_id(uint8_t sid) {
-    switch (sid) {
-        case 0xBC: case 0xBE: case 0xBF: case 0xF0:
-        case 0xF1: case 0xF2: case 0xF8: case 0xFF:
-            return true;
-        default:
-            return false;
-    }
-}
-
-int64_t read_pes_pts(const uint8_t* pkt) {
-    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
-    int off = payload_offset(pkt);
-    if (off + 14 > PKT) return -1;
-    const uint8_t* p = pkt + off;
-    if (p[0] != 0x00 || p[1] != 0x00 || p[2] != 0x01) return -1;
-    if (pes_no_header_id(p[3])) return -1;
-    if ((p[6] & 0xC0) != 0x80) return -1;       // '10' marker of the optional header
-    if (!(p[7] & 0x80)) return -1;              // PTS absent
-    return ((int64_t)((p[9] >> 1) & 0x07) << 30) | ((int64_t)p[10] << 22) |
-           ((int64_t)(p[11] >> 1) << 15) | ((int64_t)p[12] << 7) | (p[13] >> 1);
-}
-
 void null_packet(int cc, uint8_t out[PKT]) {
     out[0] = SYNC_BYTE;
     out[1] = (PID_NULL >> 8) & 0x1F;
@@ -217,6 +192,13 @@ bool first_section(const std::deque<TsPacket>& packets, int pid,
         }
         if (collecting && want < 0 && buf.size() >= 3)
             want = 3 + (((buf[1] & 0x0F) << 8) | buf[2]);
+        // Only section 0 is the table: a later section is dropped with its length,
+        // and the search goes on at the next section start.
+        if (collecting && buf.size() >= 7 && (buf[1] & 0x80) && buf[6] != 0) {
+            collecting = false;
+            want = -1;
+            continue;
+        }
         if (collecting && want > 0 && (int)buf.size() >= want) {
             section.assign(buf.begin(), buf.begin() + want);
             return true;
@@ -320,6 +302,7 @@ void PsiDiscovery::select_program(int program_number) {
     // re-reads the retained PAT for the new one.
     pmt_pid_ = -1;
     program_ = -1;
+    pmt_shared_ = false;
     pmt_pkts_.clear();
     pmt_sig_ = pmt_new_sig_ = SectionSig();
     pmt_resync_ = false;
@@ -360,32 +343,37 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
     }
     n_++;
     if (pmt_pid_ < 0 || pat_resync_) {
-        auto pat = parse_pat(pat_pkts_);
-        if (select_ >= 0)
-            pat.erase(std::remove_if(pat.begin(), pat.end(),
-                                     [&](const std::pair<int, int>& e) {
-                                         return e.first != select_;
-                                     }),
-                      pat.end());
-        if (!pat.empty()) {
+        const auto pat = parse_pat(pat_pkts_);
+        using Entry = std::pair<int, int>;
+        const auto it = select_ < 0 ? pat.begin()
+                                    : std::find_if(pat.begin(), pat.end(), [&](const Entry& e) {
+                                          return e.first == select_;
+                                      });
+        if (it != pat.end()) {
             if (pat_resync_) {
                 pat_sig_ = pat_new_sig_;
                 pat_resync_ = false;
             }
-            if (pat.front().second != pmt_pid_) {
+            if (it->second != pmt_pid_) {
                 // A new PAT may also move the program to a different PMT PID;
                 // the buffered packets belong to the old one.
-                pmt_pid_ = pat.front().second;
+                pmt_pid_ = it->second;
                 pmt_pkts_.clear();
                 pmt_sig_ = SectionSig();
                 pmt_resync_ = false;
             }
-            program_ = pat.front().first;
+            program_ = it->first;
+            pmt_shared_ = std::count_if(pat.begin(), pat.end(), [&](const Entry& e) {
+                              return e.second == pmt_pid_;
+                          }) > 1;
         }
     }
     bool changed = false;
     if (pmt_pid_ >= 0 && (!pmt_ || pmt_resync_ || n_ % 500 == 0)) {
         auto pmt = parse_pmt(pmt_pkts_, pmt_pid_);
+        // A PMT PID the PAT gives two programs carries both tables: only ours counts.
+        // On a PID of ours alone the PMT is ours whatever number it carries.
+        if (pmt && pmt_shared_ && pmt->program_number != program_) pmt.reset();
         if (pmt && pmt_resync_) {
             pmt_sig_ = pmt_new_sig_;   // decided on it; do not re-trigger on it
             pmt_resync_ = false;

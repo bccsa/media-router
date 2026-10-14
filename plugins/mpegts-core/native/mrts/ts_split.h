@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "ts_packet.h"
 #include "ts_psi.h"
 #include "ts_video_info.h"
 
@@ -95,7 +96,7 @@ class SplitterCore {
     // feed() call. Order = first-appearance order in the buffer.
     const std::vector<Batch>& feed(const uint8_t* data, size_t len);
 
-    long long desync_bytes() const { return desync_bytes_; }
+    long long desync_bytes() const { return (long long)walker_.desync_bytes(); }
     int pcr_pid() const { return pcr_pid_; }
     const PsiDiscovery& discovery() const { return disc_; }
 
@@ -112,10 +113,8 @@ class SplitterCore {
     SplitterCallbacks cb_;
     int pcr_pid_ = -1;
     int64_t master_pcr_ = -1;
-    long long desync_bytes_ = 0;
-    std::vector<uint8_t> rem_;       // unaligned tail carried into the next feed
+    PacketWalker walker_;            // carry across feeds, resync, desync count
     // Per-feed scratch (reused across calls):
-    std::vector<uint8_t> joined_;    // rem_ + data when rem_ is non-empty
     std::vector<std::vector<const uint8_t*>> buckets_;
     std::vector<std::vector<uint8_t>> batch_bufs_;
     std::vector<TsPacket> psi_pkts_;

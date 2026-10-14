@@ -12,11 +12,12 @@
 #include <vector>
 
 // PKT, SYNC_BYTE and the packet header helpers moved to ts_packet.h, PCR_HZ and
-// PCR_MODULO to ts_house.h, read_pcr and build_pcr_packet to ts_pcr.h; included
-// here so every caller compiles unchanged.
+// PCR_MODULO to ts_house.h, read_pcr and build_pcr_packet to ts_pcr.h, the PES
+// header parse to ts_pes.h; included here so every caller compiles unchanged.
 #include "ts_house.h"
 #include "ts_packet.h"
 #include "ts_pcr.h"
+#include "ts_pes.h"
 
 namespace mrts {
 
@@ -40,8 +41,16 @@ struct TsPacket {
 // CRC-32/MPEG-2: poly 0x04C11DB7, init 0xFFFFFFFF, no reflection/xorout.
 uint32_t crc32_mpeg(const uint8_t* data, size_t n);
 
-// 33-bit 90 kHz PTS of the PES header starting in this packet, or -1.
-int64_t read_pes_pts(const uint8_t* pkt);
+// 33-bit 90 kHz PTS of the PES header starting in this packet, or -1. Forwards to
+// parse_pes_header until its last caller moves (Phase 3); ts_psi_test pins it to
+// the body it replaced.
+inline int64_t read_pes_pts(const uint8_t* pkt) {
+    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
+    const int off = payload_offset(pkt);
+    if (off >= PKT) return -1;
+    PesHeader h;
+    return parse_pes_header(pkt + off, PKT - off, &h) ? h.pts : -1;
+}
 
 void null_packet(int cc, uint8_t out[PKT]);
 
@@ -107,7 +116,8 @@ std::vector<uint8_t> build_pmt_section(int program_number, int pcr_pid,
 void packetise_section(int pid, const std::vector<uint8_t>& section, uint8_t& cc,
                        std::vector<uint8_t>& out);
 
-// Reassemble the first complete PSI section carried on `pid`.
+// Reassemble the first complete PSI section carried on `pid` whose section_number
+// is 0; a later section is skipped, as the parsers here understand section 0 only.
 bool first_section(const std::deque<TsPacket>& packets, int pid,
                    std::vector<uint8_t>& section);
 
@@ -165,6 +175,7 @@ class PsiDiscovery {
     // a PAT lists it nothing is discovered; a new choice drops the PMT state.
     void select_program(int program_number);
     int pmt_pid() const { return pmt_pid_; }
+    int program() const { return program_; }   // the PAT's program on pmt_pid(); -1 until then
     const std::optional<Pmt>& pmt() const { return pmt_; }
     // Bumps on every PMT change, any field: the first parse, the changes feed()
     // reports, and version- or program_info-only ones.
@@ -179,6 +190,7 @@ class PsiDiscovery {
     long long n_ = 0;
     int pmt_pid_ = -1;
     int program_ = -1;                  // program the PAT mapped to pmt_pid_
+    bool pmt_shared_ = false;           // the PAT maps pmt_pid_ to other programs too
     int select_ = -1;                   // select_program's choice
     std::optional<Pmt> pmt_;
     // Signature of the last section handed to the parser; a differing one

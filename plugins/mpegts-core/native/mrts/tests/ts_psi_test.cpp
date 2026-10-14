@@ -165,6 +165,65 @@ bool stuffed(const uint8_t* from, const uint8_t* to) {
     return std::all_of(from, to, [](uint8_t b) { return b == 0xFF; });
 }
 
+// read_pes_pts as it was before it forwarded to parse_pes_header (WI-S0-6): the
+// oracle the forwarder must match, since the frozen model still calls it.
+int64_t old_read_pes_pts(const uint8_t* pkt) {
+    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
+    int off = payload_offset(pkt);
+    if (off + 14 > PKT) return -1;
+    const uint8_t* p = pkt + off;
+    if (p[0] != 0x00 || p[1] != 0x00 || p[2] != 0x01) return -1;
+    switch (p[3]) {
+        case 0xBC: case 0xBE: case 0xBF: case 0xF0:
+        case 0xF1: case 0xF2: case 0xF8: case 0xFF:
+            return -1;
+        default:
+            break;
+    }
+    if ((p[6] & 0xC0) != 0x80) return -1;
+    if (!(p[7] & 0x80)) return -1;
+    return ((int64_t)((p[9] >> 1) & 0x07) << 30) | ((int64_t)p[10] << 22) |
+           ((int64_t)(p[11] >> 1) << 15) | ((int64_t)p[12] << 7) | (p[13] >> 1);
+}
+
+uint32_t lcg_next(uint32_t& s) {
+    s = s * 1103515245u + 12345u;
+    return s >> 1;
+}
+
+// A packet carrying the start of a PES header after an AF of `af_len` bytes (-1 =
+// none; past 183 it overruns the packet, as broken wire data does). Both timestamp
+// fields are written whatever `flags` says; `broken` 0..2 spoils that start code byte.
+TsPacket pes_variant(bool pusi, bool payload, int af_len, uint8_t sid, uint8_t marker,
+                     uint8_t flags, uint8_t hdl, uint64_t pts, uint64_t dts, int broken) {
+    uint8_t pes[24] = {0x00, 0x00, 0x01, sid, 0x00, 0x00, marker, flags, hdl};
+    auto field = [&](int at, uint8_t prefix, uint64_t v) {
+        pes[at] = (uint8_t)((prefix << 4) | (((v >> 30) & 0x07) << 1) | 1);
+        pes[at + 1] = (uint8_t)(v >> 22);
+        pes[at + 2] = (uint8_t)((((v >> 15) & 0x7F) << 1) | 1);
+        pes[at + 3] = (uint8_t)(v >> 7);
+        pes[at + 4] = (uint8_t)(((v & 0x7F) << 1) | 1);
+    };
+    field(9, flags == 0xC0 ? 0x3 : 0x2, pts);
+    field(14, 0x1, dts);
+    pes[19] = pes[20] = pes[21] = pes[22] = pes[23] = 0xFF;
+    if (broken >= 0) pes[broken] ^= 0x01;
+    TsPacket t;
+    std::memset(t.b, 0xFF, PKT);
+    t.b[0] = SYNC_BYTE;
+    t.b[1] = (uint8_t)((pusi ? 0x40 : 0x00) | 0x01);
+    t.b[2] = 0x00;
+    t.b[3] = (uint8_t)((payload ? 0x10 : 0x00) | (af_len >= 0 ? 0x20 : 0x00));
+    int off = 4;
+    if (af_len >= 0) {
+        t.b[4] = (uint8_t)af_len;
+        if (af_len > 0) t.b[5] = 0x00;
+        off = 5 + af_len;
+    }
+    for (int i = 0; off + i < PKT && i < (int)sizeof pes; i++) t.b[off + i] = pes[i];
+    return t;
+}
+
 }  // namespace
 
 int main() {
@@ -353,6 +412,63 @@ int main() {
           read_pes_pts(pes_ts_packet(0x65, 90000, -1, 0xBE, true, -1).b) == -1);
     CHECK("PES behind adaptation field",
           read_pes_pts(pes_ts_packet(0x65, 4500, -1, 0xE0, true, 10).b) == 4500);
+
+    // --- read_pes_pts forwards to parse_pes_header (WI-S0-6): the old body's answer on
+    // every AF length (header cut anywhere), flag, start code, marker and stream id.
+    {
+        const uint8_t sids[] = {0xE0, 0xC0, 0xBD, 0xFA, 0x00, 0xB9, 0xBC, 0xBE,
+                                0xBF, 0xF0, 0xF1, 0xF2, 0xF8, 0xFF};
+        const uint8_t flag_set[] = {0x00, 0x40, 0x80, 0xC0};
+        const uint8_t marker_set[] = {0x80, 0x84, 0x00, 0x40, 0xC0};
+        const uint8_t hdl_set[] = {0, 5, 10, 255};
+        uint32_t s = 0x5EED;
+        auto rand33 = [&] {
+            const uint64_t hi = lcg_next(s);
+            return (hi << 2 ^ lcg_next(s)) & 0x1FFFFFFFFull;
+        };
+        long n = 0, bad = 0, found = 0, at14 = 0, cut13 = 0;
+        std::vector<long> found_at(257);       // per AF length + 1
+        for (int af = -1; af <= 255; af++)
+            for (uint8_t sid : sids)
+                for (uint8_t fl : flag_set)
+                    for (uint8_t mk : marker_set)
+                        for (int broken = -1; broken < 3; broken++)
+                            for (int mode = 0; mode < 3; mode++) {   // ok, no PUSI, no payload flag
+                                const uint64_t pts = rand33(), dts = rand33();
+                                const TsPacket t = pes_variant(mode != 1, mode != 2, af, sid,
+                                                               mk, fl, hdl_set[n % 4], pts, dts,
+                                                               broken);
+                                const int64_t want = old_read_pes_pts(t.b);
+                                if (read_pes_pts(t.b) != want) bad++;
+                                found += want >= 0;
+                                found_at[af + 1] += want >= 0;
+                                at14 += want >= 0 && af == 169;   // payload exactly 14 bytes
+                                cut13 += want < 0 && af == 170 && broken < 0 && mode == 0 &&
+                                         (fl & 0x80) && mk == 0x80 && sid == 0xE0;
+                                n++;
+                            }
+        for (int i = 0; i < 300000; i++) {     // random bytes, half behind a start code
+            TsPacket t;
+            for (int k = 0; k < PKT; k++) t.b[k] = (uint8_t)lcg_next(s);
+            t.b[0] = SYNC_BYTE;
+            if (lcg_next(s) & 1) {
+                const int off = payload_offset(t.b);
+                const uint8_t pre[] = {0x00, 0x00, 0x01, sids[lcg_next(s) % sizeof sids]};
+                for (int k = 0; k < 4 && off + k < PKT; k++) t.b[off + k] = pre[k];
+                if (off + 6 < PKT && (lcg_next(s) & 1)) t.b[off + 6] = (t.b[off + 6] & 0x3F) | 0x80;
+            }
+            const int64_t want = old_read_pes_pts(t.b);
+            if (read_pes_pts(t.b) != want) bad++;
+            found += want >= 0;
+            n++;
+        }
+        std::printf("  read_pes_pts differential: %ld packets, %ld with a PTS, %ld mismatches\n", n,
+                    found, bad);
+        CHECK("read_pes_pts forwarder == the old body on every generated packet", bad == 0);
+        CHECK("... the set reaches PTS at a 14-byte payload and cuts at 13", at14 > 0 && cut13 > 0);
+        CHECK("... and finds a PTS behind every AF length that leaves room for one",
+              std::all_of(found_at.begin(), found_at.begin() + 171, [](long c) { return c > 0; }));
+    }
 
     // ======================= WI-S0-5: generalised PSI =======================
 
@@ -630,6 +746,89 @@ int main() {
     us.feed({o1, n1});
     CHECK("unsupported: another program's or a next-table section 1 is not",
           us.unsupported_sections() == 4);
+
+    // --- Two programs on one PMT PID. The buffer holds both tables; once
+    // eviction leaves the other one oldest, the 500-feed re-parse must not latch it.
+    {
+        uint8_t spat[PKT], sp1[PKT], sp2[PKT], spts_pat[PKT], spts_pmt[PKT];
+        build_pat(6, {{1, 0x0030}, {2, 0x0030}}, 0, 0, spat);
+        build_pmt(0x0030, 1, 0x0101, {{0x0101, STREAM_TYPE_AVC, {}}}, 0, 0, sp1);
+        build_pmt(0x0030, 2, 0x0201, {{0x0201, STREAM_TYPE_HEVC, {}}}, 0, 0, sp2);
+        // One PMT packet per feed, `even` on even feeds and `odd` on odd ones.
+        struct Run {
+            int changes = 0, wrong_at = -1;
+        };
+        auto run = [&](PsiDiscovery& d, const uint8_t* pat, const uint8_t* even,
+                       const uint8_t* odd, int want) {
+            Run r;
+            d.feed({pkt_of(pat)});
+            for (int f = 2; f <= 1200; f++) {
+                r.changes += d.feed({pkt_of(f % 2 ? odd : even)}) ? 1 : 0;
+                if (r.wrong_at < 0 && d.pmt() && d.pmt()->program_number != want) r.wrong_at = f;
+            }
+            return r;
+        };
+        PsiDiscovery shared(128);
+        const Run a = run(shared, spat, sp1, sp2, 1);
+        if (a.wrong_at >= 0)
+            std::printf("  shared PMT PID: the other program's PMT latched at feed %d\n", a.wrong_at);
+        CHECK("shared PMT PID: the followed program is kept through the re-parses",
+              a.wrong_at < 0 && a.changes == 1 && shared.pmt() &&
+                  shared.pmt()->program_number == 1 && shared.generation() == 1);
+        PsiDiscovery other_first(128);
+        const Run b = run(other_first, spat, sp2, sp1, 1);
+        CHECK("shared PMT PID: ... and never latches the other program's PMT arriving first",
+              b.wrong_at < 0 && b.changes == 1 && other_first.pmt() &&
+                  other_first.pmt()->program_number == 1);
+        PsiDiscovery second(128);
+        second.select_program(2);
+        const Run c = run(second, spat, sp1, sp2, 2);
+        CHECK("shared PMT PID: a selected second program on the shared PID keeps its own PMT",
+              c.wrong_at < 0 && c.changes == 1 && second.pmt() &&
+                  second.pmt()->program_number == 2);
+        // Production and the python reference take a PMT on a PID no other program
+        // uses whatever program_number it carries (a muxer that writes another one).
+        build_pat(7, {{1, 0x0030}}, 0, 0, spts_pat);
+        build_pmt(0x0030, 2, 0x0201, {{0x0201, STREAM_TYPE_HEVC, {}}}, 0, 0, spts_pmt);
+        PsiDiscovery own(128);
+        const Run d = run(own, spts_pat, spts_pmt, spts_pmt, 2);
+        CHECK("one program's PMT PID: its PMT counts whatever program_number it says",
+              d.wrong_at < 0 && d.changes == 1 && own.pmt() && own.pmt()->program_number == 2 &&
+                  own.pmt()->streams.size() == 1 && own.pmt()->streams[0].pid == 0x0201);
+    }
+
+    // --- Only section 0 is the table. A buffered section 1 is skipped, not
+    // parsed as the PAT (it would move the PMT PID to another program).
+    {
+        uint8_t s0p[PKT], s1p[PKT], pmt_a[PKT], pmt_b[PKT];
+        build_pat(7, {{1, 0x0030}}, 0, 0, s0p);
+        build_pat(7, {{2, 0x0040}, {3, 0x0050}}, 1, 0, s1p);   // longer: its length must not leak
+        build_pmt(0x0030, 1, 0x0101, {{0x0101, STREAM_TYPE_AVC, {}}}, 0, 0, pmt_a);
+        build_pmt(0x0040, 2, 0x0201, {{0x0201, STREAM_TYPE_HEVC, {}}}, 0, 0, pmt_b);
+        TsPacket s0 = pkt_of(s0p), s1 = pkt_of(s1p);
+        s0.b[section_offset(s0.b) + 7] = 1;          // last_section_number
+        s1.b[section_offset(s1.b) + 6] = 1;          // section_number
+        s1.b[section_offset(s1.b) + 7] = 1;
+        fix_crc(s0);
+        fix_crc(s1);
+        Bytes sec;
+        const uint8_t* s0sec = s0.b + section_offset(s0.b);
+        const Bytes s0_bytes(s0sec, s0sec + 3 + (((s0sec[1] & 0x0F) << 8) | s0sec[2]));
+        CHECK("section 0: first_section skips a section 1 to the section 0 behind it",
+              first_section({s1, s0}, PID_PAT, sec) && sec == s0_bytes &&
+                  parse_pat({s1, s0}) == std::vector<std::pair<int, int>>({{1, 0x0030}}));
+        CHECK("section 0: a section 1 alone is no table", !first_section({s1}, PID_PAT, sec) &&
+                                                       parse_pat({s1}).empty());
+        PsiDiscovery joiner(128);
+        joiner.feed({s1});
+        joiner.feed({pkt_of(pmt_b)});
+        CHECK("section 0: discovery joining at a PAT section 1 learns nothing from it",
+              joiner.pmt_pid() == -1 && !joiner.pmt());
+        joiner.feed({s0});
+        CHECK("section 0: then the first program's PMT PID", joiner.pmt_pid() == 0x0030);
+        CHECK("section 0: ... and its PMT",
+              joiner.feed({pkt_of(pmt_a)}) && joiner.pmt()->program_number == 1);
+    }
 
     return test_summary("ts_psi");
 }

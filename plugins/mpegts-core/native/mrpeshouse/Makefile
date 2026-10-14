@@ -1,9 +1,7 @@
 # mrpeshouse — GStreamer element running the subtitle bridge's per-packet walk
 # (private PES assembly + the floor model) natively; the python bridge
 # (plugins/subtitle-core/py) loads it by path. Linux/GStreamer only.
-#
-# Like mrtsstamp, the mrts source it needs is compiled INTO the .so (libmrts.a
-# is built without -fPIC), so it has no build-order dependency on mrts.
+# Links the mrts core as the PIC archive libmrts.a, like every mrts user (WI-S0-6).
 CXX        ?= c++
 CXXFLAGS   ?= -O2
 CXXFLAGS   += -std=c++17 -Wall -Wextra -fPIC
@@ -17,8 +15,9 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 # libgst<name>.so: GStreamer derives the entry symbol from the filename.
 SO    = libgstmrpeshouse.so
-CORE  = pes_walk.cpp stamp_model.cpp $(MRTS)/ts_psi.cpp $(MRTS)/ts_pcr.cpp
-HDRS  = pes_walk.h stamp_model.h $(MRTS)/ts_psi.h $(MRTS)/ts_pcr.h
+CORE  = pes_walk.cpp stamp_model.cpp
+HDRS  = pes_walk.h stamp_model.h $(MRTS)/ts_psi.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
+        $(MRTS)/ts_pcr.h $(MRTS)/ts_pes.h
 SRCS  = gstmrpeshouse.cpp $(CORE)
 TESTS = tests/stamp_model_test
 PKGS  = gstreamer-1.0 gstreamer-base-1.0
@@ -40,8 +39,14 @@ GST_LIBS   := $(shell pkg-config --libs $(PKGS))
 
 all: $(SO)
 
-$(SO): $(SRCS) $(HDRS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(GST_LIBS) -o $@
+$(SO): $(SRCS) $(HDRS) $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(GST_CFLAGS) -shared $(SRCS) $(MRTS)/libmrts.a $(GST_LIBS) -o $@
+
+# mrts decides whether its archive is stale, whatever order the root Makefile
+# reaches the directories in; the .so relinks only when the archive changed.
+$(MRTS)/libmrts.a: FORCE
+	$(MAKE) -C $(MRTS) libmrts.a
+FORCE:
 
 install: $(SO)
 	install -D -m 755 $(SO) $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/$(SO)

@@ -1605,6 +1605,102 @@ int main() {
               read_pes_pts(d.data()) == 8128801);
     }
 
+    // --- the conditioner's PES writes on ts_pes (WI-S0-6): byte for byte what the
+    // replaced read_pes_dts/write_ts_field wrote, on every payload length, a header
+    // cut short included; a 14-18 byte payload keeps its DTS (frozen model, Q2).
+    {
+        // The replaced path, kept as the oracle; read_pes_pts is pinned by ts_psi_test.
+        auto old_field = [](uint8_t* f, int64_t v) {
+            f[0] = (uint8_t)((f[0] & 0xF0) | (((v >> 30) & 0x07) << 1) | 0x01);
+            f[1] = (uint8_t)((v >> 22) & 0xFF);
+            f[2] = (uint8_t)((((v >> 15) & 0x7F) << 1) | 0x01);
+            f[3] = (uint8_t)((v >> 7) & 0xFF);
+            f[4] = (uint8_t)(((v & 0x7F) << 1) | 0x01);
+        };
+        auto old_dts = [](const uint8_t* pkt) -> int64_t {
+            int off = payload_offset(pkt);
+            if (off + 19 > PKT) return -1;
+            const uint8_t* p = pkt + off;
+            if (!(p[7] & 0x40)) return -1;
+            return ((int64_t)((p[14] >> 1) & 0x07) << 30) | ((int64_t)p[15] << 22) |
+                   ((int64_t)(p[16] >> 1) << 15) | ((int64_t)p[17] << 7) | (p[18] >> 1);
+        };
+        auto old_write = [&](uint8_t* pkt, int64_t offset) {
+            const int64_t pts = read_pes_pts(pkt);
+            if (pts < 0) return;
+            const int poff = payload_offset(pkt);
+            const int64_t wpts = ((pts + offset) % PTS_WRAP + PTS_WRAP) % PTS_WRAP;
+            old_field(pkt + poff + 9, wpts);
+            const int64_t dts = old_dts(pkt);
+            if (dts < 0) return;
+            int64_t wdts = ((dts + offset) % PTS_WRAP + PTS_WRAP) % PTS_WRAP;
+            if (fold33(wdts - wpts) > 0) wdts = wpts;
+            old_field(pkt + poff + 14, wdts);
+        };
+        // PUSI video PES behind an AF of af_len bytes (-1 = none), PTS_DTS_flags `fl`.
+        auto pes_af = [](int af_len, uint8_t fl, uint8_t hdl, int64_t pts, int64_t dts) {
+            TsPacket t;
+            std::memset(t.b, 0xFF, PKT);
+            t.b[0] = SYNC_BYTE; t.b[1] = 0x41; t.b[2] = 0x00; t.b[3] = 0x10;
+            int off = 4;
+            if (af_len >= 0) {
+                t.b[3] |= 0x20; t.b[4] = (uint8_t)af_len;
+                if (af_len > 0) t.b[5] = 0x00;
+                off = 5 + af_len;
+            }
+            uint8_t pes[19] = {0x00, 0x00, 0x01, 0xE0, 0x00, 0x00, 0x80, fl, hdl};
+            auto field = [&](int at, uint8_t prefix, int64_t v) {
+                pes[at] = (uint8_t)((prefix << 4) | (((v >> 30) & 0x07) << 1) | 1);
+                pes[at + 1] = (uint8_t)(v >> 22);
+                pes[at + 2] = (uint8_t)((((v >> 15) & 0x7F) << 1) | 1);
+                pes[at + 3] = (uint8_t)(v >> 7);
+                pes[at + 4] = (uint8_t)(((v & 0x7F) << 1) | 1);
+            };
+            field(9, fl == 0xC0 ? 0x3 : 0x2, pts);
+            field(14, 0x1, dts);
+            for (int i = 0; i < 19 && off + i < PKT; i++) t.b[off + i] = pes[i];
+            return t;
+        };
+        std::vector<TimelineStamper::Conditioned> cr;
+        TimelineStamper st(nullptr, nullptr, nullptr, true);
+        st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { cr.push_back(c); });
+        int i = 0;
+        for (; i < 8; i++) {
+            auto d = bytes_of({pes_packet(0x100, FIRST_PES + i * STEP)});
+            st.condition(d.data(), d.size(), HOUSE + i * STEP_NS);
+        }
+        auto stepped = bytes_of({pes_packet(0x100, FIRST_PES + i * STEP - 89999)});
+        st.condition(stepped.data(), stepped.size(), HOUSE + i * STEP_NS);
+        const bool offset_on = cr.size() == 1 && cr[0].offset_ticks == 90000;
+        long n = 0, bad = 0, pts_only = 0, both = 0, cut = 0, clamped = 0, untouched = 0;
+        for (int af = -1; af <= 183; af++)
+            for (int shape = 0; shape < 4; shape++) {   // PTS; PTS+DTS; DTS after PTS; long header
+                i++;
+                const int64_t pts = (FIRST_PES + i * STEP - 89999) % PTS_WRAP;
+                const int64_t dts = shape == 2 ? pts + ((af & 1) ? 900 : 1) : pts - 3600;
+                const TsPacket in = pes_af(af, shape == 0 ? 0x80 : 0xC0, shape == 3 ? 40 : 10, pts,
+                                           (dts + PTS_WRAP) % PTS_WRAP);
+                TsPacket want = in, got = in;
+                old_write(want.b, 90000);
+                st.condition(got.b, PKT, HOUSE + i * STEP_NS);
+                bad += std::memcmp(got.b, want.b, PKT) != 0;
+                const int pay = PKT - payload_offset(in.b);
+                untouched += std::memcmp(want.b, in.b, PKT) == 0;
+                pts_only += shape != 0 && pay >= 14 && pay < 19;
+                both += shape != 0 && pay >= 19;
+                cut += shape == 3 && pay >= 19 && pay < 49;
+                clamped += shape == 2 && pay >= 19;
+                n++;
+            }
+        std::printf("  conditioner differential: %ld packets, %ld mismatches (DTS-less %ld,"
+                    " both %ld, cut header %ld, clamped %ld, untouched %ld)\n",
+                    n, bad, pts_only, both, cut, clamped, untouched);
+        CHECK("conditioner PES writes == the replaced read_pes_dts/write_ts_field, any payload",
+              offset_on && bad == 0);
+        CHECK("... the set covers PTS-only writes, both, a cut header, the clamp and no PES",
+              pts_only > 0 && both > 0 && cut > 0 && clamped > 0 && untouched > 0);
+    }
+
     // --- house-timeline egress (ADR-0005 amendment 2026-10-08): the identity
     // stamp `PES - 1 h` for a transform producer. Python parity, integer for
     // integer (ts_timeline_test.py "house-timeline egress").

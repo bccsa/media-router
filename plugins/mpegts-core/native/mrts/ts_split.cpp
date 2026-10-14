@@ -136,38 +136,22 @@ void SplitterCore::apply_discovery() {
 
 const std::vector<SplitterCore::Batch>& SplitterCore::feed(const uint8_t* data,
                                                            size_t len) {
-    if (!rem_.empty()) {
-        joined_.clear();
-        joined_.insert(joined_.end(), rem_.begin(), rem_.end());
-        joined_.insert(joined_.end(), data, data + len);
-        rem_.clear();
-        data = joined_.data();
-        len = joined_.size();
-    }
-    const long n = (long)len;
-    long off = 0;
-    long long desynced = 0;
     for (auto& b : buckets_) b.clear();
     psi_pkts_.clear();
     result_.clear();
     const int pmt_pid_before = disc_.pmt_pid();
     const int pcr_pid = pcr_pid_;
+    const size_t carried = walker_.carried();
+    const uint64_t desync_before = walker_.desync_bytes();
+    const uint8_t* head = nullptr;   // the packet at offset 0 of carry + data, when joined
+    bool first = true;
     std::vector<int> used;           // bucket indexes, first-appearance order
-    while (off + PKT <= n) {
-        const uint8_t* p = data + off;
-        if (p[0] != SYNC_BYTE) {
-            // Lost sync: scan for a sync byte confirmed by another sync one
-            // packet later (or by the buffer edge), drop the garbage span.
-            long scan = off + 1;
-            while (scan + PKT <= n &&
-                   !(data[scan] == SYNC_BYTE &&
-                     (scan + 2 * PKT > n || data[scan + PKT] == SYNC_BYTE)))
-                scan++;
-            desynced += scan - off;
-            off = scan;
-            continue;
-        }
-        int pid = ((p[1] & 0x1F) << 8) | p[2];
+    // The walker never writes through v.p; it takes mutable data for the rewriters.
+    walker_.feed(const_cast<uint8_t*>(data), len, [&](const PacketView& v) {
+        const uint8_t* p = v.p;      // a joined packet stays valid until the next feed
+        if (first && carried && walker_.desync_bytes() == desync_before) head = p;
+        first = false;
+        const int pid = v.pid;
         int16_t oi = out_lut_[pid];
         if (oi >= 0 && enabled_[oi]) {
             if (buckets_[oi].empty()) used.push_back(oi);
@@ -183,31 +167,27 @@ const std::vector<SplitterCore::Batch>& SplitterCore::feed(const uint8_t* data,
             std::memcpy(psi_pkts_.back().b, p, PKT);   // discovery retains these
         }
         if (pid == pcr_pid) {
-            int64_t v = read_pcr(p);
-            if (v >= 0) master_pcr_ = v;
+            int64_t pcr = read_pcr(p);
+            if (pcr >= 0) master_pcr_ = pcr;
         }
-        off += PKT;
-    }
-    // Remainder = wherever the pass actually stopped (a desync can leave the
-    // tail unaligned — never pre-compute this from len alone).
-    if (off < n) rem_.assign(data + off, data + n);
-    if (desynced) {
-        desync_bytes_ += desynced;
-        if (cb_.on_desync) cb_.on_desync(desynced);
-    }
+    });
+    const long long desynced = (long long)(walker_.desync_bytes() - desync_before);
+    if (desynced && cb_.on_desync) cb_.on_desync(desynced);
     // Feed discovery every call (empty is fine): its call count drives the
     // periodic PMT re-parse.
     if (disc_.feed(psi_pkts_)) apply_discovery();
     if (pmt_pid_before < 0 && disc_.pmt_pid() >= 0) {
-        // The PAT parsed from THIS buffer — its PMT packets are typically in
-        // the same buffer and were not captured above. One targeted re-scan,
-        // once per stream lifetime.
+        // The PAT parsed from THIS buffer — its PMT packets are typically in the same
+        // buffer and were not captured above. One re-scan per stream lifetime, at the
+        // python reference's offsets: 188-aligned in carry + data, whatever a resync did.
         const int new_pid = disc_.pmt_pid();
+        const size_t n = carried + len;
         std::vector<TsPacket> late;
-        for (long o = 0; o + PKT <= (n / PKT) * PKT; o += PKT) {
-            if (data[o] == SYNC_BYTE && ts_pid(data + o) == new_pid) {
+        for (size_t o = 0; o + PKT <= n / PKT * PKT; o += PKT) {
+            const uint8_t* p = o >= carried ? data + (o - carried) : head;   // o == 0
+            if (p && p[0] == SYNC_BYTE && ts_pid(p) == new_pid) {
                 late.emplace_back();
-                std::memcpy(late.back().b, data + o, PKT);
+                std::memcpy(late.back().b, p, PKT);
             }
         }
         if (!late.empty() && disc_.feed(late)) apply_discovery();
