@@ -1838,6 +1838,7 @@ def _install_branch_stamp_align(pipe, cfg):
 import gst_bus_stamper                                            # noqa: E402
 import gst_rist_native                                            # noqa: E402
 import gst_lateness_native                                        # noqa: E402
+import gst_native_plugins                                         # noqa: E402
 
 # A lambda, not the function object: the emitter is resolved on every event, so
 # a test (or a future indirection) that replaces this module's `emit_event`
@@ -1998,6 +1999,12 @@ def handle_start(data):
     # GST_PLUGIN_PATH) — must be registered before the parse sees their names.
     if "mrristsink" in pipeline_str or "mrristsrc" in pipeline_str:
         gst_rist_native.load_plugin()
+    # The house-clock plugin, by path, before the parse: if it cannot be used, its elements get
+    # stand-ins and the module alarms, or the start is refused (plan ch. 3 part 4.5 rule 6).
+    gst_native_plugins.load(emit_event)
+    pipeline_str = gst_native_plugins.stand_in(pipeline_str, emit_event)
+    if pipeline_str is None:
+        return
 
     try:
         pipeline = Gst.parse_launch(pipeline_str)
@@ -2135,7 +2142,8 @@ def handle_start(data):
         playing_watchdog_id = GLib.timeout_add(timeout_ms, _on_playing_timeout)
 
     running = True
-    emit_event({"event": "started"})
+    # Which timing plugin this start loaded (None: none); the engine clears rule 6's alarm on one.
+    emit_event({"event": "started", "timingPlugin": gst_native_plugins.timing_plugin()})
 
 def handle_stop(data=None):
     """Stop the pipeline.
@@ -2187,6 +2195,17 @@ def handle_set_property(data):
     element = pipeline.get_by_name(element_name)
     if not element:
         emit_command_error(req_id, f"Element not found: {element_name}")
+        return
+
+    # A stand-in has none of the timing element's properties: the call is answered with a
+    # warning carrying its id, so the request resolves (plan ch. 3 part 4.5 rule 6).
+    if element_name in gst_native_plugins.stood_in:
+        evt = {"event": "warning",
+               "message": f"set_property {element_name}.{prop} ignored: a stand-in runs in its "
+                          f"place (native TS module not loaded)"}
+        if req_id:
+            evt["id"] = req_id
+        emit_event(evt)
         return
 
     try:

@@ -19,6 +19,7 @@
 #include "ipc.h"
 #include "json_util.h"
 #include "lateness_tap.h"
+#include "native_plugins.h"
 #include "source_gate.h"
 #include "stamper.h"
 
@@ -298,6 +299,10 @@ void Runner::handle_start(JsonObject* data) {
     // GST_PLUGIN_PATH) — registered before the parse sees their names.
     if (pipeline_str.find("mrristsink") != std::string::npos || pipeline_str.find("mrristsrc") != std::string::npos)
         rist::load_plugin();
+    // The house-clock plugin, by path, before the parse: if it cannot be used, its elements get
+    // stand-ins and the module alarms, or the start is refused (plan ch. 3 part 4.5 rule 6).
+    native_plugins::load();
+    if (!native_plugins::stand_in(&pipeline_str)) return;
 
     GError* err = nullptr;
     GstElement* pipe = gst_parse_launch(pipeline_str.c_str(), &err);
@@ -390,7 +395,10 @@ void Runner::handle_start(JsonObject* data) {
     if (playing_timeout_ms > 0 && !deferred) arm_playing_watchdog(playing_timeout_ms);
 
     running = true;
-    ipc::emit(ipc::event("started"));
+    JsonObject* started = ipc::event("started");
+    // Which timing plugin this start loaded (null: none); the engine clears rule 6's alarm on one.
+    json_object_set_member(started, "timingPlugin", native_plugins::timing_plugin_json());
+    ipc::emit(started);
 }
 
 void Runner::handle_stop() {

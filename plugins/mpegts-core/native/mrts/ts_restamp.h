@@ -63,6 +63,7 @@ class RestampCore {
         // Output bytes before the marker: it goes right before the PES that shows the
         // gap, which may follow that PID's earlier PES in the same buffer.
         size_t at;
+        uint8_t cc = 0;                   // the PID's last payload CC there: the marker repeats it
     };
     struct Result {
         // The output in order: ranges of the input buffer (rewritten in place) or of
@@ -72,7 +73,8 @@ class RestampCore {
         bool in_place = false;
         size_t bytes() const;
     };
-    // Part 10's mrtsrestamp-event. STC events carry pid -1 (the program).
+    // Part 10's mrtsrestamp-event. STC events carry pid -1 (the program), but for
+    // `degraded`, which names the reference PID whose PTS the timing then follows.
     struct Event {
         enum class Kind { relock, degraded, recovered, envelope_step, gap, overlap, psi_change };
         Kind kind = Kind::relock;
@@ -119,6 +121,13 @@ class RestampCore {
     void set_offset(int64_t ns);                      // live: per PID from its next PUSI
     void set_trims(const std::map<int, int64_t>& trims_ns);   // replaces the set; live
     void tick(int64_t now_ns);                        // no input: lets a clock go lost
+    // During an outage (OQ-17): per PID that emitted a PES, the gap from the end of what it
+    // emitted to `now_ns` (arrival time, as process()), where that end is before now. A
+    // query: the gap on resume still comes from process().
+    std::vector<Gap> outage_gaps(int64_t now_ns) const;
+    // FLUSH_STOP: a carried partial packet and the held split headers are dropped, so
+    // nothing from before the flush joins what follows; clocks, guards and CC stay.
+    void flush();
     // Non-const: the clock's PCR interval maximum runs from one stats() to the next.
     Stats stats();
     std::vector<Event> take_events();
@@ -144,6 +153,7 @@ class RestampCore {
         // Packets: the open PES's fate, CC renumbering, duplicates, a held header.
         Unit unit = Unit::none;
         uint8_t cc_delta = 0;             // CC steps removed so far, mod 16
+        uint8_t out_cc = 0;               // the last payload packet's CC as it left
         bool emitted = false;             // a payload packet has left: CC continuity applies
         bool seen_payload = false, prev_kept = false;
         bool prev_cont = false;           // the last kept payload packet continued a split header

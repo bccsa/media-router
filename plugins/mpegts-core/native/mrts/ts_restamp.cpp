@@ -337,6 +337,7 @@ void RestampCore::pull_events(Program& g) {
                 break;
             case StcEvent::Kind::degraded:
                 out.kind = Event::Kind::degraded;
+                out.pid = g.ref_pid;      // the warning names the PID whose PTS times the program
                 g.degraded = true;
                 break;
             case StcEvent::Kind::recovered:
@@ -451,6 +452,7 @@ void RestampCore::keep_es(Pid& p, uint8_t* pkt, bool span_cont) {
     if (pkt[3] & 0x10) {
         p.emitted = p.seen_payload = p.prev_kept = true;
         p.prev_cont = span_cont;
+        p.out_cc = pkt[3] & 0x0F;
     }
     put(pkt);
 }
@@ -721,7 +723,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
 
 void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, uint32_t epoch) {
     Program& g = *p.prog;
-    res_->gaps.push_back(Gap{g.number, p.pid, start, end, why, out_bytes_});
+    res_->gaps.push_back(Gap{g.number, p.pid, start, end, why, out_bytes_, p.out_cc});
     Event e = make_event(Event::Kind::gap, g.number, p.pid, why, arrival_h_, epoch);
     e.gap_ns = end - start;
     events_.push_back(e);
@@ -733,6 +735,37 @@ void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, 
 
 void RestampCore::tick(int64_t now_ns) {
     for (auto& g : progs_) g->stc.tick(now_ns);
+}
+
+std::vector<RestampCore::Gap> RestampCore::outage_gaps(int64_t now_ns) const {
+    // From the end of what each PID emitted, as the gap on resume will start (start_pes);
+    // a PID whose content still runs past now (its lead) has no gap yet.
+    std::vector<Gap> out;
+    const int64_t now_h = now_ns + base_;
+    for (const auto& g : progs_)
+        for (int pid : g->es) {
+            const Pid* p = pids_[pid].get();
+            if (!p || p->prog != g.get() || !p->have_last) continue;
+            const int64_t start = p->last_key + p->interval;
+            if (now_h > start) out.push_back(Gap{g->number, pid, start, now_h, "outage", 0, p->out_cc});
+        }
+    return out;
+}
+
+void RestampCore::flush() {
+    walker_.reset();
+    for (auto& p : pids_) {
+        if (!p) continue;
+        // A held header goes with the flush, and the rest of its PES after it; both are
+        // removed steps, so the PID's CC stays continuous.
+        if (span_.held(p->pid)) {
+            p->unit = Pid::Unit::drop;
+            if (p->emitted) p->cc_delta = (uint8_t)((p->cc_delta + 1) & 0x0F);
+            removed_++;
+        }
+        p->held_af.clear();
+    }
+    span_.reset();
 }
 
 RestampCore::Stats RestampCore::stats() {

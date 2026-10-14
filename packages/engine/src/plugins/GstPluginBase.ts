@@ -25,12 +25,22 @@ import {
 } from './playoutReanchor.js';
 import { PlayoutReanchorState, type PlayoutWarningKind } from './playoutReanchorState.js';
 import { ModuleTiming } from './moduleTiming.js';
+import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
  *  this module: health stays a warning through the restart that follows. */
 const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
+/** The runner's `error` event; `detail` comes with kind `timing_plugin` (plan ch. 3 rule 6). */
+type RunnerError = { message: string; kind?: string; detail?: string };
 /** The transient warnings a module writes and later withdraws itself. */
-type OwnedWarning = 'gate' | 'silence' | 'reconnect' | 'input-lost' | 'reanchor' | 'rebase';
+type OwnedWarning =
+    | 'gate'
+    | 'silence'
+    | 'reconnect'
+    | 'input-lost'
+    | 'reanchor'
+    | 'rebase'
+    | 'timing-plugin';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -218,8 +228,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             if (data.state === 'playing') {
                 this.running = true;
                 this.ready = true;
-                this.health = 'ok';
-                this.error = undefined;
+                this.markHealthy();
                 // Re-attach this producer's per-consumer bus fan-out branches:
                 // a runner-internal respawn rebuilds the pipeline from the base
                 // string with the egress tee but NO branches, so without this a
@@ -260,14 +269,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.dispatchPluginEvent(data.channel, data.payload);
         });
 
-        this.childProcess.on('error', (data: { message: string; kind?: string }) => {
+        this.childProcess.on('error', (data: RunnerError) => {
             if (RECONNECT_ERROR_KINDS.has(data.kind ?? '')) {
                 // A wait on upstream (the producer restarted under us), not a
                 // fault of this module; cleared by the PLAYING that follows.
                 this.ownWarning('reconnect', data.message);
                 return;
             }
+            if (data.kind === 'timing_plugin') {
+                // A demux has no stand-in: the start fails with the rule-6 alarm's text.
+                this.timingPluginAlarm = timingPluginAlarm(data.detail);
+                this.setHealth('error', this.timingPluginAlarm);
+                return;
+            }
             this.setHealth('error', data.message);
+        });
+
+        this.childProcess.on('timingPlugin', (data: TimingPluginEvent) => {
+            this.onTimingPlugin(data);
         });
 
         // udpsrc silence: a state (gst_source_gate.py), shown as a warning we
@@ -306,11 +325,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         await this.childProcess.start(desc);
         this.running = true;
-        this.health = 'ok';
         // A successful start supersedes whatever error text the previous
         // incarnation left behind — without this the stale text rides along
         // with health='ok' forever ("healthy but shows an old error").
-        this.error = undefined;
+        this.markHealthy();
         this.emit('stateChange', this.getState());
 
         // For data-mode pipelines with a null-sink, start a separate VU metering process
@@ -366,6 +384,34 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.ownedWarning !== kind) return;
         if (this.health === 'warning') this.setHealth('ok');
         this.ownedWarning = null;
+    }
+
+    /**
+     * Plan ch. 3 part 4.5 rule 6: the runner could not use libgstmrtshouse.so, so this stream
+     * is on source time. Not transient: every return to ok shows it again until a start that
+     * loads the plugin clears it.
+     */
+    private timingPluginAlarm: string | null = null;
+
+    private onTimingPlugin(data: TimingPluginEvent): void {
+        if (data.loaded) {
+            this.timingPluginAlarm = null;
+            this.clearOwnWarning('timing-plugin');
+            return;
+        }
+        this.timingPluginAlarm = timingPluginAlarm(data.detail);
+        // A start failure outranks it; it shows again when health is next ok.
+        if (this.health !== 'error') this.ownWarning('timing-plugin', this.timingPluginAlarm);
+    }
+
+    /** `ok`, or the rule-6 alarm while it stands (no state change emitted). */
+    private markHealthy(): void {
+        this.health = 'ok';
+        this.error = undefined;
+        if (!this.timingPluginAlarm) return;
+        this.health = 'warning';
+        this.error = this.timingPluginAlarm;
+        this.ownedWarning = 'timing-plugin';
     }
 
     /**
@@ -922,6 +968,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.ownedWarning = null;
         this.health = health;
         this.error = error;
+        // A return to ok shows the rule-6 alarm while it stands (see `timingPluginAlarm`).
+        if (health === 'ok' && this.timingPluginAlarm) this.markHealthy();
         this.emit('stateChange', this.getState());
     }
 

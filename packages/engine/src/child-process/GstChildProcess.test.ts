@@ -267,6 +267,16 @@ describe('start payload (the wire to the runner)', () => {
         expect(child.pipelineLaunchedAt).toBeUndefined();
     });
 
+    it('passes the timing plugin outcome through to the module (plan ch. 3 WI-S0-8)', () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        const handlers = new Map<string, (d: unknown) => void>();
+        child.wireRunnerEvents({ on: (n: string, h: (d: unknown) => void) => handlers.set(n, h) });
+        const seen: unknown[] = [];
+        child.on('timingPlugin', (d: unknown) => seen.push(d));
+        handlers.get('timingPlugin')?.({ detail: 'libgstmrtshouse.so abi 0 < 1: /x' });
+        expect(seen).toEqual([{ detail: 'libgstmrtshouse.so abi 0 < 1: /x' }]);
+    });
+
     it('restartPipeline clears the launch instant at once, so a second producer PLAYING cannot relaunch mid-gate', async () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
         child.ipc = { sendRequest: vi.fn(async () => ({ ok: true })) };

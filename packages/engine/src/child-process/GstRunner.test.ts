@@ -338,6 +338,61 @@ describe('GstRunner — Python event routing', () => {
         );
     });
 
+    describe('the timing plugin (plan ch. 3 WI-S0-8)', () => {
+        const detail = 'libgstmrtshouse.so abi 0 < 1: /opt/x/libgstmrtshouse.so';
+
+        it('its warning becomes a timingPlugin event, never an error or a restart', () => {
+            vi.useFakeTimers();
+            emit({ event: 'warning', kind: 'timing_plugin', message: `alarm (${detail})`, detail });
+            expect(lastByType('event', 'timingPlugin')?.data).toEqual({ detail });
+            expect(lastByType('event', 'error')).toBeUndefined();
+            expect((runner as unknown as { restartTimer: unknown }).restartTimer).toBeNull();
+            // Any other warning stays a log line.
+            sent = [];
+            emit({ event: 'warning', message: 'bus_attach retry' });
+            expect(lastByType('event', 'timingPlugin')).toBeUndefined();
+        });
+
+        it('a started event that loaded it carries the load; one that did not is silent', () => {
+            const loaded = { version: '1.0.0', abi: 1, path: '/p/libgstmrtshouse.so' };
+            emit({ event: 'started', timingPlugin: loaded });
+            expect(lastByType('event', 'timingPlugin')?.data).toEqual({ loaded });
+            sent = [];
+            emit({ event: 'started', timingPlugin: null });
+            emit({ event: 'started' });
+            expect(lastByType('event', 'timingPlugin')).toBeUndefined();
+        });
+
+        it('the refusal (a demux with no stand-in) is an error carrying its detail', () => {
+            emit({ event: 'error', kind: 'timing_plugin', message: 'alarm', detail });
+            expect(lastByType('event', 'error')?.data).toMatchObject({
+                kind: 'timing_plugin',
+                detail,
+            });
+        });
+
+        it('a warning carrying a request id answers it (set_property on a stand-in)', () => {
+            runner.handleControlMessage({
+                id: 'rpc-si',
+                type: 'request',
+                action: 'setProperty',
+                data: { element: 'restamp', property: 'offset-ns', value: 5 },
+            });
+            const pending = (runner as unknown as { ipc: { pending: Map<string, unknown> } }).ipc
+                .pending;
+            const [reqId] = [...pending.keys()];
+            emit({
+                event: 'warning',
+                id: reqId,
+                message: 'set_property restamp.offset-ns ignored',
+            });
+            const response = lastByType('response');
+            expect(response?.id).toBe('rpc-si');
+            expect(response?.data).toEqual({ warning: 'set_property restamp.offset-ns ignored' });
+            expect(pending.size).toBe(0);
+        });
+    });
+
     it('forwards the error source `element` on pipeline error events', () => {
         // Attribution from the gst bus message source — diagnostics and
         // per-element policies (e.g. a udpsrc timeout names its udpsrc).

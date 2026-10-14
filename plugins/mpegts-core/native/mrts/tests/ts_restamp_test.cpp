@@ -1124,6 +1124,20 @@ bool gaps_placed(const Out& o, const Ana& a) {
     return true;
 }
 
+// Each gap's CC is the last payload CC its PID left with before the marker: the marker's
+// adaptation-only packet repeats it (WI-P1-4), renumbering included.
+bool gaps_cc_ok(const Out& o) {
+    for (size_t i = 0; i < o.gaps.size(); i++) {
+        int cc = -1;
+        for (size_t j = o.gap_at[i]; j-- > 0 && cc < 0;) {
+            const uint8_t* pk = o.bytes.data() + j * PKT;
+            if (ts_pid(pk) == o.gaps[i].pid && (pk[3] & 0x10)) cc = pk[3] & 0x0F;
+        }
+        if (cc != o.gaps[i].cc) return false;
+    }
+    return !o.gaps.empty();
+}
+
 std::map<int, int> gap_count(const Out& o, const char* reason, int64_t len, int64_t tol, bool* all_ok) {
     std::map<int, int> n;
     bool ok = true;
@@ -1245,6 +1259,8 @@ void test_offset_edits() {
         const std::map<int, int> n = gap_count(m, "edit", 500 * MS, TICK_NS - 1, &ok);
         CHECK("O back to 0: one gap of 500 ms per PID (the reverse edit), none for the drop",
               one_each(n, {PID_V, PID_A1, PID_A2, PID_T}) && ok);
+        CHECK("O back to 0: each gap carries its PID's last CC as renumbered after the drop",
+              gaps_cc_ok(m));
     }
 
     // O +1.5 s: a gap of 1 s or more flags the next rewritten PCR, though the PCR itself
@@ -1713,6 +1729,7 @@ void test_outage() {
     CHECK("outage: the first PCR after it carries discontinuity_indicator, no other",
           flagged == 1 && flagged_after == 1);
     CHECK("outage: monotonic, CC intact, bytes as the input's", monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic);
+    CHECK("outage: each gap carries its PID's last payload CC", gaps_cc_ok(a));
 
     // The recorded trace: every PCR and PES the core saw, raw, with its arrival.
     TraceReader rd;
@@ -1767,6 +1784,13 @@ void test_degraded() {
     print_events("PCR frozen 20-30 s", a, c);
     CHECK("degraded: entered (freeze), recovered once the PCR was clean 30 s",
           count_events(a, Ev::Kind::degraded, "freeze") == 1 && count_events(a, Ev::Kind::recovered) == 1);
+    int deg_pid = -2, rec_pid = -2;
+    for (const Ev& e : a.events) {
+        if (e.kind == Ev::Kind::degraded) deg_pid = e.pid;
+        if (e.kind == Ev::Kind::recovered) rec_pid = e.pid;
+    }
+    CHECK("degraded: the event names the reference PID (the PCR PID, which carries PES); recovered the program",
+          deg_pid == PID_V && rec_pid == -1);
     int64_t deg_at = 0, rec_at = 0;
     for (const Ev& e : a.events) {
         if (e.kind == Ev::Kind::degraded) deg_at = e.house_ns;
@@ -1817,6 +1841,185 @@ void test_degraded() {
           one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && runs_at_entry);
     CHECK("degraded: content keeps flowing, monotonic, CC continuous", monotonic(aa) && aa.cc_lost == 0 &&
                                                                           aa.matched && aa.atomic);
+}
+
+void test_degraded_ref_pid() {
+    // The PCR on a PID of its own (no PES) from 10 s, then stuck 20-30 s: the reference is
+    // the first video PID, not the PCR PID, and the degraded event says so.
+    Gen g;
+    g.secs = 40;
+    g.pcr_move_at = 10 * S;
+    g.freeze_from = 20 * S;
+    g.freeze_to = 30 * S;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    int deg = 0, deg_pid = -2;
+    for (const Ev& e : a.events)
+        if (e.kind == Ev::Kind::degraded) {
+            deg++;
+            deg_pid = e.pid;
+        }
+    CHECK("degraded, PCR-only PCR PID: the event names the first video PID", deg == 1 && deg_pid == PID_V);
+}
+
+// The output PES of `pid` in `bytes`: the last one's guard key (DTS for video, else PTS) on
+// house time near `now`, and the CC its PID last left with; false without one.
+bool last_emitted(const Bytes& bytes, int pid, int64_t now, int64_t* key_house, int* cc) {
+    bool found = false;
+    for (size_t j = 0; j + PKT <= bytes.size(); j += PKT) {
+        const uint8_t* pk = bytes.data() + j;
+        if (ts_pid(pk) != pid || !(pk[3] & 0x10)) continue;
+        *cc = pk[3] & 0x0F;
+        PesHeader h;
+        const int off = payload_offset(pk);
+        if (!ts_pusi(pk) || off >= PKT || !parse_pes_header(pk + off, (size_t)(PKT - off), &h) || !h.complete) continue;
+        *key_house = house_from_mux_pts(pid == PID_V && h.dts >= 0 ? h.dts : h.pts, now);
+        found = true;
+    }
+    return found;
+}
+
+void test_outage_gaps() {
+    // test_outage's 3 s silence at 40 s, queried as the element's outage task does (OQ-17).
+    Gen g;
+    g.outage_from = 40 * S;
+    g.outage_to = 43 * S;
+    const Case c = make_case(g);
+    RestampCore rc(stc_cfg());
+    CHECK("outage gaps: none before any PES", rc.outage_gaps(c.h0 + 50 * S).empty());
+    Bytes buf, out;
+    size_t k = 0;
+    int64_t last = 0;
+    for (; k < c.dg.size() && c.dg[k].send < g.outage_from; k++) {
+        const Dg& d = c.dg[k];
+        buf.clear();
+        for (size_t i = d.first; i < d.first + d.n; i++) buf.insert(buf.end(), c.st.pk[i].b.begin(), c.st.pk[i].b.end());
+        const RestampCore::Result r = rc.process(buf.data(), buf.size(), d.arrival);
+        for (const RestampCore::Range& kr : r.keep) out.insert(out.end(), kr.data, kr.data + kr.len);
+        last = d.arrival;
+    }
+    std::map<int, int64_t> start;
+    std::map<int, int> cc;
+    bool have = true;
+    for (int pid : kPids) {
+        int64_t key = 0;
+        int c_ = -1;
+        have &= last_emitted(out, pid, last, &key, &c_);
+        start[pid] = key + period_of(pid);
+        cc[pid] = c_;
+    }
+    CHECK("outage gaps: none while each PID's content still runs past now (its lead)",
+          have && rc.outage_gaps(last).empty());
+    bool all = true, steady = true;
+    int queries = 0;
+    std::map<int, int64_t> first_start;
+    for (int64_t t = last + 1 * S; t <= last + 3 * S; t += 250 * MS) {
+        const std::vector<RestampCore::Gap> gs = rc.outage_gaps(t);
+        queries++;
+        all &= gs.size() == 4;
+        for (size_t i = 0; i < gs.size() && i < 4; i++) {
+            const RestampCore::Gap& gp = gs[i];
+            all &= gp.pid == kPids[i] && gp.program == PROGRAM && gp.end_ns == t && !std::strcmp(gp.reason, "outage") &&
+                   iabs(gp.start_ns - start[gp.pid]) <= 2 * TICK_NS && gp.cc == cc[gp.pid];
+            if (!first_start.count(gp.pid)) first_start[gp.pid] = gp.start_ns;
+            steady &= gp.start_ns == first_start[gp.pid];
+        }
+    }
+    CHECK("outage gaps: every 250 ms from 1 s to 3 s, one per PID in PMT order, from the end of what it "
+          "emitted to now, with its last CC",
+          queries == 9 && all);
+    CHECK("outage gaps: the start stays put while the length grows", steady && first_start.size() == 4);
+    // The gap on resume (process()) starts at the end of what the PID emitted, which is the
+    // outage's start unless the datagram that ends the outage still carries the PID's older
+    // PES (7 packets straddle the silence).
+    Bytes sofar = out;
+    std::map<int, int64_t> resumed, emitted_end;
+    for (; k < c.dg.size(); k++) {
+        const Dg& d = c.dg[k];
+        buf.clear();
+        for (size_t i = d.first; i < d.first + d.n; i++) buf.insert(buf.end(), c.st.pk[i].b.begin(), c.st.pk[i].b.end());
+        const RestampCore::Result r = rc.process(buf.data(), buf.size(), d.arrival);
+        Bytes chunk;
+        for (const RestampCore::Range& kr : r.keep) chunk.insert(chunk.end(), kr.data, kr.data + kr.len);
+        for (const RestampCore::Gap& gp : r.gaps) {
+            if (resumed.count(gp.pid)) continue;
+            Bytes before = sofar;
+            before.insert(before.end(), chunk.begin(), chunk.begin() + (std::ptrdiff_t)gp.at);
+            int64_t key = 0;
+            int c_ = -1;
+            if (last_emitted(before, gp.pid, d.arrival, &key, &c_)) emitted_end[gp.pid] = key + period_of(gp.pid);
+            resumed[gp.pid] = gp.start_ns;
+        }
+        sofar.insert(sofar.end(), chunk.begin(), chunk.end());
+    }
+    bool at_end = resumed.size() == 4, kept = true;
+    int unchanged = 0;
+    for (const auto& kv : resumed) {
+        at_end &= emitted_end.count(kv.first) && iabs(kv.second - emitted_end[kv.first]) <= 2 * TICK_NS;
+        if (iabs(emitted_end[kv.first] - start[kv.first]) > 2 * TICK_NS) continue;
+        unchanged++;
+        kept &= kv.second == first_start[kv.first];
+    }
+    CHECK("outage gaps: the gap on resume starts at the end of what each PID emitted, exactly the outage's "
+          "start where nothing older came after it",
+          at_end && kept && unchanged >= 3);
+}
+
+void test_flush() {
+    // FLUSH_STOP: half a packet carried, then a held split header; neither joins what follows.
+    Bytes psi(2 * PKT);
+    build_pat(1, {{PROGRAM, PID_PMT}}, 0, 0, psi.data());
+    build_pmt(PID_PMT, PROGRAM, PID_NULL, {{PID_A1, 0x03, {}}}, 0, 0, psi.data() + PKT);
+    const int64_t b90 = MUX_CLOCK_BASE_90K + 90000;
+    int cc = 0;
+    auto pes = [&](int64_t pts, size_t first_cap) {
+        std::vector<Bytes> pk = packetize(PID_A1, pes_bytes(0xC0, pts, -1, Bytes(100, 0x33)), -1, first_cap);
+        Bytes b;
+        for (Bytes& p : pk) {
+            p[3] = (uint8_t)((p[3] & 0xF0) | (cc++ & 0x0F));
+            b.insert(b.end(), p.begin(), p.end());
+        }
+        return b;
+    };
+    auto out_of = [](const RestampCore::Result& r) {
+        Bytes b;
+        for (const RestampCore::Range& k : r.keep) b.insert(b.end(), k.data, k.data + k.len);
+        return b;
+    };
+    {
+        cc = 0;
+        RestampCore rc(fixed_cfg(false, 0));
+        Bytes a = psi;
+        const Bytes p0 = pes(b90, 0), p1 = pes(b90 + 2160, 0);
+        a.insert(a.end(), p0.begin(), p0.end());
+        a.insert(a.end(), p1.begin(), p1.begin() + 94);   // half of the next packet, carried
+        rc.process(a.data(), a.size(), 1 * S);
+        rc.flush();
+        Bytes b = pes(b90 + 4320, 0);
+        const Bytes want = b;                            // fixed, O = 0: the bytes as they came
+        const Bytes got = out_of(rc.process(b.data(), b.size(), 1024 * MS));
+        const RestampCore::Stats s = rc.stats();
+        CHECK("flush: a carried half packet is not joined to the next buffer's packets",
+              got == want && s.desync_bytes == 0 && s.cc_lost == 1);
+    }
+    {
+        cc = 0;
+        RestampCore rc(fixed_cfg(false, 0));
+        Bytes a = psi;
+        const Bytes p0 = pes(b90, 0), p1 = pes(b90 + 2160, 10), p2 = pes(b90 + 4320, 0);
+        a.insert(a.end(), p0.begin(), p0.end());
+        a.insert(a.end(), p1.begin(), p1.begin() + PKT);   // a header split over two packets
+        const Bytes got0 = out_of(rc.process(a.data(), a.size(), 1 * S));
+        rc.flush();
+        Bytes b(p1.begin() + PKT, p1.end());             // its continuation, then the next PES
+        b.insert(b.end(), p2.begin(), p2.end());
+        const Bytes got = out_of(rc.process(b.data(), b.size(), 1024 * MS));
+        // Out: PSI and PES 0 (CC 0) before; after it PES 2 alone, CC 1 (the held one and its
+        // continuation removed steps).
+        CHECK("flush: the held header goes, its continuation after it, the next PES stays",
+              got0.size() == 3 * PKT && got.size() == p2.size() && ts_pusi(got.data()) &&
+                  (got[3] & 0x0F) == 1 && rc.stats().removed_packets == 2);
+    }
 }
 
 void test_duplicates() {
@@ -2134,7 +2337,10 @@ int main() {
     test_floor_fall("floor -100 ms at 30 s", -100 * MS, 0);
     test_floor_fall("queue drains 100 ms over 30 s from 30 s", -100 * MS, 30 * S);
     test_outage();
+    test_outage_gaps();
     test_degraded();
+    test_degraded_ref_pid();
+    test_flush();
     test_duplicates();
     test_two_programs();
     test_trace_mid_stream();

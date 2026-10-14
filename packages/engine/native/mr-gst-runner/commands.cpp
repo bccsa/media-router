@@ -8,6 +8,7 @@
 #include "bus_inputs.h"
 #include "ipc.h"
 #include "json_util.h"
+#include "native_plugins.h"
 #include "runner.h"
 #include "stamper.h"
 
@@ -73,6 +74,19 @@ void Runner::handle_set_property(JsonObject* data) {
     if (!el) return;
     std::string prop = json_get_string(data, "property");
     JsonNode* value = json_has(data, "value") ? json_object_get_member(data, "value") : nullptr;
+
+    // A stand-in has none of the timing element's properties: the call is answered with a
+    // warning carrying its id, so the request resolves (plan ch. 3 part 4.5 rule 6).
+    if (native_plugins::is_stand_in(name)) {
+        JsonObject* ev = ipc::event("warning");
+        std::string msg = "set_property " + name + "." + prop +
+                          " ignored: a stand-in runs in its place (native TS module not loaded)";
+        json_object_set_string_member(ev, "message", msg.c_str());
+        if (!req_id.empty()) json_object_set_string_member(ev, "id", req_id.c_str());
+        ipc::emit(ev);
+        gst_object_unref(el);
+        return;
+    }
 
     GParamSpec* ps = g_object_class_find_property(G_OBJECT_GET_CLASS(el), prop.c_str());
     if (!ps) {

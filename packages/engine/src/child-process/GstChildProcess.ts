@@ -62,6 +62,7 @@ export function throwIfRpcError(result: unknown, label: string): void {
  *   - 'vuData' (data) — VU meter data
  *   - 'pluginEvent' ({channel, payload}) — generic pipeline→plugin data
  *   - 'error' (data) — error from pipeline
+ *   - 'timingPlugin' ({detail} | {loaded}) — the timing plugin's load outcome
  *   - 'exit' (code) — the runner finished (in-process: after `stop()`;
  *     fork: the shim process exited)
  */
@@ -205,7 +206,9 @@ export class GstChildProcess extends EventEmitter {
         //  - busGate: socket-gate progress (`pending: []` = gate opened);
         //  - inputSilent / inputResumed: udpsrc silence as a state;
         //  - inputBranchLost: a live input branch dropped after its producer
-        //    died (the pipeline keeps running).
+        //    died (the pipeline keeps running);
+        //  - timingPlugin: the runner could not use libgstmrtshouse.so, or a
+        //    start loaded it (plan ch. 3 part 4.5 rule 6).
         for (const name of [
             'vuData',
             'pluginEvent',
@@ -214,6 +217,7 @@ export class GstChildProcess extends EventEmitter {
             'inputSilent',
             'inputResumed',
             'inputBranchLost',
+            'timingPlugin',
         ] as const) {
             ipc.on(name, (data) => {
                 this.emit(name, data);

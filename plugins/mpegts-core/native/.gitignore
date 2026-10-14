@@ -17,5 +17,7 @@ mrts/tests/ts_stc_test
 mrts/tests/ts_trace_test
 mrts/tests/ts_restamp_test
 mrts/tests/asrc_servo_test
+mrts/tests/ts_gap_test
 mrts/tests/mrts_bench
 mrpeshouse/tests/stamp_model_test
+mrtshouse/tests/restamp_ref

@@ -475,8 +475,15 @@ export class GstRunner {
 
         switch (event) {
             case 'ready':
-            case 'started':
                 // No-op — the `Starting pipeline (...)` log already covers it.
+                break;
+
+            case 'started':
+                // A start that loaded the timing plugin clears the module alarm of plan ch. 3
+                // part 4.5 rule 6; a start that could not use it warned before this event.
+                if (eventJson.timingPlugin) {
+                    this.ipc.sendEvent('timingPlugin', { loaded: eventJson.timingPlugin });
+                }
                 break;
 
             case 'state_change': {
@@ -525,6 +532,8 @@ export class GstRunner {
                     // Source element name (from the gst bus message) — error
                     // attribution for diagnostics and per-element policies.
                     element: eventJson.element,
+                    // `timing_plugin` (a demux with no stand-in): the specifics of the alarm.
+                    detail: eventJson.detail,
                 });
                 // `kind` rides along so GstPluginBase can tell a reconnect
                 // (`bus_producer_restarted`) from a fault when it flips health.
@@ -623,6 +632,14 @@ export class GstRunner {
                 // failures — a video branch linked without its codec parser
                 // warned here and nothing reached the logs.
                 console.error(`[gst-runner] Warning: ${eventJson.message}`);
+                // The timing plugin could not be used: the module alarm of plan ch. 3 rule 6.
+                if (eventJson.kind === 'timing_plugin') {
+                    this.ipc.sendEvent('timingPlugin', { detail: eventJson.detail });
+                }
+                // A warning that answers a request (set_property on a stand-in) resolves it.
+                if (typeof eventJson.id === 'string') {
+                    this.ipc.resolvePending(eventJson.id, { warning: eventJson.message });
+                }
                 break;
 
             case 'property':

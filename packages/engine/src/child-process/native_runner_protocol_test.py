@@ -1635,6 +1635,36 @@ def test_lateness_taps():
     lateness_case([_BIN], "Q native", check)
 
 
+# --------------------------------------------------------------------------- mrtshouse-load (WI-S0-8)
+def test_mrtshouse_load():
+    """libgstmrtshouse.so present, missing, without a stand-in and below the ABI; the scenario is
+    shared with the python runner's test, plus every rewrite vector through this binary."""
+    sys.path.insert(0, _HERE)
+    from gst_native_plugins_test import mrtshouse_load_case
+    mrtshouse_load_case([_BIN], "mrtshouse-load native", check, vectors=True)
+
+
+# --------------------------------------------------------------------------- ingest-restamp (WI-P1-4)
+def test_ingest_restamp():
+    """Plan ch. 5 part 7.3: an SRT ingest's input through `mrtsrestamp arrival=buffer-pts` and
+    buildBusSink, one consumer edge: identity stamps, gap markers and the mrtsrestamp-* plugin
+    events as RestampCore makes them, plain and behind srt-input's queue. The scenario is
+    gst_ingest_restamp_test.py's; one input for both runners, which must forward the same events
+    (they host the one element)."""
+    sys.path.insert(0, _HERE)
+    from gst_ingest_restamp_test import ingest_restamp_case
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    now = clock.get_time()
+    native = ingest_restamp_case([_BIN], "native", check, now=now)
+    ingest_restamp_case([_BIN], "native", check, srt_queue=True, now=now)
+    py = ingest_restamp_case(_PY_RUNNER, "py", check, now=now)
+    if native is not None and py is not None:
+        check("ingest-restamp: both runners forward the same mrtsrestamp-stats, -pid and -event "
+              f"plugin events ({', '.join(f'{len(v)} {k}' for k, v in native.items())})",
+              native == py)
+
+
 test_plain_pipeline()
 test_producer_edge()
 test_house_timeline_egress()
@@ -1652,6 +1682,8 @@ test_live_input_branches()
 test_transform_producer_align()
 test_mux_inputs_retime()
 test_lateness_taps()
+test_mrtshouse_load()
+test_ingest_restamp()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")
