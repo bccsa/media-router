@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import type { HouseEpoch, TimeSyncState } from '@media-router/engine';
+import { GstPluginBase, type HouseEpoch, type TimeSyncState } from '@media-router/engine';
 import { Aes67OutputModule } from './Aes67OutputModule.js';
 
 // `as any` reaches private fields/methods without re-declaring them in a typed
@@ -14,7 +14,7 @@ function makeModule(opts: { source?: boolean } = {}) {
         mediaRouter: { getModuleBusSource: vi.fn(() => source) },
     };
     module.config = {};
-    module.log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
+    module.log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
     module.setStatusData = vi.fn();
     module.setHealth = vi.fn();
     module.setBadge = vi.fn();
@@ -242,24 +242,6 @@ describe('Aes67OutputModule — the engine house epoch', () => {
         expect(module.epochError).toMatch(/no engine house clock/);
     });
 
-    it("restarts on an 'epoch' event so the new timestamp-offset lands", async () => {
-        const module = makeModule();
-        const clock = fakeClock({});
-        module.services.houseClock = clock;
-        module.config = { ptpSync: true };
-        await module.resolveEpoch();
-        module.running = true;
-        module.onStop = vi.fn(async () => {});
-        module.onStart = vi.fn(async () => {});
-        clock.on('epoch', module.onClockChange);
-
-        clock.current = { ...clock.current!, eNs: E + 2_000_000_000n, seq: 2, reason: 'step' };
-        clock.emit('epoch', clock.current);
-        await module.epochRestart;
-        expect(module.onStop).toHaveBeenCalledOnce();
-        expect(module.onStart).toHaveBeenCalledOnce();
-    });
-
     it('keeps the claim when sync is lost (E unchanged), and restarts when sync arrives', async () => {
         const module = makeModule();
         const clock = fakeClock({});
@@ -286,23 +268,6 @@ describe('Aes67OutputModule — the engine house epoch', () => {
         expect(module.onStart).toHaveBeenCalledOnce();
     });
 
-    it('does not revive a module the engine stopped during the restart', async () => {
-        const module = makeModule();
-        const clock = fakeClock({});
-        module.services.houseClock = clock;
-        module.config = { ptpSync: true };
-        await module.resolveEpoch();
-        module.running = true;
-        module.onStart = vi.fn(async () => {});
-        module.onStop = vi.fn(async () => {
-            module.externalStop = true; // the engine's own stop landed meanwhile
-        });
-        clock.current = { ...clock.current!, eNs: E + 5_000_000n, seq: 2 };
-        module.onClockChange();
-        await module.epochRestart;
-        expect(module.onStart).not.toHaveBeenCalled();
-    });
-
     it('shows seq and source in the clock section', async () => {
         const module = makeModule();
         module.services.houseClock = fakeClock({ seq: 4 }, { source: 'chrony' });
@@ -313,5 +278,128 @@ describe('Aes67OutputModule — the engine house epoch', () => {
             'clock',
             expect.objectContaining({ epochSeq: 4, timeSource: 'chrony' }),
         );
+    });
+});
+
+type FakeClock = ReturnType<typeof fakeClock>;
+
+/** A step re-latch as HouseClock announces it: 'epoch', then 'state'. */
+function relatch(clock: FakeClock, eNs: bigint, seq: number): void {
+    clock.current = { ...clock.current!, eNs, seq, reason: 'step' };
+    clock.emit('epoch', clock.current);
+    clock.emit('state', clock.state());
+}
+
+/** The module's own onStart/onStop over a stubbed runner; each start records its pipeline. */
+function withLifecycle(clock: FakeClock) {
+    const module = makeModule();
+    module.services.houseClock = clock;
+    module.config = { ...DEST, ptpSync: true, sapEnabled: false };
+    const pipelines: string[] = [];
+    let runnerStop = Promise.resolve();
+    vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+        pipelines.push(this.buildPipeline(this.config).pipeline);
+        this.running = true;
+    });
+    vi.spyOn(GstPluginBase.prototype, 'onStop').mockImplementation(async function (this: any) {
+        await runnerStop;
+        this.running = false;
+    });
+    /** Holds every runner stop (the Python drain) until the returned release runs. */
+    const holdStops = (): (() => void) => {
+        let release!: () => void;
+        runnerStop = new Promise<void>((r) => (release = r));
+        return release;
+    };
+    return { module, pipelines, holdStops };
+}
+
+/** The last 'clock' status section the module published. */
+const clockSection = (module: any) =>
+    module.setStatusData.mock.calls.filter((c: unknown[]) => c[0] === 'clock').at(-1)?.[1];
+
+describe('Aes67OutputModule — restart on a re-epoch', () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }));
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it("restarts on an 'epoch' event so the new timestamp-offset lands", async () => {
+        const clock = fakeClock({});
+        const { module, pipelines } = withLifecycle(clock);
+        await module.onStart();
+        expect(pipelines[0]).toContain('timestamp-offset=1301132260');
+
+        // E + 2 s is +96000 samples.
+        clock.current = { ...clock.current!, eNs: E + 2_000_000_000n, seq: 2, reason: 'step' };
+        clock.emit('epoch', clock.current);
+        await module.epochRestart;
+        expect(pipelines).toHaveLength(2);
+        expect(pipelines[1]).toContain('timestamp-offset=1301228260');
+
+        // Listening again after the restart, once: the next re-latch restarts it once more.
+        relatch(clock, E + 4_000_000_000n, 3);
+        await module.epochRestart;
+        expect(pipelines).toHaveLength(3);
+        expect(pipelines[2]).toContain('timestamp-offset=1301324260');
+
+        await module.onStop();
+        expect(clock.listenerCount('epoch') + clock.listenerCount('state')).toBe(0);
+    });
+
+    it('lands an E that moved again while the restart was stopping', async () => {
+        // The restart's own resolveEpoch() reads the clock after its stop, so nothing is queued.
+        const clock = fakeClock({});
+        const { module, pipelines, holdStops } = withLifecycle(clock);
+        await module.onStart();
+        const release = holdStops();
+        relatch(clock, E + 2_000_000_000n, 2);
+        relatch(clock, E + 4_000_000_000n, 3);
+        release();
+        await module.epochRestart;
+        expect(pipelines).toHaveLength(2);
+        expect(pipelines[1]).toContain('timestamp-offset=1301324260');
+        await module.onStop();
+    });
+
+    it('does not revive a module the engine stopped during the restart', async () => {
+        const clock = fakeClock({});
+        const { module, pipelines, holdStops } = withLifecycle(clock);
+        await module.onStart();
+        const release = holdStops();
+        relatch(clock, E + 5_000_000n, 2);
+        const engineStop = module.onStop(); // lands while the restart's own stop drains
+        release();
+        await Promise.all([module.epochRestart, engineStop]);
+        expect(pipelines).toHaveLength(1);
+        expect(clock.listenerCount('epoch')).toBe(0);
+    });
+
+    it('keeps the free-running reason current when the clock changes without a restart', async () => {
+        const clock = fakeClock({ traceable: false }, { source: 'none' });
+        const untraceable = clock.current;
+        clock.current = null; // the start wait expired before any sample
+        const { module, pipelines } = withLifecycle(clock);
+        await module.onStart();
+        expect(clockSection(module).epoch).toMatch(/Free-running — no house epoch yet/);
+
+        // The first sample latches E, untraceable: nothing to claim, but the reason moves on.
+        clock.current = untraceable;
+        clock.emit('epoch', clock.current);
+        expect(clockSection(module)).toMatchObject({
+            epoch: expect.stringContaining('source none'),
+            epochSeq: 1,
+        });
+
+        // The source poll finds chrony: the reason agrees with the time source beside it.
+        clock.st = { ...clock.st, source: 'chrony' };
+        clock.emit('state', clock.state());
+        expect(clockSection(module)).toMatchObject({
+            epoch: expect.stringContaining('not synchronised'),
+            timeSource: 'chrony',
+        });
+        expect(pipelines).toHaveLength(1);
+        await module.onStop();
     });
 });
