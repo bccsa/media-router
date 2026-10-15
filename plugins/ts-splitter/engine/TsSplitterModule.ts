@@ -106,8 +106,10 @@ export class TsSplitterModule extends GstPluginBase {
             test: (caps) => caps.startsWith('audio/mpeg') && /mpegversion=\(int\)1\b/.test(caps),
             classify: () => 'mp2',
         });
+        // MPEG-2 AAC (ADTS ID bit set) caps as mpegversion=2; `aacparse ! avdec_aac` takes both.
+        // Unmatched, a live MPEG-2 AAC feed fell back to decodebin and the 10 s ReprobeLoop.
         registerCodecClassifier({
-            test: (caps) => caps.startsWith('audio/mpeg') && /mpegversion=\(int\)4\b/.test(caps),
+            test: (caps) => caps.startsWith('audio/mpeg') && /mpegversion=\(int\)[24]\b/.test(caps),
             classify: () => 'aac',
         });
         registerCodecClassifier({
