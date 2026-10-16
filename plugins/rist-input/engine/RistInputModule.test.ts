@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GstPluginBase, ModuleInstance, PluginLoader } from '@media-router/engine';
 import { RistInputModule } from './RistInputModule.js';
 
 function makeModule() {
@@ -46,6 +50,9 @@ describe('RistInputModule.buildPipeline', () => {
         expect(desc.busReports).toEqual([
             { element: 'ristsrc', structure: 'mrrist-stats' },
             { element: 'ristsrc', structure: 'mrrist-peer' },
+            { element: 'restamp', structure: 'mrtsrestamp-stats' },
+            { element: 'restamp', structure: 'mrtsrestamp-pid' },
+            { element: 'restamp', structure: 'mrtsrestamp-event' },
         ]);
     });
 
@@ -494,5 +501,239 @@ describe('RistInputModule link health (recovered-loss storms)', () => {
         setHealth.mockClear();
         for (let i = 0; i < 10; i++) module.onPluginEvent('rist:stats', storm(90, 50, 950));
         expect(setHealth).not.toHaveBeenCalledWith('ok');
+    });
+});
+
+// --- On the restamp (house-clock plan WI-P1-10) -----------------------------------------------
+
+const MS = 1_000_000;
+const CH = {
+    stats: 'mrtsrestamp-stats:restamp',
+    pid: 'mrtsrestamp-pid:restamp',
+    event: 'mrtsrestamp-event:restamp',
+};
+/** The element's messages as the runner forwards them (plan ch. 5 part 10). */
+const clockStats = (o: Record<string, unknown> = {}) => ({
+    program: 1,
+    state: 'locked',
+    reason: 'none',
+    ppb: 1234,
+    'residual-p99-ns': 4 * MS,
+    'pcr-interval-max-ns': 40 * MS,
+    relocks: 0,
+    'cadence-warning': false,
+    'cc-lost': 0,
+    'desync-bytes': 0,
+    ...o,
+});
+const pidMsg = (pid: number, type: number) => ({
+    program: 1,
+    pid,
+    'stream-type': type,
+    'lead-min-ns': 300 * MS,
+    'lead-median-ns': 340 * MS,
+    'lead-max-ns': 420 * MS,
+    'trim-ns': 0,
+    'shift-ns': 0,
+    'dropped-pes': 0,
+});
+const factories = (pipeline: string) => pipeline.split(' ! ').map((el) => el.split(' ')[0]);
+/** librist's receiver stats for one flow with one peer. */
+const flowStats = (quality: number, missing = 0, received = 1000) => ({
+    'receiver-stats': {
+        flowinstant: {
+            flow_id: 1,
+            stats: { received, missing, quality, lost: 0 },
+            peers: [{ id: 1, dead: 0, stats: { received_data: 80, avg_rtt: 14 } }],
+        },
+    },
+});
+
+/** A playing module on the base's own state methods: what its card shows is `getState()`. */
+function cardModule() {
+    const module = new RistInputModule() as any;
+    module.services = {
+        instanceId: 'rist-in-1',
+        mediaRouter: { assignBusChannel: vi.fn(), getBusChannel: vi.fn(() => ({ port: 41000 })) },
+    };
+    module.config = {};
+    module.log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+    module.health = 'ok';
+    return module;
+}
+const sectionIds = (module: any) =>
+    module.getState().dynamicStatusSections.map((s: { id: string }) => s.id);
+function report(module: any, s: Record<string, unknown> = {}) {
+    module.dispatchPluginEvent(CH.stats, clockStats(s));
+    module.dispatchPluginEvent(CH.pid, pidMsg(256, 0x1b));
+    module.ingestTiming.tick();
+}
+
+describe('RistInputModule on the restamp (WI-P1-10)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it('restamps right after mrristsrc, before the queue and the bus sink', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({})!;
+        expect(factories(desc.pipeline)).toEqual([
+            'mrristsrc',
+            'mrtsrestamp',
+            'queue',
+            'capssetter',
+            'capsfilter',
+            'mrlateness',
+            'tee',
+        ]);
+        expect(desc.pipeline).toContain(
+            ' ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=downstream ',
+        );
+        expect(desc.houseTimelineEgress).toBe(true);
+    });
+
+    it('starts the restamp on the configured offset and trims', () => {
+        const { module } = makeModule();
+        module.config = { ingestOffsetMs: 1500, pidTrimsMs: { 4097: 2500, 256: 0 } };
+        // Clamped to ±2 s; a zero trim is no trim.
+        expect(module.buildPipeline({})!.pipeline).toContain(
+            'mrtsrestamp name=restamp clock-mode=stc offset-ns=1500000000 ' +
+                'pid-trims="4097=2000000000" ! queue',
+        );
+    });
+
+    it('a live edit of O or a trim sets the restamp property, with no restart', async () => {
+        const { module } = makeModule();
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        const instance = new ModuleInstance('rist-in-1', 'rist-input', module, {});
+        await instance.applyConfigUpdate({ ingestOffsetMs: -300, pidTrimsMs: { 257: 120 } });
+        expect(setElementProperty.mock.calls).toEqual([
+            ['restamp', 'offset-ns', -300_000_000],
+            ['restamp', 'pid-trims', '257=120000000'],
+        ]);
+        expect(instance.getState().pendingRestart).toBe(false);
+        expect(module.buildPipeline({})!.pipeline).toContain(
+            'offset-ns=-300000000 pid-trims="257=120000000"',
+        );
+    });
+
+    it('declares ingest timing: the loader adds O and the trims, and each is live here', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'rist-input-manifest-'));
+        try {
+            mkdirSync(join(dir, 'rist-input'));
+            copyFileSync(join(__dirname, '../package.json'), join(dir, 'rist-input/package.json'));
+            const loader = new PluginLoader(dir);
+            await loader.load();
+            const props = (loader.getPluginSchemas()['rist-input'] as any).properties;
+            expect(props.ingestOffsetMs).toMatchObject({ minimum: -10000, maximum: 10000 });
+            expect(props.pidTrimsMs).toMatchObject({
+                'x-widget': 'pidTrim',
+                'x-optionsFrom': 'pids',
+            });
+            const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
+            expect(live).toEqual(expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs']));
+            expect(new RistInputModule().getLiveUpdatableParams()).toEqual(
+                expect.arrayContaining(live),
+            );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("shows the restamp's card from start to stop, beside the peer sections", async () => {
+        vi.useFakeTimers();
+        // The base's start spawns a runner; nothing stands in for it here.
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockResolvedValue(undefined);
+        const module = cardModule();
+        await module.onStart();
+        module.dispatchPluginEvent(CH.stats, clockStats());
+        module.dispatchPluginEvent(CH.pid, pidMsg(256, 0x1b));
+        vi.advanceTimersByTime(2000); // the reporter's tick
+        const state = module.getState();
+        expect(state.badges).toContainEqual({
+            id: 'clock',
+            icon: 'clock',
+            text: 'Locked',
+            color: '#10b981',
+        });
+        expect(state.statusData.clock).toMatchObject({ state: 'Locked', residualP99: 4 });
+        expect(state.fieldOptions.pids).toEqual([{ value: '256', label: '0x0100 H.264 video' }]);
+        expect(sectionIds(module)).toEqual(['clock', 'pid-256']);
+
+        // librist's peers are reconciled every stats window; the clock's sections stay.
+        module.dispatchPluginEvent('mrrist-stats:ristsrc', { json: JSON.stringify(flowStats(99)) });
+        expect(sectionIds(module)).toEqual(['peer-1', 'clock', 'pid-256']);
+        report(module, { state: 'acquiring' });
+        expect(sectionIds(module)).toEqual(['peer-1', 'clock', 'pid-256']);
+        expect(module.getState().statusData['peer-1']).toBeDefined();
+
+        // Every program stopped reporting (its PIDs report on): the badge is withdrawn.
+        for (let i = 0; i < 4; i++) {
+            vi.advanceTimersByTime(2000);
+            module.dispatchPluginEvent(CH.pid, pidMsg(256, 0x1b));
+        }
+        vi.advanceTimersByTime(2000);
+        expect(module.getState().badges.map((b: { id: string }) => b.id)).not.toContain('clock');
+
+        await module.onStop();
+        module.dispatchPluginEvent(CH.stats, clockStats());
+        vi.advanceTimersByTime(4000);
+        expect(module.getState().badges).toEqual([]);
+        expect(sectionIds(module)).toEqual([]);
+    });
+
+    it('logs the restamp events', () => {
+        const module = cardModule();
+        module.dispatchPluginEvent(CH.event, { kind: 'degraded', program: 1, pid: 256 });
+        expect(module.log.warn).toHaveBeenCalledWith(
+            { 'mrtsrestamp-event': { kind: 'degraded', program: 1, pid: 256 } },
+            'mrtsrestamp-event degraded',
+        );
+    });
+
+    it('the degraded clock and the link warning share the health text without losing either', () => {
+        const module = cardModule();
+        const degraded = /^Degraded clock: PCR frozen — timing from PID 0x0100/;
+        module.dispatchPluginEvent(CH.event, { kind: 'degraded', program: 1, pid: 256 });
+        report(module, { state: 'degraded', reason: 'freeze' });
+        expect(module.health).toBe('warning');
+        expect(module.error).toMatch(degraded);
+        // A second condition replaces the clock's own text.
+        const sparse = { 'cadence-warning': true, 'pcr-interval-max-ns': 300 * MS };
+        report(module, { state: 'degraded', reason: 'freeze', ...sparse });
+        expect(module.error).toMatch(/^Degraded clock: .*; PCR every 300 ms \(spec ≤ 100 ms\)$/);
+        report(module, { state: 'degraded', reason: 'freeze' });
+        expect(module.error).toMatch(degraded);
+
+        // A recovered-loss storm takes the text; the clock recovering leaves it there.
+        const storm = () => flowStats(80, 150, 850);
+        for (let i = 0; i < 3; i++) module.onPluginEvent('rist:stats', storm());
+        expect(module.error).toMatch(/^RIST link degraded/);
+        report(module);
+        expect(module.error).toMatch(/^RIST link degraded/);
+        // The clock degrading again takes the text back (the last writer shows).
+        report(module, { state: 'degraded', reason: 'freeze' });
+        expect(module.error).toMatch(degraded);
+
+        // The link clears after 5 clean windows, taking any text down: the clock's shows again.
+        for (let i = 0; i < 5; i++) module.onPluginEvent('rist:stats', flowStats(100));
+        expect(module.health).toBe('warning');
+        expect(module.error).toMatch(degraded);
+        report(module);
+        expect([module.health, module.error]).toEqual(['ok', undefined]);
+    });
+
+    it('a fault outranks the clock warning; the PLAYING after it puts the warning back', () => {
+        const module = cardModule();
+        module.setHealth('error', 'mrristsrc: cannot resolve host');
+        report(module, { state: 'degraded', reason: 'freeze' });
+        expect([module.health, module.error]).toEqual(['error', 'mrristsrc: cannot resolve host']);
+        module.health = 'ok'; // what the base's PLAYING sets before its hook
+        module.error = undefined;
+        module.onPipelinePlaying();
+        expect(module.health).toBe('warning');
+        expect(module.error).toMatch(/^Degraded clock: PCR frozen/);
     });
 });

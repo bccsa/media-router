@@ -1,8 +1,16 @@
 import {
     GstPluginBase,
+    INGEST_OFFSET_KEY,
+    IngestTimingReporter,
+    PID_TRIMS_KEY,
+    applyIngestTimingLiveUpdate,
     buildBusSink,
+    buildRestamp,
     formatBitrate,
+    isIngestTimingSection,
     quoteGstString,
+    restampBusReports,
+    type IngestTimingHost,
     type PipelineDescription,
 } from '@media-router/engine';
 import { RistFlowTracker, peerRtt } from './ristFlowTracker.js';
@@ -56,12 +64,19 @@ const PEER_FIELDS = [
 
 export class RistInputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. */
-    protected liveUpdatableParams = ['playoutOffsetMs'];
+     *  never by this pipeline, so it is live and never pends a restart. O and the trims are
+     *  the restamp's live properties (§5.5). */
+    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY, PID_TRIMS_KEY];
     private linkHealth = new RistLinkHealth();
     private flows = new RistFlowTracker();
     private peerNames = new Map<number, string>();
     private sweepTimer: ReturnType<typeof setInterval> | null = null;
+    /** The restamp's card: Clock badge and sections, one section per PID, part 10's warnings. */
+    private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
+        mode: 'stc',
+    });
+    /** The reporter's warning text, so its clear never takes another warning down. */
+    private clockWarning: string | null = null;
 
     async onStart(): Promise<void> {
         this.linkHealth.reset();
@@ -88,6 +103,7 @@ export class RistInputModule extends GstPluginBase {
         this.sweepTimer = setInterval(() => {
             if (this.flows.sweep(Date.now(), this.staleMs())) this.renderPeers();
         }, SWEEP_MS);
+        this.ingestTiming.start();
     }
 
     async onStop(): Promise<void> {
@@ -95,7 +111,21 @@ export class RistInputModule extends GstPluginBase {
             clearInterval(this.sweepTimer);
             this.sweepTimer = null;
         }
+        this.ingestTiming.stop();
         await super.onStop();
+    }
+
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        await super.onLiveConfigUpdate(changes);
+        await applyIngestTimingLiveUpdate(
+            { setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+            changes,
+        );
+    }
+
+    /** Every PLAYING sets health ok: put a standing clock warning back. */
+    protected onPipelinePlaying(): void {
+        this.ingestTiming.reassert();
     }
 
     buildPipeline(_config: Record<string, unknown>): PipelineDescription | null {
@@ -124,8 +154,15 @@ export class RistInputModule extends GstPluginBase {
             ...(encType ? [`aes-type=${encType}`] : []),
             `stats-interval=${this.statsIntervalMs()}`,
         ];
+        // The restamp reads arrival itself, so it sits before the queue (OQ-19): the instant
+        // librist hands the packets over, after its recovery buffer.
+        const restamp = buildRestamp({
+            mode: 'stc',
+            offsetMs: this.config[INGEST_OFFSET_KEY],
+            pidTrimsMs: this.config[PID_TRIMS_KEY],
+        });
         const pipeline =
-            `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ` +
+            `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ${restamp} ! ` +
             'queue leaky=downstream max-size-bytes=4194304 max-size-buffers=0 max-size-time=0 ! ' +
             buildBusSink(endpoint.port);
 
@@ -135,14 +172,17 @@ export class RistInputModule extends GstPluginBase {
             // An unresolvable caller host is a durable, looping element error
             // (mrrist); retry every 5-10 s like SRT until DNS is up.
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
+            houseTimelineEgress: true,
             busReports: [
                 { element: RIST_SRC, structure: RIST_STATS_STRUCTURE },
                 { element: RIST_SRC, structure: RIST_PEER_STRUCTURE },
+                ...restampBusReports(),
             ],
         };
     }
 
     protected onPluginEvent(channel: string, payload: unknown): void {
+        if (this.ingestTiming.onEvent(channel, payload)) return;
         if (channel === 'rist:stats') {
             // Legacy channel: the runner's python librist binding (still the
             // fallback when a pipeline carries a `rist` runner config).
@@ -238,8 +278,10 @@ export class RistInputModule extends GstPluginBase {
             fields: PEER_FIELDS,
         }));
         // A reconnected peer gets a fresh librist id, so anything not live
-        // this window is a ghost (25 piled up on one single-link input).
-        this.setDynamicSections(sections);
+        // this window is a ghost (25 piled up on one single-link input). The
+        // restamp's and the base's sections stay: the base keeps one list.
+        const others = this.dynamicStatusSections.filter((s) => !s.id.startsWith('peer-'));
+        this.setDynamicSections([...sections, ...others]);
         for (const peer of live) {
             const p = peer.stats ?? {};
             this.setStatusData(`peer-${peer.id ?? 0}`, {
@@ -262,6 +304,43 @@ export class RistInputModule extends GstPluginBase {
             text: `${peerCount}/${linkCount}`,
             color: peerCount === 0 ? '#6b7280' : peerCount === linkCount ? '#10b981' : '#f59e0b',
         });
+    }
+
+    /** A return to ok shows a standing clock warning again: another warning may have hidden it
+     *  (the link-health clear takes any warning down). */
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok') this.ingestTiming.reassert();
+    }
+
+    private ingestTimingHost(): IngestTimingHost {
+        return {
+            // The base keeps one list of dynamic sections: anyone else's stay.
+            setDynamicSections: (sections) => {
+                const others = this.dynamicStatusSections.filter(
+                    (s) => !isIngestTimingSection(s.id),
+                );
+                this.setDynamicSections([...others, ...sections]);
+            },
+            setStatusData: (id, data) => this.setStatusData(id, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setFieldOptions: (key, options) => this.setFieldOptions(key, options),
+            // Over ok or another warning, never over a fault or a stop: PLAYING re-asserts it.
+            warn: (text) => {
+                this.clockWarning = text;
+                if (this.health === 'ok' || this.health === 'warning') {
+                    this.setHealth('warning', text);
+                }
+            },
+            clearWarning: () => {
+                if (this.health === 'warning' && this.error === this.clockWarning) {
+                    this.setHealth('ok');
+                }
+                this.clockWarning = null;
+            },
+            log: (level, obj, msg) => this.log[level](obj, msg),
+        };
     }
 }
 

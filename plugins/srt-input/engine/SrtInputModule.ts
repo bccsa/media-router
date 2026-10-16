@@ -1,7 +1,15 @@
 import {
     GstPluginBase,
+    INGEST_OFFSET_KEY,
+    IngestTimingReporter,
+    PID_TRIMS_KEY,
+    applyIngestTimingLiveUpdate,
     buildBusSink,
+    buildRestamp,
+    isIngestTimingSection,
+    restampBusReports,
     SrtStatPoller,
+    type IngestTimingHost,
     type PipelineDescription,
     type SrtStatPollerHost,
 } from '@media-router/engine';
@@ -18,10 +26,17 @@ import {
  */
 export class SrtInputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. */
-    protected liveUpdatableParams = ['playoutOffsetMs'];
+     *  never by this pipeline, so it is live and never pends a restart. O and the trims are
+     *  the restamp's live properties (§5.5). */
+    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY, PID_TRIMS_KEY];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     private statPoller: SrtStatPoller;
+    /** The restamp's card: Clock badge and sections, one section per PID, part 10's warnings. */
+    private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
+        mode: 'stc',
+    });
+    /** The reporter's warning text, so its clear never takes another warning down. */
+    private clockWarning: string | null = null;
 
     constructor() {
         super();
@@ -34,7 +49,7 @@ export class SrtInputModule extends GstPluginBase {
             setStatusData: (section, data) => this.setStatusData(section, data),
             setBadge: (id, badge) => this.setBadge(id, badge),
             clearBadge: (id) => this.clearBadge(id),
-            setSections: (sections) => this.setDynamicSections(sections),
+            setSections: (sections) => this.setCallerSections(sections),
         };
         this.statPoller = new SrtStatPoller(host, 'receive');
     }
@@ -60,12 +75,13 @@ export class SrtInputModule extends GstPluginBase {
                     color: '#f59e0b',
                 });
                 this.clearBadge('callers');
-                this.setDynamicSections([]);
+                this.setCallerSections([]);
                 this.statPoller.reset();
             }
         });
 
         this.statsTimer = setInterval(() => this.statPoller.poll(), 2000);
+        this.ingestTiming.start();
         this.updateStatusData();
     }
 
@@ -75,7 +91,25 @@ export class SrtInputModule extends GstPluginBase {
             this.statsTimer = null;
         }
         this.statPoller.reset();
+        this.ingestTiming.stop();
         await super.onStop();
+    }
+
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        await super.onLiveConfigUpdate(changes);
+        await applyIngestTimingLiveUpdate(
+            { setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+            changes,
+        );
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        this.ingestTiming.onEvent(channel, payload);
+    }
+
+    /** Every PLAYING sets health ok: put a standing clock warning back. */
+    protected onPipelinePlaying(): void {
+        this.ingestTiming.reassert();
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -115,8 +149,16 @@ export class SrtInputModule extends GstPluginBase {
         // when its caller drops; with no bus edge attached that EOS is lost and
         // the runner wedges with the port unbound.
         const keepListening = mode === 'listener' ? ' keep-listening=true' : '';
+        // The restamp reads arrival itself, so it sits before the queue (OQ-19): srtsrc's
+        // buffer PTS is the sender's send time in gst-plugins-bad 1.28, not receipt.
+        const restamp = buildRestamp({
+            mode: 'stc',
+            offsetMs: config[INGEST_OFFSET_KEY],
+            pidTrimsMs: config[PID_TRIMS_KEY],
+        });
         const pipeline = [
             `srtsrc name=src uri="${uri}" auto-reconnect=false${keepListening}`,
+            restamp,
             'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
             buildBusSink(udpPort),
         ].join(' ! ');
@@ -125,6 +167,50 @@ export class SrtInputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
+            houseTimelineEgress: true,
+            busReports: restampBusReports(),
+        };
+    }
+
+    /** The poller's caller sections; the restamp's and the base's stay (one list in the base). */
+    private setCallerSections(sections: typeof this.dynamicStatusSections): void {
+        const others = this.dynamicStatusSections.filter((s) => !s.id.startsWith('caller-'));
+        this.setDynamicSections([...sections, ...others]);
+    }
+
+    /** A return to ok shows a standing clock warning again: another warning may have hidden it. */
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok') this.ingestTiming.reassert();
+    }
+
+    private ingestTimingHost(): IngestTimingHost {
+        return {
+            // The base keeps one list of dynamic sections: anyone else's stay.
+            setDynamicSections: (sections) => {
+                const others = this.dynamicStatusSections.filter(
+                    (s) => !isIngestTimingSection(s.id),
+                );
+                this.setDynamicSections([...others, ...sections]);
+            },
+            setStatusData: (id, data) => this.setStatusData(id, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setFieldOptions: (key, options) => this.setFieldOptions(key, options),
+            // Over ok or another warning, never over a fault or a stop: PLAYING re-asserts it.
+            warn: (text) => {
+                this.clockWarning = text;
+                if (this.health === 'ok' || this.health === 'warning') {
+                    this.setHealth('warning', text);
+                }
+            },
+            clearWarning: () => {
+                if (this.health === 'warning' && this.error === this.clockWarning) {
+                    this.setHealth('ok');
+                }
+                this.clockWarning = null;
+            },
+            log: (level, obj, msg) => this.log[level](obj, msg),
         };
     }
 

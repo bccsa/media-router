@@ -1,15 +1,23 @@
 import {
     GstPluginBase,
+    INGEST_OFFSET_KEY,
+    IngestTimingReporter,
+    PID_TRIMS_KEY,
+    applyIngestTimingLiveUpdate,
     buildBusSink,
     buildNetUdpSrc,
     buildBackpressureQueue,
+    buildRestamp,
     busTeeName,
+    isIngestTimingSection,
     isMulticastAddr,
     formatBytes,
     bitrateBadge,
     NET_UDP_RCV_BUF,
     interfaceAddress,
     registerNetworkInterfaceDeviceProvider,
+    restampBusReports,
+    type IngestTimingHost,
     type PipelineDescription,
     type EngineServices,
 } from '@media-router/engine';
@@ -32,11 +40,18 @@ const DETECT_TIMEOUT_MS = 2000;
 
 export class MpegTsIpInputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. */
-    protected liveUpdatableParams = ['playoutOffsetMs'];
+     *  never by this pipeline, so it is live and never pends a restart. O and the trims are
+     *  the restamp's live properties (§5.5). */
+    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY, PID_TRIMS_KEY];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     /** Encapsulation detected this run when the operator left it on `auto`. */
     private detectedEncap: Encapsulation | null = null;
+    /** The restamp's card: Clock badge and sections, one section per PID, part 10's warnings. */
+    private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
+        mode: 'stc',
+    });
+    /** The reporter's warning text, so its clear never takes another warning down. */
+    private clockWarning: string | null = null;
 
     static registerServices(services: EngineServices): void {
         registerNetworkInterfaceDeviceProvider(services);
@@ -79,6 +94,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
         // Throughput tracking is established lazily by pollStats — registering
         // it here races the PLAYING transition (see the note in pollStats).
         this.statsTimer = setInterval(() => void this.pollStats(), 2000);
+        this.ingestTiming.start();
         this.updateStatusData();
     }
 
@@ -88,7 +104,28 @@ export class MpegTsIpInputModule extends GstPluginBase {
             this.statsTimer = null;
         }
         this.detectedEncap = null;
+        this.ingestTiming.stop();
         await super.onStop();
+    }
+
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        await super.onLiveConfigUpdate(changes);
+        await applyIngestTimingLiveUpdate(
+            { setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+            changes,
+        );
+    }
+
+    /** Every PLAYING sets health ok: put a standing clock warning back. */
+    protected onPipelinePlaying(): void {
+        this.ingestTiming.reassert();
+    }
+
+    /** A return to ok shows a standing clock warning again: another warning (udp silence) may
+     *  have hidden it. */
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok') this.ingestTiming.reassert();
     }
 
     /**
@@ -195,9 +232,17 @@ export class MpegTsIpInputModule extends GstPluginBase {
         // transient burst into the 8 MB udpsrc socket buffer keeps the relay
         // lossless on a clean link. (SRT input doesn't hit this because its
         // paced/recovered delivery never bursts the queue.)
+        // The restamp reads arrival itself, so it sits before the queue (OQ-19): the instant
+        // the transport hands the packets over, after the jitterbuffer for RTP.
+        const restamp = buildRestamp({
+            mode: 'stc',
+            offsetMs: config[INGEST_OFFSET_KEY],
+            pidTrimsMs: config[PID_TRIMS_KEY],
+        });
         const pipeline = [
             netSrc,
             ...depay,
+            restamp,
             buildBackpressureQueue(jitterMs),
             buildBusSink(udpPort),
         ].join(' ! ');
@@ -213,6 +258,8 @@ export class MpegTsIpInputModule extends GstPluginBase {
             pipeline: pipeline + probeTap,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
+            houseTimelineEgress: true,
+            busReports: restampBusReports(),
             tsProbe: { appsink: 'tsprobe' },
             udpSilenceRestartMs: multicast ? 60_000 : 0,
         };
@@ -221,6 +268,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
     /** `tsprobe:videoinfo` → the popup's Video line. Geometry fields are null
      *  until the SPS parses; `display` is pre-formatted ("1920×1080i50"). */
     protected onPluginEvent(channel: string, payload: unknown): void {
+        if (this.ingestTiming.onEvent(channel, payload)) return;
         if (channel !== 'tsprobe:videoinfo') return;
         const p = payload as { codec?: string; display?: string; scrambled?: boolean };
         this.setStatusData('video', {
@@ -286,5 +334,35 @@ export class MpegTsIpInputModule extends GstPluginBase {
             multicast: isMulticastAddr(address) ? 'Yes' : 'No',
         });
         this.setStatusData('video', { video: '—' });
+    }
+
+    private ingestTimingHost(): IngestTimingHost {
+        return {
+            // The base keeps one list of dynamic sections: anyone else's stay.
+            setDynamicSections: (sections) => {
+                const others = this.dynamicStatusSections.filter(
+                    (s) => !isIngestTimingSection(s.id),
+                );
+                this.setDynamicSections([...others, ...sections]);
+            },
+            setStatusData: (id, data) => this.setStatusData(id, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setFieldOptions: (key, options) => this.setFieldOptions(key, options),
+            // Over ok or another warning, never over a fault or a stop: PLAYING re-asserts it.
+            warn: (text) => {
+                this.clockWarning = text;
+                if (this.health === 'ok' || this.health === 'warning') {
+                    this.setHealth('warning', text);
+                }
+            },
+            clearWarning: () => {
+                if (this.health === 'warning' && this.error === this.clockWarning) {
+                    this.setHealth('ok');
+                }
+                this.clockWarning = null;
+            },
+            log: (level, obj, msg) => this.log[level](obj, msg),
+        };
     }
 }

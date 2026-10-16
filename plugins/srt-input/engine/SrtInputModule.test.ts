@@ -1,4 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GstPluginBase, ModuleInstance, PluginLoader } from '@media-router/engine';
 import { SrtInputModule } from './SrtInputModule.js';
 
 // pollStats logic moved to packages/engine/src/plugins/srtHelpers.ts (SrtStatPoller)
@@ -40,7 +45,9 @@ describe('SrtInputModule.buildPipeline', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('srtsrc name=src uri="srt://0.0.0.0:9000?mode=listener&latency=125"');
+        expect(desc!.pipeline).toContain(
+            'srtsrc name=src uri="srt://0.0.0.0:9000?mode=listener&latency=125"',
+        );
         expect(desc!.pipeline).toContain(
             'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true',
@@ -133,5 +140,279 @@ describe('SrtInputModule.updateStatusData', () => {
             port: 4200,
             encrypted: 'Yes',
         });
+    });
+});
+
+// --- On the restamp (house-clock plan WI-P1-10) -----------------------------------------------
+
+const MS = 1_000_000;
+const CH = {
+    stats: 'mrtsrestamp-stats:restamp',
+    pid: 'mrtsrestamp-pid:restamp',
+    event: 'mrtsrestamp-event:restamp',
+};
+/** The element's messages as the runner forwards them (plan ch. 5 part 10). */
+const stats = (o: Record<string, unknown> = {}) => ({
+    program: 1,
+    state: 'locked',
+    reason: 'none',
+    ppb: 1234,
+    'residual-p99-ns': 4 * MS,
+    'pcr-interval-max-ns': 40 * MS,
+    relocks: 0,
+    'cadence-warning': false,
+    'cc-lost': 0,
+    'desync-bytes': 0,
+    ...o,
+});
+const pidMsg = (pid: number, type: number) => ({
+    program: 1,
+    pid,
+    'stream-type': type,
+    'lead-min-ns': 300 * MS,
+    'lead-median-ns': 340 * MS,
+    'lead-max-ns': 420 * MS,
+    'trim-ns': 0,
+    'shift-ns': 0,
+    'dropped-pes': 0,
+});
+const DEGRADED = 'Degraded clock: PCR frozen — timing from PID 0x0100 PTS against arrival';
+const factories = (pipeline: string) => pipeline.split(' ! ').map((el) => el.split(' ')[0]);
+
+/** A playing module on the base's own state methods: what its card shows is `getState()`. */
+function cardModule() {
+    const module = new SrtInputModule() as any;
+    module.services = {
+        instanceId: 'srt-in-1',
+        mediaRouter: { assignBusChannel: vi.fn(), getBusChannel: vi.fn(() => ({ port: 41000 })) },
+    };
+    module.config = {};
+    module.log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+    module.health = 'ok';
+    return module;
+}
+const sectionIds = (module: any) =>
+    module.getState().dynamicStatusSections.map((s: { id: string }) => s.id);
+/** One report interval: stats and the video PID, then the reporter's tick. */
+function report(module: any, s: Record<string, unknown> = {}) {
+    module.dispatchPluginEvent(CH.stats, stats(s));
+    module.dispatchPluginEvent(CH.pid, pidMsg(256, 0x1b));
+    module.ingestTiming.tick();
+}
+
+describe('SrtInputModule on the restamp (WI-P1-10)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it('restamps right after srtsrc, before the queue and the bus sink', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({});
+        expect(factories(desc!.pipeline)).toEqual([
+            'srtsrc',
+            'mrtsrestamp',
+            'queue',
+            'capssetter',
+            'capsfilter',
+            'mrlateness',
+            'tee',
+        ]);
+        expect(desc!.pipeline).toContain(
+            ' ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=2 ',
+        );
+        expect(desc!.houseTimelineEgress).toBe(true);
+        expect(desc!.busReports).toEqual([
+            { element: 'restamp', structure: 'mrtsrestamp-stats' },
+            { element: 'restamp', structure: 'mrtsrestamp-pid' },
+            { element: 'restamp', structure: 'mrtsrestamp-event' },
+        ]);
+    });
+
+    it('starts the restamp on the configured offset and trims', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            ingestOffsetMs: -250,
+            pidTrimsMs: { 257: 40, 256: -12 },
+        });
+        expect(desc!.pipeline).toContain(
+            'mrtsrestamp name=restamp clock-mode=stc offset-ns=-250000000 ' +
+                'pid-trims="256=-12000000;257=40000000" ! queue',
+        );
+    });
+
+    it("is the string the ingest-restamp protocol case runs behind srt-input's queue", () => {
+        // gst_ingest_restamp_test.py copies the queue (plan ch. 5 part 7.3 b): it must not drift.
+        const py = readFileSync(
+            join(
+                __dirname,
+                '../../../packages/engine/src/child-process/gst_ingest_restamp_test.py',
+            ),
+            'utf8',
+        );
+        const queue = /^SRT_QUEUE = "(.+)"$/m.exec(py)?.[1];
+        expect(queue).toMatch(/^queue /);
+        const { module } = makeModule();
+        expect(module.buildPipeline({})!.pipeline).toContain(
+            `offset-ns=0 ! ${queue} ! capssetter `,
+        );
+    });
+
+    it('a live edit of O or a trim sets the restamp property, with no restart', async () => {
+        const { module } = makeModule();
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        const instance = new ModuleInstance('srt-in-1', 'srt-input', module, {});
+        await instance.applyConfigUpdate({ ingestOffsetMs: 500 });
+        expect(setElementProperty).toHaveBeenCalledWith('restamp', 'offset-ns', 500_000_000);
+        await instance.applyConfigUpdate({ pidTrimsMs: { 257: -40 } });
+        expect(setElementProperty).toHaveBeenLastCalledWith(
+            'restamp',
+            'pid-trims',
+            '257=-40000000',
+        );
+        expect(setElementProperty).toHaveBeenCalledTimes(2);
+        expect(instance.getState().pendingRestart).toBe(false);
+        // A later rebuild starts on the edited values.
+        expect(module.buildPipeline(module.config)!.pipeline).toContain(
+            'offset-ns=500000000 pid-trims="257=-40000000"',
+        );
+    });
+
+    it('declares ingest timing: the loader adds O and the trims, and each is live here', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'srt-input-manifest-'));
+        try {
+            mkdirSync(join(dir, 'srt-input'));
+            copyFileSync(join(__dirname, '../package.json'), join(dir, 'srt-input/package.json'));
+            const loader = new PluginLoader(dir);
+            await loader.load();
+            const props = (loader.getPluginSchemas()['srt-input'] as any).properties;
+            expect(props.ingestOffsetMs).toMatchObject({ minimum: -10000, maximum: 10000 });
+            expect(props.pidTrimsMs).toMatchObject({
+                'x-widget': 'pidTrim',
+                'x-optionsFrom': 'pids',
+            });
+            const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
+            expect(live).toEqual(expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs']));
+            expect(new SrtInputModule().getLiveUpdatableParams()).toEqual(
+                expect.arrayContaining(live),
+            );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("shows the restamp's card from start to stop, beside the caller sections", async () => {
+        vi.useFakeTimers();
+        // The base's start spawns a runner; a bare emitter stands in for it.
+        const child = Object.assign(new EventEmitter(), { stop: vi.fn(async () => {}) });
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+            this.childProcess = child;
+        });
+        const module = cardModule();
+        await module.onStart();
+        module.dispatchPluginEvent(CH.stats, stats());
+        module.dispatchPluginEvent(CH.pid, pidMsg(256, 0x1b));
+        expect(sectionIds(module)).toEqual([]);
+        vi.advanceTimersByTime(2000); // the reporter's tick
+        const state = module.getState();
+        expect(state.badges).toContainEqual({
+            id: 'clock',
+            icon: 'clock',
+            text: 'Locked',
+            color: '#10b981',
+        });
+        expect(state.statusData.clock).toMatchObject({ state: 'Locked', sourceRate: 1.23 });
+        expect(state.statusData['pid-256']).toMatchObject({ lead: '300 / 340 / 420' });
+        expect(state.fieldOptions.pids).toEqual([{ value: '256', label: '0x0100 H.264 video' }]);
+
+        // A listener's callers come and go with every poll; the clock's sections stay.
+        module.running = true;
+        module.getElementStats = vi.fn(async () => ({ callers: [{ 'bytes-received': 1000 }] }));
+        await module.statPoller.poll();
+        expect(sectionIds(module)).toEqual(['caller-0', 'clock', 'pid-256']);
+        // ...and the clock's publication keeps the callers, in the same order.
+        report(module, { state: 'acquiring' });
+        expect(sectionIds(module)).toEqual(['caller-0', 'clock', 'pid-256']);
+        expect(module.getState().statusData['caller-0']).toBeDefined();
+        // The runner going down drops the callers, not the clock (it reads No PCR when stale).
+        child.emit('stateChange', { state: 'error' });
+        expect(sectionIds(module)).toEqual(['clock', 'pid-256']);
+
+        // Every program stopped reporting (its PIDs report on): the badge is withdrawn.
+        for (let i = 0; i < 4; i++) {
+            vi.advanceTimersByTime(2000);
+            module.dispatchPluginEvent(CH.pid, pidMsg(256, 0x1b));
+        }
+        vi.advanceTimersByTime(2000);
+        expect(module.getState().badges.map((b: { id: string }) => b.id)).not.toContain('clock');
+
+        // Stopped: the card is cleared and nothing publishes any more.
+        await module.onStop();
+        module.dispatchPluginEvent(CH.stats, stats());
+        vi.advanceTimersByTime(4000);
+        expect(module.getState().badges).toEqual([]);
+        expect(sectionIds(module)).toEqual([]);
+    });
+
+    it('logs the restamp events, and leaves other plugin events alone', () => {
+        const module = cardModule();
+        module.dispatchPluginEvent(CH.event, { kind: 'relock', program: 1, reason: 'leap' });
+        expect(module.log.info).toHaveBeenCalledWith(
+            { 'mrtsrestamp-event': { kind: 'relock', program: 1, reason: 'leap' } },
+            'mrtsrestamp-event relock (leap)',
+        );
+        module.dispatchPluginEvent('mrtsrestamp-stats:other', stats());
+        module.ingestTiming.tick();
+        expect(sectionIds(module)).toEqual([]);
+    });
+
+    it('raises the degraded clock as a warning and withdraws only its own text', () => {
+        const module = cardModule();
+        module.dispatchPluginEvent(CH.event, {
+            kind: 'degraded',
+            program: 1,
+            pid: 256,
+            reason: 'freeze',
+        });
+        report(module, { state: 'degraded', reason: 'freeze' });
+        expect([module.health, module.error]).toEqual(['warning', DEGRADED]);
+        // A second condition replaces the clock's own text.
+        const sparse = { 'cadence-warning': true, 'pcr-interval-max-ns': 300 * MS };
+        report(module, { state: 'degraded', reason: 'freeze', ...sparse });
+        expect(module.error).toMatch(/^Degraded clock: .*; PCR every 300 ms \(spec ≤ 100 ms\)$/);
+        report(module);
+        expect([module.health, module.error]).toEqual(['ok', undefined]);
+
+        // Another warning since then owns the health text: the clock's clear leaves it.
+        report(module, { state: 'degraded', reason: 'freeze' });
+        module.setHealth('warning', 'Waiting for upstream module(s): x');
+        report(module);
+        expect([module.health, module.error]).toEqual([
+            'warning',
+            'Waiting for upstream module(s): x',
+        ]);
+    });
+
+    it('a clock warning hidden by another, or raised during a fault, shows again at ok', () => {
+        const module = cardModule();
+        report(module, { state: 'degraded', reason: 'freeze' });
+        module.setHealth('warning', 'Waiting for upstream module(s): x');
+        module.setHealth('ok');
+        expect([module.health, module.error]).toEqual([
+            'warning',
+            expect.stringMatching(/^Degraded clock: PCR frozen/),
+        ]);
+
+        // A fault outranks it; the PLAYING after the restart puts it back.
+        const faulted = cardModule();
+        faulted.setHealth('error', 'srtsrc: connection failed');
+        report(faulted, { state: 'degraded', reason: 'freeze' });
+        expect([faulted.health, faulted.error]).toEqual(['error', 'srtsrc: connection failed']);
+        faulted.health = 'ok'; // what the base's PLAYING sets before its hook
+        faulted.error = undefined;
+        faulted.onPipelinePlaying();
+        expect(faulted.health).toBe('warning');
+        expect(faulted.error).toMatch(/^Degraded clock: PCR frozen/);
     });
 });
