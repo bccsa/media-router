@@ -369,6 +369,31 @@ describe('build302mEncodeBranch', () => {
         expect(build302mEncodeBranch({ channels: 3 })).toContain('channels=4 !');
         expect(build302mEncodeBranch({ channels: 32 })).toContain('channels=8 !');
     });
+
+    it("pins the mixers' branch byte for byte: no ASRC, no restamp until Phase 2", () => {
+        const tail = ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7';
+        expect(build302mEncodeBranch()).toBe(
+            'audioconvert ! audioresample ! audio/x-raw,format=S32LE,rate=48000,channels=2' + tail,
+        );
+        expect(build302mEncodeBranch({ format: 'S16LE', channels: 8, asrc: false })).toBe(
+            'audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=8' + tail,
+        );
+    });
+
+    it('a PCM capture resamples once, in mrasrc, and ends in its restamp (WI-P1-11)', () => {
+        const restamp = 'mrtsrestamp name=restamp clock-mode=fixed offset-ns=-40000000';
+        expect(build302mEncodeBranch({ format: 'S16LE', channels: 4, asrc: true, restamp })).toBe(
+            'audioconvert ! mrasrc name=asrc ! audio/x-raw,format=S16LE,rate=48000,channels=4' +
+                ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7 ! ' +
+                restamp,
+        );
+        // The ASRC converts the nominal rate too, so nothing resamples twice (§13.1).
+        expect(build302mEncodeBranch({ asrc: true })).not.toContain('audioresample');
+        // The restamp follows the mux whichever resampler runs.
+        expect(build302mEncodeBranch({ restamp })).toMatch(
+            /audioresample .* alignment=7 ! mrtsrestamp /,
+        );
+    });
 });
 
 describe('normalize302mChannels', () => {

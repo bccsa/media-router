@@ -1,4 +1,5 @@
 import {
+    buildAsrc,
     buildBusSrc,
     gstElementSupportsCaps,
     probeGstElement,
@@ -411,6 +412,11 @@ export interface Audio302mEncodeOpts {
     /** Channels in the 302M stream — snapped onto {2, 4, 6, 8} by
      *  `normalize302mChannels`. Default 2 (every pre-existing caller). */
     channels?: number;
+    /** A PCM capture (house-clock plan WI-P1-11): `mrasrc` in place of `audioresample`, the one
+     *  resample of the path, locking the device clock to the capture PTS (P7). */
+    asrc?: boolean;
+    /** Appended after the mux: the capture's `buildRestamp({ mode: 'fixed', … })`. */
+    restamp?: string;
 }
 
 /**
@@ -421,18 +427,23 @@ export interface Audio302mEncodeOpts {
  * build quirk (verified `gst-inspect-1.0 avenc_s302m` on the fleet's gst
  * 1.28.2: `channels: { 2, 4, 6, 8 }`). Default stereo; wider streams are
  * opt-in per caller. Ends in its own `mpegtsmux latency=0 alignment=7`
- * (single-ES TS, SRT-aligned) — the caller appends `buildBusSink(...)`.
+ * (single-ES TS, SRT-aligned), then the `restamp` when given — the caller
+ * appends `buildBusSink(...)`. Without `asrc` and `restamp` (the mixers until
+ * Phase 2) the string is the one they have always built.
  */
 export function build302mEncodeBranch(opts: Audio302mEncodeOpts = {}): string {
     const format = opts.format ?? 'S32LE';
     const channels = normalize302mChannels(opts.channels ?? 2);
+    // No out-rate: the caps after it pin 302M's 48 kHz.
+    const resample = opts.asrc ? buildAsrc() : 'audioresample';
     // `strict=experimental`: ffmpeg flags its s302m ENCODER experimental and
     // refuses to run at normal compliance ("Codec is experimental, but
     // settings don't allow…" — verified gate01 gst 1.28). The bitstream it
     // produces is plain standard SMPTE 302M; only the encoder is gated.
     return (
-        'audioconvert ! audioresample' +
+        `audioconvert ! ${resample}` +
         ` ! audio/x-raw,format=${format},rate=48000,channels=${channels}` +
-        ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7'
+        ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7' +
+        (opts.restamp ? ` ! ${opts.restamp}` : '')
     );
 }

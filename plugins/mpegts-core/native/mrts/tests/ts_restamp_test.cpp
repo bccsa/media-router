@@ -2182,6 +2182,76 @@ void test_gap_position() {
               r.gaps[0].end_ns - r.gaps[0].start_ns == 1 * S - 24 * MS && r.in_place && r.bytes() == 4 * PKT);
 }
 
+// Fixed mode by hand, as a capture's mux: one 48 kHz audio PID whose PES hold `sizes` samples,
+// one PES per buffer at its own time, `extra` ns of nothing before the PES it names, `offsets`
+// a live O set before it. The gaps, each with the index of the PES that showed it.
+std::vector<std::pair<size_t, RestampCore::Gap>> fixed_run(const std::vector<int64_t>& sizes,
+                                                           const std::map<size_t, int64_t>& extra,
+                                                           const std::map<size_t, int64_t>& offsets = {}) {
+    Bytes psi(2 * PKT);
+    build_pat(1, {{PROGRAM, PID_PMT}}, 0, 0, psi.data());
+    build_pmt(PID_PMT, PROGRAM, PID_NULL, {{PID_A1, 0x03, {}}}, 0, 0, psi.data() + PKT);
+    RestampCore rc(fixed_cfg(false, 0));
+    rc.process(psi.data(), psi.size(), 1 * S);
+    std::vector<std::pair<size_t, RestampCore::Gap>> out;
+    int64_t samples = 0, skip90 = 0;
+    for (size_t i = 0; i < sizes.size(); i++) {
+        const auto e = extra.find(i);
+        if (e != extra.end()) skip90 += ns_to_pts90k(e->second);
+        const auto o = offsets.find(i);
+        if (o != offsets.end()) rc.set_offset(o->second);
+        const int64_t t90 = ns_to_pts90k(1 * S) + samples * 15 / 8 + skip90;   // 48 kHz on 90 kHz
+        Bytes p = packetize(PID_A1, pes_bytes(0xC0, MUX_CLOCK_BASE_90K + t90, -1, Bytes(100, 0x22)), -1, 0)[0];
+        p[3] = (uint8_t)((p[3] & 0xF0) | (i & 0x0F));
+        for (const RestampCore::Gap& g : rc.process(p.data(), p.size(), pts90k_to_ns(t90)).gaps)
+            out.emplace_back(i, g);
+        samples += sizes[i];
+    }
+    return out;
+}
+
+bool jump_of(const std::pair<size_t, RestampCore::Gap>& g, size_t at, int64_t len, int64_t tol) {
+    return g.first == at && !std::strcmp(g.second.reason, "jump") &&
+           iabs(g.second.end_ns - g.second.start_ns - len) <= tol;
+}
+
+void test_fixed_jump_reference() {
+    constexpr int64_t SAMPLE_NS = 20834;   // 1/48 kHz, rounded up
+    // mrasrc's first output on 1 ms AES67 packets is 16 of 48 samples, then 47 and 49 alternate
+    // with the ratio: as the one spacing a jump was measured against, it made every PES a jump.
+    std::vector<int64_t> aes(1, 16);
+    for (int i = 0; i < 2000; i++) aes.push_back(i % 2 ? 49 : 47);
+    const auto a = fixed_run(aes, {{1500, 60 * MS}});
+    std::printf("  AES67 1 ms PES, 16-sample first: %zu gap(s)\n", a.size());
+    CHECK("fixed jump: a 16-sample first PES among 1 ms ones marks nothing; a 60 ms jump marks one, 60 ms "
+          "(to the PES sizes' 2-sample wobble)",
+          a.size() == 1 && jump_of(a[0], 1500, 60 * MS, 2 * SAMPLE_NS + TICK_NS));
+    // A relock on a capture-latency fall drops the overlap and leaves a short buffer behind.
+    std::vector<int64_t> cap(300, 2880);
+    cap[100] = 4;
+    const auto c = fixed_run(cap, {{200, 100 * MS}});
+    std::printf("  302M 60 ms PES, one of 4 samples: %zu gap(s)\n", c.size());
+    CHECK("fixed jump: a 4-sample PES among 60 ms ones marks nothing; a 100 ms jump later marks one, 100 ms",
+          c.size() == 1 && jump_of(c[0], 200, 100 * MS, TICK_NS));
+    // A lasting cadence rise past 2x, as a PipeWire quantum rise (512 -> 2,048 samples) gives:
+    // learned within two PES, a marker each, then none; a 100 ms jump still marks one.
+    std::vector<int64_t> q(200, 512);
+    q.insert(q.end(), 300, 2048);
+    const auto r = fixed_run(q, {{400, 100 * MS}});
+    std::printf("  quantum rise 512 -> 2048 samples: %zu gap(s)\n", r.size());
+    CHECK("fixed jump: a quantum rise 512 -> 2,048 samples gives two markers, none after; a 100 ms jump marks one",
+          r.size() == 3 && r[0].first == 201 && r[1].first == 202 && jump_of(r[2], 400, 100 * MS, TICK_NS));
+    // One jump is an outlier too: the reference does not move, so a second two PES on marks.
+    const auto t = fixed_run(std::vector<int64_t>(100, 2880), {{50, 100 * MS}, {52, 100 * MS}});
+    CHECK("fixed jump: two 100 ms jumps two PES apart mark one each",
+          t.size() == 2 && jump_of(t[0], 50, 100 * MS, TICK_NS) && jump_of(t[1], 52, 100 * MS, TICK_NS));
+    // An edit's spacing is the mapping's, not the content's: it never joins the reference.
+    const auto d = fixed_run(std::vector<int64_t>(100, 2880), {{52, 100 * MS}}, {{50, 100 * MS}, {51, 200 * MS}});
+    CHECK("fixed jump: two +100 ms O edits in a row mark one each; a 100 ms jump right after still marks one",
+          d.size() == 3 && !std::strcmp(d[0].second.reason, "edit") && !std::strcmp(d[1].second.reason, "edit") &&
+              d[0].first == 50 && d[1].first == 51 && jump_of(d[2], 52, 100 * MS, TICK_NS));
+}
+
 void test_trace_mid_stream() {
     // A trace begun mid-stream (trace-location set while running) opens with the tables in
     // force, then the PCR and PES from there on: it replays on its own.
@@ -2346,6 +2416,7 @@ int main() {
     test_trace_mid_stream();
     test_no_pts_edit();
     test_gap_position();
+    test_fixed_jump_reference();
     test_dup_split_cont();
     test_dup_split_held();
     test_first_overlap();

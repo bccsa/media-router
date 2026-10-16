@@ -14,6 +14,10 @@
             "arm64",
             "x86_64"
         ],
+        "timing": {
+            "role": "ingest",
+            "pidTrims": false
+        },
         "ports": [
             {
                 "id": "audio-out",
@@ -154,13 +158,7 @@
                         "key": "multicast",
                         "type": "string",
                         "label": "Multicast"
-                    }
-                ]
-            },
-            {
-                "id": "clock",
-                "label": "Clock",
-                "fields": [
+                    },
                     {
                         "key": "ptpSync",
                         "type": "string",

@@ -792,10 +792,11 @@ for hours in (10, 14):
 
 
 # ---------------------------------------------------------------------------
-print("\n--- a GAP buffer (the bus gap marker, OQ-12) leaves an identity egress untouched ---")
+print("\n--- the bus gap marker (OQ-12) leaves an identity egress with its PTS, no DTS ---")
 # Its PTS is the gap's end and its packets' private data the gap's length; a
 # stamp would replace that PTS with the staircase. OQ-12's form has no duration;
-# the second marker carries one to show a duration is never touched either.
+# the second marker carries one to show a duration is never touched either, and
+# the DTS the restamp gives it (its input's timeline), which no bus queue may read.
 # Anchored mode is frozen (Q2), pinned as it was: no anchored egress carries one.
 GAP_FLAGS = int(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
 
@@ -834,13 +835,15 @@ for house in (True, False):
     pipe.get_state(3 * Gst.SECOND)
     c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
     pes = [pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i) for i in range(4)]
-    markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE),
-               (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 300 * Gst.MSECOND)]
+    markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE,
+                Gst.CLOCK_TIME_NONE),
+               (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 2 * Gst.SECOND,
+                300 * Gst.MSECOND)]
     push(src, pes[0], 0, 0)
     push(src, pes[1], 40 * Gst.MSECOND, 0)
-    for data, pts, duration in markers:
+    for data, pts, dts, duration in markers:
         mb = Gst.Buffer.new_wrapped(data)
-        mb.pts, mb.dts, mb.duration = pts, Gst.CLOCK_TIME_NONE, duration
+        mb.pts, mb.dts, mb.duration = pts, dts, duration
         mb.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
         src.emit("push-buffer", mb)
     push(src, pes[2], 80 * Gst.MSECOND, 0)
@@ -852,13 +855,14 @@ for house in (True, False):
     got = seen[2:4]
     check(f"{mode}: its GAP|DISCONT flags and bytes are intact",
           len(seen) == 6 and all(g[3] & GAP_FLAGS == GAP_FLAGS for g in got)
-          and [g[4] for g in got] == [d for d, _p, _u in markers])
+          and [g[4] for g in got] == [m[0] for m in markers])
     data = [s for s in seen if not s[3] & int(Gst.BufferFlags.GAP)]
     if house:
-        check("identity: each marker leaves with its own PTS and duration, DTS still unset",
+        check("identity: each marker leaves with its own PTS and duration and no DTS, also one "
+              "that came with a DTS",
               len(seen) == 6
               and [(g[0], g[1], g[2]) for g in got]
-              == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, duration in markers])
+              == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, _dts, duration in markers])
         want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(4)]
         check("identity: the data on either side is stamped PES − 1 h as usual",
               [(s[0], s[1]) for s in data] == [(w, w) for w in want])
@@ -866,7 +870,7 @@ for house in (True, False):
         check("anchored (frozen, Q2): each marker is stamped like any PES-less buffer, as before",
               len(seen) == 6
               and [(g[0], g[1], g[2]) for g in got]
-              == [(seen[1][0], seen[1][0], duration) for _d, _p, duration in markers])
+              == [(seen[1][0], seen[1][0], duration) for _d, _p, _dts, duration in markers])
         check("anchored: the data on either side keeps its 40 ms staircase",
               len(data) == 4 and {data[i + 1][0] - data[i][0] for i in range(3)} == {40_000_000}
               and all(s[1] == s[0] for s in data))

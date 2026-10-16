@@ -146,6 +146,10 @@ class RestampCore {
         // The guard and the gap: the last emitted PES's key, the spacing before it.
         bool have_last = false, clean = false;   // clean: no drop since the last emitted
         int64_t last_key = 0, interval = 0, last_h = 0;
+        // Fixed mode's jump reference: the last three such spacings, a jump's included, so one
+        // short PES or one jump never moves it and a lasting cadence change does.
+        int64_t spacing[3] = {0, 0, 0};
+        uint8_t n_spacing = 0, spacing_at = 0;
         bool have_src = false;            // the previous PES's guard key on source time
         int64_t last_src = 0;
         uint32_t max_epoch = 0, last_epoch = 0;   // the newest it emitted under; the last PES's

@@ -290,10 +290,10 @@ def ingest_restamp_case(argv, tag, check, srt_queue=False, now=None):
           len(data_ok) == sum(1 for k, *_ in expect if k == "data") and pes_bearing > 300
           and all(p == s if s is not None else p <= first for p, s in data_ok))
     marks = [(g, e) for g, e in zip(got, expect) if e[0] == "gap"]
-    check(f"{label}: (b) each marker: GAP|DISCONT, PTS the gap's end, no duration, its length "
-          f"in the private data ({len(marks)} markers)",
-          len(marks) == 5 and all(g[3] & GAP_FLAGS == GAP_FLAGS and g[0] == e[1] and g[2] == NONE
-                                  and g[4] == e[3] for g, e in marks))
+    check(f"{label}: (b) each marker: GAP|DISCONT, PTS the gap's end, no DTS or duration, its "
+          f"length in the private data ({len(marks)} markers)",
+          len(marks) == 5 and all(g[3] & GAP_FLAGS == GAP_FLAGS and g[0] == e[1] and g[1] == NONE
+                                  and g[2] == NONE and g[4] == e[3] for g, e in marks))
     pl = [(fx.pkt_pid(e[3]), fx.gap_length(e[3])) for _, e in marks]
     edit, trim, outage = sorted(pl[:2]), pl[2:3], sorted(pl[3:])
     check(f"{label}: (b) the O edit marks each PID by 500 ms ({edit}), the trim the audio PID by "

@@ -1,21 +1,29 @@
 import {
     GstPluginBase,
+    INGEST_OFFSET_KEY,
+    IngestTimingReporter,
     aes67DepayloaderElement,
     aes67RtpCaps,
+    applyIngestTimingLiveUpdate,
+    asrcBusReports,
     buildBusSink,
     buildNetUdpSrc,
+    buildRestamp,
     clampChannels,
     clampPayloadType,
     interfaceAddress,
+    isIngestTimingSection,
     isMulticastAddr,
     registerNetworkInterfaceDeviceProvider,
     resolvePythonScript,
+    restampBusReports,
     formatBytes,
     bitrateBadge,
     AES67_SAMPLE_RATE,
     NET_UDP_RCV_BUF,
     type Aes67Encoding,
     type EngineServices,
+    type IngestTimingHost,
     type PipelineDescription,
 } from '@media-router/engine';
 import { build302mEncodeBranch, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
@@ -35,11 +43,11 @@ import {
  * therefore a route head: `playoutOffsetMs` set here is the budget every player
  * fed from this stream presents against.
  *
- * Timing. The stream arrives with its own RTP timeline; the module does NOT
- * re-stamp it (no `do-timestamp`, no `tsparse set-timestamps`). Buffers reach
- * the `busout_*` tee carrying pipeline running time, and the engine's stamper
- * anchors that onto the house clock exactly as it does for every other
- * producer — so nothing here touches the time-sync contract's machinery.
+ * Timing. The jitterbuffer's PTS is the capture-time evidence (house-clock
+ * design §5.4): `mrasrc` locks the sender's clock to it and resamples to the
+ * house rate, the restamp applies the Ingest Offset after the mux, and the
+ * egress stamps by identity. Nothing re-times the stream on arrival (no
+ * `do-timestamp`, no `tsparse set-timestamps`).
  *
  * `ptpSync` adds RFC 7273 signalling to the receive caps and turns on the
  * jitterbuffer's `rfc7273-sync`, which schedules packets against the sender's
@@ -49,9 +57,16 @@ import {
  */
 export class Aes67InputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. */
-    protected liveUpdatableParams = ['playoutOffsetMs'];
+     *  never by this pipeline, so it is live and never pends a restart. O is the
+     *  restamp's live property (§5.5); no per-PID trim on a capture (OQ-15). */
+    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY];
 
+    /** The ASRC's and the restamp's card: the Clock section and part 10's warnings. */
+    private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
+        mode: 'fixed',
+    });
+    /** The reporter's warning text, so its clear never takes another warning down. */
+    private clockWarning: string | null = null;
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     /** Parameters taken from the picked SAP announcement, if it is being announced. */
     private pickedStream: DiscoveredStream | null = null;
@@ -78,6 +93,7 @@ export class Aes67InputModule extends GstPluginBase {
             }
         });
         this.statsTimer = setInterval(() => void this.pollStats(), 2000);
+        this.ingestTiming.start();
         this.updateStatusData();
     }
 
@@ -86,11 +102,35 @@ export class Aes67InputModule extends GstPluginBase {
             clearInterval(this.statsTimer);
             this.statsTimer = null;
         }
+        this.ingestTiming.stop();
         // The sidecar dies with the module (ProcessManager ownership), but the
         // streams it published would otherwise linger in every other module's
         // picker as sessions nobody is listening for any more.
         aes67Discovery.clear(this.services?.instanceId ?? '');
         await super.onStop();
+    }
+
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        await super.onLiveConfigUpdate(changes);
+        await applyIngestTimingLiveUpdate(
+            { setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+            changes,
+        );
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        this.ingestTiming.onEvent(channel, payload);
+    }
+
+    /** Every PLAYING sets health ok: put a standing clock warning back. */
+    protected onPipelinePlaying(): void {
+        this.ingestTiming.reassert();
+    }
+
+    /** A return to ok shows a standing clock warning again: another warning may have hidden it. */
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok') this.ingestTiming.reassert();
     }
 
     /** SAP listener sidecar — one per running input module (see sapDiscovery.ts). */
@@ -237,19 +277,23 @@ export class Aes67InputModule extends GstPluginBase {
             `rtpjitterbuffer name=jbuf latency=${jitterMs}` +
             (ptpActive ? ' rfc7273-sync=true add-reference-timestamp-meta=true' : '');
 
-        // NOTE: no re-timestamping anywhere in this chain (time-sync contract).
         // This module encodes STEREO 302M (`build302mEncodeBranch()` default);
         // the format itself carries up to 8 channels (ADR-0014) and widening
         // AES67 ingest is a follow-up. A >2 ch stream is downmixed by
         // audioconvert and the operator is told so rather than silently losing
         // channels. Because the wire is fixed stereo whatever `channels` says,
         // this module deliberately declares no `getBusStreamChannels`.
+        // The ASRC labels its output on the jitterbuffer's time; the restamp only moves it by O.
         const pipeline = [
             netSrc,
             jitter,
             aes67DepayloaderElement(encoding),
             `audio/x-raw,rate=${AES67_SAMPLE_RATE}`,
-            build302mEncodeBranch({ format: s302mFormatFor(config.pcmBitDepth) }),
+            build302mEncodeBranch({
+                format: s302mFormatFor(config.pcmBitDepth),
+                asrc: true,
+                restamp: buildRestamp({ mode: 'fixed', offsetMs: config[INGEST_OFFSET_KEY] }),
+            }),
             buildBusSink(endpoint.port),
         ].join(' ! ');
 
@@ -267,6 +311,8 @@ export class Aes67InputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
+            houseTimelineEgress: true,
+            busReports: [...restampBusReports(), ...asrcBusReports()],
             // udpsrc silence is a health warning, not a rebuild (gst_source_gate.py);
             // a MULTICAST membership lost across a network blip is the one case a
             // rebuild helps, so re-join after a minute of silence. Unicast: never.
@@ -305,15 +351,45 @@ export class Aes67InputModule extends GstPluginBase {
         const p = this.streamParams(this.config);
         const ptpSync = this.config.ptpSync === true;
         const gmid = ((this.config.ptpGmid as string) ?? '').trim();
+        // PTP Sync is a Stream row: the Clock section is the ASRC's, and its publication
+        // replaces the whole section's data.
         this.setStatusData('stream', {
             source: p.fromDiscovery ? `${p.address}:${p.port} (SAP)` : `${p.address}:${p.port}`,
             format: `${p.encoding} ${AES67_SAMPLE_RATE / 1000} kHz ${p.channels}ch`,
             payloadType: p.payloadType,
             multicast: isMulticastAddr(p.address) ? 'Yes' : 'No',
-        });
-        this.setStatusData('clock', {
             ptpSync: ptpSync && gmid ? `RFC 7273 (gm ${gmid})` : 'Off — arrival-scheduled',
         });
         this.setStatusData('discovery', { discovered: aes67Discovery.list().length });
+    }
+
+    private ingestTimingHost(): IngestTimingHost {
+        return {
+            // The base keeps one list of dynamic sections: anyone else's stay.
+            setDynamicSections: (sections) => {
+                const others = this.dynamicStatusSections.filter(
+                    (s) => !isIngestTimingSection(s.id),
+                );
+                this.setDynamicSections([...others, ...sections]);
+            },
+            setStatusData: (id, data) => this.setStatusData(id, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setFieldOptions: (key, options) => this.setFieldOptions(key, options),
+            // Over ok or another warning, never over a fault or a stop: PLAYING re-asserts it.
+            warn: (text) => {
+                this.clockWarning = text;
+                if (this.health === 'ok' || this.health === 'warning') {
+                    this.setHealth('warning', text);
+                }
+            },
+            clearWarning: () => {
+                if (this.health === 'warning' && this.error === this.clockWarning) {
+                    this.setHealth('ok');
+                }
+                this.clockWarning = null;
+            },
+            log: (level, obj, msg) => this.log[level](obj, msg),
+        };
     }
 }

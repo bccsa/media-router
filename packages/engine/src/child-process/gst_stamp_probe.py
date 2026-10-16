@@ -174,8 +174,10 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
         if buf is None:
             return Gst.PadProbeReturn.OK
         if house_timeline and buf.has_flags(Gst.BufferFlags.GAP):
-            # An identity egress hands a gap marker (OQ-12) on as it came: its PTS
-            # is the gap's end, its packets' private data the gap's length.
+            # An identity egress hands a gap marker (OQ-12) on with its PTS, the gap's
+            # end, but no DTS: the restamp's is its input's timeline, which a bus queue
+            # reading DTS first takes for its level, leaking what follows.
+            buf.dts = Gst.CLOCK_TIME_NONE
             return Gst.PadProbeReturn.OK
         if st["segment"] is None:
             # Armed mid-stream: the SEGMENT event went by before the probe

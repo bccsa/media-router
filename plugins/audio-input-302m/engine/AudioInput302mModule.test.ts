@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GstPluginBase, ModuleInstance, PluginLoader } from '@media-router/engine';
 import { AudioInput302mModule } from './AudioInput302mModule.js';
 
 const DEV = 'alsa_input.usb-KLARK_TEKNIK_KT-USB_33793A14-00.multichannel-input';
@@ -94,7 +98,7 @@ describe('AudioInput302mModule.buildPipeline', () => {
             'audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7',
         );
         expect(desc!.pipeline).toContain(
-            'mpegtsmux latency=0 alignment=7 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true',
+            'mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc!.restartOnError).toBe(true);
         expect(module.linkPlan).toEqual({
@@ -426,5 +430,298 @@ describe('AudioInput302mModule device links', () => {
         module.linkDeps = fakeDeps(48, 2);
         await module.linker.ensure();
         expect(module.linkDeps.dump).not.toHaveBeenCalled();
+    });
+});
+
+// --- On house time (house-clock plan WI-P1-11) ------------------------------------------------
+
+const MS = 1_000_000;
+const CH = {
+    asrc: 'mrasrc-stats:asrc',
+    asrcEvent: 'mrasrc-event:asrc',
+    pid: 'mrtsrestamp-pid:restamp',
+};
+/** The elements' messages as the runner forwards them (plan ch. 5 part 10, WI-P1-8). */
+const asrcStats = (o: Record<string, unknown> = {}) => ({
+    state: 'locked',
+    'ratio-ppb': 12_340,
+    'phase-err-ns': 2.4 * MS,
+    relocks: 1,
+    'in-frames': 96_000,
+    'out-frames': 96_000,
+    'discont-in': 0,
+    'dropped-frames': 0,
+    ...o,
+});
+/** The capture's one PID, moved by O alone. */
+const pidMsg = (shiftMs: number) => ({
+    program: 1,
+    pid: 65,
+    'stream-type': 6,
+    'lead-min-ns': -2 * MS,
+    'lead-median-ns': -1 * MS,
+    'lead-max-ns': 9 * MS,
+    'trim-ns': 0,
+    'shift-ns': shiftMs * MS,
+    'dropped-pes': 0,
+});
+const factories = (pipeline: string) => pipeline.split(' ! ').map((el) => el.split(' ')[0]);
+const OFF = "Device clock off by 300 ppm — check the device's sample rate";
+const PLAN = {
+    streamNode: 'MR_PW_ain-1',
+    direction: 'capture',
+    deviceNode: DEV,
+    firstIndex: 0,
+    channels: 2,
+};
+
+/** A module on the base's own state methods: what its card shows is `getState()`. */
+function cardModule() {
+    const module = new AudioInput302mModule() as any;
+    module.services = {
+        instanceId: 'ain-1',
+        mediaRouter: { assignBusChannel: vi.fn(() => ({ port: 41000 })) },
+    };
+    module.config = { device: DEV };
+    module.deviceName = DEV;
+    module.log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+    module.health = 'ok';
+    return module;
+}
+const sectionIds = (module: any) =>
+    module.getState().dynamicStatusSections.map((s: { id: string }) => s.id);
+/** One report interval of the ASRC and the restamp, then the reporter's tick. */
+function report(module: any, asrc: Record<string, unknown> = {}) {
+    module.dispatchPluginEvent(CH.asrc, asrcStats(asrc));
+    module.dispatchPluginEvent(CH.pid, pidMsg(-120));
+    module.ingestTiming.tick();
+}
+/** A device clock 300 ppm off for the minute part 10's warning waits. */
+function offForAMinute(module: any, ppb = 300_000) {
+    report(module, { 'ratio-ppb': ppb });
+    vi.advanceTimersByTime(61_000);
+    report(module, { 'ratio-ppb': ppb });
+}
+
+describe('AudioInput302mModule on house time (WI-P1-11)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it('resamples once, in mrasrc, and restamps after the mux, before the bus sink', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({ device: 'alsa_input.usb-mic' });
+        const f = factories(desc!.pipeline);
+        expect(f.slice(f.indexOf('level'))).toEqual([
+            'level',
+            'audioconvert',
+            'mrasrc',
+            'audio/x-raw,format=S32LE,rate=48000,channels=2',
+            'avenc_s302m',
+            'mpegtsmux',
+            'mrtsrestamp',
+            'capssetter',
+            'capsfilter',
+            'mrlateness',
+            'tee',
+        ]);
+        // One resample per path (§13.1): the ASRC converts the nominal rate too.
+        expect(desc!.pipeline).not.toContain('audioresample');
+        expect(desc!.pipeline).toContain(
+            '! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ' +
+                '! audioconvert ! mrasrc name=asrc ! audio/x-raw,format=S32LE,rate=48000,channels=2 !',
+        );
+        expect(desc!.pipeline).toContain(
+            '! mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter ',
+        );
+        expect(desc!.houseTimelineEgress).toBe(true);
+        expect(desc!.busReports).toEqual([
+            { element: 'restamp', structure: 'mrtsrestamp-stats' },
+            { element: 'restamp', structure: 'mrtsrestamp-pid' },
+            { element: 'restamp', structure: 'mrtsrestamp-event' },
+            { element: 'asrc', structure: 'mrasrc-stats' },
+            { element: 'asrc', structure: 'mrasrc-event' },
+        ]);
+    });
+
+    it('starts the restamp on the configured Ingest Offset, with no per-PID trims', () => {
+        const { module } = makeModule({ deviceChannels: 48 });
+        const p: string = module.buildPipeline({
+            device: DEV,
+            channels: 8,
+            firstChannel: 9,
+            ingestOffsetMs: -120,
+            pidTrimsMs: { 65: 40 },
+        })!.pipeline;
+        expect(p).toContain(
+            '! mrasrc name=asrc ! audio/x-raw,format=S32LE,rate=48000,channels=8 ! avenc_s302m',
+        );
+        expect(p).toContain(' ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=-120000000 ! ');
+        // A capture has one PID, where O is the trim (OQ-15).
+        expect(p).not.toContain('pid-trims');
+    });
+
+    it('a live edit of O sets the restamp property with no restart, beside the live volume', async () => {
+        const { module } = makeModule();
+        module.config = { device: DEV };
+        const setElementProperty = vi.fn(async () => {});
+        module.setElementProperty = setElementProperty;
+        const instance = new ModuleInstance('ain-1', 'audio-input-302m', module, { device: DEV });
+        await instance.applyConfigUpdate({ ingestOffsetMs: -85 });
+        expect(setElementProperty).toHaveBeenCalledWith('restamp', 'offset-ns', -85_000_000);
+        await instance.applyConfigUpdate({ volume: 50 });
+        expect(setElementProperty).toHaveBeenLastCalledWith('vol', 'volume', 0.5);
+        expect(setElementProperty).toHaveBeenCalledTimes(2);
+        expect(instance.getState().pendingRestart).toBe(false);
+        // A later rebuild starts on the edited value.
+        expect(module.buildPipeline(module.config)!.pipeline).toContain('offset-ns=-85000000');
+    });
+
+    it('declares ingest timing: the loader adds the Ingest Offset only, and it is live here', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'audio-input-302m-manifest-'));
+        try {
+            mkdirSync(join(dir, 'audio-input-302m'));
+            copyFileSync(
+                join(__dirname, '../package.json'),
+                join(dir, 'audio-input-302m/package.json'),
+            );
+            const loader = new PluginLoader(dir);
+            await loader.load();
+            const props = (loader.getPluginSchemas()['audio-input-302m'] as any).properties;
+            expect(props.ingestOffsetMs).toMatchObject({ minimum: -10000, maximum: 10000 });
+            expect(props.pidTrimsMs).toBeUndefined();
+            const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
+            expect(live).toEqual(expect.arrayContaining(['volume', 'ingestOffsetMs']));
+            expect(new AudioInput302mModule().getLiveUpdatableParams()).toEqual(
+                expect.arrayContaining(live),
+            );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("shows the ASRC on the capture's Clock card from start to stop", async () => {
+        vi.useFakeTimers();
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async () => {});
+        const module = cardModule();
+        await module.onStart();
+        // The base's own dynamic section (a route head's playout raise) shares the one list.
+        module.upsertStatusSection({ id: 'playout', label: 'Playout', fields: [] });
+        module.dispatchPluginEvent(CH.asrc, asrcStats());
+        module.dispatchPluginEvent(CH.pid, pidMsg(-120));
+        expect(sectionIds(module)).toEqual(['playout']);
+        vi.advanceTimersByTime(2000); // the reporter's tick
+        const state = module.getState();
+        expect(sectionIds(module)).toEqual(['playout', 'clock']);
+        expect(state.dynamicStatusSections[1]).toEqual({
+            id: 'clock',
+            label: 'Clock',
+            fields: [
+                { key: 'asrcRatio', label: 'ASRC ratio', unit: 'ppm' },
+                { key: 'phaseError', label: 'Phase error', unit: 'ms' },
+                { key: 'relocks', label: 'Re-locks' },
+                { key: 'ingestOffset', label: 'Ingest offset', unit: 'ms' },
+            ],
+        });
+        expect(state.statusData.clock).toEqual({
+            asrcRatio: 12.34,
+            phaseError: 2,
+            relocks: 1,
+            ingestOffset: -120,
+        });
+        // Part 8's capture card has no clock badge.
+        expect(state.badges).toEqual([]);
+        // A new reading replaces the Clock section in place.
+        module.dispatchPluginEvent(CH.asrc, asrcStats({ 'ratio-ppb': 23_450 }));
+        vi.advanceTimersByTime(2000);
+        expect(sectionIds(module)).toEqual(['playout', 'clock']);
+        expect(module.getState().statusData.clock).toMatchObject({ asrcRatio: 23.45 });
+
+        // Stopped: the card is cleared and nothing publishes any more, a new reading neither.
+        await module.onStop();
+        module.dispatchPluginEvent(CH.asrc, asrcStats({ 'ratio-ppb': 50_000 }));
+        vi.advanceTimersByTime(4000);
+        expect(sectionIds(module)).toEqual([]);
+        expect(module.getState().statusData.clock).toBeUndefined();
+    });
+
+    it('a device unplug clears the card, and the replug shows it again with nothing changed', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async () => {});
+        const module = cardModule();
+        const interval = () => {
+            module.dispatchPluginEvent(CH.asrc, asrcStats());
+            module.dispatchPluginEvent(CH.pid, pidMsg(-120));
+            vi.advanceTimersByTime(2000);
+        };
+        await module.onStart();
+        interval();
+        expect(module.getState().statusData.clock).toMatchObject({ asrcRatio: 12.34 });
+        await module.onDeviceDisconnected();
+        interval();
+        expect(sectionIds(module)).toEqual([]);
+        await module.onDeviceReconnected();
+        interval();
+        expect(sectionIds(module)).toEqual(['clock']);
+        expect(module.getState().statusData.clock).toMatchObject({
+            asrcRatio: 12.34,
+            ingestOffset: -120,
+        });
+        await module.onStop();
+    });
+
+    it('raises the device clock warning over ok, and withdraws only its own text', () => {
+        vi.useFakeTimers();
+        const module = cardModule();
+        offForAMinute(module);
+        expect([module.health, module.error]).toEqual(['warning', OFF]);
+        report(module);
+        expect([module.health, module.error]).toEqual(['ok', undefined]);
+
+        // A link warning since then owns the health text: the clock's clear leaves it.
+        offForAMinute(module);
+        module.onLinked({ linked: 1, missing: 0, streamPorts: 2 }, PLAN);
+        expect(module.error).toBe('Linked 1 of 2 device channels');
+        report(module);
+        expect([module.health, module.error]).toEqual(['warning', 'Linked 1 of 2 device channels']);
+        // ...and a clock warning raised over it replaces it.
+        offForAMinute(module);
+        expect([module.health, module.error]).toEqual(['warning', OFF]);
+    });
+
+    it('a clock warning hidden by another shows again at ok, and at PLAYING after a fault', () => {
+        vi.useFakeTimers();
+        const module = cardModule();
+        offForAMinute(module, -300_000);
+        module.onLinked({ linked: 1, missing: 0, streamPorts: 2 }, PLAN);
+        module.onLinked({ linked: 2, missing: 0, streamPorts: 2 }, PLAN); // linked: ok
+        expect([module.health, module.error]).toEqual(['warning', OFF]);
+
+        // A fault outranks one raised during it; the PLAYING after the restart puts it back.
+        const faulted = cardModule();
+        faulted.setHealth('error', 'pipewiresrc: device busy');
+        offForAMinute(faulted, -300_000);
+        expect([faulted.health, faulted.error]).toEqual(['error', 'pipewiresrc: device busy']);
+        faulted.health = 'ok'; // what the base's PLAYING sets before its hook
+        faulted.error = undefined;
+        faulted.onPipelinePlaying();
+        expect([faulted.health, faulted.error]).toEqual(['warning', OFF]);
+    });
+
+    it('logs the ASRC events, a ratio past the clamp at warn', () => {
+        const module = cardModule();
+        const relock = { kind: 'relock', reason: 'envelope-step', 'dropped-ns': 59_935_000 };
+        module.dispatchPluginEvent(CH.asrcEvent, relock);
+        expect(module.log.info).toHaveBeenCalledWith(
+            { 'mrasrc-event': relock },
+            'mrasrc-event relock (envelope-step)',
+        );
+        const oob = { kind: 'ratio-out-of-bounds', reason: '', 'fit-ppb': 1_500_000 };
+        module.dispatchPluginEvent(CH.asrcEvent, oob);
+        expect(module.log.warn).toHaveBeenCalledWith(
+            { 'mrasrc-event': oob },
+            'mrasrc-event ratio-out-of-bounds',
+        );
     });
 });

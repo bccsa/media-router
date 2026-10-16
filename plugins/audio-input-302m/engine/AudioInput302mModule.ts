@@ -1,8 +1,16 @@
 import {
     GstPluginBase,
+    INGEST_OFFSET_KEY,
+    IngestTimingReporter,
+    applyIngestTimingLiveUpdate,
+    asrcBusReports,
     buildBusSink,
+    buildRestamp,
+    isIngestTimingSection,
     pulsePinnedStreamProps,
+    restampBusReports,
     StreamPortLinker,
+    type IngestTimingHost,
     type ModuleServices,
     type PipelineDescription,
     type StreamLinkDeps,
@@ -21,9 +29,11 @@ import {
  *
  * Captures from a physical input device and emits SMPTE-302M PCM-in-TS —
  * the timeline-DEFINING ingest point for live sources: a physical signal
- * has no inherent timeline, so capture time (pipeline running time at
- * capture) becomes its PTS. Everything downstream of this module is
- * timeline-carrying GStreamer — no PipeWire routing, no re-stamping.
+ * has no inherent timeline, so capture time on the house clock becomes its
+ * PTS. `mrasrc` resamples the device clock to the house rate against those
+ * PTS (house-clock plan P7), the restamp applies the Ingest Offset after the
+ * mux, and the egress stamps by identity. Everything downstream of this
+ * module is timeline-carrying GStreamer — no PipeWire routing.
  *
  * Channel range. A 302M stream carries 2/4/6/8 channels (the format's
  * ceiling, not ours), so a wide desk is several of these modules: `channels`
@@ -64,8 +74,15 @@ import {
  */
 
 export class AudioInput302mModule extends GstPluginBase {
-    protected liveUpdatableParams = ['volume', 'audioEnabled'];
+    /** O is the restamp's live property (§5.5); a capture has no per-PID trim (OQ-15). */
+    protected liveUpdatableParams = ['volume', 'audioEnabled', INGEST_OFFSET_KEY];
 
+    /** The ASRC's and the restamp's card: the Clock section and part 10's warnings. */
+    private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
+        mode: 'fixed',
+    });
+    /** The reporter's warning text, so its clear never takes another warning down. */
+    private clockWarning: string | null = null;
     private deviceName = '';
     /** Device links for the pipeline `buildPipeline` last described; null = none to make. */
     private linkPlan: StreamLinkSpec | null = null;
@@ -104,11 +121,13 @@ export class AudioInput302mModule extends GstPluginBase {
         const started = super.onStart();
         void this.linker.ensure();
         await started;
+        this.ingestTiming.start();
         this.startDeviceWatchdog();
     }
 
     async onStop(): Promise<void> {
         await this.stopDeviceWatchdog();
+        this.ingestTiming.stop();
         await super.onStop();
     }
 
@@ -116,7 +135,10 @@ export class AudioInput302mModule extends GstPluginBase {
         return this.deviceName || null;
     }
 
+    /** The base's stop clears the card, so the reporter forgets what it showed: a reconnect
+     *  publishes afresh even where nothing changed. */
     protected async onDeviceDisconnected(): Promise<void> {
+        this.ingestTiming.stop();
         try {
             await super.onStop();
         } catch {
@@ -128,16 +150,33 @@ export class AudioInput302mModule extends GstPluginBase {
         const started = super.onStart();
         void this.linker.ensure();
         await started;
+        this.ingestTiming.start();
     }
 
     /** Every PLAYING — including a runner-internal restart, which re-creates
-     *  the stream node and so needs its device links made again. */
+     *  the stream node and so needs its device links made again. PLAYING also
+     *  sets health ok: a standing clock warning goes back up. */
     protected onPipelinePlaying(): void {
         void this.linker.ensure();
+        this.ingestTiming.reassert();
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
         await this.applyVolumeLiveUpdate(changes);
+        await applyIngestTimingLiveUpdate(
+            { setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+            changes,
+        );
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        this.ingestTiming.onEvent(channel, payload);
+    }
+
+    /** A return to ok shows a standing clock warning again: another warning may have hidden it. */
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok') this.ingestTiming.reassert();
     }
 
     /** The 302M wire width this instance encodes — consumers size their
@@ -186,12 +225,14 @@ export class AudioInput302mModule extends GstPluginBase {
         const audioOff = (config.audioEnabled as boolean) === false;
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const sink = buildBusSink(endpoint.port);
+        // The PES carry capture time, so the restamp only moves them by O (part 4.2's fixed mode).
+        const restamp = buildRestamp({ mode: 'fixed', offsetMs: config[INGEST_OFFSET_KEY] });
 
         const pipeline =
             `${capture.clause}` +
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-            ` ! ${build302mEncodeBranch({ channels })} ! ${sink}`;
+            ` ! ${build302mEncodeBranch({ channels, asrc: true, restamp })} ! ${sink}`;
 
         this.linkPlan = capture.plan;
         this.setStatusData('input', {
@@ -209,6 +250,8 @@ export class AudioInput302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            houseTimelineEgress: true,
+            busReports: [...restampBusReports(), ...asrcBusReports()],
         };
     }
 
@@ -321,5 +364,35 @@ export class AudioInput302mModule extends GstPluginBase {
             this.linkWarning = false;
             this.setHealth('ok');
         }
+    }
+
+    private ingestTimingHost(): IngestTimingHost {
+        return {
+            // The base keeps one list of dynamic sections: anyone else's stay.
+            setDynamicSections: (sections) => {
+                const others = this.dynamicStatusSections.filter(
+                    (s) => !isIngestTimingSection(s.id),
+                );
+                this.setDynamicSections([...others, ...sections]);
+            },
+            setStatusData: (id, data) => this.setStatusData(id, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setFieldOptions: (key, options) => this.setFieldOptions(key, options),
+            // Over ok or another warning, never over a fault or a stop: PLAYING re-asserts it.
+            warn: (text) => {
+                this.clockWarning = text;
+                if (this.health === 'ok' || this.health === 'warning') {
+                    this.setHealth('warning', text);
+                }
+            },
+            clearWarning: () => {
+                if (this.health === 'warning' && this.error === this.clockWarning) {
+                    this.setHealth('ok');
+                }
+                this.clockWarning = null;
+            },
+            log: (level, obj, msg) => this.log[level](obj, msg),
+        };
     }
 }

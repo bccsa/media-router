@@ -34,6 +34,8 @@ What is pinned here:
       gstmrtsstamp.cpp moves the consumer's timeline by ~2 days and this fails.
   --  PARITY: the same fixture through the python probe and through the element
       produces the identical stamped ladder (deltas exact).
+  --  A gap marker leaves an identity egress with its PTS and no DTS, so the 5 s
+      edge queue behind a restamp keeps the PES behind it (both backends).
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable, or where the plugin
 has not been built (`make native`).
@@ -1040,10 +1042,11 @@ for hours in (10, 14):
 
 
 # ---------------------------------------------------------------------------
-print("\n--- a GAP buffer (the bus gap marker, OQ-12) leaves an identity egress untouched ---")
+print("\n--- the bus gap marker (OQ-12) leaves an identity egress with its PTS, no DTS ---")
 # Its PTS is the gap's end and its packets' private data the gap's length; a
 # stamp would replace that PTS with the staircase. OQ-12's form has no duration;
-# the second marker carries one to show a duration is never touched either.
+# the second marker carries one to show a duration is never touched either, and
+# the DTS the restamp gives it (its input's timeline), which no bus queue may read.
 # Anchored mode is frozen (Q2), pinned as it was: no anchored egress carries one.
 GAP_FLAGS = int(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
 
@@ -1081,13 +1084,15 @@ for house in (True, False):
     pipe.get_state(3 * Gst.SECOND)
     c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
     pes = [pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i) for i in range(4)]
-    markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE),
-               (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 300 * Gst.MSECOND)]
+    markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE,
+                Gst.CLOCK_TIME_NONE),
+               (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 2 * Gst.SECOND,
+                300 * Gst.MSECOND)]
     push(src, pes[0], 0, 0)
     push(src, pes[1], 40 * Gst.MSECOND, 0)
-    for data, pts, duration in markers:
+    for data, pts, dts, duration in markers:
         mb = Gst.Buffer.new_wrapped(data)
-        mb.pts, mb.dts, mb.duration = pts, Gst.CLOCK_TIME_NONE, duration
+        mb.pts, mb.dts, mb.duration = pts, dts, duration
         mb.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
         src.emit("push-buffer", mb)
     push(src, pes[2], 80 * Gst.MSECOND, 0)
@@ -1099,13 +1104,14 @@ for house in (True, False):
     got = seen[2:4]
     check(f"{mode}: its GAP|DISCONT flags and bytes are intact",
           len(seen) == 6 and all(g[3] & GAP_FLAGS == GAP_FLAGS for g in got)
-          and [g[4] for g in got] == [d for d, _p, _u in markers])
+          and [g[4] for g in got] == [m[0] for m in markers])
     data = [s for s in seen if not s[3] & int(Gst.BufferFlags.GAP)]
     if house:
-        check("identity: each marker leaves with its own PTS and duration, DTS still unset",
+        check("identity: each marker leaves with its own PTS and duration and no DTS, also one "
+              "that came with a DTS",
               len(seen) == 6
               and [(g[0], g[1], g[2]) for g in got]
-              == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, duration in markers])
+              == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, _dts, duration in markers])
         want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(4)]
         check("identity: the data on either side is stamped PES − 1 h as usual",
               [(s[0], s[1]) for s in data] == [(w, w) for w in want])
@@ -1113,7 +1119,7 @@ for house in (True, False):
         check("anchored (frozen, Q2): each marker is stamped like any PES-less buffer, as before",
               len(seen) == 6
               and [(g[0], g[1], g[2]) for g in got]
-              == [(seen[1][0], seen[1][0], duration) for _d, _p, duration in markers])
+              == [(seen[1][0], seen[1][0], duration) for _d, _p, _dts, duration in markers])
         check("anchored: the data on either side keeps its 40 ms staircase",
               len(data) == 4 and {data[i + 1][0] - data[i][0] for i in range(3)} == {40_000_000}
               and all(s[1] == s[0] for s in data))
@@ -1136,9 +1142,8 @@ for house in (True, False):
                              (pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0, 0), False, 0),
                              (filler_packet(cc=1), False, 0)):
         b = Gst.Buffer.new_wrapped(data)
-        b.pts = b.dts = pts
+        b.pts = b.dts = pts   # the marker too: a DTS, as the restamp gives it one
         if flags:
-            b.dts = Gst.CLOCK_TIME_NONE
             b.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
         lst.insert(-1, b)
     src.emit("push-buffer-list", lst)
@@ -1149,13 +1154,136 @@ for house in (True, False):
     if house:
         check("identity: a list holding a marker is handed on member by member, not merged",
               len(seen) == 3 and el.get_property("coalesced-lists") == 0)
-        check("identity: the marker keeps its PTS and flags; the AU behind it is stamped",
+        check("identity: the marker keeps its PTS and flags, its DTS cleared; the AU behind it "
+              "is stamped",
               len(seen) == 3 and seen[0][0] == 5 * Gst.SECOND
               and seen[0][1] == Gst.CLOCK_TIME_NONE and seen[0][3] & GAP_FLAGS == GAP_FLAGS
               and seen[1][0] == seen[1][1] == _tl.pts90k_to_ns(c0) and seen[2][0] == seen[1][0])
     else:
         check("anchored (frozen, Q2): the same list still coalesces into one buffer",
               len(seen) == 1 and el.get_property("coalesced-lists") == 1)
+
+
+# ---------------------------------------------------------------------------
+print("\n--- restamp -> identity egress -> the 5 s edge queue: the PES behind a marker stays ---")
+# A capture's mux stamps its buffers' DTS on its own time (seconds) and the restamp gives
+# its marker that DTS; the egress puts the data on house time. A DTS left on the marker made
+# the edge queue (DTS first) read house minus it as its level and leak the PES behind it.
+# Deterministic: the edge's pushing thread is held on the marker, as a slow consumer holds
+# it, while the next buffer arrives; the test's own pad runs each push to the queue.
+import threading  # noqa: E402
+
+import gst_native_plugins  # noqa: E402
+import ingest_restamp_fixture as fx  # noqa: E402
+
+gst_native_plugins.load(lambda _event: None)
+EDGE_QUEUE = runner.bus_edge_branch_description("unused").split(" ! ")[0].replace(
+    "queue ", "queue name=edge ", 1)
+
+
+def bufs_of(info):
+    lst = info.get_buffer_list() if info.type & Gst.PadProbeType.BUFFER_LIST else None
+    return [lst.get(i) for i in range(lst.length())] if lst else [info.get_buffer()]
+
+
+def edge_marker_case(native):
+    label = "native" if native else "python probe"
+    pipe = Gst.parse_launch(
+        f"mrtsrestamp name=restamp clock-mode=fixed arrival=buffer-pts ! {BUS_SINK} "
+        f"busout_41000. ! {EDGE_QUEUE} ! fakesink name=fs sync=false async=false")
+    bus = Bus(pipe)
+    start(pipe, native=native)
+    stamper.house_timeline = True
+    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+    entered, left = [], []
+    held, release = threading.Event(), threading.Event()
+
+    def on_enter(_pad, info):
+        entered.extend((b.pts, b.dts, int(b.get_flags()), b.extract_dup(0, b.get_size()))
+                       for b in bufs_of(info))
+        return Gst.PadProbeReturn.OK
+
+    def on_leave(_pad, info):
+        for b in bufs_of(info):
+            if b.has_flags(Gst.BufferFlags.GAP) and not held.is_set():
+                held.set()
+                release.wait(5)
+            left.append((b.pts, b.dts, int(b.get_flags()), b.extract_dup(0, b.get_size())))
+        return Gst.PadProbeReturn.OK
+
+    kinds = Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST
+    edge = pipe.get_by_name("edge")
+    edge.get_static_pad("sink").add_probe(kinds, on_enter)
+    edge.get_static_pad("src").add_probe(kinds, on_leave)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(3 * Gst.SECOND)
+    feed = Gst.Pad.new("feed", Gst.PadDirection.SRC)
+    feed.link(pipe.get_by_name("restamp").get_static_pad("sink"))
+    feed.set_active(True)
+    feed.push_event(Gst.Event.new_stream_start("feed"))
+    feed.push_event(Gst.Event.new_caps(Gst.Caps.from_string(TS_CAPS)))
+    seg = Gst.Segment.new()
+    seg.init(Gst.Format.TIME)
+    feed.push_event(Gst.Event.new_segment(seg))
+
+    house0 = pipe.get_pipeline_clock().get_time() + Gst.SECOND
+    cc = {}
+
+    def numbered(pkts):
+        out = b""
+        for p in pkts:
+            pid = ((p[1] & 0x1F) << 8) | p[2]
+            n = cc.get(pid, 0)
+            cc[pid] = n + 1
+            out += p[:3] + bytes([(p[3] & 0xF0) | (n & 0x0F)]) + p[4:]
+        return out
+
+    def send(i):
+        """A 60 ms MPEG audio PES on its house time + 1 h; DTS on the mux's own time."""
+        house = house0 + i * 60 * Gst.MSECOND
+        pts90 = (fx.ns90k(house) + _tl.MUX_CLOCK_BASE_90K) % fx.PTS_WRAP
+        pkts = ([fx.psi_packet(0, fx.PAT), fx.psi_packet(fx.PID_PMT, fx.PMT)] if i == 0 else [])
+        pkts += fx.packetize(fx.PID_A, fx.pes(0xC0, pts90, None, bytes(300)))
+        b = Gst.Buffer.new_wrapped(numbered(pkts))
+        b.pts, b.dts = house, Gst.SECOND + i * 60 * Gst.MSECOND
+        return feed.push(b) == Gst.FlowReturn.OK
+
+    ok = all(send(i) for i in range(10))
+    pipe.get_by_name("restamp").set_property("offset-ns", 500 * Gst.MSECOND)
+    ok &= send(10)                  # the marker, then the PES that shows the gap
+    ok &= held.wait(5)              # the edge has popped the marker and is pushing it
+    ok &= send(11)                  # arrives while the PES behind the marker waits
+    release.set()
+    ok &= all(send(i) for i in range(12, 16))
+    deadline = time.time() + 3
+    while len(left) < len(entered) and time.time() < deadline:
+        time.sleep(0.01)
+    feed.push_event(Gst.Event.new_eos())
+    deadline = time.time() + 5
+    while not bus.done and time.time() < deadline:
+        bus.pump(0.02)
+    pipe.set_state(Gst.State.NULL)
+    feed.set_active(False)
+    stamper.house_timeline = False
+    teardown()
+
+    marks = [i for i, x in enumerate(entered) if x[2] & int(Gst.BufferFlags.GAP)]
+    behind = entered[marks[0] + 1] if marks and marks[0] + 1 < len(entered) else None
+    check(f"{label}: the edit's one marker leaves the egress with no DTS, its PTS the house "
+          "time of the PES behind it, its length 500 ms",
+          ok and len(marks) == 1 and entered[marks[0]][1] == Gst.CLOCK_TIME_NONE
+          and behind is not None and entered[marks[0]][0] == behind[0]
+          and abs(fx.gap_length(entered[marks[0]][3]) - 500 * Gst.MSECOND) <= fx.TICK)
+    check(f"{label}: every buffer the 5 s edge queue took leaves it, in order and unchanged "
+          f"({len(left)} of {len(entered)})",
+          ok and len(entered) == 17 and [x[2:] for x in left] == [x[2:] for x in entered])
+
+
+if Gst.ElementFactory.find("mrtsrestamp") is None:
+    print("SKIP the restamp edge case — libgstmrtshouse.so not built (`make native`)")
+else:
+    for native in (True, False):
+        edge_marker_case(native)
 
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

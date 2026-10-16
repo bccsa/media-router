@@ -14,6 +14,11 @@ int64_t floor_mod(int64_t a, int64_t m) {
 
 int64_t clamp64(int64_t v, int64_t lo, int64_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+// The longer of two, the middle of three.
+int64_t upper_median(const int64_t* s, int n) {
+    return n == 2 ? std::max(s[0], s[1]) : std::max(std::min(s[0], s[1]), std::min(std::max(s[0], s[1]), s[2]));
+}
+
 constexpr uint32_t fourcc(const char (&s)[5]) {
     return ((uint32_t)(uint8_t)s[0] << 24) | ((uint32_t)(uint8_t)s[1] << 16) |
            ((uint32_t)(uint8_t)s[2] << 8) | (uint8_t)s[3];
@@ -687,14 +692,20 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         return false;
     }
     const char* why = nullptr;
+    bool jump = false;
     if (p.have_last) {
         // A gap is checked on a PID's first PES under a newer epoch; a straddler back on
         // an older one is no new epoch.
         if (epoch > p.max_epoch) why = "epoch";
         else if (edited) why = "edit";
         else if (p.outage) why = "outage";
-        else if (cfg_.mode == RestampConfig::Mode::fixed && p.interval > 0 && key - p.last_key > 2 * p.interval)
+        else if (cfg_.mode == RestampConfig::Mode::fixed && p.n_spacing >= 2 &&
+                 key - p.last_key > 2 * upper_median(p.spacing, p.n_spacing)) {
+            // More than two PES lengths, the length being the upper median of the last three
+            // spacings: a short PES (an ASRC's first output, a relock's remainder) never sets it.
             why = "jump";
+            jump = true;
+        }
     }
     const bool gap = why && key > p.last_key + p.interval;
     if (gap) push_gap(p, p.last_key + p.interval, key, why, epoch);
@@ -709,7 +720,14 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     }
     // The spacing of two PES in a row with nothing between, on one mapping: the PID's
     // PES length (a straddler's return to a newer epoch is a jump, not a length).
-    if (p.have_last && p.clean && !why && epoch == p.last_epoch) p.interval = key - p.last_key;
+    const bool spaced = p.have_last && p.clean && epoch == p.last_epoch;
+    if (spaced && !why) p.interval = key - p.last_key;
+    // A jump's spacing joins the reference, or a lasting cadence rise would read as a jump forever.
+    if (spaced && (!why || jump)) {
+        p.spacing[p.spacing_at] = key - p.last_key;
+        p.spacing_at = (uint8_t)((p.spacing_at + 1) % 3);
+        if (p.n_spacing < 3) p.n_spacing++;
+    }
     p.have_last = p.clean = true;
     p.last_key = key;
     p.last_h = arrival_h;

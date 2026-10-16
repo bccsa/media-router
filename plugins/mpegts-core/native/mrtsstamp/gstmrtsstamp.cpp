@@ -75,7 +75,7 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.6.0"
+#define MRTSSTAMP_VERSION "2.7.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -415,10 +415,13 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
      * one size read and one atomic add, no map, no lock. */
     self->bytes_total.fetch_add(gst_buffer_get_size(buf), std::memory_order_relaxed);
     if (!self->active) return GST_FLOW_OK;
-    /* An identity egress hands a gap marker (OQ-12) on as it came: its PTS is the
-     * gap's end, its packets' private data the gap's length. Anchored is frozen (Q2). */
-    if (self->house_timeline && GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP))
+    /* An identity egress hands a gap marker (OQ-12) on with its PTS, the gap's end, but no
+     * DTS: the restamp's is on its input's timeline, which a bus queue reading DTS first takes
+     * for its level, leaking what follows. Anchored is frozen (Q2). */
+    if (self->house_timeline && GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP)) {
+        GST_BUFFER_DTS(buf) = GST_CLOCK_TIME_NONE;
         return GST_FLOW_OK;
+    }
 
     /* READWRITE only when the timeline conditioner may rewrite PES/PCR fields
      * (live-cadence producers, `repair-latch`); otherwise READ — the stamp is
