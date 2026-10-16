@@ -2037,8 +2037,7 @@ def handle_start(data):
     # same reason as above — an attach can land the moment the pipeline starts
     # and the probe must own that edge's first buffer. The probes themselves arm
     # per tee as consumers attach.
-    gst_bus_stamper.enable(pipeline, data.get("latchRepair"),
-                           data.get("conditionStepMs"), data.get("houseTimelineEgress"))
+    gst_bus_stamper.enable(pipeline, data.get("latchRepair"), data.get("houseTimelineEgress"))
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`

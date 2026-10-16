@@ -22,7 +22,6 @@ bool g_enabled = false;
 GstElement* g_pipeline = nullptr;
 int g_native_loaded = -1;          // -1 not tried, 0 failed, 1 loaded
 bool g_repair_latch = true;
-gint64 g_condition_step_ms = 0;
 bool g_house_timeline = false;     // the payload's `houseTimelineEgress`
 guint g_drift_timer_id = 0;
 std::map<std::string, GstElement*> g_elements;   // tee name -> spliced mrtsstamp (owned ref)
@@ -254,7 +253,7 @@ void stop_drift_timer() {
 
 // ---------------------------------------------------------------------------
 
-void enable(GstElement* pipe, JsonNode* repair, gint64 condition_step_ms, bool house_timeline) {
+void enable(GstElement* pipe, JsonNode* repair, bool house_timeline) {
     clear();
     g_enabled = true;
     g_pipeline = pipe;
@@ -262,7 +261,6 @@ void enable(GstElement* pipe, JsonNode* repair, gint64 condition_step_ms, bool h
         GType t = json_node_get_value_type(repair);
         g_repair_latch = t == G_TYPE_BOOLEAN ? json_node_get_boolean(repair) : json_node_get_int(repair) != 0;
     }
-    g_condition_step_ms = condition_step_ms > 0 ? condition_step_ms : 0;
     g_house_timeline = house_timeline;
     if (load_native()) insert_elements(pipe);
 }
@@ -273,8 +271,6 @@ void arm(GstElement* tee, const std::string& name) {
     if (it == g_elements.end()) return;   // no spliced element (plugin missing / splice failed)
     GstElement* el = it->second;
     g_object_set(el, "repair-latch", (gboolean)g_repair_latch, nullptr);
-    if (g_condition_step_ms > 0 && g_object_class_find_property(G_OBJECT_GET_CLASS(el), "condition-step-ms"))
-        g_object_set(el, "condition-step-ms", (gint)g_condition_step_ms, nullptr);
     if (g_object_class_find_property(G_OBJECT_GET_CLASS(el), "house-timeline"))
         g_object_set(el, "house-timeline", (gboolean)g_house_timeline, nullptr);
     else if (g_house_timeline)

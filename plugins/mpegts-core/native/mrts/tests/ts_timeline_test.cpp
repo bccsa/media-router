@@ -1163,14 +1163,13 @@ int main() {
         CHECK("a 500 ms lead is inside the early bound and never trips it", small == 0);
     }
 
-    // Per-egress conditioner threshold (#751 follow-up): a +190 ms PTS step on
-    // one audio PID with continuous arrival passes the 300 ms default and is
-    // absorbed at the audio-encoder's 100 ms (python parity, same numbers).
-    for (int pass = 0; pass < 2; pass++) {
+    // One conditioner threshold for every egress, the fixed 300 ms: a +190 ms
+    // PTS step on one audio PID with continuous arrival stays on the wire
+    // (python parity, same numbers).
+    {
         std::vector<TimelineStamper::Conditioned> ev;
         TimelineStamper st(nullptr, nullptr, nullptr, true);
         st.set_on_conditioned([&](const TimelineStamper::Conditioned& c) { ev.push_back(c); });
-        if (pass == 1) st.set_condition_step_ns(100'000'000LL);
         std::vector<int64_t> written;
         for (int i = 0; i < 400; i++) {
             int64_t h = HOUSE + (int64_t)i * 20'000'000LL;
@@ -1185,13 +1184,8 @@ int main() {
             if (d == 1800) cont++;
             if (d == 18900) has_step = true;
         }
-        if (pass == 0) {
-            CHECK("190 ms audio re-timestamp: default 300 ms threshold leaves it on the wire",
-                  ev.empty() && cont == 398 && has_step);
-        } else {
-            CHECK("190 ms audio re-timestamp: the audio-encoder's 100 ms threshold writes it out",
-                  ev.size() == 1 && ev[0].step_ticks == 17100 && cont == 399);
-        }
+        CHECK("190 ms audio re-timestamp: the fixed 300 ms threshold leaves it on the wire",
+              ev.empty() && cont == 398 && has_step);
     }
 
     // --- the timeline conditioner (the vMix CBR pacer reset, 2026-09-08) -----

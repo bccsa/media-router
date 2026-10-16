@@ -120,13 +120,6 @@ class TimelineStamper {
         : on_anchor_(std::move(on_anchor)), on_reanchor_(std::move(on_reanchor)),
           on_settled_(std::move(on_settled)), repair_on_(repair_latch) {}
 
-    // The conditioner's step threshold for THIS egress, ns; 0 = the 300 ms
-    // default (ts_timeline.py `condition_step_ns`). The audio-encoder sets
-    // 100 ms: one audio PID off a live ring has no reorder to mistake for a
-    // step, and its pulsesrc re-timestamps by a whole ~200 ms ring now and then.
-    void set_condition_step_ns(int64_t ns) { cond_threshold_ns_ = ns; }
-    int64_t cond_threshold() const;
-
     // Map one outgoing buffer of `stream` onto the house timeline. EVERY
     // buffer gets a valid stamp: one with no PES header at all (PSI/PCR-only
     // or continuation packets) repeats the stream's last stamp, because a
@@ -272,7 +265,6 @@ class TimelineStamper {
     OnConditioned on_conditioned_;
     bool repair_on_ = false;
     bool house_timeline_ = false;         // set_house_timeline: identity stamps, nothing anchored
-    int64_t cond_threshold_ns_ = 0;       // per-egress conditioner threshold, 0 = default
     // Timeline conditioner state (python's `_cond_pes` / `_cond_pcr`).
     struct CondClock {
         int64_t last_raw;      // last raw PTS seen (90 kHz)

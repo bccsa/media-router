@@ -209,8 +209,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // Enabled before the first buffer moves, because an attach can land
         // the moment the pipeline starts.
         expect(runnerSource).toContain(
-            'gst_bus_stamper.enable(pipeline, data.get("latchRepair"),\n' +
-                '                           data.get("conditionStepMs"), data.get("houseTimelineEgress"))',
+            'gst_bus_stamper.enable(pipeline, data.get("latchRepair"), data.get("houseTimelineEgress"))',
         );
         const armIdx = runnerSource.indexOf('gst_bus_stamper.enable(pipeline,');
         const playIdx = runnerSource.indexOf('ret = pipeline.set_state(Gst.State.PLAYING)');

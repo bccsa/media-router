@@ -75,7 +75,6 @@ drift_timer_id = None   # GLib source id of the periodic drift report
 # than real time (every synthetic ladder below reads to the window as a
 # backlog flush) can pin it off, the way `native_loaded` pins the backend.
 repair_latch = True
-condition_step_ms = None   # the start payload's `conditionStepMs` — a producer's own threshold, else the stamper default
 # The start payload's `houseTimelineEgress` (ADR-0005 2026-10-08): a transform
 # producer's PES already carry house time + 1 h, so its egress stamps by identity.
 house_timeline = False
@@ -178,7 +177,7 @@ def clear():
     elements.clear()
 
 
-def enable(pipe, repair=None, cond_step_ms=None, house=None):
+def enable(pipe, repair=None, house=None):
     """Enable stamping for `pipe` (every pipeline). Stampers arm LAZILY, per
     tee, on that tee's FIRST consumer edge (`arm`, from the runner's
     bus_attach path).
@@ -212,13 +211,12 @@ def enable(pipe, repair=None, cond_step_ms=None, house=None):
     throughput source for the tee), so lazy arming is unaffected: what arms
     per consumer edge is the `active` property, not the element's existence.
     """
-    global enabled, pipeline, repair_latch, condition_step_ms, house_timeline
+    global enabled, pipeline, repair_latch, house_timeline
     clear()
     enabled = True
     pipeline = pipe
     if repair is not None:
         repair_latch = bool(repair)
-    condition_step_ms = int(cond_step_ms) if cond_step_ms else None
     house_timeline = bool(house)
     if load_native():
         insert_elements(pipe)
@@ -245,11 +243,10 @@ def arm(tee, name):
 
     el = elements.get(name)
     if el is not None:
-        native.activate(el, name, repair_latch, condition_step_ms, house_timeline)
+        native.activate(el, name, repair_latch, house_timeline)
         st = {"tee": name, "element": el, "pad": None, "probe_id": None}
     else:
-        st = probe.install(tee, name, pipeline, repair_latch, condition_step_ms,
-                           house_timeline)
+        st = probe.install(tee, name, pipeline, repair_latch, house_timeline)
         if st is None:
             return None
         mode = ("house-timeline egress: PES − 1 h, no anchor" if house_timeline

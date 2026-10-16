@@ -303,18 +303,6 @@ export interface PipelineDescription {
      */
     latchRepair?: boolean;
     /**
-     * Per-egress threshold (ms) for the stamper's wire conditioner: a PES PTS
-     * delta beyond it that the buffer's arrival did not match is a source
-     * clock step and is written out of the wire. Unset = the stamper's 300 ms
-     * default, which B-frame reorder and network jitter sit well inside. A
-     * producer whose egress is ONE audio PID off a live capture ring may set
-     * it lower — the audio-encoder sets 100: its pulsesrc re-timestamps by a
-     * whole ~200 ms ring now and then with no arrival change, and every paced
-     * consumer downstream stored that as +200 ms of latency per event
-     * (#751 follow-up, 2026-09-15).
-     */
-    conditionStepMs?: number;
-    /**
      * Egress PES already carry house time + 1 h, so the stamper stamps by identity. Every producer
      * sets it except the Phase 2 set (mixers, audio-processing, splitter, HLS fan-out), which
      * anchor until Phase 2 deletes the anchored stamper (house-clock plan ch. 5 part 4.1).

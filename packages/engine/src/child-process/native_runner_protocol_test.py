@@ -207,7 +207,7 @@ def test_producer_edge():
                             " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
                             f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
                             " ! tee name=busout_40000 allow-not-linked=true",
-                "latchRepair": True, "conditionStepMs": 100})
+                "latchRepair": True})
         check("B reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
         stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
         check("B mrtsstamp spliced in front of the busout tee", stamped)

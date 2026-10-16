@@ -890,26 +890,20 @@ check("conditioned: both PES offsets are back to zero once the reset is over",
 check("conditioned: written PTS − PCR sits on the lead throughout",
       all(abs(t.TimelineStamper._fold(w_v[i] - w_pcr[i] // 300, t.PTS_WRAP) / 90000 - 0.25) < 0.05 for i in range(1, 600)))
 
-# Per-egress threshold (#751 follow-up, 2026-09-15): an audio encoder's pulsesrc
-# re-timestamps by a whole ~200 ms ring now and then with NO arrival change — on
-# .22 every encoder egress stepped +190 ms at once, three times in a day, and every
-# paced consumer downstream stored each as +200 ms of latency. 190 ms sits under
-# the 300 ms default (chosen for B-frame reorder, which a single audio PID never
-# has), so the audio-encoder asks for 100 ms: the same step is then written out
-# of the wire, and a 20 ms opus cadence is untouched either way.
-for thr, name, want in ((None, 'default 300 ms', 0), (100_000_000, 'audio-encoder 100 ms', 1)):
-    ev = []
-    ast = t.TimelineStamper(repair_latch=True, on_conditioned=ev.append, condition_step_ns=thr)
-    written = []
-    for i in range(400):
-        h = HOUSE + i * 20_000_000
-        pts = FIRST + i * 1800 + (17100 if i >= 200 else 0)          # +190 ms at i=200, arrival continuous
-        buf = bytearray(pes_ts_packet(A, pts=pts)); ast.condition(buf, h); written.append(p.read_pes_pts(buf))
-    steps = [t.TimelineStamper._fold(written[i + 1] - written[i], t.PTS_WRAP) for i in range(399)]
-    check(f"a 190 ms pulsesrc re-timestamp on one audio PID: {name} -> {want} conditioned event(s)",
-          len(ev) == want and all(e['stepTicks'] == 17100 for e in ev))
-    check(f"and the written audio cadence is {'continuous' if want else 'left with the step'} ({name})",
-          (all(s == 1800 for s in steps)) if want else (steps.count(1800) == 398 and 18900 in steps))
+# One conditioner threshold for every egress, the fixed 300 ms: a +190 ms PTS
+# step on one audio PID with NO arrival change stays on the wire.
+ev = []
+ast = t.TimelineStamper(repair_latch=True, on_conditioned=ev.append)
+written = []
+for i in range(400):
+    h = HOUSE + i * 20_000_000
+    pts = FIRST + i * 1800 + (17100 if i >= 200 else 0)              # +190 ms at i=200, arrival continuous
+    buf = bytearray(pes_ts_packet(A, pts=pts)); ast.condition(buf, h); written.append(p.read_pes_pts(buf))
+steps = [t.TimelineStamper._fold(written[i + 1] - written[i], t.PTS_WRAP) for i in range(399)]
+check("a 190 ms re-timestamp on one audio PID: the fixed 300 ms threshold conditions nothing",
+      ev == [])
+check("and the written audio cadence is left with the step",
+      steps.count(1800) == 398 and 18900 in steps)
 
 # The correction is sized by cadence, not arrival: the step lands on a 94 KB
 # I-frame that took 350 ms to arrive (the .103 capture). Absorbing "delta minus

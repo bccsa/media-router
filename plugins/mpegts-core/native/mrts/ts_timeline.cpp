@@ -61,7 +61,7 @@ constexpr int64_t EARLY_HOLD_NS = 10'000'000'000LL;
 // PTS (or PCR) delta beyond COND_STEP_NS that its arrival did not match is a
 // clock step and is absorbed; beyond COND_MAX_NS it is a real discontinuity
 // and is left to the watch.
-constexpr int64_t COND_STEP_NS = 300'000'000LL;   // default; per-egress override via set_condition_step_ns
+constexpr int64_t COND_STEP_NS = 300'000'000LL;
 constexpr int64_t COND_MAX_NS = 10'000'000'000LL;
 // How long a PID's OWN correction (a step it took alone) is carried before it
 // is released as the stream's real placement: the vMix pacer reset reverts in
@@ -605,10 +605,6 @@ int64_t TimelineStamper::cond_pcr_floor_pts(int64_t house_now) const {
     return floor;
 }
 
-int64_t TimelineStamper::cond_threshold() const {
-    return cond_threshold_ns_ > 0 ? cond_threshold_ns_ : COND_STEP_NS;
-}
-
 int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
     if (house_timeline_) return 0;           // the wire IS the house timeline
     int absorbed = 0;
@@ -660,7 +656,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 // One event per new deviation of the source's PCR from ours.
                 const int64_t off = fold(w - pcr, PCR_MODULO);
                 if (!cond_pcr_reported_ ||
-                    std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > cond_threshold()) {
+                    std::llabs(off - cond_pcr_reported_offset_) * 1000 / 27 > COND_STEP_NS) {
                     const int64_t step = cond_pcr_reported_ ? off - cond_pcr_reported_offset_ : off;
                     cond_pcr_reported_ = true;
                     cond_pcr_reported_offset_ = off;
@@ -702,9 +698,9 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
             const int64_t d_ns = pts90k_to_ns(fold33(pts - c.last_raw));
             const int64_t a_ns = house_now - c.last_house;
             const int64_t pending = cond_prog_offset_ - c.prog_applied;
-            const bool stepped = std::llabs(d_ns) > cond_threshold() && std::llabs(d_ns) <= COND_MAX_NS &&
-                                 std::llabs(d_ns - a_ns) > cond_threshold();
-            if (!stepped && std::llabs(d_ns) <= cond_threshold()) cond_remember(c, d_ns);   // the nominal's source
+            const bool stepped = std::llabs(d_ns) > COND_STEP_NS && std::llabs(d_ns) <= COND_MAX_NS &&
+                                 std::llabs(d_ns - a_ns) > COND_STEP_NS;
+            if (!stepped && std::llabs(d_ns) <= COND_STEP_NS) cond_remember(c, d_ns);   // the nominal's source
             if (is_ref) {
                 if (stepped) {
                     // floor_div, not `/`: `cond_step_ns` is negative on a backward
@@ -720,7 +716,7 @@ int TimelineStamper::condition(uint8_t* data, size_t len, int64_t house_now) {
                 }
             } else if (pending != 0 &&
                        std::llabs(floor_div((d_ns - a_ns) * 9, 100000) + pending) <=
-                           floor_div(cond_threshold() * 9, 100000)) {
+                           floor_div(COND_STEP_NS * 9, 100000)) {
                 // Its PTS jumped by what the reference's did: the same clock step,
                 // adopted whole. Judged on the jump beyond the time that passed,
                 // so a PID idle across the restart (gap + step) adopts it too.

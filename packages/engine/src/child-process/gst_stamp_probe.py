@@ -95,8 +95,7 @@ def _position_for(st, stamp):
 # ---------------------------------------------------------------------------
 # The probe itself
 # ---------------------------------------------------------------------------
-def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
-            house_timeline=False):
+def install(tee, name, pipe, repair_latch=True, house_timeline=False):
     """Install the stamping probe on `tee`'s sink pad. Returns the stamper
     state dict, or None if the pad is not there.
 
@@ -154,8 +153,6 @@ def install(tee, name, pipe, repair_latch=True, condition_step_ms=None,
                                           on_reanchor=on_reanchor,
                                           on_settled=on_settled,
                                           repair_latch=repair_latch,
-                                          condition_step_ns=(int(condition_step_ms) * 1_000_000
-                                                             if condition_step_ms else None),
                                           # A transform producer's egress: identity
                                           # stamps, PES − 1 h (gst_bus_stamper.house_timeline).
                                           house_timeline=house_timeline)

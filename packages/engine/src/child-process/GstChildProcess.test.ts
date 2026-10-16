@@ -223,14 +223,6 @@ describe('start payload (the wire to the runner)', () => {
         expect(child.startPayload({ pipeline: 'x' }).udpSilenceRestartMs).toBeUndefined();
     });
 
-    it('carries a producer conditionStepMs, and omits it when unset', () => {
-        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        expect(child.startPayload({ pipeline: 'x', conditionStepMs: 100 }).conditionStepMs).toBe(
-            100,
-        );
-        expect(child.startPayload({ pipeline: 'x' }).conditionStepMs).toBeUndefined();
-    });
-
     it('carries houseTimelineEgress (identity stamps for a transform producer), and omits it when unset', () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
         expect(

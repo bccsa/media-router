@@ -707,7 +707,7 @@ events = collect_events()
 pipe, src = build_stamper_pipe()
 runner.pipeline = pipe
 runner._apply_contract_clock(pipe)
-stamper.enable(pipe, None, None, True)
+stamper.enable(pipe, house=True)
 check("the start payload's flag is recorded on the subsystem", stamper.house_timeline is True)
 stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
 seen = tap_timestamps(pipe)
@@ -762,7 +762,7 @@ for hours in (10, 14):
     runner._apply_contract_clock(pipe)
     pipe.use_clock(uptime_clock(base + Gst.SECOND))
     pipe.set_base_time(base)                     # start time is NONE: it survives PLAYING
-    stamper.enable(pipe, None, None, True)
+    stamper.enable(pipe, house=True)
     stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
     seen = tap_timestamps(pipe)
     pipe.set_state(Gst.State.PLAYING)
@@ -828,7 +828,7 @@ for house in (True, False):
     pipe, src = build_stamper_pipe()
     runner.pipeline = pipe
     runner._apply_contract_clock(pipe)
-    stamper.enable(pipe, None, None, house)
+    stamper.enable(pipe, house=house)
     stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
     seen = tap_buffers(pipe)
     pipe.set_state(Gst.State.PLAYING)

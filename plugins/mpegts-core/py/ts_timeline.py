@@ -364,7 +364,7 @@ class TimelineStamper:
     # segment, and every segment boundary would read as a clock step.
     # Reported per absorbed step (`on_conditioned`), so the source fault stays
     # visible in the journal while the picture no longer pays for it.
-    _COND_STEP_NS = 300_000_000         # default; a producer may lower it per egress (`condition_step_ns`)
+    _COND_STEP_NS = 300_000_000
     _COND_MAX_NS = 10_000_000_000
     # How long a PID's OWN correction (a step it took alone) is carried before
     # it is released as the stream's real placement (C++: COND_OWN_HOLD_NS).
@@ -547,23 +547,13 @@ class TimelineStamper:
     _LATCH_REPAIR_NS = 3_000_000_000    # window after an anchor the repair is open
 
     def __init__(self, on_anchor=None, on_reanchor=None, on_settled=None,
-                 repair_latch=False, on_conditioned=None, condition_step_ns=None,
-                 house_timeline=False):
+                 repair_latch=False, on_conditioned=None, house_timeline=False):
         self.latch = TimelineLatch()
         # HOUSE-TIMELINE egress (ADR-0005 amendment 2026-10-08): the producer's
         # own mpegtsmux wrote its PES off house running time (+1 h), so every
         # stamp is that value read back (`_stamp_house`) — no anchor, no
         # re-anchor, no repair, no servo, no conditioner. See `stamp`.
         self._house_timeline = bool(house_timeline)
-        # The conditioner's step threshold for THIS egress. 300 ms is the
-        # default (B-frame reorder and jitter live well inside it); a producer
-        # whose egress carries one audio PID off a live capture ring can set it
-        # lower — the audio-encoder sets 100 ms (2026-09-15, #751 follow-up):
-        # its pulsesrc re-timestamps by a whole ring (~200 ms) now and then with
-        # no arrival change, and every paced consumer downstream stored that as
-        # +200 ms of latency per event. There is no reorder on a single audio PID
-        # to mistake for a step.
-        self._cond_threshold_ns = int(condition_step_ns) if condition_step_ns else self._COND_STEP_NS
         self.anchor = None      # house time (ns) latched at the first PES
         self.ref = None         # that first PES (90 kHz), the timeline's zero
         self.reanchors = 0
@@ -1188,7 +1178,7 @@ class TimelineStamper:
                     # One event per new deviation of the source's PCR from ours.
                     o = self._fold(w - pcr, PCR_MODULO)
                     if (self._cond_pcr_reported is None
-                            or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._cond_threshold_ns):
+                            or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._COND_STEP_NS):
                         step = o if self._cond_pcr_reported is None else o - self._cond_pcr_reported
                         self._cond_pcr_reported = o
                         absorbed += 1
@@ -1226,9 +1216,9 @@ class TimelineStamper:
                 d_ns = pts90k_to_ns(self._fold(pts - c['last_raw'], PTS_WRAP))
                 a_ns = house_now - c['last_house']
                 pending = self._cond_prog_offset - c['prog_applied']
-                stepped = (abs(d_ns) > self._cond_threshold_ns and abs(d_ns) <= self._COND_MAX_NS
-                           and abs(d_ns - a_ns) > self._cond_threshold_ns)
-                if not stepped and abs(d_ns) <= self._cond_threshold_ns:
+                stepped = (abs(d_ns) > self._COND_STEP_NS and abs(d_ns) <= self._COND_MAX_NS
+                           and abs(d_ns - a_ns) > self._COND_STEP_NS)
+                if not stepped and abs(d_ns) <= self._COND_STEP_NS:
                     self._cond_remember(c, d_ns)                     # the nominal's source
                 if is_ref:
                     if stepped:
@@ -1241,7 +1231,7 @@ class TimelineStamper:
                             self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
                                                   'offsetTicks': c['offset'], 'houseNs': house_now})
                 elif pending and abs((d_ns - a_ns) * _NS_DEN // _NS_NUM + pending) \
-                        <= self._cond_threshold_ns * _NS_DEN // _NS_NUM:
+                        <= self._COND_STEP_NS * _NS_DEN // _NS_NUM:
                     c['offset'] += pending
                     c['prog_applied'] = self._cond_prog_offset
                     absorbed += 1
