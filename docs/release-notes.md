@@ -3,6 +3,99 @@
 Operator-facing notes per release, newest first. What changed on the box,
 what to expect, what to do. Engineering detail is in `docs/adr/`.
 
+## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1 items, 2026-10-16)
+
+Phases 1, 2, 3 and 4 ship together as one release. This draft holds the
+Phase 1 items; the Phase 2–4 items join it as those phases land, and the
+note is finished with Phase 4. One RAUC bundle carries the image and the
+app: the new timing elements ship in the image, so do not hot-deploy this
+app onto an older image. On a box where they are missing, the GStreamer
+modules' cards say "Native TS module not loaded", and the network inputs
+and Video Encoder still run, on their source's own time. (Open before
+release: the three audio captures do not start without them yet.)
+
+**Time is set once, where a stream enters the box**
+
+- **Network inputs** (SRT Input, RIST Input, MPEG-TS IP Input) put every
+  stream on the box's house clock using the source's own clock (its PCR),
+  the way a decoder recovers it. All streams of a program move together, a
+  source clock that runs fast or slow is followed, and content lands where
+  the source scheduled it: its arrival plus the source's own buffering
+  lead. A source restart or an outage becomes a gap of that length; the
+  timeline never steps back.
+- **Captures** (Audio Input 302M, AES67 Input, Audio Encoder, Video Encoder)
+  label their content with its capture time.
+- **The three audio captures resample once**, locked to the device's
+  clock, so the sample count and the timestamps on the bus always agree and
+  a device clock that runs a little fast or slow no longer drifts the
+  stream. The Audio Encoder now captures from PipeWire directly instead of
+  through a PulseAudio ring, whose re-stamping caused occasional ~200 ms
+  timing steps.
+
+**New settings**
+
+- **Ingest Offset** (ms, default 0, −10,000 to +10,000) on SRT Input, RIST
+  Input, MPEG-TS IP Input, Audio Input 302M, AES67 Input, Audio Encoder and
+  Video Encoder. Positive lands the input later on the timeline, negative
+  earlier. It applies live, when you press Enter or leave the box. A
+  positive change leaves a short gap, a negative change drops the content
+  it overlaps: on audio a short cut, and on Video Encoder the picture breaks
+  up until the next keyframe. Change it at a quiet moment.
+- **Per-PID Trim** (ms, −2,000 to +2,000 per stream, default 0, live) on the
+  three network inputs: moves one stream of the program against the others,
+  on top of Ingest Offset, to correct a source's fixed lip-sync error or to
+  match an external path. The rows list the streams from the source's PMT
+  with their type ("Waiting for the stream's PMT" until it arrives); a trim
+  kept for a stream the source no longer carries shows greyed as "not in
+  stream".
+- **Audio Encoder, Capture Buffer** is now the capture quantum: 40–85 ms,
+  default 60 (was 40–1000 ms, default 200). A stored value above 85 ms is
+  reset to the default.
+
+**Reading the lead, and when to set a negative offset**
+
+- Each network input shows, per stream, **Lead min / median / max**: how far
+  ahead of its own presentation time the source delivers that stream (the
+  source encoder's buffering, typically 0.3–1 s). Content is presented
+  that long after it arrives, and the input's lateness reads negative by it.
+- To win that latency back, set Ingest Offset to minus the smallest **lead
+  min** across the streams (for example −380 ms when the smallest lead min
+  is 380 ms). Never go further: content would then arrive after its own
+  time and play late.
+- **Interpreter or commentator microphones** (talent loops): set the
+  microphone input's Ingest Offset to minus the lateness of the output the
+  talent monitors (shown on that output's timing display), at a pause in
+  their speech. Their voice then lands one reaction time after the content
+  it answers instead of a monitor delay later.
+
+**Clock status on the cards**
+
+- Network inputs carry a **clock** badge: Locked (green), Acquiring (grey),
+  Degraded or No PCR (amber), and a **Clock** section: state, source rate
+  (ppm), residual p99, re-locks and the last event, plus one section per
+  stream (lead, trim, total shift, PES dropped in the last 10 min). The
+  audio captures show the ASRC ratio (ppm), phase error and re-locks; every
+  capture shows its Ingest Offset.
+- Warnings, none of which drops content: **Degraded clock** (the source's
+  PCR is unusable, as on some vMix feeds: timing then follows one stream's
+  own timestamps against arrival); **Source clock unstable** (more than 3
+  re-locks in 10 min); **Source clock off by n ppm** (past 100 ppm for a
+  minute); **PCR every n ms (spec ≤ 100 ms)**; **Transport errors**
+  (continuity errors or lost sync on the input); on audio captures **Device
+  clock off by n ppm — check the device's sample rate** (past 200 ppm for a
+  minute).
+
+**Behaviour changes**
+
+- **Capture latency becomes visible.** Captured content is stamped when it
+  was captured, so it reaches an output later than before by its capture
+  and encode latency, and the lateness displays show it.
+- **Mixed versions.** A box on the previous release that receives a stream
+  from a box on this release (through SRT, RIST or MPEG-TS IP Output)
+  re-anchors it once and then holds.
+- **Rollback** is the previous release, installed from the Device Manager;
+  there is no in-app switch.
+
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 
 One RAUC bundle carrying the image and the app. The app's time-sync wait,

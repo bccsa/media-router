@@ -8,9 +8,9 @@ ingest dropped for being late. Its §13.1 holds the owner's decisions and is
 not reopened here. This ADR is the living record the design calls for: it
 records the choices the design left to the engineer (§13.3 and the
 implementation plan's open-question register), one section per phase, and
-it marks what each phase supersedes in the older ADRs. Phase 0 is below;
-Phases 1–5 append to this file when they land
-(`docs/house-clock-timing-implementation-plan.md`).
+it marks what each phase supersedes in the older ADRs. Phase 0, the shared
+TS module (S0) and Phase 1 are below; Phases 2–5 append to this file when
+they land (`docs/house-clock-timing-implementation-plan.md`).
 
 Every phase is a cut-over (§13.1): the mechanism a phase replaces is deleted
 in the same release, with no engine flag, no legacy arm and no in-app
@@ -188,9 +188,13 @@ current model is frozen, §13.1 Q2). Phase 0 built the measuring instrument.
     `reference=running-time`.
 
   `house` compares raw buffer PTS with `CLOCK_MONOTONIC`, the bus convention
-  (§4.3), and stays correct in `liveCaptureClock` pipelines whose running
-  time is not house time; `running-time` compares segment running time with
-  the element clock, which is what a sink renders against.
+  (§4.3); `running-time` compares segment running time with the element
+  clock, which is what a sink renders against. Corrected 2026-10-16: the
+  draft said `house` stays correct in `liveCaptureClock` pipelines. At a bus
+  egress it does not: the stamper writes running time (stamp − base time),
+  so video-encoder's `lat_busout` tap reads its base time plus the encode
+  latency (measured in Phase 1, open there). Ingress taps on base-0
+  pipelines are unaffected.
 - **Transport.** The element posts an `mrlateness` element message per
   window (`count`, `untimed`, `min-ns`, `mean-ns`, `max-ns`, `last-ns`,
   `interval-ns`, `reference`) from the streaming thread, only when the
@@ -284,24 +288,234 @@ verifiable on a development host:
 - The dispatcher variable name `DHCP4_NTP_SERVERS` on a lease carrying
   option 42.
 
-## Phase 1 (building, 2026-10-14) — ingest restamp, captures on house time, ASRC at captures
+## The shared TS module (S0, built 2026-10-13 to 2026-10-15) — TS timing implemented once, natively
 
-Phase 1 is being built with the shared TS module on `feat/house-clock-s0`
-(plan chapters 3 and 5). This section records the choices made so far;
-WI-P1-6 adds the tuned constants and the sweep, and WI-P1-17 completes it
-when the phase lands. The plan's register (chapter 15.4, rows B-1 to B-16)
-holds the same records with their work items.
+S0 is not a phase: it ships with Phase 1, inside the Phases 1–4 release
+(plan chapter 3). It is a C++17 core with no GStreamer,
+`plugins/mpegts-core/native/mrts` (archive `libmrts.a`), and one GStreamer
+plugin, `plugins/mpegts-core/native/mrtshouse/libgstmrtshouse.so`, that both
+runners load by path. Everything that reads or writes timing in a transport
+stream is implemented there once (§11.5, §13.1): the packet walk, PSI, PES
+reassembly on every PID, PCR read and write, the PES header rewrite, the
+33-bit unwrap and the 1 h formula. Its users are the ingest restamp
+(Phase 1, built), the splitter pass-through (Phase 2), the formula demux
+(Phase 3) and the egress writer (Phase 5). The file list is in
+`plugins/mpegts-core/README.md`.
+
+### The API (plan chapter 3 part 4.2; the headers are the contract)
+
+- **`ts_house.h`, the timescales.** `PTS_WRAP`, `MUX_CLOCK_BASE_90K` (1 h),
+  `PCR_HZ`, `PCR_MODULO`, `PCR_MAX_INTERVAL_NS` (40 ms); the unit
+  conversions with floor division, as Python's `//`, exact for TAI-scale
+  values; `fold33`, `unwrap_near`; the bus formula `house_from_mux_pts` and
+  its inverse `mux_pts_from_house`. `Unwrapper` is the continuous per-stream
+  unwrap: seeded once, then each value nearest the previous; a DTS is
+  unwrapped nearest its own PES's PTS, never on its own (the a1 wrap fault,
+  §6), and a DTS more than 5 s from it is discarded and counted.
+  `NetEpoch`, `bus_to_net`, `net_to_bus` and `net_pcr27` hold the network
+  boundary for Phase 5.
+- **`ts_packet.h`, the packet walk.** `PacketView`, `parse_packet`,
+  `PacketWalker` (carries a packet split across feeds, resyncs by
+  `ts_split`'s rule and counts the bytes skipped; a packet joined across
+  feeds is handed out of the walker's own buffer), and `CcTracker`
+  (ISO 13818-1 2.4.3.3: adaptation-only packets never advance CC, one
+  duplicate is legal, `discontinuity_indicator` resets).
+- **`ts_pes.h`, PES headers and reassembly.** `parse_pes_header` (lenient, as
+  the three readers it replaced; stream ids without an optional header give a
+  6-byte header), `write_pes_ts_field`, `rewrite_pes_timestamps`;
+  `PesHeaderSpan` for rewriters, which holds one PUSI packet per PID whose
+  header spills into that PID's next payload packet, rewrites both and
+  releases them in order, other PIDs never delayed; `PesAssembler`, every
+  selected PID, bounded and unbounded PES, a 32 MB cap per open unit
+  (counted, R9), a CC loss drops the open unit, `keep_payload = false` gives
+  the header index without a copy.
+- **`ts_pcr.h`.** `read_pcr`, `write_pcr`, `set_discontinuity_indicator`,
+  `build_pcr_packet` (with a discontinuity flag) and `PcrScheduler`, which is
+  due before the first PCR too, so a Phase 5 egress gives a PCR-less source
+  one.
+- **`ts_psi.h`, generalised.** The descriptor walk, `registration_format`,
+  `has_descriptor`, `Pmt::version` and `program_info`, multi-packet sections
+  (`build_pmt_section`, `packetise_section`), and on `PsiDiscovery`
+  `select_program`, `generation` (bumps on every PMT change) and
+  `unsupported_sections` (sections other than 0 are counted, not parsed;
+  R1, now visible). Two latent bugs found on the way are fixed: on a PMT PID
+  the PAT maps to several programs, a PMT counts only for its own
+  `program_number`; and only section 0 of a table is parsed.
+  `read_pes_pts` stays in `ts_psi.h` as an inline forwarder until its last
+  caller goes in Phase 3.
+
+### Choices (plan chapter 3 part 4.5, as built)
+
+1. **No Python twin at runtime.** `mrtsrestamp` and `mrasrc` have no Python
+   fallback, and nothing new is twinned. New timing code is prototyped in
+   Python and ported once it is right; the Python under
+   `plugins/mpegts-core/py` stays as the reference and its `test:py` suites
+   keep running (the owner's rule, OQ-1). The frozen paths that still import
+   it at runtime (the anchored stamper's Python probe,
+   `unixfd-fanout.py --stamp-timeline`, branch alignment and retime) stop in
+   Phases 2 and 3, with the mechanisms they serve (plan chapter 3 part 6.2).
+   Test harnesses that drive a native element over appsrc/appsink are
+   allowed. **This amends ADR-0001's consequence** "the python is the
+   executable specification" to: the Python is the reference; only the C++
+   runs.
+2. **One PIC archive, one link form.** `libmrts.a` is built with
+   `override CXXFLAGS += -fPIC`, so a command-line `CXXFLAGS`
+   (`build-native-dev.sh`) cannot make it non-PIC. Every user links it:
+   `mrtsstamp`, `mrpeshouse`, `mrlateness`, `mrtshouse`, `mr-gst-runner`,
+   `mr-tssplit` and `mr-bus-fanout`, each through a `libmrts.a: FORCE` rule
+   that lets the mrts Makefile decide whether the archive is stale. No tool
+   compiles `mrts/*.cpp` into itself any more, so ADR-0002's exception 3 and
+   ADR-0019's "sources compiled in" now read "links `libmrts.a`"; the
+   dependency and its condition (no TS arithmetic in the runner) are
+   unchanged.
+3. **One plugin, many elements.** `libgstmrtshouse.so` registers each
+   house-clock element from one table, `kFactories` in `gstmrtshouse.cpp`,
+   at rank NONE, because the runners place them by name: `mrtsrestamp` and
+   `mrasrc` in Phase 1. Every element carries the plugin's common properties:
+   a read-only `abi`, and chapter 3 part 10's eight counters (`desync-bytes`,
+   `cc-lost`, `pes-oversize`, `pes-dropped-cc`, `header-spans`,
+   `psi-unsupported-sections`, `pes-no-pts`, `dts-discarded`), each a running
+   total since the element started, 0 where the element keeps no such count.
+4. **A version-checked load.** `mrtshouse_abi.h` sets `MRTSHOUSE_ABI` 1 and
+   `MRTSHOUSE_VERSION` "1.0.0". Each runner has `MRTSHOUSE_MIN_ABI` 1
+   (`native_plugins.h`, `gst_native_plugins.py`; a test pins the two, the
+   alarm sentence and the element tables equal) and reads the loaded
+   plugin's ABI from an element's `abi` property. A plugin below the minimum
+   is refused and removed from the GStreamer registry, and no later
+   candidate is tried, because its types would collide in the process: a
+   stale copy under `/opt` masks a good one in libexec, and the alarm names
+   its path. No plugin of ABI 1 has shipped, so `mrtsrestamp` and `mrasrc`
+   joined it without a bump; from the release on, a change a runner or the
+   engine relies on bumps it together with both runners' minimum.
+5. **Behaviour-preserving moves.** The pure functions moved out of
+   `ts_timeline` and `ts_psi` unchanged in behaviour: differential runs
+   (`read_pes_pts` over 1,163,520 packets; the conditioner's rewrite) found no
+   difference. The conditioner's split-header quirk (PTS rewritten, DTS not,
+   when a PUSI packet carries 14–18 payload bytes) is kept byte for byte,
+   because the frozen model still runs it (Q2).
+6. **A missing or stale plugin starts the module and alarms** (the owner's
+   decision on C-1). Both runners load the plugin once per process, before
+   the first parse, and log `native plugin mrtshouse <version> abi <n> from
+   <path>`. On a miss or a stale ABI they emit a `warning` of kind
+   `timing_plugin` (`detail`: the tried paths, or `abi N < MIN: <path>`),
+   rewrite the start description with a gst-launch tokenizer so each
+   element of the table becomes its stand-in with only its `name=` kept
+   (`mrtsrestamp` becomes `identity`), and answer a `set_property` on a
+   stand-in with a warning. `mrtsdemux` has no stand-in: a description naming
+   it is refused with an `error` carrying the same text. The engine shows
+   "Native TS module not loaded: this stream carries no house time on the
+   bus; consumers will mis-time it until the deploy is fixed." with the
+   detail (`timingPluginAlarm.ts`) and keeps it until a start whose
+   `started` event reports the plugin loaded (`timingPlugin`). Only the
+   start description is rewritten: a `bus_input_add` or pad-link fragment
+   naming a timing element fails to parse (Phase 2 decides what that does to
+   a fan-in). As built, the alarm shows on every GStreamer module whose
+   runner cannot use the plugin, not only on modules naming a timing
+   element; narrowing it is a small change if the owner wants it.
+
+### Budget (WI-S0-11)
+
+On a Pi 4, one core, `-O2`: the walk, header index and in-place rewrite at
+most 1.0 µs per packet, full reassembly with copy at most 2.0 µs per packet
+(0.7 % and 1.3 % of a core at 10 Mbit/s). `tests/mrts_bench` times the three
+passes over a capture; `--wrap-at <s>` moves its timestamps so a 33-bit
+wrap lands that far in (R19). On the dev Pi 5 (aarch64, GCC 12) it read
+17.6, 41.1 and 58.8 ns per packet on `v1/output.ts`, and 36.4, 54.0 and
+96.3 ns on 300,000 packets of the OCC capture: about a twentieth of the
+Pi 4 budget. The Pi 4 run belongs to the gate (chapter 3 part 11); its
+figures are recorded here when it has run.
+
+### Tests and fixtures
+
+- **C++ suites**, one per `mrts` module (14: `ts_house`, `ts_packet`,
+  `ts_pes`, `ts_pcr`, `ts_psi`, `ts_split`, `ts_timeline`, `ts_video_info`,
+  `lateness`, `ts_stc`, `ts_trace`, `ts_restamp`, `asrc_servo`, `ts_gap`),
+  run by `make -C plugins/mpegts-core/native/mrts test` and the root
+  `make native-test`, then `tests/trace_cli_test.sh`, which replays every
+  expectation file under `plugins/mpegts-core/tests/fixtures/restamp/`.
+- **Synthetic traces.** Each `.expect.json` names the deterministic
+  `fixture_gen --trace` command that regenerates its trace, so no `.stct` is
+  committed (the eleven come to about 5 MB). The `.ts` fixtures of chapter 3
+  part 7.2, their `ts_conformance_test.cpp` and every field capture wait for
+  WI-S0-9's capture session on the rigs.
+- **A second opinion.** `tests/hlsPipeReference.test.ts` (WI-S0-10) runs
+  `mrts_cli dump` and hls-pipe's TypeScript demuxer over the same captures
+  and compares them PES for PES (pid, PTS, DTS, length, payload CRC-32).
+  hls-pipe's known limits are an allowlist of six, each with its reason and
+  a test of the evidence (`clamps-pts-dts`, `ignores-cc`,
+  `single-section-psi`, `one-pid-per-kind`, `ignores-pes-length`,
+  `no-resync`); any other difference fails. It found that hls-pipe cannot
+  read a PMT spanning packets (the OCC feed's 514-byte, 23-stream PMT).
+- **Element and protocol tests** drive the native elements over
+  appsrc/appsink in the Python runner's interpreter
+  (`gst_mrtshouse_element_test.py`, `gst_mrtsrestamp_element_test.py`,
+  `gst_mrasrc_element_test.py`, `gst_native_plugins_test.py`,
+  `gst_ingest_restamp_test.py`) and black-box through the native runner
+  (`native_runner_protocol_test.py`); both runners must post the same
+  events.
+- **Fixtures stay off the device** (OQ-2, WI-S0-13). They are committed in
+  the repository, and no `tests/` directory ships: the image's
+  `media-router.bb` prunes every `tests/` directory from its copy into
+  `/opt/media-router`, and the dist tarball packs none. The tests run from a
+  checkout, never from `/opt`.
+
+## Phase 1 (built 2026-10-13 to 2026-10-15, gate pending) — ingest restamp, captures on house time, ASRC at captures
+
+Every producer that brings content into the engine now writes house time
+into its bytes and leaves on identity egress: the three network ingests
+(srt-input, rist-input, mpegts-ip-input) through a virtual STC, the four
+capture producers (audio-input-302m, aes67-input, audio-encoder,
+video-encoder) on their capture time, the three PCM captures through one
+house-rate ASRC. Every one sets `houseTimelineEgress`, so its egress stamps
+`PES − 1 h` and never conditions; the anchored stamper and the conditioner
+remain for the Phase 2 set (mixers, audio-processing, the splitter, the HLS
+fan-out). Still to come in this phase: the capture session (WI-P1-5,
+WI-S0-9), the constants tuned by replay (WI-P1-6, which adds its sweep
+here), and the gate checks of plan chapter 5 part 11. The plan's register
+(chapter 15.4, rows B-1 to B-31) holds the same records with their work
+items.
+
+### Where the restamp sits and what it reads as arrival (OQ-19)
+
+- **Right after the transport element, before any queue:** `srtsrc`,
+  `mrristsrc`, `udpsrc`, or `rtpjitterbuffer ! rtpmp2tdepay` for RTP. The
+  element (`mrtsrestamp`, `arrival=clock`) reads `clock − base_time` at chain
+  entry, on the source's streaming thread: the instant the transport hands
+  the packets over, after its recovery buffer. That is what §10.4's transit
+  check assumes. A source element's own timestamp is not used: srtsrc's is
+  the sender's send time in gst-plugins-bad 1.28.2. (A dev box with 1.22.0
+  stamps receipt there; `arrival=clock` is right under both.)
+- **The output keeps its input timestamps**, so the time-bounded leaky queue
+  after it still measures arrival spacing; the bus stamp is written later,
+  at the tee, by `mrtsstamp`.
+- **Nothing it cannot place leaves it.** A PES before its program has a
+  mapping is dropped (`unmapped-pes`), and packets on a PID that no PMT
+  lists are removed (`unknown-pid-packets`); null packets and the SI PIDs
+  below 0x20 pass. Every program of the PAT gets its own discovery and
+  clock.
+- **Found, not decided: RTP start-up latency.** `rtpjitterbuffer` releases its
+  first ~160 ms in one burst; the lock seeds β from that first sample and
+  slews it out at the acquire slew (2,000 ppm), so for ~80 s after each
+  start content lands up to ~160 ms later than source-natural. Added latency
+  only: nothing is late or dropped. Options: seed β from the first bucket's
+  minimum, step down once before the first fit, a faster acquire slew, or
+  `rtpjitterbuffer faststart-min-packets`. SRT, RIST and raw UDP show no
+  such burst.
 
 ### The virtual STC (`mrts::ClockLock`, `VirtualStc`; plan part 4.3)
 
 - **The two stages as planned, at the plan's initial constants**
-  (`ClockLockConfig`, `PcrValidatorConfig`): bucket minima per second, a
-  least-squares rate fit refit once without the points more than 2 MAD
-  above the line, a first-order follower, and a lower-envelope offset with
-  an acquire and a track slew. Integer arithmetic, so a replay is
-  bit-exact on every machine. WI-P1-6 tunes the constants by replay.
-- **The rate fit runs on one floor level.** A bucket more than `step_ns`
-  off the fit's level opens a candidate level; a candidate held for
+  (`ClockLockConfig`, `PcrValidatorConfig` in `ts_stc.h`): bucket minima per
+  second, a least-squares rate fit refit once without the points more than
+  2 MAD above the line, a first-order follower (τ 60 s, clamped at
+  ±1,000 ppm, warning past 100), and a lower-envelope offset over the last
+  10 buckets with a 2,000 ppm acquire slew for 5 s and a 20 ppm track slew.
+  Integer arithmetic, so a replay is bit-exact on every machine. A program
+  is `locked` once the rate is known and the acquire time has passed, and
+  `lost` after 5 s without a sample; the mapping survives `lost`. WI-P1-6
+  tunes the constants by replay.
+- **The rate fit runs on one floor level.** A bucket more than `step_ns` off
+  the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
   sooner (a burst or a dip) stays out. The rule has no constant of its
   own. A level adoption clears the fit until the new level has
@@ -325,21 +539,215 @@ holds the same records with their work items.
 - **The residual's sign.** `r = arrival − house(σ)`. A negative r is a
   mapping later than the arrival: added latency, not lateness. A PES
   arrives after its house PTS only when r exceeds its source lead.
+- **The PCR is written on the mux's base**, house + 1 h as mpegtsmux writes
+  it, so `PTS − PCR` on the bus is the source's own lead. It is mapped as a
+  PES is (one mapping per program, the straddle rule included) but outside
+  the validator's lead row, where its lag would read as a lead.
+
+### PCR validation and degraded mode (§5.3)
+
+- **The checks, one row each** (`PcrValidator`): cadence (p99 PCR interval
+  over 10 s past 150 ms raises the cadence warning; three intervals past
+  500 ms in 60 s while packets keep arriving fail, so an outage is not a
+  PCR fault); rate (the raw fit past 1,000 ppm for 30 s); freeze (three
+  consecutive PCRs with `Δσ < Δh / 2` and `Δh ≥ 30 ms`); leap
+  (`|Δσ − Δh| > 250 ms` without `discontinuity_indicator` re-locks; three in
+  60 s fail); lead (a PID's 1 s median lead outside [−200 ms, +4 s] for 5 s).
+  The first failing row is the stats `reason`; a re-lock's reason is
+  `discontinuity`, `leap`, `envelope-step`, `external` (the PMT's PCR PID
+  changed) or `ref-change`.
+- **Degraded mode** feeds a warm second `ClockLock` with the reference PID's
+  PTS (DTS for video) against the arrival of its PES headers: the PCR PID if
+  it carries PES, else the first video PID, else the first audio. Its lower
+  envelope lands the reference PID at its earliest arrival (lead 0), which
+  removes #820's 12.6 s lead. Entering it moves the program onto that floor, so the guard
+  drops about the source's lead on every PID at the switch (a synthetic
+  sparse-PCR trace drops ~0.6 s per PID). The output PCR is regenerated by
+  the conditioner's rule: the reference PID's last written key, pulled down
+  by up to 1 s to a video or audio PID with a PES in the last 500 ms, minus
+  250 ms, never back among regenerated values. Return needs 30 s of PCR that
+  passes every row; a new PCR epoch then opens with a `recovered` event.
+- **Not built: the per-PID lead clamp** of plan part 4.3 (a PID past 4 s
+  under the degraded mapping gets its own envelope and a `lead-clamp`
+  event). Until `RestampCore` has it, the card's "Source lead above 4 s"
+  warning cannot fire (B-8).
+
+### Discontinuities, overlap and live edits (plan part 4.4)
+
+- **Re-lock triggers:** a flagged PCR discontinuity, a leap, a PCR PID
+  change in the PMT, an envelope step. An outage (no packets for ≥ 1 s)
+  alone is not one: the first PCR after it passes the leap check against the
+  mapping in force, the epoch is kept and only the gap is marked, so a
+  sending engine on this design causes no re-lock when it restarts (§5.2).
+  A re-lock keeps ε as the starting guess and re-acquires β with the acquire
+  slew. House time never jumps.
+- **Overlap (R18).** A PES whose house key (DTS for video, PTS otherwise) is
+  not after its PID's last emitted key is dropped, its packets removed and
+  the PID's later CC renumbered so the output stays continuous; a
+  PCR-carrying packet of a dropped PES stays as an adaptation-only packet.
+  Video is mapped by its DTS too, so an epoch switch never takes a P frame
+  onto the new mapping ahead of its B frames. A dropped run is counted at
+  the PID's learned PES spacing, or before it has one at each dropped PES's
+  own source spacing (an O edit of −300 ms counted 280, 288, 300 and 280 ms
+  on video, two audio PIDs and teletext). A duplicate of a held split-header
+  packet is dropped alone; the original still joins its continuation.
+- **Live edits of O and the trims** apply per PID from its next PUSI. A
+  positive change leaves a gap, a negative one drops the overlap. The PCR
+  follows `min(0, smallest shift in the program)`, so `PTS − PCR` never
+  shrinks below the source's lead, and a change of that value flags the
+  next PCR. O is clamped to ±10 s (OQ-14) and a trim to ±2 s (§5.5).
+- **The PCR is flagged for Phase 1–2 consumers.** `discontinuity_indicator`
+  is set on the next written PCR after a gap of 1 s or more, after the
+  written PCR steps by 1 s or more (as after an outage), and when it changes
+  between mapped and regenerated: those consumers still run `tsdemux` in
+  PCR mode and would otherwise read a PCR jump as an error.
 
 ### The straddle rule (OQ-11, refined 2026-10-14)
 
-The decided tie-break (a PES in two epochs' ranges takes the epoch whose
-lead is closest to the PID's median lead before the re-lock) applies to
-real timeline jumps only. An epoch closed by an envelope step is no
-candidate, because the floor moved, not the timeline; and a range that
+Each epoch keeps its source range `[first PCR − 1 s, last PCR + 4 s]`; a
+range idle for 10 s is dropped. A PES in one range uses that epoch; in
+neither, the newest. The decided tie-break for a PES in two ranges (the
+epoch whose lead is closest to the PID's median lead before the re-lock)
+applies to real timeline jumps only. An epoch closed by an envelope step is
+no candidate, because the floor moved, not the timeline; and a range that
 maps the PES within `step_ns` of a newer range holding it gives way to the
 newer one (one timeline, such as a same-clock PCR PID change). Why: left to
 the tie-break, delay jitter flipped PIDs between such epochs, and a
-+100 ms delay ramp over 30 s dropped 1.3 s of audio. The design's §5.2
-keeps the general rule.
++100 ms delay ramp over 30 s dropped 1.3 s of audio. With this rule, the
+one-level rate fit and the PCR mapped outside the lead row, the replays
+put all 3,551 PES on the new floor after a +150 ms re-route (none before)
+and drop none on a +200 ms queue build-up over 20 s (137 before). The
+design's §5.2 keeps the general rule.
 
-### ASRC at PCM captures (`mrts::AsrcServo`; plan part 4.5)
+### Gaps on the bus (OQ-12) and the queues they cross
 
+- **The marker.** A GStreamer GAP event cannot cross `unixfdsink`, which
+  carries buffers, caps and EOS only. A gap is a buffer flagged
+  `GAP | DISCONT`, holding one adaptation-only packet per PID the gap is on:
+  AF length 183, only `transport_private_data_flag` set, 8 bytes of private
+  data with the gap's length in ns (unsigned big-endian), 0xFF stuffing, the
+  PID's last payload CC repeated, so it moves no demux and no CC
+  (`mrts::build_gap_packet`, `read_gap_length`; later readers use the
+  latter). Its PTS is the gap's **end** on the bus convention (house minus
+  the element's base, mapped through the segment as `mrtsstamp` maps a
+  stamp), and it has no duration.
+- **Its DTS, in two places.** Out of the restamp, the marker's DTS is the
+  input's own DTS-or-PTS, so the time-level queue right after it (srt-input's
+  100 ms `queue leaky=2`) never moves on it: `GstQueue` reads DTS before
+  PTS. At an identity egress `mrtsstamp` and the Python probe
+  clear it, so the bus carries **no DTS** on a marker: an input-timeline DTS
+  next to house-time data made the 5 s edge queue and the 5 s consumer
+  ingress queue read their level as house minus arrival and leak the buffer
+  behind the marker. A duration was rejected for the same reason: `GstQueue`
+  adds it to its level.
+- **One list per revealing buffer.** A marker goes right before the PES that
+  shows its gap, so the input buffer is split around it, and the pieces and
+  markers of one input buffer leave as one buffer list, which a leaky queue
+  takes or drops together. Pushed one by one, a 3 s outage behind
+  srt-input's queue lost a marker or data in 10 of 10 runs (the input's own
+  PTS jump reads as a full queue); as a list, 0 of 10.
+- **When.** On a PID's first PES under a newer epoch (reason `epoch`), after
+  a live edit (`edit`), after an outage (`outage`), or in fixed mode a jump
+  (`jump`, below), when the PES lands after the end of what the PID last
+  emitted. During an outage the element's own `GstTask` (`arrival=clock`,
+  in PLAYING) pushes one buffer with a packet per PID whose gap has started,
+  at 1 s without packets and every 250 ms after (OQ-17; measured 1000.5 ms,
+  then 250.2–250.6 ms apart); the resume marker comes from the stream.
+- **Through an identity egress** a marker leaves with its PTS, duration,
+  flags and bytes, and a buffer list holding one is chained member by
+  member, not coalesced: an exception to ADR-0011, because merging would
+  hand the marker's flags and PTS to the whole access unit, or bury the
+  marker in a data buffer. `mr-tssplit` and `mr-bus-fanout` still write
+  `flags = 0`, so a marker does not cross a splitter until Phase 2 forwards
+  it (R-P1-5); no Phase 1 component consumes markers.
+- **Found, not decided: DISCONT and `tsdemux`.** The DISCONT flag makes every
+  Phase 1–2 `tsdemux` consumer drain and flush at each marker
+  (gst-plugins-bad 1.28.2 `mpegtsbase.c:1539–1557`, `tsdemux.c:2314–2356`).
+  Measured on an 8 s stream with three markers: one audio PES lost and two
+  extra DISCONT outputs per stream, against none without the flag. It
+  affects development and gate checks only, since Phase 3 replaces
+  `tsdemux`. If vetoed, the marker keeps GAP alone (one line in
+  `restamp_marker`); Phase 2's readers key on GAP.
+
+### The captures: fixed mode (plan parts 4.2 and 4.6)
+
+- **`clock-mode=fixed`** skips the STC: a PES's house time is `PES − 1 h` as
+  the local mux wrote it, plus the base time under `add-base-time`, plus the
+  shift. PTS and DTS move by that constant and keep the mux's exact spacing;
+  the PCR moves by the base and `min(0, shift)`, as at a network ingest, so
+  `PTS − PCR` never shrinks below the mux's. It is how the four capture
+  producers get O, the live edits and gap markers without a second
+  implementation. A capture has one PID, so it has O and no per-PID trim
+  (OQ-15).
+- **The jump rule.** In fixed mode a PES is also a gap (`jump`) when its
+  spacing from the PID's last PES exceeds twice the PID's PES length, the
+  length being the upper median of its last three clean spacings (the
+  longer of two while only two are known; no test before that), with a
+  jump's own spacing joining the three. So one short PES never sets the
+  length (an ASRC's first output, a relock's remainder), a second jump two
+  PES later still marks, and a lasting cadence rise is learned: a PipeWire
+  quantum rising from 512 to 2,048 samples gives two markers and then none,
+  where "twice the longer of the last two non-jump spacings" gave 299.
+  Phase 2's aligners should not lower on a marker shorter than the PID's
+  PES length: those two are false.
+- **video-encoder keeps `liveCaptureClock`** (its natural base time avoids
+  the measured aggregator mis-schedule) and adds the base back:
+  `mpegtsmux name=mux latency=0 alignment=0 ! mrtsrestamp clock-mode=fixed
+  add-base-time=true ! buildBusSink`, the base taken at the first buffer of
+  a start. PES − 1 h is then the capture time on the house timescale
+  (§11.3 item 6). Fixing the aggregator schedule instead, which would let
+  `liveCaptureClock` go, is the recorded alternative and was not attempted.
+  A negative O edit there drops whole frames, so the picture is damaged
+  until the next keyframe; a positive one is a clean time jump.
+- **The PCM captures** run `audioconvert ! mrasrc` where `audioresample` was
+  (`build302mEncodeBranch({ asrc: true, restamp })` for audio-input-302m and
+  aes67-input; audio-encoder builds its own), then the encoder and
+  `mpegtsmux`, then `mrtsrestamp clock-mode=fixed`. Without `asrc` and
+  `restamp` the branch string is byte-identical to before (the mixers until
+  Phase 2).
+- **audio-encoder captures with `pipewiresrc`** on its null-sink monitor
+  (`stream.capture.sink=true`, `node.latency` from `srcBufferMs`, now
+  40–85 ms, default 60; OQ-16) in place of `pulsesrc`, with the capture caps
+  pinned to F32LE, the channel count and, from two channels up, GStreamer's
+  fallback channel mask: an open format hung PipeWire 1.2.7's negotiation.
+  On the dev Pi 5 (PipeWire 1.2.7, 600 s, 14,064 buffers) its PTS landed
+  exactly on the driver cycle, with no ring-sized steps, so the `pw_time`
+  fallback was not needed; the fleet's PipeWire 1.6.3 is a gate check.
+
+### ASRC at PCM captures (`mrts::AsrcServo`, `mrasrc`; plan part 4.5)
+
+- **The resampler: `GstAudioResampler` with scaled integer rates** (§13.3).
+  `in_rate = round(fs_in·1000 / (1 + ε_cmd))` against `out_rate =
+  fs_out·1000` gives a ratio resolution of 0.02 ppm at 48 kHz, and
+  `gst_audio_resampler_update` takes new rates without a reset, keeping the
+  filter phase. Kaiser at `quality` 4 (the GStreamer default), cubic
+  interpolation, `MAX_PHASE_ERROR` 0.05, `VARIABLE_RATE`; the settings live
+  in `mrasrc_resampler.h`, which `tests/asrc_bench.c` shares. The
+  interpolated filter table is **forced**: AUTO picks the full table when
+  the scaled rates reduce small (44.1 → 48 kHz reduces to 147/160) and asked
+  for 15.7 GB. It is in `gstreamer-audio-1.0`, already a dependency, so no
+  recipe change. Measured at a 1.0002 ratio with 1 ms of PTS jitter
+  (AES17-style, ±50 Hz notch): THD+N −110.4 dBFS for F32LE and S32LE,
+  −94.4 dBFS for S16LE (its own floor). CPU on the dev Pi 5: 1.04–1.24 % of a
+  core per stereo stream and 4.18–5.21 % for 8 channels at quality 4.
+  speexdsp is the measured alternative if the Pi 4 bench misses its budget
+  (3 % stereo, 10 % for 8 channels): first quality 2, then the speexdsp
+  backend behind the same element, with `speexdsp` in the recipe.
+- **The element.** A `GstBaseTransform`, not in place. Per buffer the servo
+  locks the input frame count to the buffer PTS (the capture time on
+  `CLOCK_MONOTONIC`) and commands the ratio, `ε_cmd = ε + phase_err / 10 s`
+  clamped to ±1,000 ppm; the resampler is updated before the output is
+  sized, whenever the commanded rate moves by at least 1 (about 47 times a
+  second at 1,024-frame buffers). The output is a house-rate sample counter,
+  `PTS_out(m) = T0 + m / out_rate`, so sample count and PTS agree exactly on
+  the bus (P7). `out-rate` 0 means the input's rate or the rate the caps
+  downstream ask for, so one element also converts the nominal rate (a
+  44.1 kHz device onto a 48 kHz bus) and nothing resamples twice (§13.1).
+  Formats S16LE, S32LE and F32LE interleaved; the latency query adds the
+  filter's lookahead; at EOS it drains that lookahead on the same counter.
+  It posts `mrasrc-stats` every 2 s of output labels and `mrasrc-event`
+  (`relock` with `reason`, `jump-ns` and `dropped-ns`;
+  `ratio-out-of-bounds` with `fit-ppb`).
 - **A two-sided 50 ms step.** `asrc_lock_config()` is the STC's constants
   with `step_ns` = 50 ms and `step_falls` = true. A capture labelled on
   its floor is late by any fall of its latency (a PipeWire quantum change)
@@ -359,14 +767,24 @@ keeps the general rule.
   about 2 min for 60 ms and 5 min for 200 ms, with late labels throughout.
   Measured: −60 and −200 ms falls give one relock 9–10 s after the step,
   no PTS jump, 59.935 and 199.928 ms dropped, and labels within one frame
-  from the relock. The rule covers every relock; limiting the drop to
-  envelope steps is a one-line change.
+  from the relock; the element on the real resampler reproduces the
+  servo's model to about 1 µs. The rule covers every relock; limiting the
+  drop to envelope steps is a one-line change.
 - **Measured against the plan, constants unchanged until WI-P1-6.** The
   lock takes 35.01–36.01 s (plan 30 s: the STC's 30-bucket first fit plus
   the 5 s acquire). Over 1 h the frame count is within 0.70 frames at 0
   and ±50 ppm and 1.19 frames at ±500 ppm (plan ±1; the jitter of the
   bucket minima). A device past the ratio clamp now relocks on falls as
   well.
+- **Found, minor.** The phase detector counts whole input frames, which
+  steps the ratio by about ±1 ppm per buffer: FM about 87 dB below the tone,
+  inaudible. After a DISCONT whose PTS steps back, labels run up to 1⅛
+  frames late for about 2.5 s (the drop rounds down to whole frames). At
+  audio-encoder's start the first `pipewiresrc` buffer is labelled one
+  quantum late, and the servo slews that out at the ratio clamp for about
+  30 s, labels sitting up to ~40 ms after the capture time meanwhile; the
+  "Device clock off" warning (past 200 ppm for 60 s) does not fire. Each is
+  a small servo change if wanted.
 
 ### Identity egress (`mrtsstamp` and the Python probe; plan parts 4.6–4.7)
 
@@ -374,18 +792,59 @@ keeps the general rule.
   to running time `max(stamp − base_time, 0)`, so wire = PES − 1 h under
   any base time (video-encoder's natural one). Base-0 pipelines are
   unchanged.
-- **Gap markers pass.** A GAP-flagged buffer (OQ-12) leaves an identity
-  egress untouched. Anchored egresses are frozen (Q2) and get no markers in
-  Phase 1.
-- **An exception to ADR-0011.** At an identity egress a buffer list
-  holding a GAP member is chained member by member, not coalesced:
-  merging would hand the marker's flags and PTS to the whole access unit,
-  or bury the marker in a data buffer. `MRTSSTAMP_VERSION` is 2.6.0.
+- **Gap markers pass**, with their DTS cleared (above). Anchored egresses
+  are frozen (Q2) and get no markers in Phase 1.
+- **The per-egress conditioner threshold is gone** (WI-P1-15):
+  `PipelineDescription.conditionStepMs`, its runner plumbing, the
+  `condition-step-ms` property, `TimelineStamper::set_condition_step_ns` and
+  the twin's keyword. The conditioner the Phase 2 set still runs uses the
+  fixed 300 ms everywhere. `MRTSSTAMP_VERSION` is 2.7.0. ADR-0005's text on
+  `conditionStepMs` and on `liveCaptureClock` is left as written (§11.6);
+  this is its correction.
 
-### Operator settings (plan WI-P1-14)
+### The engine side and what the operator gets
 
-The Ingest Offset and the per-PID trims apply on change only (Enter, blur
-or a spinner step), never per keystroke, because every live write is a gap
-or a drop on the stream (§5.5). Each box keeps a draft of its uncommitted
-text, so a re-render of the settings form, which any engine's store patch
-causes, never resets what is being typed.
+- **One TypeScript home**, `packages/engine/src/plugins/ingestTiming.ts`:
+  `buildRestamp`, `buildAsrc`, the bus reports, and
+  `applyIngestTimingLiveUpdate`, which sets `offset-ns` or `pid-trims` on
+  the element named `restamp` with no restart. `IngestTimingReporter` turns
+  the element messages into the card, throttled to changes of 1 ms or a
+  state flip; each module binds it to its own health, badge and sections
+  (the binding is repeated in seven modules, a refactor candidate for the
+  base class).
+- **The settings are injected, not declared.** A manifest declaring
+  `"timing": { "role": "ingest", "pidTrims": true|false }` gets Ingest
+  Offset (`ingestOffsetMs`, ±10,000 ms, live) and, with `pidTrims`, Per-PID
+  Trim (`pidTrimsMs`, ±2,000 ms per PID, live, the `pidTrim` widget) from
+  `withIngestTimingSettings`, in both the engine's loader and the manager's
+  registry: the three network ingests have both, the four captures O only.
+- **The box writes on change only** (Enter, blur or a spinner step), never
+  per keystroke, because every live write is a gap or a drop on the stream
+  (§5.5). Each box keeps a draft of its uncommitted text, so a re-render of
+  the settings form, which any engine's store patch causes, never resets
+  what is being typed.
+- **The card.** Network ingests: a `clock` badge (Locked, Acquiring,
+  Degraded, No PCR), a Clock section (state, source rate in ppm, residual
+  p99, re-locks, last event) and one section per PID (lead min, median and
+  max, trim, shift, PES dropped in 10 min). Captures: a Clock section with
+  the ASRC ratio, phase error and re-locks on the PCM ones, and the ingest
+  offset. Warnings: degraded clock, more than 3 re-locks in 10 min, source
+  rate past 100 ppm or ASRC ratio past 200 ppm for 60 s, PCR cadence, and
+  transport errors (`cc-lost` or `desync-bytes` rising for 10 s, read as
+  running totals from every program's stats message). None drops content.
+
+### Open at the end of the build
+
+- The capture session (WI-P1-5, WI-S0-9), the tuning sweep (WI-P1-6), the
+  Pi 4 benches (WI-S0-11, WI-P1-8) and the part 11 gate checks, all on the
+  rigs.
+- The degraded-mode lead clamp and its `lead-clamp` event (B-8).
+- `mrasrc` has no row in either runner's stand-in table, so without the
+  plugin the three PCM captures fail to parse instead of starting with the
+  rule-6 alarm. Recommended stand-in: `audioresample`, which keeps the
+  nominal-rate conversion.
+- The RTP start-up latency and the DISCONT flag on markers (both above).
+- The bus-egress lateness tap of a `liveCaptureClock` pipeline reads the base
+  time (Phase 0, corrected above): video-encoder's card shows no output
+  lateness, because the reporter hides a window of 1 h or more. Proposed
+  fix: that tap with `reference=running-time`, exact under any base time.

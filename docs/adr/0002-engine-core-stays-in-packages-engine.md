@@ -49,3 +49,11 @@ Recorded exceptions:
    of its own, so there is one definition, in mpegts-core, for the python
    runner, `mrtsstamp` and the native runner alike. Removing mpegts-core
    breaks the runner build, loudly.
+
+## Status
+
+Exception 3 amended by [[0029]] (2026-10-16, S0): the runner links
+mpegts-core's PIC archive `libmrts.a`, as every other user of the TS core
+does, instead of compiling the `mrts` sources into itself; it also loads
+`libgstmrtshouse.so` by path, a lookup of exception 1's kind. The condition
+is unchanged: no TS arithmetic in the runner.

@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-mpegts-core",
     "version": "2.1.0",
     "private": true,
-    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): MPEG-TS domain base code. C++ mrts packet core (PSI parse/build, TS splitter, H.264/H.265 SPS probe) plus the python reference modules that are its executable specification, the parity-test fixtures, the TS timeline shifter, and the TS-side PMT descriptor-loop reader every TS plugin walks ES descriptors with.",
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): MPEG-TS domain base code. The C++ mrts core that implements TS timing once (packet walk, PSI, PES, PCR, the house-clock timescales, the virtual STC, the ingest restamp, the capture ASRC servo, the TS splitter, the H.264/H.265 SPS probe) and the GStreamer plugins on it (libgstmrtshouse.so, mrtsstamp, mrlateness); the python reference modules (the reference, not loaded for any new path), the parity-test fixtures, and the TS-side PMT descriptor-loop reader every TS plugin walks ES descriptors with.",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {

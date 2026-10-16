@@ -41,3 +41,13 @@ to "never inside `packages/engine`". It follows this ADR's plain-make
 contract and is discovered by the same root `make native*` targets
 (`packages/engine/native/*/Makefile`, owner `engine`, installed to
 `/usr/libexec/media-router/engine/`). Everything else here stands.
+
+Amended by [[0029]] (2026-10-16, the shared TS module, S0): the consequence
+"the python is the executable specification" now reads: the python is the
+reference; only the C++ runs. The house-clock elements have no python
+fallback, and the frozen paths that still import the python at runtime (the
+egress stamper's python probe, `unixfd-fanout.py`, branch alignment and
+retime) stop doing so in Phases 2 and 3. New timing code is prototyped in
+python and ported once it is right; the python stays beside its port with
+its tests (the owner's rule, plan OQ-1). The parity suite pins
+byte-identical outputs until Phase 2 deletes it.

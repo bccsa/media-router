@@ -94,6 +94,11 @@ log). The plugin ships in every image and is resolved the same way
 - Protocol conformance is pinned black-box by
   `native_runner_protocol_test.py` (in `test:py`); the engine-side selection
   by `nativeRunner.test.ts`.
+- Amended by [[0029]] (2026-10-16, S0): the aligner and the gates link
+  mpegts-core's `libmrts.a` rather than compiling its sources in, and the
+  runner loads the house-clock plugin `libgstmrtshouse.so` by path before
+  the parse, with an ABI check, and gives its elements stand-ins when it
+  cannot use it (ADR-0029, S0 rules 4 and 6).
 - Native was opt-in (`MR_GST_RUNNER_NATIVE=1`) for the first trial; after
   the clean 16 h soak on three boxes (2026-09-18) it is the default, so a
   fresh image runs native with no drop-in. Rollback: `MR_GST_RUNNER_NATIVE=0`

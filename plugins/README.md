@@ -1185,9 +1185,13 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   paced). Build every new mixer through this rather than assembling the string by hand.
   All three fan-in rules — pacing, chaining only from `continuationName`, and the
   single-source bypass — are locked in [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md).
-- `build302mEncodeBranch({ format?, channels? })` — PCM → 302M-in-TS encode tail
+- `build302mEncodeBranch({ format?, channels?, asrc?, restamp? })` — PCM → 302M-in-TS encode tail
   (`S32LE`/48 kHz, `avenc_s302m strict=experimental` — ffmpeg gates the encoder; the
-  bitstream is standard). Stereo by default; `channels` is snapped onto the 2/4/6/8 set
+  bitstream is standard). A PCM capture passes `asrc: true` (`mrasrc` in place of
+  `audioresample`, the path's one resample, locked to the capture clock) and
+  `restamp: buildRestamp({ mode: 'fixed', … })`, appended after the mux (see "Ingest
+  timing"); without either the string is the one the mixers have always built.
+  Stereo by default; `channels` is snapped onto the 2/4/6/8 set
   a 302M stream can carry — that is the FORMAT's ceiling, so a wide desk is several
   producer modules, never one wide stream ([ADR-0014](../docs/adr/0014-302m-stream-width.md)).
   A producer that emits anything but stereo must also declare it via
@@ -2045,7 +2049,9 @@ plugin authors:
 - **Don't re-stamp.** No `tsparse set-timestamps=true`, no
   `do-timestamp=true`, no arrival-based re-timing between your mux and the
   bus sink — the contract's whole point is that the producer's stamp survives
-  to the consumer (a regression test pins that it survives `tsdemux`).
+  to the consumer (a regression test pins that it survives `tsdemux`). The
+  one sanctioned rewrite is the engine's own `mrtsrestamp` at an ingest or a
+  capture, built by `buildRestamp` (see "Ingest timing" below).
 - `preserveSourceTimeline` is dropped from every description (the stamper's
   in-place re-anchor replaces its error-out-and-relatch); it is deleted with
   the stamper rework.
@@ -2071,10 +2077,12 @@ pass-through `mrlateness` (`mpegts-core/native/mrlateness`, a plain
 ADR-0011) is named in the `buildBusSrc` string ahead of the ingress queue
 (`lat_busin…`, arrival) and in `buildBusSink` after the caps pair, before the
 `busout_*` tee (`lat_busout_<port>`, the stamped PTS every consumer receives),
-both `reference=house` (raw PTS against `CLOCK_MONOTONIC`, correct even in a
-`liveCaptureClock` pipeline). Each tap posts one `mrlateness` element message
-per 2 s window (count, untimed, min/mean/max/last ns); both runners forward it
-as the plugin event `mrlateness:<tap name>` with no `busReports` subscription,
+both `reference=house` (raw PTS against `CLOCK_MONOTONIC`). One exception, open:
+in a `liveCaptureClock` pipeline (video-encoder) the egress tap reads the
+pipeline's base time plus the latency, because the stamper writes running
+time there, so that card shows no output lateness (ADR-0029 Phase 1). Each
+tap posts one `mrlateness` element message per 2 s window (count, untimed,
+min/mean/max/last ns); both runners forward it as the plugin event `mrlateness:<tap name>` with no `busReports` subscription,
 so dynamic inputs report too, and `GstPluginBase` consumes those events before
 `dispatchPluginEvent` reaches your module. What it publishes, every row with
 its label and unit and re-sent only when a value moves by ≥ 1 ms: a `timing`
@@ -2108,9 +2116,10 @@ does:
   `Latency` param, from `pw-dump`, polled every 10 s) — audio-input,
   audio-output, n1-mixer and audio-dynamics do.
 
-Reading the numbers in Phase 0: ingests read near 0 (their stamps are still
-arrival-anchored) and outputs are D-dominated; they turn source-natural in
-Phase 1 and D-free in Phase 4. A box without `libgstmrlateness.so` gets no
+Reading the numbers: a network ingest reads negative, early by its source's
+PTS − PCR lead (its content lands source-natural, Phase 1); a capture reads
+its capture and encode latency; outputs are D-dominated until Phase 4 makes
+them D-free. A box without `libgstmrlateness.so` gets no
 taps — the fragments omit the element, so nothing fails to parse — and the
 module's `timing` section reads `lateness instrument missing`. Pipeline-string
 tests pin the instrument present (`vitest.setup.ts`,
@@ -2170,24 +2179,14 @@ rebuild genuinely helps — mpegts-ip-input and aes67-input do for MULTICAST
 (60 s) to re-join a dropped group; leave it 0 for unicast. The runner side of
 all this is `gst_source_gate.py`.
 
-**Conditioner step threshold (`conditionStepMs`).** The stamper's wire
-conditioner rewrites a PES PTS step that the buffer's arrival did not match
-(a source clock step, not content) out of the wire — 300 ms default, which
-B-frame reorder and jitter sit well inside. A producer whose egress is ONE
-audio PID off a live capture ring can put a lower threshold on its description
-(`conditionStepMs`); the audio-encoder sets 100 because its pulsesrc
-re-timestamps by a whole ~200 ms ring now and then with no arrival change, and
-every paced consumer downstream stored that as +200 ms of latency per event
-(#751 follow-up, 2026-09-15). Do NOT lower it on a video egress (reorder reads
-as a step). The runner passes it to the stampers as `condition-step-ms`
-(native, read at arm) / `condition_step_ns` (python probe).
-
-**House-timeline egress (`houseTimelineEgress`).** A transform producer —
-an `mpegtsmux` on bus-fed, house-stamped input (transcoder, audio-transcoder,
-mpegts-muxer) — already writes house time + 1 h into its PES. Setting
-`houseTimelineEgress: true` on the description makes its egress stamp by
-identity (`PES − 1 h`) instead of anchoring, so the source's time passes
-through and the hop's transit is left for the route's D to cover.
+**House-timeline egress (`houseTimelineEgress`).** A producer whose PES
+already carry house time + 1 h sets `houseTimelineEgress: true`, and its
+egress stamps by identity (`PES − 1 h`, base-aware, gap markers passed
+through) instead of anchoring. That is every transform producer on bus-fed,
+house-stamped input (transcoder, audio-transcoder, mpegts-muxer,
+teletext-subtitles) and, since Phase 1, every ingest and capture that runs
+the restamp (below). Only the Phase 2 set still anchors: the mixers,
+audio-processing, the splitter and the HLS fan-out.
 
 **Transform-producer inputs (`alignBranchesToStamps.transformProducer`).**
 Set it with `alignBranchesToStamps` on a transform producer's input demuxes:
@@ -2216,6 +2215,170 @@ arming, drift timer) plus its `gst_stamp_probe.py` /
 same `timeline` block in their 2 s stats line. If wire timing looks wrong,
 read those runner log lines before suspecting your own pipeline.
 
+### Ingest timing: house time written into the bytes (house-clock Phase 1)
+
+A producer that brings content into the engine writes house time into the
+TS it publishes, once, where the stream enters: its PES then carry
+`house + 1 h`, its egress stamps them by identity (`houseTimelineEgress`),
+and every consumer reads the same time from the bytes. The engine's
+`mrtsrestamp` element does the writing; a plugin only places it. Seven
+modules do (design §5, [`docs/adr/0029`](../docs/adr/0029-house-clock-timing.md)
+Phase 1):
+
+| Module | Restamp | ASRC | Settings injected |
+|---|---|---|---|
+| srt-input, rist-input, mpegts-ip-input | `clock-mode=stc`, directly after the transport element (`srtsrc`, `mrristsrc`, `udpsrc`, or `rtpjitterbuffer ! rtpmp2tdepay` for RTP) and before the module's queue | — | Ingest Offset, Per-PID Trim |
+| audio-input-302m, aes67-input | `clock-mode=fixed`, after the 302M encode branch's `mpegtsmux` | `mrasrc` in place of `audioresample` in that branch | Ingest Offset |
+| audio-encoder | `clock-mode=fixed`, after its `mpegtsmux` | `mrasrc out-rate=<sampleRate>` after the `pipewiresrc` capture | Ingest Offset |
+| video-encoder | `clock-mode=fixed add-base-time=true`, after its `mpegtsmux` (the `liveCaptureClock` base time added back) | — | Ingest Offset |
+
+Wiring one (helpers in `packages/engine/src/plugins/ingestTiming.ts`,
+exported from `@media-router/engine`; srt-input is the reference):
+
+1. **Manifest.** Declare `"timing": { "role": "ingest", "pidTrims": true }`
+   under `mediaRouter` (`false` for a capture: one PID, where O does the
+   same job). The engine's `PluginLoader` and the manager's `PluginRegistry`
+   then inject `ingestOffsetMs` (Ingest Offset, ±10,000 ms, live) and, with
+   `pidTrims`, `pidTrimsMs` (Per-PID Trim, ±2,000 ms per PID, live, the
+   `pidTrim` widget fed from the `pids` field options) through
+   `withIngestTimingSettings` (shared-types). Do not declare them in your
+   `configSchema`.
+2. **Pipeline.** `buildRestamp({ mode, addBaseTime, offsetMs, pidTrimsMs })`
+   returns `mrtsrestamp name=restamp clock-mode=… offset-ns=… [pid-trims="…"]`.
+   A network ingest places it right after the transport element, before any
+   queue, because it reads arrival itself (the clock at chain entry, after
+   the transport's recovery buffer; `srtsrc`'s own buffer PTS is the
+   sender's send time). A capture places it right after its mux. A PCM
+   capture uses `buildAsrc()` where it had `audioresample`
+   (`build302mEncodeBranch({ asrc: true, restamp })` does both for 302M):
+   one resample per path, which also converts the device's nominal rate.
+3. **Description.** Return `houseTimelineEgress: true` and add
+   `restampBusReports()` (and `asrcBusReports()` for an ASRC) to
+   `busReports`, so the element messages reach the module as plugin events
+   `mrtsrestamp-stats:restamp`, `mrtsrestamp-pid:restamp`,
+   `mrtsrestamp-event:restamp`, `mrasrc-stats:asrc`, `mrasrc-event:asrc`.
+4. **Card.** Feed those events to an `IngestTimingReporter` (mode `stc` or
+   `fixed`) from `onPluginEvent`, `start()` it in `onStart` and `stop()` it
+   in `onStop`, and `reassert()` its warning from `onPipelinePlaying` and on
+   any return to health `ok` (every PLAYING sets ok). Its host binds your
+   dynamic sections (replace only the reporter's ids, those
+   `isIngestTimingSection` matches, and keep your own and the base's), the
+   `clock` badge (`clearBadge` to `GstPluginBase.clearBadge`), the `pids`
+   field options and your health warning. It shows, for a network ingest, the `clock` badge (Locked,
+   Acquiring, Degraded, No PCR), a Clock section (state, source rate,
+   residual p99, re-locks, last event) and one section per PID (lead
+   min / median / max, trim, shift O + trim, PES dropped in 10 min); for a
+   capture, a Clock section with the ASRC ratio, phase error and re-locks
+   where there is an ASRC, and the ingest offset. Its warnings: degraded
+   clock, more than 3 re-locks in 10 min, a source rate past 100 ppm or an
+   ASRC ratio past 200 ppm for a minute, PCR cadence, transport errors.
+5. **Live edits.** List `ingestOffsetMs` (and `pidTrimsMs`) in
+   `liveUpdatableParams` and call `applyIngestTimingLiveUpdate({
+   setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+   changes)` from `onLiveConfigUpdate`; it sets `offset-ns` or `pid-trims` on
+   the element named `restamp`, clamped, with no restart. Each PID takes the
+   new shift at its next PES: a positive change leaves a gap (a marker), a
+   negative change drops the overlap (§5.5). The settings form writes on
+   Enter, blur or a spinner step only, never per keystroke.
+
+What the consumers see: a network ingest's content lands where its source
+scheduled it (arrival plus the source's PTS − PCR lead, "source-natural"),
+so its lateness reads negative by that lead; a capture's PES carry capture
+time, so its lateness is its capture and encode latency. The PCR is
+rewritten onto house time too, keeping the source's lead, with
+`discontinuity_indicator` on the first PCR after a gap of 1 s or more, so
+the consumers of the day (`tsdemux` in PCR mode) keep working. Rules:
+
+- **No second rewrite.** Nothing re-stamps between the restamp and the bus
+  sink, and a bus-fed producer (transcoder, muxer) does not restamp at all:
+  its PES already carry house time.
+- **No queue before a network restamp**, or arrival is read after the queue.
+- **One resample per audio path**: `mrasrc` replaces `audioresample`, it
+  never sits beside one.
+
+### The restamp and ASRC elements (`libgstmrtshouse.so`)
+
+Both live in mpegts-core's one house-clock plugin, which both runners load
+by path before any pipeline is parsed, with an ABI check (ADR-0029, "The
+shared TS module"). When a runner cannot use it (missing, or its ABI below
+the runner's), it puts `identity name=restamp` where `mrtsrestamp` was,
+answers `set_property` on it with a warning, and the module carries "Native
+TS module not loaded: this stream carries no house time on the bus;
+consumers will mis-time it until the deploy is fixed." until a start loads
+the plugin; the stream then runs on source time. `mrasrc` has no stand-in
+yet, so a capture naming it fails to parse without the plugin (open,
+ADR-0029 Phase 1).
+
+**`mrtsrestamp`** is `mrts::RestampCore` as a plain `GstElement` with `chain`
+and `chain_list`; a buffer list leaves as one list. It rewrites PES PTS/DTS
+and the PCR in place and keeps each buffer's own timestamps, so a
+time-bounded queue after it still measures arrival. It removes the packets
+of a PES it drops as overlap (renumbering that PID's CC), packets on a PID
+no PMT lists, and PES that arrive before their program has a mapping.
+
+| Property | Meaning |
+|---|---|
+| `clock-mode` | `stc`: one virtual STC per program, locked to the PCR (network ingests). `fixed`: `PES − 1 h` as the local mux wrote it, moved by a constant (captures). Read at start |
+| `arrival` | `clock` (default): the pipeline clock minus base time at chain entry. `buffer-pts`: the buffer's PTS, for appsrc-driven tests and replays. Read at start |
+| `add-base-time` | `fixed` only: add the pipeline's base time, taken at the first buffer of a start (video-encoder). Read at start |
+| `offset-ns` | The ingest offset O, ±10 s. Live |
+| `pid-trims` | `"<pid>=<ns>;…"`, PIDs decimal or `0x`, each trim clamped to ±2 s. Live |
+| `stats-interval-ms` | Stats cadence, default 2000 |
+| `trace-location` | Record an `.stct` arrival trace there; empty is off. Live |
+| `stats` | Read-only: the last stats post, with the core's counters |
+| `abi` and the counters | Read-only, every element of the plugin: `desync-bytes`, `cc-lost`, `pes-oversize`, `pes-dropped-cc`, `header-spans`, `psi-unsupported-sections`, `pes-no-pts`, `dts-discarded`, running totals since the element started |
+
+Element messages, posted from the streaming thread: `mrtsrestamp-stats` per
+program per interval (`program`, `state` acquiring / locked / degraded /
+lost, `reason`, `ppb`, `offset-drift-ns`, `residual-min/p50/p99/max-ns`,
+`residual-count`, `pcr-interval-max-ns`, `cadence-warning`, `rate-warning`,
+`relocks`, `epoch`, `gaps`, `gap-ns-total`, `dropped-pes`,
+`dropped-ns-total`, and the element-wide `cc-lost` and `desync-bytes`);
+`mrtsrestamp-pid` per PID per interval (`program`, `pid`, `stream-type`,
+`lead-count`, `lead-min/median/max-ns` once the PID has a lead, `trim-ns`,
+`shift-ns`, `dropped-pes`); `mrtsrestamp-event` on occurrence (`kind`
+relock / degraded / recovered / envelope-step / gap / overlap / psi-change,
+`program`, `pid`, `reason`, `gap-ns`, `dropped-ns`, `house-ns`, `epoch`,
+`value-ns`). Counters are running totals since the element started. In
+`fixed` mode the clock fields stay at their idle values.
+
+**Gap markers.** The bus cannot carry a GAP event, so a gap is a buffer
+flagged `GAP | DISCONT` holding one adaptation-only packet per PID the gap is
+on, the gap's length in ns in its transport private data
+(`mrts::read_gap_length`), its PTS the gap's end on the bus convention, no
+duration. Its DTS is on the restamp's input timeline, so the queue after it
+never moves; an identity egress clears the DTS, so the bus carries none. A
+marker is pushed just before the PES that shows its gap, the rest of that
+input buffer around it in one buffer list; during an outage the element's
+own task pushes one at 1 s without packets and every 250 ms after. A reader
+keys on the GAP flag and the private data, never on a duration or a DTS. In
+Phase 1 no consumer reads them, and the sidecars (`mr-tssplit`,
+`mr-bus-fanout`) do not forward them yet.
+
+**`mrasrc`** is the ASRC at a PCM capture: a `GstBaseTransform` that locks
+the input frame count to the buffer PTS (the capture time on the house
+clock, which `pipewiresrc` and the RTP jitterbuffer deliver) and steers a
+`GstAudioResampler` by its ratio, so the output is a house-rate sample
+counter labelled `T0 + m / out_rate`. It never drops or inserts samples to
+steer; a relock onto a lower capture-latency floor drops the overlap with
+what already left (at most 1 s), and a rise leaves a forward PTS jump that
+the restamp downstream turns into a gap marker. `out-rate` is the rate it
+counts at (0: the input's rate, or what the caps downstream ask for);
+`quality` is the Kaiser quality, 0–10, default 4; both apply at start or on
+a caps change. Formats S16LE, S32LE, F32LE interleaved; above two channels
+the caps need a channel mask. Keep the base transform's `qos` off (its
+default): a dropped input buffer would read as an xrun. Messages:
+`mrasrc-stats` every 2 s of output (`state`, `ratio-ppb`, `phase-err-ns`,
+`relocks`, `in-frames`, `out-frames`, `discont-in`, `dropped-frames`) and
+`mrasrc-event` (`relock` with `reason` discont / envelope-step, `house-ns`,
+`jump-ns`, `dropped-ns`; `ratio-out-of-bounds` with `fit-ppb`).
+
+**Debugging.** Record a trace on a running ingest with `trace-location`
+(≤ 2 MB is about 15 min) and replay it off the box with
+`plugins/mpegts-core/native/mrts/mrts_cli restamp-replay <trace.stct>`,
+which runs the same core and prints the element's message lines;
+`mrts_cli trace2jsonl` dumps the records.
+
 ---
 
 ## Native & Python code in plugins
@@ -2224,6 +2387,18 @@ Plugins can ship compiled C++ tools and python sidecars/modules inside their
 own folder — no registration anywhere. Architecture decisions behind this:
 `docs/adr/0001` (plugin-owned code + library plugins), `docs/adr/0003`
 (scoped resolution + namespaced install).
+
+**Timing code: the C++ runs, the python is the reference** (ADR-0029, the
+shared TS module). Everything that reads or writes timing in a transport
+stream — packet walk, PSI, PES, PCR, the PES header rewrite, the 33-bit
+unwrap, the 1 h formula — is implemented once, in `mpegts-core/native/mrts`,
+and every native element and sidecar that needs it links `libmrts.a`; do not
+write a second parser. New timing code is prototyped and tested in python
+first, then ported to C++ once it is right; the python stays beside it as
+the reference and keeps its tests, but no runner loads it and no native
+element gets a python fallback. A python harness that drives a native
+element over appsrc/appsink is a test, not a twin. (The frozen pre-house-clock
+paths that still import `py/ts_timeline.py` stop in Phases 2 and 3.)
 
 ### Add C++ to your plugin
 
@@ -2338,10 +2513,12 @@ Put python in `plugins/<plugin>/py/`. Two ways it gets used:
   has one flat import namespace) — the engine logs an error at startup if two
   plugins ship the same module name.
 
-The plugins tree ships verbatim to `/opt/media-router`, so the same paths
-work on dev checkouts and installed systems. Note: `.py` files and `tests/`
-dirs are outside the plugin `tsc` rootDir — they ship as source, nothing to
-build.
+The image copies the plugins tree into `/opt/media-router` as it is in the
+repository, so the same paths work on dev checkouts and installed systems —
+except every `tests/` directory, which stays in the repository with its
+fixtures (house-clock plan WI-S0-13): runtime code must never read from one.
+`.py` files are outside the plugin `tsc` rootDir — they ship as source,
+nothing to build.
 
 ### Library plugins (shared base code, no GUI)
 
@@ -2375,8 +2552,8 @@ sources and are picked up by vitest's `plugins/*/engine/**/*.test.ts`. The
 dependency direction is one-way (ADR-0002): a core plugin may import
 `@media-router/engine`; `packages/engine` never imports a plugin.
 
-Cross-language test suites live in the owning plugin's `tests/` dir
-(vitest picks up `plugins/*/tests/**/*.test.ts`): the bus protocol
+Cross-language test suites live in the owning plugin's `tests/` dir, which
+never ships (vitest picks up `plugins/*/tests/**/*.test.ts`): the bus protocol
 conformance suite in `unixfdbus-core/tests/`, the mrts golden-parity suite in
 `mpegts-core/tests/`, the mr-tssplit end-to-end suite in
 `ts-splitter/tests/`.
