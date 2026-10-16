@@ -42,3 +42,4 @@ class MrtsHouseCommon {
 
 /* The elements of the factory table, one source file each. */
 GType gst_mrtsrestamp_get_type(void);
+GType gst_mrasrc_get_type(void);

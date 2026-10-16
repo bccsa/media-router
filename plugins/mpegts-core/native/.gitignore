@@ -22,3 +22,4 @@ mrts/tests/mrts_bench
 mrts/tests/fixture_gen
 mrpeshouse/tests/stamp_model_test
 mrtshouse/tests/restamp_ref
+mrtshouse/tests/asrc_bench

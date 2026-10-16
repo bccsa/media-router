@@ -55,10 +55,11 @@ struct Factory {
     GType (*type)(void);
 };
 
-/* mrtsrestamp took WI-S0-7's placeholder probe's place (WI-P1-4b); Phase 1 adds mrasrc
- * (WI-P1-8). */
+/* mrtsrestamp took WI-S0-7's placeholder probe's place (WI-P1-4b); mrasrc is the capture
+ * ASRC (WI-P1-8). */
 const Factory kFactories[] = {
     {"mrtsrestamp", gst_mrtsrestamp_get_type},
+    {"mrasrc", gst_mrasrc_get_type},
 };
 
 }  // namespace
