@@ -66,7 +66,8 @@ export interface EncodeLeafOptions {
     /** `name=` of the mpegtsmux (`mux`, or `mux_0`… when several coexist). */
     muxName: string;
     /** Pre-built sink fragment — `buildBusSink(port)`, or a fakesink when the
-     *  module has no bus channel assigned yet. */
+     *  module has no bus channel assigned yet. Follows the mux with nothing between,
+     *  so a capture puts its restamp in front: `mrtsrestamp … ! <sink>` (video-encoder). */
     sink: string;
 }
 

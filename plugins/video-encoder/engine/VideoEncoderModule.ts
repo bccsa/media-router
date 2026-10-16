@@ -1,21 +1,28 @@
 import {
     GstPluginBase,
+    INGEST_OFFSET_KEY,
+    IngestTimingReporter,
     ProbedEncoders,
     ThroughputPoller,
     acquireV4l2Demand,
+    applyIngestTimingLiveUpdate,
     bitrateBadge,
     buildBusSink,
     buildEncodeLeaf,
+    buildRestamp,
     buildScaleStage,
     buildV4l2ExtraControls,
     busTeeName,
+    isIngestTimingSection,
     registerV4l2DeviceProvider,
+    restampBusReports,
     suspendV4l2Enumeration,
     releaseV4l2Demand,
     ENCODER_ELEMENTS,
     type CodecId,
     type EngineServices,
     type ImplId,
+    type IngestTimingHost,
     type ModuleServices,
     type PipelineDescription,
     type ThroughputSample,
@@ -51,6 +58,13 @@ export class VideoEncoderModule extends GstPluginBase {
     /** Bus egress element to poll for throughput, resolved at build time:
      *  the fan-out `tee` (busTeeName). */
     private busSinkName: string | undefined;
+
+    /** The restamp's capture card: the Ingest offset in force, its events in the log. */
+    private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
+        mode: 'fixed',
+    });
+    /** The reporter's warning text, so its clear never takes another warning down. */
+    private clockWarning: string | null = null;
 
     /**
      * What this host can encode with — impls per codec plus hardware-scaler
@@ -102,13 +116,15 @@ export class VideoEncoderModule extends GstPluginBase {
 
     /**
      * Live params depend on the resolved encoder. AV1 (svtav1enc) needs a
-     * pipeline rebuild for bitrate changes, so we narrow to `[]` there and
-     * route the change through `pendingRestart` instead.
+     * pipeline rebuild for bitrate changes, so bitrate is left out there and
+     * the change goes through `pendingRestart` instead. O is the restamp's
+     * live property whatever the encoder (§5.5).
      */
     getLiveUpdatableParams(): string[] {
         const codec = (this.config.codec as CodecId) ?? 'h264';
         const impl = this.resolveCurrentImpl();
-        return impl && supportsLiveBitrate(codec, impl) ? ['bitrate'] : [];
+        const bitrate = impl && supportsLiveBitrate(codec, impl) ? ['bitrate'] : [];
+        return [...bitrate, INGEST_OFFSET_KEY];
     }
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
@@ -132,10 +148,12 @@ export class VideoEncoderModule extends GstPluginBase {
         await super.onStart();
         this.updateStatusData();
         this.throughput.start();
+        this.ingestTiming.start();
     }
 
     async onStop(): Promise<void> {
         this.throughput.stop();
+        this.ingestTiming.stop();
         await super.onStop();
     }
 
@@ -153,7 +171,26 @@ export class VideoEncoderModule extends GstPluginBase {
         if ('bitrate' in changes) {
             await this.applyLiveBitrate(changes.bitrate as number);
         }
+        await applyIngestTimingLiveUpdate(
+            { setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
+            changes,
+        );
         this.updateStatusData();
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        this.ingestTiming.onEvent(channel, payload);
+    }
+
+    /** Every PLAYING sets health ok: put a standing restamp warning back. */
+    protected onPipelinePlaying(): void {
+        this.ingestTiming.reassert();
+    }
+
+    /** A return to ok shows a standing restamp warning again: another may have hidden it. */
+    setHealth(...args: Parameters<GstPluginBase['setHealth']>): void {
+        super.setHealth(...args);
+        if (args[0] === 'ok') this.ingestTiming.reassert();
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -200,6 +237,14 @@ export class VideoEncoderModule extends GstPluginBase {
         const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
         this.busSinkName = endpoint ? busTeeName(endpoint.port) : undefined;
         const sink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
+        // The mux writes running time + 1 h off the natural base time below; the restamp adds
+        // that base, so the PES carry capture time on the house timescale (plan part 4.6).
+        // O only: a capture has one PID, so no per-PID trim (OQ-15).
+        const restamp = buildRestamp({
+            mode: 'fixed',
+            addBaseTime: true,
+            offsetMs: config[INGEST_OFFSET_KEY],
+        });
 
         // name 'venc0' keeps the Video Encoder's established element name; the
         // knobs come from `readEncoderKnobs` (validated, defaulted).
@@ -226,7 +271,7 @@ export class VideoEncoderModule extends GstPluginBase {
             },
             inputQueue: 'none',
             muxName: 'mux',
-            sink,
+            sink: `${restamp} ! ${sink}`,
         });
 
         return {
@@ -240,6 +285,9 @@ export class VideoEncoderModule extends GstPluginBase {
             // bursts — every live consumer freezes on one frame. Full trace on
             // `PipelineDescription.liveCaptureClock`.
             liveCaptureClock: true,
+            // After the restamp the PES are house time + 1 h: the stamper stamps by identity.
+            houseTimelineEgress: true,
+            busReports: restampBusReports(),
         };
     }
 
@@ -284,5 +332,35 @@ export class VideoEncoderModule extends GstPluginBase {
     private publishThroughput(sample: ThroughputSample): void {
         this.setStatusData('throughput', throughputStatus(sample));
         this.setBadge('bitrate', bitrateBadge(sample.bitrateKbps));
+    }
+
+    private ingestTimingHost(): IngestTimingHost {
+        return {
+            // The base keeps one list of dynamic sections: anyone else's stay.
+            setDynamicSections: (sections) => {
+                const others = this.dynamicStatusSections.filter(
+                    (s) => !isIngestTimingSection(s.id),
+                );
+                this.setDynamicSections([...others, ...sections]);
+            },
+            setStatusData: (id, data) => this.setStatusData(id, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setFieldOptions: (key, options) => this.setFieldOptions(key, options),
+            // Over ok or another warning, never over a fault or a stop: PLAYING re-asserts it.
+            warn: (text) => {
+                this.clockWarning = text;
+                if (this.health === 'ok' || this.health === 'warning') {
+                    this.setHealth('warning', text);
+                }
+            },
+            clearWarning: () => {
+                if (this.health === 'warning' && this.error === this.clockWarning) {
+                    this.setHealth('ok');
+                }
+                this.clockWarning = null;
+            },
+            log: (level, obj, msg) => this.log[level](obj, msg),
+        };
     }
 }
