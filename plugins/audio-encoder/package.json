@@ -15,6 +15,10 @@
             "arm64",
             "x86_64"
         ],
+        "timing": {
+            "role": "ingest",
+            "pidTrims": false
+        },
         "ports": [
             {
                 "id": "audio-in",
@@ -121,14 +125,14 @@
                 },
                 "srcBufferMs": {
                     "type": "number",
-                    "default": 200,
+                    "default": 60,
                     "minimum": 40,
-                    "maximum": 1000,
+                    "maximum": 85,
                     "x-widget": "slider",
-                    "x-step": 10,
+                    "x-step": 5,
                     "x-unit": "ms",
                     "title": "Capture Buffer",
-                    "description": "Capture ring buffer. Lower only while measuring."
+                    "description": "Capture quantum. 40–60 on smooth systems; raise on xruns. Above 85 ms is clamped."
                 },
                 "tsAlignment": {
                     "type": "number",
