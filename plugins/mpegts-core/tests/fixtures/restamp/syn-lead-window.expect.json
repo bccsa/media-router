@@ -1,0 +1,19 @@
+{
+  "source": "fixture_gen --trace --ahead a2:3500 --delay-ms 100,20@3 --duration 120 --seed 1",
+  "note": "D1's window (the third Phase 1 review, chapter 15.4 B-48): the AAC PID 0x102 stamped 3.5 s ahead, 3.95 s on the floor (just under lead_max_ns), and the path's floor 80 ms lower from 3 s, so under the line, which slews down to it, 0x102 reads up to 4.03 s ahead. A floor gap under backlog_ns is jitter or a fall, not a backlog: 0x102 is never stale and nothing says backlog; it is the lead row's, which degrades the program (lead) at 8.6 s, timing from the video PID 0x100 (the degraded entry's runs, 0.6 s per PID); the PCR lock, relocked at the entry on the new floor, then reads 3.95 s, so the program recovers at 44.7 s, one 0.6 s gap per PID (epoch). Before: 0x102 stale for as long as the line lay more than step_ns above the floor, 5.8 s dropped as overlap (backlog) in 21 runs with gap markers (seed 7: 9.3 s, 7 runs).",
+  "relocks": 0,
+  "degraded": 1,
+  "recovered": 1,
+  "leadClamps": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "degraded", "reason": "lead", "pid": 256, "atS": [8.3, 9]}, {"kind": "recovered", "reason": "lead", "atS": [44, 45.5]}],
+  "overlaps": 3,
+  "droppedMs": [1700, 1900],
+  "gaps": 3,
+  "gapsPerPid": 1,
+  "gapMs": [550, 650],
+  "leadMaxMs": 4100,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

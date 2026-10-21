@@ -5,6 +5,7 @@
   "degraded": 1,
   "recovered": 0,
   "leadClamps": 4,
+  "backlogEvents": 0,
   "gaps": 0,
   "events": [{"kind": "degraded", "reason": "lead", "pid": 256, "atS": [5, 5.6]}, {"kind": "lead-clamp", "pid": 258, "atS": [5, 5.6]}, {"kind": "overlap", "reason": "", "pid": 258, "droppedMs": [12500, 13500]}, {"kind": "lead-clamp", "pid": 258, "atS": [35, 35.7]}, {"kind": "lead-clamp", "pid": 258, "atS": [65, 65.7]}, {"kind": "lead-clamp", "pid": 258, "atS": [95, 95.7]}],
   "overlaps": 3,

@@ -2320,10 +2320,11 @@ of a PES it drops as overlap (renumbering that PID's CC), packets on a PID
 no PMT lists, and PES that arrive before their program has a mapping. A
 caller that queued while its listener was away (SRT) sends that backlog at
 once on its return: the PES its lock would put more than 4 s ahead of
-their arrival are stale and dropped as overlap (reason `backlog`) until the
-lock has found the floor, so a reconnect plays at most 4 s of the backlog,
-then the live content; a shorter backlog plays, and the guard then drops as
-much of the live content once (ADR-0029 Phase 1).
+their arrival by the backlog's doing are stale and dropped as overlap
+(reason `backlog`) until the lock has found the floor, so a reconnect plays
+at most 4 s of the backlog, then the live content; a shorter backlog plays,
+and up to about twice as much of the live content goes once, every hole it
+leaves behind a gap marker (ADR-0029 Phase 1).
 
 | Property | Meaning |
 |---|---|

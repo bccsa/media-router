@@ -568,14 +568,38 @@ void test_start_burst() {
     CHECK("start burst: 15 ms (under step_ns) is slewed, no step (8 ms left at 2.5 s, on the floor by 20 s)",
           s.at(2500 * MS) >= 8 * MS && iabs(s.at(20 * S)) <= 1 * MS);
     const StartRun rl = start_run(stc, 400 * MS, 100 * S, 500 * MS, false, 100 * S, 120);
-    std::printf("  burst after a relock at 100 s: house - floor %.3f ms at 102.5 s\n", rl.at(102500 * MS) / 1e6);
+    const StartRun rl49 = start_run(stc, 490 * MS, 100 * S, 500 * MS, false, 100 * S, 120);
+    std::printf("  burst after a relock at 100 s: house - floor %.3f ms at 102.5 s; 490 ms: %.3f ms\n",
+                rl.at(102500 * MS) / 1e6, rl49.at(102500 * MS) / 1e6);
     CHECK("start burst: after a relock a burst under backlog_ns is the acquire slew's (the rule is the pipeline's start)",
           rl.at(102500 * MS) >= 380 * MS);
+    CHECK("start burst: ... 490 ms too, just under backlog_ns (B-48: 500 ms, as leap_ns)", rl49.at(102500 * MS) >= 470 * MS);
     // mrasrc's lock: its 50 ms step is the threshold.
     const StartRun a40 = start_run(asrc, 40 * MS), a80 = start_run(asrc, 80 * MS);
     CHECK("start burst: mrasrc's lock (50 ms step) slews 40 ms and moves onto the floor under 80 ms",
           a40.at(2500 * MS) >= 30 * MS && iabs(a80.at(2500 * MS)) <= 1 * MS);
-    for (const StartRun* r : {&b, &d, &s, &rl, &a40, &a80})
+    // The first pair moves only when both its buckets lie past step_ns below the line (B-48): the
+    // seed 30 ms late, the first bucket on the floor, the second 12 ms above it. They agree, but the
+    // second's floor is not past step_ns below: nothing moves, the acquire slew only.
+    const StartRun two = [] {
+        ClockLock lk;
+        StartRun r;
+        int64_t prev = INT64_MIN;
+        for (int64_t k = 0; k * 100 * MS <= 10 * S; k++) {
+            const int64_t t = k * 100 * MS;
+            const int64_t floor_h = H0 + t + at_ppb(t, 50000) + 20 * MS;
+            const int64_t extra = k == 0 ? 30 * MS : t >= 1100 * MS && t < 2100 * MS ? 12 * MS : 0;
+            const int64_t h = std::max(prev, floor_h + extra + (k * 7919 % 30) * 100000);
+            prev = h;
+            lk.feed(7200 * S + t, h);
+            r.off.push_back({t, lk.house_of(7200 * S + t) - floor_h});
+        }
+        return r;
+    }();
+    std::printf("  first pair 30 ms and 12 ms late: house - floor %.3f ms at 2.5 s\n", two.at(2500 * MS) / 1e6);
+    CHECK("start burst: a first pair with only one bucket past step_ns below the line moves nothing (both must)",
+          two.at(2500 * MS) >= 20 * MS && two.at(2500 * MS) <= 30 * MS);
+    for (const StartRun* r : {&b, &d, &s, &rl, &rl49, &a40, &a80, &two})
         for (const auto& o : r->off) g_all.add(o.second);
 }
 
@@ -1216,19 +1240,22 @@ uint64_t straddle_scenario(bool report) {
 
 void test_vstc_straddle() { g_all.add((int64_t)straddle_scenario(true)); }
 
+// A caller that queues: what it sends from `at` leaves `len` later, then all of it over `drain`.
+Shape queued_at(int pid, int64_t t, int64_t at, int64_t len, int64_t drain) {
+    Shape s;
+    const int64_t span = len + drain;
+    if (t >= at && t - at < span) s.mux_ns = at + len + (int64_t)((__int128)(t - at) * drain / span) - t;
+    if (pid == PCR_PID) s.pcr_ns = -s.mux_ns;   // stamped when sent, as the PES
+    return s;
+}
+
 // B-39 through the program: what a backlog's seed would map past lead_max_ns ahead is stale
 // (no mapping, and no lead row: the program never degrades on it); once the floor is found the
 // PES map at their source lead. `at` 0: the pipeline starts on it; else a reconnect, a leap.
 void vstc_backlog(const char* label, int64_t at, int64_t len, int64_t drain, int64_t secs) {
     VirtualStc v;
     Fnv f;
-    auto queued = [=](int pid, int64_t t) {
-        Shape s;
-        const int64_t span = len + drain;
-        if (t >= at && t - at < span) s.mux_ns = at + len + (int64_t)((__int128)(t - at) * drain / span) - t;
-        if (pid == PCR_PID) s.pcr_ns = -s.mux_ns;   // stamped when sent, as the PES
-        return s;
-    };
+    auto queued = [=](int pid, int64_t t) { return queued_at(pid, t, at, len, drain); };
     const int64_t live = at + len + drain;
     int stale = 0, stale_late = 0, valid_ahead = 0, after = 0, after_ok = 0;
     drive(v, program(secs, 50000, 61, queued), f, [&](const Pkt& p, const VirtualStc::Mapping& m) {
@@ -1262,6 +1289,33 @@ void test_vstc_backlog() {
     vstc_backlog("backlog 30 s, 1 s, at the start", 0, 30 * S, 1 * S, 100);
     vstc_backlog("backlog 90 s, 5 s, at the start", 0, 90 * S, 5 * S, 160);
     vstc_backlog("backlog 30 s, 1 s, after 60 s live", 60 * S, 30 * S, 1 * S, 160);
+
+    // A slow drain (B-48): 3.9 s queued at 60 s, drained over 30 s, video 1.5 s further ahead (2.3 s).
+    // Under the seed line it reads past 4 s for the drain's last 17 s, stale by the second clause, and
+    // so out of the lead row: the drain does not degrade the program.
+    VirtualStc v;
+    Fnv f;
+    auto slow = [](int pid, int64_t t) {
+        Shape s = queued_at(pid, t, 60 * S, 3900 * MS, 30 * S);
+        if (pid == PID_V) s.pts_ns = 1500 * MS;
+        return s;
+    };
+    int stale = 0, after = 0, after_ok = 0;
+    drive(v, program(130, 50000, 62, slow), f, [&](const Pkt& p, const VirtualStc::Mapping& m) {
+        stale += p.pid == PID_V && m.stale;
+        if (p.t < 100 * S) return;
+        const int64_t lead = m.house_ns - p.h, want = p.pid == PID_A ? 500 * MS : 2300 * MS;
+        after++;
+        after_ok += m.valid && lead > want - 55 * MS && lead <= want + 1 * MS;
+    });
+    const std::vector<StcEvent> ev = fold_events(v, f);
+    print_events("slow drain, 3.9 s over 30 s, video 2.3 s ahead", ev);
+    std::printf("  slow drain: %d video PES stale; %d/%d at their source lead from 100 s\n", stale, after_ok, after);
+    CHECK("vstc slow drain: what the floor puts past 4 s is stale and kept out of the lead row: never degraded",
+          kinds_are(ev, {StcEvent::Kind::leap, StcEvent::Kind::relock}) && stale > 300 &&
+              v.state() == VirtualStc::State::locked);
+    CHECK("vstc slow drain: ... then every PES at its source lead", after > 0 && after_ok == after);
+    g_all.add((int64_t)f.h);
 }
 
 // B-8 (#820): the video PES 12.6 s ahead of the audio, the reference. The lead row degrades
@@ -1389,6 +1443,76 @@ void test_vstc_lead_clamp() {
                 v_lo / 1e6, v_hi / 1e6);
     CHECK("vstc PCR mode: a PID 13 s ahead under a line 100 ms above its floor maps (never stale), never degraded",
           d.ev.empty() && d.stale(PID_V) == 0 && v_lo > 13 * S && v_hi < 13600 * MS);
+
+    // A 6 s reconnect backlog at 40 s (drained in 1 s) while video is clamped: its own envelope
+    // relocks on the leap, seeded on the backlog's oldest PES, so what that maps more than 4 s
+    // ahead is stale too (B-48: the clamp lock's own check), and then lands on the floor again.
+    auto backlog = [&](int pid, int64_t t) {
+        Shape s = queued_at(pid, t, 40 * S, 6 * S, 1 * S);
+        if (pid == PID_V) s.pts_ns = 12600 * MS;
+        return s;
+    };
+    auto drain_leads = [](const ClampRun& r, int64_t* hi, int* stale) {
+        *hi = INT64_MIN;
+        *stale = 0;
+        for (const ClampRun::Rec& x : r.recs)
+            if (x.pid == PID_V && x.t >= 40 * S && x.t < 48 * S) {
+                if (x.valid) *hi = std::max(*hi, x.lead);
+                *stale += x.stale;
+            }
+    };
+    const ClampRun g = clamp_run("... and a 6 s reconnect backlog at 40 s", backlog, 90, 43);
+    int64_t g_hi;
+    int g_stale;
+    drain_leads(g, &g_hi, &g_stale);
+    g.leads(PID_V, H0 + 52 * S, &v_lo, &v_hi);
+    std::printf("  clamp, backlog: %d video PES of the backlog stale, the rest at most %.3f ms ahead; from 52 s "
+                "video lead %.3f..%.3f ms\n",
+                g_stale, g_hi / 1e6, v_lo / 1e6, v_hi / 1e6);
+    CHECK("vstc clamp, backlog: on the clamped PID's own envelope the backlog past 4 s ahead is stale, none valid past it",
+          g.degraded_first() && g_stale > 50 && g_hi <= 4 * S && v_lo >= -55 * MS && v_hi <= 1 * MS);
+
+    // PCR mode, the same backlog: video, 13.4 s ahead, is the source's lead (the floor gap does not
+    // explain it), but while the line lies more than lead_max_ns above its floor every PES is stale,
+    // video's too (the first clause; the floor shows in the PCR, which a PES leads by up to 100 ms).
+    const ClampRun k = clamp_run("... PCR mode, a 6 s reconnect backlog at 40 s", backlog, 90, 43, hold);
+    int64_t k_hi;
+    int k_stale;
+    drain_leads(k, &k_hi, &k_stale);
+    std::printf("  PCR mode, backlog: %d video PES of the backlog stale, the rest at most %.3f ms ahead\n", k_stale,
+                k_hi / 1e6);
+    CHECK("vstc PCR mode, backlog: a PID far ahead maps until the line lies past lead_max_ns above its floor, then stale",
+          kinds_are(k.ev, {StcEvent::Kind::leap, StcEvent::Kind::relock}) && k_stale > 50 &&
+              k_hi > 13400 * MS + 2 * S && k_hi <= 13400 * MS + 4100 * MS);
+}
+
+// D1's window (B-48): video's lead on the floor 3.95 s, just under lead_max_ns, and the floor 100 ms
+// lower from 3 s, so under the line, until the slew brings it down, video reads up to 4.05 s. A gap
+// under backlog_ns is jitter or a fall, not a backlog: video is never stale; it is the lead row's.
+void test_vstc_window() {
+    auto window = [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PID_V) s.pts_ns = 3150 * MS;
+        s.net_ns = t < 3 * S ? 100 * MS : 0;
+        return s;
+    };
+    PcrValidatorConfig hold;
+    hold.lead_hold_ns = 1000 * S;
+    const ClampRun a = clamp_run("video 3.95 s ahead, the floor 100 ms lower from 3 s, PCR mode", window, 60, 44, hold);
+    int64_t lo, hi;
+    a.leads(PID_V, H0 + 4 * S, &lo, &hi);
+    std::printf("  window, PCR mode: %d video PES stale, video lead %.3f..%.3f ms from 4 s\n", a.stale(PID_V),
+                lo / 1e6, hi / 1e6);
+    CHECK("vstc window: a PID past lead_max_ns under a line less than backlog_ns above its floor is never stale",
+          a.ev.empty() && a.stale(PID_V) == 0 && a.stale(PID_A) == 0 && hi > 4 * S && hi < 4100 * MS);
+    // On the frozen PCR epoch (the straddle rule's pick) video still reads past 4 s: clamped.
+    const ClampRun b = clamp_run("... the lead row on", window, 90, 44);
+    bool between = b.ev.size() >= 2;
+    for (size_t i = 1; between && i + 1 < b.ev.size(); i++)
+        between = b.ev[i].kind == StcEvent::Kind::lead_clamp && b.ev[i].pid == PID_V;
+    CHECK("vstc window: ... the lead row degrades the program (lead), video is clamped, it recovers; nothing stale",
+          between && b.degraded_first() && b.ev.back().kind == StcEvent::Kind::recovered && b.stale(PID_V) == 0 &&
+              b.stale(PID_A) == 0);
 }
 
 // The restamp maps the PCR too (part 4.2 step 3). map_pcr gives it its PES's epoch
@@ -1581,6 +1705,7 @@ int main(int argc, char** argv) {
     test_vstc_degraded();
     test_vstc_backlog();
     test_vstc_lead_clamp();
+    test_vstc_window();
     test_vstc_straddle();
     test_vstc_map_pcr();
     test_vstc_floor_moves();

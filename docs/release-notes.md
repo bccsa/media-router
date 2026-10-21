@@ -27,8 +27,8 @@ nominal rate, unlocked).
   when it reconnects: the input drops that stale backlog, so the stream
   shows the gap, at most the first 4 s of the backlog, then live content
   again within seconds, instead of running the backlog's length ahead. A
-  backlog under 4 s plays, and the same length of live content is skipped
-  once.
+  backlog under 4 s plays, and up to about twice its length of live content
+  is skipped once.
 - **Captures** (Audio Input 302M, AES67 Input, Audio Encoder, Video Encoder)
   label their content with its capture time.
 - **The three audio captures resample once**, locked to the device's

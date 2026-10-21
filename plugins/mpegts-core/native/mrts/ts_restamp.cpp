@@ -709,6 +709,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         // Overlap (R18): what the bus already carries is not written again, so no
         // PID's time steps back. Video compares DTS, the rest PTS.
         const int64_t len = p.interval > 0 ? p.interval : own;
+        p.prev_epoch = epoch;
         p.unit = Pid::Unit::drop;
         p.clean = false;
         p.run_pes++;
@@ -727,6 +728,9 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         else if (edited) why = "edit";
         else if (p.outage) why = "outage";
         else if (p.backlog) why = "backlog";
+        // Onto another epoch than its last PES's, kept or dropped (a straddler back from a dropped
+        // run, a clamped PID back on the program's): the hole it shows, a PES or more (B-48).
+        else if (epoch != p.prev_epoch && key > p.last_key + 2 * p.interval) why = "epoch";
         else if (cfg_.mode == RestampConfig::Mode::fixed && p.n_spacing >= 2 &&
                  key - p.last_key > 2 * upper_median(p.spacing, p.n_spacing)) {
             // More than two PES lengths, the length being the upper median of the last three
@@ -736,7 +740,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         }
     }
     const bool gap = why && key > p.last_key + p.interval;
-    if (gap) push_gap(p, p.last_key + p.interval, key, why, epoch);
+    if (gap) push_gap(p, p.last_key + p.interval, key, why, epoch, arrival_h);
     // The outage check runs until a PES shows its gap, or one comes in a later buffer.
     if (gap || arrival_h > outage_h_) p.outage = false;
     if (p.run_pes) {
@@ -761,17 +765,18 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     p.last_key = key;
     p.last_h = arrival_h;
     p.max_epoch = std::max(p.max_epoch, epoch);
-    p.last_epoch = epoch;
+    p.last_epoch = p.prev_epoch = epoch;
     p.unit = Pid::Unit::keep;
     pts33 = p.pts33 = out_pts;
     dts33 = p.dts33 = out_dts;
     return true;
 }
 
-void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, uint32_t epoch) {
+// Timed by the PES that shows it, as its overlap is: a header held across buffers replays alike.
+void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, uint32_t epoch, int64_t at_h) {
     Program& g = *p.prog;
     res_->gaps.push_back(Gap{g.number, p.pid, start, end, why, out_bytes_, p.out_cc});
-    Event e = make_event(Event::Kind::gap, g.number, p.pid, why, arrival_h_, epoch);
+    Event e = make_event(Event::Kind::gap, g.number, p.pid, why, at_h, epoch);
     e.gap_ns = end - start;
     events_.push_back(e);
     g.gaps++;

@@ -895,6 +895,7 @@ Run replay(const std::vector<TraceRecord>& recs, const ReplayOpts& o) {
 struct ProgramSum {
     int program = 0;
     int relocks = 0, degraded = 0, recovered = 0, steps = 0, gaps = 0, overlaps = 0, psi = 0, clamps = 0;
+    int backlog = 0;                      // gaps and overlaps with reason backlog: a stale run's
     std::vector<std::string> reasons;     // relock reasons, in order
     uint32_t epoch = 0;
     int64_t gap_ns = 0, gap_min = 0, gap_max = 0, overlap_ns = 0;
@@ -949,6 +950,9 @@ ProgramSum summarize(const Run& run, int program) {
             case RestampCore::Event::Kind::lead_clamp: s.clamps++; break;
             default: s.psi++; break;
         }
+        if ((e.kind == RestampCore::Event::Kind::gap || e.kind == RestampCore::Event::Kind::overlap) && e.reason &&
+            !std::strcmp(e.reason, "backlog"))
+            s.backlog++;
     }
     for (const RestampCore::ProgramStats& p : run.final_stats.programs) {
         if (p.program != program) continue;
@@ -1004,16 +1008,18 @@ ProgramSum summarize(const Run& run, int program) {
 void print_program(const ProgramSum& s) {
     std::printf("{\"program\":%d,\"relocks\":%d,\"relockReasons\":[", s.program, s.relocks);
     for (size_t k = 0; k < s.reasons.size(); k++) std::printf("%s%s", k ? "," : "", jstr(s.reasons[k]).c_str());
-    std::printf("],\"epochs\":%u,\"degraded\":%d,\"recovered\":%d,\"envelopeSteps\":%d,\"leadClamps\":%d,\"gaps\":%d,"
+    std::printf("],\"epochs\":%u,\"degraded\":%d,\"recovered\":%d,\"envelopeSteps\":%d,\"leadClamps\":%d,"
+                "\"backlogEvents\":%d,\"gaps\":%d,"
                 "\"gapNsTotal\":%lld,\"gapNsMin\":%lld,\"gapNsMax\":%lld,\"overlaps\":%d,\"overlapNs\":%lld,"
                 "\"droppedPes\":%llu,\"droppedNsTotal\":%lld,\"lockedAtNs\":%lld,\"finalState\":\"%s\","
                 "\"finalPpb\":%lld,\"lockedPpbMin\":%lld,\"lockedPpbMax\":%lld,\"residualMinNs\":%lld,"
                 "\"cadenceWarning\":%s,\"mappingPpbMax\":%lld,\"pesIn\":%llu,\"pesOut\":%llu,\"backward\":%llu,"
                 "\"leadMaxNs\":%lld,"
                 "\"ppbAtS\":{",
-                s.epoch, s.degraded, s.recovered, s.steps, s.clamps, s.gaps, (long long)s.gap_ns, (long long)s.gap_min,
-                (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns, (unsigned long long)s.dropped_pes,
-                (long long)s.dropped_ns, (long long)s.locked_at, s.final_state.c_str(), (long long)s.final_ppb,
+                s.epoch, s.degraded, s.recovered, s.steps, s.clamps, s.backlog, s.gaps, (long long)s.gap_ns,
+                (long long)s.gap_min, (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns,
+                (unsigned long long)s.dropped_pes, (long long)s.dropped_ns, (long long)s.locked_at,
+                s.final_state.c_str(), (long long)s.final_ppb,
                 (long long)s.ppb_min, (long long)s.ppb_max, (long long)s.residual_min,
                 s.cadence_warning ? "true" : "false", (long long)s.mapping_ppb_max, (unsigned long long)s.pes_in,
                 (unsigned long long)s.pes_out, (unsigned long long)s.backward,
@@ -1098,10 +1104,10 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
                                       "lockedWithinS", "residualMinMs", "finalState", "mappingPpmMax", "gapMs",
                                       "gapsPerPid", "ppm", "leadMaxMs"};
     const char* counts[] = {"relocks", "epochs", "degraded", "recovered", "envelopeSteps", "gaps", "overlaps",
-                            "droppedPes", "droppedMs", "psiChanges", "leadClamps"};
+                            "droppedPes", "droppedMs", "psiChanges", "leadClamps", "backlogEvents"};
     const double vals[] = {(double)s.relocks, (double)s.epoch, (double)s.degraded, (double)s.recovered,
                            (double)s.steps, (double)s.gaps, (double)s.overlaps, (double)s.dropped_pes,
-                           s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps};
+                           s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps, (double)s.backlog};
     for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
         count(counts[i], vals[i]);
         known.push_back(counts[i]);

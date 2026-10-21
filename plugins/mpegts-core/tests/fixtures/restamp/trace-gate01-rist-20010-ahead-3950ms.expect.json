@@ -1,0 +1,15 @@
+{
+  "source": "fixture_gen --shift 200:3950 -i trace-gate01-rist-20010.stct",
+  "note": "As trace-gate01-rist-20010-ahead-3900ms with PID 200 stamped 3.95 s later, about lead_max_ns + 120 ms (chapter 15.4 B-48): never stale, nothing says backlog; degraded (lead) at 191.7 s and B-8's clamp on PID 200 at the entry, told every 30 s; its own envelope relocks once (358.7 s, an epoch gap). Before: 76.5 s of PID 200 dropped as overlap (backlog) in 1195 events, no clamp.",
+  "relocks": [0, 2],
+  "degraded": 1,
+  "recovered": 0,
+  "leadClamps": [10, 12],
+  "backlogEvents": 0,
+  "events": [{"kind": "relock", "reason": "envelope-step", "atS": [185.5, 186.5]}, {"kind": "degraded", "reason": "lead", "pid": 100, "atS": [191, 192.5]}, {"kind": "lead-clamp", "pid": 200, "atS": [191, 192.5]}],
+  "droppedMs": [5500, 8500],
+  "leadMaxMs": 4400,
+  "finalState": "degraded",
+  "monotonic": true,
+  "faithful": true
+}

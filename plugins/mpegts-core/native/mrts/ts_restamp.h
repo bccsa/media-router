@@ -154,6 +154,7 @@ class RestampCore {
         bool have_src = false;            // the previous PES's guard key on source time
         int64_t last_src = 0;
         uint32_t max_epoch = 0, last_epoch = 0;   // the newest it emitted under; the last PES's
+        uint32_t prev_epoch = 0;          // the last PES's mapping, kept or dropped as overlap
         bool outage = false;              // an outage since its last PES
         bool backlog = false;             // stale PES dropped since its last (B-39)
         // Packets: the open PES's fate, CC renumbering, duplicates, a held header.
@@ -210,7 +211,7 @@ class RestampCore {
     int64_t unwrap_pes(Pid& p, int64_t pts33);
     bool start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di, int64_t& pts33,
                    int64_t& dts33);
-    void push_gap(Pid& p, int64_t start, int64_t end, const char* why, uint32_t epoch);
+    void push_gap(Pid& p, int64_t start, int64_t end, const char* why, uint32_t epoch, int64_t at_h);
     int64_t target_shift(int pid) const;
     void update_pcr_shift(Program& g);
     void pull_events(Program& g);

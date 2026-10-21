@@ -783,11 +783,12 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     val_.feed_activity(h);
     pcr_.tick(h);
     ref_.tick(h);
-    // The lead row judges the PCR mapping, also while degraded (recovery needs it), but not a
-    // line seeded on a backlog: further above its floor than any lead, it measures none (B-39).
-    const int64_t lim = val_.config().lead_max_ns;
-    if (lead_row && pcr_.started() && pcr_.floor_gap_ns() <= lim)
-        val_.feed_lead(pid, sat_sub(pcr_.house_of(sigma), h));
+    // The lead row judges the PCR mapping, also while degraded (recovery needs it), but not what
+    // that line maps stale: a backlog's lead measures the line, not the source (B-39, B-48).
+    if (lead_row && pcr_.started()) {
+        const int64_t house = pcr_.house_of(sigma);
+        if (!stale(pcr_, house, h)) val_.feed_lead(pid, sat_sub(house, h));
+    }
     check_failure(h);
 
     for (size_t i = 0; i + 1 < epochs_.size();) {
@@ -860,12 +861,13 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     return m;
 }
 
-// B-39: what the live line maps is stale while it lies further above its floor than any source
-// lead, or visibly above it with the PES that far ahead by the floor's doing (the PCR evidence
-// lags a fast drain by up to a PCR interval); a PID ahead past that is the source's (B-8).
+// B-39: stale while the live line lies further above its floor than any source lead, or past
+// backlog_ns above it (a backlog's) with the PES that far ahead by the floor's doing (the PCR lags
+// a fast drain); nearer the floor the gap is jitter, so a PID ahead is the source's (B-8, B-48).
 bool VirtualStc::stale(const ClockLock& lock, int64_t house, int64_t h) const {
     const int64_t gap = lock.floor_gap_ns(), lim = val_.config().lead_max_ns, lead = sat_sub(house, h);
-    return gap > lim || (gap > lock.config().step_ns && lead > lim && sat_sub(lead, gap) <= lim);
+    const int64_t backlog = std::max(lock.config().step_ns, lock.config().backlog_ns);
+    return gap > lim || (gap > backlog && lead > lim && sat_sub(lead, gap) <= lim);
 }
 
 // B-8 (part 4.3): degraded, a PID further ahead of arrival than lead_clamp_ns under the

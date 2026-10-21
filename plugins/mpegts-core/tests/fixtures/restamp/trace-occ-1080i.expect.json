@@ -3,6 +3,7 @@
   "relocks": 0,
   "epochs": 1,
   "degraded": 0,
+  "backlogEvents": 0,
   "gaps": 0,
   "overlaps": 0,
   "droppedPes": 0,

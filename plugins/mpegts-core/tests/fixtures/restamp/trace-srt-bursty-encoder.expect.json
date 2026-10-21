@@ -3,6 +3,7 @@
   "relocks": [0, 1],
   "envelopeSteps": [0, 1],
   "degraded": 0,
+  "backlogEvents": 0,
   "gaps": [0, 2],
   "gapMs": [0, 210],
   "overlaps": 0,

@@ -29,8 +29,8 @@ struct ClockLockConfig {
     int64_t step_hold_ns = 10000000000LL;      // ... for this long
     bool step_falls = false;                   // ... or fell this much (mrasrc: two-sided)
     // Two buckets agreeing on a floor this far below the line: a drained backlog, moved onto
-    // in any epoch and phase (B-39). leap_ns's 500 ms: a backlog that relocks lies past it.
-    // 0: off (mrasrc, whose PTS is the capture time).
+    // in any epoch and phase (B-39). leap_ns's 500 ms: a backlog that relocks lies past it, but
+    // one under 510 ms the acquire slew may first bring under (B-48). 0: off (mrasrc).
     int64_t backlog_ns = 500000000;
     int64_t lost_ns = 5000000000LL;            // no sample this long: phase lost
     int64_t residual_window_ns = 2000000000;   // residual stats window (stats-interval-ms)
@@ -252,8 +252,8 @@ class VirtualStc {
         uint32_t epoch = 0;
         bool valid = false;
         // !valid: the live line, seeded on a backlog, lies more than lead_max_ns above its
-        // floor, or visibly above it and would put this PES that far ahead, which the floor
-        // explains (B-39): stale.
+        // floor, or more than backlog_ns above it and would put this PES that far ahead, which
+        // the floor explains (B-39, B-48): stale.
         bool stale = false;
     };
     struct Stats {

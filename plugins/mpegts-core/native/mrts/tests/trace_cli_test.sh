@@ -28,13 +28,25 @@ cmp -s "$T/a.stct" "$T/b.stct"; check "fixture_gen: the same arguments and seed 
     [ "$(status "$GEN" --trace -o "$T/x.stct" --jump 5:10:xx)" = 2 ] &&
     [ "$(status "$GEN" --trace -o "$T/x.stct" --backlog 0:0:1000)" = 2 ] &&
     [ "$(status "$GEN" --trace -o "$T/x.stct" --backlog 0:1000)" = 2 ] &&
-    [ "$(status "$GEN" --trace -o "$T/x.stct" --ahead zz:100)" = 2 ]
-check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, no --trace or no -o exit 2" $?
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --ahead zz:100)" = 2 ] &&
+    [ "$(status "$GEN" --shift 257:x -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
+    [ "$(status "$GEN" --shift 9000:100 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
+    [ "$(status "$GEN" --shift 257:100 -o "$T/x.stct")" = 2 ]
+check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, shift, no --trace or no -o exit 2" $?
 # A backlog delays what was queued and keeps its stamps: the records, in order, arrive later.
 "$GEN" --trace -o "$T/q0.stct" --seed 5 --duration 30 && "$GEN" --trace -o "$T/q1.stct" --seed 5 --duration 30 --backlog 10:3000:500 &&
     "$CLI" trace2jsonl "$T/q0.stct" | sed 's/"t":[0-9]*,//' >"$T/q0.v" && "$CLI" trace2jsonl "$T/q1.stct" | grep -v '"kind":"outage"' |
     sed 's/"t":[0-9]*,//' >"$T/q1.v" && cmp -s "$T/q0.v" "$T/q1.v" && "$CLI" trace2jsonl "$T/q1.stct" | grep -q '"kind":"outage"'
 check "fixture_gen: --backlog moves arrivals only (the same records, an outage where the queue held them)" $?
+# --shift copies a recorded trace with one PID's PES stamped later: only those records differ, by the shift.
+"$GEN" --shift 257:1000 -i "$T/q0.stct" -o "$T/sh.stct" && "$CLI" trace2jsonl "$T/q0.stct" >"$T/sh0.jsonl" &&
+    "$CLI" trace2jsonl "$T/sh.stct" >"$T/sh1.jsonl" && [ "$(wc -l <"$T/sh0.jsonl")" -eq "$(wc -l <"$T/sh1.jsonl")" ] &&
+    paste -d '\n' "$T/sh0.jsonl" "$T/sh1.jsonl" | awk 'NR % 2 { a = $0; next }
+        a != $0 { n++; split(a, x, "\"pts\":"); split($0, y, "\"pts\":"); d = (y[2] + 0) - (x[2] + 0)
+                  if (a !~ /"kind":"pes","pid":257,/ || (d != 90000 && d != 90000 - 8589934592)) bad++ }
+        END { exit !(n > 100 && !bad) }' &&
+    [ "$(status "$GEN" --shift 300:1000 -i "$T/q0.stct" -o "$T/x.stct")" = 1 ]
+check "fixture_gen: --shift moves that PID's PES PTS alone, by the shift; a PID with no PES exits 1" $?
 
 # .stct -> JSONL -> .stct, every kind; through a pipe too.
 "$CLI" trace2jsonl "$T/a.stct" >"$T/a.jsonl" && "$CLI" jsonl2trace "$T/a.jsonl" "$T/a2.stct" && cmp -s "$T/a.stct" "$T/a2.stct"
@@ -147,6 +159,8 @@ for x in "$FIX"/*.expect.json; do
     args=$(sed -n 's/^  "source": "fixture_gen \(.*\)",$/\1/p' "$x")
     trace=$FIX/$name.stct
     if [ -n "$args" ]; then
+        # A derived trace's input (-i) is a committed trace beside the expectation.
+        args=$(printf '%s' "$args" | sed "s| -i \([^ ]*\)| -i $FIX/\1|")
         # shellcheck disable=SC2086
         "$GEN" $args -o "$T/$name.stct"
         if [ -e "$trace" ]; then
@@ -177,7 +191,8 @@ all=0
 for want in '"residualMinMs": -1' '"lockedWithinS": 10' '"mappingPpmMax": 5' '"finalState": "degraded"' \
     '"cadenceWarning": true' '"gapMs": [0, 1]' '"droppedPes": 1' '"ppm": [100, 200]' '"monotonic": false' \
     '"faithful": false' '"epochs": 1' '"envelopeSteps": 0' '"recovered": 1' '"overlaps": 1' '"droppedMs": [1, 2]' \
-    '"gapsPerPid": 2' '"relockReasons": ["leap"]' '"psiChanges": 0' '"program": 2' '"leadClamps": 1' '"leadMaxMs": 1'; do
+    '"gapsPerPid": 2' '"relockReasons": ["leap"]' '"psiChanges": 0' '"program": 2' '"leadClamps": 1' '"leadMaxMs": 1' \
+    '"backlogEvents": 1'; do
     printf '{%s}\n' "$want" >"$T/neg.json"
     [ "$(status "$CLI" restamp-replay "$r" --quiet --expect "$T/neg.json")" = 1 ] || { echo "  passed: $want"; all=1; }
 done

@@ -626,33 +626,47 @@ rows B-1 to B-38) holds the same records with their work items.
   seeded on the backlog's oldest sample, gets its floor. `backlog_ns` is
   500 ms, as `leap_ns` (B-47, 2026-10-17; 4 s as first built): a backlog
   that relocks lies past it, while the largest delivery swing measured (the
-  bursty encoder's 400 ms dips) stays under it. At 4 s a relock backlog of
-  1–3 s left the egress that early for the 1.4 days the 20 ppm slew needs,
-  and one of 3.5–3.9 s degraded the program. `mrasrc` has the second rule
-  off: its PTS is the capture time.
+  bursty encoder's dips: its line moves at 420 ms, not at 430) stays under
+  it. At 4 s a relock backlog of 1–3 s left the egress that early for the
+  1.4 days the 20 ppm slew needs, and one of 3.5–3.9 s degraded the
+  program. Not exact at the edge (B-48, for the owner): a backlog within
+  the acquire slew's 10 ms past `leap_ns` relocks but can stay about 0.5 s
+  above the floor (30 of 160 replays at 500–512 ms; none at 490 ms), while
+  at 485 ms a gate PES envelope's dip (a clamped PID's lock, 100 s after a
+  stall relocked it) already moves the line, drops 0.47 s and relocks
+  10 s later; both sides lie within about 15 ms. `mrasrc` has the second
+  rule off: its PTS is the capture time.
 - **A caller's backlog is stale** (B-39, B-45). While the live line lies
   more than `lead_max_ns` above the floor its open and last closed bucket
-  show, or more than `step_ns` above it and would put the PES more than
+  show, or more than `backlog_ns` above it (a backlog's: the floor rule
+  moves it at the next agreeing pair) and would put the PES more than
   `lead_max_ns` ahead by its own doing (its lead less that floor gap within
-  `lead_max_ns`, B-47), what it maps is stale: the PES is dropped and
+  `lead_max_ns`, B-47, B-48), what it maps is stale: the PES is dropped and
   counted as overlap (its run's event says `backlog`), its lead stays out of
-  the lead row, so a drain never degrades the program, and the written PCR
-  follows arrival less 250 ms, never back, flagged at both switches (a
-  frozen PCR would read as a freeze one hop on). The first PES of a PID that
-  shows a hole after the run carries a gap marker, reason `backlog`. So a
-  reconnect plays at most 4 s of the backlog (3.5–3.8 s on the traces) and
-  loses 2–3 s of the live content (the two buckets the line waits for after
-  the drain), where the build before it degraded on the lead row and then
-  dropped up to the whole backlog of live content (30 s on .103, 86 s on
-  .111). The floor gap judges the line, not a PID's lead, and the second
-  clause takes only a lead the floor gap explains, so a source far ahead
-  reaches the lead row and the clamp below even under a line visibly above
-  its floor (before B-47 the clamp came 3–28 s late there, its drop and gap
-  named `backlog`). A backlog under 4 s is not stale, but for what the seed
-  would put past 4 s: the line moves, after a relock too, and the guard
-  drops its length of live content once, as at a start burst; the written
-  PCR's step back there carries `discontinuity_indicator`, as every PCR
-  step back does (B-47).
+  the lead row, so a drain, however slow, never degrades the program (B-48:
+  before, only a line past `lead_max_ns` kept it out, and drains of 10–30 s
+  with a PID 2–2.5 s ahead degraded it, one 137 s off its source lead
+  after), and the written PCR follows arrival less 250 ms, never back,
+  flagged at both switches (a frozen PCR would read as a freeze one hop
+  on). The first PES of a PID that shows a hole after the run carries a
+  gap marker, reason `backlog`. So a reconnect plays at most 4 s of the
+  backlog (3.5–3.8 s on the traces) and loses 2–3 s of the live content
+  (the two buckets the line waits for after the drain), where the build
+  before it degraded on the lead row and then dropped up to the whole
+  backlog of live content (30 s on .103, 86 s on .111). The floor gap
+  judges the line, not a PID's lead, and the second
+  clause takes only a lead the floor gap explains, past `backlog_ns`, so a
+  source far ahead, or one just past 4 s under a line that jitter or a
+  slewed fall keeps a little above its floor, reaches the lead row and the
+  clamp below (before B-47 the clamp came 3–28 s late there, its drop and
+  gap named `backlog`; before B-48 a PID 4.0–4.15 s ahead on the gate's
+  delivery lost 16–76 s as a backlog's and was never clamped). A backlog
+  under 4 s is not stale, but for what the seed would put past 4 s: the
+  line moves, after a relock too, and up to about twice its length of live
+  content goes, the guard's drop as at a start burst and, after a relock,
+  the drain's tail the straddle rule maps onto the old epoch, whose hole
+  carries a gap marker (B-48); the written PCR's step back there carries
+  `discontinuity_indicator`, as every PCR step back does (B-47).
 - **The rate fit runs on one floor level.** A bucket more than `step_ns` off
   the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
@@ -934,12 +948,18 @@ design's §5.2 keeps the general rule.
   srt-input's queue lost a marker or data in 10 of 10 runs (the input's own
   PTS jump reads as a full queue); as a list, 0 of 10.
 - **When.** On a PID's first PES under a newer epoch (reason `epoch`), after
-  a live edit (`edit`), after an outage (`outage`), or in fixed mode a jump
-  (`jump`, below), when the PES lands after the end of what the PID last
-  emitted. During an outage the element's own `GstTask` (`arrival=clock`,
-  in PLAYING) pushes one buffer with a packet per PID whose gap has started,
-  at 1 s without packets and every 250 ms after (OQ-17; measured 1000.5 ms,
-  then 250.2–250.6 ms apart); the resume marker comes from the stream.
+  a live edit (`edit`), after an outage (`outage`), after a backlog's stale
+  run (`backlog`), or in fixed mode a jump (`jump`, below), when the PES
+  lands after the end of what the PID last emitted; and on its first PES on
+  another epoch than its previous PES's, kept or dropped, that leaves a
+  hole of a PES or more (`epoch`: a straddler back from a run dropped on the
+  old epoch, a clamped PID back on the program's; B-48, before which such
+  holes of 0.3–2 s after a relock backlog went unsignalled). The event is
+  timed by that PES's arrival, as an overlap is. During an outage the
+  element's own `GstTask` (`arrival=clock`, in PLAYING) pushes one buffer
+  with a packet per PID whose gap has started, at 1 s without packets and
+  every 250 ms after (OQ-17; measured 1000.5 ms, then 250.2–250.6 ms
+  apart); the resume marker comes from the stream.
 - **Through an identity egress** a marker leaves with its PTS, duration,
   flags and bytes, and a buffer list holding one is chained member by
   member, not coalesced: an exception to ADR-0011, because merging would
@@ -1132,9 +1152,19 @@ design's §5.2 keeps the general rule.
   floor, after a relock too since B-47, the guard drops that much of the
   live content once (B-45, as at a start burst, B-37), and a keep-listening
   reconnect loses up to about 2 s more where the straddle rule maps the
-  drain's tail on the old epoch. `trace-820-vmix-pcr` (OQ-3) still has to
-  show the clamp on a real vMix feed; `syn-lead-clamp` and
-  `syn-lead-clamp-floor-fall` stand in.
+  drain's tail on the old epoch (signalled since B-48).
+- `backlog_ns` at the edge (B-48, the owner's): 500 ms leaves a relock
+  backlog within 10 ms past `leap_ns` about 0.5 s early for hours, 485 ms
+  and under moves a gate PES envelope onto a dip; 490 ms clears both on
+  today's traces by 0–5 ms. Alternative: the rule only in an epoch a leap
+  opened (4 s elsewhere), with the stale rule's second clause scoped alike
+  and in the first epoch, so that a stale run never outlasts a move.
+- In `stc` mode a source's own PTS step under the leap row passes with no
+  marker (fixed mode's jump check is not applied): the gate's own 215–220 ms
+  step on every PID at 421 s of `trace-gate01-rist-20010` and at 345 s of
+  `-20046`. For Phase 2's aligners (R-P1-5).
+- `trace-820-vmix-pcr` (OQ-3) still has to show the clamp on a real vMix
+  feed; `syn-lead-clamp` and `syn-lead-clamp-floor-fall` stand in.
 - A floor step under `step_ns` inside the first fit window bends ε: the
   SRT receiver's +2.85 ms time-base correction 35 s after a reconnect read
   as 43–71 ppm (186 ppm on .111's own run), decaying with τ (plan chapter

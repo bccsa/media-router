@@ -467,6 +467,9 @@ struct OutPcr {
     long in;
 };
 
+// What the guard compares: video by DTS when it has one, the rest by PTS.
+int64_t key33(const OutPes& p) { return p.pid == PID_V && p.dts >= 0 ? p.dts : p.pts; }
+
 struct Ana {
     bool matched = true, atomic = true, ordered = true;
     long first_unmatched = -1;
@@ -480,6 +483,9 @@ struct Ana {
     // Adaptation-only packets whose CC is not their PID's last payload CC (CcTracker
     // does not look at them); duplicate pairs (same PID and CC) that differ but for the PCR.
     size_t af_cc_bad = 0, dup_differ = 0;
+    // Per PID: holes no gap marker announces (absence is signalled, §5.2; B-48), ns past a PES
+    // length, where its guard key steps more than 1.5 PES lengths between two output PES.
+    std::map<int, int64_t> unsignalled;
 };
 
 // Equal but for the bytes the core may write: PTS/DTS/PCR fields, the CC nibble
@@ -620,14 +626,30 @@ Ana analyze(const Case& c, const Out& o, bool strict_cc) {
             h.clear();
         }
     }
+    std::map<int, const OutPes*> prev;
+    for (const OutPes& p : a.pes) {
+        const OutPes* q = prev.count(p.pid) ? prev[p.pid] : nullptr;
+        prev[p.pid] = &p;
+        const int64_t per = period_of(p.pid);
+        const int64_t step = q ? pts90k_to_ns(fold33(key33(p) - key33(*q))) : 0;
+        if (!q || per <= 0 || step <= per + per / 2) continue;
+        bool marked = false;
+        for (size_t i = 0; i < o.gaps.size(); i++)
+            marked |= o.gaps[i].pid == p.pid && o.gap_at[i] > q->at && o.gap_at[i] <= p.at;
+        if (!marked) a.unsignalled[p.pid] += step - per;
+    }
     return a;
 }
 
 // The house time the model gives a source slot: its PCR's arrival at the floor delay.
 int64_t model(const Case& c, int64_t slot) { return c.h0 + 20 * MS + slot + at_ppb(slot, c.ppb); }
 
-// What the guard compares: video by DTS when it has one, the rest by PTS.
-int64_t key33(const OutPes& p) { return p.pid == PID_V && p.dts >= 0 ? p.dts : p.pts; }
+// The holes no marker announces, all PIDs: their total span.
+int64_t unsignalled_ns(const Ana& a) {
+    int64_t n = 0;
+    for (const auto& kv : a.unsignalled) n += kv.second;
+    return n;
+}
 
 // Per PID, every key after the one before it (33-bit folded), and the worst step.
 bool monotonic(const Ana& a, int64_t* worst = nullptr) {
@@ -2006,7 +2028,7 @@ void test_backlog(const char* label, int64_t at, int64_t len, int64_t drain) {
             reason_ok &= !std::strcmp(e.reason, "backlog");
         }
     CHECK("backlog: one overlap run per PID, reason backlog", one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && reason_ok);
-    bool placed = gaps_placed(a, aa);
+    bool placed = gaps_placed(a, aa) && unsignalled_ns(aa) == 0;
     for (const RestampCore::Gap& gp : a.gaps)
         placed &= !std::strcmp(gp.reason, "backlog") || !std::strcmp(gp.reason, "epoch");
     CHECK("backlog: any gap it leaves is signalled (reason backlog), right before the PES that shows it", placed);
@@ -2046,10 +2068,21 @@ void test_backlog_relock(const char* label, int64_t at, int64_t len, int64_t dra
     CHECK("relock backlog: one relock (leap), never degraded, no lead clamp",
           count_events(a, Ev::Kind::relock) == 1 && count_events(a, Ev::Kind::relock, "leap") == 1 &&
               count_events(a, Ev::Kind::degraded) == 0 && count_events(a, Ev::Kind::lead_clamp) == 0);
-    bool ok = false;
-    const std::map<int, int> n = gap_count(a, "epoch", len, 50 * MS, &ok);
-    CHECK("relock backlog: one gap per PID of the outage (50 ms), reason epoch, and no other",
-          a.gaps.size() == 4 && one_each(n, {PID_V, PID_A1, PID_A2, PID_T}) && ok);
+    // Per PID the outage's gap; and where the straddle rule mapped the drain's tail on the old epoch,
+    // dropped under what the new one sent, the hole its return to the new one shows (B-48).
+    std::map<int, int> n, outage;
+    bool epoch_only = true;
+    for (const RestampCore::Gap& gp : a.gaps) {
+        epoch_only &= !std::strcmp(gp.reason, "epoch") && gp.end_ns - gp.start_ns >= period_of(gp.pid);
+        if (!n[gp.pid]++) outage[gp.pid] = iabs(gp.end_ns - gp.start_ns - len) <= 50 * MS;
+    }
+    bool each = n.size() == 4;
+    for (int pid : kPids) each &= outage[pid] == 1 && n[pid] <= 2;
+    std::printf("  %s: %zu gaps, %.3f ms of holes unsignalled\n", label, a.gaps.size(), unsignalled_ns(aa) / 1e6);
+    CHECK("relock backlog: per PID the outage's gap (50 ms), at most one more where a straddler returns; reason epoch, "
+          "a PES or more each",
+          each && epoch_only);
+    CHECK("relock backlog: every hole is signalled (absence, §5.2)", unsignalled_ns(aa) == 0);
     bool ahead = true, natural = true, lost_ok = true;
     for (const EsDef* e : {&kV, &kA1, &kA2, &kT}) {
         ahead &= r.max_lead.at(e->pid) <= 4 * S + 750 * MS;
@@ -2140,6 +2173,38 @@ void test_lead_clamp(const char* label, int64_t fall) {
               no_backlog && a.gaps.empty());
     CHECK("lead clamp: content keeps flowing, monotonic, CC continuous, whole PES",
           monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched);
+}
+
+// D1's window (B-48): audio-2 stamped 3.5 s ahead (3.95 s on the floor, just under lead_max_ns) and
+// the floor 80 ms lower from 3 s, so under the lines it reads past 4 s. A gap under backlog_ns is no
+// backlog: audio-2 never goes as a backlog's, and nothing says backlog; it is the lead row's.
+void test_lead_window() {
+    Gen g;
+    g.secs = 80;
+    g.a2_ahead = 3500 * MS;
+    g.delay_from = 3 * S;
+    g.delay_rise = -80 * MS;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);
+    print_events("audio-2 3.5 s ahead, the floor 80 ms lower from 3 s", a, c);
+    bool no_backlog = true;
+    for (const Ev& e : a.events) no_backlog &= std::strcmp(e.reason, "backlog") != 0;
+    for (const RestampCore::Gap& gp : a.gaps) no_backlog &= std::strcmp(gp.reason, "backlog") != 0;
+    const LeadRun r = lead_run(c, a, aa, INT64_MAX, INT64_MAX);
+    std::printf("  lead window: audio-2 lead max %.3f ms; %zu gaps\n", r.max_lead.at(PID_A2) / 1e6, a.gaps.size());
+    CHECK("lead window: audio-2 leaves past 4 s ahead (the lead row's to judge), never as a backlog's",
+          r.max_lead.at(PID_A2) > 4 * S && no_backlog);
+    int deg_pid = -2;
+    for (const Ev& e : a.events)
+        if (e.kind == Ev::Kind::degraded) deg_pid = e.pid;
+    CHECK("lead window: the lead row degrades the program (lead), timing from the video PID, and it recovers",
+          count_events(a, Ev::Kind::degraded, "lead") == 1 && deg_pid == PID_V &&
+              count_events(a, Ev::Kind::recovered) == 1);
+    // At recovery audio-2 leaves its clamp (lead 0) for the program's mapping: a hole, signalled.
+    CHECK("lead window: monotonic, CC continuous, whole PES, every hole signalled",
+          monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched && gaps_placed(a, aa) &&
+              unsignalled_ns(aa) == 0);
 }
 
 // The output PES of `pid` in `bytes`: the last one's guard key (DTS for video, else PTS) on
@@ -2700,6 +2765,7 @@ int main() {
     test_backlog_relock("0.6 s queued after 30 s live, drained in 0.5 s", 30 * S, 600 * MS, 500 * MS);
     test_lead_clamp("audio-2 12.6 s ahead (#820)", 0);
     test_lead_clamp("audio-2 12.6 s ahead, the floor 80 ms lower from 3 s", 80 * MS);
+    test_lead_window();
     test_flush();
     test_duplicates();
     test_two_programs();

@@ -1,8 +1,10 @@
 // fixture_gen: the deterministic generator of the synthetic fixtures (plan ch. 3 part 7, ch. 5
 // part 7.2). --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts
-// fixture from ts_gen.h (WI-S0-9); --drop removes packets from a capture (cap-cc-loss).
+// fixture from ts_gen.h (WI-S0-9); --drop removes packets from a capture (cap-cc-loss);
+// --shift stamps PIDs of a recorded trace further ahead (B-48's window fixtures).
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -19,6 +21,9 @@ const char kUsage[] =
     "  [--wrap-at S], pes-header-split, pes-no-pts, source-restart [--restart S]\n"
     "       fixture_gen --drop PID@N[,PID@N...] -i IN.ts -o OUT.ts\n"
     "  removes the N-th packet (from 0) of each PID named; PIDs decimal or 0x\n"
+    "       fixture_gen --shift PID:MS[,PID:MS...] -i IN.stct -o OUT.stct\n"
+    "  copies an arrival trace, the PES of each PID named stamped MS later (ahead of\n"
+    "  the rest, mod 2^33); PIDs decimal or 0x\n"
     "       fixture_gen --trace -o OUT.stct [options]\n"
     "  An arrival trace of one program: the PCR on the video PID, the chosen PES, sent\n"
     "  over a path of floor delay plus exponential jitter, in order.\n"
@@ -104,7 +109,7 @@ bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_ge
 int main(int argc, char** argv) {
     trace_gen::Config c;
     bool trace = false;
-    std::string out, ts_kind_name, drop_spec, in;
+    std::string out, ts_kind_name, drop_spec, shift_spec, in;
     int64_t restart_ns = 3 * trace_gen::S;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
@@ -124,6 +129,8 @@ int main(int argc, char** argv) {
             ts_kind_name = v;
         } else if (a == "--drop") {
             drop_spec = v;
+        } else if (a == "--shift") {
+            shift_spec = v;
         } else if (a == "--restart") {
             ok = seconds(v, &restart_ns) && restart_ns > 0;
         } else if (a == "--seed") {
@@ -219,7 +226,52 @@ int main(int argc, char** argv) {
         }
         return write_file(out, o) ? 0 : 1;
     }
-    if (!trace) return usage("one of --ts, --drop or --trace is required");
+    if (!shift_spec.empty()) {
+        if (out.empty() || in.empty()) return usage("--shift needs -i IN.stct and -o OUT.stct");
+        std::map<int, int64_t> by;   // PID -> 90 kHz ticks
+        for (const std::string& item : split(shift_spec, ',')) {
+            const size_t at = item.find(':');
+            const std::string p = item.substr(0, at), ms = at == std::string::npos ? "" : item.substr(at + 1);
+            char* e = nullptr;
+            const long pid = std::strtol(p.c_str(), &e, 0);
+            int64_t ns = 0;
+            if (p.empty() || *e || pid < 0 || pid > 0x1FFF || !millis(ms, &ns))
+                return usage(("bad --shift item " + item).c_str());
+            by[(int)pid] = mrts::ns_to_pts90k(ns);
+        }
+        mrts::TraceReader r;
+        if (!r.open(in)) {
+            std::fprintf(stderr, "fixture_gen: %s: no arrival trace\n", in.c_str());
+            return 1;
+        }
+        mrts::TraceWriter w;
+        if (!w.open(out)) {
+            std::perror(out.c_str());
+            return 1;
+        }
+        mrts::TraceRecord rec;
+        size_t moved = 0;
+        while (r.next(&rec)) {
+            const auto it = by.find(rec.pid);
+            if (rec.kind == mrts::TraceKind::pes && it != by.end()) {
+                rec.value = (uint64_t)((((int64_t)rec.value + it->second) % mrts::PTS_WRAP + mrts::PTS_WRAP) %
+                                       mrts::PTS_WRAP);
+                moved++;
+            }
+            w.write(rec);
+        }
+        const bool whole = r.status() == mrts::TraceReader::Status::ok ||
+                           r.status() == mrts::TraceReader::Status::unclosed;
+        const bool wrote = w.close();
+        if (!whole || !moved || !wrote) {
+            const char* why = !whole ? "the input trace is damaged" : !moved ? "no PES of the PIDs named"
+                                                                         : "writing failed";
+            std::fprintf(stderr, "fixture_gen: %s: %s\n", in.c_str(), why);
+            return 1;
+        }
+        return 0;
+    }
+    if (!trace) return usage("one of --ts, --drop, --shift or --trace is required");
     if (out.empty()) return usage("-o OUT.stct is required");
     const std::vector<mrts::TraceRecord> recs = trace_gen::generate(c);
     mrts::TraceWriter w;
