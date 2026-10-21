@@ -10,9 +10,9 @@ Phase 1 items; the Phase 2–4 items join it as those phases land, and the
 note is finished with Phase 4. One RAUC bundle carries the image and the
 app: the new timing elements ship in the image, so do not hot-deploy this
 app onto an older image. On a box where they are missing, the GStreamer
-modules' cards say "Native TS module not loaded", and the network inputs
-and Video Encoder still run, on their source's own time. (Open before
-release: the three audio captures do not start without them yet.)
+modules' cards say "Native TS module not loaded", and the modules still
+run, on their source's own time (the audio captures at their device's
+nominal rate, unlocked).
 
 **Time is set once, where a stream enters the box**
 
@@ -26,7 +26,9 @@ release: the three audio captures do not start without them yet.)
   away (an input or engine restart, a network loss) sends its queue at once
   when it reconnects: the input drops that stale backlog, so the stream
   shows the gap, at most the first 4 s of the backlog, then live content
-  again within seconds, instead of running the backlog's length ahead.
+  again within seconds, instead of running the backlog's length ahead. A
+  backlog under 4 s plays, and the same length of live content is skipped
+  once.
 - **Captures** (Audio Input 302M, AES67 Input, Audio Encoder, Video Encoder)
   label their content with its capture time.
 - **The three audio captures resample once**, locked to the device's

@@ -1,0 +1,22 @@
+{
+  "source": "fixture_gen --trace --backlog 60:2000:1000 --duration 150 --seed 33",
+  "note": "The keep-listening reconnect with a backlog under lead_max_ns (the second Phase 1 review, D2): 60 s live, 2 s queued, drained in 1 s. The backlog's first PCR leaps (-2 s against arrival): one relock, one gap of the outage per PID (epoch), the new epoch seeded 2 s above the floor. Two agreeing buckets more than backlog_ns (500 ms, leap_ns: a backlog that relocks lies past it) below the line move it onto the floor at 65 s; the guard then drops what left on the seed once per PID (about 2 s, at 67 s), as at a start burst (B-37). The run before it (63.3-63.5 s, 1.8-2 s per PID) is the straddle rule taking the drain's tail onto the old epoch, whose line is the floor, under what the new one already sent. Before: the line stayed 2 s above the floor (residual -1997 ms), the egress 2 s early for the 1.4 days the 20 ppm slew needs.",
+  "relocks": 1,
+  "relockReasons": ["leap"],
+  "epochs": 2,
+  "degraded": 0,
+  "leadClamps": 0,
+  "gaps": 3,
+  "gapsPerPid": 1,
+  "gapMs": [1950, 2050],
+  "overlaps": 6,
+  "events": [{"kind": "relock", "reason": "leap", "atS": [61.9, 62.2]}, {"kind": "overlap", "reason": "", "atS": [66.5, 67.5]}, {"kind": "overlap", "reason": "", "atS": [66.5, 67.5]}, {"kind": "overlap", "reason": "", "atS": [66.5, 67.5]}],
+  "droppedMs": [11000, 12200],
+  "leadMaxMs": 2800,
+  "lockedWithinS": 40,
+  "residualMinMs": -1,
+  "mappingPpmMax": 10,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

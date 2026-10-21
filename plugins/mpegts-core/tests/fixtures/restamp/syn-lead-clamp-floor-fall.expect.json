@@ -1,0 +1,15 @@
+{
+  "source": "fixture_gen --trace --ahead a2:12600 --delay-ms 100,20@3 --duration 120 --seed 1",
+  "note": "syn-lead-clamp with the path's floor 80 ms lower from 3 s (the second Phase 1 review, D1): the lines then lie visibly above the floor (more than step_ns) for tens of seconds, which made B-39's stale rule take the AAC PID 0x102, 12.6 s ahead, for a backlog's: dropped as overlap (backlog) in PCR mode, and in degraded mode kept from the clamp, which came 28 s late with a 16.9 s gap and 30 s dropped. A PES is stale by that clause only when the floor explains its lead (lead less the floor gap within lead_max_ns); a PID that far ahead is the source's. So, as without the fall: degraded (lead) at 5 s timing from the video PID 0x100, lead-clamp on 0x102 at once and every 30 s, its 13 s ahead dropped as one run (at 18 s), no gap marker and no backlog reason anywhere.",
+  "relocks": 0,
+  "degraded": 1,
+  "recovered": 0,
+  "leadClamps": 4,
+  "gaps": 0,
+  "events": [{"kind": "degraded", "reason": "lead", "pid": 256, "atS": [5, 5.6]}, {"kind": "lead-clamp", "pid": 258, "atS": [5, 5.6]}, {"kind": "overlap", "reason": "", "pid": 258, "droppedMs": [12500, 13500]}, {"kind": "lead-clamp", "pid": 258, "atS": [35, 35.7]}, {"kind": "lead-clamp", "pid": 258, "atS": [65, 65.7]}, {"kind": "lead-clamp", "pid": 258, "atS": [95, 95.7]}],
+  "overlaps": 3,
+  "droppedMs": [14000, 14500],
+  "finalState": "degraded",
+  "monotonic": true,
+  "faithful": true
+}

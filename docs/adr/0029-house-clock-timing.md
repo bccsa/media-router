@@ -400,9 +400,11 @@ reassembly on every PID, PCR read and write, the PES header rewrite, the
    `timing_plugin` (`detail`: the tried paths, or `abi N < MIN: <path>`),
    rewrite the start description with a gst-launch tokenizer so each
    element of the table becomes its stand-in with only its `name=` kept
-   (`mrtsrestamp` becomes `identity`), and answer a `set_property` on a
-   stand-in with a warning. `mrtsdemux` has no stand-in: a description naming
-   it is refused with an `error` carrying the same text. The engine shows
+   (`mrtsrestamp` becomes `identity`, `mrasrc` `audioresample`, which keeps
+   the nominal-rate conversion, unlocked; B-23), and answer a
+   `set_property` on a stand-in with a warning. `mrtsdemux` has no
+   stand-in: a description naming it is refused with an `error` carrying
+   the same text. The engine shows
    "Native TS module not loaded: this stream carries no house time on the
    bus; consumers will mis-time it until the deploy is fixed." with the
    detail (`timingPluginAlarm.ts`) and keeps it until a start whose
@@ -619,14 +621,20 @@ rows B-1 to B-38) holds the same records with their work items.
   the bucket minima keep falling by more than `step_ns` (a caller's backlog
   draining), the first epoch tests again at every close until a pair agrees
   or rises (a dip passed: nothing moves); and in any epoch and phase two
-  buckets agreeing on a floor more than `backlog_ns` (4 s) below the line
-  move it, which is how a reconnect into a running keep-listening listener,
-  a relock seeded on the backlog's oldest sample, gets its floor. `mrasrc`
-  has the second rule off: its PTS is the capture time.
+  buckets agreeing on a floor more than `backlog_ns` below the line move it,
+  which is how a reconnect into a running keep-listening listener, a relock
+  seeded on the backlog's oldest sample, gets its floor. `backlog_ns` is
+  500 ms, as `leap_ns` (B-47, 2026-10-17; 4 s as first built): a backlog
+  that relocks lies past it, while the largest delivery swing measured (the
+  bursty encoder's 400 ms dips) stays under it. At 4 s a relock backlog of
+  1–3 s left the egress that early for the 1.4 days the 20 ppm slew needs,
+  and one of 3.5–3.9 s degraded the program. `mrasrc` has the second rule
+  off: its PTS is the capture time.
 - **A caller's backlog is stale** (B-39, B-45). While the live line lies
   more than `lead_max_ns` above the floor its open and last closed bucket
   show, or more than `step_ns` above it and would put the PES more than
-  `lead_max_ns` ahead, what it maps is stale: the PES is dropped and
+  `lead_max_ns` ahead by its own doing (its lead less that floor gap within
+  `lead_max_ns`, B-47), what it maps is stale: the PES is dropped and
   counted as overlap (its run's event says `backlog`), its lead stays out of
   the lead row, so a drain never degrades the program, and the written PCR
   follows arrival less 250 ms, never back, flagged at both switches (a
@@ -636,10 +644,15 @@ rows B-1 to B-38) holds the same records with their work items.
   loses 2–3 s of the live content (the two buckets the line waits for after
   the drain), where the build before it degraded on the lead row and then
   dropped up to the whole backlog of live content (30 s on .103, 86 s on
-  .111). The floor gap judges the line, not a PID's lead, so a source far
-  ahead under a good line still reaches the lead row and the clamp below. A
-  backlog under 4 s is not stale: the line moves and the guard drops its
-  length of live content once, as at a start burst.
+  .111). The floor gap judges the line, not a PID's lead, and the second
+  clause takes only a lead the floor gap explains, so a source far ahead
+  reaches the lead row and the clamp below even under a line visibly above
+  its floor (before B-47 the clamp came 3–28 s late there, its drop and gap
+  named `backlog`). A backlog under 4 s is not stale, but for what the seed
+  would put past 4 s: the line moves, after a relock too, and the guard
+  drops its length of live content once, as at a start burst; the written
+  PCR's step back there carries `discontinuity_indicator`, as every PCR
+  step back does (B-47).
 - **The rate fit runs on one floor level.** A bucket more than `step_ns` off
   the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
@@ -1116,17 +1129,16 @@ design's §5.2 keeps the general rule.
   Pi 4), so V-P1-10 fails as written until the per-buffer cost is cut or
   the criterion is changed.
 - A reconnect backlog under 4 s is not stale: once the line moves onto the
-  floor, the guard drops that much of the live content once (B-45, as at a
-  start burst, B-37). `trace-820-vmix-pcr` (OQ-3) still has to show the
-  clamp on a real vMix feed; `syn-lead-clamp` stands in.
+  floor, after a relock too since B-47, the guard drops that much of the
+  live content once (B-45, as at a start burst, B-37), and a keep-listening
+  reconnect loses up to about 2 s more where the straddle rule maps the
+  drain's tail on the old epoch. `trace-820-vmix-pcr` (OQ-3) still has to
+  show the clamp on a real vMix feed; `syn-lead-clamp` and
+  `syn-lead-clamp-floor-fall` stand in.
 - A floor step under `step_ns` inside the first fit window bends ε: the
   SRT receiver's +2.85 ms time-base correction 35 s after a reconnect read
   as 43–71 ppm (186 ppm on .111's own run), decaying with τ (plan chapter
   15.4 B-46). A fit that tolerates one level shift would remove it.
-- `mrasrc` has no row in either runner's stand-in table, so without the
-  plugin the three PCM captures fail to parse instead of starting with the
-  rule-6 alarm. Recommended stand-in: `audioresample`, which keeps the
-  nominal-rate conversion.
 - The DISCONT flag on markers (above). The RTP start-up burst is the start
   rule's case, but no RTP trace confirms it yet.
 - The leap row cannot tell a delivery stall from a timeline jump: 500 ms

@@ -1914,6 +1914,32 @@ bool pcr_steps_flagged(const Ana& a, int pid) {
     return true;
 }
 
+// The PCR while the line is a backlog's: from the first flagged PCR of a dropped PES at or after
+// `from` to the next flagged one (the switches mapped <-> regenerated), every PCR of `pid` written
+// at its arrival less 250 ms (B-39: never frozen at the last key, which would lag arrival).
+// Returns the run's span (0: none); `off` counts its PCRs more than 1 ms off.
+int64_t stale_pcr_run(const Out& o, int pid, int64_t from, int* off) {
+    *off = 0;
+    int64_t first = -1, last = -1;
+    for (size_t j = 0; j < o.bytes.size() / PKT; j++) {
+        const uint8_t* pk = o.bytes.data() + j * PKT;
+        const int64_t pcr = read_pcr(pk), h = o.arrival_of_out[j];
+        if (ts_pid(pk) != pid || pcr < 0 || h < from) continue;
+        const bool di = (pk[5] & 0x80) != 0;
+        if (first < 0) {
+            if (!di || (pk[3] & 0x10)) continue;
+            first = h;
+        } else if (di) {
+            break;
+        }
+        last = h;
+        const int64_t lag = h - house_from_mux_pts(pcr / 300, h);
+        const int64_t want = RestampCore::DEGRADED_PCR_LEAD_NS;
+        *off += lag < want - 1 * MS || lag > want + 1 * MS;
+    }
+    return first < 0 ? 0 : last - first;
+}
+
 // A caller queues for `len` from `at` (0: the pipeline starts on its backlog) and drains in
 // `drain`. What it queued is stale: at most lead_max_ns of it leaves (on the seed), none of it
 // once the line lies further above its floor, and the line moves onto the floor as two buckets
@@ -1986,19 +2012,79 @@ void test_backlog(const char* label, int64_t at, int64_t len, int64_t drain) {
     CHECK("backlog: any gap it leaves is signalled (reason backlog), right before the PES that shows it", placed);
     CHECK("backlog: monotonic, CC continuous, whole PES; every PCR step back or of 1 s or more flagged",
           monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched && pcr_steps_flagged(aa, PID_V));
+    int off = 0;
+    const int64_t span = stale_pcr_run(a, PID_V, model(c, at + len), &off);
+    std::printf("  %s: the stale run's PCR %.3f s, %d of it off arrival - 250 ms\n", label, span / 1e9, off);
+    CHECK("backlog: while the line is the backlog's the PCR is arrival - 250 ms (flagged in and out, 1.5 s or more)",
+          span >= 1500 * MS && off == 0);
+}
+
+// A reconnect backlog under lead_max_ns (the second review's D2): the relock seeds the new epoch
+// `len` above the floor, and two agreeing buckets past backlog_ns (500 ms) move it there. Never
+// degraded; within 10 s of the reconnect every PID leaves at its source lead (V-P1-3). What left
+// on the seed overlaps the live content after the move, which the guard drops once (B-37's drop);
+// the straddle rule maps the drain's tail on the old epoch, under what left, which goes too.
+void test_backlog_relock(const char* label, int64_t at, int64_t len, int64_t drain) {
+    Gen g;
+    const int64_t live = at + len + drain;
+    g.secs = live / S + 40;
+    g.backlog_at = at;
+    g.backlog_len = len;
+    g.backlog_drain = drain;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);
+    print_events(label, a, c);
+    const int64_t back_h = model(c, at + len);   // the reconnect: the queue's first arrival
+    const LeadRun r = lead_run(c, a, aa, live, back_h + 10 * S);
+    std::printf("  %s: lead max v/a1/a2/t %.0f/%.0f/%.0f/%.0f ms; live lost %.0f/%.0f/%.0f/%.0f ms; dropped %.1f s\n",
+                label, r.max_lead.at(PID_V) / 1e6, r.max_lead.at(PID_A1) / 1e6, r.max_lead.at(PID_A2) / 1e6,
+                r.max_lead.at(PID_T) / 1e6, r.lost_ns.count(PID_V) ? r.lost_ns.at(PID_V) / 1e6 : 0.0,
+                r.lost_ns.count(PID_A1) ? r.lost_ns.at(PID_A1) / 1e6 : 0.0,
+                r.lost_ns.count(PID_A2) ? r.lost_ns.at(PID_A2) / 1e6 : 0.0,
+                r.lost_ns.count(PID_T) ? r.lost_ns.at(PID_T) / 1e6 : 0.0, a.stats.programs[0].dropped_ns_total / 1e9);
+    CHECK("relock backlog: one relock (leap), never degraded, no lead clamp",
+          count_events(a, Ev::Kind::relock) == 1 && count_events(a, Ev::Kind::relock, "leap") == 1 &&
+              count_events(a, Ev::Kind::degraded) == 0 && count_events(a, Ev::Kind::lead_clamp) == 0);
+    bool ok = false;
+    const std::map<int, int> n = gap_count(a, "epoch", len, 50 * MS, &ok);
+    CHECK("relock backlog: one gap per PID of the outage (50 ms), reason epoch, and no other",
+          a.gaps.size() == 4 && one_each(n, {PID_V, PID_A1, PID_A2, PID_T}) && ok);
+    bool ahead = true, natural = true, lost_ok = true;
+    for (const EsDef* e : {&kV, &kA1, &kA2, &kT}) {
+        ahead &= r.max_lead.at(e->pid) <= 4 * S + 750 * MS;
+        const int64_t reorder = e->pid == PID_V ? 120 * MS : 0;
+        natural &= r.lo_after.count(e->pid) && r.lo_after.at(e->pid) >= e->lead - 40 * MS &&
+                   r.hi_after.at(e->pid) <= e->lead + reorder + 1 * MS;
+        lost_ok &= (!r.lost_ns.count(e->pid) || r.lost_ns.at(e->pid) <= len + 1 * S) &&
+                   (!r.last_lost.count(e->pid) || r.last_lost.at(e->pid) < at + len + 10 * S);
+    }
+    CHECK("relock backlog: no PES leaves further ahead of its arrival than lead_max_ns past its source lead", ahead);
+    CHECK("relock backlog: from 10 s after the reconnect every PID leaves at its source lead (V-P1-3)", natural);
+    CHECK("relock backlog: at most the backlog's length + 1 s of live content lost per PID, none after that",
+          lost_ok);
+    CHECK("relock backlog: monotonic, CC continuous, whole PES; every PCR step back or of 1 s or more flagged",
+          monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched && pcr_steps_flagged(aa, PID_V) &&
+              gaps_placed(a, aa));
 }
 
 // #820: audio-2 stamped 12.6 s ahead of the rest. The lead row degrades the program; under
 // the reference mapping (video) audio-2 still runs 12.5 s ahead, so it gets its own envelope
 // and lands at its earliest arrival, with lead-clamp naming it, told again every 30 s (B-8).
-void test_lead_clamp() {
+// `fall`: the path's floor falls that much at 3 s, so the lines lie visibly above it for a
+// while; audio-2's lead is the source's, not a backlog's: never stale, the clamp still at entry.
+void test_lead_clamp(const char* label, int64_t fall) {
     Gen g;
     g.secs = 80;
     g.a2_ahead = 12600 * MS;
+    if (fall) {
+        g.delay_from = 3 * S;
+        g.delay_rise = -fall;
+    }
     const Case c = make_case(g);
     const Out a = run(c, stc_cfg());
     const Ana aa = analyze(c, a, false);
-    print_events("audio-2 12.6 s ahead (#820)", a, c);
+    print_events(label, a, c);
     int64_t deg_at = -1;
     int deg_pid = -2;
     for (const Ev& e : a.events)
@@ -2021,8 +2107,8 @@ void test_lead_clamp() {
     const int64_t first = clamps.empty() ? -1 : clamps[0]->house_ns;
     std::printf("  lead clamp: %zu events, the first %.3f s after degraded, lead %.3f s\n", clamps.size(),
                 (first - deg_at) / 1e9, clamps.empty() ? 0.0 : clamps[0]->value_ns / 1e9);
-    CHECK("lead clamp: lead-clamp names audio-2 alone, its lead 12-13 s under the reference mapping",
-          only_a2 && first >= deg_at && first <= deg_at + 1 * S);
+    CHECK("lead clamp: lead-clamp names audio-2 alone at degraded entry, its lead 12-13 s under the reference mapping",
+          only_a2 && first >= deg_at && first <= deg_at + 100 * MS);
     CHECK("lead clamp: told again every 30 s while it holds (part 10's 60 s alarm)",
           told && clamps.size() == (size_t)(1 + (c.dg.back().arrival - first) / (30 * S)));
     // After its overlap (what left at 13 s ahead before the clamp): at its earliest arrival.
@@ -2030,21 +2116,28 @@ void test_lead_clamp() {
     std::printf("  lead clamp: from 15 s after it, audio-2 lead %.3f..%.3f ms, video %.3f..%.3f ms\n",
                 r.lo_after.at(PID_A2) / 1e6, r.hi_after.at(PID_A2) / 1e6, r.lo_after.at(PID_V) / 1e6,
                 r.hi_after.at(PID_V) / 1e6);
+    // A fall is slewed: the reference PID's lead keeps up to `fall` of it for a while.
     CHECK("lead clamp: audio-2 then lands at its earliest arrival (lead -40..+1 ms), the reference PID as before",
-          r.lo_after.at(PID_A2) >= -40 * MS && r.hi_after.at(PID_A2) <= 1 * MS && r.hi_after.at(PID_V) <= 121 * MS);
+          r.lo_after.at(PID_A2) >= -40 * MS && r.hi_after.at(PID_A2) <= 1 * MS &&
+              r.hi_after.at(PID_V) <= 121 * MS + fall);
     // Drops: the degraded entry's, one run per PID (test_degraded), audio-2's the 13 s it had
-    // left ahead before the clamp; none once it holds.
+    // left ahead before the clamp; none once it holds. After a fall the slew moves what lies
+    // 12.6 s ahead by up to 25 ms (2,000 ppm) at the next close: one audio-2 PES before degraded.
     std::map<int, int> runs;
     int64_t a2_dropped = 0;
     bool late_run = false;
     for (const Ev& e : a.events) {
         if (e.kind != Ev::Kind::overlap) continue;
+        if (fall && e.pid == PID_A2 && e.house_ns < deg_at && e.dropped_ns <= kA2.period) continue;
         runs[e.pid]++;
         if (e.pid == PID_A2) a2_dropped = e.dropped_ns;
         late_run |= e.house_ns > first + 15 * S;
     }
-    CHECK("lead clamp: one overlap run per PID, audio-2's about its lead, none once the clamp holds",
-          one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && a2_dropped > 12 * S && a2_dropped < 14 * S && !late_run);
+    bool no_backlog = true;
+    for (const Ev& e : a.events) no_backlog &= std::strcmp(e.reason, "backlog") != 0;
+    CHECK("lead clamp: one overlap run per PID, audio-2's about its lead, none once the clamp holds, none a backlog's",
+          one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && a2_dropped > 12 * S && a2_dropped < 14 * S && !late_run &&
+              no_backlog && a.gaps.empty());
     CHECK("lead clamp: content keeps flowing, monotonic, CC continuous, whole PES",
           monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched);
 }
@@ -2602,7 +2695,11 @@ int main() {
     test_backlog("fresh, 30 s queued, drained in 1 s", 0, 30 * S, 1 * S);
     test_backlog("fresh, 90 s queued, drained in 5 s", 0, 90 * S, 5 * S);
     test_backlog("30 s queued after 30 s live, drained in 1 s", 30 * S, 30 * S, 1 * S);
-    test_lead_clamp();
+    test_backlog_relock("2 s queued after 30 s live, drained in 1 s", 30 * S, 2 * S, 1 * S);
+    test_backlog_relock("3.7 s queued after 30 s live, drained in 1 s", 30 * S, 3700 * MS, 1 * S);
+    test_backlog_relock("0.6 s queued after 30 s live, drained in 0.5 s", 30 * S, 600 * MS, 500 * MS);
+    test_lead_clamp("audio-2 12.6 s ahead (#820)", 0);
+    test_lead_clamp("audio-2 12.6 s ahead, the floor 80 ms lower from 3 s", 80 * MS);
     test_flush();
     test_duplicates();
     test_two_programs();

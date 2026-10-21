@@ -29,7 +29,7 @@ struct Row {
 const std::vector<Row>& table() {
     static const std::vector<Row> rows = {
         {"mpegts-core", "mrtshouse", "libgstmrtshouse.so", true, MRTSHOUSE_MIN_ABI,
-         {{"mrtsrestamp", "identity"}, {"mrtsdemux", nullptr}}},
+         {{"mrtsrestamp", "identity"}, {"mrasrc", "audioresample"}, {"mrtsdemux", nullptr}}},
     };
     return rows;
 }

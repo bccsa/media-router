@@ -130,8 +130,9 @@ checkout, never from `/opt`.
   `GST_PLUGIN_PATH`: the plugins tree first, then
   `/usr/libexec/media-router/mpegts-core/`. Without `libgstmrtshouse.so`, or
   with one below the runner's ABI, a module starts with `identity` in the
-  restamp's place and the alarm "Native TS module not loaded" (the PCM
-  captures, whose `mrasrc` has no stand-in yet, fail to start); without
+  restamp's place, `audioresample` in `mrasrc`'s (the PCM captures run
+  unlocked at their device's nominal rate), and the alarm "Native TS module
+  not loaded"; without
   `libgstmrtsstamp.so` the Python runner falls back to its probe (frozen,
   until Phase 2).
 - **`libmrts.a`** is linked by `mrtsstamp`, `mrlateness`, `mrpeshouse` and

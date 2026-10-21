@@ -22,7 +22,7 @@ ALARM = ("Native TS module not loaded: this stream carries no house time on the 
 PLUGINS = [
     {"plugin": "mpegts-core", "tool": "mrtshouse", "file": "libgstmrtshouse.so",
      "required": True, "min_abi": MRTSHOUSE_MIN_ABI,
-     "factories": {"mrtsrestamp": "identity", "mrtsdemux": None}},
+     "factories": {"mrtsrestamp": "identity", "mrasrc": "audioresample", "mrtsdemux": None}},
 ]
 
 _outcomes = []     # per row: {"version", "abi", "path"} or {"detail"}; empty until load()

@@ -848,16 +848,9 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
             }
         }
     }
-    // A backlog's (B-39): while the live line lies further above its floor than any source
-    // lead, what it maps is stale, until two buckets agree on the floor and the line moves;
-    // and while it lies visibly above it, so is a PES it would put that far ahead (the PCR
-    // evidence lags a fast drain by up to a PCR interval).
-    if (pick->live) {
-        const int64_t gap = lock_of(pick->src).floor_gap_ns();
-        if (gap > lim || (gap > pcr_.config().step_ns && sat_sub(house_in(*pick, sigma), h) > lim)) {
-            m.stale = true;
-            return m;
-        }
+    if (pick->live && stale(lock_of(pick->src), house_in(*pick, sigma), h)) {
+        m.stale = true;
+        return m;
     }
     m.house_ns = house_in(*pick, sigma);
     m.epoch = pick->id;
@@ -865,6 +858,14 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     if (clamping) clamp(pid, sigma, h, m);
     if (m.valid) keep();
     return m;
+}
+
+// B-39: what the live line maps is stale while it lies further above its floor than any source
+// lead, or visibly above it with the PES that far ahead by the floor's doing (the PCR evidence
+// lags a fast drain by up to a PCR interval); a PID ahead past that is the source's (B-8).
+bool VirtualStc::stale(const ClockLock& lock, int64_t house, int64_t h) const {
+    const int64_t gap = lock.floor_gap_ns(), lim = val_.config().lead_max_ns, lead = sat_sub(house, h);
+    return gap > lim || (gap > lock.config().step_ns && lead > lim && sat_sub(lead, gap) <= lim);
 }
 
 // B-8 (part 4.3): degraded, a PID further ahead of arrival than lead_clamp_ns under the
@@ -902,8 +903,7 @@ void VirtualStc::clamp(int pid, int64_t sigma, int64_t h, Mapping& m) {
         c.lock.feed(sigma, h);
         c.epoch = next_epoch_++;
     }
-    const int64_t gap = c.lock.floor_gap_ns(), lim = val_.config().lead_max_ns;
-    if (gap > lim || (gap > c.lock.config().step_ns && sat_sub(c.lock.house_of(sigma), h) > lim)) {
+    if (stale(c.lock, c.lock.house_of(sigma), h)) {
         m = Mapping();
         m.house_ns = h;
         m.stale = true;

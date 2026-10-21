@@ -422,11 +422,12 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
         // PTS - PCR on the bus is the source's lead.
         out27 = floor_mod(ns_to_pcr27(out_ns) + MUX_CLOCK_BASE_90K * 300, PCR_MODULO);
     }
-    // A PCR that steps (a shift change, mapped <-> regenerated, a jump of 1 s or more as
-    // after an outage) or follows a gap of 1 s is flagged for Phases 1-2's tsdemux.
+    // A PCR that steps (a shift change, mapped <-> regenerated, back as the line moves onto a
+    // backlog's floor or a straddler's epoch, a jump of 1 s or more as after an outage) or
+    // follows a gap of 1 s is flagged for Phases 1-2's tsdemux.
     int64_t step = floor_mod(out27 - g.wpcr27, PCR_MODULO);
     if (step > PCR_MODULO / 2) step -= PCR_MODULO;
-    if (g.have_wpcr && (g.flag_pcr || regen != g.wpcr_regen || pcr27_to_ns(step) >= GAP_FLAG_NS))
+    if (g.have_wpcr && (g.flag_pcr || regen != g.wpcr_regen || step < 0 || pcr27_to_ns(step) >= GAP_FLAG_NS))
         set_discontinuity_indicator(v);
     g.flag_pcr = false;
     write_pcr(v, out27);

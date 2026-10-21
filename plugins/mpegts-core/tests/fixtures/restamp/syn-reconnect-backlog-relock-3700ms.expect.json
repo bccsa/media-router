@@ -1,0 +1,22 @@
+{
+  "source": "fixture_gen --trace --backlog 60:3700:1000 --duration 150 --seed 33",
+  "note": "As syn-reconnect-backlog-relock-2s with 3.7 s queued (the second Phase 1 review, D2: a network loss of about 7-10 s behind a queuing caller): the seed lies 3.7 s above the floor, the source lead puts some PES past 4 s, and those are stale (the floor explains their lead) and dropped with the run (reason backlog). The line moves onto the floor at 66 s, one run per PID at 68 s (about 3.7 s), never degraded. Before: the line stayed, the lead row degraded the program 6.5 s after the reconnect, 30 s were dropped in all and a recovery relock followed 30 s later.",
+  "relocks": 1,
+  "relockReasons": ["leap"],
+  "epochs": 2,
+  "degraded": 0,
+  "leadClamps": 0,
+  "gaps": 3,
+  "gapsPerPid": 1,
+  "gapMs": [3650, 3750],
+  "overlaps": 6,
+  "events": [{"kind": "relock", "reason": "leap", "atS": [63.6, 63.9]}, {"kind": "overlap", "reason": "backlog", "atS": [67.5, 68.5]}, {"kind": "overlap", "reason": "backlog", "atS": [67.5, 68.5]}, {"kind": "overlap", "reason": "backlog", "atS": [67.5, 68.5]}],
+  "droppedMs": [13500, 15000],
+  "leadMaxMs": 4150,
+  "lockedWithinS": 40,
+  "residualMinMs": -1,
+  "mappingPpmMax": 21,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

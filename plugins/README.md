@@ -2288,8 +2288,9 @@ scheduled it (arrival plus the source's PTS − PCR lead, "source-natural"),
 so its lateness reads negative by that lead; a capture's PES carry capture
 time, so its lateness is its capture and encode latency. The PCR is
 rewritten onto house time too, keeping the source's lead, with
-`discontinuity_indicator` on the first PCR after a gap of 1 s or more, so
-the consumers of the day (`tsdemux` in PCR mode) keep working. Rules:
+`discontinuity_indicator` on the first PCR after a gap of 1 s or more and
+on any PCR that steps back, so the consumers of the day (`tsdemux` in PCR
+mode) keep working. Rules:
 
 - **No second rewrite.** Nothing re-stamps between the restamp and the bus
   sink, and a bus-fed producer (transcoder, muxer) does not restamp at all:
@@ -2303,13 +2304,13 @@ the consumers of the day (`tsdemux` in PCR mode) keep working. Rules:
 Both live in mpegts-core's one house-clock plugin, which both runners load
 by path before any pipeline is parsed, with an ABI check (ADR-0029, "The
 shared TS module"). When a runner cannot use it (missing, or its ABI below
-the runner's), it puts `identity name=restamp` where `mrtsrestamp` was,
-answers `set_property` on it with a warning, and the module carries "Native
-TS module not loaded: this stream carries no house time on the bus;
-consumers will mis-time it until the deploy is fixed." until a start loads
-the plugin; the stream then runs on source time. `mrasrc` has no stand-in
-yet, so a capture naming it fails to parse without the plugin (open,
-ADR-0029 Phase 1).
+the runner's), it puts `identity` where `mrtsrestamp` was and
+`audioresample` where `mrasrc` was, each with its `name=`, answers
+`set_property` on them with a warning, and the module carries "Native TS
+module not loaded: this stream carries no house time on the bus; consumers
+will mis-time it until the deploy is fixed." until a start loads the
+plugin; the stream then runs on source time (a capture at its device's
+nominal rate, unlocked).
 
 **`mrtsrestamp`** is `mrts::RestampCore` as a plain `GstElement` with `chain`
 and `chain_list`; a buffer list leaves as one list. It rewrites PES PTS/DTS
@@ -2321,7 +2322,8 @@ caller that queued while its listener was away (SRT) sends that backlog at
 once on its return: the PES its lock would put more than 4 s ahead of
 their arrival are stale and dropped as overlap (reason `backlog`) until the
 lock has found the floor, so a reconnect plays at most 4 s of the backlog,
-then the live content (ADR-0029 Phase 1).
+then the live content; a shorter backlog plays, and the guard then drops as
+much of the live content once (ADR-0029 Phase 1).
 
 | Property | Meaning |
 |---|---|

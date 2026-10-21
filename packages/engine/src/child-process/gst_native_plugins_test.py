@@ -403,6 +403,11 @@ def unit_cases(check):
                     re.findall(r'\{"([\w-]+)", (?:"([\w-]+)"|nullptr)\}', source)}
     check(f"the element tables are twins (python {TABLE}, native {native_table})",
           native_table == TABLE)
+    # Every element the plugin registers has a row, so a module naming it starts on rule 6 (B-23).
+    with open(os.path.join(_HOUSE, "gstmrtshouse.cpp"), encoding="utf-8") as fh:
+        registered = re.findall(r'\{"([\w-]+)", gst_\w+_get_type\}', fh.read())
+    check(f"every element of the plugin has a row in the table ({registered})",
+          registered and set(registered) <= set(TABLE))
 
 
 if __name__ == "__main__":
