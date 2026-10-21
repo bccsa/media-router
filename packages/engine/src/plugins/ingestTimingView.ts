@@ -38,6 +38,7 @@ const REASONS = new Map([
     ['envelope-step', 'network delay step'],
     ['external', 'PCR PID changed'],
     ['ref-change', 'reference PID changed'],
+    ['backlog', 'reconnect backlog'],
 ]);
 const reasonText = (code: string): string => REASONS.get(code) ?? code;
 

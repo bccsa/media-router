@@ -11,6 +11,7 @@ namespace mrts {
 
 // The STC's constants (part 4.3) with part 4.5's 50 ms re-lock step, two-sided: a fall
 // of the capture latency (a PipeWire quantum change) makes labels late, as a rise early.
+// No backlog rule: a capture's PTS is its capture time.
 ClockLockConfig asrc_lock_config();
 
 struct AsrcServoConfig {

@@ -1,0 +1,21 @@
+{
+  "source": "fixture_gen --trace --backlog 0:90000:5000 --duration 210 --seed 32",
+  "note": "As syn-reconnect-backlog-30s, the .111 case of chapter 15.4 B-39: 90 s of backlog draining over 5 s, so five bucket pairs disagree before two agree on the floor at 7 s. Before the fix the first two buckets disagreed, the line stayed on the seed (96 s early, degraded on the lead row) and every PES after the recovery was dropped. Now: what would leave more than 4 s ahead is stale; the line moves at 7 s; the live content resumes on the floor at once, past a hole of 3.2-3.4 s per PID that a gap marker (reason backlog) signals, with one overlap run per PID (about 93 s, of it 2.0 s of live content).",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "leadClamps": 0,
+  "gaps": 3,
+  "gapsPerPid": 1,
+  "gapMs": [2500, 4000],
+  "overlaps": 3,
+  "events": [{"kind": "gap", "reason": "backlog", "atS": [6.5, 8]}, {"kind": "overlap", "reason": "backlog", "atS": [6.5, 8]}, {"kind": "gap", "reason": "backlog", "atS": [6.5, 8]}, {"kind": "overlap", "reason": "backlog", "atS": [6.5, 8]}, {"kind": "gap", "reason": "backlog", "atS": [6.5, 8]}, {"kind": "overlap", "reason": "backlog", "atS": [6.5, 8]}],
+  "droppedMs": [277000, 282000],
+  "leadMaxMs": 4150,
+  "lockedWithinS": 55,
+  "residualMinMs": -1,
+  "mappingPpmMax": 20,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

@@ -34,6 +34,7 @@ ClockLockConfig asrc_lock_config() {
     ClockLockConfig c;
     c.step_ns = 50000000;
     c.step_falls = true;
+    c.backlog_ns = 0;   // a capture's PTS is its capture time: a fall is an envelope step
     return c;
 }
 

@@ -59,7 +59,7 @@ class RestampCore {
     struct Gap {
         int program, pid;
         int64_t start_ns, end_ns;         // end_ns: the marker's PTS
-        const char* reason;               // "epoch", "edit", "outage", "jump"
+        const char* reason;               // "epoch", "edit", "outage", "jump", "backlog"
         // Output bytes before the marker: it goes right before the PES that shows the
         // gap, which may follow that PID's earlier PES in the same buffer.
         size_t at;
@@ -74,9 +74,10 @@ class RestampCore {
         size_t bytes() const;
     };
     // Part 10's mrtsrestamp-event. STC events carry pid -1 (the program), but for
-    // `degraded`, which names the reference PID whose PTS the timing then follows.
+    // `degraded`, which names the reference PID whose PTS the timing then follows, and
+    // `lead_clamp`, the PID clamped (value_ns: its lead under the reference mapping).
     struct Event {
-        enum class Kind { relock, degraded, recovered, envelope_step, gap, overlap, psi_change };
+        enum class Kind { relock, degraded, recovered, envelope_step, gap, overlap, psi_change, lead_clamp };
         Kind kind = Kind::relock;
         int program = -1;
         int pid = -1;
@@ -154,6 +155,7 @@ class RestampCore {
         int64_t last_src = 0;
         uint32_t max_epoch = 0, last_epoch = 0;   // the newest it emitted under; the last PES's
         bool outage = false;              // an outage since its last PES
+        bool backlog = false;             // stale PES dropped since its last (B-39)
         // Packets: the open PES's fate, CC renumbering, duplicates, a held header.
         Unit unit = Unit::none;
         uint8_t cc_delta = 0;             // CC steps removed so far, mod 16

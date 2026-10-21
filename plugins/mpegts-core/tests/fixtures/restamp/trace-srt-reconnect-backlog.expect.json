@@ -1,0 +1,18 @@
+{
+  "note": "A real SRT reconnect backlog (chapter 15.4 B-39, B-45), recorded on 10.9.16.111 (Pi 4) 2026-10-16 16:16:15Z by a standalone srtsrc listener (keep-listening, latency 500) into mrtsrestamp trace-location, the Phase 1 build with B-45: the dev box's paced gst srtsink caller (sync=true; AAC 300 kbit/s, one frame per PES, the PCR on the AAC PID) kept sending while the listener was away 90 s, and sent its 85.5 s backlog within 0.59 s when the listener came back; the trace starts there and runs 150 s. As replayed: never degraded, no relock; the first epoch moves onto the floor once two buckets agree, the stale backlog and what overlapped goes as one overlap run (backlog, 85.5 s) at 3.3 s, no PES more than 4 s ahead (3.99 s max), locked at 38 s. At 35 s the SRT receiver's delivery floor steps +2.85 ms (its time-base drift correction), which the rate fit, inside one floor level, reads as 43-71 ppm, decaying with tau (21.5 ppm at 150 s; chapter 15.4 B-46). The bounds keep today's results as the ceiling.",
+  "relocks": 0,
+  "degraded": 0,
+  "leadClamps": 0,
+  "gaps": 0,
+  "overlaps": 1,
+  "events": [{"kind": "overlap", "reason": "backlog", "atS": [3, 4]}],
+  "droppedMs": [85000, 86000],
+  "leadMaxMs": 4050,
+  "lockedWithinS": 40,
+  "residualMinMs": -2,
+  "mappingPpmMax": 21,
+  "ppm": [-1, 80],
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

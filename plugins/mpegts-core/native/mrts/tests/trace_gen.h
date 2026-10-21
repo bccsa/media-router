@@ -41,6 +41,11 @@ struct Late {
     int pid;
     int64_t from_ns, to_ns, by_ns;        // PES of these slots sent by_ns late, stamps kept
 };
+// A caller that queues while its listener is away (B-39): what it sends from at_ns waits
+// len_ns, then the queue drains, everything sent until then arriving over drain_ns in order.
+struct Backlog {
+    int64_t at_ns, len_ns, drain_ns;
+};
 
 struct Config {
     uint64_t seed = 1;
@@ -56,6 +61,8 @@ struct Config {
     std::vector<Jump> jumps;
     std::vector<Outage> outages;
     std::vector<Late> late;
+    std::vector<Backlog> backlogs;
+    std::vector<std::pair<int, int64_t>> ahead;   // (PID, ns): its PES stamped that far ahead (#820)
 };
 
 // H.264 IPBB carrying the PCR, MPEG-1 audio, AAC, a teletext-like private stream.
@@ -257,7 +264,10 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
                 const int64_t disp = k == 0 ? 0 : (k - 1) % 3 == 0 ? k + 2 : k - 1;
                 reorder = (disp - k + 1) * e->period_90k;
             }
-            const int64_t dts = sigma0 + jump90(slot) + slot90 + e->lead_90k;
+            int64_t ahead90 = 0;
+            for (const auto& a : c.ahead)
+                if (a.first == e->pid) ahead90 += mrts::ns_to_pts90k(a.second);
+            const int64_t dts = sigma0 + jump90(slot) + slot90 + e->lead_90k + ahead90;
             Ev p{send, 1 + (int)(e - table), TraceRecord()};
             p.r.kind = TraceKind::pes;
             p.r.pid = (uint16_t)e->pid;
@@ -271,6 +281,16 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
         return a.send != b.send ? a.send < b.send : a.order < b.order;
     });
 
+    // A queued send leaves when its place in the drain comes: linear from the queue's end.
+    auto due = [&](int64_t t) {
+        for (const Backlog& b : c.backlogs) {
+            const int64_t span = b.len_ns + b.drain_ns;
+            if (t >= b.at_ns && t - b.at_ns < span)
+                return b.at_ns + b.len_ns + (int64_t)((__int128)(t - b.at_ns) * b.drain_ns / span);
+        }
+        return t;
+    };
+
     // Arrivals: one delay per send (one datagram), never before the previous (FIFO).
     Lcg g(c.seed);
     std::vector<TraceRecord> out;
@@ -281,7 +301,8 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
         if (e.send != last_send || !any) {
             const int64_t jitter =
                 std::min<int64_t>(10 * c.jitter_mean_ns, (c.jitter_mean_ns * neg_ln_q24(g.next())) >> 24);
-            arrival = house(e.send) + c.delay_ns.at(e.send) + jitter;
+            const int64_t leave = due(e.send);
+            arrival = house(leave) + c.delay_ns.at(leave) + jitter;
             if (any && arrival < last) arrival = last;
             if (any && arrival - last >= mrts::RestampCore::OUTAGE_NS) {
                 TraceRecord o;

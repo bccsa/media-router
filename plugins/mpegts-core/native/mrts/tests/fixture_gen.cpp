@@ -34,6 +34,10 @@ const char kUsage[] =
     "                        di: the first PCR after it flagged (repeatable)\n"
     "  --outage S:MS         nothing sent from S for MS, the source clock running on\n"
     "  --late ES:S0:S1:MS    that ES's PES with slots in [S0, S1) sent MS late, stamps kept\n"
+    "  --backlog S:MS:MS     what is sent from S queues for the first MS (nothing arrives),\n"
+    "                        then drains: all sent until then arrives over the second MS,\n"
+    "                        in order (a caller that queues; S 0: the trace starts on it)\n"
+    "  --ahead ES:MS         that ES's PES stamped MS ahead of the others (#820)\n"
     "  --wrap-at S           the PCR's 33-bit base wraps S seconds in\n"
     "  --house0 S            house time of the first send (1000)\n"
     "  --sigma0 S            source time of the first send (7200; --wrap-at replaces it)\n"
@@ -161,6 +165,18 @@ int main(int argc, char** argv) {
                  millis(f[3], &l.by_ns) && l.by_ns >= 0;
             if (e) l.pid = e->pid;
             c.late.push_back(l);
+        } else if (a == "--ahead") {
+            const std::vector<std::string> f = split(v, ':');
+            const trace_gen::Es* e = f.empty() ? nullptr : trace_gen::es_by_name(f[0]);
+            int64_t ns = 0;
+            ok = f.size() == 2 && e && millis(f[1], &ns);
+            if (ok) c.ahead.push_back({e->pid, ns});
+        } else if (a == "--backlog") {
+            const std::vector<std::string> f = split(v, ':');
+            trace_gen::Backlog b{0, 0, 0};
+            ok = f.size() == 3 && seconds(f[0], &b.at_ns) && millis(f[1], &b.len_ns) && millis(f[2], &b.drain_ns) &&
+                 b.at_ns >= 0 && b.len_ns > 0 && b.drain_ns >= 0;
+            c.backlogs.push_back(b);
         } else if (a == "--wrap-at") {
             ok = seconds(v, &c.wrap_at_ns) && c.wrap_at_ns >= 0;
         } else if (a == "--house0") {

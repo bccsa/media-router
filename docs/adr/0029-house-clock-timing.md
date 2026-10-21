@@ -615,7 +615,31 @@ rows B-1 to B-38) holds the same records with their work items.
   already left on the first sample overlaps and the guard drops it, once.
   Why: a transport's start burst seeds the epoch far above the floor, which
   the acquire slew cannot remove (70 ms before the lock) and the track slew
-  takes hours for (below).
+  takes hours for (below). Refined 2026-10-16 (plan chapter 15.4 B-45): while
+  the bucket minima keep falling by more than `step_ns` (a caller's backlog
+  draining), the first epoch tests again at every close until a pair agrees
+  or rises (a dip passed: nothing moves); and in any epoch and phase two
+  buckets agreeing on a floor more than `backlog_ns` (4 s) below the line
+  move it, which is how a reconnect into a running keep-listening listener,
+  a relock seeded on the backlog's oldest sample, gets its floor. `mrasrc`
+  has the second rule off: its PTS is the capture time.
+- **A caller's backlog is stale** (B-39, B-45). While the live line lies
+  more than `lead_max_ns` above the floor its open and last closed bucket
+  show, or more than `step_ns` above it and would put the PES more than
+  `lead_max_ns` ahead, what it maps is stale: the PES is dropped and
+  counted as overlap (its run's event says `backlog`), its lead stays out of
+  the lead row, so a drain never degrades the program, and the written PCR
+  follows arrival less 250 ms, never back, flagged at both switches (a
+  frozen PCR would read as a freeze one hop on). The first PES of a PID that
+  shows a hole after the run carries a gap marker, reason `backlog`. So a
+  reconnect plays at most 4 s of the backlog (3.5–3.8 s on the traces) and
+  loses 2–3 s of the live content (the two buckets the line waits for after
+  the drain), where the build before it degraded on the lead row and then
+  dropped up to the whole backlog of live content (30 s on .103, 86 s on
+  .111). The floor gap judges the line, not a PID's lead, so a source far
+  ahead under a good line still reaches the lead row and the clamp below. A
+  backlog under 4 s is not stale: the line moves and the guard drops its
+  length of live content once, as at a start burst.
 - **The rate fit runs on one floor level.** A bucket more than `step_ns` off
   the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
@@ -671,10 +695,17 @@ rows B-1 to B-38) holds the same records with their work items.
   by up to 1 s to a video or audio PID with a PES in the last 500 ms, minus
   250 ms, never back among regenerated values. Return needs 30 s of PCR that
   passes every row; a new PCR epoch then opens with a `recovered` event.
-- **Not built: the per-PID lead clamp** of plan part 4.3 (a PID past 4 s
-  under the degraded mapping gets its own envelope and a `lead-clamp`
-  event). Until `RestampCore` has it, the card's "Source lead above 4 s"
-  warning cannot fire (B-8).
+- **The per-PID lead clamp** (plan part 4.3; B-8, built 2026-10-16, B-45).
+  Degraded, a PID other than the reference whose lead under the reference
+  mapping passes `lead_clamp_ns` (4 s, under the 5 s bus ingress queue)
+  leaves on a `ClockLock` of its own: its earliest arrival, lead 0. Its
+  leaps and envelope steps relock it as the reference lock's do, and it has
+  an epoch id of its own, so the guard and the gap see the switch. What it
+  had left ahead before the program degraded overlaps and goes as one run.
+  `lead-clamp` (`pid`, `value-ns` its lead) is posted at once and every
+  30 s while the clamp holds, so the card's 60 s "Source lead above 4 s on
+  PID 0x… — clamped" warning lasts as long as it; the clamp holds until the
+  program recovers.
 
 ### The constants, tuned by replay (WI-P1-6, 2026-10-16)
 
@@ -795,7 +826,25 @@ rows B-1 to B-38) holds the same records with their work items.
 - **Determinism checksums moved** with τ and the start rule's test: `ts_stc`
   85f5a95a7a801a1f → d0ec660233eef7cd, `asrc_servo` 65ba266b108a634c →
   432e8439f253974f (the degraded scenario 6efe69276bb82fa9 → d20527d208b11b30;
-  the straddle scenario unchanged).
+  the straddle scenario unchanged). The backlog rules and the clamp (B-45)
+  leave every one of those scenarios bit-identical (`ts_stc` still
+  d0ec660233eef7cd without the new cases); with the backlog and clamp cases
+  folded in, `ts_stc` cf41dd134b4fbac4; `asrc_servo` unchanged.
+- **The backlog traces** (B-45, with the shipped set): `syn-reconnect-backlog-30s`
+  (30 s queued, drained in 1 s): never degraded, one overlap run per PID at
+  3.5–3.7 s, no PES more than 4 s ahead; `-90s` (5 s drain): the line moves
+  at 7 s, a gap marker of 3.2–3.4 s per PID, then live; `-relock` (the
+  queue after 60 s live): one relock (leap), a gap of the outage per PID,
+  then as the 30 s case; `-3s` (2 s drain): the first epoch moves at 4 s
+  and the guard drops about 3 s per PID once. `syn-lead-clamp` (the AAC PID
+  12.6 s ahead): degraded (lead) at 5 s, `lead-clamp` on it at once and
+  every 30 s. `trace-srt-reconnect-backlog` (a real 85.5 s backlog on .111,
+  drained in 0.59 s): one overlap (backlog), never degraded, locked at
+  38 s. The grid re-run on the 63 traces with these six: the same 36 of 243
+  points pass C0–C4 as before, and the shipped point passes every
+  expectation file. On .103 and .111 a queuing caller's reconnect (the
+  listener away 30 s and 90 s, or the network 30 s) played at most 3.3 s of
+  its backlog and was back at the source lead within 4–6 s.
 
 ### Discontinuities, overlap and live edits (plan part 4.4)
 
@@ -1066,7 +1115,14 @@ design's §5.2 keeps the general rule.
   same wiring (S0 Budget above: +0.04 core per 28.6 Mbit/s ingest on a
   Pi 4), so V-P1-10 fails as written until the per-buffer cost is cut or
   the criterion is changed.
-- The degraded-mode lead clamp and its `lead-clamp` event (B-8).
+- A reconnect backlog under 4 s is not stale: once the line moves onto the
+  floor, the guard drops that much of the live content once (B-45, as at a
+  start burst, B-37). `trace-820-vmix-pcr` (OQ-3) still has to show the
+  clamp on a real vMix feed; `syn-lead-clamp` stands in.
+- A floor step under `step_ns` inside the first fit window bends ε: the
+  SRT receiver's +2.85 ms time-base correction 35 s after a reconnect read
+  as 43–71 ppm (186 ppm on .111's own run), decaying with τ (plan chapter
+  15.4 B-46). A fit that tolerates one level shift would remove it.
 - `mrasrc` has no row in either runner's stand-in table, so without the
   plugin the three PCM captures fail to parse instead of starting with the
   rule-6 alarm. Recommended stand-in: `audioresample`, which keeps the

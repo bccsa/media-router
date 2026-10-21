@@ -28,6 +28,9 @@ struct ClockLockConfig {
     int64_t step_ns = 20000000;                // envelope step: the minimum delay rose this much
     int64_t step_hold_ns = 10000000000LL;      // ... for this long
     bool step_falls = false;                   // ... or fell this much (mrasrc: two-sided)
+    // Two buckets agreeing on a floor this far below the line: a drained backlog, moved onto
+    // in any epoch and phase (B-39). 0: off (mrasrc, whose PTS is the capture time).
+    int64_t backlog_ns = 4000000000LL;
     int64_t lost_ns = 5000000000LL;            // no sample this long: phase lost
     int64_t residual_window_ns = 2000000000;   // residual stats window (stats-interval-ms)
 };
@@ -81,8 +84,12 @@ class ClockLock {
     // labelled on its floor is late by any fall.
     bool envelope_step() const { return step_fired_; }
     int64_t step_size_ns() const { return step_size_; }
-    // New epoch from the next sample; ε stays as the starting guess with keep_rate.
-    // Only the first epoch moves onto its first two buckets' floor (seed_floor).
+    // How far the line lies above the floor its open and last closed buckets show; delay is
+    // one-sided, so one early sample proves it. 0 when the line is on or under it.
+    int64_t floor_gap_ns() const;
+    // New epoch from the next sample; ε stays as the starting guess with keep_rate. Only
+    // the first epoch moves onto the floor of its first two agreeing buckets (seed_floor);
+    // any epoch moves onto a backlog's (backlog_ns).
     void relock(bool keep_rate);
     // After a step: the mapping onto the floor the step's buckets measured, at once,
     // keeping ε and the phase (mrasrc). A program's STC never steps; it relocks.
@@ -93,13 +100,15 @@ class ClockLock {
     // The rate fit runs on one floor level: a bucket off it by more than step_ns is a
     // candidate level, which replaces the fit's after step_hold_ns or is left out.
     enum class Level : uint8_t { fit, candidate, out };
+    // The last two buckets' minima: within step_ns, or the newer that far above or below.
+    enum class Pair : uint8_t { agree, rise, fall };
     struct Point {
         int64_t sigma, house;
         Level level;
         int64_t eps = 0;   // the rate in force when it closed: what judges against it
     };
     void close_bucket(int64_t sigma_now, int64_t house_now);
-    void seed_floor();
+    Pair seed_floor(int64_t below);
     void classify(int64_t house_now);
     bool fit(int64_t* ppb, int* n) const;
     int64_t eps_ppb() const;
@@ -107,7 +116,7 @@ class ClockLock {
     ClockLockConfig cfg_;
     bool started_ = false;
     bool fresh_ = true;               // no relock yet: the epoch the pipeline started with
-    int closed_ = 0;                  // buckets closed in this epoch
+    bool floor_found_ = false;        // its floor decided: two buckets agreed, or a dip passed
     StcLine line_;
     int64_t origin_h_ = 0;            // bucket grid of this epoch
     int64_t bucket_ = 0;              // index of the open bucket
@@ -152,6 +161,9 @@ struct PcrValidatorConfig {
     int64_t lead_median_window_ns = 1000000000;   // the median that must stay out ...
     int64_t lead_hold_ns = 5000000000LL;          // ... this long
     int64_t recover_ns = 30000000000LL;           // clean PCR before leaving degraded
+    // Degraded: a PID further ahead of arrival under the reference mapping gets its own
+    // envelope (lead 0), under the 5 s bus ingress queue (part 4.3, B-8).
+    int64_t lead_clamp_ns = 4000000000LL;
 };
 
 // The PCR checks of §5.3, one row each (part 4.3's table).
@@ -218,12 +230,13 @@ class PcrValidator {
 const char* reason_name(PcrValidator::Reason r);
 
 struct StcEvent {
-    enum class Kind { relock, degraded, recovered, envelope_step, leap };
+    enum class Kind { relock, degraded, recovered, envelope_step, leap, lead_clamp };
     Kind kind;
     const char* reason;   // static: the trigger, or the failing validator row
     int64_t house_ns;     // arrival of the sample that caused it
     uint32_t epoch;       // epoch in force after it
-    int64_t value_ns;     // envelope_step: the step; leap: Δσ - Δh
+    int64_t value_ns;     // envelope_step: the step; leap: Δσ - Δh; lead_clamp: the lead
+    int pid = -1;         // lead_clamp: the PID clamped; else the program
 };
 
 const char* event_name(StcEvent::Kind k);
@@ -237,6 +250,9 @@ class VirtualStc {
         int64_t house_ns = 0;   // the arrival while !valid (no epoch yet)
         uint32_t epoch = 0;
         bool valid = false;
+        // !valid: the live line, seeded on a backlog, lies more than lead_max_ns above its
+        // floor, or visibly above it and would put this PES that far ahead (B-39): stale.
+        bool stale = false;
     };
     struct Stats {
         State state = State::acquiring;
@@ -264,6 +280,8 @@ class VirtualStc {
     static constexpr int64_t RANGE_AFTER_NS = 4000000000LL;
     static constexpr int64_t RANGE_KEEP_NS = 10000000000LL;
     static constexpr int64_t LEAD_WINDOW_NS = 10000000000LL;   // per-PID lead telemetry
+    // A clamp in force tells it again this often, so part 10's 60 s alarm holds with it.
+    static constexpr int64_t LEAD_CLAMP_REPEAT_NS = 30000000000LL;
 
     explicit VirtualStc(const ClockLockConfig& clock = ClockLockConfig(),
                         const PcrValidatorConfig& pcr = PcrValidatorConfig());
@@ -302,9 +320,20 @@ class VirtualStc {
         bool has_before = false;
         int64_t before = 0;                         // median at the last epoch switch
     };
+    // Degraded: a PID past lead_clamp_ns on its own lower envelope, until the program recovers.
+    struct Clamp {
+        explicit Clamp(const ClockLockConfig& c) : lock(c) {}
+        ClockLock lock;
+        uint32_t epoch = 0;       // its own: a timeline of its own for the PID's gap and guard
+        bool have = false;
+        int64_t sigma = 0, h = 0;  // its last PES, for the leap check
+        int64_t lead_ns = 0;      // its lead under the reference mapping when clamped
+        int64_t told_h = 0;       // the last lead_clamp event
+    };
     static constexpr int PCR_KEY = -1;   // map_pcr's lead history: no PID is negative
     const ClockLock& lock_of(Src s) const { return s == Src::pcr ? pcr_ : ref_; }
     Mapping map_sigma(int pid, int64_t sigma, int64_t h, bool lead_row);
+    void clamp(int pid, int64_t sigma, int64_t h, Mapping& m);
     int64_t house_in(const Epoch& e, int64_t sigma) const;
     void freeze_current();
     void open_epoch(Src src, int64_t sigma, int64_t h, bool step = false);
@@ -312,7 +341,7 @@ class VirtualStc {
     void check_failure(int64_t h);
     void enter_degraded(int64_t h);
     void try_recover(int64_t sigma, int64_t h);
-    void emit(StcEvent::Kind k, const char* why, int64_t h, int64_t value);
+    void emit(StcEvent::Kind k, const char* why, int64_t h, int64_t value, int pid = -1);
 
     ClockLock pcr_, ref_;
     PcrValidator val_;
@@ -329,6 +358,7 @@ class VirtualStc {
     std::vector<Epoch> epochs_;
     uint32_t next_epoch_ = 1;
     std::map<int, PidLeads> leads_;
+    std::map<int, Clamp> clamps_;
     std::vector<StcEvent> events_;
     uint64_t relocks_ = 0;
 };

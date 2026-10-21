@@ -101,6 +101,10 @@ struct Gen {
     // The path's floor delay rises by delay_rise from send time delay_from on, linearly
     // over delay_ramp (0: at once): a re-route, or a queue building up.
     int64_t delay_from = -1, delay_rise = 0, delay_ramp = 0;
+    // A caller that queues while its listener is away (B-39): what it sends from backlog_at
+    // waits backlog_len, then drains, all sent until then arriving over backlog_drain.
+    int64_t backlog_at = -1, backlog_len = 0, backlog_drain = 0;
+    int64_t a2_ahead = 0;                 // audio-2 stamped this far ahead of the rest (#820)
 };
 
 struct Pkt {
@@ -250,7 +254,8 @@ Stream generate(const Gen& g) {
                 const int64_t disp = k == 0 ? 0 : (k - 1) % 3 == 0 ? k + 2 : k - 1;
                 reorder = (disp - k + 1) * e->period;
             }
-            const int64_t base = (e->pid == PID_B1 ? stc2(t) : stc(t)) - t;   // this slot's timeline
+            const int64_t base = (e->pid == PID_B1 ? stc2(t) : stc(t)) - t +   // this slot's timeline
+                                 (e->pid == PID_A2 ? g.a2_ahead : 0);
             PesInfo info;
             info.pid = e->pid;
             info.t = t;
@@ -262,6 +267,10 @@ Stream generate(const Gen& g) {
             const int n = e->bytes * (video && k % 12 == 0 ? 6 : 1);
             Bytes payload((size_t)n);
             for (int i = 0; i < n; i++) payload[i] = (uint8_t)(i * 7 + e->pid * 13 + idx * 31 + (i >> 8));
+            // The pattern repeats every 256 PES: these tell the blocks apart, so a long drop
+            // cannot pair an output PES with an input 256 PES away.
+            payload[0] ^= (uint8_t)(idx >> 8);
+            payload[1] ^= (uint8_t)(idx >> 16);
             const Bytes data = pes_bytes(e->sid, info.pts, info.dts, payload);
             const bool pcr_here = video && (g.pcr_move_at < 0 || mux0 < g.pcr_move_at);
             const bool split = e->pid == PID_A2 && g.split_every > 0 && k % g.split_every == g.split_every - 1;
@@ -367,7 +376,11 @@ std::vector<Dg> datagrams(const Stream& st, const Gen& g, int64_t h0, int64_t pp
             const int64_t at = (send - g.delay_from) / US, len = std::max<int64_t>(1, g.delay_ramp / US);
             rise = g.delay_ramp > 0 && at < len ? g.delay_rise * at / len : g.delay_rise;
         }
-        last = std::max(last, h0 + 20 * MS + rise + send + at_ppb(send, ppb) + j);
+        int64_t due = send;               // a queued send leaves at its place in the drain
+        const int64_t span = g.backlog_len + g.backlog_drain;
+        if (g.backlog_at >= 0 && send >= g.backlog_at && send - g.backlog_at < span)
+            due = g.backlog_at + g.backlog_len + (int64_t)((__int128)(send - g.backlog_at) * g.backlog_drain / span);
+        last = std::max(last, h0 + 20 * MS + rise + due + at_ppb(due, ppb) + j);
         out.push_back(Dg{i, n, send, last});
     }
     return out;
@@ -1841,6 +1854,8 @@ void test_degraded() {
           one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && runs_at_entry);
     CHECK("degraded: content keeps flowing, monotonic, CC continuous", monotonic(aa) && aa.cc_lost == 0 &&
                                                                           aa.matched && aa.atomic);
+    CHECK("degraded: no PID past lead_clamp_ns under the reference mapping, so no lead clamp",
+          count_events(a, Ev::Kind::lead_clamp) == 0);
 }
 
 void test_degraded_ref_pid() {
@@ -1860,6 +1875,178 @@ void test_degraded_ref_pid() {
             deg_pid = e.pid;
         }
     CHECK("degraded, PCR-only PCR PID: the event names the first video PID", deg == 1 && deg_pid == PID_V);
+}
+
+// --- B-39: a caller's reconnect backlog; B-8: the degraded lead clamp ------------------
+
+// Per PID over the output: the highest house(PTS) - arrival; the lowest and highest from
+// arrival `settled` on; the source PES sent from `live` on that are missing (their slots'
+// span, ns) and the last such slot.
+struct LeadRun {
+    std::map<int, int64_t> max_lead, lo_after, hi_after, lost_ns, last_lost;
+};
+LeadRun lead_run(const Case& c, const Out& o, const Ana& a, int64_t live, int64_t settled) {
+    LeadRun r;
+    for (const OutPes& p : a.pes) {
+        const int64_t at = o.arrival_of_out[p.at];
+        const int64_t lead = house_from_mux_pts(p.pts, at) - at;
+        r.max_lead[p.pid] = r.max_lead.count(p.pid) ? std::max(r.max_lead[p.pid], lead) : lead;
+        if (at < settled) continue;
+        r.lo_after[p.pid] = r.lo_after.count(p.pid) ? std::min(r.lo_after[p.pid], lead) : lead;
+        r.hi_after[p.pid] = r.hi_after.count(p.pid) ? std::max(r.hi_after[p.pid], lead) : lead;
+    }
+    for (size_t i = 0; i < c.st.pes.size(); i++) {
+        const PesInfo& in = c.st.pes[i];
+        if (in.t < live || a.out_of_pes[i] >= 0) continue;
+        r.lost_ns[in.pid] += period_of(in.pid);
+        r.last_lost[in.pid] = std::max(r.last_lost.count(in.pid) ? r.last_lost[in.pid] : 0, in.t);
+    }
+    return r;
+}
+
+// Every PCR of `pid` that steps back, or forward by 1 s or more, carries discontinuity_indicator.
+bool pcr_steps_flagged(const Ana& a, int pid) {
+    const std::vector<OutPcr>& v = a.pcr.at(pid);
+    for (size_t i = 1; i < v.size(); i++) {
+        const int64_t d = fmod64(v[i].pcr - v[i - 1].pcr, PCR_MODULO);
+        if ((d > PCR_MODULO / 2 || pcr27_to_ns(d) >= 1 * S) && !v[i].di) return false;
+    }
+    return true;
+}
+
+// A caller queues for `len` from `at` (0: the pipeline starts on its backlog) and drains in
+// `drain`. What it queued is stale: at most lead_max_ns of it leaves (on the seed), none of it
+// once the line lies further above its floor, and the line moves onto the floor as two buckets
+// agree; then the live content, on the floor (B-39).
+void test_backlog(const char* label, int64_t at, int64_t len, int64_t drain) {
+    Gen g;
+    const int64_t live = at + len + drain;   // sent from here on: in real time
+    g.secs = live / S + 40;
+    g.backlog_at = at;
+    g.backlog_len = len;
+    g.backlog_drain = drain;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);
+    print_events(label, a, c);
+    const int64_t live_h = model(c, live);
+    const LeadRun r = lead_run(c, a, aa, live, live_h + 5 * S);
+    std::printf("  %s: lead max v/a1/a2/t %.0f/%.0f/%.0f/%.0f ms; live lost %.0f/%.0f/%.0f/%.0f ms; dropped %.1f s\n",
+                label, r.max_lead.at(PID_V) / 1e6, r.max_lead.at(PID_A1) / 1e6, r.max_lead.at(PID_A2) / 1e6,
+                r.max_lead.at(PID_T) / 1e6, r.lost_ns.count(PID_V) ? r.lost_ns.at(PID_V) / 1e6 : 0.0,
+                r.lost_ns.count(PID_A1) ? r.lost_ns.at(PID_A1) / 1e6 : 0.0,
+                r.lost_ns.count(PID_A2) ? r.lost_ns.at(PID_A2) / 1e6 : 0.0,
+                r.lost_ns.count(PID_T) ? r.lost_ns.at(PID_T) / 1e6 : 0.0, a.stats.programs[0].dropped_ns_total / 1e9);
+    const bool fresh = at == 0;
+    CHECK("backlog: never degraded, no lead clamp; no relock, or one (leap) where the queue followed live content",
+          count_events(a, Ev::Kind::degraded) == 0 && count_events(a, Ev::Kind::lead_clamp) == 0 &&
+              count_events(a, Ev::Kind::relock) == (fresh ? 0 : 1) &&
+              (fresh || count_events(a, Ev::Kind::relock, "leap") == 1));
+    if (!fresh) {
+        bool ok = false;
+        const std::map<int, int> n = gap_count(a, "epoch", len, 50 * MS, &ok);
+        int epoch_gaps = 0;
+        for (const RestampCore::Gap& gp : a.gaps) epoch_gaps += !std::strcmp(gp.reason, "epoch");
+        CHECK("backlog after live content: one gap per PID of the outage (50 ms), reason epoch",
+              epoch_gaps == 4 && n.size() == 4 && std::all_of(n.begin(), n.end(), [](const std::pair<const int, int>& kv) {
+                  return kv.second >= 1;
+              }));
+        (void)ok;
+    }
+    bool ahead = true;
+    for (const auto& kv : r.max_lead) ahead &= kv.second <= 4 * S + 750 * MS;
+    CHECK("backlog: no PES leaves further ahead of its arrival than lead_max_ns past its source lead", ahead);
+    bool lost_ok = true, kept_after = true;
+    for (int pid : kPids) {
+        const int64_t lost = r.lost_ns.count(pid) ? r.lost_ns.at(pid) : 0;
+        lost_ok &= lost <= 4500 * MS;
+        kept_after &= !r.last_lost.count(pid) || r.last_lost.at(pid) < live + 4500 * MS;
+    }
+    CHECK("backlog: at most 4.5 s of live content lost per PID, all of it within 4.5 s of the drain's end",
+          lost_ok && kept_after);
+    // A header can ride a datagram up to its last packet's send plus 8 ms of jitter late.
+    bool natural = true;
+    for (const EsDef* e : {&kV, &kA1, &kA2, &kT}) {
+        const int64_t reorder = e->pid == PID_V ? 120 * MS : 0;
+        natural &= r.lo_after.count(e->pid) && r.lo_after.at(e->pid) >= e->lead - 40 * MS &&
+                   r.hi_after.at(e->pid) <= e->lead + reorder + 1 * MS;
+    }
+    CHECK("backlog: 5 s after the drain every PID leaves at its source lead (the floor's mapping)", natural);
+    std::map<int, int> runs;
+    bool reason_ok = true;
+    for (const Ev& e : a.events)
+        if (e.kind == Ev::Kind::overlap) {
+            runs[e.pid]++;
+            reason_ok &= !std::strcmp(e.reason, "backlog");
+        }
+    CHECK("backlog: one overlap run per PID, reason backlog", one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && reason_ok);
+    bool placed = gaps_placed(a, aa);
+    for (const RestampCore::Gap& gp : a.gaps)
+        placed &= !std::strcmp(gp.reason, "backlog") || !std::strcmp(gp.reason, "epoch");
+    CHECK("backlog: any gap it leaves is signalled (reason backlog), right before the PES that shows it", placed);
+    CHECK("backlog: monotonic, CC continuous, whole PES; every PCR step back or of 1 s or more flagged",
+          monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched && pcr_steps_flagged(aa, PID_V));
+}
+
+// #820: audio-2 stamped 12.6 s ahead of the rest. The lead row degrades the program; under
+// the reference mapping (video) audio-2 still runs 12.5 s ahead, so it gets its own envelope
+// and lands at its earliest arrival, with lead-clamp naming it, told again every 30 s (B-8).
+void test_lead_clamp() {
+    Gen g;
+    g.secs = 80;
+    g.a2_ahead = 12600 * MS;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);
+    print_events("audio-2 12.6 s ahead (#820)", a, c);
+    int64_t deg_at = -1;
+    int deg_pid = -2;
+    for (const Ev& e : a.events)
+        if (e.kind == Ev::Kind::degraded) {
+            deg_at = e.house_ns;
+            deg_pid = e.pid;
+        }
+    CHECK("lead clamp: degraded once (lead), timing from the video PID",
+          count_events(a, Ev::Kind::degraded) == 1 && count_events(a, Ev::Kind::degraded, "lead") == 1 &&
+              deg_pid == PID_V && count_events(a, Ev::Kind::recovered) == 0);
+    std::vector<const Ev*> clamps;
+    for (const Ev& e : a.events)
+        if (e.kind == Ev::Kind::lead_clamp) clamps.push_back(&e);
+    bool only_a2 = !clamps.empty(), told = true;
+    for (size_t i = 0; i < clamps.size(); i++) {
+        only_a2 &= clamps[i]->pid == PID_A2 && clamps[i]->value_ns > 12 * S && clamps[i]->value_ns < 13 * S;
+        if (i) told &= clamps[i]->house_ns - clamps[i - 1]->house_ns >= 30 * S &&
+                       clamps[i]->house_ns - clamps[i - 1]->house_ns <= 30 * S + 100 * MS;
+    }
+    const int64_t first = clamps.empty() ? -1 : clamps[0]->house_ns;
+    std::printf("  lead clamp: %zu events, the first %.3f s after degraded, lead %.3f s\n", clamps.size(),
+                (first - deg_at) / 1e9, clamps.empty() ? 0.0 : clamps[0]->value_ns / 1e9);
+    CHECK("lead clamp: lead-clamp names audio-2 alone, its lead 12-13 s under the reference mapping",
+          only_a2 && first >= deg_at && first <= deg_at + 1 * S);
+    CHECK("lead clamp: told again every 30 s while it holds (part 10's 60 s alarm)",
+          told && clamps.size() == (size_t)(1 + (c.dg.back().arrival - first) / (30 * S)));
+    // After its overlap (what left at 13 s ahead before the clamp): at its earliest arrival.
+    const LeadRun r = lead_run(c, a, aa, INT64_MAX, first + 15 * S);
+    std::printf("  lead clamp: from 15 s after it, audio-2 lead %.3f..%.3f ms, video %.3f..%.3f ms\n",
+                r.lo_after.at(PID_A2) / 1e6, r.hi_after.at(PID_A2) / 1e6, r.lo_after.at(PID_V) / 1e6,
+                r.hi_after.at(PID_V) / 1e6);
+    CHECK("lead clamp: audio-2 then lands at its earliest arrival (lead -40..+1 ms), the reference PID as before",
+          r.lo_after.at(PID_A2) >= -40 * MS && r.hi_after.at(PID_A2) <= 1 * MS && r.hi_after.at(PID_V) <= 121 * MS);
+    // Drops: the degraded entry's, one run per PID (test_degraded), audio-2's the 13 s it had
+    // left ahead before the clamp; none once it holds.
+    std::map<int, int> runs;
+    int64_t a2_dropped = 0;
+    bool late_run = false;
+    for (const Ev& e : a.events) {
+        if (e.kind != Ev::Kind::overlap) continue;
+        runs[e.pid]++;
+        if (e.pid == PID_A2) a2_dropped = e.dropped_ns;
+        late_run |= e.house_ns > first + 15 * S;
+    }
+    CHECK("lead clamp: one overlap run per PID, audio-2's about its lead, none once the clamp holds",
+          one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && a2_dropped > 12 * S && a2_dropped < 14 * S && !late_run);
+    CHECK("lead clamp: content keeps flowing, monotonic, CC continuous, whole PES",
+          monotonic(aa) && aa.cc_lost == 0 && aa.atomic && aa.matched);
 }
 
 // The output PES of `pid` in `bytes`: the last one's guard key (DTS for video, else PTS) on
@@ -2412,6 +2599,10 @@ int main() {
     test_outage_gaps();
     test_degraded();
     test_degraded_ref_pid();
+    test_backlog("fresh, 30 s queued, drained in 1 s", 0, 30 * S, 1 * S);
+    test_backlog("fresh, 90 s queued, drained in 5 s", 0, 90 * S, 5 * S);
+    test_backlog("30 s queued after 30 s live, drained in 1 s", 30 * S, 30 * S, 1 * S);
+    test_lead_clamp();
     test_flush();
     test_duplicates();
     test_two_programs();

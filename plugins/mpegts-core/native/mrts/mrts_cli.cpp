@@ -616,6 +616,7 @@ const Knob64 kKnobs64[] = {
     {"slew_track_ppm", &ClockLockConfig::slew_track_ppm, nullptr},
     {"step_ns", &ClockLockConfig::step_ns, nullptr},
     {"step_hold_ns", &ClockLockConfig::step_hold_ns, nullptr},
+    {"backlog_ns", &ClockLockConfig::backlog_ns, nullptr},
     {"lost_ns", &ClockLockConfig::lost_ns, nullptr},
     {"residual_window_ns", &ClockLockConfig::residual_window_ns, nullptr},
     {"pcr_interval_warn_ns", nullptr, &PcrValidatorConfig::pcr_interval_warn_ns},
@@ -631,6 +632,7 @@ const Knob64 kKnobs64[] = {
     {"lead_median_window_ns", nullptr, &PcrValidatorConfig::lead_median_window_ns},
     {"lead_hold_ns", nullptr, &PcrValidatorConfig::lead_hold_ns},
     {"recover_ns", nullptr, &PcrValidatorConfig::recover_ns},
+    {"lead_clamp_ns", nullptr, &PcrValidatorConfig::lead_clamp_ns},
 };
 const KnobInt kKnobsInt[] = {
     {"rate_buckets_min", &ClockLockConfig::rate_buckets_min, nullptr},
@@ -892,7 +894,7 @@ Run replay(const std::vector<TraceRecord>& recs, const ReplayOpts& o) {
 // What one program did over the replay, the facts an expectation file names.
 struct ProgramSum {
     int program = 0;
-    int relocks = 0, degraded = 0, recovered = 0, steps = 0, gaps = 0, overlaps = 0, psi = 0;
+    int relocks = 0, degraded = 0, recovered = 0, steps = 0, gaps = 0, overlaps = 0, psi = 0, clamps = 0;
     std::vector<std::string> reasons;     // relock reasons, in order
     uint32_t epoch = 0;
     int64_t gap_ns = 0, gap_min = 0, gap_max = 0, overlap_ns = 0;
@@ -909,6 +911,7 @@ struct ProgramSum {
     // at bucket closes, so the window reads up to one bucket's travel high (1/30).
     int64_t mapping_ppb_max = 0;
     uint64_t pes_in = 0, pes_out = 0, backward = 0;
+    int64_t lead_max = INT64_MIN;         // the highest house PTS - arrival of a PES kept
     // ε on the last stats line at each convergence mark the trace reaches (the sweep's
     // drift criterion, part 4.3).
     int64_t ppb_at[4] = {0, 0, 0, 0};
@@ -943,6 +946,7 @@ ProgramSum summarize(const Run& run, int program) {
                 s.overlaps++;
                 s.overlap_ns += e.dropped_ns;
                 break;
+            case RestampCore::Event::Kind::lead_clamp: s.clamps++; break;
             default: s.psi++; break;
         }
     }
@@ -991,6 +995,7 @@ ProgramSum summarize(const Run& run, int program) {
         s.pes_in += kv.second.in;
         s.pes_out += kv.second.out;
         s.backward += kv.second.backward;
+        for (const int64_t l : kv.second.leads) s.lead_max = std::max(s.lead_max, l);
     }
     return s;
 }
@@ -999,18 +1004,20 @@ ProgramSum summarize(const Run& run, int program) {
 void print_program(const ProgramSum& s) {
     std::printf("{\"program\":%d,\"relocks\":%d,\"relockReasons\":[", s.program, s.relocks);
     for (size_t k = 0; k < s.reasons.size(); k++) std::printf("%s%s", k ? "," : "", jstr(s.reasons[k]).c_str());
-    std::printf("],\"epochs\":%u,\"degraded\":%d,\"recovered\":%d,\"envelopeSteps\":%d,\"gaps\":%d,"
+    std::printf("],\"epochs\":%u,\"degraded\":%d,\"recovered\":%d,\"envelopeSteps\":%d,\"leadClamps\":%d,\"gaps\":%d,"
                 "\"gapNsTotal\":%lld,\"gapNsMin\":%lld,\"gapNsMax\":%lld,\"overlaps\":%d,\"overlapNs\":%lld,"
                 "\"droppedPes\":%llu,\"droppedNsTotal\":%lld,\"lockedAtNs\":%lld,\"finalState\":\"%s\","
                 "\"finalPpb\":%lld,\"lockedPpbMin\":%lld,\"lockedPpbMax\":%lld,\"residualMinNs\":%lld,"
                 "\"cadenceWarning\":%s,\"mappingPpbMax\":%lld,\"pesIn\":%llu,\"pesOut\":%llu,\"backward\":%llu,"
+                "\"leadMaxNs\":%lld,"
                 "\"ppbAtS\":{",
-                s.epoch, s.degraded, s.recovered, s.steps, s.gaps, (long long)s.gap_ns, (long long)s.gap_min,
+                s.epoch, s.degraded, s.recovered, s.steps, s.clamps, s.gaps, (long long)s.gap_ns, (long long)s.gap_min,
                 (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns, (unsigned long long)s.dropped_pes,
                 (long long)s.dropped_ns, (long long)s.locked_at, s.final_state.c_str(), (long long)s.final_ppb,
                 (long long)s.ppb_min, (long long)s.ppb_max, (long long)s.residual_min,
                 s.cadence_warning ? "true" : "false", (long long)s.mapping_ppb_max, (unsigned long long)s.pes_in,
-                (unsigned long long)s.pes_out, (unsigned long long)s.backward);
+                (unsigned long long)s.pes_out, (unsigned long long)s.backward,
+                (long long)(s.lead_max == INT64_MIN ? 0 : s.lead_max));
     for (int k = 0, n = 0; k < 4; k++)
         if (s.has_at[k]) std::printf("%s\"%lld\":%lld", n++ ? "," : "", (long long)PPB_MARKS_S[k], (long long)s.ppb_at[k]);
     std::printf("}}");
@@ -1089,12 +1096,12 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
     };
     std::vector<std::string> known = {"source", "note", "program", "relockReasons", "events", "ppmAfterS",
                                       "lockedWithinS", "residualMinMs", "finalState", "mappingPpmMax", "gapMs",
-                                      "gapsPerPid", "ppm"};
+                                      "gapsPerPid", "ppm", "leadMaxMs"};
     const char* counts[] = {"relocks", "epochs", "degraded", "recovered", "envelopeSteps", "gaps", "overlaps",
-                            "droppedPes", "droppedMs", "psiChanges"};
+                            "droppedPes", "droppedMs", "psiChanges", "leadClamps"};
     const double vals[] = {(double)s.relocks, (double)s.epoch, (double)s.degraded, (double)s.recovered,
                            (double)s.steps, (double)s.gaps, (double)s.overlaps, (double)s.dropped_pes,
-                           s.dropped_ns / 1e6, (double)s.psi};
+                           s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps};
     for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
         count(counts[i], vals[i]);
         known.push_back(counts[i]);
@@ -1129,6 +1136,10 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
     if (const Json* j = x.get("mappingPpmMax")) {
         if (!j->f64(&lim) || s.mapping_ppb_max / 1e3 > lim)
             fail.push_back("mappingPpmMax: " + num(s.mapping_ppb_max / 1e3));
+    }
+    if (const Json* j = x.get("leadMaxMs")) {   // no PES kept further ahead of its arrival
+        if (!j->f64(&lim) || s.lead_max == INT64_MIN || s.lead_max / 1e6 > lim)
+            fail.push_back("leadMaxMs: " + (s.lead_max == INT64_MIN ? std::string("no PES") : num(s.lead_max / 1e6)));
     }
     if (const Json* j = x.get("ppm")) {
         // Every stats line of the program from ppmAfterS on.

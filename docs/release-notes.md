@@ -22,7 +22,11 @@ release: the three audio captures do not start without them yet.)
   source clock that runs fast or slow is followed, and content lands where
   the source scheduled it: its arrival plus the source's own buffering
   lead. A source restart or an outage becomes a gap of that length; the
-  timeline never steps back.
+  timeline never steps back. An SRT caller that queued while the input was
+  away (an input or engine restart, a network loss) sends its queue at once
+  when it reconnects: the input drops that stale backlog, so the stream
+  shows the gap, at most the first 4 s of the backlog, then live content
+  again within seconds, instead of running the backlog's length ahead.
 - **Captures** (Audio Input 302M, AES67 Input, Audio Encoder, Video Encoder)
   label their content with its capture time.
 - **The three audio captures resample once**, locked to the device's
@@ -78,7 +82,9 @@ release: the three audio captures do not start without them yet.)
   capture shows its Ingest Offset.
 - Warnings, none of which drops content: **Degraded clock** (the source's
   PCR is unusable, as on some vMix feeds: timing then follows one stream's
-  own timestamps against arrival); **Source clock unstable** (more than 3
+  own timestamps against arrival); **Source lead above 4 s on PID … —
+  clamped** (while degraded, a stream more than 4 s ahead of the stream the
+  timing follows is timed by its own arrival instead); **Source clock unstable** (more than 3
   re-locks in 10 min); **Source clock off by n ppm** (past 100 ppm for a
   minute); **PCR every n ms (spec ≤ 100 ms)**; **Transport errors**
   (continuity errors or lost sync on the input); on audio captures **Device

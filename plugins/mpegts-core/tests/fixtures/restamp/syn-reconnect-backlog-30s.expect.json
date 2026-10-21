@@ -1,0 +1,19 @@
+{
+  "source": "fixture_gen --trace --backlog 0:30000:1000 --duration 150 --seed 31",
+  "note": "A caller that queues while its listener is away (chapter 15.4 B-39): the listener's pipeline starts on 30 s of backlog that drains in 1 s, then the live sends. The first sample seeds the first epoch on the backlog's oldest; the floor falls with the drain and the first epoch waits for two agreeing buckets (3 s), then moves onto the floor. Until then a PES the seed would put more than lead_max_ns (4 s) ahead is stale and dropped, and its lead stays out of the lead row, so the program never degrades. What left on the seed (the oldest 4 s) and the live content it overlaps once the line moved go as one overlap run per PID, reason backlog, at 3.5-3.7 s: about 30 s per PID; the backlog's oldest 3.5-3.7 s play, 2.5-2.7 s of live content go. Before the fix: degraded (lead) at 5 s, the program 30 s early, then 29 s of live content dropped at the recovery.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "leadClamps": 0,
+  "gaps": 0,
+  "overlaps": 3,
+  "events": [{"kind": "overlap", "reason": "backlog", "atS": [3, 4.5]}, {"kind": "overlap", "reason": "backlog", "atS": [3, 4.5]}, {"kind": "overlap", "reason": "backlog", "atS": [3, 4.5]}],
+  "droppedMs": [88000, 91000],
+  "leadMaxMs": 4150,
+  "lockedWithinS": 50,
+  "residualMinMs": -1,
+  "mappingPpmMax": 10,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

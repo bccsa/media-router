@@ -2270,8 +2270,10 @@ exported from `@media-router/engine`; srt-input is the reference):
    min / median / max, trim, shift O + trim, PES dropped in 10 min); for a
    capture, a Clock section with the ASRC ratio, phase error and re-locks
    where there is an ASRC, and the ingest offset. Its warnings: degraded
-   clock, more than 3 re-locks in 10 min, a source rate past 100 ppm or an
-   ASRC ratio past 200 ppm for a minute, PCR cadence, transport errors.
+   clock, a lead clamp (a PID past 4 s ahead under the degraded mapping,
+   held while the element keeps posting `lead-clamp`), more than 3 re-locks
+   in 10 min, a source rate past 100 ppm or an ASRC ratio past 200 ppm for a
+   minute, PCR cadence, transport errors.
 5. **Live edits.** List `ingestOffsetMs` (and `pidTrimsMs`) in
    `liveUpdatableParams` and call `applyIngestTimingLiveUpdate({
    setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
@@ -2314,7 +2316,12 @@ and `chain_list`; a buffer list leaves as one list. It rewrites PES PTS/DTS
 and the PCR in place and keeps each buffer's own timestamps, so a
 time-bounded queue after it still measures arrival. It removes the packets
 of a PES it drops as overlap (renumbering that PID's CC), packets on a PID
-no PMT lists, and PES that arrive before their program has a mapping.
+no PMT lists, and PES that arrive before their program has a mapping. A
+caller that queued while its listener was away (SRT) sends that backlog at
+once on its return: the PES its lock would put more than 4 s ahead of
+their arrival are stale and dropped as overlap (reason `backlog`) until the
+lock has found the floor, so a reconnect plays at most 4 s of the backlog,
+then the live content (ADR-0029 Phase 1).
 
 | Property | Meaning |
 |---|---|
@@ -2337,9 +2344,12 @@ lost, `reason`, `ppb`, `offset-drift-ns`, `residual-min/p50/p99/max-ns`,
 `mrtsrestamp-pid` per PID per interval (`program`, `pid`, `stream-type`,
 `lead-count`, `lead-min/median/max-ns` once the PID has a lead, `trim-ns`,
 `shift-ns`, `dropped-pes`); `mrtsrestamp-event` on occurrence (`kind`
-relock / degraded / recovered / envelope-step / gap / overlap / psi-change,
-`program`, `pid`, `reason`, `gap-ns`, `dropped-ns`, `house-ns`, `epoch`,
-`value-ns`). Counters are running totals since the element started. In
+relock / degraded / recovered / envelope-step / gap / overlap / psi-change /
+lead-clamp, `program`, `pid`, `reason`, `gap-ns`, `dropped-ns`, `house-ns`,
+`epoch`, `value-ns`; a `lead-clamp` names the clamped PID and its lead in
+`value-ns`, again every 30 s while the clamp holds; a gap's reason is
+`epoch`, `edit`, `outage`, `jump` or `backlog`, an overlap's empty or
+`backlog`). Counters are running totals since the element started. In
 `fixed` mode the clock fields stay at their idle values.
 
 **Gap markers.** The bus cannot carry a GAP event, so a gap is a buffer

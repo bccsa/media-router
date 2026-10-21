@@ -92,6 +92,7 @@ const char* event_kind_name(RestampCore::Event::Kind k) {
         case RestampCore::Event::Kind::envelope_step: return "envelope-step";
         case RestampCore::Event::Kind::gap: return "gap";
         case RestampCore::Event::Kind::overlap: return "overlap";
+        case RestampCore::Event::Kind::lead_clamp: return "lead-clamp";
         default: return "psi-change";
     }
 }
@@ -353,6 +354,11 @@ void RestampCore::pull_events(Program& g) {
                 out.kind = Event::Kind::envelope_step;
                 out.value_ns = e.value_ns;
                 break;
+            case StcEvent::Kind::lead_clamp:
+                out.kind = Event::Kind::lead_clamp;
+                out.pid = e.pid;
+                out.value_ns = e.value_ns;
+                break;
         }
         events_.push_back(out);
     }
@@ -402,6 +408,12 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
         }
         if (m.valid) {
             out_ns = m.house_ns + g.pcr_shift;
+        } else if (m.stale) {
+            // No PES leaves while the line is a backlog's (B-39): the PCR keeps arrival's pace
+            // (a frozen one would read as a freeze one hop on), never back among such.
+            out_ns = arrival_h_ - DEGRADED_PCR_LEAD_NS;
+            if (g.have_wpcr && g.wpcr_regen && out_ns < g.wpcr_ns) out_ns = g.wpcr_ns;
+            regen = true;
         } else {
             out_ns = degraded_pcr(g);
             regen = true;
@@ -660,6 +672,20 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         }
         const VirtualStc::Mapping m = g.stc.map(p.pid, s90, arrival);
         pull_events(g);
+        if (m.stale) {
+            // A backlog's (B-39): on its seed it would leave far ahead of arrival, and once the
+            // line moves onto the floor it would overlap the live content. Counted as overlap.
+            const int64_t len = p.interval > 0 ? p.interval : own;
+            p.unit = Pid::Unit::drop;
+            p.clean = false;
+            p.backlog = true;
+            p.run_pes++;
+            p.run_ns += len;
+            p.dropped_pes++;
+            g.dropped_pes++;
+            g.dropped_ns += len;
+            return false;
+        }
         if (!m.valid) {                   // no clock yet: nowhere on house time to put it
             unmapped_++;
             p.unit = Pid::Unit::drop;
@@ -699,6 +725,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         if (epoch > p.max_epoch) why = "epoch";
         else if (edited) why = "edit";
         else if (p.outage) why = "outage";
+        else if (p.backlog) why = "backlog";
         else if (cfg_.mode == RestampConfig::Mode::fixed && p.n_spacing >= 2 &&
                  key - p.last_key > 2 * upper_median(p.spacing, p.n_spacing)) {
             // More than two PES lengths, the length being the upper median of the last three
@@ -712,12 +739,13 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     // The outage check runs until a PES shows its gap, or one comes in a later buffer.
     if (gap || arrival_h > outage_h_) p.outage = false;
     if (p.run_pes) {
-        Event e = make_event(Event::Kind::overlap, g.number, p.pid, "", arrival_h, epoch);
+        Event e = make_event(Event::Kind::overlap, g.number, p.pid, p.backlog ? "backlog" : "", arrival_h, epoch);
         e.dropped_ns = p.run_ns;
         events_.push_back(e);
         p.run_pes = 0;
         p.run_ns = 0;
     }
+    p.backlog = false;
     // The spacing of two PES in a row with nothing between, on one mapping: the PID's
     // PES length (a straddler's return to a newer epoch is a jump, not a length).
     const bool spaced = p.have_last && p.clean && epoch == p.last_epoch;

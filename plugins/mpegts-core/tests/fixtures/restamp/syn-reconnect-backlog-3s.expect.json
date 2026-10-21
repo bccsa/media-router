@@ -1,0 +1,19 @@
+{
+  "source": "fixture_gen --trace --backlog 0:3000:2000 --duration 120 --seed 35",
+  "note": "A backlog under lead_max_ns (chapter 15.4 B-39): 3 s queued, drained over 2 s, so the first bucket pairs disagree (the floor falling) and B-37's rule, which tested the first pair only, left the line 3 s above the floor (content 3.5 s ahead for the whole trace). The first epoch now waits while the floor falls and moves onto it once two buckets agree (4 s); nothing is stale (the seed's lead stays under 4 s), so what left on the seed overlaps the live content after the move and the guard drops it once per PID at about 7 s (2.95-2.98 s), as at a start burst (B-37).",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "leadClamps": 0,
+  "gaps": 0,
+  "overlaps": 3,
+  "events": [{"kind": "overlap", "reason": "", "atS": [6.5, 7.5]}, {"kind": "overlap", "reason": "", "atS": [6.5, 7.5]}, {"kind": "overlap", "reason": "", "atS": [6.5, 7.5]}],
+  "droppedMs": [8500, 9300],
+  "leadMaxMs": 3800,
+  "lockedWithinS": 50,
+  "residualMinMs": -1,
+  "mappingPpmMax": 10,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

@@ -188,6 +188,16 @@ describe('IngestTimingReporter: the warnings of part 10', () => {
         expect(card.warning).toBeNull();
     });
 
+    it("a reconnect backlog's drop reads as such in the last event", () => {
+        const { rep, card } = setup();
+        rep.onEvent(CH.event, event('overlap', { pid: 256, reason: 'backlog' }), 1000);
+        run(rep, 2000, 2000);
+        expect(card.data.clock).toMatchObject({
+            lastEvent: 'overlap (reconnect backlog), just now',
+        });
+        expect(card.warning).toBeNull();
+    });
+
     it('a source rate past 100 ppm for a minute', () => {
         const { rep, card } = setup();
         run(rep, 2000, 60_000, { ppb: -150_000 });

@@ -141,7 +141,6 @@ void ClockLock::feed(int64_t sigma, int64_t h) {
         line_ = StcLine{sigma, h, eps_ppb(), 0, 0};
         origin_h_ = epoch_h_ = h;
         bucket_ = 0;
-        closed_ = 0;
         cur_ = Point{sigma, h, Level::fit};
         last_sample_h_ = last_seen_h_ = h;
         resid_.push_back({h, 0});
@@ -297,7 +296,13 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
         travel_at_lock_ = travel_ns_;
     }
 
-    if (fresh_ && ++closed_ == 2) seed_floor();
+    // The first epoch takes the floor of its first two agreeing buckets, none once a pair
+    // rises (a dip passed, B-37); while the minima keep falling (a backlog draining) it tests
+    // again at every close until it locks (B-39). Then any epoch only a backlog's floor.
+    if (hist_.size() >= 2) {
+        if (fresh_ && !floor_found_ && !locked_) floor_found_ = seed_floor(cfg_.step_ns) != Pair::fall;
+        else if (cfg_.backlog_ns > 0) seed_floor(cfg_.backlog_ns);
+    }
 
     // β* - β_applied: min over the last M buckets of d_j - ε·σ_j, against the line
     // through the pivot.
@@ -351,16 +356,27 @@ ClockLock::Residual ClockLock::residual() const {
     return out;
 }
 
-// A transport's start burst (an SRT or RTP backlog read at once) seeds the first epoch
-// far above the floor its first two buckets agree on: move there at once. What already
-// left on the seed and overlaps is the caller's to drop (the ingest guard does, R18).
-void ClockLock::seed_floor() {
+// A transport's start burst, or a caller's backlog read at once, seeds the epoch far above
+// the floor that follows: when the last two buckets agree on it (within step_ns) more than
+// `below` under the line, move there at once. What already left on the seed and overlaps is
+// the caller's to drop (the ingest guard does, R18).
+ClockLock::Pair ClockLock::seed_floor(int64_t below) {
     const int64_t a = sat_sub(hist_[hist_.size() - 2].house, line_.house_of(hist_[hist_.size() - 2].sigma));
     const int64_t b = sat_sub(hist_.back().house, line_.house_of(hist_.back().sigma));
+    if (sat_sub(b, a) > cfg_.step_ns) return Pair::rise;
+    if (sat_sub(a, b) > cfg_.step_ns) return Pair::fall;
     const int64_t lo = std::min(a, b), hi = std::max(a, b);
-    if (hi >= -cfg_.step_ns || sat_sub(hi, lo) > cfg_.step_ns) return;
+    if (hi >= -below) return Pair::agree;
     line_.house_ref = sat_add(line_.house_ref, clamp64(lo, -DELTA_LIM, DELTA_LIM));
     resid_.clear();   // against the seed
+    return Pair::agree;
+}
+
+int64_t ClockLock::floor_gap_ns() const {
+    if (!started_) return 0;
+    int64_t r = sat_sub(cur_.house, line_.house_of(cur_.sigma));
+    if (!hist_.empty()) r = std::min(r, sat_sub(hist_.back().house, line_.house_of(hist_.back().sigma)));
+    return r < 0 ? sat_sub(0, r) : 0;
 }
 
 void ClockLock::relock(bool keep_rate) {
@@ -573,6 +589,7 @@ const char* event_name(StcEvent::Kind k) {
         case StcEvent::Kind::degraded: return "degraded";
         case StcEvent::Kind::recovered: return "recovered";
         case StcEvent::Kind::envelope_step: return "envelope-step";
+        case StcEvent::Kind::lead_clamp: return "lead-clamp";
         default: return "leap";
     }
 }
@@ -615,8 +632,8 @@ void VirtualStc::grow_epoch(Src src, int64_t sigma, int64_t h) {
     e.last_h = std::max(e.last_h, h);
 }
 
-void VirtualStc::emit(StcEvent::Kind k, const char* why, int64_t h, int64_t value) {
-    events_.push_back(StcEvent{k, why, h, epochs_.empty() ? 0u : epochs_.back().id, value});
+void VirtualStc::emit(StcEvent::Kind k, const char* why, int64_t h, int64_t value, int pid) {
+    events_.push_back(StcEvent{k, why, h, epochs_.empty() ? 0u : epochs_.back().id, value, pid});
 }
 
 void VirtualStc::check_failure(int64_t h) {
@@ -626,6 +643,7 @@ void VirtualStc::check_failure(int64_t h) {
 void VirtualStc::enter_degraded(int64_t h) {
     degraded_ = true;
     degraded_reason_ = val_.reason();
+    clamps_.clear();
     freeze_current();
     pcr_.relock(true);   // the bad PCR must not train it; its ε is the guess on recovery
     pcr_pending_ = false;
@@ -640,6 +658,7 @@ void VirtualStc::try_recover(int64_t sigma, int64_t h) {
     val_.clear_failure();
     degraded_ = false;
     ref_pending_ = false;
+    clamps_.clear();
     open_epoch(Src::pcr, sigma, h);
     emit(StcEvent::Kind::recovered, reason_name(degraded_reason_), h, 0);
     degraded_reason_ = PcrValidator::Reason::none;
@@ -764,8 +783,11 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     val_.feed_activity(h);
     pcr_.tick(h);
     ref_.tick(h);
-    // The lead row judges the PCR mapping, also while degraded (recovery needs it).
-    if (lead_row && pcr_.started()) val_.feed_lead(pid, sat_sub(pcr_.house_of(sigma), h));
+    // The lead row judges the PCR mapping, also while degraded (recovery needs it), but not a
+    // line seeded on a backlog: further above its floor than any lead, it measures none (B-39).
+    const int64_t lim = val_.config().lead_max_ns;
+    if (lead_row && pcr_.started() && pcr_.floor_gap_ns() <= lim)
+        val_.feed_lead(pid, sat_sub(pcr_.house_of(sigma), h));
     check_failure(h);
 
     for (size_t i = 0; i + 1 < epochs_.size();) {
@@ -774,6 +796,17 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     }
     Mapping m;
     m.house_ns = h;
+    PidLeads& pl = leads_[pid];
+    auto keep = [&]() {
+        pl.w.push_back({h, sat_sub(m.house_ns, h)});
+        while (pl.w.front().first < sat_sub(h, LEAD_WINDOW_NS)) pl.w.pop_front();
+    };
+    const bool clamping = degraded_ && lead_row && pid != ref_pid_;
+    if (clamping && clamps_.count(pid)) {   // on its own envelope, whatever the reference does
+        clamp(pid, sigma, h, m);
+        if (m.valid) keep();
+        return m;
+    }
     if (epochs_.empty()) return m;
 
     // Straddle (OQ-11): the one range holding σ; none, the newest; several, the
@@ -793,7 +826,6 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
         }
         return true;
     };
-    PidLeads& pl = leads_[pid];
     const Epoch* pick = nullptr;
     int hits = 0;
     for (size_t i = 0; i < epochs_.size(); i++) {
@@ -816,12 +848,70 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
             }
         }
     }
+    // A backlog's (B-39): while the live line lies further above its floor than any source
+    // lead, what it maps is stale, until two buckets agree on the floor and the line moves;
+    // and while it lies visibly above it, so is a PES it would put that far ahead (the PCR
+    // evidence lags a fast drain by up to a PCR interval).
+    if (pick->live) {
+        const int64_t gap = lock_of(pick->src).floor_gap_ns();
+        if (gap > lim || (gap > pcr_.config().step_ns && sat_sub(house_in(*pick, sigma), h) > lim)) {
+            m.stale = true;
+            return m;
+        }
+    }
     m.house_ns = house_in(*pick, sigma);
     m.epoch = pick->id;
     m.valid = true;
-    pl.w.push_back({h, sat_sub(m.house_ns, h)});
-    while (pl.w.front().first < sat_sub(h, LEAD_WINDOW_NS)) pl.w.pop_front();
+    if (clamping) clamp(pid, sigma, h, m);
+    if (m.valid) keep();
     return m;
+}
+
+// B-8 (part 4.3): degraded, a PID further ahead of arrival than lead_clamp_ns under the
+// reference mapping leaves on its own lower envelope (lead 0 at its earliest arrival) until
+// the program recovers; a leap or a step relocks that envelope, as feed_ref_pes's.
+void VirtualStc::clamp(int pid, int64_t sigma, int64_t h, Mapping& m) {
+    auto it = clamps_.find(pid);
+    const int64_t lead = sat_sub(m.house_ns, h);   // under the reference mapping, when m is valid
+    if (it == clamps_.end()) {
+        if (lead <= val_.config().lead_clamp_ns) return;
+        it = clamps_.emplace(pid, Clamp(ref_.config())).first;
+        it->second.epoch = next_epoch_++;
+        it->second.lead_ns = lead;
+        it->second.told_h = h;
+        emit(StcEvent::Kind::lead_clamp, "", h, lead, pid);
+    } else if (sat_sub(h, it->second.told_h) >= LEAD_CLAMP_REPEAT_NS) {
+        it->second.told_h = h;
+        emit(StcEvent::Kind::lead_clamp, "", h, it->second.lead_ns, pid);
+    }
+    Clamp& c = it->second;
+    if (c.have) {
+        const int64_t ds = sat_sub(sigma, c.sigma);
+        const int64_t miss = sat_sub(sat_add(ds, mul_ppb(ds, c.lock.ppb())), sat_sub(h, c.h));
+        if (miss > val_.config().leap_ns || miss < -val_.config().leap_ns) {
+            c.lock.relock(true);
+            c.epoch = next_epoch_++;
+        }
+    }
+    c.have = true;
+    c.sigma = sigma;
+    c.h = h;
+    c.lock.feed(sigma, h);
+    if (c.lock.envelope_step()) {
+        c.lock.relock(true);
+        c.lock.feed(sigma, h);
+        c.epoch = next_epoch_++;
+    }
+    const int64_t gap = c.lock.floor_gap_ns(), lim = val_.config().lead_max_ns;
+    if (gap > lim || (gap > c.lock.config().step_ns && sat_sub(c.lock.house_of(sigma), h) > lim)) {
+        m = Mapping();
+        m.house_ns = h;
+        m.stale = true;
+        return;
+    }
+    m.house_ns = c.lock.house_of(sigma);
+    m.epoch = c.epoch;
+    m.valid = true;
 }
 
 void VirtualStc::tick(int64_t now_ns) {
