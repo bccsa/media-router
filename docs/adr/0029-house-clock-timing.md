@@ -465,7 +465,8 @@ continuous unwrapped PTS, its largest step 360 ms, the stream's own spacing.
 ns per packet; budget 1,000 for the rewrite, 2,000 for the reassembly.
 
 **In the pipeline the restamp costs more than today's stamper and
-conditioner**, so V-P1-10's criterion is not met as measured (2026-10-16,
+conditioner**; it stays inside the owner's Pi 4 budget for V-P1-10 (<= +0.05
+core per 30 Mbit/s ingest, <= +0.035 core per 302M capture; 2026-10-16,
 .108). One srt-input with one consumer, an mpegts-ip-output to a local
 port, so the egress stamper is armed, fed by a paced SRT caller on the dev
 box: the OCC capture (28.6 Mbit/s: 1080i H.264 at 20 Mbit/s, 21 AAC PIDs,
