@@ -4,6 +4,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace mrts {
 
@@ -38,6 +39,16 @@ bool parse_packet(uint8_t* p, PacketView* out);   // false: not 0x47
 class PacketWalker {
   public:
     template <class F> void feed(uint8_t* data, size_t len, F&& on_packet);
+    // The read-only walk (B-15): the same packets, each handed to on_packet(const
+    // PacketView&), for input nobody may write (a buffer mapped READ). Only a
+    // `const uint8_t*` picks it, so feed(nullptr, 0, f) stays the mutable walk.
+    template <class P, class F,
+              std::enable_if_t<std::is_same_v<P, const uint8_t*>, int> = 0>
+    void feed(P data, size_t len, F&& on_packet) {
+        // parse_packet's view is mutable for the rewriters; this walk only hands it out const.
+        feed(const_cast<uint8_t*>(data), len,
+             [&on_packet](PacketView& v) { on_packet(static_cast<const PacketView&>(v)); });
+    }
     size_t carried() const { return carry_len_; }   // bytes held for the next feed
     uint64_t desync_bytes() const { return desync_; }
     void reset() { carry_len_ = 0; }      // drops the carry; desync_bytes is lifetime

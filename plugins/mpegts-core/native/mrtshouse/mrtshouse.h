@@ -44,3 +44,4 @@ class MrtsHouseCommon {
 GType gst_mrtsrestamp_get_type(void);
 GType gst_mrasrc_get_type(void);
 GType gst_mralignwatch_get_type(void);
+GType gst_mrtsdemux_get_type(void);
