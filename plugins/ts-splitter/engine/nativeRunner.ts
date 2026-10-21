@@ -30,19 +30,10 @@ export function buildSpawnArgs(opts: {
      *  splitter batch immediately (ultra-low-latency; per-buffer fan-out
      *  costs return). Omitted = the runner's built-in 20 ms default. */
     busBatchMs?: number;
-    /** The stamper's latch-repair window (`effectiveLatchRepair`, ADR-0005
-     *  note 2026-09-05): OFF when a delivery-lead source (hls-player) sits
-     *  anywhere upstream. The runner's own default is ON, so only an explicit
-     *  `false` reaches argv. */
-    latchRepair?: boolean;
 }): string[] {
     const args = ['--input', opts.inputSocketPath, '--caps', BUS_TS_CAPS];
     if (opts.tsId !== undefined) args.push('--ts-id', String(opts.tsId));
     if (opts.busBatchMs !== undefined) args.push('--flush-ms', String(opts.busBatchMs));
-    // Producer half of the time-sync contract: every output PID is stamped
-    // from its own payload against ONE shared anchor.
-    args.push('--stamp-timeline');
-    if (opts.latchRepair === false) args.push('--no-latch-repair');
     for (const o of opts.outputs) {
         const stype = o.streamType !== undefined ? `:0x${o.streamType.toString(16)}` : '';
         args.push('--out', `0x${o.pid.toString(16)}:${busTeeName(o.port)}${stype}`);

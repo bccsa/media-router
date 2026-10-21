@@ -4,6 +4,7 @@
 
 #include "libmrbus/busproto.h"
 #include "libmrbus/control.h"
+#include "mrts/ts_gap.h"
 
 namespace mrtssplit {
 
@@ -82,43 +83,24 @@ App::App(Options opts) : opts_(std::move(opts)) {
         outputs_.push_back(std::move(o));
     }
     core_ = std::make_unique<mrts::SplitterCore>(opts_.ts_id, specs, cb);
-    if (opts_.stamp_timeline) {
-        // One event builder for every native producer (mrts::*_event_json), so
-        // what a re-anchor reports here is field for field what the python
-        // sidecar reports — the copies that used to live in each sidecar had
-        // already lost `lastPts90k` and `deltaTicks`.
-        // Latch repair ON: the splitter's input is a live ingest (an srt-input
-        // or rist-input's bus), so its delivery cadence is its media cadence
-        // and a first PES that is the head of a reconnect backlog must not
-        // become the anchor (ts_timeline.py, "latch repair" — the 2026-09-05
-        // GATE01 cross-feed lipsync).
-        stamper_ = std::make_unique<mrts::TimelineStamper>(
-            [](const mrts::TimelineStamper::Anchored& a) {
-                emit(mrts::anchor_event_json(a));
-            },
-            [](const mrts::TimelineStamper::Reanchor& r) {
-                emit(mrts::reanchor_event_json(r));
-            },
-            [](const mrts::TimelineStamper::Settled& s) {
-                emit(mrts::settled_event_json(s));
-            },
-            opts_.repair_latch);
-        // The timeline conditioner rides the same live-cadence opt-in as the
-        // latch repair: the splitter's input is a live ingest, so a source
-        // clock step (vMix CBR's pacer reset) is taken out of the PES/PCR
-        // bytes before the core splits them — every output, and every consumer
-        // downstream, sees one continuous timeline. Reported per step.
-        stamper_->set_on_conditioned([](const mrts::TimelineStamper::Conditioned& c) {
-            emit(mrts::conditioned_event_json(c));
-        });
-    }
     refresh_gating();   // nothing wired yet -> all outputs disabled
-    input_ = std::make_unique<mrbus::BusClient>(
-        opts_.input_socket, [this](const uint8_t* d, size_t n) { on_input_buffer(d, n); },
+    input_ = connect_input(opts_.input_socket);
+}
+
+std::unique_ptr<mrbus::BusClient> App::connect_input(const std::string& socket_path) {
+    return std::make_unique<mrbus::BusClient>(
+        socket_path,
+        [this](const uint8_t* d, size_t n, int64_t pts, uint32_t flags) {
+            on_input_buffer(d, n, pts, flags);
+        },
         opts_.stall_ns);
 }
 
-void App::on_input_buffer(const uint8_t* data, size_t len) {
+void App::on_input_buffer(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags) {
+    if (flags & mrbus::BUFFER_FLAG_GAP) {
+        forward_markers(data, len, pts_ns, flags);
+        return;
+    }
     // Coalesce before broadcast: splitter batches arrive per input buffer
     // (~7-packet same-PID runs at typical A/V interleave — measured 692
     // buffers/s of ~1.3 KB on a 1080p50 feed), and every broadcast costs a
@@ -129,14 +111,6 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     // audio would take seconds to fill a size batch). Packet order within an
     // output is preserved; PSI stays ahead of the ES packets it precedes.
     const int64_t now = mrbus::mono_ns();
-    if (stamper_ && opts_.repair_latch) {
-        // Condition a private copy (the bus hands us its buffer read-only):
-        // one memcpy of ≤24 KB per input buffer, well under the fan-out cost
-        // this splitter already pays per output.
-        cond_buf_.assign(data, data + len);
-        stamper_->condition(cond_buf_.data(), len, now);
-        data = cond_buf_.data();
-    }
     for (const auto& b : core_->feed(data, len)) {
         for (auto& o : outputs_) {
             if (o.pid == b.pid) {
@@ -156,12 +130,27 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     }
 }
 
+void App::forward_markers(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags) {
+    for (size_t off = 0; off + mrts::PKT <= len; off += mrts::PKT) {
+        const uint8_t* p = data + off;
+        if (mrts::read_gap_length(p) < 0) continue;
+        const int pid = mrts::ts_pid(p);
+        for (auto& o : outputs_) {
+            if (o.pid != pid) continue;
+            flush_output(o);   // what came before the gap goes first
+            o.server->broadcast(p, mrts::PKT, pts_ns, flags);
+            o.batches++;
+            if (pts_ns >= 0) o.lateness.add(mrbus::mono_ns() - pts_ns);
+            else o.lateness.add_untimed();
+            break;
+        }
+    }
+}
+
 int64_t App::stamp_for(Output& o, const uint8_t* data, size_t len) {
-    if (!stamper_) return -1;   // send time, exactly as before the contract
     const int64_t now = mrbus::mono_ns();
-    const int64_t pts = stamper_->stamp(data, len, now, o.pid);
-    if (pts >= 0) o.lateness.add(now - pts);
-    else o.lateness.add_untimed();
+    const int64_t pts = identity_.stamp(data, len, now, o.pid);
+    o.lateness.add(now - pts);
     return pts;
 }
 
@@ -214,9 +203,7 @@ void App::bus_detach(const std::string& socket_path) {
 void App::reinput(const std::string& socket_path) {
     // Make-before-break: connect the new edge first; the old input keeps
     // flowing until the swap. Failure keeps the old input untouched.
-    pending_input_ = std::make_unique<mrbus::BusClient>(
-        socket_path, [this](const uint8_t* d, size_t n) { on_input_buffer(d, n); },
-        opts_.stall_ns);
+    pending_input_ = connect_input(socket_path);
     pending_deadline_ns_ = mrbus::mono_ns() + 5'000'000'000;
 }
 
@@ -272,12 +259,6 @@ void App::emit_stats(int64_t now_ns) {
     double dt = (now_ns - last_stats_ns_) / 1e9;
     long long kbps = dt > 0 ? (long long)((bytes - last_stats_bytes_) * 8 / 1000.0 / dt) : 0;
     last_stats_bytes_ = bytes;
-    // `timeline` only while the contract is on: with it off there is no stamper
-    // and the line stays byte-identical to the pre-contract one. The drift loop
-    // is per-EGRESS (one stamper, one anchor for every output PID), so this is
-    // one object for the whole splitter and not one per branch.
-    std::string timeline =
-        stamper_ ? ",\"timeline\":" + mrts::drift_stats_json(stamper_->drift()) : "";
     // One window per output, keyed by the tee the engine addresses it with.
     std::string lateness;
     for (auto& o : outputs_) {
@@ -287,7 +268,7 @@ void App::emit_stats(int64_t now_ns) {
     }
     if (!lateness.empty()) lateness = ",\"lateness\":{" + lateness + "}";
     emit("{\"stats\":{\"clients\":" + std::to_string(clients) + ",\"drops\":{" + drops +
-         "}" + timeline + lateness + ",\"in_kbps\":" + std::to_string(kbps) + "}}");
+         "}" + lateness + ",\"in_kbps\":" + std::to_string(kbps) + "}}");
 }
 
 void App::tick(int64_t now_ns) {
@@ -326,8 +307,6 @@ void App::tick(int64_t now_ns) {
 }
 
 void App::shutdown() {
-    // A stop inside the latch-repair window still reports what it cost.
-    if (stamper_) stamper_->close_latch();
     for (auto& o : outputs_) o.server->detach_all();
 }
 

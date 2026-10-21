@@ -6,7 +6,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { STEP, ladderFixture, pesPacket, rungs, toNs } from '../../mpegts-core/tests/tsFixtures';
+import { PTS_WRAP } from '../../mpegts-core/tests/tsFixtures';
 
 /**
  * End-to-end integration of the native mr-tssplit child over real GstUnixFd
@@ -15,7 +15,9 @@ import { STEP, ladderFixture, pesPacket, rungs, toNs } from '../../mpegts-core/t
  * clients drain each output edge, and the captured SPTS streams must be
  * byte-identical (sha256) to the python SplitterCore reference over the same
  * chunking. Also covers: wired-only gating (late attach starts with PSI),
- * make-before-break reinput continuity, and input stall events.
+ * make-before-break reinput continuity, input stall events, and the
+ * pass-through on a field capture (plan ch. 6 WI-P2-4): PES and PCR copied,
+ * each output stamped by identity, gap markers forwarded.
  */
 
 const PLUGINS_DIR = join(__dirname, '../..');
@@ -24,17 +26,26 @@ const SERVER = join(PLUGINS_DIR, 'unixfdbus-core/py/unixfd-test-server.py');
 const CLIENT = join(PLUGINS_DIR, 'unixfdbus-core/py/unixfd-fanout.test-client.py');
 const FIXTURE_GEN = join(PLUGINS_DIR, 'mpegts-core/py/native_parity_fixture.py');
 const REF_RUNNER = join(PLUGINS_DIR, 'mpegts-core/py/native_parity_ref.py');
+const MRTS_CLI = join(PLUGINS_DIR, 'mpegts-core/native/mrts/mrts_cli');
 const CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 const CHUNK = 1316;
 
 const PIDS = [0x65, 0xc9, 0xca, 0x1f0];
-const OUT_ARGS = PIDS.flatMap((pid) => [
-    '--out',
-    `0x${pid.toString(16)}:busout_${pid}`,
-]);
+const outArgs = (pids: number[]) =>
+    pids.flatMap((pid) => ['--out', `0x${pid.toString(16)}:busout_${pid}`]);
+
+/** The OCC feed's first 2 MB (2026-07-17): H.264 1080i with B-frames, AAC, teletext;
+ *  its PMT comes before its first PAT. Its dump, reviewed against ffprobe: .expect.jsonl. */
+const OCC = join(PLUGINS_DIR, 'mpegts-core/tests/fixtures/cap-occ-1080i-h264-mp2-ttx.ts');
+/** Video (the program's PCR PID), one AAC PID, teletext (private, no PCR of its own). */
+const OCC_OUTS = [0x65, 0xc9, 0x20];
+const OCC_PCR_PID = 0x65;
+const GST_GAP = 0x800;      // GST_BUFFER_FLAG_GAP
+const GST_DISCONT = 0x40;   // GST_BUFFER_FLAG_DISCONT
 
 const havePython = spawnSync('python3', ['--version']).status === 0;
 const haveBinary = process.platform === 'linux' && existsSync(MR_TSSPLIT);
+const haveCli = existsSync(MRTS_CLI);
 
 function jsonLines(proc: ChildProcess): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
@@ -65,7 +76,11 @@ async function waitFor<T>(probe: () => T | undefined, what: string, timeoutMs = 
 }
 
 function sha256(path: string): string {
-    return createHash('sha256').update(readFileSync(path)).digest('hex');
+    return sha256Of(readFileSync(path));
+}
+
+function sha256Of(data: Buffer): string {
+    return createHash('sha256').update(data).digest('hex');
 }
 
 /**
@@ -84,44 +99,218 @@ function shedCount(events: Array<Record<string, unknown>>): number {
     return Object.values(last?.drops ?? {}).reduce((a, b) => a + b, 0);
 }
 
-const LADDER_RUNGS = 20;
-/** Audio leads video by a fixed 100 ms, so a shared anchor is distinguishable
- *  from two coincidental ones. */
-const AV_SKEW = 9000n;
+// --- TS reading for the pass-through cases, the layouts mrts parses ---
 
-/**
- * Interleaved A/V PES ladder for the stamping test: one video packet then one
- * audio packet per rung, 40 ms apart. No PSI — the splitter routes by the
- * `--out` PIDs and injects its own PAT/PMT per output. (The parity fixture
- * can't serve here: its PES headers carry no PTS at all.)
- */
-const avLadder = (count: number) =>
-    ladderFixture(rungs(count, 8_100_000n), { pids: [0x65, 0xc9], skew: AV_SKEW });
+const PKT = 188;
+const PCR_MODULO = PTS_WRAP * 300n;
+const MUX_BASE = 3600n * 90000n;   // mpegtsmux's 1 h in 90 kHz ticks
 
-/** Where the looping-VOD fixture below rewinds to — 50 ms, as the real source
- *  restarts near zero. A multiple of 9, like every other PTS here, so the
- *  90 kHz → ns conversion stays exact and implied anchors compare by equality. */
-const LOOP_PTS = 4500n;
+const tsPid = (p: Buffer) => ((p[1] & 0x1f) << 8) | p[2];
+const isAvSid = (sid: number) => (sid & 0xf0) === 0xe0 || (sid & 0xe0) === 0xc0;
 
-/**
- * The 2026-08-13 field topology: a looping VOD, and a video PID that emits
- * SEVERAL buffers between each audio one (which is what the splitter's
- * coalescing does to a real A/V feed — video fills a batch in tens of ms,
- * audio takes far longer). At the loop each output therefore sees a LONE
- * anomaly with clean buffers either side, so the cross-PID confirmation rule
- * — two anomalous buffers in a row — can never be satisfied on either. This
- * shape is the difference between reproducing the field freeze and not: a 1:1
- * A/V interleave would have confirmed on the audio buffer and recovered.
- */
-function avLoopFixture(pre: number, post: number): Buffer {
-    const parts: Buffer[] = [];
-    for (let i = 0; i < pre + post; i++) {
-        const pts =
-            i < pre ? 8_100_000n + BigInt(i) * STEP : LOOP_PTS + BigInt(i - pre) * STEP;
-        parts.push(pesPacket(0x65, pts));
-        if (i % 4 === 3) parts.push(pesPacket(0xc9, pts + AV_SKEW));
+function packetsOf(buf: Buffer, pid?: number): Buffer[] {
+    const out: Buffer[] = [];
+    for (let o = 0; o + PKT <= buf.length; o += PKT) {
+        const p = buf.subarray(o, o + PKT);
+        if (pid === undefined || tsPid(p) === pid) out.push(p);
     }
-    return Buffer.concat(parts);
+    return out;
+}
+
+/** The 27 MHz PCR in `p`'s adaptation field (mrts::read_pcr). */
+function pcrOf(p: Buffer): bigint | undefined {
+    if (!(p[3] & 0x20) || p[4] < 7 || !(p[5] & 0x10)) return undefined;
+    const base = (BigInt(p[6]) << 25n) | (BigInt(p[7]) << 17n) | (BigInt(p[8]) << 9n) |
+        (BigInt(p[9]) << 1n) | BigInt(p[10] >> 7);
+    return base * 300n + BigInt(((p[10] & 1) << 8) | p[11]);
+}
+
+/** Adaptation only with a PCR: what the splitter injects on a non-PCR output. */
+const isPcrOnly = (p: Buffer) => (p[3] & 0x30) === 0x20 && pcrOf(p) !== undefined;
+
+/** The PES header starting in `p`: stream id, where its PTS sits, PTS/DTS count. */
+function pesHeader(p: Buffer): { sid: number; at: number; fields: number } | undefined {
+    if (!(p[1] & 0x40) || !(p[3] & 0x10)) return undefined;
+    const o = p[3] & 0x20 ? 5 + p[4] : 4;
+    if (o + 9 > PKT || p[o] !== 0 || p[o + 1] !== 0 || p[o + 2] !== 1) return undefined;
+    const sid = p[o + 3];
+    if ([0xbc, 0xbe, 0xbf, 0xf0, 0xf1, 0xf2, 0xf8, 0xff].includes(sid)) return undefined;
+    if ((p[o + 6] & 0xc0) !== 0x80) return undefined;
+    const flags = p[o + 7] >> 6;
+    return { sid, at: o + 9, fields: flags === 3 ? 2 : flags === 2 ? 1 : 0 };
+}
+
+const readTs = (p: Buffer, o: number) =>
+    (BigInt((p[o] >> 1) & 7) << 30n) | (BigInt(p[o + 1]) << 22n) |
+    (BigInt(p[o + 2] >> 1) << 15n) | (BigInt(p[o + 3]) << 7n) | BigInt(p[o + 4] >> 1);
+
+function writeTs(p: Buffer, o: number, v: bigint): void {
+    p[o] = (p[o] & 0xf0) | Number((v >> 29n) & 0x0en) | 1;
+    p[o + 1] = Number((v >> 22n) & 0xffn);
+    p[o + 2] = Number((v >> 14n) & 0xfen) | 1;
+    p[o + 3] = Number((v >> 7n) & 0xffn);
+    p[o + 4] = Number((v << 1n) & 0xfen) | 1;
+}
+
+function pesPts(p: Buffer): bigint | undefined {
+    const h = pesHeader(p);
+    return h && h.fields > 0 && h.at + 5 <= PKT ? readTs(p, h.at) : undefined;
+}
+
+const floorDiv = (a: bigint, b: bigint) => (a % b !== 0n && a < 0n ? a / b - 1n : a / b);
+const floorMod = (a: bigint, m: bigint) => ((a % m) + m) % m;
+
+/** mrts::house_from_mux_pts: `PES − 1 h` in ns, unwrapped nearest `nowNs`. */
+function houseFromMuxPts(pts33: bigint, nowNs: bigint): bigint {
+    const raw = floorMod(pts33 - MUX_BASE, PTS_WRAP);
+    const ref = floorDiv(nowNs * 9n, 100000n);
+    let d = floorMod(ref - raw, PTS_WRAP);
+    if (d > PTS_WRAP / 2n) d -= PTS_WRAP;
+    return floorDiv((ref - d) * 100000n, 9n);
+}
+
+/**
+ * `src` with every PTS, DTS and PCR moved by one constant, its first PCR `leadNs`
+ * after now on the bus convention (house + 1 h): the stream as Phase 1's ingest
+ * restamp hands it on.
+ */
+function rebaseToHouse(src: Buffer, leadNs: bigint): Buffer {
+    const out = Buffer.from(src);
+    const pkts = packetsOf(out);
+    const pcr0 = pkts.map(pcrOf).find((v) => v !== undefined)!;
+    const target = floorDiv((process.hrtime.bigint() + leadNs) * 9n, 100000n) + MUX_BASE;
+    const shift = floorMod(target - pcr0 / 300n, PTS_WRAP);
+    for (const p of pkts) {
+        const pcr = pcrOf(p);
+        if (pcr !== undefined) {
+            const b = floorMod(pcr / 300n + shift, PTS_WRAP);
+            p[6] = Number(b >> 25n);
+            p[7] = Number((b >> 17n) & 0xffn);
+            p[8] = Number((b >> 9n) & 0xffn);
+            p[9] = Number((b >> 1n) & 0xffn);
+            p[10] = (p[10] & 0x7f) | (Number(b & 1n) << 7);
+        }
+        const h = pesHeader(p);
+        if (!h) continue;
+        if (h.at + 5 * h.fields > PKT) throw new Error('fixture: a PES header spans two packets');
+        for (let i = 0; i < h.fields; i++) {
+            const at = h.at + 5 * i;
+            writeTs(p, at, floorMod(readTs(p, at) + shift, PTS_WRAP));
+        }
+    }
+    return out;
+}
+
+/** mrts::build_gap_packet: adaptation only, the gap's length (ns, big-endian) as
+ *  its transport_private_data (plan ch. 5 OQ-12). */
+function gapPacket(pid: number, cc: number, lengthNs: bigint): Buffer {
+    const p = Buffer.alloc(PKT, 0xff);
+    p[0] = 0x47;
+    p[1] = (pid >> 8) & 0x1f;
+    p[2] = pid & 0xff;
+    p[3] = 0x20 | (cc & 0x0f);
+    p[4] = 183;
+    p[5] = 0x02;
+    p[6] = 8;
+    p.writeBigUInt64BE(lengthNs, 7);
+    return p;
+}
+
+/** `pid`'s last payload CC in `buf`, which an adaptation-only packet repeats. */
+const lastCc = (buf: Buffer, pid: number) =>
+    (packetsOf(buf, pid).filter((p) => p[3] & 0x10).at(-1)?.[3] ?? 0) & 0x0f;
+
+interface WireBuffer {
+    pts: bigint;
+    flags: number;
+    size: number;
+    firstPes: number | null;
+    tsAligned: boolean;
+}
+
+/** The per-buffer reports cut out of the same edge's capture. */
+function withBytes(wire: WireBuffer[], capture: Buffer): Array<WireBuffer & { bytes: Buffer }> {
+    let off = 0;
+    const out = wire.map((b) => {
+        const bytes = capture.subarray(off, off + b.size);
+        off += b.size;
+        return { ...b, bytes };
+    });
+    expect(off).toBe(capture.length);
+    return out;
+}
+
+/**
+ * mrts::IdentityStamp's rule on one output, buffer by buffer: the first timing PES
+ * (video/audio, or on the first PCR carrier) gives `PES − 1 h`; a PES none timing,
+ * arrival (in [t0, t1]); no PES, the last stamp; never below the last stamp.
+ */
+function checkIdentity(bufs: Array<{ pts: bigint; bytes: Buffer }>, t0: bigint, t1: bigint) {
+    const now = process.hrtime.bigint();
+    const n = { exact: 0, held: 0, arrival: 0, repeat: 0, carrier: -1 };
+    let prev: bigint | undefined;
+    bufs.forEach((b, i) => {
+        const pkts = packetsOf(b.bytes);
+        const pc = pkts.find((p) => pcrOf(p) !== undefined);
+        if (n.carrier < 0 && pc) n.carrier = tsPid(pc);
+        let first: bigint | undefined;
+        let anyPes = false;
+        for (const p of pkts) {
+            const pts = pesPts(p);
+            if (pts === undefined) continue;
+            anyPes = true;
+            if (isAvSid(pesHeader(p)!.sid) || tsPid(p) === n.carrier) {
+                first = pts;
+                break;
+            }
+        }
+        const at = `buffer ${i}: ${b.pts}`;
+        if (first !== undefined) {
+            const want = houseFromMuxPts(first, now);
+            expect(b.pts, at).toBe(prev !== undefined && prev > want ? prev : want);
+            if (b.pts === want) n.exact++;
+            else n.held++;
+        } else if (anyPes || prev === undefined) {
+            const arrival = b.pts >= t0 && b.pts <= t1;
+            expect(arrival || b.pts === prev, `${at} outside [${t0}, ${t1}]`).toBe(true);
+            expect(prev === undefined || b.pts >= prev, at).toBe(true);
+            n.arrival++;
+        } else {
+            expect(b.pts, at).toBe(prev);
+            n.repeat++;
+        }
+        prev = b.pts;
+    });
+    return n;
+}
+
+interface PesRec {
+    pid: number;
+    sid: number;
+    pts: number | null;
+    dts: number | null;
+    len: number;
+    crc32: string;
+}
+
+/** `mrts_cli dump`: every PES of the followed program (crc32 of its payload). */
+function dumpPes(file: string): { pes: Map<number, PesRec[]>; counters: Record<string, number> } {
+    const res = spawnSync(MRTS_CLI, ['dump', '--chunk', String(CHUNK), file], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    expect(res.status, res.stderr).toBe(0);
+    const pes = new Map<number, PesRec[]>();
+    let counters: Record<string, number> = {};
+    for (const line of res.stdout.split('\n').filter(Boolean)) {
+        const r = JSON.parse(line);
+        if (r.counters) counters = r.counters;
+        if (typeof r.pid !== 'number') continue;
+        const { pid, sid, pts, dts, len, crc32 } = r;
+        if (!pes.has(pid)) pes.set(pid, []);
+        pes.get(pid)!.push({ pid, sid, pts, dts, len, crc32 });
+    }
+    return { pes, counters };
 }
 
 const SHED_MSG =
@@ -168,19 +357,20 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         attach: (pid: number) => Promise<void>;
         captureClient: (pid: number, file: string, expectBytes?: number) => Promise<ChildProcess>;
         verdictOf: (proc: ChildProcess) => Promise<{ buffers: number; bytes: number; sha256: string }>;
-        /** Per-buffer client (reports wire pts + the payload's first PES). */
-        ladderClient: (pid: number, buffers: number) => Promise<ChildProcess>;
-        stampsOf: (proc: ChildProcess) => Promise<Array<{ pts: bigint; firstPes: bigint }>>;
+        /** Per-buffer client: wire pts, flags and size of every buffer, until killed. */
+        bufferClient: (pid: number) => Promise<ChildProcess>;
+        /** Its reports, once they add up to `bytes` (the same edge's capture size). */
+        buffersOf: (proc: ChildProcess, bytes: number) => Promise<WireBuffer[]>;
         send: (cmd: Record<string, unknown>) => void;
     }
 
     let rigSeq = 0;
-    async function rig(extraArgs: string[] = []): Promise<Rig> {
+    async function rig(extraArgs: string[] = [], pids: number[] = PIDS): Promise<Rig> {
         const d = join(dir, `rig-${rigSeq++}`);
         mkdirSync(d);
         const inputSock = join(d, 'in.sock');
         const split = spawn(MR_TSSPLIT, [
-            '--input', inputSock, '--caps', CAPS, ...OUT_ARGS, ...extraArgs,
+            '--input', inputSock, '--caps', CAPS, ...outArgs(pids), ...extraArgs,
         ], { stdio: ['pipe', 'pipe', 'inherit'] });
         cleanups.push(() => split.kill('SIGKILL'));
         const events = jsonLines(split);
@@ -217,8 +407,9 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
             const v = await waitFor(() => evs.find((e) => e.captured), 'capture verdict');
             return v.captured as { buffers: number; bytes: number; sha256: string };
         };
-        const ladderClient = async (pid: number, buffers: number) => {
-            const c = spawn('python3', [CLIENT, edge(pid), '--buffers', String(buffers)], {
+        const bufferClient = async (pid: number) => {
+            // A count no test reaches: it reports every buffer until it is killed.
+            const c = spawn('python3', [CLIENT, edge(pid), '--buffers', '100000000'], {
                 stdio: ['ignore', 'pipe', 'inherit'],
             });
             cleanups.push(() => c.kill('SIGKILL'));
@@ -227,18 +418,26 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
             await waitFor(() => evs.find((e) => e.caps), 'client accepted (caps)');
             return c;
         };
-        const stampsOf = async (proc: ChildProcess) => {
+        const buffersOf = async (proc: ChildProcess, bytes: number) => {
+            type Result = { pts: string; flags: number; memSize: number; firstPes: number | null;
+                            tsAligned: boolean };
             const evs = (proc as ChildProcess & { evs: Array<Record<string, unknown>> }).evs;
-            await waitFor(() => evs.find((e) => e.event === 'done' || e.error), 'stamp verdicts');
+            const results = () =>
+                evs.map((e) => e.result as Result | undefined).filter((v): v is Result => !!v);
+            await waitFor(
+                () => (results().reduce((a, v) => a + v.memSize, 0) >= bytes ? true : undefined),
+                'every buffer reported',
+                30000,
+            );
             expect(evs.find((e) => e.error)?.error).toBeUndefined();
-            return evs
-                .map((e) => e.result as { pts: string; firstPes: number } | undefined)
-                .filter((v): v is { pts: string; firstPes: number } => v !== undefined)
-                .map((v) => ({ pts: BigInt(v.pts), firstPes: BigInt(v.firstPes) }));
+            return results().map((v) => ({
+                pts: BigInt(v.pts), flags: v.flags, size: v.memSize, firstPes: v.firstPes,
+                tsAligned: v.tsAligned,
+            }));
         };
         return {
             split, events, inputSock, edge, attach, captureClient, verdictOf,
-            ladderClient, stampsOf, send,
+            bufferClient, buffersOf, send,
         };
     }
 
@@ -458,141 +657,6 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         srv.proc.kill();
     }, 120_000);
 
-    it('stamps every output from ONE shared anchor (--stamp-timeline)', async () => {
-        // The time-sync contract's per-branch property, and the reason the
-        // splitter exists: each output is its own wire stream, but they must
-        // stay MUTUALLY aligned. With one shared anchor + epoch the implied
-        // anchor (wire pts - the buffer's own PES, in ns) is a single number
-        // across both branches; give each output its own stamper and the two
-        // constants drift apart by the wall gap between their first buffers.
-        const ladder = join(dir, 'ladder.ts');
-        writeFileSync(ladder, avLadder(LADDER_RUNGS));
-        // `--no-latch-repair`: this ladder is fed as fast as the splitter
-        // takes it, which the stamper's latch-repair window reads (correctly)
-        // as a reconnect backlog and pulls the anchor back from — the wire
-        // would then carry arrival time, not the ladder. The repair's own
-        // coverage is ts_timeline_test.{py,cpp}; this pins the anchor UNDER it.
-        const r = await rig(['--stamp-timeline', '--no-latch-repair', '--flush-ms', '0']);
-        await r.attach(0x65);
-        await r.attach(0xc9);
-        const video = await r.ladderClient(0x65, LADDER_RUNGS);
-        const audio = await r.ladderClient(0xc9, LADDER_RUNGS);
-        // One rung (the video+audio packet pair) per input chunk — the later
-        // --chunk wins in the server's argparse — so with --flush-ms 0 each
-        // output emits exactly one buffer per rung, carrying one ES packet.
-        const srv = server(r.inputSock, ladder, '--chunk', String(2 * 188));
-        await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'ladder consumed', 60000);
-
-        const stamps = await Promise.all([video, audio].map((c) => r.stampsOf(c)));
-        expect(shedCount(r.events), SHED_MSG).toBe(0);
-        // Every buffer carries exactly one ES packet here (--flush-ms 0), so
-        // each stamp is checkable against the payload it describes.
-        for (const s of stamps) expect(s).toHaveLength(LADDER_RUNGS);
-        const implied = stamps.flat().map((s) => s.pts - toNs(s.firstPes));
-        expect(new Set(implied.map(String)).size, 'branches anchored separately').toBe(1);
-        // The drift loop is per-EGRESS, like the anchor it corrects: ONE
-        // `timeline` object in the stats line for the whole splitter, not one
-        // per output — a per-branch loop would slew the branches apart, which
-        // is the failure a shared anchor exists to prevent. Field set is
-        // `mrts::drift_stats_json`, python's `drift_stats()` key for key.
-        const stats = (await waitFor(
-            () => r.events.find((e) => 'stats' in e),
-            'stats event',
-            8000,
-        )).stats as Record<string, unknown>;
-        expect(Object.keys(stats.timeline as object).sort()).toEqual([
-            'engageNs',
-            'marginNs',
-            'ppb',
-            'ppm',
-            'samples',
-            'slewNs',
-            'window',
-        ]);
-        // Lateness of what each output writes (WI-P0-8): one window per output,
-        // keyed by its tee, every stamped buffer counted once across the lines.
-        type Win = { count: number; untimed: number; min: number; mean: number; max: number };
-        const counted = await waitFor(
-            () => {
-                const c: Record<string, number> = {};
-                for (const e of r.events) {
-                    const lat = (e.stats as { lateness?: Record<string, Win> } | undefined)
-                        ?.lateness;
-                    for (const [tee, w] of Object.entries(lat ?? {})) {
-                        expect(Object.keys(w).sort()).toEqual([
-                            'count',
-                            'max',
-                            'mean',
-                            'min',
-                            'untimed',
-                        ]);
-                        c[tee] = (c[tee] ?? 0) + w.count;
-                    }
-                }
-                return c.busout_101 === LADDER_RUNGS && c.busout_201 === LADDER_RUNGS
-                    ? c
-                    : undefined;
-            },
-            'a lateness window per output',
-            8000,
-        );
-        expect(Object.keys(counted).sort()).toEqual(['busout_101', 'busout_201']);
-        // ...and the mapping is the contract's, not a constant offset that
-        // happens to match: the A/V lead the source encoded survives exactly.
-        expect(stamps[1][0].pts - stamps[0][0].pts).toBe(
-            toNs(stamps[1][0].firstPes - stamps[0][0].firstPes),
-        );
-        for (const pid of [0x65, 0xc9]) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
-    }, 120_000);
-
-    it('re-anchors every output when the source loops back to zero', async () => {
-        // The 2026-08-13 field failure, in the producer that showed it. The
-        // splitter's outputs are SINGLE-PID streams, so a source loop gives
-        // each of them one isolated anomaly and nothing to confirm it with —
-        // until the watch learned to confirm on the PID's own next buffer, no
-        // re-anchor was emitted at all and the monotone floor pinned every
-        // later stamp to the last pre-loop value. Measured on .202: newest and
-        // oldest of 20 tapped video buffers both at the SAME pts, 11.6 minutes
-        // behind CLOCK_MONOTONIC, with the sync=true sink dropping the lot.
-        const PRE = 12, POST = 24;
-        const ladder = join(dir, 'loop-ladder.ts');
-        writeFileSync(ladder, avLoopFixture(PRE, POST));
-        // `--no-latch-repair` for the same reason as the anchor test above.
-        const r = await rig(['--stamp-timeline', '--no-latch-repair', '--flush-ms', '0']);
-        await r.attach(0x65);
-        await r.attach(0xc9);
-        const video = await r.ladderClient(0x65, PRE + POST);
-        const audio = await r.ladderClient(0xc9, (PRE + POST) / 4);
-        // One TS packet per input chunk, so every ES packet becomes its own
-        // output buffer — the per-PID buffer cadence the field ran at.
-        const srv = server(r.inputSock, ladder, '--chunk', '188');
-        await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'ladder consumed', 60000);
-
-        const [vStamps, aStamps] = await Promise.all([video, audio].map((c) => r.stampsOf(c)));
-        expect(shedCount(r.events), SHED_MSG).toBe(0);
-        const reanchors = r.events.filter((e) => e.event === 'timeline_reanchor');
-        expect(reanchors).toHaveLength(1);
-        // The video PID both reports and confirms it — no second PID needed.
-        expect(reanchors[0]).toMatchObject({ pid: 0x65, count: 1 });
-
-        // The timeline is LIVE again on the far side of the loop: a surviving
-        // floor would flatten every one of these steps to zero for the rest of
-        // the loop, which is exactly what the field saw.
-        const tail = vStamps.slice(PRE + 2);
-        expect(tail.length).toBeGreaterThan(10);
-        for (let i = 1; i < tail.length; i++) {
-            expect(tail[i].pts - tail[i - 1].pts).toBe(toNs(STEP));
-        }
-        // ...and both branches came through it on ONE anchor, so the A/V lead
-        // the source encoded is still exactly the source's. Two anchors here
-        // would re-roll lipsync at every loop.
-        const implied = [...tail, ...aStamps.filter((s) => s.firstPes < 8_100_000n)].map(
-            (s) => s.pts - toNs(s.firstPes),
-        );
-        expect(new Set(implied.map(String)).size, 'branches re-anchored separately').toBe(1);
-        for (const pid of [0x65, 0xc9]) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
-    }, 120_000);
-
     it('emits input_stalled / input_resumed around a silence window', async () => {
         const r = await rig(['--stall-ms', '300']);
         await r.attach(0x65);
@@ -608,4 +672,217 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         r.send({ cmd: 'bus_detach', socket: r.edge(0x65) });
         await r.verdictOf(cap);
     }, 120_000);
+
+    /** The python core's output per PID over `file` at the rig's chunking. */
+    function refSplit(file: string, pids: number[]): Record<number, Buffer> {
+        const out = mkdtempSync(join(dir, 'ref-'));
+        const res = spawnSync('python3', [
+            REF_RUNNER, '--outputs', pids.map((p) => `0x${p.toString(16)}`).join(','),
+            '--chunk', String(CHUNK), '--out-dir', out, file,
+        ], { encoding: 'utf8' });
+        expect(res.status, res.stderr).toBe(0);
+        return Object.fromEntries(
+            pids.map((pid) => [pid, readFileSync(join(out, `out_0x${pid.toString(16)}.ts`))]),
+        );
+    }
+
+    describe.skipIf(!haveCli)('pass-through on a field capture', () => {
+        it('the OCC fixture is the capture its dump expectation describes', () => {
+            const res = spawnSync(MRTS_CLI, ['dump', '--chunk', String(CHUNK), OCC], {
+                encoding: 'utf8',
+                maxBuffer: 64 * 1024 * 1024,
+            });
+            expect(res.status, res.stderr).toBe(0);
+            expect(res.stdout).toBe(readFileSync(OCC.replace(/\.ts$/, '.expect.jsonl'), 'utf8'));
+        });
+
+        it('copies PES and PCR untouched and stamps each output by identity', async () => {
+            // On this box's house time, 30 s ahead: no arrival stamp can then hold an
+            // identity stamp at the floor, so every timing PES is checked exactly.
+            const input = rebaseToHouse(readFileSync(OCC), 30_000_000_000n);
+            const inFile = join(dir, 'occ-in.ts');
+            writeFileSync(inFile, input);
+            const ref = refSplit(inFile, OCC_OUTS);
+            const r = await rig([], OCC_OUTS);
+            for (const pid of OCC_OUTS) await r.attach(pid);
+            const caps = await Promise.all(
+                OCC_OUTS.map((pid) =>
+                    r.captureClient(pid, join(dir, `occ-${pid}.ts`), ref[pid].length),
+                ),
+            );
+            const per = await Promise.all(OCC_OUTS.map((pid) => r.bufferClient(pid)));
+            const t0 = process.hrtime.bigint();
+            // About a third of real time, so the 20 ms coalescing gives each output its
+            // own cadence of buffers (unpaced, a sparse output gets two in all).
+            const srv = server(r.inputSock, inFile, '--hold', '--pace-us', '1000');
+            const done = () => srv.evs.find((e) => e.event === 'done');
+            await waitFor(done, 'all buffers released', 60000);
+            const verdicts = await Promise.all(caps.map((c) => r.verdictOf(c)));
+            const t1 = process.hrtime.bigint();
+            expect(shedCount(r.events), SHED_MSG).toBe(0);
+            const outs = OCC_OUTS.map((pid) => readFileSync(join(dir, `occ-${pid}.ts`)));
+            verdicts.forEach((v, i) =>
+                expect(v.sha256, `0x${OCC_OUTS[i].toString(16)} vs the python core`).toBe(
+                    sha256Of(ref[OCC_OUTS[i]]),
+                ),
+            );
+
+            // (1) PES bytes are never written: an output's packets on its PID are the
+            // input's, in order, plus the PCR packets injected on a non-PCR output.
+            const inDump = dumpPes(inFile);
+            OCC_OUTS.forEach((pid, i) => {
+                const hex = `0x${pid.toString(16)}`;
+                const inPkts = packetsOf(input, pid);
+                if (pid !== OCC_PCR_PID) {
+                    expect(inPkts.some((p) => pcrOf(p) !== undefined)).toBe(false);
+                }
+                const outPkts = packetsOf(outs[i], pid).filter(
+                    (p) => pid === OCC_PCR_PID || !isPcrOnly(p),
+                );
+                expect(sha256Of(Buffer.concat(outPkts)), `${hex} packets`).toBe(
+                    sha256Of(Buffer.concat(inPkts)),
+                );
+                // ...and PES for PES as `mrts_cli dump` reads both sides (crc32 each). The
+                // input's dump starts at the PMT after its first PAT (B-13), so it is the tail.
+                const outDump = dumpPes(join(dir, `occ-${pid}.ts`));
+                expect(outDump.counters, hex).toMatchObject({
+                    desyncBytes: 0, ccLost: 0, pesDroppedCc: 0,
+                });
+                const want = inDump.pes.get(pid) ?? [];
+                const got = outDump.pes.get(pid) ?? [];
+                expect(want.length, hex).toBeGreaterThan(0);
+                expect(got.slice(got.length - want.length), `${hex} PES`).toEqual(want);
+            });
+
+            // (2) The program PCR is copied, never computed: each PCR injected on a non-PCR
+            // output is an input PCR value, at least 10 ms after the one before.
+            const inPcrs = new Set(
+                packetsOf(input, OCC_PCR_PID).map((p) => String(pcrOf(p) ?? '')).filter(Boolean),
+            );
+            OCC_OUTS.forEach((pid, i) => {
+                const pcrOnly = (b: Buffer) =>
+                    packetsOf(b, pid).filter(isPcrOnly).map((p) => pcrOf(p)!);
+                const injected = pcrOnly(outs[i]);
+                if (pid === OCC_PCR_PID) {
+                    expect(injected).toEqual(pcrOnly(input));   // only the source's own
+                    return;
+                }
+                expect(injected.length).toBeGreaterThan(2);
+                injected.forEach((v, k) => {
+                    expect(inPcrs.has(String(v)), `0x${pid.toString(16)} PCR ${v}`).toBe(true);
+                    if (k) expect(floorMod(v - injected[k - 1], PCR_MODULO) >= 270000n).toBe(true);
+                });
+            });
+
+            // (3) Each buffer's wire stamp is `PES − 1 h` of its first timing PES (never
+            // below the last), the teletext output's too: its PID carries the injected PCR.
+            const wires = await Promise.all(
+                OCC_OUTS.map(async (_, i) =>
+                    withBytes(await r.buffersOf(per[i], outs[i].length), outs[i]),
+                ),
+            );
+            per.forEach((c) => c.kill('SIGKILL'));   // before a detach ends their reads
+            for (const w of wires) expect(w.every((b) => b.flags === 0 && b.tsAligned)).toBe(true);
+            const [video, audio, ttx] = wires.map((w) => checkIdentity(w, t0, t1));
+            expect(video.exact).toBeGreaterThan(2);   // B-frame buffers held at the floor
+            expect(audio.held).toBe(0);
+            expect(audio.exact).toBeGreaterThan(1);
+            // Teletext is stamped at arrival until the splitter's discovery injects a PCR.
+            expect(ttx.carrier).toBe(0x20);
+            expect(ttx.held).toBe(0);
+            expect(ttx.arrival).toBeGreaterThan(0);
+            expect(ttx.exact).toBeGreaterThan(2);
+
+            // (4) Nothing estimates time: no timeline_* events, no `timeline` in the stats
+            // line, and P0's lateness window per output counts each buffer once.
+            type Stats = { lateness?: Record<string, { count: number }> } | undefined;
+            await waitFor(() => {
+                const c: Record<string, number> = {};
+                for (const e of r.events) {
+                    for (const [tee, w] of Object.entries((e.stats as Stats)?.lateness ?? {})) {
+                        c[tee] = (c[tee] ?? 0) + w.count;
+                    }
+                }
+                const all = OCC_OUTS.every((pid, i) => c[`busout_${pid}`] === wires[i].length);
+                return all ? c : undefined;
+            }, 'a lateness window per output', 8000);
+            const timeline = r.events.filter((e) => String(e.event ?? '').startsWith('timeline'));
+            expect(timeline).toEqual([]);
+            for (const e of r.events.filter((e) => e.stats)) {
+                expect(e.stats).not.toHaveProperty('timeline');
+            }
+            for (const pid of OCC_OUTS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
+        }, 120_000);
+
+        it('forwards a gap marker alone on its output, with its own PTS and flags', async () => {
+            // Marker 1 before the splitter's discovery, on two outputs and a PID that is
+            // no output; marker 2 after it, on teletext, GAP without DISCONT, beside a
+            // PCR-only packet on the video PID that is no marker and goes nowhere.
+            const data = readFileSync(OCC);
+            const A = 400 * CHUNK;
+            const AB = 1200 * CHUNK;
+            const m1 = [0x65, 0xc9, 0x1ff].map((pid) =>
+                gapPacket(pid, lastCc(data.subarray(0, A), pid), 1_500_000_000n),
+            );
+            const m2 = gapPacket(0x20, lastCc(data.subarray(0, AB), 0x20), 250_000_000n);
+            const stray = gapPacket(0x65, 0, 0n);
+            stray[5] = 0x10;   // PCR_flag instead of transport_private_data_flag
+            const M1 = 7_000_000_000_001n;
+            const M2 = 7_000_250_000_002n;
+            writeFileSync(join(dir, 'm1.ts'), Buffer.concat(m1));
+            writeFileSync(join(dir, 'm2.ts'), Buffer.concat([m2, stray]));
+            writeFileSync(join(dir, 'occ-a.ts'), data.subarray(0, A));
+            writeFileSync(join(dir, 'occ-ab.ts'), data.subarray(0, AB));
+            // The core never sees a marker: each output is the python core's stream
+            // with its marker where the prefix before it ends.
+            const full = refSplit(OCC, OCC_OUTS);
+            const refA = refSplit(join(dir, 'occ-a.ts'), OCC_OUTS);
+            const refAB = refSplit(join(dir, 'occ-ab.ts'), OCC_OUTS);
+            const GAP_DISCONT = GST_GAP | GST_DISCONT;
+            type Marker = { at: number; pkt: Buffer; pts: bigint; flags: number };
+            const marker: Record<number, Marker> = {
+                [0x65]: { at: refA[0x65].length, pkt: m1[0], pts: M1, flags: GAP_DISCONT },
+                [0xc9]: { at: refA[0xc9].length, pkt: m1[1], pts: M1, flags: GAP_DISCONT },
+                [0x20]: { at: refAB[0x20].length, pkt: m2, pts: M2, flags: GST_GAP },
+            };
+            const expected: Record<number, Buffer> = {};
+            for (const pid of OCC_OUTS) {
+                const { at, pkt } = marker[pid];
+                const out = full[pid];
+                expected[pid] = Buffer.concat([out.subarray(0, at), pkt, out.subarray(at)]);
+            }
+
+            const r = await rig([], OCC_OUTS);
+            for (const pid of OCC_OUTS) await r.attach(pid);
+            const caps = await Promise.all(
+                OCC_OUTS.map((pid) =>
+                    r.captureClient(pid, join(dir, `gap-${pid}.ts`), expected[pid].length),
+                ),
+            );
+            const per = await Promise.all(OCC_OUTS.map((pid) => r.bufferClient(pid)));
+            const srv = server(r.inputSock, OCC, '--hold',
+                '--insert', `${A}:${join(dir, 'm1.ts')}:${M1}:${GAP_DISCONT}`,
+                '--insert', `${AB}:${join(dir, 'm2.ts')}:${M2}:${GST_GAP}`);
+            const done = () => srv.evs.find((e) => e.event === 'done');
+            await waitFor(done, 'all buffers released', 60000);
+            const verdicts = await Promise.all(caps.map((c) => r.verdictOf(c)));
+            expect(shedCount(r.events), SHED_MSG).toBe(0);
+            verdicts.forEach((v, i) => {
+                const pid = OCC_OUTS[i];
+                expect(v.sha256, `0x${pid.toString(16)}`).toBe(sha256Of(expected[pid]));
+            });
+            for (const [i, pid] of OCC_OUTS.entries()) {
+                const wire = await r.buffersOf(per[i], expected[pid].length);
+                const flagged = wire.filter((b) => b.flags !== 0);
+                expect(flagged, `0x${pid.toString(16)}`).toHaveLength(1);
+                const { at, pts, flags } = marker[pid];
+                const alone = { pts, flags, size: PKT, firstPes: null, tsAligned: true };
+                expect(flagged[0]).toEqual(alone);
+                const k = wire.indexOf(flagged[0]);
+                expect(wire.slice(0, k).reduce((a, b) => a + b.size, 0)).toBe(at);
+            }
+            per.forEach((c) => c.kill('SIGKILL'));
+            for (const pid of OCC_OUTS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
+        }, 120_000);
+    });
 });

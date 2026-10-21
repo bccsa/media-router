@@ -48,9 +48,13 @@ class FanoutServer {
     // `pts_ns` is the wire timestamp (absolute CLOCK_MONOTONIC — busproto.h).
     // Negative = stamp send-time `mono_ns()`, which is what a live source does
     // and stays the default, so a caller that passes nothing is byte-identical
-    // to before the time-sync contract. Producers running the contract pass a
-    // mapped media time instead (mrts::TimelineStamper).
-    void broadcast(const uint8_t* data, size_t len, int64_t pts_ns = -1);
+    // to before the time-sync contract. Producers pass their bus stamp instead
+    // (mrts::IdentityStamp). The wire flags are 0.
+    void broadcast(const uint8_t* data, size_t len, int64_t pts_ns = -1) {
+        broadcast(data, len, pts_ns, 0);
+    }
+    // The same with the buffer's GstBufferFlags on the wire (a gap marker's).
+    void broadcast(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags);
 
     size_t client_count() const { return clients_.size(); }
     size_t edge_count() const { return edges_.size(); }

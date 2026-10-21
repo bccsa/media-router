@@ -49,6 +49,9 @@ static_assert(sizeof(MemoryPayload) == 16, "wire ABI");
 
 constexpr uint64_t CLOCK_TIME_NONE = 0xFFFFFFFFFFFFFFFFull;
 constexpr uint8_t MEMORY_TYPE_DEFAULT = 0;
+// NewBufferPayload::flags is GstBufferFlags, copied by unixfdsink and unixfdsrc.
+// GAP marks a bus gap marker (plan ch. 5 OQ-12).
+constexpr uint32_t BUFFER_FLAG_GAP = 1u << 11;
 
 // Fan-out discipline (parity with unixfd-fanout.py / the gst busedge
 // branches' `queue leaky=2 max-size-time=500ms`):

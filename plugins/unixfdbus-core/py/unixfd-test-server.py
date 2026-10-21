@@ -12,6 +12,12 @@ Events (stdout JSON lines): ready, client-connected, served {n}, released
 Usage: unixfd-test-server.py <socket> <file> [--chunk 1316]
            [--pause-after N --pause-ms M]   # silence window mid-stream
            [--hold]                          # keep serving connection open
+           [--insert OFF:FILE:PTS:FLAGS]     # extra buffer, repeatable
+           [--pace-us N]                     # sleep N us after each chunk
+
+--insert sends FILE as one buffer with that wire pts (ns) and GstBufferFlags
+once the file's first OFF bytes are served (OFF on a chunk boundary), as a
+producer sends a gap marker.
 """
 import argparse
 import json
@@ -62,7 +68,15 @@ def main():
     ap.add_argument('--pause-after', type=int, default=0)
     ap.add_argument('--pause-ms', type=int, default=0)
     ap.add_argument('--hold', action='store_true')
+    ap.add_argument('--insert', action='append', default=[])
+    ap.add_argument('--pace-us', type=int, default=0)
     args = ap.parse_args()
+    inserts = []
+    for spec in args.insert:
+        off, rest = spec.split(':', 1)
+        path, pts, flags = rest.rsplit(':', 2)
+        inserts.append((int(off), open(path, 'rb').read(), int(pts), int(flags, 0)))
+    inserts.sort(key=lambda t: t[0])
 
     data = open(args.file, 'rb').read()
     try:
@@ -79,21 +93,35 @@ def main():
     sock.sendall(HEADER.pack(CMD_CAPS, len(CAPS) + 1) + CAPS.encode() + b'\0')
     state = {'released': 0, 'buf': b''}
     served = 0
-    for off in range(0, len(data), args.chunk):
-        chunk = data[off:off + args.chunk]
-        if args.pause_after and served == args.pause_after:
-            time.sleep(args.pause_ms / 1000)
+
+    def send(chunk, pts, flags):
+        nonlocal served
         served += 1
-        payload = NEW_BUFFER.pack(served, time.monotonic_ns(), NONE, NONE, NONE,
-                                  NONE, 0, 0, 1, 0) + MEMORY.pack(len(chunk), 0)
+        payload = NEW_BUFFER.pack(served, pts, NONE, NONE, NONE,
+                                  NONE, flags, 0, 1, 0) + MEMORY.pack(len(chunk), 0)
         fd = os.memfd_create(f'test-{served}')
         os.write(fd, chunk)
         msg = HEADER.pack(CMD_NEW_BUFFER, len(payload)) + payload
         socket.send_fds(sock, [msg], [fd])
         os.close(fd)
-        if not drain_releases(sock, state):
+        return drain_releases(sock, state)
+
+    for off in range(0, len(data) + args.chunk, args.chunk):
+        while inserts and inserts[0][0] <= off:
+            _, chunk, pts, flags = inserts.pop(0)
+            if not send(chunk, pts, flags):
+                emit({'error': 'client vanished mid-stream'})
+                return 1
+        chunk = data[off:off + args.chunk]
+        if not chunk:
+            break
+        if args.pause_after and served == args.pause_after:
+            time.sleep(args.pause_ms / 1000)
+        if not send(chunk, time.monotonic_ns(), 0):
             emit({'error': 'client vanished mid-stream'})
             return 1
+        if args.pace_us:
+            time.sleep(args.pace_us / 1e6)
     emit({'event': 'served', 'n': served})
 
     deadline = time.monotonic() + 10
