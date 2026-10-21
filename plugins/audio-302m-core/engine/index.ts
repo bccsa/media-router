@@ -7,6 +7,7 @@
  * on `@media-router/engine`, and nothing in `packages/engine` imports it back.
  */
 export {
+    alignedMixer,
     buildAudioMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
@@ -19,6 +20,7 @@ export {
     probe302mSupport,
 } from './audio302mHelpers.js';
 export type {
+    AlignedMixerOpts,
     AudioMixSource,
     AudioMixInputOpts,
     Audio302mEncodeOpts,

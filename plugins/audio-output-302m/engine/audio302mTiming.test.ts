@@ -33,15 +33,13 @@ describe('audio302mTsOffsetNs', () => {
         expect(audio302mTsOffsetNs(services(), { lipSyncMs: -60 })).toBe(140 * MS);
     });
 
-    it('subtracts the mixer arm aggregation latency too, so both arms land on D', () => {
-        expect(audio302mTsOffsetNs(services(), {}, 100 * MS)).toBe(100 * MS);
-        // Single-source arm declares none.
-        expect(audio302mTsOffsetNs(services(), {}, 0)).toBe(200 * MS);
+    it('has no mixer term: the aligned fan-in adds no latency to give back', () => {
+        expect(audio302mTsOffsetNs.length).toBe(2);
+        expect(audio302mTsOffsetNs(services(), { mixLatencyMs: 100 })).toBe(200 * MS);
     });
 
-    it('never goes negative — a trim or a latency past D clamps to 0', () => {
+    it('never goes negative — a trim past D, or a D under the ring, clamps to 0', () => {
         expect(audio302mTsOffsetNs(services(), { lipSyncMs: -2000 })).toBe(0);
-        expect(audio302mTsOffsetNs(services(), {}, 5000 * MS)).toBe(0);
         expect(audio302mTsOffsetNs(services({ engineMs: 50 }), {})).toBe(0);
     });
 

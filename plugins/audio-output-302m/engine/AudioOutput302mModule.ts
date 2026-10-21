@@ -10,6 +10,11 @@ import { buildAudioMixInput } from '@media-router/plugin-audio-302m-core';
 import { SINK_BUFFER_US, SLAVE_METHOD_SKEW, audio302mTsOffsetNs } from './audio302mTiming.js';
 import { buildOutputPlacement } from './outputPlacement.js';
 
+/** Answers LATENCY live (gstidentity.c: `live || sync`), so the sink adds its ring behind the
+ *  non-live mixer arm too and one ts-offset holds in both arms; without it that arm plays about
+ *  the ring early, or not at all at D = 60. Never waits: buffers come after their running time. */
+const LIVE_UPSTREAM = 'identity name=live_upstream sync=true';
+
 /**
  * Audio Output (302M) plugin.
  *
@@ -22,7 +27,8 @@ import { buildOutputPlacement } from './outputPlacement.js';
  *
  * TIMING. Under the engine-wide time-sync contract (ADR-0005) this sink is a
  * presentation leg like the video-player's and the audio-decoder's: it
- * presents at `stamped-time + D` on the house clock — `sync=true`, `ts-offset`
+ * presents at `stamped-time + D` on the house clock — every input decodes on
+ * content time (`mrtsdemux`, the formula demux), `sync=true`, `ts-offset`
  * = the route's playout offset (decision 4) plus the `lipSyncMs` trim,
  * `provide-clock=false`, `slave-method=skew` (decision 5), `max-lateness=-1`
  * (a late timeline — mid-stream join, restart backlog — drains instead of
@@ -50,13 +56,6 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
 
     private deviceName = '';
-    /**
-     * Aggregation latency the RUNNING pipeline's mixer arm declared (ns), 0 in
-     * the single-source arm — see `audio302mTsOffsetNs`. Kept so a live
-     * `ts-offset` push applies the same subtraction the build did; the value
-     * only changes with a rebuild (source count is not live).
-     */
-    private mixerLatencyNs = 0;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -128,7 +127,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         await this.setElementProperty(
             'sink',
             'ts-offset',
-            audio302mTsOffsetNs(this.services, this.config, this.mixerLatencyNs),
+            audio302mTsOffsetNs(this.services, this.config),
         );
     }
 
@@ -164,17 +163,8 @@ export class AudioOutput302mModule extends GstPluginBase {
             return null;
         }
 
-        const { fragment, continuationName, mixerLatencyNs, demuxes } = buildAudioMixInput({
-            // Branches are stamp-aligned at launch: keep tsdemux on PCR timing.
-            ignorePcr: false,
-            sources,
-            channels,
-            // 20, not 200: at D=300 a 200 ms mixer latency would clamp the sink offset back to 0.
-            latencyMs: Number(config.mixLatencyMs ?? 20),
-        });
-        this.mixerLatencyNs = mixerLatencyNs ?? 0;
-
-        const tsOffsetNs = audio302mTsOffsetNs(this.services, config, this.mixerLatencyNs);
+        const { fragment, continuationName } = buildAudioMixInput({ sources, channels });
+        const tsOffsetNs = audio302mTsOffsetNs(this.services, config);
 
         // Present at stamped time + D on the house clock (see the class comment). `name=sink` is
         // what the live offset push and the backlog shedder address; audioconvert/audioresample
@@ -186,7 +176,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         // Placement (if any) sits between the VU and the sink: the level meter
         // reads the mix, the sink receives the device-wide spread.
         const pipeline =
-            `${fragment} ${continuationName}. ! audioconvert ! audioresample` +
+            `${fragment} ${continuationName}. ! ${LIVE_UPSTREAM} ! audioconvert ! audioresample` +
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
             (placement.fragment ? ` ! ${placement.fragment}` : '') +
@@ -207,6 +197,9 @@ export class AudioOutput302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            // Audio only, nothing to drain; and the mixer arm's aligners hold every EOS
+            // (hold-on-eos), so a drain would wait out its 6 s timeout on each stop or rebuild.
+            eosDrain: false,
             timingSink: { element: 'sink', kind: 'audio' },
             // Backlog shedder — the latency ratchet guard on this `sync=true`
             // leg (see backlogShed.ts). Shed point is
@@ -221,10 +214,6 @@ export class AudioOutput302mModule extends GstPluginBase {
                 sink: 'sink',
                 keyframeAligned: false,
             }),
-            // Anchor every branch to the producer's house stamps (ADR-0005 Stage 3c, as the muxer
-            // does for its inputs): a tsdemux keeps the zero-point error of the bus buffer it
-            // locked on for life (−73…−85 ms on .103, re-rolled per restart); that IS lipsync.
-            alignBranchesToStamps: { demuxes },
         };
     }
 }

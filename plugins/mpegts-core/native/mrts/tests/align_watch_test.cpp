@@ -1,6 +1,8 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
-// rhythms, the pace's rules (seeds, rises only, recomputed on leave) and the gap stretches an
-// absent input gets.
+// rhythms, the pace's rules (seeds, rises only, recomputed on leave, a lateness over wall time
+// that a backlog's drain does not move) and the gap stretches an absent input gets.
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -123,9 +125,9 @@ void test_pace_rises_only() {
         g.observe(1, i * 10 * MS, 200 * MS);
         g.observe(2, i * 10 * MS, 50 * MS);
     }
-    CHECK("pace is the largest member mean (200 ms)", g.pace() == 200 * MS);
+    CHECK("pace is the largest member lateness (200 ms)", g.pace() == 200 * MS);
     int64_t l = 0;
-    CHECK("a member's lateness is its mean", g.lateness(2, &l) && l == 50 * MS);
+    CHECK("a member's lateness is its own (50 ms)", g.lateness(2, &l) && l == 50 * MS);
     for (int i = 100; i < 300; i++) g.observe(1, i * 10 * MS, 1500 * MS);
     CHECK("member 1 slows to 1.5 s: the pace follows", g.pace() == 1500 * MS);
     for (int i = 300; i < 600; i++) g.observe(1, i * 10 * MS, 100 * MS);
@@ -133,28 +135,33 @@ void test_pace_rises_only() {
           g.pace() == 1500 * MS);
     CHECK("... while member 1's own lateness reads 100 ms", g.lateness(1, &l) && l == 100 * MS);
 
-    // The mean is over the second before each arrival: an old second ages out of it.
+    // The lateness is over the second before each arrival: an old second ages out of it.
     PaceGroup h;
     h.join(1, -1);
     for (int i = 0; i < 300; i++) h.observe(1, i * 10 * MS, i < 100 ? 1000 * MS : 0);
     CHECK("a second 1 s late, then two on time: the pace holds 1 s",
           h.pace() == 1000 * MS && h.lateness(1, &l) && l == 0);
+    // The 1 s -> 0 drop in 10 ms is a catch-up, left out; the median turns when more than half
+    // the second is at the new lateness.
     PaceGroup w;
     w.join(1, -1);
     for (int i = 0; i < 150; i++) w.observe(1, i * 10 * MS, i < 100 ? 1000 * MS : 0);
-    CHECK("half a second after a 1 s late second: the mean over 1 s is half of it",
-          w.lateness(1, &l) && l == 500 * MS);
+    CHECK("0.49 s after a 1 s late second: 500 ms of it in the window, still 1 s",
+          w.lateness(1, &l) && l == 1000 * MS);
+    w.observe(1, 1500 * MS, 0);
+    w.observe(1, 1510 * MS, 0);
+    CHECK("0.51 s after it: 510 ms at 0 of 990, the median is 0", w.lateness(1, &l) && l == 0);
 
-    // One sample, or a few within half a second, is no mean over a second.
+    // A few stretches within half a second are no lateness over a second.
     PaceGroup b;
     b.join(1, -1);
     b.observe(1, 0, 610 * MS);   // a start-up burst's first, latest packet
-    for (int i = 1; i < 50; i++) b.observe(1, i * 10 * MS, 100 * MS);
-    CHECK("the first 490 ms of arrivals do not set the pace (a burst's first sample is 610 ms)",
-          b.pace() == 0 && b.lateness(1, &l) && l == 110200000);
+    for (int i = 1; i <= 49; i++) b.observe(1, i * 10 * MS, 100 * MS);
+    CHECK("490 ms of stretches do not set the pace; the 610 ms drop is left out (100 ms)",
+          b.pace() == 0 && b.lateness(1, &l) && l == 100 * MS);
     b.observe(1, 500 * MS, 100 * MS);
-    CHECK("at half a second their mean counts (110 ms, not the first sample's 610)",
-          b.pace() == 110 * MS);
+    CHECK("at half a second of stretches it counts: 100 ms, nothing of the 610",
+          b.pace() == 100 * MS);
 
     PaceGroup e;
     e.join(1, -1);
@@ -207,7 +214,7 @@ void test_pace_leave() {
     for (int i = 0; i < 100; i++) s.observe(1, i * 10 * MS, 100 * MS);
     for (int i = 0; i < 30; i++) s.observe(2, i * 10 * MS, 2000 * MS);
     s.leave(1);
-    CHECK("a recompute takes no mean that never counted (300 ms of arrivals): 0",
+    CHECK("a recompute takes no lateness that never counted (300 ms of arrivals): 0",
           s.pace() == 0);
 }
 
@@ -243,6 +250,146 @@ void test_pace_seeds() {
     k.leave(2);
     CHECK("it leaves: the seed of the one that stays holds the pace (600 ms)",
           k.pace() == 600 * MS);
+}
+
+// --- bursts: a median over wall time, a catch-up weighs nothing -----------------------------
+
+void test_pace_bursts() {
+    int64_t l = 0;
+    // An upstream aligner's start backlog (B2, WI-P2-8): 2 s of 10 ms buffers drained in 60 ms
+    // as the input's first data, lateness 2 s -> 70 ms, then 70 ms steady. The mean over the
+    // arrivals of a second was about 840 ms, and the pace held it.
+    PaceGroup a;
+    a.join(1, -1);
+    for (int n = 0; n < 200; n++) {
+        const int64_t at = 2000 * MS + n * 300000;   // 0.3 ms apart
+        a.observe(1, at, at - n * 10 * MS);
+    }
+    for (int n = 200; n < 350; n++) a.observe(1, n * 10 * MS + 70 * MS, 70 * MS);
+    CHECK("a 2 s backlog drained in 60 ms, then 70 ms: the pace is 70 ms",
+          a.pace() >= 69 * MS && a.pace() <= 71 * MS);
+    CHECK("... and the member reads 70 ms", a.lateness(1, &l) && l >= 69 * MS && l <= 71 * MS);
+
+    // A rejoin starts a run: no stretch reaches back across the absence (it would rise from
+    // 20 to 300 ms over 2 s and pull the median to 160).
+    PaceGroup f;
+    f.join(1, -1);
+    for (int i = 0; i < 100; i++) f.observe(1, i * 10 * MS, 20 * MS);
+    for (int i = 0; i < 60; i++) f.observe(1, 3 * S + i * 10 * MS, 300 * MS, i == 0);
+    CHECK("a rejoin at 300 ms after 20 ms: the member reads 300 ms, and so does the pace",
+          f.lateness(1, &l) && l == 300 * MS && f.pace() == 300 * MS);
+
+    // A stall of 70 ms, then its backlog at once, mid-run: 80 ms of stretches at 40 -> 110 ms,
+    // the drain left out, 920 ms at 40 ms. A stall is not a slower input.
+    PaceGroup s;
+    s.join(1, -1);
+    for (int n = 0; n < 50; n++) s.observe(1, n * 10 * MS + 40 * MS, 40 * MS);
+    for (int n = 50; n < 58; n++) s.observe(1, 610 * MS, (57 - n) * 10 * MS + 40 * MS);
+    for (int n = 58; n < 151; n++) s.observe(1, n * 10 * MS + 40 * MS, 40 * MS);
+    CHECK("a 70 ms stall then its backlog: 40 ms, and the pace too",
+          s.lateness(1, &l) && l == 40 * MS && s.pace() == 40 * MS);
+
+    // A sender of 150 ms bursts (RIST, SRT): 20 ms buffers, each burst all the content done 10 ms
+    // before it. Over wall time its lateness is the middle of its range, as the arrivals' mean.
+    PaceGroup r;
+    r.join(1, -1);
+    int n = 0;
+    double sum = 0;
+    int cnt = 0;
+    for (int j = 1; j <= 40; j++) {
+        const int64_t w = j * 150 * MS;
+        for (int k = 0; (n + 1) * 20 * MS <= w - 10 * MS; k++, n++) {
+            const int64_t at = w + k * 100000, late = at - n * 20 * MS;
+            r.observe(1, at, late);
+            if (j > 30) sum += (double)late, cnt++;
+        }
+    }
+    const double arrival_mean = sum / cnt;
+    CHECK("150 ms bursts: the arrivals' mean within 10 ms (the middle of 31..170 ms)",
+          r.lateness(1, &l) && std::abs((double)l - arrival_mean) <= 10.0 * MS
+              && l > 80 * MS && l < 120 * MS);
+}
+
+// A delay of 0..2 x `jit` ms, the same on every platform.
+struct Jitter {
+    uint32_t x = 2463534242u;
+    Jitter() = default;
+    explicit Jitter(uint32_t seed) : x(seed) {}
+    int64_t next(int jit) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        return jit ? (int64_t)(x % (uint32_t)(2 * jit * 1000 + 1)) * 1000 : 0;
+    }
+};
+
+void test_pace_catch_ups() {
+    // A 4 s backlog drained in 300 ms, then 50 ms: a third of the first half second was drain.
+    PaceGroup a;
+    a.join(1, -1);
+    for (int n = 0; n < 400; n++) {
+        const int64_t at = 4000 * MS + n * 750000;
+        a.observe(1, at, at - n * 10 * MS);
+    }
+    for (int n = 400; n < 600; n++) a.observe(1, n * 10 * MS + 50 * MS, 50 * MS);
+    CHECK("a 4 s backlog drained in 300 ms, then 50 ms: the pace is 50 ms", a.pace() == 50 * MS);
+
+    // A slow catch-up: 2 s behind at the start, 1.5 x real time until 50 ms behind, arrivals
+    // delayed 0..10 ms, so many stretches rise, at the draining level. Not taken until settled.
+    PaceGroup s;
+    s.join(1, -1);
+    Jitter j;
+    int64_t content = 0, prev = 0, behind = 2000 * MS, taken_behind = -1;
+    for (int n = 0; n < 700; n++) {
+        const int64_t at = std::max(prev, content + behind + j.next(5));
+        prev = at;
+        s.observe(1, at, at - content);
+        if (taken_behind < 0 && s.pace() > 0) taken_behind = behind;
+        content += 10 * MS;
+        if (behind > 50 * MS) behind -= std::min<int64_t>(behind - 50 * MS, 10 * MS / 3);
+    }
+    CHECK("a 1.5 x catch-up from 2 s: the pace is taken only once it settled 50 ms behind",
+          taken_behind == 50 * MS);
+    CHECK("... at the 50 ms and its jitter", s.pace() > 50 * MS && s.pace() <= 60 * MS);
+
+    // A 5 x catch-up with arrivals delayed 0..16 ms: a few of its stretches rise, at the
+    // draining level, too few of the window to be taken (without that rule: 191 ms).
+    PaceGroup v;
+    v.join(1, -1);
+    Jitter q{99};
+    content = 0, prev = 0, behind = 2000 * MS;
+    for (int n = 0; n < 1500; n++) {
+        const int64_t at = std::max(prev, content + behind + q.next(8));
+        prev = at;
+        v.observe(1, at, at - content);
+        content += 10 * MS;
+        if (behind > 50 * MS) behind -= std::min<int64_t>(behind - 50 * MS, 8 * MS);
+    }
+    CHECK("a 5 x catch-up, delays up to 16 ms: the pace is the 50 ms and its jitter",
+          v.pace() > 50 * MS && v.pace() <= 70 * MS);
+
+    // A real slowdown is taken: 40 ms for a second, then 300 ms.
+    PaceGroup u;
+    u.join(1, -1);
+    int64_t t = 0, when = -1;
+    for (int k = 0; k < 100; k++, t += 10 * MS) u.observe(1, t, 40 * MS);
+    for (int k = 0; k < 150; k++, t += 10 * MS) {
+        u.observe(1, t, 300 * MS);
+        if (when < 0 && u.pace() == 300 * MS) when = t - 1000 * MS;
+    }
+    CHECK("an input that slows from 40 to 300 ms: the pace follows within 0.6 s",
+          when >= 0 && when <= 600 * MS);
+
+    // Symmetric jitter (+-4 ms around 100 ms, arrivals in order) leaves the median at 100.
+    PaceGroup e;
+    e.join(1, -1);
+    Jitter k;
+    for (int n = 0; n < 300; n++) {
+        const int64_t jj = k.next(4) - 4 * MS;
+        e.observe(1, n * 10 * MS + jj, 100 * MS + jj);
+    }
+    CHECK("+-4 ms jitter around 100 ms: the pace within 1.5 ms of it",
+          e.pace() >= 100 * MS - 1500000 && e.pace() <= 100 * MS + 1500000);
 }
 
 // --- the registry --------------------------------------------------------------------------
@@ -341,6 +488,8 @@ int main() {
     test_pace_rises_only();
     test_pace_leave();
     test_pace_seeds();
+    test_pace_bursts();
+    test_pace_catch_ups();
     test_registry();
     test_gaps();
     return test_summary("align_watch");

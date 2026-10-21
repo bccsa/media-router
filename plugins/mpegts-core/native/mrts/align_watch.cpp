@@ -59,23 +59,66 @@ void PaceGroup::leave(Member m) {
     }
 }
 
-void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns) {
+// Of the stretches that count and end after `after`, the smallest mid with at least half their
+// length at or below it; false when none counts.
+bool PaceGroup::median(const std::deque<Stretch>& w, int64_t after, int64_t* out,
+                       std::vector<std::pair<int64_t, int64_t>>* scratch) {
+    scratch->clear();
+    int64_t len = 0;
+    for (const Stretch& st : w) {
+        if (!st.counts || st.end <= after) continue;
+        scratch->emplace_back(st.mid, st.len);
+        len += st.len;
+    }
+    if (scratch->empty()) return false;
+    std::sort(scratch->begin(), scratch->end());
+    int64_t acc = 0;
+    for (const auto& v : *scratch) {
+        acc += v.second;
+        if (2 * acc >= len) {
+            *out = v.first;
+            return true;
+        }
+    }
+    *out = scratch->back().first;
+    return true;
+}
+
+void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh) {
     auto it = members_.find(m);
     if (it == members_.end()) return;
     State& s = it->second;
     const int64_t l = std::clamp(lateness_ns, -LATENESS_LIMIT_NS, LATENESS_LIMIT_NS);
-    s.window.emplace_back(now_ns, l);
-    s.sum += l;
-    while (s.window.front().first <= now_ns - MEAN_NS) {
-        s.sum -= s.window.front().second;
+    const int64_t len = now_ns - s.last_at;
+    // The stretch since the run's last arrival; it counts unless the lateness fell over it.
+    if (s.has_last && !fresh && len > 0) {
+        const bool counts = l >= s.last_lateness;
+        s.window.push_back(Stretch{now_ns, len, (s.last_lateness + l) / 2, counts});
+        s.span += len;
+        if (counts) s.len += len;
+    }
+    s.has_last = true;
+    s.last_at = now_ns;
+    s.last_lateness = l;
+    while (!s.window.empty() && s.window.front().end <= now_ns - WINDOW_NS) {
+        s.span -= s.window.front().len;
+        if (s.window.front().counts) s.len -= s.window.front().len;
         s.window.pop_front();
     }
-    s.mean = (int64_t)std::llround((double)s.sum / (double)s.window.size());
-    s.has_mean = true;
-    if (s.window.back().first - s.window.front().first >= MEAN_SPAN_NS) {
-        s.need = s.mean;
-        s.has_need = true;
-        pace_ = std::max(pace_, s.need);
+    if (!median(s.window, INT64_MIN, &s.level, &scratch_)) s.level = l;
+    s.has_level = true;
+    // Taken once the stretches span half a second and a third of that counts (jitter counts
+    // half of a steady input's, a catch-up much less).
+    if (s.span >= SPAN_NS && 3 * s.len >= s.span) {
+        // Falling: over the newer half nothing counts, or what does sits under the whole.
+        int64_t newer = 0;
+        const bool falling = !median(s.window, now_ns - s.span / 2, &newer, &scratch_) ||
+                             newer < s.level - FALL_NS;
+        if (!falling) {
+            s.need = s.level;
+            s.has_need = true;
+            pace_ = std::max(pace_, s.need);
+        }
     }
 }
 
@@ -83,8 +126,8 @@ void PaceGroup::raise(int64_t pace_ns) { pace_ = std::max(pace_, pace_ns); }
 
 bool PaceGroup::lateness(Member m, int64_t* out) const {
     auto it = members_.find(m);
-    if (it == members_.end() || !it->second.has_mean) return false;
-    *out = it->second.mean;
+    if (it == members_.end() || !it->second.has_level) return false;
+    *out = it->second.level;
     return true;
 }
 
@@ -116,10 +159,11 @@ void PaceRegistry::leave(Membership* m) {
     m->member = 0;
 }
 
-void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns) {
+void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns,
+                           bool fresh) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = groups_.find(m.key);
-    if (m.member && it != groups_.end()) it->second.observe(m.member, now_ns, lateness_ns);
+    if (m.member && it != groups_.end()) it->second.observe(m.member, now_ns, lateness_ns, fresh);
 }
 
 void PaceRegistry::raise(const Membership& m, int64_t pace_ns) {

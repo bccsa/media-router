@@ -145,9 +145,10 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         const desc = module.buildPipeline({ pairCount: 2 });
         expect(desc).not.toBeNull();
         // One source per input still builds the input fan-in (live inputs, #787).
-        expect(desc!.pipeline).toContain('audiomixer name=inmix0 force-live=true');
-        expect(desc!.pipeline).toContain('capsfilter name=inmix0_caps');
-        expect(desc!.pipeline).toContain('identity name=inmix1_out sync=true');
+        expect(desc!.pipeline).toContain('audiomixer name=inmix0 latency=0');
+        expect(desc!.pipeline).toContain('capsfilter name=inmix0_out ');
+        expect(desc!.pipeline).toContain('mralignwatch name=inmix1_aw_');
+        expect(desc!.pipeline).not.toContain('identity name=inmix');
         expect(desc!.pipeline).toContain('audiomixer name=omix0 force-live=true');
         expect(desc!.pipeline).toContain('audiomixer name=omix1 force-live=true');
         expect(desc!.pipeline).toContain('avenc_s302m strict=experimental');
@@ -167,7 +168,7 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         const { module } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
         const desc = module.buildPipeline({ pairCount: 2, channels: 6 });
         expect(desc!.pipeline).toContain(
-            'capsfilter name=inmix0_caps caps="audio/x-raw,rate=48000,channels=6"',
+            'capsfilter name=inmix0_out caps="audio/x-raw,rate=48000,channels=6"',
         );
         expect(desc!.pipeline).toContain(
             '! audio/x-raw,rate=48000,channels=6 ! identity name=omix0_pace',

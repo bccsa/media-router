@@ -41,41 +41,62 @@ class ArrivalRhythm {
 };
 
 // The pace of one aggregator's inputs (part 4.3 job 3): at least 0, each member's seed and
-// each mean lateness a member showed over a second. It rises only, and is recomputed from the
+// each lateness a member showed over a second. It rises only, and is recomputed from the
 // members that remain when one leaves. PaceRegistry's lock guards it.
+//
+// A member's lateness: the median over wall time of its last second, each stretch between two
+// arrivals at its midpoint, leaving out those over which it fell (a backlog draining, at any
+// speed). It goes into the pace only while a third of the window counts and it is not falling.
 class PaceGroup {
   public:
     using Member = uint64_t;
-    static constexpr int64_t MEAN_NS = 1000000000;   // a member's lateness: its mean over 1 s
-    // A mean counts toward the pace once its samples span half the second: one sample of a
-    // start-up burst, or the last few of a run, is no mean over a second.
-    static constexpr int64_t MEAN_SPAN_NS = MEAN_NS / 2;
-    // Samples are clamped to +-1 h: past that a PTS is garbage, and sums stay in 64 bits.
+    static constexpr int64_t WINDOW_NS = 1000000000;   // a member's lateness: over its last 1 s
+    // It counts toward the pace once its stretches span half the second: the first arrivals of
+    // a run are no lateness over a second.
+    static constexpr int64_t SPAN_NS = WINDOW_NS / 2;
+    // Falling: the newer half's median this far under the whole window's.
+    static constexpr int64_t FALL_NS = 2000000;
+    // Samples are clamped to +-1 h: past that a PTS is garbage.
     static constexpr int64_t LATENESS_LIMIT_NS = 3600LL * 1000000000LL;
 
     // seed_ns < 0: none.
     void join(Member m, int64_t seed_ns);
     void leave(Member m);
-    // An arrival: the member's mean over the second before it, into the pace when it counts.
-    void observe(Member m, int64_t now_ns, int64_t lateness_ns);
+    // An arrival. `fresh` starts a run (after waiting, an absence or a flush): no stretch
+    // reaches back to the member's previous arrival. The lateness goes into the pace when it
+    // counts.
+    void observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh = false);
     void raise(int64_t pace_ns);
 
     int64_t pace() const { return pace_; }
-    // The member's mean lateness over the second before its last arrival; false before any.
+    // The member's lateness over the second before its last arrival (that arrival's own
+    // before any stretch counts); false before any.
     bool lateness(Member m, int64_t* out) const;
     size_t size() const { return members_.size(); }
 
   private:
+    struct Stretch {
+        int64_t end;   // the arrival that closed it
+        int64_t len;
+        int64_t mid;   // the lateness halfway through it
+        bool counts;   // the lateness did not fall over it
+    };
     struct State {
         int64_t seed = -1;
-        std::deque<std::pair<int64_t, int64_t>> window;   // (arrival, lateness), the last second
-        int64_t sum = 0;
-        bool has_mean = false;
-        int64_t mean = 0;   // at the last arrival, shown
+        bool has_last = false;
+        int64_t last_at = 0, last_lateness = 0;
+        std::deque<Stretch> window;   // the stretches that end in the last second
+        int64_t span = 0;             // their total length
+        int64_t len = 0;              // the length of those that count
+        bool has_level = false;
+        int64_t level = 0;   // the median at the last arrival, shown
         bool has_need = false;
-        int64_t need = 0;   // the last mean that counted: an absent member's need
+        int64_t need = 0;    // the last level that counted: an absent member's need
     };
+    static bool median(const std::deque<Stretch>& w, int64_t after, int64_t* out,
+                       std::vector<std::pair<int64_t, int64_t>>* scratch);
     std::map<Member, State> members_;
+    std::vector<std::pair<int64_t, int64_t>> scratch_;   // (mid, len), sorted per arrival
     int64_t pace_ = 0;
 };
 
@@ -98,7 +119,7 @@ class PaceRegistry {
 
     Membership join(const std::string& key, int64_t seed_ns);
     void leave(Membership* m);   // and clears it; a second call is a no-op
-    void observe(const Membership& m, int64_t now_ns, int64_t lateness_ns);
+    void observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh = false);
     void raise(const Membership& m, int64_t pace_ns);
     View view(const Membership& m) const;
     size_t groups() const;

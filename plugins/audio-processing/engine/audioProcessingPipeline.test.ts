@@ -28,7 +28,6 @@ function build(
         programSources: [mkSource(0)],
         sidechainSources: sidechain,
         outputPort: 40200,
-        latencyMs: 200,
         config,
         stages: stages(over),
     });
@@ -53,7 +52,6 @@ describe('buildProcessingPipeline', () => {
                 programSources: [],
                 sidechainSources: [mkSource(1)],
                 outputPort: 40200,
-                latencyMs: 200,
                 config: {},
                 stages: stages(),
             }),
@@ -62,10 +60,12 @@ describe('buildProcessingPipeline', () => {
 
     it('bare chain: 302M decode in, fader + VU, 302M encode out — no PipeWire', () => {
         const result = build()!;
-        // One program source → direct branch: no aggregator, no 200 ms mix
-        // latency, no pacer (nothing can free-run without force-live).
+        // One program source → direct branch: no aggregator, no watchdog.
         expect(result.pipeline).not.toContain('audiomixer');
-        expect(result.pipeline).not.toContain('latency=200000000');
+        expect(result.pipeline).not.toContain('mralignwatch');
+        expect(result.pipeline).toContain(
+            'mrtsdemux name=progmix_demux0 select=audio/x-smpte-302m ! avdec_s302m',
+        );
         expect(result.pipeline).toContain(
             'capsfilter name=progmix_out caps="audio/x-raw,rate=48000,channels=2"',
         );
@@ -90,16 +90,20 @@ describe('buildProcessingPipeline', () => {
             programSources: [mkSource(0), mkSource(1), mkSource(2)],
             sidechainSources: [],
             outputPort: 40200,
-            latencyMs: 500,
             config: {},
             stages: stages(),
         })!;
         expect(result.pipeline.match(/! progmix\./g)).toHaveLength(3);
-        expect(result.pipeline).toContain('audiomixer name=progmix force-live=true');
-        expect(result.pipeline).toContain('latency=500000000');
-        // The force-live mixer is clock-paced: without this it free-runs once
-        // every input has gone EOS (11.64 s CPU per 10 s wall, fleet box).
-        expect(result.pipeline).toContain('identity name=progmix_out sync=true');
+        // The aligned mixer: no budget, every source through its watchdog.
+        expect(result.pipeline).toContain(
+            'audiomixer name=progmix latency=0 start-time-selection=first' +
+                ' ! capsfilter name=progmix_out caps="audio/x-raw,rate=48000,channels=2"',
+        );
+        expect(
+            result.pipeline.match(/! mralignwatch name=progmix_aw_[0-9a-f]{6} aligner=progmix /g),
+        ).toHaveLength(3);
+        expect(result.pipeline).not.toContain('force-live');
+        expect(result.pipeline).not.toContain('identity');
     });
 
     it('builds the full stage order: hpf → eq → dynamics → limiter → duckvol', () => {
@@ -262,7 +266,6 @@ describe('buildProcessingPipeline', () => {
                 programSources: [],
                 sidechainSources: [key],
                 outputPort: 40200,
-                latencyMs: 200,
                 config: {},
                 stages: stages({ dynMode: 'ducker', duckerKey: true }),
             }),
@@ -276,7 +279,6 @@ describe('buildProcessingPipeline', () => {
                 programSources: [shared],
                 sidechainSources: [shared],
                 outputPort: 40200,
-                latencyMs: 200,
                 config: {},
                 stages: stages(),
             }),
@@ -290,7 +292,6 @@ describe('buildProcessingPipeline', () => {
             programSources: [program],
             sidechainSources: [key],
             outputPort: 40200,
-            latencyMs: 200,
             config: { gateKey: 'sidechain' },
             stages: stages({ dynElement: SC_GATE_EL, dynMode: 'gate', keyedGate: true }),
         })!;
@@ -311,7 +312,6 @@ describe('buildProcessingPipeline', () => {
             programSources: [program],
             sidechainSources: [key],
             outputPort: 40200,
-            latencyMs: 200,
             config: {},
             stages: stages({ dynMode: 'ducker', duckerKey: true }),
         })!;

@@ -244,6 +244,18 @@ describe('AudioProcessingModule — buildPipeline', () => {
         await module.onStop();
     });
 
+    it('stops without the EOS drain, a fan-in of two holding every EOS or not', async () => {
+        for (const n of [1, 2]) {
+            const sources = Array.from({ length: n }, (_, i) => mkSource('program-in', i));
+            const { module } = await createModule({ mode: 'compressor' }, sources);
+            await startModule(module);
+            const desc = module.buildPipeline((module as any).config)!;
+            expect(desc.pipeline.includes('hold-on-eos=true')).toBe(n > 1);
+            expect(desc.eosDrain).toBe(false);
+            await module.onStop();
+        }
+    });
+
     it('errors when the bus channel pool is exhausted', async () => {
         const { module, setHealth } = await createModule({}, [mkSource('program-in')]);
         await startModule(module);

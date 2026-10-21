@@ -72,7 +72,7 @@ describe('AudioMixerModule.buildPipeline', () => {
         expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('exhausted'));
     });
 
-    it('opts out of the EOS drain — an audio-only producer whose force-live mix never drains (#787)', () => {
+    it('opts out of the EOS drain — an audio-only producer whose aligners hold EOS (#787)', () => {
         const { module } = makeModule(2);
         expect(module.buildPipeline({})!.eosDrain).toBe(false);
     });

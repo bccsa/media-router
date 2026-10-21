@@ -17,17 +17,19 @@ nothing in `packages/engine` imports it back
 | Export | Purpose |
 |---|---|
 | `probe302mSupport()` | Runtime gate: `avenc_s302m` present AND `mpegtsmux` accepting `audio/x-smpte-302m` (gst ≥ 1.26). Call once from `static initManifest`, cache the flag. |
-| `pacedMixer(opts)` | The `audiomixer force-live=true ! <caps> ! identity sync=true` shape. The trailing `identity` is the OOM fix, not a style. |
-| `buildAudioMixInput(opts)` | N × 302M edges → one continuation point. Mixer arm for ≥ 2 (and 0) sources, direct branch for exactly 1. Returns `{ fragment, continuationName }` — chain only from `continuationName`. |
+| `alignedMixer(opts)` | The `audiomixer latency=0 start-time-selection=first ! capsfilter` aligner. Not live, no timeout: every pad comes through `mralignwatch`, which paces it and gaps it when silent. |
+| `buildAudioMixInput(opts)` | N × 302M edges → one continuation point. Each branch `mrtsdemux select=audio/x-smpte-302m` (content time). Mixer arm for ≥ 2 (and 0) sources and live-input mode, each input through `mralignwatch`; direct branch for exactly 1. Returns `{ fragment, continuationName }` — chain only from `continuationName`. |
+| `pacedMixer(opts)` | The `audiomixer force-live=true ! <caps> ! identity sync=true` shape (ADR-0008). Only n1-mixer-302m's output mixers still build it, until house-clock WI-P2-9. |
 | `build302mEncodeBranch(opts?)` | PCM → 302M-in-TS encode tail; the caller appends `buildBusSink(...)`. |
 | `mixMatrixClause(map, src, dst)` | A `ChannelMapEntry[]` rendered as an `audioconvert mix-matrix` (fan-out, downmix, channel picking, per-channel gain). |
 | `positionedChannelsClause(n)` | `audioconvert <identity matrix> ! audio/x-raw,channels=n,channel-mask=<default layout>` — gives an unpositioned n-wide stream (whole-device capture, decoded wide 302M) the layout `avenc_s302m` insists on. `POSITIONED_302M_MASK` is the table. |
 | `channelRange(first, last)` | `"5"` for one channel, `"5–12"` for a range — the device-channel span in a 302M module's health messages (input capture, output placement). |
 
-All three fan-in rules — pacing, chaining only from `continuationName`, and
-the single-source bypass — are locked in
-[ADR-0008](../../docs/adr/0008-302m-fan-in-contract.md). Read it before
-changing anything in `audio302mHelpers.ts`.
+The fan-in rules — chaining only from `continuationName` and the single-source
+bypass — are locked in [ADR-0008](../../docs/adr/0008-302m-fan-in-contract.md);
+its force-live mixer, pacer and `ignore-pcr` gave way to the aligned mixer in
+house-clock Phase 2 (plan chapter 6, OQ-21). Read both before changing
+anything in `audio302mHelpers.ts`.
 
 ## Using it
 

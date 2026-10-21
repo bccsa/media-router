@@ -111,8 +111,6 @@ export interface N1PipelineInputs {
     /** Connected sources grouped by input index — only indices with ≥1 edge. */
     inputs: Map<number, AudioMixSource[]>;
     outputs: N1Output[];
-    /** Per-input mix latency budget (ms) — the wait for lagging SOURCES. */
-    latencyMs: number;
     /** 302M word length of every output (`pcmBitDepth`). Default 16-bit. */
     pcmFormat?: S302mFormat;
     /** Mix width of every input fan-in and output mixer (`channels`). Default
@@ -121,10 +119,8 @@ export interface N1PipelineInputs {
 }
 
 // The output mixers bridge only intra-pipeline jitter between the input
-// stages' continuous force-live streams — a fixed small budget, NOT the
-// configurable source-side latency (reusing it would double the audible
-// latency to every output). 20 ms: the hop costs this plus the input budget
-// (measured .103 2026-10-05, ADR-0008 amendment).
+// stages' continuous streams — a fixed small budget (measured .103 2026-10-05,
+// ADR-0008 amendment). Until house-clock WI-P2-9 moves them to `alignedMixer`.
 const OUTPUT_MIX_LATENCY_NS = 20_000_000;
 
 /**
@@ -169,7 +165,6 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
         const { fragment, continuationName } = buildAudioMixInput({
             sources,
             channels,
-            latencyMs: input.latencyMs,
             mixerName: n1InputMixerName(i),
             liveInputs: true,
         });
@@ -182,8 +177,8 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     // its sink pads go EOS, and nothing downstream paces it here — the 302M
     // encode tail ends in an unsynced bus tee. Un-paced, an output whose every
     // contributor has died free-runs at CPU speed and floods the bus (the
-    // measured OOM pathology, see `buildAudioMixInput`). The input fan-in is
-    // already paced inside that helper; these mixers it never sees.
+    // measured OOM pathology, see ADR-0008). The input fan-ins are aligned
+    // inside that helper (`mralignwatch`, nothing free-runs); these it never sees.
     const pcmFormat = input.pcmFormat ?? s302mFormatFor(undefined);
     for (const out of outputs) {
         const sink = buildBusSink(out.port);

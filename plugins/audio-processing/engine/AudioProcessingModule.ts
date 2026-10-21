@@ -210,7 +210,6 @@ export class AudioProcessingModule extends GstPluginBase {
             programSources,
             sidechainSources,
             outputPort: ep.port,
-            latencyMs: Number(config.mixLatencyMs ?? 200),
             config,
             stages: this.stages,
         });
@@ -231,6 +230,9 @@ export class AudioProcessingModule extends GstPluginBase {
             pipeline: result.pipeline,
             restartOnError: true,
             busReports: result.busReports,
+            // Audio-only bus producer, nothing to drain; and a fan-in of two or more sources
+            // holds every EOS in its aligners (hold-on-eos): a drain would wait out 6 s per stop.
+            eosDrain: false,
         };
     }
 }

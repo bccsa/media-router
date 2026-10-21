@@ -32,8 +32,6 @@ export interface ProcessingPipelineInputs {
     sidechainSources: AudioMixSource[];
     /** Allocated bus channel for the processed output. */
     outputPort: number;
-    /** Per-input mix latency budget (ms) — the wait for lagging SOURCES. */
-    latencyMs: number;
     config: Record<string, unknown>;
     stages: ChainStages;
 }
@@ -72,7 +70,6 @@ export function buildProcessingPipeline(
     const program = buildAudioMixInput({
         sources: programSources,
         channels: 2,
-        latencyMs: input.latencyMs,
         mixerName: PROGRAM_MIXER,
     });
     parts.push(program.fragment);
@@ -86,7 +83,6 @@ export function buildProcessingPipeline(
         const sidechain = buildAudioMixInput({
             sources: input.sidechainSources,
             channels: 2,
-            latencyMs: input.latencyMs,
             mixerName: SIDECHAIN_MIXER,
         });
         parts.push(sidechain.fragment);

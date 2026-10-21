@@ -1,185 +1,216 @@
 import { describe, it, expect } from 'vitest';
+import { buildBusSrc, quoteGstString, shortHash } from '@media-router/engine';
 import {
+    alignedMixer,
     buildAudioMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
     liveDemuxName,
+    liveInputBranchFor,
     liveMixInputBranch,
     mixInputBranchName,
     normalize302mChannels,
     pacedMixer,
+    type AudioMixSource,
 } from './audio302mHelpers.js';
 
 const SRC = { port: 40001, connectionId: 'c1' };
 const SRC2 = { port: 40002, connectionId: 'c2' };
+const CAPS2 = 'audio/x-raw,rate=48000,channels=2';
 
-describe('pacedMixer', () => {
-    it('always ends in the identity clock pacer — the OOM fix lives here only', () => {
-        expect(
-            pacedMixer({
-                name: 'omix0',
-                latencyNs: 50_000_000,
-                caps: 'audio/x-raw,rate=48000,channels=2',
-                pacerName: 'omix0_pace',
-            }),
-        ).toBe(
-            'audiomixer name=omix0 force-live=true latency=50000000' +
-                ' start-time-selection=first' +
-                ' ! audio/x-raw,rate=48000,channels=2' +
-                ' ! identity name=omix0_pace sync=true',
+/** A branch up to its decode; the bus source itself is the engine's (`buildBusSrc`). */
+const decoded = (port: number, demux: string): string =>
+    `${buildBusSrc({ port })} ! mrtsdemux name=${demux} select=audio/x-smpte-302m` +
+    ' ! avdec_s302m ! audioconvert ! audioresample';
+/** The watchdog every mixer-arm branch ends in. */
+const watch = (mixer: string, connectionId: string): string =>
+    `mralignwatch name=${mixer}_aw_${shortHash(connectionId)} aligner=${mixer}` +
+    ` input="${connectionId}" hold-on-eos=true`;
+
+describe('alignedMixer', () => {
+    it('is a non-live audiomixer with no budget, anchored at its first input, caps pinned on the continuation', () => {
+        expect(alignedMixer({ name: 'omix0', caps: CAPS2, outName: 'omix0_out' })).toBe(
+            'audiomixer name=omix0 latency=0 start-time-selection=first' +
+                ` ! capsfilter name=omix0_out caps="${CAPS2}"`,
         );
-    });
-
-    it('anchors the output timeline at the first input (never at running time 0)', () => {
-        // Default `zero` + the base_time=0 house clock = the mixer starts at
-        // BOOT and races the box's uptime as silence before consuming a sample
-        // (10.9.16.111, 2026-09-08: 13 min of dead Audio Out after a restart).
-        const s = pacedMixer({
-            name: 'm',
-            latencyNs: 200_000_000,
-            caps: 'audio/x-raw,rate=48000,channels=2',
-            pacerName: 'm_out',
-        });
-        expect(s).toMatch(/^audiomixer name=m [^!]*\bstart-time-selection=first\b[^!]* ! /);
-    });
-
-    it('names the capsfilter only when the caller needs to address it', () => {
-        expect(
-            pacedMixer({
-                name: 'mixin',
-                latencyNs: 200_000_000,
-                caps: 'audio/x-raw,rate=48000,channels=2',
-                capsName: 'mixin_caps',
-                pacerName: 'mixin_out',
-            }),
-        ).toContain('! capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2" !');
     });
 });
 
-describe('buildAudioMixInput — many sources (mixer arm)', () => {
-    it('emits a force-live audiomixer with the latency budget applied', () => {
-        const { fragment, continuationName } = buildAudioMixInput({ sources: [SRC, SRC2] });
-        // Callers continue from the named terminal element, not the raw mixer.
-        expect(continuationName).toBe('mixin_out');
-        expect(fragment).toContain('audiomixer name=mixin force-live=true');
-        expect(fragment).toContain('latency=200000000');
-        expect(fragment).not.toContain('min-upstream-latency');
-    });
-
-    it('pins the mixer OUTPUT caps — a force-live aggregator fixates before inputs deliver caps and otherwise goes mono (gate01 VU bug)', () => {
-        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], channels: 2 });
-        expect(fragment).toContain(
-            'capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2"',
-        );
-    });
-
-    it('paces the mixer on the pipeline clock — force-live free-runs after all pads EOS', () => {
-        const { fragment, continuationName } = buildAudioMixInput({ sources: [SRC, SRC2] });
-        // The pacer IS the continuation point: a caller branching off the
-        // capsfilter instead would bypass it and get the free-run back.
-        expect(fragment).toContain(
-            'capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2"' +
-                ' ! identity name=mixin_out sync=true',
+describe('buildAudioMixInput — the three arms, snapshot', () => {
+    it('one source: the direct branch, mrtsdemux and the branch queue, no aggregator or watchdog', () => {
+        const { fragment, continuationName } = buildAudioMixInput({ sources: [SRC] });
+        expect(fragment).toBe(
+            `${decoded(40001, 'mixin_demux0')}` +
+                ' ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0' +
+                ` ! capsfilter name=mixin_out caps="${CAPS2}"`,
         );
         expect(continuationName).toBe('mixin_out');
-        expect(fragment.endsWith(`${continuationName}.`)).toBe(false);
-        // Minimal props — identity's `single-segment` already defaults to false.
-        expect(fragment).not.toContain('single-segment');
     });
 
-    it('names the pacer off a custom mixer name', () => {
+    it('many sources: the aligned mixer, every branch through its mralignwatch', () => {
+        const { fragment, continuationName } = buildAudioMixInput({ sources: [SRC, SRC2] });
+        expect(fragment).toBe(
+            'audiomixer name=mixin latency=0 start-time-selection=first' +
+                ` ! capsfilter name=mixin_out caps="${CAPS2}"` +
+                ` ${decoded(40001, 'mixin_demux0')} ! ${CAPS2} ! ${watch('mixin', 'c1')} ! mixin.` +
+                ` ${decoded(40002, 'mixin_demux1')} ! ${CAPS2} ! ${watch('mixin', 'c2')} ! mixin.`,
+        );
+        expect(continuationName).toBe('mixin_out');
+    });
+
+    it('live inputs: the aligned mixer, each branch a named bin on an explicit pad', () => {
         const { fragment, continuationName } = buildAudioMixInput({
             sources: [SRC, SRC2],
-            mixerName: 'progmix',
+            liveInputs: true,
         });
-        expect(continuationName).toBe('progmix_out');
-        expect(fragment).toContain('identity name=progmix_out sync=true');
-    });
-
-    it('clamps the latency budget to 20–2000 ms', () => {
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).fragment).toContain(
-            'latency=20000000',
-        );
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).fragment).toContain(
-            'latency=2000000000',
-        );
-    });
-
-    it('builds one branch per source, each ending at the mixer', () => {
-        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2] });
-        expect(fragment.match(/! mixin\./g)).toHaveLength(2);
-        expect(fragment.match(/avdec_s302m/g)).toHaveLength(2);
-    });
-
-    it('pins 48 kHz and the requested channel count on every branch', () => {
-        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], channels: 2 });
-        expect(fragment.match(/! audio\/x-raw,rate=48000,channels=2 ! queue/g)).toHaveLength(2);
-    });
-
-    it('keeps the mixer (and the pacer) for a fan-in with no sources yet', () => {
-        const { fragment, continuationName } = buildAudioMixInput({ sources: [] });
+        const bin = (s: typeof SRC, i: number): string =>
+            ` ( name=${mixInputBranchName('mixin', s.connectionId)}` +
+            ` ${decoded(s.port, liveDemuxName('mixin', s.connectionId))} ! ${CAPS2}` +
+            ` ! ${watch('mixin', s.connectionId)} ) ! mixin.sink_${i}`;
         expect(fragment).toBe(
-            'audiomixer name=mixin force-live=true latency=200000000' +
-                ' start-time-selection=first' +
-                ' ! capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2"' +
-                ' ! identity name=mixin_out sync=true',
+            'audiomixer name=mixin latency=0 start-time-selection=first' +
+                ` ! capsfilter name=mixin_out caps="${CAPS2}"` +
+                bin(SRC, 0) +
+                bin(SRC2, 1),
         );
         expect(continuationName).toBe('mixin_out');
     });
-});
 
-describe('buildAudioMixInput — named demuxers for stamp alignment', () => {
-    it('names every branch tsdemux and returns them in source order', () => {
-        const two = buildAudioMixInput({ sources: [SRC, SRC2] });
-        expect(two.demuxes).toEqual(['mixin_demux0', 'mixin_demux1']);
-        expect(two.fragment).toContain('tsdemux name=mixin_demux0 latency=0');
-        expect(two.fragment).toContain('tsdemux name=mixin_demux1 latency=0');
-        expect(buildAudioMixInput({ sources: [SRC], mixerName: 'prog' }).demuxes).toEqual([
-            'prog_demux0',
-        ]);
-        expect(buildAudioMixInput({ sources: [] }).demuxes).toEqual([]);
+    it('no sources: the aligned mixer alone', () => {
+        const { fragment, continuationName } = buildAudioMixInput({ sources: [] });
+        expect(fragment).toBe(alignedMixer({ name: 'mixin', caps: CAPS2, outName: 'mixin_out' }));
+        expect(continuationName).toBe('mixin_out');
+    });
+
+    it('returns only the fragment and the continuation — no latency, no demux list to align', () => {
+        for (const sources of [[], [SRC], [SRC, SRC2]]) {
+            expect(Object.keys(buildAudioMixInput({ sources })).sort()).toEqual([
+                'continuationName',
+                'fragment',
+            ]);
+        }
     });
 });
 
-describe('buildAudioMixInput — declared aggregation latency', () => {
-    it('the mixer arm reports its effective (clamped) latency so a paced sink can subtract it', () => {
-        expect(buildAudioMixInput({ sources: [SRC, SRC2] }).mixerLatencyNs).toBe(200_000_000);
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 50 }).mixerLatencyNs).toBe(
-            50_000_000,
-        );
-        // Same clamp as the fragment: 20–2000 ms.
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).mixerLatencyNs).toBe(
-            20_000_000,
-        );
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).mixerLatencyNs).toBe(
-            2_000_000_000,
-        );
-        expect(buildAudioMixInput({ sources: [] }).mixerLatencyNs).toBe(200_000_000);
+describe('fan-in strings carry none of the replaced mechanisms', () => {
+    const MAP = [
+        { srcChannel: 0, dstChannel: 0 },
+        { srcChannel: 0, dstChannel: 1 },
+    ];
+    const SOURCES: AudioMixSource[] = [
+        { ...SRC, channelMap: MAP, sourceChannels: 1, seedLatenessMs: 40 },
+        { ...SRC2, socketPath: '/tmp/mr-bus-40002-abc.sock' },
+        { port: 40003, connectionId: 'mod-a:out-0-mod-b:in-0', sourceChannels: 8 },
+    ];
+
+    function everyString(): string[] {
+        const out: string[] = [alignedMixer({ name: 'm', caps: CAPS2, outName: 'm_out' })];
+        for (let n = 0; n <= SOURCES.length; n++) {
+            for (const liveInputs of [false, true]) {
+                for (const channels of [1, 2, 8]) {
+                    const sources = SOURCES.slice(0, n);
+                    out.push(buildAudioMixInput({ sources, liveInputs, channels }).fragment);
+                }
+            }
+        }
+        for (const s of SOURCES) {
+            out.push(build302mMixBranch(s, { mixerName: 'm', demuxName: 'd' }));
+            out.push(liveMixInputBranch('m', s, { channels: 8 }).description!);
+            out.push(liveInputBranchFor('m', s.connectionId, s).description!);
+        }
+        return out;
+    }
+
+    it('no tsdemux, no ignore-pcr, no force-live, no clock pacer (sync=true)', () => {
+        const all = everyString();
+        expect(all.length).toBeGreaterThan(20);
+        for (const s of all) {
+            expect(s).not.toMatch(/\btsdemux\b/);
+            expect(s).not.toContain('ignore-pcr');
+            expect(s).not.toContain('force-live');
+            expect(s).not.toContain('sync=true');
+            expect(s).not.toContain('identity');
+        }
     });
 
-    it('the single-source arm declares none — nothing to compensate', () => {
-        expect(
-            buildAudioMixInput({ sources: [SRC], latencyMs: 500 }).mixerLatencyNs,
-        ).toBeUndefined();
+    it('every mrtsdemux selects 302M, so a TS without it fails soft (no stream, silent pad)', () => {
+        for (const s of everyString()) {
+            const demuxes = s.match(/\bmrtsdemux [^!]*/g) ?? [];
+            for (const d of demuxes) expect(d).toMatch(/ select=audio\/x-smpte-302m $/);
+            expect(demuxes.length).toBe(s.match(/avdec_s302m/g)?.length ?? 0);
+        }
+    });
+});
+
+describe('build302mMixBranch — the watchdog in front of the aggregator', () => {
+    it('ends in the mralignwatch (the unlinked src pad a live add ghosts) and links nothing', () => {
+        const branch = build302mMixBranch(SRC, { mixerName: 'mixin', demuxName: 'd1' });
+        expect(branch).toBe(`${decoded(40001, 'd1')} ! ${CAPS2} ! ${watch('mixin', 'c1')}`);
+        expect(branch).not.toContain('mixin.');
+    });
+
+    it('joins the pace group of the mixer it feeds, holding EOS as absence', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], mixerName: 'progmix' });
+        const watches = fragment.match(/mralignwatch [^!]+/g)!;
+        expect(watches).toHaveLength(2);
+        for (const w of watches) {
+            expect(w).toContain(' aligner=progmix ');
+            expect(w).toContain(' hold-on-eos=true');
+        }
+        // The queue it replaced is gone from the mixer arm.
+        expect(fragment).not.toContain('queue leaky=0');
+    });
+
+    it('names the watchdog and labels the input by connection, never by position', () => {
+        const ab = buildAudioMixInput({ sources: [SRC, SRC2] }).fragment;
+        const ba = buildAudioMixInput({ sources: [SRC2, SRC] }).fragment;
+        for (const id of ['c1', 'c2']) {
+            expect(ab).toContain(watch('mixin', id));
+            expect(ba).toContain(watch('mixin', id));
+        }
+    });
+
+    it('quotes the input label, so any connection id parses', () => {
+        const id = 'odd id "x" \\ y';
+        const branch = build302mMixBranch(
+            { port: 40001, connectionId: id },
+            { mixerName: 'mixin', demuxName: 'd' },
+        );
+        expect(branch).toContain(
+            `mralignwatch name=mixin_aw_${shortHash(id)} aligner=mixin input=${quoteGstString(id)} `,
+        );
+        expect(quoteGstString(id)).toBe('"odd id \\"x\\" \\\\ y"');
+    });
+
+    it('renders a seed lateness as seed-lateness in ns, and none without one', () => {
+        const seeded = (seedLatenessMs: number | undefined): string =>
+            build302mMixBranch({ ...SRC, seedLatenessMs }, { mixerName: 'mixin', demuxName: 'd' });
+        expect(seeded(12.5)).toMatch(/ hold-on-eos=true seed-lateness=12500000$/);
+        // A mean (WI-P2-13 fills it) renders whole ns: gst-parse refuses a fractional int64.
+        expect(seeded(12.3456789)).toMatch(/ seed-lateness=12345679$/);
+        expect(seeded(0.0000004)).toMatch(/ seed-lateness=0$/);
+        expect(seeded(0)).toMatch(/ seed-lateness=0$/);
+        // Inside the element's range: an early producer seeds 0, a seed past 1 h is 1 h.
+        expect(seeded(-3)).toMatch(/ seed-lateness=0$/);
+        expect(seeded(5_000_000)).toMatch(/ seed-lateness=3600000000000$/);
+        for (const none of [undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(seeded(none)).not.toContain('seed-lateness');
+            expect(seeded(none)).toMatch(/ hold-on-eos=true$/);
+        }
+    });
+
+    it('a seed reaches the start-time pipeline in both mixer modes, but not the direct branch', () => {
+        const s = { ...SRC, seedLatenessMs: 250 };
+        for (const liveInputs of [false, true]) {
+            const { fragment } = buildAudioMixInput({ sources: [s, SRC2], liveInputs });
+            expect(fragment.match(/seed-lateness=250000000/g)).toHaveLength(1);
+        }
+        // One source, no watchdog: nothing to seed.
+        expect(buildAudioMixInput({ sources: [s] }).fragment).not.toContain('seed-lateness');
     });
 });
 
 describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
-    it('drops the aggregator entirely: no audiomixer, no pacer, no mix latency', () => {
-        const { fragment, continuationName } = buildAudioMixInput({
-            sources: [SRC],
-            latencyMs: 500,
-        });
-        expect(fragment).not.toContain('audiomixer');
-        expect(fragment).not.toContain('identity');
-        expect(fragment).not.toContain('latency=500000000');
-        // Same continuation name as the mixer arm — callers stay topology-agnostic.
-        expect(continuationName).toBe('mixin_out');
-        expect(
-            fragment.endsWith('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2"'),
-        ).toBe(true);
-    });
-
     it('keeps the decode chain, the branch queue bound and the channel map', () => {
         const { fragment } = buildAudioMixInput({
             sources: [
@@ -197,7 +228,7 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
         });
         expect(fragment).toContain('unixfdsrc socket-path=/tmp/mr-bus-40001-abc.sock');
         expect(fragment).toContain(
-            'tsdemux name=mixin_demux0 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m',
+            'mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m',
         );
         // `sourceChannels: 1` still means a stereo 302M wire (no mono layout
         // exists) — the matrix must be 2 columns wide.
@@ -207,6 +238,15 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
         expect(fragment).toContain(
             'queue leaky=0 max-size-time=250000000 max-size-buffers=0 max-size-bytes=0',
         );
+        expect(fragment).not.toContain('mralignwatch');
+        expect(fragment).not.toContain('audiomixer');
+    });
+
+    it('clamps the branch queue to 20–2000 ms', () => {
+        const q = (ms: number) =>
+            buildAudioMixInput({ sources: [SRC], branchQueueMs: ms }).fragment;
+        expect(q(5)).toContain('max-size-time=20000000 ');
+        expect(q(9999)).toContain('max-size-time=2000000000 ');
     });
 
     it('honours a custom mixer name for the terminal element', () => {
@@ -216,15 +256,62 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
         });
         expect(continuationName).toBe('inmix2_out');
         expect(fragment).toContain('capsfilter name=inmix2_out');
+        expect(fragment).toContain('mrtsdemux name=inmix2_demux0 ');
+    });
+});
+
+describe('buildAudioMixInput — mixer arm', () => {
+    it('pins the mixer OUTPUT caps on the continuation — left to downstream it goes mono (gate01 VU bug)', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], channels: 2 });
+        expect(fragment).toMatch(
+            /^audiomixer name=mixin [^!]+ ! capsfilter name=mixin_out caps="audio\/x-raw,rate=48000,channels=2" /,
+        );
+    });
+
+    it('anchors the output timeline at the first input (never at running time 0)', () => {
+        // Default `zero` + the base_time=0 house clock = the mixer starts at
+        // BOOT and races the box's uptime as silence before consuming a sample
+        // (10.9.16.111, 2026-09-08: 13 min of dead Audio Out after a restart).
+        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2] });
+        expect(fragment).toMatch(/^audiomixer name=mixin [^!]*\bstart-time-selection=first\b/);
+    });
+
+    it('builds one branch per source, each ending at the mixer', () => {
+        const { fragment } = buildAudioMixInput({
+            sources: [SRC, SRC2, { ...SRC, port: 40003, connectionId: 'c3' }],
+        });
+        expect(fragment.match(/ ! mixin\./g)).toHaveLength(3);
+        expect(fragment.match(/avdec_s302m/g)).toHaveLength(3);
+        expect(fragment.match(/mralignwatch /g)).toHaveLength(3);
+        expect(fragment).toContain('mrtsdemux name=mixin_demux2 ');
+    });
+
+    it('pins 48 kHz and the requested channel count on every branch and the output', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], channels: 8 });
+        expect(
+            fragment.match(/! audio\/x-raw,rate=48000,channels=8 ! mralignwatch /g),
+        ).toHaveLength(2);
+        expect(fragment).toContain(
+            'capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8"',
+        );
+    });
+
+    it('names the continuation off a custom mixer name', () => {
+        const { fragment, continuationName } = buildAudioMixInput({
+            sources: [SRC, SRC2],
+            mixerName: 'progmix',
+        });
+        expect(continuationName).toBe('progmix_out');
+        expect(fragment).toContain('capsfilter name=progmix_out ');
+        expect(fragment).toContain('audiomixer name=progmix ');
     });
 });
 
 describe('buildAudioMixInput — live-input mode (#787)', () => {
     it('always builds the mixer arm, each source a named bin on an explicit pad', () => {
         const one = buildAudioMixInput({ sources: [SRC], liveInputs: true });
-        expect(one.fragment).toContain('audiomixer name=mixin force-live=true');
+        expect(one.fragment).toMatch(/^audiomixer name=mixin latency=0 /);
         expect(one.continuationName).toBe('mixin_out');
-        expect(one.mixerLatencyNs).toBe(200_000_000);
         expect(one.fragment).toContain(`( name=${mixInputBranchName('mixin', 'c1')} unixfdsrc`);
         expect(one.fragment).toContain(') ! mixin.sink_0');
 
@@ -235,52 +322,40 @@ describe('buildAudioMixInput — live-input mode (#787)', () => {
     });
 
     it('keys demuxer names by connection, never by position', () => {
-        const { fragment, demuxes } = buildAudioMixInput({
-            sources: [SRC, SRC2],
-            liveInputs: true,
-        });
-        expect(demuxes).toEqual([liveDemuxName('mixin', 'c1'), liveDemuxName('mixin', 'c2')]);
+        const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2], liveInputs: true });
         expect(fragment).not.toContain('mixin_demux0');
-        expect(fragment).toContain(`tsdemux name=${liveDemuxName('mixin', 'c1')} latency=0`);
+        expect(fragment).toContain(`mrtsdemux name=${liveDemuxName('mixin', 'c1')} `);
+        expect(fragment).toContain(`mrtsdemux name=${liveDemuxName('mixin', 'c2')} `);
     });
 
     it('renders every start-time branch through liveMixInputBranch, byte for byte', () => {
+        const source = { ...SRC, channelMap: [{ srcChannel: 0, dstChannel: 0, gain: 0.5 }] };
         const { fragment } = buildAudioMixInput({
-            sources: [{ ...SRC, channelMap: [{ srcChannel: 0, dstChannel: 0, gain: 0.5 }] }],
+            sources: [source],
             liveInputs: true,
             channels: 2,
-            branchQueueMs: 250,
         });
-        const b = liveMixInputBranch(
-            'mixin',
-            { ...SRC, channelMap: [{ srcChannel: 0, dstChannel: 0, gain: 0.5 }] },
-            { channels: 2, branchQueueMs: 250 },
-        );
+        const b = liveMixInputBranch('mixin', source, { channels: 2 });
         expect(b.element).toBe('mixin');
         expect(b.name).toBe(mixInputBranchName('mixin', 'c1'));
         expect(fragment).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
         expect(b.description).toContain('mix-matrix=');
-        expect(b.description).toContain('max-size-time=250000000');
+        expect(b.description).toMatch(/ ! mralignwatch [^!]+$/);
     });
 
-    it('build302mMixBranch ends in the branch queue and carries no mixer link', () => {
-        const branch = build302mMixBranch(SRC, { channels: 2, demuxName: 'd1' });
-        expect(branch).toBe(
-            'unixfdsrc socket-path=/tmp/mr-bus-40001.sock' +
-                ' ! mrlateness name=lat_busin_40001 reference=house' +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
-                ' ! tsdemux name=d1 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m' +
-                ' ! audioconvert ! audioresample' +
-                ' ! audio/x-raw,rate=48000,channels=2' +
-                ' ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0',
-        );
+    it('a removed edge is named without a description (the live remove)', () => {
+        expect(liveInputBranchFor('mixin', 'c1', undefined)).toEqual({
+            element: 'mixin',
+            name: mixInputBranchName('mixin', 'c1'),
+        });
+        expect(liveInputBranchFor('mixin', 'c1', SRC)).toEqual(liveMixInputBranch('mixin', SRC));
     });
 
-    it('off by default: the classic strings are untouched', () => {
+    it('off by default: the classic strings have no bins', () => {
         const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2] });
         expect(fragment).not.toContain('( name=');
-        expect(fragment).toContain('! mixin. ');
-        expect(fragment).toContain('tsdemux name=mixin_demux0 latency=0');
+        expect(fragment).toContain(' ! mixin. ');
+        expect(fragment).toContain('mrtsdemux name=mixin_demux0 ');
     });
 });
 
@@ -296,15 +371,6 @@ describe('buildAudioMixInput — shared branch contract', () => {
             sources: [{ ...SRC, socketPath: '/tmp/mr-bus-40001-abc.sock' }, SRC2],
         });
         expect(fragment).toContain('unixfdsrc socket-path=/tmp/mr-bus-40001-abc.sock');
-    });
-
-    it('steers tsdemux pad selection with 302M caps (wrong-content TS fails soft)', () => {
-        for (const sources of [[SRC], [SRC, SRC2]]) {
-            const { fragment } = buildAudioMixInput({ sources });
-            expect(fragment).toContain(
-                'tsdemux name=mixin_demux0 latency=0 ignore-pcr=true ! audio/x-smpte-302m ! avdec_s302m',
-            );
-        }
     });
 
     it('is PTS-preserving: no pulsesrc, no do-timestamp, no tsparse re-stamping', () => {
@@ -340,6 +406,46 @@ describe('buildAudioMixInput — shared branch contract', () => {
         );
         // The unmapped branch keeps a bare audioconvert.
         expect(fragment.match(/avdec_s302m ! audioconvert ! audioresample/g)).toHaveLength(1);
+    });
+});
+
+describe('pacedMixer — n1-mixer-302m output mixers only, until WI-P2-9', () => {
+    it('always ends in the identity clock pacer — the OOM fix lives here only', () => {
+        expect(
+            pacedMixer({
+                name: 'omix0',
+                latencyNs: 50_000_000,
+                caps: 'audio/x-raw,rate=48000,channels=2',
+                pacerName: 'omix0_pace',
+            }),
+        ).toBe(
+            'audiomixer name=omix0 force-live=true latency=50000000' +
+                ' start-time-selection=first' +
+                ' ! audio/x-raw,rate=48000,channels=2' +
+                ' ! identity name=omix0_pace sync=true',
+        );
+    });
+
+    it('names the capsfilter only when the caller needs to address it', () => {
+        expect(
+            pacedMixer({
+                name: 'mixin',
+                latencyNs: 200_000_000,
+                caps: 'audio/x-raw,rate=48000,channels=2',
+                capsName: 'mixin_caps',
+                pacerName: 'mixin_out',
+            }),
+        ).toContain('! capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2" !');
+    });
+
+    it('never forces an upstream latency on the aggregator (it doubled the pacer hold)', () => {
+        const m = pacedMixer({
+            name: 'm',
+            latencyNs: 50_000_000,
+            caps: 'audio/x-raw',
+            pacerName: 'o',
+        });
+        expect(m).not.toContain('min-upstream-latency');
     });
 });
 
@@ -429,33 +535,5 @@ describe('normalize302mChannels', () => {
         const row0 = [z, z, z, z, z, z, '(float)1.0000', z].join(', ');
         const row1 = [z, z, z, z, z, z, z, '(float)1.0000'].join(', ');
         expect(fragment).toContain(`mix-matrix="<<${row0}>, <${row1}>>"`);
-    });
-});
-
-describe('fan-in hop latency — the hop costs mixLatencyMs, not a PTS lead', () => {
-    it('ignores the PCR on every branch unless a stamp-aligned caller opts out', () => {
-        const dflt = buildAudioMixInput({ sources: [SRC, SRC2] });
-        expect(dflt.fragment.match(/ignore-pcr=true/g)).toHaveLength(2);
-        const kept = buildAudioMixInput({ sources: [SRC, SRC2], ignorePcr: false });
-        expect(kept.fragment).not.toContain('ignore-pcr');
-        const live = buildAudioMixInput({ sources: [SRC], liveInputs: true });
-        expect(live.fragment).toContain('ignore-pcr=true');
-    });
-
-    it('never forces an upstream latency on the aggregator (it doubled the pacer hold)', () => {
-        const m = pacedMixer({
-            name: 'm',
-            latencyNs: 50_000_000,
-            caps: 'audio/x-raw',
-            pacerName: 'o',
-        });
-        expect(m).toContain('latency=50000000');
-        expect(m).not.toContain('min-upstream-latency');
-    });
-
-    it('floors the latency budget at 20 ms', () => {
-        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 5 }).mixerLatencyNs).toBe(
-            20_000_000,
-        );
     });
 });

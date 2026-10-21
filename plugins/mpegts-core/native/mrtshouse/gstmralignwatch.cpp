@@ -115,6 +115,7 @@ struct Run {
     bool eos_held = false;          // hold-on-eos: the EOS became absence
     bool discont = false;           // the next data out carries DISCONT (WI-P2-1 F3)
     bool full_episode = false;
+    bool pace_run = false;          // an arrival of this run went into the pace
     bool primed = false;            // the task pushed what a first gap needs (task thread only)
     bool caps_primed = false;       // ...caps among it, no upstream CAPS out since (task only)
     bool quiet_started = false;
@@ -325,22 +326,28 @@ static void aw_dequeued(GstMrAlignWatch* self, const Item& it) {
 
 /* --- arrival ---------------------------------------------------------------------------- */
 
-/* Under the lock: an arrival (data or a GAP) at `now`; `lateness` only for a timed one. */
-static void aw_arrival(GstMrAlignWatch* self, gint64 now, bool timed, gint64 lateness,
-                       guint* pending) {
+/* Under the lock: an arrival (data or a GAP) at `now`. */
+static void aw_arrival(GstMrAlignWatch* self, gint64 now, guint* pending) {
     Run& r = *self->run;
     r.rhythm.arrive(now);
     r.quiet_started = true;
     r.quiet_from = now;
     r.held_ns = 0;
     if (r.upstream_blocked) r.blocked_since = now;
-    if (timed) PaceRegistry::global().observe(r.member, now, lateness);
     r.eos_held = false;   // data after a held EOS: the stream started again, a rejoin
     if (r.state == AwState::present) return;
     if (r.state == AwState::absent) r.discont = true;   // a rejoin is placed by PTS
     r.state = AwState::present;
     *pending |= MSG_STATE;
     GST_INFO_OBJECT(self, "input %s present", r.input.c_str());
+}
+
+/* Under the lock: a timed arrival that is kept, into the pace. A stale one is not (R21): a
+ * rejoin's backlog is discarded, it says nothing of how late the input now is. */
+static void aw_observe(GstMrAlignWatch* self, gint64 now, gint64 lateness) {
+    Run& r = *self->run;
+    PaceRegistry::global().observe(r.member, now, lateness, !r.pace_run);
+    r.pace_run = true;
 }
 
 /* Under the lock: the sink thread waits in us from `now` (clocked) or not at all. */
@@ -380,7 +387,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
     const bool clocked = aw_now(self, &now);
     if (clocked) {
         if (it.timed) it.lateness = now - it.start;
-        aw_arrival(self, now, it.timed, it.lateness, &pending);
+        aw_arrival(self, now, &pending);
     } else if (r.state != AwState::present) {
         r.state = AwState::present;
         pending |= MSG_STATE;
@@ -392,6 +399,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             it.late = true;
             PaceRegistry::global().raise(r.member, it.lateness);
         }
+        if (clocked && it.timed) aw_observe(self, now, it.lateness);
     } else if (is_list) {
         /* The only discard (R21): what ends before the horizon, member by member. */
         GstBufferList* l = GST_BUFFER_LIST_CAST(obj);
@@ -412,6 +420,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         if (dropped) {
             r.discont = true;
             it.timed = aw_list_times(&r.in_segment, l, &it.start, &it.end);
+            if (it.timed && clocked) it.lateness = now - it.start;
         }
         if (gst_buffer_list_length(l) == 0) {
             snap = aw_snap(self);
@@ -420,6 +429,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             aw_post_pending(self, pending, snap);
             return GST_FLOW_OK;
         }
+        if (clocked && it.timed) aw_observe(self, now, it.lateness);
     } else if (it.timed && r.planner.stale(it.start, it.end)) {
         r.stale_buffers++;
         r.stale_time += (guint64)(it.end - it.start);
@@ -432,6 +442,8 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         gst_mini_object_unref(obj);
         aw_post_pending(self, pending, snap);
         return GST_FLOW_OK;
+    } else if (clocked && it.timed) {
+        aw_observe(self, now, it.lateness);
     }
     it.bytes = is_list ? gst_buffer_list_calculate_size(GST_BUFFER_LIST_CAST(it.obj))
                        : gst_buffer_get_size(GST_BUFFER_CAST(it.obj));
@@ -517,6 +529,7 @@ static gboolean aw_take_event(GstMrAlignWatch* self, GstEvent* event) {
         case GST_EVENT_SEGMENT:
             r.sink_eos = false;
             if (type == GST_EVENT_SEGMENT) gst_event_copy_segment(event, &r.in_segment);
+            else r.pace_run = false;   // a new stream: no stretch reaches back past it
             break;
         case GST_EVENT_EOS:
             r.sink_eos = true;
@@ -536,7 +549,7 @@ static gboolean aw_take_event(GstMrAlignWatch* self, GstEvent* event) {
                 it.end = it.start + (GST_CLOCK_TIME_IS_VALID(dur) ? (gint64)dur : 0);
                 it.lateness = now - it.end;   // the gap's end: when what follows is due
             }
-            if (clocked) aw_arrival(self, now, it.timed && !r.sparse, it.lateness, &pending);
+            if (clocked) aw_arrival(self, now, &pending);
             if (r.sparse) {
                 if (pending) snap = aw_snap(self);
                 g_mutex_unlock(&self->lock);
@@ -544,6 +557,10 @@ static gboolean aw_take_event(GstMrAlignWatch* self, GstEvent* event) {
                 if (pending) aw_post_pending(self, pending, snap);
                 return TRUE;
             }
+            /* A gap that all went by already is clipped away at its release: not kept. */
+            if (clocked && it.timed &&
+                !(r.planner.has_horizon() && it.end <= r.planner.horizon_ns()))
+                aw_observe(self, now, it.lateness);
             break;
         }
         default:
@@ -579,6 +596,7 @@ static gboolean aw_sink_event(GstPad* pad, GstObject* parent, GstEvent* event) {
             r.planner.reset();
             r.sink_eos = r.eos_out = r.eos_held = false;
             r.discont = r.primed = r.caps_primed = false;
+            r.pace_run = false;
             r.quiet_started = false;
             if (r.state == AwState::absent) r.state = AwState::waiting;
             gst_segment_init(&r.in_segment, GST_FORMAT_UNDEFINED);
@@ -795,6 +813,7 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                     /* Absence until FLUSH or NULL: the aggregator keeps waiting on gaps. */
                     gst_event_unref(ev);
                     r.eos_held = true;
+                    r.pace_run = false;
                     if (r.state != AwState::absent) {
                         r.state = AwState::absent;
                         r.absences++;
@@ -874,8 +893,21 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
     }
 }
 
-/* Under the lock, clocked: silence -> absent; this tick's gap; the 1 s report. Returns the
- * gap to push (out of the lock) in *gap. */
+/* Under the lock, clocked: the 1 s report, due on every pass of the task, a releasing one too
+ * (an input held behind a slower one releases on every pass). */
+static void aw_report(GstMrAlignWatch* self, gint64 now, guint* pending) {
+    Run& r = *self->run;
+    if (!r.report_started) {
+        r.report_started = true;
+        r.report_at = now;
+    } else if (now - r.report_at >= REPORT_NS) {
+        *pending |= MSG_INTERVAL;
+        r.report_at = now;
+    }
+}
+
+/* Under the lock, clocked: silence -> absent; this tick's gap. Returns the gap to push (out of
+ * the lock) in *gap. */
 static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
                      mrts::GapPlanner::Gap* gap) {
     Run& r = *self->run;
@@ -883,13 +915,6 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
         r.quiet_started = true;
         r.quiet_from = now;
         r.held_ns = 0;
-    }
-    if (!r.report_started) {
-        r.report_started = true;
-        r.report_at = now;
-    } else if (now - r.report_at >= REPORT_NS) {
-        *pending |= MSG_INTERVAL;
-        r.report_at = now;
     }
     if (r.eos_out) return false;
     /* An input whose EOS is queued ended, it is not silent; a held EOS turns absent on its pop. */
@@ -901,6 +926,7 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
         const gint64 w = r.rhythm.limit_ns(aw_rhythm_config(self));
         if (silent >= w) {
             r.state = AwState::absent;
+            r.pace_run = false;
             r.absences++;
             *pending |= MSG_STATE;
             GST_INFO_OBJECT(self, "input %s absent: silent %" G_GINT64_FORMAT " ms, W %"
@@ -939,6 +965,7 @@ static void aw_loop(gpointer data) {
     const PaceRegistry::View view = PaceRegistry::global().view(r.member);
     r.pace = view.pace_ns;
     if (view.has_lateness) r.lateness = view.lateness_ns;
+    if (clocked) aw_report(self, now, &pending);
 
     /* The head, when due: untimed at once, timed at start + pace. Not PLAYING (no clock): at
      * once, as from a queue, so a non-live upstream can preroll. */
@@ -1101,6 +1128,7 @@ static GstStateChangeReturn aw_change_state(GstElement* element, GstStateChange 
             self->playing.store(false, std::memory_order_release);
             g_mutex_lock(&self->lock);
             self->run->quiet_started = false;
+            self->run->pace_run = false;   // the clock stops: no stretch spans the pause
             aw_wake(self);
             g_mutex_unlock(&self->lock);
             break;
@@ -1375,7 +1403,8 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
     g_object_class_install_property(
         gobject_class, PROP_LATENESS,
         g_param_spec_int64("lateness", "Lateness (ns)",
-                           "This input's mean lateness over its last second of arrivals.",
+                           "This input's lateness: the median over the last second of wall "
+                           "time it delivered; a catch-up (a burst) and stale data left out.",
                            G_MININT64, G_MAXINT64, 0, ro));
     g_object_class_install_property(
         gobject_class, PROP_PACE,

@@ -135,7 +135,6 @@ export class N1Mixer302mModule extends GstPluginBase {
         const pipeline = buildN1Pipeline({
             inputs,
             outputs,
-            latencyMs: Number(config.mixLatencyMs ?? 20),
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
             channels,
         });
@@ -152,8 +151,9 @@ export class N1Mixer302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
-            // Audio-only bus producer: no decoder to drain, and force-live
-            // mixers never complete the EOS drain.
+            // Audio-only bus producer: no decoder to drain, and the input
+            // fan-ins' aligners hold every EOS (hold-on-eos), so the mix never
+            // completes the EOS drain.
             eosDrain: false,
         };
     }

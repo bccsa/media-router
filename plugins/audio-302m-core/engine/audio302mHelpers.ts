@@ -3,6 +3,7 @@ import {
     buildBusSrc,
     gstElementSupportsCaps,
     probeGstElement,
+    quoteGstString,
     shortHash,
     type ChannelMapEntry,
     type LiveInputBranch,
@@ -25,9 +26,10 @@ import { mixMatrixClause } from './channelMapMatrix.js';
  * 302M PES PTS is the timeline.
  *
  * Runtime requirement: gst-libav `avenc_s302m`/`avdec_s302m` (present on
- * 1.22+) AND mpegts mux/demux support for `audio/x-smpte-302m` (gst ≥ 1.26 —
+ * 1.22+) AND `mpegtsmux` support for `audio/x-smpte-302m` (gst ≥ 1.26 —
  * fleet runs 1.28; older dev runtimes can only exercise these strings in
- * unit tests). 302M itself is 48 kHz-only.
+ * unit tests); the fan-in's `mrtsdemux` and `mralignwatch` come from the
+ * timing plugin (`libgstmrtshouse.so`). 302M itself is 48 kHz-only.
  */
 
 /**
@@ -65,6 +67,9 @@ export interface AudioMixSource {
      *  `getBusStreamChannels` declaration — the wire width, never a config
      *  field. */
     sourceChannels?: number;
+    /** The producer's known output lateness at start (ms): its aligner's `seed-lateness`,
+     *  a floor of the mixer's pace (house-clock plan WI-P2-13 fills it). */
+    seedLatenessMs?: number;
 }
 
 /** The channel counts a SMPTE-302M stream can carry (and `avenc_s302m` accepts). */
@@ -97,14 +102,9 @@ export interface PacedMixerOpts {
     capsName?: string;
 }
 
-/**
- * `audiomixer force-live=true start-time-selection=first ! <caps> ! identity
- * sync=true` — the one shape every 302M aggregation point uses, in one place
- * because the `identity` and the start-time selection are FIXES, not style:
- * see `buildAudioMixInput` below for both measurements. Both the input fan-in
- * here and the n1-mixer's feature mixers build through this, so neither can be
- * dropped from one of them by accident.
- */
+/** `audiomixer force-live=true … ! <caps> ! identity sync=true`: a force-live mixer and its clock
+ *  pacer (ADR-0008; force-live free-runs after every pad is EOS). Kept only for n1-mixer-302m's
+ *  output mixers, until house-clock WI-P2-9 moves them to `alignedMixer`. */
 export function pacedMixer(opts: PacedMixerOpts): string {
     const caps = opts.capsName ? `capsfilter name=${opts.capsName} caps="${opts.caps}"` : opts.caps;
     return (
@@ -117,31 +117,42 @@ export function pacedMixer(opts: PacedMixerOpts): string {
     );
 }
 
+export interface AlignedMixerOpts {
+    /** Element name of the `audiomixer`. */
+    name: string;
+    /** Output caps, pinned on the capsfilter after the mixer. */
+    caps: string;
+    /** Element name of that capsfilter: the element callers chain from. */
+    outName: string;
+}
+
+/** `audiomixer latency=0 start-time-selection=first ! capsfilter`, the aligner of every 302M
+ *  fan-in (house-clock plan part 4.3). Every pad comes through `mralignwatch`: non-live, so the
+ *  mixer never times out, waits for data or a gap on each pad and drops nothing late. */
+export function alignedMixer(opts: AlignedMixerOpts): string {
+    return (
+        `audiomixer name=${opts.name} latency=0 start-time-selection=first` +
+        ` ! capsfilter name=${opts.outName} caps="${opts.caps}"`
+    );
+}
+
 export interface AudioMixInputOpts {
     sources: AudioMixSource[];
     /** Output channel count of the mix (inputs are converted). Default 2. */
     channels?: number;
-    /** audiomixer latency budget in ms — how long the aggregator waits for
-     *  lagging inputs before emitting (silence-filling starved pads).
-     *  Default 200, clamped 20–2000. Unused (and free) in the single-source
-     *  arm, which has no aggregator to wait on anything. */
-    latencyMs?: number;
     /** Name PREFIX for the fan-in's elements, not an element name: the
      *  continuation point is always `<mixerName>_out` and the mixer arm also
-     *  names `<mixerName>` / `<mixerName>_caps`. In the single-source arm no
+     *  names the `audiomixer` `<mixerName>`. In the single-source arm no
      *  `audiomixer` exists at all and this only prefixes the terminal
      *  capsfilter. Default 'mixin'. */
     mixerName?: string;
-    /** Per-branch post-decode queue bound in ms. Default 100. */
+    /** The single-source arm's post-decode queue bound in ms (default 100,
+     *  clamped 20–2000). The mixer arm's inputs queue in `mralignwatch` (5 s). */
     branchQueueMs?: number;
     /** Live-input mode: each source its own named bin on an explicit
      *  `sink_<i>` pad, mixer arm even for ONE source (ADR-0008 addendum).
      *  Default off — classic callers keep byte-identical strings. */
     liveInputs?: boolean;
-    /** `tsdemux ignore-pcr` on every branch (default true). mpegtsmux writes PES
-     *  PTS ~250 ms ahead of the PCR and a sync element downstream honours that
-     *  lead (measured .103). Off only for stamp-aligned (presentation) callers. */
-    ignorePcr?: boolean;
 }
 
 /**
@@ -156,15 +167,13 @@ export function mixInputBranchName(mixerName: string, connectionId: string): str
 export interface MixInputBranchOpts {
     /** Output channel count of the mix (the branch converts to it). Default 2. */
     channels?: number;
-    /** Per-branch post-decode queue bound in ms. Default 100. */
-    branchQueueMs?: number;
-    /** See `AudioMixInputOpts.ignorePcr`. Default true. */
-    ignorePcr?: boolean;
-    /** `name=` of the branch's tsdemux. */
+    /** The aggregator the branch links into: its watchdog's pace group (`aligner`). */
+    mixerName: string;
+    /** `name=` of the branch's mrtsdemux. */
     demuxName: string;
 }
 
-/** `name=` of a live-input branch's tsdemux — keyed by the connection like
+/** `name=` of a live-input branch's mrtsdemux — keyed by the connection like
  *  the bin, so a branch added later never collides with one built at start. */
 export function liveDemuxName(mixerName: string, connectionId: string): string {
     return `${mixerName}_demux_${shortHash(connectionId)}`;
@@ -176,13 +185,14 @@ export function liveDemuxName(mixerName: string, connectionId: string): string {
 export function liveMixInputBranch(
     mixerName: string,
     source: AudioMixSource,
-    opts: Omit<MixInputBranchOpts, 'demuxName'> = {},
+    opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName'> = {},
 ): LiveInputBranch {
     return {
         element: mixerName,
         name: mixInputBranchName(mixerName, source.connectionId),
         description: build302mMixBranch(source, {
             ...opts,
+            mixerName,
             demuxName: liveDemuxName(mixerName, source.connectionId),
         }),
     };
@@ -195,21 +205,22 @@ export function liveInputBranchFor(
     mixerName: string,
     connectionId: string,
     source: AudioMixSource | undefined,
-    opts: Omit<MixInputBranchOpts, 'demuxName'> = {},
+    opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName'> = {},
 ): LiveInputBranch {
     if (!source) return { element: mixerName, name: mixInputBranchName(mixerName, connectionId) };
     return liveMixInputBranch(mixerName, source, opts);
 }
 
-/** `tsdemux` keeps PCR timing only when a caller opts out (stamp-aligned branches). */
-const ignorePcrClause = (ignorePcr: boolean | undefined): string =>
-    ignorePcr === false ? '' : ' ignore-pcr=true';
+/** `seed-lateness` in ns, within the 0..1 h the element takes; none without a seed. */
+function seedClause(seedMs: number | undefined): string {
+    if (typeof seedMs !== 'number' || !Number.isFinite(seedMs)) return '';
+    const ms = Math.min(Math.max(seedMs, 0), 3_600_000);
+    return ` seed-lateness=${Math.round(ms * 1_000_000)}`;
+}
 
-/** One source's decode branch: 302M edge → raw audio at the mix caps, ending
- *  in its branch queue (the element whose src pad links into the aggregator). */
-export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchOpts): string {
-    const channels = opts.channels ?? 2;
-    const branchQueueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
+/** 302M edge → raw audio, on content time: `mrtsdemux` in select mode is the
+ *  formula demux (running time = PES PTS − 1 h, house-clock WI-P2-7). */
+function decode302m(source: AudioMixSource, demuxName: string, channels: number): string {
     const src = buildBusSrc({ port: source.port, socketPath: source.socketPath });
     // Per-connection channel mapping on THIS branch's audioconvert.
     const matrix = source.channelMap?.length
@@ -220,190 +231,115 @@ export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchO
           )
         : '';
     return (
-        `${src} ! tsdemux name=${opts.demuxName} latency=0${ignorePcrClause(opts.ignorePcr)}` +
-        ` ! audio/x-smpte-302m ! avdec_s302m` +
-        ` ! audioconvert${matrix} ! audioresample` +
+        `${src} ! mrtsdemux name=${demuxName} select=audio/x-smpte-302m ! avdec_s302m` +
+        ` ! audioconvert${matrix} ! audioresample`
+    );
+}
+
+/** The input's watchdog (house-clock WI-P2-6): paced with the mixer's other inputs;
+ *  silence past W, and EOS (`hold-on-eos`), make it absent and gapped, never a stall. */
+function alignWatch(mixerName: string, source: AudioMixSource): string {
+    return (
+        `mralignwatch name=${mixerName}_aw_${shortHash(source.connectionId)}` +
+        ` aligner=${mixerName} input=${quoteGstString(source.connectionId)} hold-on-eos=true` +
+        seedClause(source.seedLatenessMs)
+    );
+}
+
+/** One source's decode branch into an aggregator: 302M edge → content-time raw
+ *  audio at the mix caps → its `mralignwatch`, the element whose src pad links
+ *  into the aggregator (and the unlinked src pad a live add ghosts). */
+export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchOpts): string {
+    const channels = opts.channels ?? 2;
+    return (
+        `${decode302m(source, opts.demuxName, channels)}` +
         ` ! audio/x-raw,rate=48000,channels=${channels}` +
-        ` ! queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`
+        ` ! ${alignWatch(opts.mixerName, source)}`
     );
 }
 
 /**
  * N × 302M inputs → one named continuation point — the gst-native replacement
  * for PipeWire's implicit summing when several sources are wired to one input
- * pin. Two topologies, chosen by source count, both ending in an element named
+ * pin. Two topologies, chosen by source count, both ending in a capsfilter named
  * `<mixerName>_out`; that name comes back as `continuationName` and is the only
  * thing callers may chain from (`${fragment} ${continuationName}. ! … `), so
  * they stay topology-agnostic. Never hard-code the name.
  *
- * MANY sources (≥ 2) — and the empty case, see below — `audiomixer`:
- * it aggregates by RUNNING TIME, so same-timeline inputs mix content-aligned
- * and the output carries coherent PTS.
- * - `force-live=true` (construct-only): the aggregator emits on its latency
- *   deadline regardless of upstream liveness, silence-filling starved pads —
- *   a dark input degrades the mix to silence instead of stalling it.
- * - `identity sync=true` on the mixer's output is the clock pacer, and it is
- *   load-bearing: force-live keeps producing AFTER every pad has gone EOS (by
- *   design — it can't know a dead input won't come back), and no 302M tail
- *   paces it (the output module ends in `pulsesink sync=false`, producer
- *   modules end in an unsynced bus tee). With nothing to block on, the mixer
- *   generated silence at CPU speed and flooded downstream — `level` message
- *   storms, faster-than-realtime bus traffic, a memory balloon that OOM'd a
- *   fleet box. `identity sync=true` blocks on the pipeline clock, so post-EOS
- *   silence runs at realtime: measured 2026-08-25 on the fleet box (gst
- *   1.28.2), one EOS'd input into an unsynced tail = 11.64 s CPU per 10 s
- *   wall, the same pipeline with the pacer = 0.07 s; reproduced bare on a dev
- *   box, same gst version, at 9.16 s vs 0.03 s per 10 s wall. Healthy flow
- *   keeps its rate — a live stream already advances at clock rate; the pacer
- *   only stops the pipeline running AHEAD of the clock, which costs a one-off
- *   startup offset of about 2 × the mixer latency (measured 0.12 / 0.42 /
- *   1.02 s at latency 50 / 200 / 500 ms) and nothing per buffer after that. The 2× was the forced `min-upstream-latency`, dropped 2026-10-05 (ADR-0008 amendment).
- *   Sink-agnostic by construction, so it holds for every 302M module's tail.
- * - `start-time-selection=first`: where the mixer's OUTPUT timeline begins.
- *   The aggregator default (`zero`) starts the output segment at running time
- *   0, and under the time-sync contract (ADR-0005: `base_time=0`, house-clock
- *   PTS) running time 0 is BOOT — the live inputs arrive stamped at the house
- *   time, i.e. the box's uptime ahead of where the mixer starts. The mixer
- *   then has to emit that whole gap as silence before it ever reaches a
- *   sample it can consume; until it does, each input pad holds its first
- *   buffer, the 100 ms branch queue fills, tsdemux blocks and the leaky bus
- *   queue drains the feed on the floor. Measured 10.9.16.111 (Audio Out
- *   (302M), 4 inputs, 2026-09-08): a 938 s gap after an engine restart was
- *   still silent at +204 s; a 3818 s gap after a device change took ~13 min
- *   (the sink pad probe read the first buffers 3 708 732 ms "late", the
- *   branch aligner "joined only 0–1 access units", the runner sat at 27 %
- *   CPU racing the gap). Producer arms fare worse: the bus stamper anchors on
- *   the first PES while the mixer is still racing, so once it catches up the
- *   stamps sit a constant uptime-at-start behind the house clock (−900 s on
- *   the Audio Mixer's egress, −805 s on the three transcoders it feeds).
- *   `first` anchors the output at the running time of the first input buffer
- *   — under `force-live` the aggregator picks the current running time if a
- *   timeout comes first (gstaggregator.c wait_and_check), so a dark start is
- *   anchored live too. Same-timeline inputs are then consumed from the first
- *   buffer, and the stamps downstream read the house clock.
- *   Defaults are right for everything else (`single-segment=false` is
- *   identity's default).
+ * Every branch decodes on content time: `mrtsdemux select=audio/x-smpte-302m` is
+ * the formula demux (running time = PES PTS − 1 h, house-clock WI-P2-7), so no
+ * branch is aligned to the bus stamps. Wrong content (a TS with no 302M stream)
+ * fails soft: the demux posts its `no-stream` message and its pad stays silent.
  *
- * ONE source — direct branch, no aggregator and no pacer: a lone input needs
- * no summing, and the mixer only cost it the `latencyMs` aggregation delay
- * (200 ms by default) plus a re-stamped timeline. Trade: no silence-fill, so a
- * dying source EOSes/stalls the module and the runner's restart path takes
- * over instead of the mix degrading to silence — the same behaviour the
- * single-input audio-transcoder has always had. Without a force-live
- * aggregator there is no post-EOS free-run to pace. `latencyMs` is simply
- * unused here.
+ * MANY sources (≥ 2), live-input mode and the empty case — `alignedMixer`.
+ * `audiomixer` aggregates by RUNNING TIME, so same-timeline inputs mix
+ * content-aligned. Each input enters through its `mralignwatch` (house-clock
+ * part 4.3, WI-P2-6), which answers LATENCY non-live, so the mixer never times
+ * out: it waits for data or a gap on every pad and drops nothing late. The
+ * watchdogs of one mixer share a pace, the slowest input's lateness, and release
+ * data at running time + pace. An input silent past W, or EOS (`hold-on-eos`), is
+ * absent and gapped, so a dark input degrades the mix to silence instead of
+ * stalling it. Nothing is force-live, so nothing free-runs after EOS: no pacer.
+ * - Non-live also means a `sync=true` sink after this arm adds no latency of its
+ *   own, its ring included, unlike after the live single-source arm. A leg that
+ *   cancels its sink's ring in `ts-offset` keeps the sink's upstream live
+ *   (audio-output-302m).
+ * - `start-time-selection=first`: the output starts at the first input's running
+ *   time. The default `zero` starts at running time 0, BOOT under base_time=0, and
+ *   the mixer would first emit the box's uptime as silence (10.9.16.111,
+ *   2026-09-08: 13 min of dead Audio Out after a restart). Non-live, the
+ *   aggregator takes the earliest first buffer of all its pads (WI-P2-6).
  *
- * ZERO sources — mixer arm, unchanged: callers that build a pad-less fan-in
- * (and then wire it themselves) keep the force-live mixer they had, now with
- * the pacer, which is exactly the never-fed free-run case above.
+ * ONE source, not in live-input mode — direct branch, no aggregator and no
+ * watchdog (ADR-0008's bypass): a lone input needs no summing. Trade: no
+ * silence-fill, so a dying source EOSes/stalls the module and the runner's
+ * restart path takes over instead of the mix degrading to silence — the same
+ * behaviour the single-input audio-transcoder has always had.
  *
- * The `audio/x-smpte-302m` capsfilter after each tsdemux steers pad selection
- * in both arms AND makes wrong-content wiring (an arbitrary TS connected to an
- * audio pin via TS-family compatibility) fail soft: the pad never links, the
- * branch stays silent, the runner logs a warning.
+ * ZERO sources — the aligned mixer alone: a caller that wires its own inputs
+ * brings each through `mralignwatch` (`build302mMixBranch`); a live pad straight
+ * into it would make the mixer live, and it would drop what comes late.
  */
 export function buildAudioMixInput(opts: AudioMixInputOpts): {
     fragment: string;
-    /** Element to chain from. NOT always a mixer — it is a `capsfilter` in the
-     *  single-source arm and the `identity` pacer in the mixer arm. */
+    /** Element to chain from: the terminal capsfilter `<mixerName>_out`, in both arms. */
     continuationName: string;
-    /**
-     * The mixer arm's effective aggregation latency in ns (the clamped
-     * `latencyMs`); ABSENT in the single-source arm, which declares none.
-     *
-     * This is pipeline latency in GStreamer's sense: the aggregator reports it
-     * on the LATENCY query and a `sync=true` sink downstream adds it to every
-     * render time. A presentation module that schedules against a playout
-     * offset (ADR-0005 decision 4) therefore subtracts it from its `ts-offset`,
-     * or the same route would play `latencyMs` later through a mixer than
-     * through a single-source bypass. Returned rather than re-derived so the
-     * clamp lives in one place.
-     */
-    mixerLatencyNs?: number;
-    /**
-     * `name=` of every input branch's `tsdemux`, in source order — what a
-     * PRESENTATION module passes as `alignBranchesToStamps.demuxes`, so the
-     * runner anchors each branch's running time to the producer's house stamps
-     * (ADR-0005 Stage 3c). Without it a `tsdemux` keeps the zero-point error of
-     * the one bus buffer it locked on for the pipeline's whole life — measured
-     * on the .103 muxer's branches at −73…−85 ms, re-rolled on every restart —
-     * and a `sync=true` sink presents that error as lipsync. Empty only when
-     * there are no sources.
-     */
-    demuxes: string[];
 } {
     const channels = opts.channels ?? 2;
-    const latencyNs = Math.max(20, Math.min(2000, opts.latencyMs ?? 200)) * 1_000_000;
     const mixerName = opts.mixerName ?? 'mixin';
-    const branchQueueMs = opts.branchQueueMs;
-    const branchQueueNs = Math.max(20, Math.min(2000, branchQueueMs ?? 100)) * 1_000_000;
     const live = opts.liveInputs === true;
-
     const outName = `${mixerName}_out`;
     const caps = `audio/x-raw,rate=48000,channels=${channels}`;
-    const branchQueue = `queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`;
-
-    /** `name=` of branch i's tsdemux — returned as `demuxes` so a presentation
-     *  module can hand them to the runner's `alignBranchesToStamps`. In
-     *  live-input mode the name is keyed by the connection, like the bin, so
-     *  a branch added later never collides with one built at start. */
-    const demuxName = (s: AudioMixSource, i: number): string =>
-        live ? liveDemuxName(mixerName, s.connectionId) : `${mixerName}_demux${i}`;
-    /** 302M edge socket → decoded, channel-mapped, resampled raw audio. */
-    const decode = (s: AudioMixSource, i: number): string => {
-        const src = buildBusSrc({ port: s.port, socketPath: s.socketPath });
-        // Per-connection channel mapping on THIS branch's audioconvert.
-        const matrix = s.channelMap?.length
-            ? mixMatrixClause(s.channelMap, normalize302mChannels(s.sourceChannels ?? 2), channels)
-            : '';
-        return (
-            `${src} ! tsdemux name=${demuxName(s, i)} latency=0${ignorePcrClause(opts.ignorePcr)}` +
-            ` ! audio/x-smpte-302m ! avdec_s302m` +
-            ` ! audioconvert${matrix} ! audioresample`
-        );
-    };
 
     if (opts.sources.length === 1 && !live) {
         // The output caps sit on the terminal capsfilter (the queue is
         // transparent to negotiation), so the branch pins the same format the
         // mixer arm publishes, with one element fewer.
+        const queueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
         const fragment =
-            `${decode(opts.sources[0], 0)} ! ${branchQueue}` +
+            `${decode302m(opts.sources[0], `${mixerName}_demux0`, channels)}` +
+            ` ! queue leaky=0 max-size-time=${queueNs} max-size-buffers=0 max-size-bytes=0` +
             ` ! capsfilter name=${outName} caps="${caps}"`;
-        return { fragment, continuationName: outName, demuxes: [demuxName(opts.sources[0], 0)] };
+        return { fragment, continuationName: outName };
     }
 
-    // The mixer's OUTPUT caps are pinned immediately on its src pad: a
-    // force-live aggregator fixates its output format at startup, BEFORE any
-    // input has delivered caps — left to downstream preference it fixates
-    // channels=1 (encoders advertise [1,N]) and then DOWNMIXES every input
-    // to mono (measured on gate01: stereo 302M in, mono trunk/VU/encode out).
-    const mixer = pacedMixer({
-        name: mixerName,
-        latencyNs,
-        caps,
-        capsName: `${mixerName}_caps`,
-        pacerName: outName,
-    });
+    // The mixer's OUTPUT caps are pinned right on its src pad: left to downstream
+    // preference it fixates channels=1 (encoders advertise [1,N]) and DOWNMIXES
+    // every input to mono (measured on gate01: stereo 302M in, mono out).
+    const mixer = alignedMixer({ name: mixerName, caps, outName });
 
     // Live-input mode: each branch is a named bin on an explicit request pad,
     // the exact string a hot add sends — so a later live remove finds it.
     const branches = opts.sources.map((s, i) => {
-        const branchOpts = { channels, branchQueueMs, ignorePcr: opts.ignorePcr };
         if (!live) {
-            const text = build302mMixBranch(s, { ...branchOpts, demuxName: demuxName(s, i) });
-            return `${text} ! ${mixerName}.`;
+            const demuxName = `${mixerName}_demux${i}`;
+            return `${build302mMixBranch(s, { channels, mixerName, demuxName })} ! ${mixerName}.`;
         }
-        const b = liveMixInputBranch(mixerName, s, branchOpts);
+        const b = liveMixInputBranch(mixerName, s, { channels });
         return `( name=${b.name} ${b.description} ) ! ${mixerName}.sink_${i}`;
     });
 
-    return {
-        fragment: [mixer, ...branches].join(' '),
-        continuationName: outName,
-        mixerLatencyNs: latencyNs,
-        demuxes: opts.sources.map((s, i) => demuxName(s, i)),
-    };
+    return { fragment: [mixer, ...branches].join(' '), continuationName: outName };
 }
 
 export interface Audio302mEncodeOpts {

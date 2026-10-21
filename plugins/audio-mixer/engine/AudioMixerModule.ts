@@ -119,7 +119,6 @@ export class AudioMixerModule extends GstPluginBase {
             outputPort: ep.port,
             channels: (config.channels as number) ?? 2,
             volume: volumePct / 100,
-            latencyMs: Number(config.mixLatencyMs ?? 20),
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
         });
         if (!result) return null;
@@ -131,9 +130,9 @@ export class AudioMixerModule extends GstPluginBase {
         return {
             pipeline: result.pipeline,
             restartOnError: true,
-            // Audio-only bus producer: no decoder to drain, and a force-live
-            // mix never completes the EOS drain — a stop would stall the 6 s
-            // timeout and EOS every consumer first.
+            // Audio-only bus producer: no decoder to drain, and the aligners
+            // hold every input's EOS (hold-on-eos), so the mix never completes
+            // the EOS drain — a stop would stall the 6 s timeout first.
             eosDrain: false,
         };
     }
