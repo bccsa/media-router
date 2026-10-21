@@ -15,10 +15,9 @@ instrument.
 
 THE MATHS IS NOT HERE. `ts_timeline.TimelineStamper` (plugins/mpegts-core/py) is
 the one python definition of the contract's arithmetic — anchor, per-PID unwrap,
-discontinuity watch, re-anchor, monotone staircase, drift slew — shared with the
-`unixfd-fanout.py` sidecar and ported to `mrts::TimelineStamper` for the native
-ones. What lives here is only where the stamp lands and how the segment mapping
-survives it.
+discontinuity watch, re-anchor, monotone staircase, drift slew — ported to
+`mrts::TimelineStamper` for the native ones. What lives here is only where the
+stamp lands and how the segment mapping survives it.
 """
 import gi
 
@@ -142,9 +141,8 @@ def install(tee, name, pipe, repair_latch=True, house_timeline=False):
     def on_settled(ev):
         events.settled_moment(name, ev)
 
-    # The contract's arithmetic, verbatim from the module every other producer
-    # runs (`unixfd-fanout.py`, and `mrts::TimelineStamper` for the native
-    # sidecars): per-buffer watch, epoch-consistent latch, monotone staircase,
+    # The contract's arithmetic, the python reference of `mrts::TimelineStamper`:
+    # per-buffer watch, epoch-consistent latch, monotone staircase,
     # re-anchor in place. ONE egress, so ONE `stream`. `repair_latch` is on for
     # every producer the runner hosts — network ingests, muxers, transcoders,
     # captures all deliver at their media cadence — and off only where a

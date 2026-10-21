@@ -107,9 +107,9 @@ const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
 });
 
 // The engine resolves from source in tests (vitest.config.ts), so the
-// node:fs mock above also drives resolveNativeBinary / resolvePythonScript.
-// MR_NATIVE_BIN_DIR still pins WHERE the binary is looked for, so the choice
-// of fan-out never depends on whether the native tools happen to be built.
+// node:fs mock above also drives resolveNativeBinary. MR_NATIVE_BIN_DIR still
+// pins WHERE the binary is looked for, so these tests never depend on whether
+// the native tools happen to be built.
 let nativeBinDir: string;
 let emptyBinDir: string;
 /** Everything exists except the native fan-out binary. */
@@ -131,7 +131,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
     process.env.MR_NATIVE_BIN_DIR = nativeBinDir;   // native available by default
-    delete process.env.MR_PLUGINS_DIR;              // python sidecar resolvable by default
+    delete process.env.MR_PLUGINS_DIR;
 });
 
 describe('HlsPlayerModule.buildPipeline', () => {
@@ -208,42 +208,28 @@ describe('HlsPlayerModule.onStart', () => {
         expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
     });
 
-    it('falls back to the python sidecar when the native binary is absent', async () => {
+    it('passes the ingest and the caps only: the sidecar rebases and stamps unconditionally', async () => {
         const { module, spawn } = makeModule();
-        process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
-        noNativeFanout();
         await module.onStart();
         const { opts } = sidecarOf(spawn);
-        expect(opts.command).toBe('python3');
-        expect(opts.args[0].endsWith('unixfd-fanout.py')).toBe(true);
-        // Identical CLI either way — the two implementations are interchangeable.
-        expect(opts.args.join(' ')).toContain('--ingest /tmp/mr-bus-41000-ingest.sock');
-        expect(opts.args.join(' ')).toContain('video/mpegts');
+        expect(opts.args).toEqual([
+            '--ingest',
+            '/tmp/mr-bus-41000-ingest.sock',
+            '--caps',
+            'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
+        ]);
     });
 
-    it('always passes --stamp-timeline, on both fan-out implementations', async () => {
-        const native = makeModule();
-        await native.module.onStart();
-        expect(sidecarOf(native.spawn).opts.args).toContain('--stamp-timeline');
-        // Same flag on the python leg — the two fan-outs stay interchangeable.
-        const py = makeModule();
-        process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
-        noNativeFanout();
-        await py.module.onStart();
-        expect(sidecarOf(py.spawn).opts.command).toBe('python3');
-        expect(sidecarOf(py.spawn).opts.args).toContain('--stamp-timeline');
-    });
-
-    it('reports an error when NEITHER fan-out implementation is available', async () => {
+    it('reports an error and spawns nothing when mr-bus-fanout is not built', async () => {
         const { module, spawn } = makeModule();
         process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
-        // resolvePythonScript scans MR_PLUGINS_DIR — point it at an empty dir
-        // so the python sidecar is unavailable too.
-        process.env.MR_PLUGINS_DIR = emptyBinDir;
-        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
+        noNativeFanout();
         await module.onStart();
         expect(spawn).not.toHaveBeenCalled();
-        expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
+        expect(module.setHealth.mock.calls.at(-1)).toEqual([
+            'error',
+            expect.stringContaining('no bus fan-out available'),
+        ]);
     });
 
     it('probes the playlist and publishes detected languages as fieldOptions', async () => {

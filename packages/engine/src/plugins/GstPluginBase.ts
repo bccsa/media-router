@@ -109,7 +109,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * Where the BusFanoutCoordinator sends this producer's unixfd
      * `bus_attach`/`bus_detach`. The gst runner handles them natively; a
      * non-GStreamer producer overrides this with its own fan-out controller
-     * (hls-player → UnixFdFanoutController + unixfd-fanout.py sidecar).
+     * (hls-player → UnixFdFanoutController + mr-bus-fanout sidecar).
      */
     getBusAttachTarget(): BusAttachTarget | null {
         return this.childProcess;

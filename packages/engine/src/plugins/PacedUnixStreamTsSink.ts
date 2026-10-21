@@ -16,7 +16,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * Unix-stream transport for `PacedTsSink` (pacing/buffering documented
- * there): paced raw TS into the module's `unixfd-fanout.py` sidecar ingest
+ * there): paced raw TS into the module's `mr-bus-fanout` sidecar ingest
  * socket, which speaks the GstUnixFd protocol to the per-consumer edges. The
  * non-GStreamer Node producer egress under unixfd bus transport (hls-player).
  *

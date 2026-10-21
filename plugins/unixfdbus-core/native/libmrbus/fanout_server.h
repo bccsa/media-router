@@ -1,5 +1,5 @@
-// GstUnixFd fan-out SERVER — the native replacement for a gst producer's
-// `tee ! queue leaky=2 ! unixfdsink` branches and for unixfd-fanout.py.
+// GstUnixFd fan-out SERVER — the native stand-in for a gst producer's
+// `tee ! queue leaky=2 ! unixfdsink` branches.
 //
 // One instance serves N consumer EDGE sockets; each accepted client
 // (a gst `unixfdsrc` or equivalent) gets CAPS first, then every broadcast
@@ -35,10 +35,10 @@ class FanoutServer {
     ~FanoutServer();
 
     // Bind a consumer edge listener. Emits `attached` (idempotent re-attach
-    // included) or `error`. Parity: unixfd-fanout.py attach().
+    // included) or `error`.
     void attach(const std::string& path);
     // Close an edge listener + its clients, unlink the socket, emit
-    // `detached`. Unknown path is silently ignored (python parity).
+    // `detached`. Unknown path is silently ignored.
     void detach(const std::string& path);
     void detach_all();
 

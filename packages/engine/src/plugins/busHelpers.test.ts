@@ -155,8 +155,8 @@ describe('buildBusSink', () => {
         expect(sink.indexOf('capssetter')).toBeLessThan(sink.indexOf('tee name='));
     });
 
-    it('publishes the same caps as the unixfd-fanout sidecar', () => {
-        // Both producer paths (GStreamer tee here, unixfd-fanout.py --caps for
+    it('publishes the same caps as the mr-bus-fanout sidecar', () => {
+        // Both producer paths (GStreamer tee here, mr-bus-fanout --caps for
         // non-GStreamer producers) must put IDENTICAL caps on the wire — a
         // consumer cannot tell which produced its edge.
         expect(BUS_TS_CAPS).toBe('video/mpegts, systemstream=(boolean)true, packetsize=(int)188');

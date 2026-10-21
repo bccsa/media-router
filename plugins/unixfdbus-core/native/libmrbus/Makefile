@@ -1,6 +1,6 @@
 # libmrbus — shared GstUnixFd bus transport (Linux-only: memfd_create,
-# SCM_RIGHTS fd passing). Conformance-tested by unixfdFanout.test.ts against
-# the same protocol clients as the python reference sidecar.
+# SCM_RIGHTS fd passing). Conformance-tested through its two binaries,
+# mr-bus-fanout (unixfdFanout.test.ts) and mr-tssplit (mrTssplit.test.ts).
 CXX      ?= c++
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++17 -Wall -Wextra

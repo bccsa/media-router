@@ -14,10 +14,10 @@ to MONOTONIC).
 
 THE MATHS IS NOT HERE. `ts_timeline.TimelineStamper` (plugins/mpegts-core/py)
 is the one python definition of the contract's arithmetic — anchor, per-PID
-unwrap, discontinuity watch, re-anchor, monotone staircase — shared with the
-`unixfd-fanout.py` sidecar and ported to `mrts::TimelineStamper` for the native
-ones. What lives in this subsystem is only the GStreamer parts around it, split
-three ways because they change for unrelated reasons:
+unwrap, discontinuity watch, re-anchor, monotone staircase — ported to
+`mrts::TimelineStamper` for the native ones. What lives in this subsystem is
+only the GStreamer parts around it, split three ways because they change for
+unrelated reasons:
 
   `gst_stamp_probe`   — the python probe: where the stamp lands on a pad, and
                         the segment mapping it has to survive.

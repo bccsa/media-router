@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Test client for unixfd-fanout.py — a minimal unixfdsrc stand-in.
+"""Test client for the bus fan-out servers (mr-bus-fanout, mr-tssplit) — a
+minimal unixfdsrc stand-in.
 
 Connects to an edge socket, expects CAPS first, then `--buffers N` NEW_BUFFER
 messages with passed fds; validates the 56-byte payload layout, the fd's
@@ -25,7 +26,7 @@ import socket
 import struct
 import sys
 
-# Sibling plugin's TS parser (same path plumbing unixfd-fanout.py uses), so a
+# Sibling plugin's TS parser (the python reference in mpegts-core/py), so a
 # verdict can report the buffer's first PES PTS — what the time-sync contract's
 # stamp is derived from. Absent = the field reports null; nothing else changes.
 sys.path.append(os.path.normpath(os.path.join(

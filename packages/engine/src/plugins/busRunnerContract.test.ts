@@ -387,11 +387,11 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
 
     it('the non-gst fan-out sidecar speaks the same wire commands', () => {
         const sidecarSource = readFileSync(
-            join(__dirname, '../../../../plugins/unixfdbus-core/py/unixfd-fanout.py'),
+            join(__dirname, '../../../../plugins/unixfdbus-core/native/mr-bus-fanout/main.cpp'),
             'utf8',
         );
-        expect(sidecarSource).toContain("'bus_attach'");
-        expect(sidecarSource).toContain("'bus_detach'");
+        expect(sidecarSource).toContain('"bus_attach"');
+        expect(sidecarSource).toContain('"bus_detach"');
     });
 
     describe('lateness taps (house-clock WI-P0-8)', () => {

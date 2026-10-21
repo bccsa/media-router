@@ -11,7 +11,7 @@
  * engine's `BusFanoutCoordinator` (`bus_attach`/`bus_detach` runner commands),
  * each on its own edge socket. Consumers read their own branch
  * (`buildBusSrc`). Non-GStreamer producers (hls-player's Node child) publish
- * through the `unixfd-fanout.py` sidecar via `busIngestSocketPath`.
+ * through the `mr-bus-fanout` sidecar via `busIngestSocketPath`.
  *
  * Channel identity: the allocated bus port NUMBER (from the channel manager,
  * with its sticky-reacquire semantics) — it no longer binds a socket, it keys
@@ -25,7 +25,7 @@
  * The caps EVERY bus producer publishes — identity, not a hint. unixfd carries
  * caps across the socket and `tsdemux` rejects caps-less buffers, so both
  * producer paths must publish exactly this and nothing more: the GStreamer
- * egress (`buildBusSink`) and the `unixfd-fanout.py` sidecar (`--caps`).
+ * egress (`buildBusSink`) and the `mr-bus-fanout` sidecar (`--caps`).
  *
  * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
  */
@@ -108,7 +108,7 @@ export function busEdgeSocketPath(port: number, connectionId: string): string {
 /**
  * Ingest socket path for a non-GStreamer bus PRODUCER (today: hls-player).
  * The producer's data process (hls-pipe's Node child) streams raw TS into
- * this socket; the module's `unixfd-fanout.py` sidecar listens here and fans
+ * this socket; the module's `mr-bus-fanout` sidecar listens here and fans
  * the stream out to the per-consumer edge sockets (`busEdgeSocketPath`)
  * speaking the GstUnixFd protocol. Keyed by the channel port like every other
  * bus path so it survives module restarts with the sticky port.

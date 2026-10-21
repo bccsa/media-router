@@ -2,10 +2,9 @@
 //
 // This is the protocol spoken by GStreamer's unixfdsink/unixfdsrc
 // (gst-plugins-bad gst/unixfd/gstunixfd.[ch]) — layouts are ABI-frozen
-// upstream. The repo's executable reference is
-// packages/engine/src/child-process/unixfd-fanout.py; the conformance suite
-// (unixfdFanout.test.ts) runs this implementation and the python one against
-// the same clients.
+// upstream. The conformance suite (unixfdFanout.test.ts) runs this
+// implementation against a python unixfdsrc stand-in
+// (py/unixfd-fanout.test-client.py).
 //
 // Transport: AF_UNIX SOCK_STREAM. Every message: 8-byte Header (native LE).
 // NEW_BUFFER's memfd rides SCM_RIGHTS on the sendmsg that carries the
@@ -53,8 +52,8 @@ constexpr uint8_t MEMORY_TYPE_DEFAULT = 0;
 // GAP marks a bus gap marker (plan ch. 5 OQ-12).
 constexpr uint32_t BUFFER_FLAG_GAP = 1u << 11;
 
-// Fan-out discipline (parity with unixfd-fanout.py / the gst busedge
-// branches' `queue leaky=2 max-size-time=500ms`):
+// Fan-out discipline (as the gst busedge branches'
+// `queue leaky=2 max-size-time=500ms`):
 constexpr int TS_PKT = 188;
 constexpr int BUFFER_BYTES = 128 * TS_PKT;              // ingest chunking
 constexpr int64_t QUEUE_BUDGET_NS = 500'000'000;        // per-client send budget
