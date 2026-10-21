@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { MediaRouter } from '@media-router/engine';
 import { AudioMixerModule } from './AudioMixerModule.js';
 
 function makeModule(sourceCount = 0, opts: { busPort?: number | null } = {}) {
@@ -115,5 +116,59 @@ describe('AudioMixerModule.getLiveInputBranch (#787)', () => {
     it('other ports are not live-input ports', () => {
         const { module } = makeModule(1);
         expect(module.getLiveInputBranch('audio-out', 'c-0')).toBeNull();
+    });
+});
+
+describe('AudioMixerModule: the start pace from the producers (WI-P2-13)', () => {
+    it("a running producer's output lateness reaches its watchdog as seed-lateness", async () => {
+        const router = new MediaRouter();
+        const out = { id: 'audio-out', direction: 'output', streamType: 'audio/302m', label: 'A' };
+        router.registerPorts('enc-a', [out as never]);
+        router.registerPorts('enc-b', [out as never]);
+        router.registerPorts('amx-1', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+            { id: 'audio-out', direction: 'output', streamType: 'audio/302m', label: 'Out' },
+        ]);
+        const summary = {
+            instrument: true,
+            inputs: [],
+            output: { meanMs: 48.25, minMs: 40, maxMs: 55 },
+        };
+        router.setDependencies(
+            {} as never,
+            ((id: string) =>
+                id === 'amx-1'
+                    ? { config: {}, running: false, stop: vi.fn(), start: vi.fn() }
+                    : // enc-b runs but has shown no lateness yet: no seed.
+                      {
+                          config: {},
+                          running: true,
+                          getTimingSummary: () => (id === 'enc-a' ? summary : undefined),
+                      }) as never,
+        );
+        router.assignBusChannel('enc-a');
+        router.assignBusChannel('enc-b');
+        await router.createConnection('enc-a', 'audio-out', 'amx-1', 'audio-in');
+        await router.createConnection('enc-b', 'audio-out', 'amx-1', 'audio-in');
+
+        const module = new AudioMixerModule() as any;
+        module.services = { instanceId: 'amx-1', mediaRouter: router };
+        module.setHealth = vi.fn();
+        module.setStatusData = vi.fn();
+        const pipeline: string = module.buildPipeline({}).pipeline;
+        expect(pipeline.match(/seed-lateness=\d+/g)).toEqual(['seed-lateness=48250000']);
+        const seeded = router
+            .getModuleBusSources('amx-1')
+            .find((s) => s.sourceModuleId === 'enc-a')!;
+        // On the branch of that edge, the one a live re-add sends too.
+        const branch = module.getLiveInputBranch('audio-in', seeded.connectionId);
+        expect(branch.description).toMatch(/ seed-lateness=48250000$/);
+        expect(pipeline).toContain(branch.description);
     });
 });

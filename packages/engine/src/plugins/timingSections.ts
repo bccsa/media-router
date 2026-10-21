@@ -1,9 +1,10 @@
 // A module's timing summary as status sections and a face badge (ADR-0007: the plugin
 // computes, the UI renders). Every row is labelled with its unit, so the operator reads a
-// number, not a colour. House-clock plan WI-P0-9.
+// number, not a colour. House-clock plan WI-P0-9; the aligner rows WI-P2-13.
 import type {
     LatenessStatsMs,
     ModuleBadge,
+    ModuleTimingInput,
     ModuleTimingSummary,
     StatusValue,
 } from '@media-router/shared-types';
@@ -45,6 +46,21 @@ const latenessRows = (l: LatenessStatsMs): Row[] => [
     ['latenessRange', 'Lateness min – max', range(l.minMs, l.maxMs), 'ms'],
 ];
 
+/** An input's rows: its tap's lateness, then what its aligner watch reports. */
+function inputRows(input: ModuleTimingInput): Row[] {
+    const rows = input.lateness ? latenessRows(input.lateness) : [];
+    if (input.addedMs !== undefined) rows.push(['addedMs', 'Added', ms(input.addedMs), 'ms']);
+    if (input.state !== undefined) rows.push(['state', 'State', input.state]);
+    if (input.silenceLimitMs !== undefined) {
+        rows.push(['silenceLimitMs', 'Silence limit', ms(input.silenceLimitMs), 'ms']);
+    }
+    if (input.absences !== undefined) rows.push(['absences', 'Absences', input.absences]);
+    if (input.staleMs !== undefined) {
+        rows.push(['staleMs', 'Discarded on rejoin', ms(input.staleMs), 'ms']);
+    }
+    return rows;
+}
+
 export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     const pub: TimingPublication = { sections: [], data: {}, badge: null };
     const rows: Row[] = [];
@@ -58,14 +74,18 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
             'ms',
         ]);
     }
-    const waitedOn = s.inputs.find((i) => i.label === s.slowest) ?? s.inputs[0];
+    const waitedOn =
+        s.inputs.find((i) => i.label === s.slowest) ?? s.inputs.find((i) => i.lateness);
     if (waitedOn?.addedMs !== undefined) {
         rows.push(['addedMs', 'Added latency', ms(waitedOn.addedMs), 'ms']);
     }
+    if (s.paceMs !== undefined) rows.push(['paceMs', 'Pace', ms(s.paceMs), 'ms']);
     if (s.processingLatencyMs !== undefined) {
         rows.push(['processingLatencyMs', 'Processing latency', ms(s.processingLatencyMs), 'ms']);
     }
-    if (s.slowest) rows.push(['slowest', 'Slowest input', s.slowest]);
+    // Phase 0's stand-in for what the module waits for gives way to the aligners' answer.
+    if (s.waitingFor !== undefined) rows.push(['waitingFor', 'Waiting for', s.waitingFor]);
+    else if (s.slowest) rows.push(['slowest', 'Slowest input', s.slowest]);
     if (s.decodeMs !== undefined) rows.push(['decodeMs', 'Decode', ms(s.decodeMs), 'ms']);
     if (s.presentationDelayMs !== undefined) {
         rows.push(['presentationDelayMs', 'Presentation delay', ms(s.presentationDelayMs), 'ms']);
@@ -80,12 +100,10 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
     s.inputs.forEach((input, n) => {
-        const inRows = latenessRows(input.lateness);
-        if (input.addedMs !== undefined) inRows.push(['addedMs', 'Added', ms(input.addedMs), 'ms']);
         section(
             `${TIMING_SECTION}-in-${n + 1}`,
             `Input ${n + 1} timing: ${input.label}`,
-            inRows,
+            inputRows(input),
             pub,
         );
     });
@@ -112,6 +130,8 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('out.min', s.output?.minMs);
     put('out.max', s.output?.maxMs);
     put('slowest', s.slowest);
+    put('pace', s.paceMs);
+    put('waitingFor', s.waitingFor);
     put('decode', s.decodeMs);
     put('d', s.presentationDelayMs);
     put('device', s.deviceLatencyMs);
@@ -120,10 +140,14 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('proc', s.processingLatencyMs);
     for (const i of s.inputs) {
         put(`${i.tap}.label`, i.label);
-        put(`${i.tap}.mean`, i.lateness.meanMs);
-        put(`${i.tap}.min`, i.lateness.minMs);
-        put(`${i.tap}.max`, i.lateness.maxMs);
+        put(`${i.tap}.mean`, i.lateness?.meanMs);
+        put(`${i.tap}.min`, i.lateness?.minMs);
+        put(`${i.tap}.max`, i.lateness?.maxMs);
         put(`${i.tap}.added`, i.addedMs);
+        put(`${i.tap}.state`, i.state);
+        put(`${i.tap}.w`, i.silenceLimitMs);
+        put(`${i.tap}.absences`, i.absences); // a count: each new absence moves it by 1
+        put(`${i.tap}.stale`, i.staleMs);
     }
     for (const o of s.outputs ?? []) {
         put(`${o.tap}.mean`, o.lateness.meanMs);

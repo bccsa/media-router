@@ -1,11 +1,20 @@
-// LatenessReporter (design §9.5, WI-P0-9): the `mrlateness` windows a module's taps and
-// sidecars post, as its timing summary. Display only: no threshold, no alarm (OQ-8). Taps are
-// classified by name: `lat_busin…` inputs; `lat_render`/`lat_egress`/`lat_busout…` output.
+// LatenessReporter (§9.5, WI-P0-9): taps' and sidecars' `mrlateness` windows as the timing
+// summary (`lat_busin…` in; `lat_render`/`lat_egress`/`lat_busout…` out), no threshold (OQ-8);
+// aligner modules add their `mralignwatch` reports and warnings (WI-P2-13).
 import type {
+    AlignerInputState,
     LatenessStatsMs,
     ModuleTimingInput,
     ModuleTimingSummary,
 } from '@media-router/shared-types';
+import {
+    ALIGNER_EVENT,
+    AlignerWatches,
+    type AlignerEvent,
+    type AlignerInputRef,
+    type AlignerWatch,
+    type AlignerWatchRef,
+} from './alignerWatches.js';
 import { LAT_IN_PREFIX, LAT_OUT_PREFIX, LATENESS_EVENT } from './latenessTap.js';
 
 export interface LatenessWindowMs extends LatenessStatsMs {
@@ -49,15 +58,51 @@ function merge(windows: LatenessWindowMs[]): LatenessStatsMs | undefined {
     };
 }
 
+/** The input an aligner event names, as the display labels it. */
+export type LabelledAlignerEvent = AlignerEvent & { label: string };
+
+/** The aligners' warning texts; null where nothing stands. */
+export interface AlignerWarnings {
+    absent: string | null;
+    full: string | null;
+}
+
+/** One display row and the watches that serve it. */
+interface AlignerRow {
+    key: string;
+    label: string;
+    watches: AlignerWatch[];
+}
+
+/** Several watches on one input (a muxer input's routes): absent when any is. */
+function rowState(watches: AlignerWatch[]): AlignerInputState {
+    const states = new Set(watches.map((w) => w.report.state));
+    if (states.has('absent')) return 'absent';
+    return states.has('present') ? 'present' : 'waiting';
+}
+
+function alignerFields(watches: AlignerWatch[]): Partial<ModuleTimingInput> {
+    const r = watches.map((w) => w.report);
+    return {
+        state: rowState(watches),
+        silenceLimitMs: Math.min(...r.map((x) => x.silenceLimitMs)),
+        absences: Math.max(...r.map((x) => x.absences)),
+        staleMs: Math.max(...r.map((x) => x.staleMs)),
+    };
+}
+
 export interface LatenessReporterOptions {
     /** Human label for an input tap (its upstream module, when known). */
     labelFor?: (tap: string) => string;
+    /** Which input an aligner watch serves; default an input of its own, by its label. */
+    alignerInput?: (watch: AlignerWatchRef) => AlignerInputRef;
     /** Window length the taps run at; staleness is measured in these. */
     intervalMs?: number;
 }
 
 export class LatenessReporter {
     private readonly taps = new Map<string, Entry>();
+    private readonly watches = new AlignerWatches();
     private presentationDelayMs: number | undefined;
     private deviceLatencyMs: number | undefined;
     private pipeWireLatencyMs: number | undefined;
@@ -69,14 +114,30 @@ export class LatenessReporter {
         this.intervalMs = opts.intervalMs ?? 2000;
     }
 
-    /** Takes `mrlateness:<tap>` plugin events; false for any other channel. */
+    /** Takes `mrlateness:<tap>` and `mralignwatch:<element>` plugin events; false for any
+     *  other channel. */
     onEvent(channel: string, payload: unknown, now = Date.now()): boolean {
+        if (this.onAligner(channel, payload, now)) return true;
         if (!channel.startsWith(`${LATENESS_EVENT}:`)) return false;
         const tap = channel.slice(LATENESS_EVENT.length + 1);
         const window = parseLatenessPayload(payload);
         if (window && Math.abs(window.meanMs) >= OFF_TIMELINE_MS) this.taps.delete(tap);
         else if (window) this.addWindow(tap, window, now);
         return true;
+    }
+
+    /** An `mralignwatch:<element>` report: whether a state or a full episode changed, and the
+     *  events it completes. Null for any other channel. */
+    onAligner(
+        channel: string,
+        payload: unknown,
+        now = Date.now(),
+    ): { changed: boolean; events: LabelledAlignerEvent[] } | null {
+        if (!channel.startsWith(`${ALIGNER_EVENT}:`)) return null;
+        const taken = this.watches.take(channel.slice(ALIGNER_EVENT.length + 1), payload, now);
+        if (!taken) return { changed: false, events: [] };
+        const events = taken.events.map((e) => ({ ...e, label: this.labelOf(e.watch) }));
+        return { changed: taken.changed, events };
     }
 
     /** A window from any source: a tap, or a sidecar's stats line. */
@@ -103,31 +164,143 @@ export class LatenessReporter {
 
     reset(): void {
         this.taps.clear();
+        this.watches.clear();
         this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
         this.processingLatencyMs = undefined;
         this.instrument = true;
     }
 
-    summary(now = Date.now()): ModuleTimingSummary {
+    private expire(now: number): void {
+        const staleMs = STALE_WINDOWS * this.intervalMs;
         for (const [tap, e] of this.taps) {
-            if (now - e.at > STALE_WINDOWS * this.intervalMs) this.taps.delete(tap);
+            if (now - e.at > staleMs) this.taps.delete(tap);
         }
+        this.watches.expire(now, staleMs);
+    }
+
+    private tapLabel(tap: string): string {
+        return this.opts.labelFor?.(tap) ?? tap.slice(4);
+    }
+
+    private labelOf(watch: AlignerWatchRef): string {
+        const ref = this.resolve(watch);
+        if (ref && 'tap' in ref) return this.tapLabel(ref.tap);
+        return ref ? ref.label : watch.input;
+    }
+
+    private resolve(watch: AlignerWatchRef): AlignerInputRef {
+        return this.opts.alignerInput ? this.opts.alignerInput(watch) : { label: watch.input };
+    }
+
+    /** The watches by the input they serve (a tap's, or one of their own), in the display's
+     *  order, and the internal ones apart. */
+    private alignerRows(): { rows: AlignerRow[]; internal: AlignerWatch[] } {
+        const rows = new Map<string, AlignerRow>();
+        const internal: AlignerWatch[] = [];
+        for (const w of this.watches.list()) {
+            const ref = this.resolve(w.ref);
+            if (!ref) {
+                internal.push(w);
+                continue;
+            }
+            const key = 'tap' in ref ? ref.tap : `${ALIGNER_EVENT}:${ref.label}`;
+            const label = 'tap' in ref ? this.tapLabel(ref.tap) : ref.label;
+            const row = rows.get(key) ?? { key, label, watches: [] };
+            row.watches.push(w);
+            rows.set(key, row);
+        }
+        const sorted = [...rows.values()].sort((a, b) => a.key.localeCompare(b.key));
+        return { rows: sorted, internal };
+    }
+
+    /** The pace's added latency (the most any aligner adds to its fastest present member) and
+     *  what the module waits for: the absent inputs, else the slowest present member of the
+     *  aligner that adds the most, among two or more. Internal stages are never named. */
+    private alignerPace(
+        rows: AlignerRow[],
+        internal: AlignerWatch[],
+    ): Partial<ModuleTimingSummary> {
+        const groups = new Map<string, Array<{ w: AlignerWatch; label?: string }>>();
+        const join = (w: AlignerWatch, label?: string): void => {
+            const g = groups.get(w.report.aligner) ?? [];
+            g.push({ w, label });
+            groups.set(w.report.aligner, g);
+        };
+        for (const row of rows) for (const w of row.watches) join(w, row.label);
+        for (const w of internal) join(w);
+        let paceMs: number | undefined;
+        let held: { addedMs: number; label: string } | undefined;
+        for (const members of groups.values()) {
+            const present = members.filter((m) => m.w.report.state === 'present');
+            if (!present.length) continue;
+            const pace = Math.max(...members.map((m) => m.w.report.paceMs));
+            const fastest = Math.min(...present.map((m) => m.w.report.latenessMs));
+            const addedMs = pace - fastest; // < 0: every input later than the pace, none held
+            paceMs = Math.max(paceMs ?? 0, addedMs);
+            const named = present.filter((m) => m.label !== undefined);
+            if (present.length < 2 || !named.length) continue;
+            const slowest = named.reduce((a, b) =>
+                b.w.report.latenessMs > a.w.report.latenessMs ? b : a,
+            );
+            if (!held || addedMs > held.addedMs) held = { addedMs, label: slowest.label! };
+        }
+        const absent = rows.filter((r) => rowState(r.watches) === 'absent').map((r) => r.label);
+        const waitingFor = absent.length ? absent.join(', ') : held?.label;
+        return {
+            ...(paceMs !== undefined ? { paceMs } : {}),
+            ...(waitingFor !== undefined ? { waitingFor } : {}),
+        };
+    }
+
+    /** The warning texts: every absent input with its W; every input whose queue is full. */
+    alignerWarnings(now = Date.now()): AlignerWarnings {
+        this.expire(now);
+        const { rows, internal } = this.alignerRows();
+        const absent = rows
+            .filter((r) => rowState(r.watches) === 'absent')
+            .map((r) => {
+                const w = r.watches.filter((x) => x.report.state === 'absent');
+                const limitMs = Math.round(Math.min(...w.map((x) => x.report.silenceLimitMs)));
+                return `Input ${r.label} silent for ${limitMs} ms — continuing without it`;
+            });
+        const full = [
+            ...rows.filter((r) => r.watches.some((w) => w.full)).map((r) => r.label),
+            ...internal.filter((w) => w.full).map((w) => w.ref.input),
+        ].map((label) => `Input ${label} queue full — upstream held`);
+        return {
+            absent: absent.length ? absent.join('; ') : null,
+            full: full.length ? full.join('; ') : null,
+        };
+    }
+
+    summary(now = Date.now()): ModuleTimingSummary {
+        this.expire(now);
         const all = [...this.taps.entries()].sort(([a], [b]) => a.localeCompare(b));
         const render = this.taps.get('lat_render')?.window;
         const sinkSide = all.filter(([t]) => t === 'lat_render' || t === 'lat_egress');
         const busOut = all.filter(([t]) => t.startsWith(LAT_OUT_PREFIX));
         const outSide = sinkSide.length ? sinkSide : busOut;
         const output = merge(outSide.map(([, e]) => e.window));
-        const inputs: ModuleTimingInput[] = all
-            .filter(([t]) => t.startsWith(LAT_IN_PREFIX))
-            .map(([tap, e]) => ({
+        const byTap = new Map<string, ModuleTimingInput>();
+        for (const [tap, e] of all.filter(([t]) => t.startsWith(LAT_IN_PREFIX))) {
+            byTap.set(tap, {
                 tap,
-                label: this.opts.labelFor?.(tap) ?? tap.slice(4),
+                label: this.tapLabel(tap),
                 lateness: e.window,
                 ...(output ? { addedMs: output.meanMs - e.window.meanMs } : {}),
-            }));
-        const slowestIn = inputs.reduce<ModuleTimingInput | undefined>(
-            (s, i) => (!s || i.lateness.meanMs > s.lateness.meanMs ? i : s),
+            });
+        }
+        // An aligner input joins its tap's row, or is a row of its own (a dark input's tap
+        // goes quiet, its watch reports on).
+        const { rows, internal } = this.alignerRows();
+        for (const row of rows) {
+            const input = byTap.get(row.key) ?? { tap: row.key, label: row.label };
+            byTap.set(row.key, { ...input, ...alignerFields(row.watches) });
+        }
+        const inputs = [...byTap.values()].sort((a, b) => a.tap.localeCompare(b.tap));
+        const tapped = inputs.filter((i) => i.lateness !== undefined);
+        const slowestIn = tapped.reduce<ModuleTimingInput | undefined>(
+            (s, i) => (!s || i.lateness!.meanMs > s.lateness!.meanMs ? i : s),
             undefined,
         );
         const summary: ModuleTimingSummary = { inputs, instrument: this.instrument };
@@ -140,9 +313,10 @@ export class LatenessReporter {
                 lateness: e.window,
             }));
         }
-        if (inputs.length >= 2 && slowestIn) summary.slowest = slowestIn.label;
+        if (tapped.length >= 2 && slowestIn) summary.slowest = slowestIn.label;
+        Object.assign(summary, this.alignerPace(rows, internal));
         if (render) {
-            if (slowestIn) summary.decodeMs = render.meanMs - slowestIn.lateness.meanMs;
+            if (slowestIn) summary.decodeMs = render.meanMs - slowestIn.lateness!.meanMs;
             const d = this.presentationDelayMs;
             const device = this.deviceLatencyMs ?? 0;
             if (d !== undefined) summary.presentationDelayMs = d;

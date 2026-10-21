@@ -1,4 +1,4 @@
-import type { PluginManifest, StreamType } from '@media-router/shared-types';
+import type { ModuleTimingSummary, PluginManifest, StreamType } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -191,6 +191,10 @@ export interface PluginModule {
      * nothing.
      */
     getBusStreamChannels?(portId: string): number | undefined;
+    /** The lateness summary its `timing` section shows (§9.5; GstPluginBase). A consumer's
+     *  aligner input starts its pace at this producer's output lateness (`seedLatenessMs` in
+     *  `MediaRouter.getModuleBusSources`, WI-P2-13). */
+    getTimingSummary?(): ModuleTimingSummary | undefined;
     /**
      * Target of the tracked `bus_reinput` RPC that executes a live input swap.
      * Defaults to the gst child process; a native (non-GStreamer) sink

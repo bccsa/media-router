@@ -1,4 +1,9 @@
-import type { ModulePort, StreamType, ChannelMapEntry } from '@media-router/shared-types';
+import type {
+    ModulePort,
+    StreamType,
+    ChannelMapEntry,
+    ModuleTimingSummary,
+} from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
@@ -49,6 +54,35 @@ export interface ActiveHandle {
     pwLinkIds?: number[];
     /** Port name pairs for pw-link teardown (fallback when link IDs are 0). */
     pwLinkPairs?: Array<{ src: string; dst: string }>;
+}
+
+/** One connected bus source of a sink module (`MediaRouter.getModuleBusSources`). */
+export interface ModuleBusSource {
+    port: number;
+    connectionId: string;
+    sourceModuleId: string;
+    sourcePortId: string;
+    sinkPortId: string;
+    streamType: StreamType;
+    socketPath: string;
+    /** Per-connection channel map (audio/pcm and audio/302m edges). */
+    channelMap?: ChannelMapEntry[];
+    /** Channel count of the bus stream as DECLARED by the producer
+     *  (`PluginModule.getBusStreamChannels`) — what a consumer's channel-map
+     *  matrix needs as its input dimension. Undefined when the producer
+     *  declares nothing; the consumer applies its own default. */
+    sourceChannels?: number;
+    /** The running producer's output lateness (ms, its timing summary): the consumer's
+     *  aligner input starts its pace there (`seed-lateness`, house-clock WI-P2-13).
+     *  Undefined while the producer is stopped or has shown none. */
+    seedLatenessMs?: number;
+}
+
+/** A producer's lateness on bus channel `port`: that output's own when it lists one per
+ *  output, else its merged output. */
+function outputLatenessMs(s: ModuleTimingSummary | undefined, port: number): number | undefined {
+    const own = s?.outputs?.find((o) => o.port === String(port));
+    return own ? own.lateness.meanMs : s?.output?.meanMs;
 }
 
 /**
@@ -672,42 +706,19 @@ export class MediaRouter {
 
     /** Resolve every connected bus-carried source (muxed/mpegts or audio/302m)
      *  feeding a given sink module. */
-    getModuleBusSources(moduleId: string): Array<{
-        port: number;
-        connectionId: string;
-        sourceModuleId: string;
-        sourcePortId: string;
-        sinkPortId: string;
-        streamType: StreamType;
-        socketPath: string;
-        /** Per-connection channel map (audio/pcm and audio/302m edges). */
-        channelMap?: ChannelMapEntry[];
-        /** Channel count of the bus stream as DECLARED by the producer
-         *  (`PluginModule.getBusStreamChannels`) — what a consumer's channel-map
-         *  matrix needs as its input dimension. Undefined when the producer
-         *  declares nothing; the consumer applies its own default. */
-        sourceChannels?: number;
-    }> {
-        const out: Array<{
-            port: number;
-            connectionId: string;
-            sourceModuleId: string;
-            sourcePortId: string;
-            sinkPortId: string;
-            streamType: StreamType;
-            socketPath: string;
-            channelMap?: ChannelMapEntry[];
-            sourceChannels?: number;
-        }> = [];
+    getModuleBusSources(moduleId: string): ModuleBusSource[] {
+        const out: ModuleBusSource[] = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
             const port =
                 this.busChannels.get(this.channelKey(conn.sourceModuleId, conn.sourcePortId)) ??
                 this.busChannels.get(conn.sourceModuleId);
             if (port !== undefined) {
-                const sourceChannels = this.moduleGetter?.(
-                    conn.sourceModuleId,
-                )?.getBusStreamChannels?.(conn.sourcePortId);
+                const producer = this.moduleGetter?.(conn.sourceModuleId);
+                const sourceChannels = producer?.getBusStreamChannels?.(conn.sourcePortId);
+                const seedLatenessMs = producer?.running
+                    ? outputLatenessMs(producer.getTimingSummary?.(), port)
+                    : undefined;
                 out.push({
                     port,
                     connectionId: connId,
@@ -718,6 +729,7 @@ export class MediaRouter {
                     socketPath: this.edgeSocketPath(port, connId),
                     channelMap: conn.channelMap,
                     ...(sourceChannels !== undefined ? { sourceChannels } : {}),
+                    ...(seedLatenessMs !== undefined ? { seedLatenessMs } : {}),
                 });
             }
         }

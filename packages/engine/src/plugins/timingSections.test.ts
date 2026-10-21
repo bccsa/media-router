@@ -199,3 +199,130 @@ describe('timingChanged (R-P0-6)', () => {
         expect(timingChanged(a, merged)).toBe(true);
     });
 });
+
+describe('timingPublication: aligner modules (WI-P2-13)', () => {
+    /** An aligner input: its tap's window and what its watch reports. */
+    const aligned = (
+        tap: string,
+        meanMs: number | undefined,
+        state: 'waiting' | 'present' | 'absent',
+        more: { silenceLimitMs?: number; absences?: number; staleMs?: number } = {},
+    ) => ({
+        tap,
+        label: tap.replace(/^lat_/, ''),
+        ...(meanMs !== undefined ? { lateness: lat(meanMs), addedMs: 300 - meanMs } : {}),
+        state,
+        silenceLimitMs: more.silenceLimitMs ?? 100,
+        absences: more.absences ?? 0,
+        staleMs: more.staleMs ?? 0,
+    });
+    const mixer: ModuleTimingSummary = {
+        instrument: true,
+        output: lat(300),
+        inputs: [
+            aligned('lat_busin_0', 20, 'present', { silenceLimitMs: 104.6 }),
+            aligned('lat_busin_1', 140, 'present', { absences: 2, staleMs: 990.4 }),
+        ],
+        slowest: 'busin_1',
+        paceMs: 120.4,
+        waitingFor: 'busin_1',
+    };
+
+    it('Pace and Waiting for in the timing section (Waiting for replaces Slowest input)', () => {
+        const pub = timingPublication(mixer);
+        const timing = pub.sections.find((x) => x.id === 'timing')!;
+        expect(timing.fields).toEqual([
+            { key: 'outputMs', label: 'Output lateness', unit: 'ms' },
+            { key: 'outputRange', label: 'Output lateness min – max', unit: 'ms' },
+            { key: 'addedMs', label: 'Added latency', unit: 'ms' },
+            { key: 'paceMs', label: 'Pace', unit: 'ms' },
+            { key: 'waitingFor', label: 'Waiting for' },
+        ]);
+        expect(pub.data.timing).toEqual({
+            outputMs: 300,
+            outputRange: '300 – 300',
+            addedMs: 160,
+            paceMs: 120,
+            waitingFor: 'busin_1',
+        });
+        // Without the aligners' answer P0's stand-in shows, as before.
+        const p0 = timingPublication({ ...mixer, paceMs: undefined, waitingFor: undefined });
+        expect(p0.data.timing).toMatchObject({ slowest: 'busin_1' });
+        expect(p0.data.timing).not.toHaveProperty('waitingFor');
+    });
+
+    it('State, Silence limit, Absences and Discarded on rejoin per input, with units', () => {
+        const pub = timingPublication(mixer);
+        expect(pub.sections.find((x) => x.id === 'timing-in-2')!.fields).toEqual([
+            { key: 'latenessMs', label: 'Lateness', unit: 'ms' },
+            { key: 'latenessRange', label: 'Lateness min – max', unit: 'ms' },
+            { key: 'addedMs', label: 'Added', unit: 'ms' },
+            { key: 'state', label: 'State' },
+            { key: 'silenceLimitMs', label: 'Silence limit', unit: 'ms' },
+            { key: 'absences', label: 'Absences' },
+            { key: 'staleMs', label: 'Discarded on rejoin', unit: 'ms' },
+        ]);
+        expect(pub.data['timing-in-1']).toMatchObject({ state: 'present', silenceLimitMs: 105 });
+        expect(pub.data['timing-in-2']).toEqual({
+            latenessMs: 140,
+            latenessRange: '140 – 140',
+            addedMs: 160,
+            state: 'present',
+            silenceLimitMs: 100,
+            absences: 2,
+            staleMs: 990,
+        });
+    });
+
+    it('an input only its watch reports (a dark tap, or none): no lateness rows', () => {
+        const pub = timingPublication({
+            instrument: true,
+            output: lat(300),
+            inputs: [
+                aligned('lat_busin_0', undefined, 'absent', { silenceLimitMs: 300, absences: 1 }),
+                aligned('lat_busin_1', 20, 'present'),
+            ],
+            waitingFor: 'busin_0',
+        });
+        expect(pub.data['timing-in-1']).toEqual({
+            state: 'absent',
+            silenceLimitMs: 300,
+            absences: 1,
+            staleMs: 0,
+        });
+        // Added latency is read off an input that has a tap.
+        expect(pub.data.timing).toMatchObject({ addedMs: 280 });
+    });
+
+    it('every number carries its unit; a count none', () => {
+        const pub = timingPublication(mixer);
+        for (const sec of pub.sections) {
+            for (const f of sec.fields) {
+                const v = pub.data[sec.id][f.key];
+                if (f.key === 'absences') expect(f.unit).toBeUndefined();
+                else if (typeof v === 'number') expect(f.unit).toBe('ms');
+            }
+        }
+    });
+
+    it('timingChanged: a state, a waited-for input or one more absence is a change', () => {
+        const moved = (patch: Partial<ReturnType<typeof aligned>>, top = {}) => ({
+            ...mixer,
+            ...top,
+            inputs: [mixer.inputs[0], { ...mixer.inputs[1], ...patch }],
+        });
+        expect(timingChanged(mixer, moved({ state: 'absent' }))).toBe(true);
+        expect(timingChanged(mixer, moved({ absences: 3 }))).toBe(true);
+        expect(timingChanged(mixer, moved({ silenceLimitMs: 100.6 }))).toBe(false);
+        expect(timingChanged(mixer, moved({ silenceLimitMs: 101.2 }))).toBe(true);
+        expect(timingChanged(mixer, moved({ staleMs: 990.9 }))).toBe(false);
+        expect(timingChanged(mixer, moved({ staleMs: 1000 }))).toBe(true);
+        expect(timingChanged(mixer, moved({}, { waitingFor: 'busin_0' }))).toBe(true);
+        expect(timingChanged(mixer, moved({}, { paceMs: 120.9 }))).toBe(false);
+        expect(timingChanged(mixer, moved({}, { paceMs: 121.5 }))).toBe(true);
+        expect(timingChanged(mixer, moved({}, { paceMs: undefined }))).toBe(true);
+        // A row coming or going is a change: the watch's fields alone, too.
+        const { state: _s, ...noState } = mixer.inputs[1];
+        expect(timingChanged(mixer, { ...mixer, inputs: [mixer.inputs[0], noState] })).toBe(true);
+    });
+});

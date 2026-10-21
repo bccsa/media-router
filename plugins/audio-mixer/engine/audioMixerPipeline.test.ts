@@ -111,6 +111,24 @@ describe('buildMixerPipeline', () => {
         expect(r.pipeline).not.toMatch(/\btsdemux\b/);
     });
 
+    it('seeds reach the pipeline string', () => {
+        // The router's `seedLatenessMs` (the producer's output lateness, WI-P2-13) is the
+        // start pace of that source's watchdog, in ns; a source without one gets none.
+        const sources = [{ ...SOURCES[0], seedLatenessMs: 212.5 }, SOURCES[1]];
+        const r = buildMixerPipeline({ sources, outputPort: 41000, channels: 2, volume: 1 })!;
+        const watchdogs = [
+            ...r.pipeline.matchAll(/mralignwatch name=(mixin_aw_[0-9a-f]{6})[^!)]*/g),
+        ];
+        expect(watchdogs.map((m) => /seed-lateness=(\d+)/.exec(m[0])?.[1] ?? 'none')).toEqual([
+            '212500000',
+            'none',
+        ]);
+        // The live-input branch a later add sends carries the same seed.
+        const b = mixerInputBranch('c1', sources[0], 2);
+        expect(b.description).toMatch(/ hold-on-eos=true seed-lateness=212500000$/);
+        expect(r.pipeline).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
+    });
+
     it('master volume + VU level sit between the mix and the encode', () => {
         const r = buildMixerPipeline({
             sources: SOURCES,

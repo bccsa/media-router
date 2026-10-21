@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type {
     ModuleRuntimeState,
     ModuleHealth,
+    ModuleTimingSummary,
     StatusGraph,
     StatusValue,
 } from '@media-router/shared-types';
@@ -24,6 +25,7 @@ import {
 } from './playoutReanchor.js';
 import { PlayoutReanchorState, type PlayoutWarningKind } from './playoutReanchorState.js';
 import { ModuleTiming } from './moduleTiming.js';
+import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
@@ -39,7 +41,9 @@ type OwnedWarning =
     | 'input-lost'
     | 'reanchor'
     | 'rebase'
-    | 'timing-plugin';
+    | 'timing-plugin'
+    | 'input-absent'
+    | 'aligner-full';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -86,7 +90,23 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.services?.instanceId
                 ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
                 : [],
+        alignerWarnings: (absent, full) => this.onAlignerWarnings(absent, full),
+        log: (level, obj, msg) =>
+            level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
+        alignerInput: (watch) => this.alignerInputOf(watch),
     });
+
+    /** Which input an aligner watch serves (WI-P2-13): `{ tap }`, `{ label }` of its own, or
+     *  `null` (internal). Undefined: the engine's rule, a watch labelled with a bus connection
+     *  id serves that edge (the 302M fan-ins); a module whose watches say otherwise answers. */
+    protected alignerInputOf(_watch: AlignerWatchRef): AlignerInputRef | undefined {
+        return undefined;
+    }
+
+    /** The timing summary last published (`PluginModule.getTimingSummary`). */
+    getTimingSummary(): ModuleTimingSummary | undefined {
+        return this.timing.summary();
+    }
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */
     abstract buildPipeline(config: Record<string, unknown>): PipelineDescription | null;
@@ -137,6 +157,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.annotateLiveInputBranches(desc);
         await this.childProcess.updatePipelineDesc(desc);
         this.reassertLostInputs();
+        this.timing.reassertWarnings();
         return true;
     }
 
@@ -388,6 +409,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.timingPluginAlarm = timingPluginAlarm(data.detail);
         // A start failure outranks it; it shows again when health is next ok.
         if (this.health !== 'error') this.ownWarning('timing-plugin', this.timingPluginAlarm);
+    }
+
+    /**
+     * The aligners' `input-absent` and `aligner-full` warnings (WI-P2-13) as one health text.
+     * Taken only over ok or our own text (ADR-0010 rule 2), so another writer's warning or an
+     * error stands; the next tick takes over once it clears. Withdrawn when neither stands.
+     */
+    private onAlignerWarnings(absent: string | null, full: string | null): void {
+        const text = [absent, full].filter((t): t is string => t !== null).join('; ');
+        const ours = this.ownedWarning === 'input-absent' || this.ownedWarning === 'aligner-full';
+        if (!text) {
+            this.clearOwnWarning('input-absent');
+            this.clearOwnWarning('aligner-full');
+            return;
+        }
+        if (!ours && this.health !== 'ok') return;
+        if (ours && this.health === 'warning' && this.error === text) return;
+        this.ownWarning(absent !== null ? 'input-absent' : 'aligner-full', text);
     }
 
     /** `ok`, or the rule-6 alarm while it stands (no state change emitted). */
@@ -700,7 +739,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * do more with it.
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
-        // Lateness windows are the base class's alone (WI-P0-9): no subclass hook.
+        // Lateness windows and aligner reports are the base class's alone (WI-P0-9,
+        // WI-P2-13): no subclass hook.
         if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
         if (channel === PLAYOUT_REANCHOR_EVENT) {

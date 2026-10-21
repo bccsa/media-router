@@ -337,6 +337,71 @@ describe('MediaRouter', () => {
         expect(bySource.n1).not.toHaveProperty('sourceChannels');
     });
 
+    it('getModuleBusSources seeds each source with its running producer output lateness (WI-P2-13)', async () => {
+        const out = (id: string) => ({
+            id,
+            direction: 'output' as const,
+            streamType: 'audio/302m' as const,
+            label: '302M',
+        });
+        router.registerPorts('enc', [out('audio-out')]);
+        router.registerPorts('n1', [out('out-0'), out('out-1')]);
+        router.registerPorts('stopped', [out('audio-out')]);
+        router.registerPorts('quiet', [out('audio-out')]);
+        router.registerPorts('mix', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+        ]);
+        const lat = (meanMs: number) => ({ meanMs, minMs: meanMs - 5, maxMs: meanMs + 5 });
+        const n1Out1 = router.assignBusChannel('n1', 'out-1')!.port;
+        const summaries: Record<string, unknown> = {
+            enc: { instrument: true, inputs: [], output: lat(212.5) },
+            // Two bus outputs: each edge is seeded from its own, not the merge.
+            n1: {
+                instrument: true,
+                inputs: [],
+                output: lat(50),
+                outputs: [
+                    { tap: 'lat_busout_1', port: '1', lateness: lat(10) },
+                    { tap: `lat_busout_${n1Out1}`, port: String(n1Out1), lateness: lat(90) },
+                ],
+            },
+            stopped: { instrument: true, inputs: [], output: lat(400) },
+            quiet: { instrument: true, inputs: [] },
+        };
+        router.setDependencies({} as any, (id: string) =>
+            id === 'mix'
+                ? ({ config: {}, running: false, stop: vi.fn(), start: vi.fn() } as any)
+                : ({
+                      config: {},
+                      running: id !== 'stopped',
+                      getTimingSummary: () => summaries[id],
+                  } as any),
+        );
+        router.assignBusChannel('enc');
+        router.assignBusChannel('stopped');
+        router.assignBusChannel('quiet');
+        await router.createConnection('enc', 'audio-out', 'mix', 'audio-in');
+        await router.createConnection('n1', 'out-1', 'mix', 'audio-in');
+        await router.createConnection('stopped', 'audio-out', 'mix', 'audio-in');
+        await router.createConnection('quiet', 'audio-out', 'mix', 'audio-in');
+
+        const seeds = Object.fromEntries(
+            router.getModuleBusSources('mix').map((s) => [s.sourceModuleId, s.seedLatenessMs]),
+        );
+        expect(seeds).toEqual({ enc: 212.5, n1: 90, stopped: undefined, quiet: undefined });
+        const bySource = Object.fromEntries(
+            router.getModuleBusSources('mix').map((s) => [s.sourceModuleId, s]),
+        );
+        expect(bySource.stopped).not.toHaveProperty('seedLatenessMs');
+        expect(bySource.quiet).not.toHaveProperty('seedLatenessMs');
+    });
+
     it('updateChannelMap accepts audio/302m edges and exposes the map via getModuleBusSources', async () => {
         router.registerPorts('atx', [
             { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: 'PCM 302M' },
