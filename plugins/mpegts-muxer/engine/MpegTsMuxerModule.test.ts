@@ -28,7 +28,7 @@ import {
     RESERVED_PIDS,
     type MuxRoutingConfig,
 } from './muxPids.js';
-import type { PipelineDescription } from '@media-router/engine';
+import { tsQueueByteCap, type PipelineDescription } from '@media-router/engine';
 
 /** The mux_routing hook inputs a built PipelineDescription carries. */
 const hookInputs = (desc: PipelineDescription) =>
@@ -275,8 +275,9 @@ describe('mpegtsMuxerPipeline helpers', () => {
 
     describe('buildPipeline', () => {
         const output = { port: 40010 };
-        const QUEUE =
-            'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000';
+        /** A route's aligner: in the mux's pace group, ADR-0015's 5 s byte cap. */
+        const AW = (tag: string, extra = '') =>
+            `mralignwatch name=aw_${tag} aligner=mux input=${tag} max-size-bytes=40000000${extra}`;
 
         it('returns null when no inputs are wired', () => {
             expect(buildPipeline({ sources: [], output, alignment: 7 })).toBeNull();
@@ -299,9 +300,10 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 output,
                 alignment: 7,
             })!;
-            expect(result.pipeline).toContain(
-                'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7',
-            );
+            // Non-live, no budget: the mux waits for data or a gap on every pad.
+            expect(result.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
+            expect(result.pipeline).not.toContain('latency=1200000000');
+            expect(result.pipeline).not.toContain('min-upstream-latency');
             expect(result.pipeline).toContain(
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                     'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
@@ -318,7 +320,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
                     ['audio', 'klv', 'subtitle', 'video'].sort(),
                 );
                 for (const route of Object.values(rule.routes)) {
-                    expect(route!.branch.startsWith('queue leaky=0')).toBe(true);
+                    expect(route!.branch.startsWith('mralignwatch name=aw_')).toBe(true);
                     expect(route!.branch).not.toMatch(/h264parse|aacparse/);
                 }
             }
@@ -349,17 +351,60 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 { sinkPortId: 'input-3', demux: 'demux_2', pid: 0x108, automatic: true },
             ]);
         });
-        it('marks the cue classes sparse so the runner keeps the mux fed while they are idle', () => {
+        it('ends every route in ONE mralignwatch of the mux pace group; the cue classes are sparse', () => {
             const result = buildPipeline({
-                sources: [{ sinkPortId: 'input-0', port: 40001 }],
+                sources: [
+                    { sinkPortId: 'input-0', port: 40001 },
+                    { sinkPortId: 'input-1', port: 40002 },
+                ],
                 output,
                 alignment: 7,
             })!;
-            const routes = result.routing.inputs[0].routes;
-            expect(routes.klv!.sparse).toBe(true);
-            expect(routes.subtitle!.sparse).toBe(true);
-            expect('sparse' in routes.video!).toBe(false);
-            expect('sparse' in routes.audio!).toBe(false);
+            expect(tsQueueByteCap(5000)).toBe(40_000_000);
+            for (const [i, rule] of result.routing.inputs.entries()) {
+                const tag = (media: string) => `demux_${i}_${media}`;
+                expect(rule.routes.video!.branch).toBe(AW(tag('video')));
+                expect(rule.routes.audio!.branch).toBe(AW(tag('audio')));
+                // Gapped between cues at the pace: the non-live mux never waits on them.
+                expect(rule.routes.klv!.branch).toBe(AW(tag('klv'), ' sparse=true'));
+                expect(rule.routes.subtitle!.branch).toBe(AW(tag('subtitle'), ' sparse=true'));
+                for (const route of Object.values(rule.routes)) {
+                    expect(route!.branch.match(/mralignwatch/g)).toHaveLength(1);
+                    // The hook keeps no sparse handling of its own (no restamp, no GAP timer).
+                    expect(Object.keys(route!)).toEqual(['branch']);
+                    expect(route!.branch).not.toMatch(/\bqueue\b|leaky|hold-on-eos/);
+                }
+            }
+            // The aligners live in the hook-built branches only.
+            expect(result.pipeline).not.toContain('mralignwatch');
+        });
+        it('seeds every route aligner of an input with its producer lateness (ns, clamped 0..1 h)', () => {
+            const result = buildPipeline({
+                sources: [
+                    { sinkPortId: 'input-0', port: 40001, seedLatenessMs: 212.5 },
+                    { sinkPortId: 'input-1', port: 40002, seedLatenessMs: -3 },
+                    { sinkPortId: 'input-2', port: 40003, seedLatenessMs: 5_000_000 },
+                    { sinkPortId: 'input-3', port: 40004, seedLatenessMs: Number.NaN },
+                    { sinkPortId: 'input-4', port: 40005 },
+                ],
+                output,
+                alignment: 7,
+            })!;
+            const seeds = result.routing.inputs.map((rule) =>
+                Object.values(rule.routes).map(
+                    (r) => /seed-lateness=(\d+)/.exec(r!.branch)?.[1] ?? 'none',
+                ),
+            );
+            expect(seeds).toEqual([
+                ['212500000', '212500000', '212500000', '212500000'],
+                ['0', '0', '0', '0'],
+                ['3600000000000', '3600000000000', '3600000000000', '3600000000000'],
+                ['none', 'none', 'none', 'none'],
+                ['none', 'none', 'none', 'none'],
+            ]);
+            expect(result.routing.inputs[0].routes.klv!.branch).toBe(
+                AW('demux_0_klv', ' sparse=true seed-lateness=212500000'),
+            );
         });
         it('never routes the metadata carousel PID of an upstream muxer', () => {
             const result = buildPipeline({
@@ -428,9 +473,11 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 expect(rule.linkTo).toBe('mux');
                 expect(rule.routes.klv).toEqual({
                     padName: 'sink_384',
-                    branch: QUEUE,
-                    sparse: true,
+                    branch: AW('384', ' sparse=true'),
                 });
+                // A legacy port's aligners are named by their slot PID.
+                expect(rule.routes.audio!.branch).toBe(AW('320'));
+                expect(rule.routes.subtitle!.branch).toBe(AW('416', ' sparse=true'));
             });
         });
 
@@ -454,7 +501,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             })!;
             expect('parser' in result.routing.inputs[0].routes.video!).toBe(false);
         });
-        it('declares a 5 s runner-side stall watch on every input source', () => {
+        it('declares no stall watch and no watchdog: a dark input is gapped by its aligners and rejoins', () => {
             const result = buildPipeline({
                 sources: [
                     { sinkPortId: 'input-0', port: 40002 },
@@ -463,13 +510,15 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 output,
                 alignment: 7,
             })!;
-            expect(result.inputStallWatch).toEqual([
-                { element: 'busin_0', timeoutMs: 5000 },
-                { element: 'busin_1', timeoutMs: 5000 },
+            expect(Object.keys(result).sort()).toEqual([
+                'demuxes',
+                'pipeline',
+                'routing',
+                'runnerHooks',
+                'slots',
             ]);
-            for (const w of result.inputStallWatch) {
-                expect(result.pipeline).toContain(`unixfdsrc name=${w.element} `);
-            }
+            expect(result.pipeline).toContain('unixfdsrc name=busin_0 ');
+            expect(result.pipeline).toContain('unixfdsrc name=busin_1 ');
             expect(result.pipeline).not.toContain('watchdog');
         });
         it('honours the alignment config', () => {
@@ -481,48 +530,6 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 })!.pipeline,
             ).toContain('alignment=1');
         });
-        it('defaults to non-leaky input queues on every route (aggregator skew back-pressures, never sheds)', () => {
-            const result = buildPipeline({
-                sources: [{ sinkPortId: 'input-0', port: 40002 }],
-                output,
-                alignment: 7,
-            })!;
-            for (const route of Object.values(result.routing.inputs[0].routes)) {
-                expect(route!.branch).toBe(QUEUE);
-            }
-        });
-        it('threads queueDepthMs into the bound (clamped 100–5000 ms)', () => {
-            const r = buildPipeline({
-                sources: [{ sinkPortId: 'input-0', port: 40002 }],
-                output,
-                alignment: 7,
-                queueDepthMs: 1200,
-            })!;
-            expect(r.routing.inputs[0].routes.audio!.branch).toContain('max-size-time=1200000000');
-            const clamped = buildPipeline({
-                sources: [{ sinkPortId: 'input-0', port: 40002 }],
-                output,
-                alignment: 7,
-                queueDepthMs: 99_999,
-            })!;
-            expect(clamped.routing.inputs[0].routes.audio!.branch).toContain(
-                'max-size-time=5000000000',
-            );
-        });
-        it('queueLeaky switches every route to shed-oldest at the same depth', () => {
-            const result = buildPipeline({
-                sources: [{ sinkPortId: 'input-0', port: 40001 }],
-                output,
-                alignment: 7,
-                queueLeaky: true,
-                queueDepthMs: 200,
-            })!;
-            for (const route of Object.values(result.routing.inputs[0].routes)) {
-                expect(route!.branch).toContain('queue leaky=2 max-size-time=200000000');
-                expect(route!.branch).toContain('max-size-bytes=1600000');
-            }
-        });
-
         describe('prog-map + PCR', () => {
             const twoSources = [
                 { sinkPortId: 'input-0', port: 40001 },
@@ -617,16 +624,17 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 // Every non-video class carries the tag — the ISO 639 descriptor
                 // is the official carrier of stream identity (what Gate01's
                 // feeds do); mpegtsmux writes it for audio today.
+                // After the route's aligner, so the tag rides into the mux pad.
                 expect(routes.audio!.branch).toBe(
-                    `${QUEUE} ! taginject name=lang_demux_0_audio tags=language-code=deu`,
+                    `${AW('demux_0_audio')} ! taginject name=lang_demux_0_audio tags=language-code=deu`,
                 );
                 expect(routes.klv!.branch).toBe(
-                    `${QUEUE} ! taginject name=lang_demux_0_klv tags=language-code=deu`,
+                    `${AW('demux_0_klv', ' sparse=true')} ! taginject name=lang_demux_0_klv tags=language-code=deu`,
                 );
                 expect(routes.subtitle!.branch).toBe(
-                    `${QUEUE} ! taginject name=lang_demux_0_subtitle tags=language-code=deu`,
+                    `${AW('demux_0_subtitle', ' sparse=true')} ! taginject name=lang_demux_0_subtitle tags=language-code=deu`,
                 );
-                expect(routes.video!.branch).toBe(QUEUE);
+                expect(routes.video!.branch).toBe(AW('demux_0_video'));
             });
             it('omits the taginject when language is blank or invalid', () => {
                 const result = buildPipeline({
@@ -795,7 +803,7 @@ describe('MpegTsMuxerModule', () => {
             });
         });
 
-        it('asks the runner to anchor every branch to the producers stamps and hands it one stall watch per input', () => {
+        it('asks the runner to retime every branch, cue pads included, and declares no stall watch', () => {
             const { module } = makeModule({
                 sources: [
                     { sinkPortId: 'input-0', port: 40001 },
@@ -804,18 +812,43 @@ describe('MpegTsMuxerModule', () => {
             });
             (module as any).config = { alignment: 7, inputs: [{}, {}] };
             const desc = module.buildPipeline((module as any).config)!;
-            // Every input retimed per access unit, as a transform producer's input.
+            // Every input retimed per access unit, as a transform producer's input;
+            // KLV and teletext too, so a cue reaches its aligner at PES − 1 h.
             expect(desc.alignBranchesToStamps).toEqual({
                 demuxes: ['demux_0', 'demux_1'],
                 transformProducer: true,
+                privatePads: true,
             });
-            // Retimed branches make the mux output house time (+1 h): stamped by identity.
-            expect(desc.houseTimelineEgress).toBe(true);
-            expect(desc.inputStallWatch).toEqual([
-                { element: 'busin_0', timeoutMs: 5000 },
-                { element: 'busin_1', timeoutMs: 5000 },
+            expect(Object.keys(desc).sort()).toEqual([
+                'alignBranchesToStamps',
+                'pipeline',
+                'restartOnError',
+                'runnerHooks',
             ]);
+            expect(desc.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
+            expect(desc.pipeline).not.toContain('min-upstream-latency');
             expect(desc.pipeline).not.toContain('watchdog');
+        });
+
+        it('hands each input its producer lateness as the seed of its route aligners', () => {
+            const { module, getModuleBusSources } = makeModule({
+                sources: [
+                    { sinkPortId: 'input-0', port: 40001 },
+                    { sinkPortId: 'input-1', port: 40002 },
+                ],
+            });
+            const plain = getModuleBusSources.getMockImplementation()!;
+            getModuleBusSources.mockImplementation(() =>
+                plain().map((s, i) => (i === 0 ? { ...s, seedLatenessMs: 180 } : s)),
+            );
+            (module as any).config = { alignment: 7, inputs: [{}, {}] };
+            const [r0, r1] = hookInputs(module.buildPipeline((module as any).config)!);
+            for (const route of Object.values(r0.routes)) {
+                expect(route!.branch).toContain(' seed-lateness=180000000');
+            }
+            for (const route of Object.values(r1.routes)) {
+                expect(route!.branch).not.toContain('seed-lateness');
+            }
         });
 
         it('declares the input arrays (generic and legacy) as live-updatable, so a legacy rename stays live', () => {
@@ -905,6 +938,13 @@ describe('MpegTsMuxerModule', () => {
             expect(schema.videoStreams).toBeUndefined();
             expect(schema.audioStreams).toBeUndefined();
             expect(schema.emitStreamInfo).toBeUndefined();
+            // Exactly these settings: the pad queue's depth and leakiness went
+            // with the queue (house-clock C-2; stored values are ignored).
+            expect(Object.keys(schema).sort()).toEqual([
+                'alignment',
+                'inputs',
+                'videoParserBypass',
+            ]);
         });
 
         it('ignores connections that arrive on unknown port ids (e.g. the output)', () => {

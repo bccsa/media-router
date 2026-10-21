@@ -4,8 +4,8 @@ import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { ModuleServices, PipelineDescription } from './PluginModule.js';
 
 /** What `GstPluginBase.applyTimeSync` does to a description on both the start and the refresh
- *  path. Every pipeline runs on the house clock (§4.1); the runners need no flag for it, so
- *  nothing clock-related is added here. */
+ *  path. Every pipeline runs on the house clock (§4.1) and every egress is stamped by identity
+ *  (plan ch. 6 WI-P2-3); the runners need no field for either, so nothing is added here. */
 class TestModule extends GstPluginBase {
     constructor(private readonly desc: PipelineDescription | null) {
         super();
@@ -40,27 +40,17 @@ async function resolve(
 }
 
 describe('GstPluginBase time-sync resolution', () => {
-    it('adds no clock key: the runners pin every pipeline themselves', async () => {
-        // A producer and a consumer get the same treatment — a producer left on
-        // its own base-time would break the stamps for everything downstream.
-        for (const pipeline of ['srtsrc ! queue ! tee name=busout_41000', 'fakesrc ! fakesink']) {
+    it('adds nothing: the runners pin the clock and stamp every egress themselves', async () => {
+        // An ingest, a transform producer and a consumer get the same treatment: the
+        // description goes out as the module built it.
+        for (const pipeline of [
+            'srtsrc ! queue ! tee name=busout_41000',
+            'unixfdsrc ! tsdemux ! mpegtsmux ! tee name=busout_41001',
+            'fakesrc ! fakesink',
+        ]) {
             const sent = await resolve({ pipeline }, {});
-            expect(Object.keys(sent!).sort()).toEqual(['latchRepair', 'pipeline']);
+            expect(Object.keys(sent!)).toEqual(['pipeline']);
         }
-    });
-
-    it('drops preserveSourceTimeline — the mechanism the producer stamps replaced', async () => {
-        // The two timeline mechanisms do not compose: the latch's constant pad offset cancels in
-        // the stamper's `anchor + (PES − firstPES)`, and it answers a source discontinuity by
-        // erroring out to re-latch, where the stamper re-anchors in place.
-        const sent = await resolve(
-            {
-                pipeline: 'unixfdsrc ! tsdemux name=demux ! fakesink',
-                preserveSourceTimeline: { demux: 'demux' },
-            },
-            {},
-        );
-        expect(sent!.preserveSourceTimeline).toBeUndefined();
     });
 
     it('keeps alignBranchesToStamps — it is anchored to the producer stamps', async () => {
@@ -77,71 +67,14 @@ describe('GstPluginBase time-sync resolution', () => {
         expect(sent!.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
     });
 
-    it('keeps houseTimelineEgress — the identity stamp rides the producer stamps too', async () => {
-        const sent = await resolve(
-            {
-                pipeline:
-                    'unixfdsrc ! tsdemux ! avdec_aac ! avenc_s302m ! mpegtsmux ! tee name=busout_1',
-                houseTimelineEgress: true,
-            },
-            {},
-        );
-        expect(sent!.houseTimelineEgress).toBe(true);
-    });
-
     it('keeps liveCaptureClock for the runner to read', async () => {
         const sent = await resolve(
             { pipeline: 'v4l2src ! mpegtsmux ! tee name=busout_1', liveCaptureClock: true },
             {},
         );
-        expect(sent!.liveCaptureClock).toBe(true);
-    });
-});
-
-describe('latch repair (ADR-0005 note 2026-09-05)', () => {
-    const desc = (): PipelineDescription => ({ pipeline: 'fakesrc ! fakesink' });
-
-    it('is resolved from the graph: ON below a live source', async () => {
-        const sent = await resolve(desc(), {
-            instanceId: 'mpegts-muxer-1',
-            mediaRouter: {
-                getUpstreamBusProducers: () => [
-                    { pluginId: 'ts-splitter', deliveryLead: false },
-                    { pluginId: 'srt-input', deliveryLead: false },
-                ],
-            } as never,
+        expect(sent).toEqual({
+            pipeline: 'v4l2src ! mpegtsmux ! tee name=busout_1',
+            liveCaptureClock: true,
         });
-        expect(sent!.latchRepair).toBe(true);
-    });
-
-    it('...and OFF anywhere below a producer that declares a delivery lead (hls-player)', async () => {
-        const sent = await resolve(desc(), {
-            instanceId: 'mpegts-muxer-1',
-            mediaRouter: {
-                getUpstreamBusProducers: () => [
-                    { pluginId: 'ts-splitter', deliveryLead: false },
-                    { pluginId: 'hls-player', deliveryLead: true },
-                ],
-            } as never,
-        });
-        expect(sent!.latchRepair).toBe(false);
-    });
-
-    it('MR_LATCH_REPAIR=0 turns it OFF for every producer (operator kill-switch for the conditioner)', async () => {
-        const prev = process.env.MR_LATCH_REPAIR;
-        process.env.MR_LATCH_REPAIR = '0';
-        try {
-            const sent = await resolve(
-                { pipeline: 'udpsrc ! tee name=busout_1' },
-                {
-                    instanceId: 'mpegts-ip-input-1',
-                    mediaRouter: { getUpstreamBusProducers: () => [] } as never,
-                },
-            );
-            expect(sent!.latchRepair).toBe(false);
-        } finally {
-            if (prev === undefined) delete process.env.MR_LATCH_REPAIR;
-            else process.env.MR_LATCH_REPAIR = prev;
-        }
     });
 });

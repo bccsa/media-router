@@ -9,7 +9,6 @@ export type {
     RistRunnerConfig,
     TsProbeRunnerConfig,
     BacklogShedConfig,
-    InputStallWatch,
     RunnerHook,
     EngineServices,
     ModuleServices,
@@ -110,7 +109,6 @@ export {
     busIngestSocketPath,
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
-    busStallWatch,
     quoteGstString,
     shortHash,
     latInName,
@@ -234,8 +232,6 @@ export type {
     PlayoutOffsetServices,
     PlayoutOffsetRouteSource,
 } from './plugins/playoutOffset.js';
-export { effectiveLatchRepair } from './plugins/latchRepair.js';
-export type { LatchRepairServices, LatchRepairRouteSource } from './plugins/latchRepair.js';
 export {
     backlogShedConfig,
     BACKLOG_SHED_EVENT,

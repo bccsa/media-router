@@ -9,10 +9,13 @@ Run:  python3 native_runner_protocol_test.py
 """
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -190,177 +193,198 @@ def test_plain_pipeline():
         r.kill()
 
 
-# --------------------------------------------------------------------------- B: producer + fan-out edge
-def test_producer_edge():
-    if Gst.ElementFactory.find("unixfdsink") is None or Gst.ElementFactory.find("avenc_s302m") is None:
-        print("SKIP B — unixfdsink / avenc_s302m unavailable")
-        return
-    tmp = tempfile.mkdtemp(prefix="mrtest-")
-    edge = os.path.join(tmp, "edge.sock")
-    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
-    r = RunnerProc()
-    consumer = None
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start",
-                "pipeline": "audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
-                            " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
-                            f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
-                            " ! tee name=busout_40000 allow-not-linked=true",
-                "latchRepair": True})
-        check("B reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
-        check("B mrtsstamp spliced in front of the busout tee", stamped)
-
-        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
-        att = r.wait_event(ev_is("bus_attached", socket=edge))
-        check("B bus_attach -> bus_attached", att is not None and att.get("tee") == "busout_40000")
-        if stamped:
-            check("B stamper armed on first edge", r.wait_log("armed on busout_40000", timeout=2))
-
-        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
-        got = {"n": 0}
-
-        def on_buf(_pad, _info):
-            got["n"] += 1
-            return Gst.PadProbeReturn.OK
-
-        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
-        consumer.set_state(Gst.State.PLAYING)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and got["n"] < 5:
-            time.sleep(0.05)
-        check("B consumer receives buffers over the edge", got["n"] >= 5)
-        if stamped:
-            check("B anchor reported through the stamper", r.wait_event(ev_is("timeline_restamped"), timeout=3) is not None)
-
-        r.send({"cmd": "track_throughput", "id": "tt", "element": "busout_40000", "pad": "sink"})
-        r.wait_event(ev_is("tracking", id="tt"))
-        time.sleep(0.5)
-        r.send({"cmd": "get_throughput", "id": "gt"})
-        tp = r.wait_event(ev_is("throughput", id="gt"))
-        check("B tee throughput via native counter", tp is not None and tp["data"]["busout_40000"]["total_bytes"] > 0)
-
-        # A second attach for the same edge is idempotent.
-        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
-        time.sleep(0.3)
-        check("B duplicate attach is a no-op", len([e for e in r.events if e.get("event") == "bus_attached"]) == 1)
-
-        consumer.set_state(Gst.State.NULL)
-        r.send({"cmd": "bus_detach", "socket": edge})
-        det = r.wait_event(ev_is("bus_detached", socket=edge))
-        check("B bus_detach -> bus_detached", det is not None)
-        if stamped:
-            check("B stamper disarmed on last edge", r.wait_log("stamper disarmed", timeout=2))
-        check("B socket file removed after detach", not os.path.exists(edge))
-
-        # Attach on a tee that does not exist stays pending, never errors.
-        r.send({"cmd": "bus_attach", "tee": "busout_99999", "socket": os.path.join(tmp, "ghost.sock")})
-        time.sleep(0.6)
-        check("B attach on a missing tee is pending, not an error", not r.has_event(ev_is("error")))
-
-        code = r.stop_and_wait()
-        check("B exits 0 after stop", code == 0)
-    finally:
-        if consumer is not None:
-            consumer.set_state(Gst.State.NULL)
-        r.kill()
-        for f in os.listdir(tmp):
-            os.unlink(os.path.join(tmp, f))
-        os.rmdir(tmp)
+# --------------------------------------------------------------------------- B2: identity egress (B folded in)
+# The python twin, with mpegts-core's py dir on its path as PythonProcess gives it one.
+_PY_ENV_RUNNER = ["env", "PYTHONPATH=" + os.path.join(_PLUGINS, "mpegts-core", "py"), sys.executable,
+                  os.path.join(_HERE, "gst-pipeline-runner.py")]
+_IDENTITY_LINE = re.compile(r"^\[(?:mr-gst-runner|gst-runner\.py)\] (busStamp busout_40000: identity egress: "
+                            r"first PES pid=0x([0-9a-f]+) stamp=(\d+) pts=(\d+))$")
+_S302M_PRODUCER = ("audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
+                   " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
+                   " ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
+                   " ! tee name=busout_40000 allow-not-linked=true")
 
 
-# --------------------------------------------------------------------------- B2: house-timeline egress
-def test_house_timeline_egress():
-    """A transform producer (`houseTimelineEgress`): the egress is stamped by
-    identity, PES − 1 h, so the wire carries the mux's own house time. Checked
-    end to end on a consumer pinned to the same house clock: every stamped
-    buffer's timestamp equals the PES PTS the mux wrote minus one hour."""
+def test_identity_egress():
+    """Identity is the only egress (plan ch. 6 WI-P2-3), in both runners: the producer-edge
+    lifecycle (splice, arm on the first edge, throughput off the element's counter, disarm on
+    the last) and the wire, which carries the mux's PES − 1 h, checked on a consumer pinned to
+    the same house clock. Both runners log the identity line in the same words."""
     if Gst.ElementFactory.find("unixfdsink") is None or Gst.ElementFactory.find("avenc_s302m") is None:
         print("SKIP B2 — unixfdsink / avenc_s302m unavailable")
         return
-    sys.path.insert(0, os.path.normpath(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "plugins", "mpegts-core", "py")))
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
     import ts_psi  # noqa: E402
     import ts_timeline  # noqa: E402
-    tmp = tempfile.mkdtemp(prefix="mrtest-")
-    edge = os.path.join(tmp, "edge.sock")
     caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
-    r = RunnerProc()
-    consumer = None
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start",
-                "pipeline": "audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
-                            " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
-                            f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
-                            " ! tee name=busout_40000 allow-not-linked=true",
-                "latchRepair": False, "houseTimelineEgress": True})
-        check("B2 reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
-        check("B2 mrtsstamp spliced in front of the busout tee", stamped)
-        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
-        check("B2 bus_attach -> bus_attached", r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
-        if stamped:
-            check("B2 armed as a house-timeline egress", r.wait_log("house-timeline egress", timeout=2))
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    lines = {}
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        label = f"B2 {tag}"
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        edge = os.path.join(tmp, "edge.sock")
+        r = RunnerProc(argv)
+        consumer = None
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "pipeline": _S302M_PRODUCER.format(caps=caps)})
+            started = r.wait_event(ev_is("started"), timeout=10)
+            check(f"{label}: started, reporting the timing plugin it loaded",
+                  started is not None and started.get("timingPlugin") is not None)
+            check(f"{label}: reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+            stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
+            check(f"{label}: mrtsstamp spliced in front of the busout tee", stamped)
 
-        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
-        # Pinned exactly as the runner pins a contract pipeline, so the wire's
-        # absolute house time comes out as the buffer timestamp unchanged.
-        clock = Gst.SystemClock.obtain()
-        clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
-        consumer.use_clock(clock)
-        consumer.set_start_time(Gst.CLOCK_TIME_NONE)
-        consumer.set_base_time(0)
-        got = []
+            r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            att = r.wait_event(ev_is("bus_attached", socket=edge))
+            check(f"{label}: bus_attach -> bus_attached", att is not None and att.get("tee") == "busout_40000")
+            check(f"{label}: the first edge arms an identity egress",
+                  r.wait_log("busStamp: identity egress armed on busout_40000 (PES - 1 h, native mrtsstamp)",
+                             timeout=2))
 
-        def on_buf(_pad, info):
-            buf = info.get_buffer()
-            ok, mi = buf.map(Gst.MapFlags.READ)
-            if ok:
-                data = bytes(mi.data)
-                buf.unmap(mi)
-                for pkt in ts_psi.iter_packets(data):
-                    if not (pkt[1] & 0x40):
-                        continue
-                    pts = ts_psi.read_pes_pts(pkt)
-                    if pts is None:
-                        continue
-                    got.append((pts, buf.pts))
-                    break
-            return Gst.PadProbeReturn.OK
+            consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
+            # Pinned exactly as the runner pins a contract pipeline, so the wire's
+            # absolute house time comes out as the buffer timestamp unchanged.
+            consumer.use_clock(clock)
+            consumer.set_start_time(Gst.CLOCK_TIME_NONE)
+            consumer.set_base_time(0)
+            got = []
 
-        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
-        consumer.set_state(Gst.State.PLAYING)
-        deadline = time.monotonic() + 6
-        while time.monotonic() < deadline and len(got) < 12:
-            time.sleep(0.05)
-        check("B2 consumer receives stamped PES buffers over the edge", len(got) >= 12)
-        if stamped and got:
-            off = [buf_pts - ts_timeline.house_from_mux_pts(pts, buf_pts) for pts, buf_pts in got]
-            check(f"B2 every wire timestamp is the mux's PES PTS − 1 h, to the tick "
-                  f"(worst {max(abs(o) for o in off) / 1e3:.1f} µs)",
-                  all(abs(o) <= 11112 for o in off))
-            check("B2 one anchor event (the identity), no re-anchor",
-                  r.wait_event(ev_is("timeline_restamped"), timeout=3) is not None
-                  and not r.has_event(ev_is("timeline_reanchor")))
-        consumer.set_state(Gst.State.NULL)
-        r.send({"cmd": "bus_detach", "socket": edge})
-        r.wait_event(ev_is("bus_detached", socket=edge))
-        code = r.stop_and_wait()
-        check("B2 exits 0 after stop", code == 0)
-    finally:
-        if consumer is not None:
+            def on_buf(_pad, info, got=got):
+                buf = info.get_buffer()
+                pkts = list(ts_psi.iter_packets(buf.extract_dup(0, buf.get_size())))
+                pcr = any(ts_psi.read_pcr(p) is not None for p in pkts)
+                for pkt in pkts:
+                    pts = ts_psi.read_pes_pts(pkt) if pkt[1] & 0x40 else None
+                    if pts is not None:
+                        got.append((ts_psi.ts_pid(pkt), pts, buf.pts, pcr))
+                        break
+                return Gst.PadProbeReturn.OK
+
+            consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+            consumer.set_state(Gst.State.PLAYING)
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline and len(got) < 12:
+                time.sleep(0.05)
+            check(f"{label}: the consumer receives stamped PES buffers over the edge", len(got) >= 12)
+            # From the first PCR on: the 302M PES are private (0xBD), so a buffer the arm met
+            # before the PCR PID is known is stamped at arrival (mrts::IdentityStamp's rule).
+            first_pcr = next((i for i, g in enumerate(got) if g[3]), len(got))
+            off = [buf_pts - ts_timeline.house_from_mux_pts(pts, buf_pts)
+                   for _pid, pts, buf_pts, _pcr in got[first_pcr:]]
+            check(f"{label}: every wire timestamp is the mux's PES PTS − 1 h, to the tick "
+                  f"(worst {max((abs(o) for o in off), default=0) / 1e3:.1f} µs)",
+                  len(off) >= 10 and all(abs(o) <= 11112 for o in off))
+            ident = None
+            if r.wait_log("identity egress: first PES", timeout=3):
+                ident = next((m for m in map(_IDENTITY_LINE.match, r.logs) if m), None)
+            check(f"{label}: one identity line, its stamp the PES − 1 h of its pts on the mux's PID",
+                  ident is not None
+                  and sum(1 for line in r.logs if "identity egress: first PES" in line) == 1
+                  and got and int(ident.group(2), 16) == got[0][0]
+                  and int(ident.group(3)) == ts_timeline.house_from_mux_pts(int(ident.group(4)),
+                                                                            int(ident.group(3))))
+            lines[tag] = ident
+
+            r.send({"cmd": "track_throughput", "id": "tt", "element": "busout_40000", "pad": "sink"})
+            r.wait_event(ev_is("tracking", id="tt"))
+            time.sleep(0.5)
+            r.send({"cmd": "get_throughput", "id": "gt"})
+            tp = r.wait_event(ev_is("throughput", id="gt"))
+            check(f"{label}: tee throughput via the element's counter",
+                  tp is not None and tp["data"]["busout_40000"]["total_bytes"] > 0)
+
+            # A second attach for the same edge is idempotent.
+            r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            time.sleep(0.3)
+            check(f"{label}: duplicate attach is a no-op",
+                  len([e for e in r.events if e.get("event") == "bus_attached"]) == 1)
+
             consumer.set_state(Gst.State.NULL)
-        r.kill()
-        for f in os.listdir(tmp):
-            os.unlink(os.path.join(tmp, f))
-        os.rmdir(tmp)
+            r.send({"cmd": "bus_detach", "socket": edge})
+            check(f"{label}: bus_detach -> bus_detached", r.wait_event(ev_is("bus_detached", socket=edge)) is not None)
+            check(f"{label}: stamper disarmed on the last edge", r.wait_log("stamper disarmed", timeout=2))
+            check(f"{label}: socket file removed after detach", not os.path.exists(edge))
+
+            # Attach on a tee that does not exist stays pending, never errors.
+            r.send({"cmd": "bus_attach", "tee": "busout_99999", "socket": os.path.join(tmp, "ghost.sock")})
+            time.sleep(0.6)
+            check(f"{label}: attach on a missing tee is pending, not an error", not r.has_event(ev_is("error")))
+            check(f"{label}: no warning on a healthy egress", not r.has_event(ev_is("warning")))
+            check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+        finally:
+            if consumer is not None:
+                consumer.set_state(Gst.State.NULL)
+            r.kill()
+            for f in os.listdir(tmp):
+                os.unlink(os.path.join(tmp, f))
+            os.rmdir(tmp)
+    check("B2: both runners log the identity line in the same words",
+          all(lines.get(t) for t in ("native", "py"))
+          and lines["native"].group(1).split(" stamp=")[0] == lines["py"].group(1).split(" stamp=")[0])
+
+
+# --------------------------------------------------------------------------- stamper-missing (WI-P2-3)
+def test_stamper_missing():
+    """libgstmrtsstamp.so absent, libgstmrtshouse.so present, in both runners: a producer
+    raises rule 6's alarm with the tried paths (the same detail in both), runs unstamped
+    with no fallback, and its `started` carries no timingPlugin so the alarm stands; a
+    pipeline without a bus egress neither tries nor misses the plugin."""
+    house_so = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "libgstmrtshouse.so")
+    if not os.path.exists(house_so) or Gst.ElementFactory.find("avenc_s302m") is None:
+        print("SKIP stamper-missing — libgstmrtshouse.so not built / avenc_s302m unavailable")
+        return
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    root = tempfile.mkdtemp(prefix="mrtest-plugins-")
+    os.makedirs(os.path.join(root, "mpegts-core", "native", "mrtshouse"))
+    os.symlink(house_so, os.path.join(root, "mpegts-core", "native", "mrtshouse", "libgstmrtshouse.so"))
+    env = ["env", f"MR_PLUGINS_DIR={root}", "MR_LIBEXEC_DIR=/nonexistent"]
+    detail = ("libgstmrtsstamp.so not loaded, tried "
+              f"{root}/mpegts-core/native/mrtsstamp/libgstmrtsstamp.so, "
+              "/nonexistent/mpegts-core/libgstmrtsstamp.so")
+    try:
+        for tag, argv in (("native", [_BIN]), ("py", _PY_ENV_RUNNER)):
+            label = f"stamper-missing {tag}"
+            r = RunnerProc(env + argv)
+            try:
+                r.wait_event(ev_is("ready"), timeout=10)
+                r.send({"cmd": "start", "pipeline": _S302M_PRODUCER.format(caps=caps)})
+                started = r.wait_event(ev_is("started"), timeout=10)
+                alarm = next((e for e in r.events if e.get("event") == "warning"
+                              and e.get("kind") == "timing_plugin"), None)
+                check(f"{label}: one timing_plugin warning, the rule-6 sentence with the tried paths",
+                      alarm is not None and alarm.get("detail") == detail
+                      and alarm.get("message", "").startswith("Native TS module not loaded: ")
+                      and alarm["message"].endswith(f" ({detail})")
+                      and sum(1 for e in r.events if e.get("kind") == "timing_plugin") == 1)
+                check(f"{label}: the start reports no timing plugin, so the alarm stands",
+                      started is not None and "timingPlugin" in started and started["timingPlugin"] is None)
+                check(f"{label}: and still plays, unstamped (nothing spliced, no error)",
+                      r.wait_event(ev_is("state_change", state="playing")) is not None
+                      and not r.wait_log("native stamper inserted", timeout=0.5)
+                      and not r.has_event(ev_is("error")))
+                check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+            finally:
+                r.kill()
+            r = RunnerProc(env + argv)
+            try:
+                r.wait_event(ev_is("ready"), timeout=10)
+                r.send({"cmd": "start", "pipeline": "audiotestsrc is-live=true ! fakesink sync=false"})
+                started = r.wait_event(ev_is("started"), timeout=10)
+                check(f"{label}: a pipeline without a bus egress neither tries nor misses it",
+                      started is not None and started.get("timingPlugin") is not None
+                      and not r.has_event(ev_is("warning")))
+                r.stop_and_wait()
+            finally:
+                r.kill()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- identity-base-time (WI-P1-7)
 def test_identity_base_time():
-    """A house-timeline egress on a natural base time (`liveCaptureClock`, as
+    """An identity egress on a natural base time (`liveCaptureClock`, as
     video-encoder runs) whose PES carry house time + 1 h: the wire is PES − 1 h
     exactly, on both runners. The base is this box's uptime, so unwrapping against
     running time would miss by the base and by whole 2^33 periods."""
@@ -403,7 +427,7 @@ def test_identity_base_time():
                     "pipeline": f"udpsrc address=127.0.0.1 port={port} caps=\"{caps}\""
                                 f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
                                 " ! tee name=busout_40000 allow-not-linked=true",
-                    "latchRepair": False, "houseTimelineEgress": True, "liveCaptureClock": True})
+                    "liveCaptureClock": True})
             check(f"{label}: reaches PLAYING",
                   r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
             check(f"{label}: the pipeline keeps its natural base time",
@@ -411,8 +435,9 @@ def test_identity_base_time():
             r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
             check(f"{label}: bus_attach -> bus_attached",
                   r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
-            check(f"{label}: the native element is armed as a house-timeline egress",
-                  r.wait_log("house-timeline egress", timeout=2) and r.wait_log("native mrtsstamp"))
+            check(f"{label}: the native element is armed as an identity egress",
+                  r.wait_log("identity egress armed on busout_40000 (PES - 1 h, native mrtsstamp)",
+                             timeout=2))
 
             consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
             # Base 0 on the house clock, as the runner pins a contract pipeline:
@@ -449,13 +474,17 @@ def test_identity_base_time():
             check(f"{label}: every wire timestamp is PES − 1 h exactly, under a "
                   f"~{clock.get_time() / 3.6e12:.0f} h base (worst {worst} ns)",
                   bool(got) and all(o == 0 for o in off))
-            anchor = r.wait_event(ev_is("timeline_restamped"), timeout=3)
-            anchors[tag] = anchor
-            check(f"{label}: the anchor event names the first PES's house time, not running time",
-                  anchor is not None
-                  and anchor.get("anchorNs") == ts_timeline.pts90k_to_ns(c0)
-                  and anchor.get("refPts90k") == (ts_timeline.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
-            check(f"{label}: nothing re-anchors", not r.has_event(ev_is("timeline_reanchor")))
+            ident = None
+            if r.wait_log("identity egress: first PES", timeout=3):
+                ident = next((m for m in map(_IDENTITY_LINE.match, r.logs) if m), None)
+            anchors[tag] = ident
+            check(f"{label}: the identity line names the first PES's house time, not running time",
+                  ident is not None and int(ident.group(2), 16) == 0x41
+                  and int(ident.group(3)) == ts_timeline.pts90k_to_ns(c0)
+                  and int(ident.group(4)) == (ts_timeline.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
+            check(f"{label}: no engine event for it, and no warning",
+                  not r.has_event(ev_is("warning"))
+                  and not any(str(e.get("event", "")).startswith("timeline_") for e in r.events))
             consumer.set_state(Gst.State.NULL)
             r.send({"cmd": "bus_detach", "socket": edge})
             r.wait_event(ev_is("bus_detached", socket=edge))
@@ -468,9 +497,9 @@ def test_identity_base_time():
             for f in os.listdir(tmp):
                 os.unlink(os.path.join(tmp, f))
             os.rmdir(tmp)
-    check("identity-base-time: both runners report the anchor with the same fields",
+    check("identity-base-time: both runners log the identity line in the same words",
           all(anchors.get(t) for t in ("native", "py"))
-          and set(anchors["native"]) == set(anchors["py"]))
+          and anchors["native"].group(1).split(" stamp=")[0] == anchors["py"].group(1).split(" stamp=")[0])
 
 
 # --------------------------------------------------------------------------- C: gated consumer (data wait)
@@ -523,10 +552,10 @@ def test_refusals():
     try:
         r.wait_event(ev_is("ready"))
         r.send({"cmd": "start", "pipeline": "audiotestsrc ! fakesink",
-                "preserveSourceTimeline": {"demux": "d"}})
+                "rist": {"role": "sender"}})
         ev = r.wait_event(ev_is("error", kind="unsupported"))
-        check("D preserveSourceTimeline refused with kind=unsupported",
-              ev is not None and "preserveSourceTimeline" in ev["message"])
+        check("D a python-only field (the legacy rist drain) refused with kind=unsupported",
+              ev is not None and "`rist`" in ev["message"])
         r.kill()
 
         r = RunnerProc()
@@ -567,8 +596,7 @@ def test_presentation_leg():
                    "pipeline": "audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
                                " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
                                f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
-                               " ! tee name=busout_40100 allow-not-linked=true",
-                   "latchRepair": True})
+                               " ! tee name=busout_40100 allow-not-linked=true"})
         check("E producer PLAYING", prod.wait_event(ev_is("state_change", state="playing")) is not None)
         prod.send({"cmd": "bus_attach", "tee": "busout_40100", "socket": edge})
         check("E edge attached", prod.wait_event(ev_is("bus_attached", socket=edge)) is not None)
@@ -828,6 +856,16 @@ def make_klv_ts(path, n_buffers=40):
     return os.path.getsize(path)
 
 
+def _klv_pts(path, pid):
+    """PES PTS of every cue on `pid` in a TS file."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    with open(path, "rb") as f:
+        data = f.read()
+    return [t for pkt in ts_psi.iter_packets(data) if ts_psi.ts_pid(pkt) == pid
+            for t in [ts_psi.read_pes_pts(pkt)] if t is not None]
+
+
 def test_runner_hooks():
     for el in ("tsdemux", "mpegtsmux"):
         if Gst.ElementFactory.find(el) is None:
@@ -839,6 +877,7 @@ def test_runner_hooks():
         return
     tmp = tempfile.mkdtemp(prefix="mrtest-")
     ts = os.path.join(tmp, "klv.ts")
+    out = os.path.join(tmp, "out.ts")
     size = make_klv_ts(ts)
     check("G fixture TS generated", size > 188 * 10 and size % 188 == 0)
     r = RunnerProc()
@@ -847,10 +886,10 @@ def test_runner_hooks():
         r.send({"cmd": "start",
                 "pipeline": f"filesrc location={ts} ! tsdemux name=demux_0 latency=0 "
                             'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_384=(int)1,PCR_1=sink_384" '
-                            "! fakesink name=out sync=false",
+                            f"! filesink name=out location={out} sync=false",
                 "runnerHooks": [{"module": "mux_routing", "config": {"inputs": [{
                     "demux": "demux_0", "linkTo": "mux",
-                    "routes": {"klv": {"padName": "sink_384", "branch": "queue", "sparse": True},
+                    "routes": {"klv": {"padName": "sink_384", "branch": "queue"},
                                "video": {"padName": "sink_256", "branch": "queue"}},
                     "ignorePids": [0x1F0], "pcr": {"program": 1}}]}}]})
         check("G native hook installed", r.wait_log("runner hook 'mux_routing' installed", timeout=5))
@@ -867,6 +906,9 @@ def test_runner_hooks():
         check("G only one pad_linked", len([e for e in r.events if e.get("event") == "pad_linked"]) == 1)
         r.proc.wait(timeout=5)
         check("G exits 0 after EOS", r.proc.returncode == 0)
+        src_pts, out_pts = _klv_pts(ts, 0x180), _klv_pts(out, 0x180)
+        check(f"G no restamp: all {len(out_pts)} cues keep their own PTS, one offset for all",
+              len(out_pts) == len(src_pts) == 40 and len({o - i for o, i in zip(out_pts, src_pts)}) == 1)
     finally:
         r.kill()
         for f in os.listdir(tmp):
@@ -877,6 +919,7 @@ def test_runner_hooks():
     # source PMT and lands the klv-only stream on exactly the input's PID.
     tmp = tempfile.mkdtemp(prefix="mrtest-")
     ts = os.path.join(tmp, "klv.ts")
+    out = os.path.join(tmp, "out.ts")
     make_klv_ts(ts)
     r = RunnerProc()
     try:
@@ -884,12 +927,11 @@ def test_runner_hooks():
         r.send({"cmd": "start",
                 "pipeline": f"filesrc location={ts} ! tsdemux name=demux_0 latency=0 "
                             'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" '
-                            "! fakesink name=out sync=false",
+                            f"! filesink name=out location={out} sync=false",
                 "runnerHooks": [{"module": "mux_routing", "config": {"inputs": [{
                     "demux": "demux_0", "linkTo": "mux", "pid": 300,
                     "routes": {"video": {"branch": "queue"}, "audio": {"branch": "queue"},
-                               "klv": {"branch": "queue", "sparse": True},
-                               "subtitle": {"branch": "queue", "sparse": True}},
+                               "klv": {"branch": "queue"}, "subtitle": {"branch": "queue"}},
                     "ignorePids": [0x1F0], "pcr": {"program": 1}}]}}]})
         check("G2 native hook installed", r.wait_log("runner hook 'mux_routing' installed", timeout=5))
         linked = r.wait_event(ev_is("pad_linked"), timeout=8)
@@ -907,6 +949,9 @@ def test_runner_hooks():
         check("G2 no error events", not r.has_event(ev_is("error")))
         r.proc.wait(timeout=5)
         check("G2 exits 0 after EOS", r.proc.returncode == 0)
+        src_pts, out_pts = _klv_pts(ts, 0x180), _klv_pts(out, 300)
+        check(f"G2 no restamp: all {len(out_pts)} cues on the input PID keep their own PTS",
+              len(out_pts) == len(src_pts) == 40 and len({o - i for o, i in zip(out_pts, src_pts)}) == 1)
     finally:
         r.kill()
         for f in os.listdir(tmp):
@@ -923,6 +968,61 @@ def test_runner_hooks():
               ev is not None and "no_such_hook" in ev["message"])
     finally:
         r.kill()
+
+
+# --------------------------------------------------------------------------- G3: the hook, pads added at once (WI-P2-12)
+def test_runner_hooks_concurrent():
+    """G3: eight file inputs add their pads at once, through the native hook, 100 starts: the prog-map
+    edits go one input at a time (unlocked, one start in ten double-freed it). The branches drop every
+    buffer, so mpegtsmux's own unlocked read stays out (R1); mux_routing_test.py pins the python twin."""
+    for el in ("tsdemux", "mpegtsmux"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP G3 — {el} unavailable")
+            return
+    so = os.path.join(_PLUGINS, "mpegts-muxer", "native", "mux-routing", "libmrhook_mux_routing.so")
+    if not os.path.exists(so):
+        print(f"SKIP G3 — {so} not built")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    ts = os.path.join(tmp, "klv.ts")
+    make_klv_ts(ts)
+    pids = [300 + 10 * i for i in range(8)]
+    # Each file reaches its demuxer first and a fakesink second (the tee pushes in that order on
+    # the file's thread), so the pipeline ends only after every demuxer saw its whole file.
+    pipe = (" ".join(f"filesrc location={ts} ! tee name=file_{i} ! tsdemux name=demux_{i} latency=0"
+                     f" file_{i}. ! queue ! fakesink sync=false" for i in range(len(pids)))
+            + ' mpegtsmux name=mux alignment=7 prog-map="program_map,PCR_1=sink_300" ! fakesink sync=false')
+    cfg = {"inputs": [{"demux": f"demux_{i}", "linkTo": "mux", "pid": p,
+                       "routes": {c: {"branch": "identity drop-probability=1.0"}
+                                  for c in ("video", "audio", "klv", "subtitle")},
+                       "ignorePids": [0x1F0], "pcr": {"program": 1}} for i, p in enumerate(pids)]}
+    runs = []
+    try:
+        for _ in range(100):
+            r = RunnerProc()
+            try:
+                r.wait_event(ev_is("ready"))
+                r.send({"cmd": "start", "pipeline": pipe,
+                        "runnerHooks": [{"module": "mux_routing", "config": cfg}]})
+                eos = r.wait_event(ev_is("eos"), timeout=15) is not None
+                rc = r.proc.wait(timeout=10) if eos else r.proc.poll()
+                runs.append((eos, rc, sorted(e.get("outPid") for e in r.events if e.get("event") == "pad_linked"),
+                             [e.get("message") for e in r.events if e.get("event") == "error"]))
+                if not (eos and rc == 0 and runs[-1][2] == pids and not runs[-1][3]):
+                    print(f"    G3 start {len(runs)}: eos={eos} exit={rc} linked={runs[-1][2]} errors={runs[-1][3]} "
+                          f"warnings={[e.get('message') for e in r.events if e.get('event') == 'warning'][:4]} "
+                          f"log tail={r.logs[-6:]}")
+            finally:
+                r.kill()
+    finally:
+        for f in os.listdir(tmp):
+            os.unlink(os.path.join(tmp, f))
+        os.rmdir(tmp)
+    aborted = [rc for _e, rc, _l, _x in runs if rc is not None and rc < 0]
+    check(f"G3 {len(runs)} starts, 8 inputs adding pads at once: none aborted ({len(aborted)} did, "
+          f"signals {sorted(set(-s for s in aborted))})", not aborted)
+    check("G3 every start ran to EOS with each input's klv on its own PID, no error, exit 0",
+          len(runs) == 100 and all(e and rc == 0 and linked == pids and not err for e, rc, linked, err in runs))
 
 
 # --------------------------------------------------------------------------- O: deinterlace guard hook (native form, #817)
@@ -1157,135 +1257,37 @@ def test_video_gates():
         r.kill()
 
 
-# --------------------------------------------------------------------------- L: live input branches (#787)
-def _drain_timeout_warning(ev):
-    return ev.get("event") == "warning" and "EOS drain timed out" in str(ev.get("message", ""))
-
-
+# --------------------------------------------------------------------------- L: live input branches (#787, WI-P2-14)
 def test_live_input_branches():
-    """An aggregator sink gains and loses input branches on its running
-    pipeline (`bus_input_add` / `bus_input_remove`), including a branch with a
-    delayed demuxer link, without a rebuild; and `eosDrain: false` lets a
-    force-live mixer stop without the 6 s drain stall."""
-    if Gst.ElementFactory.find("avenc_s302m") is None or Gst.ElementFactory.find("tsdemux") is None:
-        print("SKIP L — avenc_s302m / tsdemux unavailable")
-        return
-    caps = "audio/x-raw,rate=48000,channels=2"
-    tone = f"audiotestsrc is-live=true ! audioconvert ! {caps} ! queue"
-    mixer = ("audiomixer name=mixin force-live=true latency=100000000"
-             " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
-             " ! identity name=mixin_out sync=true ! level name=lvl post-messages=true interval=100000000"
-             " ! fakesink sync=false")
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": f"{mixer}  ( name=mixin_in_a {tone} ) ! mixin.sink_0",
-                "eosDrain": False})
-        check("L reaches PLAYING with one bin branch", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        check("L VU flows from the start branch", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
+    """Plan ch. 6 part 7.3 case L, native: audio-mixer's own start and its own live branch
+    (mrtsdemux, then mralignwatch, into the aligned mixer) from fixtures/aligner/pipelines.json;
+    a source added and removed on the running mixer, mixed at PES - 1 h from its first buffer with
+    no runner retime. The case is gst_live_inputs_test.py's, which runs it on the python runner."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import live_aligned_case
+    live_aligned_case([_BIN], "native", check)
 
-        # Plain branch added live.
-        r.send({"cmd": "bus_input_add", "id": "a1", "element": "mixin", "name": "mixin_in_b",
-                "description": "audiotestsrc is-live=true freq=880 ! audioconvert ! " + caps + " ! queue"})
-        check("L bus_input_add -> bus_input_add_done", r.wait_event(ev_is("bus_input_add_done", id="a1")) is not None)
-        r.send({"cmd": "get_property", "id": "p1", "element": "mixin_in_b", "property": "name"})
-        p = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p1")
-        check("L the added bin is in the pipeline under its name", p is not None and p.get("event") == "property")
 
-        # A branch whose demuxer link is delayed (302M over TS through tsdemux).
-        demux_branch = ("audiotestsrc is-live=true ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2"
-                        " ! avenc_s302m strict=experimental ! mpegtsmux ! tsdemux name=mixin_demux_c latency=0"
-                        " ! audio/x-smpte-302m ! avdec_s302m ! audioconvert ! audioresample ! " + caps + " ! queue")
-        r.send({"cmd": "bus_input_add", "id": "a2", "element": "mixin", "name": "mixin_in_c", "description": demux_branch})
-        check("L demuxer-headed branch added live", r.wait_event(ev_is("bus_input_add_done", id="a2")) is not None)
-        time.sleep(1.0)
-        check("L no error after the live adds", not r.has_event(ev_is("error")))
-
-        # A duplicate add is idempotent (the branch IS the requested state —
-        # the producer-PLAYING re-link and the connection re-apply can race for
-        # one edge); an unknown aggregator is a command error, never a fault.
-        r.send({"cmd": "bus_input_add", "id": "a3", "element": "mixin", "name": "mixin_in_b",
-                "description": "audiotestsrc is-live=true ! queue"})
-        check("L duplicate branch add is a no-op done", r.wait_event(ev_is("bus_input_add_done", id="a3")) is not None)
-        r.send({"cmd": "bus_input_add", "id": "a4", "element": "nope", "name": "mixin_in_d",
-                "description": "audiotestsrc is-live=true ! queue"})
-        check("L unknown aggregator -> command_error", r.wait_event(ev_is("command_error", id="a4")) is not None)
-
-        # Containment: a branch whose source dies (here: a unixfdsrc on a
-        # socket nobody serves) is dropped and reported — never a pipeline
-        # error. The mix keeps running on its other inputs.
-        tmp = tempfile.mkdtemp(prefix="mrtest-")
-        dead = os.path.join(tmp, "dead.sock")
-        r.send({"cmd": "bus_input_add", "id": "a5", "element": "mixin", "name": "mixin_in_dead",
-                "description": f"unixfdsrc socket-path={dead} ! queue"})
-        lost = r.wait_event(lambda e: e.get("event") == "input_branch_lost" and e.get("name") == "mixin_in_dead",
-                            timeout=5)
-        check("L dead-producer branch is reported as input_branch_lost", lost is not None)
-        check("L ...and is NOT a pipeline error", not r.has_event(ev_is("error")))
-        r.send({"cmd": "get_property", "id": "p3", "element": "mixin_in_dead", "property": "name"})
-        p3 = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p3")
-        check("L dropped branch is gone from the pipeline", p3 is not None and p3.get("event") == "command_error")
-        check("L mix still flowing after the drop (VU)", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
-        os.rmdir(tmp)
-
-        # Live removes: the start-time bin, then a live-added one.
-        r.send({"cmd": "bus_input_remove", "id": "r1", "element": "mixin", "name": "mixin_in_a"})
-        check("L start-time bin removed live", r.wait_event(ev_is("bus_input_remove_done", id="r1")) is not None)
-        r.send({"cmd": "bus_input_remove", "id": "r2", "element": "mixin", "name": "mixin_in_c"})
-        check("L demuxer-headed bin removed live", r.wait_event(ev_is("bus_input_remove_done", id="r2")) is not None)
-        r.send({"cmd": "get_property", "id": "p2", "element": "mixin_in_a", "property": "name"})
-        p2 = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p2")
-        check("L removed bin is gone from the pipeline", p2 is not None and p2.get("event") == "command_error")
-        r.send({"cmd": "bus_input_remove", "id": "r3", "element": "mixin", "name": "mixin_in_a"})
-        check("L removing a branch that is already gone is a no-op done",
-              r.wait_event(ev_is("bus_input_remove_done", id="r3")) is not None)
-        time.sleep(1.0)
-        check("L pipeline still alive after removes (VU)", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
-        check("L no error after the live removes", not r.has_event(ev_is("error")))
-
-        # eosDrain:false — a force-live mixer never completes an EOS drain;
-        # without the opt-out this stop would stall EOS_DRAIN_TIMEOUT_MS.
-        t0 = time.monotonic()
-        code = r.stop_and_wait()
-        took = time.monotonic() - t0
-        check("L exits 0 after stop", code == 0)
-        check(f"L eosDrain:false stops a force-live mixer promptly ({took:.1f}s)", took < 3.0)
-        check("L no drain timeout warning with eosDrain:false", not r.has_event(_drain_timeout_warning))
-    finally:
-        r.kill()
-
-    # Control: the default (drain) on the real producer shape — force-live mix
-    # into the 302M encode and a bus tee with no edge, i.e. no sink element to
-    # post EOS — stalls the full timeout (the .103 measurement behind #787).
-    producer = ("audiomixer name=mixin force-live=true latency=200000000"
-                " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
-                " ! identity name=mixin_out sync=true ! audioconvert ! audioresample"
-                " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m strict=experimental"
-                " ! mpegtsmux latency=0 alignment=7"
-                " ! capssetter caps=\"video/mpegts,systemstream=true,packetsize=188\" replace=true"
-                " ! tee name=busout_41000 allow-not-linked=true"
-                f"  ( name=mixin_in_a {tone} ) ! mixin.sink_0")
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": producer})
-        check("L control reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        time.sleep(1.0)
-        t0 = time.monotonic()
-        r.stop_and_wait(timeout=15)
-        took = time.monotonic() - t0
-        check(f"L default drain stalls a force-live mixer stop ({took:.1f}s)",
-              took >= 5.0 and r.has_event(_drain_timeout_warning))
-    finally:
-        r.kill()
+def test_aligner_absent():
+    """Plan ch. 6 part 7.3 case aligner-absent, native (gst_live_inputs_test.py runs it on the
+    python runner): one of three mixer inputs stops 2 s; the mix goes on, its mralignwatch absent
+    then present with its stale backlog counted, no error."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import aligner_absent_case
+    aligner_absent_case([_BIN], "native", check)
 
 
 # --------------------------------------------------------------------------- M: transform producer retime (2026-10-08)
-def _retime_run(argv, bufs, tag, align, fx, ts_psi):
+_AV_BRANCHES = (' demux. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.',
+                ' demux. ! audio/mpeg ! capssetter caps="audio/mpeg,framed=(boolean)true" ! queue ! mux.')
+
+
+def _retime_run(argv, bufs, tag, align, fx, ts_psi, branches=_AV_BRANCHES, rate=None):
     """One runner hosting a transform-producer-shaped pipeline (tsdemux → mpegtsmux
     → bus tee), fed `bufs` over a unixfd edge and read back by a consumer attached
     BEFORE any media: [(pid, serial, PES PTS, PES DTS or None)] in output order,
-    and its `branchAlign:` log lines without the runner's prefix."""
+    and its `branchAlign:` log lines without the runner's prefix. `rate` paces the
+    feed by its stamps at that many times real time (else bursts of 50 buffers)."""
     tmp = tempfile.mkdtemp(prefix="mrtest-")
     inp, edge = os.path.join(tmp, "in.sock"), os.path.join(tmp, "edge.sock")
     caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
@@ -1308,10 +1310,8 @@ def _retime_run(argv, bufs, tag, align, fx, ts_psi):
     try:
         r.wait_event(ev_is("ready"))
         r.send({"cmd": "start",
-                "pipeline": f"unixfdsrc socket-path={inp} ! {q} ! tsdemux name=demux latency=0"
-                            ' demux. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.'
-                            ' demux. ! audio/mpeg ! capssetter caps="audio/mpeg,framed=(boolean)true" ! queue ! mux.'
-                            f' mpegtsmux name=mux latency=0 alignment=7 ! capssetter caps="{caps}" replace=true'
+                "pipeline": f"unixfdsrc socket-path={inp} ! {q} ! tsdemux name=demux latency=0" + "".join(branches)
+                            + f' mpegtsmux name=mux latency=0 alignment=7 ! capssetter caps="{caps}" replace=true'
                             " ! tee name=busout_41200 allow-not-linked=true",
                 "alignBranchesToStamps": align})
         check(f"M {tag} runner reaches PLAYING",
@@ -1338,11 +1338,16 @@ def _retime_run(argv, bufs, tag, align, fx, ts_psi):
         consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
         consumer.set_state(Gst.State.PLAYING)
         time.sleep(0.5)
-        for i, (data, st) in enumerate(bufs):
+        t0 = time.monotonic()
+        for i, (data, st, *_arrival) in enumerate(bufs):
+            if rate:
+                ahead = (st - bufs[0][1]) / 1e9 / rate - (time.monotonic() - t0)
+                if ahead > 0:
+                    time.sleep(ahead)
             b = Gst.Buffer.new_wrapped(data)
             b.pts = b.dts = st
             src.emit("push-buffer", b)
-            if i % 50 == 49:
+            if not rate and i % 50 == 49:
                 # ~6x real time: an unpaced burst fills both unixfd sockets and the
                 # elements' release-under-lock deadlocks them (gst 1.28.2).
                 time.sleep(0.01)
@@ -1362,6 +1367,48 @@ def _retime_run(argv, bufs, tag, align, fx, ts_psi):
             os.unlink(os.path.join(tmp, f))
         os.rmdir(tmp)
     return rows, [line.split("branchAlign: ", 1)[1] for line in r.logs if "branchAlign: " in line]
+
+
+def test_live_remove_start_time_branch():
+    """A start-time branch taken off a non-live aligned mixer releases its request pad, both
+    runners: its src pad is the parser's ghost<N>, not "src", and a pad left behind holds the
+    mixer for ever (the other branch's watchdog then fills up)."""
+    caps = "audio/x-raw,rate=48000,channels=2"
+
+    def branch(name, freq):
+        return (f"( name=mixin_in_{name} audiotestsrc is-live=true freq={freq} ! audioconvert"
+                f" ! {caps} ! mralignwatch name=aw_{name} aligner=mixin input={name}"
+                " hold-on-eos=true )")
+    pipe = ("audiomixer name=mixin latency=0 start-time-selection=first"
+            f" ! capsfilter caps=\"{caps}\" ! fakesink sync=false"
+            f"  {branch('a', 440)} ! mixin.sink_0  {branch('b', 880)} ! mixin.sink_1")
+
+    def level(r, rid):
+        r.send({"cmd": "get_property", "id": rid, "element": "aw_b", "property": "level-time"})
+        ev = r.wait_event(lambda e: e.get("id") == rid
+                          and e.get("event") in ("property", "command_error"))
+        return ev.get("value") if ev and ev.get("event") == "property" else None
+
+    for kind, argv in (("native", None), ("py", _PY_RUNNER)):
+        r = RunnerProc(argv)
+        try:
+            r.wait_event(ev_is("ready"))
+            r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+            check(f"L2 {kind}: an aligned mixer with two start-time bins reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+            time.sleep(1.0)
+            r.send({"cmd": "bus_input_remove", "id": "r1", "element": "mixin",
+                    "name": "mixin_in_a"})
+            check(f"L2 {kind}: start-time bin removed live",
+                  r.wait_event(ev_is("bus_input_remove_done", id="r1")) is not None)
+            time.sleep(2.0)
+            lv = level(r, "p1")
+            check(f"L2 {kind}: the mixer goes on with the other branch (its watchdog holds "
+                  f"{lv / 1e6 if isinstance(lv, int) else lv} ms)",
+                  isinstance(lv, int) and lv < 500_000_000)
+            check(f"L2 {kind}: no error", not r.has_event(ev_is("error")))
+        finally:
+            r.kill()
 
 
 def test_transform_producer_align():
@@ -1404,8 +1451,10 @@ def test_transform_producer_align():
     bufs2, targets2 = fx.stamp(fx.build_packets(70, dts_lead_ms=900.0, lead_swing_ms=500.0, jump_at_s=40.0),
                                2.2, 200_000 * 10**9, -40.0, dts_targets=dts2)
     logs = {}
+    # Paced by the stamps at 4x real time: in bursts a loaded box falls 5 s behind and the
+    # runner's leaky edge sheds access units (668 of 675 at load 2.4, 2026-10-17).
     for tag, argv in (("native", None), ("python", py)):
-        rows1, logs1 = _retime_run(argv, bufs1, f"{tag} cut", producer, fx, ts_psi)
+        rows1, logs1 = _retime_run(argv, bufs1, f"{tag} cut", producer, fx, ts_psi, rate=4)
         first, serials = {}, {}
         for pid, s, _p, _d in rows1:
             first.setdefault(pid, s)
@@ -1417,7 +1466,7 @@ def test_transform_producer_align():
         check(f"M {tag}: every access unit leaves on its content time from that first one "
               f"(worst {max(map(abs, e1), default=0):.3f} ms over {len(e1)})",
               len(e1) > 500 and max(map(abs, e1)) <= 20)
-        rows2, logs2 = _retime_run(argv, bufs2, f"{tag} 70 s", producer, fx, ts_psi)
+        rows2, logs2 = _retime_run(argv, bufs2, f"{tag} 70 s", producer, fx, ts_psi, rate=4)
         e2 = [err_ms(p, targets2[(pid, s)]) for pid, s, p, _d in rows2]
         last, back = {}, 0.0
         for pid, _s, p, d in rows2:
@@ -1442,15 +1491,368 @@ def test_transform_producer_align():
     check("M both twins log the same retime lines, word for word", logs["native"] == logs["python"])
     if logs["native"] != logs["python"]:
         print("    native:", logs["native"], "\n    python:", logs["python"])
-    rows0, _ = _retime_run(None, bufs1, "native mux-mode control", {"demuxes": ["demux"]}, fx, ts_psi)
+    rows0, _ = _retime_run(None, bufs1, "native mux-mode control", {"demuxes": ["demux"]}, fx, ts_psi, rate=4)
     e0 = [err_ms(p, targets1[(pid, s)]) for pid, s, p, _d in rows0]
     check(f"M control: the same cut WITHOUT transformProducer leaves the input's lead in "
           f"(best {min(map(abs, e0), default=0):.0f} ms off), so the checks above can fail",
           len(e0) > 500 and min(map(abs, e0)) > 1000)
 
 
+# --------------------------------------------------------------------------- M2: cue pads retimed (WI-P2-12)
+# Cues a second apart, then two pauses over 5 s: a subtitle carrier sends only while a cue is live.
+_M2_CUES = [1, 2, 3, 4, 5, 6, 12, 13, 14, 15, 22, 23]
+
+
+def test_cue_pads_retime():
+    """M2, `privatePads` on both runners: identity egress with KLV, teletext and DVB cues and two
+    pauses over 5 s, into mpegtsmux. Every cue at its own PES PTS, a quiet PID back on the video's
+    epoch (its newest after a step); without the flag tsdemux's time. The twins agree."""
+    for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP M2 — {el} unavailable")
+            return
+    sys.path.insert(0, _HERE)
+    import transform_input_fixture as fx  # noqa: E402  (puts mpegts-core/py on the path)
+    import ts_psi  # noqa: E402
+    py = ["env", "PYTHONPATH=" + os.path.join(_PLUGINS, "mpegts-core", "py"), sys.executable,
+          os.path.join(_HERE, "gst-pipeline-runner.py")]
+    bufs, _targets = fx.cue_egress(25, lambda p: 200_000 * 10**9 + fx.ns(p - fx.DTS0), start_s=2.2,
+                                   schedule=_M2_CUES)
+    pes_in = {}
+    for data, _st, _arr in bufs:
+        for pkt in ts_psi.iter_packets(data):
+            pts = ts_psi.read_pes_pts(pkt)
+            if pts is not None and ts_psi.ts_pid(pkt) in fx.CUE_PIDS:
+                key = fx.au_key(pkt[ts_psi.payload_offset(pkt):][14:])
+                pes_in[key] = pts
+    branches = (_AV_BRANCHES[0], " demux. ! meta/x-klv ! queue ! mux.",
+                " demux. ! application/x-teletext ! queue ! mux.", " demux. ! subpicture/x-dvb ! queue ! mux.")
+    wrap = 1 << 33
+
+    def ticks_off(rows):
+        """Per cue written: output PES PTS − its input PES PTS, in 90 kHz ticks."""
+        return {(pid, s): ((p - pes_in[(pid, s)] + wrap // 2) % wrap) - wrap // 2
+                for pid, s, p, _d in rows if pid in fx.CUE_PIDS and (pid, s) in pes_in}
+
+    on, logs = {}, {}
+    # 4x real time: this sparse feed in bursts of 50 runs far ahead and the 5 s leaky edge sheds.
+    for tag, argv in (("native", None), ("python", py)):
+        rows, lines = _retime_run(argv, bufs, f"{tag} cues", {"demuxes": ["demux"], "transformProducer": True,
+                                                              "privatePads": True}, fx, ts_psi, branches, rate=4)
+        off = ticks_off(rows)
+        check(f"M2 {tag}: every cue of KLV, teletext and DVB subtitles written at its own PES PTS, "
+              f"across both pauses ({len(off)} of {len(pes_in)}, worst "
+              f"{max(map(abs, off.values()), default=None)} ticks)",
+              len(off) == len(pes_in) >= 30 and all(abs(t) <= 1 for t in off.values()))
+        check(f"M2 {tag}: a cue PID's pause is no PTS discontinuity (no stamp epoch of its own)",
+              lines and not any("discontinuity" in l for l in lines))
+        rows0, _ = _retime_run(argv, bufs, f"{tag} cues, no flag", {"demuxes": ["demux"], "transformProducer": True},
+                               fx, ts_psi, branches, rate=4)
+        off0 = ticks_off(rows0)
+        check(f"M2 {tag}: without privatePads the cues keep tsdemux's time (worst "
+              f"{max(map(abs, off0.values()), default=0) / 90:.1f} ms off), so the check above can fail",
+              len(off0) >= 30 and max(map(abs, off0.values())) > 90)
+        on[tag], logs[tag] = sorted(rows), lines
+    check("M2 both twins write the same PES, cues included", on["native"] == on["python"])
+    check("M2 both twins log the same retime lines, word for word", logs["native"] == logs["python"])
+    if logs["native"] != logs["python"]:
+        print("    native:", logs["native"], "\n    python:", logs["python"])
+    # The source stepped back 2 s during a 9 s cue pause, its producer re-anchored (stamps kept).
+    # The cue back is near both of the video's epochs: it takes the newest, so stays on content time.
+    sbufs, _ = fx.cue_egress(20, lambda p: 200_000 * 10**9 + fx.ns(p - fx.DTS0), start_s=2.2,
+                             schedule=[1, 2, 3, 4, 13, 14, 15, 16])
+    content_pes = {}
+    for data, _st, _arr in sbufs:
+        for pkt in ts_psi.iter_packets(data):
+            if ts_psi.read_pes_pts(pkt) is not None and ts_psi.ts_pid(pkt) in fx.CUE_PIDS:
+                content_pes[fx.au_key(pkt[ts_psi.payload_offset(pkt):][14:])] = ts_psi.read_pes_pts(pkt)
+    sbufs = fx.step_back(sbufs, 200_000 * 10**9 + 7 * 10**9, 2 * 90000)
+    stepped = {}
+    for tag, argv in (("native", None), ("python", py)):
+        rows, lines = _retime_run(argv, sbufs, f"{tag} cues, step", {"demuxes": ["demux"], "transformProducer": True,
+                                                                    "privatePads": True}, fx, ts_psi, branches, rate=4)
+        off = {(pid, s): ((p - content_pes[(pid, s)] + wrap // 2) % wrap) - wrap // 2
+               for pid, s, p, _d in rows if (pid, s) in content_pes}
+        check(f"M2 {tag}: the video stepped back 2 s in a cue pause; every cue on content time, those back "
+              f"on the video's new epoch ({len(off)} of {len(content_pes)}, worst "
+              f"{max(map(abs, off.values()), default=None)} ticks)",
+              len(off) == len(content_pes) >= 15 and all(abs(t) <= 1 for t in off.values())
+              and any("PTS discontinuity" in line for line in lines))
+        stepped[tag] = sorted(rows)
+    check("M2 both twins write the same PES across the step", stepped["native"] == stepped["python"])
+
+
+# --------------------------------------------------------------------------- M3: the muxer's aligners over a cue pause (WI-P2-12)
+_M3_CUES = [1.0, 2.0, 9.0, 10.0]        # a 7 s pause between cues
+_M3_SECONDS = 13
+
+
+def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues=_M3_CUES, dark=None):
+    """The muxer's description for two generic inputs (hook, `mralignwatch aligner=mux` per route,
+    retime with privatePads) at real time: input 0 video and `cues`, silent over `dark` (content s,
+    `fx.go_dark`), input 1 video as 0x105. Returns PES in, targets, output, pace, aligner stats, log."""
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    socks, edge = [os.path.join(tmp, f"in{i}.sock") for i in range(2)], os.path.join(tmp, "edge.sock")
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    feeders = []
+    for s in socks:
+        f = Gst.parse_launch(f'appsrc name=src format=time block=true max-bytes=8000000 caps="{fx.TS_CAPS}"'
+                             f" ! unixfdsink socket-path={s} sync=false async=false")
+        f.use_clock(clock)
+        f.set_start_time(Gst.CLOCK_TIME_NONE)
+        f.set_base_time(0)                      # a contract producer: the wire carries the stamps
+        f.set_state(Gst.State.PLAYING)
+        feeders.append(f)
+    ingress = "queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000"
+    pipeline = ('mpegtsmux name=mux latency=0 alignment=7 prog-map="program_map,sink_256=(int)1,sink_264=(int)1,'
+                f'PCR_1=sink_256" ! capssetter caps="{caps}" replace=true ! tee name=busout_41400 allow-not-linked=true'
+                + "".join(f" unixfdsrc name=busin_{i} socket-path={s} ! {ingress} ! tsdemux latency=0 name=demux_{i}"
+                          for i, s in enumerate(socks)))
+
+    def route(i, media, sparse=False):
+        return {"branch": f"mralignwatch name=aw_demux_{i}_{media} aligner=mux input=demux_{i}_{media} "
+                          "max-size-bytes=40000000" + (" sparse=true" if sparse else "")}
+    hook = {"module": "mux_routing", "config": {"inputs": [
+        {"demux": f"demux_{i}", "linkTo": "mux", "pid": pid, "ignorePids": [496], "pcr": {"program": 1},
+         "routes": {"video": {**route(i, "video"), "parser": "none"}, "audio": route(i, "audio"),
+                    "klv": route(i, "klv", True), "subtitle": route(i, "subtitle", True)}}
+        for i, pid in enumerate((256, 264))]}}
+    r = RunnerProc(argv)
+    consumer = None
+    rows, paces, full, absences, back = [], [], {}, {}, None
+    q = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=0"
+
+    def prop(element, name):
+        rid = f"p{len(paces)}{element}{name}{time.monotonic_ns()}"
+        r.send({"cmd": "get_property", "id": rid, "element": element, "property": name})
+        ev = r.wait_event(lambda e: e.get("id") == rid and e.get("event") in ("property", "command_error"))
+        return ev.get("value") if ev and ev.get("event") == "property" else None
+
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": pipeline, "runnerHooks": [hook],
+                "alignBranchesToStamps": {"demuxes": ["demux_0", "demux_1"], "transformProducer": True,
+                                          "privatePads": True}})
+        check(f"{case} {tag} runner reaches PLAYING",
+              r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+        r.send({"cmd": "bus_attach", "tee": "busout_41400", "socket": edge})
+        check(f"{case} {tag} edge attached", r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
+        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! {q} ! fakesink name=csink sync=false")
+
+        def on_buf(_pad, info):
+            now = time.monotonic_ns()
+            for pkt in ts_psi.iter_packets(info.get_buffer().extract_dup(0, info.get_buffer().get_size())):
+                pts = ts_psi.read_pes_pts(pkt) if pkt[1] & 0x40 else None
+                if pts is not None:
+                    pes = pkt[ts_psi.payload_offset(pkt):]
+                    key = fx.au_key(pes[9 + pes[8]:])
+                    if key:
+                        rows.append((key[0], key[1], pts, now))
+            return Gst.PadProbeReturn.OK
+
+        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+        consumer.set_state(Gst.State.PLAYING)
+        now0 = time.monotonic_ns() + 1_000_000_000          # content time 0, a second from now
+        target = lambda p: now0 + fx.ns(p - fx.DTS0)        # noqa: E731
+        bufs0, targets = fx.cue_egress(seconds, target, schedule=cues)
+        if dark:
+            bufs0, back = fx.go_dark(bufs0, now0 + int(dark[0] * 1e9), now0 + int(dark[1] * 1e9), (fx.KLV_PID,))
+            back = (back - now0) / 1e9
+        bufs1, t1 = fx.house_egress(seconds, target)
+        bufs1 = [(d.replace(b"MRAU\x01\x00", b"MRAU\x01\x05"), st, arr) for d, st, arr in bufs1]
+        targets.update({(0x105, s): v for (_p, s), v in t1.items()})
+        pes_in = {}
+        for data, _st, _arr in bufs0 + bufs1:
+            for pkt in ts_psi.iter_packets(data):
+                pts = ts_psi.read_pes_pts(pkt)
+                if pts is not None:
+                    pes = pkt[ts_psi.payload_offset(pkt):]
+                    key = fx.au_key(pes[9 + pes[8]:])
+                    if key:
+                        pes_in[key] = pts
+
+        def feed(i, bufs):
+            src = feeders[i].get_by_name("src")
+            for data, st, arr in bufs:
+                ahead = arr - time.monotonic_ns()
+                if ahead > 0:
+                    time.sleep(ahead / 1e9)
+                b = Gst.Buffer.new_wrapped(data)
+                b.pts = b.dts = st
+                src.emit("push-buffer", b)
+
+        threads = [threading.Thread(target=feed, args=(i, b)) for i, b in enumerate((bufs0, bufs1))]
+        for t in threads:
+            t.start()
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.5)
+            v = prop("aw_demux_0_video", "pace")
+            paces.append(((time.monotonic_ns() - now0) / 1e9, v / 1e6 if isinstance(v, int) else None))
+        for t in threads:
+            t.join()
+        time.sleep(1.5)
+        full = {n: prop(f"aw_demux_{n}", "full-count") for n in ("0_video", "1_video")}
+        absences = {n: prop(f"aw_demux_{n}", "absences") for n in ("0_video", "1_video")}
+        check(f"{case} {tag} no lifecycle error", not r.has_event(ev_is("error")))
+        check(f"{case} {tag} exits 0 after stop", r.stop_and_wait() == 0)
+    finally:
+        if consumer is not None:
+            consumer.set_state(Gst.State.NULL)
+        for f in feeders:
+            f.set_state(Gst.State.NULL)
+        r.kill()
+        for f in os.listdir(tmp):
+            os.unlink(os.path.join(tmp, f))
+        os.rmdir(tmp)
+    return (pes_in, targets, rows, paces, {"full": full, "absences": absences, "back": back},
+            [line.split("branchAlign: ", 1)[1] for line in r.logs if "branchAlign: " in line])
+
+
+def test_mux_aligners_sparse():
+    """M3, both runners: a 7 s pause between cues. Every KLV and teletext cue at its own PES PTS,
+    the pace flat, the video not slowed; a cue mistimed after the pause would raise the group's
+    pace by its lateness for good (measured before the fix: 240 → 7490 ms)."""
+    for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP M3 — {el} unavailable")
+            return
+    so = os.path.join(_PLUGINS, "mpegts-muxer", "native", "mux-routing", "libmrhook_mux_routing.so")
+    if not os.path.exists(so):
+        print(f"SKIP M3 — {so} not built")
+        return
+    sys.path.insert(0, _HERE)
+    import transform_input_fixture as fx  # noqa: E402  (puts mpegts-core/py on the path)
+    import ts_psi  # noqa: E402
+    py = ["env", "PYTHONPATH=" + ":".join(os.path.join(_PLUGINS, p, "py") for p in ("mpegts-core", "mpegts-muxer")),
+          sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
+    wrap = 1 << 33
+    pause = _M3_CUES[2] - 1.0                   # the first cue after the pause is on the wire ~0.7 s early
+    for tag, argv in (("native", None), ("python", py)):
+        pes_in, targets, rows, paces, stats, lines = _aligned_mux_run(argv, tag, fx, ts_psi)
+        full = stats["full"]
+        written = {}
+        for pid, s, pts, arr in rows:
+            written.setdefault((pid, s), (pts, arr))
+        cues = {k: ((written[k][0] - v + wrap // 2) % wrap) - wrap // 2
+                for k, v in pes_in.items() if k[0] in (fx.KLV_PID, fx.TTX_PID) and k in written}
+        want = [k for k in pes_in if k[0] in (fx.KLV_PID, fx.TTX_PID)]
+        check(f"M3 {tag}: every KLV and teletext cue written at its own PES PTS across the pause "
+              f"({len(cues)} of {len(want)}, worst {max(map(abs, cues.values()), default=None)} ticks)",
+              len(want) == 8 and len(cues) == len(want) and all(abs(t) <= 1 for t in cues.values()))
+        before = [p for t, p in paces if p is not None and t < pause]
+        after = [p for t, p in paces if p is not None and t >= pause]
+        rise = max(after) - max(before) if before and after else None
+        check(f"M3 {tag}: the mux pace does not rise after the pause (before ≤ "
+              f"{max(before, default=0):.0f} ms, after ≤ {max(after, default=0):.0f} ms)",
+              rise is not None and rise <= 500)
+        delays = {}
+        for pid in (fx.VIDEO_PID, 0x105):
+            for k, (_pts, arr) in written.items():
+                if k[0] == pid and k in targets:
+                    content = (targets[k] - targets[(fx.VIDEO_PID, 0)]) / 1e9
+                    half = "before" if 3 <= content < pause else "after" if content >= _M3_CUES[3] else None
+                    if half:
+                        delays.setdefault((pid, half), []).append((arr - targets[k]) / 1e6)
+        med = {k: sorted(v)[len(v) // 2] for k, v in delays.items()}
+        check(f"M3 {tag}: the video does not slow after the pause (output delay, median ms: "
+              f"{ {f'0x{p:x} {h}': round(v) for (p, h), v in sorted(med.items())} })",
+              len(med) == 4 and all(med[(p, "after")] - med[(p, "before")] <= 500 for p in (fx.VIDEO_PID, 0x105)))
+        check(f"M3 {tag}: no video aligner filled ({full}) and no cue pause logged as a discontinuity",
+              full == {"0_video": 0, "1_video": 0} and not any("discontinuity" in l for l in lines))
+
+
+# --------------------------------------------------------------------------- M4: the muxer's aligners over a dark input (WI-P2-12)
+_M4_SECONDS, _M4_DARK = 16, (4.0, 10.0)     # back at 10.49 s; five clamped stamps follow the cue
+
+
+def test_mux_aligners_dark():
+    """M4, both runners: input 0 silent over 6 s, back with a KLV cue alone in its bus buffer. That
+    cue and input 0's video at their own PES PTS, the pace flat, input 1 not slowed; the cue's own
+    cadence put it 6 s early and raised the pace for good (before the fix: 240 → 5490 ms)."""
+    for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP M4 — {el} unavailable")
+            return
+    so = os.path.join(_PLUGINS, "mpegts-muxer", "native", "mux-routing", "libmrhook_mux_routing.so")
+    if not os.path.exists(so):
+        print(f"SKIP M4 — {so} not built")
+        return
+    sys.path.insert(0, _HERE)
+    import transform_input_fixture as fx  # noqa: E402  (puts mpegts-core/py on the path)
+    import ts_psi  # noqa: E402
+    py = ["env", "PYTHONPATH=" + ":".join(os.path.join(_PLUGINS, p, "py") for p in ("mpegts-core", "mpegts-muxer")),
+          sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
+    wrap, (dark_from, _) = 1 << 33, _M4_DARK
+    retimed = {}
+    for tag, argv in (("native", None), ("python", py)):
+        pes_in, targets, rows, paces, stats, lines = _aligned_mux_run(
+            argv, tag, fx, ts_psi, "M4", _M4_SECONDS, [float(c) for c in range(1, _M4_SECONDS - 1)], _M4_DARK)
+        now0, back = targets[(fx.VIDEO_PID, 0)] - fx.ns(fx.FRAME), stats["back"]
+        written = {}
+        for pid, s, pts, arr in rows:
+            written.setdefault((pid, s), (pts, arr))
+
+        def content(k):
+            return (targets[k] - now0) / 1e9
+
+        def off(k):
+            return ((written[k][0] - pes_in[k] + wrap // 2) % wrap) - wrap // 2
+        cues = [k for k in pes_in if k[0] in (fx.KLV_PID, fx.TTX_PID)]
+        first = min((k for k in cues if k[0] == fx.KLV_PID and content(k) > back), key=content)
+        check(f"M4 {tag}: input 0 silent {back - dark_from:.2f} s, back with KLV cue #{first[1]} alone in its "
+              f"bus buffer", back - dark_from >= 6.0)
+        check(f"M4 {tag}: that cue and every KLV and teletext cue written at its own PES PTS (cue #{first[1]} "
+              f"{off(first) if first in written else None} ticks; {sum(k in written for k in cues)} of {len(cues)}, "
+              f"worst {max((abs(off(k)) for k in cues if k in written), default=None)} ticks)",
+              all(k in written and abs(off(k)) <= 1 for k in cues))
+        video = [k for k in pes_in if k[0] == fx.VIDEO_PID and content(k) > dark_from + 1]
+        out0 = [k for k in video if k in written]
+        # All but the last, which tsdemux holds for a next PES (no EOS here).
+        check(f"M4 {tag}: input 0's video after the return written at its own PES PTS ({len(out0)} of "
+              f"{len(video)}, worst {max((abs(off(k)) for k in out0), default=None)} ticks)",
+              len(out0) >= len(video) - 1 > 100 and all(abs(off(k)) <= 1 for k in out0))
+        before = [p for t, p in paces if p is not None and t < dark_from]
+        after = [p for t, p in paces if p is not None and t >= back]
+        check(f"M4 {tag}: the mux pace does not rise after the return (before ≤ {max(before, default=0):.0f} "
+              f"ms, after ≤ {max(after, default=0):.0f} ms)",
+              before and after and max(after) - max(before) <= 250)
+        delay = {}
+        for k, (_pts, arr) in written.items():
+            if k[0] == 0x105 and k in targets:
+                half = "before" if 2 <= content(k) < dark_from else "after" if content(k) >= back + 2 else None
+                if half:
+                    delay.setdefault(half, []).append((arr - targets[k]) / 1e6)
+        med = {h: sorted(v)[len(v) // 2] for h, v in delay.items()}
+        check(f"M4 {tag}: input 1's video delay holds (median ms: { {h: round(v) for h, v in med.items()} })",
+              len(med) == 2 and abs(med["after"] - med["before"]) <= 250)
+        # Both go absent once the feed ends; input 0 once more, over its silence.
+        check(f"M4 {tag}: input 0 absent once more than input 1, no video aligner filled ({stats})",
+              stats["full"] == {"0_video": 0, "1_video": 0}
+              and stats["absences"]["0_video"] == stats["absences"]["1_video"] + 1)
+        retimed[tag] = [re.sub(r"K=-?\d+", "K=<K>", line) for line in lines if line.startswith("demux_0 retime:")]
+        check(f"M4 {tag}: the cue logs its quiet spell on the last K, the video's reading confirms it, no "
+              f"discontinuity", any("pid=0x102 back after" in line and line.endswith("on the last K")
+                                    for line in retimed[tag])
+              and any(line.endswith("on its stamps, +0.000 ms off the prediction") for line in retimed[tag])
+              and not any("discontinuity" in line for line in lines))
+    check("M4 both twins log the same retime lines for the dark input, word for word",
+          retimed["native"] == retimed["python"])
+    if retimed["native"] != retimed["python"]:
+        print("    native:", retimed["native"], "\n    python:", retimed["python"])
+
+
 # --------------------------------------------------------------------------- P: mpegts-muxer inputs retimed (2026-10-08)
-def _mux_run(argv, feed, tag, align, fx, ts_psi):
+# Input 2 of case P (WI-P2-14): a transcoder's identity egress with KLV cues. Its KLV goes into the
+# mux; its video, teletext and DVB pads are sunk.
+_P_KLV_BRANCHES = (" demux_2. ! meta/x-klv ! queue ! mux."
+                   " demux_2. ! video/x-h264 ! fakesink sync=false async=false"
+                   " demux_2. ! application/x-teletext ! fakesink sync=false async=false"
+                   " demux_2. ! subpicture/x-dvb ! fakesink sync=false async=false")
+
+
+def _mux_run(argv, feed, tag, align, fx, ts_psi, extra=_P_KLV_BRANCHES):
     """One runner hosting the mpegts-muxer's shape — N `unixfdsrc → tsdemux
     name=demux_<i>` inputs into one live `mpegtsmux` (the module's latency
     properties) → bus tee — fed `feed` = [(arrival, input, bytes, stamp)] in
@@ -1485,9 +1887,10 @@ def _mux_run(argv, feed, tag, align, fx, ts_psi):
                 "pipeline": f"{heads}"
                             ' demux_0. ! audio/mpeg ! capssetter caps="audio/mpeg,framed=(boolean)true" ! queue ! mux.'
                             ' demux_1. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.'
+                            + (extra if n_in > 2 else "") +
                             " mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7"
                             f' ! capssetter caps="{caps}" replace=true ! tee name=busout_41300 allow-not-linked=true',
-                "alignBranchesToStamps": align, "houseTimelineEgress": True})
+                "alignBranchesToStamps": align})
         check(f"P {tag} runner reaches PLAYING",
               r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
         r.send({"cmd": "bus_attach", "tee": "busout_41300", "socket": edge})
@@ -1544,10 +1947,12 @@ def test_mux_inputs_retime():
     BOTH runners: a passthrough AAC leg (a splitter's: anchored stamps, the VBR lead
     swinging 0.25–0.75 s, a 427 s rewind, the source 40 ppm slow) and a transcoded
     video leg (a transform producer's identity egress: K = −3600 s, B-frames) into one
-    production-shaped live mux. Every access unit must leave on its content time, so
-    audio and video agree; per PID the output stays continuous and monotonic and
-    mpegtsmux never ignores a DTS going backward; each demux keeps its own K, hold
-    and epochs. Mux mode on the same feed is the control that fails."""
+    production-shaped live mux, and since WI-P2-14 that producer's egress with KLV cues as a
+    third input, its private pads retimed (`privatePads`). Every access unit must leave on its
+    content time, so audio and video agree, and every cue at its own PES PTS; per PID the
+    output stays continuous and monotonic and mpegtsmux never ignores a DTS going backward;
+    each demux keeps its own K, hold and epochs. Mux mode on the same feed is the control
+    that fails."""
     for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP P — {el} unavailable")
@@ -1557,20 +1962,38 @@ def test_mux_inputs_retime():
     import ts_psi  # noqa: E402
     py = ["env", "PYTHONPATH=" + os.path.join(_PLUGINS, "mpegts-core", "py"), sys.executable,
           os.path.join(_HERE, "gst-pipeline-runner.py")]
-    producer = {"demuxes": ["demux_0", "demux_1"], "transformProducer": True}
+    producer = {"demuxes": ["demux_0", "demux_1", "demux_2"], "transformProducer": True,
+                "privatePads": True}
     wrap = 1 << 33
 
     def fold(d):
         d %= wrap
         return d - wrap if d > wrap // 2 else d
 
-    # Input 0 the splitter's AAC leg, input 1 the transcoder's video (K = −3600 s).
+    # Input 0 the splitter's AAC leg, input 1 the transcoder's video (K = −3600 s), input 2 that
+    # transcoder's egress with KLV cues (WI-P2-14) on the same content timeline.
     feed, targets, k_splitter = fx.mux_inputs(70, jump_at_s=40.0)
+    a_house, a_pts, rate = targets[(fx.AUDIO_PID, 0)], fx.DTS0 + fx.FRAME, 1.0 - 40 / 1e6
+    cues, _cue_targets = fx.cue_egress(70, lambda p: a_house + int(fx.ns(p - a_pts) / rate), start_s=2.2)
+    feed = sorted(feed + [(t, 2, d, st) for d, st, t in cues], key=lambda e: (e[0], e[1]))
+    klv_in = {}
+    for data, _st, _t in cues:
+        for pkt in ts_psi.iter_packets(data):
+            pts = ts_psi.read_pes_pts(pkt)
+            if pts is not None and ts_psi.ts_pid(pkt) == fx.KLV_PID:
+                klv_in[fx.au_key(pkt[ts_psi.payload_offset(pkt):][14:])] = pts
+
+    def klv_off(rows):
+        """Per KLV cue written: output PES PTS - its input PES PTS, in 90 kHz ticks."""
+        return {(pid, s): fold(p - klv_in[(pid, s)]) for pid, s, p, _d in rows
+                if pid == fx.KLV_PID and (pid, s) in klv_in}
 
     def judge(rows):
         """Per AU: output PES (− 1 h) against its content time, ms; and the content span, s."""
         err = {fx.AUDIO_PID: [], fx.VIDEO_PID: []}
         for pid, s, p, _d in rows:
+            if pid not in err:
+                continue
             err[pid].append(fold(p - fx.MUX_BASE - targets[(pid, s)] * 9 // 100000) / 90.0)
         span = (max(targets[(fx.AUDIO_PID, s)] for pid, s, _p, _d in rows if pid == fx.AUDIO_PID)
                 - min(targets[(fx.AUDIO_PID, s)] for pid, s, _p, _d in rows if pid == fx.AUDIO_PID)) / 1e9
@@ -1594,6 +2017,8 @@ def test_mux_inputs_retime():
               and max(map(abs, every)) <= 5 and max(every) - min(every) <= 10)
         last, serials, back_ms = {}, {}, 0.0
         for pid, s, p, d in rows:
+            if pid not in (fx.AUDIO_PID, fx.VIDEO_PID):
+                continue
             t = p if d is None else d
             if pid in last:
                 back_ms = max(back_ms, fold(last[pid] - t) / 90.0)
@@ -1604,20 +2029,26 @@ def test_mux_inputs_retime():
               f"DTS going backward ({back} warnings)",
               back_ms <= 0 and back == 0 and len(serials) == 2
               and all(v == list(range(v[0], v[0] + len(v))) for v in serials.values()))
-        k0, k1 = k_of(lines, "demux_0"), k_of(lines, "demux_1")
+        off = klv_off(rows)
+        check(f"P {tag}: the KLV input's cues leave the mux at their own PES PTS, unchanged ({len(off)} "
+              f"of {len(klv_in)}, worst {max(map(abs, off.values()), default=None)} ticks)",
+              len(klv_in) > 60 and len(off) == len(klv_in) and all(t == 0 for t in off.values()))
+        k0, k1, k2 = k_of(lines, "demux_0"), k_of(lines, "demux_1"), k_of(lines, "demux_2")
         check(f"P {tag}: each demux holds its own mapping — demux_0 K={k0} (the splitter's), "
-              f"demux_1 K={k1} (identity, −3600 s); only demux_0 opened a stamp epoch at the rewind",
+              f"demux_1 K={k1} and demux_2 K={k2} (identity, −3600 s); only demux_0 opened a stamp "
+              f"epoch at the rewind",
               k0 is not None and abs(k0 - k_splitter) < 1_000_000 and k1 == -3_600_000_000_000
+              and k2 == -3_600_000_000_000
               and any(l.startswith("demux_0 retime: pid=0x101 PTS discontinuity -42") for l in lines)
               and any(l.startswith("demux_0 retime: epoch #1 on its stamps") for l in lines)
-              and not any(l.startswith("demux_1") and "discontinuity" in l for l in lines))
+              and not any(l.startswith(("demux_1", "demux_2")) and "discontinuity" in l for l in lines))
         # Two streaming threads log: compare each demux's own sequence, not the interleave.
-        logs[tag] = {d: [l for l in lines if l.startswith(d + " ")] for d in ("demux_0", "demux_1")}
+        logs[tag] = {d: [l for l in lines if l.startswith(d + " ")] for d in ("demux_0", "demux_1", "demux_2")}
     check("P both twins log the same retime lines per demux, word for word", logs["native"] == logs["python"])
     if logs["native"] != logs["python"]:
         print("    native:", logs["native"], "\n    python:", logs["python"])
-    rows0, _l0, back0 = _mux_run(None, feed, "native mux-mode control", {"demuxes": ["demux_0", "demux_1"]},
-                                 fx, ts_psi)
+    rows0, _l0, back0 = _mux_run(None, feed, "native mux-mode control",
+                                 {"demuxes": ["demux_0", "demux_1", "demux_2"]}, fx, ts_psi)
     err0, _span0 = judge(rows0)
     every0 = err0[fx.AUDIO_PID] + err0[fx.VIDEO_PID]
     check(f"P control: the same feed in mux mode leaves audio and video "
@@ -1644,6 +2075,16 @@ def test_mrtshouse_load():
     mrtshouse_load_case([_BIN], "mrtshouse-load native", check, vectors=True)
 
 
+# --------------------------------------------------------------------------- native-plugins (WI-P2-14)
+def test_native_plugins():
+    """Plan ch. 6 part 7.3: mralignwatch and mrtsdemux of libgstmrtshouse.so, mrducker and
+    mrptskeep of libgstmrducker.so, loaded and used in one module by this binary; the scenario is
+    gst_native_plugins_test.py's, which runs it on the python runner."""
+    sys.path.insert(0, _HERE)
+    from gst_native_plugins_test import native_plugins_case
+    native_plugins_case([_BIN], "native", check)
+
+
 # --------------------------------------------------------------------------- ingest-restamp (WI-P1-4)
 def test_ingest_restamp():
     """Plan ch. 5 part 7.3: an SRT ingest's input through `mrtsrestamp arrival=buffer-pts` and
@@ -1666,8 +2107,8 @@ def test_ingest_restamp():
 
 
 test_plain_pipeline()
-test_producer_edge()
-test_house_timeline_egress()
+test_identity_egress()
+test_stamper_missing()
 test_identity_base_time()
 test_consumer_data_wait()
 test_refusals()
@@ -1676,13 +2117,20 @@ test_shed_refusals()
 test_reanchor_parity()
 test_reanchor_gap_and_undo_parity()
 test_runner_hooks()
+test_runner_hooks_concurrent()
 test_deinterlace_guard_hook()
 test_video_gates()
 test_live_input_branches()
+test_aligner_absent()
+test_live_remove_start_time_branch()
 test_transform_producer_align()
+test_cue_pads_retime()
+test_mux_aligners_sparse()
+test_mux_aligners_dark()
 test_mux_inputs_retime()
 test_lateness_taps()
 test_mrtshouse_load()
+test_native_plugins()
 test_ingest_restamp()
 
 if _failures:

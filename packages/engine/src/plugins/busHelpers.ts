@@ -11,7 +11,7 @@
  * engine's `BusFanoutCoordinator` (`bus_attach`/`bus_detach` runner commands),
  * each on its own edge socket. Consumers read their own branch
  * (`buildBusSrc`). Non-GStreamer producers (hls-player's Node child) publish
- * through the `unixfd-fanout.py` sidecar via `busIngestSocketPath`.
+ * through the `mr-bus-fanout` sidecar via `busIngestSocketPath`.
  *
  * Channel identity: the allocated bus port NUMBER (from the channel manager,
  * with its sticky-reacquire semantics) — it no longer binds a socket, it keys
@@ -25,11 +25,10 @@
  * The caps EVERY bus producer publishes — identity, not a hint. unixfd carries
  * caps across the socket and `tsdemux` rejects caps-less buffers, so both
  * producer paths must publish exactly this and nothing more: the GStreamer
- * egress (`buildBusSink`) and the `unixfd-fanout.py` sidecar (`--caps`).
+ * egress (`buildBusSink`) and the `mr-bus-fanout` sidecar (`--caps`).
  *
  * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
  */
-import type { InputStallWatch } from './PluginModule.js';
 import { tsQueueByteCap } from './queueBounds.js';
 import { busLatenessTap, LAT_IN_PREFIX } from './latenessTap.js';
 
@@ -108,7 +107,7 @@ export function busEdgeSocketPath(port: number, connectionId: string): string {
 /**
  * Ingest socket path for a non-GStreamer bus PRODUCER (today: hls-player).
  * The producer's data process (hls-pipe's Node child) streams raw TS into
- * this socket; the module's `unixfd-fanout.py` sidecar listens here and fans
+ * this socket; the module's `mr-bus-fanout` sidecar listens here and fans
  * the stream out to the per-consumer edge sockets (`busEdgeSocketPath`)
  * speaking the GstUnixFd protocol. Keyed by the channel port like every other
  * bus path so it survives module restarts with the sticky port.
@@ -122,20 +121,6 @@ export function busIngestSocketPath(port: number): string {
  *  `stallTimeoutMs`. The python runner matches this prefix on error messages
  *  to tag them `kind: 'bus_stall'` (source-silent, not a hard failure). */
 export const BUS_WATCHDOG_PREFIX = 'buswd';
-
-/**
- * Runner-side stall watch entry for a NAMED bus source (`buildBusSrc({ name })`)
- * — the replacement for `BusSrcOpts.stallTimeoutMs`. Same contract (silence
- * for `timeoutMs` → `kind: 'bus_stall'`, element prefixed `BUS_WATCHDOG_PREFIX`,
- * restartOnError), asked once a second instead of per buffer; an input that
- * never delivered is warned about, not restarted. Mechanism, measurements and
- * the never-fed rule: `gst_input_stall_watch.py`. Goes on
- * `PipelineDescription.inputStallWatch`. Used by mpegts-muxer; video-player
- * still carries the element until measured on its own.
- */
-export function busStallWatch(element: string, timeoutMs: number): InputStallWatch {
-    return { element, timeoutMs };
-}
 
 export interface BusSrcOpts {
     /** Allocated bus channel port (identity only — names the socket). */

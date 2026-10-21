@@ -1,18 +1,15 @@
-// Bus egress stamper lifecycle (time-sync contract, ADR-0005) — the native
-// port of `gst_bus_stamper.py` + `gst_stamp_native.py` + `gst_stamp_events.py`,
-// with ONE backend: the `mrtsstamp` element. The python probe fallback does
-// not exist here; a box without the plugin runs the contract unstamped and
-// says so loudly (warning event + log) instead of silently.
+// Bus egress stamper lifecycle — the twin of `gst_bus_stamper.py` + `gst_stamp_native.py` +
+// `gst_stamp_events.py`. One backend, the `mrtsstamp` element, stamping by identity
+// (PES - 1 h, plan ch. 6 WI-P2-3); without its plugin the egress runs unstamped and the module
+// carries the rule-6 alarm (`warning`, kind `timing_plugin`).
 //
-// Elements are spliced in once, before PLAYING, at the head of every
-// `busout_*` egress and arrive inactive; `arm` (a tee's first consumer edge)
-// sets `active`, `release` (its last edge gone) clears it. Every event and log
-// line keeps the python runner's field names and wording so the engine and a
-// burn-in reading the journal cannot tell which runner stamped.
+// Elements are spliced in once, before PLAYING, at the head of every `busout_*` egress and
+// arrive inactive; `arm` (a tee's first consumer edge) sets `active`, `release` (its last edge
+// gone) clears it. Log lines keep the python runner's wording, so the journal cannot tell
+// which runner stamped.
 #pragma once
 
 #include <gst/gst.h>
-#include <json-glib/json-glib.h>
 
 #include <string>
 
@@ -20,11 +17,13 @@ namespace mr::stamper {
 
 constexpr const char* ELEMENT_PREFIX = "mrstamp_";
 
-/** Enable stamping for `pipe` and splice the elements. `repair`
- *  is the payload's `latchRepair` (nullptr = keep the module default),
- *  `house_timeline` the payload's `houseTimelineEgress` (a transform
- *  producer: identity stamps, PES - 1 h, ADR-0005 amendment 2026-10-08). */
-void enable(GstElement* pipe, JsonNode* repair, bool house_timeline);
+/** Enable stamping for `pipe`: when it has a `busout_*` tee, load the plugin (once per process)
+ *  and splice the elements. */
+void enable(GstElement* pipe);
+
+/** The plugin was tried and could not be loaded: a start reporting `timingPlugin` must not
+ *  clear the alarm then. */
+bool missing();
 
 /** Arm the stamper on `tee_name`'s egress (idempotent; no-op before `enable`). */
 void arm(GstElement* tee, const std::string& tee_name);
@@ -44,8 +43,8 @@ gint64 bytes_total(GstElement* el);
 /** True for the element's bus message names (`mrtsstamp-*`). */
 bool is_stamper_message(const char* structure_name);
 
-/** Translate one element bus message into the engine event + log line the
- *  python probe emits for the same moment. */
+/** One element bus message as the python runner reports it: the identity log line, or the
+ *  segment / map warning. */
 void handle_message(const char* src_name, const char* kind, const GstStructure* s);
 
 }  // namespace mr::stamper

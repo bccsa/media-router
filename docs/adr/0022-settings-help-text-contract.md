@@ -27,7 +27,8 @@ so no new `x-` extension was needed.
 
 - `packages/manager/src/plugins/manifestHelpText.test.ts` enforces the caps and
   that settings shared across plugins (`playoutOffsetMs`, `pcmBitDepth`,
-  `mixLatencyMs`) carry identical wording.
+  `mixLatencyMs`) carry identical wording. Amended by [[0029]] (Phase 2):
+  `mixLatencyMs` is deleted from every manifest and from the shared keys.
 - Long-form tuning knowledge lives in git history and, where it is an operating
   rule, in the plugin's README — not in the manifest.
 - Two tooltip idioms exist: `MrTooltip` (CSS hover, for chrome that never

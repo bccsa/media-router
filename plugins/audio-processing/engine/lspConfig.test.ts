@@ -72,8 +72,8 @@ describe('isLadspaDynMode', () => {
     });
 
     it('is false for the modes that build no LSP element', () => {
-        // `none` builds no stage; the ducker runs on the native level→volume
-        // loop, so neither has an element to resolve or meters to poll.
+        // `none` builds no stage; the ducker is the native mrducker element,
+        // so neither has an LSP element to resolve or meters to poll.
         expect(isLadspaDynMode('none')).toBe(false);
         expect(isLadspaDynMode('ducker')).toBe(false);
         expect(isLadspaDynMode(undefined)).toBe(false);
@@ -112,16 +112,15 @@ describe('DEFAULTS mirrors the manifest configSchema', () => {
     });
 
     it('covers every live-tunable schema key that reaches an element', () => {
-        // Structural keys (mode, the per-stage enables, mixLatencyMs, the
-        // 302M word length) are read directly off config with their own
-        // fallbacks and are not mirrored.
+        // Structural keys (mode, the per-stage enables, the 302M word length)
+        // are read directly off config with their own fallbacks and are not
+        // mirrored.
         const structural = new Set([
             'mode',
             'hpfEnabled',
             'agcEnabled',
             'eqEnabled',
             'limiterEnabled',
-            'mixLatencyMs',
             'pcmBitDepth',
         ]);
         const missing = Object.keys(schema).filter(

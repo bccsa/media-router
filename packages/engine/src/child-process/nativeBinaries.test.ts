@@ -109,11 +109,11 @@ describe('nativeBinaries resolution', () => {
 
     it('pluginPythonPaths lists existing py dirs, sorted by plugin name', () => {
         addScript(root, 'rist-core', 'librist.py');
-        addScript(root, 'unixfdbus-core', 'unixfd-fanout.py');
+        addScript(root, 'aes67-core', 'mr-sap.py');
         mkdirSync(join(root, 'no-py-plugin'), { recursive: true });
         expect(pluginPythonPaths()).toEqual([
+            join(root, 'aes67-core', 'py'),
             join(root, 'rist-core', 'py'),
-            join(root, 'unixfdbus-core', 'py'),
         ]);
     });
 });

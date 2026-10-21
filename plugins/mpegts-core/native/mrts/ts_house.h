@@ -1,8 +1,11 @@
 // The house-clock timescales (design §4.3, §4.4): 90 kHz PTS, 27 MHz PCR and
-// ns, the 33-bit wrap, the mux's 1 h base and the bus <-> network boundary.
-// Floor arithmetic throughout, as python's `//` in py/ts_timeline.py.
+// ns, the 33-bit wrap, the mux's 1 h base, the bus <-> network boundary and
+// the identity stamp. Floor arithmetic throughout, as python's `//` in
+// py/ts_timeline.py.
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <map>
 
 namespace mrts {
 
@@ -61,5 +64,31 @@ int64_t bus_to_net(int64_t pts33, const NetEpoch& e); // + E - 1 h mod 2^33
 int64_t net_to_bus(int64_t pts33, const NetEpoch& e); // - E + 1 h mod 2^33
 // H(emission) - D_e mod PCR_MODULO; H on the network timescale (MONO + E).
 int64_t net_pcr27(int64_t h_emission_ns, int64_t d_e_ns);
+
+// The identity stamp of a bus buffer (P3, plan ch. 6 part 4.1): the house time
+// its first timing PES carries, `PES - 1 h`. All state is per `stream`, as
+// mr-tssplit's outputs (stream = PID) each carry their own PCR carrier.
+class IdentityStamp {
+  public:
+    // Timing PES: a video/audio stream_id, or on the stream's first PCR carrier.
+    // PES, none timing: `house_now`; no PES: the last stamp (`house_now` first).
+    // Monotone per stream, never below 0 (to libmrbus a negative stamp is "now").
+    int64_t stamp(const uint8_t* data, size_t len, int64_t house_now, int stream = 0);
+    // `stream`'s first timing PES: pid, identity stamp (before the floor), PTS.
+    // For the one-time log line; any out-pointer may be null.
+    bool first(int stream, int* pid, int64_t* stamp_ns, int64_t* pts) const;
+    void reset();                         // forgets every stream
+
+  private:
+    struct Stream {
+        int timing_pid = -1;
+        bool stamped = false;             // `floor` is the last stamp
+        int64_t floor = 0;
+        bool has_first = false;
+        int first_pid = 0;
+        int64_t first_stamp = 0, first_pts = 0;
+    };
+    std::map<int, Stream> streams_;
+};
 
 }  // namespace mrts

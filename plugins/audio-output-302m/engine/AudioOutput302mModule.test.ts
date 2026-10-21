@@ -69,11 +69,15 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         const { module } = makeModule({ sources: 2 });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', volume: 80 });
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true');
+        // The aligned mixer: every input through its watchdog, no force-live.
+        expect(desc!.pipeline).toContain(
+            'audiomixer name=mixin latency=0 start-time-selection=first ! capsfilter name=mixin_out',
+        );
         expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
-        // The mixer carries its own clock pacer — without it a force-live
-        // mixer whose inputs have all gone EOS generates silence at CPU speed.
-        expect(desc!.pipeline).toContain('identity name=mixin_out sync=true');
+        expect(
+            desc!.pipeline.match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
+        ).toHaveLength(2);
+        expect(desc!.pipeline).not.toContain('force-live');
         expect(desc!.pipeline).toContain('volume name=vol volume=0.80');
         expect(desc!.pipeline).toContain('level post-messages=true');
         expect(desc!.pipeline).toContain(
@@ -92,19 +96,27 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('volume name=vol volume=0.00');
     });
 
-    it('a single source plays direct — no mixer, no mix latency', () => {
+    it('a single source plays direct — no mixer, no watchdog', () => {
         const { module } = makeModule({ sources: 1 });
-        const desc = module.buildPipeline({
-            device: 'alsa_output.usb-foo',
-            mixLatencyMs: 400,
-        });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.pipeline).not.toContain('audiomixer');
-        expect(desc!.pipeline).not.toContain('latency=400000000');
+        expect(desc!.pipeline).not.toContain('mralignwatch');
         expect(desc!.pipeline).toContain('capsfilter name=mixin_out');
-        expect(desc!.pipeline).toContain('mixin_out. ! audioconvert ! audioresample');
+        expect(desc!.pipeline).toContain(
+            'mixin_out. ! identity name=live_upstream sync=true ! audioconvert ! audioresample',
+        );
         expect(desc!.pipeline).toContain(
             'pulsesink name=sink device=alsa_output.usb-foo sync=true',
         );
+    });
+
+    it('stops without the EOS drain in both arms (the mixer arm holds every EOS)', () => {
+        for (const sources of [1, 2]) {
+            const { module } = makeModule({ sources });
+            const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
+            expect(desc!.pipeline.includes('hold-on-eos=true')).toBe(sources > 1);
+            expect(desc!.eosDrain).toBe(false);
+        }
     });
 
     it('consumes the per-connection unixfd edge sockets', () => {
@@ -237,9 +249,12 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
             sink: 'sink',
             keyframeAligned: false,
         });
-        // …and the branch anchored to the producer's stamps, like the muxer's inputs.
-        expect(desc!.pipeline).toContain('tsdemux name=mixin_demux0 latency=0');
-        expect(desc!.alignBranchesToStamps).toEqual({ demuxes: ['mixin_demux0'] });
+        // …and the input on content time from the formula demux: nothing to align to stamps.
+        expect(desc!.pipeline).toContain(
+            'mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m',
+        );
+        expect(desc!.pipeline).not.toMatch(/\btsdemux\b/);
+        expect(desc!.alignBranchesToStamps).toBeUndefined();
     });
 
     it('the route head override replaces the engine default — resolved for THIS consumer', () => {
@@ -278,22 +293,32 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 0);
     });
 
-    it('the mixer arm subtracts its declared aggregation latency, so both arms play at stamp + D', () => {
-        const { module } = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } });
-        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo', mixLatencyMs: 100 });
-        // audiomixer latency=100 ms is pipeline latency a sync=true sink adds
-        // to every render time; the offset gives it back (300 − 100 mixer − 100 ring).
-        expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true latency=100000000');
-        expect(desc!.pipeline).toContain('identity name=mixin_out sync=true');
-        expect(desc!.pipeline).toContain('ts-offset=100000000');
+    it('both arms play at stamp + D: one offset, and the sink sees a live upstream in each', () => {
+        const one = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } }).module;
+        const two = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } }).module;
+        const tail =
+            ' ! identity name=live_upstream sync=true ! audioconvert ! audioresample' +
+            ' ! volume name=vol volume=1.00';
+        for (const m of [one, two]) {
+            const p: string = m.buildPipeline({ device: 'alsa_output.usb-foo' })!.pipeline;
+            // The identity answers LATENCY live, so the sink adds its ring in the
+            // non-live mixer arm too, and the same 300 − 100 ring offset holds.
+            expect(p).toContain(`mixin_out.${tail}`);
+            expect(p.match(/identity /g)).toHaveLength(1);
+            expect(p).toContain('ts-offset=200000000');
+        }
     });
 
-    it('mix latency defaults to 20 ms, in the manifest and the code fallback alike', () => {
+    it('mixLatencyMs is gone: not in the manifest, and a stored value changes nothing', () => {
         const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
-        expect(manifest.mediaRouter.configSchema.properties.mixLatencyMs.default).toBe(20);
+        expect(manifest.mediaRouter.configSchema.properties).not.toHaveProperty('mixLatencyMs');
         const { module } = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } });
-        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
-        expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true latency=20000000');
+        const plain = module.buildPipeline({ device: 'alsa_output.usb-foo' })!.pipeline;
+        const stored = module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+            mixLatencyMs: 400,
+        })!.pipeline;
+        expect(stored).toBe(plain);
     });
 
     it('re-pushes ts-offset live when the route D or the trim changes', async () => {
@@ -309,14 +334,16 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 250000000);
     });
 
-    it('a live push through the mixer arm keeps the latency subtraction the build applied', async () => {
+    it('a live push through the mixer arm gives the offset the single-source arm gets', async () => {
         const { module, setElementProperty } = makeModule({
             sources: 2,
             playout: { playoutOffsetMs: 300 },
         });
-        module.config = { device: 'alsa_output.usb-foo', mixLatencyMs: 100 };
+        module.config = { device: 'alsa_output.usb-foo' };
         module.buildPipeline(module.config);
         await module.onRoutePlayoutOffsetChanged();
-        expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 100000000);
+        expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 200000000);
+        await module.onLiveConfigUpdate({ lipSyncMs: 50 });
+        expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 250000000);
     });
 });

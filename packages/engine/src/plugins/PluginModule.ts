@@ -1,4 +1,4 @@
-import type { PluginManifest, StreamType } from '@media-router/shared-types';
+import type { ModuleTimingSummary, PluginManifest, StreamType } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -191,16 +191,10 @@ export interface PluginModule {
      * nothing.
      */
     getBusStreamChannels?(portId: string): number | undefined;
-    /**
-     * Declare that this producer's delivery runs AHEAD of real time by design
-     * — a segmented or file-backed player that builds a lead (hls-player). The
-     * engine's latch-repair resolution (`effectiveLatchRepair`, ADR-0005 note
-     * 2026-09-05) turns the egress stamper's repair off for every producer
-     * downstream of one, at any depth, because for those the "delivery cadence
-     * is media cadence" assumption the repair rests on is false. Omit for a
-     * live source; the engine never names plugins itself (ADR-0007).
-     */
-    isDeliveryLeadProducer?(): boolean;
+    /** The lateness summary its `timing` section shows (§9.5; GstPluginBase). A consumer's
+     *  aligner input starts its pace at this producer's output lateness (`seedLatenessMs` in
+     *  `MediaRouter.getModuleBusSources`, WI-P2-13). */
+    getTimingSummary?(): ModuleTimingSummary | undefined;
     /**
      * Target of the tracked `bus_reinput` RPC that executes a live input swap.
      * Defaults to the gst child process; a native (non-GStreamer) sink
@@ -295,20 +289,6 @@ export interface PipelineDescription {
      */
     env?: Record<string, string>;
     /**
-     * Whether this pipeline's egress stampers may run the latch-repair window
-     * (ADR-0005 note 2026-09-05). Resolved by `GstPluginBase.applyTimeSync`
-     * from the graph via `effectiveLatchRepair` — ON unless a delivery-lead
-     * source (hls-player) sits anywhere upstream. Plugins do not set it
-     * themselves.
-     */
-    latchRepair?: boolean;
-    /**
-     * Egress PES already carry house time + 1 h, so the stamper stamps by identity. Every producer
-     * sets it except the Phase 2 set (mixers, audio-processing, splitter, HLS fan-out), which
-     * anchor until Phase 2 deletes the anchored stamper (house-clock plan ch. 5 part 4.1).
-     */
-    houseTimelineEgress?: boolean;
-    /**
      * udpsrc silence past this many ms errors the pipeline out (`udp_timeout`)
      * so the restart path re-joins the group — MULTICAST inputs only, where a
      * network blip can silently drop the IGMP membership. Unset/0 = silence is
@@ -335,10 +315,8 @@ export interface PipelineDescription {
      * running time back next to the source's own timeline and the egress is flat.
      *
      * WHY THE CONTRACT STILL HOLDS. The producer stamp is base-time INDEPENDENT
-     * by construction: the anchored backends read house time as
-     * `clock − base_time`, the identity ones map a stamp to running time
-     * `stamp − base_time` (`gst_stamp_probe.house_now`,
-     * `gst_mrtsstamp_clock_now`), and `unixfdsink` transmits
+     * by construction: the identity stamp maps to running time
+     * `stamp − base_time` (`mrtsstamp`, `gst_mrtsstamp_clock_now`), and `unixfdsink` transmits
      * `segment_to_running_time(pts) + base_time`, so the base-time cancels and
      * the wire carries the same absolute house time either way. The clock half —
      * one fixed monotonic `GstSystemClock` per pipeline, shared by every process
@@ -484,19 +462,6 @@ export interface PipelineDescription {
      */
     backlogShed?: BacklogShedConfig;
     /**
-     * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
-     * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
-     * rebased ~0 per incarnation), so a transcoding pipeline's output mux
-     * stamps a fresh timeline every (re)start and downstream muxers anchor its
-     * A/V branches by arrival — restarts re-roll lipsync. When set, the runner
-     * latches the first PES PTS per PID on the demux sink pad and shifts each
-     * media src pad onto the source timeline via `GstPad.set_offset()`, so
-     * output PES PTS/PCR carry source values and every restart re-derives the
-     * SAME timeline. Scope: per-incarnation only — mid-stream source
-     * discontinuities and the 26.5 h 33-bit PTS wrap are not followed.
-     */
-    preserveSourceTimeline?: PreserveSourceTimelineConfig;
-    /**
      * Anchor a multi-branch pipeline's input branches to the PRODUCER'S STAMPS.
      *
      * WHY. Each named `tsdemux` works out its own zero point: it slaves the PES
@@ -519,16 +484,6 @@ export interface PipelineDescription {
      * is no longer the zero-point error this removes.
      */
     alignBranchesToStamps?: AlignBranchesToStampsConfig;
-    /**
-     * Runner-side stall watch on named bus sources — the `watchdog` element's
-     * contract (no buffer for `timeoutMs` → `kind: 'bus_stall'` error, errored
-     * teardown, restartOnError) asked once a second instead of per buffer, and
-     * never for an input that has yet to deliver its first buffer (reported
-     * once as a `warning`, `kind: 'input_silent'`). Build entries with
-     * `busStallWatch()`. Mechanism, measurements and rationale live in
-     * `gst_input_stall_watch.py`.
-     */
-    inputStallWatch?: InputStallWatch[];
     /**
      * Plugin-owned runner-side python (`plugins/<x>/py/<module>.py`, on the
      * runner's PYTHONPATH). For each entry the runner imports `module` and
@@ -557,20 +512,6 @@ export interface RunnerHook {
     config?: unknown;
 }
 
-/** One entry of `PipelineDescription.inputStallWatch`. */
-export interface InputStallWatch {
-    /** `name=` of the bus source element (its src pad is watched). */
-    element: string;
-    /** Silence tolerated before the pipeline fails with `bus_stall`. */
-    timeoutMs: number;
-}
-
-/** Config for `PipelineDescription.preserveSourceTimeline`. */
-export interface PreserveSourceTimelineConfig {
-    /** `name=` of the tsdemux whose branches must carry the source timeline. */
-    demux: string;
-}
-
 /** Config for `PipelineDescription.alignBranchesToStamps`. */
 export interface AlignBranchesToStampsConfig {
     /** `name=`s of the input-branch tsdemux elements to anchor. */
@@ -583,6 +524,13 @@ export interface AlignBranchesToStampsConfig {
      * legs stay on the one-offset path (unset).
      */
     transformProducer?: boolean;
+    /**
+     * With `transformProducer`: retime the cue pads too (tsdemux's `private_` and
+     * `subpicture_`: KLV, teletext, DVB subtitles), so a cue leaves the demux at
+     * K + its PES. Set by the mpegts-muxer only; a transcoder's subtitle pads keep
+     * tsdemux's times (unset).
+     */
+    privatePads?: boolean;
 }
 
 /** TS video-info probe config — see PipelineDescription.tsProbe. */

@@ -250,7 +250,6 @@ export class AudioInput302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
-            houseTimelineEgress: true,
             busReports: [...restampBusReports(), ...asrcBusReports()],
         };
     }

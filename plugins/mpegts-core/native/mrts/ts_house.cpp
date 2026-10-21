@@ -1,5 +1,10 @@
 #include "ts_house.h"
 
+#include "ts_packet.h"
+#include "ts_pcr.h"
+#include "ts_pes.h"
+#include "ts_timeline.h"                  // timing_pes, kept until Phase 3
+
 namespace mrts {
 namespace {
 
@@ -20,6 +25,14 @@ int64_t floor_mod(int64_t a, int64_t m) {
 int64_t scale_floor(int64_t v, int64_t num, int64_t den) {
     const int64_t q = floor_div(v, den);
     return q * num + (v - q * den) * num / den;
+}
+
+// PTS of the PES header that starts in `pkt`, or -1: read_pes_pts on a synced packet.
+int64_t pes_pts(const uint8_t* pkt) {
+    if (pkt[0] != SYNC_BYTE || !ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
+    const int off = payload_offset(pkt);
+    PesHeader h;
+    return off < PKT && parse_pes_header(pkt + off, PKT - off, &h) ? h.pts : -1;
 }
 
 }  // namespace
@@ -82,5 +95,47 @@ int64_t net_to_bus(int64_t pts33, const NetEpoch& e) {
 int64_t net_pcr27(int64_t h_emission_ns, int64_t d_e_ns) {
     return ns_to_pcr27(h_emission_ns - d_e_ns);
 }
+
+int64_t IdentityStamp::stamp(const uint8_t* data, size_t len, int64_t house_now, int stream) {
+    Stream& st = streams_[stream];
+    // The whole buffer first: a PCR after the PES still makes its PID timing.
+    for (size_t off = 0; st.timing_pid < 0 && off + PKT <= len; off += PKT)
+        if (data[off] == SYNC_BYTE && read_pcr(data + off) >= 0) st.timing_pid = ts_pid(data + off);
+    bool any_pes = false, timing = false;
+    int64_t s = 0;
+    for (size_t off = 0; off + PKT <= len; off += PKT) {
+        const uint8_t* pkt = data + off;
+        const int64_t pts = pes_pts(pkt);
+        if (pts < 0) continue;
+        any_pes = true;
+        const int pid = ts_pid(pkt);
+        if (!timing_pes(pkt, pid, st.timing_pid)) continue;
+        timing = true;
+        s = house_from_mux_pts(pts, house_now);
+        if (!st.has_first) {
+            st.has_first = true;
+            st.first_pid = pid;
+            st.first_stamp = s;
+            st.first_pts = pts;
+        }
+        break;
+    }
+    if (!timing) s = (any_pes || !st.stamped) ? house_now : st.floor;
+    if (s < st.floor) s = st.floor;
+    st.floor = s;
+    st.stamped = true;
+    return s;
+}
+
+bool IdentityStamp::first(int stream, int* pid, int64_t* stamp_ns, int64_t* pts) const {
+    const auto it = streams_.find(stream);
+    if (it == streams_.end() || !it->second.has_first) return false;
+    if (pid) *pid = it->second.first_pid;
+    if (stamp_ns) *stamp_ns = it->second.first_stamp;
+    if (pts) *pts = it->second.first_pts;
+    return true;
+}
+
+void IdentityStamp::reset() { streams_.clear(); }
 
 }  // namespace mrts

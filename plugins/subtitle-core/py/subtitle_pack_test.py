@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """`subtitle_pack`: the bridge's own TS for one cue, pinned against bytes gst
 1.28 mpegtsmux wrote (the oracle), round-tripped through `subtitle_ts`, and
-read back by the engine's house-timeline stamper.
+read back by the bus egress's identity stamp.
 Run: python3 subtitle_pack_test.py
 """
 import subtitle_klv as klv
 import subtitle_pack as sp
 import subtitle_ts as ts
 from subtitle_egress_trace import klv_pes_ticks
-from subtitle_testlib import check, use_mpegts_core
-
-use_mpegts_core()
-import ts_timeline  # noqa: E402 — plugins/mpegts-core/py
+from subtitle_testlib import IdentityStamp, check
 
 # Golden bytes written by gst 1.28 mpegtsmux for PID 0x180 (scratch mux_ref.py).
 MUX_PAT = "0000b00d0001c100000001e020a2c32941"
@@ -53,10 +50,10 @@ check("pack: multi-packet cue round-trips, CC continuous, last packet stuffed",
       and [p[3] & 0x0F for p in ts.iter_packets(c3) if ts.packet_pid(p) == 0x181] == [0, 1, 2]
       and ts.parse_pes_header(c3[376 + ts.payload_offset(c3[376:564]):])[3] == len(big_k))
 check("pack: wraps the 33-bit PTS", sp.pes_ticks(100_000_000) == (100_000_000 + 3_600_000) * 90 % (1 << 33))
-house_stamper, house_now = ts_timeline.TimelineStamper(house_timeline=True), 1_768_000_000_000_000
+house_stamper, house_now = IdentityStamp(), 1_768_000_000_000_000
 packer = sp.KlvTsPacker(0x180)
 stamps = [house_stamper.stamp(packer.cue_chunk(sp.pes_ticks(ms), klv.encode_cue(0, 3000, "x")), house_now) // 1_000_000
           for ms in (1_767_999_000, 1_767_999_000, 1_768_001_600)]
-check("pack: the engine's house-timeline stamper reads back each cue's start (PES - 1 h, wrapped)",
+check("pack: the egress's identity stamp reads back each cue's start (PES - 1 h, wrapped)",
       stamps == [1_767_999_000, 1_767_999_000, 1_768_001_600])
 print("all subtitle_pack tests passed")

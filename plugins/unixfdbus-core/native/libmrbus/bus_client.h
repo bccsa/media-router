@@ -27,8 +27,13 @@ namespace mrbus {
 class BusClient {
   public:
     using OnBuffer = std::function<void(const uint8_t* data, size_t len)>;
+    // The same, with the buffer's wire PTS (absolute CLOCK_MONOTONIC ns, -1 =
+    // none) and its GstBufferFlags (busproto.h).
+    using OnBufferEx =
+        std::function<void(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags)>;
 
     BusClient(std::string path, OnBuffer on_buffer, int64_t stall_ns);
+    BusClient(std::string path, OnBufferEx on_buffer, int64_t stall_ns);
     ~BusClient();
 
     // Re-point at a new edge socket (make-before-break is the OWNER's job:
@@ -59,7 +64,7 @@ class BusClient {
     bool flush_out();                // false = connection lost
 
     std::string path_;
-    OnBuffer on_buffer_;
+    OnBufferEx on_buffer_;
     int64_t stall_ns_;
     int sock_ = -1;
     int64_t next_connect_ns_ = 0;

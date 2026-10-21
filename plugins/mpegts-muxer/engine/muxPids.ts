@@ -107,12 +107,11 @@ export interface MuxRoute {
      *  on LEGACY ports only; a generic input leaves it out and the hook
      *  derives it from the input's `pid` (see `MuxRoutingInput.pid`). */
     padName?: string;
-    /** parse_launch fragment between the hook-injected parser and the mux. */
+    /** parse_launch fragment between the hook-injected parser and the mux: the
+     *  route's `mralignwatch`, then any `taginject`. */
     branch: string;
     /** `'none'` skips the video parser and declares alignment=au instead. */
     parser?: 'auto' | 'none';
-    /** One buffer per cue: the hook restamps to the mux position and sends GAPs while idle. */
-    sparse?: boolean;
 }
 
 /** One input of the `mux_routing` hook config — see py/mux_routing.py. */

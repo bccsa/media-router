@@ -164,7 +164,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
 | A multi-port plugin with variable port count | `ts-splitter` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
 | A bus-native N→1 audio processing plugin (302M in/out, per-connection channel maps) | `audio-mixer` | `buildAudioMixInput` fan-in + `build302mEncodeBranch`, `probe302mSupport()` gating, shared `applyVolumeLiveUpdate` fader, `ThroughputPoller` badge |
-| A DSP chain plugin (LADSPA stages, live parameter control, a sidechain input) | `audio-processing` | Optional stages assembled into one chain, `findLadspaElement` per enabled stage, live writes guarded by which stages actually exist, native `level`→`volume` control loop for ducking |
+| A DSP chain plugin (LADSPA stages, live parameter control, a sidechain input) | `audio-processing` | Optional stages assembled into one chain, `findLadspaElement` per enabled stage, live writes guarded by which stages actually exist, ducking in the plugin's own native element (`native/mrducker`) on content time |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
 
 The Quick Start example above is a minimal skeleton — for anything non-trivial, copying a real plugin will save more time than reading docs.
@@ -777,10 +777,11 @@ section (SRT listener mode fills `stats` for that).
 
 The engine adds two dynamic sections of its own to every module:
 `timing` and one `timing-in-<n>` per input (lateness and added latency in
-ms, house-clock design §9.5 — "Lateness on every module" below). They are
-merged into `getState()` beside yours, so `setDynamicSections()` never
-clears them; dashboards bind to them like any other section. Do not reuse
-the ids.
+ms, house-clock design §9.5 — "Lateness on every module" below; on a module
+with aligners also the pace, what it waits for, and each input's state,
+silence limit, absences and discarded time). They are merged into
+`getState()` beside yours, so `setDynamicSections()` never clears them;
+dashboards bind to them like any other section. Do not reuse the ids.
 
 ---
 
@@ -834,9 +835,8 @@ interface PipelineDescription {
      * `mr-gst-runner`, `'python'` pins `gst-pipeline-runner.py`. Unset, every
      * ELIGIBLE description runs native by default and the rest stay on
      * python, silently (`MR_GST_RUNNER_NATIVE=0` rolls a whole engine back). Not
-     * eligible: a description naming `rist`, `preserveSourceTimeline`,
-     * `readKlvNames`, `useStdioForData`, the legacy net `clock` without the
-     * contract, or a runner hook with no native form (ADR-0020). Ask
+     * eligible: a description naming `rist`, `readKlvNames`,
+     * `useStdioForData`, or a runner hook with no native form (ADR-0020). Ask
      * `nativeRunnerIneligibility()` (`child-process/nativeRunner.ts`) before
      * pinning `'native'`; a pinned request that cannot be honoured is logged.
      */
@@ -900,36 +900,15 @@ interface PipelineDescription {
      * stream or display resolution).
      */
     renderWatch?: RenderWatchRunnerConfig;
-    /**
-     * Carry the SOURCE PES timeline through the named tsdemux. tsdemux erases
-     * the source timeline (buffer PTS rebased ~0 per incarnation), so a
-     * transcoding pipeline's output mux stamps a fresh timeline every
-     * (re)start and downstream muxers anchor its A/V branches by ARRIVAL —
-     * restarts re-roll lipsync. With this set, the runner latches the first
-     * PES PTS per PID on the demux sink pad and shifts each media src pad
-     * onto the source timeline (`GstPad.set_offset`), so output PES PTS/PCR
-     * carry source values and restarts re-derive the SAME timeline. Used by
-     * `transcoder` and `audio-transcoder` (default on, per-module toggle).
-     * Per-incarnation only: mid-stream source discontinuities and the 26.5 h
-     * 33-bit PTS wrap are not followed.
-     */
-    preserveSourceTimeline?: { demux: string };
-    /**
-     * Runner-side dark-input detection on NAMED bus sources — the `watchdog`
-     * element's contract (no buffer for `timeoutMs` → error `kind: 'bus_stall'`,
-     * `element: 'buswd_<name>'`, errored teardown, restartOnError) without its
-     * per-buffer cost. The element re-creates a GLib timeout source on every
-     * buffer on its own thread (~900 wakeups/s per video input at 1316-byte
-     * bus chunks, measured on the mpegts-muxer 2026-09-02); the runner instead
-     * arms a one-shot probe on the source's src pad and checks it once a
-     * second. Build entries with `busStallWatch(name, timeoutMs)`; the source
-     * is `buildBusSrc({ name })`. Armed on the first PLAYING transition. Used
-     * by `mpegts-muxer`; `video-player` still uses `buildBusSrc({
-     * stallTimeoutMs })` (the element) until measured on its own.
-     */
-    inputStallWatch?: InputStallWatch[];
 }
 ```
+
+The listing is a selection; `PluginModule.ts` has every field. House-clock
+Phase 2 deleted `preserveSourceTimeline` (identity egress keeps a source's
+time on the bus by construction) and `inputStallWatch` (an aggregator input
+that goes dark is gapped by its `mralignwatch` and rejoins; see "Aligners"
+below). `buildBusSrc({ stallTimeoutMs })`, the `watchdog` element a
+video-player uses, stays.
 
 Return `null` to run the module without a GStreamer pipeline (idle state). The module's null-sink stays active but no audio processing runs. Useful for decoders waiting for an encoder connection.
 
@@ -1147,44 +1126,44 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
 }
 ```
 
-- `ignorePcr` (option of `buildAudioMixInput` and `MixInputBranchOpts`, default **true**):
-  every branch `tsdemux` runs `ignore-pcr=true`, so running time follows the PTS and the
-  pacer hold is at most the latency budget (mpegtsmux writes PES PTS ~250 ms ahead of the
-  PCR; on PCR timing a `sync=true` element downstream holds that lead). A presentation
-  module that stamp-aligns its branches (`alignBranchesToStamps`, e.g. audio-output-302m)
-  MUST pass `ignorePcr: false` and keep PCR timing. ADR-0008 amendment 2026-10-05.
-- `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs?, liveInputs?, ignorePcr? })` —
-  N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
-  a dark input silence-fills instead of stalling the mix), or a direct branch with no
-  aggregator at all when there is exactly one source. Returns
-  `{ fragment, continuationName, mixerLatencyNs?, demuxes }`; continue the chain from
-  `${continuationName}. ! …` — that element is a `capsfilter`, an `identity` or a mixer
-  depending on the arm, so never hard-code the name. `mixerLatencyNs` is the mixer arm's
-  clamped aggregation latency (absent in the single-source arm): it is pipeline latency a
-  `sync=true` sink adds to every render time, so a PRESENTATION module scheduling against
-  the route's playout offset subtracts it from its `ts-offset` (see `audio-output-302m`);
-  producers ending in an unsynced bus tee ignore it. `demuxes` names every input
-  branch's `tsdemux` in source order (empty with no sources): a PRESENTATION
-  module passes it straight to `PipelineDescription.alignBranchesToStamps`, which
-  anchors each branch's running time to the producer's house stamps. Without it a
-  `tsdemux` keeps the zero-point error of the one bus buffer it locked on for the
-  pipeline's whole life (−73…−125 ms measured on the fleet, re-rolled on every
-  restart) and a `sync=true` sink presents that error as lipsync — see
-  [ADR-0005](../docs/adr/0005-time-sync-backend.md) Stage 3c. Feed it `getModuleBusSources(id)` entries filtered by your input
-  port. PTS-preserving by contract — never add `pulsesrc`, `do-timestamp`, or
-  `tsparse set-timestamps` around it.
-  `mixerName` is a name PREFIX for the fan-in's elements, not the name of an
-  `audiomixer` — the continuation point is always `<mixerName>_out`, and in the
-  single-source arm there is no mixer for it to name, only the terminal capsfilter.
-  Give it a distinct value per input pin when a module builds more than one fan-in.
-- `pacedMixer({ name, latencyNs, caps, pacerName, capsName? })` — the
-  `audiomixer force-live=true ! <caps> ! identity sync=true` shape every 302M aggregation
-  point uses. The trailing `identity` is load-bearing, not style: a force-live aggregator
-  keeps emitting silence after every sink pad has gone EOS, and with no synced element
-  downstream it free-runs at CPU speed (11.64 s CPU / 10 s wall on a fleet box, vs 0.07 s
-  paced). Build every new mixer through this rather than assembling the string by hand.
-  All three fan-in rules — pacing, chaining only from `continuationName`, and the
-  single-source bypass — are locked in [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md).
+- `buildAudioMixInput({ sources, channels?, mixerName?, branchQueueMs?, liveInputs? })` —
+  N × 302M inputs into one aligned `audiomixer`, or a direct branch with no aggregator
+  when there is exactly one source (not in live-input mode; ADR-0008's bypass). Every
+  branch decodes on content time: `mrtsdemux select=audio/x-smpte-302m` is the formula
+  demux (running time = PES PTS − 1 h), so no branch is aligned to the bus stamps and
+  there is nothing to pass to `alignBranchesToStamps`. In the mixer arm each branch ends
+  in its `mralignwatch` (`aligner=<mixerName>`, `input` = the connection id,
+  `hold-on-eos=true`, `seed-lateness` from the source's `seedLatenessMs` when the router
+  gives one), so the mixer waits for data or a gap on every pad, goes on without an input
+  silent past its limit W (that input is gapped), and drops nothing that comes late. Returns
+  `{ fragment, continuationName }`; continue the chain from `${continuationName}. ! …`, the
+  terminal capsfilter `<mixerName>_out` in every arm. Feed it `getModuleBusSources(id)`
+  entries filtered by your input port. PTS-preserving by contract — never add
+  `pulsesrc`, `do-timestamp`, or `tsparse set-timestamps` around it. `mixerName` is a
+  name PREFIX for the fan-in's elements (the mixer arm also names the `audiomixer`
+  `<mixerName>`); give it a distinct value per input pin when a module builds more than
+  one fan-in. `branchQueueMs` sizes the single-source arm's queue only. The mixer arm is
+  non-live, so a `sync=true` sink after it adds no ring latency of its own: a
+  presentation leg that cancels its sink's ring in `ts-offset` puts `identity
+  sync=true` after the continuation (audio-output-302m). Every module built on it
+  returns `eosDrain: false`: the aligners hold each input's EOS, so the drain would wait
+  out its 6 s timeout.
+- `alignedMixer({ name, caps, outName })` — `audiomixer name=<name> latency=0
+  start-time-selection=first ! capsfilter name=<outName> caps=…`, every 302M
+  aggregation point (the fan-ins and n1-mixer-302m's output mixers). Non-live, so it
+  never times out and nothing free-runs after EOS; `start-time-selection=first`, because
+  under `base_time=0` the default `zero` would emit the box's uptime as silence first.
+  Feed every pad through `mralignwatch`: one live pad turns the aggregator live, and it
+  then drops what comes late (see "Aligners" below). The fan-in rules that stand —
+  chaining only from `continuationName`, and the single-source bypass — are locked in
+  [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md), whose force-live pacing ADR-0029
+  (Phase 2) superseded.
+- `build302mMixBranch(source, { channels?, mixerName, demuxName })`,
+  `liveMixInputBranch(mixerName, source, opts?)`, `liveInputBranchFor(mixerName,
+  connectionId, source?, opts?)` — one source's branch into a mixer you build yourself,
+  ending in its `mralignwatch` (the unlinked src pad a live add ghosts), and the
+  `getLiveInputBranch` answer for an edge; `mixInputBranchName` and `liveDemuxName` give
+  the bin and demux names a later live remove finds.
 - `build302mEncodeBranch({ format?, channels?, asrc?, restamp? })` — PCM → 302M-in-TS encode tail
   (`S32LE`/48 kHz, `avenc_s302m strict=experimental` — ffmpeg gates the encoder; the
   bitstream is standard). A PCM capture passes `asrc: true` (`mrasrc` in place of
@@ -1235,7 +1214,8 @@ real-time capture paths (pulsesrc trickle) tolerate small leaky queues. Real exa
 [`audio-output-302m`](audio-output-302m/engine/AudioOutput302mModule.ts),
 [`audio-input-302m`](audio-input-302m/engine/AudioInput302mModule.ts),
 [`n1-mixer-302m`](n1-mixer-302m/engine/n1Mixer302mPipeline.ts) (N-1 mix-minus matrix
-built from these helpers — decode each input once, `tee`, one output mixer per pair).
+built from these helpers — decode each input once, `tee`, one aligned output mixer per
+pair, each matrix link through its own `mralignwatch`).
 
 #### `static registerServices(services)` — Contribute engine-wide services
 
@@ -1434,9 +1414,14 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   renders every start-time branch as `( name=<bin> … ) ! <mixer>.sink_<i>`
   through the same `liveMixInputBranch`, and always builds the mixer arm
   (the lone-source bypass of ADR-0008 rule 3 is given up: a hot add needs
-  the aggregator to exist — so a lone input pays `mixLatencyMs` (the hop costs at
-  most the budget — ADR-0008 amendment 2026-10-05) plus the
-  pacer start-up, the cost that bypass avoided).
+  the aggregator to exist — so a lone input pays the aligned mixer's
+  output block, about 10 ms, the cost that bypass avoided).
+- A branch ends in its `mralignwatch`: an edge added to a RUNNING mixer is
+  gapped at the mixer's pace from its first tick while it starts, so the
+  mix never waits for it, and joins at the current position (its content
+  from before that is discarded as stale; a seed avoids the loss when the
+  joiner is later than the pace). Without the watchdog a live pad would
+  turn the non-live mixer live.
 - `description` is the branch text ending in the element whose src pad
   links to the aggregator; it is absent on a remove (the connection record
   is already gone — only `element` + `name` are needed).
@@ -1449,15 +1434,19 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   the classic restart, which is how the n1-mixer's FIRST source on an input
   (no `inmix<i>` yet) is handled without the hook having to know.
 - Pair it with `eosDrain: false` on the description: an audio-only bus
-  producer has no decoder to drain, and a force-live mix never completes
-  the drain (6 s stall, EOS to every consumer first).
+  producer has no decoder to drain, and its aligners hold every input's
+  EOS, so the drain would stall its full 6 s (EOS to every consumer first).
+- A live remove of a branch built at START works too: both runners find a
+  bin's src pad whatever its name (a start-time bin's ghost pad is
+  `ghost<N>`, not `src`) and release the aggregator's request pad, which a
+  non-live mixer would otherwise wait on for ever.
 - **A dead producer costs its own input, not the mix.** GstPluginBase fills
   `desc.liveInputBranches` (the bin names) from the hook, and the runner
   contains an error inside any of them — a producer idled or crashed under
   the branch's `unixfdsrc` — by dropping that branch and reporting
-  `input_branch_lost` instead of failing the pipeline (the aggregator
-  silence-fills; the module warns "Input from X lost — continuing without
-  it"). When that producer reaches PLAYING again, the BusFanoutCoordinator
+  `input_branch_lost` instead of failing the pipeline (the mixer goes on
+  without that input; the module warns "Input from X lost — continuing
+  without it"). When that producer reaches PLAYING again, the BusFanoutCoordinator
   re-links just that branch (`MpegTsBusExecutor.relinkLiveInput`: drop if
   still there, wait for the new edge socket, add, clear the warning) instead
   of ADR-0010 rule 4's whole-pipeline relaunch — so an upstream flap never
@@ -1563,7 +1552,7 @@ When the two disagree, the runtime `getLiveUpdatableParams()` result wins for be
 
 ### Playout Offset D (`playoutOffsetMs`)
 
-Under the engine-wide time-sync contract, producers stamp bus buffer PTS with house-clock media time and every **presentation sink schedules at `stamped-time + D`**, where D is the *playout offset* — a configured latency budget, not a best-effort. See ADR-0005 decision 4.
+Under the engine-wide time-sync contract, producers stamp bus buffer PTS with house-clock media time and every **presentation sink schedules at `stamped-time + D`**, where D is the *playout offset* — a configured latency budget, not a best-effort. See ADR-0005 decision 4, which ADR-0029 (Phase 2) supersedes: outputs will play as soon as they can, and this mechanism stays until house-clock Phase 4 removes it.
 
 Two knobs, and neither of them lives on the sink:
 
@@ -1977,7 +1966,7 @@ await sink.end(); // flush whole packets at media rate, then close
 
 Use the `port` from `assignBusChannel` / `getBusChannel` — never hardcode socket paths. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
 
-**The unixfd fan-out** stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). Two interchangeable implementations exist, both shipped by the `unixfdbus-core` library plugin — the native `mr-bus-fanout` (`unixfdbus-core/native/`, preferred) and the pure-stdlib `unixfd-fanout.py` (`unixfdbus-core/py/`, used when the binary is absent). They share a CLI, control verbs and events, and the conformance suite runs both against the same protocol clients, so `resolveNativeBinary('mr-bus-fanout', '<your-plugin-id>')` picking either is invisible to the module. The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
+**The unixfd fan-out** stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). It is the native `mr-bus-fanout`, shipped by the `unixfdbus-core` library plugin (`unixfdbus-core/native/`); the python fan-out it replaced is deleted (house-clock Phase 2), so resolve the binary with `resolveNativeBinary('mr-bus-fanout', '<your-plugin-id>')` and report a module error when it is missing. It also puts the stream on house time: it rebases the TS onto house time at the first timing PES (playout start, media offset 0), re-anchors only on a source jump of more than 1 s, and stamps each buffer by identity (ADR-0029, Phase 2), so the module passes nothing but the ingest socket and the caps. The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
 
 ```typescript
 getBusAttachTarget(): BusAttachTarget | null {
@@ -1985,14 +1974,15 @@ getBusAttachTarget(): BusAttachTarget | null {
 }
 
 // onStart: spawn the sidecar and bridge its stdio to the controller
+const fanout = resolveNativeBinary('mr-bus-fanout', 'hls-player'); // null: setHealth('error', …)
 this.fanoutController = new UnixFdFanoutController(
     () => this.fanout,
     () => this.services?.mediaRouter?.onProducerPlaying(this.services.instanceId), // reattach on every sidecar ready
 );
 this.fanout = this.spawnRunnerProcess({
-    label: 'unixfd-fanout',
-    command: 'python3',
-    args: [script, '--ingest', busIngestSocketPath(port), '--caps', TS_CAPS],
+    label: 'mr-bus-fanout',
+    command: fanout,
+    args: ['--ingest', busIngestSocketPath(port), '--caps', BUS_TS_CAPS],
     autoRestart: true,
     stdin: true, // controller sends bus_attach/bus_detach as JSON lines
     onStdout: (line) => this.fanoutController?.handleLine(line),
@@ -2017,15 +2007,19 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 }
 ```
 
-### The time-sync contract (producer-stamped bus timing)
+### The time-sync contract (identity-stamped bus timing)
 
 Everything on the bus rides the engine-wide time-sync contract: every process
 shares one monotonic house clock, pipelines pin `base_time=0` so running-time
-≡ house-clock time, and **producers — not consumers — stamp bus buffer
-PTS/DTS with house-clock media time**. Every consumer therefore inherits
-identical timing by construction, and presentation sinks schedule at
-`stamped-time + D` (see "Playout Offset D (`playoutOffsetMs`)" above). Full
-design and the rejected alternatives:
+≡ house-clock time, and **a stream's PES carry house time + 1 h from where it
+entered the engine**: written once by an ingest's or a capture's restamp
+("Ingest timing" below), or by a transform producer's own mux running on
+house-stamped input. Every bus egress then stamps each buffer by identity,
+wire PTS = `PES − 1 h`, so every consumer inherits identical timing by
+construction. Presentation sinks still schedule at `stamped-time + D` (see
+"Playout Offset D (`playoutOffsetMs`)" above) until house-clock Phase 4. Full
+design: [`docs/adr/0029`](../docs/adr/0029-house-clock-timing.md) and the
+house-clock design it records; the history:
 [`docs/adr/0005`](../docs/adr/0005-time-sync-backend.md).
 
 **Always on; no switch.** Both runners put every pipeline on the house clock
@@ -2035,37 +2029,43 @@ every consumer downstream of it.
 
 **What a gst producer gets for free.** If your `buildPipeline` ends in
 `buildBusSink(...)`, stamping needs zero plugin work: the runner splices the
-native `mrtsstamp` element (`mpegts-core/native/mrtsstamp`, wrapping the same
-`TimelineStamper` the sidecars run) at the head of each `busout_*` egress —
-directly on the producer's src, ahead of the `capssetter ! capsfilter` pair,
-where it also coalesces the mux's per-AU buffer lists (ADR-0011) — falling
-back to a python pad probe — same arithmetic, a logged warning — on a box
-where the `.so` isn't built. Arming is **lazy**: an egress starts stamping on
-its first consumer edge and stops on its last, so an enabled-but-unrouted
-output costs nothing (and while debugging, expect no stamper activity until a
-consumer attaches; a re-attach after a full detach anchors afresh). Rules for
-plugin authors:
+native `mrtsstamp` element (`mpegts-core/native/mrtsstamp`, on
+`mrts::IdentityStamp`) at the head of each `busout_*` egress — directly on the
+producer's src, ahead of the `capssetter ! capsfilter` pair, where it also
+coalesces the mux's per-AU buffer lists (ADR-0011). A buffer is stamped
+`PES − 1 h` of its first timing PES (video or audio, or any PES on the
+stream's first PCR carrier), base-aware; a buffer of private PES alone is
+stamped at arrival, a PES-less one repeats the last stamp, and stamps never
+fall. Gap markers pass with their PTS and flags and no DTS. There is no
+description field and no fallback: on a box without `libgstmrtsstamp.so` the
+egress runs unstamped and the module carries the "Native TS module not
+loaded" alarm, in both runners, which load the plugin only for a pipeline
+with a `busout_*` tee. Arming is **lazy**: an egress starts stamping on its
+first consumer edge and stops on its last, so an enabled-but-unrouted output
+costs nothing (and while debugging, expect no stamper activity until a
+consumer attaches; each arm logs one identity line). Rules for plugin
+authors:
 
 - **Don't re-stamp.** No `tsparse set-timestamps=true`, no
   `do-timestamp=true`, no arrival-based re-timing between your mux and the
   bus sink — the contract's whole point is that the producer's stamp survives
   to the consumer (a regression test pins that it survives `tsdemux`). The
-  one sanctioned rewrite is the engine's own `mrtsrestamp` at an ingest or a
-  capture, built by `buildRestamp` (see "Ingest timing" below).
-- `preserveSourceTimeline` is dropped from every description (the stamper's
-  in-place re-anchor replaces its error-out-and-relatch); it is deleted with
-  the stamper rework.
+  sanctioned rewrites are the engine's own `mrtsrestamp` at an ingest or a
+  capture, built by `buildRestamp` (see "Ingest timing" below), and
+  `mr-bus-fanout`'s rebase for a producer in Node.
+- **Your PES must already carry house time + 1 h** when they reach the bus
+  sink. A bus-fed producer whose mux runs on its house-stamped input
+  (transcoder, muxer, the mixers) gets that for free; anything that brings
+  content in restamps. Nothing downstream maps a PES on another timeline.
 
-**Sidecar/native producers stamp too (`--stamp-timeline`).** A module that
-publishes through its own child instead of a gst pipeline passes
-`--stamp-timeline`, always. `unixfd-fanout.py`, `mr-bus-fanout` and
-`mr-tssplit` implement it already, all through the one shared
-`TimelineStamper` (`mpegts-core/py/ts_timeline.py` ↔ `native/mrts/`, pinned
-against each other by the conformance suite). Pattern, from hls-player:
-
-```typescript
-args: [..., '--stamp-timeline'],
-```
+**Sidecar producers stamp by identity too.** A module that publishes through
+its own child instead of a gst pipeline gets the same stamp with no flag:
+`mr-tssplit` and `mr-bus-fanout` stamp every output buffer with
+`mrts::IdentityStamp` (`--stamp-timeline` is now an argv error). `mr-tssplit`
+passes PES and the program PCR through untouched, one identity stream per
+output PID, and forwards a gap marker alone on its PID's output with its PTS
+and flags. `mr-bus-fanout` first rebases a Node producer's TS onto house time
+("Producer pattern from Node" above).
 
 **Lateness on every module (`mrlateness` → the `timing` section).** Because
 every pipeline runs on the house clock with `base_time=0`, `now − PTS` on a
@@ -2083,16 +2083,21 @@ pipeline's base time plus the latency, because the stamper writes running
 time there, so that card shows no output lateness (ADR-0029 Phase 1). Each
 tap posts one `mrlateness` element message per 2 s window (count, untimed,
 min/mean/max/last ns); both runners forward it as the plugin event `mrlateness:<tap name>` with no `busReports` subscription,
-so dynamic inputs report too, and `GstPluginBase` consumes those events before
-`dispatchPluginEvent` reaches your module. What it publishes, every row with
-its label and unit and re-sent only when a value moves by ≥ 1 ms: a `timing`
-section (Output lateness mean and min–max; Added latency = output mean − the
-slowest input's mean; Slowest input, with two or more inputs; and for outputs
-Decode, Presentation delay, Device latency and Render lateness), one
-`timing-in-<n>` section per input (Lateness, Added), and a grey `lateness`
-face badge with the mean in ms. Display only: no threshold and no warning
-(OQ-8, deferred until the fleet has numbers). Three things a plugin author
-does:
+so dynamic inputs report too, and `GstPluginBase` consumes those events (and
+an aligner's `mralignwatch:<name>`, below) before `dispatchPluginEvent`
+reaches your module. What it publishes, every row with its label and unit
+and re-sent only when a value moves by ≥ 1 ms: a `timing` section (Output
+lateness mean and min–max; Added latency = output mean − the slowest input's
+mean; Slowest input, with two or more inputs; and for outputs Decode,
+Presentation delay, Device latency and Render lateness), one `timing-in-<n>`
+section per input (Lateness, Added), and a grey `lateness` face badge with
+the mean in ms. A module with aligners also shows Pace and Waiting for (which
+replaces Slowest input when shown) and, per input, State, Silence limit,
+Absences and Discarded on rejoin; audio-processing adds Processing latency
+(its LSP chain's reported lookahead, OQ-22). Lateness is display only: no
+threshold and no warning on it (OQ-8, deferred until the fleet has numbers);
+the aligners' `input-absent` and `aligner-full` warnings (below) are about an
+input, not lateness. Three things a plugin author does:
 
 - **Output modules** wrap their final sink in
   `withLatenessTap('lat_render' | 'lat_egress', sink)`
@@ -2118,8 +2123,9 @@ does:
 
 Reading the numbers: a network ingest reads negative, early by its source's
 PTS − PCR lead (its content lands source-natural, Phase 1); a capture reads
-its capture and encode latency; outputs are D-dominated until Phase 4 makes
-them D-free. A box without `libgstmrlateness.so` gets no
+its capture and encode latency; an aligner module reads its pace above its
+fastest input; outputs are D-dominated until Phase 4 makes them D-free. A
+box without `libgstmrlateness.so` gets no
 taps — the fragments omit the element, so nothing fails to parse — and the
 module's `timing` section reads `lateness instrument missing`. Pipeline-string
 tests pin the instrument present (`vitest.setup.ts`,
@@ -2134,28 +2140,6 @@ tests pin the instrument present (`vitest.setup.ts`,
 `liveUpdatableParams`; your producer never reads it — the engine resolves it
 for the consumer legs and fans a change out to them live. The consuming side
 is covered in "Playout Offset D (`playoutOffsetMs`)" above.
-
-**Latch repair (`latchRepair` / `--no-latch-repair`).** The stamper anchors on
-the first PES it sees; a live source's first PES after a (re)connect is the
-head of the sender's backlog, so for 3 s after any anchor the stamper pulls
-the anchor back onto the earliest-delivering buffer and reports what that
-cost as `timeline_settled { anchorNs, repairNs, windowNs }` (ADR-0005 note
-2026-09-05 — the GATE01 cross-feed lipsync). It rests on ONE assumption:
-delivery cadence = media cadence. That is a property of the SOURCE at the
-head of the chain, so the engine resolves it from the graph
-(`effectiveLatchRepair`, `packages/engine/src/plugins/latchRepair.ts`): ON
-unless a producer that declares `isDeliveryLeadProducer()` (hls-player) sits
-anywhere upstream. `GstPluginBase` puts the answer on the description (`latchRepair`)
-and the runner passes it to the stampers; a sidecar producer passes
-`--no-latch-repair` when it resolves false (mr-tssplit does — copy that). **If
-you write a producer whose delivery deliberately runs ahead of real time**
-(segmented, file-backed, pre-buffered), implement
-`isDeliveryLeadProducer(): boolean` returning true on your module (the engine
-names no plugin itself, ADR-0007) and leave the repair off in your own sidecar
-(`TimelineStamper(..., repair_latch=False)`, the default), or every later
-segment head will be stamped late by a segment. The native element exposes
-the same switch as `repair-latch` (read at arm). `MR_LATCH_REPAIR=0` turns
-latch repair and its wire conditioner off box-wide.
 
 **A consumer on a dark bus waits, it does not restart.** `unixfdsrc` is not a
 live source, so a consumer whose producer is connected but silent (interlocked
@@ -2179,21 +2163,16 @@ rebuild genuinely helps — mpegts-ip-input and aes67-input do for MULTICAST
 (60 s) to re-join a dropped group; leave it 0 for unicast. The runner side of
 all this is `gst_source_gate.py`.
 
-**House-timeline egress (`houseTimelineEgress`).** A producer whose PES
-already carry house time + 1 h sets `houseTimelineEgress: true`, and its
-egress stamps by identity (`PES − 1 h`, base-aware, gap markers passed
-through) instead of anchoring. That is every transform producer on bus-fed,
-house-stamped input (transcoder, audio-transcoder, mpegts-muxer,
-teletext-subtitles) and, since Phase 1, every ingest and capture that runs
-the restamp (below). Only the Phase 2 set still anchors: the mixers,
-audio-processing, the splitter and the HLS fan-out.
-
 **Transform-producer inputs (`alignBranchesToStamps.transformProducer`).**
 Set it with `alignBranchesToStamps` on a transform producer's input demuxes:
 instead of one pad offset per branch, every access unit leaving the demux is
 retimed to its producer's stamp mapping (PTS/DTS = K + its PES), across
-source rewinds, with the bus input held until the first exact reading.
-Presentation legs leave it unset.
+source rewinds, with the bus input held until the first exact reading. Under
+identity egress K is −1 h. `privatePads: true` also retimes tsdemux's
+`private_` and `subpicture_` pads (KLV, teletext, DVB subtitles) to their own
+PES; only the mpegts-muxer sets it, so a transcoder's subtitle pads keep
+tsdemux's times. Presentation legs leave both unset; Phase 3 replaces the
+retime with the formula demux.
 
 **Never drop on lateness (`BacklogShedConfig.onLateness`).**
 `backlogShedConfig()` sets `onLateness: "reanchor"` when
@@ -2206,20 +2185,24 @@ hold), `reanchorRetryMs` (30 000, re-ask gap unless the budget moved),
 before a rebase) and `rebaseCooldownMs` (60 000, at most one rebase per
 leg). Numbers live in `playoutReanchor.ts`; absent `onLateness` = shed.
 
-**Where stamper events come from (debugging).** Anchor / settled / re-anchor /
-segment-warning events and the periodic `timeline_drift` report (per armed
-egress, every 30 s) originate in the runner's stamping subsystem —
-`packages/engine/src/child-process/gst_bus_stamper.py` (lifecycle: lazy
-arming, drift timer) plus its `gst_stamp_probe.py` /
-`gst_stamp_native.py` / `gst_stamp_events.py` split; the sidecars publish the
-same `timeline` block in their 2 s stats line. If wire timing looks wrong,
-read those runner log lines before suspecting your own pipeline.
+**Where stamper lines come from (debugging).** Each armed egress logs two
+lines from the runner's stamping subsystem (`stamper.cpp` in the native
+runner; `gst_bus_stamper.py` with `gst_stamp_native.py` and
+`gst_stamp_events.py` in the python one), the same words in both:
+`busStamp: identity egress armed on <tee> (PES - 1 h, native mrtsstamp)`, then
+`busStamp <tee>: identity egress: first PES pid=0x<hex> stamp=<ns> pts=<90 kHz>`.
+A segment or a buffer that cannot be mapped raises a `warning` event once per
+armed egress. The sidecars put `lateness` in their 2 s stats line,
+and `mr-bus-fanout` its `rebase` block (the shift, re-anchors, kept PIDs,
+dropped packets). There are no anchor, settled, re-anchor, conditioned or
+drift events any more. If wire timing looks wrong, read those lines before
+suspecting your own pipeline.
 
 ### Ingest timing: house time written into the bytes (house-clock Phase 1)
 
 A producer that brings content into the engine writes house time into the
 TS it publishes, once, where the stream enters: its PES then carry
-`house + 1 h`, its egress stamps them by identity (`houseTimelineEgress`),
+`house + 1 h`, its egress stamps them by identity, as every egress does,
 and every consumer reads the same time from the bytes. The engine's
 `mrtsrestamp` element does the writing; a plugin only places it. Seven
 modules do (design §5, [`docs/adr/0029`](../docs/adr/0029-house-clock-timing.md)
@@ -2252,9 +2235,9 @@ exported from `@media-router/engine`; srt-input is the reference):
    capture uses `buildAsrc()` where it had `audioresample`
    (`build302mEncodeBranch({ asrc: true, restamp })` does both for 302M):
    one resample per path, which also converts the device's nominal rate.
-3. **Description.** Return `houseTimelineEgress: true` and add
-   `restampBusReports()` (and `asrcBusReports()` for an ASRC) to
-   `busReports`, so the element messages reach the module as plugin events
+3. **Description.** Add `restampBusReports()` (and `asrcBusReports()` for
+   an ASRC) to `busReports`, so the element messages reach the module as
+   plugin events
    `mrtsrestamp-stats:restamp`, `mrtsrestamp-pid:restamp`,
    `mrtsrestamp-event:restamp`, `mrasrc-stats:asrc`, `mrasrc-event:asrc`.
 4. **Card.** Feed those events to an `IngestTimingReporter` (mode `stc` or
@@ -2364,9 +2347,11 @@ never moves; an identity egress clears the DTS, so the bus carries none. A
 marker is pushed just before the PES that shows its gap, the rest of that
 input buffer around it in one buffer list; during an outage the element's
 own task pushes one at 1 s without packets and every 250 ms after. A reader
-keys on the GAP flag and the private data, never on a duration or a DTS. In
-Phase 1 no consumer reads them, and the sidecars (`mr-tssplit`,
-`mr-bus-fanout`) do not forward them yet.
+keys on the GAP flag and the private data, never on a duration or a DTS.
+Since Phase 2 `mr-tssplit` forwards each marker alone on its PID's output,
+with its PTS and flags, and `mrtsdemux` turns one into a GAP event over its
+hole, trimmed to what it already emitted; `mr-bus-fanout`'s raw-TS ingest
+carries no flags, so there is nothing for it to forward.
 
 **`mrasrc`** is the ASRC at a PCM capture: a `GstBaseTransform` that locks
 the input frame count to the buffer PTS (the capture time on the house
@@ -2391,6 +2376,82 @@ default): a dropped input buffer would read as an xrun. Messages:
 `plugins/mpegts-core/native/mrts/mrts_cli restamp-replay <trace.stct>`,
 which runs the same core and prints the element's message lines;
 `mrts_cli trace2jsonl` dumps the records.
+
+### Aligners: every input waited for, nothing dropped late (house-clock Phase 2)
+
+An aggregation point on the bus (an `audiomixer`, an `audiointerleave`, an
+`mpegtsmux`) waits for data or a gap on every input and never drops a late
+one (house-clock design §6 item 4, ADR-0029 Phase 2). The engine's piece is
+`mralignwatch`, in mpegts-core's `libgstmrtshouse.so` beside the restamp:
+put one in front of every pad of the aggregator, in place of the queue.
+
+```
+<input> ! mralignwatch name=<agg>_aw_<x> aligner=<agg> input=<label> [hold-on-eos=true] [sparse=true] [seed-lateness=<ns>] ! <agg>.sink_<i>
+audiomixer name=<agg> latency=0 start-time-selection=first ! …     (or audiointerleave; mpegtsmux latency=0)
+```
+
+It answers LATENCY as non-live, so the aggregator never times out. The
+watchdogs with one `aligner` (per pipeline) share a pace, the largest
+lateness any of them shows over a second, and release data at its running
+time plus the pace, so all inputs reach the aggregator at the same lateness.
+An input silent for W (3 × the p95 of its gaps between arrivals, 100 ms to
+2 s) is absent: it is gapped at the pace and the aggregator goes on without
+it; when it comes back, what it sends that ends before the gaps' horizon is
+discarded as stale and counted, and it rejoins at the current position. An
+input added to a running aggregator is gapped from its first tick while it
+starts. The queue holds 5 s (`max-size-time`), blocks upstream when full and
+never drops. The pace never falls by itself: it comes down only when an input
+leaves (its pad released), so a module keeps the latency of its slowest input
+until that input is removed or the module restarts. Rules:
+
+- **Every pad, live-added ones included.** One input that answers LATENCY
+  live turns the whole aggregator live, and it then times out and drops late
+  data. The 302M helpers do this for you (`buildAudioMixInput`,
+  `alignedMixer`, `build302mMixBranch`; "Shared 302M audio helpers" above).
+- **Feed it content time.** The aggregator aligns by running time, so each
+  input's running time must be its content time: `mrtsdemux
+  select=audio/x-smpte-302m` for 302M (running time = PES PTS − 1 h, and a bus
+  gap marker becomes a GAP event), the retime
+  (`alignBranchesToStamps.transformProducer`) for the muxer's `tsdemux` pads
+  until Phase 3.
+- **The aggregator:** `latency=0` and nothing force-live; an audio one with
+  `start-time-selection=first`. `mpegtsmux` has no `force-live`; it is
+  non-live because its inputs answer so.
+- **`hold-on-eos=true`** on an audio fan-in's inputs: an EOS becomes an
+  absence and the mix goes on (the module then returns `eosDrain: false`).
+  Without it the EOS is forwarded, as on the muxer's routes.
+- **`sparse=true`** for a cue pad into `mpegtsmux` (KLV, subtitles): never
+  absent, gapped between cues at the pace (the mux writes only while every
+  pad holds an item), and a cue that comes after its time raises the pace
+  and is forwarded at its own PTS, never dropped.
+- **`silence-floor`** (ns) when the input comes from another aligned stage:
+  an aligned mixer's output stops while it waits for one of its own inputs or
+  raises its pace, which is not silence. n1-mixer-302m's matrix links and
+  audio-processing's channels fed by a mix use 500 ms.
+- **`seed-lateness`** (ns): the source's `seedLatenessMs` from
+  `getModuleBusSources`, the producer's output lateness while it runs, so the
+  pace starts at what that input needs and a joiner later than the pace keeps
+  its first content.
+- **Pin the caps in front of it** when the aggregator insists on a subset of
+  its first pad's caps (`audiointerleave`): an input that never delivered is
+  gapped under caps primed from the caps query, so give it exact ones.
+- **Label it.** The engine reads the `mralignwatch:<name>` messages (forwarded
+  with no `busReports` subscription) into the timing section and two
+  warnings. Label an input with its bus connection id, as the 302M helpers do,
+  and it joins that edge's row; for any other label answer
+  `alignerInputOf(watch)` on your module.
+- **Without the plugin**, a start description naming `mrtsdemux` is refused
+  with the "Native TS module not loaded" alarm (no stand-in), and
+  `mralignwatch` gets an `identity` stand-in in a start description only: a
+  hook-built or live-added branch naming it fails to parse (the muxer then
+  does not start).
+
+What the operator sees: `timing` gains Pace (the aligner's added latency over
+its fastest input) and Waiting for (the absent inputs, else the slowest);
+each `timing-in-<n>` gains State, Silence limit, Absences and Discarded on
+rejoin; the module warns `Input <label> silent for <W> ms — continuing
+without it` and `Input <label> queue full — upstream held`. The element's
+properties, messages and constants are in ADR-0029, Phase 2.
 
 ---
 
@@ -2591,8 +2652,8 @@ subtitle branch in an `appsink` that receives one `text/x-raw` buffer per cue
 egress (a `video/mpegts` appsrc — the bridge packs each cue's TS itself, no
 mpegtsmux), and put the pairs on the description as `runnerHooks:
 [subtitleRunnerHook({ pay: [{appsink, appsrc, pid: subtitleStreamPid(i),
-holdMs, label}], sourceDemux })]` plus `houseTimelineEgress: true` and
-`runner: 'python'` (the bridge is a python-only hook by decision). The
+holdMs, label}], sourceDemux })]` plus `runner: 'python'` (the bridge is a
+python-only hook by decision). The
 bridge starts each cue at its CONTENT time — the text buffer's PTS, which
 `sourceDemux` (the tsdemux the text comes from) has had retimed onto the bus
 chunk stamps; house-now when that PTS is missing or > 10 s off — and puts
@@ -2804,8 +2865,8 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignBusChannel(instanceId, portId)`, `linkOnPadAdded` rules |
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
-| N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one force-live `audiomixer` per output (i ≠ o matrix), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignBusChannel` only for outputs with contributors |
-| Audio Processing | `plugins/audio-processing/` | HPF → AGC → EQ → dynamics → limiter → ducker on the 302M bus (supersedes the PipeWire `audio-dynamics`). Program + sidechain are both `buildAudioMixInput` fan-ins; LSP LADSPA stages resolved per enabled stage; dB→linear + range clamping isolated in `lspProcessing.ts`; the auto gain (LSP Autogain: kick-in level, target, max gain, speed presets) in `agcStage.ts`; the `sc-*` 4-channel packing survives only for a sidechain-keyed gate |
+| N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one aligned `audiomixer` per output, each i ≠ o matrix link through its own `mralignwatch` (500 ms silence floor), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignBusChannel` only for outputs with contributors |
+| Audio Processing | `plugins/audio-processing/` | HPF → AGC → EQ → dynamics → limiter → ducker on the 302M bus (supersedes the PipeWire `audio-dynamics`). Program + sidechain are both `buildAudioMixInput` fan-ins; LSP LADSPA stages resolved per enabled stage; dB→linear + range clamping isolated in `lspProcessing.ts`; the auto gain (LSP Autogain: kick-in level, target, max gain, speed presets) in `agcStage.ts`; a mode keyed off the sidechain joins programme and key by PTS in one 4-channel `audiointerleave` (an `mralignwatch` per channel) into the native `mrducker` or the LSP `sc-gate-stereo`, whose LADSPA output gets its PTS back from `mrptskeep` (`native/mrducker`, WI-P2-10) |
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates, **codec-aware decoder selection** (see below) |
 | Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignBusChannel(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |
@@ -2826,8 +2887,9 @@ worth copying:
   not add/remove deltas — mean a sidecar restart re-syncs the GUI instead of
   leaving a phantom entry. Discovery is owned by the RUNNING modules, so a box
   with no AES67 input joins no multicast group and runs no extra process.
-- **A route head like any other.** `aes67-input` ends in `buildBusSink`, so the
-  engine's stamper anchors it onto the house clock with no plugin work, and it
+- **A route head like any other.** `aes67-input` restamps its capture onto the
+  house clock after its 302M mux ("Ingest timing" above) and ends in
+  `buildBusSink`, whose egress stamps it by identity with no plugin work, and it
   declares `playoutOffsetMs` (no schema `default`) for the players it feeds.
 - **The epoch is one integer: the engine's E.** GStreamer's
   payloader computes `rtptime = timestamp-offset + running_time x rate / 1e9`

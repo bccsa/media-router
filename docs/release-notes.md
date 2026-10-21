@@ -3,16 +3,17 @@
 Operator-facing notes per release, newest first. What changed on the box,
 what to expect, what to do. Engineering detail is in `docs/adr/`.
 
-## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1 items, 2026-10-16)
+## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1 and 2 items, 2026-10-21)
 
 Phases 1, 2, 3 and 4 ship together as one release. This draft holds the
-Phase 1 items; the Phase 2–4 items join it as those phases land, and the
-note is finished with Phase 4. One RAUC bundle carries the image and the
+Phase 1 and Phase 2 items; the Phase 3 and 4 items join it as those phases
+land, and the note is finished with Phase 4. One RAUC bundle carries the image and the
 app: the new timing elements ship in the image, so do not hot-deploy this
 app onto an older image. On a box where they are missing, the GStreamer
-modules' cards say "Native TS module not loaded", and the modules still
-run, on their source's own time (the audio captures at their device's
-nominal rate, unlocked).
+modules' cards say "Native TS module not loaded": the inputs and captures
+still run, on their source's own time (the audio captures at their device's
+nominal rate, unlocked), and the modules under "Needs the image's native
+elements" below do not start.
 
 **Time is set once, where a stream enters the box**
 
@@ -103,6 +104,70 @@ nominal rate, unlocked).
   re-anchors it once and then holds.
 - **Rollback** is the previous release, installed from the Device Manager;
   there is no in-app switch.
+
+**Mixers, Audio Processing and the MPEG-TS Muxer wait for every input
+(Phase 2)**
+
+- **Nothing is dropped for arriving late.** Audio Mixer, N-1 Audio Mixer
+  (302M), Audio Processing, Audio Output (302M) with two or more sources and
+  the MPEG-TS Muxer line their inputs up by their content time and wait for
+  the slowest one. Before, a mixer gave up on a late input after its Mix
+  Latency (20 ms by default, 200 ms on Audio Processing), filled the gap with
+  silence and dropped what came later, and the muxer stopped waiting after
+  2.4 s and muxed what came later out of order. Now the module adds the
+  latency of its slowest input instead, and shows it.
+- **The added latency does not come down by itself.** Once a slower input
+  has raised it, it stays until that input is removed or the module is
+  restarted. The module's timing popup shows it as **Pace**, and **Waiting
+  for** names the input it waits on.
+- **An input that goes silent is left out, not waited for.** After its
+  silence limit (three times the input's usual gap between arrivals, 100 ms
+  to 2 s; 2 s at start) the module carries a warning, "Input <name> silent
+  for <n> ms — continuing without it", and goes on without that input. When
+  the input comes back it joins at the current position; what it sends from
+  before that moment is discarded, and the popup counts it as **Discarded
+  on rejoin**. A queue that fills (5 s) holds the input back and warns
+  "Input <name> queue full — upstream held"; nothing is dropped.
+- **The MPEG-TS Muxer no longer restarts on a dark input.** It continues
+  with the other inputs and warns. An input that is connected but stuck is
+  therefore no longer restarted automatically: the warning names it for the
+  operator to restart.
+- **Subtitles and KLV keep their own timing through the muxer.** Each cue
+  leaves at its own time instead of being re-timed to the mux position. A
+  cue that arrives after its time is played late, never dropped, and the
+  muxer raises its latency by that much.
+- **Audio Processing ducks on content time.** The ducker now runs inside
+  the pipeline and follows the key's content time, so a key that arrives
+  late (through a transcoder, say) no longer ducks late. Its settings and
+  graph are unchanged. Keyed-gate mode's output now carries timestamps; it
+  had none, which left its stream untimed on the bus. The limiter's
+  lookahead shows as **Processing latency**. When its programme source
+  ends, the module keeps running, with silence, while the key flows.
+- **HLS Player's stream is on the house clock**, like every other input:
+  its first content lands at the time playback starts, and an origin's
+  timeline jump of more than a second moves it once, without a step back.
+- **TS Splitter passes its streams through untouched**: every output
+  carries the input's PES bytes and the program's clock unchanged.
+
+**Removed settings (Phase 2), nothing migrated**
+
+- **Mix Latency** on Audio Mixer, N-1 Audio Mixer (302M), Audio Processing
+  and Audio Output (302M).
+- **Leaky Input Queues** and **Queue Depth** on the MPEG-TS Muxer.
+- **Preserve Source Timeline** on Video Transcoder and Audio Transcoder.
+- Stored values are ignored; a rollback restores them. The OCC gate's
+  mixers ran Mix Latency 300 and a hot-patched alignment threshold; both are
+  superseded, because the mixers have no latency budget any more and their
+  inputs arrive on content time. Do not run the hot patch's revert script
+  after installing this release: it would put back the old file.
+
+**Needs the image's native elements (Phase 2)**
+
+- Without the timing elements of this image, Audio Mixer, N-1 Audio Mixer
+  (302M), Audio Processing and Audio Output (302M), whose 302M inputs now go
+  through the image's new demux, refuse to start with "Native TS module not
+  loaded", and the MPEG-TS Muxer does not start. Audio Processing's ducker and keyed-gate modes also need
+  their own native plugin and otherwise show "Native plugin not loaded".
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

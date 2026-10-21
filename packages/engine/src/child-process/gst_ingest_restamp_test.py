@@ -186,7 +186,7 @@ def ingest_restamp_case(argv, tag, check, srt_queue=False, now=None):
     r = Runner(argv, _PLUGINS, empty)
     consumer, conn, got = None, None, []
     try:
-        r.send({"cmd": "start", "pipeline": pipeline, "houseTimelineEgress": True,
+        r.send({"cmd": "start", "pipeline": pipeline,
                 "restartOnError": False,
                 "busReports": [{"element": "restamp", "structure": c} for c in CHANNELS]})
         conn = accept_input(server)   # the runner's start connects
@@ -200,7 +200,7 @@ def ingest_restamp_case(argv, tag, check, srt_queue=False, now=None):
         r.send({"cmd": "bus_attach", "tee": f"busout_{PORT}", "socket": edge})
         check(f"{label}: bus_attach -> bus_attached",
               r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
-        armed = f"timeline armed on busout_{PORT} (house-timeline egress"
+        armed = f"identity egress armed on busout_{PORT} (PES - 1 h"
 
         def is_armed():
             r.pump()

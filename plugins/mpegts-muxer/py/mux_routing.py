@@ -11,10 +11,10 @@ imports this module (every plugin `py/` dir is on its PYTHONPATH), calls
         "linkTo": "mux",                     # the mpegtsmux (request pads)
         "pid":    264,                       # generic input: the output PID of its stream
         "routes": {                          # first pad of each class goes here
-            "video":    {"branch": "queue …", "parser": "none"},
-            "audio":    {"branch": "queue …"},
-            "klv":      {"branch": "queue …", "sparse": True},
-            "subtitle": {"branch": "queue …", "sparse": True},
+            "video":    {"branch": "mralignwatch …", "parser": "none"},
+            "audio":    {"branch": "mralignwatch …"},
+            "klv":      {"branch": "mralignwatch … sparse=true"},
+            "subtitle": {"branch": "mralignwatch … sparse=true"},
         },
         "ignorePids": [496],                 # never routed (an upstream name carousel)
         "pcr": {"program": 1},               # pick the PCR stream video-first at link time
@@ -46,12 +46,11 @@ What one input does at pad-added time:
   * with `pcr`, `prog-map`'s `PCR_<program>` is pointed at the first VIDEO
     pad's request pad before it is linked (first audio until a video shows
     up) — mpegtsmux reads prog-map per pad at stream creation, so the builder
-    need not know which input carries video;
-  * a `sparse` route (one buffer per cue, nothing between) is restamped to
-    the pipeline running time on every buffer and kept fed with GAP events
-    while idle, so the aggregator never holds the other pads for it
-    (mpegtsmux waited latency + min-upstream-latency = 2.4 s and burst the
-    video, 2026-09-16).
+    need not know which input carries video.
+
+Timestamps are not the hook's business: a route's buffers reach the mux as the
+branch hands them over. A cue route's `mralignwatch sparse=true` (in its
+`branch`) fills between cues with gaps at the mux's pace.
 
 Events go to the engine through `ctx["emit_event"]`: `pad_linked`
 (`rule`, `padName`, `media`, `pid`, `outPid`), `warning`,
@@ -67,10 +66,10 @@ import threading
 _emit_event = None
 _emit_plugin_event = None
 # PMT messages and pad-added run on each demuxer's streaming thread; two
-# inputs spilling at once must not pick the same PID (the native form holds a
-# mutex for the same reason).
+# inputs at once must not pick the same PID nor swap the mux's prog-map
+# together (the native form holds a mutex for the same reasons).
 _lock = threading.Lock()
-# {"pcr": {linkTo: {...}}, "sparse": [...], "handlers": [(element, id)], "warned": set(),
+# {"pcr": {linkTo: {...}}, "handlers": [(element, id)], "warned": set(),
 #  "taken": set(output PIDs no class may take), "inputs": {demux name: input state},
 #  "bus": (bus, handler id) or None}
 _state = None
@@ -112,12 +111,6 @@ _AU_ALIGNED_CAPS = {
     "video/x-h264": "video/x-h264,stream-format=byte-stream,alignment=au",
     "video/x-h265": "video/x-h265,stream-format=byte-stream,alignment=au",
 }
-
-# Sparse routes: GAP cadence and how far ahead of the mux position the GAP is
-# placed (a gap AT the position is consumed at once and the pad is empty again
-# until the next tick, which paced the video in 500 ms steps — measured).
-SPARSE_GAP_MS = 500
-SPARSE_GAP_LEAD_MS = 2 * SPARSE_GAP_MS
 
 
 def _gst():
@@ -254,7 +247,7 @@ def install(pipe, config, ctx=None):
     if ctx:
         _emit_event = ctx.get("emit_event")
         _emit_plugin_event = ctx.get("emit_plugin_event")
-    _state = {"pcr": {}, "sparse": [], "handlers": [], "warned": set(),
+    _state = {"pcr": {}, "handlers": [], "warned": set(),
               "taken": set(_RESERVED_PIDS), "inputs": {}, "bus": None}
     entries = (config or {}).get("inputs") or []
     # Every input's own PID is off limits to every other input's spill.
@@ -271,11 +264,6 @@ def clear():
     global _state
     if _state is None:
         return
-    GLib, _ = _gst()
-    for st in _state["sparse"]:
-        if st.get("timer") is not None:
-            GLib.source_remove(st["timer"])
-            st["timer"] = None
     for element, hid in _state["handlers"]:
         try:
             element.disconnect(hid)
@@ -340,7 +328,8 @@ def _watch_pmts(pipe):
 def _ensure_prog_map(pipe, target_name, program, pad_name):
     """Add `sink_<pid>=(int)program` to `target_name`'s prog-map for a PID the
     builder could not list (a multi-stream input's spill). Same mechanism as
-    the PCR pin: mpegtsmux reads prog-map per pad at stream creation."""
+    the PCR pin: mpegtsmux reads prog-map per pad at stream creation. Caller
+    holds `_lock`: mpegtsmux frees the old map on every set, unlocked."""
     _, Gst = _gst()
     target = pipe.get_by_name(target_name)
     if target is None or target.find_property("prog-map") is None:
@@ -380,39 +369,34 @@ def _install_input(pipe, entry):
 
     def out_pad_name(media, route):
         """(request-pad name, output PID) for this class; (None, None) when
-        no output PID is left — the caller reports it and sinks the pad."""
+        no output PID is left — the caller reports it and sinks the pad.
+        Caller holds `_lock`."""
         if inp["pid"] is None:
             return route.get("padName"), None
-        with _lock:
-            out = plan_output_pid(inp["pid"], media, inp["classes"], set(routes), inp["assigned"],
-                                  _state["taken"])
-            if out is None:
-                return None, None
-            inp["assigned"][media] = out
-            _state["taken"].add(out)
+        out = plan_output_pid(inp["pid"], media, inp["classes"], set(routes), inp["assigned"],
+                              _state["taken"])
+        if out is None:
+            return None, None
+        inp["assigned"][media] = out
+        _state["taken"].add(out)
         return f"sink_{out}", out
 
-    def on_pad_added(_element, pad):
-        caps = pad.get_current_caps() or pad.query_caps(None)
-        caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ""
-        pid = pid_from_pad_name(pad.get_name())
+    def plan_route(pad, caps, caps_name, pid, media):
+        """The routing decision for one demuxed pad, and the mux's prog-map and PCR
+        edits it needs: (None, request pad, output PID, branch) to link, else (why the
+        pad is sunk, None, None, None). Caller holds `_lock`."""
         if pid is not None and pid in ignore:
-            _sink_unrouted(pipe, pad, rule_id, f"pid 0x{pid:x} is excluded")
-            return
-        media = route_media_for_caps(caps_name)
+            return f"pid 0x{pid:x} is excluded", None, None, None
         route = routes.get(media)
         if not route or (inp["pid"] is None and not route.get("padName")):
-            _sink_unrouted(pipe, pad, rule_id, f"no route for {media} ({caps_name or 'unknown caps'})")
-            return
+            return f"no route for {media} ({caps_name or 'unknown caps'})", None, None, None
         if media in linked:
-            _sink_unrouted(pipe, pad, rule_id, f"second {media} stream (already routed {linked[media]})")
-            return
+            return f"second {media} stream (already routed {linked[media]})", None, None, None
         pad_name, out_pid = out_pad_name(media, route)
         if pad_name is None:
             _emit({"event": "error",
                    "message": f"mux_routing: no free output PID above {inp['pid']} for {media} on {rule_id}"})
-            _sink_unrouted(pipe, pad, rule_id, "no free output PID")
-            return
+            return "no free output PID", None, None, None
         linked[media] = pad.get_name()
         if inp["pid"] is not None and out_pid != inp["pid"]:
             _log(f"{rule_id}: {media} spills to output PID {out_pid} (input PID {inp['pid']} "
@@ -422,8 +406,22 @@ def _install_input(pipe, entry):
             _ensure_prog_map(pipe, link_to, program, pad_name)
         if link_to and pcr and media in ("video", "audio"):
             _pin_pcr_before_link(pipe, link_to, program, media, pad_name, rule_id)
+        return None, pad_name, out_pid, branch
+
+    def on_pad_added(_element, pad):
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ""
+        pid = pid_from_pad_name(pad.get_name())
+        media = route_media_for_caps(caps_name)
+        # Each demux adds its pads on its own streaming thread: one decision and one
+        # prog-map edit at a time (two inputs' edits at once double-freed the map).
+        with _lock:
+            why, pad_name, out_pid, branch = plan_route(pad, caps, caps_name, pid, media)
+        if why is not None:
+            _sink_unrouted(pipe, pad, rule_id, why)
+            return
         ok = _link_pad(pipe, pad, rule_id, media, branch, link_to, pad_name,
-                       {"media": media, "pid": pid, "outPid": out_pid}, bool(route.get("sparse")))
+                       {"media": media, "pid": pid, "outPid": out_pid})
         if ok and _emit_plugin_event:
             _emit_plugin_event("mux:routed", {"demux": demux_name, "media": media, "srcPid": pid,
                                               "outPid": out_pid, "caps": caps.to_string() if caps else ""})
@@ -432,6 +430,7 @@ def _install_input(pipe, entry):
 
 
 def _parser_prefix(pad, caps, rule_id, mode):
+    """The parser (or capssetter) ahead of a route's branch. Caller holds `_lock`."""
     caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ""
     if mode == "none" and caps_name in _AU_ALIGNED_CAPS:
         au = _AU_ALIGNED_CAPS[caps_name]
@@ -455,10 +454,13 @@ def _parser_prefix(pad, caps, rule_id, mode):
 
 
 def _sink_unrouted(pipe, pad, rule_id, why):
+    """Sink a pad no route takes. Takes `_lock` for the warned set; the caller must not hold it."""
     _, Gst = _gst()
     key = f"{rule_id}::{why}"
-    if key not in _state["warned"]:
+    with _lock:
+        first = key not in _state["warned"]
         _state["warned"].add(key)
+    if first:
         _emit({"event": "warning",
                "message": f"mux_routing: {pad.get_name()} not routed on {rule_id} — {why}; sinking it"})
     try:
@@ -480,7 +482,7 @@ def _pin_pcr_before_link(pipe, target_name, program, media, pad_name, rule_id):
     each new sink pad's name at stream creation and the match becomes the
     program's PCR stream (later matches override), so writing before the link
     is enough: first audio takes PCR until the first video takes it over.
-    At most two writes per pipeline."""
+    At most two writes per pipeline. Caller holds `_lock`."""
     _, Gst = _gst()
     st = _state["pcr"].get(target_name)
     if st is not None and (st["media"] == "video" or media != "video"):
@@ -490,80 +492,18 @@ def _pin_pcr_before_link(pipe, target_name, program, media, pad_name, rule_id):
         return
     try:
         cur = target.get_property("prog-map")
-        struct = cur.copy() if cur is not None else Gst.Structure.new_empty("program_map")
-        struct.set_value(f"PCR_{program}", pad_name)
-        target.set_property("prog-map", struct)
+        # A pin the map already holds writes nothing: every set frees the map the mux reads.
+        if cur is None or cur.get_string(f"PCR_{program}") != pad_name:
+            struct = cur.copy() if cur is not None else Gst.Structure.new_empty("program_map")
+            struct.set_value(f"PCR_{program}", pad_name)
+            target.set_property("prog-map", struct)
         _state["pcr"][target_name] = {"media": media, "pad": pad_name}
         _log(f"PCR_{program} of {target_name} → {pad_name} ({media}, {rule_id})")
     except Exception as e:  # noqa: BLE001
         _emit({"event": "warning", "message": f"mux_routing: could not pin PCR on {target_name} ({e})"})
 
 
-def _sparse_position(pipe, pad):
-    """The mux's current position in `pad`'s stream time: the pipeline running
-    time (NOT minus the aggregator latency — that budget is only how long it
-    waits for a pad WITHOUT data), mapped through the pad's segment."""
-    _, Gst = _gst()
-    clock = pipe.get_clock()
-    if clock is None:
-        return None
-    rt = max(0, clock.get_time() - pipe.get_base_time())
-    ev = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
-    if ev is not None:
-        pos = ev.parse_segment().position_from_running_time(Gst.Format.TIME, rt)
-        if pos is not None and pos != Gst.CLOCK_TIME_NONE:
-            return int(pos)
-    return int(rt)
-
-
-def _arm_sparse_pad(pipe, req_pad, rule_id, media):
-    """Restamp every buffer on `req_pad` to the mux position and send a GAP
-    every SPARSE_GAP_MS placed SPARSE_GAP_LEAD_MS ahead of it. The branch's
-    own timestamps are unusable: tsdemux hands a sparse private stream over
-    mostly without PTS and unaligned when it has one; a cue's timing lives in
-    its payload (subtitle-core: relative to the carrying PES), not its PTS."""
-    GLib, Gst = _gst()
-    st = {"pad": req_pad, "restamped": 0, "gaps": 0, "gap_refused": 0, "timer": None}
-
-    def on_buf(pad, info):
-        buf = info.get_buffer()
-        if buf is None:
-            return Gst.PadProbeReturn.OK
-        try:
-            pos = _sparse_position(pipe, pad)
-        except Exception as e:  # noqa: BLE001
-            _emit({"event": "warning", "message": f"mux_routing: sparse restamp failed on {rule_id} ({e})"})
-            pos = None
-        if pos is not None:
-            if st["restamped"] == 0:
-                had = None if buf.pts == Gst.CLOCK_TIME_NONE else f"{buf.pts / 1e6:.0f} ms"
-                _log(f"sparse {media} route on {rule_id} restamped to the mux position "
-                     f"(first buffer carried {had or 'no PTS'}, now {pos / 1e6:.0f} ms)")
-            buf.pts = pos
-            buf.dts = Gst.CLOCK_TIME_NONE
-            st["restamped"] += 1
-        return Gst.PadProbeReturn.OK
-
-    req_pad.add_probe(Gst.PadProbeType.BUFFER, on_buf)
-
-    def tick():
-        try:
-            pos = _sparse_position(pipe, req_pad)
-            if pos is None:
-                return True
-            ok = req_pad.send_event(Gst.Event.new_gap(pos + SPARSE_GAP_LEAD_MS * 1_000_000, 0))
-            st["gaps" if ok else "gap_refused"] += 1
-        except Exception as e:  # noqa: BLE001
-            _emit({"event": "warning", "message": f"mux_routing: sparse GAP failed on {rule_id} ({e})"})
-            return False
-        return True
-
-    st["timer"] = GLib.timeout_add(SPARSE_GAP_MS, tick)
-    _state["sparse"].append(st)
-    return st
-
-
-def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, extra, sparse):
+def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, extra):
     GLib, Gst = _gst()
     try:
         bin_ = Gst.parse_bin_from_description(branch_str, True)
@@ -595,8 +535,6 @@ def _link_pad(pipe, pad, rule_id, media, branch_str, link_to, pad_name, extra, s
                 _emit({"event": "error",
                        "message": f"mux_routing: could not link branch to {link_to} ({outer}) ({rule_id})"})
                 return False
-            if sparse:
-                _arm_sparse_pad(pipe, req_pad, rule_id, media)
         bin_.sync_state_with_parent()
         _emit({"event": "pad_linked", "rule": rule_id, "padName": pad.get_name(), **extra})
         return True

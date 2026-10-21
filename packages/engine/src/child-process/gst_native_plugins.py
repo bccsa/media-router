@@ -1,6 +1,8 @@
 """The house-clock plugin loader (plan ch. 3 WI-S0-8), twin of mr-gst-runner's native_plugins.cpp:
-libgstmrtshouse.so by path (never GST_PLUGIN_PATH), once, before the parse, with an ABI check. If
-it cannot be used its elements get stand-ins, or the start is refused (part 4.5 rule 6)."""
+the table's plugins (libgstmrtshouse.so, audio-processing's libgstmrducker.so) by path (never
+GST_PLUGIN_PATH), once, before the parse, with an ABI check. If one cannot be used its elements
+get stand-ins, or the start is refused (part 4.5 rule 6 for the TS module, PLUGIN_ALARM for
+another row)."""
 import os
 import sys
 
@@ -11,18 +13,31 @@ from gi.repository import GObject, Gst  # noqa: E402
 # The element protocol this runner speaks; a plugin below it is refused (part 4.5 rule 4).
 # Bumped with mrtshouse_abi.h; equal to native_plugins.h's.
 MRTSHOUSE_MIN_ABI = 1
+# The same for audio-processing's libgstmrducker.so (MRDUCKER_ABI, gstmrducker.cpp).
+MRDUCKER_MIN_ABI = 1
 
 # Part 4.5 rule 6's alarm; the engine shows the same sentence (timingPluginAlarm.ts).
 ALARM = ("Native TS module not loaded: this stream carries no house time on the bus; consumers "
          "will mis-time it until the deploy is fixed.")
+# A row not required refuses a module naming its element with this, kind PLUGIN_KIND: that
+# module cannot run, the bus's house time is fine. The engine shows it as the module's error.
+PLUGIN_ALARM = ("Native plugin not loaded: this module needs it and cannot run until the deploy "
+                "is fixed.")
+PLUGIN_KIND = "native_plugin"
 
 # One row per plugin .so of the timing path, resolved as plugins/<plugin>/native/<tool>/<file>
-# then libexec/<plugin>/<file>. `required`: a miss is the module alarm, not just a log line.
+# then libexec/<plugin>/<file>. `required`: a miss is every module's alarm; else only a module
+# naming one of its elements, refused when it has no stand-in, sees it.
 # `factories`: each element and its stand-in, None for none; a phase adds its element here.
 PLUGINS = [
     {"plugin": "mpegts-core", "tool": "mrtshouse", "file": "libgstmrtshouse.so",
      "required": True, "min_abi": MRTSHOUSE_MIN_ABI,
-     "factories": {"mrtsrestamp": "identity", "mrasrc": "audioresample", "mrtsdemux": None}},
+     "factories": {"mrtsrestamp": "identity", "mrasrc": "audioresample", "mrtsdemux": None,
+                   "mralignwatch": "identity"}},
+    # The ducker and the keyed gate's PTS keeper (WI-P2-10): neither has a stand-in.
+    {"plugin": "audio-processing", "tool": "mrducker", "file": "libgstmrducker.so",
+     "required": False, "min_abi": MRDUCKER_MIN_ABI,
+     "factories": {"mrducker": None, "mrptskeep": None}},
 ]
 
 _outcomes = []     # per row: {"version", "abi", "path"} or {"detail"}; empty until load()
@@ -79,15 +94,28 @@ def _load_row(row):
     return {"detail": f"{row['file']} not loaded, tried {', '.join(tried)}"}
 
 
-def _alarm(event, detail):
-    """The rule-6 event (`warning` or `error`) with its detail; the engine keys on `kind`."""
+def alarm(event, detail):
+    """The rule-6 event (`warning` or `error`) with its detail; the engine keys on `kind`. The
+    stamper raises it too (gst_bus_stamper.load_native)."""
     return {"event": event, "kind": "timing_plugin", "message": f"{ALARM} ({detail})",
             "detail": detail}
 
 
+def _row_of(name):
+    """(row, outcome) of the factory `name`; (None, None) for none."""
+    return next(((r, o) for r, o in zip(PLUGINS, _outcomes) if name in r["factories"]),
+                (None, None))
+
+
+def _sentence_kind(row):
+    """A row's alarm: rule 6 for the TS module (required), PLUGIN_ALARM for another."""
+    return (ALARM, "timing_plugin") if row["required"] else (PLUGIN_ALARM, PLUGIN_KIND)
+
+
 def load(emit):
     """Load the table's plugins once per process: a log line each, or for a required row that
-    misses or is below its ABI a `warning` event of kind `timing_plugin` through `emit`."""
+    misses or is below its ABI a `warning` event of kind `timing_plugin` through `emit`. A row
+    not required alarms only a module that names its element (`stand_in`)."""
     if _outcomes:
         return
     for row in PLUGINS:
@@ -96,9 +124,11 @@ def load(emit):
         if "detail" not in out:
             continue
         if row["required"]:
-            emit(_alarm("warning", out["detail"]))
-        else:
-            _log(f"{out['detail']} — its elements get stand-ins")
+            emit(alarm("warning", out["detail"]))
+            continue
+        refused = ", ".join(name for name, stand in row["factories"].items() if stand is None)
+        _log(f"{out['detail']} — " + (f"a module naming {refused} is refused" if refused
+                                      else "its elements get stand-ins"))
 
 
 def timing_plugin():
@@ -110,7 +140,8 @@ def timing_plugin():
 
 def stand_in(desc, emit):
     """`desc` with stand-ins for the plugins `load` could not use, or None when it names an
-    element that has none: the `error` event went through `emit` and the start stops there."""
+    element that has none: the `error` event (rule 6, or PLUGIN_ALARM for a row not required)
+    went through `emit` and the start stops there."""
     table = {}
     for row, out in zip(PLUGINS, _outcomes):
         if "detail" in out:
@@ -119,13 +150,41 @@ def stand_in(desc, emit):
         return desc
     out, names, refused = rewrite(desc, table)
     if refused is not None:
-        detail = next(o["detail"] for r, o in zip(PLUGINS, _outcomes) if refused in r["factories"])
-        emit(_alarm("error", f"{detail}; {refused} has no stand-in"))
+        row, outcome = _row_of(refused)
+        sentence, kind = _sentence_kind(row)
+        detail = f"{outcome['detail']}; {refused} has no stand-in"
+        emit({"event": "error", "kind": kind, "message": f"{sentence} ({detail})",
+              "detail": detail})
         return None
     if out != desc:
         _log(f"native TS module not loaded, parsing with stand-ins: {out}")
     stood_in.update(names)
     return out
+
+
+def refuse_live_add(req_id, desc, message):
+    """`bus_input_add`'s parse failure as a `command_error` event: when `desc` names an element
+    of a plugin `load` could not use, `message` gains that row's alarm (as `stand_in`'s) and the
+    load detail, with `kind` and `detail`. Live adds are never stood in (B-17); the module keeps
+    running."""
+    # Every element of a plugin not loaded, as if none had a stand-in: what the parse missed.
+    missing = {}
+    for row, out in zip(PLUGINS, _outcomes):
+        if "detail" in out:
+            missing.update({name: None for name in row["factories"]})
+    row = outcome = None
+    if missing:
+        _, _, refused = rewrite(desc, missing)
+        if refused is not None:
+            row, outcome = _row_of(refused)
+    evt = {"event": "command_error", "message": message}
+    if row is not None:
+        sentence, kind = _sentence_kind(row)
+        detail = outcome["detail"]
+        evt.update(message=f"{message}; {sentence} ({detail})", kind=kind, detail=detail)
+    if req_id:
+        evt["id"] = req_id
+    return evt
 
 
 # --- gst-launch tokens (gst/parse/parse.l, as far as finding elements needs) ---------------

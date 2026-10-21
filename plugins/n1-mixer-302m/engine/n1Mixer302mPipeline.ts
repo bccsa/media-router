@@ -11,10 +11,10 @@
 
 import { buildBusSink, type DynamicPort, type LiveInputBranch } from '@media-router/engine';
 import {
+    alignedMixer,
     buildAudioMixInput,
     build302mEncodeBranch,
     liveInputBranchFor,
-    pacedMixer,
     positionedChannelsClause,
     type AudioMixSource,
     s302mFormatFor,
@@ -111,8 +111,6 @@ export interface N1PipelineInputs {
     /** Connected sources grouped by input index — only indices with ≥1 edge. */
     inputs: Map<number, AudioMixSource[]>;
     outputs: N1Output[];
-    /** Per-input mix latency budget (ms) — the wait for lagging SOURCES. */
-    latencyMs: number;
     /** 302M word length of every output (`pcmBitDepth`). Default 16-bit. */
     pcmFormat?: S302mFormat;
     /** Mix width of every input fan-in and output mixer (`channels`). Default
@@ -120,20 +118,6 @@ export interface N1PipelineInputs {
     channels?: number;
 }
 
-// The output mixers bridge only intra-pipeline jitter between the input
-// stages' continuous force-live streams — a fixed small budget, NOT the
-// configurable source-side latency (reusing it would double the audible
-// latency to every output). 20 ms: the hop costs this plus the input budget
-// (measured .103 2026-10-05, ADR-0008 amendment).
-const OUTPUT_MIX_LATENCY_NS = 20_000_000;
-
-/**
- * Assemble the full pipeline:
- *   per connected input  — 302M sum (`inmix{i}`) → `tee name=in{i}t`
- *   per active output    — `audiomixer omix{o}` → `omix{o}_pace` → 302M
- *                          encode → bus sink
- *   exclusion matrix     — `in{i}t. ! queue ! omix{o}.` for every i ≠ o
- */
 /** Output indices that have ≥1 contributing input (some connected i ≠ o) —
  *  the only outputs worth building/allocating a bus port for. */
 export function activeOutputIndices(
@@ -148,9 +132,28 @@ export function activeOutputIndices(
     return out;
 }
 
+/** A matrix link's least W. What it gets left `inmix<i>`, which holds its output for one of
+ *  its sources' W or a pace rise: no silence, and a false absence would drop it. */
+const N1_MATRIX_SILENCE_FLOOR_NS = 500_000_000;
+
+/** Input `i`'s link into output `o`'s mixer: its watchdog, in that mixer's pace
+ *  group (house-clock part 4.4). Its FIFO replaced the 500 ms matrix queue. */
+function n1MatrixLink(i: number, o: number): string {
+    return (
+        `mralignwatch name=omix${o}_aw${i} aligner=omix${o} input=in${i}` +
+        ` silence-floor=${N1_MATRIX_SILENCE_FLOOR_NS}`
+    );
+}
+
+/**
+ * Assemble the full pipeline:
+ *   per connected input — 302M sum (`inmix<i>`) → `tee name=in<i>t`
+ *   per active output   — aligned mixer `omix<o>` → 302M encode → bus sink
+ *   exclusion matrix    — `in<i>t. ! <n1MatrixLink(i, o)> ! omix<o>.` for every i ≠ o
+ */
 export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     // An output whose only contributor would be its own pair has no branches —
-    // never build a pad-less force-live mixer.
+    // never build a pad-less mixer.
     const outputs = input.outputs.filter((out) =>
         [...input.inputs.keys()].some((i) => i !== out.index),
     );
@@ -169,47 +172,31 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
         const { fragment, continuationName } = buildAudioMixInput({
             sources,
             channels,
-            latencyMs: input.latencyMs,
             mixerName: n1InputMixerName(i),
             liveInputs: true,
         });
         parts.push(`${fragment} ${continuationName}. ! tee name=in${i}t`);
     }
 
-    // The N-1 FEATURE mixers, built through the shared `pacedMixer` so the
-    // `identity sync=true` clock pacer can never be dropped from one side of
-    // the codebase: a force-live aggregator keeps generating silence after ALL
-    // its sink pads go EOS, and nothing downstream paces it here — the 302M
-    // encode tail ends in an unsynced bus tee. Un-paced, an output whose every
-    // contributor has died free-runs at CPU speed and floods the bus (the
-    // measured OOM pathology, see `buildAudioMixInput`). The input fan-in is
-    // already paced inside that helper; these mixers it never sees.
+    // The N-1 feature mixers are aligned like the fan-ins: non-live, no budget,
+    // no pacer. Their matrix links release at running time + pace, so an output
+    // whose contributors all went dark runs on their gaps and never free-runs.
     const pcmFormat = input.pcmFormat ?? s302mFormatFor(undefined);
+    const caps = `audio/x-raw,rate=48000,channels=${channels}`;
     for (const out of outputs) {
-        const sink = buildBusSink(out.port);
+        const name = `omix${out.index}`;
         parts.push(
-            pacedMixer({
-                name: `omix${out.index}`,
-                latencyNs: OUTPUT_MIX_LATENCY_NS,
-                caps: `audio/x-raw,rate=48000,channels=${channels}`,
-                pacerName: `omix${out.index}_pace`,
-            }) +
+            alignedMixer({ name, caps, outName: `${name}_out` }) +
                 positionedTail(channels) +
-                ` ! ${build302mEncodeBranch({ format: pcmFormat, channels })} ! ${sink}`,
+                ` ! ${build302mEncodeBranch({ format: pcmFormat, channels })}` +
+                ` ! ${buildBusSink(out.port)}`,
         );
     }
 
-    // NON-leaky matrix queues, sized well past one source PES batch (same
-    // rationale as the transcoder's leaf queues — decoders release audio in
-    // ~150 ms bursts, and a small leaky queue here would shed most of every
-    // burst). Encode leaves drain ≫ real-time, so no deadlock.
     for (const out of outputs) {
         for (const i of input.inputs.keys()) {
             if (i === out.index) continue; // the N-1 exclusion
-            parts.push(
-                `in${i}t. ! queue leaky=0 max-size-time=500000000` +
-                    ` max-size-buffers=0 max-size-bytes=0 ! omix${out.index}.`,
-            );
+            parts.push(`in${i}t. ! ${n1MatrixLink(i, out.index)} ! omix${out.index}.`);
         }
     }
 

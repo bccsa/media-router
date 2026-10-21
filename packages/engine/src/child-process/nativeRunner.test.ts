@@ -25,7 +25,6 @@ const audioMatrix: RunnerStartOptions = {
     pipeline: 'unixfdsrc socket-path=/tmp/mr-bus-40000-abc.sock ! queue ! tsdemux ! avdec_s302m ! fakesink',
     linkOnPadAdded: [],
     busReports: [],
-    latchRepair: true,
     decoderThreadType: 'auto',
 } as RunnerStartOptions;
 
@@ -36,9 +35,6 @@ describe('nativeRunnerEligible', () => {
     });
 
     it('names the first python-only feature it finds', () => {
-        expect(nativeRunnerIneligibility({ ...audioMatrix, preserveSourceTimeline: { demux: 'd' } } as never)).toBe(
-            'preserveSourceTimeline',
-        );
         expect(
             nativeRunnerIneligibility({ ...audioMatrix, runnerHooks: [{ module: 'no_such_hook' }] } as never, {
                 MR_PLUGINS_DIR: '/nonexistent',
@@ -59,7 +55,8 @@ describe('nativeRunnerEligible', () => {
 
     it('treats null / empty python-only fields as absent', () => {
         expect(nativeRunnerIneligibility({ ...audioMatrix, runnerHooks: [] } as never)).toBeNull();
-        expect(nativeRunnerIneligibility({ ...audioMatrix, preserveSourceTimeline: undefined })).toBeNull();
+        expect(nativeRunnerIneligibility({ ...audioMatrix, rist: undefined } as never)).toBeNull();
+        expect(nativeRunnerIneligibility({ ...audioMatrix, rist: null } as never)).toBeNull();
     });
 
     it('accepts the video-player shape (Stage 3: gates, watches, probe, pad-link rules)', () => {

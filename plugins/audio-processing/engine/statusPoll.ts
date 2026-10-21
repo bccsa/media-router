@@ -59,6 +59,9 @@ export interface ChainMeters {
     inDb: number | null;
     /** Auto gain correction in dB (positive = lifting), null without the stage. */
     agcDb: number | null;
+    /** The chain's reported latency in ms (the limiter's lookahead, filters): content later
+     *  than its PTS, reported, not corrected (OQ-22); null when no stage reported one. */
+    latencyMs: number | null;
 }
 
 /** The LADSPA elements present, in chain order. */
@@ -163,11 +166,15 @@ export async function readChainMeters(
     // operator has no other way to see it.
     let inDb: number | null = null;
     let latency = 0;
+    let reported = false;
     for (const name of latencyElements(stages)) {
         const v = await read(name, 'latency');
-        if (typeof v === 'number') latency += v;
+        if (typeof v !== 'number') continue;
+        latency += v;
+        reported = true;
     }
     status.latency = `${(latency / SAMPLES_PER_MS).toFixed(1)} ms`;
+    const latencyMs = reported ? latency / SAMPLES_PER_MS : null;
 
     if (present.length > 0) {
         const [inL, inR] = await readPair(read, present[0], 'input');
@@ -195,5 +202,5 @@ export async function readChainMeters(
         );
     }
 
-    return { status, grDb, inDb, agcDb };
+    return { status, grDb, inDb, agcDb, latencyMs };
 }

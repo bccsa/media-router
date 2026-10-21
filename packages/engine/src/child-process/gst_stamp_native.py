@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
-"""The native stamping backend: loading `mrtsstamp` and splicing it in.
+"""The stamper's one backend: loading `mrtsstamp` (plugins/mpegts-core/native/mrtsstamp, a
+`GstBaseTransform` on `mrts::IdentityStamp`) and splicing it in, the twin of mr-gst-runner's
+stamper.cpp. There is no python fallback: without the plugin the egress runs unstamped and the
+module carries the rule-6 alarm (`gst_bus_stamper.load_native`).
 
-`mrtsstamp` (plugins/mpegts-core/native/mrtsstamp) is a `GstBaseTransform`
-wrapping `mrts::TimelineStamper` — the same object the native sidecars run, so
-the contract still has one definition per language and not three. It is the
-PREFERRED backend; `gst_stamp_probe` is the reference implementation and the
-fallback for a box where the plugin is missing or fails to load, and everything
-here is written so that failing is never fatal.
-
-What forced the split is measurement, not taste: the python probe's remaining
-cost is not TS parsing but fixed per-buffer overhead — PyGObject callback
-dispatch and the whole-buffer `bytes` copy pygobject makes on every
-`MapInfo.data` read — which no amount of optimising the python can remove (+323
-ticks/min on a routed producer on .42, against ~18 for the same maths inside
-mr-tssplit).
-
-The elements are spliced in ONCE, before PLAYING (a graph change is only safe
-while the pipeline is in NULL) and arrive INACTIVE; `active` is the lazy arm the
-runner's bus_attach/bus_detach paths toggle. Inactive is basetransform
-passthrough; the element still sees each buffer for one atomic size add (its
-`bytes-total` counter — the producer's throughput source, see `bytes_total`),
-and nothing else.
+The elements are spliced in ONCE, before PLAYING (a graph change is only safe while the
+pipeline is in NULL) and arrive INACTIVE; `active` is the lazy arm the runner's
+bus_attach/bus_detach paths toggle. Inactive, an element only counts bytes (`bytes-total`, the
+producer's throughput source, see `bytes_total`).
 """
 import os
 import sys
@@ -37,15 +24,16 @@ from gst_stamp_events import ELEMENT_PREFIX  # noqa: E402
 elements = {}
 
 
-def so_paths():
-    """Candidate paths for the native stamper plugin, in resolution order.
+def _log(line):
+    sys.stderr.write(f"[gst-runner.py] {line}\n")
+    sys.stderr.flush()
 
-    Mirrors `nativeBinaries.ts::resolveNativeBinary` for the owning plugin
-    (mpegts-core): the repo/deployed plugins tree first — a dev drop-in must be
-    able to win — then the packaged install root. NOT GST_PLUGIN_PATH: a plugin
-    on the global search path would be scanned into every GStreamer process on
-    the box, and this one must only ever exist where the runner puts it.
-    """
+
+def so_paths():
+    """Candidate paths for the stamper plugin, in resolution order: the repo/deployed plugins
+    tree first (a dev drop-in must be able to win), then the packaged install root, as
+    `nativeBinaries.ts` resolves the owning plugin (mpegts-core). Never GST_PLUGIN_PATH: a
+    plugin there would be scanned into every GStreamer process on the box."""
     so = "libgstmrtsstamp.so"
     here = os.path.dirname(os.path.abspath(__file__))
     # {src,dist}/child-process -> packages/engine -> repo root, as the TS
@@ -58,32 +46,24 @@ def so_paths():
 
 
 def load_plugin():
-    """Try to load the native stamper plugin. False => the python probe is used
-    instead, unchanged. Never fatal: a box without the plugin still runs the
-    contract, just at the python probe's cost. The CACHING of this outcome lives
-    in `gst_bus_stamper.load_native` (one attempt per process)."""
+    """Load the stamper plugin: None, or why it is not loaded (the tried paths, a failed
+    load's error), the alarm's detail. The caching lives in `gst_bus_stamper.load_native`."""
+    tried = []
     for path in so_paths():
         if not os.path.exists(path):
+            tried.append(path)
             continue
         try:
             plugin = Gst.Plugin.load_file(path)
-        except Exception as e:  # noqa: BLE001 — any load failure is a fallback
-            sys.stderr.write(f"[gst-runner.py] busStamp: mrtsstamp plugin at {path} "
-                             f"failed to load ({e}) — falling back to the python "
-                             f"probe\n")
-            sys.stderr.flush()
+        except Exception as e:  # noqa: BLE001 — report it and try the next candidate
+            tried.append(f"{path} ({getattr(e, 'message', None) or e})")
             continue
         if plugin is None:
+            tried.append(f"{path} (failed)")
             continue
-        sys.stderr.write(f"[gst-runner.py] busStamp: native stamper loaded "
-                         f"(mrtsstamp {plugin.get_version()} from {path})\n")
-        sys.stderr.flush()
-        return True
-    sys.stderr.write("[gst-runner.py] busStamp: no mrtsstamp plugin found "
-                     f"({', '.join(so_paths())}) — falling back to the "
-                     f"python probe\n")
-    sys.stderr.flush()
-    return False
+        _log(f"busStamp: native stamper loaded (mrtsstamp {plugin.get_version()} from {path})")
+        return None
+    return f"libgstmrtsstamp.so not loaded, tried {', '.join(tried)}"
 
 
 def egress_head(tee):
@@ -111,21 +91,8 @@ def egress_head(tee):
     return None, None
 
 
-def insert_elements(pipe):
-    """Splice an inactive `mrtsstamp` at the head of every `busout_*` egress.
-
-    Element API, not pipeline strings: the TS-side `buildBusSink` fragment stays
-    byte-identical. Inserted BEFORE the tee so one stamp fans out to every
-    consumer edge — on a tee branch each branch would see a shared
-    (non-writable) buffer and pay its own copy, and the branches
-    are created and destroyed at runtime anyway — and before the caps pair so
-    the element sees the mux's buffer lists (`egress_head`).
-
-    Inactive on arrival: `active` is the lazy arm, toggled from the same
-    bus_attach / bus_detach paths that arm and disarm the python probe. The
-    list coalescing is NOT gated by `active`: it is a bus-format property of
-    the egress, on from the first buffer.
-    """
+def busout_tees(pipe):
+    """Every `busout_*` tee of `pipe`."""
     # Collect first, splice second: adding elements invalidates a live
     # GstIterator (RESYNC), and the walk is the only place we need it.
     tees = []
@@ -136,82 +103,61 @@ def insert_elements(pipe):
             break
         if (element.get_name() or "").startswith("busout_"):
             tees.append(element)
+    return tees
+
+
+def insert_elements(pipe, tees):
+    """Splice an inactive `mrtsstamp` at the head of every egress in `tees`.
+
+    Element API, not pipeline strings: the TS-side `buildBusSink` fragment stays
+    byte-identical. Inserted BEFORE the tee so one stamp fans out to every
+    consumer edge — on a tee branch each branch would see a shared
+    (non-writable) buffer and pay its own copy, and the branches
+    are created and destroyed at runtime anyway — and before the caps pair so
+    the element sees the mux's buffer lists (`egress_head`). The list
+    coalescing is not gated by `active`: it is a bus-format property of the
+    egress, on from the first buffer.
+    """
     for tee in tees:
         name = tee.get_name()
         peer, sink = egress_head(tee)
         if peer is None:
-            sys.stderr.write(f"[gst-runner.py] busStamp: {name} has no upstream peer "
-                             f"— not inserting mrtsstamp\n")
-            sys.stderr.flush()
+            _log(f"busStamp: {name} has no upstream peer — not inserting mrtsstamp")
             continue
         stamp = Gst.ElementFactory.make("mrtsstamp", ELEMENT_PREFIX + name)
         if stamp is None:
-            sys.stderr.write("[gst-runner.py] busStamp: mrtsstamp factory missing "
-                             "— falling back to the python probe\n")
-            sys.stderr.flush()
-            return
+            _log("busStamp: mrtsstamp factory missing — egress will NOT be stamped")
+            break
         parent = tee.get_parent() or pipe
         parent.add(stamp)
         ok = (peer.unlink(sink)
               and peer.link(stamp.get_static_pad("sink")) == Gst.PadLinkReturn.OK
               and stamp.get_static_pad("src").link(sink) == Gst.PadLinkReturn.OK)
         if not ok:
-            # Put the graph back the way it was rather than ship a half-spliced
-            # pipeline; the python probe covers this tee instead.
-            sys.stderr.write(f"[gst-runner.py] busStamp: could not splice mrtsstamp "
-                             f"into {name} — falling back to the python probe\n")
-            sys.stderr.flush()
+            # Put the graph back the way it was rather than ship a half-spliced pipeline.
+            _log(f"busStamp: could not splice mrtsstamp into {name} — egress will NOT be stamped")
             parent.remove(stamp)
             peer.link(sink)
             continue
         stamp.sync_state_with_parent()
         elements[name] = stamp
     if elements:
-        sys.stderr.write("[gst-runner.py] busStamp: native stamper inserted on "
-                         f"{', '.join(sorted(elements))}\n")
-        sys.stderr.flush()
+        _log(f"busStamp: native stamper inserted on {', '.join(sorted(elements))}")
 
 
-def activate(el, name, repair_latch=True, house_timeline=False):
-    """Arm one spliced element. Setting `active` IS the whole arm: it resets the
-    latch and takes the element out of passthrough, in that order. The
-    latch-repair policy is set first so the fresh latch is built with it; so is
-    `house-timeline` (a transform producer: identity stamps, PES − 1 h)."""
-    el.set_property("repair-latch", bool(repair_latch))
-    if el.find_property("house-timeline") is not None:
-        el.set_property("house-timeline", bool(house_timeline))
-    elif house_timeline:
-        sys.stderr.write(f"[gst-runner.py] busStamp: {name} declares a house-timeline egress "
-                         "but this mrtsstamp predates the property — anchored stamps instead\n")
+def activate(el, name):
+    """Arm one spliced element: `active` forgets the stream and takes the element out of
+    passthrough."""
     el.set_property("active", True)
-    mode = ("house-timeline egress: PES − 1 h, no anchor" if house_timeline
-            else "first consumer edge")
-    sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "
-                     f"armed on {name} ({mode}, native mrtsstamp)\n")
-    sys.stderr.flush()
+    _log(f"busStamp: identity egress armed on {name} (PES - 1 h, native mrtsstamp)")
 
 
 def deactivate(el):
-    """Disarm one spliced element — drops the whole latch state, the same
-    contract the probe's removal has (see `gst_bus_stamper.release`)."""
+    """Disarm one spliced element; it forgets the stream."""
     try:
         el.set_property("active", False)
     except Exception:  # noqa: BLE001 — a disposed element is already disarmed
         pass
-
-
-def drift_stats(el):
-    """The element's `drift` property as the python probe's dict, or None while
-    it has nothing to report."""
-    s = el.get_property("drift")
-    if s is None:
-        return None
-    d = {k: s.get_value(k) for k in
-         ("ppm", "slewNs", "marginNs", "engageNs", "samples", "window")}
-    # `ppb` arrived with the dead-band removal (#751); an older native reports
-    # only the truncated ppm, which is the best it knows.
-    d["ppb"] = s.get_value("ppb") if s.has_field("ppb") else d["ppm"] * 1000
-    return d
 
 
 def copy_count_note(el):

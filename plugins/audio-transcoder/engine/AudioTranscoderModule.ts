@@ -232,21 +232,10 @@ export class AudioTranscoderModule extends GstPluginBase {
         return {
             pipeline: result.pipeline,
             restartOnError: true,
-            // Restart-proof lipsync (default on): shifts the demux branches onto
-            // the SOURCE timeline, which also anchors the perfect-timestamp
-            // encoders at source values — output PES PTS then match the source
-            // and downstream muxers align by real PTS across restarts. LEGACY
-            // PATH ONLY — the engine drops it under the time-sync contract
-            // (GstPluginBase.applyTimeSync), which stamps the egress instead.
-            ...(config.preserveSourceTimeline === false
-                ? {}
-                : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
-            // CONTRACT PATH: output PES already carry house time + 1 h, so the
-            // egress stamps by identity instead of anchoring here (ADR-0005 2026-10-08).
-            houseTimelineEgress: true,
             // Input demux retimed to the bus stamps per access unit (it otherwise
             // runs the input's PTS−PCR lead late, ~1.1 s at the OCC gate, and
-            // walks), so the identity egress is content-correct. Contract only.
+            // walks), so the output PES carry content time + 1 h and the identity
+            // egress is content-correct.
             alignBranchesToStamps: { demuxes: [DEMUX_NAME], transformProducer: true },
         };
     }

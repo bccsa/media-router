@@ -77,6 +77,10 @@ running = False
 # feeding the aggregate VU meter.
 bus_reports = set()
 
+# Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
+# no busReports entry. Equal to runner.cpp's kForwardedMessages.
+FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux")
+
 # VU throttle: only send when changed, heartbeat every 1s
 last_vu = None
 last_vu_time = 0
@@ -484,11 +488,9 @@ def on_bus_message(bus, message):
         # Stop the pipeline on error. `errored`: the source that just failed
         # can no longer carry a pipeline-level EOS, so the drain goes straight
         # at the decoder instead of burning its budget (see _eos_drain).
-        _stop_input_stall_watch()
         _fail_pipeline(ev, errored=True)
 
     elif t == Gst.MessageType.EOS:
-        _stop_input_stall_watch()
         # Already drained by definition — EOS reached the sinks, so the decoder
         # is idle and a second EOS would only stall the teardown.
         _fail_pipeline({"event": "eos"}, drain=False)
@@ -500,7 +502,6 @@ def on_bus_message(bus, message):
             if new == Gst.State.PLAYING:
                 _cancel_playing_watchdog()
                 source_gate.on_playing()
-                _arm_input_stall_watch()
             emit_event({"event": "state_change", "state": state_name})
 
     elif t == Gst.MessageType.ELEMENT:
@@ -508,17 +509,12 @@ def on_bus_message(bus, message):
         name = structure.get_name() if structure else None
         src = message.src
         src_name = src.get_name() if src else None
-        if name in ("mrtsstamp-anchor", "mrtsstamp-settled", "mrtsstamp-reanchor",
-                    "mrtsstamp-conditioned", "mrtsstamp-segment-warning",
-                    "mrtsstamp-map-failed"):
-            # The native egress stamper reports through the bus (it has no other
-            # way home). Translated here into the SAME engine events the python
-            # probe emits — identical field names, identical message text — so
-            # which backend stamped is invisible to everything downstream.
+        if gst_bus_stamper.is_stamper_message(name):
+            # The egress stamper reports through the bus: the identity log line and the
+            # segment warning, worded as mr-gst-runner words them.
             gst_bus_stamper.handle_message(src_name, name, structure)
-        elif name == "mrlateness" and src_name:
-            # Lateness taps report unsubscribed, so inputs added at runtime do too.
-            emit_plugin_event(f"mrlateness:{src_name}", gst_structure_to_dict(structure))
+        elif name in FORWARDED_ELEMENT_MESSAGES and src_name:
+            emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))
         elif name and src_name and (src_name, name) in bus_reports:
             # Subscribed via `busReports` — forward the whole structure on the
             # generic `<structure>:<element>` channel (e.g. `level:sclevel`).
@@ -1125,205 +1121,6 @@ def _install_pad_link_rule(pipe, rule):
 
 
 # ---------------------------------------------------------------------------
-# preserveSourceTimeline — carry the SOURCE PES timeline through a tsdemux
-# ---------------------------------------------------------------------------
-# tsdemux erases the source timeline (buffer PTS rebased ~0 on an identity
-# segment), so everything downstream — including this pipeline's own output
-# mpegtsmux — stamps a fresh per-incarnation timeline. Downstream muxers then
-# anchor A/V branches by ARRIVAL, and every restart re-rolls lipsync (the
-# 2026-07-23 incident; TodoNotes:20). This opt-in feature latches the first
-# PES PTS per PID on the demux SINK pad, then shifts each media src pad onto
-# the source timeline via GstPad.set_offset() so output PES PTS/PCR carry
-# source values. Restart ⇒ re-latch ⇒ same timeline. Mid-stream source
-# discontinuities and the 26.5 h PTS wrap are NOT followed (plan non-goals) —
-# the offset is per-incarnation, exactly like today's anchor.
-_preserve_timeline = None   # {"latch", "sink_pad", "sink_probe_id", "pending"}
-
-
-def _clear_preserve_timeline():
-    global _preserve_timeline
-    _preserve_timeline = None
-
-
-def _install_preserve_timeline(pipe, cfg):
-    """cfg = {"demux": "<element name>"} from the pipeline description."""
-    global _preserve_timeline
-    _clear_preserve_timeline()
-    if not cfg:
-        return
-    demux_name = cfg.get("demux")
-    demux = pipe.get_by_name(demux_name) if demux_name else None
-    if not demux:
-        sys.stderr.write(
-            f"[gst-runner.py] preserveSourceTimeline: element "
-            f"'{demux_name}' not found — feature disabled for this run\n")
-        return
-    import ts_timeline  # lazy, pure stdlib (embedded-core pattern)
-
-    state = {"latch": ts_timeline.TimelineLatch(),
-             "sink_pad": demux.get_static_pad("sink"),
-             "sink_probe_id": None,
-             "pending": 0,       # armed src pads still awaiting their offset
-             "attempts": {},     # per-PID unlatched-buffer retry counts
-             "watch": False,     # post-latch discontinuity watch active
-             "last": {},         # per-PID last COHERENT PES PTS (watch mode)
-             "proposed": {},     # per-PID epoch its last anomaly proposed
-             "anom": 0,          # consecutive anomalous buffers
-             "nbuf": 0,          # buffer stride counter (watch samples 1-in-8)
-             "fired": False}
-    _preserve_timeline = state
-
-    # Post-latch discontinuity watch: a genuine mid-stream source PTS jump
-    # (upstream encoder restart, playout switch) stales every latched offset
-    # and silently re-rolls downstream A/V pairing. Anything past the
-    # stamper's thresholds is a REAL discontinuity: emit a `timeline_discont`
-    # pipeline error and let the normal restartOnError path rebuild + re-latch
-    # within seconds. Sampled 1-in-8 buffers.
-    #
-    # The RULE is `TimelineStamper`'s, not a copy of it: `_delta` (wrap-folded,
-    # so a legal 2^33 crossing reads as the tiny step it is) and `_coherent`
-    # come from the module that defines the contract, and the thresholds with
-    # them. This path had carried its own copy of the OLD, defective rule —
-    # reference advanced ACROSS the anomaly, one anomaly counted per buffer,
-    # nothing but the cross-PID count to confirm with — which is exactly the
-    # 2026-08-13 field bug fixed in the stamper: a single-PID source that loops
-    # reports one anomaly, comes back coherent from the epoch it jumped to, and
-    # never fires. `GstPluginBase.applyTimeSync` now drops this whole feature
-    # from every description; it is deleted with `preserveSourceTimeline`.
-    _WATCH_STRIDE = 8
-    _CONFIRM = ts_timeline.TimelineStamper._CONFIRM
-
-    def watch_scan(data):
-        for pkt in ts_timeline.iter_packets(data):
-            if not (pkt[1] & 0x40):
-                continue
-            pts = ts_timeline.read_pes_pts(pkt)
-            if pts is None:
-                continue
-            pid = ts_timeline.ts_pid(pkt)
-            lastp = state["last"].get(pid)
-            if lastp is None:
-                state["last"][pid] = pts
-                continue
-            if ts_timeline.TimelineStamper._coherent(pts, lastp):
-                # Continues from the pre-jump reference, so whatever it
-                # proposed before was an outlier: advance and forget it.
-                state["last"][pid] = pts
-                state["proposed"].pop(pid, None)
-                continue
-            state["anom"] += 1
-            cand = state["proposed"].get(pid)
-            state["proposed"][pid] = pts
-            # Two ways to confirm, either sufficient: the SAME PID coming back
-            # coherent from the epoch its last anomaly proposed (the only path
-            # a single-PID stream has), or `_CONFIRM` consecutive anomalous
-            # buffers whichever PIDs reported them (a muxed source, where the
-            # second PID confirms a buffer later). The reference is deliberately
-            # NOT advanced here, so a merely glitched PID can come back to it.
-            confirmed = (cand is not None
-                         and ts_timeline.TimelineStamper._coherent(pts, cand))
-            if (confirmed or state["anom"] >= _CONFIRM) and not state["fired"]:
-                d = ts_timeline.TimelineStamper._delta(pts, lastp)
-                state["fired"] = True
-                emit_event({
-                    "event": "error",
-                    "kind": "timeline_discont",
-                    "message": (
-                        f"source timeline discontinuity on pid 0x{pid:x}"
-                        f" ({lastp} -> {pts}, {d / 90000.0:+.2f}s) — "
-                        f"restarting pipeline to re-latch"),
-                })
-            return
-        state["anom"] = 0
-
-    def on_sink_buffer(_pad, info):
-        buf = info.get_buffer()
-        if buf is None or state["fired"]:
-            return Gst.PadProbeReturn.OK
-        if state["watch"]:
-            state["nbuf"] += 1
-            if state["nbuf"] % _WATCH_STRIDE:
-                return Gst.PadProbeReturn.OK
-        ok, mi = buf.map(Gst.MapFlags.READ)
-        if ok:
-            try:
-                data = bytes(mi.data)
-            finally:
-                buf.unmap(mi)
-            state["latch"].feed(data)     # latch-once per PID; cheap when done
-            if state["watch"]:
-                watch_scan(data)
-        return Gst.PadProbeReturn.OK
-
-    def maybe_release_sink_probe():
-        # All armed pads resolved → switch the sink probe from full-rate
-        # latching into the sampled discontinuity watch (kept for the life of
-        # the pipeline; ~1-in-8 buffers pay a header scan).
-        if state["pending"] == 0 and not state["watch"]:
-            state["watch"] = True
-            sys.stderr.write(
-                "[gst-runner.py] preserveSourceTimeline: all pads shifted — "
-                "watching for source discontinuities\n")
-
-    def on_first_buffer(pad, info, pid):
-        buf = info.get_buffer()
-        if buf is None:
-            # Non-buffer item on a BLOCK|BUFFER probe — let it through and
-            # stay armed (returning OK would keep the pad blocked forever).
-            return Gst.PadProbeReturn.PASS
-        pts = buf.pts
-        if pts == Gst.CLOCK_TIME_NONE:
-            # A PTS-less leading buffer (e.g. codec headers mid-resync): pass
-            # it through and keep waiting for the first STAMPED buffer — giving
-            # up here would run the whole incarnation un-shifted (seen live
-            # 2026-07-23 during the swap-starvation churn).
-            return Gst.PadProbeReturn.PASS
-        off = state["latch"].offset_ns(pid, pts)
-        if off is None:
-            # Latch hasn't seen a PES PTS for this PID yet (e.g. the leading
-            # PES carried none). Pass and retry on subsequent buffers, bounded
-            # so a pathological stream can't pay probe overhead forever.
-            state["attempts"][pid] = state["attempts"].get(pid, 0) + 1
-            if state["attempts"][pid] < 300:
-                return Gst.PadProbeReturn.PASS
-            state["pending"] -= 1
-            sys.stderr.write(
-                f"[gst-runner.py] preserveSourceTimeline: PID 0x{pid:x} never "
-                f"latched a source PTS — pad {pad.get_name()} left un-shifted\n")
-            maybe_release_sink_probe()
-            return Gst.PadProbeReturn.REMOVE
-        state["pending"] -= 1
-        pad.set_offset(off)
-        sys.stderr.write(
-            f"[gst-runner.py] preserveSourceTimeline: {pad.get_name()} "
-            f"pid=0x{pid:x} offsetNs={off} (sourcePts90k="
-            f"{state['latch'].first_pts.get(pid)} firstBufPtsNs={pts})\n")
-        maybe_release_sink_probe()
-        return Gst.PadProbeReturn.REMOVE
-
-    def on_demux_pad_added(_element, pad):
-        name = pad.get_name() or ""
-        if not (name.startswith("audio_") or name.startswith("video_")):
-            return
-        pid = _pid_from_tsdemux_pad_name(name)
-        if pid is None:
-            sys.stderr.write(
-                f"[gst-runner.py] preserveSourceTimeline: no PID in pad name "
-                f"'{name}' — pad left un-shifted\n")
-            return
-        state["pending"] += 1
-        # BLOCK|BUFFER: the callback runs with the pad blocked BEFORE the
-        # first buffer passes, so the recomputed segment (set_offset) reaches
-        # downstream ahead of that buffer. Validated on the rig (plan gate 1).
-        pad.add_probe(Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER,
-                      on_first_buffer, pid)
-
-    state["sink_probe_id"] = state["sink_pad"].add_probe(
-        Gst.PadProbeType.BUFFER, on_sink_buffer)
-    demux.connect("pad-added", on_demux_pad_added)
-
-
-# ---------------------------------------------------------------------------
 # alignBranchesToStamps — anchor a mux's input branches to the PRODUCER'S STAMPS
 # ---------------------------------------------------------------------------
 # THE DEFECT (measured on the .202 X-Chain rig, 2026-08-14). A multi-input mux
@@ -1333,8 +1130,8 @@ def _install_preserve_timeline(pipe, cfg):
 # producer's house-clock STAMP, so the branch is right whenever that one stamp
 # was exact — and wrong by however much it was NOT, for the whole incarnation.
 #
-# It is not exact on a REORDERED stream. The stamp is `anchor + (firstPES −
-# ref)` under a monotone floor (ts_timeline.TimelineStamper), and a B-frame
+# It is not exact on a REORDERED stream. The stamp is the buffer's first timing
+# PES on the house timeline under a monotone floor (mrtsstamp), and a B-frame
 # stream's per-buffer FIRST PES walks backwards, so those buffers' stamps are
 # clamped UP to the previous one — measured on the live video leg: K spread
 # 120.009 ms (= the reorder depth), against 0.316 ms on the audio leg of the
@@ -1513,9 +1310,10 @@ _BRANCH_ALIGN_KEY_BYTES = branch_retime.KEY_BYTES
 
 
 def _install_branch_stamp_align(pipe, cfg):
-    """cfg = {"demuxes": ["demux_0", ...], "transformProducer"?: bool} from the
-    pipeline description. `transformProducer` retimes every access unit instead
-    (`branch_retime.install`); without it, this mux-branch path."""
+    """cfg = {"demuxes": ["demux_0", ...], "transformProducer"?: bool, "privatePads"?:
+    bool} from the pipeline description. `transformProducer` retimes every access unit
+    instead (`branch_retime.install`), cue pads too under `privatePads`; without it,
+    this mux-branch path."""
     _clear_branch_align()
     if not cfg:
         return
@@ -1523,6 +1321,7 @@ def _install_branch_stamp_align(pipe, cfg):
     if not names:
         return
     producer = bool(cfg.get("transformProducer"))
+    private_pads = bool(cfg.get("privatePads"))
     import ts_psi          # lazy, pure stdlib (embedded-core pattern)
     import ts_timeline
 
@@ -1537,7 +1336,8 @@ def _install_branch_stamp_align(pipe, cfg):
         if sink_pad is None:
             continue
         if producer:
-            branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name)
+            branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name,
+                                  private_pads)
             continue
         state = {
             "name": name,
@@ -1827,12 +1627,10 @@ def _install_branch_stamp_align(pipe, cfg):
 
 
 # ---------------------------------------------------------------------------
-# Bus egress stamper (time-sync contract) — the PRODUCER stamps the timeline
+# Bus egress stamper — every egress stamped by identity, PES − 1 h
 # ---------------------------------------------------------------------------
-# The subsystem lives in `gst_bus_stamper.py` next to this file (probe install,
-# lazy arm/disarm per consumer edge, native `mrtsstamp` splice, engine events),
-# and the arithmetic it applies is `ts_timeline.TimelineStamper` — the one
-# python definition of the contract, shared with the sidecars. What stays here
+# The subsystem lives in `gst_bus_stamper.py` next to this file (the `mrtsstamp`
+# splice, lazy arm/disarm per consumer edge, its bus messages). What stays here
 # is the wiring: the emitter it reports through, and the consumer-edge
 # bookkeeping only this file knows about (`_bus_branches`).
 import gst_bus_stamper                                            # noqa: E402
@@ -1850,12 +1648,12 @@ def _release_bus_stamper(tee_name):
     """Disarm `tee_name`'s stamper once its LAST consumer edge is gone.
 
     Held edges keep it armed, so one consumer of several detaching changes
-    nothing. A tee that gets a consumer again later re-anchors from that
-    moment, which is the established re-anchor semantics.
+    nothing. A tee that gets a consumer again later is stamped afresh (the element
+    forgets the stream on every transition).
 
     Note the stall watchdog's in-place edge RESET goes through here too when
     the stalled edge is a tee's only one: that reset EOFs the zombie consumer
-    so it respawns, and a fresh consumer wants a fresh anchor anyway.
+    so it respawns.
     """
     for entry in _bus_branches.values():
         if entry.get("tee_name") == tee_name:
@@ -1892,9 +1690,8 @@ def _apply_contract_clock(pipe, live_capture_clock=False):
     live consumer frozen on one frame).
 
     The contract survives that: the producer stamp is base-time independent by
-    construction — the anchored backends read house time as `clock - base_time`,
-    the identity ones map a stamp to running time `stamp - base_time`
-    (`gst_stamp_probe.house_now`, `gst_mrtsstamp_clock_now`), and `unixfdsink`
+    construction — the identity stamp maps to running time `stamp - base_time`
+    (`mrtsstamp`, `gst_mrtsstamp_clock_now`), and `unixfdsink`
     transmits `segment_to_running_time(pts) + base_time`, so the base-time
     cancels and the wire carries the same absolute house time either way. Only
     the pinning is skipped; the clock half is identical. Bus-fed producers
@@ -2022,22 +1819,15 @@ def handle_start(data):
     for rule in pad_link_rules:
         _install_pad_link_rule(pipeline, rule)
 
-    # Source-timeline preservation (opt-in; must be armed BEFORE PLAYING so
-    # the sink-pad latch sees the very first TS bytes).
-    _install_preserve_timeline(pipeline, data.get("preserveSourceTimeline"))
-
     # Multi-branch stamp alignment (contract-only; same window and the same
     # reason — the first TS bytes carry the mapping every branch is anchored to,
     # and a branch that has already emitted cannot be re-zeroed without a jolt).
     _install_branch_stamp_align(pipeline, data.get("alignBranchesToStamps"))
-    _start_input_stall_watch(pipeline, data.get("inputStallWatch"))
 
-    # The producer half of the time-sync contract: stamp every bus egress with
-    # house-clock media time. Enabled here, before PLAYING, for the
-    # same reason as above — an attach can land the moment the pipeline starts
-    # and the probe must own that edge's first buffer. The probes themselves arm
-    # per tee as consumers attach.
-    gst_bus_stamper.enable(pipeline, data.get("latchRepair"), data.get("houseTimelineEgress"))
+    # The bus egress stamp, spliced here, before PLAYING, for the same reason as
+    # above: an attach can land the moment the pipeline starts and the element must
+    # own that edge's first buffer. It arms per tee as consumers attach.
+    gst_bus_stamper.enable(pipeline)
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
@@ -2141,8 +1931,10 @@ def handle_start(data):
         playing_watchdog_id = GLib.timeout_add(timeout_ms, _on_playing_timeout)
 
     running = True
-    # Which timing plugin this start loaded (None: none); the engine clears rule 6's alarm on one.
-    emit_event({"event": "started", "timingPlugin": gst_native_plugins.timing_plugin()})
+    # Which timing plugin this start loaded (None: none); the engine clears rule 6's alarm on
+    # one, so a missing stamper plugin reports none.
+    emit_event({"event": "started",
+                "timingPlugin": None if gst_bus_stamper.missing() else gst_native_plugins.timing_plugin()})
 
 def handle_stop(data=None):
     """Stop the pipeline.
@@ -2157,14 +1949,12 @@ def handle_stop(data=None):
     source_gate.stop()
     _clear_pending_bus_attaches()
     _live_input_branches.clear()
-    _clear_preserve_timeline()
     _clear_branch_align()
     gst_bus_stamper.clear()
     _clear_runner_hooks()
     _stop_rist()
     _stop_ts_probe()
     _stop_render_watch()
-    _stop_input_stall_watch()
     if pipeline:
         _teardown_pipeline(pipeline)
         running = False
@@ -3101,6 +2891,16 @@ def handle_bus_reinput(data):
     emit_event({"event": "bus_reinput_done", "id": req_id})
 
 
+def _branch_src_pad(bin_):
+    """The branch's src pad: "src" when ghosted here (a live add), the parser's
+    "ghost<N>" on a start-time bin; a non-live mixer waits on a pad left behind."""
+    pad = bin_.get_static_pad("src")
+    if pad is not None:
+        return pad
+    res, pad = bin_.iterate_src_pads().next()
+    return pad if res == Gst.IteratorResult.OK else None
+
+
 def _remove_live_bin(bin_, agg=None):
     """Stop the branch (the pushing side — NULL ends its thread; no pad probe,
     one on its own src pad would deadlock the NULL join), unlink it, release
@@ -3109,7 +2909,7 @@ def _remove_live_bin(bin_, agg=None):
     # polled socket may fire for a branch that is being taken away.
     source_gate.forget_sources_in(bin_)
     bin_.set_state(Gst.State.NULL)
-    src = bin_.get_static_pad("src")
+    src = _branch_src_pad(bin_)
     agg_pad = src.get_peer() if src is not None else None
     if src is not None and agg_pad is not None:
         src.unlink(agg_pad)
@@ -3178,7 +2978,9 @@ def handle_bus_input_add(data):
     try:
         bin_ = Gst.parse_bin_from_description(desc, False)
     except GLib.Error as e:
-        emit_command_error(req_id, f"bus_input_add: parse failed: {e.message}")
+        # Live adds are never stood in (B-17): an unloaded plugin's element names the alarm.
+        emit_event(gst_native_plugins.refuse_live_add(
+            req_id, desc, f"bus_input_add: parse failed: {e.message}"))
         return
     bin_.set_name(name)
     tail = bin_.find_unlinked_pad(Gst.PadDirection.SRC)
@@ -3741,34 +3543,13 @@ def _stop_render_watch():
 
 
 # ---------------------------------------------------------------------------
-# Input stall watch (`inputStallWatch` config) — lives in gst_input_stall_watch.py
+# Non-live source heads — lives in gst_source_gate.py
 # ---------------------------------------------------------------------------
-# The `watchdog` element's contract without its per-buffer cost, and without
-# restart-looping on an input that never delivered. The module owns the probes
-# and the tick; this file wires in the two things only the runner knows — how
-# to emit an engine event and how to fail the pipeline the way the bus ERROR
-# path does (errored teardown, loop quit → the parent's restartOnError).
-import gst_input_stall_watch as input_stall
 import gst_source_gate as source_gate                       # noqa: E402
-# Non-live source heads (data-gated PLAYING deadline, udpsrc silence) — see
-# gst_source_gate.py. Configured here, once every callable it needs exists.
-# Late-bound `emit_event` (the suites swap it for a collector), same as the
-# stall watch above.
+# Data-gated PLAYING deadline and udpsrc silence. Configured here, once every
+# callable it needs exists; `emit_event` late-bound (the suites swap it).
 source_gate.configure(lambda obj: emit_event(obj), _fail_pipeline, _arm_playing_watchdog,
                       lambda: pipeline)
-
-
-def _fail_pipeline_on_stall():
-    _teardown_pipeline(pipeline, errored=True)
-    if loop and loop.is_running():
-        loop.quit()
-
-
-input_stall.configure(lambda obj: emit_event(obj), _fail_pipeline_on_stall,
-                      lambda: pipeline is not None)
-_start_input_stall_watch = input_stall.start
-_arm_input_stall_watch = input_stall.arm
-_stop_input_stall_watch = input_stall.stop
 
 
 # ---------------------------------------------------------------------------

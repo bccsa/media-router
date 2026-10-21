@@ -23,7 +23,7 @@ import {
 } from './lspConfig.js';
 
 /** The LADSPA-backed modes plus the two that build no LSP element: `none`
- *  (no stage) and `ducker` (native `level`→`volume` loop). */
+ *  (no stage) and `ducker` (the native `mrducker` element). */
 export type DynamicsMode = 'none' | 'ducker' | LadspaDynMode;
 
 /** Version-suffixed LADSPA element names are resolved at start via
@@ -37,7 +37,8 @@ export const DYN_SUFFIXES = {
     compressor: 'compressor-stereo',
     gate: 'gate-stereo',
     expander: 'expander-stereo',
-    /** The ONE surviving `sc-*` element: an externally keyed gate. 4-ch in. */
+    /** The ONE surviving `sc-*` element: an externally keyed gate. 4-ch in, and
+     *  no PTS out (the LADSPA wrapper's 4 -> 2 path): `mrptskeep` follows it. */
     gateSidechain: 'sc-gate-stereo',
 } as const;
 
@@ -95,7 +96,7 @@ export interface ChainStages {
     /** gate mode with an external key → the 4-channel `sc-gate-stereo` path. */
     keyedGate: boolean;
     limiterElement: string | null;
-    /** Sidechain `level` branch built (ducker with a sidechain wired). */
+    /** Ducker mode with a sidechain wired: the `mrducker` stage is built. */
     duckerKey: boolean;
 }
 
@@ -131,8 +132,8 @@ export function limiterProps(config: Record<string, unknown>): string[] {
 
 /**
  * Resolve one live config change to an element property write, or null when
- * the change has no element to drive (stage disabled, ducker params — the
- * envelope reads those straight off `this.config`, structural keys).
+ * the change has no element here to drive (stage disabled, structural keys, the
+ * ducker's settings: `duckerStage.ts` owns those).
  */
 export function resolveLiveTarget(
     key: string,

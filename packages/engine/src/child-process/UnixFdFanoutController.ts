@@ -31,7 +31,7 @@ export interface LiveInputBranchTarget {
 /**
  * Bus fan-out control for a non-GStreamer producer (hls-player): bridges the
  * BusFanoutCoordinator's attach/detach calls to the module's
- * `unixfd-fanout.py` sidecar over its stdin (JSON lines, same verbs as the
+ * `mr-bus-fanout` sidecar over its stdin (JSON lines, same verbs as the
  * gst runner).
  *
  * Owns the DESIRED edge set so sidecar lifecycle is invisible to the engine:

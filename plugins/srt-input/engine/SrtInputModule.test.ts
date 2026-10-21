@@ -221,7 +221,6 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         expect(desc!.pipeline).toContain(
             ' ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=2 ',
         );
-        expect(desc!.houseTimelineEgress).toBe(true);
         expect(desc!.busReports).toEqual([
             { element: 'restamp', structure: 'mrtsrestamp-stats' },
             { element: 'restamp', structure: 'mrtsrestamp-pid' },

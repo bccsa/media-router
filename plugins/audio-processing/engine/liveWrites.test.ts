@@ -30,7 +30,26 @@ describe('resolveLiveWrites', () => {
 
     it('writes nothing for a key no built stage owns', () => {
         expect(resolveLiveWrites('agcTarget', -20, stages())).toEqual([]);
-        expect(resolveLiveWrites('duckDepth', -12, built)).toEqual([]); // envelope reads config
+        expect(resolveLiveWrites('duckDepth', -12, built)).toEqual([]); // no ducker here
         expect(resolveLiveWrites('mode', 'gate', built)).toEqual([]); // structural
+    });
+
+    it('routes the duck settings to the ducker element when it is built', () => {
+        const ducking = stages({ dynMode: 'ducker', duckerKey: true });
+        expect(resolveLiveWrites('threshold', -20, ducking)).toEqual([
+            { element: 'ducker', prop: 'threshold', value: -20 },
+        ]);
+        expect(resolveLiveWrites('duckDepth', -50, ducking)).toEqual([
+            { element: 'ducker', prop: 'depth', value: -40 }, // clamped to the element
+        ]);
+        expect(resolveLiveWrites('hold', 300, ducking)).toEqual([
+            { element: 'ducker', prop: 'hold', value: 300 },
+        ]);
+        // No key wired: no mrducker to write to.
+        expect(resolveLiveWrites('threshold', -20, stages({ dynMode: 'ducker' }))).toEqual([]);
+        // A shared knob in a LADSPA mode stays on its element, never the ducker.
+        expect(resolveLiveWrites('attack', 10, built)).toEqual([
+            { element: 'dyn', prop: 'attack-time', value: 10 },
+        ]);
     });
 });

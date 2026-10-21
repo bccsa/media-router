@@ -258,7 +258,6 @@ export class MpegTsIpInputModule extends GstPluginBase {
             pipeline: pipeline + probeTap,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
-            houseTimelineEgress: true,
             busReports: restampBusReports(),
             tsProbe: { appsink: 'tsprobe' },
             udpSilenceRestartMs: multicast ? 60_000 : 0,

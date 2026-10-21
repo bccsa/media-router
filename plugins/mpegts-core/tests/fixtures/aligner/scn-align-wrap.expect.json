@@ -1,0 +1,14 @@
+{
+  "scenario": "scn-align-wrap",
+  "graph": "3 x 302M -> mrtsdemux -> audio-mixer while the house clock crosses the 33-bit PES wrap (a time namespace sets CLOCK_MONOTONIC)",
+  "pipelines": "mixer3",
+  "seconds": 20,
+  "inputs": {
+    "in0": {"seed": 41},
+    "in1": {"seed": 42},
+    "in2": {"seed": 43}
+  },
+  "expect": {
+    "wrap_after_s": [4.0, 16.0]
+  }
+}

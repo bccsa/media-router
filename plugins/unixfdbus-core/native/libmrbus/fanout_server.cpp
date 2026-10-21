@@ -223,7 +223,7 @@ void FanoutServer::drop_client(int sock) {
     clients_.erase(it);
 }
 
-void FanoutServer::broadcast(const uint8_t* data, size_t len, int64_t pts_ns) {
+void FanoutServer::broadcast(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags) {
     if (clients_.empty()) return;   // tee with no branches: drop, keep flowing
     buffer_id_++;
     NewBufferPayload p{};
@@ -232,7 +232,7 @@ void FanoutServer::broadcast(const uint8_t* data, size_t len, int64_t pts_ns) {
     // mapped the payload onto the house timeline (see the header).
     p.pts = (uint64_t)(pts_ns < 0 ? mono_ns() : pts_ns);
     p.dts = p.duration = p.offset = p.offset_end = CLOCK_TIME_NONE;
-    p.flags = 0;
+    p.flags = flags;
     p.memory_type = MEMORY_TYPE_DEFAULT;
     p.n_memory = 1;
     p.n_meta = 0;

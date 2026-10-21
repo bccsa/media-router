@@ -1,165 +1,34 @@
-/* mrtsstamp — the time-sync contract's producer-side egress stamper, as a
- * GStreamer element.
+/* mrtsstamp (plan ch. 6 WI-P2-3): the bus egress stamp, by identity only. Every bus producer's
+ * PES carry house time + 1 h, so a buffer is stamped with `mrts::IdentityStamp` (PES - 1 h,
+ * unwrapped near the clock) and its running time is `max(stamp - base_time, 0)`.
  *
- * ADR-0005 decision 2: a producer maps its source's PES timeline onto the house
- * clock ONCE and rewrites its bus buffers' PTS/DTS with the result, so every
- * consumer inherits identical timing by construction instead of re-deriving it
- * from its own arrival. This element is the C++ half of that; the python probe
- * in the runner's `gst_bus_stamper.py` (`arm`) is the reference and the
- * fallback, and the arithmetic below is not a second implementation — it is
- * `mrts::TimelineStamper` verbatim, the same object `mr-tssplit` and
- * `mr-bus-fanout` run, conformance-pinned buffer-for-buffer against the python
- * one.
- *
- * WHY an element at all: the python probe's cost is not TS parsing (one fused
- * parse pass already took that term down 2x), it is FIXED per-buffer overhead —
- * PyGObject callback dispatch plus the whole-buffer `bytes` copy pygobject makes
- * on every `MapInfo.data` read. Measured on the Pi 400 at 10.9.1.42
- * (2026-08-12) that left a routed producer +323 cgroup ticks/min while the same
- * arithmetic inside `mr-tssplit` cost ~18. The only way down is off the python
- * probe, so: same maths, native call path, no copy.
- *
- * PLACEMENT: at the HEAD of the bus egress — directly after the mux, before the
- * `capssetter ! capsfilter` pair and the `busout_*` tee (the runner inserts it
- * there via the element API — the pipeline STRINGS are untouched). Upstream of the tee the
- * buffer is normally singly-owned, so basetransform hands it to us in place with no copy
- * at all; downstream of the tee every branch would see a shared buffer and pay
- * a (shallow) copy each. `copy-count` counts exactly that case so the claim
- * stays measured rather than assumed.
- *
- * COALESCE (ADR-0011): `mpegtsmux alignment=7` emits every access unit as a
- * GstBufferList of 1316-byte buffers, and a GstBaseTransform — capssetter,
- * capsfilter, this element's own base class — has no chain_list, so the
- * default pad handler dismantles the list into one chain() per member. On the
- * bus that made every 1316 bytes a unixfd message (memfd + sendmsg + recvmsg
- * + release), ~760 of them per second at 8 Mbit/s, per hop. Measured 2026-09-02
- * (Pi 5, 8.6 Mbit/s over unixfdsink→unixfdsrc): the hop cost 25 producer + 45
- * consumer ticks/10 s at 1316-byte buffers and 11 + 9 at 24 KB buffers; on the
- * Pi 4 mpegts-muxer (two hops) the transport was ~45 % of 0.54 core. A large
- * mux `alignment` is not the answer: it holds packets across access units
- * (a 128 kbit/s audio mux at alignment=128 emitted once per ~950 ms). So the
- * sink pad gets a chain_list that concatenates each list into ONE buffer —
- * one buffer per access unit, no added latency — and hands that to the base
- * chain. Being first in the chain is what makes this possible: nothing before
- * us has taken the list apart yet. Bytes per second and packet alignment are
- * unchanged; only the buffer boundaries move, and every bus consumer already
- * accepts arbitrary whole-packet buffers (the native ingest chunks at 24 KB).
- *
- * LAZY ARM: the `active` property is the contract's arm/disarm. Inactive is
- * basetransform passthrough; the buffer is still handed to `transform_ip`
- * (`transform_ip_on_passthrough` on) but only for the `bytes-total` counter —
- * one size read and one atomic add — and the stamping path stays behind the
- * `active` check, so a tee with no consumer edge pays nothing for stamping.
- * The counter is the producer's egress byte counter, read by the runner's
- * throughput tracker instead of a per-buffer python probe (which cost 0.5-0.7
- * of a core per producer on a Pi 4, 2026-09-02). Activating starts a FRESH
- * latch (an anchor only ever means anything to the consumers that held it);
- * deactivating drops all state; the byte counter runs across both.
- *
- * FILE SIZE, deliberately over the repo's ~250-line guideline (CLAUDE.md): a
- * GStreamer element is one cohesive unit — GObject boilerplate, property
- * plumbing and `transform_ip` are a single registration contract that reads as
- * one file and cannot be understood in halves. The timeline arithmetic, which
- * is the part that would be worth extracting, IS already extracted: it lives in
- * `mrts::TimelineStamper` and is maintained in line-for-line parity with
- * `py/ts_timeline.py`. What is left here is the element, and splitting THAT
- * would only add a second place to look for one registration.
- */
+ * Both runners splice one element at the head of each `busout_*` egress, ahead of the
+ * `capssetter ! capsfilter` pair, where the buffer is still singly owned (no copy) and the mux's
+ * per-access-unit buffer lists are still whole, so `chain_list` can merge each into one bus
+ * buffer (ADR-0011). `active` is the lazy arm: inactive it only counts bytes (`bytes-total`). */
 #include <gst/gst.h>
 #include <gst/base/gstbasetransform.h>
 
 #include <atomic>
-#include <vector>
 
-#include "mrts/ts_timeline.h"
+#include "mrts/ts_house.h"
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.7.0"
+/* 3.0.0: the anchored stamper, its properties and messages removed (WI-P2-3). */
+#define MRTSSTAMP_VERSION "3.0.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
 
-/* Bus caps, identical to busHelpers.BUS_TS_CAPS minus packetsize. Since the
- * egress-head splice (ADR-0011) the element sits directly on the PRODUCER's
- * src (mpegtsmux, srtsrc, ristsrc, an appsrc…), ahead of the caps pair that
- * pins the bus caps, so it negotiates whatever TS caps that producer emits —
- * including a `streamheader` field from mpegtsmux, which caps intersection
- * keeps and the downstream capssetter then strips. Leaving packetsize open
- * keeps it from inventing a negotiation failure the python probe never had.
- * The element test drives it from a caps-only appsrc for exactly this reason. */
+/* Bus caps without packetsize: the element sits on the producer's own src, ahead of the caps
+ * pair that pins them, so it takes whatever TS caps that producer emits. */
 #define MRTSSTAMP_CAPS "video/mpegts, systemstream=(boolean)true"
-
-/* One anchor / re-anchor notification, collected under the lock by the
- * TimelineStamper callbacks and posted on the bus after it is released —
- * posting a message runs arbitrary bus handlers, and doing that under our own
- * lock invites a deadlock with the thread setting `active`. */
-struct MrTsStampPending {
-    gint kind;                   /* MRTSSTAMP_PENDING_* below */
-    gint pid;
-    gint64 anchor_ns;
-    gint64 ref_pts;
-    gint64 last_pts;
-    gint64 delta_ticks;
-    gint64 count;
-    gint64 repair_ns;            /* settled: what the latch-repair window cost */
-    gint64 window_ns;
-    gboolean pcr;                /* conditioned: which clock stepped */
-    gint64 step_ticks;           /* conditioned: the step taken out of the wire */
-    gint64 offset_ticks;         /* conditioned: the PID's cumulative correction */
-    gint64 house_ns;             /* conditioned: house time of the step */
-};
-enum { MRTSSTAMP_PENDING_ANCHOR = 0, MRTSSTAMP_PENDING_REANCHOR, MRTSSTAMP_PENDING_SETTLED,
-       MRTSSTAMP_PENDING_CONDITIONED };
-
-/* One factory per kind, naming every field it fills: the struct is positional
- * and three kinds share it, so a brace-init with padding zeros would let a
- * field-order slip compile. Everything not named is value-initialised. */
-static MrTsStampPending mrtsstamp_pending_anchor(const mrts::TimelineStamper::Anchored &a) {
-    MrTsStampPending p{};
-    p.kind = MRTSSTAMP_PENDING_ANCHOR;
-    p.pid = a.pid;
-    p.anchor_ns = a.anchor_ns;
-    p.ref_pts = a.ref_pts;
-    return p;
-}
-static MrTsStampPending mrtsstamp_pending_reanchor(const mrts::TimelineStamper::Reanchor &r) {
-    MrTsStampPending p{};
-    p.kind = MRTSSTAMP_PENDING_REANCHOR;
-    p.pid = r.pid;
-    p.anchor_ns = r.anchor_ns;
-    p.ref_pts = r.pts;
-    p.last_pts = r.last_pts;
-    p.delta_ticks = r.delta_ticks;
-    p.count = (gint64)r.count;
-    return p;
-}
-static MrTsStampPending mrtsstamp_pending_conditioned(const mrts::TimelineStamper::Conditioned &c) {
-    MrTsStampPending p{};
-    p.kind = MRTSSTAMP_PENDING_CONDITIONED;
-    p.pid = c.pid;
-    p.pcr = c.pcr ? TRUE : FALSE;
-    p.step_ticks = c.step_ticks;
-    p.offset_ticks = c.offset_ticks;
-    p.house_ns = c.house_ns;
-    return p;
-}
-static MrTsStampPending mrtsstamp_pending_settled(const mrts::TimelineStamper::Settled &s) {
-    MrTsStampPending p{};
-    p.kind = MRTSSTAMP_PENDING_SETTLED;
-    p.anchor_ns = s.anchor_ns;
-    p.repair_ns = s.repair_ns;
-    p.window_ns = s.window_ns;
-    return p;
-}
 
 enum {
     PROP_0,
     PROP_ACTIVE,
-    PROP_REPAIR_LATCH,
-    PROP_HOUSE_TIMELINE,
     PROP_COPY_COUNT,
-    PROP_DRIFT,
     PROP_BYTES_TOTAL,
     PROP_COALESCE,
     PROP_COALESCED_LISTS,
@@ -171,37 +40,19 @@ G_DECLARE_FINAL_TYPE(GstMrTsStamp, gst_mrtsstamp, GST, MRTSSTAMP, GstBaseTransfo
 struct _GstMrTsStamp {
     GstBaseTransform parent;
 
-    GMutex lock;                 /* guards everything below */
+    GMutex lock;                 /* guards everything up to `copies` */
     gboolean active;
-    /* The stamper's latch-repair window (`repair-latch`, ts_timeline.py "latch
-     * repair"). Read when a fresh stamper is built, i.e. on every arm. */
-    gboolean repair_latch;
-    /* HOUSE-TIMELINE egress (`house-timeline`, ts_timeline.py `house_timeline`):
-     * this producer's own mpegtsmux wrote its PES off house running time (+1 h),
-     * so the stamper reads that back instead of anchoring at this egress. Read at
-     * the next arm like `repair-latch`; it also keeps the conditioner off. */
-    gboolean house_timeline;
     gboolean checked;            /* one-shot clock/segment diagnostics per arm */
     gboolean seg_warned;         /* one-shot unmappable-segment report per arm */
-    gint map_warned;             /* one-shot buffer-map-failure report (atomic, pre-lock) */
-    guint64 copies;              /* buffers we were handed as a COPY (see above) */
-    /* Bytes seen on the sink pad since construction, active OR passthrough —
-     * the producer's egress byte counter (`bytes-total`). Counted here, in C,
-     * because this element already sits in front of every `busout_*` tee and
-     * a python pad probe at this rate (~1170 single buffers/s at 12 Mbps —
-     * capssetter/capsfilter dismantle the mux's buffer lists) cost the runner
-     * 0.5-0.7 of a core PER PRODUCER (Pi 4, 2026-09-02: a box at 60 % fell
-     * to 26 % with the probe removed). Atomic: read by the runner's
-     * get_throughput from the main loop while the streaming thread adds. */
+    gboolean identity_posted;    /* `mrtsstamp-identity` posted for this arm */
+    mrts::IdentityStamp *idst;   /* one stream: the egress's A/V share one floor */
+    guint64 copies;              /* buffers handed to us non-writable */
+    gint map_warned;             /* one-shot map-failure report (atomic, taken before the lock) */
+    /* The producer's egress byte counter, armed or not: read by the runner's throughput
+     * tracker from the main loop while the streaming thread adds. */
     std::atomic<guint64> bytes_total;
-    /* COALESCE (see the header): merge each incoming GstBufferList into one
-     * buffer before the base chain sees it. Written from the property thread,
-     * read on the streaming thread — atomic, like every other cross-thread
-     * field here. `coalesced-lists` counts merges for the element test. */
     std::atomic<int> coalesce;
     std::atomic<guint64> coalesced_lists;
-    mrts::TimelineStamper *st;
-    std::vector<MrTsStampPending> *pending;
 };
 
 G_DEFINE_TYPE(GstMrTsStamp, gst_mrtsstamp, GST_TYPE_BASE_TRANSFORM)
@@ -211,37 +62,10 @@ static GstStaticPadTemplate mrtsstamp_sink_tmpl = GST_STATIC_PAD_TEMPLATE(
 static GstStaticPadTemplate mrtsstamp_src_tmpl = GST_STATIC_PAD_TEMPLATE(
     "src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS(MRTSSTAMP_CAPS));
 
-/* --- stamper state ------------------------------------------------------- */
+/* --- environment ---------------------------------------------------------- */
 
-/* Fresh latch + fresh callbacks. Called with the lock held on every `active`
- * transition, so an arm never inherits the previous incarnation's anchor. */
-static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
-    delete self->st;
-    self->pending->clear();
-    std::vector<MrTsStampPending> *pending = self->pending;
-    self->st = new mrts::TimelineStamper(
-        [pending](const mrts::TimelineStamper::Anchored &a) {
-            pending->push_back(mrtsstamp_pending_anchor(a));
-        },
-        [pending](const mrts::TimelineStamper::Reanchor &r) {
-            pending->push_back(mrtsstamp_pending_reanchor(r));
-        },
-        [pending](const mrts::TimelineStamper::Settled &s) {
-            pending->push_back(mrtsstamp_pending_settled(s));
-        },
-        self->repair_latch != FALSE);
-    /* The timeline conditioner rides the same live-cadence opt-in as the latch
-     * repair (`repair-latch`): both rest on delivery cadence being media
-     * cadence, which an HLS fan-out's bursts are not. */
-    self->st->set_on_conditioned([pending](const mrts::TimelineStamper::Conditioned &c) {
-        pending->push_back(mrtsstamp_pending_conditioned(c));
-    });
-    self->st->set_house_timeline(self->house_timeline != FALSE);
-}
-
-/* The pipeline clock's time, 0 without one. Anchored mode subtracts the base
- * time (running time, self-consistent even off the contract clock); identity
- * keeps clock time, see `transform_ip`. */
+/* The pipeline clock's time, 0 without one. Identity unwraps against clock time; the base comes
+ * off the position, so a natural base (liveCaptureClock) still lands on house time. */
 static gint64 gst_mrtsstamp_clock_now(GstMrTsStamp *self) {
     GstClock *clock = gst_element_get_clock(GST_ELEMENT_CAST(self));
     if (clock == NULL) return 0;
@@ -256,17 +80,13 @@ static gboolean gst_mrtsstamp_identity_segment(const GstSegment *seg) {
            && seg->base == 0 && seg->time == 0;
 }
 
-/* One-shot, per arm: report (never fail on) the two environment assumptions the
- * stamp rides on. Report-only for the same reason the python probe's checks
- * are — a real pipeline that hits either needs a human, not a dropped stream. */
+/* Once per arm, report (never fail on) the clock and segment the stamp rides on: a pipeline
+ * that hits either needs a human, not a dropped stream. */
 static void gst_mrtsstamp_check_env(GstMrTsStamp *self) {
     const gchar *name = GST_OBJECT_NAME(self);
-
-    /* House clock. The contract pins a monotonic GstSystemClock; anything
-     * else and `clock_now` is not house time. */
     GstClock *clock = gst_element_get_clock(GST_ELEMENT_CAST(self));
     if (clock == NULL) {
-        g_printerr("[mrtsstamp] %s: no pipeline clock at arm — the anchor will be 0\n", name);
+        g_printerr("[mrtsstamp] %s: no pipeline clock at arm — PES are unwrapped against 0\n", name);
     } else {
         gint type = -1;
         if (GST_IS_SYSTEM_CLOCK(clock)) g_object_get(clock, "clock-type", &type, NULL);
@@ -278,12 +98,6 @@ static void gst_mrtsstamp_check_env(GstMrTsStamp *self) {
         }
         gst_object_unref(clock);
     }
-
-    /* Segment. What reaches the wire is not the PTS we write: unixfdsink
-     * transmits gst_segment_to_running_time(segment, pts) + base_time. On the
-     * identity segment a bus producer normally carries those are the same
-     * number; anything else is mapped back through the segment in
-     * `gst_mrtsstamp_position` below, so this is a note, not a fault. */
     const GstSegment *seg = &GST_BASE_TRANSFORM_CAST(self)->segment;
     if (!GST_BASE_TRANSFORM_CAST(self)->have_segment) {
         g_printerr("[mrtsstamp] %s: no SEGMENT event yet — stamp may not survive the "
@@ -299,42 +113,33 @@ static void gst_mrtsstamp_check_env(GstMrTsStamp *self) {
     }
 }
 
-/* Buffer PTS that makes this buffer's RUNNING time equal `stamp`.
- *
- * The stamp is house-clock time, and house-clock time is what a consumer has to
- * end up seeing — but the wire carries running time, not PTS. On the identity
- * segment a bus producer normally has, the two are equal and this returns the
- * stamp unchanged; on anything else (an upstream `GstPad.set_offset`, a trimmed
- * or rate-scaled segment, a non-zero base after a seek) the segment's own
- * inverse mapping is what keeps the contract true instead of shipping silently
- * shifted timing. `why` is set when no mapping exists at all — the caller
- * reports that once, ENGINE-visibly. */
-static GstClockTime gst_mrtsstamp_position(GstMrTsStamp *self, gint64 stamp,
+/* Buffer PTS whose RUNNING time is `running`: the wire carries running time + base time, so
+ * a non-identity segment is undone through its own inverse. `why` is set when no mapping exists. */
+static GstClockTime gst_mrtsstamp_position(GstMrTsStamp *self, gint64 running,
                                            const gchar **why) {
     GstBaseTransform *base = GST_BASE_TRANSFORM_CAST(self);
     const GstSegment *seg = &base->segment;
     if (!base->have_segment) {
         *why = "no SEGMENT event on the tee sink";
-        return (GstClockTime)stamp;
+        return (GstClockTime)running;
     }
-    if (gst_mrtsstamp_identity_segment(seg)) return (GstClockTime)stamp;
+    if (gst_mrtsstamp_identity_segment(seg)) return (GstClockTime)running;
     if (seg->format != GST_FORMAT_TIME) {
         *why = "the segment format is not TIME";
-        return (GstClockTime)stamp;
+        return (GstClockTime)running;
     }
     guint64 pos = gst_segment_position_from_running_time(seg, GST_FORMAT_TIME,
-                                                         (guint64)stamp);
+                                                         (guint64)running);
     if (!GST_CLOCK_TIME_IS_VALID(pos)) {
         *why = "the house stamp falls outside the current segment";
-        return (GstClockTime)stamp;
+        return (GstClockTime)running;
     }
     return (GstClockTime)pos;
 }
 
-/* A segment the stamp cannot be mapped through. ENGINE-VISIBLE and once per
- * arm: this is the case that silently ships shifted timing, so it must reach
- * the engine's log rather than our stderr. The runner turns it into the same
- * `warning` event the python probe emits for the same condition. */
+/* --- messages (posted outside the lock: a bus handler may re-enter us) ---- */
+
+/* The segment cannot carry the stamp: once per arm, engine-visible through the runner. */
 static void gst_mrtsstamp_post_segment_warning(GstMrTsStamp *self, const gchar *why) {
     GstStructure *s = gst_structure_new("mrtsstamp-segment-warning",
                                         "why", G_TYPE_STRING, why, NULL);
@@ -344,16 +149,11 @@ static void gst_mrtsstamp_post_segment_warning(GstMrTsStamp *self, const gchar *
                GST_OBJECT_NAME(self), why);
 }
 
-/* The buffer would not map. ENGINE-VISIBLE and once per arm (atomic latch, no
- * lock — this fires before we take one): the buffer then leaves UNSTAMPED and
- * UNCONDITIONED, shipping the source's own timing, so it must not pass in
- * silence. READ rarely failed; READWRITE (the conditioner's mode) on shared or
- * read-only memory can. */
-static void gst_mrtsstamp_post_map_warning(GstMrTsStamp *self, gboolean rw) {
+/* The buffer would not map, so it leaves with its source timing: once per arm. */
+static void gst_mrtsstamp_post_map_warning(GstMrTsStamp *self) {
     if (!g_atomic_int_compare_and_exchange(&self->map_warned, 0, 1))
         return;
-    const gchar *why = rw ? "buffer would not map READWRITE — conditioner and stamp skipped"
-                          : "buffer would not map READ — stamp skipped";
+    const gchar *why = "buffer would not map READ — stamp skipped";
     GstStructure *s = gst_structure_new("mrtsstamp-map-failed",
                                         "why", G_TYPE_STRING, why, NULL);
     gst_element_post_message(GST_ELEMENT_CAST(self),
@@ -362,80 +162,42 @@ static void gst_mrtsstamp_post_map_warning(GstMrTsStamp *self, gboolean rw) {
                GST_OBJECT_NAME(self), why);
 }
 
-/* --- transform ----------------------------------------------------------- */
-
-static void gst_mrtsstamp_post(GstMrTsStamp *self, const MrTsStampPending &p) {
-    /* Field names are the python probe's event field names verbatim: the runner
-     * translates these straight into the existing `timeline_restamped` /
-     * `timeline_reanchor` engine events, so nothing downstream can tell which
-     * stamper produced them. */
-    GstStructure *s;
-    if (p.kind == MRTSSTAMP_PENDING_CONDITIONED) {
-        s = gst_structure_new("mrtsstamp-conditioned",
-                              "pid", G_TYPE_INT, p.pid,
-                              "clock", G_TYPE_STRING, p.pcr ? "pcr" : "pts",
-                              "stepTicks", G_TYPE_INT64, p.step_ticks,
-                              "offsetTicks", G_TYPE_INT64, p.offset_ticks,
-                              "houseNs", G_TYPE_INT64, p.house_ns, NULL);
-    } else if (p.kind == MRTSSTAMP_PENDING_SETTLED) {
-        s = gst_structure_new("mrtsstamp-settled",
-                              "anchorNs", G_TYPE_INT64, p.anchor_ns,
-                              "repairNs", G_TYPE_INT64, p.repair_ns,
-                              "windowNs", G_TYPE_INT64, p.window_ns, NULL);
-    } else if (p.kind == MRTSSTAMP_PENDING_REANCHOR) {
-        s = gst_structure_new("mrtsstamp-reanchor",
-                              "pid", G_TYPE_INT, p.pid,
-                              "anchorNs", G_TYPE_INT64, p.anchor_ns,
-                              "refPts90k", G_TYPE_INT64, p.ref_pts,
-                              "lastPts90k", G_TYPE_INT64, p.last_pts,
-                              "deltaTicks", G_TYPE_INT64, p.delta_ticks,
-                              "count", G_TYPE_INT64, p.count, NULL);
-    } else {
-        s = gst_structure_new("mrtsstamp-anchor",
-                              "pid", G_TYPE_INT, p.pid,
-                              "anchorNs", G_TYPE_INT64, p.anchor_ns,
-                              "refPts90k", G_TYPE_INT64, p.ref_pts, NULL);
-    }
+/* The egress's first timing PES since the arm, for the runners' one log line. */
+static void gst_mrtsstamp_post_identity(GstMrTsStamp *self, gint pid, gint64 stamp, gint64 pts) {
+    GstStructure *s = gst_structure_new("mrtsstamp-identity",
+                                        "pid", G_TYPE_INT, pid,
+                                        "stamp", G_TYPE_INT64, stamp,
+                                        "pts", G_TYPE_INT64, pts, NULL);
     gst_element_post_message(GST_ELEMENT_CAST(self),
                              gst_message_new_element(GST_OBJECT_CAST(self), s));
 }
 
+/* --- transform ------------------------------------------------------------ */
+
 static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffer *buf) {
     GstMrTsStamp *self = GST_MRTSSTAMP(base);
-    GstMapInfo mi;
-
-    /* Byte accounting first, every buffer, armed or not: in passthrough
-     * (`transform_ip_on_passthrough` on) this is the whole per-buffer cost —
-     * one size read and one atomic add, no map, no lock. */
     self->bytes_total.fetch_add(gst_buffer_get_size(buf), std::memory_order_relaxed);
     if (!self->active) return GST_FLOW_OK;
-    /* An identity egress hands a gap marker (OQ-12) on with its PTS, the gap's end, but no
-     * DTS: the restamp's is on its input's timeline, which a bus queue reading DTS first takes
-     * for its level, leaking what follows. Anchored is frozen (Q2). */
-    if (self->house_timeline && GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP)) {
+    /* A gap marker (OQ-12) keeps its PTS, the gap's end, but loses its DTS: the restamp's is on
+     * its input's timeline, which a bus queue reading DTS first takes for its level (B-19). */
+    if (GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_GAP)) {
         GST_BUFFER_DTS(buf) = GST_CLOCK_TIME_NONE;
         return GST_FLOW_OK;
     }
-
-    /* READWRITE only when the timeline conditioner may rewrite PES/PCR fields
-     * (live-cadence producers, `repair-latch`); otherwise READ — the stamp is
-     * the buffer's PTS/DTS, never its bytes. In-place basetransform hands us a
-     * writable buffer (prepare_output_buffer counts the copies that costs). */
-    const gboolean conditioning = self->repair_latch != FALSE && self->house_timeline == FALSE;
-    if (!gst_buffer_map(buf, &mi, conditioning ? GST_MAP_READWRITE : GST_MAP_READ)) {
-        gst_mrtsstamp_post_map_warning(self, conditioning);
+    GstMapInfo mi;
+    if (!gst_buffer_map(buf, &mi, GST_MAP_READ)) {
+        gst_mrtsstamp_post_map_warning(self);
         return GST_FLOW_OK;
     }
-
     const gint64 clock_now = gst_mrtsstamp_clock_now(self);
     const gint64 base_time = (gint64)gst_element_get_base_time(GST_ELEMENT_CAST(self));
-    std::vector<MrTsStampPending> posts;
-    gint64 stamp;
+    int first_pid = 0;
+    int64_t first_stamp = 0, first_pts = 0;
+    gboolean post_identity = FALSE;
 
     g_mutex_lock(&self->lock);
     if (!self->active) {
-        /* Raced with a disarm — leave the buffer exactly as it arrived, which
-         * is what removing the python probe does. */
+        /* Raced with a disarm: the buffer leaves as it arrived. */
         g_mutex_unlock(&self->lock);
         gst_buffer_unmap(buf, &mi);
         return GST_FLOW_OK;
@@ -444,50 +206,30 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
         self->checked = TRUE;
         gst_mrtsstamp_check_env(self);
     }
-    /* Identity reads PES − 1 h, absolute house time even under a natural base
-     * (liveCaptureClock), so it unwraps against the clock and takes the base
-     * off the position instead. */
-    const bool identity = self->st->house_timeline();
-    const gint64 now = identity ? clock_now : MAX(clock_now - base_time, 0);
-    /* ONE egress, so ONE stream: every branch of this producer shares the
-     * anchor and the monotone floor, which is what keeps A/V paired. */
-    /* Condition first: a source clock step is taken out of the PES/PCR bytes
-     * before the stamper's watch can read it as a discontinuity. */
-    if (conditioning) self->st->condition(mi.data, mi.size, now);
-    stamp = self->st->stamp(mi.data, mi.size, now, 0);
-    posts.swap(*self->pending);
-    /* Segment mapping under the lock only for the one-shot warn latch; the
-     * segment itself is owned by this (the streaming) thread. */
+    const gint64 stamp = self->idst->stamp(mi.data, mi.size, clock_now, 0);
+    if (!self->identity_posted && self->idst->first(0, &first_pid, &first_stamp, &first_pts)) {
+        self->identity_posted = TRUE;
+        post_identity = TRUE;
+    }
     const gchar *seg_why = NULL;
-    GstClockTime pos = gst_mrtsstamp_position(
-        self, identity ? MAX(stamp - base_time, 0) : stamp, &seg_why);
+    GstClockTime pos = gst_mrtsstamp_position(self, MAX(stamp - base_time, 0), &seg_why);
     if (seg_why != NULL && self->seg_warned) seg_why = NULL;
     else if (seg_why != NULL) self->seg_warned = TRUE;
     g_mutex_unlock(&self->lock);
-
     gst_buffer_unmap(buf, &mi);
 
     GST_BUFFER_PTS(buf) = pos;
-    /* DTS is LOAD-BEARING, not tidiness: the consumer's tsdemux takes its PCR
-     * skew basis from GST_BUFFER_DTS_OR_PTS — DTS FIRST — so a mux-generated DTS
-     * riding along unchanged silently overrides the PTS we just wrote and the
-     * whole contract becomes a no-op that nothing reports (ADR-0005's named
-     * regression). */
+    /* DTS too: tsdemux takes its PCR skew basis from DTS before PTS, so a mux DTS left in
+     * place would silently override the stamp (ADR-0005's named regression). */
     GST_BUFFER_DTS(buf) = pos;
 
-    for (const MrTsStampPending &p : posts) gst_mrtsstamp_post(self, p);
+    if (post_identity) gst_mrtsstamp_post_identity(self, first_pid, first_stamp, first_pts);
     if (seg_why != NULL) gst_mrtsstamp_post_segment_warning(self, seg_why);
     return GST_FLOW_OK;
 }
 
-/* Counting only — the base implementation does all the work. A non-writable
- * input is what makes basetransform `gst_buffer_make_writable` before handing
- * us the buffer: a SHALLOW copy (the GstBuffer struct; its GstMemory is taken
- * by reference, the TS bytes are never copied), but still an allocation per
- * buffer. Upstream of the tee the buffer is singly-owned and this stays 0,
- * which is exactly why the element goes there and not on a tee branch. The
- * `copy_metadata` vfunc is NOT this signal: the make-writable path derives the
- * output from the input, so basetransform never calls it. */
+/* Counting only: a non-writable input costs basetransform a shallow GstBuffer copy before we
+ * see it. Upstream of the tee this stays 0, which is why the element goes there. */
 static GstFlowReturn gst_mrtsstamp_prepare_output_buffer(GstBaseTransform *base,
                                                          GstBuffer *inbuf,
                                                          GstBuffer **outbuf) {
@@ -501,40 +243,28 @@ static GstFlowReturn gst_mrtsstamp_prepare_output_buffer(GstBaseTransform *base,
         ->prepare_output_buffer(base, inbuf, outbuf);
 }
 
-/* --- coalesce (ADR-0011) ------------------------------------------------- */
+/* --- coalesce (ADR-0011) -------------------------------------------------- */
 
-/* Merging would hand a gap marker's flags and PTS to the whole AU, or bury the
- * marker in a data buffer, so an identity egress takes such a list member by member. */
+/* Merging would hand a gap marker's flags and PTS to the whole access unit, or bury the
+ * marker in a data buffer, so such a list goes member by member (B-10). */
 static gboolean gst_mrtsstamp_list_has_gap(GstBufferList *list) {
     for (guint i = 0; i < gst_buffer_list_length(list); i++)
         if (GST_BUFFER_FLAG_IS_SET(gst_buffer_list_get(list, i), GST_BUFFER_FLAG_GAP)) return TRUE;
     return FALSE;
 }
 
-/* Sink-pad chain_list. GstBaseTransform installs a chain function but no
- * chain_list, so without this the core's default would split every list into
- * single chain() calls before the element ran — and the 1316-byte members of
- * the mux's per-access-unit lists would each travel the bus as their own
- * message. Here the members are concatenated (one allocation, one copy of the
- * AU's bytes — at 8 Mbit/s that is 1 MB/s of memcpy, nothing next to the
- * per-message kernel work it removes) into a single buffer carrying the first
- * member's timestamps and flags, and THAT goes down the base chain: stamping,
- * byte accounting and everything downstream see one buffer per AU. Lists of
- * one, lists holding a gap marker at an identity egress, or `coalesce=false`,
- * take the original path member by member. */
+/* GstBaseTransform has no chain_list, so the core would split every mux list into 1316-byte
+ * bus messages. A list of two or more members becomes one buffer with the first member's
+ * timestamps, flags and metas and the summed duration; it goes through gst_pad_chain on our own
+ * sink pad, so a BUFFER probe there still fires (the stream lock is recursive). */
 static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *parent,
                                                    GstBufferList *list) {
     GstMrTsStamp *self = GST_MRTSSTAMP(parent);
     guint n = gst_buffer_list_length(list);
     GstBuffer *out = NULL;
 
-    /* Everything below hands buffers to gst_pad_chain() on our own sink pad —
-     * the same path the core's default chain_list takes — so a BUFFER probe
-     * on this pad still fires for list input; calling the base chain function
-     * directly would skip it. The stream lock is recursive, so re-entering
-     * the pad from inside its chain_list is legal. */
     if (self->coalesce.load(std::memory_order_relaxed) && n >= 2
-        && !(self->house_timeline && gst_mrtsstamp_list_has_gap(list))) {
+        && !gst_mrtsstamp_list_has_gap(list)) {
         gsize total = 0;
         GstClockTime duration = 0;
         gboolean all_durations = TRUE;
@@ -553,9 +283,6 @@ static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *paren
                 off += gst_buffer_extract(b, 0, mo.data + off, gst_buffer_get_size(b));
             }
             gst_buffer_unmap(out, &mo);
-            /* The AU's identity comes from its first member: flags, PTS/DTS and
-             * metas. Duration is the SUM of the members' (they tile the AU), or
-             * left as the first member's when any member lacks one. */
             gst_buffer_copy_into(out, gst_buffer_list_get(list, 0),
                                  (GstBufferCopyFlags)(GST_BUFFER_COPY_FLAGS
                                                       | GST_BUFFER_COPY_TIMESTAMPS
@@ -564,7 +291,7 @@ static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *paren
             if (all_durations) GST_BUFFER_DURATION(out) = duration;
             self->coalesced_lists.fetch_add(1, std::memory_order_relaxed);
         } else if (out != NULL) {
-            gst_buffer_unref(out);       /* map failed: fall back to member-wise */
+            gst_buffer_unref(out);       /* map failed: member by member */
             out = NULL;
         }
     }
@@ -572,8 +299,6 @@ static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *paren
         gst_buffer_list_unref(list);
         return gst_pad_chain(pad, out);
     }
-
-    /* Member by member — exactly what the core's default chain_list did. */
     GstFlowReturn ret = GST_FLOW_OK;
     for (guint i = 0; i < n && ret == GST_FLOW_OK; i++) {
         ret = gst_pad_chain(pad, gst_buffer_ref(gst_buffer_list_get(list, i)));
@@ -582,7 +307,7 @@ static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *paren
     return ret;
 }
 
-/* --- GObject ------------------------------------------------------------- */
+/* --- GObject -------------------------------------------------------------- */
 
 static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
                                        const GValue *value, GParamSpec *pspec) {
@@ -590,47 +315,22 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
     switch (prop_id) {
         case PROP_ACTIVE: {
             gboolean want = g_value_get_boolean(value);
-            std::vector<MrTsStampPending> posts;
             g_mutex_lock(&self->lock);
             if (want != self->active) {
-                if (!want && self->st != NULL) {
-                    /* A disarm inside the latch-repair window still reports
-                     * what the window cost — otherwise a short-lived edge's
-                     * anchor would vanish from the tally. Collected here,
-                     * posted below outside the lock like every other message. */
-                    self->st->close_latch();
-                    posts.swap(*self->pending);
-                }
+                /* Every transition forgets the stream, so an arm starts a fresh floor and a
+                 * fresh first-PES record. */
                 self->active = want;
                 self->checked = FALSE;
                 self->seg_warned = FALSE;
+                self->identity_posted = FALSE;
                 g_atomic_int_set(&self->map_warned, 0);
-                gst_mrtsstamp_reset(self);
+                self->idst->reset();
             }
             g_mutex_unlock(&self->lock);
-            for (const MrTsStampPending &p : posts) gst_mrtsstamp_post(self, p);
-            /* Outside the lock: basetransform takes its own object lock here.
-             * Order matters — arming resets state BEFORE buffers can reach
-             * transform_ip; disarming stops stamping before the state is gone
-             * (the `!active` guard in transform_ip covers the in-flight buffer
-             * either way). */
+            /* Outside the lock: basetransform takes its own object lock here. */
             gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), !want);
             break;
         }
-        case PROP_REPAIR_LATCH:
-            /* Takes effect at the next arm: the policy belongs to the stamper
-             * built on the `active` transition, and the runner sets it before
-             * arming. Changing it on a running latch would mean two policies
-             * for one anchor. */
-            g_mutex_lock(&self->lock);
-            self->repair_latch = g_value_get_boolean(value);
-            g_mutex_unlock(&self->lock);
-            break;
-        case PROP_HOUSE_TIMELINE:
-            g_mutex_lock(&self->lock);
-            self->house_timeline = g_value_get_boolean(value);
-            g_mutex_unlock(&self->lock);
-            break;
         case PROP_COALESCE:
             self->coalesce.store(g_value_get_boolean(value) ? 1 : 0, std::memory_order_relaxed);
             break;
@@ -649,16 +349,6 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
             g_value_set_boolean(value, self->active);
             g_mutex_unlock(&self->lock);
             break;
-        case PROP_REPAIR_LATCH:
-            g_mutex_lock(&self->lock);
-            g_value_set_boolean(value, self->repair_latch);
-            g_mutex_unlock(&self->lock);
-            break;
-        case PROP_HOUSE_TIMELINE:
-            g_mutex_lock(&self->lock);
-            g_value_set_boolean(value, self->house_timeline);
-            g_mutex_unlock(&self->lock);
-            break;
         case PROP_COALESCE:
             g_value_set_boolean(value, self->coalesce.load(std::memory_order_relaxed) != 0);
             break;
@@ -673,25 +363,6 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
             g_value_set_uint64(value, self->copies);
             g_mutex_unlock(&self->lock);
             break;
-        case PROP_DRIFT: {
-            /* A GstStructure, read by the runner's periodic drift report and
-             * turned into the same `timeline_drift` engine event the python
-             * probe builds from `TimelineStamper.drift_stats()` — field names
-             * are that dict's, so which backend stamped stays invisible. */
-            g_mutex_lock(&self->lock);
-            mrts::TimelineStamper::Drift d = self->st->drift();
-            g_mutex_unlock(&self->lock);
-            g_value_take_boxed(value,
-                               gst_structure_new("mrtsstamp-drift",
-                                                 "ppm", G_TYPE_INT, d.ppm,
-                                                 "ppb", G_TYPE_INT64, d.ppb,
-                                                 "slewNs", G_TYPE_INT64, d.slew_ns,
-                                                 "marginNs", G_TYPE_INT64, d.margin_ns,
-                                                 "engageNs", G_TYPE_INT64, d.engage_ns,
-                                                 "samples", G_TYPE_INT, d.samples,
-                                                 "window", G_TYPE_INT, d.window, NULL));
-            break;
-        }
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -700,38 +371,28 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
 
 static void gst_mrtsstamp_finalize(GObject *object) {
     GstMrTsStamp *self = GST_MRTSSTAMP(object);
-    delete self->st;
-    delete self->pending;
+    delete self->idst;
     g_mutex_clear(&self->lock);
     G_OBJECT_CLASS(gst_mrtsstamp_parent_class)->finalize(object);
 }
 
 static void gst_mrtsstamp_init(GstMrTsStamp *self) {
-    /* GObject memory is zeroed, but be explicit for the atomic. */
-    self->bytes_total.store(0, std::memory_order_relaxed);
     g_mutex_init(&self->lock);
     self->active = FALSE;
-    /* ON by default: every producer the runner splices this into delivers at
-     * its media cadence (the one assumption the repair rests on). The HLS
-     * path does not go through this element at all. */
-    self->repair_latch = TRUE;
-    self->house_timeline = FALSE;
     self->checked = FALSE;
     self->seg_warned = FALSE;
-    self->map_warned = 0;
+    self->identity_posted = FALSE;
+    self->idst = new mrts::IdentityStamp();
     self->copies = 0;
-    self->st = NULL;
-    self->pending = new std::vector<MrTsStampPending>();
+    self->map_warned = 0;
+    self->bytes_total.store(0, std::memory_order_relaxed);
     self->coalesce.store(1, std::memory_order_relaxed);
     self->coalesced_lists.store(0, std::memory_order_relaxed);
-    gst_mrtsstamp_reset(self);
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
-    /* The base class has already installed its chain function on the sink pad
-     * (parent instance init runs first); chain_list is ours alone. */
+    /* The base class installed its chain function already; chain_list is ours. */
     gst_pad_set_chain_list_function(GST_BASE_TRANSFORM(self)->sinkpad,
                                     gst_mrtsstamp_sink_chain_list);
-    /* Inactive by default: the runner arms per tee on that tee's first consumer
-     * edge, exactly where it armed the python probe. */
+    /* Inactive until the runner arms it on the tee's first consumer edge. */
     gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), TRUE);
 }
 
@@ -747,35 +408,11 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
     g_object_class_install_property(
         gobject_class, PROP_ACTIVE,
         g_param_spec_boolean("active", "Active",
-                             "Stamp buffers onto the house timeline. FALSE is pure "
-                             "passthrough with no state and no per-buffer cost; each "
-                             "transition starts a fresh anchor.",
+                             "Stamp buffers by identity (PES - 1 h). FALSE is passthrough that "
+                             "only counts bytes; each transition forgets the stream.",
                              FALSE,
                              (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS
                                            | GST_PARAM_MUTABLE_PLAYING)));
-    g_object_class_install_property(
-        gobject_class, PROP_REPAIR_LATCH,
-        g_param_spec_boolean("repair-latch", "Repair latch",
-                             "Open the stamper's latch-repair window on every fresh "
-                             "anchor: for the first seconds a buffer stamped later than "
-                             "it arrived pulls the anchor back to its arrival, so a first "
-                             "PES that was the head of a reconnect backlog does not fix "
-                             "the egress that far in the future (ADR-0005, ts_timeline.py "
-                             "\"latch repair\"). Only for a producer whose delivery "
-                             "cadence is its media cadence. Read at the next arm.",
-                             TRUE,
-                             (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-    g_object_class_install_property(
-        gobject_class, PROP_HOUSE_TIMELINE,
-        g_param_spec_boolean("house-timeline", "House-timeline egress",
-                             "This producer's own mpegtsmux wrote its PES off house "
-                             "running time (+1 h): stamp every buffer with that value "
-                             "read back (PES - 1 h) instead of anchoring at this egress, "
-                             "so a transform producer carries its source's content time "
-                             "through (ADR-0005 amendment 2026-10-08). No anchor, no "
-                             "re-anchor, no repair, no conditioner. Read at the next arm.",
-                             FALSE,
-                             (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
         gobject_class, PROP_COPY_COUNT,
         g_param_spec_uint64("copy-count", "Copy count",
@@ -786,23 +423,10 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
     g_object_class_install_property(
         gobject_class, PROP_BYTES_TOTAL,
         g_param_spec_uint64("bytes-total", "Bytes total",
-                            "Bytes that passed this element since construction, whether "
-                            "stamping or in passthrough — the producer's egress byte "
-                            "counter, read by the runner's throughput tracker instead of "
-                            "a per-buffer python probe.",
+                            "Bytes that passed this element since construction, stamping "
+                            "or in passthrough: the producer's egress byte counter.",
                             0, G_MAXUINT64, 0,
                             (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
-    g_object_class_install_property(
-        gobject_class, PROP_DRIFT,
-        g_param_spec_boxed("drift", "Drift",
-                           "Drift-servo state (ppm, ppb, slewNs, marginNs, engageNs, "
-                           "samples, window) — the source's clock offset against ours and "
-                           "what holding it has cost the anchor. Read periodically "
-                           "by the runner; the native equivalent of the python "
-                           "stamper's drift_stats().",
-                           GST_TYPE_STRUCTURE,
-                           (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
-
     g_object_class_install_property(
         gobject_class, PROP_COALESCE,
         g_param_spec_boolean("coalesce", "Coalesce buffer lists",
@@ -822,33 +446,26 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
     gst_element_class_add_static_pad_template(element_class, &mrtsstamp_sink_tmpl);
     gst_element_class_add_static_pad_template(element_class, &mrtsstamp_src_tmpl);
     gst_element_class_set_static_metadata(
-        element_class, "Media Router MPEG-TS timeline stamper", "Filter/Network",
-        "Stamps bus MPEG-TS buffers with house-clock media time (ADR-0005)",
+        element_class, "Media Router MPEG-TS identity stamper", "Filter/Network",
+        "Stamps bus MPEG-TS buffers by identity: PES - 1 h (ADR-0029)",
         "Media Router <https://github.com/bccsa/media-router>");
 
     base_class->transform_ip = gst_mrtsstamp_transform_ip;
     base_class->prepare_output_buffer = gst_mrtsstamp_prepare_output_buffer;
-    /* Passthrough still hands every buffer to transform_ip — for the byte
-     * counter only (one atomic add, then return; the stamping path is behind
-     * the `active` check). This used to be FALSE so a disarmed egress paid
-     * nothing per buffer; the counter's cost is a rounding error next to the
-     * python probe it replaces, and a producer with no consumer attached must
-     * still report its output bitrate. */
+    /* Passthrough still reaches transform_ip, for the byte counter alone. */
     base_class->transform_ip_on_passthrough = TRUE;
-    /* In and out caps are always identical, so leaving this on would pin
-     * passthrough permanently and the element could never arm. */
+    /* In and out caps are always identical: on, this would pin passthrough for good. */
     base_class->passthrough_on_same_caps = FALSE;
 }
 
 static gboolean plugin_init(GstPlugin *plugin) {
     GST_DEBUG_CATEGORY_INIT(mrtsstamp_debug, "mrtsstamp", 0,
-                            "Media Router MPEG-TS timeline stamper");
-    /* Rank NONE: the runner loads this plugin explicitly and inserts the element
-     * by name — it must never be auto-plugged into anything. */
+                            "Media Router MPEG-TS identity stamper");
+    /* Rank NONE: the runner loads the plugin by path and splices the element by name. */
     return gst_element_register(plugin, "mrtsstamp", GST_RANK_NONE, GST_TYPE_MRTSSTAMP);
 }
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, mrtsstamp,
-                  "Media Router producer-side MPEG-TS timeline stamper",
+                  "Media Router producer-side MPEG-TS identity stamper",
                   plugin_init, MRTSSTAMP_VERSION, "MIT/X11", "media-router",
                   "https://github.com/bccsa/media-router")

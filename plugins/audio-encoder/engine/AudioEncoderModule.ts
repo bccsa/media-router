@@ -272,8 +272,6 @@ export class AudioEncoderModule extends GstPluginBase {
 
         return {
             pipeline,
-            // After the restamp the PES are house time + 1 h: the stamper stamps by identity.
-            houseTimelineEgress: true,
             busReports: [...restampBusReports(), ...asrcBusReports()],
         };
     }

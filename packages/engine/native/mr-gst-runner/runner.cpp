@@ -40,6 +40,16 @@ std::string factory_name(GstElement* el) {
 
 namespace {
 
+/** Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
+ *  no busReports entry. Equal to gst-pipeline-runner.py's FORWARDED_ELEMENT_MESSAGES. */
+const char* const kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux"};
+
+bool forwarded_message(const char* name) {
+    for (const char* f : kForwardedMessages)
+        if (std::strcmp(name, f) == 0) return true;
+    return false;
+}
+
 const char* state_nick(GstState s) {
     switch (s) {
         case GST_STATE_VOID_PENDING: return "void-pending";
@@ -53,7 +63,7 @@ const char* state_nick(GstState s) {
 
 /** The start-payload fields this runner does not implement (see runner.h). */
 const char* unsupported_field(JsonObject* data) {
-    static const char* const fields[] = {"rist", "preserveSourceTimeline", nullptr};
+    static const char* const fields[] = {"rist", nullptr};
     for (int i = 0; fields[i]; i++)
         if (json_has(data, fields[i]) && json_get_object(data, fields[i]) != nullptr) return fields[i];
     if (json_get_bool(data, "readKlvNames")) return "readKlvNames";
@@ -330,12 +340,10 @@ void Runner::handle_start(JsonObject* data) {
     // Multi-branch stamp alignment: armed before PLAYING so
     // the first TS bytes carry the mapping every branch is anchored to.
     align::install(pipeline, json_get_object(data, "alignBranchesToStamps"));
-    stall::start(pipeline, json_get_array(data, "inputStallWatch"));
 
-    // The producer half of the time-sync contract — recorded before PLAYING so
-    // an attach landing the moment the pipeline starts owns its first buffer.
-    JsonNode* repair = json_has(data, "latchRepair") ? json_object_get_member(data, "latchRepair") : nullptr;
-    stamper::enable(pipeline, repair, json_get_bool(data, "houseTimelineEgress"));
+    // The bus egress stamp, spliced before PLAYING so an attach landing the
+    // moment the pipeline starts owns its first buffer.
+    stamper::enable(pipeline);
 
     // Plugin-owned runner hooks in their native form (mr_hook.h, ADR-0020),
     // handed the pipeline before PLAYING like the python runner imports theirs.
@@ -395,8 +403,10 @@ void Runner::handle_start(JsonObject* data) {
 
     running = true;
     JsonObject* started = ipc::event("started");
-    // Which timing plugin this start loaded (null: none); the engine clears rule 6's alarm on one.
-    json_object_set_member(started, "timingPlugin", native_plugins::timing_plugin_json());
+    // Which timing plugin this start loaded (null: none); the engine clears rule 6's alarm on
+    // one, so a missing stamper plugin reports none.
+    json_object_set_member(started, "timingPlugin", stamper::missing() ? json_node_new(JSON_NODE_NULL)
+                                                                       : native_plugins::timing_plugin_json());
     ipc::emit(started);
 }
 
@@ -413,7 +423,6 @@ void Runner::handle_stop() {
     inputs::clear();
     tsprobe::stop();
     render::stop();
-    stall::stop();
     if (pipeline) {
         teardown_pipeline(pipeline);
         running = false;
@@ -501,12 +510,10 @@ void Runner::on_bus_message(GstMessage* msg) {
             json_object_set_string_member(ev, "element", element.c_str());
             g_clear_error(&err);
             g_free(debug);
-            stall::stop();
             fail_pipeline(ev, /*drain=*/true, /*errored=*/true);
             break;
         }
         case GST_MESSAGE_EOS:
-            stall::stop();
             // EOS reached the sinks — already drained; a second EOS would only
             // stall the teardown.
             fail_pipeline(ipc::event("eos"), /*drain=*/false);
@@ -518,7 +525,6 @@ void Runner::on_bus_message(GstMessage* msg) {
             if (new_s == GST_STATE_PLAYING) {
                 cancel_playing_watchdog();
                 gate::on_playing();
-                stall::arm();
             }
             JsonObject* ev = ipc::event("state_change");
             json_object_set_string_member(ev, "state", state_nick(new_s));
@@ -532,9 +538,8 @@ void Runner::on_bus_message(GstMessage* msg) {
             if (!name) break;
             if (stamper::is_stamper_message(name)) {
                 stamper::handle_message(src_name, name, s);
-            } else if (src_name && std::strcmp(name, lateness::MESSAGE) == 0) {
-                // Lateness taps report unsubscribed, so inputs added at runtime do too.
-                emit_plugin_event(std::string("mrlateness:") + src_name, gst_structure_to_json(s));
+            } else if (src_name && forwarded_message(name)) {
+                emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));
             } else if (src_name && bus_reports.count({src_name, name})) {
                 emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));
             } else if (std::strcmp(name, "level") == 0) {

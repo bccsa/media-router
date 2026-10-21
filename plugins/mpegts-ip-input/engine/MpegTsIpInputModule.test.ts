@@ -415,7 +415,6 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
             'rtpmp2tdepay ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=0',
         );
         for (const desc of [raw, rtp]) {
-            expect(desc.houseTimelineEgress).toBe(true);
             expect(desc.busReports).toEqual([
                 { element: 'restamp', structure: 'mrtsrestamp-stats' },
                 { element: 'restamp', structure: 'mrtsrestamp-pid' },

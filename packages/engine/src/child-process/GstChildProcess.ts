@@ -248,15 +248,9 @@ export class GstChildProcess extends EventEmitter {
             renderWatch: desc.renderWatch,
             keyframeGate: desc.keyframeGate,
             backlogShed: desc.backlogShed,
-            preserveSourceTimeline: desc.preserveSourceTimeline,
             alignBranchesToStamps: desc.alignBranchesToStamps,
-            // The stamper's latch-repair policy, resolved per route by
-            // GstPluginBase (undefined = the runner's live default).
-            latchRepair: desc.latchRepair,
-            houseTimelineEgress: desc.houseTimelineEgress,
             // Multicast re-join bound for udpsrc silence (undefined = never restart on silence).
             udpSilenceRestartMs: desc.udpSilenceRestartMs,
-            inputStallWatch: desc.inputStallWatch,
             // Plugin-owned runner python (`runnerHooks`, e.g. subtitle-core's
             // bridge) — forwarded verbatim; the runner imports and installs it.
             runnerHooks: desc.runnerHooks,

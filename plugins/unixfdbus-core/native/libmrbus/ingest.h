@@ -3,7 +3,6 @@
 // path), flushes a partial tail after 20 ms of silence, and DISCARDS any
 // sub-packet remainder when a producer dies (splicing it before the next
 // incarnation's aligned bytes would desync every buffer boundary).
-// Parity: the ingest half of unixfd-fanout.py.
 #pragma once
 #include <poll.h>
 

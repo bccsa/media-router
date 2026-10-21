@@ -38,10 +38,12 @@ export const SINK_BUFFER_US = 100_000;
  * 101.3 ms at 100 ms, 71.3 ms at 50 ms. The video leg's `waylandsink`
  * declares ~20 ms, so left alone the same route played audio well behind the
  * picture even with identical stamps and the same D. With the 100 ms ring and
- * this cancellation, plus `alignBranchesToStamps` on the video-player, the
- * transcoder and this module, the route on .103 was confirmed in sync BY EAR
- * (2026-09-03); the three are a tuple — change one and re-check. Slack is
- * unaffected: buffers reach the sink well before their stamp.
+ * this cancellation, plus content-time inputs (`alignBranchesToStamps` then, the
+ * `mrtsdemux` formula demux since house-clock Phase 2), the route on .103 was
+ * confirmed in sync BY EAR (2026-09-03); the three are a tuple — change one and
+ * re-check. Slack is unaffected: buffers reach the sink well before their stamp.
+ * The sink adds this ring only behind a live upstream, which the module's
+ * `identity sync=true` gives it in the mixer arm too.
  */
 export const SINK_DECLARED_LATENCY_MS = 100;
 
@@ -51,18 +53,12 @@ export const SINK_DECLARED_LATENCY_MS = 100;
  * The route's playout offset D (engine default, or the route head's override —
  * resolved through the SAME `effectivePlayoutOffsetNs` the video-player and the
  * audio-decoder call, so one route resolves to one number on every leg), plus
- * this output's `lipSyncMs` trim, MINUS the mixer arm's declared aggregation
- * latency, MINUS the sink's own declared latency (`SINK_DECLARED_LATENCY_MS`).
+ * this output's `lipSyncMs` trim, MINUS the sink's own declared latency
+ * (`SINK_DECLARED_LATENCY_MS`). The same in both fan-in arms: the aligned
+ * mixer adds no latency (house-clock Phase 2), so there is nothing else to
+ * give back.
  *
- * Why the subtraction: `audiomixer latency=L` is pipeline latency in
- * GStreamer's sense — the aggregator reports it on the LATENCY query and a
- * `sync=true` sink adds it to every render time. Left alone, the same route
- * would play L later through a mixer than through the single-source bypass,
- * i.e. "playout offset" would stop meaning "after the stamp". Subtracting it
- * keeps presentation at `stamp + D + trim` in both arms. The single-source arm
- * declares no latency and passes 0.
- *
- * NEVER NEGATIVE. A trim past D (or L past D) is clamped to 0, for two reasons.
+ * NEVER NEGATIVE. A trim past D is clamped to 0, for two reasons.
  * Audio cannot be presented before it arrives, so a negative offset buys
  * nothing: the buffers are simply "late" and `max-lateness=-1` plays them on
  * arrival. And the backlog shedder reads this very `ts-offset` as the leg's
@@ -78,12 +74,10 @@ export const SINK_DECLARED_LATENCY_MS = 100;
 export function audio302mTsOffsetNs(
     services: PlayoutOffsetServices | null | undefined,
     config: Record<string, unknown>,
-    mixerLatencyNs = 0,
 ): number {
     return Math.max(
         0,
         effectivePlayoutOffsetNs(services, { trimMs: Number(config.lipSyncMs ?? 0) || 0 }) -
-            mixerLatencyNs -
             SINK_DECLARED_LATENCY_MS * 1_000_000,
     );
 }

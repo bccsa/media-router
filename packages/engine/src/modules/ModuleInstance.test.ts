@@ -503,6 +503,16 @@ describe('ModuleInstance', () => {
         expect(instance.getProcessCount()).toBe(2);
     });
 
+    it('getTimingSummary delegates to plugin (the producer lateness MediaRouter seeds from)', () => {
+        const summary = {
+            instrument: true,
+            inputs: [],
+            output: { meanMs: 40, minMs: 35, maxMs: 45 },
+        };
+        (plugin as unknown as PluginModule).getTimingSummary = () => summary;
+        expect(instance.getTimingSummary()).toBe(summary);
+    });
+
     it('getPlugin returns the underlying plugin', () => {
         expect(instance.getPlugin()).toBe(plugin);
     });
@@ -550,5 +560,6 @@ describe('ModuleInstance', () => {
         expect(inst.getDynamicPorts()).toBeUndefined();
         expect(inst.getChildProcess()).toBeNull();
         expect(inst.getProcessCount()).toBe(0);
+        expect(inst.getTimingSummary()).toBeUndefined();
     });
 });

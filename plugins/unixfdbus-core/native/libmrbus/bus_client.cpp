@@ -18,6 +18,12 @@ constexpr size_t MAX_FDS_PER_READ = 4;
 }
 
 BusClient::BusClient(std::string path, OnBuffer on_buffer, int64_t stall_ns)
+    : BusClient(std::move(path),
+                OnBufferEx([cb = std::move(on_buffer)](const uint8_t* d, size_t n, int64_t,
+                                                       uint32_t) { cb(d, n); }),
+                stall_ns) {}
+
+BusClient::BusClient(std::string path, OnBufferEx on_buffer, int64_t stall_ns)
     : path_(std::move(path)), on_buffer_(std::move(on_buffer)), stall_ns_(stall_ns) {
     in_.reserve(4096);
 }
@@ -111,7 +117,8 @@ bool BusClient::dispatch_message() {
         // unixfdsink tracks outstanding buffers, and our pread copy is done.
         queue_release(p.id);
         if (!flush_out()) return false;
-        on_buffer_(payload_buf_.data(), payload_buf_.size());
+        const int64_t pts = p.pts > (uint64_t)INT64_MAX ? -1 : (int64_t)p.pts;
+        on_buffer_(payload_buf_.data(), payload_buf_.size(), pts, p.flags);
     } else if (h.type == CMD_CAPS) {
         // Caps are transported for gst consumers; this consumer routes raw
         // TS packets, so the string is consumed and dropped.

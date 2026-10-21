@@ -32,9 +32,9 @@ export const num = (v: unknown, fallback: number): number =>
 
 /**
  * The dynamics modes backed by a LADSPA element. `none` and `ducker` are not:
- * `none` builds no stage at all, and the ducker runs on the native
- * `level`→`volume` control loop. Kept here rather than beside `DynamicsMode`
- * so the graph builders can test it without importing the pipeline module.
+ * `none` builds no stage at all, and the ducker is the native `mrducker`
+ * element. Kept here rather than beside `DynamicsMode` so the graph builders
+ * can test it without importing the pipeline module.
  */
 export const LADSPA_DYN_MODES = ['compressor', 'gate', 'expander'] as const;
 

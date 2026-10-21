@@ -571,15 +571,6 @@ export class GstRunner {
                 );
                 break;
 
-            case 'timeline_settled':
-                // The producer stamper's latch-repair window closed (ADR-0005
-                // note 2026-09-05): what this anchor cost, at the engine, so a
-                // burn-in can read it without the runner's own stderr.
-                console.error(
-                    `[gst-runner] latch settled on ${String(eventJson.tee)}: anchor pulled back ${(-(Number(eventJson.repairNs) || 0) / 1e6).toFixed(1)} ms in the first ${(Number(eventJson.windowNs) || 0) / 1e9} s`,
-                );
-                break;
-
             // A unixfdsrc-headed consumer on a connected but DARK bus (runner
             // `_data_wait`): it waits instead of restart-looping, and after the
             // watchdog period says so. Reported through the same `busGate`

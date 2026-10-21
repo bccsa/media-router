@@ -1,5 +1,11 @@
 # ADR-0018: The timeline conditioner absorbs a clock step once per program
 
+**Status: superseded by [[0029]] (Phase 2).** The conditioner is deleted with
+the anchored stamper; nothing between ingest and egress rewrites PES or PCR
+timing. A source clock step is a re-lock and a gap at the ingest restamp
+(Phase 1), which moves every PID of a program by one mapping. The record
+below is history.
+
 The time-sync conditioner (`mrts::TimelineStamper::condition()` in
 `plugins/mpegts-core/native/mrts/ts_timeline.cpp` and its python twin
 `ts_timeline.py`; run by `mrtsstamp`, `mr-tssplit`, `mr-bus-fanout`) rewrites

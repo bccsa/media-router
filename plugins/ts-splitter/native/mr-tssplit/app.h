@@ -1,7 +1,9 @@
 // mr-tssplit application wiring: BusClient input → mrts SplitterCore → one
 // FanoutServer per output PID, plus the stdin control plane (bus_attach /
-// bus_detach / reinput) and runner-shaped stdout events. See main.cpp for
-// the process shell (args, signals, poll loop).
+// bus_detach / reinput) and runner-shaped stdout events. A pass-through (plan
+// ch. 6 part 4.2): PES bytes and the program PCR are copied, each output is
+// stamped by identity, a gap marker goes on alone to its PID's output. See
+// main.cpp for the process shell (args, signals, poll loop).
 #pragma once
 #include <cstdint>
 #include <map>
@@ -12,8 +14,8 @@
 #include "libmrbus/bus_client.h"
 #include "libmrbus/fanout_server.h"
 #include "mrts/lateness.h"
+#include "mrts/ts_house.h"
 #include "mrts/ts_split.h"
-#include "mrts/ts_timeline.h"
 
 namespace mrtssplit {
 
@@ -31,15 +33,6 @@ struct Options {
     // per-buffer fd-pass/mmap cost returns — measured ~0.35 core across
     // producer+consumers at 1080p50).
     int64_t flush_ns = 20'000'000;
-    // Time-sync contract (--stamp-timeline): stamp each output buffer with its
-    // payload's mapped media time instead of send time. Off = byte-identical.
-    bool stamp_timeline = false;
-    // The stamper's latch-repair window (ts_timeline.py, "latch repair"). ON:
-    // the splitter's input is a live ingest, so a first PES that is the head
-    // of a reconnect backlog must not become the anchor. `--no-latch-repair`
-    // exists for the test rig, which feeds its ladders faster than real time
-    // (which the window reads — correctly — as a backlog flush).
-    bool repair_latch = true;
     // pid -> tee name (busout_<port>), from --out 0x100:busout_40001
     std::vector<std::pair<int, std::string>> outputs;
     std::vector<int> stream_types;   // parallel to outputs; -1 = unknown
@@ -85,9 +78,14 @@ class App {
         mrts::LatenessWindow lateness;
     };
 
-    void on_input_buffer(const uint8_t* data, size_t len);
-    // Wire pts for one output buffer: -1 (send time) with the contract off,
-    // else the payload's mapped media time (and its lateness is recorded).
+    std::unique_ptr<mrbus::BusClient> connect_input(const std::string& socket_path);
+    void on_input_buffer(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags);
+    // A gap marker (OQ-12): each of its packets on an output PID leaves alone
+    // on that output, after what the output holds, with the marker's PTS and
+    // flags, never merged into data (B-10) or stamped (its PTS is house time).
+    void forward_markers(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags);
+    // Wire pts for one output buffer: its identity stamp, `PES − 1 h` of its
+    // first timing PES (and its lateness is recorded).
     int64_t stamp_for(Output& o, const uint8_t* data, size_t len);
     void flush_output(Output& o);
     void flush_due(int64_t now_ns);
@@ -96,17 +94,9 @@ class App {
 
     Options opts_;
     std::unique_ptr<mrts::SplitterCore> core_;
-    // ONE stamper for every output (opts_.stamp_timeline only): the outputs
-    // are separate wire streams but must share one anchor + epoch reference,
-    // or each branch anchors on its own first buffer and the split re-rolls
-    // lipsync — the 2026-07-19 incident this splitter exists to prevent. Each
-    // output PID is its own `stream` key, so only the monotone floor is
-    // per-branch. Re-latched here rather than forwarded from the input's wire
-    // pts: an input buffer's pts is one number for a MUXED stream, so every
-    // output would inherit the interleave's leading PID's time (and, with a
-    // legacy upstream, its arrival jitter) instead of its own PES.
-    std::unique_ptr<mrts::TimelineStamper> stamper_;
-    std::vector<uint8_t> cond_buf_;      // conditioned copy of the input buffer
+    // Each output PID is its own stream, with its own PCR carrier and floor:
+    // the input's one wire pts would give every output the leading PID's time.
+    mrts::IdentityStamp identity_;
 
     std::vector<Output> outputs_;
     std::map<std::string, size_t> edge_owner_;   // edge socket -> outputs_ index

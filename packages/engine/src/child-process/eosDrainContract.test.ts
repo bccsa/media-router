@@ -72,8 +72,11 @@ describe('EOS drain before teardown (runner ↔ parent contract)', () => {
         const branch = pythonFunctionBody('_drain_decoder_branch');
         expect(branch).toContain('pad.send_event(Gst.Event.new_eos())');
         expect(branch).toContain('done.wait(max(0.0, deadline - time.monotonic()))');
-        // The bus ERROR handler is the one caller that sets the flag.
-        expect(runnerSource).toContain('_teardown_pipeline(pipeline, errored=True)');
+        // The bus ERROR handler is the one caller that sets the flag, through _fail_pipeline.
+        expect(runnerSource).toContain('_fail_pipeline(ev, errored=True)');
+        expect(pythonFunctionBody('_fail_pipeline')).toContain(
+            '_teardown_pipeline(pipeline, drain=drain, errored=errored)',
+        );
     });
 
     it('the drain runs BEFORE the NULL transition, and NULL happens either way', () => {

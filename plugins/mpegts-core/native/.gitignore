@@ -19,6 +19,8 @@ mrts/tests/ts_restamp_test
 mrts/tests/asrc_servo_test
 mrts/tests/ts_gap_test
 mrts/tests/ts_conformance_test
+mrts/tests/align_watch_test
+mrts/tests/ts_select_test
 mrts/tests/mrts_bench
 mrts/tests/fixture_gen
 mrpeshouse/tests/stamp_model_test

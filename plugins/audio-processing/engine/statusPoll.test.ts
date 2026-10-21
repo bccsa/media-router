@@ -86,6 +86,17 @@ describe('readChainMeters', () => {
         expect(status.latency).toBe('26.0 ms'); // (240 + 48 + 960) / 48
     });
 
+    it('hands the latency on as ms for the timing section, null when nothing reported it', async () => {
+        const lim = await readChainMeters(
+            stages({ limiterElement: 'lim-el' }),
+            reader({ 'lim.latency': 240 }),
+        );
+        expect(lim.latencyMs).toBe(5); // the default 5 ms lookahead
+        const none = await readChainMeters(stages({ limiterElement: 'lim-el' }), reader({}));
+        expect(none.latencyMs).toBeNull();
+        expect(none.status.latency).toBe('0.0 ms');
+    });
+
     it('shows a silent or unreadable meter as an em dash, per side', async () => {
         const read = reader({
             'eq.input-signal-meter-left': DB(-30),

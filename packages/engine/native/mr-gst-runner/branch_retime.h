@@ -10,8 +10,9 @@
 
 namespace mr::align::rt {
 
-/** Arm the retime on one transform producer's input demux; owns `demux` and `sink`. */
-void install(const gchar* name, GstElement* demux, GstPad* sink);
+/** Arm the retime on one transform producer's input demux; owns `demux` and `sink`.
+ *  `private_pads` also retimes its private_/subpicture_ pads (`privatePads`). */
+void install(const gchar* name, GstElement* demux, GstPad* sink, bool private_pads);
 
 /** Drop the registry and every ref a state holds (pipeline stop / restart). */
 void clear();

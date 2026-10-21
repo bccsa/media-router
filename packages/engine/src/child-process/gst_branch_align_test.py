@@ -861,6 +861,75 @@ try:
     wrap = w2.e is w1.e and w2.u == W and w2.du == W - 3600
     _pk = fx._pes(0x100, 0xE0, P + 7200, P, 1, 1, {0x100: 0}, False)[0]
     dts_parse = rt.pes_dts(_pk[4:]) == P
+
+    def vid(st, n, shift=0):
+        """The video's n-th PES (40 ms apart), `shift` ticks off its timeline, stamped by itself
+        on the house clock (continuous: K0 + the shift's ns)."""
+        v = rt.on_pes(st, 0x100, P + n * 3600 + 3600 - shift, P + n * 3600 - shift)
+        rt.sample(st, K0 + NS(shift) + NS(P + n * 3600 + 3600 - shift), v, v)
+        return v
+    def quiet_run(name, pid, first, timing=False, frames=260, step_at=None):
+        """10.4 s of video with one PES on `pid` at `first` after its third frame; from frame
+        `step_at` on the source stepped back 2 s. Returns (state, that Au, the last video Au
+        before the step, the last one)."""
+        st = rt.new_state(name)
+        for n in range(3):
+            vid(st, n)
+        au = rt.on_pes(st, pid, first, None, timing)
+        before = None
+        for n in range(3, frames):
+            v = vid(st, n, 0 if step_at is None or n < step_at else 2 * 90000)
+            before = v if step_at is None or n < step_at else before
+        return st, au, before, v
+    S9 = 9 * 90000                                         # a 9 s quiet stretch
+    # A cue (0xBD, not timing) quiet for 9 s comes back at the video's time: it was quiet.
+    s11, c0, _b, v11 = quiet_run("pure-quiet", 0x102, P + 7200)
+    c1 = rt.on_pes(s11, 0x102, P + S9 + 7200, None, False)
+    c2 = rt.on_pes(s11, 0x102, P + S9 + 97200, None, False)
+    quiet = (c1.e is c0.e is v11.e and c2.e is c0.e and c1.u == P + S9 + 7200
+             and rt.k_for(c1) == K0 and s11["seq"] == 1 and len(s11["epochs"]) == 1)
+    # The video stepped back 2 s while the cue was quiet: the newest coherent epoch wins.
+    s12, _c, old12, v12 = quiet_run("pure-quiet-step", 0x102, P + 7200, frames=225, step_at=125)
+    c12 = rt.on_pes(s12, 0x102, P + S9 + 7200 - 2 * 90000, None, False)
+    stepped = (v12.e is not old12.e and c12.e is v12.e and v12.e.k == K0 + NS(2 * 90000)
+               and rt.k_for(c12) + NS(c12.u) == K0 + NS(P + S9 + 7200))
+    # Out of the rule's reach an epoch opens: a timing PID's 9 s gap and a cue stepping back over
+    # 1 s predicted from their own step, a cue back with no timing PID within 5 s on the last K.
+    cut = []
+    for name, pid, first, timing, back in (("pure-cut-timing", 0x101, P + 3600, True, P + S9 + 3600),
+                                           ("pure-cut-back", 0x102, P + 3 * 90000, False, P + 90000),
+                                           ("pure-cut-far", 0x103, P + 7200, False, P + S9 + 7 * 90000)):
+        st13, a13, _b, _v = quiet_run(name, pid, first, timing)
+        b13 = rt.on_pes(st13, pid, back, None, timing)
+        cut.append((b13.e is not a13.e and st13["seq"] == 2, None if b13.e.pred is None else b13.e.pred - K0))
+
+    def dark_run(name, spell_s):
+        """Video and a cue a second for 5 s, then the whole input silent `spell_s` s: back with the
+        cue alone in its bus buffer (stamped at arrival), the next video's stamp clamped to it."""
+        st = rt.new_state(name)
+        for n in range(125):
+            vid(st, n)
+            if n % 25 == 0:
+                rt.on_pes(st, 0x102, P + n * 3600 + 7200, None, False)
+        back = 125 + spell_s * 25
+        cue = rt.on_pes(st, 0x102, P + back * 3600 + 66600, None, False)    # written 0.7 s early
+        arrival = K0 + NS(P + back * 3600 + 66600) - 530_000_000
+        rt.sample(st, arrival, None, None)
+        v = rt.on_pes(st, 0x100, P + back * 3600 + 3600, P + back * 3600)
+        rt.sample(st, arrival, v, v)
+        clamped_k = rt.k_for(v)
+        vid(st, back + 10)                                    # the first stamp above that floor
+        return cue, v, clamped_k
+    dark = {s: dark_run(f"pure-dark{s}", s) for s in (6, 9, 30)}
+    # The input silent across a 33-bit wrap: the old epoch's unwrap carries over to the new one.
+    s14 = rt.new_state("pure-dark-wrap")
+    for n in range(10):
+        w14 = rt.on_pes(s14, 0x100, (W - 5 * 3600 + n * 3600) % W, None)
+        rt.sample(s14, K0 + NS(W - 5 * 3600 + n * 3600), w14, w14)
+    c14a = rt.on_pes(s14, 0x102, 7200, None, False)
+    c14 = rt.on_pes(s14, 0x102, 7200 + 8 * 90000, None, False)
+    dark_wrap = (c14a.e is w14.e and c14.e is not w14.e and c14a.u == W + 7200
+                 and abs(rt.k_for(c14) + NS(c14.u) - K0 - NS(W + 7200 + 8 * 90000)) <= 1)
 finally:
     sys.stderr = _old7
 check("a buffer with no previous stamp only bounds K; a moved stamp reads it exactly",
@@ -878,6 +947,25 @@ check("the new epoch's first moved stamp replaces the prediction; old access uni
       "the old K", epoch_k)
 check("a 33-bit PTS wrap stays in its epoch, unwrapped past 2^33 (DTS too)", wrap)
 check("the PES DTS is read from the header", dts_parse)
+check("a cue back after 9 s of quiet rejoins the video's epoch on its exact K: no epoch of its own",
+      quiet)
+check("a cue back after 9 s while the video stepped back 2 s: the video's new epoch, not its own, "
+      "and on content time", stepped)
+check("out of that rule's reach each opens an epoch: a timing PID's 9 s gap and a cue stepping back "
+      f"2 s predicted from their own step, a cue with no timing PID within 5 s on the last K ({cut})",
+      cut == [(True, -NS(S9)), (True, NS(2 * 90000)), (True, 0)])
+check("a cue's quiet stretch is not logged as a discontinuity",
+      "pure-quiet retime" not in _cap7.getvalue() and "pure-quiet-step retime: pid=0x102" not in _cap7.getvalue())
+check("a dark input back 6, 9 and 30 s later with a cue alone in its buffer: the cue opens an epoch "
+      "on the last K and leaves on its PES; the video joins it, exact under a clamped stamp",
+      all(c.e.seq == 1 and c.e.pred == K0 and rt.k_for(c) == K0 and v.e is c.e and ck == K0
+          and v.e.k == K0 for c, v, ck in dark.values()))
+check("a dark input's cue logs its quiet spell and the reading that confirms its K, no discontinuity",
+      all(re.search(rf"pure-dark{s} retime: pid=0x102 back after {s + 1}\.660 s with no timing PES near — "
+                    r"stamp epoch #1 on the last K", _cap7.getvalue())
+          and f"pure-dark{s} retime: epoch #1 on its stamps, +0.000 ms off the prediction" in _cap7.getvalue()
+          for s in dark) and not re.search(r"pure-dark\d+ retime: .*discontinuity", _cap7.getvalue()))
+check("a dark input's cue across a 33-bit wrap: the new epoch's K carries the old unwrap", dark_wrap)
 
 print("\n--- 8. an mpegts-muxer's inputs: one retime per demux, different producers ---")
 # The muxer's inputs are N demuxes in ONE pipeline, each on its own producer's
@@ -948,6 +1036,134 @@ _rs, _one = rt.new_state, {}
 m8, _ = mutated({"new_state": lambda name: _one or _one.update(_rs(name)) or _one}, lambda: mux_run(MUX))
 check(f"(d) mutant, one retime state for both demuxes: (b) fails (A/V spread {av_spread(m8):.0f} ms)",
       not av_ok(m8))
+
+print("\n--- 9. cue pads (KLV, teletext, DVB subtitles): retimed under privatePads only ---")
+# The muxer's inputs ask for it (WI-P2-12): a cue then leaves its demux at K + its PES,
+# −1 h on identity egress. A transcoder's cue pads keep tsdemux's own times.
+CUE_BUFS, CUE_TARGETS = fx.cue_egress(20, lambda p: H0 + fx.ns(p - fx.DTS0), start_s=2.2)
+CUES = {"demuxes": ["demux"], "transformProducer": True, "privatePads": True}
+
+
+def cue_run(cfg, bufs=CUE_BUFS, targets=CUE_TARGETS, pids=fx.CUE_PIDS):
+    """{pid of `pids`: [(serial, running PTS − target in ms, or None untimed)]}, the demux pad of
+    each, and the runner log: every cue (AU) the demux let out, in sink order."""
+    pipe = Gst.parse_launch(f'appsrc name=src is-live=true format=time block=true max-bytes=4000000 '
+                            f'caps="{fx.TS_CAPS}" ! tsdemux name=demux latency=0')
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    pipe.use_clock(clock)
+    pipe.set_start_time(Gst.CLOCK_TIME_NONE)
+    pipe.set_base_time(0)
+    rows, pads = {}, {}
+
+    def on_buf(pad, info):
+        buf = info.get_buffer()
+        key = fx.au_key(buf.extract_dup(0, min(11, buf.get_size())))
+        if key is not None and key[0] in pids:
+            pads[key[0]] = pad.get_peer().get_name()
+            seg = pad.get_sticky_event(Gst.EventType.SEGMENT, 0).parse_segment()
+            err = (None if buf.pts == Gst.CLOCK_TIME_NONE
+                   else (seg.to_running_time(Gst.Format.TIME, buf.pts) - targets[key]) / 1e6)
+            rows.setdefault(key[0], []).append((key[1], err))
+        return Gst.PadProbeReturn.OK
+
+    def on_pad(_demux, pad):
+        sink = Gst.ElementFactory.make("fakesink")
+        sink.set_property("sync", False)
+        sink.set_property("async", False)
+        pipe.add(sink)
+        sink.sync_state_with_parent()
+        sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+        pad.link(sink.get_static_pad("sink"))
+
+    pipe.get_by_name("demux").connect("pad-added", on_pad)
+    cap, old = _io.StringIO(), sys.stderr
+    sys.stderr = cap
+    try:
+        if cfg:
+            runner._install_branch_stamp_align(pipe, cfg)
+        pipe.set_state(Gst.State.PLAYING)
+        src = pipe.get_by_name("src")
+        for data, st, _arr in bufs:
+            b = Gst.Buffer.new_wrapped(data)
+            b.pts = b.dts = st
+            src.emit("push-buffer", b)
+        src.emit("end-of-stream")
+        pipe.get_bus().timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        pipe.set_state(Gst.State.NULL)
+    finally:
+        sys.stderr = old
+        runner._clear_branch_align()
+    return rows, pads, cap.getvalue()
+
+
+def cues_exact(rows, least=15):
+    """Every cue of the three cue PIDs out, each on its content time to the rounding (≤ 20 µs)."""
+    return (sorted(rows) == list(fx.CUE_PIDS) and all(len(r) >= least for r in rows.values())
+            and all(e is not None and abs(e) <= 0.02 for r in rows.values() for _s, e in r))
+
+
+def worst_cue(rows):
+    return max((abs(e) for r in rows.values() for _s, e in r if e is not None), default=float("inf"))
+
+
+cue_on, cue_pads, cue_log = cue_run(CUES)
+cue_off, _, cue_off_log = cue_run({"demuxes": ["demux"], "transformProducer": True})
+cue_alone, _, _ = cue_run(None)
+cue_mux, _, cue_mux_log = cue_run({"demuxes": ["demux"], "privatePads": True})
+vid_on, _ = tp_run(CUES, seconds=12)
+vid_off, _ = tp_run(PRODUCER, seconds=12)
+print(f"    cue pads {cue_pads}; tsdemux alone: worst {worst_cue(cue_alone):.3f} ms off content time")
+check(f"(a) privatePads: KLV and teletext (private_) and DVB subtitles (subpicture_) retimed — "
+      f"every cue on its content time (worst {worst_cue(cue_on):.4f} ms over "
+      f"{sum(map(len, cue_on.values()))} cues)",
+      cues_exact(cue_on) and cue_pads == {fx.KLV_PID: "private_0_0102", fx.TTX_PID: "private_0_0103",
+                                         fx.DVB_PID: "subpicture_0_0104"})
+check("(a) the same K for cues as for the video: one hold, one release line, nothing more",
+      cue_log.count("released on the first exact stamp reading") == 1
+      and "did not join" not in cue_log)
+check(f"(b) without the flag a cue keeps tsdemux's own PTS, exactly the unretimed run's "
+      f"(worst {worst_cue(cue_off):.3f} ms off content time), so (a) can fail",
+      cue_off == cue_alone and worst_cue(cue_off) > 1.0)
+check("(c) the flag changes nothing else: audio and video AUs leave exactly as without it",
+      vid_on == vid_off and len(vid_on) > 800)
+check("(d) mux mode ignores the flag (no retime there): the cues are tsdemux's",
+      cue_mux == cue_alone and "retime" not in cue_mux_log)
+m9a, _, _ = mutated({"CUE_PADS": ()}, lambda: cue_run(CUES))
+check("(e) mutant, the flag ignored: (a) fails", not cues_exact(m9a))
+m9b, _, _ = mutated({"RETIMED": rt.RETIMED + rt.CUE_PADS},
+                    lambda: cue_run({"demuxes": ["demux"], "transformProducer": True}))
+check("(e) mutant, cue pads retimed without the flag: (b) fails", m9b != cue_alone)
+
+# (f) Real cues pause: subtitle-core sends only while a cue is live. A cue PID quiet for more
+# than 5 s is back on the video's K, not on an epoch predicted from its own cadence.
+SPARSE = [1, 2, 3, 12, 13, 14, 23, 24]
+SPARSE_BUFS, SPARSE_TARGETS = fx.cue_egress(27, lambda p: H0 + fx.ns(p - fx.DTS0), start_s=0.5,
+                                            schedule=SPARSE)
+sparse_on, _, sparse_log = cue_run(CUES, SPARSE_BUFS, SPARSE_TARGETS)
+check(f"(f) cues 9 s apart: every cue on its content time across both gaps (worst "
+      f"{worst_cue(sparse_on):.4f} ms over {sum(map(len, sparse_on.values()))} cues), none logged as a "
+      f"discontinuity", cues_exact(sparse_on, least=7) and "discontinuity" not in sparse_log)
+_on_pes = rt.on_pes
+m9c, _, m9c_log = mutated({"on_pes": lambda st, pid, pts, dts, timing=True: _on_pes(st, pid, pts, dts, True)},
+                          lambda: cue_run(CUES, SPARSE_BUFS, SPARSE_TARGETS))
+check(f"(f) mutant, every PES taken as timing (the cue opens an epoch predicted from its own cadence): "
+      f"(f) fails (worst {worst_cue(m9c):.0f} ms)", not cues_exact(m9c, least=7))
+
+# (g) A dark input: every PID silent over 5 s, back with a KLV cue alone in its bus buffer, CCs
+# carried on so tsdemux keeps it. That cue and the video after it leave on content time.
+DARK_BUFS, DARK_BACK = fx.go_dark(CUE_BUFS, H0 + 6 * 10**9, H0 + 13 * 10**9, (fx.KLV_PID,))
+dark_on, _, dark_log = cue_run(CUES, DARK_BUFS, CUE_TARGETS, fx.CUE_PIDS + (fx.VIDEO_PID,))
+dark_video = dark_on.pop(fx.VIDEO_PID, [])
+dark_after = [e for s, e in dark_video if CUE_TARGETS[(fx.VIDEO_PID, s)] > H0 + 7 * 10**9]
+dark_first = next((e for s, e in dark_on.get(fx.KLV_PID, []) if CUE_TARGETS[(fx.KLV_PID, s)] > DARK_BACK), None)
+check(f"(g) a dark input ({(DARK_BACK - H0) / 1e9 - 6:.1f} s silent) back with a cue alone: that cue "
+      f"({dark_first} ms), every cue and every video AU after it on content time (worst "
+      f"{max((abs(e) for e in dark_after if e is not None), default=None)} ms over {len(dark_after)} AUs)",
+      cues_exact(dark_on, least=8) and dark_first is not None and abs(dark_first) <= 0.02
+      and len(dark_after) >= 100 and all(e is not None and abs(e) <= 0.02 for e in dark_after))
+check("(g) the cue logs its quiet spell on the last K, nothing logs a discontinuity",
+      "pid=0x102 back after" in dark_log and "on the last K" in dark_log and "discontinuity" not in dark_log)
 
 print()
 if _failures:

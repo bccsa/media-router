@@ -203,7 +203,7 @@ describe('buildPipeline', () => {
         // Single static pipeline (no linkOnPadAdded): unixfdsrc → tsparse →
         // tsdemux → decode once → conform framerate → tee → one leaf per
         // rendition.
-        // Named demux — the runner's preserveSourceTimeline targets this name.
+        // Named demux — the runner's alignBranchesToStamps targets this name.
         expect(p).toContain(`tsdemux name=${DEMUX_NAME} latency=0`);
         expect(p).toContain(`unixfdsrc socket-path=${base.input.socketPath}`);
         expect(p.match(/avdec_h264/g)).toHaveLength(1); // decoded exactly once

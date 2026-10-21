@@ -109,30 +109,22 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         expect(desc!.restartOnError).toBe(true);
     });
 
-    it('carries preserveSourceTimeline targeting the named demux by default', () => {
+    it('retimes its input demux to the bus stamps and declares no stamper policy', () => {
         const { module } = makeModule({});
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
-        expect(desc!.preserveSourceTimeline).toEqual({ demux: 'demux' });
         // Its input demux is retimed to the bus stamps as a transform producer
         // (per access unit), so the identity egress is content-correct.
         expect(desc!.alignBranchesToStamps).toEqual({
             demuxes: ['demux'],
             transformProducer: true,
         });
-        // ... and under the contract the egress stamper reads the mux-written
-        // house time back (identity) rather than anchoring at this egress.
-        expect(desc!.houseTimelineEgress).toBe(true);
-    });
-
-    it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {
-        const { module } = makeModule({});
-        module.probeResult = { codec: 'aac' };
-        const desc = module.buildPipeline({
-            renditions: [{ codec: 'opus' }],
-            preserveSourceTimeline: false,
-        });
-        expect(desc!.preserveSourceTimeline).toBeUndefined();
+        // Every egress is stamped by identity (WI-P2-3): nothing else to declare.
+        expect(Object.keys(desc!).sort()).toEqual([
+            'alignBranchesToStamps',
+            'pipeline',
+            'restartOnError',
+        ]);
     });
 
     it('a 302M-declared source decodes the same way (probe → avdec_s302m)', () => {

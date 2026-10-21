@@ -10,15 +10,14 @@ contract and how other plugins consume this.
 | Path | What | Portability |
 |---|---|---|
 | `native/libmrbus/` | GstUnixFd bus transport static lib: fan-out server (per-client leaky send queues, CAPS-first, memfd + SCM_RIGHTS), raw-TS ingest buffering, stdin/stdout JSON control plane | Linux only (`memfd_create`, fd passing) |
-| `native/mr-bus-fanout/` | Fan-out sidecar binary for non-GStreamer bus producers — drop-in replacement for `py/unixfd-fanout.py` (same CLI, control verbs, and events) | Linux only |
-| `py/unixfd-fanout.py` | Python reference fan-out sidecar — the executable specification `mr-bus-fanout` is conformance-tested against | Linux only |
+| `native/mr-bus-fanout/` | Fan-out sidecar binary for non-GStreamer bus producers (hls-player): moves the TS onto house time (`house_rebase.{h,cpp}`, tested by `tests/house_rebase_test.cpp`) and stamps each buffer by identity | Linux only |
 | `py/unixfd-test-server.py` | Upstream `unixfdsink` stand-in for integration tests (feeds a bus input edge, verifies RELEASE_BUFFER) | Linux only |
 | `py/unixfd-fanout.test-client.py` | GstUnixFd protocol capture client used by the conformance and e2e suites | Linux only |
-| `tests/unixfdFanout.test.ts` | GstUnixFd protocol conformance, parameterized over BOTH fan-out implementations against the same protocol clients (skips off-Linux) | — |
+| `tests/unixfdFanout.test.ts` | GstUnixFd protocol conformance of `mr-bus-fanout` and its house time on the wire, against the python protocol clients (skips off-Linux) | — |
 
 ## Consumers
 
-- The engine's bus fan-out per module (`unixfd-fanout.py` reference sidecar,
-  `UnixFdFanoutController`).
-- `hls-player` — prefers `mr-bus-fanout`, falls back to the python sidecar.
+- The engine's `UnixFdFanoutController`, which drives `mr-bus-fanout`'s
+  control verbs.
+- `hls-player` — runs `mr-bus-fanout`; there is no fallback.
 - `ts-splitter` — links `libmrbus.a` into its `mr-tssplit` child.

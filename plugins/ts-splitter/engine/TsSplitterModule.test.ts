@@ -93,7 +93,6 @@ describe('TsSplitterModule native child (onStart)', () => {
             '--input', '/tmp/mr-bus-40000-edge.sock',
             '--caps', 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
             '--ts-id', '1',
-            '--stamp-timeline',
             '--out', '0x65:busout_41000:0x1b',
             '--out', '0xc9:busout_41001:0xf',
         ]);

@@ -175,8 +175,8 @@ pipe.set_state(Gst.State.NULL)
 
 
 print("\n--- a mux-written PES timeline is house running time + exactly 1 h ---")
-# The house-timeline egress (ts_timeline.MUX_CLOCK_BASE_90K, ADR-0005 amendment
-# 2026-10-08) inverts mpegtsmux's CLOCK_BASE. Pinned against the real element so
+# The identity egress stamp (ts_timeline.MUX_CLOCK_BASE_90K, mrts::IdentityStamp)
+# inverts mpegtsmux's CLOCK_BASE. Pinned against the real element so
 # a GStreamer upgrade that moves it fails here instead of shifting every
 # transform hop's timeline by the difference.
 if Gst.ElementFactory.find("mpegtsmux") is None or Gst.ElementFactory.find("avenc_aac") is None:

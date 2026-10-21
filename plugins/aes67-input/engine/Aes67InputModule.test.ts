@@ -344,7 +344,6 @@ describe('Aes67InputModule on house time (WI-P1-11)', () => {
                 ' ! mpegtsmux latency=0 alignment=7' +
                 ' ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter ',
         );
-        expect(desc!.houseTimelineEgress).toBe(true);
         expect(desc!.busReports).toEqual([
             { element: 'restamp', structure: 'mrtsrestamp-stats' },
             { element: 'restamp', structure: 'mrtsrestamp-pid' },

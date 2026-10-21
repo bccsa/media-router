@@ -57,3 +57,9 @@ mpegts-core's PIC archive `libmrts.a`, as every other user of the TS core
 does, instead of compiling the `mrts` sources into itself; it also loads
 `libgstmrtshouse.so` by path, a lookup of exception 1's kind. The condition
 is unchanged: no TS arithmetic in the runner.
+
+Amended by [[0029]] (2026-10-18, Phase 2): `pacedMixer` is now
+`alignedMixer`, still in `plugins/audio-302m-core/`. Exception 2 no longer
+has a python stamping probe (`gst_stamp_probe` is deleted); what stays in
+`packages/engine` is the stamper's lifecycle, its native splice and its
+message handling, still with no arithmetic of its own.

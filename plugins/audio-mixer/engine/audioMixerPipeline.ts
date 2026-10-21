@@ -35,8 +35,6 @@ export interface AudioMixerPipelineInputs {
     outputPort: number;
     channels: number;
     volume: number; // 0..1.5 gst scale
-    /** audiomixer latency budget (ms) — silence-fills starved sources. */
-    latencyMs: number;
     /** 302M word length of the mix output (`pcmBitDepth`). Default 16-bit. */
     pcmFormat?: S302mFormat;
 }
@@ -62,7 +60,6 @@ export function buildMixerPipeline(
     const { fragment, continuationName } = buildAudioMixInput({
         sources: input.sources,
         channels: input.channels,
-        latencyMs: input.latencyMs,
         mixerName: MIXER_NAME,
         liveInputs: true,
     });

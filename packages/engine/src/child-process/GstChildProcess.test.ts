@@ -213,29 +213,42 @@ describe('start payload', () => {
 
 describe('start payload (the wire to the runner)', () => {
     // `startPayload` is an explicit field list, so a description field the
-    // runner reads only exists on the wire if it is named here — the latch
-    // repair flag was dropped exactly this way once (review, 2026-09-06).
+    // runner reads only exists on the wire if it is named here — a stamper
+    // flag was dropped exactly this way once (review, 2026-09-06).
+    it('carries exactly the runner-relevant fields, no stamper policy among them', () => {
+        // The egress stamp needs no field: every egress is stamped by identity (WI-P2-3).
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        expect(Object.keys(child.startPayload({ pipeline: 'x' })).sort()).toEqual([
+            'alignBranchesToStamps',
+            'backlogShed',
+            'busReports',
+            'decoderThreadType',
+            'env',
+            'eosDrain',
+            'keyframeGate',
+            'linkOnPadAdded',
+            'liveCaptureClock',
+            'liveInputBranches',
+            'pipeline',
+            'readKlvNames',
+            'renderWatch',
+            'restartBackoffMs',
+            'restartOnError',
+            'rist',
+            'runner',
+            'runnerHooks',
+            'tsProbe',
+            'udpSilenceRestartMs',
+            'useStdioForData',
+        ]);
+    });
+
     it('carries udpSilenceRestartMs (multicast re-join bound), and omits it when unset', () => {
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
         expect(
             child.startPayload({ pipeline: 'x', udpSilenceRestartMs: 60000 }).udpSilenceRestartMs,
         ).toBe(60000);
         expect(child.startPayload({ pipeline: 'x' }).udpSilenceRestartMs).toBeUndefined();
-    });
-
-    it('carries houseTimelineEgress (identity stamps for a transform producer), and omits it when unset', () => {
-        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        expect(
-            child.startPayload({ pipeline: 'x', houseTimelineEgress: true }).houseTimelineEgress,
-        ).toBe(true);
-        expect(child.startPayload({ pipeline: 'x' }).houseTimelineEgress).toBeUndefined();
-    });
-
-    it('carries latchRepair as resolved, and omits it when unresolved', () => {
-        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
-        expect(child.startPayload({ pipeline: 'x', latchRepair: false }).latchRepair).toBe(false);
-        expect(child.startPayload({ pipeline: 'x', latchRepair: true }).latchRepair).toBe(true);
-        expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('latchRepair', undefined);
     });
 
     it('records the pipeline launch instant and clears it when the pipeline stops or errors', () => {

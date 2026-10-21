@@ -43,7 +43,7 @@ export class BusFanoutCoordinator {
         if (port === undefined) return;
         // The attach target is the gst runner for pipeline producers, or a
         // non-gst producer's own fan-out controller (hls-player's
-        // UnixFdFanoutController driving its unixfd-fanout.py sidecar).
+        // UnixFdFanoutController driving its mr-bus-fanout sidecar).
         const target = this.moduleGetter(conn.sourceModuleId)?.getBusAttachTarget?.();
         if (!target) return;
         target.sendBusAttach(busTeeName(port), busEdgeSocketPath(port, conn.id));

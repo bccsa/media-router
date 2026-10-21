@@ -21,8 +21,9 @@
  * visibly outlasts a short attack. The real values ride on the segment
  * markers, and the axis prints no ticks that would imply otherwise.
  *
- * The ramps are drawn straight because `DuckerEnvelope` really is linear in dB
- * (`db ± (|floor| / time) * dt`), which also makes our attack and release FULL
+ * The ramps are drawn straight because mrducker's envelope really is linear in
+ * dB (`db ± (|floor| / time) * dt`, ducker_envelope.cpp; per sample too: each
+ * window's ramp is geometric), which also makes our attack and release FULL
  * TRAVEL durations to the floor and back — Logic/Ableton semantics, not Q-SYS's
  * 63 % time constants nor Yamaha's per-6 dB rates. The notes say so.
  *

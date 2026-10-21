@@ -95,6 +95,11 @@ conditioner correction (ADR-0018) — it is on the program's timeline, it just
 never sets it. A private-data PID (0xBD: KLV cues, teletext, DVB
 subtitles) rides the media's anchor untouched; an egress with nothing but
 private PES and no PCR never anchors and stamps every buffer at arrival.
+Amended by [[0029]] (Phase 2): the anchored stamper and the conditioner are
+deleted. `timing_pes` now picks the PES that `mrts::IdentityStamp` stamps a
+buffer by (`PES − 1 h`); a buffer of private PES alone, or a stream with no
+PCR carrier, is still stamped at arrival. teletext-subtitles no longer
+declares `houseTimelineEgress`: every egress is identity.
 
 ## Amendment 2026-10-09 — content-timed cues
 

@@ -3,8 +3,8 @@
 // A native port of `gst-pipeline-runner.py` (ADR-0019): one GStreamer
 // pipeline per process, driven by the engine over the same JSON protocol,
 // emitting the same events. It covers, subsystem by subsystem:
-//   parse/PLAYING/EOS-drain, the PLAYING watchdog, the non-live source gate
-//   and the input stall watch (runner.cpp, source_gate.cpp); VU, bus-report
+//   parse/PLAYING/EOS-drain, the PLAYING watchdog and the non-live source
+//   gate (runner.cpp, source_gate.cpp); VU, bus-report
 //   and plugin-event forwarding, live properties, element stats, throughput
 //   (commands.cpp); per-consumer bus fan-out edges with the stall watchdog
 //   (bus_edges.cpp); the time-sync contract's house clock and the native
@@ -14,7 +14,7 @@
 //   keep-up watch and TS video-info probe, and the mrrist plugin loader
 //   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020).
 // A start payload naming what it does NOT implement — the legacy python RIST
-// drain (`rist`), `preserveSourceTimeline`, `readKlvNames`/`set_klv_payload`,
+// drain (`rist`), `readKlvNames`/`set_klv_payload`,
 // `useStdioForData`, or a hook with no native form — is refused
 // with an `error` event (`unsupported_field` in runner.cpp,
 // mirrored by `nativeRunnerIneligibility` in the engine): the

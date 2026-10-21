@@ -178,7 +178,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         const allSources = router.getModuleBusSources(instanceId);
         const muxedSources: UdpInputSource[] = allSources
             .filter((s) => isInputPort(s.sinkPortId))
-            .map((s) => {
+            .map((s: BusSource) => {
                 const entry = entryForPort(entries, s.sinkPortId);
                 return {
                     sinkPortId: s.sinkPortId,
@@ -186,6 +186,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                     socketPath: s.socketPath,
                     language: entry?.language,
                     ...(entry?.pid !== undefined ? { pid: entry.pid } : {}),
+                    ...(s.seedLatenessMs !== undefined ? { seedLatenessMs: s.seedLatenessMs } : {}),
                 };
             });
         const sources = sortSources(muxedSources);
@@ -207,18 +208,12 @@ export class MpegTsMuxerModule extends GstPluginBase {
         this.busSinkName = busTeeName(endpoint.port);
 
         const alignment = (config.alignment as number) ?? DEFAULT_MPEGTS_ALIGNMENT;
-        // Stability-vs-latency is a per-use-case operator call, not a
-        // constant — see the queueLeaky doc in the pipeline helpers.
-        const queueLeaky = (config.queueLeaky as boolean) ?? false;
-        const queueDepthMs = config.queueDepthMs as number | undefined;
         let result;
         try {
             result = buildPipeline({
                 sources,
                 output: endpoint,
                 alignment,
-                queueLeaky,
-                queueDepthMs,
                 videoParserBypass: config.videoParserBypass === true,
             });
         } catch (err) {
@@ -244,17 +239,13 @@ export class MpegTsMuxerModule extends GstPluginBase {
             runnerHooks: result.runnerHooks,
             restartOnError: true,
             // Retime every input's access units onto their producer's stamps (K +
-            // PES), so no branch keeps tsdemux's zero point or skew walk as A/V
-            // skew at the output. Dropped by `applyTimeSync` off-contract.
-            alignBranchesToStamps: { demuxes: result.demuxes, transformProducer: true },
-            // ... and with the branches on house time, the mux's own output PES
-            // ARE house time (+1 h): the egress stamper reads them back instead
-            // of anchoring at this egress and baking the aggregator's latency
-            // into every consumer's timeline (ADR-0005 amendment 2026-10-08).
-            houseTimelineEgress: true,
-            // Dark-input detection (see INPUT_STALL_TIMEOUT_MS): runner-side,
-            // one entry per input source, no `watchdog` element in the branch.
-            inputStallWatch: result.inputStallWatch,
+            // PES), cue pads too: a KLV or teletext buffer leaves its demux at
+            // PES − 1 h, so the mux writes it at its own PTS (part 4.6).
+            alignBranchesToStamps: {
+                demuxes: result.demuxes,
+                transformProducer: true,
+                privatePads: true,
+            },
         };
     }
 
@@ -362,4 +353,13 @@ export class MpegTsMuxerModule extends GstPluginBase {
 /** Input entry for a sink port id (`input-2`, or a legacy `video-0` / `audio-2`). */
 function entryForPort(entries: InputEntry[], sinkPortId: string): InputEntry | undefined {
     return entries.find((e) => e.id === sinkPortId);
+}
+
+/** What the muxer reads of a `getModuleBusSources` entry; the router adds
+ *  `seedLatenessMs` from the producer's output lateness (WI-P2-13). */
+interface BusSource {
+    sinkPortId: string;
+    port: number;
+    socketPath: string;
+    seedLatenessMs?: number;
 }

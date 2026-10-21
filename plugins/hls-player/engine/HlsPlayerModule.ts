@@ -6,7 +6,6 @@ import {
     formatBytes,
     latOutName,
     resolveNativeBinary,
-    resolvePythonScript,
     type BusAttachTarget,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -30,19 +29,10 @@ function resolveRunnerPath(): string | null {
     return candidates.find((p) => existsSync(p)) ?? null;
 }
 
-/**
- * How to launch the GstUnixFd fan-out. Prefers the native `mr-bus-fanout`
- * binary (unixfdbus-core library plugin) and falls back to its python sidecar,
- * which speaks the identical CLI, control verbs and events — the two are
- * interchangeable and the conformance suite runs both against the same
- * protocol clients. Returns null when neither is present.
- */
-function resolveFanout(): { command: string; prefix: string[]; label: string } | null {
-    const native = resolveNativeBinary('mr-bus-fanout', 'hls-player');
-    if (native) return { command: native, prefix: [], label: 'mr-bus-fanout' };
-    const script = resolvePythonScript('unixfd-fanout.py', 'hls-player');
-    if (script) return { command: 'python3', prefix: [script], label: 'unixfd-fanout' };
-    return null;
+/** The GstUnixFd fan-out, the native `mr-bus-fanout` (unixfdbus-core library
+ *  plugin); null when it is not built. */
+function resolveFanout(): string | null {
+    return resolveNativeBinary('mr-bus-fanout', 'hls-player');
 }
 
 type Option = { value: string; label: string };
@@ -85,10 +75,11 @@ function asArray(v: unknown): string[] {
  * Pulls an HLS stream via the hls-pipe library (spawned as an isolated Node
  * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on the
  * inter-module bus — same producer contract as srt-input. The child streams
- * into this module's fan-out sidecar (the native `mr-bus-fanout`, or the
- * python `unixfd-fanout.py` when the binary is absent), which serves the
+ * into this module's fan-out sidecar `mr-bus-fanout`, which serves the
  * per-consumer edge sockets speaking the GstUnixFd protocol (see
- * `startFanout`).
+ * `startFanout`). The origin's timeline does not reach the bus: the sidecar
+ * moves the TS onto house time at playout start plus the media offset, so a
+ * source discontinuity is a content skip, and stamps each buffer by identity.
  *
  * On start it probes the master playlist to detect available audio / subtitle
  * languages and reports them as `fieldOptions`, so the settings panel can show
@@ -97,18 +88,6 @@ function asArray(v: unknown): string[] {
  * restart — see `getLiveUpdatableParams()`.
  */
 export class HlsPlayerModule extends GstPluginBase {
-    /**
-     * An HLS player fetches whole segments and runs AHEAD of real time by
-     * design (a ~2 s lead, built over the first minutes). Every producer
-     * downstream of this one therefore keeps the first-PES anchor: the
-     * stamper's latch repair would read the per-segment burst as a reconnect
-     * backlog (ADR-0005 note 2026-09-05, `effectiveLatchRepair`). The fan-out
-     * sidecar this module runs leaves its own stamper's repair off too.
-     */
-    isDeliveryLeadProducer(): boolean {
-        return true;
-    }
-
     private runner: ManagedProcess | null = null;
     /** The GstUnixFd fan-out sidecar + its controller. The sidecar owns the
      *  per-consumer edge sockets, so they survive runner relaunches (URL
@@ -239,21 +218,13 @@ export class HlsPlayerModule extends GstPluginBase {
             },
         );
         this.fanout = this.spawnRunnerProcess({
-            label: fanout.label,
-            command: fanout.command,
-            args: [
-                ...fanout.prefix,
-                '--ingest', busIngestSocketPath(port),
-                '--caps', BUS_TS_CAPS,
-                // Producer half of the time-sync contract: the sidecar stamps
-                // the payload's mapped media time instead of send time. Both
-                // implementations take the same flag.
-                '--stamp-timeline',
-            ],
+            label: 'mr-bus-fanout',
+            command: fanout,
+            args: ['--ingest', busIngestSocketPath(port), '--caps', BUS_TS_CAPS],
             autoRestart: true,
             stdin: true,
             onStdout: (line) => this.handleFanoutLine(line, port),
-            onStderr: (line) => this.log.warn({ src: fanout.label }, line),
+            onStderr: (line) => this.log.warn({ src: 'mr-bus-fanout' }, line),
         });
         return true;
     }

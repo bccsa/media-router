@@ -16,7 +16,6 @@ describe('buildSpawnArgs', () => {
             '--input', '/tmp/mr-bus-40000-abc.sock',
             '--caps', BUS_TS_CAPS,
             '--ts-id', '7',
-            '--stamp-timeline',
             '--out', '0x65:busout_41000:0x1b',
             '--out', '0x1f0:busout_41001',
         ]);
@@ -27,17 +26,10 @@ describe('buildSpawnArgs', () => {
         expect(args).not.toContain('--flush-ms');
     });
 
-    it('always stamps, and adds --no-latch-repair only for an explicit false', () => {
+    it('passes no stamping flag: the child always stamps by identity', () => {
         expect(buildSpawnArgs({ inputSocketPath: '/s', outputs: [] })).toEqual([
-            '--input', '/s', '--caps', BUS_TS_CAPS, '--stamp-timeline',
+            '--input', '/s', '--caps', BUS_TS_CAPS,
         ]);
-        expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], latchRepair: false }),
-        ).toEqual(expect.arrayContaining(['--stamp-timeline', '--no-latch-repair']));
-        // The runner's own default is ON: absent and true are both argv-silent.
-        expect(
-            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], latchRepair: true }),
-        ).not.toContain('--no-latch-repair');
     });
 
     it('passes busBatchMs through as --flush-ms, including 0 (batching off)', () => {

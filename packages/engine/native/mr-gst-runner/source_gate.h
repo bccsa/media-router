@@ -1,6 +1,5 @@
 // The two non-live heads and what the runner does about them (the native port
-// of `gst_source_gate.py`, ADR-0010 rule 3), plus the input stall watch
-// (`gst_input_stall_watch.py`).
+// of `gst_source_gate.py`, ADR-0010 rule 3).
 //
 // DATA WAIT — for a pipeline whose PLAYING request came back ASYNC and whose
 // head is unixfdsrc/udpsrc, the PLAYING deadline starts when every such
@@ -41,15 +40,3 @@ void on_udp_timeout(const std::string& src_name);
 void forget_sources_in(GstElement* bin);
 
 }  // namespace mr::gate
-
-namespace mr::stall {
-
-/** `cfg` = [{"element": "busin_0", "timeoutMs": 5000}, …] (may be nullptr). */
-void start(GstElement* pipe, JsonArray* cfg);
-
-/** First PLAYING: start every entry's clock and the shared tick. */
-void arm();
-
-void stop();
-
-}  // namespace mr::stall

@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import type { AudioMixSource } from '@media-router/plugin-audio-302m-core';
+import { shortHash } from '@media-router/engine';
+import {
+    alignedMixer,
+    liveDemuxName,
+    liveMixInputBranch,
+    type AudioMixSource,
+} from '@media-router/plugin-audio-302m-core';
 import {
     activeOutputIndices,
     buildN1Pipeline,
     buildN1Ports,
+    n1InputBranch,
     readChannels,
     readPairCount,
     type N1Output,
@@ -26,6 +33,14 @@ function mkInputs(indices: number[], sourcesPer = 1): Map<number, AudioMixSource
 function mkOutputs(indices: number[]): N1Output[] {
     return indices.map((o) => ({ index: o, port: 40200 + o }));
 }
+
+/** Input i's matrix link into output o: its watchdog in that output's pace group, W ≥ 500 ms. */
+const link = (i: number, o: number): string =>
+    `in${i}t. ! mralignwatch name=omix${o}_aw${i} aligner=omix${o} input=in${i}` +
+    ` silence-floor=500000000 ! omix${o}.`;
+const MATRIX =
+    /in(\d+)t\. ! mralignwatch name=omix(\d+)_aw(\d+) aligner=omix(\d+) input=in(\d+) silence-floor=500000000 ! omix(\d+)\./g;
+const CAPS2 = 'audio/x-raw,rate=48000,channels=2';
 
 describe('readPairCount', () => {
     it('defaults to 4 and clamps to 2–16', () => {
@@ -89,31 +104,39 @@ describe('activeOutputIndices', () => {
 
 describe('buildN1Pipeline', () => {
     it('returns null with no inputs or no outputs', () => {
-        expect(
-            buildN1Pipeline({ inputs: new Map(), outputs: mkOutputs([0]), latencyMs: 200 }),
-        ).toBeNull();
-        expect(buildN1Pipeline({ inputs: mkInputs([0]), outputs: [], latencyMs: 200 })).toBeNull();
+        expect(buildN1Pipeline({ inputs: new Map(), outputs: mkOutputs([0]) })).toBeNull();
+        expect(buildN1Pipeline({ inputs: mkInputs([0]), outputs: [] })).toBeNull();
     });
 
     it('builds the full N·(N-1) exclusion matrix with no self-branch', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1, 2, 3]),
             outputs: mkOutputs([0, 1, 2, 3]),
-            latencyMs: 200,
         })!;
-        const matrix = [...pipeline.matchAll(/in(\d+)t\. ! queue [^!]+! omix(\d+)\./g)];
+        const matrix = [...pipeline.matchAll(MATRIX)];
         expect(matrix).toHaveLength(12);
-        for (const [, i, o] of matrix) expect(i).not.toBe(o);
+        for (const [, i, o, aw, group, label, into] of matrix) {
+            expect(i).not.toBe(o);
+            // Named, labelled and grouped by the pair it links, never by position.
+            expect([aw, label]).toEqual([i, i]);
+            expect([group, into]).toEqual([o, o]);
+        }
         for (let i = 0; i < 4; i++) {
             // One source per input pin still builds the input aggregator —
             // live inputs (#787) need it there to add a second source to
             // without a rebuild. Each source is a named bin on an explicit pad.
-            expect(pipeline).toContain(`audiomixer name=inmix${i} force-live=true`);
-            expect(pipeline).toContain(`capsfilter name=inmix${i}_caps`);
+            expect(pipeline).toContain(
+                `audiomixer name=inmix${i} latency=0 start-time-selection=first` +
+                    ` ! capsfilter name=inmix${i}_out `,
+            );
+            expect(pipeline).toContain(`mralignwatch name=inmix${i}_aw_`);
             expect(pipeline).toContain(`( name=inmix${i}_in_`);
             expect(pipeline).toContain(`! inmix${i}.sink_0`);
             expect(pipeline).toContain(`tee name=in${i}t`);
-            expect(pipeline).toContain(`audiomixer name=omix${i} force-live=true`);
+            expect(pipeline).toContain(
+                `audiomixer name=omix${i} latency=0 start-time-selection=first` +
+                    ` ! capsfilter name=omix${i}_out caps="${CAPS2}"`,
+            );
         }
         // One 302M encode + bus sink per output, one decode per source branch.
         expect(pipeline.match(/avenc_s302m/g)).toHaveLength(4);
@@ -124,136 +147,175 @@ describe('buildN1Pipeline', () => {
         expect(pipeline.match(/tee name=busout_/g)).toHaveLength(4);
     });
 
-    it('paces EVERY output mixer on the pipeline clock — force-live free-runs after all its contributors EOS', () => {
+    it('every output mixer is the aligned mixer, chained straight into its 302M encode', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1, 2, 3]),
             outputs: mkOutputs([0, 1, 2, 3]),
-            latencyMs: 200,
         })!;
-        expect(pipeline.match(/identity name=omix\d+_pace sync=true/g)).toHaveLength(4);
         for (let o = 0; o < 4; o++) {
-            // Contiguous: the pacer sits between the caps pin and the encode
-            // branch, so nothing can tap the mixer ahead of the clock.
             expect(pipeline).toContain(
-                `audiomixer name=omix${o} force-live=true` +
-                    ' latency=20000000' +
-                    ' start-time-selection=first' +
-                    ' ! audio/x-raw,rate=48000,channels=2' +
-                    ` ! identity name=omix${o}_pace sync=true` +
-                    ' ! audioconvert ! audioresample',
+                alignedMixer({ name: `omix${o}`, caps: CAPS2, outName: `omix${o}_out` }) +
+                    ' ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2' +
+                    ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7' +
+                    ` ! capssetter caps=`,
             );
+        }
+        // One active output is built the same way.
+        const one = buildN1Pipeline({ inputs: mkInputs([1]), outputs: mkOutputs([0]) })!;
+        expect(one).toContain(
+            alignedMixer({ name: 'omix0', caps: CAPS2, outName: 'omix0_out' }) + ' ! audioconvert',
+        );
+        expect(one.match(/audiomixer name=omix/g)).toHaveLength(1);
+    });
+
+    it('nothing is force-live or clock-paced: no pacer, no fixed budget, anywhere (WI-P2-9)', () => {
+        for (const sourcesPer of [1, 3]) {
+            const pipeline = buildN1Pipeline({
+                inputs: mkInputs([0, 1, 2], sourcesPer),
+                outputs: mkOutputs([0, 1, 2]),
+            })!;
+            expect(pipeline).not.toContain('force-live');
+            expect(pipeline).not.toContain('sync=true');
+            expect(pipeline).not.toMatch(/\bidentity\b/);
+            expect(pipeline).not.toContain('_pace');
+            // Every mixer, input fan-in or output, waits for data or a gap: latency 0.
+            const mixers = pipeline.match(/audiomixer [^!]*/g)!;
+            expect(mixers).toHaveLength(6);
+            for (const m of mixers) {
+                expect(m).toMatch(
+                    /^audiomixer name=(in|o)mix\d latency=0 start-time-selection=first $/,
+                );
+            }
         }
     });
 
-    it('paces the output mixer even when only one output is active', () => {
+    it('the matrix links are watchdogs, not the 500 ms queues they replaced', () => {
         const pipeline = buildN1Pipeline({
-            inputs: mkInputs([1]),
-            outputs: mkOutputs([0]),
-            latencyMs: 200,
+            inputs: mkInputs([0, 1, 2]),
+            outputs: mkOutputs([0, 1, 2]),
         })!;
-        expect(pipeline.match(/identity name=omix\d+_pace sync=true/g)).toHaveLength(1);
-        expect(pipeline).toContain('identity name=omix0_pace sync=true');
+        for (const [i, o] of [
+            [1, 0],
+            [2, 0],
+            [0, 1],
+            [2, 1],
+            [0, 2],
+            [1, 2],
+        ]) {
+            expect(pipeline).toContain(link(i, o));
+        }
+        // Each tee feeds only watchdogs; the only queues left are the bus ingress ones.
+        expect(pipeline).not.toMatch(/in\dt\. ! queue/);
+        expect(pipeline).not.toMatch(/max-size-time=500000000\s/);
+        expect(pipeline.match(/ ! queue /g)).toHaveLength(3);
+        expect(pipeline.match(/unixfdsrc /g)).toHaveLength(3);
     });
 
-    it('does not double-pace the input fan-in — a single-source pin has no aggregator to pace', () => {
+    it("a matrix link's W is at least 500 ms: its input mixer's holds are not silence", () => {
         const pipeline = buildN1Pipeline({
-            inputs: mkInputs([0, 1]),
-            outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
+            inputs: mkInputs([0, 1, 2], 2),
+            outputs: mkOutputs([0, 1, 2]),
         })!;
-        // Every aggregator carries its clock pacer: the two output mixers
-        // and the two input fan-ins (always built — live inputs, #787).
-        expect(pipeline.match(/identity /g)).toHaveLength(4);
-        expect(pipeline).toContain('identity name=inmix0_out sync=true');
+        expect(pipeline.match(MATRIX)).toHaveLength(6);
+        // Only the matrix links: a source's own watchdog keeps the element's 100 ms floor, so a
+        // dead source holds its input mixer for as short a time as its rhythm allows.
+        expect(pipeline.match(/silence-floor=/g)).toHaveLength(6);
+        expect(pipeline).toMatch(/mralignwatch name=inmix0_aw_[0-9a-f]{6} aligner=inmix0 [^!]*! /);
+        expect(pipeline).not.toMatch(/name=inmix\d_aw_[^!]*silence-floor/);
     });
 
     it('sums multiple sources wired to one input port', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1], 3),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
         })!;
         expect(pipeline.match(/! inmix0\./g)).toHaveLength(3);
         expect(pipeline.match(/! inmix1\./g)).toHaveLength(3);
-        // Summing brings the aggregator back — with its clock pacer.
-        expect(pipeline).toContain('audiomixer name=inmix0 force-live=true');
-        expect(pipeline).toContain('identity name=inmix0_out sync=true');
+        // Summing goes through the aligned mixer, one watchdog per source.
+        expect(pipeline).toContain('audiomixer name=inmix0 latency=0');
+        expect(pipeline).toContain('capsfilter name=inmix0_out ');
+        expect(
+            pipeline.match(/mralignwatch name=inmix0_aw_[0-9a-f]{6} aligner=inmix0 /g),
+        ).toHaveLength(3);
     });
 
     it('single connected input feeds every output except its own pair', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([1]),
             outputs: mkOutputs([0, 2, 3]),
-            latencyMs: 200,
         })!;
         expect(pipeline).not.toContain('omix1');
-        for (const o of [0, 2, 3]) {
-            expect(pipeline).toContain(
-                `in1t. ! queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0 ! omix${o}.`,
-            );
-        }
+        for (const o of [0, 2, 3]) expect(pipeline).toContain(link(1, o));
     });
 
     it('never builds a pad-less output mixer — self-only output is dropped', () => {
-        expect(
-            buildN1Pipeline({ inputs: mkInputs([1]), outputs: mkOutputs([1]), latencyMs: 200 }),
-        ).toBeNull();
+        expect(buildN1Pipeline({ inputs: mkInputs([1]), outputs: mkOutputs([1]) })).toBeNull();
     });
 
     it('N=2 is a pure cross-feed', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1]),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
         })!;
-        const matrix = [...pipeline.matchAll(/in(\d+)t\. ! queue [^!]+! omix(\d+)\./g)];
+        const matrix = [...pipeline.matchAll(MATRIX)];
         expect(matrix.map(([, i, o]) => `${i}>${o}`).sort()).toEqual(['0>1', '1>0']);
     });
 
-    it('honours the mix latency budget on the input mixers only', () => {
-        // The input fan-ins carry the configurable budget whatever their
-        // source count (always built — live inputs, #787); the output
-        // mixers keep their fixed small one.
+    it('a live second source on a connected input: the branch liveMixInputBranch builds (#787)', () => {
+        const added = mkSource(1, 1);
+        const b = n1InputBranch(1, added.connectionId, added, 2);
+        expect(b).toEqual(liveMixInputBranch('inmix1', added, { channels: 2 }));
+        expect(b.element).toBe('inmix1');
+        // Content time through the formula demux, then the watchdog the live add ghosts.
+        expect(b.description).toContain(
+            `mrtsdemux name=${liveDemuxName('inmix1', added.connectionId)}` +
+                ' select=audio/x-smpte-302m ! avdec_s302m',
+        );
+        expect(b.description).toMatch(
+            new RegExp(
+                ` ! ${CAPS2} ! mralignwatch name=inmix1_aw_${shortHash(added.connectionId)}` +
+                    ` aligner=inmix1 input="${added.connectionId}" hold-on-eos=true$`,
+            ),
+        );
+        // A start with both sources renders the same text, so a later remove finds it.
         const pipeline = buildN1Pipeline({
-            inputs: mkInputs([0, 1], 2),
+            inputs: new Map([
+                [0, [mkSource(0)]],
+                [1, [mkSource(1), added]],
+            ]),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 500,
         })!;
-        expect(pipeline).toContain('audiomixer name=inmix0 force-live=true latency=500000000');
-        expect(pipeline).toContain('audiomixer name=omix0 force-live=true latency=20000000');
-
-        const single = buildN1Pipeline({
-            inputs: mkInputs([0, 1]),
-            outputs: mkOutputs([0, 1]),
-            latencyMs: 500,
-        })!;
-        expect(single).toContain('audiomixer name=inmix0 force-live=true latency=500000000');
-        expect(single.match(/! inmix0\.sink_0/g)).toHaveLength(1);
+        expect(pipeline).toContain(`( name=${b.name} ${b.description} ) ! inmix1.sink_1`);
+        expect(n1InputBranch(1, added.connectionId, undefined, 2)).toEqual({
+            element: 'inmix1',
+            name: b.name,
+        });
     });
 
     it('mixes and encodes every stage at the configured width', () => {
         const wide = buildN1Pipeline({
             inputs: mkInputs([0, 1], 2),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
             channels: 8,
         })!;
         // Input fan-in, matrix branches and output mixers all pin 8 channels…
         expect(
-            wide.match(/capsfilter name=inmix\d_caps caps="audio\/x-raw,rate=48000,channels=8"/g),
+            wide.match(/capsfilter name=inmix\d_out caps="audio\/x-raw,rate=48000,channels=8"/g),
         ).toHaveLength(2);
         expect(
-            wide.match(/audiomixer name=omix\d [^!]+! audio\/x-raw,rate=48000,channels=8 !/g),
+            wide.match(
+                /audiomixer name=omix\d [^!]+! capsfilter name=omix\d_out caps="audio\/x-raw,rate=48000,channels=8" !/g,
+            ),
         ).toHaveLength(2);
         // …and the 302M encode carries the same width on the wire.
         expect(wide.match(/format=S16LE,rate=48000,channels=8 ! avenc_s302m/g)).toHaveLength(2);
         expect(wide).not.toContain('channels=2');
         // A wide mix leaves the mixer unpositioned (wide 302M decodes that
-        // way) and avenc_s302m refuses it — the pacer hands the encoder a
-        // layout via an identity matrix + explicit mask, per output.
+        // way) and avenc_s302m refuses it — the tail after each output mixer
+        // hands the encoder a layout via an identity matrix + explicit mask.
         expect(
             wide.match(
-                /identity name=omix\d_pace sync=true ! audioconvert mix-matrix="<<\(float\)1\.0000, \(float\)0\.0000[^"]*>" ! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x63f ! audioconvert ! audioresample/g,
+                /capsfilter name=omix\d_out caps="[^"]+" ! audioconvert mix-matrix="<<\(float\)1\.0000, \(float\)0\.0000[^"]*>" ! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x63f ! audioconvert ! audioresample/g,
             ),
         ).toHaveLength(2);
 
@@ -261,7 +323,6 @@ describe('buildN1Pipeline', () => {
         const stereo = buildN1Pipeline({
             inputs: mkInputs([0, 1]),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
         })!;
         expect(stereo).not.toContain('channels=8');
         expect(stereo.match(/rate=48000,channels=2/g)!.length).toBeGreaterThan(0);
@@ -274,14 +335,15 @@ describe('buildN1Pipeline', () => {
         const mono = buildN1Pipeline({
             inputs: mkInputs([0, 1]),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
             channels: 1,
         })!;
         expect(
-            mono.match(/capsfilter name=inmix\d_caps caps="audio\/x-raw,rate=48000,channels=1"/g),
+            mono.match(/capsfilter name=inmix\d_out caps="audio\/x-raw,rate=48000,channels=1"/g),
         ).toHaveLength(2);
         expect(
-            mono.match(/audiomixer name=omix\d [^!]+! audio\/x-raw,rate=48000,channels=1 !/g),
+            mono.match(
+                /audiomixer name=omix\d [^!]+! capsfilter name=omix\d_out caps="audio\/x-raw,rate=48000,channels=1" !/g,
+            ),
         ).toHaveLength(2);
         expect(mono.match(/format=S16LE,rate=48000,channels=2 ! avenc_s302m/g)).toHaveLength(2);
         expect(mono).not.toContain('channels=1 ! avenc_s302m');
@@ -292,7 +354,6 @@ describe('buildN1Pipeline', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1]),
             outputs: mkOutputs([0, 1]),
-            latencyMs: 200,
         })!;
         expect(pipeline).toContain('unixfdsrc');
         expect(pipeline).toContain('socket-path=/tmp/mr-bus-40100-abcdef.sock');

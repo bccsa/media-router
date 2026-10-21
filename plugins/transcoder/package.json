@@ -280,13 +280,6 @@
                     "x-step": 50,
                     "x-unit": "ms"
                 },
-                "preserveSourceTimeline": {
-                    "type": "boolean",
-                    "default": true,
-                    "x-advanced": true,
-                    "title": "Preserve Source Timeline",
-                    "description": "Keep source timestamps so muxers align video with audio and lip-sync survives restarts."
-                },
                 "subtitleDelayMs": {
                     "type": "number",
                     "minimum": 0,

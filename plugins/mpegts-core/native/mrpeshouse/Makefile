@@ -28,8 +28,8 @@ tests/stamp_model_test: tests/stamp_model_test.cpp stamp_model.cpp stamp_model.h
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $< stamp_model.cpp -o $@
 
 test: $(TESTS)
-	@# Model parity (vectors dumped by subtitle-core/py/subtitle_stamp_dump.py); the
-	@# walk + element are pinned by subtitle-core/py/subtitle_peshouse_gst_test.py.
+	@# Model parity on frozen vectors (their generator was retired with the anchored
+	@# stamper); the walk + element are pinned by subtitle-core/py/subtitle_peshouse_gst_test.py.
 	cd tests && ./stamp_model_test stamp_model_vectors.txt
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)

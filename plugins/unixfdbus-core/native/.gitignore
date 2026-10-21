@@ -3,3 +3,4 @@
 *.o
 *.a
 mr-bus-fanout/mr-bus-fanout
+mr-bus-fanout/tests/house_rebase_test

@@ -50,17 +50,6 @@
                     "default": 16,
                     "title": "PCM Bit Depth",
                     "description": "16-bit is a third less bus data and transparent for Opus/AAC; use 24-bit only when PCM is the deliverable."
-                },
-                "mixLatencyMs": {
-                    "type": "number",
-                    "default": 20,
-                    "minimum": 20,
-                    "maximum": 2000,
-                    "x-widget": "slider",
-                    "x-step": 10,
-                    "x-unit": "ms",
-                    "title": "Mix Latency",
-                    "description": "How long to wait for lagging inputs before emitting; starved inputs get silence."
                 }
             }
         },

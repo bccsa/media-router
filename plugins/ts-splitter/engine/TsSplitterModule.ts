@@ -2,7 +2,6 @@ import {
     GstPluginBase,
     NativeSinkController,
     busTeeName,
-    effectiveLatchRepair,
     registerCodecClassifier,
     resolveNativeBinary,
     type BusAttachTarget,
@@ -219,10 +218,6 @@ export class TsSplitterModule extends GstPluginBase {
                 // Fan-out coalescing window; 0 disables batching for
                 // ultra-low-latency chains (see the schema description).
                 busBatchMs: this.config.busBatchMs as number | undefined,
-                // Whether its stamper may repair a late first PES: a property
-                // of the SOURCE upstream (an hls-player anywhere above this
-                // splitter turns it off), resolved from the graph.
-                latchRepair: effectiveLatchRepair(this.services),
             }),
             autoRestart: true,
             stdin: true,

@@ -133,7 +133,7 @@ describe('AudioProcessingModule — element resolution', () => {
         await startModule(keyed.module);
         expect(keyed.module.resolvedSuffixes).toEqual(['sc-gate-stereo']);
         const desc = keyed.module.buildPipeline((keyed.module as any).config)!;
-        expect(desc.pipeline).toContain('interleave name=il');
+        expect(desc.pipeline).toContain('audiointerleave name=il latency=0');
         await keyed.module.onStop();
 
         // Same config, nothing on the sidechain pin → self-keyed fallback.
@@ -244,6 +244,18 @@ describe('AudioProcessingModule — buildPipeline', () => {
         await module.onStop();
     });
 
+    it('stops without the EOS drain, a fan-in of two holding every EOS or not', async () => {
+        for (const n of [1, 2]) {
+            const sources = Array.from({ length: n }, (_, i) => mkSource('program-in', i));
+            const { module } = await createModule({ mode: 'compressor' }, sources);
+            await startModule(module);
+            const desc = module.buildPipeline((module as any).config)!;
+            expect(desc.pipeline.includes('hold-on-eos=true')).toBe(n > 1);
+            expect(desc.eosDrain).toBe(false);
+            await module.onStop();
+        }
+    });
+
     it('errors when the bus channel pool is exhausted', async () => {
         const { module, setHealth } = await createModule({}, [mkSource('program-in')]);
         await startModule(module);
@@ -253,15 +265,19 @@ describe('AudioProcessingModule — buildPipeline', () => {
         await module.onStop();
     });
 
-    it('a ducker with a key wired subscribes to the sidechain level', async () => {
-        const { module, setHealth } = await createModule({ mode: 'ducker' }, [
+    it('a ducker with a key wired builds mrducker and subscribes to its messages', async () => {
+        const { module, setHealth } = await createModule({ mode: 'ducker', duckDepth: -20 }, [
             mkSource('program-in'),
             mkSource('sidechain-in', 1),
         ]);
         await startModule(module);
         const desc = module.buildPipeline((module as any).config)!;
-        expect(desc.busReports).toEqual([{ element: 'sclevel', structure: 'level' }]);
-        expect(desc.pipeline).toContain('level name=sclevel');
+        expect(desc.busReports).toEqual([{ element: 'ducker', structure: 'mrducker' }]);
+        expect(desc.pipeline).toContain(
+            'mrducker name=ducker threshold=-35 depth=-20 attack=5 release=200 hold=250',
+        );
+        expect(desc.pipeline).toContain('audiointerleave name=il latency=0');
+        expect(desc.pipeline).not.toContain('sclevel');
         expect(setHealth).toHaveBeenCalledWith('ok');
         await module.onStop();
     });
@@ -273,7 +289,8 @@ describe('AudioProcessingModule — buildPipeline', () => {
         await startModule(module);
         const desc = module.buildPipeline((module as any).config)!;
         expect(desc.busReports).toBeUndefined();
-        expect(desc.pipeline).toContain('volume name=duckvol');
+        expect(desc.pipeline).not.toContain('mrducker');
+        expect(desc.pipeline).toContain('progmix_out. ! audioconvert ! level name=outlevel');
         expect(setHealth).toHaveBeenCalledWith(
             'warning',
             expect.stringContaining('no sidechain source'),
@@ -330,11 +347,10 @@ describe('AudioProcessingModule — live config updates', () => {
     it('never writes to a stage the running chain does not have', async () => {
         const { module, setProperty } = await createModule({ mode: 'ducker' }, [
             mkSource('program-in'),
-            mkSource('sidechain-in', 1),
         ]);
         await startModule(module);
         await module.onLiveConfigUpdate({
-            threshold: -20, // ducker: envelope reads it from config
+            threshold: -20, // a ducker with no key wired builds no mrducker
             duckDepth: -18,
             eqBand0Gain: 6, // no EQ in this chain
             limiterThreshold: -3, // no limiter in this chain
@@ -344,105 +360,97 @@ describe('AudioProcessingModule — live config updates', () => {
         expect((module as any).config).toMatchObject({ threshold: -20, duckDepth: -18 });
         await module.onStop();
     });
+
+    it('a duck slider is a live write on the ducker element, clamped to its range', async () => {
+        const { module, setProperty } = await createModule({ mode: 'ducker' }, [
+            mkSource('program-in'),
+            mkSource('sidechain-in', 1),
+        ]);
+        await startModule(module);
+        await module.onLiveConfigUpdate({
+            threshold: -20,
+            duckDepth: -18,
+            attack: 40,
+            release: 1, // under the element's 5 ms floor
+            hold: 600,
+        });
+        expect(setProperty.mock.calls).toEqual([
+            ['ducker', 'threshold', -20],
+            ['ducker', 'depth', -18],
+            ['ducker', 'attack', 40],
+            ['ducker', 'release', 5],
+            ['ducker', 'hold', 600],
+        ]);
+        await module.onStop();
+    });
 });
 
-/** The envelope's own arithmetic is covered in `duckerEnvelope.test.ts`; these
- *  cover the module's wiring into it. */
+/** The envelope runs in `mrducker` (native/mrducker, its tests there); these cover the
+ *  module's side: its messages into the ducker graphs. */
 describe('AudioProcessingModule — ducker wiring', () => {
-    /** Drive the module with N sidechain readings at `keyDb`, `stepMs` apart. */
-    async function runEnvelope(
-        config: Record<string, unknown>,
-        keyDb: number,
-        ticks: number,
-        stepMs = 15,
-    ) {
-        const { module } = await createModule({ mode: 'ducker', ...config });
-        const sets: number[] = [];
-        (module as any).setElementProperty = async (_el: string, _p: string, v: number) => {
-            sets.push(v);
-        };
-        let t = 1_000_000;
-        const spy = vi.spyOn(Date, 'now').mockImplementation(() => t);
-        (module as any).ducker.reset(t);
-        for (let i = 0; i < ticks; i++) {
-            t += stepMs;
-            (module as any).onPluginEvent('level:sclevel', { rms: [keyDb], peak: [keyDb] });
-        }
-        spy.mockRestore();
-        return { module, sets, lastGain: sets.length ? sets[sets.length - 1] : 1 };
-    }
-
-    it('pushes the envelope gain to duckvol while the key is over threshold', async () => {
-        const { lastGain } = await runEnvelope(
-            { threshold: -35, duckDepth: -12, attack: 5 },
-            -3,
-            40,
-        );
-        expect(lastGain).toBeCloseTo(10 ** (-12 / 20), 2); // 0.251
+    /** One `mrducker` message as a runner forwards it (busReports, `mrducker:ducker`). */
+    const msg = (gainDb: number, phase = 'attack', keyDb: number | null = -8) => ({
+        'running-time': 0,
+        'gain-db': gainDb,
+        'key-db': keyDb,
+        phase,
     });
 
-    it('stays at unity below threshold (no IPC at all)', async () => {
-        const { sets } = await runEnvelope({ threshold: -35 }, -50, 20);
-        expect(sets).toHaveLength(0);
-    });
-
-    it('ignores other channels, other dynamics modes and empty readings', async () => {
-        const { module, setProperty } = await createModule({ mode: 'compressor' });
-        (module as any).onPluginEvent('level:sclevel', { rms: [0], peak: [0] });
-        expect(setProperty).not.toHaveBeenCalled();
-
-        const duck = await createModule({ mode: 'ducker' });
-        (duck.module as any).onPluginEvent('level:outlevel', { rms: [0], peak: [0] });
-        (duck.module as any).onPluginEvent('level:sclevel', { rms: [] });
-        (duck.module as any).onPluginEvent('level:sclevel', {});
-        expect(duck.setProperty).not.toHaveBeenCalled();
-    });
-
-    it('feeds the ducker graphs a throttled live level, not one per 15 ms tick', async () => {
-        const { module } = await createModule({
-            mode: 'ducker',
-            threshold: -35,
-            duckDepth: -12,
-            attack: 5,
-        });
+    it('feeds the ducker graphs from mrducker messages, at most 4 Hz of their 10', async () => {
+        const { module } = await createModule({ mode: 'ducker', duckDepth: -12 });
         const graph = vi.fn();
         (module as any).setStatusGraph = graph;
         let t = 2_000_000;
         const spy = vi.spyOn(Date, 'now').mockImplementation(() => t);
-        (module as any).ducker.reset(t);
-        for (let i = 0; i < 40; i++) {
-            t += 15;
-            (module as any).onPluginEvent('level:sclevel', { rms: [-3] });
+        // 2 s of messages at 10 Hz walking down to the floor and holding there.
+        for (let i = 0; i < 20; i++) {
+            t += 100;
+            (module as any).onPluginEvent('mrducker:ducker', msg(Math.max(-12, -1.5 * (i + 1))));
         }
         spy.mockRestore();
-
         const envelopes = graph.mock.calls.filter(([, key]) => key === 'duckEnvelope');
-        // 600 ms of readings: the onset plus 4 Hz — never one per tick.
-        expect(envelopes.length).toBeGreaterThan(0);
-        expect(envelopes.length).toBeLessThanOrEqual(4);
+        // The onset, then never two publishes inside 250 ms: at most 1 + 2000 / 250.
+        expect(envelopes.length).toBeGreaterThan(1);
+        expect(envelopes.length).toBeLessThanOrEqual(1 + 2000 / 250);
         const graphed = envelopes.at(-1)![2];
+        expect(graphed.live.y).toBeLessThan(0); // the dot on the envelope
         const live = graphed.markers.find((m: { axis: string }) => m.axis === 'y');
         expect(live.value).toBeLessThan(0); // the applied duck, live on the plot
-        expect(graphed.live.y).toBeLessThan(0); // …and the dot on the envelope
         // The ducker has no transfer curve — every publish clears that key.
         const curve = graph.mock.calls.filter(([, key]) => key === 'dynamics');
         expect(curve.length).toBeGreaterThan(0);
         expect(curve.every(([, , g]) => g === null)).toBe(true);
     });
 
-    it('re-seeds on every PLAYING and pushes unity (sticky replay may hold a duck)', async () => {
-        const { module, setProperty } = await createModule({ mode: 'ducker' });
-        const envelope = (module as any).ducker;
-        envelope.advance([0], { threshold: -35, duckDepth: -18 }, Date.now());
-        expect(envelope.gainDb).toBeLessThan(0);
+    it('ignores other channels and payloads that are no reading', async () => {
+        const { module } = await createModule({ mode: 'ducker' });
+        const duck = vi.spyOn((module as any).telemetry, 'duckLevel');
+        (module as any).onPluginEvent('level:sclevel', { rms: [0], peak: [0] });
+        (module as any).onPluginEvent('mrducker:other', msg(-6));
+        (module as any).onPluginEvent('mrducker:ducker', { 'gain-db': null, phase: 'hold' });
+        (module as any).onPluginEvent('mrducker:ducker', { 'gain-db': -6, phase: 'ducking' });
+        (module as any).onPluginEvent('mrducker:ducker', undefined);
+        expect(duck).not.toHaveBeenCalled();
+        (module as any).onPluginEvent('mrducker:ducker', msg(-6, 'hold', null));
+        expect(duck).toHaveBeenCalledWith({ gainDb: -6, keyDb: null, phase: 'hold' });
+    });
 
+    it('writes nothing on PLAYING: the gain lives in the element, not in a property', async () => {
+        const { module, setProperty } = await createModule({ mode: 'ducker' }, [
+            mkSource('program-in'),
+            mkSource('sidechain-in', 1),
+        ]);
+        await startModule(module);
         (module as any).onPipelinePlaying();
-        expect(envelope.gainDb).toBe(0);
-        expect(setProperty).toHaveBeenCalledWith('duckvol', 'volume', 1);
+        expect(setProperty).not.toHaveBeenCalled();
+        await module.onStop();
+    });
 
-        // A LADSPA mode leaves the element alone — sticky replay restores it.
-        const comp = await createModule({ mode: 'compressor' });
-        (comp.module as any).onPipelinePlaying();
-        expect(comp.setProperty).not.toHaveBeenCalled();
+    it('no setting of the manifest is a fixed mixer budget (OQ-33)', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+        const keys = Object.keys(manifest.mediaRouter.configSchema.properties);
+        expect(keys.filter((k) => /LatencyMs$/.test(k))).toEqual([]);
     });
 });

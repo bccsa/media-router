@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
     buildBusSink,
     buildBusSrc,
-    busStallWatch,
     busTeeName,
     latInName,
     latOutName,
@@ -25,21 +24,20 @@ const runnerSource = readFileSync(
 );
 /**
  * The egress-stamper subsystem the runner imports (`gst_bus_stamper.py` and the
- * three modules it is split across — lazy arm and lifecycle, the python probe,
- * the native splice, the engine events). Same process, same contracts; they are
+ * two modules it is split across — lazy arm and lifecycle, the native splice,
+ * what the element's messages become). Same process, same contracts; they are
  * separate files only because the runner has no business being 3600 lines.
  *
  * Read as one string: every claim below is about the SUBSYSTEM, so which of its
  * files satisfies a given one is an internal detail that may move. What must
- * not move is the module the runner imports — `gst_bus_stamper` — and the
- * counted claims (one builder per event) hold across the whole set.
+ * not move is the module the runner imports — `gst_bus_stamper`.
  */
-const STAMPER_FILES = [
-    'gst_bus_stamper.py',
-    'gst_stamp_probe.py',
-    'gst_stamp_native.py',
-    'gst_stamp_events.py',
-];
+const STAMPER_FILES = ['gst_bus_stamper.py', 'gst_stamp_native.py', 'gst_stamp_events.py'];
+/** The element both runners splice (plugins/mpegts-core/native/mrtsstamp). */
+const elementSource = readFileSync(
+    join(__dirname, '../../../../plugins/mpegts-core/native/mrtsstamp/gstmrtsstamp.cpp'),
+    'utf8',
+);
 const stamperSource = STAMPER_FILES.map((f) =>
     readFileSync(join(__dirname, '..', 'child-process', f), 'utf8'),
 ).join('\n');
@@ -59,27 +57,32 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(name.startsWith(BUS_WATCHDOG_PREFIX)).toBe(true);
     });
 
-    it('the runner-side input stall watch reads the field the parent sends, and tags like the element did', () => {
-        // PipelineDescription.inputStallWatch → GstChildProcess.startPayload →
-        // handle_start's data.get("inputStallWatch"). A rename on any hop
-        // silently disables dark-input recovery on the muxer.
+    it('the input stall watch is gone from both runners (a dark mux input is gapped and rejoins)', () => {
+        // House-clock part 4.6: the muxer's aligners replace the restart on a dark input.
         const childProcess = readFileSync(
             join(__dirname, '..', 'child-process', 'GstChildProcess.ts'),
             'utf8',
         );
-        expect(childProcess).toContain('inputStallWatch: desc.inputStallWatch');
-        expect(runnerSource).toContain('data.get("inputStallWatch")');
-        // The mechanism lives in its own module; the runner aliases it.
-        expect(runnerSource).toContain('import gst_input_stall_watch as input_stall');
-        const stallWatch = readFileSync(
-            join(__dirname, '..', 'child-process', 'gst_input_stall_watch.py'),
+        const native = readFileSync(
+            join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'runner.cpp'),
             'utf8',
         );
-        // Same error shape as the `watchdog` element path: kind + prefixed element.
-        expect(stallWatch).toContain(`ELEMENT_PREFIX = "${BUS_WATCHDOG_PREFIX}_"`);
-        expect(stallWatch).toContain('"element": ELEMENT_PREFIX + name');
-        expect(stallWatch).toContain('"kind": "bus_stall"');
-        expect(busStallWatch('busin_0', 5000)).toEqual({ element: 'busin_0', timeoutMs: 5000 });
+        for (const source of [childProcess, runnerSource, native]) {
+            expect(source).not.toContain('inputStallWatch');
+        }
+        expect(existsSync(join(__dirname, '..', 'child-process', 'gst_input_stall_watch.py'))).toBe(
+            false,
+        );
+    });
+
+    it('both runners read the retime cue-pad flag under the same key', () => {
+        // alignBranchesToStamps travels whole; a rename on one side leaves cues on tsdemux time.
+        const native = readFileSync(
+            join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'branch_align.cpp'),
+            'utf8',
+        );
+        expect(runnerSource).toContain('private_pads = bool(cfg.get("privatePads"))');
+        expect(native).toContain('bool private_pads = json_get_bool(cfg, "privatePads");');
     });
 
     it('the runner group-bind workaround for the removed UDP bus is gone', () => {
@@ -126,22 +129,6 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // demote a healthy hardware decoder even if the runner ever started
         // forwarding a last-seen element name on it.
         expect(runnerSource).toContain('"kind": "playing_timeout"');
-    });
-
-    it('the runner detects source timeline discontinuities post-latch', () => {
-        // The watch emits a `timeline_discont`-tagged pipeline error so the
-        // normal restartOnError path re-latches; modular delta math keeps the
-        // legal 33-bit wrap invisible (2026-07-23 wrap drill).
-        expect(runnerSource).toContain('"kind": "timeline_discont"');
-    });
-
-    it('the runner implements the preserveSourceTimeline start option', () => {
-        // GstChildProcess sends `preserveSourceTimeline: { demux }` in the
-        // start payload (PipelineDescription contract); the runner must read
-        // that exact key and define the installer, or the feature is silently
-        // lost (the decoderThreadType trap).
-        expect(runnerSource).toContain('data.get("preserveSourceTimeline")');
-        expect(runnerSource).toContain('def _install_preserve_timeline');
     });
 
     it('the runner implements the keyframeGate start option', () => {
@@ -205,19 +192,17 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerProcess).not.toContain('_BUS_TEE_PREFIX');
     });
 
-    it('the stamper is enabled on every pipeline, before PLAYING', () => {
+    it('the stamper is enabled on every pipeline, before PLAYING, with no policy to read', () => {
         // Enabled before the first buffer moves, because an attach can land
-        // the moment the pipeline starts.
-        expect(runnerSource).toContain(
-            'gst_bus_stamper.enable(pipeline, data.get("latchRepair"), data.get("houseTimelineEgress"))',
-        );
-        const armIdx = runnerSource.indexOf('gst_bus_stamper.enable(pipeline,');
+        // the moment the pipeline starts. Identity is the only stamp (WI-P2-3).
+        expect(runnerSource).toContain('    gst_bus_stamper.enable(pipeline)\n');
+        const armIdx = runnerSource.indexOf('gst_bus_stamper.enable(pipeline)');
         const playIdx = runnerSource.indexOf('ret = pipeline.set_state(Gst.State.PLAYING)');
         expect(armIdx).toBeGreaterThan(0);
         expect(armIdx).toBeLessThan(playIdx);
     });
 
-    it('the stamper probe is armed lazily — per tee, from the bus_attach path', () => {
+    it('the stamper is armed lazily — per tee, from the bus_attach path', () => {
         // Arming every busout_* tee at start made a producer pay a per-buffer
         // TS scan for consumers it might not have: measured on .42 (2026-08-12)
         // an idle-but-flowing rist-input with NO edges attached burned 2492
@@ -243,21 +228,15 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         ).toBeGreaterThan(teardownIdx);
     });
 
-    it('the stamper rewrites DTS as well as PTS', () => {
+    it('the element rewrites DTS as well as PTS', () => {
         // tsdemux reads GST_BUFFER_DTS_OR_PTS — DTS first. Stamping PTS alone
         // is silently a no-op end to end (mutation-checked in
-        // gst_bus_stamper_test.py: dropping this line moves the consumer's
-        // timeline by ~2 days).
-        expect(stamperSource).toContain('buf.pts = pos');
-        expect(stamperSource).toContain('buf.dts = pos');
+        // gst_mrtsstamp_element_test.py's R1: the consumer leaves the stamp).
+        expect(elementSource).toContain('GST_BUFFER_PTS(buf) = pos;');
+        expect(elementSource).toContain('GST_BUFFER_DTS(buf) = pos;');
     });
 
-    it('the native stamper is preferred, resolved scoped, and falls back to the probe', () => {
-        // The stamping arithmetic now ships twice: the python probe above and
-        // the `mrtsstamp` element (plugins/mpegts-core/native/mrtsstamp). Three
-        // things must hold or the split becomes a liability rather than a CPU
-        // win.
-        //
+    it('the stamper has one backend, resolved scoped, and no python fallback', () => {
         // 1. The plugin is loaded from a SCOPED path — the same two roots
         //    `resolveNativeBinary` uses for the owning plugin — and never via
         //    GST_PLUGIN_PATH, which would scan it into every GStreamer process
@@ -268,37 +247,20 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
             'os.environ.get("MR_LIBEXEC_DIR") or "/usr/libexec/media-router"',
         );
         expect(runnerProcess).not.toMatch(/environ\[["']GST_PLUGIN_PATH/);
-        // 2. A load failure is a WARNING and the python probe runs unchanged.
-        //    The probe is the fallback, so it must not be deleted.
-        expect(stamperSource).toContain('falling back to the python probe');
-        expect(stamperSource).toContain('import ts_timeline  # lazy, pure stdlib');
-        // 3. Both backends emit the SAME engine events, from one builder each —
-        //    two copies of these dicts is exactly where the promise that
-        //    nothing downstream can tell them apart would break.
-        expect(stamperSource).toContain('def anchor_event(tee, ev)');
-        expect(stamperSource).toContain('def reanchor_event(tee, ev)');
-        expect(runnerProcess.match(/"event": "timeline_restamped"/g)).toHaveLength(1);
-        expect(runnerProcess.match(/"event": "timeline_reanchor"/g)).toHaveLength(1);
-    });
-
-    it('the runner-side probe runs ts_timeline.TimelineStamper, not its own copy', () => {
-        // The probe used to re-implement the contract's arithmetic as closures
-        // over a state dict WHILE importing the module that defines it — two
-        // python definitions of one contract, free to drift apart silently.
-        // The probe now instantiates the shared class and only supplies the
-        // GStreamer parts (where the stamp lands, when it arms, how its events
-        // get out), so ts_timeline is the single python definition and a break
-        // in it fails the probe suite too (mutation-checked).
-        expect(stamperSource).toContain('ts_timeline.TimelineStamper(on_anchor=on_anchor,');
-        expect(stamperSource).toContain('stamper.stamp(');
-        // None of the maths may be restated here: no anchor/floor bookkeeping,
-        // no wrap-unwrap, no discontinuity thresholds.
+        // 2. A miss is rule 6's alarm (plan ch. 3 part 4.5) and the egress runs
+        //    unstamped: no python stamper is left to fall back to, and none of
+        //    the stamp's arithmetic is restated in the runner process.
+        expect(stamperSource).toContain('emit(gst_native_plugins.alarm("warning", detail))');
+        expect(existsSync(join(__dirname, '..', 'child-process', 'gst_stamp_probe.py'))).toBe(
+            false,
+        );
+        expect(runnerProcess).not.toMatch(/Timeline(Stamper|Latch)/);
+        expect(stamperSource).not.toContain('import ts_timeline');
         expect(stamperSource).not.toContain('unwrap_near');
-        expect(stamperSource).not.toContain('PTS_WRAP');
-        expect(stamperSource).not.toContain('pts90k_to_ns');
-        expect(stamperSource).not.toContain('_FWD_TICKS');
-        expect(stamperSource).not.toContain('TimelineLatch');
-        expect(runnerProcess).not.toContain('def scan_stamp');
+        // 3. The started event cannot clear the alarm while the stamper is missing.
+        expect(runnerSource).toContain(
+            '"timingPlugin": None if gst_bus_stamper.missing() else gst_native_plugins.timing_plugin()',
+        );
     });
 
     it('the native stamper is spliced by element API, leaving the pipeline strings alone', () => {
@@ -312,7 +274,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
                 'tee name=busout_41000 allow-not-linked=true',
         );
         expect(runnerProcess).not.toContain('mrtsstamp !');
-        expect(stamperSource).toContain('def insert_elements(pipe)');
+        expect(stamperSource).toContain('def insert_elements(pipe, tees)');
         expect(stamperSource).toContain('Gst.ElementFactory.make("mrtsstamp"');
         // Spliced onto the tee's SINK peer (the capsfilter), not a src branch.
         expect(stamperSource).toContain('sink = tee.get_static_pad("sink")');
@@ -387,11 +349,11 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
 
     it('the non-gst fan-out sidecar speaks the same wire commands', () => {
         const sidecarSource = readFileSync(
-            join(__dirname, '../../../../plugins/unixfdbus-core/py/unixfd-fanout.py'),
+            join(__dirname, '../../../../plugins/unixfdbus-core/native/mr-bus-fanout/main.cpp'),
             'utf8',
         );
-        expect(sidecarSource).toContain("'bus_attach'");
-        expect(sidecarSource).toContain("'bus_detach'");
+        expect(sidecarSource).toContain('"bus_attach"');
+        expect(sidecarSource).toContain('"bus_detach"');
     });
 
     describe('lateness taps (house-clock WI-P0-8)', () => {
@@ -414,15 +376,26 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         });
 
         it('both runners forward mrlateness unsubscribed, as mrlateness:<tap>', () => {
-            expect(runnerSource).toContain('elif name == "mrlateness" and src_name:');
+            // One list per runner since WI-P2-6 (the aligner's and the demux's messages too);
+            // gst_native_plugins_test.py pins the two lists equal.
             expect(runnerSource).toContain(
-                'emit_plugin_event(f"mrlateness:{src_name}", gst_structure_to_dict(structure))',
+                'FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux")',
             );
-            expect(native).toContain('std::strcmp(name, lateness::MESSAGE) == 0');
-            expect(native).toContain('emit_plugin_event(std::string("mrlateness:") + src_name');
+            expect(runnerSource).toContain('elif name in FORWARDED_ELEMENT_MESSAGES and src_name:');
+            expect(runnerSource).toContain(
+                'emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))',
+            );
+            expect(native).toContain(
+                'kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux"}',
+            );
+            expect(native).toContain('} else if (src_name && forwarded_message(name)) {');
+            expect(native).toContain('emit_plugin_event(std::string(name) + ":" + src_name');
             // Ahead of the busReports branch: no subscription is consulted.
-            expect(runnerSource.indexOf('elif name == "mrlateness"')).toBeLessThan(
+            expect(runnerSource.indexOf('elif name in FORWARDED_ELEMENT_MESSAGES')).toBeLessThan(
                 runnerSource.indexOf('(src_name, name) in bus_reports'),
+            );
+            expect(native.indexOf('forwarded_message(name)) {')).toBeLessThan(
+                native.indexOf('bus_reports.count({src_name, name})'),
             );
         });
 

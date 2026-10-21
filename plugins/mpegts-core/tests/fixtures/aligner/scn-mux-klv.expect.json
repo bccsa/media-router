@@ -1,0 +1,13 @@
+{
+  "scenario": "scn-mux-klv",
+  "graph": "video + KLV + teletext cues (a 7 s pause, two equal KLV cues in a row) and a second video input -> mpegts-muxer",
+  "pipelines": "muxKlv",
+  "seconds": 16,
+  "cues_s": [1.0, 2.0, 3.0, 10.0, 11.0, 12.0],
+  "repeat_klv_cue": 1,
+  "expect": {
+    "cue_ticks": 0,
+    "video_gap_ms": 200,
+    "pace_rise_ms": 50
+  }
+}

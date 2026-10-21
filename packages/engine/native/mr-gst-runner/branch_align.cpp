@@ -371,8 +371,10 @@ void install(GstElement* pipe, JsonObject* cfg) {
     if (!cfg || !GST_IS_BIN(pipe)) return;
     JsonArray* names = json_get_array(cfg, "demuxes");
     if (!names) return;
-    // A transform producer's input demux is retimed per access unit instead (`rt`).
+    // A transform producer's input demux is retimed per access unit instead (`rt`),
+    // its cue pads too under `privatePads` (the mpegts-muxer's inputs).
     bool producer = json_get_bool(cfg, "transformProducer");
+    bool private_pads = json_get_bool(cfg, "privatePads");
     guint n = json_array_get_length(names);
     for (guint i = 0; i < n; i++) {
         JsonNode* node = json_array_get_element(names, i);
@@ -390,7 +392,7 @@ void install(GstElement* pipe, JsonObject* cfg) {
             continue;
         }
         if (producer) {
-            rt::install(name, demux, sink);
+            rt::install(name, demux, sink, private_pads);
             continue;
         }
         auto st = std::make_shared<State>();

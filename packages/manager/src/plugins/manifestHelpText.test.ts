@@ -12,7 +12,7 @@ const PLUGINS_DIR = path.resolve(__dirname, '../../../../plugins');
 const MAX_DESCRIPTION = 120;
 const MAX_TITLE = 40;
 /** Settings that several plugins expose with identical meaning — keep one wording. */
-const SHARED_KEYS = ['playoutOffsetMs', 'pcmBitDepth', 'mixLatencyMs'];
+const SHARED_KEYS = ['playoutOffsetMs', 'pcmBitDepth'];
 
 interface Prop {
     title?: unknown;

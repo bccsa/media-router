@@ -213,11 +213,10 @@ class TimelineStamper:
     Maps a producer's PES timeline onto the house clock ONCE and stamps every
     outgoing bus buffer with `anchor + (payload PES - firstPES)`, so consumers
     inherit identical timing by construction instead of re-deriving it from
-    their own arrival. THE definition of the contract in python: the
-    unixfd-fanout.py sidecar and the gst runner's egress probe
-    (`packages/engine/src/child-process/gst_bus_stamper.py`) both instantiate
-    this class, and `mrts::TimelineStamper` is its line-for-line C++ port for
-    the native sidecars and the `mrtsstamp` element.
+    their own arrival. THE definition of the contract in python: the gst
+    runner's egress probe (`packages/engine/src/child-process/gst_bus_stamper.py`)
+    instantiates this class, and `mrts::TimelineStamper` is its line-for-line
+    C++ port for the native sidecars and the `mrtsstamp` element.
 
     `house_now` is the caller's clock reading: on the sidecars the wire domain
     is absolute CLOCK_MONOTONIC (busproto.h), i.e. `time.monotonic_ns()`.

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import type { ModuleRuntimeState } from '@media-router/shared-types';
+import type { ModuleRuntimeState, ModuleTimingSummary } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
@@ -361,9 +361,9 @@ export class ModuleInstance extends EventEmitter {
         return this.plugin.getBusStreamChannels?.(portId);
     }
 
-    /** Producer declares its delivery runs ahead of real time (see PluginModule). */
-    isDeliveryLeadProducer(): boolean {
-        return this.plugin.isDeliveryLeadProducer?.() === true;
+    /** The module's last published timing summary (see PluginModule). */
+    getTimingSummary(): ModuleTimingSummary | undefined {
+        return this.plugin.getTimingSummary?.();
     }
 
     /** Target of the tracked `bus_reinput` live-swap RPC (gst child process,

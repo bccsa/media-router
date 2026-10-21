@@ -1,5 +1,6 @@
-# mr-bus-fanout — native GstUnixFd fan-out sidecar (drop-in replacement for
-# unixfd-fanout.py). Linux-only.
+# mr-bus-fanout — native GstUnixFd fan-out sidecar for non-GStreamer bus
+# producers (hls-player): the TS moved onto house time, stamped by identity.
+# Linux-only.
 CXX        ?= c++
 CXXFLAGS   ?= -O2
 CXXFLAGS   += -std=c++17 -Wall -Wextra
@@ -11,13 +12,15 @@ LIBEXECDIR ?= $(PREFIX)/libexec
 # the default keeps a standalone `make install` here working.
 MR_PLUGIN  ?= unixfdbus-core
 
-# The egress timeline stamper lives with the shared TS code (mpegts-core
-# library plugin); MR_PLUGINS_DIR points at the plugins root.
+# The TS primitives and the identity stamp live with the shared TS code
+# (mpegts-core library plugin); MR_PLUGINS_DIR points at the plugins root.
 MR_PLUGINS_DIR ?= ../../..
 MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
-MRTS_HDRS = $(addprefix $(MRTS)/,lateness.h ts_timeline.h ts_house.h)
+MRTS_HDRS = $(addprefix $(MRTS)/,lateness.h ts_house.h ts_packet.h ts_pes.h ts_pcr.h ts_psi.h)
+REBASE = house_rebase.cpp house_rebase.h
+TESTS = tests/house_rebase_test
 
 ifeq ($(shell uname -s),Linux)
 
@@ -33,14 +36,18 @@ $(MRTS)/libmrts.a: FORCE
 
 FORCE:
 
-mr-bus-fanout: main.cpp $(MRTS_HDRS) ../libmrbus/libmrbus.a $(MRTS)/libmrts.a
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) main.cpp ../libmrbus/libmrbus.a $(MRTS)/libmrts.a -o $@
+mr-bus-fanout: main.cpp $(REBASE) $(MRTS_HDRS) ../libmrbus/libmrbus.a $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) main.cpp house_rebase.cpp ../libmrbus/libmrbus.a $(MRTS)/libmrts.a -o $@
 
-test:
-	@# Protocol conformance runs from vitest (unixfdFanout.test.ts).
+# The rebase alone (no sockets); the protocol runs from vitest (unixfdFanout.test.ts).
+tests/house_rebase_test: tests/house_rebase_test.cpp $(REBASE) $(MRTS_HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $< house_rebase.cpp $(MRTS)/libmrts.a -o $@
+
+test: $(TESTS)
+	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f mr-bus-fanout
+	rm -f mr-bus-fanout $(TESTS)
 
 install: mr-bus-fanout
 	install -D -m 755 mr-bus-fanout $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/mr-bus-fanout

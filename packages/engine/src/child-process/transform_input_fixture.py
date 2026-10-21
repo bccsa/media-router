@@ -20,8 +20,9 @@ producer's identity egress (PES = content time + 1 h, stamp = PES − 1 h).
 Stamps: the producer model — `content(pts) = A + ns(pts − ref)` (anchor A at
 the first PES's arrival, ref that PES), a bus buffer stamped by its first
 timing-PID PES (else its first PES), never below the last stamp. It is what
-`ts_timeline.TimelineStamper` writes once its conditioner has learned the PCR
-PID (pinned in gst_tsdemux_slave_test.py). `skew_ppm` runs the source clock
+the anchored stamper of `py/ts_timeline.py`, kept as the reference, writes once
+its conditioner has learned the PCR PID (pinned in gst_tsdemux_slave_test.py;
+no runtime path stamps that way since Phase 2). `skew_ppm` runs the source clock
 fast against house with the producer's drift slew assumed ideal; a jump steps
 PES and PCR back `jump_s` with the producer re-anchored, so stamps and content
 time stay continuous. An access unit's TARGET is its content time.
@@ -70,7 +71,10 @@ def _pes(pid, sid, pts, dts, serial, npk, cc, bounded):
 
 
 def au_key(data):
-    """(pid, serial) from the head of an access unit's payload, or None."""
+    """(pid, serial) from the head of an access unit's payload, or None. A leading
+    teletext data_identifier (0x10–0x1F, which mpegtsmux adds) is skipped."""
+    if data[:1] and 0x10 <= data[0] <= 0x1F:
+        data = data[1:]
     if len(data) < 10 or data[:4] != b"MRAU":
         return None
     return (data[4] << 8) | data[5], int.from_bytes(data[6:10], "big")
@@ -226,6 +230,124 @@ def house_egress(seconds, target, start_s=0.0, transit_ms=170.0, per_buf=7):
         if (group[-1][0] - w0) / 1e9 >= start_s:
             bufs.append((b"".join(p for _, p, _ in group), floor, arrival))
     return bufs, targets
+
+
+KLV_PID, TTX_PID, DVB_PID = 0x102, 0x103, 0x104
+CUE_PIDS = (KLV_PID, TTX_PID, DVB_PID)
+# stream_type 0x06 named by its descriptor: tsdemux puts KLV and teletext on
+# private_ pads, DVB subtitles on a subpicture_ pad.
+_CUE_ES_INFO = {KLV_PID: b"\x05\x04KLVA", TTX_PID: b"\x56\x05eng\x11\x88",
+                DVB_PID: b"\x59\x08eng\x10\x00\x01\x00\x01"}
+
+
+def cue_egress(seconds, target, cue_lead_ms=700.0, start_s=0.0, transit_ms=170.0, per_buf=7,
+               schedule=None):
+    """`house_egress`'s video plus KLV, teletext and DVB cues 0.25 s apart, one a second or at
+    `schedule`'s content seconds, each on the wire `cue_lead_ms` early; stamped as identity egress
+    (first video PES − 1 h, else cues' arrival, monotone). [(bytes, stamp, arrival)], targets."""
+    wrap = 1 << 33
+
+    def mux90(t_ns):
+        return (t_ns * 9 // 100000 + MUX_BASE) % wrap
+
+    ev, targets = [], {}
+    for d, pts, dts, has_dts, npk in video_aus(seconds):
+        pts_t, dts_t = target(pts), target(dts)
+        targets[(VIDEO_PID, d)] = pts_t
+        ev.append((dts_t, 2, (VIDEO_PID, 0xE0, d, mux90(pts_t), mux90(dts_t) if has_dts else None, npk)))
+    times = schedule if schedule is not None else [n + 1 for n in range(int(seconds) - 1)]
+    for k, pid in enumerate(CUE_PIDS):
+        for n, s in enumerate(times):
+            t = target(DTS0) + (s + k * 0.25) * 10**9
+            targets[(pid, n)] = int(t)
+            ev.append((int(t - cue_lead_ms * 1e6), 3, (pid, 0xBD, n, mux90(int(t)), None, 1)))
+    w0, w_end = min(e[0] for e in ev), max(e[0] for e in ev)
+    ev += [(w, 1, None) for w in range(w0, w_end + 1, 20_000_000)]      # PCR, 20 ms
+    ev += [(w, 0, None) for w in range(w0, w_end + 1, 100_000_000)]     # PSI, 100 ms
+    ev.sort(key=lambda e: (e[0], e[1]))
+    cc = {VIDEO_PID: 0, 0: 0, PMT_PID: 0, **{p: 0 for p in CUE_PIDS}}
+    streams = [(VIDEO_PID, 0x1B)] + [(p, 0x06, _CUE_ES_INFO[p]) for p in CUE_PIDS]
+    pkts = []                               # (wire ns, packet, (pid, PES PTS) or None)
+    for wire, kind, info in ev:
+        if kind == 0:
+            pkts.append((wire, ts_psi.build_pat(1, {PROGRAM: PMT_PID}, cc=cc[0]), None))
+            pkts.append((wire, ts_psi.build_pmt(PMT_PID, PROGRAM, VIDEO_PID, streams, cc=cc[PMT_PID]), None))
+            cc[0], cc[PMT_PID] = (cc[0] + 1) & 0x0F, (cc[PMT_PID] + 1) & 0x0F
+        elif kind == 1:
+            pkts.append((wire, ts_psi.build_pcr_packet(VIDEO_PID, mux90(wire) * 300,
+                                                       cc=(cc[VIDEO_PID] - 1) & 0x0F), None))
+        else:
+            pid, sid, serial, pes_pts, pes_dts, npk = info
+            pk = _pes(pid, sid, pes_pts, pes_dts, serial, npk, cc, kind == 3)
+            pkts += [(wire, p, (pid, pes_pts) if i == 0 else None) for i, p in enumerate(pk)]
+    floor, bufs = None, []
+    for i in range(0, len(pkts), per_buf):
+        group = pkts[i:i + per_buf]
+        arrival = group[-1][0] + int(transit_ms * 1e6)
+        heads = [h for _, _, h in group if h is not None]
+        video = next((pts for pid, pts in heads if pid == VIDEO_PID), None)
+        st = (ts_timeline.house_from_mux_pts(video, arrival) if video is not None
+              else arrival if heads or floor is None else floor)
+        floor = st if floor is None else max(floor, st)
+        if (group[-1][0] - w0) / 1e9 >= start_s:
+            bufs.append((b"".join(p for _, p, _ in group), floor, arrival))
+    return bufs, targets
+
+
+def go_dark(bufs, t_from, t_back, pids=CUE_PIDS):
+    """`cue_egress` buffers with the producer silent from arrival `t_from` to its first buffer from
+    `t_back` on that opens with a cue on `pids`, split after it (cue-only, the rest a frame later),
+    restamped as `cue_egress` does, each PID's continuity counter carried on; and that arrival."""
+    def heads(data):
+        return [j for j in range(0, len(data), 188) if ts_psi.read_pes_pts(data[j:j + 188]) is not None]
+
+    back = next(i for i, (data, _st, arr) in enumerate(bufs) if arr >= t_back and heads(data)
+                and ts_psi.ts_pid(data[heads(data)[0]:]) in pids)
+    data, _st, arrival = bufs[back]
+    cut = heads(data)[0] + 188
+    kept = ([(d, a) for d, _s, a in bufs if a < t_from] + [(data[:cut], arrival)]
+            + ([(data[cut:], arrival + 40_000_000)] if data[cut:] else [])
+            + [(d, a) for d, _s, a in bufs[back + 1:]])
+    cc, floor, out = {}, None, []
+    for data, arr in kept:
+        b = bytearray(data)
+        for j in range(0, len(b), 188):
+            pid = ((b[j + 1] & 0x1F) << 8) | b[j + 2]
+            # A payload packet steps the counter, an adaptation-only one (PCR) repeats it.
+            cc[pid] = b[j + 3] & 0x0F if pid not in cc else (cc[pid] + (1 if b[j + 3] & 0x10 else 0)) & 0x0F
+            b[j + 3] = (b[j + 3] & 0xF0) | cc[pid]
+        video = next((ts_psi.read_pes_pts(data[j:j + 188]) for j in heads(data)
+                      if ts_psi.ts_pid(data[j:]) == VIDEO_PID), None)
+        st = (ts_timeline.house_from_mux_pts(video, arr) if video is not None
+              else arr if heads(data) or floor is None else floor)
+        floor = st if floor is None else max(floor, st)
+        out.append((bytes(b), floor, arr))
+    return out, arrival
+
+
+def step_back(bufs, t_at, ticks):
+    """The source stepped back `ticks` from arrival `t_at` on: every PES PTS/DTS and PCR after it
+    moved, the stamps kept (a producer that re-anchored on content time: K moves by ns(ticks))."""
+    out = []
+    for data, st, arr in bufs:
+        b = bytearray(data)
+        for j in range(0, len(b) if arr >= t_at else 0, 188):
+            if b[j + 3] & 0x20 and b[j + 4] >= 7 and b[j + 5] & 0x10:
+                base = ((b[j + 6] << 25) | (b[j + 7] << 17) | (b[j + 8] << 9) | (b[j + 9] << 1) | (b[j + 10] >> 7))
+                base = (base - ticks) % (1 << 33)
+                b[j + 6:j + 10] = bytes([(base >> 25) & 0xFF, (base >> 17) & 0xFF, (base >> 9) & 0xFF, (base >> 1) & 0xFF])
+                b[j + 10] = (b[j + 10] & 0x7F) | ((base & 1) << 7)
+            pts = ts_psi.read_pes_pts(bytes(b[j:j + 188]))
+            if pts is not None:
+                p = j + ts_psi.payload_offset(b[j:j + 188])
+                has_dts = (b[p + 7] & 0xC0) == 0xC0
+                b[p + 9:p + 14] = _ts_field(0x31 if has_dts else 0x21, pts - ticks)
+                if has_dts:
+                    q = b[p + 14:p + 19]
+                    dts = (((q[0] >> 1) & 7) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) | (q[3] << 7) | (q[4] >> 1)
+                    b[p + 14:p + 19] = _ts_field(0x11, dts - ticks)
+        out.append((bytes(b), st, arr))
+    return out
 
 
 def mux_inputs(seconds=70, jump_at_s=40.0, house0_ns=50_000 * 10**9, skew_ppm=-40.0):

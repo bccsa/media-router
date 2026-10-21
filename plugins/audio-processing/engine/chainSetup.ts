@@ -21,12 +21,22 @@ export const PROGRAM_PORT = 'program-in';
 export const SIDECHAIN_PORT = 'sidechain-in';
 export const OUTPUT_PORT = 'audio-out';
 
+/** The ducker's settings and their schema defaults; `mrducker`'s own defaults are the same
+ *  (chainSetup.test.ts and mrducker_element_test.py hold both to the manifest). */
+export const DUCK_DEFAULTS = {
+    threshold: -35,
+    duckDepth: -12,
+    attack: 5,
+    release: 200,
+    hold: 250,
+} as const;
+
 /** Config keys the module accepts without a pipeline restart. Everything here
- *  either resolves to an element property (`resolveLiveTarget`) or is read
- *  live by the ducker envelope. `gateKey` is deliberately absent: self vs
- *  sidechain selects a different ELEMENT, so it needs a restart. */
+ *  resolves to element properties (`resolveLiveWrites`). `gateKey` is
+ *  deliberately absent: self vs sidechain selects a different ELEMENT, so it
+ *  needs a restart. */
 export const LIVE_PARAMS: string[] = [
-    // Dynamics (shared with the ducker envelope, resolved by mode)
+    // Dynamics (shared with the ducker, resolved by mode)
     'threshold',
     'duckDepth',
     'hold',
