@@ -141,6 +141,7 @@ void ClockLock::feed(int64_t sigma, int64_t h) {
         line_ = StcLine{sigma, h, eps_ppb(), 0, 0};
         origin_h_ = epoch_h_ = h;
         bucket_ = 0;
+        closed_ = 0;
         cur_ = Point{sigma, h, Level::fit};
         last_sample_h_ = last_seen_h_ = h;
         resid_.push_back({h, 0});
@@ -296,6 +297,8 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
         travel_at_lock_ = travel_ns_;
     }
 
+    if (fresh_ && ++closed_ == 2) seed_floor();
+
     // β* - β_applied: min over the last M buckets of d_j - ε·σ_j, against the line
     // through the pivot.
     int64_t e = INT64_MAX;
@@ -348,8 +351,21 @@ ClockLock::Residual ClockLock::residual() const {
     return out;
 }
 
+// A transport's start burst (an SRT or RTP backlog read at once) seeds the first epoch
+// far above the floor its first two buckets agree on: move there at once. What already
+// left on the seed and overlaps is the caller's to drop (the ingest guard does, R18).
+void ClockLock::seed_floor() {
+    const int64_t a = sat_sub(hist_[hist_.size() - 2].house, line_.house_of(hist_[hist_.size() - 2].sigma));
+    const int64_t b = sat_sub(hist_.back().house, line_.house_of(hist_.back().sigma));
+    const int64_t lo = std::min(a, b), hi = std::max(a, b);
+    if (hi >= -cfg_.step_ns || sat_sub(hi, lo) > cfg_.step_ns) return;
+    line_.house_ref = sat_add(line_.house_ref, clamp64(lo, -DELTA_LIM, DELTA_LIM));
+    resid_.clear();   // against the seed
+}
+
 void ClockLock::relock(bool keep_rate) {
     started_ = false;
+    fresh_ = false;
     hist_.clear();
     cand_ = false;
     resid_.clear();

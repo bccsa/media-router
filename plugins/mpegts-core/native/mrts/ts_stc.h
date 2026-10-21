@@ -12,12 +12,12 @@
 
 namespace mrts {
 
-// Every constant of part 4.3 at its initial value; WI-P1-6 tunes them by replay.
+// Every constant of part 4.3, at the values WI-P1-6's replay sweep chose (ADR-0029).
 struct ClockLockConfig {
     int64_t bucket_ns = 1000000000;            // bucket minima: 1 s of house time
     int rate_buckets_min = 30;                 // first rate fit
     int rate_buckets_max = 300;                // fit window grows to 5 min (clamped to 1000)
-    int64_t rate_tau_ns = 60000000000LL;       // ε_applied's first-order loop
+    int64_t rate_tau_ns = 120000000000LL;      // ε_applied's first-order loop
     int64_t rate_warn_ppm = 100;
     int64_t rate_max_ppm = 1000;               // ε_applied is clamped here
     int rate_refit_mads = 2;                   // refit without points this many MADs above the line
@@ -82,6 +82,7 @@ class ClockLock {
     bool envelope_step() const { return step_fired_; }
     int64_t step_size_ns() const { return step_size_; }
     // New epoch from the next sample; ε stays as the starting guess with keep_rate.
+    // Only the first epoch moves onto its first two buckets' floor (seed_floor).
     void relock(bool keep_rate);
     // After a step: the mapping onto the floor the step's buckets measured, at once,
     // keeping ε and the phase (mrasrc). A program's STC never steps; it relocks.
@@ -98,12 +99,15 @@ class ClockLock {
         int64_t eps = 0;   // the rate in force when it closed: what judges against it
     };
     void close_bucket(int64_t sigma_now, int64_t house_now);
+    void seed_floor();
     void classify(int64_t house_now);
     bool fit(int64_t* ppb, int* n) const;
     int64_t eps_ppb() const;
 
     ClockLockConfig cfg_;
     bool started_ = false;
+    bool fresh_ = true;               // no relock yet: the epoch the pipeline started with
+    int closed_ = 0;                  // buckets closed in this epoch
     StcLine line_;
     int64_t origin_h_ = 0;            // bucket grid of this epoch
     int64_t bucket_ = 0;              // index of the open bucket
@@ -140,7 +144,7 @@ struct PcrValidatorConfig {
     int64_t rate_hold_ns = 30000000000LL;
     int freeze_count = 3;
     int64_t freeze_min_dh_ns = 30000000;
-    int64_t leap_ns = 250000000;
+    int64_t leap_ns = 500000000;                  // above the gate egress's delivery stalls (WI-P1-6)
     int leap_fail_count = 3;
     int64_t leap_window_ns = 60000000000LL;
     int64_t lead_min_ns = -200000000;

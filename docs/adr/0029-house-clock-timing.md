@@ -562,11 +562,10 @@ video-encoder) on their capture time, the three PCM captures through one
 house-rate ASRC. Every one sets `houseTimelineEgress`, so its egress stamps
 `PES − 1 h` and never conditions; the anchored stamper and the conditioner
 remain for the Phase 2 set (mixers, audio-processing, the splitter, the HLS
-fan-out). Still to come in this phase: the capture session (WI-P1-5,
-WI-S0-9), the constants tuned by replay (WI-P1-6, which adds its sweep
-here), and the gate checks of plan chapter 5 part 11. The plan's register
-(chapter 15.4, rows B-1 to B-31) holds the same records with their work
-items.
+fan-out). The capture session (WI-P1-5, WI-S0-9) and the constants tuned
+by replay (WI-P1-6, below) are done; still to come in this phase are the
+gate checks of plan chapter 5 part 11. The plan's register (chapter 15.4,
+rows B-1 to B-38) holds the same records with their work items.
 
 ### Where the restamp sits and what it reads as arrival (OQ-19)
 
@@ -586,27 +585,37 @@ items.
   lists are removed (`unknown-pid-packets`); null packets and the SI PIDs
   below 0x20 pass. Every program of the PAT gets its own discovery and
   clock.
-- **Found, not decided: RTP start-up latency.** `rtpjitterbuffer` releases its
-  first ~160 ms in one burst; the lock seeds β from that first sample and
-  slews it out at the acquire slew (2,000 ppm), so for ~80 s after each
-  start content lands up to ~160 ms later than source-natural. Added latency
-  only: nothing is late or dropped. Options: seed β from the first bucket's
-  minimum, step down once before the first fit, a faster acquire slew, or
-  `rtpjitterbuffer faststart-min-packets`. SRT, RIST and raw UDP show no
-  such burst.
+- **RTP start-up latency.** `rtpjitterbuffer` releases its first ~160 ms in
+  one burst; the lock seeded β from that first sample and slewed it out at
+  the acquire slew (2,000 ppm), so for ~80 s after each start content landed
+  up to ~160 ms later than source-natural. WI-P1-6's start rule (below)
+  moves the first epoch onto the floor its first two buckets agree on, so
+  such a burst costs one drop of its overlap at 2 s instead; no RTP trace was
+  captured, so this case stands on the synthetic `syn-start-burst` and the
+  SRT start of `trace-816-clean-cbr`. An SRT listener started while its
+  caller was connecting showed the same burst (0.5 s); RIST and raw UDP
+  showed none.
 
 ### The virtual STC (`mrts::ClockLock`, `VirtualStc`; plan part 4.3)
 
-- **The two stages as planned, at the plan's initial constants**
-  (`ClockLockConfig`, `PcrValidatorConfig` in `ts_stc.h`): bucket minima per
-  second, a least-squares rate fit refit once without the points more than
-  2 MAD above the line, a first-order follower (τ 60 s, clamped at
-  ±1,000 ppm, warning past 100), and a lower-envelope offset over the last
-  10 buckets with a 2,000 ppm acquire slew for 5 s and a 20 ppm track slew.
-  Integer arithmetic, so a replay is bit-exact on every machine. A program
-  is `locked` once the rate is known and the acquire time has passed, and
-  `lost` after 5 s without a sample; the mapping survives `lost`. WI-P1-6
-  tunes the constants by replay.
+- **The two stages as planned, at the constants WI-P1-6 chose by replay**
+  (`ClockLockConfig`, `PcrValidatorConfig` in `ts_stc.h`; below): bucket
+  minima per second, a least-squares rate fit refit once without the points
+  more than 2 MAD above the line, a first-order follower (τ 120 s, the
+  plan's 60 s doubled; clamped at ±1,000 ppm, warning past 100), and a
+  lower-envelope offset over the last 10 buckets with a 2,000 ppm acquire
+  slew for 5 s and a 20 ppm track slew. Integer arithmetic, so a replay is
+  bit-exact on every machine. A program is `locked` once the rate is known
+  and the acquire time has passed, and `lost` after 5 s without a sample;
+  the mapping survives `lost`.
+- **The first epoch moves onto its floor** (WI-P1-6). In a lock's first
+  epoch, the one the pipeline started with, when its first two buckets agree
+  within `step_ns` on a floor more than `step_ns` below the line, the line
+  moves onto that floor at their close (2 s) instead of slewing to it. What
+  already left on the first sample overlaps and the guard drops it, once.
+  Why: a transport's start burst seeds the epoch far above the floor, which
+  the acquire slew cannot remove (70 ms before the lock) and the track slew
+  takes hours for (below).
 - **The rate fit runs on one floor level.** A bucket more than `step_ns` off
   the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
@@ -644,8 +653,10 @@ items.
   500 ms in 60 s while packets keep arriving fail, so an outage is not a
   PCR fault); rate (the raw fit past 1,000 ppm for 30 s); freeze (three
   consecutive PCRs with `Δσ < Δh / 2` and `Δh ≥ 30 ms`); leap
-  (`|Δσ − Δh| > 250 ms` without `discontinuity_indicator` re-locks; three in
-  60 s fail); lead (a PID's 1 s median lead outside [−200 ms, +4 s] for 5 s).
+  (`|Δσ − Δh| > 500 ms` without `discontinuity_indicator` re-locks; three in
+  60 s fail; the plan's 250 ms read the gate egress's delivery stalls as
+  leaps, WI-P1-6 below); lead (a PID's 1 s median lead outside [−200 ms,
+  +4 s] for 5 s).
   The first failing row is the stats `reason`; a re-lock's reason is
   `discontinuity`, `leap`, `envelope-step`, `external` (the PMT's PCR PID
   changed) or `ref-change`.
@@ -664,6 +675,127 @@ items.
   under the degraded mapping gets its own envelope and a `lead-clamp`
   event). Until `RestampCore` has it, the card's "Source lead above 4 s"
   warning cannot fire (B-8).
+
+### The constants, tuned by replay (WI-P1-6, 2026-10-16)
+
+- **The sweep.** `mrts_cli restamp-replay --sweep` over plan part 4.3's
+  grid, committed as `plugins/mpegts-core/tests/fixtures/restamp/sweep-grid.json`:
+  `bucket_ns` 0.5, 1, 2 s × `offset_buckets` 5, 10, 30 × `rate_tau_ns` 30,
+  60, 120 s × `slew_track_ppm` 10, 20, 50 × `step_ns` 10, 20, 50 ms, 243
+  points, on 57 traces: the eight field traces of WI-P1-5, the thirteen
+  synthetic expectation traces (`trace-812-slow-source` and
+  `syn-start-burst` included) and 36 drift traces (±50 and ±500 ppm, nine
+  seeds each, 610 s). Each sweep line carries
+  the program's summary, ε at 60, 120, 300 and 600 s included. A second
+  sweep at 1 s buckets, a 20 ppm track slew and a 20 ms step covered
+  `rate_buckets_min` 20, 30 × the three M × the three τ × `leap_ns` 250,
+  350, 500 ms.
+- **The criteria** (part 4.3, with WI-P1-1's lock time): **C0** locked within
+  the trace's bound (40 s; the bursty encoder 250 s); **C1** re-locks as the
+  trace's expectation (none on the clean ones); **C2** residual min ≥ −1 ms
+  once locked, on the traces whose floor never falls by design; **C3** on the
+  drift traces |ε error| ≤ 0.5 ppm at 300 s on the median seed and at 600 s
+  on the worst; **C4** the mapping never faster than 20 ppm while locked
+  (plus one bucket's travel in the 30 s measuring window). The gate's two
+  traces, today's sender, are judged by what they drop.
+- **What the grid says.** 36 of 243 points pass, all at 1 s buckets. 2 s
+  buckets lock at 65–68 s (C0: the first fit needs 30 of them); 0.5 s
+  buckets miss C3 (0.81–1.32 ppm at 600 s on the worst seed: a 150 s fit
+  window) and C2 on a drift seed; a 50 ppm track slew fails C4 (the
+  re-route trace slews its fall at it); a 50 ms step fails C1 (the
+  re-route's +30 ms rise is no step). M and τ pass at every value. τ sets
+  the worst seed at 600 s: 0.33–0.41 ppm at 30 s, 0.27–0.34 at 60 s,
+  0.16–0.25 at 120 s; the median at 300 s is 0.17–0.24 ppm at every τ, the
+  fit window still growing.
+- **The set shipped:** 1 s buckets, `offset_buckets` 10, **`rate_tau_ns`
+  120 s** (was 60 s), a 20 ppm track slew, a 20 ms step,
+  `rate_buckets_min` 30, the start rule above, and **`leap_ns` 500 ms**
+  (was 250 ms). Not the longest M: on the jittery field sources a 30-bucket
+  envelope holds the deepest dip longer, so content lands earlier than most
+  of its arrivals; the bursty encoder's relock gap grows from 206 to 407 ms
+  and gate 20010 degrades on the lead row (1.9 s dropped, against 0.63 s at
+  M 10). On every clean trace M changes nothing. The track slew stays at
+  20 ppm (10 ppm passes too and recovers from a floor fall half as fast),
+  the step at 20 ms. A 2 s bucket with a 15-bucket first fit also passes
+  C0–C4 (C3 at 600 s 0.11–0.18 ppm), but widens the bursty encoder's relock
+  gap to 315 ms and moves every unit test's timing; 1 s meets C3 with twice
+  the margin. `rate_buckets_min` 20 locks about 10 s sooner and adds a
+  relock on each gate trace; no criterion asks for it (B-7).
+- **The start rule, measured.** No constant of the grid removes a start
+  burst: on `trace-816-clean-cbr` (an SRT listener started while its caller
+  was connecting: 0.5 s of content in 3.4 ms) every one of the 243 points
+  left the residual at −386 to −476 ms at the lock and the mapping at the
+  track-slew cap for all 905 s. With the rule: −0.07 ms, the mapping at most
+  3.9 ppm, and one drop at 2.5 s, 479 ms of video and 511 ms of audio. Only
+  the first epoch: applied at every relock it raised the drops on the gate's
+  wandering delivery from 17.6 to 24.2 s (20010), and a relock happens on a
+  running transport, whose backlog is no start burst. Two buckets, not one:
+  the bursty encoder's first bucket holds a 360 ms dip its second does not
+  confirm, and moving onto it dropped 741 ms and left a 366 ms gap. Keeping
+  the acquire slew until the floor instead left 2,000 ppm on the PTS for
+  four minutes and added three relocks on the bursty encoder. mrasrc's lock
+  takes the same rule at its own 50 ms step (a 40 ms start burst is slewed,
+  80 ms moves), and its servo slews the phase change out at the ratio clamp:
+  with a first buffer labelled 85 ms late (a 4,096-frame quantum) the labels
+  are within 1 ms of capture time by about 100 s, where the slewed lock left
+  them 12 ms late after 3 min. B-25's one-quantum start (under 50 ms) is
+  unchanged.
+- **A delivery stall is no leap: `leap_ns` 500 ms.** On the gate's RIST
+  outputs the PCR advances 60 ms per PCR while arrivals come 0–384 ms apart:
+  stalls, then catch-up bursts. Under 250 ms the 13 stalls longer than
+  310 ms in 520 s read as timeline leaps; each relocked, three in 60 s
+  degraded the program for good, and the straddle and overlap rules dropped
+  3.4–5.1 % of the content (B-34). At 350 and at 500 ms the same traces
+  relock 0–1 times, never degrade, and drop 0.63 s (20010's start rule) and
+  nothing (20046); 500 ms keeps a margin over the largest stall seen on the
+  three ports (a 353 ms miss). The cost: a timeline jump or re-route between
+  250 and 500 ms now waits the envelope step's 10 s hold (a rise) or is
+  slewed (a fall) instead of relocking at once; `ts_restamp_test`'s +300 ms
+  re-route became an envelope-step case and the leap case is +600 ms. A
+  leap check that confirms a jump from the PCRs after it would remove the
+  trade; it is not built.
+- **Per trace, with the shipped set** (`restamp_replay_test` passes every
+  expectation file with it):
+
+  | Trace | Relocks | Locked | Residual min | Mapping max | ε locked (ppm) | Dropped |
+  |---|---|---|---|---|---|---|
+  | `trace-occ-1080i` | 0 | 38 s | −0.002 ms | 0.10 ppm | −0.13…−0.05 | 0 |
+  | `trace-816-clean-cbr` | 0 | 36 s | −0.067 ms | 3.94 ppm | −6.75…−0.46 | 990 ms at 2.5 s (start burst) |
+  | `trace-srt-restart` | 1 (leap) | 38 s | −0.129 ms | 4.04 ppm | −5.88…−1.12 | 0 |
+  | `trace-rist-reconnect` | 0 | 38 s | −0.119 ms | 5.85 ppm | +17.5…+23.2 | 0 |
+  | `trace-836-program-split` | 0 | 38 s | −0.218 ms | 11.9 ppm | +19.6…+30.1 | 0 |
+  | `trace-srt-bursty-encoder` | 1 (step) | 246 s | −464 ms | 20.3 ppm | −16.6…+16.1 | 0 |
+  | `trace-gate01-rist-20010` | 1 (step) | 178 s | −389 ms | 20.2 ppm | +14.9…+71.0 | 625 ms at 2.4 s (the start rule) |
+  | `trace-gate01-rist-20046` | 0 | never | — | — | — | 0 |
+  | `trace-812-slow-source` (−300 ppm) | 0 | 36 s | −0.248 ms | 12.9 ppm | +284.4…+300.4 | 0 |
+  | `syn-start-burst` | 0 | 36 s | −0.099 ms | 6.37 ppm | −5.0…+5.0 | 1,472 ms at 2.5 s (3 PIDs) |
+  | `syn-reroute-30ms` | 1 (step) | 38 s | −29.9 ms (its fall) | 20.0 ppm | −5.1…+23.9 | 0 |
+  | `syn-rewind-1s` | 1 (leap) | 38 s | −22.4 ms | 20.0 ppm | −5.2…+4.1 | 288 ms (its straddlers) |
+  | `syn-pcr-discont`, `syn-straddle-audio` | 1 each | 36–38 s | ≥ −0.17 ms | ≤ 6.2 ppm | — | 0 |
+  | `syn-outage-continuous-pcr`, `syn-wrap-33bit` | 0 | 36 s | ≥ −0.22 ms | ≤ 12.3 ppm | — | 0 |
+  | `syn-pcr-sparse` | 0, degraded (cadence) | 36 s | — | — | — | 1.8 s at the switch to degraded |
+  | drift ±50, ±500 ppm, 40 traces | 0 | ≤ 38 s | ≥ −0.24 ms | ≤ 10.0 ppm | off by ≤ 0.24 at 300 s (median), ≤ 0.25 at 600 s (worst) | 0 |
+
+  The bursty encoder and the gate's outputs are no clock floor, so their
+  residual is the delivery's own spread. On the gate's lower envelope a
+  PES's house PTS lies up to 554 ms before its arrival after the worst stall
+  (median +137 to +147 ms on 20010, −34 to −53 ms on 20046): a Phase 1–4
+  receiver of that sender needs that much latency at its outputs (plan
+  R-P1-14). ε on `trace-816-clean-cbr` is the floor's own slope
+  (two chrony-disciplined boxes, −2.2 to −0.35 ppm per 2 min), so V-P1-1's
+  ±0.1 ppm needs a source with a stable clock (the OCC encoder: within
+  0.1 ppm).
+- **mrasrc** keeps its 50 ms two-sided step: no capture of a 20–50 ms
+  latency change exists (B-16). It inherits τ 120 s; over 100 seeds × 1 h
+  its lock (35.0–36.0 s) and frame counts (≤ 0.70 frames at 0 and ±50 ppm,
+  ≤ 1.19 at ±500 ppm, median 0.50) are those of τ 60 s to 0.01 frames, and
+  the +30 ms latency rise leaves labels 1.7 ms off at 300 s (2.2 ms). The
+  ±500 ppm excess over ±1 frame does not come from these constants: a 2 s
+  bucket gives 1.26–1.29 frames over 30 seeds.
+- **Determinism checksums moved** with τ and the start rule's test: `ts_stc`
+  85f5a95a7a801a1f → d0ec660233eef7cd, `asrc_servo` 65ba266b108a634c →
+  432e8439f253974f (the degraded scenario 6efe69276bb82fa9 → d20527d208b11b30;
+  the straddle scenario unchanged).
 
 ### Discontinuities, overlap and live edits (plan part 4.4)
 
@@ -863,11 +995,12 @@ design's §5.2 keeps the general rule.
   from the relock; the element on the real resampler reproduces the
   servo's model to about 1 µs. The rule covers every relock; limiting the
   drop to envelope steps is a one-line change.
-- **Measured against the plan, constants unchanged until WI-P1-6.** The
+- **Measured against the plan; WI-P1-6 kept the ASRC's constants.** The
   lock takes 35.01–36.01 s (plan 30 s: the STC's 30-bucket first fit plus
   the 5 s acquire). Over 1 h the frame count is within 0.70 frames at 0
-  and ±50 ppm and 1.19 frames at ±500 ppm (plan ±1; the jitter of the
-  bucket minima). A device past the ratio clamp now relocks on falls as
+  and ±50 ppm and 1.19 frames at ±500 ppm (plan ±1), the same with the
+  tuned τ (above) and with a 2 s bucket (1.29), so the excess is not the
+  bucket minima's. A device past the ratio clamp now relocks on falls as
   well.
 - **Found, minor.** The phase detector counts whole input frames, which
   steps the ratio by about ±1 ppm per buffer: FM about 87 dB below the tone,
@@ -928,9 +1061,7 @@ design's §5.2 keeps the general rule.
 
 ### Open at the end of the build
 
-- The capture session (WI-P1-5, WI-S0-9), the tuning sweep (WI-P1-6), the
-  Pi 4 bench of WI-P1-8 and the part 11 gate checks, all on the
-  rigs.
+- The Pi 4 bench of WI-P1-8 and the part 11 gate checks, on the rigs.
 - The restamp's runner CPU is above today's stamper and conditioner on the
   same wiring (S0 Budget above: +0.04 core per 28.6 Mbit/s ingest on a
   Pi 4), so V-P1-10 fails as written until the per-buffer cost is cut or
@@ -940,7 +1071,15 @@ design's §5.2 keeps the general rule.
   plugin the three PCM captures fail to parse instead of starting with the
   rule-6 alarm. Recommended stand-in: `audioresample`, which keeps the
   nominal-rate conversion.
-- The RTP start-up latency and the DISCONT flag on markers (both above).
+- The DISCONT flag on markers (above). The RTP start-up burst is the start
+  rule's case, but no RTP trace confirms it yet.
+- The leap row cannot tell a delivery stall from a timeline jump: 500 ms
+  clears today's gate egress (its largest stall misses by 353 ms), and a
+  250–500 ms jump now waits the envelope step's hold. A leap confirmed by
+  the PCRs after it would remove the trade (WI-P1-6).
+- A sender whose delivery swings by ±300 ms (today's gate egress) lands on
+  its lower envelope, so its PES reach a receiver up to 554 ms after their
+  house PTS: a Phase 4 output's latency, or the ingest offset, must cover it.
 - The bus-egress lateness tap of a `liveCaptureClock` pipeline reads the base
   time (Phase 0, corrected above): video-encoder's card shows no output
   lateness, because the reporter hides a window of 1 h or more. Proposed

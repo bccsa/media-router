@@ -1560,7 +1560,7 @@ std::vector<std::pair<int64_t, int64_t>> landing(const Case& c, const Gen& g, co
 
 // The path's floor delay rises by `rise` at 30 s for good (over `ramp`; 0: at once): a
 // re-route. The program re-locks for it (an envelope step after its 10 s hold, a leap at
-// once above 250 ms), never degrades, drops nothing, and lands later by the rise.
+// once above 500 ms), never degrades, drops nothing, and lands later by the rise.
 void test_reroute(const char* label, int64_t rise, int64_t ramp, const char* reason) {
     Gen g;
     g.secs = 75;
@@ -2396,11 +2396,13 @@ int main() {
     test_discontinuity_straddle("flagged jump 2^32 ticks - 30 ms at 30 s, audio-1 straddling",
                                 pts90k_to_ns(1LL << 32) - 30 * MS, true, "discontinuity");
     // Re-routes: rises the envelope step re-locks after its hold, also past the lead row's
-    // -200 ms (a PCR's lag is no lead), a queue building up as fast, and a leap (> 250 ms).
+    // -200 ms (a PCR's lag is no lead), a queue building up as fast, and a leap (> 500 ms,
+    // above the delivery stalls of the gate's egress, WI-P1-6).
     test_reroute("re-route +150 ms at 30 s", 150 * MS, 0, "envelope-step");
     test_reroute("re-route +230 ms at 30 s", 230 * MS, 0, "envelope-step");
     test_reroute("queue +240 ms over 3 s from 30 s", 240 * MS, 3 * S, "envelope-step");
-    test_reroute("re-route +300 ms at 30 s (a leap)", 300 * MS, 0, "leap");
+    test_reroute("re-route +300 ms at 30 s", 300 * MS, 0, "envelope-step");
+    test_reroute("re-route +600 ms at 30 s (a leap)", 600 * MS, 0, "leap");
     // Queues building at 10 and 20 ms/s: at 20 ms/s the relocks' epochs lie ~290 ms apart.
     test_queue_ramp("queue +200 ms over 20 s from 30 s", 200 * MS, 20 * S, 75);
     test_queue_ramp("queue +600 ms over 30 s from 30 s", 600 * MS, 30 * S, 100);

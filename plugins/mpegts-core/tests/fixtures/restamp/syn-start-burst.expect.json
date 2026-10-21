@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --delay-ms 520,20@0.5 --duration 120 --seed 28",
+  "note": "A transport's start burst (chapter 15.4 B-35, B-24; WI-P1-6): the first 0.5 s of sends arrive 500 ms above the floor and the next 0.5 s queue behind them, so the first sample seeds the epoch 506 ms late. The first two buckets agree on the floor, so the lock moves onto it at their close (2 s) instead of slewing (before WI-P1-6: residual -443 ms at the lock, the mapping at the 20 ppm limit for hours). What left on the seed overlaps, and the guard drops it once per PID at about 2.5 s (479, 490 and 503 ms); from then on the residual floor is within 1 ms and the mapping never moves faster than its jitter needs.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 0,
+  "overlaps": 3,
+  "events": [{"kind": "overlap", "atS": [2, 3]}, {"kind": "overlap", "atS": [2, 3]}, {"kind": "overlap", "atS": [2, 3]}],
+  "droppedMs": [1400, 1550],
+  "lockedWithinS": 40,
+  "residualMinMs": -1,
+  "mappingPpmMax": 10,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

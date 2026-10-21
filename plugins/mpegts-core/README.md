@@ -108,6 +108,7 @@ it at runtime stop doing so phase by phase (below).
 | `tests/tsFixtures.ts` | Hand-built TS for the ts-splitter and unixfdbus-core suites |
 | `tests/fixtures/*.ts`, `*.expect.jsonl` | The conformance fixtures (plan ch. 3 part 7.2, WI-S0-9): `syn-*` from `fixture_gen --ts`, `cap-*` field captures of at most 2 MB (OCC 1080i H.264 + AAC + teletext; our mux egress of AAC + Opus and of 1080i H.264 with unbounded video PES; 302M with `BSSD`; KLVA subtitles; an SRT ingest of 1316-byte datagrams from a third-party mux; `cap-cc-loss` derived by `--drop`), each with its `mrts_cli dump`, reviewed against ffprobe |
 | `tests/fixtures/restamp/*.stct`, `*.expect.json` | Arrival traces and their expectations (plan ch. 5 part 7.2, WI-P1-5): the synthetic ones name the `fixture_gen` command that regenerates them (no `.stct` committed); the field traces (`trace-*`, at most 2 MB) are committed and their notes say where and how each was recorded and what its dump shows |
+| `tests/fixtures/restamp/sweep-grid.json` | WI-P1-6's grid of the STC constants (plan ch. 5 part 4.3), for `mrts_cli restamp-replay --sweep`; the criteria, the per-trace results and the constants chosen are in ADR-0029 |
 
 Every `tests/` directory stays in the repository and never reaches a box:
 the image and the dist tarball prune them (WI-S0-13). Run the suites from a

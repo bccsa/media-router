@@ -909,9 +909,14 @@ struct ProgramSum {
     // at bucket closes, so the window reads up to one bucket's travel high (1/30).
     int64_t mapping_ppb_max = 0;
     uint64_t pes_in = 0, pes_out = 0, backward = 0;
+    // ε on the last stats line at each convergence mark the trace reaches (the sweep's
+    // drift criterion, part 4.3).
+    int64_t ppb_at[4] = {0, 0, 0, 0};
+    bool has_at[4] = {false, false, false, false};
 };
 
 constexpr int64_t MAPPING_WINDOW_NS = 30000000000LL;
+constexpr int64_t PPB_MARKS_S[4] = {60, 120, 300, 600};   // WI-P1-1's convergence marks
 
 ProgramSum summarize(const Run& run, int program) {
     ProgramSum s;
@@ -956,6 +961,12 @@ ProgramSum summarize(const Run& run, int program) {
     for (size_t i = 0; i < mine.size(); i++) {
         const VirtualStc::Stats& c = mine[i]->p.clock;
         s.cadence_warning |= c.cadence_warning;
+        for (int k = 0; k < 4; k++)
+            if (sat_sub(mine[i]->t, run.t0) <= PPB_MARKS_S[k] * 1000000000LL &&
+                sat_sub(run.t_end, run.t0) >= PPB_MARKS_S[k] * 1000000000LL) {
+                s.ppb_at[k] = c.ppb;
+                s.has_at[k] = true;
+            }
         if (c.state != VirtualStc::State::locked) {
             from = i + 1;
             continue;
@@ -984,26 +995,35 @@ ProgramSum summarize(const Run& run, int program) {
     return s;
 }
 
+// One program's facts as JSON: the summary's program objects and each sweep line's.
+void print_program(const ProgramSum& s) {
+    std::printf("{\"program\":%d,\"relocks\":%d,\"relockReasons\":[", s.program, s.relocks);
+    for (size_t k = 0; k < s.reasons.size(); k++) std::printf("%s%s", k ? "," : "", jstr(s.reasons[k]).c_str());
+    std::printf("],\"epochs\":%u,\"degraded\":%d,\"recovered\":%d,\"envelopeSteps\":%d,\"gaps\":%d,"
+                "\"gapNsTotal\":%lld,\"gapNsMin\":%lld,\"gapNsMax\":%lld,\"overlaps\":%d,\"overlapNs\":%lld,"
+                "\"droppedPes\":%llu,\"droppedNsTotal\":%lld,\"lockedAtNs\":%lld,\"finalState\":\"%s\","
+                "\"finalPpb\":%lld,\"lockedPpbMin\":%lld,\"lockedPpbMax\":%lld,\"residualMinNs\":%lld,"
+                "\"cadenceWarning\":%s,\"mappingPpbMax\":%lld,\"pesIn\":%llu,\"pesOut\":%llu,\"backward\":%llu,"
+                "\"ppbAtS\":{",
+                s.epoch, s.degraded, s.recovered, s.steps, s.gaps, (long long)s.gap_ns, (long long)s.gap_min,
+                (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns, (unsigned long long)s.dropped_pes,
+                (long long)s.dropped_ns, (long long)s.locked_at, s.final_state.c_str(), (long long)s.final_ppb,
+                (long long)s.ppb_min, (long long)s.ppb_max, (long long)s.residual_min,
+                s.cadence_warning ? "true" : "false", (long long)s.mapping_ppb_max, (unsigned long long)s.pes_in,
+                (unsigned long long)s.pes_out, (unsigned long long)s.backward);
+    for (int k = 0, n = 0; k < 4; k++)
+        if (s.has_at[k]) std::printf("%s\"%lld\":%lld", n++ ? "," : "", (long long)PPB_MARKS_S[k], (long long)s.ppb_at[k]);
+    std::printf("}}");
+}
+
 void print_summary(const Run& run) {
     std::printf("{\"msg\":\"summary\",\"durationNs\":%lld,\"buffers\":%zu,\"faithful\":%s,\"rerecorded\":%zu",
                 (long long)sat_sub(run.t_end, run.t0), run.buffers, run.faithful() ? "true" : "false", run.rerecorded);
     if (!run.faithful()) std::printf(",\"firstDiff\":%ld", run.first_diff);
     std::printf(",\"misplaced\":%llu,\"programs\":[", (unsigned long long)run.misplaced);
     for (size_t i = 0; i < run.programs.size(); i++) {
-        const ProgramSum s = summarize(run, run.programs[i]);
-        std::printf("%s{\"program\":%d,\"relocks\":%d,\"relockReasons\":[", i ? "," : "", s.program, s.relocks);
-        for (size_t k = 0; k < s.reasons.size(); k++) std::printf("%s%s", k ? "," : "", jstr(s.reasons[k]).c_str());
-        std::printf("],\"epochs\":%u,\"degraded\":%d,\"recovered\":%d,\"envelopeSteps\":%d,\"gaps\":%d,"
-                    "\"gapNsTotal\":%lld,\"gapNsMin\":%lld,\"gapNsMax\":%lld,\"overlaps\":%d,\"overlapNs\":%lld,"
-                    "\"droppedPes\":%llu,\"droppedNsTotal\":%lld,\"lockedAtNs\":%lld,\"finalState\":\"%s\","
-                    "\"finalPpb\":%lld,\"lockedPpbMin\":%lld,\"lockedPpbMax\":%lld,\"residualMinNs\":%lld,"
-                    "\"cadenceWarning\":%s,\"mappingPpbMax\":%lld,\"pesIn\":%llu,\"pesOut\":%llu,\"backward\":%llu}",
-                    s.epoch, s.degraded, s.recovered, s.steps, s.gaps, (long long)s.gap_ns, (long long)s.gap_min,
-                    (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns, (unsigned long long)s.dropped_pes,
-                    (long long)s.dropped_ns, (long long)s.locked_at, s.final_state.c_str(), (long long)s.final_ppb,
-                    (long long)s.ppb_min, (long long)s.ppb_max, (long long)s.residual_min,
-                    s.cadence_warning ? "true" : "false", (long long)s.mapping_ppb_max, (unsigned long long)s.pes_in,
-                    (unsigned long long)s.pes_out, (unsigned long long)s.backward);
+        if (i) std::printf(",");
+        print_program(summarize(run, run.programs[i]));
     }
     std::printf("],\"pids\":[");
     bool first = true;
@@ -1203,7 +1223,9 @@ const char kReplayUsage[] =
     "  the replay against an expectation file (exit 1 on a failure). --config sets RestampConfig\n"
     "  (mode, add_base_time, base_time_ns, offset_ns, pid_trims=<pid>=<ns>;...) and every\n"
     "  ClockLockConfig / PcrValidatorConfig field by name (clock. / pcr. to pick one). --sweep\n"
-    "  replays once per point of {\"key\": [values], ...} and prints one line per point.\n";
+    "  replays once per point of {\"key\": [values], ...} and prints one line per point: its\n"
+    "  config, the expectation's verdict and the first program's summary (ppbAtS: epsilon at\n"
+    "  60/120/300/600 s).\n";
 
 int restamp_replay_main(int argc, char** argv) {
     ReplayOpts o;
@@ -1318,15 +1340,12 @@ int restamp_replay_main(int argc, char** argv) {
         const Run run = replay(recs, p);
         const std::vector<std::string> fail = x ? check_expect(*x, run) : std::vector<std::string>();
         passed += fail.empty();
-        const ProgramSum s = summarize(run, run.programs.empty() ? 1 : run.programs.front());
-        std::printf("{\"msg\":\"sweep\",\"point\":%zu,\"config\":{%s},\"ok\":%s,\"relocks\":%d,\"lockedAtNs\":%lld,"
-                    "\"finalPpb\":%lld,\"residualMinNs\":%lld,\"mappingPpbMax\":%lld,\"droppedPes\":%llu,"
-                    "\"failures\":[",
-                    n, cfg.c_str(), fail.empty() ? "true" : "false", s.relocks, (long long)s.locked_at,
-                    (long long)s.final_ppb, (long long)s.residual_min, (long long)s.mapping_ppb_max,
-                    (unsigned long long)s.dropped_pes);
+        std::printf("{\"msg\":\"sweep\",\"point\":%zu,\"config\":{%s},\"ok\":%s,\"failures\":[", n, cfg.c_str(),
+                    fail.empty() ? "true" : "false");
         for (size_t i = 0; i < fail.size(); i++) std::printf("%s%s", i ? "," : "", jstr(fail[i]).c_str());
-        std::printf("]}\n");
+        std::printf("],\"summary\":");
+        print_program(summarize(run, run.programs.empty() ? 1 : run.programs.front()));
+        std::printf("}\n");
         for (size_t a = axes.size(); a-- > 0;) {
             if (++idx[a] < axes[a].vals.size()) break;
             idx[a] = 0;

@@ -1,14 +1,13 @@
 {
-  "note": "The OCC gate's real RIST output on port 20010 (no-occ-gate01, frozen-model engine: H.264 720p50 PID 0x64 with the PCR, AAC 0xc8 nor and 0xc9 eng; the #825 port) as received by 10.9.16.103's rist-input-mtogzsuurzbe on the Phase 1 build, recorded by its own restamp (trace-location), 2026-10-16 07:28:52Z, the first 520 s (2 MB). Read off the dump: PCR median every 42 ms but p99 271 ms, max 384 ms; 13 unflagged PCR leaps of -254..-324 ms between consecutive PCRs (the first at 154.7 s; the same instants on ports 20033 and 20046: upstream of the outputs); the PCR and every PID's PTS move together against arrival by up to +-200 ms from one second to the next (the gate's re-anchoring timeline, #816), so the delay floor is not a clock; lead p50 120-125 ms, min -191 ms; no DTS, no outage; audio and video leads within 10 ms of each other, so #825's swing does not reproduce. As replayed: never locked (the rate fit restarts on every floor move), relock on each leap (17, all leap, the first at 154.7 s), three leaps in 60 s degrade the program at 285.1 s with no recovery, a gap per PID at most relocks, and the monotonic guard drops the overlap of every rewind: 845 PES, 17.6 s of content (3.4 %) in 520 s. The bounds keep today's counts as the ceiling: fewer drops pass, more fail.",
-  "relocks": [13, 20],
-  "degraded": 1,
+  "note": "The OCC gate's real RIST output on port 20010 (no-occ-gate01, frozen-model engine: H.264 720p50 PID 0x64 with the PCR, AAC 0xc8 nor and 0xc9 eng; the #825 port) as received by 10.9.16.103's rist-input-mtogzsuurzbe on the Phase 1 build, recorded by its own restamp (trace-location), 2026-10-16 07:28:52Z, the first 520 s (2 MB). Read off the dump: a PCR every 60 ms of source time (all but 1 %) arriving 0-384 ms apart (median 42 ms, p99 271 ms), so the delay moves by up to +-300 ms within a second: stalls, then catch-up bursts (the gate's re-anchoring egress, #816); 13 stalls longer than 310 ms (the first at 154.7 s; the same instants on ports 20033 and 20046: upstream of the outputs); lead p50 120-125 ms, min -191 ms; no DTS, no outage; audio and video leads within 10 ms of each other, so #825's swing does not reproduce. Before WI-P1-6 (leap_ns 250 ms) every such stall read as a timeline leap: 17 relocks, degraded at 285 s with no recovery, 845 PES (17.6 s, 3.4 %) dropped as overlap. With leap_ns 500 ms the stalls are delivery, not leaps: the first two buckets agree on a floor 217 ms below the first sample, so the start rule moves onto it at 2 s (the only drop: 200-213 ms per PID, 0.63 s in all), the clock locks at 178 s (the rate fit restarts on every floor move until then), one envelope-step relock (+52 ms, a 307 ms gap per PID) at 186 s, never degraded, no PES dropped after the start. On the lower envelope of this delivery a PES's house PTS lies 137-147 ms after its arrival at the median and up to 554 ms before it after the worst stall: a consumer of this sender needs that much latency. The bounds keep these results as the ceiling.",
+  "relocks": [0, 2],
+  "degraded": 0,
   "recovered": 0,
-  "events": [{"kind": "relock", "reason": "leap", "atS": [154, 156]}, {"kind": "degraded", "reason": "leap", "atS": [280, 290]}],
-  "gaps": [20, 45],
-  "gapMs": [5, 320],
-  "droppedMs": [0, 18000],
+  "events": [{"kind": "overlap", "atS": [2, 3]}],
+  "gaps": [0, 6],
+  "gapMs": [5, 350],
+  "droppedMs": [0, 1000],
   "cadenceWarning": true,
-  "finalState": "degraded",
   "monotonic": true,
   "faithful": true
 }

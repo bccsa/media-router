@@ -12,6 +12,7 @@
 #include <map>
 #include <vector>
 
+#include "../asrc_servo.h"
 #include "../ts_house.h"
 #include "../ts_stc.h"
 #include "check.h"
@@ -508,6 +509,73 @@ void test_fit_levels() {
     CHECK("fit level: an adopted level clears the fit until 30 buckets of its own (none stale), then the source's",
           before && off >= 129 * S && off <= 131 * S && on >= off + 29 * S && on <= off + 31 * S &&
               iabs(ppb_on - 50000) <= 20000);
+}
+
+// The first epoch's floor (WI-P1-6; chapter 15.4 B-35, B-24). PCR at 10/s on a +50 ppm
+// source, 0..2.9 ms of jitter above a 20 ms floor; sends from `at` for `len` arrive `excess`
+// late and the next ones queue behind them (FIFO), so a start burst follows. `dip`: from
+// at + len the delay is `excess` again, so the first bucket's floor was a dip. With `relock_at`
+// the lock relocks there and the burst comes after it. Returns house(σ) - floor arrival.
+struct StartRun {
+    std::vector<std::pair<int64_t, int64_t>> off;   // (send time, house_of(σ) - floor arrival)
+    int64_t locked = -1;
+    int64_t at(int64_t t) const {
+        for (const auto& o : off)
+            if (o.first >= t) return o.second;
+        return INT64_MIN;
+    }
+};
+
+StartRun start_run(const ClockLockConfig& cfg, int64_t excess, int64_t at = 0, int64_t len = 500 * MS, bool dip = false,
+                   int64_t relock_at = -1, int64_t secs = 60) {
+    ClockLock lk(cfg);
+    StartRun r;
+    int64_t prev = INT64_MIN;
+    for (int64_t k = 0; k * 100 * MS <= secs * S; k++) {
+        const int64_t t = k * 100 * MS;
+        if (t == relock_at) lk.relock(true);
+        const int64_t floor_h = H0 + t + at_ppb(t, 50000) + 20 * MS;
+        const bool late = t >= at && (t < at + len || dip);
+        const int64_t own = floor_h + (late && !(dip && t >= at + len && t < at + 2 * len) ? excess : 0) +
+                            (k * 7919 % 30) * 100000;
+        const int64_t h = std::max(prev, own);
+        prev = h;
+        lk.feed(7200 * S + t, h);
+        r.off.push_back({t, lk.house_of(7200 * S + t) - floor_h});
+        if (r.locked < 0 && lk.phase() == ClockLock::Phase::locked) r.locked = t;
+    }
+    return r;
+}
+
+void test_start_burst() {
+    const ClockLockConfig stc, asrc = asrc_lock_config();
+    // 500 ms late for the first 0.5 s, as an SRT listener's start (trace-816-clean-cbr).
+    const StartRun b = start_run(stc, 500 * MS);
+    std::printf("  start burst +500 ms: house - floor %.3f ms at 1.5 s, %.3f at 2.5 s, %.3f at 60 s; locked %.1f s\n",
+                b.at(1500 * MS) / 1e6, b.at(2500 * MS) / 1e6, b.at(60 * S) / 1e6, b.locked / 1e9);
+    CHECK("start burst: on the seed until the second bucket closes, then on the floor the two agree on (1 ms)",
+          b.at(1500 * MS) >= 490 * MS && iabs(b.at(2500 * MS)) <= 1 * MS && iabs(b.at(60 * S)) <= 1 * MS);
+    CHECK("start burst: ... the lock as without a burst (within 40 s)", b.locked >= 0 && b.locked <= 40 * S);
+    // A dip the second bucket does not confirm: the delay is back up from 0.6 s.
+    const StartRun d = start_run(stc, 300 * MS, 0, 300 * MS, true);
+    std::printf("  first-bucket dip, delay +300 ms again from 0.6 s: house - floor %.3f ms at 2.5 s\n",
+                d.at(2500 * MS) / 1e6);
+    CHECK("start burst: a first-bucket dip the second bucket does not confirm moves nothing (the acquire slew only)",
+          d.at(2500 * MS) >= 294 * MS && d.at(2500 * MS) <= 301 * MS);
+    // Below step_ns the acquire slew takes it, as before; past a relock the rule is off.
+    const StartRun s = start_run(stc, 15 * MS);
+    CHECK("start burst: 15 ms (under step_ns) is slewed, no step (8 ms left at 2.5 s, on the floor by 20 s)",
+          s.at(2500 * MS) >= 8 * MS && iabs(s.at(20 * S)) <= 1 * MS);
+    const StartRun rl = start_run(stc, 500 * MS, 100 * S, 500 * MS, false, 100 * S, 120);
+    std::printf("  burst after a relock at 100 s: house - floor %.3f ms at 102.5 s\n", rl.at(102500 * MS) / 1e6);
+    CHECK("start burst: after a relock a burst is the acquire slew's (the rule is the pipeline's start)",
+          rl.at(102500 * MS) >= 480 * MS);
+    // mrasrc's lock: its 50 ms step is the threshold.
+    const StartRun a40 = start_run(asrc, 40 * MS), a80 = start_run(asrc, 80 * MS);
+    CHECK("start burst: mrasrc's lock (50 ms step) slews 40 ms and moves onto the floor under 80 ms",
+          a40.at(2500 * MS) >= 30 * MS && iabs(a80.at(2500 * MS)) <= 1 * MS);
+    for (const StartRun* r : {&b, &d, &s, &rl, &a40, &a80})
+        for (const auto& o : r->off) g_all.add(o.second);
 }
 
 // --- PcrValidator, row by row ------------------------------------------------------
@@ -1238,6 +1306,7 @@ int main(int argc, char** argv) {
     test_convergence();
     test_envelope_step();
     test_fit_levels();
+    test_start_burst();
     test_validator();
     test_vstc_clean_and_wrap();
     test_vstc_relocks();

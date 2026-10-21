@@ -104,8 +104,17 @@ check "restamp-replay: an unknown or bad --config exits 2, a good one replays, a
 printf '{"step_ns": [10000000, 20000000], "pcr.rate_max_ppm": [1000]}\n' >"$T/grid.json"
 "$CLI" restamp-replay "$T/a.stct" --sweep "$T/grid.json" >"$T/sweep.jsonl" &&
     [ "$(grep -c '"msg":"sweep",' "$T/sweep.jsonl")" -eq 2 ] && grep -q '"msg":"sweep-done","points":2' "$T/sweep.jsonl" &&
-    grep -q '"config":{"step_ns":20000000,"pcr.rate_max_ppm":1000}' "$T/sweep.jsonl"
-check "restamp-replay: --sweep replays once per grid point, naming its config" $?
+    grep -q '"config":{"step_ns":20000000,"pcr.rate_max_ppm":1000}' "$T/sweep.jsonl" &&
+    [ "$(grep -c '"summary":{"program":1,"relocks":1,.*"ppbAtS":{}}}$' "$T/sweep.jsonl")" -eq 2 ]
+check "restamp-replay: --sweep replays once per grid point, naming its config, with the program's summary" $?
+# The summary's epsilon at the convergence marks the trace reaches (60 s of 61 here).
+"$GEN" --trace -o "$T/m.stct" --duration 61 --pids v --seed 3 &&
+    "$CLI" restamp-replay "$T/m.stct" --sweep "$T/grid.json" | grep -q '"ppbAtS":{"60":-\{0,1\}[0-9]*}}}$'
+check "restamp-replay: a sweep line names epsilon at each convergence mark the trace reaches" $?
+# The committed grid (WI-P1-6, plan part 4.3): every axis a knob, 243 points.
+"$CLI" restamp-replay "$T/a.stct" --sweep "$FIX/sweep-grid.json" >"$T/grid243.jsonl" &&
+    grep -q '"msg":"sweep-done","points":243' "$T/grid243.jsonl"
+check "restamp-replay: the committed sweep-grid.json replays, 243 points" $?
 printf '{"step_ns": [10000000], "bucket_nss": [1]}\n' >"$T/grid2.json"
 [ "$(status "$CLI" restamp-replay "$T/a.stct" --sweep "$T/grid2.json")" = 1 ]
 check "restamp-replay: a grid with an unknown key exits 1" $?
