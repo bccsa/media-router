@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <initializer_list>
 #include <map>
-#include <memory>
 #include <utility>
 #include <vector>
 
@@ -15,7 +14,6 @@
 #include "../ts_pcr.h"
 #include "../ts_pes.h"
 #include "../ts_psi.h"
-#include "../ts_timeline.h"   // the differential block only; WI-P2-2b deletes both
 #include "check.h"
 
 using namespace mrts;
@@ -576,7 +574,8 @@ int main() {
     CHECK("net_pcr27 stays in [0, PCR_MODULO)", net_pcr27(0, 1) == PCR_MODULO - 1);
 
     // --- IdentityStamp (WI-P2-2a) --------------------------------------------
-    // ts_timeline_test's two house-timeline cases, as buffers: (house_now, bytes).
+    // The two house-timeline cases ts_timeline_test held until WI-P2-2b, as buffers:
+    // (house_now, bytes).
     const int64_t H = 10 * S;
     std::vector<std::pair<int64_t, Bytes>> ladder, priv;
     for (int i = 0; i < 10; i++)   // content 10 s + i * 40 ms; arrival late and jittery
@@ -607,92 +606,6 @@ int main() {
         for (const auto& b : bufs) out.push_back(stamp_of(id, b.second, b.first));
         return out;
     };
-
-    // ==== BEGIN differential against TimelineStamper, one instance per stream.
-    // ==== WI-P2-2b deletes this block with that class; the vectors above stay.
-    {
-        struct Old {
-            TimelineStamper st;
-            TimelineStamper::Anchored a{};
-            int anchors = 0;
-            explicit Old(bool repair = false)
-                : st([this](const TimelineStamper::Anchored& x) { a = x; anchors++; }, nullptr,
-                     nullptr, repair) {
-                st.set_house_timeline(true);
-            }
-            int64_t stamp(const Bytes& b, int64_t now, int stream) {
-                return st.stamp(b.data(), b.size(), now, stream);
-            }
-        };
-        // The anchor event and first() report the same PES; one event per stream.
-        auto same_first = [](const Old& o, const IdentityStamp& id, int stream) {
-            int pid = 0;
-            int64_t fs = 0, fp = 0;
-            const bool has = id.first(stream, &pid, &fs, &fp);
-            if (has != o.st.anchored() || o.anchors != (has ? 1 : 0)) return false;
-            return !has || (pid == o.a.pid && fs == o.a.anchor_ns && fp == o.a.ref_pts &&
-                            fs == o.st.anchor_ns() && fp == o.st.ref_pts());
-        };
-        Old ol(true), op;   // the ladder case ran with repair_latch, as in ts_timeline_test
-        IdentityStamp il, ip;
-        std::vector<int64_t> old_ladder, old_priv;
-        for (const auto& b : ladder) old_ladder.push_back(ol.stamp(b.second, b.first, 0));
-        for (const auto& b : priv) old_priv.push_back(op.stamp(b.second, b.first, 0));
-        CHECK("differential: ts_timeline_test's house-timeline ladder, stamp for stamp",
-              run(il, ladder) == old_ladder && old_ladder == LADDER);
-        CHECK("differential: ... and its private-PES-on-the-carrier case",
-              run(ip, priv) == old_priv && old_priv == PRIV);
-        CHECK("differential: first() is the anchor event of both cases",
-              same_first(ol, il, 0) && same_first(op, ip, 0) && ol.a.pid == 0x41);
-
-        // The corpus: each stream against an old instance of its own.
-        Fnv f;
-        std::vector<int64_t> head;
-        long buffers = 0, bad = 0, bad_first = 0;
-        Tally scratch;
-        for (int c = 0; c < CORPUS; c++) {
-            IdentityStamp id;
-            std::map<int, std::unique_ptr<Old>> olds;
-            for (const Buf& b : scenario(1000 + c, scratch)) {
-                auto& o = olds[b.stream];
-                if (!o) o = std::make_unique<Old>();
-                const int64_t want = o->stamp(b.data, b.now, b.stream);
-                const int64_t got = id.stamp(b.data.data(), b.data.size(), b.now, b.stream);
-                if (got != want && bad++ == 0)
-                    std::printf("  first difference: scenario %d buffer %ld stream %d: %lld,"
-                                " old %lld\n",
-                                c, buffers, b.stream, (long long)got, (long long)want);
-                if (!same_first(*o, id, b.stream)) bad_first++;
-                f.add(want);
-                if (head.size() < HEAD) head.push_back(want);
-                buffers++;
-            }
-            for (const auto& kv : olds)
-                fold_first(f, kv.second->st.anchored(), kv.second->a.pid,
-                           kv.second->a.anchor_ns, kv.second->a.ref_pts);
-        }
-        std::printf("  recorded by TimelineStamper: %ld buffers, checksum %016llx\n", buffers,
-                    (unsigned long long)f.h);
-        CHECK("differential: every corpus stamp equals the old class's, per stream", bad == 0);
-        CHECK("differential: ... and first() its anchor event, after every buffer", bad_first == 0);
-        CHECK("differential: the old class gives the recorded corpus vectors",
-              head == CORPUS_HEAD && f.h == CORPUS_SUM);
-
-        // The one difference, the per-stream state: shared across mr-tssplit's
-        // outputs, the old timing PID is the first output's PCR carrier.
-        Old shared;
-        IdentityStamp per;
-        const int64_t pcr = P(H - 300 * MS) * 300;
-        const Bytes v = pes(0x100, P(H), 0xE0, -1, pcr);
-        const Bytes k = cat({psi(0x1F0, 0x1F0, STREAM_TYPE_KLV), pcr_pkt(0x1F0, pcr),
-                             pes(0x1F0, P(H + 40 * MS), 0xBD)});
-        shared.stamp(v, H + 150 * MS, 0x100);
-        stamp_of(per, v, H + 150 * MS, 0x100);
-        CHECK("differential: a KLV output: arrival under one shared TimelineStamper, its PES here",
-              shared.stamp(k, H + 160 * MS, 0x1F0) == H + 160 * MS &&
-              stamp_of(per, k, H + 160 * MS, 0x1F0) == H + 40 * MS);
-    }
-    // ==== END differential
 
     // The recorded vectors, through IdentityStamp alone.
     {

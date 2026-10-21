@@ -9,12 +9,12 @@ import { PacedTsSink, packetizeTs, TS_PACKET_BYTES } from './PacedTsSink.js';
  * That difference is the producer's DELIVERY LEAD, and it is this sink's half
  * of the bus time contract (ADR-0005). Consumers hold the lead in their
  * `leaky=2 max-size-time=bufferMs` queues, and the fan-out sidecar's
- * `TimelineStamper` anchors the bus timeline ONCE and then cancels only the
- * margin's TREND, never its level (ts_timeline.py, "NO SETPOINT"). So the lead
+ * `HouseRebase` maps the bus timeline ONCE (house time at playout start plus
+ * the media offset) and never corrects the margin. So the lead
  * has exactly one owner — this file — and exactly one bound, `PREFILL_MS`.
  *
- * `leadMs` below is `-marginNs` as that sidecar reports it, which is what makes
- * these numbers directly comparable to a burn-in log.
+ * `leadMs` below is minus the `lateness` that sidecar reports, which is what
+ * makes these numbers directly comparable to a burn-in log.
  */
 
 /** The consumers' leaky-queue window on the .202 burn-in profile. */

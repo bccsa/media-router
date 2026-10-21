@@ -188,10 +188,10 @@ export abstract class PacedTsSink {
                 // MONOTONE re-anchor: a re-anchor may only move the mapping
                 // LATER, never earlier. Earlier means handing ourselves a fresh
                 // PREFILL_MS head start on top of the lead we already hold, and
-                // those grants ACCUMULATE — the anchor downstream is latched
-                // once and, by design, never corrects the LEVEL of the margin
-                // (mpegts-core `TimelineStamper` cancels the trend only; see
-                // ts_timeline.py "NO SETPOINT"). So every dry spell shorter
+                // those grants ACCUMULATE — the mapping downstream is latched
+                // once and never corrects the margin (mr-bus-fanout's
+                // `HouseRebase`: house time at playout start plus the media
+                // offset, moved only by a source jump). So every dry spell shorter
                 // than PREFILL_MS permanently widened the producer's delivery
                 // lead by the difference — and a dry spell can be one 10 ms
                 // idle poll at a segment boundary. Field failure 2026-08-13 on

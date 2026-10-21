@@ -20,8 +20,9 @@ producer's identity egress (PES = content time + 1 h, stamp = PES − 1 h).
 Stamps: the producer model — `content(pts) = A + ns(pts − ref)` (anchor A at
 the first PES's arrival, ref that PES), a bus buffer stamped by its first
 timing-PID PES (else its first PES), never below the last stamp. It is what
-`ts_timeline.TimelineStamper` writes once its conditioner has learned the PCR
-PID (pinned in gst_tsdemux_slave_test.py). `skew_ppm` runs the source clock
+the anchored stamper of `py/ts_timeline.py`, kept as the reference, writes once
+its conditioner has learned the PCR PID (pinned in gst_tsdemux_slave_test.py;
+no runtime path stamps that way since Phase 2). `skew_ppm` runs the source clock
 fast against house with the producer's drift slew assumed ideal; a jump steps
 PES and PCR back `jump_s` with the producer re-anchored, so stamps and content
 time stay continuous. An access unit's TARGET is its content time.

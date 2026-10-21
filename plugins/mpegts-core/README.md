@@ -38,13 +38,13 @@ it at runtime stop doing so phase by phase (below).
 | Path | What |
 |---|---|
 | `Makefile` | Builds `libmrts.a` (always `-fPIC`, even under a command-line `CXXFLAGS`) and `mrts_cli`. `test` builds the suites, `tests/mrts_bench` and `tests/fixture_gen`, runs the suites, then `tests/trace_cli_test.sh`. Installs nothing |
-| `ts_house.h`, `ts_house.cpp` | The timescales: 90 kHz, 27 MHz and ns conversions with Python's floor rule, `fold33`, `unwrap_near`, the bus formula `house_from_mux_pts` and its inverse `mux_pts_from_house`, `Unwrapper` (continuous per stream, DTS nearest its own PTS), the network boundary `NetEpoch` / `bus_to_net` / `net_to_bus` / `net_pcr27` (Phase 5) |
+| `ts_house.h`, `ts_house.cpp` | The timescales: 90 kHz, 27 MHz and ns conversions with Python's floor rule, `fold33`, `unwrap_near`, the bus formula `house_from_mux_pts` and its inverse `mux_pts_from_house`, `Unwrapper` (continuous per stream, DTS nearest its own PTS), the network boundary `NetEpoch` / `bus_to_net` / `net_to_bus` / `net_pcr27` (Phase 5), and `IdentityStamp`, the bus stamp `PES − 1 h` per stream that `mrtsstamp`, `mr-tssplit` and `mr-bus-fanout` use (Phase 2) |
 | `ts_packet.h`, `ts_packet.cpp` | The packet layer: header helpers, `PacketView`, `PacketWalker` (carries split packets across feeds, resyncs, counts desync bytes), `CcTracker` (continuity per PID) |
 | `ts_pes.h`, `ts_pes.cpp` | PES headers: `parse_pes_header`, the in-place PTS/DTS rewrite, `PesHeaderSpan` (a header split over two packets), `PesAssembler` (whole PES on every selected PID, capped and counted) |
 | `ts_pcr.h`, `ts_pcr.cpp` | The PCR: read, write, PCR-only packets, `discontinuity_indicator`, `PcrScheduler` (egress cadence, Phase 5) |
 | `ts_psi.h`, `ts_psi.cpp` | PSI parse and build and `PsiDiscovery` (port of `py/ts_psi.py`), generalised in C++ only: program selection, PMT generation, descriptor loops, `registration_format`, multi-packet sections |
 | `ts_split.h`, `ts_split.cpp` | `SplitterCore`, the packet-level per-PID SPTS splitter of `mr-tssplit` (port of `py/ts_split.py`), on `PacketWalker` |
-| `ts_timeline.h`, `ts_timeline.cpp` | `TimelineStamper` (port of `py/ts_timeline.py`): the anchored stamper with latch repair, drift servo and wire conditioner, and the identity stamp `stamp_house`. Frozen model (Q2); the anchored parts go in Phase 2 |
+| `ts_timeline.h`, `ts_timeline.cpp` | `timing_pes`, the one rule Phase 2 kept of the anchored stamper (port of `py/ts_timeline.py`'s): a PES may define a timeline when it is video or audio, or on the PCR carrier. Used by `IdentityStamp` and the runner's branch retime; deleted in Phase 3 |
 | `ts_video_info.h`, `ts_video_info.cpp`, `sps_parse.h`, `sps_parse.cpp` | H.264/H.265 SPS probe for the video-info tap (not timing) |
 | `lateness.h`, `lateness.cpp` | `LatenessWindow`, the accumulator behind every lateness reading (Phase 0) |
 | `ts_stc.h`, `ts_stc.cpp` | The virtual STC: `ClockLock` (lower-envelope lock of a remote clock to arrival), `PcrValidator`, `VirtualStc` (per program: epochs, degraded mode, the straddle rule) |
@@ -54,7 +54,7 @@ it at runtime stop doing so phase by phase (below).
 | `asrc_servo.h`, `asrc_servo.cpp` | `AsrcServo`: `ClockLock` on input frame count against buffer PTS, and the phase servo that commands `mrasrc`'s ratio |
 | `align_watch.h`, `align_watch.cpp` | What `mralignwatch` decides (Phase 2): W from the arrival rhythm (`ArrivalRhythm`), the pace group and its process-wide registry (`PaceGroup`, `PaceRegistry`), the gap planner (`GapPlanner`) |
 | `ts_select.h`, `ts_select.cpp` | `SelectDemux`, what `mrtsdemux` does in select mode (Phase 2): one stream of one program on the formula timeline (`PES − 1 h`, unwrapped from the clock), the jump rule, bus gap markers turned into gaps, the no-stream warning; Phase 3's `DemuxCore` generalises it |
-| `mrts_cli.cpp` | Test harness, never installed: the splitter mode of the parity suite, `dump` (PES index as JSON lines), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
+| `mrts_cli.cpp` | Test harness, never installed: `dump` (PES index as JSON lines), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
 
 ### `native/mrts/tests/` — C++ unit tests (`make -C native/mrts test`, root `make native-test`)
 
@@ -104,7 +104,6 @@ it at runtime stop doing so phase by phase (below).
 | Path | What |
 |---|---|
 | `engine/esDescriptors.ts`, `engine/index.ts` | The TypeScript ES descriptor-loop reader every TS plugin uses (`descriptorsFromEsInfo`, `esInfoBytes`, `isoLanguage`); tests in `esDescriptors.test.ts` |
-| `tests/nativeSplitParity.test.ts` | Python and C++ splitters over identical chunking, every output PID byte for byte (until Phase 2) |
 | `tests/hlsPipeReference.test.ts` | `mrts_cli dump` against hls-pipe's TypeScript demuxer, PES for PES (pid, PTS, DTS, length, CRC-32); hls-pipe's known limits are an allowlist with reasons, any other difference fails. `HLS_PIPE_DIR` names another hls-pipe checkout, `HLS_PIPE_REFERENCE_FIXTURES` adds captures |
 | `tests/dump_vs_ffprobe.py` | `mrts_cli dump` against ffprobe, PES for PES |
 | `tests/tsFixtures.ts` | Hand-built TS for the ts-splitter and unixfdbus-core suites |
@@ -118,7 +117,7 @@ checkout, never from `/opt`.
 
 | Phase | What goes or stops being loaded | Why then |
 |---|---|---|
-| 2 | `tests/nativeSplitParity.test.ts` and `mrts_cli`'s splitter mode; the anchored stamper, latch repair, drift servo and conditioner in `ts_timeline`, with their tests; the stamper's Python probe and `unixfd-fanout.py --stamp-timeline`. `py/ts_split.py`, `py/native_parity_*.py` and `py/ts_timeline.py` stay as reference | Phase 2 deletes anchored stamping and the wire conditioner, and the splitter pass-through ends the byte parity |
+| 2 | `tests/nativeSplitParity.test.ts` and `mrts_cli`'s splitter mode (WI-P2-4); the anchored stamper in `ts_timeline` (anchor, latch and latch repair, watch, staleness net, late/early tiers, drift servo, conditioner, their event JSON) with its tests, so `ts_timeline` keeps only `timing_pes` (WI-P2-2); the stamper's Python probe (WI-P2-3) and `unixfd-fanout.py` (WI-P2-5). `py/ts_split.py`, `py/native_parity_*.py` and `py/ts_timeline.py` stay as reference | Phase 2 deletes anchored stamping and the wire conditioner, and the splitter pass-through ends the byte parity |
 | 3 | The last runtime importers of `py/ts_timeline.py` (branch retime and the align block), the `ts_psi.h` forwarders, `native/mrpeshouse/` with the subtitle K recovery | Phase 3 deletes branch alignment, retime and K recovery |
 | — | `py/ts_psi.py`, `py/ts_video_info.py`, `py/sps_parse.py` stay | The Python runner's `tsProbe` imports them (OQ-1) |
 
@@ -134,13 +133,13 @@ checkout, never from `/opt`.
   not loaded" (the PCM captures, whose `mrasrc` has no stand-in yet, fail to
   start; a pipeline naming `mrtsdemux`, which has none by design, is refused
   with that alarm); a live input add that names one of its elements is refused with that
-  alarm, never stood in (B-17); without `libgstmrtsstamp.so` the Python runner
-  falls back to its probe (frozen, until Phase 2).
+  alarm, never stood in (B-17); without `libgstmrtsstamp.so` an egress runs
+  unstamped with that alarm, in either runner (no Python stamper since Phase 2).
 - **`libmrts.a`** is linked by `mrtsstamp`, `mrlateness`, `mrpeshouse` and
   `mrtshouse` here, by the engine's `mr-gst-runner`, by `ts-splitter`'s
   `mr-tssplit` and by `unixfdbus-core`'s `mr-bus-fanout`.
 - **The Python runner** imports `ts_psi` and `ts_video_info` (`tsProbe`) and
-  `ts_timeline` (the frozen paths above) via the plugin PYTHONPATH;
-  `unixfd-fanout.py` imports `ts_timeline` (`--stamp-timeline`).
+  `ts_timeline`'s helpers (branch alignment and retime, until Phase 3) via the
+  plugin PYTHONPATH.
 - **TypeScript plugins** read ES descriptors through
   `@media-router/plugin-mpegts-core` (`engine/`).

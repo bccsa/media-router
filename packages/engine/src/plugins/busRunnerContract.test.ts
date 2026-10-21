@@ -250,8 +250,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(existsSync(join(__dirname, '..', 'child-process', 'gst_stamp_probe.py'))).toBe(
             false,
         );
-        expect(runnerProcess).not.toContain('TimelineStamper');
-        expect(runnerProcess).not.toContain('TimelineLatch');
+        expect(runnerProcess).not.toMatch(/Timeline(Stamper|Latch)/);
         expect(stamperSource).not.toContain('import ts_timeline');
         expect(stamperSource).not.toContain('unwrap_near');
         // 3. The started event cannot clear the alarm while the stamper is missing.
