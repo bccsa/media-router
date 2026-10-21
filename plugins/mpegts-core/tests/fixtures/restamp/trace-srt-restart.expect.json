@@ -1,0 +1,19 @@
+{
+  "note": "An SRT caller stopped 5 s and restarted, into srt-input on 10.9.16.108 (listener, latency 500 ms, keep-listening), recorded by its restamp on the Phase 1 build, 2026-10-16 08:24:33Z, 180 s: the paced CBR source of trace-816-clean-cbr, stopped at 84.9 s and started again 5 s later from the start of its file, so its timeline rewinds 95 s. Read off the dump: one outage record of 6111 ms (the stop, then SRT's reconnection), one unflagged PCR leap of -95009 ms at 91.0 s, PCR every 38.7 ms either side, delay floor within -0.2..+2.0 ms, video lead 228-860 ms, audio 27-559 ms; neither start delivered a burst. As replayed: locked at 36 s, lost during the outage, one relock (leap) at 91.0 s, locked again at 96 s; one gap per PID (5930 and 5922 ms: the outage less the change of the source's lead across its restart, so V-P1-3's +-50 ms holds only for a restart that keeps its lead); nothing dropped, no backward PTS.",
+  "relocks": 1,
+  "relockReasons": ["leap"],
+  "epochs": 2,
+  "degraded": 0,
+  "gaps": 2,
+  "gapsPerPid": 1,
+  "gapMs": [5800, 6200],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "events": [{"kind": "relock", "reason": "leap", "atS": [90.5, 91.5]}, {"kind": "gap", "reason": "epoch"}],
+  "residualMinMs": -1,
+  "finalState": "locked",
+  "cadenceWarning": false,
+  "monotonic": true,
+  "faithful": true
+}

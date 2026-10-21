@@ -1,0 +1,17 @@
+{
+  "note": "A RIST link dropped and restored at the receiver, 2026-10-16 08:09:55Z, 180 s: 10.9.16.108 (Phase 1 build) forwards its srt-input of the paced CBR source (trace-816-clean-cbr) through a rist-output listener (main profile, buffer 1000 ms) to 10.9.16.103's rist-input caller, which recorded this with its restamp; at 95.6 s an nft rule on .103 dropped every packet from .108 for 5 s (1533 packets). Read off the dump: one outage record of 5027 ms, the PCR continuous across it (the sender kept its timeline: a sending engine on this design), PCR every 39.6 ms (p99 45.9 ms), delay floor within -0.8..+1.7 ms, video lead 180-860 ms, audio -71..557 ms. So, as syn-outage-continuous-pcr and section 5.2 say: no relock, the epoch kept, one gap per PID of the outage plus the PID's lead change (5080 and 5120 ms), nothing dropped; locked within 40 s (38 s). Epsilon reads +17.5..+23.2 ppm: .108's restamp of the source was slewing its offset at the 20 ppm limit (trace-816-clean-cbr, chapter 15.4 B-35), and the next hop sees that slew as the source's rate. The field case this stands for (.103, 2026-09-06: the anchored stamper latched on the sender's reconnect backlog and ran early for hours) has no such latch here.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 2,
+  "gapsPerPid": 1,
+  "gapMs": [5000, 5200],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "events": [{"kind": "gap", "reason": "outage", "atS": [95, 96.5]}],
+  "finalState": "locked",
+  "cadenceWarning": false,
+  "monotonic": true,
+  "faithful": true
+}

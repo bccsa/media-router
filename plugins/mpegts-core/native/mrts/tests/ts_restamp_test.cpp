@@ -783,7 +783,7 @@ std::vector<std::pair<int64_t, int64_t>> pts_pcr_moves(const Case& c, const Out&
 const int kPids[] = {PID_V, PID_A1, PID_A2, PID_T};
 
 void test_mapping() {
-    // WI-S0-9: cap-occ-1080i-h264-mp2-ttx.ts, replayed with these arrivals, plugs in here.
+    // WI-S0-9: cap-occ-1080i-h264-aac-ttx.ts, replayed with these arrivals, plugs in here.
     const Case c = make_case(Gen());
     const Out a = run(c, stc_cfg());
     const Ana aa = analyze(c, a, true);

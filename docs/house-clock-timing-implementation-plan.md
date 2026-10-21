@@ -1098,7 +1098,7 @@ element's section reuses it beyond this module.
 | `syn-pes-no-pts.ts` | `fixture_gen.cpp` | PES without PTS, no-header stream ids (0xBE padding, 0xBF private_2) | 3 |
 | `cap-mux-align7-aac-opus.ts` | our `mpegtsmux alignment=7` egress (audio-encoder or audio-transcoder on .108) | PSI between held-back PES, several PES headers per 1316-byte chunk (§6 "several PIDs in one buffer"), bounded audio PES | 1, 2, 3 |
 | `cap-mux-unbounded-video.ts` | our transcoder rendition on .108 (H.264 1080p) | Unbounded video PES (> 64 KB, length 0) closed at the next PUSI, DTS present | 3, 5 |
-| `cap-occ-1080i-h264-mp2-ttx.ts` | the OCC feed on the .103 rig | 1080i B-frames (DTS ≠ PTS), MPEG audio, teletext 0x56 sparse PID, program PCR cadence | 1, 3 |
+| `cap-occ-1080i-h264-aac-ttx.ts` | the OCC feed (the July 2026 multicast capture the .103 rig replays) | 1080i B-frames (DTS ≠ PTS), AAC ADTS (the feed carries no MPEG-1 audio; the draft named it mp2), teletext 0x56 sparse PID, program PCR cadence | 1, 3 |
 | `cap-vmix-cbr-h264-aac.ts` | the vMix source (#820, #737) | PCR that stops and lags; PTS−PCR lead of seconds; AAC ADTS | 1 (STC degraded fallback) |
 | `cap-302m-bssd.ts` | audio-input-302m on .108 | 302M `BSSD` registration, one PES per buffer, PTS = DTS | 2, 3 |
 | `cap-klv-sparse.ts` | a subtitle route on .103 (KLVA PES, stream_id 0xBD) | Sparse private stream, PTS = cue start + 1 h, gaps between cues | 3 |
@@ -3097,7 +3097,7 @@ Ordered by dependency. Estimates are lines at this repo's comment density
   across an epoch change) and P3 (`map_pcr` always on the newest epoch);
   tests that catch them are still to be written.
 - **Acceptance.** `ts_restamp_test`: house PTS equals the STC mapping +
-  shift for every PES of `cap-occ-1080i-h264-mp2-ttx.ts` replayed with
+  shift for every PES of `cap-occ-1080i-h264-aac-ttx.ts` replayed with
   synthetic arrivals; B-frame DTS mapped with PTS; header split across two
   packets (`syn-pes-header-split.ts`) rewritten with no other PID delayed;
   `syn-wrap-33bit.ts` crosses the wrap without a backward PTS; O +500 ms →
@@ -3592,6 +3592,8 @@ fixtures are reused where named.
 | `trace-occ-1080i.stct` | OCC feed on .103 (the feed the conditioner misread, ±0.32 s storm) | Zero relocks; B-frame DTS behind PTS mapped consistently. |
 | `trace-srt-restart.stct` | SRT caller stopped 5 s and restarted on .108 | One relock, one gap of ≈ outage per PID, no overlap drop beyond the source's own rewind. |
 | `trace-rist-reconnect.stct` | RIST link dropped and restored on .103 | As above, for RIST's reconnect pattern (the .103 reconnect case with early stamps). |
+| `trace-gate01-rist-20010.stct`, `trace-gate01-rist-20046.stct` | The OCC gate's real RIST outputs (frozen model), pulled by .103 and .108; added 2026-10-16 | Today's sender: never locked, a relock per leap, degraded without recovery, today's overlap drop as the ceiling (chapter 15.4 B-34). |
+| `trace-srt-bursty-encoder.stct` | The encoder of `trace-816-clean-cbr` writing straight to SRT (deliveries in bursts of up to 400 ms); added 2026-10-16 | A late lock, at most one envelope-step relock, nothing dropped. |
 | `syn-drift-ppm.stct` | `fixture_gen --trace --ppm ±50,±500` | Rate convergence and tracking. |
 | `syn-pcr-discont.stct` | generator: PCR jump with `discontinuity_indicator` | Flagged discontinuity re-locks; house time continuous. |
 | `syn-rewind-1s.stct` | generator: PCR and PTS rewind 1 s, unflagged | Leap detection, relock, straddle tie-break (OQ-11), overlap drop. |
@@ -3601,7 +3603,7 @@ fixtures are reused where named.
 | `syn-outage-continuous-pcr.stct` | generator: 3 s outage, PCR continuous across it (a sending engine restarting its link) | Zero relocks; one gap of 3 s per PID; the epoch is kept (§5.2). |
 | `syn-wrap-33bit.ts` (chapter 3) + generated arrivals | `fixture_gen --wrap-at 5 --trace` | No backward PTS/DTS across the wrap, PCR unwrapped. |
 | `syn-pes-header-split.ts` (chapter 3) | — | Header span rewrite; no other PID delayed. |
-| `cap-srt-ingest-1316.ts`, `cap-occ-1080i-h264-mp2-ttx.ts` (chapter 3) | — | Byte-level rewrite on real chunking (1316-byte datagrams, PSI anywhere). |
+| `cap-srt-ingest-1316.ts`, `cap-occ-1080i-h264-aac-ttx.ts` (chapter 3) | — | Byte-level rewrite on real chunking (1316-byte datagrams, PSI anywhere). |
 
 #### 7.3 Element and protocol tests, both runners
 
@@ -4366,7 +4368,7 @@ Ordered by dependency. Estimates are lines at this repo's comment density
     `py/ts_split.py`, `py/ts_split_test.py`, `py/native_parity_ref.py` and
     `py/native_parity_fixture.py` stay as reference (OQ-1).
 - **Acceptance.** New cases in `mrTssplit.test.ts` over
-  `cap-srt-ingest-1316.ts`, `cap-occ-1080i-h264-mp2-ttx.ts` and
+  `cap-srt-ingest-1316.ts`, `cap-occ-1080i-h264-aac-ttx.ts` and
   `cap-836-program-step.ts` (part 7.4):
   1. Each output's PES are byte-identical to the input PID's (`mrts_cli
      dump` crc32 per PES, both sides).
@@ -4794,7 +4796,7 @@ All in `packages/engine/src/child-process/`, run by `test:py`.
 #### 7.4 Conformance fixtures from field captures
 
 S0's fixtures (`plugins/mpegts-core/tests/fixtures/`) are reused:
-`cap-302m-bssd.ts`, `cap-klv-sparse.ts`, `cap-occ-1080i-h264-mp2-ttx.ts`,
+`cap-302m-bssd.ts`, `cap-klv-sparse.ts`, `cap-occ-1080i-h264-aac-ttx.ts`,
 `cap-srt-ingest-1316.ts`, `cap-mux-align7-aac-opus.ts`, `syn-wrap-33bit.ts`.
 New captures are taken on the gate after Phase 1 is installed, so they carry
 house time from the ingest restamp:
@@ -4813,7 +4815,7 @@ Scenarios (`aligner_conformance_test.py`, expectations
 | Scenario | Graph | Pass condition |
 |---|---|---|
 | `scn-837-ducker-mixer` (R15) | programme → audio-processing (ducker, key = the key source) → audio-mixer beside the key source | 90 s: zero silence-fill not present in the inputs; programme in the mix sample-exact (0 samples) at its content time; key source within 1 sample of its own; ducker egress PES PTS = its input PES PTS (0 ticks) |
-| `scn-split-passthrough` | `cap-occ-1080i-h264-mp2-ttx.ts` → mr-tssplit (3 outputs) | WI-P2-4 acceptance 1–4 |
+| `scn-split-passthrough` | `cap-occ-1080i-h264-aac-ttx.ts` → mr-tssplit (3 outputs) | WI-P2-4 acceptance 1–4 |
 | `scn-mux-klv` | video + KLV (`cap-klv-sparse.ts`) + teletext → mpegts-muxer | Output KLV/teletext PES PTS = input (0 ticks); video PES cadence constant between cues |
 | `scn-align-absent-rejoin` | 3 × 302M → audio-mixer; one input silenced 2 s | Absent within W + 20 ms; output continuous; output lateness unchanged ± 5 ms while absent; on return, stale count and ms reported; no restart |
 | `scn-align-slow-joiner` | 2 inputs, a third added live with +500 ms lateness | One output gap of 500 ± 25 ms; then all three aligned at content time; pace +500 ms |
@@ -5989,14 +5991,14 @@ change, program selection), `syn-wrap-33bit.ts` (33-bit wrap, B-frame DTS
 at the wrap), `syn-pes-no-pts.ts` (PES without PTS),
 `cap-mux-align7-aac-opus.ts` (several PIDs per buffer, PSI between PES,
 Opus caps), `cap-mux-unbounded-video.ts` (unbounded PES),
-`cap-occ-1080i-h264-mp2-ttx.ts` (B-frames, MPEG audio, teletext),
+`cap-occ-1080i-h264-aac-ttx.ts` (B-frames, AAC, teletext),
 `cap-302m-bssd.ts`, `cap-klv-sparse.ts` (sparse private), `cap-cc-loss.ts`.
 New, recorded on the gate with the Phase 2 development image so every
 producer writes house PES:
 
 | Fixture | Source | Pins (§6 list item) |
 |---|---|---|
-| `bus-occ-ingest.gdp` | .103 OCC rig: srt-input after `mrtsrestamp` | B-frames (DTS ≠ PTS); teletext sparse; MPEG audio; formula on a restamped ingest |
+| `bus-occ-ingest.gdp` | .103 OCC rig: srt-input after `mrtsrestamp` | B-frames (DTS ≠ PTS); teletext sparse; AAC; formula on a restamped ingest |
 | `bus-mux-av-klv.gdp` | .103: mpegts-muxer output (transcoder video + AAC + KLV) | several PIDs per buffer; PSI between PES; KLV sparse; language tags |
 | `bus-transcoder-h264.gdp` | .108: transcoder rendition | unbounded video PES (length 0) at 1080p; DTS present |
 | `bus-audio-encoder-opus.gdp`, `bus-audio-encoder-aac.gdp` | .108: audio-encoder Opus stereo and 5.1, AAC | Opus caps and access units; ADTS `mpegversion` |
@@ -7331,7 +7333,7 @@ and the Python runner (case N's idiom):
 Location: `plugins/mpegts-core/tests/fixtures/`, with `<name>.expect.json`
 beside each scenario (S0's convention). New captures are taken on the gate
 after Phase 3 is installed. Reused from S0 and Phase 2:
-`cap-occ-1080i-h264-mp2-ttx.ts`, `cap-mux-align7-aac-opus.ts`,
+`cap-occ-1080i-h264-aac-ttx.ts`, `cap-mux-align7-aac-opus.ts`,
 `cap-302m-bssd.ts`, `syn-wrap-33bit.ts`.
 
 | Fixture | Source | Pins |
@@ -8572,7 +8574,7 @@ device per WI-S0-13). Expectation lines are S0's per-PES format plus
 | `syn-pes-header-split.ts` (S0) | reused | Header spanning two packets rewritten via `PesHeaderSpan` |
 | `cap-mux-unbounded-video.ts` (S0) | reused | PCR on the video PID rewritten in place; unbounded PES; DTS |
 | `cap-302m-bssd.ts` (S0) | reused | 302M egress (audio-only program, PCR at mux cadence) |
-| `cap-occ-1080i-h264-mp2-ttx.ts` (S0), after the Phase 1 restamp | reused through `restamp-replay` | Relay of a foreign program: its PMT descriptors kept, ours appended; teletext rewritten but not driving D_e |
+| `cap-occ-1080i-h264-aac-ttx.ts` (S0), after the Phase 1 restamp | reused through `restamp-replay` | Relay of a foreign program: its PMT descriptors kept, ours appended; teletext rewritten but not driving D_e |
 | `bus-egress-gap.gdp` | .108 bus tap: srt-input source stopped 3 s | P1 gap marker consumed and not sent; D_e lowered by ≤ the gap |
 | `wire-mrht-v1.ts` | .108 srt-output, captured on .103 | Golden wire: descriptor bytes, PCR cadence, PTS = `H mod 2^33` |
 | `wire-mrht-de-raise.ts` | .108, a 1.5 s stall injected upstream of the egress | New PMT version before a flagged PCR; same-program rule (WI-P5-4) |
@@ -8845,7 +8847,7 @@ the budget, the writer's edit path is reworked before release.
 | `syn-source-restart.ts` | `fixture_gen.cpp --restart` | PCR discontinuity and a multi-hour PTS/DTS jump: `Unwrapper` reseed, `PesAssembler` flush (§5.2) | S0, P1, P3 |
 | `cap-mux-align7-aac-opus.ts` | audio-encoder or audio-transcoder `mpegtsmux alignment=7` on .108 | PSI between held-back PES; several PES headers per 1316-byte chunk; bounded audio PES; Opus caps | S0, P1, P2, P3, P4 |
 | `cap-mux-unbounded-video.ts` | transcoder rendition on .108 | Unbounded video PES (> 64 KB) closed at the next PUSI; DTS present | S0, P3, P5 |
-| `cap-occ-1080i-h264-mp2-ttx.ts` | the OCC feed on the .103 rig | 1080i B-frames, MPEG audio, teletext sparse PID, PCR cadence | S0, P1, P2, P3, P4, P5 (relay) |
+| `cap-occ-1080i-h264-aac-ttx.ts` | the OCC feed (the July 2026 multicast capture the .103 rig replays) | 1080i B-frames, AAC, teletext sparse PID, PCR cadence | S0, P1, P2, P3, P4, P5 (relay) |
 | `cap-vmix-cbr-h264-aac.ts` | the vMix source (#820, #737) | A PCR that stops and lags; a PTS−PCR lead of seconds; AAC ADTS | S0, P1 |
 | `cap-302m-bssd.ts` | audio-input-302m on .108 | 302M `BSSD` registration, one PES per buffer | S0, P2, P3, P4, P5 |
 | `cap-klv-sparse.ts` | a subtitle route on .103 | Sparse private stream, gaps between cues | S0, P2, P3 |
@@ -8865,7 +8867,7 @@ the budget, the writer's edit path is reworked before release.
 | `cap-836-program-step.ts` | the #836 source through Phase 1's restamp on .103 | A source restart: one program, one gap, no split | P2 |
 | `cap-transcoder-burst.ts`, `cap-opus-32k.ts` | transcoder rendition and audio-encoder Opus 32 kbit/s on .108 | Bursty and low-rate arrival rhythms (W learning) | P2 |
 | `cap-ttx-gate01.ts` | NO-OCC-Gate01 teletext PID | Sparse teletext into the muxer | P2 |
-| `bus-occ-ingest.gdp` | .103 OCC rig, srt-input after `mrtsrestamp` (Phase 2 image) | B-frames, teletext sparse, MPEG audio on a restamped ingest | P3 |
+| `bus-occ-ingest.gdp` | .103 OCC rig, srt-input after `mrtsrestamp` (Phase 2 image) | B-frames, teletext sparse, AAC on a restamped ingest | P3 |
 | `bus-mux-av-klv.gdp` | .103 mpegts-muxer output | Several PIDs per buffer, PSI between PES, KLV sparse, language tags | P3 |
 | `bus-transcoder-h264.gdp` | .108 transcoder rendition | Unbounded video PES at 1080p, DTS | P3 |
 | `bus-audio-encoder-opus.gdp`, `bus-audio-encoder-aac.gdp` | .108 audio-encoder | Opus caps and access units; ADTS `mpegversion` | P3 |
@@ -9519,7 +9521,7 @@ texts named in the last column carry each row, and ADR-0029's Phase 1
 section repeats the timing choices. Rows B-1 to B-16 are Phase 1's third
 wave (2026-10-13 and 2026-10-14) and the S0 notes it carried; rows B-17 to
 B-31 are waves 4 and 5 (2026-10-14 and 2026-10-15) and the documentation
-pass (2026-10-16).
+pass (2026-10-16); rows B-32 to B-35 are the capture session (2026-10-16).
 
 | # | Item | Decision or finding | Why | Consequence |
 |---|---|---|---|---|
@@ -9554,3 +9556,7 @@ pass (2026-10-16).
 | B-29 | WI-S0-10: the hls-pipe reference | As built, 2026-10-14: six allowlist entries (`clamps-pts-dts`, `ignores-cc`, `single-section-psi`, `one-pid-per-kind`, `ignores-pes-length`, `no-resync`), each with its reason and an evidence check, and the payload CRC-32 compared too. Found: hls-pipe throws `PmtParseError` on a PMT spanning packets (the OCC feed's 514-byte, 23-stream PMT). | `ignores-pes-length` and `no-resync` were needed by real captures and by the parity fixture's garbage. | Worth an hls-pipe issue (reassemble sections, parse on PUSI with a CRC check): it would stop hls-player on an origin whose PMT spans packets. |
 | B-30 | WI-S0-13: tests off the device | As built, 2026-10-16: the recipe's `do_install` prunes every `tests/` directory from `/opt/media-router` after its copy (`find … -type d -name tests -prune -exec rm -rf {} +`), and the dist tarball's packer excludes them and refuses a payload that carries one. Nothing at runtime reads a `tests/` directory; in `node_modules` the only ones (zod's `src/*/tests`, sonic-boom's `types/tests`) are no entry points. | OQ-2: fixtures in the repository, off the device. Copy, then prune keeps the copy's exact semantics (pnpm symlinks, owners, the top-level dotfile rule); a dry run of the two lines left the tree equal to the source minus its `tests/` subtrees. | The recipe change is in the Yocto layer, uncommitted for the owner; the packer is deploy tooling outside the submodule. Gate: `find /opt/media-router -path '*/tests/*'` empty after an image install and after a dist deploy. |
 | B-31 | The ingest-timing host binding | Recorded, 2026-10-15: the `IngestTimingHost` binding (section merge, the own-warning rule, `clearBadge`, the re-assert at PLAYING and on a return to ok) is repeated in all seven modules. | `GstPluginBase`'s own-warning latch is private, and the lanes could not touch it. | Refactor candidate: a protected helper on `GstPluginBase` with an owned-warning kind of its own. |
+| B-32 | WI-S0-9: the conformance set as built | As built, 2026-10-16: `PesIndex` (`ts_dump`) is the dump's PES index as a class, so `mrts_cli dump` and `ts_conformance_test` print one format; `fixture_gen --ts` carries the byte-for-byte port of `py/native_parity_fixture.py` (6,698,476 bytes, CRC-32 `8fedaffa`, pinned in the test) and the five synthetic shapes; `--drop` derives `cap-cc-loss`. Twelve fixtures and thirteen expectations (`syn-mpts-two-programs` also as `.p2` for program 2) pass at 188, 1316 and 24 576 bytes; every PES the dump emits agrees with ffprobe and, where it reads, with hls-pipe. Renamed: `cap-occ-1080i-h264-mp2-ttx.ts` is `cap-occ-1080i-h264-aac-ttx.ts`, since the OCC feed carries AAC. Substituted: `cap-mux-unbounded-video` is our mpegts-muxer's remux of the OCC 1080i H.264 on .103 (no transcoder here writes B-frames, so none writes a DTS); `cap-mux-align7-aac-opus` is a mpegts-muxer of AAC and Opus on .103 (an audio-encoder or audio-transcoder egress carries one PID). Missing: `cap-vmix-cbr-h264-aac` (OQ-3: no rig reaches a vMix source). | The part 7.2 pins hold on these sources; a name must say what the file is. | The ts_restamp_test spots that name WI-S0-9 fixtures (`test_mapping`, `test_split_header`, `test_wrap`) still run their own generators. The ffprobe review notes ffprobe's own behaviours: teletext PTS taken from the PCR, the padding stream not output, PES before the first PMT and cut by a discontinuity or EOF kept. |
+| B-33 | WI-P1-5: the traces as recorded | As built, 2026-10-16, on the Phase 1 build: the plan's pipeline-string override is a temporary hook in the boxes' engine (a marker file arms `trace-location`, or a tee before the restamp, at a module's next start), reverted after. `trace-occ-1080i` is the July OCC multicast capture fed at its recorded arrivals into the element on the dev box (the .103 rig replays it with a Python pacer and loop seams). `trace-816-clean-cbr` is a pre-encoded libx264 CBR stream sent at its mux rate (GStreamer `tsparse` + `srtsink sync`) into srt-input on .108; the same encoder writing straight to SRT delivers in bursts of up to 400 ms and is kept as `trace-srt-bursty-encoder`. `trace-srt-restart` stops that paced caller 5 s and restarts it from the file's start: one relock (leap), one gap per PID of the outage less the source's lead change (5.92 s for 6.11 s), so V-P1-3's ±50 ms holds only for a restart that keeps its lead. `trace-rist-reconnect` drops a .108 → .103 RIST loop for 5 s with nft; `trace-836-program-split` restarts its sending module. New: `trace-gate01-rist-20010` and `-20046`, the gate's real RIST outputs (owner, 2026-10-16: test boxes may pull them as a site does). `trace-812-slow-source` is the generator at −300 ppm. Missing: `trace-820-vmix-pcr` (OQ-3). #825's swing does not reproduce on 20010 today. | Each source is the closest the rigs reach to the row's case, and the notes in each `.expect.json` say what its dump shows. | Fixtures and expectations in `tests/fixtures/restamp/`; captures beyond them in /home/mrstation/mr-captures/wf7/capture/ on the dev box. |
+| B-34 | Finding: today's gate egress through the restamp | Measured, 2026-10-16: the gate's RIST outputs (frozen model) carry a PCR and PTS that move together against arrival by up to ±200 ms from one second to the next, with 13 unflagged leaps of −250…−324 ms in 520 s, PCR p99 271 ms. With the shipped constants the restamp never locks (the rate fit restarts on every floor move), relocks on each leap (17), degrades at the third leap in 60 s with no recovery, and the monotonic guard drops 3.4–5.1 % of the content (17.6 s of 520 s on 20010, 20.3 s of 396 s on 20046). | Phases 1–4 ship together, but a receiver on that release meets senders still on the frozen model until they move too (R-P1-14, V-P1-19). | For WI-P1-6's sweep and the mixed-fleet plan: the drop is the design's overlap rule on a rewinding timeline; whether a degraded program should drop or slew sub-leap rewinds is open. The two traces hold today's counts as their ceiling. |
+| B-35 | Finding: the offset acquired on an SRT start burst | Measured, 2026-10-16 (`trace-816-clean-cbr`): one of three paced SRT starts into srt-input delivered its first ~0.5 s of content in one burst (13 PCRs within 6 ms, the first 513 ms above the floor that follows; the caller connected as the listener's module started). β is acquired on that burst, the 2,000 ppm acquisition slew removes 2 ms a second until the lock at 36 s, and the 20 ppm track slew then needs about 6 h for the remaining 445 ms: the mapping runs about 0.43 s late of source-natural for hours (residual −446 ms at the lock, −429 ms after 15 min, the mapping moving at the 20 ppm limit throughout, ε still moving by 1.7 ppm). One hop on, the RIST loop that relayed that ingest to .103 read the slew as the source's rate (ε +17.5…+30 ppm in `trace-rist-reconnect` and `trace-836-program-split`). The other starts, the multicast and the loop's own start show a residual within 3 ms. | Part 4.3 assumed the acquisition settles in seconds; a start transient of the SRT latency is larger than 5 s × 2,000 ppm. | For WI-P1-6 (or WI-P1-1): β taken from the lower envelope at the lock rather than slewed to it, or the acquisition slew kept until the residual floor is within `step_ns`; the trace holds today's residual as its floor. |

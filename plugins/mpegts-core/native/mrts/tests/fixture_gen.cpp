@@ -1,6 +1,6 @@
 // fixture_gen: the deterministic generator of the synthetic fixtures (plan ch. 3 part 7, ch. 5
-// part 7.2). --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; WI-S0-9's .ts
-// fixtures (the native_parity_fixture.py port) join here.
+// part 7.2). --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts
+// fixture from ts_gen.h (WI-S0-9); --drop removes packets from a capture (cap-cc-loss).
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -9,11 +9,17 @@
 #include "../ts_house.h"
 #include "../ts_trace.h"
 #include "trace_gen.h"
+#include "ts_gen.h"
 
 namespace {
 
 const char kUsage[] =
-    "usage: fixture_gen --trace -o OUT.stct [options]\n"
+    "usage: fixture_gen --ts KIND -o OUT.ts\n"
+    "  KIND: parity (py/native_parity_fixture.py's bytes), mpts-two-programs, wrap-33bit\n"
+    "  [--wrap-at S], pes-header-split, pes-no-pts, source-restart [--restart S]\n"
+    "       fixture_gen --drop PID@N[,PID@N...] -i IN.ts -o OUT.ts\n"
+    "  removes the N-th packet (from 0) of each PID named; PIDs decimal or 0x\n"
+    "       fixture_gen --trace -o OUT.stct [options]\n"
     "  An arrival trace of one program: the PCR on the video PID, the chosen PES, sent\n"
     "  over a path of floor delay plus exponential jitter, in order.\n"
     "  --seed N              the jitter's seed (1)\n"
@@ -53,12 +59,49 @@ std::vector<std::string> split(const std::string& s, char sep) {
 bool seconds(const std::string& s, int64_t* ns) { return trace_gen::parse_decimal(s, trace_gen::S, ns); }
 bool millis(const std::string& s, int64_t* ns) { return trace_gen::parse_decimal(s, trace_gen::MS, ns); }
 
+bool write_file(const std::string& path, const ts_gen::Bytes& b) {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        std::perror(path.c_str());
+        return false;
+    }
+    const bool ok = std::fwrite(b.data(), 1, b.size(), f) == b.size();
+    return std::fclose(f) == 0 && ok;
+}
+
+bool read_file(const std::string& path, ts_gen::Bytes* b) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::perror(path.c_str());
+        return false;
+    }
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) b->insert(b->end(), buf, buf + n);
+    const bool ok = !std::ferror(f);
+    std::fclose(f);
+    return ok;
+}
+
+// The --ts kinds by name; restart_ns and wrap_ns as given (or the kind's default).
+bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_gen::Bytes* out) {
+    if (kind == "parity") *out = ts_gen::parity();
+    else if (kind == "mpts-two-programs") *out = ts_gen::mpts_two_programs();
+    else if (kind == "wrap-33bit") *out = ts_gen::wrap_33bit(wrap_ns);
+    else if (kind == "pes-header-split") *out = ts_gen::pes_header_split();
+    else if (kind == "pes-no-pts") *out = ts_gen::pes_no_pts();
+    else if (kind == "source-restart") *out = ts_gen::source_restart(restart_ns);
+    else return false;
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     trace_gen::Config c;
     bool trace = false;
-    std::string out;
+    std::string out, ts_kind_name, drop_spec, in;
+    int64_t restart_ns = 3 * trace_gen::S;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
         if (a == "--trace") {
@@ -71,6 +114,14 @@ int main(int argc, char** argv) {
         bool ok = true;
         if (a == "-o") {
             out = v;
+        } else if (a == "-i") {
+            in = v;
+        } else if (a == "--ts") {
+            ts_kind_name = v;
+        } else if (a == "--drop") {
+            drop_spec = v;
+        } else if (a == "--restart") {
+            ok = seconds(v, &restart_ns) && restart_ns > 0;
         } else if (a == "--seed") {
             char* end = nullptr;
             c.seed = std::strtoull(v.c_str(), &end, 0);
@@ -121,7 +172,38 @@ int main(int argc, char** argv) {
         }
         if (!ok) return usage(("bad value for " + a + ": " + v).c_str());
     }
-    if (!trace) return usage("only --trace output exists yet (the .ts fixtures are WI-S0-9)");
+    if (!ts_kind_name.empty()) {
+        if (out.empty()) return usage("-o OUT.ts is required");
+        ts_gen::Bytes b;
+        const int64_t wrap_ns = c.wrap_at_ns >= 0 ? c.wrap_at_ns : 5 * trace_gen::S;
+        if (!ts_kind(ts_kind_name, wrap_ns, restart_ns, &b)) return usage(("unknown --ts kind " + ts_kind_name).c_str());
+        return write_file(out, b) ? 0 : 1;
+    }
+    if (!drop_spec.empty()) {
+        if (out.empty() || in.empty()) return usage("--drop needs -i IN.ts and -o OUT.ts");
+        std::vector<ts_gen::Drop> d;
+        for (const std::string& item : split(drop_spec, ',')) {
+            const size_t at = item.find('@');
+            const std::string p = item.substr(0, at), n = at == std::string::npos ? "" : item.substr(at + 1);
+            char* e1 = nullptr;
+            char* e2 = nullptr;
+            const long pid = std::strtol(p.c_str(), &e1, 0);
+            const long idx = std::strtol(n.c_str(), &e2, 10);
+            if (p.empty() || n.empty() || *e1 || *e2 || pid < 0 || pid > 0x1FFF || idx < 0)
+                return usage(("bad --drop item " + item).c_str());
+            d.push_back({(int)pid, idx});
+        }
+        ts_gen::Bytes b;
+        if (!read_file(in, &b)) return 1;
+        size_t removed = 0;
+        const ts_gen::Bytes o = ts_gen::drop(b, d, &removed);
+        if (removed != d.size()) {
+            std::fprintf(stderr, "fixture_gen: %zu of %zu packets to drop found\n", removed, d.size());
+            return 1;
+        }
+        return write_file(out, o) ? 0 : 1;
+    }
+    if (!trace) return usage("one of --ts, --drop or --trace is required");
     if (out.empty()) return usage("-o OUT.stct is required");
     const std::vector<mrts::TraceRecord> recs = trace_gen::generate(c);
     mrts::TraceWriter w;

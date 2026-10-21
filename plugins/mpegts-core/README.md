@@ -51,8 +51,9 @@ it at runtime stop doing so phase by phase (below).
 | `ts_restamp.h`, `ts_restamp.cpp` | `RestampCore`, the ingest restamp: STC or fixed mode, O and per-PID trims, the overlap guard with CC renumbering, the PCR rewrite, gaps, trace recording |
 | `ts_gap.h`, `ts_gap.cpp` | The bus gap marker's adaptation-only packet: build and read |
 | `ts_trace.h`, `ts_trace.cpp` | Arrival traces (`.stct`): writer, reader, and `TracePlayer`, which replays a trace as the TS its recorder read |
+| `ts_dump.h`, `ts_dump.cpp` | `PesIndex`: the PES index of a TS as JSON lines (every PES of the followed program, each PAT/PMT change, the counters), what `mrts_cli dump` prints and `ts_conformance_test` compares; `crc32_zlib` |
 | `asrc_servo.h`, `asrc_servo.cpp` | `AsrcServo`: `ClockLock` on input frame count against buffer PTS, and the phase servo that commands `mrasrc`'s ratio |
-| `mrts_cli.cpp` | Test harness, never installed: the splitter mode of the parity suite, `dump` (PES index as JSON lines), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
+| `mrts_cli.cpp` | Test harness, never installed: the splitter mode of the parity suite, `dump` (`PesIndex`; `--program N` follows that program of the PAT), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
 
 ### `native/mrts/tests/` — C++ unit tests (`make -C native/mrts test`, root `make native-test`)
 
@@ -60,7 +61,8 @@ it at runtime stop doing so phase by phase (below).
 |---|---|
 | `check.h` | The assertion harness |
 | `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp` | The 14 suites, one per module |
-| `trace_gen.h`, `fixture_gen.cpp` | The deterministic arrival-trace generator (`fixture_gen --trace`); its `.ts` modes come with the conformance fixtures (WI-S0-9) |
+| `ts_conformance_test.cpp` | Every `tests/fixtures/<name>.ts` through `PesIndex` at 188, 1316 and 24 576-byte chunks against `<name>.expect.jsonl` (and `<name>.p<N>.expect.jsonl` for program N), line by line; the synthetic fixtures must be `fixture_gen`'s bytes, `cap-cc-loss` its source with the named packets removed, the parity port `py/native_parity_fixture.py`'s length and CRC-32. `MRTS_FIXTURES` names another fixture directory |
+| `trace_gen.h`, `ts_gen.h`, `fixture_gen.cpp` | The deterministic generators: arrival traces (`fixture_gen --trace`), the synthetic `.ts` fixtures (`--ts KIND`: `parity`, the byte-for-byte port of `py/native_parity_fixture.py`, LCG and all; `mpts-two-programs`, `wrap-33bit`, `pes-header-split`, `pes-no-pts`, `source-restart`) and packets removed from a capture (`--drop PID@N,...`) |
 | `trace_cli_test.sh` | `mrts_cli`'s trace verbs, and every `tests/fixtures/restamp/*.expect.json` against its regenerated trace |
 | `mrts_bench.cpp` | ns per packet of the walk, the rewrite and the reassembly (the Pi 4 budget, WI-S0-11); `--wrap-at` moves a capture's timestamps across the 33-bit wrap. Built by `test`, never run by it |
 
@@ -104,7 +106,8 @@ it at runtime stop doing so phase by phase (below).
 | `tests/hlsPipeReference.test.ts` | `mrts_cli dump` against hls-pipe's TypeScript demuxer, PES for PES (pid, PTS, DTS, length, CRC-32); hls-pipe's known limits are an allowlist with reasons, any other difference fails. `HLS_PIPE_DIR` names another hls-pipe checkout, `HLS_PIPE_REFERENCE_FIXTURES` adds captures |
 | `tests/dump_vs_ffprobe.py` | `mrts_cli dump` against ffprobe, PES for PES |
 | `tests/tsFixtures.ts` | Hand-built TS for the ts-splitter and unixfdbus-core suites |
-| `tests/fixtures/restamp/*.expect.json` | Expectations of the synthetic arrival traces; each names the `fixture_gen` command that regenerates its trace |
+| `tests/fixtures/*.ts`, `*.expect.jsonl` | The conformance fixtures (plan ch. 3 part 7.2, WI-S0-9): `syn-*` from `fixture_gen --ts`, `cap-*` field captures of at most 2 MB (OCC 1080i H.264 + AAC + teletext; our mux egress of AAC + Opus and of 1080i H.264 with unbounded video PES; 302M with `BSSD`; KLVA subtitles; an SRT ingest of 1316-byte datagrams from a third-party mux; `cap-cc-loss` derived by `--drop`), each with its `mrts_cli dump`, reviewed against ffprobe |
+| `tests/fixtures/restamp/*.stct`, `*.expect.json` | Arrival traces and their expectations (plan ch. 5 part 7.2, WI-P1-5): the synthetic ones name the `fixture_gen` command that regenerates them (no `.stct` committed); the field traces (`trace-*`, at most 2 MB) are committed and their notes say where and how each was recorded and what its dump shows |
 
 Every `tests/` directory stays in the repository and never reaches a box:
 the image and the dist tarball prune them (WI-S0-13). Run the suites from a

@@ -1,0 +1,17 @@
+{
+  "note": "#836's trigger, a sending engine's RIST output restarting, on the .108 -> .103 loop of trace-rist-reconnect, 2026-10-16 08:13:03Z, 159 s: at 69 s the rist-output module on 10.9.16.108 (Phase 1 build) was restarted while its source, the srt-input of the paced CBR feed, ran on; 10.9.16.103's rist-input recorded this with its restamp. Read off the dump: one outage record of 1009 ms, the PCR continuous across it (the sender's timeline is its restamped house time), PCR every 39.6 ms (p99 45.8 ms), delay floor within -0.8..+6.8 ms; per-PID lead the same before and after the restart (video p50 740 ms, audio p50 501 and 504 ms, measured 3 s away from it). In #836 the conditioner split one program by 8 s across such a restart; here one mapping carries every PID: no relock, the epoch kept, one gap per PID (1000 and 1195 ms), nothing dropped, and the inter-PID offset at the output is the source's. Epsilon reads +19.6..+30.1 ppm, .108's offset slew of trace-816-clean-cbr seen one hop on (chapter 15.4 B-35).",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 2,
+  "gapsPerPid": 1,
+  "gapMs": [950, 1250],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "events": [{"kind": "gap", "reason": "outage", "atS": [69.5, 71]}],
+  "finalState": "locked",
+  "cadenceWarning": false,
+  "monotonic": true,
+  "faithful": true
+}

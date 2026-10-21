@@ -1,0 +1,15 @@
+{
+  "note": "A live software encoder over SRT into 10.9.16.108's srt-input (listener, latency 500 ms), recorded by its restamp, 2026-10-16 07:49:30Z, 908 s: ffmpeg on the dev box (libx264 CBR 2.5 Mbit/s 640x360p25, GOP 50, 2 B-frames, AAC 128k, lavf mpegts muxrate 3 Mbit/s, PCR every 40 ms) writing straight to its SRT caller, which sends as the muxer writes, not at the mux rate. Read off the dump: PCR median every 42 ms (p99 85, max 158 ms), no leap; but the delivery stalls and bursts: the per-second delay floor moves by up to 440 ms within a second (stalls of ~400 ms, then catch-up), with a -40 ms base and dips to -80 ms every 80-120 s; video lead 257-860 ms (the VBV), audio 47-536 ms. As replayed: acquiring until 244 s (the floor keeps moving the rate fit), one envelope-step relock at 254 s (+40.9 ms) with a 205.7 ms gap on both PIDs, locked from 258 s, epsilon wandering -11.6..+16.1 ppm from 300 s, nothing dropped. The same encoder settings sent at the mux rate are trace-816-clean-cbr. The bounds keep today's results as the ceiling.",
+  "relocks": [0, 1],
+  "envelopeSteps": [0, 1],
+  "degraded": 0,
+  "gaps": [0, 2],
+  "gapMs": [0, 210],
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 250,
+  "finalState": "locked",
+  "cadenceWarning": false,
+  "monotonic": true,
+  "faithful": true
+}

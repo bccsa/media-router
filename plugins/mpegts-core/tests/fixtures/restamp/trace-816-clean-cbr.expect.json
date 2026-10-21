@@ -1,0 +1,18 @@
+{
+  "note": "A clean CBR source into srt-input on 10.9.16.108 (#816's case; listener, latency 500 ms), recorded by its restamp on the Phase 1 build, 2026-10-16 08:09:20Z, 905 s: a pre-encoded libx264 CBR stream (2.5 Mbit/s 640x360p25, GOP 50, 2 B-frames, AAC 128k, lavf mpegts muxrate 3 Mbit/s, PCR every 40 ms; 10 s of every 20 noisy, so the VBV swings) sent from the dev box at its mux rate (GStreamer tsparse set-timestamps, alignment 7, srtsink sync). Read off the dump: PCR every 38.6 ms (p99 42.6, max 52.9 ms), no leap, delay floor within -0.2..+0.7 ms and sloping -0.93 ppm (the dev box's clock against .108's); video lead 159-860 ms, audio -122..563 ms: the lead wanders by 0.7 s. This start delivered the first ~0.5 s of content in one burst (13 PCRs within 6 ms, the first 513 ms above the floor; the two starts of trace-srt-restart did not), and the offset is acquired on it (chapter 15.4 B-35): from the lock at 36 s the residual floor is -446 ms and the mapping slews toward it at the 20 ppm limit for the whole trace (-429 ms at 905 s), and epsilon still moves (-2.04..-0.35 ppm from 120 s). Passing now: one lock within 40 s, no relock, gap or drop, the mapping never following the lead. The ppm band, the residual floor and the mapping rate are today's values as the ceiling: the plan's +-0.1 ppm after 2 min needs B-35 fixed first.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 0,
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "ppmAfterS": 120,
+  "ppm": [-2.1, -0.3],
+  "residualMinMs": -450,
+  "mappingPpmMax": 20.5,
+  "cadenceWarning": false,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

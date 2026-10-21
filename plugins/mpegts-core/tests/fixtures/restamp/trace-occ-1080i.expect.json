@@ -1,0 +1,18 @@
+{
+  "note": "The OCC contribution feed (#816's source: one encoder, H.264 1080i25 with B-frames on PID 0x65 carrying the PCR, 21 AAC PIDs, teletext 0x20, CBR 28.6 Mbit/s, multicast 239.255.0.191:5500) as recorded on the OCC LAN on 2026-07-17 (/home/mrstation/captures/occ-capture-20260717.ts and its .times arrivals), 3-363 s, fed datagram by datagram at the recorded arrivals into mrtsrestamp (arrival=buffer-pts) on the dev box, wf7 capture lane 2026-10-16. Read off the dump: PCR every 35.0 ms (max 36.3 ms), no leap, no discontinuity, delay floor flat (-0.06 ppm, bucket minima within 0.14 ms); video lead 554-1534 ms (median 1035: the encoder buffer's wander that made the anchored stamper re-anchor every ~10 s), AAC 60-62 ms, teletext 47-61 ms; 6281 of 9012 video PES carry a DTS. So: one lock within 40 s (36 s), no relock, no gap, nothing dropped, epsilon -0.08 +- 0.1 ppm from 2 min on, the mapping still to 0.1 ppm, the residual floor within 1 ms; the lead wanders, the mapping does not follow it.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 0,
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "ppmAfterS": 120,
+  "ppm": [-0.18, 0.02],
+  "residualMinMs": -1,
+  "mappingPpmMax": 0.5,
+  "cadenceWarning": false,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

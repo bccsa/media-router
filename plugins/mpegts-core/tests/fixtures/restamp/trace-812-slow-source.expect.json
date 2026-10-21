@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --ppm -300 --duration 600 --seed 12",
+  "note": "A source whose clock runs 300 ppm slow (#812: past ~48 ppm the anchored stamper re-anchored every 30-40 min; part 7.2 allows the generator when no field source runs slow, and none of the 2026-10-16 field captures did: the OCC multicast reads -0.06 ppm, the CBR SRT source -0.0x ppm). The clock locks within 40 s (36 s measured) and holds with no relock; epsilon reaches 300 +- 0.5 ppm by 300 s (part 4.3's revised criterion) and stays; the mapping slews at most 20 ppm after acquisition (one bucket of quantisation allowed). ppm is the clock's epsilon: a slow source reads positive.",
+  "relocks": 0,
+  "epochs": 1,
+  "degraded": 0,
+  "gaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 40,
+  "ppmAfterS": 300,
+  "ppm": [299.5, 300.5],
+  "residualMinMs": -1,
+  "mappingPpmMax": 21,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

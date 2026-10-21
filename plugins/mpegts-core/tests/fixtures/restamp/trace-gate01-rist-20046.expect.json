@@ -1,0 +1,14 @@
+{
+  "note": "The OCC gate's real RIST output on port 20046 (H.264 720p50 PID 0x64 with the PCR, AAC 0xc8 and 0xc9, Opus 0xcc) as received by 10.9.16.108's rist-input-muz62i0jhde3 (the owner's pull, Pi 4) on the Phase 1 build, recorded by its own restamp, 2026-10-16 07:30:09Z, the first 396 s (2 MB). The same upstream as trace-gate01-rist-20010 (its leaps at the same wall-clock instants): PCR p99 274 ms, max 381 ms; 13 unflagged leaps of -250..-321 ms (the first at 78.2 s); PCR and PTS move together against arrival by up to +-200 ms per second; lead p50 107-125 ms, min -199 ms; no DTS, no outage. As replayed: never locked, 17 relocks (all leap, the first at 78.2 s), degraded (leap) at 208.6 s with no recovery, 40 gaps, and 982 PES (20.3 s, 5.1 %) dropped as overlap. Today's counts are the ceiling.",
+  "relocks": [13, 20],
+  "degraded": 1,
+  "recovered": 0,
+  "events": [{"kind": "relock", "reason": "leap", "atS": [78, 79]}, {"kind": "degraded", "reason": "leap", "atS": [205, 212]}],
+  "gaps": [25, 50],
+  "gapMs": [5, 320],
+  "droppedMs": [0, 21000],
+  "cadenceWarning": true,
+  "finalState": "degraded",
+  "monotonic": true,
+  "faithful": true
+}

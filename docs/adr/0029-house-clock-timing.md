@@ -430,14 +430,27 @@ figures are recorded here when it has run.
 - **C++ suites**, one per `mrts` module (14: `ts_house`, `ts_packet`,
   `ts_pes`, `ts_pcr`, `ts_psi`, `ts_split`, `ts_timeline`, `ts_video_info`,
   `lateness`, `ts_stc`, `ts_trace`, `ts_restamp`, `asrc_servo`, `ts_gap`),
-  run by `make -C plugins/mpegts-core/native/mrts test` and the root
-  `make native-test`, then `tests/trace_cli_test.sh`, which replays every
-  expectation file under `plugins/mpegts-core/tests/fixtures/restamp/`.
-- **Synthetic traces.** Each `.expect.json` names the deterministic
-  `fixture_gen --trace` command that regenerates its trace, so no `.stct` is
-  committed (the eleven come to about 5 MB). The `.ts` fixtures of chapter 3
-  part 7.2, their `ts_conformance_test.cpp` and every field capture wait for
-  WI-S0-9's capture session on the rigs.
+  and `ts_conformance`, run by `make -C plugins/mpegts-core/native/mrts test`
+  and the root `make native-test`, then `tests/trace_cli_test.sh`, which
+  replays every expectation file under `plugins/mpegts-core/tests/fixtures/restamp/`.
+- **Conformance fixtures** (WI-S0-9, 2026-10-16), in
+  `plugins/mpegts-core/tests/fixtures/`: five synthetic `.ts` from
+  `fixture_gen --ts` (whose `parity` kind is `py/native_parity_fixture.py`
+  byte for byte, so none needs Python) and seven field captures of at most
+  2 MB (the OCC 1080i feed, our mux egress of AAC + Opus and of 1080i H.264,
+  302M, KLV subtitles, an SRT ingest of a third-party mux, and `cap-cc-loss`
+  derived from the AAC + Opus capture), each with its `mrts_cli dump`;
+  `ts_conformance_test` replays them at 188, 1316 and 24 576-byte chunks,
+  line by line. A vMix capture is missing (OQ-3).
+- **Traces.** Each synthetic `.expect.json` names the deterministic
+  `fixture_gen --trace` command that regenerates its trace, so no synthetic
+  `.stct` is committed (the twelve come to about 6.9 MB). The field traces
+  of WI-P1-5 (2026-10-16) are committed, at most 2 MB each: the OCC
+  multicast at its recorded arrivals, a CBR source over SRT, paced and
+  bursty, an SRT caller restart, a RIST link drop and a sending module's
+  restart on a .108 → .103 loop, and two of the OCC gate's real RIST
+  outputs. Each expectation's note says where the trace was recorded and
+  what its dump shows (plan chapter 15.4, B-32 to B-35).
 - **A second opinion.** `tests/hlsPipeReference.test.ts` (WI-S0-10) runs
   `mrts_cli dump` and hls-pipe's TypeScript demuxer over the same captures
   and compares them PES for PES (pid, PTS, DTS, length, payload CRC-32).
