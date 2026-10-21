@@ -567,7 +567,7 @@ remain for the Phase 2 set (mixers, audio-processing, the splitter, the HLS
 fan-out). The capture session (WI-P1-5, WI-S0-9) and the constants tuned
 by replay (WI-P1-6, below) are done; still to come in this phase are the
 gate checks of plan chapter 5 part 11. The plan's register (chapter 15.4,
-rows B-1 to B-38) holds the same records with their work items.
+rows B-1 to B-48) holds the same records with their work items.
 
 ### Where the restamp sits and what it reads as arrival (OQ-19)
 
@@ -1144,10 +1144,11 @@ design's §5.2 keeps the general rule.
 ### Open at the end of the build
 
 - The Pi 4 bench of WI-P1-8 and the part 11 gate checks, on the rigs.
-- The restamp's runner CPU is above today's stamper and conditioner on the
-  same wiring (S0 Budget above: +0.04 core per 28.6 Mbit/s ingest on a
-  Pi 4), so V-P1-10 fails as written until the per-buffer cost is cut or
-  the criterion is changed.
+- The restamp's runner CPU stays above today's stamper and conditioner on
+  the same wiring (S0 Budget above, on a Pi 4: +0.040–0.044 core per
+  28.6 Mbit/s ingest, +0.033 core per 302M capture). The owner set V-P1-10
+  to a Pi 4 budget on 2026-10-16/17, at most +0.05 core per 30 Mbit/s
+  ingest and +0.035 core per 302M capture, which these figures pass.
 - A reconnect backlog under 4 s is not stale: once the line moves onto the
   floor, after a relock too since B-47, the guard drops that much of the
   live content once (B-45, as at a start burst, B-37), and a keep-listening
