@@ -16,7 +16,6 @@ export {
     liveMixInputBranch,
     mixInputBranchName,
     normalize302mChannels,
-    pacedMixer,
     probe302mSupport,
 } from './audio302mHelpers.js';
 export type {
@@ -24,7 +23,6 @@ export type {
     AudioMixSource,
     AudioMixInputOpts,
     Audio302mEncodeOpts,
-    PacedMixerOpts,
 } from './audio302mHelpers.js';
 export { mixMatrixClause } from './channelMapMatrix.js';
 export { POSITIONED_302M_MASK, channelRange, positionedChannelsClause } from './channelLayout.js';

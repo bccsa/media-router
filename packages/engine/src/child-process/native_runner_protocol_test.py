@@ -1391,6 +1391,48 @@ def _retime_run(argv, bufs, tag, align, fx, ts_psi):
     return rows, [line.split("branchAlign: ", 1)[1] for line in r.logs if "branchAlign: " in line]
 
 
+def test_live_remove_start_time_branch():
+    """A start-time branch taken off a non-live aligned mixer releases its request pad, both
+    runners: its src pad is the parser's ghost<N>, not "src", and a pad left behind holds the
+    mixer for ever (the other branch's watchdog then fills up)."""
+    caps = "audio/x-raw,rate=48000,channels=2"
+
+    def branch(name, freq):
+        return (f"( name=mixin_in_{name} audiotestsrc is-live=true freq={freq} ! audioconvert"
+                f" ! {caps} ! mralignwatch name=aw_{name} aligner=mixin input={name}"
+                " hold-on-eos=true )")
+    pipe = ("audiomixer name=mixin latency=0 start-time-selection=first"
+            f" ! capsfilter caps=\"{caps}\" ! fakesink sync=false"
+            f"  {branch('a', 440)} ! mixin.sink_0  {branch('b', 880)} ! mixin.sink_1")
+
+    def level(r, rid):
+        r.send({"cmd": "get_property", "id": rid, "element": "aw_b", "property": "level-time"})
+        ev = r.wait_event(lambda e: e.get("id") == rid
+                          and e.get("event") in ("property", "command_error"))
+        return ev.get("value") if ev and ev.get("event") == "property" else None
+
+    for kind, argv in (("native", None), ("py", _PY_RUNNER)):
+        r = RunnerProc(argv)
+        try:
+            r.wait_event(ev_is("ready"))
+            r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+            check(f"L2 {kind}: an aligned mixer with two start-time bins reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+            time.sleep(1.0)
+            r.send({"cmd": "bus_input_remove", "id": "r1", "element": "mixin",
+                    "name": "mixin_in_a"})
+            check(f"L2 {kind}: start-time bin removed live",
+                  r.wait_event(ev_is("bus_input_remove_done", id="r1")) is not None)
+            time.sleep(2.0)
+            lv = level(r, "p1")
+            check(f"L2 {kind}: the mixer goes on with the other branch (its watchdog holds "
+                  f"{lv / 1e6 if isinstance(lv, int) else lv} ms)",
+                  isinstance(lv, int) and lv < 500_000_000)
+            check(f"L2 {kind}: no error", not r.has_event(ev_is("error")))
+        finally:
+            r.kill()
+
+
 def test_transform_producer_align():
     """`alignBranchesToStamps.transformProducer` on BOTH runners over the real
     protocol: a stamped SPTS whose video PES lead the PCR by ~1.1 s
@@ -1706,6 +1748,7 @@ test_runner_hooks()
 test_deinterlace_guard_hook()
 test_video_gates()
 test_live_input_branches()
+test_live_remove_start_time_branch()
 test_transform_producer_align()
 test_mux_inputs_retime()
 test_lateness_taps()

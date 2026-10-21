@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { liveMixInputBranch } from '@media-router/plugin-audio-302m-core';
 import { N1Mixer302mModule } from './N1Mixer302mModule.js';
 
 interface FakeSource {
@@ -54,8 +57,22 @@ describe('N1Mixer302mModule.getLiveInputBranch (#787)', () => {
         expect(b).toMatchObject({ element: 'inmix1' });
         expect(b.name).toMatch(/^inmix1_in_[0-9a-f]{6}$/);
         expect(b.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40101-x.sock');
+        // The helper's live branch: mrtsdemux, then the watchdog into inmix1's pace group.
+        expect(b).toEqual(liveMixInputBranch('inmix1', mkSource('in-1', 1), { channels: 2 }));
+        expect(b.description).toMatch(/ ! mralignwatch name=inmix1_aw_[0-9a-f]{6} aligner=inmix1 /);
         // The same bin name the start-time pipeline gives that source.
         expect(module.buildPipeline(module.config)!.pipeline).toContain(`( name=${b.name} `);
+    });
+
+    it('the branch converts to the configured mix width', () => {
+        const { module } = makeModule([mkSource('in-1', 0), mkSource('in-1', 1)]);
+        module.config = { pairCount: 3, channels: 8 };
+        const b = module.getLiveInputBranch('in-1', 'c-in-1-1');
+        expect(b).toEqual(liveMixInputBranch('inmix1', mkSource('in-1', 1), { channels: 8 }));
+        expect(b.description).toContain(' ! audio/x-raw,rate=48000,channels=8 ! mralignwatch ');
+        expect(module.buildPipeline(module.config)!.pipeline).toContain(
+            `( name=${b.name} ${b.description} ) ! inmix1.sink_1`,
+        );
     });
 
     it('a source already gone (remove) still names its branch, without a description', () => {
@@ -129,8 +146,10 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         expect(assignBusChannel).toHaveBeenCalledTimes(1);
         expect(assignBusChannel).toHaveBeenCalledWith('n1m-1', 'out-1');
         expect(desc!.pipeline).not.toContain('omix0');
-        expect(desc!.pipeline).toContain('in0t. ! queue');
-        expect(desc!.pipeline).toContain('! omix1.');
+        expect(desc!.pipeline).toContain(
+            'in0t. ! mralignwatch name=omix1_aw0 aligner=omix1 input=in0 silence-floor=500000000' +
+                ' ! omix1.',
+        );
     });
 
     it('errors when the UDP port pool is exhausted', () => {
@@ -148,9 +167,14 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('audiomixer name=inmix0 latency=0');
         expect(desc!.pipeline).toContain('capsfilter name=inmix0_out ');
         expect(desc!.pipeline).toContain('mralignwatch name=inmix1_aw_');
-        expect(desc!.pipeline).not.toContain('identity name=inmix');
-        expect(desc!.pipeline).toContain('audiomixer name=omix0 force-live=true');
-        expect(desc!.pipeline).toContain('audiomixer name=omix1 force-live=true');
+        expect(desc!.pipeline).toContain(
+            'audiomixer name=omix0 latency=0 start-time-selection=first',
+        );
+        expect(desc!.pipeline).toContain(
+            'audiomixer name=omix1 latency=0 start-time-selection=first',
+        );
+        expect(desc!.pipeline).not.toContain('force-live');
+        expect(desc!.pipeline).not.toMatch(/\bidentity\b/);
         expect(desc!.pipeline).toContain('avenc_s302m strict=experimental');
         expect(desc!.pipeline).toContain('tee name=busout_40200 allow-not-linked=true');
         expect(desc!.pipeline).toContain('tee name=busout_40201 allow-not-linked=true');
@@ -171,7 +195,7 @@ describe('N1Mixer302mModule.buildPipeline', () => {
             'capsfilter name=inmix0_out caps="audio/x-raw,rate=48000,channels=6"',
         );
         expect(desc!.pipeline).toContain(
-            '! audio/x-raw,rate=48000,channels=6 ! identity name=omix0_pace',
+            'capsfilter name=omix0_out caps="audio/x-raw,rate=48000,channels=6" ! audioconvert mix-matrix=',
         );
         expect(desc!.pipeline).toContain('audio/x-raw,channels=6,channel-mask=(bitmask)0x3f');
         expect(desc!.pipeline).toContain('rate=48000,channels=6 ! avenc_s302m');
@@ -179,5 +203,20 @@ describe('N1Mixer302mModule.buildPipeline', () => {
             'routing',
             expect.objectContaining({ channels: 6 }),
         );
+    });
+
+    it('has no mix budget setting: every mixer waits for data or a gap (WI-P2-9)', () => {
+        const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+        expect(Object.keys(manifest.mediaRouter.configSchema.properties)).toEqual([
+            'pairCount',
+            'channels',
+            'pcmBitDepth',
+        ]);
+        const { module } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
+        const p = module.buildPipeline({ pairCount: 2 })!.pipeline;
+        expect(p.match(/audiomixer name=\w+ latency=0 start-time-selection=first /g)).toHaveLength(
+            4,
+        );
+        expect(p).not.toMatch(/audiomixer [^!]*latency=[1-9]/);
     });
 });

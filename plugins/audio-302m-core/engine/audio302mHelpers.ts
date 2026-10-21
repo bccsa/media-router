@@ -88,35 +88,6 @@ export function normalize302mChannels(n: number | undefined): S302mChannels {
     return (v % 2 === 0 ? v : v + 1) as S302mChannels;
 }
 
-export interface PacedMixerOpts {
-    /** Element name of the `audiomixer`. */
-    name: string;
-    /** Aggregation latency budget, nanoseconds. */
-    latencyNs: number;
-    /** Output caps pinned on the mixer's src pad. */
-    caps: string;
-    /** Element name of the `identity sync=true` clock pacer — the ONLY element
-     *  callers may chain from (branching off the caps pin skips the pacer). */
-    pacerName: string;
-    /** Name the capsfilter too, when a caller needs to address it. */
-    capsName?: string;
-}
-
-/** `audiomixer force-live=true … ! <caps> ! identity sync=true`: a force-live mixer and its clock
- *  pacer (ADR-0008; force-live free-runs after every pad is EOS). Kept only for n1-mixer-302m's
- *  output mixers, until house-clock WI-P2-9 moves them to `alignedMixer`. */
-export function pacedMixer(opts: PacedMixerOpts): string {
-    const caps = opts.capsName ? `capsfilter name=${opts.capsName} caps="${opts.caps}"` : opts.caps;
-    return (
-        // No `min-upstream-latency`: the branches report none, and forcing it
-        // doubled the pacer hold (2× latency, measured .103 2026-10-05).
-        `audiomixer name=${opts.name} force-live=true latency=${opts.latencyNs}` +
-        ' start-time-selection=first' +
-        ` ! ${caps}` +
-        ` ! identity name=${opts.pacerName} sync=true`
-    );
-}
-
 export interface AlignedMixerOpts {
     /** Element name of the `audiomixer`. */
     name: string;
@@ -126,9 +97,9 @@ export interface AlignedMixerOpts {
     outName: string;
 }
 
-/** `audiomixer latency=0 start-time-selection=first ! capsfilter`, the aligner of every 302M
- *  fan-in (house-clock plan part 4.3). Every pad comes through `mralignwatch`: non-live, so the
- *  mixer never times out, waits for data or a gap on each pad and drops nothing late. */
+/** `audiomixer latency=0 start-time-selection=first ! capsfilter`, every 302M mixer (house-clock
+ *  part 4.3). Every pad comes through `mralignwatch`: non-live, so the mixer never times out,
+ *  waits for data or a gap on each pad and drops nothing late. */
 export function alignedMixer(opts: AlignedMixerOpts): string {
     return (
         `audiomixer name=${opts.name} latency=0 start-time-selection=first` +

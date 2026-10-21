@@ -2893,6 +2893,16 @@ def handle_bus_reinput(data):
     emit_event({"event": "bus_reinput_done", "id": req_id})
 
 
+def _branch_src_pad(bin_):
+    """The branch's src pad: "src" when ghosted here (a live add), the parser's
+    "ghost<N>" on a start-time bin; a non-live mixer waits on a pad left behind."""
+    pad = bin_.get_static_pad("src")
+    if pad is not None:
+        return pad
+    res, pad = bin_.iterate_src_pads().next()
+    return pad if res == Gst.IteratorResult.OK else None
+
+
 def _remove_live_bin(bin_, agg=None):
     """Stop the branch (the pushing side — NULL ends its thread; no pad probe,
     one on its own src pad would deadlock the NULL join), unlink it, release
@@ -2901,7 +2911,7 @@ def _remove_live_bin(bin_, agg=None):
     # polled socket may fire for a branch that is being taken away.
     source_gate.forget_sources_in(bin_)
     bin_.set_state(Gst.State.NULL)
-    src = bin_.get_static_pad("src")
+    src = _branch_src_pad(bin_)
     agg_pad = src.get_peer() if src is not None else None
     if src is not None and agg_pad is not None:
         src.unlink(agg_pad)

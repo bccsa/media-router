@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { buildBusSink } from '@media-router/engine';
+import { alignedMixer, build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
 import { buildMixerPipeline, mixerInputBranch } from './audioMixerPipeline.js';
 
 const SOURCES = [
@@ -40,6 +42,36 @@ describe('buildMixerPipeline', () => {
         expect(r.pipeline).toContain('avenc_s302m');
         expect(r.pipeline).toContain('tee name=busout_41000');
         expect(r.sinkName).toBe('busout_41000');
+    });
+
+    it('the whole string: the aligned mixer, one watchdog-ended bin per source, master stage, 302M tail', () => {
+        const r = buildMixerPipeline({
+            sources: SOURCES,
+            outputPort: 41000,
+            channels: 2,
+            volume: 0.8,
+        })!;
+        const bin = (i: number): string => {
+            const b = mixerInputBranch(SOURCES[i].connectionId, SOURCES[i], 2);
+            return ` ( name=${b.name} ${b.description} ) ! mixin.sink_${i}`;
+        };
+        expect(r.pipeline).toBe(
+            alignedMixer({
+                name: 'mixin',
+                caps: 'audio/x-raw,rate=48000,channels=2',
+                outName: 'mixin_out',
+            }) +
+                bin(0) +
+                bin(1) +
+                ' mixin_out. ! audioconvert ! volume name=vol volume=0.80' +
+                ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
+                ` ! ${build302mEncodeBranch({ format: 'S16LE' })} ! ${buildBusSink(41000)}`,
+        );
+        for (const i of [0, 1]) {
+            expect(mixerInputBranch(SOURCES[i].connectionId, SOURCES[i], 2).description).toMatch(
+                /mrtsdemux name=mixin_demux_[0-9a-f]{6} select=audio\/x-smpte-302m .* ! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin input="c\d" hold-on-eos=true$/,
+            );
+        }
     });
 
     it('a lone source still builds the mixer arm — live inputs need the aggregator in place', () => {

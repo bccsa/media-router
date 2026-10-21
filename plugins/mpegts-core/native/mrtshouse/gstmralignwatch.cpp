@@ -1,6 +1,7 @@
 /* mralignwatch (plan ch. 6 part 4.3, WI-P2-6): a non-live aggregator's input. A FIFO released
- * at running time + the shared pace; silent past W, GAPs at now - pace; LATENCY non-live. A
- * plain GstElement: lists stay lists, every push leaves from the src task, in order. */
+ * at running time + the shared pace; silent past W, GAPs at now - pace, and so from the start
+ * for an input that joins a running aggregator; LATENCY non-live. A plain GstElement: lists
+ * stay lists, every push leaves from the src task, in order. */
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -115,6 +116,7 @@ struct Run {
     bool eos_held = false;          // hold-on-eos: the EOS became absence
     bool discont = false;           // the next data out carries DISCONT (WI-P2-1 F3)
     bool full_episode = false;
+    bool ran = false;               // this member told its group the aggregator runs
     bool pace_run = false;          // an arrival of this run went into the pace
     bool primed = false;            // the task pushed what a first gap needs (task thread only)
     bool caps_primed = false;       // ...caps among it, no upstream CAPS out since (task only)
@@ -348,6 +350,15 @@ static void aw_observe(GstMrAlignWatch* self, gint64 now, gint64 lateness) {
     Run& r = *self->run;
     PaceRegistry::global().observe(r.member, now, lateness, !r.pace_run);
     r.pace_run = true;
+}
+
+/* Under the lock: the first timed item out marks the group running; who joins it later is
+ * gapped while it waits (aw_watch). */
+static void aw_mark_running(GstMrAlignWatch* self) {
+    Run& r = *self->run;
+    if (r.ran || !r.planner.has_horizon()) return;
+    PaceRegistry::global().start(r.member);
+    r.ran = true;
 }
 
 /* Under the lock: the sink thread waits in us from `now` (clocked) or not at all. */
@@ -934,7 +945,9 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
                             w / GST_MSECOND);
         }
     }
-    if (!(r.sparse || r.eos_held || r.state == AwState::absent)) return false;
+    /* Joined a running aggregator: gapped while it waits, so the others never stall on it. */
+    const bool joining = r.member.late && r.state == AwState::waiting;
+    if (!(r.sparse || r.eos_held || joining || r.state == AwState::absent)) return false;
     const Item* next = nullptr;
     for (const Item& it : r.fifo)
         if (it.timed) {
@@ -974,6 +987,7 @@ static void aw_loop(gpointer data) {
         const bool due = !h.timed || !clocked || now >= h.start + r.pace;
         if (due) {
             aw_release(self, now, clocked, &pending, &late_snap, &late);
+            aw_mark_running(self);
             if (pending) snap = aw_snap(self);
             g_mutex_unlock(&self->lock);
             if (late.set) {
@@ -994,6 +1008,7 @@ static void aw_loop(gpointer data) {
             g_mutex_unlock(&self->lock);
             aw_push_gap(self, gap.start_ns, gap.end_ns);
             g_mutex_lock(&self->lock);
+            aw_mark_running(self);
         }
     }
 

@@ -144,7 +144,9 @@ PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed
     Membership m;
     m.key = key;
     m.member = ++next_;
-    groups_[key].join(m.member, seed_ns);
+    PaceGroup& g = groups_[key];
+    m.late = g.started();
+    g.join(m.member, seed_ns);
     return m;
 }
 
@@ -170,6 +172,12 @@ void PaceRegistry::raise(const Membership& m, int64_t pace_ns) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = groups_.find(m.key);
     if (m.member && it != groups_.end()) it->second.raise(pace_ns);
+}
+
+void PaceRegistry::start(const Membership& m) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = groups_.find(m.key);
+    if (m.member && it != groups_.end()) it->second.start();
 }
 
 PaceRegistry::View PaceRegistry::view_locked(const Membership& m) const {

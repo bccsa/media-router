@@ -110,6 +110,14 @@ def test_add_remove():
         runner.handle_bus_input_remove({"id": "r2", "element": "mixin", "name": "mixin_in_b"})
         check("removing a gone branch is a no-op done", cap.last("bus_input_remove_done").get("id") == "r2")
 
+        # A start-time bin's src pad is the parser's ghost<N>, not "src": a non-live mixer
+        # would wait forever on a request pad left behind.
+        runner.handle_bus_input_remove({"id": "r3", "element": "mixin", "name": "mixin_in_a"})
+        check("removing the start-time bin -> done",
+              cap.last("bus_input_remove_done").get("id") == "r3")
+        check("mixer released the start-time bin's request pad",
+              mixer.get_static_pad("sink_0") is None)
+
         _ret, state, _pending = runner.pipeline.get_state(0)
         check("pipeline still PLAYING after add/remove", state == Gst.State.PLAYING)
     finally:
@@ -126,6 +134,8 @@ def test_containment_helpers():
         check("live branch ancestor of an element inside the bin", runner._live_branch_ancestor(src) == "mixin_in_a")
         check("no ancestor for a top-level element", runner._live_branch_ancestor(runner.pipeline.get_by_name("mixin")) is None)
         check("drop_branch takes the bin out", runner._drop_live_branch("mixin_in_a") is True)
+        check("drop_branch releases the start-time bin's request pad",
+              runner.pipeline.get_by_name("mixin").get_static_pad("sink_0") is None)
         check("dropped bin gone + untracked",
               runner.pipeline.get_by_name("mixin_in_a") is None and "mixin_in_a" not in runner._live_input_branches)
         check("drop of an unknown branch is False", runner._drop_live_branch("mixin_in_a") is False)

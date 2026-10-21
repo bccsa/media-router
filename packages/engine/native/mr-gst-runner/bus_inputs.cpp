@@ -30,6 +30,19 @@ void emit_done(const char* event, const std::string& name, const std::string& re
     ipc::emit(ev);
 }
 
+/** The branch's src pad: "src" when ghosted here (a live add), the parser's
+ *  "ghost<N>" on a start-time bin; a non-live mixer waits on a pad left behind. */
+GstPad* branch_src_pad(GstElement* bin) {
+    if (GstPad* pad = gst_element_get_static_pad(bin, "src")) return pad;
+    GstPad* pad = nullptr;
+    GstIterator* it = gst_element_iterate_src_pads(bin);
+    GValue v = G_VALUE_INIT;
+    if (gst_iterator_next(it, &v) == GST_ITERATOR_OK) pad = GST_PAD(g_value_dup_object(&v));
+    g_value_unset(&v);
+    gst_iterator_free(it);
+    return pad;
+}
+
 /**
  * Stop the branch (the pushing side — NULL ends its thread; no pad probe,
  * one on its own src pad would deadlock the NULL join), unlink it, release
@@ -39,7 +52,7 @@ void emit_done(const char* event, const std::string& name, const std::string& re
 void remove_bin(GstElement* bin, GstElement* agg_or_null) {
     gate::forget_sources_in(bin);
     gst_element_set_state(bin, GST_STATE_NULL);
-    GstPad* src = gst_element_get_static_pad(bin, "src");
+    GstPad* src = branch_src_pad(bin);
     GstPad* agg_pad = src ? gst_pad_get_peer(src) : nullptr;
     if (src && agg_pad) gst_pad_unlink(src, agg_pad);
     if (src) gst_object_unref(src);

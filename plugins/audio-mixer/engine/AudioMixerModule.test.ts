@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { AudioMixerModule } from './AudioMixerModule.js';
 
 function makeModule(sourceCount = 0, opts: { busPort?: number | null } = {}) {
@@ -75,6 +77,20 @@ describe('AudioMixerModule.buildPipeline', () => {
     it('opts out of the EOS drain — an audio-only producer whose aligners hold EOS (#787)', () => {
         const { module } = makeModule(2);
         expect(module.buildPipeline({})!.eosDrain).toBe(false);
+    });
+
+    it('has no mix budget setting: the aligned mixer waits for data or a gap (WI-P2-9)', () => {
+        const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+        expect(Object.keys(manifest.mediaRouter.configSchema.properties)).toEqual([
+            'volume',
+            'audioEnabled',
+            'channels',
+            'pcmBitDepth',
+        ]);
+        const { module } = makeModule(2);
+        const p = module.buildPipeline({})!.pipeline;
+        expect(p).toContain('audiomixer name=mixin latency=0 start-time-selection=first');
+        expect(p).not.toContain('force-live');
     });
 });
 

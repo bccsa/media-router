@@ -1,6 +1,7 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
 // rhythms, the pace's rules (seeds, rises only, recomputed on leave, a lateness over wall time
-// that a backlog's drain does not move) and the gap stretches an absent input gets.
+// that a backlog's drain does not move), a join into a running group and the gap stretches an
+// absent input gets.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -440,6 +441,36 @@ void test_registry() {
           t.view(last).pace_ns == 400 * MS && t.view(last).members == 5);
 }
 
+// A member that joins once the aggregator runs is late: its aligner gaps it while it waits.
+void test_late_join() {
+    PaceGroup g;
+    g.join(1, -1);
+    CHECK("a new group has not run", !g.started());
+    g.start();
+    CHECK("start: it runs, the pace untouched", g.started() && g.pace() == 0);
+
+    PaceRegistry r;
+    PaceRegistry::Membership a = r.join("p/mix", -1);
+    PaceRegistry::Membership b = r.join("p/mix", -1);
+    CHECK("members that join before anything was pushed are on time", !a.late && !b.late);
+    r.start(a);
+    PaceRegistry::Membership c = r.join("p/mix", 300 * MS);
+    CHECK("once a member pushed, a joiner is late", c.late && !a.late && !b.late);
+    CHECK("... and its seed still raises the pace at once", r.view(a).pace_ns == 300 * MS);
+    CHECK("another aggregator's group has not run", !r.join("p/other", -1).late);
+    r.leave(&a);
+    PaceRegistry::Membership d = r.join("p/mix", -1);
+    CHECK("the group runs on while members stay, whoever pushed", d.late);
+    r.leave(&b);
+    r.leave(&c);
+    r.leave(&d);
+    CHECK("a group that lost its last member starts anew, not running",
+          !r.join("p/mix", -1).late);
+    PaceRegistry::Membership none;
+    r.start(none);
+    CHECK("an unjoined membership starts nothing", !r.join("p/x", -1).late);
+}
+
 // --- gaps ----------------------------------------------------------------------------------
 
 void test_gaps() {
@@ -491,6 +522,7 @@ int main() {
     test_pace_bursts();
     test_pace_catch_ups();
     test_registry();
+    test_late_join();
     test_gaps();
     return test_summary("align_watch");
 }

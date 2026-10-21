@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildBusSrc, quoteGstString, shortHash } from '@media-router/engine';
+import { buildBusSrc, buildRestamp, quoteGstString, shortHash } from '@media-router/engine';
 import {
     alignedMixer,
     buildAudioMixInput,
@@ -10,9 +10,11 @@ import {
     liveMixInputBranch,
     mixInputBranchName,
     normalize302mChannels,
-    pacedMixer,
     type AudioMixSource,
 } from './audio302mHelpers.js';
+import { positionedChannelsClause } from './channelLayout.js';
+import { mixMatrixClause } from './channelMapMatrix.js';
+import * as core from './index.js';
 
 const SRC = { port: 40001, connectionId: 'c1' };
 const SRC2 = { port: 40002, connectionId: 'c2' };
@@ -92,7 +94,7 @@ describe('buildAudioMixInput — the three arms, snapshot', () => {
     });
 });
 
-describe('fan-in strings carry none of the replaced mechanisms', () => {
+describe('helper strings carry none of the replaced mechanisms', () => {
     const MAP = [
         { srcChannel: 0, dstChannel: 0 },
         { srcChannel: 0, dstChannel: 1 },
@@ -139,6 +141,50 @@ describe('fan-in strings carry none of the replaced mechanisms', () => {
             for (const d of demuxes) expect(d).toMatch(/ select=audio\/x-smpte-302m $/);
             expect(demuxes.length).toBe(s.match(/avdec_s302m/g)?.length ?? 0);
         }
+    });
+
+    it('no string the package builds is force-live or syncs to the clock (WI-P2-9)', () => {
+        const all = everyString();
+        const restamp = buildRestamp({ mode: 'fixed', offsetMs: -40 });
+        for (const format of ['S16LE', 'S32LE'] as const) {
+            for (const channels of [1, 2, 3, 4, 6, 8]) {
+                for (const asrc of [false, true]) {
+                    all.push(build302mEncodeBranch({ format, channels, asrc }));
+                    all.push(build302mEncodeBranch({ format, channels, asrc, restamp }));
+                }
+            }
+        }
+        for (const n of [2, 4, 6, 8]) {
+            all.push(positionedChannelsClause(n));
+            all.push(mixMatrixClause(MAP, 2, n));
+        }
+        expect(all.length).toBeGreaterThan(80);
+        for (const s of all) {
+            expect(s).not.toContain('force-live');
+            expect(s).not.toContain('sync=true');
+            expect(s).not.toMatch(/\bidentity\b/);
+        }
+    });
+
+    it('exports no paced mixer; a new builder must join the test above', () => {
+        expect(Object.keys(core).sort()).toEqual([
+            'DEFAULT_302M_BIT_DEPTH',
+            'POSITIONED_302M_MASK',
+            'alignedMixer',
+            'build302mEncodeBranch',
+            'build302mMixBranch',
+            'buildAudioMixInput',
+            'channelRange',
+            'liveDemuxName',
+            'liveInputBranchFor',
+            'liveMixInputBranch',
+            'mixInputBranchName',
+            'mixMatrixClause',
+            'normalize302mChannels',
+            'positionedChannelsClause',
+            'probe302mSupport',
+            's302mFormatFor',
+        ]);
     });
 });
 
@@ -406,46 +452,6 @@ describe('buildAudioMixInput — shared branch contract', () => {
         );
         // The unmapped branch keeps a bare audioconvert.
         expect(fragment.match(/avdec_s302m ! audioconvert ! audioresample/g)).toHaveLength(1);
-    });
-});
-
-describe('pacedMixer — n1-mixer-302m output mixers only, until WI-P2-9', () => {
-    it('always ends in the identity clock pacer — the OOM fix lives here only', () => {
-        expect(
-            pacedMixer({
-                name: 'omix0',
-                latencyNs: 50_000_000,
-                caps: 'audio/x-raw,rate=48000,channels=2',
-                pacerName: 'omix0_pace',
-            }),
-        ).toBe(
-            'audiomixer name=omix0 force-live=true latency=50000000' +
-                ' start-time-selection=first' +
-                ' ! audio/x-raw,rate=48000,channels=2' +
-                ' ! identity name=omix0_pace sync=true',
-        );
-    });
-
-    it('names the capsfilter only when the caller needs to address it', () => {
-        expect(
-            pacedMixer({
-                name: 'mixin',
-                latencyNs: 200_000_000,
-                caps: 'audio/x-raw,rate=48000,channels=2',
-                capsName: 'mixin_caps',
-                pacerName: 'mixin_out',
-            }),
-        ).toContain('! capsfilter name=mixin_caps caps="audio/x-raw,rate=48000,channels=2" !');
-    });
-
-    it('never forces an upstream latency on the aggregator (it doubled the pacer hold)', () => {
-        const m = pacedMixer({
-            name: 'm',
-            latencyNs: 50_000_000,
-            caps: 'audio/x-raw',
-            pacerName: 'o',
-        });
-        expect(m).not.toContain('min-upstream-latency');
     });
 });
 

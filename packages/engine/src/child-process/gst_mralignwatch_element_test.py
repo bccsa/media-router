@@ -12,9 +12,11 @@ a pad lowers the pace; (6) hold-on-eos; (7) a full queue blocks upstream, full-c
 dropped; (8) sparse: a late cue is forwarded at its own PTS with a message and the pace raised.
 Plus the defaults and the LATENCY answer, and the caps a dark input's gaps go out under: (2c) a
 302M-shaped branch, (2d) 8 channels, (2e) every input dark, (2f) a branch dark at start that
-comes up, (8b) a sparse stream whose caps come with its first cue; and (13) a backlog as an
-input's first data, waited for, the pace from what follows it (an upstream aligner's start,
-WI-P2-8 B2), (14) inputs held by a paced output still report each second.
+comes up, (8b) a sparse stream whose caps come with its first cue; (11)-(11e) an input added
+while playing (late, dark, on time, seeded, into gaps alone) is gapped while it waits, so the
+mixer never stalls on it; and (13) a backlog as an input's first data, waited for, the pace from
+what follows it (an upstream aligner's start, WI-P2-8 B2), (14) inputs held by a paced output
+still report each second.
 Skips (exit 0) without GStreamer, the elements or the built plugin."""
 import array
 import os
@@ -761,7 +763,24 @@ check(f"dark at start: absent at the ceiling, then present (states {[s for _t, s
 check(f"dark at start: no error (got {r.errors})", not r.errors)
 r.stop()
 
-print("\n--- audiomixer: (11) an input added while playing joins at its lateness ---")
+def out_at(r, ms):
+    """When the mix output covering content `ms` left the mixer (None: it never did)."""
+    t0 = r.at(ms)
+    with r.lock:
+        return next((t for t, pts, nf, _d, _c in r.out if pts <= t0 < pts + nf * S // RATE), None)
+
+
+def out_late(r, a_ms, b_ms):
+    """How long after its content's end the latest mix output of content a..b ms left (ns): a
+    mixer that waited holds everything after the wait that much later."""
+    with r.lock:
+        return max((t - pts - nf * S // RATE for t, pts, nf, _d, _c in r.out
+                    if nf and r.at(a_ms) <= pts < r.at(b_ms)), default=None)
+
+
+# A live add joins a running mixer: the joiner is gapped at the pace while it waits, so the
+# others never stall on it; what it sends before the gaps' end is stale (the rejoin rule).
+print("\n--- audiomixer: (11) an input added while playing, 300 ms late ---")
 r = Rig("audiomixer", [{}])
 r.run({0: [("rt", 0, 300, 0), ("eos",)],
        1: [("at", 950), ("call", lambda: r.add({}, live=True)), ("rt", 100, 300, 300), ("eos",)]})
@@ -772,10 +791,98 @@ check(f"joined: the pace rose to the joiner's 300 ms (got {r.prop(0, 'pace') / M
       and abs(r.prop(1, "pace") - r.prop(0, "pace")) <= 2 * MS)
 check(f"joined: the first input is held to it (median {median(rel) / MS:.0f} ms)",
       len(rel) > 50 and abs(median(rel) - 300 * MS) <= SLACK)
-check(f"joined: the joiner is mixed from its first buffer, nothing dropped (got {r.spans()})",
-      r.spans() == [(0, 1000, VAL[0]), (1000, 3000, VAL[0] + VAL[1])])
+t1200 = out_at(r, 1200)
+check(f"joined: the mixer did not wait for the joiner's first data (content 1200 ms out at "
+      f"{(t1200 - r.at(1200)) / MS if t1200 else None} ms)",
+      t1200 is not None and t1200 - r.at(1200) <= 20 * MS + SLACK)
+sp = r.spans()
+h = sp[1][0] if len(sp) == 2 else None
+stale = r.prop(1, "stale-buffers")
+check(f"joined: mixed from where its gaps reached when its data came, before that stale "
+      f"({stale} buffers; got {sp})",
+      len(sp) == 2 and sp[0] == (0, h, VAL[0]) and sp[1] == (h, 3000, VAL[0] + VAL[1])
+      and 1250 <= h <= 1300 + SLACK / MS and stale == int(h - 1000) // 10)
 check("joined: no absence, EOS, no error",
       r.prop(1, "absences") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (11b) a dark 302M-shaped input added while playing ---")
+joined = []
+
+
+def _join_dark():
+    joined.append(r.now())
+    r.add({"chain": BRANCH, "caps": None}, live=True)
+
+
+r = Rig("audiomixer", [{"chain": BRANCH}])
+r.run({0: [("rt", 0, 350, 0)], 1: [("at", 950), ("call", _join_dark)]})
+r.wait(lambda: (r.reach() or 0) >= 3500)
+late = out_late(r, 900, 3400)
+check(f"dark joiner: the mixer never waits for it (its output at most "
+      f"{late / MS if late else None} ms late)", late is not None and late <= 20 * MS + SLACK)
+check(f"dark joiner: the first input mixed throughout, nothing dropped (got {r.spans(3500)})",
+      r.spans(3500) == [(0, 3500, VAL[0])])
+gaps = r.released(1, "gap")
+check(f"dark joiner: gapped from its join ({(gaps[0][1] - joined[0]) / MS if gaps else None} ms)",
+      bool(gaps) and gaps[0][1] - joined[0] <= 20 * MS + SLACK)
+absent = [t for t, s in r.states(1) if s == "absent"]
+check(f"dark joiner: waiting, then absent at the 2 s ceiling (states {r.states(1)}, "
+      f"{(absent[0] - joined[0]) / MS if absent else None} ms)",
+      [s for _t, s in r.states(1)] == ["absent"]
+      and 2000 * MS <= absent[0] - joined[0] <= 2020 * MS + 2 * SLACK)
+check(f"dark joiner: the pace untouched (got {r.prop(0, 'pace') / MS:.1f} ms)",
+      r.prop(0, "pace") <= 5 * MS)
+check(f"dark joiner: no error (got {r.errors})", not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (11c) an on-time input added while playing ---")
+r = Rig("audiomixer", [{}])
+r.run({0: [("rt", 0, 300, 0), ("eos",)],
+       1: [("at", 950), ("call", lambda: r.add({}, live=True)), ("rt", 100, 300, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+sp = r.spans()
+h = sp[1][0] if len(sp) == 2 else None
+check(f"on time: mixed from its first buffer (got {sp})",
+      len(sp) == 2 and sp[0] == (0, h, VAL[0]) and sp[1] == (h, 3000, VAL[0] + VAL[1])
+      and 1000 <= h <= 1020)
+late = out_late(r, 900, 2900)
+check(f"on time: no wait, at most one buffer stale (output at most "
+      f"{late / MS if late is not None else None} ms late, stale {r.prop(1, 'stale-buffers')})",
+      late is not None and late <= 20 * MS + SLACK and r.prop(1, "stale-buffers") <= 1)
+check("on time: no absence, EOS, no error", r.prop(1, "absences") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (11d) a seeded input added while playing, 300 ms late ---")
+# Its seed raises the pace at the join: one wait for the others, and its content all kept.
+r = Rig("audiomixer", [{}])
+r.run({0: [("rt", 0, 300, 0), ("eos",)],
+       1: [("at", 950), ("call", lambda: r.add({"props": {"seed-lateness": 300 * MS}}, live=True)),
+           ("rt", 100, 300, 300), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(1100)]
+check(f"seeded: the pace is the seed from the join (got {r.prop(0, 'pace') / MS:.0f} ms), the "
+      f"first input held to it (median {median(rel) / MS if rel else None} ms)",
+      abs(r.prop(0, "pace") - 300 * MS) <= SLACK
+      and bool(rel) and abs(median(rel) - 300 * MS) <= SLACK)
+sp = r.spans()
+h = sp[1][0] if len(sp) == 2 else None
+check(f"seeded: mixed from its first buffer, nothing stale (got {sp}, stale "
+      f"{r.prop(1, 'stale-buffers')})",
+      len(sp) == 2 and sp[0] == (0, h, VAL[0]) and sp[1] == (h, 3000, VAL[0] + VAL[1])
+      and 1000 <= h <= 1020 and r.prop(1, "stale-buffers") <= 1)
+check("seeded: no absence, EOS, no error", r.prop(1, "absences") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (11e) a dark input added to a mixer running on gaps alone ---")
+# Gaps out start the group as data does: the silent mix does not wait for the joiner either.
+r = Rig("audiomixer", [{"chain": BRANCH, "caps": None}])
+r.run({1: [("at", 2500), ("call", lambda: r.add({"chain": BRANCH, "caps": None}, live=True))]})
+r.wait(lambda: (r.reach() or 0) >= 4600, 8.0)
+late = out_late(r, 2400, 4500)
+check(f"gaps alone: the silent mix never waits for the dark joiner (output at most "
+      f"{late / MS if late else None} ms late)", late is not None and late <= 20 * MS + SLACK)
+check(f"gaps alone: no error (got {r.errors})", not r.errors)
 r.stop()
 
 print("\n--- audiomixer: (12) a seed sets the pace from the start ---")

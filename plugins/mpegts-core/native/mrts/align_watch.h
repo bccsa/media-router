@@ -67,6 +67,9 @@ class PaceGroup {
     // counts.
     void observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh = false);
     void raise(int64_t pace_ns);
+    // A member pushed something timed: the aggregator runs, for the rest of the group's life.
+    void start() { started_ = true; }
+    bool started() const { return started_; }
 
     int64_t pace() const { return pace_; }
     // The member's lateness over the second before its last arrival (that arrival's own
@@ -98,6 +101,7 @@ class PaceGroup {
     std::map<Member, State> members_;
     std::vector<std::pair<int64_t, int64_t>> scratch_;   // (mid, len), sorted per arrival
     int64_t pace_ = 0;
+    bool started_ = false;
 };
 
 // The process's pace groups, keyed by pipeline and aligner name ("all watchdogs of one
@@ -107,6 +111,7 @@ class PaceRegistry {
     struct Membership {
         std::string key;
         PaceGroup::Member member = 0;   // 0: not joined
+        bool late = false;              // joined a running group: gapped while it waits
     };
     struct View {
         int64_t pace_ns = 0;
@@ -121,6 +126,8 @@ class PaceRegistry {
     void leave(Membership* m);   // and clears it; a second call is a no-op
     void observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh = false);
     void raise(const Membership& m, int64_t pace_ns);
+    // The member pushed something timed: whoever joins its group from now on is `late`.
+    void start(const Membership& m);
     View view(const Membership& m) const;
     size_t groups() const;
 
