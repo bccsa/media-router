@@ -51,3 +51,9 @@ retime) stop doing so in Phases 2 and 3. New timing code is prototyped in
 python and ported once it is right; the python stays beside its port with
 its tests (the owner's rule, plan OQ-1). The parity suite pins
 byte-identical outputs until Phase 2 deletes it.
+
+Phase 2 (2026-10-18, [[0029]]): the egress stamper's python probe,
+`unixfd-fanout.py` and the parity suite are deleted; the new elements
+(`mralignwatch`, `mrtsdemux`, and audio-processing's `mrducker` and
+`mrptskeep`) are C++ only. Branch alignment and retime still import the
+python until Phase 3.

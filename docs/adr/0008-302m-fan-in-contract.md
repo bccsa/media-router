@@ -4,9 +4,23 @@ Three rules bind every 302M aggregation point in the fleet. They are cheap to
 break by accident and expensive to diagnose, so they are recorded rather than
 left to `audio302mHelpers.ts` comments alone.
 
+**Status: superseded in part by [[0029]] (Phase 2, OQ-21).** Rule 1, the
+force-live mixer and its `identity sync=true` pacer, is superseded: every
+302M mixer is `alignedMixer` (`audiomixer latency=0
+start-time-selection=first ! capsfilter`), non-live behind one `mralignwatch`
+per input, so it waits for data or a gap on every pad, an input silent past
+its limit is gapped instead of timed out and silence-filled, and nothing
+free-runs after EOS. So are the 2026-09-03 addendum's `mixerLatencyNs`, the
+2026-10-02 addendum's drain and cost sentences and the 2026-10-05 amendment
+(`ignore-pcr`, the 20 ms floor): each branch decodes on content time through
+`mrtsdemux select=audio/x-smpte-302m`, and there is no latency budget. Rules
+2 and 3 stand: callers chain only from `continuationName` (`<mixerName>_out`
+in every arm), and one source bypasses the mixer outside live-input mode.
+
 1. **A `force-live` mixer MUST be clock-paced.** Build it through `pacedMixer()`
    — `audiomixer force-live=true ! <caps> ! identity sync=true`. Never assemble
-   the string by hand and never drop the trailing `identity`.
+   the string by hand and never drop the trailing `identity`. (Superseded in
+   Phase 2, see Status.)
 2. **Callers chain ONLY from the returned `continuationName`.** Never hardcode
    an element name from inside the fragment.
 3. **One source bypasses the mixer entirely**, with a deliberate behaviour
@@ -97,6 +111,12 @@ Two consequences for the three rules above:
   route plays `latencyMs` later through a mixer than through the bypass. Callers
   that end in an unsynced bus tee (the producer modules) ignore it.
 
+Superseded by [[0029]] (Phase 2), both bullets: there is no pacer and no
+`mixerLatencyNs`. audio-output-302m puts `identity name=live_upstream
+sync=true` after the continuation in both arms so that its sink sees a live
+upstream and counts its own ring, which the `ts-offset` cancels; that
+identity is a liveness marker, not this pacer, and never waits.
+
 ## Addendum (2026-10-02): live inputs give up rule 3's bypass — and the drain
 
 #787: every edge added to, removed from or re-mapped on a 302M mixer's input
@@ -142,7 +162,19 @@ aggregator or anything below it. The audio-output-302m is a leaf (nothing
 downstream to ripple) and its branches are stamp-aligned at launch, so it
 keeps the classic restart for now.
 
+Amended by [[0029]] (Phase 2): a lone input in live-input mode costs about
+one 10 ms block of the aligned mixer, not a budget and a pacer; `eosDrain:
+false` is needed because every fan-in aligner holds its input's EOS
+(`hold-on-eos`), so the drain would wait out its 6 s timeout; a lost
+branch's input is gapped by its aligner, not silence-filled by a timeout;
+and audio-output-302m's branches decode on content time instead of being
+stamp-aligned (it returns `eosDrain: false` too).
+
 ## Amendment (2026-10-05): the pacer hold is `latency`, not a PTS lead plus 2× latency
+
+Superseded by [[0029]] (Phase 2): the branches run `mrtsdemux` (running time
+= PES − 1 h) instead of `tsdemux ignore-pcr=true`, the mixer has no latency
+budget and no floor, and the pacer is gone.
 
 Measured on .103 with bus edge-socket taps (same socket, mute steps, five
 replica shapes): the mixer arm as built held audio for **~350 ms at

@@ -44,7 +44,7 @@ it at runtime stop doing so phase by phase (below).
 | `ts_pcr.h`, `ts_pcr.cpp` | The PCR: read, write, PCR-only packets, `discontinuity_indicator`, `PcrScheduler` (egress cadence, Phase 5) |
 | `ts_psi.h`, `ts_psi.cpp` | PSI parse and build and `PsiDiscovery` (port of `py/ts_psi.py`), generalised in C++ only: program selection, PMT generation, descriptor loops, `registration_format`, multi-packet sections |
 | `ts_split.h`, `ts_split.cpp` | `SplitterCore`, the packet-level per-PID SPTS splitter of `mr-tssplit` (port of `py/ts_split.py`), on `PacketWalker` |
-| `ts_timeline.h`, `ts_timeline.cpp` | `timing_pes`, the one rule Phase 2 kept of the anchored stamper (port of `py/ts_timeline.py`'s): a PES may define a timeline when it is video or audio, or on the PCR carrier. Used by `IdentityStamp` and the runner's branch retime; deleted in Phase 3 |
+| `ts_timeline.h`, `ts_timeline.cpp` | `timing_pes`, the one rule Phase 2 kept of the anchored stamper (port of `py/ts_timeline.py`'s): a PES may define a timeline when it is video or audio, or on the PCR carrier. Used by `IdentityStamp` and the runner's branch retime; when Phase 3 deletes the file, the rule moves into `ts_house`, since `IdentityStamp` keeps it |
 | `ts_video_info.h`, `ts_video_info.cpp`, `sps_parse.h`, `sps_parse.cpp` | H.264/H.265 SPS probe for the video-info tap (not timing) |
 | `lateness.h`, `lateness.cpp` | `LatenessWindow`, the accumulator behind every lateness reading (Phase 0) |
 | `ts_stc.h`, `ts_stc.cpp` | The virtual STC: `ClockLock` (lower-envelope lock of a remote clock to arrival), `PcrValidator`, `VirtualStc` (per program: epochs, degraded mode, the straddle rule) |
@@ -96,7 +96,7 @@ it at runtime stop doing so phase by phase (below).
 |---|---|
 | `ts_psi.py`, `ts_split.py`, `ts_video_info.py`, `sps_parse.py` | References of the PSI, splitter and SPS code. `ts_psi.py`, `ts_video_info.py` and `sps_parse.py` also serve the Python runner's `tsProbe`, which is not timing |
 | `ts_timeline.py` | Reference of `ts_timeline`. Still imported at runtime by branch alignment and retime, for its helpers, until Phase 3 |
-| `native_parity_fixture.py`, `native_parity_ref.py` | The parity suite's synthetic MPTS generator and its Python side |
+| `native_parity_fixture.py`, `native_parity_ref.py` | The synthetic MPTS generator and the Python splitter whose output `ts-splitter`'s `mrTssplit.test.ts` expects (the parity vitest went in Phase 2) |
 | `ts_psi_test.py`, `ts_split_test.py`, `ts_video_info_test.py`, `ts_timeline_test.py` | The reference suites (`test:py`) |
 
 ### `engine/` and `tests/`
@@ -108,6 +108,8 @@ it at runtime stop doing so phase by phase (below).
 | `tests/dump_vs_ffprobe.py` | `mrts_cli dump` against ffprobe, PES for PES |
 | `tests/tsFixtures.ts` | Hand-built TS for the ts-splitter and unixfdbus-core suites |
 | `tests/fixtures/restamp/*.expect.json` | Expectations of the synthetic arrival traces; each names the `fixture_gen` command that regenerates its trace |
+| `tests/fixtures/cap-occ-1080i-h264-mp2-ttx.ts`, `.expect.jsonl` | The OCC recording's first 2 MB (H.264 1080i on the PCR PID, 22 AAC PIDs whatever the name says, teletext, a 514-byte PMT ahead of each PAT) and its `mrts_cli dump`: the splitter pass-through tests (WI-P2-4) and `scn-split-passthrough` |
+| `tests/fixtures/aligner/pipelines.json`, `scn-*.expect.json` | The aligner conformance set (WI-P2-14): the runner commands the real modules build, kept as a vitest file snapshot by `packages/engine/src/child-process/testing/alignerConformance.test.ts`, and each scenario's graph, inputs and pass bounds for `aligner_conformance_test.py` |
 
 Every `tests/` directory stays in the repository and never reaches a box:
 the image and the dist tarball prune them (WI-S0-13). Run the suites from a
@@ -117,8 +119,8 @@ checkout, never from `/opt`.
 
 | Phase | What goes or stops being loaded | Why then |
 |---|---|---|
-| 2 | `tests/nativeSplitParity.test.ts` and `mrts_cli`'s splitter mode (WI-P2-4); the anchored stamper in `ts_timeline` (anchor, latch and latch repair, watch, staleness net, late/early tiers, drift servo, conditioner, their event JSON) with its tests, so `ts_timeline` keeps only `timing_pes` (WI-P2-2); the stamper's Python probe (WI-P2-3) and `unixfd-fanout.py` (WI-P2-5). `py/ts_split.py`, `py/native_parity_*.py` and `py/ts_timeline.py` stay as reference | Phase 2 deletes anchored stamping and the wire conditioner, and the splitter pass-through ends the byte parity |
-| 3 | The last runtime importers of `py/ts_timeline.py` (branch retime and the align block), the `ts_psi.h` forwarders, `native/mrpeshouse/` with the subtitle K recovery | Phase 3 deletes branch alignment, retime and K recovery |
+| 2 (done) | `tests/nativeSplitParity.test.ts` and `mrts_cli`'s splitter mode (WI-P2-4); the anchored stamper in `ts_timeline` (anchor, latch and latch repair, watch, staleness net, late/early tiers, drift servo, conditioner, their event JSON) with its tests, so `ts_timeline` keeps only `timing_pes` (WI-P2-2); the stamper's Python probe (WI-P2-3) and `unixfd-fanout.py` (WI-P2-5). `py/ts_split.py`, `py/native_parity_*.py` and `py/ts_timeline.py` stay as reference | Phase 2 deletes anchored stamping and the wire conditioner, and the splitter pass-through ends the byte parity |
+| 3 | The last runtime importers of `py/ts_timeline.py` (branch retime and the align block), `native/mrts/ts_timeline.{h,cpp}` (its `timing_pes` moved into `ts_house`), the `ts_psi.h` forwarders, `native/mrpeshouse/` with the subtitle K recovery | Phase 3 deletes branch alignment, retime and K recovery |
 | — | `py/ts_psi.py`, `py/ts_video_info.py`, `py/sps_parse.py` stay | The Python runner's `tsProbe` imports them (OQ-1) |
 
 ## Consumers

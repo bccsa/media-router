@@ -40,6 +40,14 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    the same disagreement surface again; per-consumer arrival re-stamping —
    today's model and the root cause above.
 
+   **Superseded by [[0029]] (Phase 2), with its amendments** (the 2026-09-05
+   note below, Stage 3b's drift servo, Stage 3f's conditioner and the
+   2026-10-08 house-timeline egress note). No producer latches or re-anchors
+   a source timeline: a stream is put on house time once where it enters
+   (the Phase 1 ingest restamp), and every egress stamps by identity,
+   `PES − 1 h` (`mrts::IdentityStamp`), so consumers still inherit identical
+   timing by construction.
+
    Note 2026-09-05 (the GATE01 cross-feed lipsync): the latch anchored on
    the FIRST PES a producer emitted and trusted it to have arrived at the
    source's cadence. A live network source breaks that once per (re)connect:
@@ -84,6 +92,10 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    mux can absorb (+4 s / −1 s, its input queue and latency fill), and a
    branch left as-is raises a `warning` engine event instead of a journal
    line nobody was reading.
+   Superseded by [[0029]] (Phase 2): latch repair went with the anchored
+   stamper, and `effectiveLatchRepair`, `isDeliveryLeadProducer`,
+   `repair-latch`, `--no-latch-repair` and `MR_LATCH_REPAIR` with it. The
+   branch-align caps stay until Phase 3 deletes branch alignment.
 
 3. **Running-time ≡ house-clock time.** Bus-attached synced pipelines pin
    `base_time=0`, `start_time=NONE`, so running-time equals house-clock time
@@ -98,6 +110,13 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    aliases onto it. Rejected: per-sink-only config — reproduces today's
    failure mode of independently trimmed sinks; an explicit sync-group
    construct — deferred, may return as the vehicle for auto-measured D.
+
+   **Superseded by [[0029]] (Phase 2).** In the house-clock design physical
+   outputs play as soon as they can, with no D (§8). The mechanism (the
+   route-head `playoutOffsetMs`, `effectivePlayoutOffsetMs`, the raise
+   overlay, `lipSyncMs` and `syncOffsetMs`) still runs and is removed in
+   Phase 4. Of the amendments below, the 302M output's `mixLatencyMs` and
+   `MR_LATCH_REPAIR` are gone in Phase 2.
 
    **Delivered in Stage 3** (D plumbing in 3a; the drift-slewing anchor that
    keeps D from being eaten by clock drift in 3b, below). The engine-wide default is `EngineConfig.playoutOffsetMs` —
@@ -373,6 +392,11 @@ Corrections to the above, found while building the producer side:
   host — it installs pad probes on the runner's own pipeline — and it delegates
   ALL arithmetic to `mpegts-core`, so [[0001]]'s plugin-owned-maths rule is kept
   rather than bent.
+
+  Superseded by [[0029]] (Phase 2): `--stamp-timeline` and `unixfd-fanout.py`
+  are gone; `mr-tssplit` and `mr-bus-fanout` always stamp by identity
+  (`mrts::IdentityStamp`), the fan-out after rebasing hls-player's TS onto
+  house time.
 - The gst probe is armed **lazily, per tee, on that tee's first consumer edge**
   (and disarmed on its last) rather than on every `busout_*` tee at start.
   Measured on the Pi 400 at 10.9.1.42 (2026-08-12): the eager version cost
@@ -404,6 +428,9 @@ Corrections to the above, found while building the producer side:
   `transform_ip_on_passthrough` off, so a disarmed egress never sees the buffer
   at all. **The python probe stays** as the reference implementation and the
   fallback — a box without the plugin logs a warning and runs exactly as before.
+  Superseded by [[0029]] (Phase 2): the probe is deleted; without the plugin an
+  egress runs unstamped and the module carries the rule-6 alarm, in both
+  runners. `mrtsstamp` 3.0.0 wraps `mrts::IdentityStamp`.
 - Measured on the same Pi 400 (10.9.1.42, 2026-08-12), 7 paired arms, 120 s
   settle + 60 s restart-free window each, on the routed producer (srt-input →
   mr-tssplit). Delta is against the mean of the two neighbouring legacy arms,
@@ -535,6 +562,10 @@ anchor is *not* here; it is Stage 3b, below.
   the same head is notified once, not twice).
 
 ## Implementation notes (Stage 3b — the drift-slewing anchor)
+
+Superseded by [[0029]] (Phase 2): the drift servo went with the anchored
+stamper. Phase 1's ingest restamp follows a source's clock rate through its
+virtual STC instead.
 
 The third mechanism in `TimelineStamper`, after the discontinuity watch and the
 bounded-staleness net, and the only continuous one. Both language definitions
@@ -1170,6 +1201,10 @@ failure decision 1 exists to remove.
 
 ## Implementation notes (Stage 3f — the source-timeline conditioner; the .103 vMix CBR scramble)
 
+Superseded by [[0029]] (Phases 1 and 2): no producer conditions the wire. A
+source clock step is a re-lock and a gap at the ingest restamp, and the
+conditioner, with ADR-0018's program-wide steps, is deleted.
+
 **Amends Decision 2.** Decision 2 said a producer *re-anchors* on a source
 discontinuity. That is correct but coarse: a re-anchor moves the whole egress,
 costs a monotone-floor reset, and — over a lossy relay leg — fires so often the
@@ -1257,8 +1292,18 @@ sets `start-time-selection=first`, anchoring the output at the first input
 buffer's running time — `force-live` picks the current running time on a dark
 start — so same-timeline inputs are consumed from the first buffer and the
 stamps read the house clock. Full measurement in `audio302mHelpers.ts`.
+Amended by [[0029]] (Phase 2): every 302M mixer is `alignedMixer`, non-live at
+latency 0 behind `mralignwatch`; it keeps `start-time-selection=first`, and
+takes the earliest first buffer of its pads.
 
 ## Implementation notes (house-timeline egress — transform producers, 2026-10-08)
+
+Superseded by [[0029]] (Phase 2) for the stamp: identity is the only mode,
+in `mrts::IdentityStamp` and `mrtsstamp` 3.0.0, with no `house-timeline`
+property and no `houseTimelineEgress` field, and its event is the
+`mrtsstamp-identity` log line. The retime amendments below stay until Phase 3
+deletes the retime; their muxer **Limit** (the 2.4 s window) is gone, since
+the muxer waits for data or a gap on every input.
 
 **Amends Decision 2 for transform producers.** The producer-side anchor
 (`anchor = house time of the first egress PES`) is right for a NETWORK

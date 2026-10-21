@@ -9,8 +9,8 @@ not reopened here. This ADR is the living record the design calls for: it
 records the choices the design left to the engineer (§13.3 and the
 implementation plan's open-question register), one section per phase, and
 it marks what each phase supersedes in the older ADRs. Phase 0, the shared
-TS module (S0) and Phase 1 are below; Phases 2–5 append to this file when
-they land (`docs/house-clock-timing-implementation-plan.md`).
+TS module (S0), Phase 1 and Phase 2 are below; Phases 3–5 append to this file
+when they land (`docs/house-clock-timing-implementation-plan.md`).
 
 Every phase is a cut-over (§13.1): the mechanism a phase replaces is deleted
 in the same release, with no engine flag, no legacy arm and no in-app
@@ -848,3 +848,748 @@ design's §5.2 keeps the general rule.
   time (Phase 0, corrected above): video-encoder's card shows no output
   lateness, because the reporter hides a window of 1 h or more. Proposed
   fix: that tap with `reference=running-time`, exact under any base time.
+
+## Phase 2 (built 2026-10-16 to 2026-10-18, gate pending) — identity only, the splitter passes through, aligners wait
+
+After Phase 2 every bus egress stamps by identity, `PES − 1 h`, and nothing
+between ingest and egress estimates, conditions or re-anchors time (§6
+item 7). The anchored stamper, latch repair, the drift servo and the wire
+conditioner are deleted with their runner and engine glue. The ts-splitter
+passes PES and the program PCR through; the HLS fan-out puts hls-player's TS
+on house time once; and every aggregation point (the 302M mixers, the
+audio-processing interleave, the mpegts-muxer) takes its inputs on content
+time through `mralignwatch`, waits for data or a gap on each and drops
+nothing late. The ducker runs in the pipeline, on content time. WI-P2-0 to
+WI-P2-15 were built code only, on the dev Pi 5 with GStreamer 1.28.2; the
+gate checks (WI-P2-16, plan chapter 6 part 11), the field captures of part
+7.4 and the capture-based conformance runs are still to do. The plan's
+register (chapter 15.4, rows B-49 to B-78) holds the same records with their
+work items.
+
+### Identity is the only stamp mode (WI-P2-2, WI-P2-3)
+
+- **`mrts::IdentityStamp`** (`ts_house.{h,cpp}`) holds the rule
+  `stamp_house` held, with its state per stream: a stream's timing PID is
+  its first PCR carrier; its first timing PES (`timing_pes`: a video or
+  audio stream_id, or any PES on the timing PID) gives
+  `house_from_mux_pts(PTS, house_now)`; a buffer whose PES are none timing
+  is stamped at arrival; a PES-less buffer repeats the stream's last stamp
+  (arrival when it is the stream's first). Stamps never fall within a
+  stream, and the floor starts at 0, because libmrbus reads a negative stamp
+  as "stamp at send". API: `stamp(data, len, house_now, stream)`,
+  `first(stream, &pid, &stamp, &pts)` (the stamp before the floor, the old
+  anchor event's value) and `reset()`. The draft had one timing PID per
+  instance; `mr-tssplit` stamps every output through one instance with
+  stream = PID, and a shared timing PID would have stamped a KLV output at
+  arrival.
+- **Pinned by vectors** recorded from the old house-timeline mode before it
+  was deleted: its two ladder cases and a corpus of 300 scenarios (38,708
+  buffers of one to three streams, with steps, 33-bit wraps, late PCRs and
+  garbage), checksum `0x047423b83c74b0a7`. The Python reference
+  (`TimelineStamper(house_timeline=True)`, one instance per stream) gives the
+  same stamps. The one intended difference is several streams through one
+  instance.
+- **`ts_timeline` keeps `timing_pes` only**, 30 lines: the stamper, latch,
+  watch, staleness net, late/early tiers, drift servo, conditioner and their
+  event JSON went (−3,184 lines with tests), and every binary that linked
+  them is about 70 KB smaller. `IdentityStamp` calls `timing_pes`, so Phase 3
+  moves that rule into `ts_house` instead of deleting it. `py/ts_timeline.py`
+  stays as the reference (OQ-1); its docstrings still describe the C++ port
+  that is gone.
+- **`mrtsstamp` 3.0.0** stamps by identity only. Properties `active`,
+  `copy-count`, `bytes-total`, `coalesce`, `coalesced-lists`; messages
+  `mrtsstamp-identity` (pid, stamp, pts; once per arm), `-segment-warning`,
+  `-map-failed`. The identity path is Phase 1's: the clock time is
+  `house_now`, a stamp maps to running time `max(stamp − base_time, 0)` and
+  back through the segment, PTS = DTS; a gap marker leaves with its PTS,
+  duration and flags and no DTS; a buffer list holding a marker is chained
+  member by member and any other list is coalesced (ADR-0011). Every change
+  of `active` forgets the stream.
+- **One log line per arm, the same words in both runners** after their
+  prefix: `busStamp <tee>: identity egress: first PES pid=0x<hex>
+  stamp=<ns> pts=<90 kHz>`, after `busStamp: identity egress armed on <tee>
+  (PES - 1 h, native mrtsstamp)`. No engine event.
+- **No Python probe.** Without `libgstmrtsstamp.so` a producer's egress runs
+  unstamped and the module carries the rule-6 alarm in both runners: a
+  `warning` of kind `timing_plugin`, detail `libgstmrtsstamp.so not loaded,
+  tried <paths>`, with `started.timingPlugin` null so the engine does not
+  clear it. The plugin is loaded only for a pipeline with a `busout_*` tee,
+  so a consumer never tries or misses it. `gst_stamp_probe.py` is deleted,
+  and both loaders' `alarm()` is public so the stamper raises the loader's
+  own event.
+- **Gone with it:** the description fields `latchRepair`,
+  `houseTimelineEgress` (eleven modules declared it; the plan named four)
+  and `preserveSourceTimeline` (with its type, the Python runner's code and
+  the transcoder's and audio-transcoder's x-advanced setting; stored values
+  are ignored, OQ-33); `isDeliveryLeadProducer`, `latchRepair.ts`,
+  `MR_LATCH_REPAIR`, `MediaRouter.getUpstreamBusProducers`; the runner drift
+  timer and the `timeline_*` events. The playout rebase warning names
+  "identity unwrap" as its cause.
+- **subtitle-core** stamps its three suites with a local identity helper,
+  equal to the reference on 10,832 stamps; `subtitle_stamp_dump.py` is
+  retired and `stamp_model_vectors.txt` frozen. The engine test's −600 s
+  jump went: on an identity bus content only moves forward, since the
+  restamp turns a source jump into a gap.
+- **Open (B-53).** An egress armed mid-stream whose first buffer carries no
+  timing PES (a 302M or Opus PES before the first PCR, or no PES) is stamped
+  at arrival, and the floor holds what follows until its content passes
+  that arrival: +100, +79, +58 and +36 ms on the first four buffers at
+  100 ms of content lag. With identity the only mode, every 302M and Opus
+  egress meets this at each arm, a mixer's by its pace. The same happens
+  mid-stream to a buffer of private PES alone (a KLV or teletext cue at a
+  muxer's egress): it is stamped at arrival, and the A/V buffers after it
+  are held at that stamp until their content passes it, for at most the
+  egress's content lag. Neither loader checks `mrtsstamp`'s version either,
+  so a stale 2.x copy would load and stamp anchored, without an alarm.
+
+### The splitter passes the stream through (WI-P2-4)
+
+- **`mr-tssplit`** keeps `SplitterCore` (the PSI carousel; the program PCR
+  copied onto non-PCR outputs at least 10 ms apart) and stamps each output
+  buffer `identity_.stamp(data, len, mono_ns(), pid)`. The stamper, the
+  conditioner, the `timeline` stats object, `--stamp-timeline` and
+  `--no-latch-repair` are gone; either flag is now `unknown arg`, exit 2.
+  Phase 0's lateness window per output stays.
+- **Gap markers cross the splitter** (R-P1-5). unixfdsink and unixfdsrc copy
+  GstBufferFlags over the wire, and libmrbus gained additive overloads that
+  carry them: `BusClient` with `OnBufferEx(data, len, pts_ns, flags)`,
+  `FanoutServer::broadcast(…, flags)` and `BUFFER_FLAG_GAP`. A GAP-flagged
+  input buffer bypasses the core. Each of its packets that
+  `read_gap_length` reads as a marker on an output's PID first flushes that
+  output's pending data, then leaves alone, with the input buffer's PTS and
+  flags, unstamped (its PTS is already house time) and counted in the
+  output's lateness window. Other packets of a GAP buffer are not
+  forwarded. Flags pass as they come, so a GAP-only marker (B-20) would
+  cross the same way.
+- **Tested on a field capture**: the OCC recording's first 2 MB
+  (`cap-occ-1080i-h264-mp2-ttx.ts`: H.264 1080i on the PCR PID, 22 AAC PIDs
+  whatever the name says, teletext, a 514-byte PMT ahead of each PAT),
+  rebased onto house time. Each output's PES are byte-identical to the
+  input PID's (sha-256, and `mrts_cli dump` crc32 per PES); every injected
+  PCR is an input PCR, at least 10 ms apart; every stamp follows
+  `IdentityStamp`'s rule; there is no timeline event; a marker leaves alone
+  with its PTS and flags. The parity vitest and `mrts_cli`'s splitter mode
+  are deleted.
+- **What the rule means on a splitter.** A video buffer whose first PES is a
+  B-frame below the last stamp is held at the floor (9 of 76 here), and a
+  private output is stamped at arrival until discovery injects a PCR on it
+  (about 0.23 s of this capture, whose PMT comes before its PAT). Noted,
+  pre-existing: `SplitOutput::last_cc` starts at 0, so a PCR injected into
+  an output's first batch shows one CC discontinuity.
+
+### The HLS fan-out puts hls-player on house time (WI-P2-5, OQ-18)
+
+- **Where.** hls-pipe passes the origin's PTS through, so an identity stamp
+  alone would put origin time on the bus. The plan placed the fix in
+  hls-player's TS writer, which would be a second TS-timing writer, in
+  TypeScript and in another repository (bccsa/hls-pipe; §11.5, §13.1). The
+  orchestrator moved it into the sidecar: `mrfanout::HouseRebase` in
+  `mr-bus-fanout`, plugin-owned, no GStreamer, on the mrts walker, PSI, PES
+  and PCR primitives. `packages/hls-pipe` is unchanged. `unixfd-fanout.py` is
+  deleted (C-4), and `resolveFanout()` resolves the native binary only.
+- **The rule.** PSI and stuffing pass untouched and feed discovery. The first
+  timing PES (a video or audio stream_id, or the PCR PID's) sets the shift
+  so it lands at house now, `ns_to_pts90k(now) + 1 h − PTS`: house time at
+  playout start with a media offset of 0. Every later PES PTS/DTS is moved by
+  its PID's mapping, unwrapped by an `Unwrapper` per PID (a DTS more than 5 s
+  from its PTS is written at the PTS), split headers held by `PesHeaderSpan`;
+  every PCR moves with its own PID's mapping. Each output buffer is then
+  stamped by `IdentityStamp` and broadcast with flags 0, since the raw-TS
+  ingest carries none. Before the anchor only what carries no time passes
+  (the rest is counted `dropped`), and garbage is skipped, no longer
+  forwarded. The stats line carries `"rebase": {shiftMs, reanchors, kept,
+  dropped, desyncBytes}` in place of `timeline`.
+- **The re-anchor.** Only the reference PID re-anchors: the timing PID of
+  highest rank (the PCR PID, then video, then audio); a reference with no
+  timing PES for 2 s gives way. A jump is a decode key more than 1 s
+  (`JUMP_90K`) from the PID's last key plus one spacing, the spacing being
+  the upper median of its last three steps of at most 1 s (B-21's rule). The
+  jumped PES lands at `max(last on the bus + one spacing, house now − (PTS −
+  key))` (D3): continuous while content runs ahead of house time (the paced
+  sink's 2 s prefill), at house now after a pause, never back. The PCR PID's
+  first PCR written on a new mapping carries `discontinuity_indicator`; no
+  DISCONT is set (B-20).
+- **A PID that did not jump keeps its place** (D5, revised in the fix round).
+  At a re-anchor every other timing PID absorbs the change in its own delta.
+  At its next timing PES, one that still continues its own timeline is
+  `kept`; one that jumped too takes the mapping of the reference that
+  re-anchored, so an offset kept across a discontinuity ends at a runner
+  respawn; and a PID never re-anchors the program at the PES where it joins.
+  Why: hls-pipe's inline audio continues across EXT-X-DISCONTINUITY while its
+  video jumps, and hls-player always muxes inline AV, so one shift for all
+  would put that audio minutes off at every origin encoder restart.
+- **Known edges, the owner's call.** The PES of a non-reference PID's new
+  timeline that come before the reference's first leave on the old mapping
+  (a frame or two at a runner respawn under 2 s); a stall without a source
+  jump does not re-anchor, so the output stays late by it; quick restarts
+  can add up to the prefill as early lead; a step under 1 s stays a gap or
+  an overlap; an interleaved splice judges the audio kept. Upstream,
+  hls-pipe resets its inline-audio anchor only in `seek()`, not at
+  EXT-X-DISCONTINUITY, which also bunches up to a segment of audio at a
+  discontinuity: worth an hls-pipe issue (B-55).
+
+### The aligner model (WI-P2-1, WI-P2-6; plan part 4.3)
+
+- **WI-P2-1's outcome: the non-live model holds** (R-P2-1). With every input
+  answering LATENCY `live=FALSE, min 0, max NONE`, `audiomixer`,
+  `audiointerleave` and `mpegtsmux` at `latency=0` wait for an input 3 s
+  late and lose nothing: non-live, `gst_aggregator_wait_and_check` waits with
+  no clock (gstaggregator.c:918–945). `start-time-selection=first` starts at
+  the first buffer on 600 h timestamps, and when every input is EOS the
+  aggregator sends EOS with no free-run. The live fallback (latency 5 s) is
+  not built. The test (`gst_aligner_behaviour_test.py`, 105 checks) also
+  passed against a build of gst-plugins-base 1.28.2's own `audiomixer`.
+  Four findings shaped the element: a GAP is consumed at its start, and only
+  a zero-length GAP at its end carries an aggregator through it (F2); the
+  audio aggregators drop or clip stale data only after DISCONT, a segment or
+  a jump past discont-wait (1 s), and otherwise place it by sample count
+  (F3); one input answering live turns the aggregator live (F4);
+  `mpegtsmux` writes only while every pad holds an item (F5). It writes a
+  late cue at its own PTS (F6). `mpegtsmux` has no `force-live` property:
+  it is non-live because its inputs answer so.
+- **`mralignwatch`** (in `libgstmrtshouse.so`; its core `mrts::ArrivalRhythm`,
+  `PaceGroup`, `PaceRegistry` and `GapPlanner` in `align_watch.{h,cpp}`) is a
+  plain `GstElement` that takes the place of an aggregator input's queue: a
+  FIFO released by its own task, with LATENCY answered non-live on its src
+  pad and not forwarded. Properties: `aligner` (the pace group, keyed with
+  the topmost bin), `input` (the label), `sparse`, `hold-on-eos`,
+  `seed-lateness`, `silence-factor`, `silence-floor`, `silence-ceiling`,
+  `max-size-time`, `max-size-bytes`, `tick`; read-only `state` (`waiting`,
+  `present`, `absent`), `lateness`, `pace`, `silence-limit`, `absences`,
+  `stale-buffers`, `stale-time`, `gaps`, `level-time`, `level-bytes`,
+  `full-count`, and the plugin's `abi` and counters. The `mralignwatch`
+  message carries those with `aligner`, `input` and a `reason` (`state`,
+  `interval`, `full`, `late-cue`), at every state change and every second;
+  both runners forward it unsubscribed, as they do `mrlateness` and
+  `mrtsdemux`.
+
+| Constant | Value |
+|---|---|
+| W, the silence limit | clamp(3.0 × p95 of the last 200 gaps between arrivals, 100 ms, 2 s), p95 by nearest rank; 2 s until 10 arrivals |
+| A member's lateness | The median over wall time of its last second: each stretch between two arrivals at the lateness halfway through it, a stretch over which the lateness fell left out; kept data only |
+| What counts toward the pace | That lateness, once its stretches span 0.5 s, a third of the window counts and it is not falling (the newer half's median at most 2 ms under the window's) |
+| The pace | max(0, its last value, every counted lateness, every seed); on a member's leave, max(0, the remaining members' seeds and last counted lateness); samples clamped to ±1 h |
+| Release | An item at its decode time (DTS, else PTS) + the pace; untimed items and events at once |
+| Tick | 20 ms |
+| Report | Every state change, and every second of running time |
+| Queue | `max-size-time` 5 s, `max-size-bytes` 0 (none; 40 MB on the muxer's routes), at most 32,768 items; full blocks upstream and counts once per episode, until drained to half of every limit |
+
+- **Choices, for the owner's veto:**
+  1. *Decode time, not PTS.* On the PTS a B-frame after its P-frame would end
+     before the horizon and be discarded, so lateness, release, horizon and
+     the stale test read DTS, else PTS; for B-frame video an aligner's
+     lateness reads higher than `mrlateness` by the reorder delay. An
+     upstream GAP is metered at its end, when a demux announces it.
+  2. *No start hold.* A non-live aggregator takes the earliest first buffer
+     of all its pads until each has one, so a late start-time input's
+     earlier content is kept.
+  3. *DISCONT* on the first data out after a discard, a gap or a rejoin, so
+     the audio aggregators place it by PTS (F3).
+  4. *Gap shapes.* Toward an audio aggregator (a `GstAudioAggregator` found
+     downstream through ghost pads once linked) an absent, held-EOS or
+     joining input is gapped one input buffer length at a time, each piece
+     pushed at its start + pace, as its data would have come, with no fence.
+     A gap forwarded from upstream goes in pieces of at most the
+     aggregator's output block, or, past 1 s, as one GAP and a fence. Toward
+     `mpegtsmux`, and for a sparse input, each tick's GAP reaches now − pace
+     and is followed by a zero-length GAP (F2's fence). The first shape had
+     the mix 21 ms later while an input was absent; the pieces hold it
+     within 0.1 ms (B-59). The cost: an input that rejoins or joins can lose
+     one buffer more.
+  5. *Silence* counts only while the task is not in a push and the sink
+     thread is not held in the element (a full queue, a serialized query):
+     held upstream is not silent.
+  6. *An input that never delivers* is absent at the 2 s ceiling. Before its
+     first gap the element pushes STREAM_START, caps when they can be known
+     and a TIME segment. The caps are upstream's when its caps query is
+     fixed, whatever the media; raw audio otherwise fixated, and above two
+     channels given `channel-mask` 0 unless upstream fixes a mask
+     (audioaggregator refuses a wide pad without one; a dark 8-channel input
+     killed the mixer before the fix round); anything else none. The first
+     upstream CAPS equal to the primed ones is not sent again (mpegtsmux
+     would resend its PAT and PMT).
+  7. *EOS* is forwarded, or with `hold-on-eos` makes the input absent once it
+     reaches the head; data after a held EOS is a rejoin.
+  8. *The pace estimator* is the table's wall-time median (B-57). WI-P2-6's
+     first build took the mean of a second's arrivals, and an upstream
+     aligner's start backlog then latched every pace downstream at
+     802–866 ms. Now a backlog, its drain and a stall shorter than W weigh
+     nothing, and a lasting slowdown is taken in about half a second.
+  9. *A pace floor of 0*: an early input is not released before its running
+     time.
+  10. *A member that joins a running group* (a group runs once any member
+      has pushed something timed; a live add, a relink, a channel-map
+      replace) is gapped at the pace from its first tick while it waits, and
+      goes absent at W as before; what it then delivers before the gaps'
+      horizon is stale. Start-time members are waited for up to W. A fresh
+      joiner used to stop a running mixer for the 2 s ceiling (B-58). A
+      joiner later than the pace by Δ loses its first Δ, which a seed saves.
+  11. *Not PLAYING*, items leave at once, as from a queue, so a non-live
+      upstream can preroll.
+- **The pace never falls by itself** (R-P2-5, §6 item 4). It rises when an
+  input slows or a slower one joins, and comes down only when a member
+  leaves (its pad released). So after a transient the module's added latency
+  stays until the slow input is removed or the module restarts; "Pace" and
+  "Waiting for" show it (below). An automatic fall-back after a steady
+  spell is with the owner (B-76) and not built.
+- **A rejoin.** When data returns after an absence, buffers ending before
+  the emitted horizon are discarded and counted (`stale-buffers`,
+  `stale-time`): the only discard after ingest (R21).
+- **B-17, a live add.** A `bus_input_add` whose branch fails to parse and
+  names an element of a plugin the loader could not use is answered with a
+  `command_error` carrying the rule-6 alarm (`kind: timing_plugin`, the
+  load detail). Nothing is stood in. The engine answers a failed add with a
+  module restart. A 302M fan-in's start description names `mrtsdemux`,
+  which has no stand-in, so that restart is refused with the same alarm;
+  elsewhere `mralignwatch` would get the `identity` stand-in both loader
+  tables carry.
+- **Found, open.** A pace rise loses content downstream (B-74): the mixer's
+  output stops once for the rise, and an aligner downstream whose W is
+  shorter reads that as silence and discards as much at its return; a
+  slewed rise is the recommended follow-up. The aligners' CPU (B-75): about
+  5.5 ms of CPU per second per element on the Pi 5, against 2 for a queue, so
+  n1-mixer-302m's N × (N − 1) matrix aligners cost 0.17 cores at 4 pairs and
+  2.2–2.6 at 16; V9 decides. A module PLAYING more than W before its inputs'
+  first data starts its aggregator on a gap's grid (B-73). A pace raised by
+  a late sparse cue is lost when a member leaves, since the recompute reads
+  seeds and counted lateness only, and the next late cue raises it again. A
+  live remove of an input whose task is blocked in a push waits until the
+  aggregator advances: up to W when another input is silent but not yet
+  absent.
+
+### 302M fan-ins on content time (WI-P2-7, -8, -9, -11; OQ-20)
+
+- **`mrtsdemux` in select mode** (in `libgstmrtshouse.so`; its core
+  `mrts::SelectDemux` in `ts_select.{h,cpp}`) is the formula demux for one
+  stream. `select` is a caps string, `audio/x-smpte-302m` the one mode it
+  knows (stream type 0x06 whose first registration descriptor is `BSSD`),
+  and `program-number` −1 means the first; both apply at start. One ALWAYS
+  src pad gets the caps and one TIME segment {start 0, base 0} when the PMT
+  shows the stream. Per PES on the selected PID, `Unwrapper::feed(pts,
+  ns_to_pts90k(clock − base_time) + MUX_CLOCK_BASE_90K)`, the seed never
+  folded to 33 bits (B-14), and PTS = DTS = `pts90k_to_ns(u −
+  MUX_CLOCK_BASE_90K)`: running time is `PES − 1 h`. The bus stamps are not
+  read. Read-only `pid`, `pes`, `gaps`, `markers`, `markers-dropped`, and the
+  plugin's counters; each output buffer carries its AES3 duration. On the
+  runners' contract clock at 662.8 h of house time (the PES field wrapped 25
+  times) every output landed on its capture PTS less the 90 kHz quantum.
+- **Gaps.** Each OQ-12 marker packet on the selected PID becomes a GAP event
+  `[end − length, end)`, `end` being the marker buffer's PTS through
+  upstream's segment, trimmed to the pad's horizon (the end of the last PES
+  or GAP it emitted) and dropped when nothing remains. So B-21's two false
+  markers after a cadence rise vanish, and an outage's 250 ms markers tile
+  instead of overlapping. A PES that starts more than two frames after the
+  horizon is a `jump` gap, a frame being the upper median of the last eight
+  clean PES spacings of at most 1 s; a PES's end comes from its AES3 header,
+  so a quantum change is no jump. DISCONT follows a gap, a CC loss (which
+  drops the PES it cut) and a bus DISCONT (which drops the open PES).
+  Markers on other PIDs, the PCR PID's included, are ignored: every marker
+  producer marks each ES PID itself.
+- **No stream within 2 s** of an episode's first PMT: one `mrtsdemux` message
+  with `reason=no-stream` (`stream=missing`), and the pad stays silent, so
+  the input's aligner reports it absent and wrong content fails soft. The
+  1 s report is the same structure with `reason=interval` and the counters.
+  The plan named it `mrtsdemux-no-stream`; both runners forward only the
+  name `mrtsdemux`.
+- **No stand-in.** A module whose pipeline names `mrtsdemux` is refused
+  without the plugin, with the rule-6 alarm. Every 302M fan-in names it, so
+  audio-mixer, n1-mixer-302m, audio-processing and audio-output-302m do not
+  start without `libgstmrtshouse.so`.
+- **The helper** (`audio-302m-core`). Every branch is `<busSrc> ! mrtsdemux
+  name=<m>_demux… select=audio/x-smpte-302m ! avdec_s302m ! audioconvert[
+  mix-matrix] ! audioresample`. The mixer and live arms end it in
+  `! audio/x-raw,rate=48000,channels=N ! mralignwatch name=<m>_aw_<hash>
+  aligner=<m> input="<connection id>" hold-on-eos=true[ seed-lateness=<ns>]`
+  into `alignedMixer`, `audiomixer name=<m> latency=0
+  start-time-selection=first ! capsfilter name=<m>_out`; the single-source
+  arm keeps ADR-0008's bypass and its queue (OQ-21). `continuationName` is
+  `<m>_out` in every arm. Removed: `pacedMixer`, `latencyMs`, `ignorePcr`,
+  `mixerLatencyNs`, `demuxes`, the 20–2,000 ms clamp and
+  `MixInputBranchOpts.branchQueueMs`; new: `AudioMixSource.seedLatenessMs`
+  and `MixInputBranchOpts.mixerName`. The branch caps stay `rate,channels`:
+  a pad dark at start primes F64LE, so the mix runs in F64 when every input
+  is dark at start (CPU only, left to V9). audio-output-302m and
+  audio-processing return `eosDrain: false`, because the held EOS made every
+  stop wait out the 6 s drain.
+- **n1-mixer-302m.** Its output mixers are `alignedMixer`s, and each matrix
+  link is `in<i>t. ! mralignwatch name=omix<o>_aw<i> aligner=omix<o>
+  input=in<i> silence-floor=500000000 ! omix<o>.`, in place of the 500 ms
+  queues and the 20 ms budget. The 500 ms floor covers `inmix<i>`'s own
+  holds (a source's W plus a tick, a pace rise); it also turns a
+  single-source relink into a 0.5 s stop at every aligned consumer
+  downstream, a trade-off for the owner (B-58). `mixLatencyMs` is gone from
+  all four modules.
+- **Removing a start-time branch.** Both runners found a live branch's src
+  pad by the name `src`, which only a live-added bin has; a start-time bin's
+  ghost pad is `ghost<N>`, so its request pad stayed on the mixer, and the
+  non-live mixer waited on it for ever. Both now take the bin's src pad
+  whatever its name (protocol case L2).
+- **audio-output-302m** (WI-P2-11) drops `alignBranchesToStamps` (the demux
+  gives content time), and `audio302mTsOffsetNs` loses the mixer term:
+  `max(0, D + trim − 100 ms)`. Both arms put `identity name=live_upstream
+  sync=true` after the continuation: behind the non-live mixer the sink saw
+  no live upstream and added no ring latency, so the mixer arm played 90 ms
+  early at D = 300 and nothing at D = 60. The identity marks the upstream
+  live for the sink; it is not ADR-0008's pacer, since nothing free-runs, and
+  it never waits. The mixer arm presents about 10 ms after the single-source
+  arm (the mixer's output block, reported as latency), as it did before, so
+  V7 is unaffected.
+
+### Audio processing: the aligned interleave and the ducker (WI-P2-10; OQ-22)
+
+- **The join.** Programme and key meet in `audiointerleave name=il latency=0
+  start-time-selection=first`, each of the four channels through
+  `mralignwatch name=il_aw_<prog0|prog1|key0|key1> aligner=il` behind a fixed
+  F32 mono 48 kHz capsfilter, so a watchdog that gaps before `deinterleave`
+  has a pad primes the real caps. A channel whose pin has two or more
+  sources takes `silence-floor` 500 ms, because an aligned mixer's stops are
+  not silence. In ducker mode the limiter sits before the interleave, in
+  keyed-gate mode after the gate, as before.
+- **`mrducker`** (`plugins/audio-processing/native/mrducker`,
+  `libgstmrducker.so`, plugin-owned per ADR-0001) is `DuckerEnvelope` in
+  C++, 4 channels in (programme 0/1, key 2/3) and 2 out. It reads the key's
+  level per 15 ms window of content time (720 frames at 48 kHz, counted from
+  the stream's first frame; the louder key channel's mean square in dB,
+  silence −120 dB) and advances the envelope by that window's content time.
+  The TS's step clamp and gain epsilon are kept, its 1 ms floor under
+  `Date.now()` deltas is dropped. The reading at a window's end sets a
+  geometric ramp across the next window, causal and without lookahead, so
+  the duck starts 0–15 ms after the key's content time. Threshold, depth,
+  attack, release and hold are live properties with the manifest's ranges.
+  It posts `mrducker` (`running-time`, `gain-db`, `key-db`, `phase`) at
+  10 Hz of content through `busReports`, and `DuckLiveThrottle` publishes at
+  most 4 Hz. The TS test cases became vectors held to 0.01 dB (the largest
+  difference is 3.3e-7 dB) before `duckerEnvelope.ts` was deleted; the
+  `sclevel` branch, `volume name=duckvol` and its PLAYING reseed went with
+  it. Measured: a key from 1,003.00 ms ducks the programme from
+  1,005.10 ms, the same frame with the key 300 ms late.
+- **`mrptskeep`** (the same plugin). The LADSPA `sc-gate-stereo` is 4 in and
+  2 out, not in place, and allocates its output without metadata, so the
+  keyed gate's output and its egress PES carried no PTS at all since the
+  module was built (2026-08-25). `mrptskeep target=dyn`, right after the
+  gate, puts each call's input PTS, DTS, duration, offsets and flags (GAP
+  cleared) on the buffer the gate made for it; frames in ≠ frames out, a
+  record from another thread or no record is an element error. After the
+  fix every buffer and PES is timed, and the gate opens at the key's content
+  time plus the limiter's 5 ms lookahead in both runs.
+- **No stand-in.** The loader row `audio-processing/mrducker/libgstmrducker.so`
+  (elements `mrducker` and `mrptskeep`, `MRDUCKER_MIN_ABI` 1) is not
+  required. A box without it logs one line, raises no load alarm and
+  refuses only a description naming one of its elements, in both runners,
+  with "Native plugin not loaded: this module needs it and cannot run until
+  the deploy is fixed." (kind `native_plugin`, detail `<tried paths>;
+  <element> has no stand-in`). Ducker and keyed-gate modes need it; a ducker
+  with nothing on its sidechain builds neither element. The two loader
+  tables are pinned equal row for row.
+- **OQ-22.** The chain's reported LSP latency (AGC, EQ, dynamics, and the
+  limiter's lookahead: 5 ms by default, up to 20) is the timing section's
+  "Processing latency" row, read with the meters each second; nothing is
+  corrected. In ducker mode the programme is that much later than the key
+  inside the interleave, so the duck lands that much early on it (inside
+  ±15 ms at the defaults). The keyed gate's limiter comes after the gate.
+- **EOS is absence** for the interleave: a single programme source that ends
+  no longer ends the module, which runs on with a silent programme while
+  the key flows and ends when every input has.
+
+### The muxer as an aligner (WI-P2-12; C-2, C-3)
+
+- **The mux** is `mpegtsmux name=mux latency=0` with `prog-map` as before; no
+  `min-upstream-latency`, and no `force-live` (1.28.2 has none). Each route's
+  branch is `[parser !] mralignwatch name=aw_<tag> aligner=mux input=<tag>
+  max-size-bytes=40000000[ sparse=true][ seed-lateness=<ns>] [! taginject
+  …]`, where `<tag>` is the route's `taginject` tag (`demux_<i>_<class>`, or
+  the slot PID on a legacy port). The klv and subtitle routes are sparse. No
+  route holds EOS, so an input's EOS reaches the mux. The per-pad queues,
+  `MUX_INPUT_QUEUE_MS`, `queueLeaky` and `queueDepthMs` are gone (C-2;
+  stored values ignored).
+- **Sparse PTS kept.** Both hook twins lost the sparse restamp and its GAP
+  keepalive (`_sparse_position`, `_arm_sparse_pad`, `SPARSE_GAP_*`); a cue
+  route's aligner fills between cues. The cue pads are retimed under a new
+  flag, `AlignBranchesToStampsConfig.privatePads`, a `transformProducer`
+  modifier that only the muxer sets and both retime twins honour: admitting
+  `private_` and `subpicture_` everywhere, as part 4.6 put it, would have
+  retimed the transcoders' subtitle pads as well. Under identity K is −1 h,
+  so a cue leaves the demux at `PES − 1 h` and mpegtsmux writes it at its
+  own PES PTS.
+- **The stall watch is gone** end to end (`inputStallWatch`,
+  `INPUT_STALL_TIMEOUT_MS`, the native runner's `stall` namespace,
+  `gst_input_stall_watch.py`, `busStallWatch`). A dark input is gapped by its
+  aligners and rejoins, and the module no longer restarts. The bus source's
+  own `watchdog` (`bus_stall`, video-player) stays.
+- **Two retime rules** (both twins, fix rounds 1 and 2). A PES that is not
+  `timing_pes` and arrives more than 5 s after its PID's last is a pause, not
+  a cut: it rejoins the newest epoch, starting from its own, that has a
+  timing PID within 5 s, at that epoch's K. With none near and no coherent
+  later epoch, it opens a fresh epoch on the old epoch's K, not on its
+  cadence. Before, a cue PID quiet for over 5 s carried a growing error
+  (−8 s, then −16 s) and the sparse aligner raised the mux pace for good
+  (240 → 7,490 ms), and a dark input that came back with a cue alone raised
+  it to 6,530 ms. The rules reach every `transformProducer` retime, AC-3 and
+  Opus on 0xBD included. The hook's prog-map and PCR edits now run under the
+  hook lock: the race aborted up to 18 of 100 eight-input starts natively.
+- **B-17 for the muxer.** Its aligners sit in hook-built branches, which the
+  rule-6 rewrite of the start description does not reach, so without
+  `libgstmrtshouse.so` every route fails to parse and the muxer fails to
+  start (and `restartOnError` loops), with the alarm already shown, instead
+  of starting with a warning. The orchestrator accepted it: release images
+  carry the plugin, and the 302M mixers cannot run without it anyway.
+- **Found.** One 90 kHz tick is lost through any tsdemux → mpegtsmux hop
+  (both conversions floor, so a PTS with t mod 9 ≠ 0 comes out t − 1), and
+  tsdemux's own time for a cue is its PCR estimate, ±20 ms, which
+  `privatePads` replaces with the cue's PES. Open: the bus ingress `queue
+  leaky=2 max-size-time=5 s` drops the first buffer back after a silence of
+  more than 5 s when a second buffer arrives before the queue's thread
+  takes it (B-68; a byte-only bound is recommended), and mpegtsmux reads
+  `prog-map` under its own lock when it creates a pad's stream, so a hook
+  edit after data reached the mux can still race (R1; listing every spill
+  PID up front would close it).
+
+### The sparse rule (C-3)
+
+A sparse input (`sparse=true`) is never declared absent. It drops upstream
+GAP events (tsdemux's are not on content time), and between cues it is
+gapped to now − pace on every tick, with the fence (F5: a pad without an
+item would stall the mux). A cue that ends before the emitted horizon raises
+the group's pace to its lateness and is forwarded at its own PTS, so
+`mpegtsmux` writes it late (F6), with a `late-cue` message (`cue-start`,
+`cue-lateness`, `cue-behind`); the engine logs "Input <label>: cue after its
+time, forwarded late, pace raised by <ms> ms". Nothing after ingest is
+discarded for being late (P11). Producer-side gap signalling for sparse
+producers (§11.5 item 10) waits for Phase 3's demux, because `tsdemux` would
+not forward it. Measured (`scn-mux-klv`): every KLV and teletext cue at its
+input PES PTS (0 ticks), two equal cues in FIFO order, no stall between cues
+and no pace rise after a 7 s pause.
+
+### The engine: start seeds and the aligner display (WI-P2-13)
+
+- **Seeds.** `PluginModule.getTimingSummary?()` (implemented by
+  `GstPluginBase`, delegated by `ModuleInstance`) is a module's last
+  published timing. `MediaRouter.getModuleBusSources` adds `seedLatenessMs`
+  while the producer runs: the mean of its own output when it lists one per
+  bus port, else its merged output mean. The 302M helper and the muxer render
+  it as `seed-lateness`. A seed is a floor of the pace for the member's life,
+  so a consumer built during a producer's transient keeps it (B-71).
+- **Rows.** The engine consumes `mralignwatch:<element>` before
+  `onPluginEvent`, as it does `mrlateness`. Per input (`timing-in-<n>`):
+  State (waiting, present or absent), Silence limit (ms), Absences and
+  Discarded on rejoin (ms; the watch's `stale-time`, which also counts a late
+  joiner's trim); a dark input keeps its row without a lateness. In
+  `timing`: Pace (ms), the largest added latency of any aligner over its
+  fastest present member, and Waiting for, every absent input or else the
+  slowest present member of the aligner that adds the most. When Waiting for
+  is shown, Phase 0's Slowest input is not. A watch whose `input` is a bus
+  connection id joins that edge's tap row; `GstPluginBase.alignerInputOf()`
+  is the hook for any other label.
+- **Warnings** (`OwnedWarning`, taken only over `ok` or their own text,
+  ADR-0010 rule 2): `input-absent`, "Input <label> silent for <W> ms —
+  continuing without it", one text for every absent input, cleared when all
+  are back; and `aligner-full`, "Input <label> queue full — upstream held",
+  until the queue has drained to half of where the episode began. Both are
+  re-asserted at PLAYING and after a description refresh. Lateness itself
+  stays display only (OQ-8): these warn of an absent input and a full
+  queue, never of lateness. Log events: "Input <label> back after <ms> ms
+  absent[; <ms> ms discarded as stale]" (only absent → present: a late
+  joiner's trim, a flush or a runner respawn is no rejoin) and the late cue
+  above.
+- **Not built yet.** The muxer's route watches, n1's matrix links and
+  audio-processing's interleave carry internal labels, so they show as rows
+  of their own, and one dark muxer input is named once per route (`Input
+  demux_1_video silent …`); an `alignerInputOf` of about 8 lines per module
+  is the follow-up (B-70). Part 10's "No matching stream" warning and the
+  demux counters: both runners forward `mrtsdemux:<name>`, and no engine
+  code reads it yet.
+
+### Conformance (WI-P2-14)
+
+- **Synthetic streams.** None of part 7.4's field captures exist yet, so
+  every scenario runs on streams the harness builds: 302M through
+  `avenc_s302m ! mpegtsmux alignment=7` with each input's content keyed to
+  its absolute sample index, so it is found in a mix to the sample, on the
+  10 ms grid where ticks, ns and samples convert exactly; KLV and teletext
+  from `cue_egress`; GStreamer-made H.264, AAC and Opus; the OCC trim. The
+  runner commands are the real modules' builder output, kept as a vitest
+  file snapshot (`plugins/mpegts-core/tests/fixtures/aligner/pipelines.json`),
+  so a builder change fails vitest until the snapshot is rewritten; the
+  expectations sit beside it.
+- **Eight scenarios in both runners** (`aligner_conformance_test.py`, 157
+  checks): `scn-align-absent-rejoin` (absent about 101 ms after its last
+  data left its watchdog at W = 100 ms, output lateness while absent
+  22.8 → 22.8 ms, 199–200 stale buffers at the return),
+  `scn-align-slow-joiner` (one output gap of 500 ± 25 ms, the pace up
+  500 ms), `scn-align-late-delivering` (1.5 s late: every block mixed, no
+  absence), `scn-align-bursty` (W within 3 % of 3 × p95), `scn-align-wrap`
+  (the house clock really crosses 2^33, in a time namespace, `unshare -T`:
+  no step), `scn-mux-klv`, `scn-837-ducker-mixer` (the ducker's egress PES
+  PTS equal its input's, 2,250 of 2,250; the mix equals the ducker output
+  plus the key in every sample) and `scn-split-passthrough`. Lengths are cut
+  for CI (16–60 s; the plan's 90 s and 10 min belong to the rigs). The
+  module starts 0.7 s before its producers' data, as on a box.
+- **Protocol cases in both runners:** L rebuilt on the helper's live branch
+  (add, remove, a dead producer's branch, the joiner at `PES − 1 h` from its
+  first kept buffer); L2 (a start-time branch removed); P with a third input
+  carrying KLV under `privatePads` (67 of 67 cues at 0 ticks; P's flake 0 in
+  200 legs, against 3 in 200 at the W0 baseline); `aligner-absent`;
+  `native-plugins` (the four elements of both plugins in one module, their
+  messages forwarded).
+- **For WI-P2-16:** the capture list of part 7.4, now recorded on .103,
+  .111, .22 or .50 (.108 is in production); a PES PTS maps to the sample
+  `ceil(ticks × 48000 / 90000)`.
+
+### As-built deviations, by work item
+
+Each item recorded these against its brief for the owner's veto; the
+sections above give the reasons, the register rows the work item.
+
+- **WI-P2-0**: setup only; git 2.39 gave the linked worktree its own module
+  store, so hls-pipe was cloned over the network (B-49).
+- **WI-P2-1**: as planned; the plan text its findings correct is listed in
+  B-50 (no `force-live` on `mpegtsmux`; the GAP fence; DISCONT before a
+  clip).
+- **WI-P2-2a**: `first()` takes the stream, reports the stamp before the
+  floor and accepts null out-pointers; no Python twin (B-51).
+- **WI-P2-2b**: the acceptance grep scoped (B-51); `busRunnerContract.test.ts`'s
+  two `TimelineStamper` guards merged into one; a fourth comment edit
+  (`PacedTsSink.test.ts`); README rows beyond the two named; `ts_timeline.h`
+  no longer includes `ts_house.h`; the cut test is new direct `timing_pes`
+  cases, since no old case called it.
+- **WI-P2-3**: the stamper loaded only for a pipeline with a bus egress;
+  `started.timingPlugin` null while it is missing; `alarm()` public in both
+  loaders; `MR_LATCH_REPAIR` gone with `latchRepair.ts`; "identity unwrap"
+  in the operator text; the subtitle engine test's −600 s jump dropped;
+  protocol case B2's wire check from the first PCR-carrying buffer (B-52,
+  B-53).
+- **WI-P2-4**: markers checked per packet, and counted in the output's
+  lateness window; two test-server options (`--insert`, `--pace-us`) and a
+  `build-host.sh` comment outside the ownership list; the expectation named
+  `.expect.jsonl`; the fixture a true head, starting mid-PES with its PMT
+  before its PAT (B-54).
+- **WI-P2-5**: D1 to D12 (B-55): the rebase in the sidecar; the 1 s jump on
+  the reference PID only; the landing `max(continuous, house now)`; the
+  reference rank; kept PIDs; the spacing as an upper median of three;
+  nothing timed before the anchor; garbage not forwarded; flags 0 and no
+  DISCONT; no Python prototype; the missing-binary error text kept; DI on
+  the PCR PID's first PCR on a new mapping.
+- **WI-P2-6**: choices 1 to 11 of the aligner section (B-56), among them an
+  upstream GAP metered at its end (recorded by its verify); the pace
+  estimator it built was replaced in WI-P2-8+11's fix round (B-57);
+  `busRunnerContract.test.ts`, the mpegts-core README and a `.gitignore`
+  line edited outside its ownership.
+- **WI-P2-7**: no PCR-PID fallback for markers; the no-stream warning as
+  `reason=no-stream`; the trim baseline and the jump hole measured from the
+  pad's horizon; a PES's end from its AES3 header; a data DISCONT resets the
+  walker; a PES without PTS, or before 0, leaves untimed; with no clock the
+  seed is the PES; five extra read-only properties; the const `feed` a
+  constrained template (B-60).
+- **WI-P2-8+11**: audio-output-302m's `identity sync=true` (B-62);
+  `MixInputBranchOpts.branchQueueMs` removed and `mixerName` added; `<m>_caps`
+  gone; no pinned format; comments made true in the call-site modules; in
+  its fix round `eosDrain: false` in two modules (B-61) and the pace
+  estimator in WI-P2-6's files (B-57).
+- **WI-P2-9**: `outName` `omix<o>_out`; no `hold-on-eos` on matrix links;
+  the removed setting tested without naming it; in its fix round the
+  late-join rule in WI-P2-6's element, the matrix floor and the runners'
+  start-time remove fix (B-58).
+- **WI-P2-10**: the window, the content-time dt, the causal ramp, the
+  10 Hz cadence; no stand-in, refused with a sentence of its own (fix
+  round); the interleave's caps and floors; the Processing latency row
+  through an engine hook outside the plugin; `duckerStage.ts`; GAP in, gap
+  out; the `duckvol` reseed gone; `mrptskeep` and the keyed gate's need for
+  the plugin (fix round); EOS as absence (B-63, B-64).
+- **WI-P2-12**: `privatePads` instead of a global admission (B-65);
+  `taginject` after the aligner; no `hold-on-eos`; the seed passed through;
+  `MuxRoute.sparse` gone; `eosDrainContract.test.ts` re-pinned; B-17 for the
+  muxer (B-66); in its fix rounds the two retime rules and the hook lock
+  (B-67).
+- **WI-P2-13**: `ModuleInstance.ts` touched outside the ownership list;
+  `ModuleTimingInput.lateness` optional; Waiting for and Pace per aligner;
+  the seed per bus port; two log events beyond the brief; the
+  `alignerInputOf` hook (B-70).
+- **WI-P2-14**: the runner commands a committed vitest snapshot; the module
+  started 0.7 s before its data; late-delivering modelled as an input that
+  has run late for a while; the absence bound from the data leaving its
+  watchdog; a stalled link for the absence scenarios; the wrap in a time
+  namespace; `scn-mux-klv` on Python-built video; 837's no-fill check as a
+  residual; case L rebuilt in place; case P's KLV as a third input; CI
+  lengths (B-72); in its fix round the gap pieces in WI-P2-6's element
+  (B-59).
+
+### What this phase supersedes
+
+- **ADR-0005**: decision 2 (the producer latch and its re-anchor) with its
+  2026-09-05 latch-repair note, Stage 3b's drift servo, Stage 3f's
+  conditioner and the 2026-10-08 house-timeline egress note; decision 4
+  (playout offset D), whose mechanism still runs and goes in Phase 4.
+  **ADR-0018** whole (the conditioner's program-wide steps). **ADR-0008** in
+  part (OQ-21): rule 1 (force-live mixers paced by `identity sync=true`),
+  the 2026-09-03 addendum's `mixerLatencyNs`, the 2026-10-02 addendum's
+  drain and cost sentences and the 2026-10-05 amendment (`ignore-pcr`, the
+  20 ms floor); rule 2 (chain only from `continuationName`) and rule 3 (the
+  single-source bypass) stand. Each now points here.
+- **Amended**, a few lines each: ADR-0001 (the Python probe and
+  `unixfd-fanout.py` are gone), ADR-0002 (`alignedMixer`; exception 2
+  without the probe), ADR-0015 (no stall watch: a full aligner blocks and
+  warns), ADR-0016 (identity, not the anchored stamper, applies
+  `timing_pes`), ADR-0017 (sparse routes: no restamp, no GAP timer), ADR-0019
+  (no stall watch, no `preserveSourceTimeline`; neither runner has a Python
+  stamping fallback) and ADR-0022 (`mixLatencyMs` left the shared keys).
+- **This ADR's earlier sections.** Phase 0's display-only lateness gains the
+  aligners' two warnings. S0 choice 1's runtime importers of the Python
+  reference are gone except branch alignment and retime (Phase 3). S0
+  choice 6's open live-add case is B-17 above, and the muxer does not start
+  without the plugin. In Phase 1, "`mr-tssplit` and `mr-bus-fanout` still
+  write `flags = 0`" no longer holds for the splitter, which forwards
+  markers; the fan-out's raw-TS ingest has no flags to forward. Phase 1's
+  identity egress section names anchored egresses and a Python probe, both
+  deleted here.
+
+### Deleted in this phase
+
+`TimelineLatch` and `TimelineStamper` (anchor, latch repair, watch,
+staleness net, late/early tiers, drift servo, conditioner) with their event
+JSON and `drift_stats_json` (C++; the Python reference stays, OQ-1);
+`gst_stamp_probe.py`; mrtsstamp's anchored properties and messages; the
+runner drift timer; `latchRepair`, `houseTimelineEgress`,
+`preserveSourceTimeline`, `isDeliveryLeadProducer`, `latchRepair.ts`,
+`MR_LATCH_REPAIR`, `getUpstreamBusProducers` and
+`gst_preserve_timeline_test.py`; `subtitle_stamp_dump.py`; the splitter's
+stamper, conditioner and flags, with the parity vitest and `mrts_cli`'s
+splitter mode; `unixfd-fanout.py` and `--stamp-timeline`; `pacedMixer`,
+`ignorePcr`, `mixerLatencyNs`, `OUTPUT_MIX_LATENCY_NS` and the 500 ms matrix
+queues; `duckerEnvelope.ts`, the `sclevel` branch and `duckvol`; the mux's
+2.4 s window and pad queues, the sparse restamp and GAP timers in both hook
+twins, and the input stall watch end to end; the settings `mixLatencyMs`
+(audio-mixer, n1-mixer-302m, audio-processing, audio-output-302m),
+`queueLeaky` and `queueDepthMs` (mpegts-muxer) and `preserveSourceTimeline`
+(transcoder, audio-transcoder), their stored values ignored (OQ-33).
+
+### Open at the end of the build
+
+- WI-P2-16 on the rigs (V1–V12), the part 7.4 captures and the
+  capture-based conformance runs.
+- For the owner: R-P2-5's fall-back (B-76), the pace-rise slew (B-74), a
+  module started more than W before its data (B-73), the seed latch (B-71),
+  the 500 ms matrix floor (B-58), the ingress queue's time bound (B-68), the
+  identity egress findings (B-53), and the engineering choices of rows B-50
+  to B-67, each recorded for the veto.
+- Engine follow-ups: the muxer's, n1-mixer-302m's and audio-processing's
+  `alignerInputOf`, and part 10's demux rows (B-70); the pace estimator's
+  third-share threshold, re-derived from real captures with a Pi 4 among
+  them, and an incremental median in place of a sort per arrival (B-57); a
+  floor for the gap piece's length, which a short last buffer before an
+  absence can bring to 1,000 GAP events a second, and the audio gap shape's
+  need for a directly linked aggregator (B-59).
+- B-20 is unchanged in code: markers carry GAP | DISCONT, every Phase 2
+  reader keys on GAP, and dropping DISCONT is still one line. B-23
+  (`mrasrc`'s stand-in) belongs to the Phase 1 close.
+- Comments that still name a deleted mechanism wait for a code change:
+  `PluginModule.ts` (the `eosDrain` comment blames a force-live aggregator,
+  which drained in 0.01–0.03 s on the dev box's 1.28.2; the `hold-on-eos`
+  aligners are what never drain), `GstPluginBase.ts` ("House clock and
+  stamper policy"), `shared-types/src/moduleTiming.ts` ("display only, no
+  alarm"), `queueBounds.ts` ("the mpegts-muxer per-pad queues"),
+  `branch_retime.cpp` ("a drop (latch repair)"), `ingest_restamp_fixture.py` and
+  `gst_ingest_restamp_test.py` (`ts_timeline.cpp`'s `stamp_house`),
+  `ts_pes_test.cpp` ("until WI-S0-6 folds them in"), the `py/ts_timeline.py`
+  and `py/ts_split.py` docstrings (a C++ port and a parity suite that are
+  gone), `hls-pipe-runner.ts` ("unixfd-fanout sidecar"), and hls-player's
+  missing-binary error, which still suggests `pnpm build`.

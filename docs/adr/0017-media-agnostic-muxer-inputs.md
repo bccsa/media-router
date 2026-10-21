@@ -134,7 +134,12 @@ to ride a muxed program to reach a remote site, so the muxer must carry them.
   arrival (ADR-0016), so the PES leaves the mux beside the video of the same
   instant. GAPs placed at "now − latency" were consumed at once and paced the
   video in 500 ms steps — the position is the running time, not minus the
-  aggregator's budget.
+  aggregator's budget. Superseded by [[0029]] (Phase 2): the hook no longer
+  touches timestamps and `MuxRoute.sparse` is gone. The muxer is non-live at
+  latency 0, each route enters it through `mralignwatch` (`sparse=true` on
+  klv and subtitle routes, which fills between cues with gaps), and the cue
+  pads are retimed to their own PES under `privatePads`, so a cue is written
+  at its content time.
 - `data` (anything tsdemux exposes that is none of the four classes) is never
   routed: `mpegtsmux` has no sink caps for it and a failed request-pad link is
   a pipeline error.

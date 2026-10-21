@@ -69,6 +69,14 @@ The python-probe stamping fallback does not exist natively: a box without
 log). The plugin ships in every image and is resolved the same way
 (plugins tree, then `/usr/libexec/media-router/mpegts-core`).
 
+Amended by [[0029]] (2026-10-18, Phase 2): `preserveSourceTimeline` and
+`inputStallWatch` are deleted from both runners, so the refusal list is
+`rist`, `readKlvNames` / `set_klv_payload`, `useStdioForData` and hooks with
+no native form (the net `clock` went in Phase 0). The python runner has no
+stamping probe either: without `libgstmrtsstamp.so` both runners run an
+egress unstamped with the same rule-6 `warning`, and both load the plugin
+only for a pipeline with a `busout_*` tee.
+
 ## Consequences
 
 - The binary lives in `packages/engine/native/mr-gst-runner/` — it is the

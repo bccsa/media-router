@@ -30,7 +30,10 @@ failure mode and the byte cap costs nothing on a healthy stream.
   cap never fires on a healthy path and adds no latency.
 - On a NON-leaky queue the cap blocks instead of dropping — the same failure
   mode the time bound already has; the input stall watch turns the stall into
-  a restart.
+  a restart. Amended by [[0029]] (Phase 2): the stall watch is deleted, and a
+  muxer route's queue is its `mralignwatch` (5 s, `max-size-bytes` =
+  `tsQueueByteCap(5000)`), which blocks upstream when full and raises the
+  module's `aligner-full` warning; nothing restarts.
 - Raw video (1080p50 I420 ≈ 1.2 Gbit/s) would shed constantly under this cap,
   hence the exemption. `buildLeakyQueue` / `buildBackpressureQueue` default to
   `maxBytes = 0` so an unconverted caller stays exactly as it was.
