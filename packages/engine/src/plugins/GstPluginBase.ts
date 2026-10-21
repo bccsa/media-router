@@ -12,7 +12,6 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
-import { effectiveLatchRepair } from './latchRepair.js';
 import {
     DEFAULT_PLAYOUT_OFFSET_MS,
     PLAYOUT_OFFSET_KEY,
@@ -165,24 +164,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      *  system clock with `base_time = 0` (§4.1), so producer-stamped bus PTS is house time and
      *  `now − PTS` is lateness. Nothing is resolved or awaited, so this never delays a start. */
     private applyTimeSync(desc: PipelineDescription): void {
-        // Modules still declare `preserveSourceTimeline`, which the producer stamps replaced and
-        // which does not compose with them: its pad offset cancels in `anchor + (PES − firstPES)`,
-        // and on a discontinuity it errors out to re-latch where the stamper re-anchors in place.
-        delete desc.preserveSourceTimeline;
-        // The stamper's latch-repair window is a property of the SOURCE at the
-        // head of this module's bus chain (an hls-player anywhere upstream
-        // turns it off), resolved from the graph like the playout offset.
-        desc.latchRepair = effectiveLatchRepair(this.services);
-        // Which clock variant a module got is the first thing to establish
-        // when its egress bursts, and whether it stamps by identity the first
-        // thing when a route's A/V is off; invisible from anywhere else.
+        // Which clock variant a module got is the first thing to establish when its egress
+        // bursts; invisible from anywhere else. Every egress is stamped by identity, PES − 1 h.
         const liveCaptureClock = desc.liveCaptureClock === true;
         this.log.info(
-            {
-                liveCaptureClock,
-                latchRepair: desc.latchRepair,
-                houseTimelineEgress: desc.houseTimelineEgress === true,
-            },
+            { liveCaptureClock },
             liveCaptureClock
                 ? 'House clock: monotonic, base_time=natural (live capture), producer-stamped bus PTS'
                 : 'House clock: monotonic, base_time=0, producer-stamped bus PTS',

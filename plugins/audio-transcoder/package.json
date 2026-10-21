@@ -146,13 +146,6 @@
                     "title": "Buffer",
                     "description": "Keep low; its fill adds latency at downstream muxers. Raise for HLS or bursty sources."
                 },
-                "preserveSourceTimeline": {
-                    "type": "boolean",
-                    "default": true,
-                    "x-advanced": true,
-                    "title": "Preserve Source Timeline",
-                    "description": "Keep source timestamps so muxers align audio with video and lip-sync survives restarts."
-                },
                 "pcmBitDepth": {
                     "type": "number",
                     "enum": [16, 24],

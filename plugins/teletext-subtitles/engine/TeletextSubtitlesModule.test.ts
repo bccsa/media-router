@@ -76,7 +76,6 @@ describe('buildPipeline', () => {
         expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
         expect(desc.pipeline).not.toContain('tsdemux');
         expect(desc.runnerHooks).toBeUndefined();
-        expect(desc.houseTimelineEgress).toBeUndefined();
         expect(desc.runner).toBeUndefined();
         expect(desc.alignBranchesToStamps).toBeUndefined();
         expect((module as any).setHealth).toHaveBeenLastCalledWith(
@@ -134,7 +133,6 @@ describe('buildPipeline', () => {
         // bus stamps, and the KLV egress stamps by identity (PES - 1 h).
         expect((desc.runnerHooks![0].config as any).sourceDemux).toBe('demux');
         expect(desc.pipeline).toContain('tsdemux name=demux ');
-        expect(desc.houseTimelineEgress).toBe(true);
         // python-only hook by decision (ADR-0016 2026-10-09), not a temporary measure
         expect(desc.runner).toBe('python');
         // branchAlign retimes only audio_/video_ pads — nothing here to align.

@@ -7,7 +7,6 @@ import type {
     RenderWatchRunnerConfig,
     KeyframeGateConfig,
     BacklogShedConfig,
-    PreserveSourceTimelineConfig,
 } from '../plugins/PluginModule.js';
 import { pluginPythonPaths, pluginsRoot } from './nativeBinaries.js';
 import { selectRunner } from './nativeRunner.js';
@@ -56,7 +55,6 @@ export interface RunnerStartOptions {
     renderWatch?: RenderWatchRunnerConfig;
     keyframeGate?: KeyframeGateConfig;
     backlogShed?: BacklogShedConfig;
-    preserveSourceTimeline?: PreserveSourceTimelineConfig;
     /** Which runner binary hosts the pipeline (ADR-0019) — see `nativeRunner.ts`. */
     runner?: 'python' | 'native';
     /** EOS-drain before a deliberate stop (default true) — `PipelineDescription.eosDrain`. */

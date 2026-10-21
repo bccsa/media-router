@@ -100,16 +100,6 @@ Outcome load_row(const Row& row) {
     return out;
 }
 
-/** The rule-6 event (`warning` or `error`) with its detail; the engine keys on `kind`. */
-void emit_alarm(const char* event, const std::string& detail) {
-    const std::string message = std::string(ALARM) + " (" + detail + ")";
-    JsonObject* ev = ipc::event(event);
-    json_object_set_string_member(ev, "kind", "timing_plugin");
-    json_object_set_string_member(ev, "message", message.c_str());
-    json_object_set_string_member(ev, "detail", detail.c_str());
-    ipc::emit(ev);
-}
-
 // --- gst-launch tokens (gst/parse/parse.l, as far as finding elements needs) ---------------
 
 enum class Kind { Element, Assign, Other };
@@ -219,6 +209,15 @@ std::string unescape(std::string v) {
 
 }  // namespace
 
+void alarm(const char* event, const std::string& detail) {
+    const std::string message = std::string(ALARM) + " (" + detail + ")";
+    JsonObject* ev = ipc::event(event);
+    json_object_set_string_member(ev, "kind", "timing_plugin");
+    json_object_set_string_member(ev, "message", message.c_str());
+    json_object_set_string_member(ev, "detail", detail.c_str());
+    ipc::emit(ev);
+}
+
 Rewrite rewrite(const std::string& s, const std::vector<Factory>& table) {
     Rewrite r;
     const std::vector<Token> toks = tokenize(s);
@@ -262,7 +261,7 @@ void load() {
         g_outcomes.push_back(load_row(row));
         const Outcome& o = g_outcomes.back();
         if (o.loaded) continue;
-        if (row.required) emit_alarm("warning", o.detail);
+        if (row.required) alarm("warning", o.detail);
         else ipc::log(o.detail + " — its elements get stand-ins");
     }
 }
@@ -292,7 +291,7 @@ bool stand_in(std::string* desc) {
         for (size_t i = 0; i < g_outcomes.size(); i++)
             for (const Factory& f : table()[i].factories)
                 if (r.refused == f.name) detail = g_outcomes[i].detail;
-        emit_alarm("error", detail + "; " + r.refused + " has no stand-in");
+        alarm("error", detail + "; " + r.refused + " has no stand-in");
         return false;
     }
     if (r.desc != *desc) ipc::log("native TS module not loaded, parsing with stand-ins: " + r.desc);

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "ipc.h"
-#include "json_util.h"
+#include "native_plugins.h"
 #include "paths.h"
 #include "runner.h"
 
@@ -16,14 +16,9 @@ namespace mr::stamper {
 
 namespace {
 
-constexpr int DRIFT_REPORT_MS = 30000;
-
 bool g_enabled = false;
 GstElement* g_pipeline = nullptr;
 int g_native_loaded = -1;          // -1 not tried, 0 failed, 1 loaded
-bool g_repair_latch = true;
-bool g_house_timeline = false;     // the payload's `houseTimelineEgress`
-guint g_drift_timer_id = 0;
 std::map<std::string, GstElement*> g_elements;   // tee name -> spliced mrtsstamp (owned ref)
 std::vector<std::string> g_armed;                 // tee names armed
 
@@ -41,13 +36,13 @@ std::string fmt(const char* f, ...) {
     return buf;
 }
 
-/** Candidate paths for the native stamper plugin, in resolution order — the
- *  deployed plugins tree first, then the packaged install root (paths.h).
- *  Mirrors `gst_stamp_native.so_paths` / `nativeBinaries.ts`; never GST_PLUGIN_PATH. */
+/** Candidate paths for the stamper plugin: the deployed plugins tree, then the install root
+ *  (paths.h). Mirrors `gst_stamp_native.so_paths`; never GST_PLUGIN_PATH. */
 std::vector<std::string> so_paths() {
     return paths::asset_candidates("mpegts-core", "mrtsstamp", "libgstmrtsstamp.so");
 }
 
+/** Once per process. A miss is rule 6: the alarm, no fallback, the egress runs unstamped. */
 bool load_native() {
     if (g_native_loaded >= 0) return g_native_loaded == 1;
     g_native_loaded = 0;
@@ -59,8 +54,7 @@ bool load_native() {
         GError* err = nullptr;
         GstPlugin* plugin = gst_plugin_load_file(path.c_str(), &err);
         if (!plugin) {
-            ipc::log(fmt("busStamp: mrtsstamp plugin at %s failed to load (%s) — egress will NOT be stamped",
-                         path.c_str(), err && err->message ? err->message : "?"));
+            tried += std::string(" (") + (err && err->message ? err->message : "failed") + ")";
             g_clear_error(&err);
             continue;
         }
@@ -70,8 +64,7 @@ bool load_native() {
         g_native_loaded = 1;
         return true;
     }
-    ipc::log("busStamp: no mrtsstamp plugin found (" + tried + ") — egress will NOT be stamped");
-    ipc::warning("time-sync contract: mrtsstamp plugin missing — this producer's egress is not stamped");
+    native_plugins::alarm("warning", "libgstmrtsstamp.so not loaded, tried " + tried);
     return false;
 }
 
@@ -102,10 +95,11 @@ std::pair<GstPad*, GstPad*> egress_head(GstElement* tee) {
     return {nullptr, nullptr};
 }
 
-void insert_elements(GstElement* pipe) {
-    if (!GST_IS_BIN(pipe)) return;
-    // Collect first, splice second: adding elements invalidates a live iterator.
+/** Every `busout_*` tee of `pipe`, as owned refs. */
+std::vector<GstElement*> busout_tees(GstElement* pipe) {
     std::vector<GstElement*> tees;
+    if (!GST_IS_BIN(pipe)) return tees;
+    // Collect first, splice second: adding elements invalidates a live iterator.
     GstIterator* it = gst_bin_iterate_elements(GST_BIN(pipe));
     GValue item = G_VALUE_INIT;
     bool done = false;
@@ -128,14 +122,16 @@ void insert_elements(GstElement* pipe) {
     }
     g_value_unset(&item);
     gst_iterator_free(it);
+    return tees;
+}
 
+void insert_elements(GstElement* pipe, const std::vector<GstElement*>& tees) {
     std::string inserted;
     for (GstElement* tee : tees) {
         std::string name = GST_OBJECT_NAME(tee);
         auto [peer, sink] = egress_head(tee);
         if (!peer) {
             ipc::log(fmt("busStamp: %s has no upstream peer — not inserting mrtsstamp", name.c_str()));
-            gst_object_unref(tee);
             continue;
         }
         GstElement* stamp = gst_element_factory_make("mrtsstamp", (std::string(ELEMENT_PREFIX) + name).c_str());
@@ -143,7 +139,6 @@ void insert_elements(GstElement* pipe) {
             ipc::log("busStamp: mrtsstamp factory missing — egress will NOT be stamped");
             gst_object_unref(peer);
             gst_object_unref(sink);
-            gst_object_unref(tee);
             break;
         }
         GstObject* parent_obj = gst_object_get_parent(GST_OBJECT(tee));
@@ -170,7 +165,6 @@ void insert_elements(GstElement* pipe) {
         if (parent_obj) gst_object_unref(parent_obj);
         gst_object_unref(peer);
         gst_object_unref(sink);
-        gst_object_unref(tee);
     }
     if (!inserted.empty()) ipc::log("busStamp: native stamper inserted on " + inserted);
 }
@@ -181,106 +175,29 @@ bool is_armed(const std::string& tee) {
     return false;
 }
 
-// --- drift report -----------------------------------------------------------
-
-struct Drift {
-    gint64 ppm = 0, ppb = 0, slew_ns = 0, margin_ns = 0, engage_ns = 0, samples = 0, window = 0;
-};
-
-bool drift_stats(GstElement* el, Drift* d) {
-    GstStructure* s = nullptr;
-    g_object_get(el, "drift", &s, nullptr);
-    if (!s) return false;
-    gint ppm = 0, samples = 0, window = 0;
-    gst_structure_get_int(s, "ppm", &ppm);
-    gst_structure_get_int(s, "samples", &samples);
-    gst_structure_get_int(s, "window", &window);
-    gst_structure_get_int64(s, "slewNs", &d->slew_ns);
-    gst_structure_get_int64(s, "marginNs", &d->margin_ns);
-    gst_structure_get_int64(s, "engageNs", &d->engage_ns);
-    d->ppm = ppm;
-    d->samples = samples;
-    d->window = window;
-    // `ppb` arrived with the dead-band removal (#751); an older native reports
-    // only the truncated ppm, which is the best it knows.
-    if (!gst_structure_has_field(s, "ppb") || !gst_structure_get_int64(s, "ppb", &d->ppb)) d->ppb = d->ppm * 1000;
-    gst_structure_free(s);
-    return d->samples >= d->window;
-}
-
-gboolean report_drift(gpointer) {
-    for (const std::string& tee : g_armed) {
-        auto it = g_elements.find(tee);
-        if (it == g_elements.end()) continue;
-        Drift d;
-        bool ready = drift_stats(it->second, &d);
-        if (g_getenv("MR_RUNNER_DEBUG"))
-            ipc::log(fmt("busStamp %s: drift tick samples=%lld window=%lld ppm=%lld ready=%d", tee.c_str(),
-                         (long long)d.samples, (long long)d.window, (long long)d.ppm, (int)ready));
-        if (!ready) continue;
-        JsonObject* ev = ipc::event("timeline_drift");
-        json_object_set_string_member(ev, "tee", tee.c_str());
-        json_object_set_int_member(ev, "ppm", d.ppm);
-        json_object_set_int_member(ev, "slewNs", d.slew_ns);
-        json_object_set_int_member(ev, "marginNs", d.margin_ns);
-        json_object_set_int_member(ev, "engageNs", d.engage_ns);
-        json_object_set_int_member(ev, "samples", d.samples);
-        json_object_set_int_member(ev, "window", d.window);
-        json_object_set_int_member(ev, "ppb", d.ppb);
-        json_object_set_string_member(
-            ev, "message",
-            fmt("egress %s drift %+lld ppm, margin %+.2f ms (engaged at %+.2f ms), anchor slewed %+.3f ms so far",
-                tee.c_str(), (long long)d.ppm, d.margin_ns / 1e6, d.engage_ns / 1e6, d.slew_ns / 1e6).c_str());
-        ipc::emit(ev);
-        log_line(tee, fmt("drift %+.1f ppm, margin %+.2f ms (engaged at %+.2f ms), anchor slewed %+.3f ms",
-                          d.ppb / 1000.0, d.margin_ns / 1e6, d.engage_ns / 1e6, d.slew_ns / 1e6));
-    }
-    return G_SOURCE_CONTINUE;
-}
-
-void start_drift_timer() {
-    if (!g_drift_timer_id) g_drift_timer_id = g_timeout_add(DRIFT_REPORT_MS, report_drift, nullptr);
-}
-
-void stop_drift_timer() {
-    if (g_drift_timer_id) {
-        g_source_remove(g_drift_timer_id);
-        g_drift_timer_id = 0;
-    }
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
 
-void enable(GstElement* pipe, JsonNode* repair, bool house_timeline) {
+void enable(GstElement* pipe) {
     clear();
     g_enabled = true;
     g_pipeline = pipe;
-    if (repair && JSON_NODE_HOLDS_VALUE(repair)) {
-        GType t = json_node_get_value_type(repair);
-        g_repair_latch = t == G_TYPE_BOOLEAN ? json_node_get_boolean(repair) : json_node_get_int(repair) != 0;
-    }
-    g_house_timeline = house_timeline;
-    if (load_native()) insert_elements(pipe);
+    std::vector<GstElement*> tees = busout_tees(pipe);
+    // No bus egress, nothing to stamp: the plugin is neither loaded nor missed.
+    if (!tees.empty() && load_native()) insert_elements(pipe, tees);
+    for (GstElement* t : tees) gst_object_unref(t);
 }
+
+bool missing() { return g_native_loaded == 0; }
 
 void arm(GstElement* tee, const std::string& name) {
     if (!g_enabled || !tee || is_armed(name)) return;
     auto it = g_elements.find(name);
     if (it == g_elements.end()) return;   // no spliced element (plugin missing / splice failed)
-    GstElement* el = it->second;
-    g_object_set(el, "repair-latch", (gboolean)g_repair_latch, nullptr);
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(el), "house-timeline"))
-        g_object_set(el, "house-timeline", (gboolean)g_house_timeline, nullptr);
-    else if (g_house_timeline)
-        ipc::log(fmt("busStamp: %s declares a house-timeline egress but this mrtsstamp predates the "
-                     "property - anchored stamps instead", name.c_str()));
-    g_object_set(el, "active", TRUE, nullptr);
-    ipc::log(fmt("busStamp: producer-stamped timeline armed on %s (%s, native mrtsstamp)", name.c_str(),
-                 g_house_timeline ? "house-timeline egress: PES - 1 h, no anchor" : "first consumer edge"));
+    g_object_set(it->second, "active", TRUE, nullptr);
+    ipc::log(fmt("busStamp: identity egress armed on %s (PES - 1 h, native mrtsstamp)", name.c_str()));
     g_armed.push_back(name);
-    start_drift_timer();
 }
 
 void release(const std::string& name) {
@@ -288,7 +205,6 @@ void release(const std::string& name) {
     auto it = g_elements.find(name);
     if (it != g_elements.end()) g_object_set(it->second, "active", FALSE, nullptr);
     g_armed.erase(std::remove(g_armed.begin(), g_armed.end(), name), g_armed.end());
-    if (g_armed.empty()) stop_drift_timer();
     std::string extra;
     if (it != g_elements.end()) {
         guint64 copies = 0;
@@ -299,7 +215,6 @@ void release(const std::string& name) {
 }
 
 void clear() {
-    stop_drift_timer();
     for (const std::string& name : g_armed) {
         auto it = g_elements.find(name);
         if (it != g_elements.end()) g_object_set(it->second, "active", FALSE, nullptr);
@@ -328,7 +243,7 @@ bool is_stamper_message(const char* name) {
     return name && g_str_has_prefix(name, "mrtsstamp-");
 }
 
-// --- message translation (gst_stamp_events.handle_message) ------------------
+// --- messages (gst_stamp_events.handle_message) ------------------------------
 
 namespace {
 gint64 s_int(const GstStructure* s, const char* f) {
@@ -349,6 +264,12 @@ void handle_message(const char* src_name, const char* kind, const GstStructure* 
     if (!src_name || !g_str_has_prefix(src_name, ELEMENT_PREFIX) || !s) return;
     std::string tee = src_name + std::strlen(ELEMENT_PREFIX);
 
+    if (std::strcmp(kind, "mrtsstamp-identity") == 0) {
+        log_line(tee, fmt("identity egress: first PES pid=0x%llx stamp=%lld pts=%lld",
+                          (unsigned long long)s_int(s, "pid"), (long long)s_int(s, "stamp"),
+                          (long long)s_int(s, "pts")));
+        return;
+    }
     if (std::strcmp(kind, "mrtsstamp-segment-warning") == 0 || std::strcmp(kind, "mrtsstamp-map-failed") == 0) {
         std::string why = s_str(s, "why");
         ipc::warning(fmt("egress %s: %s — the house-clock stamp cannot be mapped onto running time, so consumers "
@@ -357,78 +278,7 @@ void handle_message(const char* src_name, const char* kind, const GstStructure* 
         log_line(tee, why + (std::strcmp(kind, "mrtsstamp-map-failed") == 0
                                  ? " — buffer passed through with source timing"
                                  : " — stamp written unmapped"));
-        return;
     }
-    if (std::strcmp(kind, "mrtsstamp-conditioned") == 0) {
-        gint64 pid = s_int(s, "pid"), step = s_int(s, "stepTicks"), offset = s_int(s, "offsetTicks");
-        std::string clock = s_str(s, "clock");
-        JsonObject* ev = ipc::event("timeline_conditioned");
-        json_object_set_string_member(ev, "tee", tee.c_str());
-        json_object_set_int_member(ev, "pid", pid);
-        json_object_set_string_member(ev, "clock", clock.c_str());
-        json_object_set_int_member(ev, "stepTicks", step);
-        json_object_set_int_member(ev, "offsetTicks", offset);
-        json_object_set_int_member(ev, "houseNs", s_int(s, "houseNs"));
-        ipc::emit(ev);
-        std::string upper = clock;
-        for (char& c : upper) c = (char)g_ascii_toupper(c);
-        log_line(tee, fmt("absorbed a %+.2fs %s step on pid 0x%llx (timeline offset now %+.2fs) — the source reset "
-                          "its clock, the wire stayed continuous",
-                          step / 90000.0, upper.c_str(), (unsigned long long)pid, offset / 90000.0));
-        return;
-    }
-    if (std::strcmp(kind, "mrtsstamp-settled") == 0) {
-        gint64 anchor = s_int(s, "anchorNs"), repair = s_int(s, "repairNs"), window = s_int(s, "windowNs");
-        JsonObject* ev = ipc::event("timeline_settled");
-        json_object_set_string_member(ev, "tee", tee.c_str());
-        json_object_set_int_member(ev, "anchorNs", anchor);
-        json_object_set_int_member(ev, "repairNs", repair);
-        json_object_set_int_member(ev, "windowNs", window);
-        json_object_set_string_member(
-            ev, "message",
-            fmt("egress %s latch settled: anchor pulled back %.3f ms by early delivery in the first %.0f s",
-                tee.c_str(), -repair / 1e6, window / 1e9).c_str());
-        ipc::emit(ev);
-        log_line(tee, fmt("latch settled: anchor pulled back %.3f ms by early delivery in the first %.0f s (anchor=%lld)",
-                          -repair / 1e6, window / 1e9, (long long)anchor));
-        return;
-    }
-    gint64 pid = s_int(s, "pid"), anchor = s_int(s, "anchorNs"), ref = s_int(s, "refPts90k");
-    if (std::strcmp(kind, "mrtsstamp-anchor") == 0) {
-        JsonObject* ev = ipc::event("timeline_restamped");
-        json_object_set_string_member(ev, "tee", tee.c_str());
-        json_object_set_int_member(ev, "pid", pid);
-        json_object_set_int_member(ev, "anchorNs", anchor);
-        json_object_set_int_member(ev, "refPts90k", ref);
-        json_object_set_string_member(
-            ev, "message",
-            fmt("egress %s stamped onto the house timeline (anchor %lld ns, first PES %lld on pid 0x%llx)",
-                tee.c_str(), (long long)anchor, (long long)ref, (unsigned long long)pid).c_str());
-        ipc::emit(ev);
-        log_line(tee, fmt("anchored: house=%lld ns, firstPes=%lld on pid 0x%llx", (long long)anchor, (long long)ref,
-                          (unsigned long long)pid));
-        return;
-    }
-    if (std::strcmp(kind, "mrtsstamp-reanchor") == 0) {
-        gint64 last = s_int(s, "lastPts90k"), delta = s_int(s, "deltaTicks"), count = s_int(s, "count");
-        JsonObject* ev = ipc::event("timeline_reanchor");
-        json_object_set_string_member(ev, "tee", tee.c_str());
-        json_object_set_int_member(ev, "pid", pid);
-        json_object_set_int_member(ev, "anchorNs", anchor);
-        json_object_set_int_member(ev, "refPts90k", ref);
-        json_object_set_int_member(ev, "count", count);
-        json_object_set_string_member(
-            ev, "message",
-            fmt("source timeline discontinuity on pid 0x%llx (%lld -> %lld, %+.2fs) — re-anchored egress %s in place",
-                (unsigned long long)pid, (long long)last, (long long)ref, delta / 90000.0, tee.c_str()).c_str());
-        ipc::emit(ev);
-        log_line(tee, fmt("re-anchored on pid 0x%llx (%+.2fs jump), anchor=%lld ref=%lld (#%lld)",
-                          (unsigned long long)pid, delta / 90000.0, (long long)anchor, (long long)ref,
-                          (long long)count));
-        return;
-    }
-    // `mrtsstamp-drift` is polled from the `drift` property on the report
-    // timer (same cadence as the python runner); the message form is ignored.
 }
 
 }  // namespace mr::stamper

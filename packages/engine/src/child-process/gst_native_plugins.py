@@ -79,8 +79,9 @@ def _load_row(row):
     return {"detail": f"{row['file']} not loaded, tried {', '.join(tried)}"}
 
 
-def _alarm(event, detail):
-    """The rule-6 event (`warning` or `error`) with its detail; the engine keys on `kind`."""
+def alarm(event, detail):
+    """The rule-6 event (`warning` or `error`) with its detail; the engine keys on `kind`. The
+    stamper raises it too (gst_bus_stamper.load_native)."""
     return {"event": event, "kind": "timing_plugin", "message": f"{ALARM} ({detail})",
             "detail": detail}
 
@@ -96,7 +97,7 @@ def load(emit):
         if "detail" not in out:
             continue
         if row["required"]:
-            emit(_alarm("warning", out["detail"]))
+            emit(alarm("warning", out["detail"]))
         else:
             _log(f"{out['detail']} — its elements get stand-ins")
 
@@ -120,7 +121,7 @@ def stand_in(desc, emit):
     out, names, refused = rewrite(desc, table)
     if refused is not None:
         detail = next(o["detail"] for r, o in zip(PLUGINS, _outcomes) if refused in r["factories"])
-        emit(_alarm("error", f"{detail}; {refused} has no stand-in"))
+        emit(alarm("error", f"{detail}; {refused} has no stand-in"))
         return None
     if out != desc:
         _log(f"native TS module not loaded, parsing with stand-ins: {out}")

@@ -86,7 +86,7 @@ it at runtime stop doing so phase by phase (below).
 
 | Path | What |
 |---|---|
-| `native/mrtsstamp/gstmrtsstamp.cpp`, `native/mrtsstamp/Makefile` | `mrtsstamp` (`libgstmrtsstamp.so`): the egress stamper both runners splice at every `busout_*` tee. Identity (`PES − 1 h`, base-aware, gap markers passed) for house-timeline producers; anchored, with the conditioner, for the Phase 2 set, until Phase 2 |
+| `native/mrtsstamp/gstmrtsstamp.cpp`, `native/mrtsstamp/Makefile` | `mrtsstamp` (`libgstmrtsstamp.so`, 3.0.0): the egress stamper both runners splice at every `busout_*` tee. Identity only (`mrts::IdentityStamp`, `PES − 1 h`, base-aware, gap markers passed), since Phase 2 |
 | `native/mrlateness/gstmrlateness.cpp`, `native/mrlateness/Makefile` | `mrlateness` (`libgstmrlateness.so`): the lateness tap on every bus edge and output sink (Phase 0) |
 | `native/mrpeshouse/gstmrpeshouse.cpp`, `pes_walk.h`, `pes_walk.cpp`, `stamp_model.h`, `stamp_model.cpp`, `Makefile`, `tests/stamp_model_test.cpp`, `tests/stamp_model_vectors.txt`, `tests/README.md` | The subtitle bridge's PES stamp model (frozen, python runner only); deleted with subtitle K recovery in Phase 3 |
 
@@ -95,7 +95,7 @@ it at runtime stop doing so phase by phase (below).
 | Path | What |
 |---|---|
 | `ts_psi.py`, `ts_split.py`, `ts_video_info.py`, `sps_parse.py` | References of the PSI, splitter and SPS code. `ts_psi.py`, `ts_video_info.py` and `sps_parse.py` also serve the Python runner's `tsProbe`, which is not timing |
-| `ts_timeline.py` | Reference of `ts_timeline`. Still imported at runtime by the frozen paths: the stamper's Python probe, `preserveSourceTimeline`, branch alignment and retime, `unixfd-fanout.py --stamp-timeline` |
+| `ts_timeline.py` | Reference of `ts_timeline`. Still imported at runtime by branch alignment and retime, for its helpers, until Phase 3 |
 | `native_parity_fixture.py`, `native_parity_ref.py` | The parity suite's synthetic MPTS generator and its Python side |
 | `ts_psi_test.py`, `ts_split_test.py`, `ts_video_info_test.py`, `ts_timeline_test.py` | The reference suites (`test:py`) |
 

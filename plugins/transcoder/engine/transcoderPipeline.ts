@@ -27,10 +27,8 @@ export type {
     TranscoderPipelineResult,
 } from './transcoderPipelineTypes.js';
 
-/** `name=` of the input tsdemux — the target of `preserveSourceTimeline`
- *  (legacy: the runner latches source PES PTS on its sink pad and shifts its
- *  media src pads onto the source timeline) and of `alignBranchesToStamps`
- *  (contract: the same pads, onto the bus stamps). */
+/** `name=` of the input tsdemux — the target of `alignBranchesToStamps` (the
+ *  runner retimes its media src pads onto the bus stamps). */
 export const DEMUX_NAME = 'demux';
 
 /** `name=` of the shared deinterlacer — the `deinterlace_guard` runner hook's target (#817). */

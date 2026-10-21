@@ -237,7 +237,7 @@ describe('warning texts (exact, ADR-0005 2026-10-08)', () => {
         ).toBe(
             "video-player-1 found this producer's stamps 21.3 s off the house clock and " +
                 're-anchored itself — producer timeline fault (stamper / PCR PID / ' +
-                'house-timeline unwrap).',
+                'identity unwrap).',
         );
     });
 

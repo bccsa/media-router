@@ -283,24 +283,10 @@ export class TranscoderModule extends GstPluginBase {
             restartOnError: true,
             ...(result.runnerHooks ? { runnerHooks: result.runnerHooks } : {}),
             ...(result.runner ? { runner: result.runner } : {}),
-            // Restart-proof lipsync (default on): output PES PTS/PCR carry the
-            // SOURCE timeline instead of a fresh per-incarnation rebase, so
-            // downstream muxers align this video with its sibling audio by real
-            // PTS. `preserveSourceTimeline: false` in settings is the per-module
-            // rollback (x-advanced). LEGACY PATH ONLY — under the time-sync
-            // contract the engine drops this (GstPluginBase.applyTimeSync): the
-            // producer-stamped egress supersedes it, and its restart-to-re-latch
-            // answer to a discontinuity would pre-empt the contract's in-place
-            // re-anchor.
-            ...(config.preserveSourceTimeline === false
-                ? {}
-                : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
-            // CONTRACT PATH: output PES already carry house time + 1 h, so the
-            // egress stamps by identity; the hop's transit is the route's D to cover.
-            houseTimelineEgress: true,
             // Input demux retimed to the bus stamps per access unit (it otherwise
             // runs the input's PTS−PCR lead late, ~1.1 s at the OCC gate, and
-            // walks), so the identity egress is content-correct. Contract only.
+            // walks), so the output PES carry content time + 1 h and the identity
+            // egress is content-correct; the hop's transit is the route's D to cover.
             alignBranchesToStamps: { demuxes: [DEMUX_NAME], transformProducer: true },
         };
     }

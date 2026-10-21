@@ -1,89 +1,44 @@
 #!/usr/bin/env python3
-"""Bus egress stamper for the gst runner (time-sync contract) — the PRODUCER
-stamps the timeline.
+"""Bus egress stamper for the gst runner, the twin of mr-gst-runner's stamper.cpp: every
+`busout_*` egress gets an `mrtsstamp` that stamps its buffers by identity, PES − 1 h (plan
+ch. 6 WI-P2-3, ADR-0029). With base_time 0 that stamp is what unixfdsink puts on the wire as
+house time; under a natural base (`liveCaptureClock`) the element maps it back through it.
 
-ADR-0005 decision 2: a producer maps its source's PES timeline onto the house
-clock once and stamps its bus buffer PTS with the result, so every consumer
-inherits identical timing BY CONSTRUCTION instead of re-deriving it from its
-own arrival (the per-consumer anchor behind every recurring lipsync incident).
-This is the stamping half; the runner's `_apply_contract_clock` is the clock
-half, and the two only work together: with base_time=0 and an identity segment,
-buffer PTS IS running-time IS house-clock time, which is exactly what
-unixfdsink puts on the wire (it transmits running_time + base_time, translated
-to MONOTONIC).
+Split three ways, because they change for unrelated reasons:
 
-THE MATHS IS NOT HERE. `ts_timeline.TimelineStamper` (plugins/mpegts-core/py)
-is the one python definition of the contract's arithmetic — anchor, per-PID
-unwrap, discontinuity watch, re-anchor, monotone staircase — ported to
-`mrts::TimelineStamper` for the native ones. What lives in this subsystem is
-only the GStreamer parts around it, split three ways because they change for
-unrelated reasons:
-
-  `gst_stamp_probe`   — the python probe: where the stamp lands on a pad, and
-                        the segment mapping it has to survive.
-  `gst_stamp_native`  — the preferred backend: loading the `mrtsstamp` plugin
-                        and splicing one in front of each `busout_*` tee.
-  `gst_stamp_events`  — what the engine is told, in ONE builder per event so
-                        the two backends are indistinguishable downstream.
-
-THIS file is the lifecycle the runner drives: enable at start, which egresses
-are armed, on which backend, and the periodic drift report. It owns all the
-mutable state, so a caller (and a test) has one place to read or pin it.
+  `gst_stamp_native`  — loading the `mrtsstamp` plugin and splicing one in front of each
+                        `busout_*` tee.
+  `gst_stamp_events`  — what the element's bus messages become (the identity log line, the
+                        segment warning).
+  this file           — the lifecycle the runner drives: enable at start, which egresses are
+                        armed. It owns all the mutable state, so a caller (and a test) has one
+                        place to read or pin it.
 
 Stampers arm LAZILY — on a tee's first consumer edge, disarmed on its last
 (`arm` / `release`, driven from the runner's bus_attach and teardown paths). A
 tee with no edges has nothing to stamp for, and paying a per-buffer TS scan for
-it was 83% of the contract's measured CPU cost. That also removes the old
-tree-walk for `busout_`-prefixed elements: the tee to arm is the one
+it was 83% of the contract's measured CPU cost. The tee to arm is the one
 `bus_attach` names (busHelpers.busTeeName), the same string the fan-out branch
 is addressed by, so the two can no longer drift apart.
 
-TWO BACKENDS, one contract. The native `mrtsstamp` element is preferred and the
-python probe stays as the reference implementation AND the fallback for a box
-where the plugin is missing. What forced that split is measurement, not taste —
-see `gst_stamp_native`.
+ONE backend. A box without the plugin runs its egress unstamped and the module carries the
+rule-6 alarm (plan ch. 3 part 4.5): there is no python probe to fall back to.
 """
-import sys
-
-import gi
-
-gi.require_version("Gst", "1.0")
-from gi.repository import GLib  # noqa: E402
-
-import gst_stamp_events as events              # noqa: E402
-import gst_stamp_native as native              # noqa: E402
-import gst_stamp_probe as probe                # noqa: E402
+import gst_native_plugins
+import gst_stamp_events as events
+import gst_stamp_native as native
 
 # Re-exported so the runner and the suites keep addressing ONE module (the
 # subsystem's public surface is this file, whatever it is split into inside).
-from gst_stamp_events import (                 # noqa: E402,F401
-    ELEMENT_PREFIX, anchor_event, drift_event, handle_message, reanchor_event,
-    segment_warning_event, set_emitter)
-from gst_stamp_native import insert_elements, so_paths   # noqa: E402,F401
-from gst_stamp_probe import _segment_warn                # noqa: E402,F401
+from gst_stamp_events import (  # noqa: F401
+    ELEMENT_PREFIX, handle_message, is_stamper_message, segment_warning_event, set_emitter)
+from gst_stamp_native import insert_elements, so_paths  # noqa: F401
 
 enabled = False         # set by `enable` at pipeline start, cleared on stop
-pipeline = None         # pipeline the armed probes belong to
-armed = []              # armed stampers — one per tee that HAS consumers
+pipeline = None         # pipeline the armed elements belong to
+armed = []              # tee names armed — one per tee that HAS consumers
 elements = native.elements   # tee name -> inserted `mrtsstamp` element
 native_loaded = None    # None = not tried, True/False = load outcome
-drift_timer_id = None   # GLib source id of the periodic drift report
-# The stamper's latch-repair window (ts_timeline.py, "latch repair"): ON for
-# every producer this runner hosts — a network ingest, a muxer, a transcoder,
-# a capture all deliver at their media cadence, which is the one assumption
-# the repair rests on. Module-level so a suite that drives a pipeline FASTER
-# than real time (every synthetic ladder below reads to the window as a
-# backlog flush) can pin it off, the way `native_loaded` pins the backend.
-repair_latch = True
-# The start payload's `houseTimelineEgress` (ADR-0005 2026-10-08): a transform
-# producer's PES already carry house time + 1 h, so its egress stamps by identity.
-house_timeline = False
-
-# How often each armed egress reports its drift loop. 30 s is a compromise:
-# the loop's own estimator window is 32 s, so anything faster reports the same
-# number twice, and a burn-in chart wants points at a cadence a drift of
-# 1-4 s/day actually moves at.
-DRIFT_REPORT_MS = 30_000
 
 
 def emit(obj):
@@ -95,80 +50,30 @@ def _log(tee, line):
 
 
 def load_native():
-    """Load the native stamper plugin ONCE per process; the outcome is cached
-    here, which is also what a test pins by assigning `native_loaded`."""
+    """Load the stamper plugin ONCE per process (a test re-tries by assigning `native_loaded`).
+    A miss is rule 6: the alarm (`warning`, kind `timing_plugin`), no fallback."""
     global native_loaded
     if native_loaded is None:
-        native_loaded = native.load_plugin()
+        detail = native.load_plugin()
+        native_loaded = detail is None
+        if detail is not None:
+            emit(gst_native_plugins.alarm("warning", detail))
     return native_loaded
 
 
-# ---------------------------------------------------------------------------
-# Drift reporting — one periodic event per armed egress
-# ---------------------------------------------------------------------------
-def drift_stats_of(st):
-    """One armed egress's drift state, from whichever backend it runs.
-
-    None while the loop is still filling its first estimator window — there is
-    nothing to report yet and an event saying `0 ppm` would read as `measured,
-    no drift` rather than `not measured`.
-    """
-    el = st.get("element")
-    d = native.drift_stats(el) if el is not None else probe.drift_stats(st)
-    if d is None or d["samples"] < d["window"]:
-        return None
-    return d
-
-
-def report_drift():
-    """Emit one `timeline_drift` event per armed egress that has a loop
-    running. Called from the periodic timer, and directly by the tests (which
-    have no main loop to run it)."""
-    for st in list(armed):
-        d = drift_stats_of(st)
-        if d is None:
-            continue
-        emit(events.drift_event(st["tee"], d))
-        events.drift_log(st["tee"], d)
-    return True     # GLib: stay armed
-
-
-def _start_drift_timer():
-    global drift_timer_id
-    if drift_timer_id is None:
-        drift_timer_id = GLib.timeout_add(DRIFT_REPORT_MS, report_drift)
-
-
-def _stop_drift_timer():
-    global drift_timer_id
-    if drift_timer_id is not None:
-        try:
-            GLib.source_remove(drift_timer_id)
-        except (ValueError, TypeError):     # already fired away / no main loop
-            pass
-        drift_timer_id = None
-
-
-# ---------------------------------------------------------------------------
-# Arm / disarm — driven by the runner's consumer-edge bookkeeping
-# ---------------------------------------------------------------------------
-def _disarm(st):
-    """Stop stamping for one egress — `active=False` on the native element, or
-    the probe removed. Both drop the whole latch state, which is the same
-    contract either way (see `release`)."""
-    el = st.get("element")
-    if el is not None:
-        native.deactivate(el)
-        return
-    probe.remove(st)
+def missing():
+    """The plugin was tried and could not be loaded: a start reporting `timingPlugin` must not
+    clear the alarm then."""
+    return native_loaded is False
 
 
 def clear():
     """Disarm every stamper and forget the pipeline (stop / re-start)."""
     global armed, enabled, pipeline
-    _stop_drift_timer()
-    for st in armed:
-        _disarm(st)
+    for name in armed:
+        el = elements.get(name)
+        if el is not None:
+            native.deactivate(el)
     armed = []
     enabled = False
     pipeline = None
@@ -177,104 +82,42 @@ def clear():
     elements.clear()
 
 
-def enable(pipe, repair=None, house=None):
-    """Enable stamping for `pipe` (every pipeline). Stampers arm LAZILY, per
-    tee, on that tee's FIRST consumer edge (`arm`, from the runner's
-    bus_attach path).
-
-    `house` is the start payload's `houseTimelineEgress` (see the module-level
-    `house_timeline`): on, every stamper this runner arms is an identity
-    stamper. A test sets the module variable directly after `enable`, the way
-    it pins `repair_latch`.
-
-    `repair` is the start payload's `latchRepair` — the engine's answer to
-    whether this pipeline's producers deliver at their media cadence
-    (`effectiveLatchRepair`: OFF anywhere below an hls-player). None leaves
-    the module-level `repair_latch` as it is, which is how a suite that pins
-    it off keeps its pin across `enable`.
-
-    Arming eagerly here — one probe per `busout_*` tee at start, as the first
-    cut did — made every producer pay a per-buffer TS scan for consumers it may
-    not have: measured on .42 (2026-08-12) an idle-but-flowing rist-input whose
-    egress tee had NO edges attached burned 2492 ticks/min, 83% of the whole
-    contract's CPU cost, stamping buffers that went nowhere. A tee with no
-    consumer has nothing to stamp FOR, so the probe follows the edges.
-
-    Enabling must still happen before PLAYING: an attach can land
-    the moment the pipeline starts, and an unstamped leading buffer would sail
-    onto the wire carrying an arrival time.
-
-    The native `mrtsstamp` elements ARE spliced in here, before PLAYING, because
-    splicing is a graph change and the graph is only safely mutable while the
-    pipeline is still in NULL. Inactive they are basetransform passthrough that
-    only counts bytes (`bytes-total`, one atomic add per buffer — the runner's
-    throughput source for the tee), so lazy arming is unaffected: what arms
-    per consumer edge is the `active` property, not the element's existence.
-    """
-    global enabled, pipeline, repair_latch, house_timeline
+def enable(pipe):
+    """Enable stamping for `pipe` (every pipeline): when it has a `busout_*` tee, load the
+    plugin and splice an inactive element at the head of each egress. Before PLAYING, because
+    an attach can land the moment the pipeline starts, and splicing is a graph change that is
+    only safe in NULL. Arming stays lazy: `arm` sets `active` on a tee's first consumer edge."""
+    global enabled, pipeline
     clear()
     enabled = True
     pipeline = pipe
-    if repair is not None:
-        repair_latch = bool(repair)
-    house_timeline = bool(house)
-    if load_native():
-        insert_elements(pipe)
-
-
-def stamper_for(tee_name):
-    for st in armed:
-        if st["tee"] == tee_name:
-            return st
-    return None
+    tees = native.busout_tees(pipe)
+    # No bus egress, nothing to stamp: the plugin is neither loaded nor missed.
+    if tees and load_native():
+        insert_elements(pipe, tees)
 
 
 def arm(tee, name):
-    """Arm the egress stamper on one `busout_*` tee. Idempotent, and a no-op
-    before `enable`.
-
-    Native element where one was spliced in (`insert_elements`), python probe
-    otherwise — same arm point, same semantics, same events.
-    """
-    if not enabled or tee is None:
+    """Arm the egress stamper on one `busout_*` tee. Idempotent, and a no-op before `enable`
+    or where nothing was spliced (the plugin missing, or the splice failed)."""
+    if not enabled or tee is None or name in armed:
         return None
-    if stamper_for(name) is not None:
-        return None
-
     el = elements.get(name)
-    if el is not None:
-        native.activate(el, name, repair_latch, house_timeline)
-        st = {"tee": name, "element": el, "pad": None, "probe_id": None}
-    else:
-        st = probe.install(tee, name, pipeline, repair_latch, house_timeline)
-        if st is None:
-            return None
-        mode = ("house-timeline egress: PES − 1 h, no anchor" if house_timeline
-                else "first consumer edge")
-        sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "
-                         f"armed on {name} ({mode})\n")
-        sys.stderr.flush()
-    armed.append(st)
-    _start_drift_timer()
-    return st
+    if el is None:
+        return None
+    native.activate(el, name)
+    armed.append(name)
+    return el
 
 
 def release(tee_name):
-    """Disarm `tee_name`'s stamper — the runner calls this once that tee's LAST
-    consumer edge is gone.
-
-    The whole latch state goes with the probe: a tee that gets a consumer again
-    later re-anchors from that moment, which is the established re-anchor
-    semantics (an anchor is only ever meaningful to the consumers that were
-    there when it was taken).
-    """
-    st = stamper_for(tee_name)
-    if st is None:
+    """Disarm `tee_name`'s stamper — the runner calls this once that tee's LAST consumer edge
+    is gone. The element forgets the stream: a tee that gets a consumer again stamps afresh."""
+    if tee_name not in armed:
         return
-    _disarm(st)
-    armed.remove(st)
-    if not armed:
-        _stop_drift_timer()
-    el = st.get("element")
+    el = elements.get(tee_name)
+    if el is not None:
+        native.deactivate(el)
+    armed.remove(tee_name)
     extra = native.copy_count_note(el) if el is not None else ""
     _log(tee_name, f"last consumer edge detached — stamper disarmed{extra}")

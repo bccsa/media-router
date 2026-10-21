@@ -3,7 +3,8 @@ engine's floored bus-chunk stamps, and the reference PES a chunk's stamp was
 taken from. K is learned only on a stamp RISE whose reference both engine rules
 agree on; derivation and measurements: docs/research/subtitle-content-time-20261009.md.
 The spec of the C++ twin (mpegts-core/native/mrpeshouse/stamp_model.cpp): port
-any change there and regenerate its vectors (`subtitle_stamp_dump.py`).
+any change there. Their parity vectors are frozen: the generator, which ran the
+anchored stamper, was retired with it (WI-P2-3).
 """
 from typing import NamedTuple, Optional
 

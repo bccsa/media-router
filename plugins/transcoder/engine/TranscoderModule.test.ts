@@ -122,20 +122,17 @@ describe('buildPipeline', () => {
         );
     });
 
-    it('carries preserveSourceTimeline targeting the named demux by default', () => {
+    it('declares no stamper policy: every egress is stamped by identity (WI-P2-3)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({
             renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
         })!;
-        expect(desc.preserveSourceTimeline).toEqual({ demux: 'demux' });
-    });
-
-    it('declares a house-timeline egress — the contract stamps its output by identity', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({
-            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
-        })!;
-        expect(desc.houseTimelineEgress).toBe(true);
+        expect(Object.keys(desc).sort()).toEqual([
+            'alignBranchesToStamps',
+            'pipeline',
+            'restartOnError',
+            'runnerHooks',
+        ]);
     });
 
     it('aligns its input demux to the bus stamps as a transform producer', () => {
@@ -178,15 +175,6 @@ describe('buildPipeline', () => {
                 : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
         );
         expect(module.buildPipeline(config)!.runner).toBe('python');
-    });
-
-    it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({
-            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
-            preserveSourceTimeline: false,
-        })!;
-        expect(desc.preserveSourceTimeline).toBeUndefined();
     });
 
     it('exposes per-rendition target bitrates in the encoder stats', () => {

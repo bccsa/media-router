@@ -167,7 +167,6 @@ export class SrtInputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
-            houseTimelineEgress: true,
             busReports: restampBusReports(),
         };
     }

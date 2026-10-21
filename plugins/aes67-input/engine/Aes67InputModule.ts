@@ -311,7 +311,6 @@ export class Aes67InputModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
-            houseTimelineEgress: true,
             busReports: [...restampBusReports(), ...asrcBusReports()],
             // udpsrc silence is a health warning, not a rebuild (gst_source_gate.py);
             // a MULTICAST membership lost across a network blip is the one case a

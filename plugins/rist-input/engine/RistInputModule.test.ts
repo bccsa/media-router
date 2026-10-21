@@ -590,7 +590,6 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
         expect(desc.pipeline).toContain(
             ' ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=downstream ',
         );
-        expect(desc.houseTimelineEgress).toBe(true);
     });
 
     it('starts the restamp on the configured offset and trims', () => {

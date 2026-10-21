@@ -63,7 +63,7 @@ const char* state_nick(GstState s) {
 
 /** The start-payload fields this runner does not implement (see runner.h). */
 const char* unsupported_field(JsonObject* data) {
-    static const char* const fields[] = {"rist", "preserveSourceTimeline", nullptr};
+    static const char* const fields[] = {"rist", nullptr};
     for (int i = 0; fields[i]; i++)
         if (json_has(data, fields[i]) && json_get_object(data, fields[i]) != nullptr) return fields[i];
     if (json_get_bool(data, "readKlvNames")) return "readKlvNames";
@@ -342,10 +342,9 @@ void Runner::handle_start(JsonObject* data) {
     align::install(pipeline, json_get_object(data, "alignBranchesToStamps"));
     stall::start(pipeline, json_get_array(data, "inputStallWatch"));
 
-    // The producer half of the time-sync contract — recorded before PLAYING so
-    // an attach landing the moment the pipeline starts owns its first buffer.
-    JsonNode* repair = json_has(data, "latchRepair") ? json_object_get_member(data, "latchRepair") : nullptr;
-    stamper::enable(pipeline, repair, json_get_bool(data, "houseTimelineEgress"));
+    // The bus egress stamp, spliced before PLAYING so an attach landing the
+    // moment the pipeline starts owns its first buffer.
+    stamper::enable(pipeline);
 
     // Plugin-owned runner hooks in their native form (mr_hook.h, ADR-0020),
     // handed the pipeline before PLAYING like the python runner imports theirs.
@@ -405,8 +404,10 @@ void Runner::handle_start(JsonObject* data) {
 
     running = true;
     JsonObject* started = ipc::event("started");
-    // Which timing plugin this start loaded (null: none); the engine clears rule 6's alarm on one.
-    json_object_set_member(started, "timingPlugin", native_plugins::timing_plugin_json());
+    // Which timing plugin this start loaded (null: none); the engine clears rule 6's alarm on
+    // one, so a missing stamper plugin reports none.
+    json_object_set_member(started, "timingPlugin", stamper::missing() ? json_node_new(JSON_NODE_NULL)
+                                                                       : native_plugins::timing_plugin_json());
     ipc::emit(started);
 }
 

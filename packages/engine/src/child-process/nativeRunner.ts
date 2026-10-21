@@ -32,7 +32,7 @@ export interface RunnerCommand {
 }
 
 /** Payload fields the native runner refuses (it mirrors `unsupported_field` in runner.cpp). */
-const NATIVE_UNSUPPORTED_OBJECTS = ['rist', 'preserveSourceTimeline'] as const;
+const NATIVE_UNSUPPORTED_OBJECTS = ['rist'] as const;
 
 function dirNames(root: string): string[] {
     try {

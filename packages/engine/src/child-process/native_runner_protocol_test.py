@@ -9,6 +9,8 @@ Run:  python3 native_runner_protocol_test.py
 """
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -190,177 +192,198 @@ def test_plain_pipeline():
         r.kill()
 
 
-# --------------------------------------------------------------------------- B: producer + fan-out edge
-def test_producer_edge():
-    if Gst.ElementFactory.find("unixfdsink") is None or Gst.ElementFactory.find("avenc_s302m") is None:
-        print("SKIP B — unixfdsink / avenc_s302m unavailable")
-        return
-    tmp = tempfile.mkdtemp(prefix="mrtest-")
-    edge = os.path.join(tmp, "edge.sock")
-    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
-    r = RunnerProc()
-    consumer = None
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start",
-                "pipeline": "audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
-                            " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
-                            f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
-                            " ! tee name=busout_40000 allow-not-linked=true",
-                "latchRepair": True})
-        check("B reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
-        check("B mrtsstamp spliced in front of the busout tee", stamped)
-
-        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
-        att = r.wait_event(ev_is("bus_attached", socket=edge))
-        check("B bus_attach -> bus_attached", att is not None and att.get("tee") == "busout_40000")
-        if stamped:
-            check("B stamper armed on first edge", r.wait_log("armed on busout_40000", timeout=2))
-
-        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
-        got = {"n": 0}
-
-        def on_buf(_pad, _info):
-            got["n"] += 1
-            return Gst.PadProbeReturn.OK
-
-        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
-        consumer.set_state(Gst.State.PLAYING)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and got["n"] < 5:
-            time.sleep(0.05)
-        check("B consumer receives buffers over the edge", got["n"] >= 5)
-        if stamped:
-            check("B anchor reported through the stamper", r.wait_event(ev_is("timeline_restamped"), timeout=3) is not None)
-
-        r.send({"cmd": "track_throughput", "id": "tt", "element": "busout_40000", "pad": "sink"})
-        r.wait_event(ev_is("tracking", id="tt"))
-        time.sleep(0.5)
-        r.send({"cmd": "get_throughput", "id": "gt"})
-        tp = r.wait_event(ev_is("throughput", id="gt"))
-        check("B tee throughput via native counter", tp is not None and tp["data"]["busout_40000"]["total_bytes"] > 0)
-
-        # A second attach for the same edge is idempotent.
-        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
-        time.sleep(0.3)
-        check("B duplicate attach is a no-op", len([e for e in r.events if e.get("event") == "bus_attached"]) == 1)
-
-        consumer.set_state(Gst.State.NULL)
-        r.send({"cmd": "bus_detach", "socket": edge})
-        det = r.wait_event(ev_is("bus_detached", socket=edge))
-        check("B bus_detach -> bus_detached", det is not None)
-        if stamped:
-            check("B stamper disarmed on last edge", r.wait_log("stamper disarmed", timeout=2))
-        check("B socket file removed after detach", not os.path.exists(edge))
-
-        # Attach on a tee that does not exist stays pending, never errors.
-        r.send({"cmd": "bus_attach", "tee": "busout_99999", "socket": os.path.join(tmp, "ghost.sock")})
-        time.sleep(0.6)
-        check("B attach on a missing tee is pending, not an error", not r.has_event(ev_is("error")))
-
-        code = r.stop_and_wait()
-        check("B exits 0 after stop", code == 0)
-    finally:
-        if consumer is not None:
-            consumer.set_state(Gst.State.NULL)
-        r.kill()
-        for f in os.listdir(tmp):
-            os.unlink(os.path.join(tmp, f))
-        os.rmdir(tmp)
+# --------------------------------------------------------------------------- B2: identity egress (B folded in)
+# The python twin, with mpegts-core's py dir on its path as PythonProcess gives it one.
+_PY_ENV_RUNNER = ["env", "PYTHONPATH=" + os.path.join(_PLUGINS, "mpegts-core", "py"), sys.executable,
+                  os.path.join(_HERE, "gst-pipeline-runner.py")]
+_IDENTITY_LINE = re.compile(r"^\[(?:mr-gst-runner|gst-runner\.py)\] (busStamp busout_40000: identity egress: "
+                            r"first PES pid=0x([0-9a-f]+) stamp=(\d+) pts=(\d+))$")
+_S302M_PRODUCER = ("audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
+                   " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
+                   " ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
+                   " ! tee name=busout_40000 allow-not-linked=true")
 
 
-# --------------------------------------------------------------------------- B2: house-timeline egress
-def test_house_timeline_egress():
-    """A transform producer (`houseTimelineEgress`): the egress is stamped by
-    identity, PES − 1 h, so the wire carries the mux's own house time. Checked
-    end to end on a consumer pinned to the same house clock: every stamped
-    buffer's timestamp equals the PES PTS the mux wrote minus one hour."""
+def test_identity_egress():
+    """Identity is the only egress (plan ch. 6 WI-P2-3), in both runners: the producer-edge
+    lifecycle (splice, arm on the first edge, throughput off the element's counter, disarm on
+    the last) and the wire, which carries the mux's PES − 1 h, checked on a consumer pinned to
+    the same house clock. Both runners log the identity line in the same words."""
     if Gst.ElementFactory.find("unixfdsink") is None or Gst.ElementFactory.find("avenc_s302m") is None:
         print("SKIP B2 — unixfdsink / avenc_s302m unavailable")
         return
-    sys.path.insert(0, os.path.normpath(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "plugins", "mpegts-core", "py")))
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
     import ts_psi  # noqa: E402
     import ts_timeline  # noqa: E402
-    tmp = tempfile.mkdtemp(prefix="mrtest-")
-    edge = os.path.join(tmp, "edge.sock")
     caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
-    r = RunnerProc()
-    consumer = None
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start",
-                "pipeline": "audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
-                            " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
-                            f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
-                            " ! tee name=busout_40000 allow-not-linked=true",
-                "latchRepair": False, "houseTimelineEgress": True})
-        check("B2 reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
-        check("B2 mrtsstamp spliced in front of the busout tee", stamped)
-        r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
-        check("B2 bus_attach -> bus_attached", r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
-        if stamped:
-            check("B2 armed as a house-timeline egress", r.wait_log("house-timeline egress", timeout=2))
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    lines = {}
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        label = f"B2 {tag}"
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        edge = os.path.join(tmp, "edge.sock")
+        r = RunnerProc(argv)
+        consumer = None
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "pipeline": _S302M_PRODUCER.format(caps=caps)})
+            started = r.wait_event(ev_is("started"), timeout=10)
+            check(f"{label}: started, reporting the timing plugin it loaded",
+                  started is not None and started.get("timingPlugin") is not None)
+            check(f"{label}: reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+            stamped = r.wait_log("native stamper inserted on busout_40000", timeout=2)
+            check(f"{label}: mrtsstamp spliced in front of the busout tee", stamped)
 
-        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
-        # Pinned exactly as the runner pins a contract pipeline, so the wire's
-        # absolute house time comes out as the buffer timestamp unchanged.
-        clock = Gst.SystemClock.obtain()
-        clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
-        consumer.use_clock(clock)
-        consumer.set_start_time(Gst.CLOCK_TIME_NONE)
-        consumer.set_base_time(0)
-        got = []
+            r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            att = r.wait_event(ev_is("bus_attached", socket=edge))
+            check(f"{label}: bus_attach -> bus_attached", att is not None and att.get("tee") == "busout_40000")
+            check(f"{label}: the first edge arms an identity egress",
+                  r.wait_log("busStamp: identity egress armed on busout_40000 (PES - 1 h, native mrtsstamp)",
+                             timeout=2))
 
-        def on_buf(_pad, info):
-            buf = info.get_buffer()
-            ok, mi = buf.map(Gst.MapFlags.READ)
-            if ok:
-                data = bytes(mi.data)
-                buf.unmap(mi)
-                for pkt in ts_psi.iter_packets(data):
-                    if not (pkt[1] & 0x40):
-                        continue
-                    pts = ts_psi.read_pes_pts(pkt)
-                    if pts is None:
-                        continue
-                    got.append((pts, buf.pts))
-                    break
-            return Gst.PadProbeReturn.OK
+            consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
+            # Pinned exactly as the runner pins a contract pipeline, so the wire's
+            # absolute house time comes out as the buffer timestamp unchanged.
+            consumer.use_clock(clock)
+            consumer.set_start_time(Gst.CLOCK_TIME_NONE)
+            consumer.set_base_time(0)
+            got = []
 
-        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
-        consumer.set_state(Gst.State.PLAYING)
-        deadline = time.monotonic() + 6
-        while time.monotonic() < deadline and len(got) < 12:
-            time.sleep(0.05)
-        check("B2 consumer receives stamped PES buffers over the edge", len(got) >= 12)
-        if stamped and got:
-            off = [buf_pts - ts_timeline.house_from_mux_pts(pts, buf_pts) for pts, buf_pts in got]
-            check(f"B2 every wire timestamp is the mux's PES PTS − 1 h, to the tick "
-                  f"(worst {max(abs(o) for o in off) / 1e3:.1f} µs)",
-                  all(abs(o) <= 11112 for o in off))
-            check("B2 one anchor event (the identity), no re-anchor",
-                  r.wait_event(ev_is("timeline_restamped"), timeout=3) is not None
-                  and not r.has_event(ev_is("timeline_reanchor")))
-        consumer.set_state(Gst.State.NULL)
-        r.send({"cmd": "bus_detach", "socket": edge})
-        r.wait_event(ev_is("bus_detached", socket=edge))
-        code = r.stop_and_wait()
-        check("B2 exits 0 after stop", code == 0)
-    finally:
-        if consumer is not None:
+            def on_buf(_pad, info, got=got):
+                buf = info.get_buffer()
+                pkts = list(ts_psi.iter_packets(buf.extract_dup(0, buf.get_size())))
+                pcr = any(ts_psi.read_pcr(p) is not None for p in pkts)
+                for pkt in pkts:
+                    pts = ts_psi.read_pes_pts(pkt) if pkt[1] & 0x40 else None
+                    if pts is not None:
+                        got.append((ts_psi.ts_pid(pkt), pts, buf.pts, pcr))
+                        break
+                return Gst.PadProbeReturn.OK
+
+            consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+            consumer.set_state(Gst.State.PLAYING)
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline and len(got) < 12:
+                time.sleep(0.05)
+            check(f"{label}: the consumer receives stamped PES buffers over the edge", len(got) >= 12)
+            # From the first PCR on: the 302M PES are private (0xBD), so a buffer the arm met
+            # before the PCR PID is known is stamped at arrival (mrts::IdentityStamp's rule).
+            first_pcr = next((i for i, g in enumerate(got) if g[3]), len(got))
+            off = [buf_pts - ts_timeline.house_from_mux_pts(pts, buf_pts)
+                   for _pid, pts, buf_pts, _pcr in got[first_pcr:]]
+            check(f"{label}: every wire timestamp is the mux's PES PTS − 1 h, to the tick "
+                  f"(worst {max((abs(o) for o in off), default=0) / 1e3:.1f} µs)",
+                  len(off) >= 10 and all(abs(o) <= 11112 for o in off))
+            ident = None
+            if r.wait_log("identity egress: first PES", timeout=3):
+                ident = next((m for m in map(_IDENTITY_LINE.match, r.logs) if m), None)
+            check(f"{label}: one identity line, its stamp the PES − 1 h of its pts on the mux's PID",
+                  ident is not None
+                  and sum(1 for line in r.logs if "identity egress: first PES" in line) == 1
+                  and got and int(ident.group(2), 16) == got[0][0]
+                  and int(ident.group(3)) == ts_timeline.house_from_mux_pts(int(ident.group(4)),
+                                                                            int(ident.group(3))))
+            lines[tag] = ident
+
+            r.send({"cmd": "track_throughput", "id": "tt", "element": "busout_40000", "pad": "sink"})
+            r.wait_event(ev_is("tracking", id="tt"))
+            time.sleep(0.5)
+            r.send({"cmd": "get_throughput", "id": "gt"})
+            tp = r.wait_event(ev_is("throughput", id="gt"))
+            check(f"{label}: tee throughput via the element's counter",
+                  tp is not None and tp["data"]["busout_40000"]["total_bytes"] > 0)
+
+            # A second attach for the same edge is idempotent.
+            r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            time.sleep(0.3)
+            check(f"{label}: duplicate attach is a no-op",
+                  len([e for e in r.events if e.get("event") == "bus_attached"]) == 1)
+
             consumer.set_state(Gst.State.NULL)
-        r.kill()
-        for f in os.listdir(tmp):
-            os.unlink(os.path.join(tmp, f))
-        os.rmdir(tmp)
+            r.send({"cmd": "bus_detach", "socket": edge})
+            check(f"{label}: bus_detach -> bus_detached", r.wait_event(ev_is("bus_detached", socket=edge)) is not None)
+            check(f"{label}: stamper disarmed on the last edge", r.wait_log("stamper disarmed", timeout=2))
+            check(f"{label}: socket file removed after detach", not os.path.exists(edge))
+
+            # Attach on a tee that does not exist stays pending, never errors.
+            r.send({"cmd": "bus_attach", "tee": "busout_99999", "socket": os.path.join(tmp, "ghost.sock")})
+            time.sleep(0.6)
+            check(f"{label}: attach on a missing tee is pending, not an error", not r.has_event(ev_is("error")))
+            check(f"{label}: no warning on a healthy egress", not r.has_event(ev_is("warning")))
+            check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+        finally:
+            if consumer is not None:
+                consumer.set_state(Gst.State.NULL)
+            r.kill()
+            for f in os.listdir(tmp):
+                os.unlink(os.path.join(tmp, f))
+            os.rmdir(tmp)
+    check("B2: both runners log the identity line in the same words",
+          all(lines.get(t) for t in ("native", "py"))
+          and lines["native"].group(1).split(" stamp=")[0] == lines["py"].group(1).split(" stamp=")[0])
+
+
+# --------------------------------------------------------------------------- stamper-missing (WI-P2-3)
+def test_stamper_missing():
+    """libgstmrtsstamp.so absent, libgstmrtshouse.so present, in both runners: a producer
+    raises rule 6's alarm with the tried paths (the same detail in both), runs unstamped
+    with no fallback, and its `started` carries no timingPlugin so the alarm stands; a
+    pipeline without a bus egress neither tries nor misses the plugin."""
+    house_so = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "libgstmrtshouse.so")
+    if not os.path.exists(house_so) or Gst.ElementFactory.find("avenc_s302m") is None:
+        print("SKIP stamper-missing — libgstmrtshouse.so not built / avenc_s302m unavailable")
+        return
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    root = tempfile.mkdtemp(prefix="mrtest-plugins-")
+    os.makedirs(os.path.join(root, "mpegts-core", "native", "mrtshouse"))
+    os.symlink(house_so, os.path.join(root, "mpegts-core", "native", "mrtshouse", "libgstmrtshouse.so"))
+    env = ["env", f"MR_PLUGINS_DIR={root}", "MR_LIBEXEC_DIR=/nonexistent"]
+    detail = ("libgstmrtsstamp.so not loaded, tried "
+              f"{root}/mpegts-core/native/mrtsstamp/libgstmrtsstamp.so, "
+              "/nonexistent/mpegts-core/libgstmrtsstamp.so")
+    try:
+        for tag, argv in (("native", [_BIN]), ("py", _PY_ENV_RUNNER)):
+            label = f"stamper-missing {tag}"
+            r = RunnerProc(env + argv)
+            try:
+                r.wait_event(ev_is("ready"), timeout=10)
+                r.send({"cmd": "start", "pipeline": _S302M_PRODUCER.format(caps=caps)})
+                started = r.wait_event(ev_is("started"), timeout=10)
+                alarm = next((e for e in r.events if e.get("event") == "warning"
+                              and e.get("kind") == "timing_plugin"), None)
+                check(f"{label}: one timing_plugin warning, the rule-6 sentence with the tried paths",
+                      alarm is not None and alarm.get("detail") == detail
+                      and alarm.get("message", "").startswith("Native TS module not loaded: ")
+                      and alarm["message"].endswith(f" ({detail})")
+                      and sum(1 for e in r.events if e.get("kind") == "timing_plugin") == 1)
+                check(f"{label}: the start reports no timing plugin, so the alarm stands",
+                      started is not None and "timingPlugin" in started and started["timingPlugin"] is None)
+                check(f"{label}: and still plays, unstamped (nothing spliced, no error)",
+                      r.wait_event(ev_is("state_change", state="playing")) is not None
+                      and not r.wait_log("native stamper inserted", timeout=0.5)
+                      and not r.has_event(ev_is("error")))
+                check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+            finally:
+                r.kill()
+            r = RunnerProc(env + argv)
+            try:
+                r.wait_event(ev_is("ready"), timeout=10)
+                r.send({"cmd": "start", "pipeline": "audiotestsrc is-live=true ! fakesink sync=false"})
+                started = r.wait_event(ev_is("started"), timeout=10)
+                check(f"{label}: a pipeline without a bus egress neither tries nor misses it",
+                      started is not None and started.get("timingPlugin") is not None
+                      and not r.has_event(ev_is("warning")))
+                r.stop_and_wait()
+            finally:
+                r.kill()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- identity-base-time (WI-P1-7)
 def test_identity_base_time():
-    """A house-timeline egress on a natural base time (`liveCaptureClock`, as
+    """An identity egress on a natural base time (`liveCaptureClock`, as
     video-encoder runs) whose PES carry house time + 1 h: the wire is PES − 1 h
     exactly, on both runners. The base is this box's uptime, so unwrapping against
     running time would miss by the base and by whole 2^33 periods."""
@@ -403,7 +426,7 @@ def test_identity_base_time():
                     "pipeline": f"udpsrc address=127.0.0.1 port={port} caps=\"{caps}\""
                                 f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
                                 " ! tee name=busout_40000 allow-not-linked=true",
-                    "latchRepair": False, "houseTimelineEgress": True, "liveCaptureClock": True})
+                    "liveCaptureClock": True})
             check(f"{label}: reaches PLAYING",
                   r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
             check(f"{label}: the pipeline keeps its natural base time",
@@ -411,8 +434,9 @@ def test_identity_base_time():
             r.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
             check(f"{label}: bus_attach -> bus_attached",
                   r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
-            check(f"{label}: the native element is armed as a house-timeline egress",
-                  r.wait_log("house-timeline egress", timeout=2) and r.wait_log("native mrtsstamp"))
+            check(f"{label}: the native element is armed as an identity egress",
+                  r.wait_log("identity egress armed on busout_40000 (PES - 1 h, native mrtsstamp)",
+                             timeout=2))
 
             consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
             # Base 0 on the house clock, as the runner pins a contract pipeline:
@@ -449,13 +473,17 @@ def test_identity_base_time():
             check(f"{label}: every wire timestamp is PES − 1 h exactly, under a "
                   f"~{clock.get_time() / 3.6e12:.0f} h base (worst {worst} ns)",
                   bool(got) and all(o == 0 for o in off))
-            anchor = r.wait_event(ev_is("timeline_restamped"), timeout=3)
-            anchors[tag] = anchor
-            check(f"{label}: the anchor event names the first PES's house time, not running time",
-                  anchor is not None
-                  and anchor.get("anchorNs") == ts_timeline.pts90k_to_ns(c0)
-                  and anchor.get("refPts90k") == (ts_timeline.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
-            check(f"{label}: nothing re-anchors", not r.has_event(ev_is("timeline_reanchor")))
+            ident = None
+            if r.wait_log("identity egress: first PES", timeout=3):
+                ident = next((m for m in map(_IDENTITY_LINE.match, r.logs) if m), None)
+            anchors[tag] = ident
+            check(f"{label}: the identity line names the first PES's house time, not running time",
+                  ident is not None and int(ident.group(2), 16) == 0x41
+                  and int(ident.group(3)) == ts_timeline.pts90k_to_ns(c0)
+                  and int(ident.group(4)) == (ts_timeline.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
+            check(f"{label}: no engine event for it, and no warning",
+                  not r.has_event(ev_is("warning"))
+                  and not any(str(e.get("event", "")).startswith("timeline_") for e in r.events))
             consumer.set_state(Gst.State.NULL)
             r.send({"cmd": "bus_detach", "socket": edge})
             r.wait_event(ev_is("bus_detached", socket=edge))
@@ -468,9 +496,9 @@ def test_identity_base_time():
             for f in os.listdir(tmp):
                 os.unlink(os.path.join(tmp, f))
             os.rmdir(tmp)
-    check("identity-base-time: both runners report the anchor with the same fields",
+    check("identity-base-time: both runners log the identity line in the same words",
           all(anchors.get(t) for t in ("native", "py"))
-          and set(anchors["native"]) == set(anchors["py"]))
+          and anchors["native"].group(1).split(" stamp=")[0] == anchors["py"].group(1).split(" stamp=")[0])
 
 
 # --------------------------------------------------------------------------- C: gated consumer (data wait)
@@ -523,10 +551,10 @@ def test_refusals():
     try:
         r.wait_event(ev_is("ready"))
         r.send({"cmd": "start", "pipeline": "audiotestsrc ! fakesink",
-                "preserveSourceTimeline": {"demux": "d"}})
+                "rist": {"role": "sender"}})
         ev = r.wait_event(ev_is("error", kind="unsupported"))
-        check("D preserveSourceTimeline refused with kind=unsupported",
-              ev is not None and "preserveSourceTimeline" in ev["message"])
+        check("D a python-only field (the legacy rist drain) refused with kind=unsupported",
+              ev is not None and "`rist`" in ev["message"])
         r.kill()
 
         r = RunnerProc()
@@ -567,8 +595,7 @@ def test_presentation_leg():
                    "pipeline": "audiotestsrc is-live=true ! audio/x-raw,format=S32LE,rate=48000,channels=2"
                                " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
                                f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
-                               " ! tee name=busout_40100 allow-not-linked=true",
-                   "latchRepair": True})
+                               " ! tee name=busout_40100 allow-not-linked=true"})
         check("E producer PLAYING", prod.wait_event(ev_is("state_change", state="playing")) is not None)
         prod.send({"cmd": "bus_attach", "tee": "busout_40100", "socket": edge})
         check("E edge attached", prod.wait_event(ev_is("bus_attached", socket=edge)) is not None)
@@ -1487,7 +1514,7 @@ def _mux_run(argv, feed, tag, align, fx, ts_psi):
                             ' demux_1. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.'
                             " mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7"
                             f' ! capssetter caps="{caps}" replace=true ! tee name=busout_41300 allow-not-linked=true',
-                "alignBranchesToStamps": align, "houseTimelineEgress": True})
+                "alignBranchesToStamps": align})
         check(f"P {tag} runner reaches PLAYING",
               r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
         r.send({"cmd": "bus_attach", "tee": "busout_41300", "socket": edge})
@@ -1666,8 +1693,8 @@ def test_ingest_restamp():
 
 
 test_plain_pipeline()
-test_producer_edge()
-test_house_timeline_egress()
+test_identity_egress()
+test_stamper_missing()
 test_identity_base_time()
 test_consumer_data_wait()
 test_refusals()

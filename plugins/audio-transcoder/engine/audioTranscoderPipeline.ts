@@ -18,11 +18,10 @@ import {
 } from '@media-router/plugin-audio-302m-core';
 import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
-/** `name=` of the input tsdemux — target of `preserveSourceTimeline` (legacy)
- *  and of `alignBranchesToStamps` (contract). The runner shifts its src pads
- *  onto the source timeline, which also moves the `perfect-timestamp=true`
- *  encoders' anchor to source values (the sample-count ladder then reproduces
- *  the source PTS exactly). */
+/** `name=` of the input tsdemux — the target of `alignBranchesToStamps`. The
+ *  runner retimes its src pads onto the bus stamps, which also moves the
+ *  `perfect-timestamp=true` encoders' anchor to content time (the sample-count
+ *  ladder then reproduces the content PTS exactly). */
 export const DEMUX_NAME = 'demux';
 
 /** The single wired source — any TS-family stream; the probe picks the

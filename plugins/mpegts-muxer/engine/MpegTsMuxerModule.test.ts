@@ -809,8 +809,6 @@ describe('MpegTsMuxerModule', () => {
                 demuxes: ['demux_0', 'demux_1'],
                 transformProducer: true,
             });
-            // Retimed branches make the mux output house time (+1 h): stamped by identity.
-            expect(desc.houseTimelineEgress).toBe(true);
             expect(desc.inputStallWatch).toEqual([
                 { element: 'busin_0', timeoutMs: 5000 },
                 { element: 'busin_1', timeoutMs: 5000 },

@@ -14,7 +14,7 @@
 //   keep-up watch and TS video-info probe, and the mrrist plugin loader
 //   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020).
 // A start payload naming what it does NOT implement — the legacy python RIST
-// drain (`rist`), `preserveSourceTimeline`, `readKlvNames`/`set_klv_payload`,
+// drain (`rist`), `readKlvNames`/`set_klv_payload`,
 // `useStdioForData`, or a hook with no native form — is refused
 // with an `error` event (`unsupported_field` in runner.cpp,
 // mirrored by `nativeRunnerIneligibility` in the engine): the

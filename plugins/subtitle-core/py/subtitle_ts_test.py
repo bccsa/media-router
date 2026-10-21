@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`subtitle_ts` + `subtitle_stamp_model`: TS walk, PES assembly across chunks,
 the house time a PES gets from the floored chunk stamps (hand-built cases and
-the REAL engine stamper, `subtitle_ts_engine_test`), the join index.
+the engine's identity stamp, `subtitle_ts_engine_test`), the join index.
 Run: python3 subtitle_ts_test.py
 """
 import subtitle_cues as sc
@@ -57,7 +57,7 @@ got = st.feed(b"".join(packets(KLV_PID, pes(0xBD, 1_800_000, cue_bytes))), 5_000
 check("no reference ever (no PCR, private only): no mapping", len(got) == 1 and house_of(got[0]) is None)
 check("no chunk PTS: no mapping", ts.PesStamper().feed(one, None)[0][2] is None)
 
-# The engine's FLOOR (ts_timeline `stamp`): K is learned only where the stamp rose.
+# The engine's FLOOR (the egress stamp is monotone): K is learned only where the stamp rose.
 ttx = lambda pts, tag: (TTX_PID, 0xBD, pts, tag, None)       # noqa: E731
 st = ts.PesStamper()
 st.feed(chunk((VID_PID, 0xE0, 990_000, b"v", 900_000)), 1_000.0)        # K = 1000 - 11000

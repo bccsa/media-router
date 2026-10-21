@@ -123,10 +123,9 @@ export class TeletextSubtitlesModule extends GstPluginBase {
                       runnerHooks: [
                           subtitleRunnerHook({ pay: result.subtitlePay, sourceDemux: DEMUX_NAME }),
                       ],
-                      // Cue PES carry content time + 1 h; identity egress keeps it. No
+                      // Cue PES carry content time + 1 h; the identity egress keeps it. No
                       // alignBranchesToStamps (A/V pads only): the bridge retimes the
                       // teletext pad itself (ADR-0016 2026-10-09).
-                      houseTimelineEgress: true,
                       // subtitle_bridge is a python-only hook by decision (ADR-0016
                       // 2026-10-09), not a temporary measure.
                       runner: 'python' as const,

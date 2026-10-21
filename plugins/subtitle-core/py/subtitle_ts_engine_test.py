@@ -1,39 +1,41 @@
-"""`subtitle_ts` against the REAL engine stamper (`ts_timeline.TimelineStamper`,
-plugins/mpegts-core/py — mrtsstamp is its C++ twin). Run from
-`subtitle_ts_test.py`; the TS comes from `subtitle_testlib`.
+"""`subtitle_ts` against the stamp the engine puts on every bus chunk: the identity stamp,
+PES − 1 h under a monotone floor (`subtitle_testlib.IdentityStamp`, the model of
+mrts::IdentityStamp, plan ch. 6 WI-P2-3). Run from `subtitle_ts_test.py`; the TS comes from
+`subtitle_testlib`.
 
-A synthetic program: video every 20 ms on the PCR PID, audio every 150 ms,
-teletext (0xBD) every 40 ms at t + 50, PAT every 100 ms — with the OCC feed's
-offsets (video t + 1100, audio t + 60) and two audio-leading ones (audio +600 /
-video +100; vMix audio +1800). Cut into pseudo-random chunks (random packet
-counts and whole PES groups, so every shape occurs; audio-only, teletext-only
-and PES-less are counted), stamped by the anchored stamper with its timing PID
-unknown and known, through +427 s, +7 s and −600 s PTS jumps, and once with the
-bridge attached mid-stream. A teletext PES the bridge places must land within
-one video frame of the stamper's own mapping; misses are allowed where noted.
+A synthetic program on the house timeline (PES = content + 1 h): video every 20 ms on the PCR
+PID, audio every 150 ms, teletext (0xBD) every 40 ms at t + 50, PAT every 100 ms — with the
+OCC feed's offsets (video t + 1100, audio t + 60) and two audio-leading ones (audio +600 /
+video +100; vMix audio +1800). Cut into pseudo-random chunks (random packet counts and whole
+PES groups, so every shape occurs; audio-only, teletext-only and PES-less are counted),
+stamped with the timing PID unknown and known, through +427 s and +7 s content jumps (a bus
+carries a source's jump as a gap: content only moves forward), and once with the bridge
+attached mid-stream. A teletext PES the bridge places must land within one video frame of
+its own identity, PES − 1 h; misses are allowed only where noted.
 Plus the consumer's view: a KLV-only cue stream (PCR on the KLV PID, packed by
-`subtitle_pack`) through the house-timeline stamper, attached mid-stream.
+`subtitle_pack`) through the identity stamp, attached mid-stream.
 """
 import random
 
 import subtitle_ts as ts
-from subtitle_testlib import packets, pat, pes, use_mpegts_core
+from subtitle_testlib import IdentityStamp, packets, pat, pes, use_mpegts_core
 
 use_mpegts_core()
-import ts_timeline  # noqa: E402 — plugins/mpegts-core/py
+import ts_timeline  # noqa: E402 — plugins/mpegts-core/py (its kept helpers)
 
 VID, AUD, TTX = 0x100, 0x101, 0x120
 FRAME_MS = 20.0
-JUMPS = ((4_000, 427_000), (6_000, 7_000), (8_000, -600_000))   # (t ms, PTS step ms)
-RESYNC_MS = 500                                  # misses allowed this long after a jump
+JUMPS = ((4_000, 427_000), (6_000, 7_000))     # (t ms, content step ms)
+RESYNC_MS = 500                                  # misses allowed this long after a start
+HOUSE0 = 5_000_000_000_000                       # house clock at t = 0 (ns)
 
 
 def program(v_off=1100, a_off=60, until_ms=12_000):
-    """[(t ms, event, packet)] in wire order + {ttx tag: raw PTS}."""
+    """[(t ms, event, packet)] in wire order + {ttx tag: raw PTS}; PES = house + 1 h."""
     events = []
     for t in range(0, until_ms, 10):
         step = sum(d for at, d in JUMPS if t >= at)
-        base = 900_000 + step * 90
+        base = HOUSE0 * 9 // 100_000 + ts_timeline.MUX_CLOCK_BASE_90K + step * 90
         if t % 20 == 0:
             events.append((t, 1, VID, 0xE0, base + (t + v_off) * 90, 300, base + t * 90))
         if t % 150 == 0:
@@ -79,63 +81,73 @@ def shape_of(data):
             frozenset(): "no-PES-head"}.get(frozenset(kinds))
 
 
-def one_run(check, timing_known, v_off=1100, a_off=60, attach=None, all_placed=True):
-    """`attach`: chunk index the bridge starts at. `all_placed`: misses outside
-    the start/jump/attach windows fail (else only wrong placements do)."""
-    stream, ttx_pts = program(v_off, a_off)
-    stamper = ts_timeline.TimelineStamper()               # anchored, no repair, no conditioner
-    if timing_known:
-        stamper._timing_pid = VID                          # what `condition` learns on the fleet
-    bridge = ts.PesStamper(pids={TTX})
-    house0 = 5_000_000_000_000                             # house clock at t = 0 (ns)
-    truth, placed, attach_t = {}, {}, None
-    shapes = {"audio-only": 0, "teletext-only": 0, "no-PES-head": 0}
+def stamped_chunks(v_off, a_off, timing_known, attach=None):
+    """[(chunk bytes, stamp ns, house now ns)] the bridge would see from `attach` on."""
+    stream, _ttx = program(v_off, a_off)
+    stamper = IdentityStamp(VID if timing_known else None)
+    out = []
     for n, part in enumerate(chunks(stream, random.Random(7))):
         data = b"".join(p for _t, _ev, p in part)
+        house_now = HOUSE0 + part[-1][0] * 1_000_000
+        stamp = stamper.stamp(data, house_now)
+        if attach is None or n >= attach:
+            out.append((data, stamp, house_now))
+    return out
+
+
+def one_run(check, timing_known, v_off=1100, a_off=60, attach=None):
+    """`attach`: chunk index the bridge starts at. Misses are allowed only in the start /
+    attach window, which a leading audio PID stretches by its lead: its stamps hold the floor
+    until the video content passes it, and the mapping is learned on a rise. Never wrong."""
+    _stream, ttx_pts = program(v_off, a_off)
+    bridge = ts.PesStamper(pids={TTX})
+    truth, placed, ks, drops, attach_t = {}, {}, [], 0, None
+    shapes = {"audio-only": 0, "teletext-only": 0, "no-PES-head": 0}
+    for data, stamp, house_now in stamped_chunks(v_off, a_off, timing_known, attach):
         shape = shape_of(data)
         if shape:
             shapes[shape] += 1
-        stamp = stamper.stamp(data, house0 + part[-1][0] * 1_000_000)
-        if attach is not None and n < attach:
-            continue                                       # the bridge has not attached yet
-        if attach_t is None:
-            attach_t = part[0][0]
-        # The stamper's mapping for this chunk (anchor/ref after the stamp).
         for pkt in ts.iter_packets(data):
             if ts.packet_pid(pkt) == TTX and pkt[1] & 0x40:
                 body = bytes(pkt[ts.payload_offset(pkt) + 14:ts.payload_offset(pkt) + 22])
-                u = ts_timeline.unwrap_near(ttx_pts[body + b"\x00" * 22], stamper.ref)
-                truth[body] = (stamper.anchor + ts_timeline.pts90k_to_ns(u - stamper.ref)) / 1e6
+                if attach_t is None:
+                    attach_t = int(body[1:])
+                # Its own identity: the house time the consumer's formula reads off its PES.
+                truth[body] = ts_timeline.house_from_mux_pts(ttx_pts[body + b"\x00" * 22], house_now) / 1e6
+        k_before = bridge.model.k
         for _pid, payload, house in bridge.feed(data, stamp / 1e6):
             placed[payload[:8]] = house
+        if bridge.model.k is not None:
+            ks.append(bridge.model.k)
+        elif k_before is not None:
+            drops += 1
     label = (f"{'timing PID known' if timing_known else 'timing PID unknown'}, video +{v_off} audio +{a_off}"
              + (f", attached at chunk {attach}" if attach else ""))
-    starts = (0, attach_t) + tuple(a for a, _d in JUMPS)
-    window = lambda tag: any(at <= int(tag[1:]) < at + RESYNC_MS for at in starts)  # noqa: E731
+    starts, span = (0, attach_t or 0), RESYNC_MS + max(0, a_off - v_off)
+    window = lambda tag: any(at <= int(tag[1:]) < at + span for at in starts)  # noqa: E731
     wrong = [tag for tag in truth if placed.get(tag) is not None and abs(placed[tag] - truth[tag]) > FRAME_MS]
     missed = [tag for tag in truth if placed.get(tag) is None and not window(tag)]
     errs = [abs(placed[t] - truth[t]) for t in truth if placed.get(t) is not None]
-    print(f"     [{label}] {len(truth)} teletext PES, {len(errs)} placed, {stamper.reanchors} re-anchors, "
-          f"worst {max(errs) if errs else float('nan'):.3f} ms, misses outside windows {len(missed)}")
-    check(f"real stamper, {label}: no teletext PES placed more than one frame off", not wrong)
-    check(f"real stamper, {label}: most teletext PES placed", len(errs) >= len(truth) // 2)
-    if all_placed:
-        check(f"real stamper, {label}: every PES placed outside start/attach/jump windows", not missed)
-    check(f"real stamper, {label}: the stamper re-anchored on the jumps", stamper.reanchors >= 2)
+    print(f"     [{label}] {len(truth)} teletext PES, {len(errs)} placed, {drops} K drops, "
+          f"worst {max(errs) if errs else float('nan'):.6f} ms, misses outside windows {len(missed)}")
+    check(f"identity stamp, {label}: no teletext PES placed more than one frame off", not wrong)
+    check(f"identity stamp, {label}: every PES placed outside the start/attach window", not missed)
+    check(f"identity stamp, {label}: the mapping K holds through the jumps, never dropped",
+          drops == 0 and bool(ks) and max(ks) - min(ks) < 1e-3)
     if attach is None:
-        check(f"real stamper, {label}: audio-only, teletext-only and no-PES-head chunks occurred {shapes}",
+        check(f"identity stamp, {label}: audio-only, teletext-only and no-PES-head chunks occurred {shapes}",
               all(n > 0 for n in shapes.values()))
     return wrong, missed
 
 
 def house_klv_run(check):
-    """The consumer's input: KLV-only cue chunks (`subtitle_pack`, PCR on the
-    KLV PID; cues, 2 s-style re-sends, clears; some chunks split in two) through
-    the house-timeline stamper; the bridge attaches at the 5th push."""
+    """The consumer's input: KLV-only cue chunks (`subtitle_pack`, PCR on the KLV PID; cues,
+    2 s-style re-sends, clears; some chunks split in two) through the identity stamp; the
+    bridge attaches at the 5th push."""
     import subtitle_klv
     import subtitle_pack
     rng, packer = random.Random(3), subtitle_pack.KlvTsPacker(0x180)
-    stamper = ts_timeline.TimelineStamper(house_timeline=True)
+    stamper = IdentityStamp()
     bridge, house0_ms = ts.PesStamper(), 5_000_000_000.0
     pushes = []
     for n in range(16):
@@ -156,15 +168,15 @@ def house_klv_run(check):
                 checked += 1
                 if house is None or abs(house - start) > 1e-3:
                     wrong.append((n, house, start))
-    print(f"     [house-timeline KLV-only, attached at push 4] {checked} cue PES checked")
-    check("real stamper, house mode KLV-only (as the consumer sees it): every cue at its start, from attach on",
+    print(f"     [identity KLV-only, attached at push 4] {checked} cue PES checked")
+    check("identity stamp, KLV-only (as the consumer sees it): every cue at its start, from attach on",
           checked == len(pushes) - 4 and not wrong)
 
 
 def run(check):
     for known in (False, True):
         one_run(check, known)                                  # the OCC shape
-        one_run(check, known, v_off=100, a_off=600, all_placed=False)
-        one_run(check, known, v_off=100, a_off=1800, all_placed=False)
+        one_run(check, known, v_off=100, a_off=600)
+        one_run(check, known, v_off=100, a_off=1800)
     one_run(check, False, attach=random.Random(11).randint(60, 200))
     house_klv_run(check)

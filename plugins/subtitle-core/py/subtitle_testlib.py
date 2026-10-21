@@ -1,8 +1,8 @@
 """Shared by the subtitle-core python suites: `check`, the ONE independent TS
 reference encoder (`pes`, `packets`, `pat` — deliberately not `subtitle_pack`,
-whose own oracle is the mpegtsmux byte fixtures in subtitle_pack_test.py), and
-the mpegts-core python dir (a declared dependency, resolved the way
-unixfdbus-core's test client resolves it).
+whose own oracle is the mpegtsmux byte fixtures in subtitle_pack_test.py), the
+bus egress stamp (`IdentityStamp`), and the mpegts-core python dir (a declared
+dependency, resolved the way unixfdbus-core's test client resolves it).
 """
 import os
 import sys
@@ -59,3 +59,30 @@ def packets(pid, data, pcr=None):
 def pat():
     body = bytes([0x00, 0x00, 0xB0, 0x0D, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xF0, 0x00])
     return bytes([0x47, 0x40, 0x00, 0x10]) + body + b"\xff" * (184 - len(body))
+
+
+class IdentityStamp:
+    """The bus egress stamp the engine puts on every chunk (mrts::IdentityStamp, plan ch. 6
+    WI-P2-3): the house time of its first timing PES, `PES − 1 h` unwrapped near `house_now`;
+    a chunk whose PES are none timing is stamped at arrival, a PES-less one repeats the last
+    stamp; monotone, never below 0. A timing PES is a video/audio one or on the timing PID,
+    the first PCR carrier unless `timing_pid` presets it."""
+
+    def __init__(self, timing_pid=None):
+        use_mpegts_core()
+        self.timing_pid = timing_pid
+        self.floor, self.stamped = 0, False
+
+    def stamp(self, data, house_now):
+        import ts_psi
+        import ts_timeline
+        if self.timing_pid is None:
+            self.timing_pid = next((ts_psi.ts_pid(p) for p in ts_psi.iter_packets(data)
+                                    if ts_psi.read_pcr(p) is not None), None)
+        seen = []
+        s = next((ts_timeline.house_from_mux_pts(pts, house_now)
+                  for _pid, pts in ts_timeline.iter_timing_pes(data, self.timing_pid, seen)), None)
+        if s is None:
+            s = house_now if seen or not self.stamped else self.floor
+        self.floor, self.stamped = max(s, self.floor), True
+        return self.floor

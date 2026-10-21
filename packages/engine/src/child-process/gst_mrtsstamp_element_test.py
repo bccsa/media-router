@@ -1,41 +1,30 @@
 #!/usr/bin/env python3
-"""Self-checking tests for the NATIVE bus egress stamper (`mrtsstamp`).
+"""Self-checking tests for the bus egress stamper element (`mrtsstamp`, plan ch. 6 WI-P2-3).
 
-Same contract as `gst_bus_stamper_test.py`, driven through the C++ element
-instead of the python probe: the runner loads
-`plugins/mpegts-core/native/mrtsstamp/libgstmrtsstamp.so` (via
-`gst_bus_stamper.py`), splices an `mrtsstamp` between each bus capsfilter and
-its `busout_*` tee, and toggles `active` from the same bus_attach / bus_detach
-paths that arm and disarm the probe. The python probe stays the reference implementation and the fallback;
-this file exists to prove the element is indistinguishable from it.
+The runner loads `plugins/mpegts-core/native/mrtsstamp/libgstmrtsstamp.so` (via
+`gst_bus_stamper.py`), splices an `mrtsstamp` at the head of each `busout_*` egress and
+toggles `active` from the bus_attach / bus_detach paths. Every armed buffer is stamped by
+identity: the house time its first timing PES carries, `PES − 1 h`, under a monotone floor.
+The lifecycle through the runner is gst_bus_stamper_test.py's; this file is the element.
 
 What is pinned here:
 
-  --  The runner's own resolver finds the plugin and loads it (no
-      GST_PLUGIN_PATH), and the element lands between the capsfilter and the
-      tee — BEFORE the fan-out, so one stamp serves every consumer edge.
-  R8  Flag off => nothing spliced, timestamps untouched.
-  --  Lazy arm through the real handle_bus_attach / handle_bus_detach: inactive
-      is pure passthrough, the first edge arms, the last disarms, a re-attach
-      anchors afresh.
-  R2  Every output buffer carries a valid PTS, non-decreasing, staircase
-      repeating across PES-less buffers; PTS *and* DTS are stamped.
-  --  The stamp is anchor + PES delta exactly; a legal 2^33 wrap is continuous;
-      a real discontinuity re-anchors in place and drops the monotone floor.
-  --  Writability: upstream of the tee the buffer is singly-owned and the
-      element stamps it in place with ZERO copies; a buffer someone else holds
-      a reference to costs one shallow GstBuffer copy and is still stamped
-      correctly. This is why the element goes before the tee and not on a
-      branch.
-  R1  ADR-0005's named regression, through the element: real muxed TS, a
-      deliberately wrong DTS and jittered push timing through a real tsdemux;
-      the consumer's timeline must land on the producer's stamp.
-      Mutation-checked: deleting `GST_BUFFER_DTS(buf) = stamp` from
-      gstmrtsstamp.cpp moves the consumer's timeline by ~2 days and this fails.
-  --  PARITY: the same fixture through the python probe and through the element
-      produces the identical stamped ladder (deltas exact).
-  --  A gap marker leaves an identity egress with its PTS and no DTS, so the 5 s
-      edge queue behind a restamp keeps the PES behind it (both backends).
+  --  The runner's own resolver finds and loads the plugin (no GST_PLUGIN_PATH), version
+      3.0.0 with the identity interface only, and the element lands at the HEAD of the
+      egress — before the caps pair and the tee, so one stamp serves every consumer edge.
+  --  Coalescing (ADR-0011): one bus buffer per buffer list, armed or not.
+  R2  Every armed buffer carries a valid PTS and DTS, non-decreasing; a PES-less buffer
+      repeats the stamp; the stamp is PES − 1 h exactly, whatever the arrival; a 2^33 wrap
+      of the PES field is continuous; a non-identity segment still puts house time on the wire.
+  --  Counters: in place upstream of the tee (copy-count 0), one shallow copy per shared
+      buffer, bytes-total armed and in passthrough.
+  --  A real mpegtsmux at alignment 0 and 7: one buffer per access-unit list, PES − 1 h.
+  R1  The stamp survives a real tsdemux: a wrong DTS and jittered pushes leave no trace,
+      because the element writes DTS too (tsdemux reads DTS first).
+  --  Base-aware identity (WI-P1-7): base time 10 h and 14 h, wire = PES − 1 h.
+  --  Gap markers (OQ-12, B-10, B-19): a marker leaves with its PTS, duration and flags and
+      no DTS; a list holding one goes member by member; the restamp's marker keeps the PES
+      behind it in the 5 s edge queue.
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable, or where the plugin
 has not been built (`make native`).
@@ -43,12 +32,14 @@ has not been built (`make native`).
 Run:  python3 gst_mrtsstamp_element_test.py
 """
 import importlib.util
+import io
 import os
 import random
 import shutil
 import sys
 import tempfile
 import time
+from contextlib import redirect_stderr
 
 try:
     import gi
@@ -78,6 +69,7 @@ _spec.loader.exec_module(runner)
 import gst_bus_stamper as stamper  # noqa: E402  (the module the runner just imported)
 
 import ts_psi  # noqa: E402  (after the sys.path insert above)
+import ts_timeline as _tl  # noqa: E402  (its kept helpers: pts90k_to_ns, house_from_mux_pts)
 
 Gst.init(sys.argv)
 
@@ -87,8 +79,9 @@ if not any(os.path.exists(p) for p in stamper.so_paths()):
     sys.exit(0)
 
 _failures = []
-NS_PER_TICK_NUM, NS_PER_TICK_DEN = 100000, 9   # 90 kHz -> ns, exact in integers
 STAMP_EL = stamper.ELEMENT_PREFIX + "busout_41000"
+STEP = 3600                      # 40 ms in 90 kHz ticks
+MUX = _tl.MUX_CLOCK_BASE_90K     # mpegtsmux's 1 h
 
 
 def check(name, cond):
@@ -121,9 +114,20 @@ def filler_packet(pid=0x1FFF, cc=0):
     return hdr + b"\xff" * (ts_psi.PKT - 4)
 
 
+def content0(pipe):
+    """90 kHz content time 1 s ahead of the pipeline's house clock: a PES of it is this + 1 h,
+    as a mux on the house clock writes it."""
+    return pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
+
+
+def house(c90k):
+    """The identity stamp of content `c90k` (90 kHz, unwrapped): its house time in ns."""
+    return _tl.pts90k_to_ns(c90k)
+
+
 # --- harness ---------------------------------------------------------------
-# The egress fragment is `busHelpers.buildBusSink` verbatim, because WHERE the
-# element gets spliced is part of what is under test.
+# The egress fragment is `busHelpers.buildBusSink` minus the lateness tap, because WHERE
+# the element gets spliced is part of what is under test.
 BUS_SINK = (f'capssetter caps="{TS_CAPS}" replace=true ! '
             f'capsfilter name=busfilter caps="{TS_CAPS}" ! '
             "tee name=busout_41000 allow-not-linked=true")
@@ -138,26 +142,37 @@ def build_pipe(consumer="busout_41000. ! identity name=tap ! fakesink name=fs "
 
 
 class Bus:
-    """Bus messages delivered to the runner's REAL handler, which is what turns
-    the element's messages into engine events. EOS/ERROR are watched here rather
-    than popped, because a signal watch owns the queue once attached."""
+    """Bus messages delivered to the runner's REAL handler, which is what turns the element's
+    messages into events and log lines (`err`). The element messages are recorded too.
+    EOS/ERROR are watched here rather than popped, because a signal watch owns the queue."""
 
     def __init__(self, pipe):
         self.done = []
         self.events = []
+        self.messages = []
+        self.err = io.StringIO()
         runner.emit_event = self.events.append
         bus = pipe.get_bus()
         bus.add_signal_watch()
         bus.connect("message::element", runner.on_bus_message)
+        bus.connect("message::element", self._record)
         bus.connect("message::eos", lambda _b, m: self.done.append(m))
         bus.connect("message::error", lambda _b, m: self.done.append(m))
+
+    def _record(self, _bus, msg):
+        s = msg.get_structure()
+        if s is not None and s.get_name().startswith("mrtsstamp-"):
+            fields = {s.nth_field_name(i): s.get_value(s.nth_field_name(i))
+                      for i in range(s.n_fields())}
+            self.messages.append((msg.src.get_name(), s.get_name(), fields))
 
     def pump(self, seconds=0.15):
         ctx = GLib.MainContext.default()
         deadline = time.time() + seconds
-        while time.time() < deadline:
-            if not ctx.iteration(False):
-                time.sleep(0.002)
+        with redirect_stderr(self.err):
+            while time.time() < deadline:
+                if not ctx.iteration(False):
+                    time.sleep(0.002)
 
     def wait(self, seen, n, timeout_s=5.0):
         deadline = time.time() + timeout_s
@@ -174,8 +189,8 @@ class Bus:
         pipe.set_state(Gst.State.NULL)
         return bool(self.done) and self.done[0].type == Gst.MessageType.EOS
 
-    def of(self, event):
-        return [e for e in self.events if e["event"] == event]
+    def of(self, kind):
+        return [m for m in self.messages if m[1] == kind]
 
 
 def tap_timestamps(pipe, name="tap"):
@@ -198,18 +213,11 @@ def push(src, payload, pts, dts):
     return src.emit("push-buffer", buf) == Gst.FlowReturn.OK
 
 
-def start(pipe, native=True, repair_latch=False):
-    """What handle_start does for every pipeline: contract clock, then the
-    stamping backend — which is where the element gets spliced in.
-
-    `repair_latch` is OFF for the ladders (they are pushed as fast as the
-    pipeline takes them, which the latch-repair window reads — correctly — as
-    a reconnect backlog); the one fixture that drives the window on purpose
-    turns it on.
-    """
+def start(pipe):
+    """What handle_start does for every pipeline: contract clock, then the stamper, which is
+    where the element gets spliced in."""
     runner.pipeline = pipe
-    stamper.native_loaded = None if native else False
-    stamper.repair_latch = repair_latch
+    stamper.native_loaded = None
     runner._apply_contract_clock(pipe)
     stamper.enable(pipe)
 
@@ -219,16 +227,34 @@ def teardown():
     runner.pipeline = None
 
 
+def uptime_clock(at_ns):
+    """A monotonic clock of its own reading `at_ns` now, whatever this box's
+    uptime; the process-wide system clock is left alone."""
+    clock = Gst.SystemClock(clock_type=Gst.ClockType.MONOTONIC)
+    clock.set_calibration(clock.get_internal_time(), at_ns, 1, 1)
+    return clock
+
+
 # ---------------------------------------------------------------------------
 print("\n--- the runner resolves and loads the plugin itself ---")
 stamper.native_loaded = None
 check("the runner's own resolver loads the plugin (no GST_PLUGIN_PATH)",
-      stamper.load_native() is True)
+      stamper.load_native() is True and stamper.missing() is False)
 check("and the element factory is registered",
       Gst.ElementFactory.find("mrtsstamp") is not None)
 check("the resolver looks in the plugin's own folder first, install root second",
       [os.path.basename(os.path.dirname(p)) for p in stamper.so_paths()]
       == ["mrtsstamp", "mpegts-core"])
+plugin = Gst.Registry.get().find_plugin("mrtsstamp")
+check("the plugin is 3.0.0, the identity-only interface",
+      plugin is not None and plugin.get_version() == "3.0.0")
+probe_el = Gst.ElementFactory.make("mrtsstamp")
+own = sorted(p.name for p in probe_el.list_properties()
+             if p.owner_type == probe_el.__gtype__)
+check(f"its own properties are the identity ones only ({own})",
+      own == ["active", "bytes-total", "coalesce", "coalesced-lists", "copy-count"])
+check("it arrives inactive, coalescing", probe_el.get_property("active") is False
+      and probe_el.get_property("coalesce") is True)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +277,7 @@ check("its downstream peer is the capssetter — the fan-out is BELOW the stamp"
 tee_up = pipe.get_by_name("busout_41000").get_static_pad("sink").get_peer()
 check("the tee's own upstream is still the capsfilter (strings untouched)",
       tee_up is not None and tee_up.get_parent_element().get_name() == "busfilter")
-check("it arrives inactive (the flag alone arms nothing)",
+check("it arrives inactive (enabling alone arms nothing)",
       el.get_property("active") is False and stamper.armed == [])
 teardown()
 pipe.set_state(Gst.State.NULL)
@@ -284,9 +310,8 @@ for p in (p2, p3, p4):
     p.set_state(Gst.State.NULL)
 
 # The egress lateness tap (buildBusSink, WI-P0-8) sits between the caps pair
-# and the tee: both stampers must still stamp AHEAD of it, so it reads the stamp.
+# and the tee: the stamp must land AHEAD of it, so it reads the stamp.
 import gst_lateness_native  # noqa: E402
-import gst_stamp_probe  # noqa: E402
 if gst_lateness_native.load_plugin():
     p5 = Gst.parse_launch(
         f"appsrc name=src5 caps={TS_CAPS} ! capssetter caps=\"{TS_CAPS}\" replace=true "
@@ -296,13 +321,9 @@ if gst_lateness_native.load_plugin():
     check("egress_head walks past the lateness tap to the producer",
           peer5 is not None and peer5.get_parent_element().get_name() == "src5"
           and sink5.get_parent_element().get_factory().get_name() == "capssetter")
-    st5 = gst_stamp_probe.install(p5.get_by_name("busout_41004"), "busout_41004", p5)
-    check("the python probe stamps on the tap's sink pad, not the tee's",
-          st5 is not None and st5["pad"].get_parent_element().get_name() == "lat_busout_41004")
-    gst_stamp_probe.remove(st5)
     p5.set_state(Gst.State.NULL)
 else:
-    print("SKIP lateness-tap splice checks — libgstmrlateness.so not built")
+    print("SKIP lateness-tap splice check — libgstmrlateness.so not built")
 
 
 # ---------------------------------------------------------------------------
@@ -362,169 +383,93 @@ teardown()
 
 
 # ---------------------------------------------------------------------------
-print("\n--- lazy arm: `active` follows the consumer edges ---")
-LAZY_STEP = 3600                                  # 40 ms in 90 kHz ticks
-LAZY_FIRST = 8_100_000
-sockdir = tempfile.mkdtemp(prefix="mr-mrtsstamp-test-")
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe)
-el = pipe.get_by_name(STAMP_EL)
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
+print("\n--- R2: every buffer carries a valid, non-decreasing PTS (and DTS), PES − 1 h ---")
 
 
-def lazy_push(i, arrival_ms):
-    push(src, pes_packet(0x100, LAZY_FIRST + i * LAZY_STEP, i & 0x0F),
-         arrival_ms * Gst.MSECOND, 0)
-
-
-for i in range(3):
-    lazy_push(i, 5 * i)
-bus.wait(seen, 3)
-check("buffers before the first attach keep their own arrival timestamps",
-      [p for p, _ in seen[:3]] == [0, 5 * Gst.MSECOND, 10 * Gst.MSECOND])
-check("and nothing is anchored while the tee has no consumer",
-      bus.of("timeline_restamped") == [])
-
-sock_a = os.path.join(sockdir, "edge-a.sock")
-sock_b = os.path.join(sockdir, "edge-b.sock")
-runner.handle_bus_attach({"tee": "busout_41000", "socket": sock_a})
-check("the first consumer edge activates the element",
-      len(stamper.armed) == 1 and el.get_property("active") is True)
-
-for i in range(3, 9):
-    lazy_push(i, 5 * i)
-bus.wait(seen, 9)
-first = (bus.of("timeline_restamped") or [None])[0]
-check("arming mid-stream anchors on the next PES it sees",
-      first is not None and first["refPts90k"] == LAZY_FIRST + 3 * LAZY_STEP)
-check("the anchor event carries the probe's field names verbatim",
-      first is not None
-      and set(first) == {"event", "tee", "pid", "anchorNs", "refPts90k", "message"}
-      and first["tee"] == "busout_41000" and first["pid"] == 0x100)
-armed = [p for p, _ in seen[3:9]]
-check("stamps flow from that anchor the moment the edge is up",
-      armed == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-                for i in range(6)] if first else False)
-
-runner.handle_bus_attach({"tee": "busout_41000", "socket": sock_b})
-check("a second consumer on the same tee does not re-arm",
-      len(stamper.armed) == 1 and len(bus.of("timeline_restamped")) == 1)
-runner.handle_bus_detach({"socket": sock_b})
-check("one consumer of two leaving keeps it active",
-      len(stamper.armed) == 1 and el.get_property("active") is True)
-for i in range(9, 12):
-    lazy_push(i, 5 * i)
-bus.wait(seen, 12)
-check("and the surviving consumer keeps its original anchor",
-      [p for p, _ in seen[9:12]]
-      == [first["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-          for i in range(6, 9)])
-
-runner.handle_bus_detach({"socket": sock_a})
-check("the LAST consumer leaving deactivates it",
-      stamper.armed == [] and el.get_property("active") is False)
-for i in range(12, 15):
-    lazy_push(i, 500 + 5 * i)
-bus.wait(seen, 15)
-check("inactive is pure passthrough — arrival timestamps again, untouched",
-      [p for p, _ in seen[12:15]] == [(500 + 5 * i) * Gst.MSECOND for i in range(12, 15)])
-
-sock_c = os.path.join(sockdir, "edge-c.sock")
-time.sleep(0.05)                                  # let the house clock advance
-runner.handle_bus_attach({"tee": "busout_41000", "socket": sock_c})
-for i in range(15, 18):
-    lazy_push(i, 1000 + 5 * i)
-bus.wait(seen, 18)
-restamps = bus.of("timeline_restamped")
-check("re-activating anchors AFRESH rather than resuming the old timeline",
-      len(restamps) == 2 and restamps[1]["anchorNs"] > restamps[0]["anchorNs"]
-      and restamps[1]["refPts90k"] == LAZY_FIRST + 15 * LAZY_STEP)
-check("and the new staircase is measured from the new anchor",
-      [p for p, _ in seen[15:18]]
-      == [restamps[1]["anchorNs"] + i * LAZY_STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-          for i in range(3)])
-runner.handle_bus_detach({"socket": sock_c})
-bus.drain(pipe, src)
-teardown()
-shutil.rmtree(sockdir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-print("\n--- R2: every buffer carries a valid, non-decreasing PTS (and DTS) ---")
-FIRST_PES = 8_100_000            # 90 s in 90 kHz ticks
-STEP = 3600                      # 40 ms
-
-
-def run_ladder(native=True, entries=None, jitter=True):
-    """Push a PES ladder (None = a PES-less filler buffer) through one armed
-    egress and return (tap timestamps, events)."""
+def run_ladder(entries, jitter=True, pid=0x100):
+    """Push a PES ladder through one armed egress: entry i is content `c0 + i * STEP` on the
+    house clock (None = a PES-less filler buffer). Returns (tap timestamps, bus, c0)."""
     pipe, src = build_pipe()
     b = Bus(pipe)
-    start(pipe, native=native)
+    start(pipe)
     stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
     seen = tap_timestamps(pipe)
     pipe.set_state(Gst.State.PLAYING)
     pipe.get_state(3 * Gst.SECOND)
-    for i, pts in enumerate(entries):
-        if pts is None:
+    c0 = content0(pipe)
+    for i, k in enumerate(entries):
+        if k is None:
             push(src, filler_packet(), 0, 0)
         else:
-            # Arrival-jittered PTS and a nonsense DTS: what the stamper exists
-            # to overwrite.
-            push(src, pes_packet(0x100, pts, i),
+            # Arrival-jittered PTS and a nonsense DTS: what the stamp replaces.
+            push(src, pes_packet(pid, MUX + c0 + k * STEP, i),
                  i * 7 * Gst.MSECOND if jitter else 0, 3 * Gst.SECOND)
     b.wait(seen, len(entries))
     b.drain(pipe, src)
     teardown()
-    return seen, b
+    return seen, b, c0
 
 
-ladder = [None if i in (3, 7) else FIRST_PES + i * STEP for i in range(12)]
-seen, bus = run_ladder(entries=ladder)
+ladder = [None if i in (3, 7) else i for i in range(12)]
+seen, bus, c0 = run_ladder(ladder)
 check("every buffer got a PTS (none left CLOCK_TIME_NONE)",
       len(seen) == 12 and all(p != Gst.CLOCK_TIME_NONE for p, _ in seen))
 check("the ladder is monotone non-decreasing",
       all(seen[i][0] <= seen[i + 1][0] for i in range(len(seen) - 1)))
 check("DTS is stamped too (tsdemux prefers DTS — see R1)",
       all(dts == pts for pts, dts in seen))
-first = (bus.of("timeline_restamped") or [None])[0]
-check("a timeline_restamped event names the anchor",
-      first is not None and first["refPts90k"] == FIRST_PES)
-check("exactly one restamp event per egress", len(bus.of("timeline_restamped")) == 1)
-
 expected, last = [], None
-for p in ladder:
-    if p is None:
-        expected.append(last)            # staircase: PES-less buffer repeats
-    else:
-        last = first["anchorNs"] + (p - FIRST_PES) * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-        expected.append(last)
-check("the stamp is anchor + PES delta, exactly", [p for p, _ in seen] == expected)
-check("PES-less buffers repeat the previous stamp rather than inventing one",
-      seen[3][0] == seen[2][0] and seen[7][0] == seen[6][0])
+for k in ladder:
+    last = last if k is None else house(c0 + k * STEP)
+    expected.append(last)
+check("the stamp is PES − 1 h, exactly; a PES-less buffer repeats the previous stamp",
+      [p for p, _ in seen] == expected and seen[3][0] == seen[2][0] and seen[7][0] == seen[6][0])
 check("arrival jitter is gone — the ladder is a clean 40 ms step",
       {seen[i + 1][0] - seen[i][0] for i in (0, 1, 4, 5)} == {40_000_000})
+ident = bus.of("mrtsstamp-identity")
+check("one mrtsstamp-identity message names the first PES (pid, stamp, PTS)",
+      len(ident) == 1 and ident[0][0] == STAMP_EL
+      and ident[0][2] == {"pid": 0x100, "stamp": house(c0), "pts": (MUX + c0) % (1 << 33)})
+check("the runner logs it as the identity line",
+      f"busStamp busout_41000: identity egress: first PES pid=0x100 stamp={house(c0)} "
+      f"pts={(MUX + c0) % (1 << 33)}" in bus.err.getvalue())
+# A timing PES behind its floor (a B-frame's first PES) is held there, never stamped back.
+seen, bus, c0 = run_ladder([0, 1, 2, 1, 3], jitter=False)
+check("a PES behind the last stamp is held at the floor",
+      [p for p, _ in seen] == [house(c0), house(c0 + STEP), house(c0 + 2 * STEP),
+                               house(c0 + 2 * STEP), house(c0 + 3 * STEP)])
 
 
 # ---------------------------------------------------------------------------
-print("\n--- a legal 2^33 PTS wrap is continuous, not a discontinuity ---")
+print("\n--- 2^33 wraps are continuous: the PES field at 25.5 h, the content at 26.5 h ---")
+# Content 1 s ahead of a house clock that sits three buffers before the wrap; identity
+# unwraps near the clock, so neither the field's nor the content's wrap shows.
 WRAP = 1 << 33
-start_pts = WRAP - 3 * STEP      # last three buffers before the boundary
-seen, bus = run_ladder(
-    entries=[(start_pts + i * STEP) % WRAP for i in range(24)], jitter=False)
-check("every step across the wrap is the plain 40 ms",
-      {seen[i + 1][0] - seen[i][0] for i in range(len(seen) - 1)} == {40_000_000})
-check("the wrap does not re-anchor", bus.of("timeline_reanchor") == [])
+for what, c_wrap in (("the PES field", WRAP - 3 * STEP - MUX), ("the content", WRAP - 3 * STEP)):
+    pipe, src = build_pipe()
+    bus = Bus(pipe)
+    start(pipe)
+    pipe.use_clock(uptime_clock(house(c_wrap - 90000)))
+    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+    seen = tap_timestamps(pipe)
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_state(3 * Gst.SECOND)
+    for i in range(24):
+        push(src, pes_packet(0x100, (MUX + c_wrap + i * STEP) % WRAP, i), i * Gst.MSECOND, 0)
+    bus.wait(seen, 24)
+    bus.drain(pipe, src)
+    teardown()
+    wraps = ((MUX + c_wrap) % WRAP > (MUX + c_wrap + 23 * STEP) % WRAP if what == "the PES field"
+             else c_wrap % WRAP > (c_wrap + 23 * STEP) % WRAP)
+    check(f"{what}: the fixture really wraps", wraps)
+    check(f"{what}: every step across the wrap is the plain 40 ms, on the content's house time",
+          len(seen) == 24 and [p for p, _ in seen] == [house(c_wrap + i * STEP) for i in range(24)])
 
 
 # ---------------------------------------------------------------------------
 print("\n--- a NON-IDENTITY segment still puts house time on the wire ---")
-# The element's half of the python probe's segment section: what leaves the
-# process is gst_segment_to_running_time(segment, pts) + base_time, so on any
-# segment but the identity one a raw stamp ships shifted and nothing notices.
+# What leaves the process is gst_segment_to_running_time(segment, pts) + base_time, so on
+# any segment but the identity one a raw stamp ships shifted and nothing notices.
 # `transform_ip` maps the house stamp back through the transform's own segment.
 SEG_OFFSET = 5 * Gst.SECOND
 pipe, src = build_pipe()
@@ -537,8 +482,9 @@ stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
 seen = tap_timestamps(pipe)
 pipe.set_state(Gst.State.PLAYING)
 pipe.get_state(3 * Gst.SECOND)
+c0 = content0(pipe)
 for i in range(8):
-    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i), i * 7 * Gst.MSECOND, 0)
+    push(src, pes_packet(0x100, MUX + c0 + i * STEP, i), i * 7 * Gst.MSECOND, 0)
 bus.wait(seen, 8)
 tap_seg_ev = pipe.get_by_name("tap").get_static_pad("sink").get_sticky_event(
     Gst.EventType.SEGMENT, 0)
@@ -547,116 +493,27 @@ bus.drain(pipe, src)
 teardown()
 check("the fixture really is a non-identity segment",
       tap_seg is not None and (tap_seg.base != 0 or tap_seg.start != 0))
-first = (bus.of("timeline_restamped") or [None])[0]
-check("the anchor is still taken from the first PES",
-      first is not None and first["refPts90k"] == FIRST_PES)
-expected = [first["anchorNs"] + i * STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-            for i in range(8)] if first else []
+expected = [house(c0 + i * STEP) for i in range(8)]
 wire = [tap_seg.to_running_time(Gst.Format.TIME, p) for p, _ in seen[:8]]
-check("running time on the wire is the house-clock ladder, exactly", wire == expected)
+check("running time on the wire is the content's house time, exactly", wire == expected)
 check("and the buffer PTS was mapped, not left raw",
       [p for p, _ in seen[:8]] != expected)
 check("DTS took the same mapping", [d for _, d in seen[:8]] == [p for p, _ in seen[:8]])
-check("a mappable segment is not an engine-visible warning", bus.of("warning") == [])
+check("a mappable segment is not an engine-visible warning", bus.events == [])
 
 
 # ---------------------------------------------------------------------------
-print("\n--- a real source discontinuity re-anchors IN PLACE ---")
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe)
-stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-# Two PIDs, as any real A/V producer has: the watch needs a second anomalous
-# buffer before it believes a discontinuity, and an interleaved stream supplies
-# one on the very next step.
-JUMP_AT, JUMP = 20, 90000 * 600          # +10 min at buffer 20
-for i in range(48):
-    p = FIRST_PES + i * STEP + (JUMP if i >= JUMP_AT else 0)
-    push(src, pes_packet(0x100, p, i) + pes_packet(0x101, p + 90, i),
-         i * Gst.MSECOND, 0)
-    bus.pump(0.002)
-bus.wait(seen, 48)
-bus.drain(pipe, src)
-teardown()
-reanchors = bus.of("timeline_reanchor")
-check("the discontinuity produced a timeline_reanchor event", len(reanchors) == 1)
-check("it is a re-anchor, not an error that forces a restart",
-      bus.of("error") == [])
-check("the re-anchor carries the probe's field names verbatim",
-      bool(reanchors)
-      and set(reanchors[0]) == {"event", "tee", "pid", "anchorNs", "refPts90k",
-                                "count", "message"}
-      and reanchors[0]["pid"] in (0x100, 0x101)
-      and reanchors[0]["count"] == 1
-      and "re-anchored" in reanchors[0]["message"])
-# The monotone floor MUST drop with the anchor: detection is a buffer or two
-# late, so by then the floor holds a stamp derived from the jumped payload.
-jumped = [i for i in range(1, len(seen))
-          if seen[i][0] - seen[i - 1][0] > 60 * Gst.SECOND]
-check("only a bounded run of buffers carries the jumped stamp", len(jumped) <= 2)
-tail = [p for p, _ in seen[JUMP_AT + 6:]]
-check("the timeline recovers instead of freezing at the jumped value",
-      len(tail) > 10 and tail[-1] > tail[0])
-check("and it steps at the source's real 40 ms rate again",
-      {tail[i + 1] - tail[i] for i in range(len(tail) - 1)} == {40_000_000})
-
-
-# ---------------------------------------------------------------------------
-print("\n--- the VOD loop: a SINGLE-PID egress re-anchors too ---")
-# The 2026-08-13 field failure, through the NATIVE backend (mrts::TimelineStamper
-# inside the element) — the same fixture gst_bus_stamper_test.py runs against
-# the python probe, because which implementation stamped must stay invisible.
-# A looping VOD rewinds its PES timeline to ~0 every pass, and mr-tssplit hands
-# the stamper each of its per-PID SPTS outputs as its OWN single-PID buffer, so
-# the cross-PID rule above has nothing to confirm with: one anomaly per output,
-# no re-anchor, and the monotone floor pinned every later stamp to the last
-# pre-loop value for the rest of the loop.
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe)
-stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-LOOP_AT, LOOP0, LOOP_N = 20, 4500, 48    # rewind to 50 ms at buffer 20
-for i in range(LOOP_N):
-    p = FIRST_PES + i * STEP if i < LOOP_AT else LOOP0 + (i - LOOP_AT) * STEP
-    push(src, pes_packet(0x100, p, i), i * Gst.MSECOND, 0)
-    bus.pump(0.002)
-bus.wait(seen, LOOP_N)
-bus.drain(pipe, src)
-teardown()
-reanchors = bus.of("timeline_reanchor")
-check("the loop re-anchored a single-PID egress", len(reanchors) == 1)
-check("named on the only PID there is, over the native bus message",
-      bool(reanchors) and reanchors[0]["pid"] == 0x100
-      and reanchors[0]["count"] == 1)
-stamps = [p for p, _ in seen]
-run = best = 1
-for i in range(1, len(stamps)):
-    run = run + 1 if stamps[i] == stamps[i - 1] else 1
-    best = max(best, run)
-check("the frozen run is bounded, not the whole rest of the loop", best <= 2)
-tail = stamps[LOOP_AT + 3:]
-check("and the timeline steps at the source's real 40 ms rate again",
-      len(tail) > 10
-      and {tail[i + 1] - tail[i] for i in range(len(tail) - 1)} == {40_000_000})
-
-
-# ---------------------------------------------------------------------------
-print("\n--- writability: in place upstream of the tee, a copy only when shared ---")
+print("\n--- counters: in place upstream of the tee, a copy only when shared ---")
 # A real source element (filesrc) hands on singly-owned buffers, which is the
 # production case upstream of the tee: basetransform runs us in place and there
 # is no copy at all. Downstream of the tee every branch would see a shared
 # buffer — the reason the element is spliced where it is.
 tsdir = tempfile.mkdtemp(prefix="mr-mrtsstamp-ts-")
 tspath = os.path.join(tsdir, "ladder.ts")
+c_file = Gst.SystemClock.obtain().get_time() * 9 // 100000 + 90000
 with open(tspath, "wb") as f:
     for i in range(60):
-        f.write(pes_packet(0x100, FIRST_PES + i * STEP, i & 0x0F))
+        f.write(pes_packet(0x100, MUX + c_file + i * STEP, i & 0x0F))
 pipe = Gst.parse_launch(
     f"filesrc location={tspath} blocksize={ts_psi.PKT} ! {BUS_SINK} "
     "busout_41000. ! identity name=tap ! fakesink name=fs sync=false async=false")
@@ -675,8 +532,8 @@ shutil.rmtree(tsdir, ignore_errors=True)
 check(f"a singly-owned buffer is stamped IN PLACE — no copies "
       f"({el.get_property('copy-count')} of {len(seen)})",
       len(seen) == 60 and el.get_property("copy-count") == 0)
-check("and the ladder is still the exact 40 ms staircase",
-      {seen[i + 1][0] - seen[i][0] for i in range(len(seen) - 1)} == {40_000_000})
+check("and every stamp is the file's PES − 1 h",
+      [p for p, _ in seen] == [house(c_file + i * STEP) for i in range(60)])
 check(f"bytes-total counts every byte while armed ({el.get_property('bytes-total')} of {60 * ts_psi.PKT})",
       el.get_property("bytes-total") == 60 * ts_psi.PKT)
 
@@ -694,8 +551,9 @@ stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
 seen = tap_timestamps(pipe)
 pipe.set_state(Gst.State.PLAYING)
 pipe.get_state(3 * Gst.SECOND)
+c0 = content0(pipe)
 for i in range(10):
-    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i), i * 7 * Gst.MSECOND, 0)
+    push(src, pes_packet(0x100, MUX + c0 + i * STEP, i), i * 7 * Gst.MSECOND, 0)
 bus.wait(seen, 10)
 bus.drain(pipe, src)
 teardown()
@@ -704,8 +562,7 @@ check(f"a shared buffer is counted as a copy ({el.get_property('copy-count')} of
 check("the input buffers are left untouched (the copy is real, not in-place)",
       [b.pts for b in held] == [i * 7 * Gst.MSECOND for i in range(10)])
 check("and the copied buffers carry the correct stamp anyway",
-      len(seen) == 10
-      and {seen[i + 1][0] - seen[i][0] for i in range(9)} == {40_000_000})
+      [p for p, _ in seen] == [house(c0 + i * STEP) for i in range(10)])
 
 # The byte counter is the producer's throughput source and must run in
 # PASSTHROUGH too — a producer with no consumer attached still reports its
@@ -719,140 +576,77 @@ seen = tap_timestamps(pipe)
 pipe.set_state(Gst.State.PLAYING)
 pipe.get_state(3 * Gst.SECOND)
 for i in range(10):
-    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i), i * 7 * Gst.MSECOND, 0)
+    push(src, pes_packet(0x100, MUX + content0(pipe) + i * STEP, i), i * 7 * Gst.MSECOND, 0)
 bus.wait(seen, 10)
 bus.drain(pipe, src)
 teardown()
 check(f"bytes-total counts in passthrough, never armed "
       f"({el.get_property('bytes-total')} of {10 * ts_psi.PKT}, active={el.get_property('active')})",
       el.get_property("active") is False and el.get_property("bytes-total") == 10 * ts_psi.PKT)
+check("and passthrough leaves the arrival timestamps alone, posting nothing",
+      [p for p, _ in seen] == [i * 7 * Gst.MSECOND for i in range(10)] and bus.messages == [])
 
 
 # ---------------------------------------------------------------------------
-print("\n--- the drift loop is readable off the element ---")
-# The slew has no moment to report at, so the runner POLLS it (`report_drift`)
-# rather than being called back — which means the native backend has to expose
-# what the python stamper returns from `drift_stats()`. Same field names, so
-# the `timeline_drift` engine event is the same event whichever backend built
-# it, and `drift_stats_of` reads either without knowing which it has.
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe)
-el = pipe.get_by_name(STAMP_EL)
-d = el.get_property("drift")
-check("the element exposes a drift structure with the python field names",
-      d is not None
-      and sorted(d.nth_field_name(i) for i in range(d.n_fields()))
-      == ["engageNs", "marginNs", "ppb", "ppm", "samples", "slewNs", "window"])
-check("a stamper that has measured nothing reports no samples",
-      d.get_value("samples") == 0 and d.get_value("ppm") == 0
-      and d.get_value("window") == 10)
-st = stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-check("and the runner reads it back as nothing to report yet",
-      stamper.drift_stats_of(st) is None)
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-# The element takes house time from the pipeline clock, so a drift fixture
-# cannot be simulated through it in a unit test the way the python stamper's
-# can (gst_bus_stamper_test.py drives that half). What is pinned here is the
-# SURFACE: shape, arm-reset, and that the runner reads it through one function.
-for i in range(4):
-    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i), i * 40 * Gst.MSECOND, 0)
-bus.wait(seen, 4)
-bus.drain(pipe, src)
-teardown()
+print("\n--- a real mpegtsmux at alignment 0 and 7: one buffer per AU list, PES − 1 h ---")
+for align in (0, 7):
+    pipe = Gst.parse_launch(
+        "audiotestsrc is-live=true num-buffers=30 ! audio/x-raw,format=S32LE,rate=48000,channels=2 "
+        f"! avenc_s302m strict=experimental ! mpegtsmux name=mux latency=0 alignment={align} "
+        f"! {BUS_SINK} busout_41000. ! identity name=tap ! fakesink name=fs sync=false async=false")
+    bus = Bus(pipe)
+    start(pipe)
+    el = pipe.get_by_name(STAMP_EL)
+    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+    got, lists = [], []
 
+    def on_mux_buf(_pad, info, got=got):
+        b = info.get_buffer()
+        data = b.extract_dup(0, b.get_size())
+        pes = next((v for v in (ts_psi.read_pes_pts(p) for p in ts_psi.iter_packets(data)
+                                if p[1] & 0x40) if v is not None), None)
+        got.append((b.pts, b.dts, pes, len(data)))
+        return Gst.PadProbeReturn.OK
 
-# ---------------------------------------------------------------------------
-print("\n--- latch repair: a reconnect backlog does not become the anchor ---")
-# The 2026-09-05 GATE01 failure through the production backend, in real time:
-# the first PES this egress sees is the head of a 1.8 s backlog (45 buffers of
-# 40 ms media pushed back to back), after which the source is on its real
-# cadence. Without the repair every steady-state stamp would sit ~1.8 s in the
-# future of its arrival for the anchor's whole life; with it the window pulls
-# the anchor back onto the source's delivery and says so.
-pipe, src = build_pipe()
-bus = Bus(pipe)
-el = pipe.get_by_name("busout_41000")
-start(pipe, repair_latch=True)
-stamp_el = pipe.get_by_name(STAMP_EL)
-check("the element's repair-latch defaults ON (the runner's producers are live)",
-      Gst.ElementFactory.make("mrtsstamp").get_property("repair-latch") is True)
-stamper.arm(el, "busout_41000")
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
+    def on_list(_pad, info, lists=lists):
+        lists.append(info.get_buffer_list().length())
+        return Gst.PadProbeReturn.OK
 
-
-def house_now():
-    return pipe.get_pipeline_clock().get_time() - pipe.get_base_time()
-
-
-BACKLOG, CADENCE = 45, 90                         # 1.8 s flushed, then 3.6 s live
-arrivals = []
-for i in range(BACKLOG):
-    arrivals.append(house_now())
-    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i & 0x0F), 0, 0)
-for i in range(BACKLOG, BACKLOG + CADENCE):
-    time.sleep(0.04)
-    arrivals.append(house_now())
-    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i & 0x0F), 0, 0)
-bus.wait(seen, BACKLOG + CADENCE, timeout_s=10.0)
-check("every buffer came through", len(seen) == BACKLOG + CADENCE)
-settled = bus.of("timeline_settled")
-# What the window should have cost: the backlog's media less the wall time
-# its flush took (the buffers of the flush are stamped with their arrival).
-flush_ns = arrivals[BACKLOG - 1] - arrivals[0]
-expected_repair = -(BACKLOG - 1) * STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN + flush_ns
-check("the window closed once and reported the backlog it pulled the anchor back by "
-      f"(got {[s.get('repairNs') for s in settled]}, expected ~{expected_repair}, "
-      f"flush took {flush_ns / 1e6:.1f} ms)",
-      len(settled) == 1 and settled[0]["tee"] == "busout_41000"
-      and abs(settled[0]["repairNs"] - expected_repair) < 50 * Gst.MSECOND
-      and settled[0]["windowNs"] == 3_000_000_000)
-# Steady state: the stamp is on the source's delivery — never later than the
-# buffer's arrival (that is what the repair removes; the 2 ms allowance is the
-# gap between this thread's clock read and the element's own), and within the
-# push loop's accumulated sleep overshoot of it.
-tail = [(arrivals[i] - seen[i][0]) for i in range(BACKLOG + 5, BACKLOG + CADENCE)]
-check("after the window every stamp is at or before its arrival, by no more than jitter",
-      all(-2 * Gst.MSECOND <= m <= 100 * Gst.MSECOND for m in tail))
-check("and the backlog itself left with monotone stamps (no floor clamp, no step)",
-      all(seen[i][0] >= seen[i - 1][0] for i in range(1, BACKLOG + CADENCE)))
-check("the repair is the ANCHOR moving, so the ladder past it is still the source's 40 ms",
-      all(seen[i][0] - seen[i - 1][0] == STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
-          for i in range(BACKLOG + 6, BACKLOG + CADENCE)))
-bus.drain(pipe, src)
-teardown()
-
-
-# ---------------------------------------------------------------------------
-print("\n--- PARITY: python probe and native element stamp identically ---")
-# Absolute stamps differ by construction (each anchors at its own house-clock
-# instant); the LADDER — every step from the anchor on — must be identical
-# buffer for buffer, including the PES-less repeats.
-par_ladder = [None if i in (5, 6, 13) else FIRST_PES + i * STEP for i in range(20)]
-py_seen, _ = run_ladder(native=False, entries=par_ladder)
-el_seen, _ = run_ladder(native=True, entries=par_ladder)
-check("both backends emitted the same number of buffers",
-      len(py_seen) == len(el_seen) == 20)
-py_rel = [p - py_seen[0][0] for p, _ in py_seen]
-el_rel = [p - el_seen[0][0] for p, _ in el_seen]
-check("the stamped ladders are identical, delta for delta", py_rel == el_rel)
-check("and so are the DTS ladders",
-      [d - py_seen[0][1] for _, d in py_seen] == [d - el_seen[0][1] for _, d in el_seen])
+    pipe.get_by_name("tap").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_mux_buf)
+    el.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER_LIST, on_list)
+    pipe.set_state(Gst.State.PLAYING)
+    deadline = time.time() + 10
+    while not bus.done and time.time() < deadline:
+        bus.pump(0.02)
+    now = pipe.get_pipeline_clock().get_time()
+    pipe.set_state(Gst.State.NULL)
+    teardown()
+    want, last = [], None
+    for _p, _d, pes, _n in got:
+        last = last if pes is None else _tl.house_from_mux_pts(pes, now)
+        want.append(last)
+    check(f"alignment={align}: the mux pushed AU lists and each left as ONE buffer "
+          f"({len(lists)} lists of up to {max(lists, default=0)} members, {len(got)} buffers)",
+          len(got) >= 25 and len(got) == len(lists) and max(lists) >= 2
+          and el.get_property("coalesced-lists") == sum(1 for n in lists if n >= 2))
+    check(f"alignment={align}: every buffer is stamped PES − 1 h of its PES, DTS with it",
+          sum(1 for g in got if g[2] is not None) >= 25
+          and [(p, d) for p, d, _pes, _n in got] == [(w, w) for w in want])
+    check(f"alignment={align}: bytes-total is every byte the egress carried",
+          el.get_property("bytes-total") == sum(g[3] for g in got))
+    check(f"alignment={align}: one identity message", len(bus.of("mrtsstamp-identity")) == 1)
 
 
 # ---------------------------------------------------------------------------
 print("\n--- R1: the stamp survives a real tsdemux (the DTS trap) ---")
 
 
-def mux_real_ts(nbuf=150):
-    """A genuine mpegtsmux stream: real PES headers, real PCR, real PSI."""
+def mux_real_ts(offset_ns, nbuf=150):
+    """A genuine mpegtsmux stream: real PES headers, real PCR, real PSI, its content on the
+    house timeline from `offset_ns` (PES = content + 1 h)."""
     pipe = Gst.parse_launch(
-        f"audiotestsrc num-buffers={nbuf} samplesperbuffer=1024 ! audioconvert "
-        "! avenc_aac ! mpegtsmux ! appsink name=out sync=false")
+        f"audiotestsrc num-buffers={nbuf} samplesperbuffer=1024 timestamp-offset={offset_ns} "
+        "! audioconvert ! avenc_aac ! mpegtsmux ! appsink name=out sync=false")
     pipe.set_state(Gst.State.PLAYING)
     out = []
     sink = pipe.get_by_name("out")
@@ -869,7 +663,7 @@ def mux_real_ts(nbuf=150):
     return b"".join(out)
 
 
-TS = mux_real_ts()
+TS = mux_real_ts(Gst.SystemClock.obtain().get_time() + Gst.SECOND)
 check("the fixture is a real muxed transport stream", len(TS) > 100 * ts_psi.PKT)
 
 pipe, src = build_pipe("busout_41000. ! queue ! tsdemux name=dmx ! identity name=tap "
@@ -897,20 +691,15 @@ while off < len(TS):
     off += CHUNK
     n += 1
     bus.pump(random.choice([0.0, 0.003, 0.012]))
+now = pipe.get_pipeline_clock().get_time()
 bus.drain(pipe, src)
 teardown()
 
-first = (bus.of("timeline_restamped") or [None])[0]
-anchor = first["anchorNs"] if first else None
-ref = first["refPts90k"] if first else None
 pes = [v for v in (ts_psi.read_pes_pts(p) for p in ts_psi.iter_packets(TS)) if v is not None]
-check("the producer anchored on the mux's first PES", anchor is not None and ref == pes[0])
-
 n_cmp = min(len(consumer), len(pes))
 check("the consumer produced a frame per PES", n_cmp > 100)
-dev = [consumer[i] - (anchor + (pes[i] - ref) * NS_PER_TICK_NUM // NS_PER_TICK_DEN)
-       for i in range(n_cmp)]
-check(f"the consumer's timeline lands on the producer's stamp "
+dev = [consumer[i] - _tl.house_from_mux_pts(pes[i], now) for i in range(n_cmp)]
+check(f"the consumer's timeline lands on the identity stamp "
       f"(offset {dev[0] / 1e6:.1f} ms)", abs(dev[0]) < Gst.SECOND)
 settled = dev[len(dev) * 3 // 5:]
 spread = max(settled) - min(settled)
@@ -920,91 +709,11 @@ check("and the whole run stays within a frame or two of the stamp",
       max(dev) - min(dev) < 100 * Gst.MSECOND)
 
 
-print()
-print("\n--- the conditioner absorbs a source PTS step (timeline_conditioned carries houseNs) ---")
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe, repair_latch=True)          # the conditioner rides the same live-cadence opt-in
-stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-# A steady cadence to teach the conditioner the media rate, then a ~1 s BACKWARD
-# PES PTS step whose arrival did not move — a source clock reset (vMix CBR, .103).
-# The conditioner rewrites the bytes so the stamper's watch never sees a step.
-for i in range(12):
-    back = 90000 if i >= 8 else 0        # 1 s back from buffer 8
-    pes_pts = FIRST_PES + i * STEP - back
-    push(src, pes_packet(0x100, pes_pts, i), i * 40 * Gst.MSECOND, 0)
-    bus.pump(0.003)
-bus.drain(pipe, src)
-teardown()
-conditioned = bus.of("timeline_conditioned")
-check("a source PTS step raised a timeline_conditioned event", len(conditioned) >= 1)
-check("the conditioned event carries the probe's field names verbatim, houseNs included "
-      "(the field the native message path used to drop)",
-      bool(conditioned)
-      and set(conditioned[0]) == {"event", "tee", "pid", "clock",
-                                  "stepTicks", "offsetTicks", "houseNs"}
-      and conditioned[0]["pid"] == 0x100
-      and conditioned[0]["clock"] in ("pts", "pcr")
-      and isinstance(conditioned[0]["houseNs"], int)
-      and conditioned[0]["houseNs"] > 0)
-
-# ---------------------------------------------------------------------------
-print("\n--- house-timeline egress: the element reads PES − 1 h back, no anchor ---")
-# The runner's arm sets `house-timeline` from the start payload's
-# `houseTimelineEgress` (a transform producer); the element then stamps by
-# identity — the python probe's section in gst_bus_stamper_test.py, buffer for
-# buffer, with the PES built off the pipeline's own house clock as the mux would.
-import ts_timeline as _tl  # noqa: E402
-pipe, src = build_pipe()
-bus = Bus(pipe)
-start(pipe)
-stamper.house_timeline = True
-stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-el = pipe.get_by_name(STAMP_EL)
-check("the arm sets the element's house-timeline property", el.get_property("house-timeline") is True)
-seen = tap_timestamps(pipe)
-pipe.set_state(Gst.State.PLAYING)
-pipe.get_state(3 * Gst.SECOND)
-house0 = pipe.get_pipeline_clock().get_time() - pipe.get_base_time()
-c0 = house0 * 9 // 100000 + 90000
-for i in range(6):
-    push(src, pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i),
-         (500 + i * 40 + (i % 3) * 7) * Gst.MSECOND, 0)
-push(src, filler_packet(cc=6), 900 * Gst.MSECOND, 0)
-bus.wait(seen, 7)
-bus.drain(pipe, src)
-want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(6)]
-check("every stamp is the content's house time, exactly, regardless of arrival",
-      [pts for pts, _ in seen[:6]] == want)
-check("DTS rides with it", [dts for _, dts in seen[:6]] == want)
-check("a PES-less buffer repeats the staircase", len(seen) == 7 and seen[6][0] == want[-1])
-anchors = bus.of("timeline_restamped")
-check("one anchor event names the identity mapping",
-      len(anchors) == 1 and anchors[0]["anchorNs"] == want[0]
-      and anchors[0]["refPts90k"] == (_tl.MUX_CLOCK_BASE_90K + c0) % (1 << 33))
-check("nothing re-anchors and nothing is conditioned",
-      not bus.of("timeline_reanchor") and not bus.of("timeline_conditioned"))
-stamper.house_timeline = False
-teardown()
-
-
 # ---------------------------------------------------------------------------
 print("\n--- base-aware identity (WI-P1-7): base time 10 h and 14 h, wire = PES − 1 h ---")
 # video-encoder keeps a natural base time (liveCaptureClock) and its restamp
 # writes PES = capture time on the house timescale + 1 h. 14 h is past half a
 # 2^33 period, where unwrapping against running time folds a whole period.
-
-
-def uptime_clock(at_ns):
-    """A monotonic clock of its own reading `at_ns` now, whatever this box's
-    uptime; the process-wide system clock is left alone."""
-    clock = Gst.SystemClock(clock_type=Gst.ClockType.MONOTONIC)
-    clock.set_calibration(clock.get_internal_time(), at_ns, 1, 1)
-    return clock
-
-
 for hours in (10, 14):
     base = hours * 3600 * Gst.SECOND
     pipe, src = build_pipe()
@@ -1012,42 +721,38 @@ for hours in (10, 14):
     start(pipe)
     pipe.use_clock(uptime_clock(base + Gst.SECOND))
     pipe.set_base_time(base)                     # start time is NONE: it survives PLAYING
-    stamper.house_timeline = True
     stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
     seen = tap_timestamps(pipe)
     pipe.set_state(Gst.State.PLAYING)
     pipe.get_state(3 * Gst.SECOND)
-    c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000   # content: now + 1 s
+    c0 = content0(pipe)
     for i in range(6):
-        push(src, pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i),
-             i * 40 * Gst.MSECOND, 0)
+        push(src, pes_packet(0x41, MUX + c0 + i * STEP, i), i * 40 * Gst.MSECOND, 0)
     bus.wait(seen, 6)
     tap = pipe.get_by_name("tap")
     seg = tap.get_static_pad("sink").get_sticky_event(Gst.EventType.SEGMENT, 0).parse_segment()
     tap_base = tap.get_base_time()
     bus.drain(pipe, src)
-    stamper.house_timeline = False
     teardown()
     # The wire is what unixfdsink sends: running time + base time.
     wire = [seg.to_running_time(Gst.Format.TIME, p) + tap_base for p, _ in seen[:6]]
-    want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(6)]
+    want = [house(c0 + i * STEP) for i in range(6)]
     check(f"base {hours} h: the egress really runs on that base time", tap_base == base)
     check(f"base {hours} h: wire = PES − 1 h exactly, every buffer "
           f"(first off by {(wire[0] - want[0]) / 1e9 if wire else None} s)",
           len(seen) == 6 and wire == want)
     check(f"base {hours} h: DTS rides with PTS", all(d == p for p, d in seen[:6]))
-    anchors = bus.of("timeline_restamped")
-    check(f"base {hours} h: the anchor event names the content's house time, not running time",
-          len(anchors) == 1 and anchors[0]["anchorNs"] == want[0])
+    ident = bus.of("mrtsstamp-identity")
+    check(f"base {hours} h: the identity message names the content's house time, not running time",
+          len(ident) == 1 and ident[0][2]["stamp"] == want[0])
 
 
 # ---------------------------------------------------------------------------
-print("\n--- the bus gap marker (OQ-12) leaves an identity egress with its PTS, no DTS ---")
+print("\n--- the bus gap marker (OQ-12) leaves the egress with its PTS, no DTS ---")
 # Its PTS is the gap's end and its packets' private data the gap's length; a
 # stamp would replace that PTS with the staircase. OQ-12's form has no duration;
 # the second marker carries one to show a duration is never touched either, and
 # the DTS the restamp gives it (its input's timeline), which no bus queue may read.
-# Anchored mode is frozen (Q2), pinned as it was: no anchored egress carries one.
 GAP_FLAGS = int(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
 
 
@@ -1072,96 +777,73 @@ def tap_buffers(pipe, name="tap"):
     return seen
 
 
-for house in (True, False):
-    mode = "identity" if house else "anchored"
-    pipe, src = build_pipe()
-    bus = Bus(pipe)
-    start(pipe)
-    stamper.house_timeline = house
-    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-    seen = tap_buffers(pipe)
-    pipe.set_state(Gst.State.PLAYING)
-    pipe.get_state(3 * Gst.SECOND)
-    c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
-    pes = [pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0 + i * 3600, i) for i in range(4)]
-    markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE,
-                Gst.CLOCK_TIME_NONE),
-               (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 2 * Gst.SECOND,
-                300 * Gst.MSECOND)]
-    push(src, pes[0], 0, 0)
-    push(src, pes[1], 40 * Gst.MSECOND, 0)
-    for data, pts, dts, duration in markers:
-        mb = Gst.Buffer.new_wrapped(data)
-        mb.pts, mb.dts, mb.duration = pts, dts, duration
-        mb.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
-        src.emit("push-buffer", mb)
-    push(src, pes[2], 80 * Gst.MSECOND, 0)
-    push(src, pes[3], 120 * Gst.MSECOND, 0)
-    bus.wait(seen, 6)
-    bus.drain(pipe, src)
-    stamper.house_timeline = False
-    teardown()
-    got = seen[2:4]
-    check(f"{mode}: its GAP|DISCONT flags and bytes are intact",
-          len(seen) == 6 and all(g[3] & GAP_FLAGS == GAP_FLAGS for g in got)
-          and [g[4] for g in got] == [m[0] for m in markers])
-    data = [s for s in seen if not s[3] & int(Gst.BufferFlags.GAP)]
-    if house:
-        check("identity: each marker leaves with its own PTS and duration and no DTS, also one "
-              "that came with a DTS",
-              len(seen) == 6
-              and [(g[0], g[1], g[2]) for g in got]
-              == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, _dts, duration in markers])
-        want = [_tl.pts90k_to_ns(c0 + i * 3600) for i in range(4)]
-        check("identity: the data on either side is stamped PES − 1 h as usual",
-              [(s[0], s[1]) for s in data] == [(w, w) for w in want])
-    else:
-        check("anchored (frozen, Q2): each marker is stamped like any PES-less buffer, as before",
-              len(seen) == 6
-              and [(g[0], g[1], g[2]) for g in got]
-              == [(seen[1][0], seen[1][0], duration) for _d, _p, _dts, duration in markers])
-        check("anchored: the data on either side keeps its 40 ms staircase",
-              len(data) == 4 and {data[i + 1][0] - data[i][0] for i in range(3)} == {40_000_000}
-              and all(s[1] == s[0] for s in data))
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe)
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+seen = tap_buffers(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+c0 = content0(pipe)
+pes = [pes_packet(0x41, MUX + c0 + i * STEP, i) for i in range(4)]
+markers = [(gap_marker(0x41, 500 * Gst.MSECOND), 7 * Gst.SECOND, Gst.CLOCK_TIME_NONE,
+            Gst.CLOCK_TIME_NONE),
+           (gap_marker(0x41, 300 * Gst.MSECOND, 1), 8 * Gst.SECOND, 2 * Gst.SECOND,
+            300 * Gst.MSECOND)]
+push(src, pes[0], 0, 0)
+push(src, pes[1], 40 * Gst.MSECOND, 0)
+for data, pts, dts, duration in markers:
+    mb = Gst.Buffer.new_wrapped(data)
+    mb.pts, mb.dts, mb.duration = pts, dts, duration
+    mb.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
+    src.emit("push-buffer", mb)
+push(src, pes[2], 80 * Gst.MSECOND, 0)
+push(src, pes[3], 120 * Gst.MSECOND, 0)
+bus.wait(seen, 6)
+bus.drain(pipe, src)
+teardown()
+got = seen[2:4]
+check("its GAP|DISCONT flags and bytes are intact",
+      len(seen) == 6 and all(g[3] & GAP_FLAGS == GAP_FLAGS for g in got)
+      and [g[4] for g in got] == [m[0] for m in markers])
+check("each marker leaves with its own PTS and duration and no DTS, also one that came with a DTS",
+      len(seen) == 6
+      and [(g[0], g[1], g[2]) for g in got]
+      == [(pts, Gst.CLOCK_TIME_NONE, duration) for _d, pts, _dts, duration in markers])
+data = [s for s in seen if not s[3] & int(Gst.BufferFlags.GAP)]
+want = [house(c0 + i * STEP) for i in range(4)]
+check("the data on either side is stamped PES − 1 h as usual",
+      [(s[0], s[1]) for s in data] == [(w, w) for w in want])
 
-# A marker inside a buffer list must not be merged into the access unit; an
-# anchored egress coalesces such a list as it always did (frozen, Q2).
-for house in (True, False):
-    pipe, src = build_pipe()
-    bus = Bus(pipe)
-    start(pipe)
-    stamper.house_timeline = house
-    stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
-    el = pipe.get_by_name(STAMP_EL)
-    seen = tap_buffers(pipe)
-    pipe.set_state(Gst.State.PLAYING)
-    pipe.get_state(3 * Gst.SECOND)
-    c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
-    lst = Gst.BufferList.new()
-    for data, flags, pts in ((gap_marker(0x41, 200 * Gst.MSECOND), True, 5 * Gst.SECOND),
-                             (pes_packet(0x41, _tl.MUX_CLOCK_BASE_90K + c0, 0), False, 0),
-                             (filler_packet(cc=1), False, 0)):
-        b = Gst.Buffer.new_wrapped(data)
-        b.pts = b.dts = pts   # the marker too: a DTS, as the restamp gives it one
-        if flags:
-            b.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
-        lst.insert(-1, b)
-    src.emit("push-buffer-list", lst)
-    bus.wait(seen, 3 if house else 1)
-    bus.drain(pipe, src)
-    stamper.house_timeline = False
-    teardown()
-    if house:
-        check("identity: a list holding a marker is handed on member by member, not merged",
-              len(seen) == 3 and el.get_property("coalesced-lists") == 0)
-        check("identity: the marker keeps its PTS and flags, its DTS cleared; the AU behind it "
-              "is stamped",
-              len(seen) == 3 and seen[0][0] == 5 * Gst.SECOND
-              and seen[0][1] == Gst.CLOCK_TIME_NONE and seen[0][3] & GAP_FLAGS == GAP_FLAGS
-              and seen[1][0] == seen[1][1] == _tl.pts90k_to_ns(c0) and seen[2][0] == seen[1][0])
-    else:
-        check("anchored (frozen, Q2): the same list still coalesces into one buffer",
-              len(seen) == 1 and el.get_property("coalesced-lists") == 1)
+# A marker inside a buffer list must not be merged into the access unit (B-10).
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe)
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+el = pipe.get_by_name(STAMP_EL)
+seen = tap_buffers(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+c0 = content0(pipe)
+lst = Gst.BufferList.new()
+for data, flags, pts in ((gap_marker(0x41, 200 * Gst.MSECOND), True, 5 * Gst.SECOND),
+                         (pes_packet(0x41, MUX + c0, 0), False, 0),
+                         (filler_packet(cc=1), False, 0)):
+    b = Gst.Buffer.new_wrapped(data)
+    b.pts = b.dts = pts   # the marker too: a DTS, as the restamp gives it one
+    if flags:
+        b.set_flags(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
+    lst.insert(-1, b)
+src.emit("push-buffer-list", lst)
+bus.wait(seen, 3)
+bus.drain(pipe, src)
+teardown()
+check("a list holding a marker is handed on member by member, not merged",
+      len(seen) == 3 and el.get_property("coalesced-lists") == 0)
+check("the marker keeps its PTS and flags, its DTS cleared; the AU behind it is stamped",
+      len(seen) == 3 and seen[0][0] == 5 * Gst.SECOND
+      and seen[0][1] == Gst.CLOCK_TIME_NONE and seen[0][3] & GAP_FLAGS == GAP_FLAGS
+      and seen[1][0] == seen[1][1] == house(c0) and seen[2][0] == seen[1][0])
 
 
 # ---------------------------------------------------------------------------
@@ -1186,14 +868,12 @@ def bufs_of(info):
     return [lst.get(i) for i in range(lst.length())] if lst else [info.get_buffer()]
 
 
-def edge_marker_case(native):
-    label = "native" if native else "python probe"
+def edge_marker_case():
     pipe = Gst.parse_launch(
         f"mrtsrestamp name=restamp clock-mode=fixed arrival=buffer-pts ! {BUS_SINK} "
         f"busout_41000. ! {EDGE_QUEUE} ! fakesink name=fs sync=false async=false")
     bus = Bus(pipe)
-    start(pipe, native=native)
-    stamper.house_timeline = True
+    start(pipe)
     stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
     entered, left = [], []
     held, release = threading.Event(), threading.Event()
@@ -1240,12 +920,12 @@ def edge_marker_case(native):
 
     def send(i):
         """A 60 ms MPEG audio PES on its house time + 1 h; DTS on the mux's own time."""
-        house = house0 + i * 60 * Gst.MSECOND
-        pts90 = (fx.ns90k(house) + _tl.MUX_CLOCK_BASE_90K) % fx.PTS_WRAP
+        house_ns = house0 + i * 60 * Gst.MSECOND
+        pts90 = (fx.ns90k(house_ns) + MUX) % fx.PTS_WRAP
         pkts = ([fx.psi_packet(0, fx.PAT), fx.psi_packet(fx.PID_PMT, fx.PMT)] if i == 0 else [])
         pkts += fx.packetize(fx.PID_A, fx.pes(0xC0, pts90, None, bytes(300)))
         b = Gst.Buffer.new_wrapped(numbered(pkts))
-        b.pts, b.dts = house, Gst.SECOND + i * 60 * Gst.MSECOND
+        b.pts, b.dts = house_ns, Gst.SECOND + i * 60 * Gst.MSECOND
         return feed.push(b) == Gst.FlowReturn.OK
 
     ok = all(send(i) for i in range(10))
@@ -1264,17 +944,16 @@ def edge_marker_case(native):
         bus.pump(0.02)
     pipe.set_state(Gst.State.NULL)
     feed.set_active(False)
-    stamper.house_timeline = False
     teardown()
 
     marks = [i for i, x in enumerate(entered) if x[2] & int(Gst.BufferFlags.GAP)]
     behind = entered[marks[0] + 1] if marks and marks[0] + 1 < len(entered) else None
-    check(f"{label}: the edit's one marker leaves the egress with no DTS, its PTS the house "
+    check("the edit's one marker leaves the egress with no DTS, its PTS the house "
           "time of the PES behind it, its length 500 ms",
           ok and len(marks) == 1 and entered[marks[0]][1] == Gst.CLOCK_TIME_NONE
           and behind is not None and entered[marks[0]][0] == behind[0]
           and abs(fx.gap_length(entered[marks[0]][3]) - 500 * Gst.MSECOND) <= fx.TICK)
-    check(f"{label}: every buffer the 5 s edge queue took leaves it, in order and unchanged "
+    check(f"every buffer the 5 s edge queue took leaves it, in order and unchanged "
           f"({len(left)} of {len(entered)})",
           ok and len(entered) == 17 and [x[2:] for x in left] == [x[2:] for x in entered])
 
@@ -1282,8 +961,7 @@ def edge_marker_case(native):
 if Gst.ElementFactory.find("mrtsrestamp") is None:
     print("SKIP the restamp edge case — libgstmrtshouse.so not built (`make native`)")
 else:
-    for native in (True, False):
-        edge_marker_case(native)
+    edge_marker_case()
 
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

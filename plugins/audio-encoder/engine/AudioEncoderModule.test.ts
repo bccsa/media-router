@@ -362,13 +362,9 @@ describe('AudioEncoderModule on house time (WI-P1-12)', () => {
         const { module } = makeModule();
         for (const codec of ['opus', 'aac']) {
             const desc = module.buildPipeline({ codec });
-            // These three and nothing else: no per-egress conditioner threshold (OQ-16).
-            expect(Object.keys(desc).sort()).toEqual([
-                'busReports',
-                'houseTimelineEgress',
-                'pipeline',
-            ]);
-            expect(desc.houseTimelineEgress).toBe(true);
+            // These two and nothing else: no stamper policy, every egress is stamped by
+            // identity (WI-P2-3), and no per-egress conditioner threshold (OQ-16).
+            expect(Object.keys(desc).sort()).toEqual(['busReports', 'pipeline']);
             expect(desc.busReports).toEqual([
                 { element: 'restamp', structure: 'mrtsrestamp-stats' },
                 { element: 'restamp', structure: 'mrtsrestamp-pid' },

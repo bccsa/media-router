@@ -718,9 +718,8 @@ describe('VideoEncoderModule on house time (WI-P1-13)', () => {
                 `mpegtsmux name=mux latency=0 alignment=0 ! ${RESTAMP} offset-ns=0 ! capssetter `,
             );
             // The base time stays natural for the mux's schedule; the PES are house time + 1 h
-            // after the restamp, so the egress stamps by identity.
+            // after the restamp, which the identity egress stamp reads back.
             expect(desc.liveCaptureClock).toBe(true);
-            expect(desc.houseTimelineEgress).toBe(true);
             expect(desc.busReports).toEqual([
                 { element: 'restamp', structure: 'mrtsrestamp-stats' },
                 { element: 'restamp', structure: 'mrtsrestamp-pid' },

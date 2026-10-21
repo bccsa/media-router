@@ -23,6 +23,10 @@ constexpr const char* ALARM =
  *  misses or is below its ABI a `warning` event of kind `timing_plugin`. */
 void load();
 
+/** The rule-6 event (`warning` or `error`) of kind `timing_plugin`: `ALARM (detail)` and
+ *  `detail`; the engine keys on `kind`. The stamper raises it too (stamper.cpp). */
+void alarm(const char* event, const std::string& detail);
+
 /** The `started` event's `timingPlugin`: `{version, abi, path}` or null. The engine clears the
  *  alarm on a start that carries one. A new node, owned by the caller. */
 JsonNode* timing_plugin_json();

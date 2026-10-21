@@ -71,7 +71,7 @@ export function rebaseWarningHead(note: PlayoutRebaseNote): string {
     return (
         `${note.label} found this producer's stamps ${offBy(note.latenessMs)} s off the house ` +
         'clock and re-anchored itself — producer timeline fault (stamper / PCR PID / ' +
-        'house-timeline unwrap).'
+        'identity unwrap).'
     );
 }
 

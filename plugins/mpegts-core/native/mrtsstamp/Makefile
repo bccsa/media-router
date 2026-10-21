@@ -1,5 +1,5 @@
-# mrtsstamp — GStreamer plugin wrapping mrts::TimelineStamper (the time-sync
-# contract's producer-side egress stamper, ADR-0005). Linux/GStreamer only.
+# mrtsstamp — GStreamer plugin wrapping mrts::IdentityStamp, the bus egress stamp
+# (PES - 1 h, ADR-0029). Linux/GStreamer only.
 # Links the mrts core as the PIC archive libmrts.a, like every mrts user (WI-S0-6).
 CXX        ?= c++
 CXXFLAGS   ?= -O2
@@ -18,7 +18,7 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 # (gst_plugin_mrtsstamp_get_desc) from `libgst<name>.so`.
 SO   = libgstmrtsstamp.so
 SRCS = gstmrtsstamp.cpp
-HDRS = $(MRTS)/ts_timeline.h $(MRTS)/ts_house.h
+HDRS = $(MRTS)/ts_house.h
 PKGS = gstreamer-1.0 gstreamer-base-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
@@ -40,7 +40,7 @@ FORCE:
 test:
 	@# Dataflow coverage runs from the python gst suite
 	@# (packages/engine/src/child-process/gst_mrtsstamp_element_test.py, in test:py);
-	@# the arithmetic itself is pinned by mrts/tests/ts_timeline_test.
+	@# the identity rule itself is pinned by mrts/tests/ts_house_test.
 
 clean:
 	rm -f $(SO)
