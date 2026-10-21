@@ -365,7 +365,8 @@ def decode(path, threads=4, deint="linear", audio_pids=None, fine=False):
     import gi
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst
-    Gst.init(None)
+    # An empty argv, not None: PyGObject 3.42 (the dev box) rejects None here.
+    Gst.init([])
     none = Gst.CLOCK_TIME_NONE
 
     pipe = Gst.Pipeline.new("avskew")
