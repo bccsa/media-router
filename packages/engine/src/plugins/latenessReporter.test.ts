@@ -112,6 +112,23 @@ describe('LatenessReporter', () => {
         ]);
     });
 
+    it("a module's processing latency (OQ-22) rides along, and a reset clears it", () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_busin', win(10));
+        r.onEvent('mrlateness:lat_busout_41000', win(30));
+        expect(r.summary().processingLatencyMs).toBeUndefined();
+        r.setProcessingLatency(5.2);
+        const s = r.summary();
+        expect(s.processingLatencyMs).toBe(5.2);
+        // Measured transit and the lookahead stay apart: the PTS carry the one, not the other.
+        expect(s.inputs[0].addedMs).toBe(20);
+        r.setProcessingLatency(undefined);
+        expect(r.summary().processingLatencyMs).toBeUndefined();
+        r.setProcessingLatency(5);
+        r.reset();
+        expect(r.summary().processingLatencyMs).toBeUndefined();
+    });
+
     it('one bus output, or one left when another goes quiet, is not listed', () => {
         const r = new LatenessReporter({ intervalMs: 2000 });
         r.onEvent('mrlateness:lat_busout_41000', win(88), 0);

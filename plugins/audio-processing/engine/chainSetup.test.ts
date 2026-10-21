@@ -1,13 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
     chainSummary,
     partitionBusSources,
     resolveChainStages,
+    DUCK_DEFAULTS,
     LIVE_PARAMS,
     PROGRAM_PORT,
     SIDECHAIN_PORT,
 } from './chainSetup.js';
 import { stages } from './chainStages.fixture.js';
+
+const schema = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).mediaRouter
+    .configSchema.properties as Record<string, { default?: unknown; 'x-live'?: boolean }>;
 
 const src = (sinkPortId: string, n = 0) => ({
     port: 40100 + n,
@@ -39,6 +45,23 @@ describe('partitionBusSources', () => {
 
     it('is empty for no edges at all', () => {
         expect(partitionBusSources([])).toEqual({ program: [], sidechain: [] });
+    });
+});
+
+describe('DUCK_DEFAULTS', () => {
+    it("are the manifest's defaults for the five duck settings, each a live slider", () => {
+        expect(Object.keys(DUCK_DEFAULTS)).toEqual([
+            'threshold',
+            'duckDepth',
+            'attack',
+            'release',
+            'hold',
+        ]);
+        for (const [key, value] of Object.entries(DUCK_DEFAULTS)) {
+            expect(schema[key]?.default, `${key} default`).toBe(value);
+            expect(schema[key]?.['x-live'], `${key} live`).toBe(true);
+            expect(LIVE_PARAMS).toContain(key);
+        }
     });
 });
 

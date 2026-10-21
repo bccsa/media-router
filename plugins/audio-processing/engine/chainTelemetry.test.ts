@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ChainTelemetry, type ChainTelemetryHooks } from './chainTelemetry.js';
+import { readDuckerMessage } from './duckLive.js';
 import { DYNAMICS_GRAPH, DUCK_ENVELOPE_GRAPH, EQ_GRAPH } from './graphPublisher.js';
 import type { StatusGraph } from '@media-router/engine';
 import { stages } from './chainStages.fixture.js';
@@ -21,6 +22,8 @@ interface Harness {
     badges: Array<[string, { text: string } | null]>;
     /** Property reads the meter poll issued, as `element/prop`. */
     reads: string[];
+    /** What reached the timing section's processing latency, in order. */
+    latencies: Array<number | undefined>;
     setConfig: (c: Record<string, unknown>) => void;
 }
 
@@ -29,17 +32,19 @@ function harness(initial: Record<string, unknown> = {}): Harness {
     const status: Harness['status'] = [];
     const badges: Harness['badges'] = [];
     const reads: string[] = [];
+    const latencies: Array<number | undefined> = [];
     let config = initial;
 
     const hooks: ChainTelemetryHooks = {
         readProperty: async (element, prop) => {
             reads.push(`${element}/${prop}`);
-            return 1;
+            return prop === 'latency' ? 240 : 1;
         },
         readSinkBytes: async () => ({ sink: 0 }),
         publishStatus: (section, data) => void status.push([section, data]),
         publishGraph: (key, graph) => void graphs.push([key, graph]),
         badge: (id, badge) => void badges.push([id, badge]),
+        processingLatency: (ms) => void latencies.push(ms),
         config: () => config,
     };
 
@@ -50,6 +55,7 @@ function harness(initial: Record<string, unknown> = {}): Harness {
         status,
         badges,
         reads,
+        latencies,
         setConfig: (c) => {
             config = c;
         },
@@ -115,6 +121,18 @@ describe('ChainTelemetry start / stop', () => {
         h.telemetry.stop();
     });
 
+    it("hands each meter tick's latency to the timing section, and clears it on stop", async () => {
+        const h = harness({ mode: 'compressor', limiterEnabled: true });
+        h.telemetry.start(
+            stages({ dynElement: 'dyn-elem', dynMode: 'compressor', limiterElement: 'lim-elem' }),
+        );
+        await vi.advanceTimersByTimeAsync(2100);
+        // dyn + lim, 240 samples each at 48 kHz: 10 ms, on each of the two ticks.
+        expect(h.latencies).toEqual([10, 10]);
+        h.telemetry.stop();
+        expect(h.latencies.at(-1)).toBeUndefined();
+    });
+
     it('a stage-less chain never publishes meters', async () => {
         const h = harness({});
         h.telemetry.start(stages());
@@ -159,6 +177,23 @@ describe('ChainTelemetry.duckLevel', () => {
         const envelope = h.graphs.filter(([k]) => k === DUCK_ENVELOPE_GRAPH);
         expect(envelope).toHaveLength(1);
         expect(envelope[0][1]).not.toBeNull();
+        expect(envelope[0][1]!.live).toMatchObject({ y: -9 });
+    });
+
+    it('takes a reading as an mrducker message carries it', () => {
+        const h = harness({ mode: 'ducker' });
+        h.graphs.length = 0;
+
+        const reading = readDuckerMessage({
+            'running-time': 105_000_000,
+            'gain-db': -9,
+            'key-db': -20,
+            phase: 'attack',
+        });
+        h.telemetry.duckLevel(reading!);
+
+        const envelope = h.graphs.filter(([k]) => k === DUCK_ENVELOPE_GRAPH);
+        expect(envelope).toHaveLength(1);
         expect(envelope[0][1]!.live).toMatchObject({ y: -9 });
     });
 

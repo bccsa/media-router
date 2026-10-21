@@ -16,7 +16,8 @@ namespace {
 constexpr size_t NPOS = std::string::npos;
 
 /** One plugin .so of the timing path, resolved as plugins/<plugin>/native/<tool>/<file> then
- *  libexec/<plugin>/<file>. `required`: a miss is the module alarm, not just a log line. */
+ *  libexec/<plugin>/<file>. `required`: a miss is every module's alarm; else only a module
+ *  naming one of its elements, refused when it has no stand-in, sees it. */
 struct Row {
     const char* plugin;
     const char* tool;
@@ -30,6 +31,9 @@ const std::vector<Row>& table() {
     static const std::vector<Row> rows = {
         {"mpegts-core", "mrtshouse", "libgstmrtshouse.so", true, MRTSHOUSE_MIN_ABI,
          {{"mrtsrestamp", "identity"}, {"mrtsdemux", nullptr}, {"mralignwatch", "identity"}}},
+        // The ducker and the keyed gate's PTS keeper (WI-P2-10): neither has a stand-in.
+        {"audio-processing", "mrducker", "libgstmrducker.so", false, MRDUCKER_MIN_ABI,
+         {{"mrducker", nullptr}, {"mrptskeep", nullptr}}},
     };
     return rows;
 }
@@ -207,15 +211,35 @@ std::string unescape(std::string v) {
     return out;
 }
 
-}  // namespace
+/** The row of the factory `name`, with its outcome; nullptr for none. */
+const Row* row_of(const std::string& name, const Outcome** outcome) {
+    for (size_t i = 0; i < g_outcomes.size(); i++)
+        for (const Factory& f : table()[i].factories)
+            if (name == f.name) {
+                *outcome = &g_outcomes[i];
+                return &table()[i];
+            }
+    return nullptr;
+}
 
-void alarm(const char* event, const std::string& detail) {
-    const std::string message = std::string(ALARM) + " (" + detail + ")";
+/** A row's alarm: rule 6 for the TS module (required), PLUGIN_ALARM for another. */
+const char* sentence_of(const Row& row) { return row.required ? ALARM : PLUGIN_ALARM; }
+const char* kind_of(const Row& row) { return row.required ? "timing_plugin" : PLUGIN_KIND; }
+
+void emit_alarm(const char* event, const char* kind, const char* sentence,
+                const std::string& detail) {
+    const std::string message = std::string(sentence) + " (" + detail + ")";
     JsonObject* ev = ipc::event(event);
-    json_object_set_string_member(ev, "kind", "timing_plugin");
+    json_object_set_string_member(ev, "kind", kind);
     json_object_set_string_member(ev, "message", message.c_str());
     json_object_set_string_member(ev, "detail", detail.c_str());
     ipc::emit(ev);
+}
+
+}  // namespace
+
+void alarm(const char* event, const std::string& detail) {
+    emit_alarm(event, "timing_plugin", ALARM, detail);
 }
 
 Rewrite rewrite(const std::string& s, const std::vector<Factory>& table) {
@@ -261,8 +285,15 @@ void load() {
         g_outcomes.push_back(load_row(row));
         const Outcome& o = g_outcomes.back();
         if (o.loaded) continue;
-        if (row.required) alarm("warning", o.detail);
-        else ipc::log(o.detail + " — its elements get stand-ins");
+        if (row.required) {
+            alarm("warning", o.detail);
+            continue;
+        }
+        std::string refused;   // the elements without a stand-in
+        for (const Factory& f : row.factories)
+            if (!f.stand_in) refused += std::string(refused.empty() ? "" : ", ") + f.name;
+        ipc::log(o.detail + (refused.empty() ? " — its elements get stand-ins"
+                                              : " — a module naming " + refused + " is refused"));
     }
 }
 
@@ -287,11 +318,10 @@ bool stand_in(std::string* desc) {
     if (missing.empty()) return true;
     Rewrite r = rewrite(*desc, missing);
     if (!r.refused.empty()) {
-        std::string detail;
-        for (size_t i = 0; i < g_outcomes.size(); i++)
-            for (const Factory& f : table()[i].factories)
-                if (r.refused == f.name) detail = g_outcomes[i].detail;
-        alarm("error", detail + "; " + r.refused + " has no stand-in");
+        const Outcome* o = nullptr;
+        const Row* row = row_of(r.refused, &o);
+        emit_alarm("error", kind_of(*row), sentence_of(*row),
+                   o->detail + "; " + r.refused + " has no stand-in");
         return false;
     }
     if (r.desc != *desc) ipc::log("native TS module not loaded, parsing with stand-ins: " + r.desc);
@@ -309,23 +339,22 @@ void refuse_live_add(const std::string& req_id, const std::string& desc,
     for (size_t i = 0; i < g_outcomes.size(); i++)
         if (!g_outcomes[i].loaded)
             for (const Factory& f : table()[i].factories) missing.push_back({f.name, nullptr});
-    std::string detail;
+    const Outcome* o = nullptr;
+    const Row* row = nullptr;
     if (!missing.empty()) {
         const Rewrite r = rewrite(desc, missing);
-        for (size_t i = 0; i < g_outcomes.size() && !r.refused.empty(); i++)
-            for (const Factory& f : table()[i].factories)
-                if (!g_outcomes[i].loaded && r.refused == f.name) detail = g_outcomes[i].detail;
+        if (!r.refused.empty()) row = row_of(r.refused, &o);
     }
-    if (detail.empty()) {
+    if (!row) {
         ipc::command_error(req_id, message);
         return;
     }
-    const std::string text = message + "; " + ALARM + " (" + detail + ")";
+    const std::string text = message + "; " + sentence_of(*row) + " (" + o->detail + ")";
     JsonObject* ev = ipc::event("command_error");
     json_object_set_string_member(ev, "message", text.c_str());
     if (!req_id.empty()) json_object_set_string_member(ev, "id", req_id.c_str());
-    json_object_set_string_member(ev, "kind", "timing_plugin");
-    json_object_set_string_member(ev, "detail", detail.c_str());
+    json_object_set_string_member(ev, "kind", kind_of(*row));
+    json_object_set_string_member(ev, "detail", o->detail.c_str());
     ipc::emit(ev);
 }
 

@@ -58,7 +58,7 @@ describe('buildProcessingPipeline', () => {
         ).toBeNull();
     });
 
-    it('bare chain: 302M decode in, fader + VU, 302M encode out — no PipeWire', () => {
+    it('bare chain: 302M decode in, VU, 302M encode out — no PipeWire', () => {
         const result = build()!;
         // One program source → direct branch: no aggregator, no watchdog.
         expect(result.pipeline).not.toContain('audiomixer');
@@ -72,9 +72,8 @@ describe('buildProcessingPipeline', () => {
         expect(result.pipeline).toContain('avdec_s302m');
         expect(result.pipeline).toContain('socket-path=/tmp/mr-bus-40100-abcdef.sock');
         expect(result.pipeline).toContain(
-            'progmix_out. ! audioconvert ! volume name=duckvol volume=1',
+            'progmix_out. ! audioconvert ! level name=outlevel post-messages=true',
         );
-        expect(result.pipeline).toContain('level name=outlevel post-messages=true');
         expect(result.pipeline).toContain('avenc_s302m strict=experimental');
         expect(result.pipeline).toContain('tee name=busout_40200 allow-not-linked=true');
         expect(result.sinkName).toBe('busout_40200');
@@ -106,7 +105,7 @@ describe('buildProcessingPipeline', () => {
         expect(result.pipeline).not.toContain('identity');
     });
 
-    it('builds the full stage order: hpf → eq → dynamics → limiter → duckvol', () => {
+    it('builds the full stage order: hpf → eq → dynamics → limiter → VU', () => {
         const result = build(
             {
                 hpf: true,
@@ -123,7 +122,6 @@ describe('buildProcessingPipeline', () => {
             `${EQ_EL} name=eq`,
             `${COMP_EL} name=dyn`,
             `${LIM_EL} name=lim`,
-            'volume name=duckvol',
             'level name=outlevel',
         ];
         let cursor = -1;
@@ -161,25 +159,135 @@ describe('buildProcessingPipeline', () => {
         expect(result.pipeline).toContain('enable-quick-amplifier=false');
     });
 
-    it('ducker adds a fast sidechain level branch and subscribes to it', () => {
+    it('ducker: programme and key by PTS into mrducker, its envelope through busReports', () => {
         const result = build({ dynMode: 'ducker', duckerKey: true }, {}, [mkSource(1)])!;
+        const p = result.pipeline;
         // Single key source → direct branch, same continuation name.
-        expect(result.pipeline).not.toContain('audiomixer name=scmix');
-        expect(result.pipeline).toContain('capsfilter name=scmix_out');
-        expect(result.pipeline).toContain(
-            'scmix_out. ! audioconvert ! level name=sclevel post-messages=true interval=15000000 ! fakesink sync=false',
+        expect(p).not.toContain('audiomixer name=scmix');
+        expect(p).toContain(
+            'scmix_out. ! audioconvert ! audio/x-raw,format=F32LE,channels=2,rate=48000,' +
+                'channel-mask=(bitmask)0x3 ! deinterleave name=ds',
         );
-        expect(result.busReports).toEqual([{ element: 'sclevel', structure: 'level' }]);
-        expect(result.pipeline).toContain('volume name=duckvol');
-        expect(result.pipeline).not.toContain('ladspa');
+        expect(p).toContain(
+            'progmix_out. ! audioconvert ! audio/x-raw,format=F32LE,channels=2,rate=48000,' +
+                'channel-mask=(bitmask)0x3 ! deinterleave name=dp',
+        );
+        expect(p).toContain(
+            'audiointerleave name=il latency=0 start-time-selection=first ! audioconvert' +
+                ' ! audio/x-raw,channels=4,channel-mask=(bitmask)0x0' +
+                ' ! mrducker name=ducker threshold=-35 depth=-12 attack=5 release=200 hold=250' +
+                ' ! level name=outlevel',
+        );
+        expect(result.busReports).toEqual([{ element: 'ducker', structure: 'mrducker' }]);
+        // The engine-side loop is gone: no key `level`, no fader.
+        expect(p).not.toContain('sclevel');
+        expect(p).not.toContain('volume');
+        expect(p).not.toContain('fakesink');
+        expect(p).not.toContain('ladspa');
+    });
+
+    it('ducker and keyed gate: every channel enters the interleave through its watchdog', () => {
+        const mono = 'audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=1';
+        for (const over of [
+            { dynMode: 'ducker' as const, duckerKey: true },
+            { dynElement: SC_GATE_EL, dynMode: 'gate' as const, keyedGate: true },
+        ]) {
+            const p = build(over, { gateKey: 'sidechain' }, [mkSource(1)])!.pipeline;
+            expect(p).toContain(
+                `dp.src_0 ! ${mono} ! mralignwatch name=il_aw_prog0 aligner=il input=prog0 ! il.sink_0`,
+            );
+            expect(p).toContain(
+                `dp.src_1 ! ${mono} ! mralignwatch name=il_aw_prog1 aligner=il input=prog1 ! il.sink_1`,
+            );
+            expect(p).toContain(
+                `ds.src_0 ! ${mono} ! mralignwatch name=il_aw_key0 aligner=il input=key0 ! il.sink_2`,
+            );
+            expect(p).toContain(
+                `ds.src_1 ! ${mono} ! mralignwatch name=il_aw_key1 aligner=il input=key1 ! il.sink_3`,
+            );
+            expect(p.match(/mralignwatch name=il_aw_/g)).toHaveLength(4);
+            // collect-pads `interleave` joined by arrival; nothing queues ahead of il any more.
+            expect(p).not.toMatch(/(^|[ !])interleave /);
+            expect(p).not.toContain('queue ! il.');
+            expect(p).not.toContain('silence-floor');
+        }
+    });
+
+    it('a channel fed by an aligned mixer waits 500 ms before it is silent, a direct one not', () => {
+        const two = [mkSource(1), mkSource(2)];
+        const floor = (p: string, input: string) =>
+            new RegExp(
+                `name=il_aw_${input} aligner=il input=${input} silence-floor=500000000 `,
+            ).test(p);
+        const keyMixed = buildProcessingPipeline({
+            programSources: [mkSource(0)],
+            sidechainSources: two,
+            outputPort: 40200,
+            config: {},
+            stages: stages({ dynMode: 'ducker', duckerKey: true }),
+        })!.pipeline;
+        expect(['prog0', 'prog1'].map((i) => floor(keyMixed, i))).toEqual([false, false]);
+        expect(['key0', 'key1'].map((i) => floor(keyMixed, i))).toEqual([true, true]);
+        const progMixed = buildProcessingPipeline({
+            programSources: [mkSource(3), mkSource(4)],
+            sidechainSources: [mkSource(1)],
+            outputPort: 40200,
+            config: {},
+            stages: stages({ dynMode: 'ducker', duckerKey: true }),
+        })!.pipeline;
+        expect(['prog0', 'prog1'].map((i) => floor(progMixed, i))).toEqual([true, true]);
+        expect(['key0', 'key1'].map((i) => floor(progMixed, i))).toEqual([false, false]);
+    });
+
+    it("ducker: the settings ride in the launch string, clamped to the element's ranges", () => {
+        const p = build(
+            { dynMode: 'ducker', duckerKey: true },
+            { threshold: -80, duckDepth: 6, attack: 900, release: 1, hold: 'x' },
+            [mkSource(1)],
+        )!.pipeline;
+        expect(p).toContain(
+            'mrducker name=ducker threshold=-60 depth=0 attack=500 release=5 hold=0 !',
+        );
+        const q = build(
+            { dynMode: 'ducker', duckerKey: true },
+            { threshold: -20, duckDepth: -18, attack: 12.5, release: 400, hold: 100 },
+            [mkSource(1)],
+        )!.pipeline;
+        expect(q).toContain(
+            'mrducker name=ducker threshold=-20 depth=-18 attack=12.5 release=400 hold=100 !',
+        );
+    });
+
+    it('ducker: the limiter runs before the interleave, so the duck stays after it', () => {
+        const p = build(
+            { dynMode: 'ducker', duckerKey: true, limiterElement: LIM_EL, eqElement: EQ_EL },
+            {},
+            [mkSource(1)],
+        )!.pipeline;
+        const at = (s: string) => p.indexOf(s);
+        expect(at(`${EQ_EL} name=eq`)).toBeLessThan(at(`${LIM_EL} name=lim`));
+        expect(at(`${LIM_EL} name=lim`)).toBeLessThan(at('deinterleave name=dp'));
+        expect(at('deinterleave name=dp')).toBeLessThan(at('mrducker name=ducker'));
+        expect(p.match(/name=lim /g)).toHaveLength(1);
+        // The key never runs through the programme's limiter.
+        expect(p).toMatch(/scmix_out\. ! audioconvert ! [^ ]+ ! deinterleave name=ds/);
     });
 
     it('ducker with nothing on the sidechain pin still passes program through', () => {
         const result = build({ dynMode: 'ducker', duckerKey: false })!;
         expect(result.pipeline).not.toContain('scmix');
-        expect(result.pipeline).not.toContain('sclevel');
+        expect(result.pipeline).not.toContain('mrducker');
+        expect(result.pipeline).not.toContain('interleave');
         expect(result.busReports).toBeUndefined();
-        expect(result.pipeline).toContain('volume name=duckvol');
+        expect(result.pipeline).toContain('progmix_out. ! audioconvert ! level name=outlevel');
+    });
+
+    it('duckerKey with no key branch built: no mrducker (caller-bug guard)', () => {
+        // The flag that names the ducker is the one that builds its key, so they cannot disagree.
+        const result = build({ dynMode: 'ducker', duckerKey: true }, {}, [])!;
+        expect(result.pipeline).not.toContain('mrducker');
+        expect(result.pipeline).not.toContain('deinterleave');
+        expect(result.busReports).toBeUndefined();
     });
 
     it('self-keyed gate is a plain inline element', () => {
@@ -188,6 +296,27 @@ describe('buildProcessingPipeline', () => {
         expect(result.pipeline).toContain('curve-threshold=');
         expect(result.pipeline).not.toContain('interleave');
         expect(result.pipeline).not.toContain('sidechain-input');
+    });
+
+    it('only the keyed gate gets the PTS keeper: a 2 -> 2 LADSPA filter keeps its PTS', () => {
+        const key = [mkSource(1)];
+        const keyed = build(
+            { dynElement: SC_GATE_EL, dynMode: 'gate', keyedGate: true },
+            { gateKey: 'sidechain' },
+            key,
+        )!.pipeline;
+        expect(keyed.match(/mrptskeep/g)).toHaveLength(1);
+        expect(keyed).toContain(`! mrptskeep target=dyn ! audioconvert ! level name=outlevel`);
+        for (const over of [
+            { dynElement: GATE_EL, dynMode: 'gate' as const },
+            { dynElement: COMP_EL, dynMode: 'compressor' as const, limiterElement: LIM_EL },
+            { dynMode: 'ducker' as const, duckerKey: true },
+            { dynElement: GATE_EL, dynMode: 'gate' as const, keyedGate: true },
+        ]) {
+            expect(
+                build(over, { gateKey: 'sidechain' }, over.duckerKey ? key : [])!.pipeline,
+            ).not.toContain('mrptskeep');
+        }
     });
 
     it('gateKey=sidechain with no key wired: gate-stereo WITHOUT sidechain-input', () => {
@@ -217,29 +346,39 @@ describe('buildProcessingPipeline', () => {
         expect(result.pipeline).toContain(`${GATE_EL} name=dyn`);
     });
 
-    it('sidechain-keyed gate is the ONE 4-channel path (program 0/1, key 2/3)', () => {
+    it('sidechain-keyed gate: programme 0/1 and key 2/3 by PTS, the limiter after the gate', () => {
         const result = build(
-            { dynElement: SC_GATE_EL, dynMode: 'gate', keyedGate: true, eqElement: EQ_EL },
+            {
+                dynElement: SC_GATE_EL,
+                dynMode: 'gate',
+                keyedGate: true,
+                eqElement: EQ_EL,
+                limiterElement: LIM_EL,
+            },
             { gateKey: 'sidechain' },
             [mkSource(1)],
         )!;
-        expect(result.pipeline).toContain('deinterleave name=dp');
-        expect(result.pipeline).toContain('deinterleave name=ds');
-        expect(result.pipeline).toContain('interleave name=il');
-        expect(result.pipeline).toContain('audio/x-raw,channels=4,channel-mask=(bitmask)0x0');
-        expect(result.pipeline).toContain(`${SC_GATE_EL} name=dyn`);
-        expect(result.pipeline).toContain('sidechain-input=1');
-        expect(result.pipeline).toContain('dp.src_0 ! queue ! il.sink_0');
-        expect(result.pipeline).toContain('dp.src_1 ! queue ! il.sink_1');
-        expect(result.pipeline).toContain('ds.src_0 ! queue ! il.sink_2');
-        expect(result.pipeline).toContain('ds.src_1 ! queue ! il.sink_3');
-        // The EQ stays on the PROGRAM leg, ahead of the split.
-        expect(result.pipeline.indexOf(`${EQ_EL} name=eq`)).toBeLessThan(
-            result.pipeline.indexOf('deinterleave name=dp'),
+        const p = result.pipeline;
+        expect(p).toContain('deinterleave name=dp');
+        expect(p).toContain('deinterleave name=ds');
+        expect(p).toContain(
+            'audiointerleave name=il latency=0 start-time-selection=first ! audioconvert' +
+                ` ! audio/x-raw,channels=4,channel-mask=(bitmask)0x0 ! ${SC_GATE_EL} name=dyn`,
         );
+        expect(p).toContain('sidechain-input=1');
+        // The LADSPA wrapper's 4 -> 2 output has no PTS: the keeper follows the gate directly.
+        expect(p).toMatch(
+            new RegExp(
+                `${SC_GATE_EL} name=dyn [^!]+! mrptskeep target=dyn ! audioconvert ! ` +
+                    `${LIM_EL} name=lim [^!]+! level name=outlevel`,
+            ),
+        );
+        // The EQ stays on the PROGRAM leg, ahead of the split.
+        expect(p.indexOf(`${EQ_EL} name=eq`)).toBeLessThan(p.indexOf('deinterleave name=dp'));
         // Both keyed legs are positioned stereo — deinterleave needs a mask.
-        expect(result.pipeline.match(/channel-mask=\(bitmask\)0x3/g)).toHaveLength(2);
-        // Key branch feeds the interleave, not a `level` — no ducker here.
+        expect(p.match(/channel-mask=\(bitmask\)0x3/g)).toHaveLength(2);
+        // Key branch feeds the interleave, no ducker here.
+        expect(p).not.toContain('mrducker');
         expect(result.busReports).toBeUndefined();
     });
 
@@ -319,14 +458,15 @@ describe('buildProcessingPipeline', () => {
             [program.socketPath!]: 'progmix',
             [key.socketPath!]: 'scmix',
         });
-        expect(result.pipeline).toContain('scmix_out. ! audioconvert ! level name=sclevel');
+        expect(result.pipeline).toContain('scmix_out. ! audioconvert ! audio/x-raw');
+        expect(result.pipeline).toContain('! deinterleave name=ds');
     });
 
-    it('limiter alone still lands ahead of the fader', () => {
+    it('limiter alone still lands ahead of the VU', () => {
         const result = build({ limiterElement: LIM_EL }, { limiterThreshold: -3 })!;
         expect(result.pipeline).toContain(`${LIM_EL} name=lim threshold=0.707946`);
         expect(result.pipeline.indexOf('name=lim')).toBeLessThan(
-            result.pipeline.indexOf('volume name=duckvol'),
+            result.pipeline.indexOf('level name=outlevel'),
         );
         expect(result.pipeline).not.toContain('name=dyn');
     });
@@ -336,5 +476,36 @@ describe('buildProcessingPipeline', () => {
         expect(result.pipeline).toContain('bypass=true');
         expect(result.pipeline.match(/filter-type-\d+=/g)).toHaveLength(16);
         expect(result.pipeline).toContain('filter-type-15=0');
+    });
+});
+
+describe('the strings py/mrducker_element_test.py runs', () => {
+    // A placeholder per LADSPA element: the test puts the registry's versioned name in.
+    const ladspa = (suffix: string) => `ladspa-@-${suffix}`;
+
+    it('py/pipelines.json is what this builder makes (`vitest -u` rewrites it)', async () => {
+        const key = [mkSource(1)];
+        const cases = {
+            ducker: build({ dynMode: 'ducker', duckerKey: true }, {}, key)!,
+            keyedGate: build(
+                {
+                    dynElement: ladspa('sc-gate-stereo'),
+                    dynMode: 'gate',
+                    keyedGate: true,
+                    limiterElement: ladspa('limiter-stereo'),
+                },
+                { gateKey: 'sidechain' },
+                key,
+            )!,
+        };
+        const out = Object.fromEntries(
+            Object.entries(cases).map(([name, r]) => [
+                name,
+                { pipeline: r.pipeline, busReports: r.busReports ?? null },
+            ]),
+        );
+        await expect(`${JSON.stringify(out, null, 2)}\n`).toMatchFileSnapshot(
+            '../py/pipelines.json',
+        );
     });
 });

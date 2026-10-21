@@ -1,14 +1,13 @@
 /**
  * Rate limiter for the ducker's live gain readings.
  *
- * The envelope advances on the sidechain `level` element's messages (~15 Hz)
- * and every graph publish rebroadcasts the module's whole runtime state, so the
- * raw tick rate is far too fast a channel for status (ADR-0007: "a graph that
- * needs a faster channel than status is a signal to revisit this"). What an
- * operator actually needs to see is *that* the programme is being pulled down
- * and roughly how far — so this publishes the onset immediately, then at most
- * 4 Hz while the gain is moving, and goes quiet the moment the ducker settles
- * back to unity.
+ * `mrducker` reports its envelope every 100 ms of content (10 Hz) and every
+ * graph publish rebroadcasts the module's whole runtime state, so that rate is
+ * still too fast a channel for status (ADR-0007: "a graph that needs a faster
+ * channel than status is a signal to revisit this"). What an operator actually
+ * needs to see is *that* the programme is being pulled down and roughly how
+ * far — so this publishes the onset immediately, then at most 4 Hz while the
+ * gain is moving, and goes quiet the moment the ducker settles back to unity.
  *
  * Settling publishes `null` rather than a reading at 0 dB: a dot frozen at the
  * last key level it happened to see would be a lie about a chain that is no
@@ -18,12 +17,12 @@
 import { round } from './dynamicsCurve.js';
 
 /** Which leg of the gain envelope is running. */
-export type DuckPhase = 'idle' | 'attack' | 'hold' | 'release';
+export const DUCK_PHASES = ['idle', 'attack', 'hold', 'release'] as const;
+export type DuckPhase = (typeof DUCK_PHASES)[number];
 
 /**
- * One reading of the ducker's state. `DuckerEnvelope` implements it directly,
- * so the module hands its envelope straight to the throttle; what gets stored
- * and published is always a copy.
+ * One reading of the ducker's state, as an `mrducker` message carries it
+ * (`readDuckerMessage`); what gets stored and published is always a copy.
  */
 export interface DuckLive {
     /** Programme gain the envelope is currently applying, dB (negative). */
@@ -38,6 +37,24 @@ export interface DuckLive {
     keyDb: number | null;
     /** Which leg of the envelope produced it — it places the live dot. */
     phase: DuckPhase;
+}
+
+/**
+ * An `mrducker` message payload (`gain-db`, `key-db`, `phase`) as a reading; null
+ * when it is not one. A key level the runner could not encode arrives as null.
+ */
+export function readDuckerMessage(payload: unknown): DuckLive | null {
+    const p = (payload ?? {}) as Record<string, unknown>;
+    const gainDb = p['gain-db'];
+    const keyDb = p['key-db'];
+    const phase = p.phase as DuckPhase;
+    if (typeof gainDb !== 'number' || !Number.isFinite(gainDb)) return null;
+    if (!DUCK_PHASES.includes(phase)) return null;
+    return {
+        gainDb,
+        keyDb: typeof keyDb === 'number' && Number.isFinite(keyDb) ? keyDb : null,
+        phase,
+    };
 }
 
 /** How far the gain must move before a new reading is worth a broadcast. */

@@ -83,6 +83,7 @@ describe('timingPublication', () => {
             deviceLatencyMs: 100,
             renderMs: 160,
             pipeWireLatencyMs: 21.3,
+            processingLatencyMs: 5.2,
         };
         const pub = timingPublication(s);
         const timing = pub.sections.find((x) => x.id === 'timing')!;
@@ -90,6 +91,7 @@ describe('timingPublication', () => {
             'Output lateness',
             'Output lateness min – max',
             'Added latency',
+            'Processing latency',
             'Slowest input',
             'Decode',
             'Presentation delay',
@@ -104,6 +106,24 @@ describe('timingPublication', () => {
                 if (typeof v === 'number' || f.key.endsWith('Range')) expect(f.unit).toBe('ms');
             }
         }
+    });
+
+    it("a processing latency (a limiter's lookahead, OQ-22) is its own row, in ms", () => {
+        const s: ModuleTimingSummary = {
+            instrument: true,
+            output: lat(30),
+            inputs: [input('lat_busin', 10, 30)],
+            processingLatencyMs: 5.2,
+        };
+        expect(timingPublication(s).data.timing).toEqual({
+            outputMs: 30,
+            outputRange: '30 – 30',
+            addedMs: 20,
+            processingLatencyMs: 5,
+        });
+        expect(timingChanged(s, { ...s, processingLatencyMs: 5.8 })).toBe(false);
+        expect(timingChanged(s, { ...s, processingLatencyMs: 6.3 })).toBe(true);
+        expect(timingChanged(s, { ...s, processingLatencyMs: undefined })).toBe(true);
     });
 
     it('says the instrument is missing instead of showing nothing', () => {

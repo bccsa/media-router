@@ -81,6 +81,29 @@ describe('ModuleTiming', () => {
     });
 });
 
+describe('processing latency (OQ-22)', () => {
+    it('shows from the next tick, and a start or stop clears it', () => {
+        vi.useFakeTimers();
+        const t = new ModuleTiming({
+            emit: () => {},
+            getProperty: async () => undefined,
+            busSources: () => [],
+        });
+        t.start(null);
+        t.setProcessingLatency(5);
+        expect(t.publication.data.timing).toBeUndefined();
+        vi.advanceTimersByTime(2000);
+        expect(t.publication.data.timing).toEqual({ processingLatencyMs: 5 });
+        t.start(null);
+        expect(t.publication.data.timing).toBeUndefined();
+        t.setProcessingLatency(20);
+        t.stop(false);
+        t.tick();
+        expect(t.publication.data.timing).toBeUndefined();
+        vi.useRealTimers();
+    });
+});
+
 describe('PipeWire-graph modules (WI-P0-10)', () => {
     it('show the worst latency PipeWire reports for their nodes, and stop with the module', async () => {
         vi.useFakeTimers();

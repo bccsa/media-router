@@ -62,6 +62,9 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (waitedOn?.addedMs !== undefined) {
         rows.push(['addedMs', 'Added latency', ms(waitedOn.addedMs), 'ms']);
     }
+    if (s.processingLatencyMs !== undefined) {
+        rows.push(['processingLatencyMs', 'Processing latency', ms(s.processingLatencyMs), 'ms']);
+    }
     if (s.slowest) rows.push(['slowest', 'Slowest input', s.slowest]);
     if (s.decodeMs !== undefined) rows.push(['decodeMs', 'Decode', ms(s.decodeMs), 'ms']);
     if (s.presentationDelayMs !== undefined) {
@@ -114,6 +117,7 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('device', s.deviceLatencyMs);
     put('render', s.renderMs);
     put('pw', s.pipeWireLatencyMs);
+    put('proc', s.processingLatencyMs);
     for (const i of s.inputs) {
         put(`${i.tap}.label`, i.label);
         put(`${i.tap}.mean`, i.lateness.meanMs);

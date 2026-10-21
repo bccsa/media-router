@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Tests for the house-clock plugin loader (plan ch. 3 WI-S0-8): the description rewrite of
-gst_native_plugins.py, and `mrtshouse_load_case` against the python runner, which
+gst_native_plugins.py, the twin tables, and `mrtshouse_load_case` against the python runner, which
 native_runner_protocol_test.py runs against mr-gst-runner too: plugin present, missing, without a
-stand-in, and below the runners' ABI. Skips (exit 0) without GStreamer or the built plugin."""
+stand-in, and below the runners' ABI. `mrducker_load_case` (WI-P2-10: mrducker and the keyed
+gate's mrptskeep) runs here against both runners (MR_GST_RUNNER overrides the native binary).
+Skips (exit 0) without GStreamer or the built plugin."""
 import json
 import os
 import re
@@ -33,6 +35,9 @@ _HOUSE = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse")
 _SO = os.path.join(_HOUSE, "libgstmrtshouse.so")
 _NATIVE = os.path.join(_ROOT, "packages", "engine", "native", "mr-gst-runner")
 PY_RUNNER = [sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
+NATIVE_RUNNER = os.environ.get("MR_GST_RUNNER") or os.path.join(_NATIVE, "mr-gst-runner")
+_DUCKER = os.path.join(_PLUGINS, "audio-processing", "native", "mrducker")
+_DUCKER_SO = os.path.join(_DUCKER, "libgstmrducker.so")
 
 with open(os.path.join(_HOUSE, "mrtshouse_abi.h"), encoding="utf-8") as fh:
     _abi_h = fh.read()
@@ -41,6 +46,9 @@ VERSION = re.search(r'#define MRTSHOUSE_VERSION "([^"]+)"', _abi_h).group(1)
 # The rule-6 sentence as plan ch. 3 part 4.5 fixes it; both runners must send exactly this.
 ALARM = ("Native TS module not loaded: this stream carries no house time on the bus; consumers "
          "will mis-time it until the deploy is fixed.")
+# A row not required (libgstmrducker.so) refuses its modules with this, kind native_plugin.
+PLUGIN_ALARM = ("Native plugin not loaded: this module needs it and cannot run until the deploy "
+                "is fixed.")
 TABLE = gnp.PLUGINS[0]["factories"]
 
 # (description, rewritten or None when refused, stand-in names, refused factory).
@@ -120,6 +128,10 @@ def ev_is(name, **fields):
 
 def timing_alarm(ev):
     return ev.get("kind") == "timing_plugin"
+
+
+def plugin_alarm(ev):
+    return ev.get("kind") == "native_plugin"
 
 
 class Runner:
@@ -434,6 +446,201 @@ def mrtshouse_load_case(argv, tag, check, vectors=False):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# --- mrducker (WI-P2-10): a row that is not required, its elements without a stand-in --------
+QUAD = "audio/x-raw,format=F32LE,rate=48000,channels=4,layout=interleaved,channel-mask=(bitmask)0x0"
+DUCK = (f"audiotestsrc is-live=true ! {QUAD} ! mrducker name=ducker depth=-20"
+        " ! fakesink sync=false async=false")
+DUCK_REPORTS = [{"element": "ducker", "structure": "mrducker"}]
+# The keyed gate's shape: a 1:1 filter (`dyn`), then its PTS keeper.
+KEEP = ("audiotestsrc is-live=true ! audio/x-raw,format=F32LE,channels=2 ! identity name=dyn"
+        " ! mrptskeep name=keep target=dyn ! fakesink sync=false async=false")
+DUCKER_LOAD_LINE = "native plugin mrducker "
+
+
+def mrducker_abi():
+    """MRDUCKER_ABI as mrducker_abi.h defines it."""
+    with open(os.path.join(_DUCKER, "mrducker_abi.h"), encoding="utf-8") as fh:
+        return int(re.search(r"#define MRDUCKER_ABI (\d+)", fh.read()).group(1))
+
+
+def build_ducker_stub():
+    """mrducker built at MRDUCKER_ABI 0 (`make -C mrducker stub`), or None without make."""
+    try:
+        done = subprocess.run(["make", "-s", "-C", _DUCKER, "stub"], capture_output=True,
+                              text=True, timeout=600)
+    except FileNotFoundError:
+        return None
+    stub = os.path.join(_DUCKER, "tests", "abi0", "libgstmrducker.so")
+    if done.returncode != 0 or not os.path.exists(stub):
+        raise RuntimeError(f"make stub failed: {done.stdout}{done.stderr}")
+    return stub
+
+
+def _start_with(argv, plugins_dir, libexec_dir, pipeline, reports=None):
+    r = Runner(argv, plugins_dir, libexec_dir)
+    cmd = {"cmd": "start", "pipeline": pipeline}
+    if reports:
+        cmd["busReports"] = reports
+    r.send(cmd)
+    r.wait_event(lambda e: e.get("event") in ("started", "error"))
+    return r
+
+
+def mrducker_load_case(argv, tag, check):
+    """libgstmrducker.so through `argv`'s runner: present (the elements run, mrducker's message
+    forwarded by busReports), missing (only a module naming mrducker or mrptskeep is refused,
+    with PLUGIN_ALARM, never the rule-6 alarm) and below the runners' ABI. libgstmrtshouse.so is
+    there throughout."""
+    for so in (_SO, _DUCKER_SO):
+        if not os.path.exists(so):
+            print(f"SKIP {tag} mrducker-load — {so} not built (make native)")
+            return
+    tmp = tempfile.mkdtemp(prefix="mrducker-")
+    house_only = os.path.join(tmp, "plugins")
+    house = tree(house_only, "mpegts-core/native/mrtshouse/libgstmrtshouse.so", _SO)
+    empty = os.path.join(tmp, "empty")
+    os.makedirs(empty)
+    tried = [os.path.join(house_only, "audio-processing", "native", "mrducker",
+                          "libgstmrducker.so"),
+             os.path.join(empty, "audio-processing", "libgstmrducker.so")]
+    missing = f"libgstmrducker.so not loaded, tried {', '.join(tried)}"
+    ducker_abi = mrducker_abi()
+    try:
+        # --- present: the load line, the element in place, its message as mrducker:ducker ----
+        r = _start_with(argv, _PLUGINS, empty, DUCK, DUCK_REPORTS)
+        try:
+            loaded = r.log_after(DUCKER_LOAD_LINE)
+            check(f"{tag} mrducker present: one load line `native plugin mrducker 1.0.0 abi "
+                  f"{ducker_abi} from <plugins tree>` (got {loaded!r})",
+                  loaded == f"1.0.0 abi {ducker_abi} from {_DUCKER_SO}")
+            check(f"{tag} mrducker present: started, no timing_plugin event",
+                  r.wait_event(ev_is("started")) is not None and r.first(timing_alarm) is None)
+            check(f"{tag} mrducker present: reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing")) is not None)
+            r.send({"cmd": "get_property", "id": "g1", "element": "ducker", "property": "abi"})
+            got = r.wait_event(ev_is("property", id="g1"))
+            check(f"{tag} mrducker present: `ducker` is the plugin's element (abi {ducker_abi})",
+                  got is not None and got.get("value") == ducker_abi)
+            ev = r.wait_event(ev_is("plugin_event", channel="mrducker:ducker"), timeout=5)
+            p = (ev or {}).get("payload") or {}
+            check(f"{tag} mrducker present: its message is forwarded as mrducker:ducker by "
+                  f"busReports (got {ev})",
+                  p.get("phase") in ("idle", "attack", "hold", "release")
+                  and isinstance(p.get("gain-db"), (int, float))
+                  and isinstance(p.get("key-db"), (int, float)) and "running-time" in p)
+            r.send({"cmd": "set_property", "id": "s1", "element": "ducker", "property": "depth",
+                    "value": -6.0})
+            r.send({"cmd": "get_property", "id": "g2", "element": "ducker", "property": "depth"})
+            got = r.wait_event(ev_is("property", id="g2"))
+            check(f"{tag} mrducker present: a live depth write lands (got {got})",
+                  r.wait_event(ev_is("property_set", id="s1")) is not None
+                  and got is not None and got.get("value") == -6.0)
+        finally:
+            r.close()
+        r = _start_with(argv, _PLUGINS, empty, KEEP)
+        try:
+            check(f"{tag} mrptskeep present: the keyed gate's shape starts and plays",
+                  r.wait_event(ev_is("started")) is not None
+                  and r.wait_event(ev_is("state_change", state="playing")) is not None
+                  and r.first(lambda e: e.get("event") == "error") is None)
+            r.send({"cmd": "get_property", "id": "g3", "element": "keep", "property": "abi"})
+            got = r.wait_event(ev_is("property", id="g3"))
+            check(f"{tag} mrptskeep present: the plugin's other element (abi {ducker_abi})",
+                  got is not None and got.get("value") == ducker_abi)
+        finally:
+            r.close()
+
+        # --- missing: no alarm at load; a module naming either element is refused, others start
+        for desc, element, reports in ((DUCK, "mrducker", DUCK_REPORTS), (KEEP, "mrptskeep", None)):
+            r = _start_with(argv, house_only, empty, desc, reports)
+            try:
+                err = r.wait_event(lambda e: e.get("event") == "error" and plugin_alarm(e))
+                detail = f"{missing}; {element} has no stand-in"
+                check(f"{tag} mrducker missing: a description naming {element} is refused with "
+                      f"the plugin's own text, not rule 6's (got {err})",
+                      err is not None and err.get("detail") == detail
+                      and err.get("message") == f"{PLUGIN_ALARM} ({detail})")
+                check(f"{tag} mrducker missing: that module does not start, and no timing_plugin "
+                      f"event at all (the bus's house time is fine)",
+                      r.first(ev_is("started")) is None and r.first(timing_alarm) is None)
+                check(f"{tag} mrducker missing: the load says what a module naming it gets",
+                      any(f"{missing} — a module naming mrducker, mrptskeep is refused" in line
+                          for line in r.logs))
+            finally:
+                r.close()
+        r = _start_with(argv, house_only, empty, ALIGN)
+        try:
+            started = r.wait_event(ev_is("started"))
+            check(f"{tag} mrducker missing: a module naming no mrducker starts, the TS module "
+                  f"loaded, with no timing_plugin event at all",
+                  started is not None and (started.get("timingPlugin") or {}).get("path") == house
+                  and r.wait_event(ev_is("state_change", state="playing")) is not None
+                  and r.first(timing_alarm) is None)
+        finally:
+            r.close()
+        # A live add naming its element: the plugin's own text too, and the module runs on.
+        r = _start_with(argv, house_only, empty, FUNNEL)
+        try:
+            r.wait_event(ev_is("state_change", state="playing"))
+            r.send({"cmd": "bus_input_add", "id": "a1", "element": "fin", "name": "fin_in_keep",
+                    "description": "audiotestsrc is-live=true ! identity name=t"
+                                   " ! mrptskeep target=t"})
+            got = r.wait_event(lambda e: e.get("id") == "a1")
+            want = (f'bus_input_add: parse failed: no element "mrptskeep"; {PLUGIN_ALARM} '
+                    f"({missing})")
+            check(f"{tag} mrducker missing: a bus_input_add naming mrptskeep is a command_error "
+                  f"with the plugin's own text and the load detail (got {got})",
+                  got is not None and got.get("event") == "command_error"
+                  and got.get("message") == want and got.get("kind") == "native_plugin"
+                  and got.get("detail") == missing and r.first(ev_is("error")) is None
+                  and r.proc.poll() is None)
+        finally:
+            r.close()
+
+        # --- below the runners' ABI: refused even with a good copy in libexec ------------------
+        stub = build_ducker_stub()
+        if stub is None:
+            print(f"SKIP {tag} mrducker-load ABI — no make to build the ABI-0 stub")
+            return
+        stale_tree = os.path.join(tmp, "stale")
+        tree(stale_tree, "mpegts-core/native/mrtshouse/libgstmrtshouse.so", _SO)
+        stale = tree(stale_tree, "audio-processing/native/mrducker/libgstmrducker.so", stub)
+        libexec = os.path.join(tmp, "libexec")
+        tree(libexec, "audio-processing/libgstmrducker.so", _DUCKER_SO)
+        old = f"libgstmrducker.so abi 0 < {gnp.MRDUCKER_MIN_ABI}: {stale}"
+        r = _start_with(argv, stale_tree, libexec, DUCK, DUCK_REPORTS)
+        try:
+            err = r.wait_event(lambda e: e.get("event") == "error" and plugin_alarm(e))
+            detail = f"{old}; mrducker has no stand-in"
+            check(f"{tag} mrducker stale: refused with both ABI numbers and the path (got {err})",
+                  err is not None and err.get("detail") == detail
+                  and err.get("message") == f"{PLUGIN_ALARM} ({detail})")
+            check(f"{tag} mrducker stale: neither copy loaded",
+                  r.log_after(DUCKER_LOAD_LINE) is None)
+        finally:
+            r.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _native_table():
+    """native_plugins.cpp's rows as gst_native_plugins.py writes them, the min ABIs resolved."""
+    with open(os.path.join(_NATIVE, "native_plugins.h"), encoding="utf-8") as fh:
+        consts = dict(re.findall(r"constexpr int (\w+) = (\d+);", fh.read()))
+    with open(os.path.join(_NATIVE, "native_plugins.cpp"), encoding="utf-8") as fh:
+        body = fh.read().split("static const std::vector<Row> rows = {", 1)[1]
+    body = body.split("\n    };", 1)[0]
+    rows = []
+    for m in re.finditer(r'\{"([\w-]+)", "([\w-]+)", "([\w.-]+)", (true|false), (\w+),\s*'
+                         r'\{((?:\{"[\w-]+", (?:"[\w-]+"|nullptr)\},?\s*)+)\}\}', body):
+        factories = {name: (stand or None) for name, stand in
+                     re.findall(r'\{"([\w-]+)", (?:"([\w-]+)"|nullptr)\}', m.group(6))}
+        rows.append({"plugin": m.group(1), "tool": m.group(2), "file": m.group(3),
+                     "required": m.group(4) == "true", "min_abi": int(consts[m.group(5)]),
+                     "factories": factories})
+    return rows
+
+
 def unit_cases(check):
     """The python rewrite, and the twin tables and constants it must share with the C++."""
     for desc, want, names, refused in REWRITE_CASES:
@@ -447,15 +654,34 @@ def unit_cases(check):
     check(f"MRTSHOUSE_MIN_ABI is one number in both runners ({gnp.MRTSHOUSE_MIN_ABI}, "
           f"{native_min}), at most the plugin's ABI {ABI}",
           gnp.MRTSHOUSE_MIN_ABI == native_min <= ABI)
-    native_alarm = "".join(re.findall(r'"([^"]*)"', header.split("ALARM =", 1)[1].split(";\n")[0]))
+    def native_const(name):
+        return "".join(re.findall(r'"([^"]*)"', header.split(f" {name} =", 1)[1].split(";\n")[0]))
+
     check("the rule-6 sentence is the plan's in both runners",
-          gnp.ALARM == ALARM and native_alarm == ALARM)
-    native_table = {name: (stand or None) for name, stand in
-                    re.findall(r'\{"([\w-]+)", (?:"([\w-]+)"|nullptr)\}', source)}
-    check(f"the element tables are twins (python {TABLE}, native {native_table})",
-          native_table == TABLE)
+          gnp.ALARM == ALARM and native_const("ALARM") == ALARM)
+    check("a row not required refuses with one sentence and kind in both runners",
+          gnp.PLUGIN_ALARM == PLUGIN_ALARM == native_const("PLUGIN_ALARM")
+          and gnp.PLUGIN_KIND == native_const("PLUGIN_KIND") == "native_plugin")
+    native_rows = _native_table()
+    check(f"the plugin tables are twins, row for row (python {gnp.PLUGINS}, native {native_rows})",
+          native_rows == gnp.PLUGINS and len(native_rows) == 2)
+    check("every row's element names are its own (no element in two rows)",
+          sum(len(r["factories"]) for r in gnp.PLUGINS)
+          == len({n for r in gnp.PLUGINS for n in r["factories"]}))
     check("mralignwatch stands in as identity (part 4.5 rule 6)",
           TABLE.get("mralignwatch") == "identity")
+    ducker_abi = mrducker_abi()
+    ducker = next((r for r in gnp.PLUGINS if r["file"] == "libgstmrducker.so"), {})
+    check(f"mrducker: audio-processing's row, not required, mrducker and mrptskeep without a "
+          f"stand-in, its min ABI {gnp.MRDUCKER_MIN_ABI} at most the plugin's {ducker_abi} "
+          f"(WI-P2-10)",
+          ducker.get("plugin") == "audio-processing" and ducker.get("tool") == "mrducker"
+          and ducker.get("required") is False
+          and ducker.get("factories") == {"mrducker": None, "mrptskeep": None}
+          and ducker.get("min_abi") == gnp.MRDUCKER_MIN_ABI <= ducker_abi)
+    check("timingPlugin reports row 0, libgstmrtshouse.so, in both runners",
+          gnp.PLUGINS[0]["file"] == "libgstmrtshouse.so"
+          and native_rows[0]["file"] == "libgstmrtshouse.so")
     with open(os.path.join(_NATIVE, "runner.cpp"), encoding="utf-8") as fh:
         runner_cpp = fh.read()
     with open(os.path.join(_HERE, "gst-pipeline-runner.py"), encoding="utf-8") as fh:
@@ -479,6 +705,11 @@ if __name__ == "__main__":
 
     unit_cases(_check)
     mrtshouse_load_case(PY_RUNNER, "py", _check)
+    mrducker_load_case(PY_RUNNER, "py", _check)
+    if os.path.exists(NATIVE_RUNNER):
+        mrducker_load_case([NATIVE_RUNNER], "native", _check)
+    else:
+        print(f"SKIP native mrducker-load — {NATIVE_RUNNER} not built (make native)")
     if _failures:
         print(f"\n{len(_failures)} FAILED: {_failures}")
         sys.exit(1)

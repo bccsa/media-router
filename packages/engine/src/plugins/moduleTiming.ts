@@ -119,6 +119,12 @@ export class ModuleTiming {
         this.pwTimer.unref?.();
     }
 
+    /** What the module's processing delays its content by, past its PTS (OQ-22): the module
+     *  reads it off its elements; shown from the next tick. Call after start (it clears it). */
+    setProcessingLatency(ms: number | undefined): void {
+        this.reporter.setProcessingLatency(ms);
+    }
+
     private stopPipeWire(): void {
         if (this.pwTimer) clearInterval(this.pwTimer);
         this.pwTimer = null;

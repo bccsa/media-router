@@ -9,7 +9,8 @@ import {
     OUTPUT_PORT,
 } from './chainSetup.js';
 import { ChainTelemetry } from './chainTelemetry.js';
-import { DuckerEnvelope } from './duckerEnvelope.js';
+import { readDuckerMessage } from './duckLive.js';
+import { DUCKER_CHANNEL } from './duckerStage.js';
 import { GRAPH_SECTION } from './graphPublisher.js';
 import { isLadspaDynMode } from './lspConfig.js';
 import { resolveLiveWrites } from './liveWrites.js';
@@ -32,8 +33,10 @@ import type { ChainStages, DynamicsMode } from './lspProcessing.js';
  * packing. `sc-gate-stereo` survives for exactly one case — a gate keyed off the
  * sidechain input.
  *
- * Ducking stays on the native `level`→`volume` control loop (exact floor,
- * independent attack/release/hold, zero added latency, no LADSPA at all).
+ * Ducking is the native `mrducker` element on content time (exact floor,
+ * independent attack/release/hold, no LADSPA at all): programme and key meet in
+ * one PTS-aligned interleave, so the duck lands where the key is in the content,
+ * however late the key arrives (house-clock part 4.5).
  */
 export class AudioProcessingModule extends GstPluginBase {
     protected liveUpdatableParams = LIVE_PARAMS;
@@ -54,7 +57,6 @@ export class AudioProcessingModule extends GstPluginBase {
      *  has resolved the LADSPA elements. */
     private stages: ChainStages | null = null;
     private sinkName: string | null = null;
-    private readonly ducker = new DuckerEnvelope();
 
     /** Meter + throughput polls and the settings-panel graphs. */
     private readonly telemetry = new ChainTelemetry({
@@ -67,6 +69,9 @@ export class AudioProcessingModule extends GstPluginBase {
         publishStatus: (section, data) => this.setStatusData(section, data),
         publishGraph: (key, graph) => this.setStatusGraph(GRAPH_SECTION, key, graph),
         badge: (id, badge) => (badge ? this.setBadge(id, badge) : this.clearBadge(id)),
+        // The limiter's lookahead and the filters delay the content past its PTS: shown in
+        // the timing section, not corrected (OQ-22).
+        processingLatency: (ms) => this.timing.setProcessingLatency(ms),
         config: () => this.config,
     });
 
@@ -134,26 +139,13 @@ export class AudioProcessingModule extends GstPluginBase {
         await super.onStop();
     }
 
-    /**
-     * Re-seed the ducker envelope on every PLAYING, including a crash-restart:
-     * the engine's sticky-property replay restores the last written `duckvol`
-     * value, which a fresh envelope (assuming unity) would never correct while
-     * the key stays steady. LADSPA stages need nothing — the same sticky replay
-     * restores their live properties.
-     */
-    protected onPipelinePlaying(): void {
-        if (this.mode !== 'ducker') return;
-        this.ducker.reset();
-        void this.setElementProperty('duckvol', 'volume', 1);
-    }
-
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
         Object.assign(this.config, changes);
         // Before the stage guard: the graphs are drawn from config alone, so a
         // knob still moves the curve on a module that isn't running.
         this.telemetry.publishGraphs();
         const stages = this.stages;
-        if (!stages) return; // ducker params are read live by the envelope
+        if (!stages) return;
 
         for (const [key, value] of Object.entries(changes)) {
             for (const w of resolveLiveWrites(key, value, stages)) {
@@ -162,20 +154,12 @@ export class AudioProcessingModule extends GstPluginBase {
         }
     }
 
-    /**
-     * Sidechain level → gain envelope (ducker mode). Fires on the generic
-     * `level:sclevel` channel (~15 ms); the envelope reads its parameters live
-     * from config, and only returns a gain when it has actually moved, so a
-     * steady (open or fully-ducked) state costs no IPC.
-     */
+    /** The ducker's envelope (`mrducker` messages, 10 Hz of content) drives the
+     *  ducker graphs' live level, throttled in telemetry. */
     protected onPluginEvent(channel: string, payload: unknown): void {
-        if (this.mode !== 'ducker' || channel !== 'level:sclevel') return;
-        const rms = (payload as { rms?: number[] })?.rms;
-        if (!rms?.length) return;
-        const gain = this.ducker.advance(rms, this.config);
-        if (gain !== null) void this.setElementProperty('duckvol', 'volume', gain);
-        // Same tick drives the ducker graphs' live level (throttled in telemetry).
-        this.telemetry.duckLevel(this.ducker);
+        if (channel !== DUCKER_CHANNEL) return;
+        const reading = readDuckerMessage(payload);
+        if (reading) this.telemetry.duckLevel(reading);
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {

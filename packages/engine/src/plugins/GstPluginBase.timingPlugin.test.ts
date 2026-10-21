@@ -158,4 +158,18 @@ describe('GstPluginBase — the timing plugin alarm (plan ch. 3 rule 6)', () => 
         child.emit('stateChange', { state: 'playing' });
         expect(health(module)).toEqual({ health: 'ok', error: null });
     });
+
+    it('a plugin row not required (kind native_plugin) is no rule-6 alarm: its own text', async () => {
+        // libgstmrducker.so (WI-P2-10): the module cannot run, the bus's house time is fine.
+        const { module, child } = await makeStarted();
+        const message =
+            'Native plugin not loaded: this module needs it and cannot run until the deploy is ' +
+            'fixed. (libgstmrducker.so not loaded, tried /a, /b; mrptskeep has no stand-in)';
+        child.emit('error', { kind: 'native_plugin', message, detail: 'x' });
+        child.emit('stateChange', { state: 'error', kind: 'native_plugin' });
+        expect(health(module)).toEqual({ health: 'error', error: message });
+        // Nothing stands once a start runs: no alarm comes back on PLAYING.
+        child.emit('stateChange', { state: 'playing' });
+        expect(health(module)).toEqual({ health: 'ok', error: null });
+    });
 });

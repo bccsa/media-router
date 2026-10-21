@@ -43,6 +43,9 @@ export interface ModuleTimingSummary {
     renderMs?: number;
     /** PipeWire-graph modules carry no PTS; they show the graph's latency. */
     pipeWireLatencyMs?: number;
+    /** What the module's processing delays its content by that its PTS do not carry (a
+     *  limiter's lookahead, filters): reported, not corrected (house-clock OQ-22). */
+    processingLatencyMs?: number;
     /** False when libgstmrlateness.so is not installed. */
     instrument: boolean;
 }

@@ -61,6 +61,7 @@ export class LatenessReporter {
     private presentationDelayMs: number | undefined;
     private deviceLatencyMs: number | undefined;
     private pipeWireLatencyMs: number | undefined;
+    private processingLatencyMs: number | undefined;
     private instrument = true;
     private readonly intervalMs: number;
 
@@ -92,6 +93,10 @@ export class LatenessReporter {
         this.pipeWireLatencyMs = ms;
     }
 
+    setProcessingLatency(ms: number | undefined): void {
+        this.processingLatencyMs = ms;
+    }
+
     setInstrument(present: boolean): void {
         this.instrument = present;
     }
@@ -99,6 +104,7 @@ export class LatenessReporter {
     reset(): void {
         this.taps.clear();
         this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
+        this.processingLatencyMs = undefined;
         this.instrument = true;
     }
 
@@ -146,6 +152,8 @@ export class LatenessReporter {
         }
         if (this.pipeWireLatencyMs !== undefined)
             summary.pipeWireLatencyMs = this.pipeWireLatencyMs;
+        if (this.processingLatencyMs !== undefined)
+            summary.processingLatencyMs = this.processingLatencyMs;
         return summary;
     }
 }
