@@ -56,10 +56,11 @@ struct Factory {
 };
 
 /* mrtsrestamp took WI-S0-7's placeholder probe's place (WI-P1-4b); mrasrc is the capture
- * ASRC (WI-P1-8). */
+ * ASRC (WI-P1-8); mralignwatch is the aligner input (WI-P2-6). */
 const Factory kFactories[] = {
     {"mrtsrestamp", gst_mrtsrestamp_get_type},
     {"mrasrc", gst_mrasrc_get_type},
+    {"mralignwatch", gst_mralignwatch_get_type},
 };
 
 }  // namespace

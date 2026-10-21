@@ -77,6 +77,10 @@ running = False
 # feeding the aggregate VU meter.
 bus_reports = set()
 
+# Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
+# no busReports entry. Equal to runner.cpp's kForwardedMessages.
+FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux")
+
 # VU throttle: only send when changed, heartbeat every 1s
 last_vu = None
 last_vu_time = 0
@@ -516,9 +520,8 @@ def on_bus_message(bus, message):
             # probe emits — identical field names, identical message text — so
             # which backend stamped is invisible to everything downstream.
             gst_bus_stamper.handle_message(src_name, name, structure)
-        elif name == "mrlateness" and src_name:
-            # Lateness taps report unsubscribed, so inputs added at runtime do too.
-            emit_plugin_event(f"mrlateness:{src_name}", gst_structure_to_dict(structure))
+        elif name in FORWARDED_ELEMENT_MESSAGES and src_name:
+            emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))
         elif name and src_name and (src_name, name) in bus_reports:
             # Subscribed via `busReports` — forward the whole structure on the
             # generic `<structure>:<element>` channel (e.g. `level:sclevel`).
@@ -3178,7 +3181,9 @@ def handle_bus_input_add(data):
     try:
         bin_ = Gst.parse_bin_from_description(desc, False)
     except GLib.Error as e:
-        emit_command_error(req_id, f"bus_input_add: parse failed: {e.message}")
+        # Live adds are never stood in (B-17): an unloaded plugin's element names the alarm.
+        emit_event(gst_native_plugins.refuse_live_add(
+            req_id, desc, f"bus_input_add: parse failed: {e.message}"))
         return
     bin_.set_name(name)
     tail = bin_.find_unlinked_pad(Gst.PadDirection.SRC)

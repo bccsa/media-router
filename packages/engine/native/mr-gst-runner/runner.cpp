@@ -40,6 +40,16 @@ std::string factory_name(GstElement* el) {
 
 namespace {
 
+/** Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
+ *  no busReports entry. Equal to gst-pipeline-runner.py's FORWARDED_ELEMENT_MESSAGES. */
+const char* const kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux"};
+
+bool forwarded_message(const char* name) {
+    for (const char* f : kForwardedMessages)
+        if (std::strcmp(name, f) == 0) return true;
+    return false;
+}
+
 const char* state_nick(GstState s) {
     switch (s) {
         case GST_STATE_VOID_PENDING: return "void-pending";
@@ -532,9 +542,8 @@ void Runner::on_bus_message(GstMessage* msg) {
             if (!name) break;
             if (stamper::is_stamper_message(name)) {
                 stamper::handle_message(src_name, name, s);
-            } else if (src_name && std::strcmp(name, lateness::MESSAGE) == 0) {
-                // Lateness taps report unsubscribed, so inputs added at runtime do too.
-                emit_plugin_event(std::string("mrlateness:") + src_name, gst_structure_to_json(s));
+            } else if (src_name && forwarded_message(name)) {
+                emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));
             } else if (src_name && bus_reports.count({src_name, name})) {
                 emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));
             } else if (std::strcmp(name, "level") == 0) {

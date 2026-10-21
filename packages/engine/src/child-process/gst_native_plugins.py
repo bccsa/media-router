@@ -22,7 +22,7 @@ ALARM = ("Native TS module not loaded: this stream carries no house time on the 
 PLUGINS = [
     {"plugin": "mpegts-core", "tool": "mrtshouse", "file": "libgstmrtshouse.so",
      "required": True, "min_abi": MRTSHOUSE_MIN_ABI,
-     "factories": {"mrtsrestamp": "identity", "mrtsdemux": None}},
+     "factories": {"mrtsrestamp": "identity", "mrtsdemux": None, "mralignwatch": "identity"}},
 ]
 
 _outcomes = []     # per row: {"version", "abi", "path"} or {"detail"}; empty until load()
@@ -126,6 +126,28 @@ def stand_in(desc, emit):
         _log(f"native TS module not loaded, parsing with stand-ins: {out}")
     stood_in.update(names)
     return out
+
+
+def refuse_live_add(req_id, desc, message):
+    """`bus_input_add`'s parse failure as a `command_error` event: when `desc` names an element
+    of a plugin `load` could not use, `message` gains the rule-6 alarm and the load detail, with
+    `kind` and `detail`. Live adds are never stood in (B-17); the module keeps running."""
+    # Every element of a plugin not loaded, as if none had a stand-in: what the parse missed.
+    missing = {}
+    for row, out in zip(PLUGINS, _outcomes):
+        if "detail" in out:
+            missing.update({name: None for name in row["factories"]})
+    detail = None
+    if missing:
+        _, _, refused = rewrite(desc, missing)
+        detail = next((o["detail"] for r, o in zip(PLUGINS, _outcomes)
+                       if "detail" in o and refused in r["factories"]), None)
+    evt = {"event": "command_error", "message": message}
+    if detail is not None:
+        evt.update(message=f"{message}; {ALARM} ({detail})", kind="timing_plugin", detail=detail)
+    if req_id:
+        evt["id"] = req_id
+    return evt
 
 
 # --- gst-launch tokens (gst/parse/parse.l, as far as finding elements needs) ---------------

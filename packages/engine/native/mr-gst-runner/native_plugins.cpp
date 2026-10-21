@@ -29,7 +29,7 @@ struct Row {
 const std::vector<Row>& table() {
     static const std::vector<Row> rows = {
         {"mpegts-core", "mrtshouse", "libgstmrtshouse.so", true, MRTSHOUSE_MIN_ABI,
-         {{"mrtsrestamp", "identity"}, {"mrtsdemux", nullptr}}},
+         {{"mrtsrestamp", "identity"}, {"mrtsdemux", nullptr}, {"mralignwatch", "identity"}}},
     };
     return rows;
 }
@@ -302,5 +302,32 @@ bool stand_in(std::string* desc) {
 }
 
 bool is_stand_in(const std::string& element) { return g_stand_ins.count(element) > 0; }
+
+void refuse_live_add(const std::string& req_id, const std::string& desc,
+                     const std::string& message) {
+    // Every element of a plugin not loaded, as if none had a stand-in: what the parse missed.
+    std::vector<Factory> missing;
+    for (size_t i = 0; i < g_outcomes.size(); i++)
+        if (!g_outcomes[i].loaded)
+            for (const Factory& f : table()[i].factories) missing.push_back({f.name, nullptr});
+    std::string detail;
+    if (!missing.empty()) {
+        const Rewrite r = rewrite(desc, missing);
+        for (size_t i = 0; i < g_outcomes.size() && !r.refused.empty(); i++)
+            for (const Factory& f : table()[i].factories)
+                if (!g_outcomes[i].loaded && r.refused == f.name) detail = g_outcomes[i].detail;
+    }
+    if (detail.empty()) {
+        ipc::command_error(req_id, message);
+        return;
+    }
+    const std::string text = message + "; " + ALARM + " (" + detail + ")";
+    JsonObject* ev = ipc::event("command_error");
+    json_object_set_string_member(ev, "message", text.c_str());
+    if (!req_id.empty()) json_object_set_string_member(ev, "id", req_id.c_str());
+    json_object_set_string_member(ev, "kind", "timing_plugin");
+    json_object_set_string_member(ev, "detail", detail.c_str());
+    ipc::emit(ev);
+}
 
 }  // namespace mr::native_plugins

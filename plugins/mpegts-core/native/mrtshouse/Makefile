@@ -23,9 +23,10 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 # libgst<name>.so: GStreamer derives the entry symbol (gst_plugin_mrtshouse_get_desc) from it.
 SO   = libgstmrtshouse.so
 # One file per element: a phase adds its source here and its row to gstmrtshouse.cpp.
-SRCS = gstmrtshouse.cpp gstmrtsrestamp.cpp gstmrasrc.cpp
+SRCS = gstmrtshouse.cpp gstmrtsrestamp.cpp gstmrasrc.cpp gstmralignwatch.cpp
 HDRS = mrtshouse.h mrtshouse_abi.h mrasrc_resampler.h $(MRTS)/ts_packet.h $(MRTS)/ts_restamp.h \
-       $(MRTS)/ts_stc.h $(MRTS)/ts_trace.h $(MRTS)/ts_gap.h $(MRTS)/asrc_servo.h
+       $(MRTS)/ts_stc.h $(MRTS)/ts_trace.h $(MRTS)/ts_gap.h $(MRTS)/asrc_servo.h \
+       $(MRTS)/align_watch.h
 # gstreamer-audio-1.0 for mrasrc's GstAudioResampler; Phase 3 adds gstreamer-mpegts-1.0
 # (section messages).
 PKGS = gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0
@@ -73,8 +74,8 @@ $(BENCH): tests/asrc_bench.c mrasrc_resampler.h
 
 # Builds the plugin, so native-test fails on a plugin that does not link. Its contract and
 # dataflow run from packages/engine/src/child-process/gst_mrtshouse_element_test.py,
-# gst_mrtsrestamp_element_test.py, gst_ingest_restamp_test.py and gst_mrasrc_element_test.py
-# (test:py).
+# gst_mrtsrestamp_element_test.py, gst_ingest_restamp_test.py, gst_mrasrc_element_test.py and
+# gst_mralignwatch_element_test.py (test:py).
 test: $(SO) $(STUB) $(REF) $(BENCH)
 
 clean:

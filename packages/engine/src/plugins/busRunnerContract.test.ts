@@ -414,15 +414,26 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         });
 
         it('both runners forward mrlateness unsubscribed, as mrlateness:<tap>', () => {
-            expect(runnerSource).toContain('elif name == "mrlateness" and src_name:');
+            // One list per runner since WI-P2-6 (the aligner's and the demux's messages too);
+            // gst_native_plugins_test.py pins the two lists equal.
             expect(runnerSource).toContain(
-                'emit_plugin_event(f"mrlateness:{src_name}", gst_structure_to_dict(structure))',
+                'FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux")',
             );
-            expect(native).toContain('std::strcmp(name, lateness::MESSAGE) == 0');
-            expect(native).toContain('emit_plugin_event(std::string("mrlateness:") + src_name');
+            expect(runnerSource).toContain('elif name in FORWARDED_ELEMENT_MESSAGES and src_name:');
+            expect(runnerSource).toContain(
+                'emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))',
+            );
+            expect(native).toContain(
+                'kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux"}',
+            );
+            expect(native).toContain('} else if (src_name && forwarded_message(name)) {');
+            expect(native).toContain('emit_plugin_event(std::string(name) + ":" + src_name');
             // Ahead of the busReports branch: no subscription is consulted.
-            expect(runnerSource.indexOf('elif name == "mrlateness"')).toBeLessThan(
+            expect(runnerSource.indexOf('elif name in FORWARDED_ELEMENT_MESSAGES')).toBeLessThan(
                 runnerSource.indexOf('(src_name, name) in bus_reports'),
+            );
+            expect(native.indexOf('forwarded_message(name)) {')).toBeLessThan(
+                native.indexOf('bus_reports.count({src_name, name})'),
             );
         });
 

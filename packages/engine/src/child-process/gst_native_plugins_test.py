@@ -92,6 +92,14 @@ REWRITE_CASES = [
      None),
     ("src ! mrtsdemux.src ! mrtsrestamp ! sink", "src ! mrtsdemux.src ! identity ! sink", [],
      None),
+    # The aligner input (WI-P2-6) as a 302M fan-in and a mux route build it: identity, its name.
+    ("in. ! mralignwatch name=mix_aw_c1 aligner=mix input=c1 hold-on-eos=true "
+     "seed-lateness=1500000000 ! mix.sink_0", "in. ! identity name=mix_aw_c1 ! mix.sink_0",
+     ["mix_aw_c1"], None),
+    ('parse ! mralignwatch aligner=mux input=v max-size-bytes=5000 sparse=true name=aw_v '
+     '! taginject tags="title=x" ! mux.',
+     'parse ! identity name=aw_v ! taginject tags="title=x" ! mux.', ["aw_v"], None),
+    ("src ! mralignwatch name=a ! mrtsdemux ! sink", None, [], "mrtsdemux"),
 ]
 
 # Runs once rewritten (the dropped properties would fail on the real element).
@@ -100,6 +108,10 @@ RICH = ("audiotestsrc is-live=true ! audio/x-raw, format=S16LE, rate=48000, chan
         ' ! mrtsrestamp  name = "restamp_b" bogus="x ! y" ! fakesink sync=false')
 # Audio is no TS, so the real restamp passes none of it: the sink must not wait to preroll.
 TIMING = "audiotestsrc is-live=true ! mrtsrestamp name=restamp ! fakesink sync=false async=false"
+# The aligner input posts `mralignwatch` at its first buffer and every second (WI-P2-6).
+ALIGN = ("audiotestsrc is-live=true ! mralignwatch name=aw_t aligner=mix input=t1"
+         " ! fakesink sync=false async=false")
+FUNNEL = "audiotestsrc is-live=true ! funnel name=fin ! fakesink sync=false async=false"
 
 
 def ev_is(name, **fields):
@@ -238,6 +250,17 @@ def mrtshouse_load_case(argv, tag, check, vectors=False):
                   got is not None and got.get("value") == ABI)
         finally:
             r.close()
+        # Live-added inputs have no busReports entry: the runner forwards these unsubscribed.
+        r = _start(argv, _PLUGINS, empty, ALIGN)
+        try:
+            ev = r.wait_event(ev_is("plugin_event", channel="mralignwatch:aw_t"))
+            p = (ev or {}).get("payload") or {}
+            check(f"{tag} present: an mralignwatch message is forwarded as mralignwatch:aw_t "
+                  f"with no busReports (got {ev})",
+                  p.get("aligner") == "mix" and p.get("input") == "t1"
+                  and p.get("state") in ("waiting", "present", "absent") and "pace" in p)
+        finally:
+            r.close()
 
         # --- missing: the warning with the tried paths, identity in place, set_property warned
         r = _start(argv, empty, empty, RICH)
@@ -280,6 +303,32 @@ def mrtshouse_load_case(argv, tag, check, vectors=False):
                   r.wait_event(ev_is("property_set", id="s2")) is not None)
             check(f"{tag} missing: no pipeline error",
                   r.first(ev_is("error")) is None)
+        finally:
+            r.close()
+        # B-17: a live add is never stood in; its refusal names the alarm, the module runs on.
+        r = _start(argv, empty, empty, FUNNEL)
+        try:
+            r.wait_event(ev_is("state_change", state="playing"))
+            r.send({"cmd": "bus_input_add", "id": "a1", "element": "fin", "name": "fin_in_aw",
+                    "description": "audiotestsrc is-live=true ! mralignwatch name=aw_live"})
+            got = r.wait_event(lambda e: e.get("id") == "a1")
+            want = f'bus_input_add: parse failed: no element "mralignwatch"; {ALARM} ({missing})'
+            check(f"{tag} missing: a bus_input_add naming mralignwatch is a command_error with "
+                  f"the rule-6 alarm and the load detail (got {got})",
+                  got is not None and got.get("event") == "command_error"
+                  and got.get("message") == want and got.get("kind") == "timing_plugin"
+                  and got.get("detail") == missing)
+            r.send({"cmd": "get_property", "id": "g1", "element": "fin", "property": "name"})
+            check(f"{tag} missing: the module keeps running without that input",
+                  r.wait_event(ev_is("property", id="g1")) is not None
+                  and r.first(ev_is("error")) is None and r.proc.poll() is None)
+            r.send({"cmd": "bus_input_add", "id": "a2", "element": "fin", "name": "fin_in_q",
+                    "description": "audiotestsrc is-live=true ! nosuchelement name=q"})
+            got = r.wait_event(lambda e: e.get("id") == "a2")
+            check(f"{tag} missing: a parse failure naming no timing element stays plain "
+                  f"(got {got})", got is not None and got.get("event") == "command_error"
+                  and got.get("message") == 'bus_input_add: parse failed: no element '
+                  '"nosuchelement"' and "kind" not in got)
         finally:
             r.close()
 
@@ -353,10 +402,12 @@ def mrtshouse_load_case(argv, tag, check, vectors=False):
                 r.send({"cmd": "bus_input_add", "id": "a1", "element": "fin", "name": "fin_in_x",
                         "description": "audiotestsrc is-live=true ! mrtsrestamp name=stale_in"})
                 got = r.wait_event(lambda e: e.get("id") == "a1")
+                want = f'bus_input_add: parse failed: no element "mrtsrestamp"; {ALARM} ({old})'
                 check(f"{tag} stale: the plugin is out of the registry, so a bus_input_add "
-                      f"naming its element fails to parse (got {got})",
+                      f"naming its element fails to parse, refused with the alarm (B-17) "
+                      f"(got {got})",
                       got is not None and got.get("event") == "command_error"
-                      and 'no element "mrtsrestamp"' in got.get("message", ""))
+                      and got.get("message") == want and got.get("detail") == old)
             finally:
                 r.close()
 
@@ -403,6 +454,19 @@ def unit_cases(check):
                     re.findall(r'\{"([\w-]+)", (?:"([\w-]+)"|nullptr)\}', source)}
     check(f"the element tables are twins (python {TABLE}, native {native_table})",
           native_table == TABLE)
+    check("mralignwatch stands in as identity (part 4.5 rule 6)",
+          TABLE.get("mralignwatch") == "identity")
+    with open(os.path.join(_NATIVE, "runner.cpp"), encoding="utf-8") as fh:
+        runner_cpp = fh.read()
+    with open(os.path.join(_HERE, "gst-pipeline-runner.py"), encoding="utf-8") as fh:
+        runner_py = fh.read()
+    cpp = re.search(r"kForwardedMessages\[\] = \{([^}]*)\}", runner_cpp).group(1)
+    cpp_names = ["mrlateness" if "lateness::MESSAGE" in x else x.strip().strip('"')
+                 for x in cpp.split(",")]
+    py_names = re.findall(r'"([\w-]+)"', re.search(
+        r"FORWARDED_ELEMENT_MESSAGES = \(([^)]*)\)", runner_py).group(1))
+    check(f"the unsubscribed element messages are twins (native {cpp_names}, python {py_names})",
+          cpp_names == py_names == ["mrlateness", "mralignwatch", "mrtsdemux"])
 
 
 if __name__ == "__main__":

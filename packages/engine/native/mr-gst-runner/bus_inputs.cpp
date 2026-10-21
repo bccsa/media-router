@@ -5,6 +5,7 @@
 
 #include "ipc.h"
 #include "json_util.h"
+#include "native_plugins.h"
 #include "runner.h"
 #include "source_gate.h"
 
@@ -132,8 +133,9 @@ void handle_bus_input_add(JsonObject* data) {
     GError* err = nullptr;
     GstElement* bin = gst_parse_bin_from_description(desc.c_str(), FALSE, &err);
     if (!bin) {
-        ipc::command_error(req_id, std::string("bus_input_add: parse failed: ") +
-                                       (err && err->message ? err->message : "?"));
+        native_plugins::refuse_live_add(req_id, desc,
+                                        std::string("bus_input_add: parse failed: ") +
+                                            (err && err->message ? err->message : "?"));
         g_clear_error(&err);
         gst_object_unref(agg);
         return;

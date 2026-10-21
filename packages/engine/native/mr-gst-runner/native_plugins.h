@@ -34,6 +34,12 @@ bool stand_in(std::string* desc);
 /** A name a stand-in took over: its `set_property` is answered with a warning. */
 bool is_stand_in(const std::string& element);
 
+/** `bus_input_add`'s parse failure as a `command_error`: when `desc` names an element of a
+ *  plugin `load` could not use, `message` gains the rule-6 alarm and the load detail, with
+ *  `kind` and `detail`. Live adds are never stood in (B-17); the module keeps running. */
+void refuse_live_add(const std::string& req_id, const std::string& desc,
+                     const std::string& message);
+
 /** An element a plugin provides; `stand_in` nullptr: none, the module cannot start. */
 struct Factory {
     const char* name;

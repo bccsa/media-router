@@ -9,10 +9,10 @@ CXXFLAGS += -std=c++17 -Wall -Wextra
 override CXXFLAGS += -fPIC
 
 OBJS  = ts_house.o ts_packet.o ts_psi.o ts_split.o ts_video_info.o sps_parse.o ts_timeline.o \
-        lateness.o ts_pcr.o ts_pes.o ts_stc.o ts_trace.o ts_restamp.o asrc_servo.o ts_gap.o
+        lateness.o ts_pcr.o ts_pes.o ts_stc.o ts_trace.o ts_restamp.o asrc_servo.o ts_gap.o align_watch.o
 TESTS = tests/ts_house_test tests/ts_packet_test tests/ts_psi_test tests/ts_split_test \
         tests/ts_video_info_test tests/ts_timeline_test tests/lateness_test tests/ts_pcr_test tests/ts_pes_test tests/ts_stc_test \
-        tests/ts_trace_test tests/ts_restamp_test tests/asrc_servo_test tests/ts_gap_test
+        tests/ts_trace_test tests/ts_restamp_test tests/asrc_servo_test tests/ts_gap_test tests/align_watch_test
 # Built with the tests so it keeps compiling; run by hand (WI-S0-11), never by `test`.
 BENCH = tests/mrts_bench
 # Built with the tests for trace_cli_test.sh; never run as one (no arguments: exit 2).
@@ -24,7 +24,7 @@ libmrts.a: $(OBJS)
 	$(AR) rcs $@ $(OBJS)
 
 %.o: %.cpp ts_house.h ts_packet.h ts_psi.h ts_split.h ts_video_info.h sps_parse.h ts_timeline.h \
-          lateness.h ts_pcr.h ts_pes.h ts_stc.h ts_trace.h ts_restamp.h asrc_servo.h ts_gap.h
+          lateness.h ts_pcr.h ts_pes.h ts_stc.h ts_trace.h ts_restamp.h asrc_servo.h ts_gap.h align_watch.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 mrts_cli: mrts_cli.cpp libmrts.a

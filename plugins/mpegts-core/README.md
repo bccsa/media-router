@@ -52,6 +52,7 @@ it at runtime stop doing so phase by phase (below).
 | `ts_gap.h`, `ts_gap.cpp` | The bus gap marker's adaptation-only packet: build and read |
 | `ts_trace.h`, `ts_trace.cpp` | Arrival traces (`.stct`): writer, reader, and `TracePlayer`, which replays a trace as the TS its recorder read |
 | `asrc_servo.h`, `asrc_servo.cpp` | `AsrcServo`: `ClockLock` on input frame count against buffer PTS, and the phase servo that commands `mrasrc`'s ratio |
+| `align_watch.h`, `align_watch.cpp` | What `mralignwatch` decides (Phase 2): W from the arrival rhythm (`ArrivalRhythm`), the pace group and its process-wide registry (`PaceGroup`, `PaceRegistry`), the gap planner (`GapPlanner`) |
 | `mrts_cli.cpp` | Test harness, never installed: the splitter mode of the parity suite, `dump` (PES index as JSON lines), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
 
 ### `native/mrts/tests/` — C++ unit tests (`make -C native/mrts test`, root `make native-test`)
@@ -59,7 +60,7 @@ it at runtime stop doing so phase by phase (below).
 | Path | What |
 |---|---|
 | `check.h` | The assertion harness |
-| `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp` | The 14 suites, one per module |
+| `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp`, `align_watch_test.cpp` | The 15 suites, one per module |
 | `trace_gen.h`, `fixture_gen.cpp` | The deterministic arrival-trace generator (`fixture_gen --trace`); its `.ts` modes come with the conformance fixtures (WI-S0-9) |
 | `trace_cli_test.sh` | `mrts_cli`'s trace verbs, and every `tests/fixtures/restamp/*.expect.json` against its regenerated trace |
 | `mrts_bench.cpp` | ns per packet of the walk, the rewrite and the reassembly (the Pi 4 budget, WI-S0-11); `--wrap-at` moves a capture's timestamps across the 33-bit wrap. Built by `test`, never run by it |
@@ -75,6 +76,7 @@ it at runtime stop doing so phase by phase (below).
 | `gstmrtsrestamp.cpp` | `mrtsrestamp`: `RestampCore` as an element, with the gap markers and the outage task (Phase 1) |
 | `gstmrasrc.cpp` | `mrasrc`: the capture ASRC, `AsrcServo` driving `GstAudioResampler` (Phase 1) |
 | `mrasrc_resampler.h` | `mrasrc`'s resampler settings, in one place so the bench measures exactly them |
+| `gstmralignwatch.cpp` | `mralignwatch`: the input of a non-live aggregator. A FIFO released at the pace its pace group shares, the silence watchdog and the gap fill, LATENCY answered as non-live (Phase 2) |
 | `tests/restamp_ref.cpp` | `RestampCore` without GStreamer: the reference the element and protocol tests hold `mrtsrestamp` to |
 | `tests/asrc_bench.c` | `GstAudioResampler` CPU at `mrasrc`'s settings, against the Pi 4 budget; run by hand |
 
@@ -121,15 +123,16 @@ checkout, never from `/opt`.
 ## Consumers
 
 - **Both pipeline runners** load `native/mrtshouse/libgstmrtshouse.so`
-  (`mrtsrestamp`, `mrasrc`), `native/mrtsstamp/libgstmrtsstamp.so` and
+  (`mrtsrestamp`, `mrasrc`, `mralignwatch`), `native/mrtsstamp/libgstmrtsstamp.so` and
   `native/mrlateness/libgstmrlateness.so` by explicit path, never
   `GST_PLUGIN_PATH`: the plugins tree first, then
   `/usr/libexec/media-router/mpegts-core/`. Without `libgstmrtshouse.so`, or
   with one below the runner's ABI, a module starts with `identity` in the
-  restamp's place and the alarm "Native TS module not loaded" (the PCM
-  captures, whose `mrasrc` has no stand-in yet, fail to start); without
-  `libgstmrtsstamp.so` the Python runner falls back to its probe (frozen,
-  until Phase 2).
+  restamp's and every `mralignwatch`'s place and the alarm "Native TS module
+  not loaded" (the PCM captures, whose `mrasrc` has no stand-in yet, fail to
+  start); a live input add that names one of its elements is refused with that
+  alarm, never stood in (B-17); without `libgstmrtsstamp.so` the Python runner
+  falls back to its probe (frozen, until Phase 2).
 - **`libmrts.a`** is linked by `mrtsstamp`, `mrlateness`, `mrpeshouse` and
   `mrtshouse` here, by the engine's `mr-gst-runner`, by `ts-splitter`'s
   `mr-tssplit` and by `unixfdbus-core`'s `mr-bus-fanout`.

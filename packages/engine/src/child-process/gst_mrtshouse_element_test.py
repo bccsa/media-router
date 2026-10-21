@@ -3,7 +3,7 @@
 MRTSHOUSE_VERSION and registers its factory table at rank NONE; every element carries the
 read-only `abi` (MRTSHOUSE_ABI) and part 10's counters. What each element does is its own
 test's: mrtsrestamp, which took the placeholder probe's place, in gst_mrtsrestamp_element_test.py;
-mrasrc in gst_mrasrc_element_test.py.
+mrasrc in gst_mrasrc_element_test.py; mralignwatch in gst_mralignwatch_element_test.py.
 Skips (exit 0) without GStreamer or the built plugin."""
 import os
 import re
@@ -76,9 +76,10 @@ check("plugin loaded from the path given", plugin.get_filename() == _path)
 factories = [f for f in Gst.Registry.get().get_feature_list_by_plugin("mrtshouse")
              if isinstance(f, Gst.ElementFactory)]
 names = sorted(f.get_name() for f in factories)
-check(f"the factory table registers mrtsrestamp and mrasrc, the placeholder probe gone "
-      f"(got {names})",
-      "mrtsrestamp" in names and "mrasrc" in names and "mrtshouse-probe" not in names)
+check(f"the factory table registers mrtsrestamp, mrasrc and mralignwatch, the placeholder "
+      f"probe gone (got {names})",
+      "mrtsrestamp" in names and "mrasrc" in names and "mralignwatch" in names
+      and "mrtshouse-probe" not in names)
 
 for f in factories:
     name = f.get_name()
