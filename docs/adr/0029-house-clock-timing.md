@@ -524,7 +524,9 @@ saw no native runner until it matched `mr-gst-runner` (it looked only for
   302M, KLV subtitles, an SRT ingest of a third-party mux, and `cap-cc-loss`
   derived from the AAC + Opus capture), each with its `mrts_cli dump`;
   `ts_conformance_test` replays them at 188, 1316 and 24 576-byte chunks,
-  line by line. A vMix capture is missing (OQ-3).
+  line by line. The vMix capture came with B-85 (2026-10-22):
+  `cap-vmix-h264-aac`, the owner's vMix in its VBR mode (a PCR only on each
+  IDR, 2 s apart); #820's CBR mode is still to be recorded.
 - **Traces.** Each synthetic `.expect.json` names the deterministic
   `fixture_gen --trace` command that regenerates its trace, so no synthetic
   `.stct` is committed (the twelve come to about 6.9 MB). The field traces
@@ -532,8 +534,9 @@ saw no native runner until it matched `mr-gst-runner` (it looked only for
   multicast at its recorded arrivals, a CBR source over SRT, paced and
   bursty, an SRT caller restart, a RIST link drop and a sending module's
   restart on a .108 → .103 loop, and two of the OCC gate's real RIST
-  outputs. Each expectation's note says where the trace was recorded and
-  what its dump shows (plan chapter 15.4, B-32 to B-35).
+  outputs; since B-85 also the owner's vMix (`trace-vmix-sparse-pcr`, a
+  PCR every 2 s). Each expectation's note says where the trace was recorded
+  and what its dump shows (plan chapter 15.4, B-32 to B-35, B-85).
 - **A second opinion.** `tests/hlsPipeReference.test.ts` (WI-S0-10) runs
   `mrts_cli dump` and hls-pipe's TypeScript demuxer over the same captures
   and compares them PES for PES (pid, PTS, DTS, length, payload CRC-32).
@@ -898,11 +901,18 @@ rows B-1 to B-48) holds the same records with their work items.
   follows `min(0, smallest shift in the program)`, so `PTS − PCR` never
   shrinks below the source's lead, and a change of that value flags the
   next PCR. O is clamped to ±10 s (OQ-14) and a trim to ±2 s (§5.5).
-- **The PCR is flagged for Phase 1–2 consumers.** `discontinuity_indicator`
-  is set on the next written PCR after a gap of 1 s or more, after the
-  written PCR steps by 1 s or more (as after an outage), and when it changes
-  between mapped and regenerated: those consumers still run `tsdemux` in
-  PCR mode and would otherwise read a PCR jump as an error.
+- **The PCR is flagged for Phase 1–2 consumers, only where its timeline
+  breaks** (B-84). `discontinuity_indicator` is set on the first written PCR
+  after an outage or a PES gap of 1 s or more, after a relock, when the PCR
+  is written on another epoch's line or with another shift, when it changes
+  between mapped and regenerated, and when it steps back: those consumers
+  still run `tsdemux` in PCR mode and would otherwise read a PCR jump as an
+  error. A source's own PCR spacing is no break. `tsdemux` re-bases at
+  every flagged PCR, and the build before, which also flagged any PCR 1 s or
+  more after the one before, flagged every PCR of a source that sends one
+  every 2 s (vMix's VBR mux): a consumer's output stepped by 1.7–18 ms at
+  each. The trace recorder writes a PES's `di` as the source sent it, read
+  before the restamp may set the bit on the same packet (B-84).
 
 ### The straddle rule (OQ-11, refined 2026-10-14)
 
@@ -1166,7 +1176,13 @@ design's §5.2 keeps the general rule.
   step on every PID at 421 s of `trace-gate01-rist-20010` and at 345 s of
   `-20046`. For Phase 2's aligners (R-P1-5).
 - `trace-820-vmix-pcr` (OQ-3) still has to show the clamp on a real vMix
-  feed; `syn-lead-clamp` and `syn-lead-clamp-floor-fall` stand in.
+  feed, which takes the owner's vMix SRT output switched to CBR for one
+  recording: in its VBR mode (`trace-vmix-sparse-pcr`, B-85) the PCR is
+  sparse but steady, with no lead to clamp. `syn-lead-clamp` and
+  `syn-lead-clamp-floor-fall` stand in.
+- With that vMix setup every vMix SRT ingest shows "Degraded clock:
+  cadence" for good (one PCR every 2 s), though a PCR lock on it works as
+  well: whether the badge should stay amber there is the owner's (B-85).
 - A floor step under `step_ns` inside the first fit window bends ε: the
   SRT receiver's +2.85 ms time-base correction 35 s after a reconnect read
   as 43–71 ppm (186 ppm on .111's own run), decaying with τ (plan chapter
@@ -1298,8 +1314,9 @@ work items.
   forwarded. Flags pass as they come, so a GAP-only marker (B-20) would
   cross the same way.
 - **Tested on a field capture**: the OCC recording's first 2 MB
-  (`cap-occ-1080i-h264-mp2-ttx.ts`: H.264 1080i on the PCR PID, 22 AAC PIDs
-  whatever the name says, teletext, a 514-byte PMT ahead of each PAT),
+  (`cap-occ-1080i-h264-21aac-ttx.ts`, drafted as `-mp2-ttx` and renamed for
+  what it holds (B-85): H.264 1080i on the PCR PID, 21 AAC PIDs, teletext, a
+  514-byte PMT ahead of each PAT),
   rebased onto house time. Each output's PES are byte-identical to the
   input PID's (sha-256, and `mrts_cli dump` crc32 per PES); every injected
   PCR is an input PCR, at least 10 ms apart; every stamp follows

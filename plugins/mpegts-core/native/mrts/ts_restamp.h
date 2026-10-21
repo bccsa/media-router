@@ -42,7 +42,7 @@ class RestampCore {
     static constexpr int64_t TRIM_LIMIT_NS = 2000000000;          // §5.5
     static constexpr int64_t OFFSET_LIMIT_NS = 10000000000LL;     // OQ-14
     static constexpr int64_t OUTAGE_NS = 1000000000;              // part 4.4: no packets this long
-    static constexpr int64_t GAP_FLAG_NS = 1000000000;            // a gap this long flags the next PCR
+    static constexpr int64_t GAP_FLAG_NS = 1000000000;            // a PES gap this long flags the next PCR
     static constexpr int64_t LEAD_WINDOW_NS = 10000000000LL;      // per-PID lead telemetry (part 4.3)
     // Degraded mode writes the conditioner's PCR: the program's PTS floor minus 250 ms,
     // the floor pulled down by a PID with a PES this recent, at most 1 s down.
@@ -189,6 +189,7 @@ class RestampCore {
         bool flag_pcr = false;            // discontinuity_indicator on the next written PCR
         bool have_wpcr = false, wpcr_regen = false;
         int64_t wpcr_ns = 0, wpcr27 = 0;  // last written PCR: house ns (stc), as written
+        uint32_t wpcr_epoch = 0;          // ... and the epoch it was mapped on (0: regenerated, fixed)
         int64_t pcr_off27 = 0;            // written - source: a PCR off the PCR PID follows it
         int64_t pending_leap = 0;
         uint64_t gaps = 0, dropped_pes = 0;
@@ -206,7 +207,7 @@ class RestampCore {
     Pid* pid_entry(int pid, Program& g);
     void on_pcr(Pid& p, PacketView& v);
     int64_t degraded_pcr(const Program& g) const;
-    void on_es(Pid& p, PacketView& v, CcTracker::Result cc);
+    void on_es(Pid& p, PacketView& v, CcTracker::Result cc, bool di);
     bool in_epoch(const Program& g, int64_t pts90k) const;
     int64_t unwrap_pes(Pid& p, int64_t pts33);
     bool start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di, int64_t& pts33,

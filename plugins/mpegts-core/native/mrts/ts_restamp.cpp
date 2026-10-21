@@ -159,6 +159,7 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
         // it left, from this buffer on (which may still carry content from before it).
         for (auto& p : pids_)
             if (p) p->outage = true;
+        for (auto& g : progs_) g->flag_pcr = true;   // a gap of 1 s or more in everything
         outage_h_ = arrival_h_;
         record(TraceKind::outage, PID_NULL, (uint64_t)silence, 0, 0, arrival_ns);
     }
@@ -203,12 +204,13 @@ void RestampCore::on_packet(PacketView& v) {
         else unknown_++;
         return;
     }
+    const bool di = v.af_discontinuity;   // the source's: on_pcr may flag this packet
     if (v.af_pcr) on_pcr(*p, v);
     if (p->stream_type < 0) {             // the PCR PID alone: no PES, nothing removed
         put(v.p);
         return;
     }
-    on_es(*p, v, cc);
+    on_es(*p, v, cc, di);
 }
 
 void RestampCore::on_psi(const PacketView& v) {
@@ -340,6 +342,7 @@ void RestampCore::pull_events(Program& g) {
                 continue;
             case StcEvent::Kind::relock:
                 if (!std::strcmp(e.reason, "leap")) out.value_ns = g.pending_leap;
+                g.flag_pcr = true;        // a new epoch: the PCR's timeline breaks
                 break;
             case StcEvent::Kind::degraded:
                 out.kind = Event::Kind::degraded;
@@ -388,6 +391,7 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
     record(TraceKind::pcr, v.pid, (uint64_t)pcr, 0, trace_flags(v.af_discontinuity, p.cls), arrival_);
     int64_t out27, out_ns = 0;
     bool regen = false;
+    uint32_t epoch = 0;
     if (cfg_.mode == RestampConfig::Mode::fixed) {
         // Moved by the constant the PES move by: PTS - PCR stays the mux's, exactly.
         out27 = floor_mod(pcr + ns_to_pts90k(base_ + g.pcr_shift) * 300, PCR_MODULO);
@@ -408,6 +412,7 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
         }
         if (m.valid) {
             out_ns = m.house_ns + g.pcr_shift;
+            epoch = m.epoch;
         } else if (m.stale) {
             // No PES leaves while the line is a backlog's (B-39): the PCR keeps arrival's pace
             // (a frozen one would read as a freeze one hop on), never back among such.
@@ -422,12 +427,12 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
         // PTS - PCR on the bus is the source's lead.
         out27 = floor_mod(ns_to_pcr27(out_ns) + MUX_CLOCK_BASE_90K * 300, PCR_MODULO);
     }
-    // A PCR that steps (a shift change, mapped <-> regenerated, back as the line moves onto a
-    // backlog's floor or a straddler's epoch, a jump of 1 s or more as after an outage) or
-    // follows a gap of 1 s is flagged for Phases 1-2's tsdemux.
+    // Phases 1-2's tsdemux re-bases at every flagged PCR, so only a break is flagged: flag_pcr (a shift,
+    // a relock, an outage, a PES gap of 1 s or more), mapped <-> regenerated, another epoch's line, a
+    // step back (a line moved onto its floor). A sparse PCR's own spacing is none (B-84).
     int64_t step = floor_mod(out27 - g.wpcr27, PCR_MODULO);
     if (step > PCR_MODULO / 2) step -= PCR_MODULO;
-    if (g.have_wpcr && (g.flag_pcr || regen != g.wpcr_regen || step < 0 || pcr27_to_ns(step) >= GAP_FLAG_NS))
+    if (g.have_wpcr && (g.flag_pcr || regen != g.wpcr_regen || epoch != g.wpcr_epoch || step < 0))
         set_discontinuity_indicator(v);
     g.flag_pcr = false;
     write_pcr(v, out27);
@@ -436,6 +441,7 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
     g.wpcr_regen = regen;
     g.wpcr_ns = out_ns;
     g.wpcr27 = out27;
+    g.wpcr_epoch = epoch;
 }
 
 int64_t RestampCore::degraded_pcr(const Program& g) const {
@@ -497,7 +503,7 @@ void RestampCore::release_held_af(Pid& p) {
     p.held_af.clear();
 }
 
-void RestampCore::on_es(Pid& p, PacketView& v, CcTracker::Result cc) {
+void RestampCore::on_es(Pid& p, PacketView& v, CcTracker::Result cc, bool di) {
     const bool payload = v.payload_off < PKT;
     const bool dup = cc == CcTracker::Result::Duplicate;
     if (payload && span_.held(v.pid)) {
@@ -569,7 +575,7 @@ void RestampCore::on_es(Pid& p, PacketView& v, CcTracker::Result cc) {
     }
     if (span_.hold(v)) {                  // the header continues in the next packet
         p.held_h = arrival_;
-        p.held_di = v.af_discontinuity;
+        p.held_di = di;
         return;
     }
     PesHeader h;
@@ -582,7 +588,7 @@ void RestampCore::on_es(Pid& p, PacketView& v, CcTracker::Result cc) {
     if (!h.complete) {                    // a duplicate's twin the span let pass
         broken_++;
         p.unit = Pid::Unit::drop;
-    } else if (start_pes(p, h, arrival_, v.af_discontinuity, pts33, dts33) &&
+    } else if (start_pes(p, h, arrival_, di, pts33, dts33) &&
                rewrite_pes_timestamps(v, h, pts33, dts33)) {
         keep_es(p, v.p);
         return;
@@ -781,7 +787,7 @@ void RestampCore::push_gap(Pid& p, int64_t start, int64_t end, const char* why, 
     events_.push_back(e);
     g.gaps++;
     g.gap_ns += end - start;
-    // After an outage the house PCR itself jumped, and on_pcr flags that one.
+    // An outage's gap: process() flagged the first PCR after the outage already.
     if (end - start >= GAP_FLAG_NS && !p.outage) g.flag_pcr = true;
 }
 

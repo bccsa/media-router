@@ -38,6 +38,12 @@ elements" below do not start.
   stream. The Audio Encoder now captures from PipeWire directly instead of
   through a PulseAudio ring, whose re-stamping caused occasional ~200 ms
   timing steps.
+- **Sources with a sparse clock reference** (vMix's SRT output sends one
+  every 2 s) now feed the modules behind the input smoothly. The input marks
+  a break in the source's clock only where there is one (an outage, a
+  re-lock, an offset change); earlier builds of this release marked every
+  one of these sparse references, and a player or transcoder on such an
+  input stepped by up to 18 ms every 2 s.
 
 **New settings**
 

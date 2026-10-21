@@ -105,6 +105,7 @@ struct Gen {
     // waits backlog_len, then drains, all sent until then arriving over backlog_drain.
     int64_t backlog_at = -1, backlog_len = 0, backlog_drain = 0;
     int64_t a2_ahead = 0;                 // audio-2 stamped this far ahead of the rest (#820)
+    int pcr_every = 1;                    // the PCR on every n-th video PES (50: every 2 s, vMix's)
 };
 
 struct Pkt {
@@ -272,7 +273,9 @@ Stream generate(const Gen& g) {
             payload[0] ^= (uint8_t)(idx >> 8);
             payload[1] ^= (uint8_t)(idx >> 16);
             const Bytes data = pes_bytes(e->sid, info.pts, info.dts, payload);
-            const bool pcr_here = video && (g.pcr_move_at < 0 || mux0 < g.pcr_move_at);
+            // A sparse PCR from the second video PES on: the first after the PSI, as vMix's.
+            const bool pcr_here = video && (g.pcr_move_at < 0 || mux0 < g.pcr_move_at) &&
+                                  k % g.pcr_every == 1 % g.pcr_every;
             const bool split = e->pid == PID_A2 && g.split_every > 0 && k % g.split_every == g.split_every - 1;
             const std::vector<Bytes> pk =
                 packetize(e->pid, data, pcr_here ? pcr_at(mux0) : -1, split ? 10 : 0, video && k % 12 == 0);
@@ -811,6 +814,40 @@ std::vector<std::pair<int64_t, int64_t>> pts_pcr_moves(const Case& c, const Out&
         v.push_back({o.arrival_of_out[p.at], pcr27_to_ns(d)});
     }
     return v;
+}
+
+// Each PCR of `pid` written: its arrival, its input packet (and send time), whether it carries
+// discontinuity_indicator and whether the source's packet did.
+struct PcrOut {
+    int64_t arrival, mux;
+    long in;
+    bool di, src_di;
+};
+std::vector<PcrOut> pcrs_of(const Case& c, const Out& o, const Ana& a, int pid) {
+    std::vector<PcrOut> v;
+    for (size_t j = 0; j < o.bytes.size() / PKT; j++) {
+        const uint8_t* pk = o.bytes.data() + j * PKT;
+        if (ts_pid(pk) != pid || read_pcr(pk) < 0) continue;
+        const long in = a.in_of_out[j];
+        const bool src = in >= 0 && (c.st.pk[(size_t)in].b[5] & 0x80) != 0;
+        v.push_back(PcrOut{o.arrival_of_out[j], in >= 0 ? c.st.pk[(size_t)in].mux : -1, in, (pk[5] & 0x80) != 0, src});
+    }
+    return v;
+}
+
+// The indices into `v` of the flagged PCRs.
+std::vector<size_t> flagged(const std::vector<PcrOut>& v) {
+    std::vector<size_t> f;
+    for (size_t i = 0; i < v.size(); i++)
+        if (v[i].di) f.push_back(i);
+    return f;
+}
+
+// The index of the first PCR in `v` that arrives after `h` (v.size(): none).
+size_t first_pcr_after(const std::vector<PcrOut>& v, int64_t h) {
+    size_t i = 0;
+    while (i < v.size() && v[i].arrival <= h) i++;
+    return i;
 }
 
 // --- Acceptance: the mapping --------------------------------------------------------
@@ -1499,6 +1536,10 @@ void test_pmt_change() {
         pcr2 &= iabs(pcr27_to_ns(p.pcr) - fmod64(want, pcr27_to_ns(PCR_MODULO))) <= 1 * MS;
     }
     CHECK("PMT change: the PCR on its new PID is rewritten onto house time (+ the mux's 1 h)", pcr2);
+    const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V), p2 = pcrs_of(c, a, aa, PID_PCR2);
+    const std::vector<size_t> f2 = flagged(p2);
+    CHECK("PMT change: the relock's PCR, the first on the new PID, alone carries discontinuity_indicator (B-84)",
+          flagged(pv).empty() && f2.size() == 1 && f2[0] == 0);
     bool gap_ok = true;
     std::map<int, int> per_pid;
     for (const RestampCore::Gap& gp : a.gaps) {
@@ -1540,6 +1581,16 @@ void test_discontinuity_straddle(const char* label, int64_t jump, bool flag, con
               count_events(a, Ev::Kind::degraded) == 0 && a.stats.programs[0].clock.epoch == 2);
     CHECK("discontinuity: a leap's relock carries the jump (delta sigma - delta h)",
           flag ? leap == 0 : iabs(leap - jump) <= 50 * MS);
+    // A relock is a break (B-84): the first PCR after it alone is flagged, the restamp's own flag
+    // where the source sent none (a leap), though house time continues.
+    const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
+    const std::vector<size_t> fl = flagged(pv);
+    size_t first_new = 0;
+    while (first_new < pv.size() && pv[first_new].mux < g.rewind_at) first_new++;
+    int src = 0;
+    for (const PcrOut& p : pv) src += p.src_di;
+    CHECK("discontinuity: the relock's PCR alone carries discontinuity_indicator (the source's only if flagged)",
+          fl.size() == 1 && fl[0] == first_new && src == (flag ? 1 : 0));
     int late = 0, late_old = 0, after = 0, after_ok = 0;
     int64_t late_err = 0;
     for (const OutPes& p : aa.pes) {
@@ -1614,6 +1665,12 @@ void test_reroute(const char* label, int64_t rise, int64_t ramp, const char* rea
           count_events(a, Ev::Kind::relock) == 1 && count_events(a, Ev::Kind::relock, reason) == 1 &&
               count_events(a, Ev::Kind::envelope_step) == (step ? 1 : 0) &&
               count_events(a, Ev::Kind::degraded) == 0 && a.stats.programs[0].clock.epoch == 2);
+    {
+        const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
+        const std::vector<size_t> fl = flagged(pv);
+        CHECK("re-route: the relock's PCR (the new epoch's first) alone carries discontinuity_indicator (B-84)",
+              fl.size() == 1 && pv[fl[0]].arrival == relock_h);
+    }
     std::map<int, int> n;
     int64_t glo = INT64_MAX, ghi = INT64_MIN;
     bool epoch_only = true;
@@ -1696,6 +1753,14 @@ void test_queue_ramp(const char* label, int64_t rise, int64_t ramp, int64_t secs
     CHECK("queue ramp: re-locked by envelope steps, never degraded",
           relocks >= 1 && relocks == count_events(a, Ev::Kind::relock, "envelope-step") &&
               count_events(a, Ev::Kind::degraded) == 0);
+    {
+        const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
+        const std::vector<size_t> fl = flagged(pv);
+        bool at = (int)fl.size() == relocks;
+        for (size_t i = 0, k = 0; at && i < a.events.size(); i++)
+            if (a.events[i].kind == Ev::Kind::relock) at &= pv[fl[k++]].arrival == a.events[i].house_ns;
+        CHECK("queue ramp: each relock's PCR carries discontinuity_indicator, no other PCR (B-84)", at);
+    }
     bool per_relock = epoch_only && n.size() == 4;
     for (const int pid : kPids) per_relock &= n[pid] == relocks;
     CHECK("queue ramp: nothing dropped; per relock one epoch gap per PID, right before the PES that shows it",
@@ -1899,6 +1964,164 @@ void test_degraded_ref_pid() {
     CHECK("degraded, PCR-only PCR PID: the event names the first video PID", deg == 1 && deg_pid == PID_V);
 }
 
+// --- B-84: discontinuity_indicator only where the PCR's timeline breaks --------------
+
+// vMix's VBR mux (B-85): a PCR only on every 50th video PES, every 2 s, steady. Its spacing is
+// no break, so nothing flags a PCR for it: mapped (the cadence fail row out of reach), none;
+// degraded (the shipped constants), the switch to the regenerated PCR alone; an outage, also the
+// first PCR after it. Every step is 2 s or more, each of which the old rule flagged.
+void test_sparse_pcr() {
+    for (const bool degrade : {false, true})
+        for (const bool outage : {false, true}) {
+            Gen g;
+            g.pcr_every = 50;
+            if (outage) {
+                g.outage_from = 30 * S;
+                g.outage_to = 33 * S;
+            }
+            RestampConfig cfg = stc_cfg();
+            if (!degrade) cfg.pcr.pcr_interval_fail_ns = 3 * S;
+            const Case c = make_case(g);
+            const Out a = run(c, cfg);
+            const Ana aa = analyze(c, a, !degrade);   // degraded: the switch's drop renumbers CC
+            char label[96];
+            std::snprintf(label, sizeof label, "PCR every 2 s, %s%s", degrade ? "degraded" : "mapped",
+                          outage ? ", 3 s outage at 30 s" : "");
+            std::printf("  [%s]\n", label);
+            print_events(label, a, c);
+            const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
+            int64_t deg_at = -1, lo = INT64_MAX;
+            for (const Ev& e : a.events)
+                if (e.kind == Ev::Kind::degraded) deg_at = e.house_ns;
+            for (size_t i = 1; i < pv.size(); i++) lo = std::min(lo, pv[i].arrival - pv[i - 1].arrival);
+            std::vector<size_t> want;
+            if (degrade) want.push_back(first_pcr_after(pv, deg_at));
+            if (outage) {
+                size_t i = 0;
+                while (i < pv.size() && pv[i].mux < g.outage_to) i++;
+                want.push_back(i);
+            }
+            int src = 0;
+            for (const PcrOut& p : pv) src += p.src_di;
+            std::printf("  %s: %zu PCRs, steps %.3f s or more; flagged:", label, pv.size(), lo / 1e9);
+            for (size_t i : flagged(pv)) std::printf(" #%zu at %.3f s", i, (pv[i].arrival - c.h0) / 1e9);
+            std::printf("; want");
+            for (size_t i : want) std::printf(" #%zu", i);
+            std::printf("\n");
+            CHECK(degrade ? "sparse PCR: degraded on the cadence row, no relock"
+                          : "sparse PCR: mapped (cadence fail row out of reach), no relock",
+                  count_events(a, Ev::Kind::degraded, "cadence") == (degrade ? 1 : 0) &&
+                      count_events(a, Ev::Kind::degraded) == (degrade ? 1 : 0) && count_events(a, Ev::Kind::relock) == 0);
+            CHECK(degrade ? (outage ? "sparse PCR, degraded, outage: the switch and the first PCR after the outage flagged"
+                                    : "sparse PCR, degraded: the switch to the regenerated PCR alone flagged")
+                          : (outage ? "sparse PCR, mapped, outage: the first PCR after the outage alone flagged, once"
+                                    : "sparse PCR, mapped: no PCR flagged"),
+                  pv.size() >= 26 && lo >= 1900 * MS && src == 0 && flagged(pv) == want);
+            CHECK("sparse PCR: monotonic, CC intact, bytes as the input's",
+                  monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic);
+        }
+}
+
+// Degraded, a leap on the reference PID relocks the warm reference lock: the regenerated PCR
+// follows the PES onto the new epoch, so the first one after the relock is flagged too.
+void test_degraded_relock() {
+    Gen g;
+    g.freeze_from = 20 * S;
+    g.freeze_to = g.secs * S;
+    g.rewind_at = 40 * S;
+    g.jump_flag = false;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);
+    print_events("PCR frozen from 20 s, the PES rewound 1 s at 40 s", a, c);
+    int64_t deg_at = -1, relock_at = -1;
+    for (const Ev& e : a.events) {
+        if (e.kind == Ev::Kind::degraded) deg_at = e.house_ns;
+        if (e.kind == Ev::Kind::relock) relock_at = e.house_ns;
+    }
+    CHECK("degraded relock: degraded (freeze), then one relock (leap) of the reference lock, never recovered",
+          count_events(a, Ev::Kind::degraded, "freeze") == 1 && count_events(a, Ev::Kind::relock) == 1 &&
+              count_events(a, Ev::Kind::relock, "leap") == 1 && count_events(a, Ev::Kind::recovered) == 0 &&
+              relock_at > deg_at);
+    const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
+    // The frozen PCR that degrades the program is itself written regenerated.
+    const std::vector<size_t> want = {first_pcr_after(pv, deg_at - 1), first_pcr_after(pv, relock_at)};
+    std::printf("  degraded relock: %zu PCRs; flagged:", pv.size());
+    for (size_t i : flagged(pv)) std::printf(" #%zu at %.3f s", i, (pv[i].arrival - c.h0) / 1e9);
+    std::printf("; want #%zu, #%zu\n", want[0], want[1]);
+    CHECK("degraded relock: the switch and the first regenerated PCR after the relock alone flagged",
+          flagged(pv) == want && want[1] < pv.size());
+}
+
+// A 3 s backlog at the start, drained in 2 s: under lead_max_ns, so the first epoch's line waits on
+// it and moves onto the floor (B-37), within the epoch and mapped throughout. The PCR's step back
+// there is the only break: flagged, alone.
+void test_floor_move_flag() {
+    Gen g;
+    g.secs = 30;
+    g.backlog_at = 0;
+    g.backlog_len = 3 * S;
+    g.backlog_drain = 2 * S;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);
+    print_events("3 s backlog at the start, drained in 2 s", a, c);
+    const std::vector<OutPcr>& op = aa.pcr.at(PID_V);
+    std::vector<size_t> back;             // the PCRs that step back
+    for (size_t i = 1; i < op.size(); i++)
+        if (fmod64(op[i].pcr - op[i - 1].pcr, PCR_MODULO) > PCR_MODULO / 2) back.push_back(i);
+    CHECK("floor move: one epoch, never degraded, no relock",
+          a.stats.programs[0].clock.epoch == 1 && count_events(a, Ev::Kind::degraded) == 0 &&
+              count_events(a, Ev::Kind::relock) == 0);
+    CHECK("floor move: the PCR steps back once, and that PCR alone is flagged",
+          back.size() == 1 && flagged(pcrs_of(c, a, aa, PID_V)) == back);
+}
+
+// The recorder writes each PES's discontinuity_indicator as the source sent it (B-84): a PES on
+// a PCR's packet the restamp flags (after an outage) records none; one the source flags (the
+// rewind's) records its own. PCR records were always read before the rewrite.
+void test_trace_di() {
+    Gen g;
+    g.secs = 50;
+    g.rewind_at = 30 * S;
+    g.outage_from = 40 * S;
+    g.outage_to = 42 * S;
+    const Case c = make_case(g);
+    TraceWriter tw;
+    tw.open_memory();
+    const Out a = run(c, stc_cfg(), nullptr, 0, &tw);
+    const Ana aa = analyze(c, a, true);
+    size_t first_pmt = 0;
+    while (c.st.pk[first_pmt].pid != PID_PMT) first_pmt++;
+    std::vector<const Pkt*> pes_in, pcr_in;
+    for (size_t i = first_pmt; i < c.st.pk.size(); i++) {
+        const Pkt& p = c.st.pk[i];
+        if (p.pid == PID_V && read_pcr(p.b.data()) >= 0) pcr_in.push_back(&p);
+        if (p.pes >= 0 && ts_pusi(p.b.data())) pes_in.push_back(&p);
+    }
+    auto af_di = [](const Pkt& p) { return (p.b[3] & 0x20) && p.b[4] > 0 && (p.b[5] & 0x80); };
+    size_t np = 0, nc = 0;
+    int pes_ok = 0, pcr_ok = 0, src_flags = 0, restamp_flags = 0;
+    for (const TraceRecord& r : tw.records()) {
+        const bool di = (r.flags & TRACE_FLAG_DISCONTINUITY) != 0;
+        if (r.kind == TraceKind::pes && np < pes_in.size()) pes_ok += di == (bool)af_di(*pes_in[np++]);
+        if (r.kind == TraceKind::pcr && nc < pcr_in.size()) {
+            pcr_ok += di == (bool)af_di(*pcr_in[nc]);
+            src_flags += di;
+            nc++;
+        }
+    }
+    // The restamp's flags in the output that rode a PES's first packet the source did not flag.
+    for (const PcrOut& p : pcrs_of(c, a, aa, PID_V))
+        restamp_flags += p.di && !p.src_di && c.st.pk[(size_t)p.in].pes >= 0;
+    std::printf("  trace di: %zu PES and %zu PCR records; %d source-flagged PCR, %d restamp flags on a PES's packet\n",
+                np, nc, src_flags, restamp_flags);
+    CHECK("trace di: every PES record's discontinuity_indicator is its packet's as the source sent it",
+          np == pes_in.size() && pes_ok == (int)np && restamp_flags >= 1);
+    CHECK("trace di: every PCR record's too (the rewind's flag recorded, none other)",
+          nc == pcr_in.size() && pcr_ok == (int)nc && src_flags == 1);
+}
+
 // --- B-39: a caller's reconnect backlog; B-8: the degraded lead clamp ------------------
 
 // Per PID over the output: the highest house(PTS) - arrival; the lowest and highest from
@@ -1926,7 +2149,8 @@ LeadRun lead_run(const Case& c, const Out& o, const Ana& a, int64_t live, int64_
     return r;
 }
 
-// Every PCR of `pid` that steps back, or forward by 1 s or more, carries discontinuity_indicator.
+// Every PCR of `pid` that steps back, or forward by 1 s or more, carries discontinuity_indicator: on
+// this 40 ms PCR such a step is a break's (an outage, a relock, the PCR onto another epoch; B-84).
 bool pcr_steps_flagged(const Ana& a, int pid) {
     const std::vector<OutPcr>& v = a.pcr.at(pid);
     for (size_t i = 1; i < v.size(); i++) {
@@ -2757,6 +2981,9 @@ int main() {
     test_outage_gaps();
     test_degraded();
     test_degraded_ref_pid();
+    test_sparse_pcr();
+    test_degraded_relock();
+    test_floor_move_flag();
     test_backlog("fresh, 30 s queued, drained in 1 s", 0, 30 * S, 1 * S);
     test_backlog("fresh, 90 s queued, drained in 5 s", 0, 90 * S, 5 * S);
     test_backlog("30 s queued after 30 s live, drained in 1 s", 30 * S, 30 * S, 1 * S);
@@ -2770,6 +2997,7 @@ int main() {
     test_duplicates();
     test_two_programs();
     test_trace_mid_stream();
+    test_trace_di();
     test_no_pts_edit();
     test_gap_position();
     test_fixed_jump_reference();

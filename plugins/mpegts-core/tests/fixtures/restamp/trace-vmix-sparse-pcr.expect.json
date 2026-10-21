@@ -1,0 +1,23 @@
+{
+  "note": "The owner's vMix looping a 180 s recording to its SRT output (listener srt://10.9.2.53:10000, no passphrase), pulled from 10.9.16.103 (Pi 5) by a standalone srtsrc caller (latency 200, auto-reconnect off) into mrtsrestamp trace-location, the Phase 1 element as deployed there (libgstmrtshouse.so 2e242d3b; recorder and trace format as in s0), 2026-10-21 15:07:59Z: the first 856 s (2 MB) of 930 s (chapter 15.4 B-85). The mux is libavformat's in VBR mode (SDT 'FFmpeg' / 'Service01'; PAT and PMT every 40 packets, SDT every 200, no null packets, 8.0-13.4 Mbit/s per GOP): H.264 Main 1280x720p50 on 0x101 (I and P frames, no DTS, an IDR every 100 frames and two more at each loop of the clip), AAC-LC ADTS 48 kHz stereo on 0x100, PMT 0x1000. Read off the dump: a PCR only in each IDR's first packet, every 2.000 s (60 ms twice per loop), equal to that IDR's PTS; no leap, freeze, outage or discontinuity; PTS - PCR at arrival -37..+28 ms (median: audio -11, video 0); the delay floors of the PCR and of both PIDs slope +16.8 ppm (the vMix PC's clock against .103's), the PES floors within -2.7..+3.1 ms of their line. Each connection opens with the listener's unsent tail of the previous one (4 PES here, 50 s old, before the first PCR: dropped unmapped). Not #820, which is vMix in CBR mode (a PCR that stops and lags, PTS 12.6 s ahead) and is still to be recorded so: this PCR is sparse but steady. As replayed: the cadence row fails 1.5 s after the first PCR (three 500 ms crossings in its first interval), the program degrades at 1.56 s with the timing from the video PID 0x101, and never recovers (every PCR interval is past 500 ms, so 30 s of clean PCR never come); no lead clamp (no PES ahead of its arrival by more than 1.1 ms: video -36..+1 ms, audio -39..-4 ms), no relock, step, gap or drop; epsilon on the video floor +13.9..+22.9 ppm from 120 s. One written PCR carries discontinuity_indicator, the switch to the regenerated PCR at 2 s (B-84; the build before flagged 427 of the 433, every PCR 1 s or more after the one before). Recorded before B-84, so a PES record's di is the restamp's flag where a PCR rode its packet (427 of the 433 IDR records; the source sent none); the replay plays it back and uses it for nothing. The bounds keep these results as the ceiling.",
+  "relocks": 0,
+  "epochs": 2,
+  "degraded": 1,
+  "recovered": 0,
+  "leadClamps": 0,
+  "backlogEvents": 0,
+  "envelopeSteps": 0,
+  "events": [{"kind": "degraded", "reason": "cadence", "pid": 257, "atS": [1, 2.5]}],
+  "gaps": 0,
+  "overlaps": 0,
+  "droppedPes": 0,
+  "psiChanges": 1,
+  "pcrFlagged": 1,
+  "leadMaxMs": 50,
+  "ppmAfterS": 120,
+  "ppm": [8, 30],
+  "cadenceWarning": true,
+  "finalState": "degraded",
+  "monotonic": true,
+  "faithful": true
+}

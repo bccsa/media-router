@@ -42,7 +42,7 @@ _HOUSE_SO = os.path.join(rig.PLUGINS, "mpegts-core", "native", "mrtshouse", "lib
 _DUCKER_SO = os.path.join(rig.PLUGINS, "audio-processing", "native", "mrducker", "libgstmrducker.so")
 _HOOK_SO = os.path.join(rig.PLUGINS, "mpegts-muxer", "native", "mux-routing", "libmrhook_mux_routing.so")
 _TSSPLIT = os.path.join(rig.PLUGINS, "ts-splitter", "native", "mr-tssplit", "mr-tssplit")
-_OCC = os.path.join(rig.PLUGINS, "mpegts-core", "tests", "fixtures", "cap-occ-1080i-h264-mp2-ttx.ts")
+_OCC = os.path.join(rig.PLUGINS, "mpegts-core", "tests", "fixtures", "cap-occ-1080i-h264-21aac-ttx.ts")
 S = 1_000_000_000
 MS = rig.MS
 

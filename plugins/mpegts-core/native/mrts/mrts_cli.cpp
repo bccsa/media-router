@@ -708,6 +708,8 @@ struct Run {
     std::vector<int> programs;            // in order of their first table
     uint64_t misplaced = 0;
     size_t rerecorded = 0;
+    std::map<int, int> pcr_pid_program;   // every PID a program's PSI named its PCR PID
+    std::map<int, uint64_t> pcr_flagged;  // per PID: written PCRs with discontinuity_indicator
     long first_diff = -1;                 // first record the replay recorded otherwise; -1: none
     bool faithful() const { return first_diff < 0; }
 };
@@ -775,6 +777,7 @@ Run replay(const std::vector<TraceRecord>& recs, const ReplayOpts& o) {
             const int program = (int)(r.value & 0xFFFF);
             if (std::find(run.programs.begin(), run.programs.end(), program) == run.programs.end())
                 run.programs.push_back(program);
+            if (r.value & TRACE_PSI_PCR) run.pcr_pid_program[r.pid] = program;
             if (!(r.value & TRACE_PSI_PCR)) {
                 PidRun& p = run.pids[r.pid];
                 p.program = program;
@@ -840,7 +843,10 @@ Run replay(const std::vector<TraceRecord>& recs, const ReplayOpts& o) {
         }
         out.clear();
         for (const RestampCore::Range& k : res.keep) out.insert(out.end(), k.data, k.data + k.len);
-        walker.feed(out.data(), out.size(), [&](PacketView& v) { units.feed(v, cc.feed(v), got); });
+        walker.feed(out.data(), out.size(), [&](PacketView& v) {
+            if (v.af_pcr && v.af_discontinuity) run.pcr_flagged[v.pid]++;
+            units.feed(v, cc.feed(v), got);
+        });
         take();
         run.t_end = std::max(run.t_end, b.arrival_ns);
     }
@@ -883,6 +889,7 @@ struct ProgramSum {
     // at bucket closes, so the window reads up to one bucket's travel high (1/30).
     int64_t mapping_ppb_max = 0;
     uint64_t pes_in = 0, pes_out = 0, backward = 0;
+    uint64_t pcr_flagged = 0;             // PCRs written with discontinuity_indicator (B-84)
     int64_t lead_max = INT64_MIN;         // the highest house PTS - arrival of a PES kept
     // ε on the last stats line at each convergence mark the trace reaches (the sweep's
     // drift criterion, part 4.3).
@@ -972,6 +979,10 @@ ProgramSum summarize(const Run& run, int program) {
         s.backward += kv.second.backward;
         for (const int64_t l : kv.second.leads) s.lead_max = std::max(s.lead_max, l);
     }
+    for (const auto& kv : run.pcr_flagged) {
+        const auto it = run.pcr_pid_program.find(kv.first);
+        if (it != run.pcr_pid_program.end() && it->second == program) s.pcr_flagged += kv.second;
+    }
     return s;
 }
 
@@ -985,7 +996,7 @@ void print_program(const ProgramSum& s) {
                 "\"droppedPes\":%llu,\"droppedNsTotal\":%lld,\"lockedAtNs\":%lld,\"finalState\":\"%s\","
                 "\"finalPpb\":%lld,\"lockedPpbMin\":%lld,\"lockedPpbMax\":%lld,\"residualMinNs\":%lld,"
                 "\"cadenceWarning\":%s,\"mappingPpbMax\":%lld,\"pesIn\":%llu,\"pesOut\":%llu,\"backward\":%llu,"
-                "\"leadMaxNs\":%lld,"
+                "\"leadMaxNs\":%lld,\"pcrFlagged\":%llu,"
                 "\"ppbAtS\":{",
                 s.epoch, s.degraded, s.recovered, s.steps, s.clamps, s.backlog, s.gaps, (long long)s.gap_ns,
                 (long long)s.gap_min, (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns,
@@ -994,7 +1005,7 @@ void print_program(const ProgramSum& s) {
                 (long long)s.ppb_min, (long long)s.ppb_max, (long long)s.residual_min,
                 s.cadence_warning ? "true" : "false", (long long)s.mapping_ppb_max, (unsigned long long)s.pes_in,
                 (unsigned long long)s.pes_out, (unsigned long long)s.backward,
-                (long long)(s.lead_max == INT64_MIN ? 0 : s.lead_max));
+                (long long)(s.lead_max == INT64_MIN ? 0 : s.lead_max), (unsigned long long)s.pcr_flagged);
     for (int k = 0, n = 0; k < 4; k++)
         if (s.has_at[k]) std::printf("%s\"%lld\":%lld", n++ ? "," : "", (long long)PPB_MARKS_S[k], (long long)s.ppb_at[k]);
     std::printf("}}");
@@ -1075,10 +1086,11 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
                                       "lockedWithinS", "residualMinMs", "finalState", "mappingPpmMax", "gapMs",
                                       "gapsPerPid", "ppm", "leadMaxMs"};
     const char* counts[] = {"relocks", "epochs", "degraded", "recovered", "envelopeSteps", "gaps", "overlaps",
-                            "droppedPes", "droppedMs", "psiChanges", "leadClamps", "backlogEvents"};
+                            "droppedPes", "droppedMs", "psiChanges", "leadClamps", "backlogEvents", "pcrFlagged"};
     const double vals[] = {(double)s.relocks, (double)s.epoch, (double)s.degraded, (double)s.recovered,
                            (double)s.steps, (double)s.gaps, (double)s.overlaps, (double)s.dropped_pes,
-                           s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps, (double)s.backlog};
+                           s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps, (double)s.backlog,
+                           (double)s.pcr_flagged};
     for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
         count(counts[i], vals[i]);
         known.push_back(counts[i]);

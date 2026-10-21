@@ -1,6 +1,6 @@
 {
   "scenario": "scn-split-passthrough",
-  "graph": "cap-occ-1080i-h264-mp2-ttx.ts at real time -> mr-tssplit, three outputs: video (the PCR PID), AAC, teletext",
+  "graph": "cap-occ-1080i-h264-21aac-ttx.ts at real time -> mr-tssplit, three outputs: video (the PCR PID), AAC, teletext",
   "pipelines": "splitter",
   "expect": {
     "pcr_pid": 101

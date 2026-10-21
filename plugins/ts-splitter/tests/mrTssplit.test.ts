@@ -34,9 +34,9 @@ const PIDS = [0x65, 0xc9, 0xca, 0x1f0];
 const outArgs = (pids: number[]) =>
     pids.flatMap((pid) => ['--out', `0x${pid.toString(16)}:busout_${pid}`]);
 
-/** The OCC feed's first 2 MB (2026-07-17): H.264 1080i with B-frames, AAC, teletext;
+/** The OCC feed's first 2 MB (2026-07-17): H.264 1080i with B-frames, 21 AAC PIDs, teletext;
  *  its PMT comes before its first PAT. Its dump, reviewed against ffprobe: .expect.jsonl. */
-const OCC = join(PLUGINS_DIR, 'mpegts-core/tests/fixtures/cap-occ-1080i-h264-mp2-ttx.ts');
+const OCC = join(PLUGINS_DIR, 'mpegts-core/tests/fixtures/cap-occ-1080i-h264-21aac-ttx.ts');
 /** Video (the program's PCR PID), one AAC PID, teletext (private, no PCR of its own). */
 const OCC_OUTS = [0x65, 0xc9, 0x20];
 const OCC_PCR_PID = 0x65;
