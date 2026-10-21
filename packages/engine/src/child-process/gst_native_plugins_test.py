@@ -4,7 +4,8 @@ gst_native_plugins.py, the twin tables, and `mrtshouse_load_case` against the py
 native_runner_protocol_test.py runs against mr-gst-runner too: plugin present, missing, without a
 stand-in, and below the runners' ABI. `mrducker_load_case` (WI-P2-10: mrducker and the keyed
 gate's mrptskeep) runs here against both runners (MR_GST_RUNNER overrides the native binary).
-Skips (exit 0) without GStreamer or the built plugin."""
+`native_plugins_case` (plan ch. 6 part 7.3, WI-P2-14) runs here on the python runner and in the
+protocol test on the native one. Skips (exit 0) without GStreamer or the built plugin."""
 import json
 import os
 import re
@@ -623,6 +624,73 @@ def mrducker_load_case(argv, tag, check):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# --- native-plugins (plan ch. 6 part 7.3): every Phase 2 element of both plugins in one module ---
+NATIVE_ALL = (
+    "audiotestsrc is-live=true ! audio/x-raw,format=S16LE,rate=48000,channels=2"
+    " ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
+    " ! mrtsdemux name=np_demux select=audio/x-smpte-302m ! avdec_s302m ! audioconvert"
+    " ! audio/x-raw,rate=48000,channels=2 ! mralignwatch name=np_aw aligner=np_mix input=a"
+    " ! audiomixer name=np_mix latency=0 start-time-selection=first ! fakesink sync=false async=false"
+    f"  audiotestsrc is-live=true ! {QUAD} ! mrducker name=ducker depth=-20"
+    " ! identity name=dyn ! mrptskeep name=keep target=dyn ! fakesink sync=false async=false")
+
+
+def native_plugins_case(argv, tag, check):
+    """libgstmrtshouse.so with mralignwatch and mrtsdemux, and libgstmrducker.so with mrducker and
+    mrptskeep, loaded and used by `argv`'s runner in one module: both load lines, each element
+    the plugin's own (its `abi`), each one's messages forwarded, nothing refused or stood in."""
+    for so in (_SO, _DUCKER_SO):
+        if not os.path.exists(so):
+            print(f"SKIP {tag} native-plugins — {so} not built (make native)")
+            return
+    lack = [e for e in ("avenc_s302m", "avdec_s302m", "mpegtsmux", "audiomixer")
+            if Gst.ElementFactory.find(e) is None]
+    if lack:
+        print(f"SKIP {tag} native-plugins — {', '.join(lack)} unavailable")
+        return
+    empty = tempfile.mkdtemp(prefix="mrnative-")
+    ducker_abi = mrducker_abi()
+    try:
+        r = _start_with(argv, _PLUGINS, empty, NATIVE_ALL, DUCK_REPORTS)
+        try:
+            check(f"{tag} native-plugins: one load line per plugin, from the plugins tree "
+                  f"({r.log_after(LOAD_LINE)!r}, {r.log_after(DUCKER_LOAD_LINE)!r})",
+                  r.log_after(LOAD_LINE) == f"{VERSION} abi {ABI} from {_SO}"
+                  and r.log_after(DUCKER_LOAD_LINE) == f"1.0.0 abi {ducker_abi} from {_DUCKER_SO}")
+            started = r.wait_event(ev_is("started"))
+            check(f"{tag} native-plugins: started with the TS module, nothing stood in or refused",
+                  started is not None and (started.get("timingPlugin") or {}).get("path") == _SO
+                  and r.log_after(STAND_INS) is None and r.first(timing_alarm) is None
+                  and r.first(plugin_alarm) is None)
+            check(f"{tag} native-plugins: reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing")) is not None)
+            for i, (element, abi) in enumerate((("np_demux", ABI), ("np_aw", ABI), ("ducker", ducker_abi),
+                                                ("keep", ducker_abi))):
+                r.send({"cmd": "get_property", "id": f"n{i}", "element": element, "property": "abi"})
+                got = r.wait_event(ev_is("property", id=f"n{i}"))
+                check(f"{tag} native-plugins: {element} is its plugin's element (abi {abi}, got "
+                      f"{got and got.get('value')})", got is not None and got.get("value") == abi)
+            for channel in ("mralignwatch:np_aw", "mrtsdemux:np_demux", "mrducker:ducker"):
+                ev = r.wait_event(ev_is("plugin_event", channel=channel), timeout=5)
+                check(f"{tag} native-plugins: {channel} forwarded",
+                      ev is not None and isinstance(ev.get("payload"), dict) and bool(ev["payload"]))
+            aw = r.wait_event(lambda e: e.get("event") == "plugin_event"
+                              and e.get("channel") == "mralignwatch:np_aw"
+                              and (e.get("payload") or {}).get("state") == "present", timeout=5)
+            demux = r.wait_event(lambda e: e.get("event") == "plugin_event"
+                                 and e.get("channel") == "mrtsdemux:np_demux"
+                                 and (e.get("payload") or {}).get("pes", 0) > 0, timeout=5)
+            check(f"{tag} native-plugins: the 302M input decodes through mrtsdemux into its aligner "
+                  f"(demux {demux and demux['payload'].get('pes')} PES, aligner "
+                  f"{aw and aw['payload'].get('state')})", aw is not None and demux is not None)
+            check(f"{tag} native-plugins: no error", r.first(ev_is("error")) is None)
+        finally:
+            r.close()
+        check(f"{tag} native-plugins: exits 0 after stop ({r.proc.returncode})", r.proc.returncode == 0)
+    finally:
+        shutil.rmtree(empty, ignore_errors=True)
+
+
 def _native_table():
     """native_plugins.cpp's rows as gst_native_plugins.py writes them, the min ABIs resolved."""
     with open(os.path.join(_NATIVE, "native_plugins.h"), encoding="utf-8") as fh:
@@ -706,6 +774,7 @@ if __name__ == "__main__":
     unit_cases(_check)
     mrtshouse_load_case(PY_RUNNER, "py", _check)
     mrducker_load_case(PY_RUNNER, "py", _check)
+    native_plugins_case(PY_RUNNER, "py", _check)
     if os.path.exists(NATIVE_RUNNER):
         mrducker_load_case([NATIVE_RUNNER], "native", _check)
     else:

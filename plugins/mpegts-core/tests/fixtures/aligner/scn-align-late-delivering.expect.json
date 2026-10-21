@@ -1,0 +1,15 @@
+{
+  "scenario": "scn-align-late-delivering",
+  "graph": "3 x 302M -> audio-mixer; in1 delivers 1.5 s behind its content from the start",
+  "pipelines": "mixer3",
+  "seconds": 16,
+  "late_input": "in1",
+  "inputs": {
+    "in0": {"seed": 31},
+    "in1": {"seed": 32, "delay_ms": 1500},
+    "in2": {"seed": 33}
+  },
+  "expect": {
+    "pace_over_ms": 60
+  }
+}

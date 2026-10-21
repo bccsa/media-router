@@ -1,0 +1,21 @@
+{
+  "scenario": "scn-align-absent-rejoin",
+  "graph": "3 x 302M -> audio-mixer; in2's link stalls 2 s, its backlog comes at the end",
+  "pipelines": "mixer3",
+  "seconds": 16,
+  "inputs": {
+    "in0": {"seed": 11},
+    "in1": {"seed": 12},
+    "in2": {"seed": 13, "silence": [7.0, 2.0, "hold"]}
+  },
+  "expect": {
+    "absent_input": "in2",
+    "tick_ms": 20,
+    "absences": {"in0": 0, "in1": 0, "in2": 1},
+    "stale_buffers_min": 1,
+    "stale_ms_min": 1000,
+    "lag_samples": 0,
+    "backlog_gain_max": 0.1,
+    "lateness_delta_ms": 5
+  }
+}

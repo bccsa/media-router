@@ -1,7 +1,7 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
 // rhythms, the pace's rules (seeds, rises only, recomputed on leave, a lateness over wall time
-// that a backlog's drain does not move), a join into a running group and the gap stretches an
-// absent input gets.
+// that a backlog's drain does not move), a join into a running group and the gap stretches or
+// pieces an absent input gets.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -510,6 +510,40 @@ void test_gaps() {
     CHECK("reset: no horizon", !p.has_horizon() && !p.stale(0, MS));
 }
 
+// An audio aggregator's pieces (WI-P2-14 F1): each due when data of that length would leave.
+void test_pieces() {
+    GapPlanner p;
+    GapPlanner::Gap g{};
+    const int64_t pace = 1500 * MS, unit = 10 * MS;
+    CHECK("pieces: now - pace before running time 0: none",
+          !p.take_piece(MS, 50 * MS, unit, nullptr, &g) && !p.has_horizon());
+    CHECK("pieces: no horizon: the first from now - pace, one piece long, at once",
+          p.take_piece(10 * S, pace, unit, nullptr, &g) && g.start_ns == 8500 * MS
+              && g.end_ns == 8510 * MS && p.horizon_ns() == 8510 * MS);
+    CHECK("pieces: the next is not due before now - pace reaches its start",
+          !p.take_piece(10 * S + 9 * MS, pace, unit, nullptr, &g));
+    CHECK("pieces: ... and is due at its start + pace",
+          p.take_piece(10 * S + 10 * MS, pace, unit, nullptr, &g) && g.start_ns == 8510 * MS
+              && g.end_ns == 8520 * MS);
+    p.emitted(8530 * MS);
+    CHECK("pieces: after data, from where it ended, due at that end + pace",
+          !p.take_piece(10 * S + 29 * MS, pace, unit, nullptr, &g)
+              && p.take_piece(10 * S + 30 * MS, pace, unit, nullptr, &g)
+              && g.start_ns == 8530 * MS && g.end_ns == 8540 * MS);
+    std::vector<int64_t> starts;
+    while (p.take_piece(10 * S + 65 * MS, pace, unit, nullptr, &g)) starts.push_back(g.start_ns);
+    CHECK("pieces: a late wake-up takes every due one, one piece at a time",
+          starts == std::vector<int64_t>{8540 * MS, 8550 * MS, 8560 * MS} && g.end_ns == 8570 * MS);
+    const int64_t next = 8575 * MS;
+    CHECK("pieces: never past a queued item",
+          p.take_piece(10 * S + 100 * MS, pace, unit, &next, &g) && g.start_ns == 8570 * MS
+              && g.end_ns == 8575 * MS);
+    CHECK("pieces: ... nor from it", !p.take_piece(10 * S + 100 * MS, pace, unit, &next, &g));
+    CHECK("pieces: a raised pace holds them",
+          !p.take_piece(10 * S + 100 * MS, 2000 * MS, unit, nullptr, &g));
+    CHECK("pieces: no length, none", !p.take_piece(20 * S, 0, 0, nullptr, &g));
+}
+
 }  // namespace
 
 int main() {
@@ -524,5 +558,6 @@ int main() {
     test_registry();
     test_late_join();
     test_gaps();
+    test_pieces();
     return test_summary("align_watch");
 }

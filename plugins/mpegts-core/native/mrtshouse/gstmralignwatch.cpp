@@ -1,7 +1,9 @@
 /* mralignwatch (plan ch. 6 part 4.3, WI-P2-6): a non-live aggregator's input. A FIFO released
- * at running time + the shared pace; silent past W, GAPs at now - pace, and so from the start
- * for an input that joins a running aggregator; LATENCY non-live. A plain GstElement: lists
- * stay lists, every push leaves from the src task, in order. */
+ * at running time + the shared pace; silent past W, gapped, and so from the start for an input
+ * that joins a running aggregator; LATENCY non-live. A plain GstElement: lists stay lists, every
+ * push leaves from the src task, in order. */
+#include <gst/audio/audio.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -47,6 +49,10 @@ enum {
 #define DEFAULT_SILENCE_CEILING (2 * GST_SECOND)
 #define DEFAULT_MAX_SIZE_TIME (5 * GST_SECOND)
 #define DEFAULT_TICK (20 * GST_MSECOND)
+/* GstAudioAggregator's own default output block, for one that reports none. */
+#define DEFAULT_AUDIO_BLOCK (10 * GST_MSECOND)
+/* The longest gap an audio aggregator gets in pieces of its block (aw_push_gap). */
+static const gint64 PIECED_MAX_NS = GST_SECOND;
 /* The `mralignwatch` message's cadence (part 4.3), besides every state change. */
 static const gint64 REPORT_NS = GST_SECOND;
 /* Untimed buffers add no time level: past this many items the FIFO is full anyway (R9). */
@@ -131,6 +137,11 @@ struct Run {
     GstSegment in_segment;
     gint64 pace = 0, lateness = 0;
     guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, full_count = 0;
+    gint64 unit_ns = 0;             // the last data buffer's duration, a gap piece's toward audio
+    /* What the src pad feeds (task thread only): an audio aggregator takes a GAP whole at the
+     * start of its output block, mpegtsmux takes only a GAP's start (WI-P2-1 F2). */
+    enum class Down { unknown, audio, other } down = Down::unknown;
+    gint64 block_ns = 0;            // the audio aggregator's output block
 };
 
 #define GST_TYPE_MRALIGNWATCH (gst_mralignwatch_get_type())
@@ -456,6 +467,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
     } else if (clocked && it.timed) {
         aw_observe(self, now, it.lateness);
     }
+    if (!is_list && it.timed && it.end > it.start) r.unit_ns = it.end - it.start;
     it.bytes = is_list ? gst_buffer_list_calculate_size(GST_BUFFER_LIST_CAST(it.obj))
                        : gst_buffer_get_size(GST_BUFFER_CAST(it.obj));
 
@@ -712,6 +724,49 @@ static void aw_prime_src(GstMrAlignWatch* self) {
     }
 }
 
+/* The element our src pad feeds, through ghost pads (a live branch's bin); NULL: unlinked. */
+static GstElement* aw_downstream(GstMrAlignWatch* self) {
+    GstPad* pad = gst_pad_get_peer(self->srcpad);
+    for (int hop = 0; pad && hop < 16; hop++) {
+        GstPad* next = NULL;
+        if (GST_IS_GHOST_PAD(pad)) {   // a bin's sink: what it targets inside
+            next = gst_ghost_pad_get_target(GST_GHOST_PAD(pad));
+        } else if (GST_IS_PROXY_PAD(pad)) {   // the inside of a bin's src: what that feeds
+            if (GstProxyPad* ghost = gst_proxy_pad_get_internal(GST_PROXY_PAD(pad))) {
+                next = gst_pad_get_peer(GST_PAD(ghost));
+                gst_object_unref(ghost);
+            }
+        } else {
+            GstElement* el = gst_pad_get_parent_element(pad);
+            gst_object_unref(pad);
+            return el;
+        }
+        gst_object_unref(pad);
+        pad = next;
+    }
+    if (pad) gst_object_unref(pad);
+    return NULL;
+}
+
+/* Task thread, not under the lock: what the src pad feeds, learnt once it feeds something. */
+static void aw_learn_downstream(GstMrAlignWatch* self) {
+    Run& r = *self->run;
+    if (r.down != Run::Down::unknown) return;
+    GstElement* el = aw_downstream(self);
+    if (!el) return;
+    if (GST_IS_AUDIO_AGGREGATOR(el)) {
+        guint64 block = 0;
+        g_object_get(el, "output-buffer-duration", &block, NULL);
+        r.block_ns = std::max<gint64>(block ? (gint64)block : DEFAULT_AUDIO_BLOCK, GST_MSECOND);
+        r.down = Run::Down::audio;
+    } else {
+        r.down = Run::Down::other;
+    }
+    GST_DEBUG_OBJECT(self, "feeds %s%s", GST_ELEMENT_NAME(el),
+                     r.down == Run::Down::audio ? ", an audio aggregator" : "");
+    gst_object_unref(el);
+}
+
 /* The segment downstream holds, to place running times; false when none is TIME. */
 static bool aw_out_segment(GstMrAlignWatch* self, GstSegment* seg) {
     GstEvent* ev = gst_pad_get_sticky_event(self->srcpad, GST_EVENT_SEGMENT, 0);
@@ -721,9 +776,9 @@ static bool aw_out_segment(GstMrAlignWatch* self, GstSegment* seg) {
     return seg->format == GST_FORMAT_TIME;
 }
 
-/* [start, end) of running time as a GAP, then a zero-length GAP at its end: an aggregator
- * takes a GAP at its start, and only the next item carries it to the end (WI-P2-1 F2). A
- * refused GAP is no fault: a flush stops the task by itself. */
+/* [start, end) of running time as GAPs; a refused one is no fault (a flush stops the task by
+ * itself). An aggregator takes a GAP at its start (WI-P2-1 F2): toward an audio one, pieces of at
+ * most its block; elsewhere one GAP and a zero-length one at its end, which carries it there. */
 static void aw_push_gap(GstMrAlignWatch* self, gint64 start, gint64 end) {
     if (!self->run->primed) {   // once per stream: the caps queries are not free
         aw_prime_src(self);
@@ -731,11 +786,20 @@ static void aw_push_gap(GstMrAlignWatch* self, gint64 start, gint64 end) {
     }
     GstSegment seg;
     if (!aw_out_segment(self, &seg)) return;
-    const guint64 s = gst_segment_position_from_running_time(&seg, GST_FORMAT_TIME, start);
-    const guint64 e = gst_segment_position_from_running_time(&seg, GST_FORMAT_TIME, end);
-    if (!GST_CLOCK_TIME_IS_VALID(s) || !GST_CLOCK_TIME_IS_VALID(e) || e < s) return;
-    if (e > s) gst_pad_push_event(self->srcpad, gst_event_new_gap(s, e - s));
-    gst_pad_push_event(self->srcpad, gst_event_new_gap(e, 0));
+    const Run& r = *self->run;
+    /* A fence would cost an audio aggregator one more block (WI-P2-14 F1); past a second (a
+     * content jump), that block costs less than a GAP per block. */
+    const bool pieces = r.down == Run::Down::audio && end - start <= PIECED_MAX_NS;
+    for (gint64 a = start;;) {
+        const gint64 b = pieces ? std::min(end, a + r.block_ns) : end;
+        const guint64 s = gst_segment_position_from_running_time(&seg, GST_FORMAT_TIME, a);
+        const guint64 e = gst_segment_position_from_running_time(&seg, GST_FORMAT_TIME, b);
+        if (!GST_CLOCK_TIME_IS_VALID(s) || !GST_CLOCK_TIME_IS_VALID(e) || e < s) return;
+        if (e > s) gst_pad_push_event(self->srcpad, gst_event_new_gap(s, e - s));
+        if (!pieces) gst_pad_push_event(self->srcpad, gst_event_new_gap(e, 0));
+        if (b >= end) return;
+        a = b;
+    }
 }
 
 /* A flow return of a push, under the lock: anything but OK stops the task. */
@@ -917,8 +981,21 @@ static void aw_report(GstMrAlignWatch* self, gint64 now, guint* pending) {
     }
 }
 
-/* Under the lock, clocked: silence -> absent; this tick's gap. Returns the gap to push (out of
- * the lock) in *gap. */
+/* Under the lock: the input is gapped, being sparse, absent, held at EOS or joining a running
+ * aggregator (gapped while it waits, so the others never stall on it). */
+static bool aw_gapped(const Run& r) {
+    if (r.eos_out) return false;
+    return r.sparse || r.eos_held || (r.member.late && r.state == AwState::waiting) ||
+           r.state == AwState::absent;
+}
+
+/* Gaps toward an audio aggregator go as the data would (WI-P2-14 F1). */
+static bool aw_paced_gaps(const Run& r) {
+    return r.down == Run::Down::audio && !r.sparse;
+}
+
+/* Under the lock, clocked: silence -> absent; the gap due now, to push out of the lock: toward
+ * an audio aggregator the input's buffer length at its start + pace, else to now - pace. */
 static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
                      mrts::GapPlanner::Gap* gap) {
     Run& r = *self->run;
@@ -945,9 +1022,7 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
                             w / GST_MSECOND);
         }
     }
-    /* Joined a running aggregator: gapped while it waits, so the others never stall on it. */
-    const bool joining = r.member.late && r.state == AwState::waiting;
-    if (!(r.sparse || r.eos_held || joining || r.state == AwState::absent)) return false;
+    if (!aw_gapped(r)) return false;
     const Item* next = nullptr;
     for (const Item& it : r.fifo)
         if (it.timed) {
@@ -955,7 +1030,11 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
             break;
         }
     const gint64 next_start = next ? next->start : 0;
-    if (!r.planner.take(now, r.pace, next ? &next_start : nullptr, gap)) return false;
+    const gint64* nx = next ? &next_start : nullptr;
+    const gint64 piece = r.unit_ns > 0 ? std::max<gint64>(r.unit_ns, GST_MSECOND) : r.block_ns;
+    if (!(aw_paced_gaps(r) ? r.planner.take_piece(now, r.pace, piece, nx, gap)
+                           : r.planner.take(now, r.pace, nx, gap)))
+        return false;
     if (gap->end_ns > gap->start_ns) r.gaps++;
     r.discont = true;
     return true;
@@ -966,6 +1045,7 @@ static void aw_loop(gpointer data) {
     guint pending = 0;
     Snap snap, late_snap;
     LateCue late;
+    aw_learn_downstream(self);
     g_mutex_lock(&self->lock);
     Run& r = *self->run;
     if (self->srcresult != GST_FLOW_OK) {
@@ -1004,22 +1084,36 @@ static void aw_loop(gpointer data) {
 
     if (clocked) {
         mrts::GapPlanner::Gap gap{};
-        if (aw_watch(self, now, &pending, &gap)) {
+        /* Paced gaps: every piece due by now (a late pass catches up); else one gap a tick. */
+        while (self->srcresult == GST_FLOW_OK && aw_watch(self, now, &pending, &gap)) {
             g_mutex_unlock(&self->lock);
             aw_push_gap(self, gap.start_ns, gap.end_ns);
             g_mutex_lock(&self->lock);
             aw_mark_running(self);
+            if (!aw_paced_gaps(r)) break;
         }
     }
 
-    /* Sleep to the head's release or the next tick, whichever is first. */
+    /* A state change is news now, not after the sleep. */
+    if (pending) {
+        snap = aw_snap(self);
+        g_mutex_unlock(&self->lock);
+        aw_post_pending(self, pending, snap);
+        pending = 0;
+        g_mutex_lock(&self->lock);
+    }
+
+    /* Sleep to the head's release, the next paced gap or the next tick, whichever is first. */
     if (self->srcresult == GST_FLOW_OK) {
         const gint64 tick = (gint64)self->tick.load(std::memory_order_relaxed);
         GstClock* clock = clocked ? gst_element_get_clock(GST_ELEMENT_CAST(self)) : NULL;
         if (clock) {
             gint64 deadline = now + tick;
-            if (!r.fifo.empty() && r.fifo.front().timed)
-                deadline = std::min(deadline, r.fifo.front().start + r.pace);
+            if (!r.fifo.empty())   // untimed: it came in while we posted, due at once
+                deadline = r.fifo.front().timed
+                               ? std::min(deadline, r.fifo.front().start + r.pace) : now;
+            else if (aw_paced_gaps(r) && aw_gapped(r) && r.planner.has_horizon())
+                deadline = std::min(deadline, r.planner.horizon_ns() + r.pace);
             const GstClockTime at = gst_element_get_base_time(GST_ELEMENT_CAST(self)) +
                                     (GstClockTime)std::max<gint64>(deadline, 0);
             GstClockID id = gst_clock_new_single_shot_id(clock, at);
@@ -1035,9 +1129,7 @@ static void aw_loop(gpointer data) {
             g_cond_wait(&self->item_added, &self->lock);
         }
     }
-    if (pending) snap = aw_snap(self);
     g_mutex_unlock(&self->lock);
-    if (pending) aw_post_pending(self, pending, snap);
 }
 
 static gboolean aw_src_activate_mode(GstPad* pad, GstObject* parent, GstPadMode mode,

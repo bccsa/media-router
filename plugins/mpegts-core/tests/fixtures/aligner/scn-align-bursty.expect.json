@@ -1,0 +1,15 @@
+{
+  "scenario": "scn-align-bursty",
+  "graph": "H.264 + AAC in 250 ms bursts (a transcoder rendition's rhythm) and Opus at 32 kbit/s -> mpegts-muxer",
+  "pipelines": "muxBursty",
+  "seconds": 60,
+  "inputs": {
+    "burst0": {"generator": "h264-aac", "burst_ms": 250, "routes": {"demux_0_video": "video", "demux_0_audio": "audio"}},
+    "burst1": {"generator": "opus-32k", "routes": {"demux_1_audio": "audio"}}
+  },
+  "expect": {
+    "floor_ms": 100,
+    "ceiling_ms": 2000,
+    "w_tolerance": 0.03
+  }
+}

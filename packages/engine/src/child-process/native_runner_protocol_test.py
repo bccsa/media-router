@@ -1257,127 +1257,24 @@ def test_video_gates():
         r.kill()
 
 
-# --------------------------------------------------------------------------- L: live input branches (#787)
-def _drain_timeout_warning(ev):
-    return ev.get("event") == "warning" and "EOS drain timed out" in str(ev.get("message", ""))
-
-
+# --------------------------------------------------------------------------- L: live input branches (#787, WI-P2-14)
 def test_live_input_branches():
-    """An aggregator sink gains and loses input branches on its running
-    pipeline (`bus_input_add` / `bus_input_remove`), including a branch with a
-    delayed demuxer link, without a rebuild; and `eosDrain: false` lets a
-    force-live mixer stop without the 6 s drain stall."""
-    if Gst.ElementFactory.find("avenc_s302m") is None or Gst.ElementFactory.find("tsdemux") is None:
-        print("SKIP L — avenc_s302m / tsdemux unavailable")
-        return
-    caps = "audio/x-raw,rate=48000,channels=2"
-    tone = f"audiotestsrc is-live=true ! audioconvert ! {caps} ! queue"
-    mixer = ("audiomixer name=mixin force-live=true latency=100000000"
-             " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
-             " ! identity name=mixin_out sync=true ! level name=lvl post-messages=true interval=100000000"
-             " ! fakesink sync=false")
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": f"{mixer}  ( name=mixin_in_a {tone} ) ! mixin.sink_0",
-                "eosDrain": False})
-        check("L reaches PLAYING with one bin branch", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        check("L VU flows from the start branch", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
+    """Plan ch. 6 part 7.3 case L, native: audio-mixer's own start and its own live branch
+    (mrtsdemux, then mralignwatch, into the aligned mixer) from fixtures/aligner/pipelines.json;
+    a source added and removed on the running mixer, mixed at PES - 1 h from its first buffer with
+    no runner retime. The case is gst_live_inputs_test.py's, which runs it on the python runner."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import live_aligned_case
+    live_aligned_case([_BIN], "native", check)
 
-        # Plain branch added live.
-        r.send({"cmd": "bus_input_add", "id": "a1", "element": "mixin", "name": "mixin_in_b",
-                "description": "audiotestsrc is-live=true freq=880 ! audioconvert ! " + caps + " ! queue"})
-        check("L bus_input_add -> bus_input_add_done", r.wait_event(ev_is("bus_input_add_done", id="a1")) is not None)
-        r.send({"cmd": "get_property", "id": "p1", "element": "mixin_in_b", "property": "name"})
-        p = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p1")
-        check("L the added bin is in the pipeline under its name", p is not None and p.get("event") == "property")
 
-        # A branch whose demuxer link is delayed (302M over TS through tsdemux).
-        demux_branch = ("audiotestsrc is-live=true ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2"
-                        " ! avenc_s302m strict=experimental ! mpegtsmux ! tsdemux name=mixin_demux_c latency=0"
-                        " ! audio/x-smpte-302m ! avdec_s302m ! audioconvert ! audioresample ! " + caps + " ! queue")
-        r.send({"cmd": "bus_input_add", "id": "a2", "element": "mixin", "name": "mixin_in_c", "description": demux_branch})
-        check("L demuxer-headed branch added live", r.wait_event(ev_is("bus_input_add_done", id="a2")) is not None)
-        time.sleep(1.0)
-        check("L no error after the live adds", not r.has_event(ev_is("error")))
-
-        # A duplicate add is idempotent (the branch IS the requested state —
-        # the producer-PLAYING re-link and the connection re-apply can race for
-        # one edge); an unknown aggregator is a command error, never a fault.
-        r.send({"cmd": "bus_input_add", "id": "a3", "element": "mixin", "name": "mixin_in_b",
-                "description": "audiotestsrc is-live=true ! queue"})
-        check("L duplicate branch add is a no-op done", r.wait_event(ev_is("bus_input_add_done", id="a3")) is not None)
-        r.send({"cmd": "bus_input_add", "id": "a4", "element": "nope", "name": "mixin_in_d",
-                "description": "audiotestsrc is-live=true ! queue"})
-        check("L unknown aggregator -> command_error", r.wait_event(ev_is("command_error", id="a4")) is not None)
-
-        # Containment: a branch whose source dies (here: a unixfdsrc on a
-        # socket nobody serves) is dropped and reported — never a pipeline
-        # error. The mix keeps running on its other inputs.
-        tmp = tempfile.mkdtemp(prefix="mrtest-")
-        dead = os.path.join(tmp, "dead.sock")
-        r.send({"cmd": "bus_input_add", "id": "a5", "element": "mixin", "name": "mixin_in_dead",
-                "description": f"unixfdsrc socket-path={dead} ! queue"})
-        lost = r.wait_event(lambda e: e.get("event") == "input_branch_lost" and e.get("name") == "mixin_in_dead",
-                            timeout=5)
-        check("L dead-producer branch is reported as input_branch_lost", lost is not None)
-        check("L ...and is NOT a pipeline error", not r.has_event(ev_is("error")))
-        r.send({"cmd": "get_property", "id": "p3", "element": "mixin_in_dead", "property": "name"})
-        p3 = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p3")
-        check("L dropped branch is gone from the pipeline", p3 is not None and p3.get("event") == "command_error")
-        check("L mix still flowing after the drop (VU)", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
-        os.rmdir(tmp)
-
-        # Live removes: the start-time bin, then a live-added one.
-        r.send({"cmd": "bus_input_remove", "id": "r1", "element": "mixin", "name": "mixin_in_a"})
-        check("L start-time bin removed live", r.wait_event(ev_is("bus_input_remove_done", id="r1")) is not None)
-        r.send({"cmd": "bus_input_remove", "id": "r2", "element": "mixin", "name": "mixin_in_c"})
-        check("L demuxer-headed bin removed live", r.wait_event(ev_is("bus_input_remove_done", id="r2")) is not None)
-        r.send({"cmd": "get_property", "id": "p2", "element": "mixin_in_a", "property": "name"})
-        p2 = r.wait_event(lambda e: e.get("event") in ("property", "command_error") and e.get("id") == "p2")
-        check("L removed bin is gone from the pipeline", p2 is not None and p2.get("event") == "command_error")
-        r.send({"cmd": "bus_input_remove", "id": "r3", "element": "mixin", "name": "mixin_in_a"})
-        check("L removing a branch that is already gone is a no-op done",
-              r.wait_event(ev_is("bus_input_remove_done", id="r3")) is not None)
-        time.sleep(1.0)
-        check("L pipeline still alive after removes (VU)", r.wait_event(ev_is("vu_data"), timeout=3) is not None)
-        check("L no error after the live removes", not r.has_event(ev_is("error")))
-
-        # eosDrain:false — a force-live mixer never completes an EOS drain;
-        # without the opt-out this stop would stall EOS_DRAIN_TIMEOUT_MS.
-        t0 = time.monotonic()
-        code = r.stop_and_wait()
-        took = time.monotonic() - t0
-        check("L exits 0 after stop", code == 0)
-        check(f"L eosDrain:false stops a force-live mixer promptly ({took:.1f}s)", took < 3.0)
-        check("L no drain timeout warning with eosDrain:false", not r.has_event(_drain_timeout_warning))
-    finally:
-        r.kill()
-
-    # Control: the default (drain) on the real producer shape — force-live mix
-    # into the 302M encode and a bus tee with no edge, i.e. no sink element to
-    # post EOS — stalls the full timeout (the .103 measurement behind #787).
-    producer = ("audiomixer name=mixin force-live=true latency=200000000"
-                " start-time-selection=first ! capsfilter name=mixin_caps caps=\"" + caps + "\""
-                " ! identity name=mixin_out sync=true ! audioconvert ! audioresample"
-                " ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m strict=experimental"
-                " ! mpegtsmux latency=0 alignment=7"
-                " ! capssetter caps=\"video/mpegts,systemstream=true,packetsize=188\" replace=true"
-                " ! tee name=busout_41000 allow-not-linked=true"
-                f"  ( name=mixin_in_a {tone} ) ! mixin.sink_0")
-    r = RunnerProc()
-    try:
-        r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": producer})
-        check("L control reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        time.sleep(1.0)
-        t0 = time.monotonic()
-        r.stop_and_wait(timeout=15)
-        took = time.monotonic() - t0
-        check(f"L default drain stalls a force-live mixer stop ({took:.1f}s)",
-              took >= 5.0 and r.has_event(_drain_timeout_warning))
-    finally:
-        r.kill()
+def test_aligner_absent():
+    """Plan ch. 6 part 7.3 case aligner-absent, native (gst_live_inputs_test.py runs it on the
+    python runner): one of three mixer inputs stops 2 s; the mix goes on, its mralignwatch absent
+    then present with its stale backlog counted, no error."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import aligner_absent_case
+    aligner_absent_case([_BIN], "native", check)
 
 
 # --------------------------------------------------------------------------- M: transform producer retime (2026-10-08)
@@ -1947,7 +1844,15 @@ def test_mux_aligners_dark():
 
 
 # --------------------------------------------------------------------------- P: mpegts-muxer inputs retimed (2026-10-08)
-def _mux_run(argv, feed, tag, align, fx, ts_psi):
+# Input 2 of case P (WI-P2-14): a transcoder's identity egress with KLV cues. Its KLV goes into the
+# mux; its video, teletext and DVB pads are sunk.
+_P_KLV_BRANCHES = (" demux_2. ! meta/x-klv ! queue ! mux."
+                   " demux_2. ! video/x-h264 ! fakesink sync=false async=false"
+                   " demux_2. ! application/x-teletext ! fakesink sync=false async=false"
+                   " demux_2. ! subpicture/x-dvb ! fakesink sync=false async=false")
+
+
+def _mux_run(argv, feed, tag, align, fx, ts_psi, extra=_P_KLV_BRANCHES):
     """One runner hosting the mpegts-muxer's shape — N `unixfdsrc → tsdemux
     name=demux_<i>` inputs into one live `mpegtsmux` (the module's latency
     properties) → bus tee — fed `feed` = [(arrival, input, bytes, stamp)] in
@@ -1982,6 +1887,7 @@ def _mux_run(argv, feed, tag, align, fx, ts_psi):
                 "pipeline": f"{heads}"
                             ' demux_0. ! audio/mpeg ! capssetter caps="audio/mpeg,framed=(boolean)true" ! queue ! mux.'
                             ' demux_1. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.'
+                            + (extra if n_in > 2 else "") +
                             " mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7"
                             f' ! capssetter caps="{caps}" replace=true ! tee name=busout_41300 allow-not-linked=true',
                 "alignBranchesToStamps": align})
@@ -2041,10 +1947,12 @@ def test_mux_inputs_retime():
     BOTH runners: a passthrough AAC leg (a splitter's: anchored stamps, the VBR lead
     swinging 0.25–0.75 s, a 427 s rewind, the source 40 ppm slow) and a transcoded
     video leg (a transform producer's identity egress: K = −3600 s, B-frames) into one
-    production-shaped live mux. Every access unit must leave on its content time, so
-    audio and video agree; per PID the output stays continuous and monotonic and
-    mpegtsmux never ignores a DTS going backward; each demux keeps its own K, hold
-    and epochs. Mux mode on the same feed is the control that fails."""
+    production-shaped live mux, and since WI-P2-14 that producer's egress with KLV cues as a
+    third input, its private pads retimed (`privatePads`). Every access unit must leave on its
+    content time, so audio and video agree, and every cue at its own PES PTS; per PID the
+    output stays continuous and monotonic and mpegtsmux never ignores a DTS going backward;
+    each demux keeps its own K, hold and epochs. Mux mode on the same feed is the control
+    that fails."""
     for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP P — {el} unavailable")
@@ -2054,20 +1962,38 @@ def test_mux_inputs_retime():
     import ts_psi  # noqa: E402
     py = ["env", "PYTHONPATH=" + os.path.join(_PLUGINS, "mpegts-core", "py"), sys.executable,
           os.path.join(_HERE, "gst-pipeline-runner.py")]
-    producer = {"demuxes": ["demux_0", "demux_1"], "transformProducer": True}
+    producer = {"demuxes": ["demux_0", "demux_1", "demux_2"], "transformProducer": True,
+                "privatePads": True}
     wrap = 1 << 33
 
     def fold(d):
         d %= wrap
         return d - wrap if d > wrap // 2 else d
 
-    # Input 0 the splitter's AAC leg, input 1 the transcoder's video (K = −3600 s).
+    # Input 0 the splitter's AAC leg, input 1 the transcoder's video (K = −3600 s), input 2 that
+    # transcoder's egress with KLV cues (WI-P2-14) on the same content timeline.
     feed, targets, k_splitter = fx.mux_inputs(70, jump_at_s=40.0)
+    a_house, a_pts, rate = targets[(fx.AUDIO_PID, 0)], fx.DTS0 + fx.FRAME, 1.0 - 40 / 1e6
+    cues, _cue_targets = fx.cue_egress(70, lambda p: a_house + int(fx.ns(p - a_pts) / rate), start_s=2.2)
+    feed = sorted(feed + [(t, 2, d, st) for d, st, t in cues], key=lambda e: (e[0], e[1]))
+    klv_in = {}
+    for data, _st, _t in cues:
+        for pkt in ts_psi.iter_packets(data):
+            pts = ts_psi.read_pes_pts(pkt)
+            if pts is not None and ts_psi.ts_pid(pkt) == fx.KLV_PID:
+                klv_in[fx.au_key(pkt[ts_psi.payload_offset(pkt):][14:])] = pts
+
+    def klv_off(rows):
+        """Per KLV cue written: output PES PTS - its input PES PTS, in 90 kHz ticks."""
+        return {(pid, s): fold(p - klv_in[(pid, s)]) for pid, s, p, _d in rows
+                if pid == fx.KLV_PID and (pid, s) in klv_in}
 
     def judge(rows):
         """Per AU: output PES (− 1 h) against its content time, ms; and the content span, s."""
         err = {fx.AUDIO_PID: [], fx.VIDEO_PID: []}
         for pid, s, p, _d in rows:
+            if pid not in err:
+                continue
             err[pid].append(fold(p - fx.MUX_BASE - targets[(pid, s)] * 9 // 100000) / 90.0)
         span = (max(targets[(fx.AUDIO_PID, s)] for pid, s, _p, _d in rows if pid == fx.AUDIO_PID)
                 - min(targets[(fx.AUDIO_PID, s)] for pid, s, _p, _d in rows if pid == fx.AUDIO_PID)) / 1e9
@@ -2091,6 +2017,8 @@ def test_mux_inputs_retime():
               and max(map(abs, every)) <= 5 and max(every) - min(every) <= 10)
         last, serials, back_ms = {}, {}, 0.0
         for pid, s, p, d in rows:
+            if pid not in (fx.AUDIO_PID, fx.VIDEO_PID):
+                continue
             t = p if d is None else d
             if pid in last:
                 back_ms = max(back_ms, fold(last[pid] - t) / 90.0)
@@ -2101,20 +2029,26 @@ def test_mux_inputs_retime():
               f"DTS going backward ({back} warnings)",
               back_ms <= 0 and back == 0 and len(serials) == 2
               and all(v == list(range(v[0], v[0] + len(v))) for v in serials.values()))
-        k0, k1 = k_of(lines, "demux_0"), k_of(lines, "demux_1")
+        off = klv_off(rows)
+        check(f"P {tag}: the KLV input's cues leave the mux at their own PES PTS, unchanged ({len(off)} "
+              f"of {len(klv_in)}, worst {max(map(abs, off.values()), default=None)} ticks)",
+              len(klv_in) > 60 and len(off) == len(klv_in) and all(t == 0 for t in off.values()))
+        k0, k1, k2 = k_of(lines, "demux_0"), k_of(lines, "demux_1"), k_of(lines, "demux_2")
         check(f"P {tag}: each demux holds its own mapping — demux_0 K={k0} (the splitter's), "
-              f"demux_1 K={k1} (identity, −3600 s); only demux_0 opened a stamp epoch at the rewind",
+              f"demux_1 K={k1} and demux_2 K={k2} (identity, −3600 s); only demux_0 opened a stamp "
+              f"epoch at the rewind",
               k0 is not None and abs(k0 - k_splitter) < 1_000_000 and k1 == -3_600_000_000_000
+              and k2 == -3_600_000_000_000
               and any(l.startswith("demux_0 retime: pid=0x101 PTS discontinuity -42") for l in lines)
               and any(l.startswith("demux_0 retime: epoch #1 on its stamps") for l in lines)
-              and not any(l.startswith("demux_1") and "discontinuity" in l for l in lines))
+              and not any(l.startswith(("demux_1", "demux_2")) and "discontinuity" in l for l in lines))
         # Two streaming threads log: compare each demux's own sequence, not the interleave.
-        logs[tag] = {d: [l for l in lines if l.startswith(d + " ")] for d in ("demux_0", "demux_1")}
+        logs[tag] = {d: [l for l in lines if l.startswith(d + " ")] for d in ("demux_0", "demux_1", "demux_2")}
     check("P both twins log the same retime lines per demux, word for word", logs["native"] == logs["python"])
     if logs["native"] != logs["python"]:
         print("    native:", logs["native"], "\n    python:", logs["python"])
-    rows0, _l0, back0 = _mux_run(None, feed, "native mux-mode control", {"demuxes": ["demux_0", "demux_1"]},
-                                 fx, ts_psi)
+    rows0, _l0, back0 = _mux_run(None, feed, "native mux-mode control",
+                                 {"demuxes": ["demux_0", "demux_1", "demux_2"]}, fx, ts_psi)
     err0, _span0 = judge(rows0)
     every0 = err0[fx.AUDIO_PID] + err0[fx.VIDEO_PID]
     check(f"P control: the same feed in mux mode leaves audio and video "
@@ -2139,6 +2073,16 @@ def test_mrtshouse_load():
     sys.path.insert(0, _HERE)
     from gst_native_plugins_test import mrtshouse_load_case
     mrtshouse_load_case([_BIN], "mrtshouse-load native", check, vectors=True)
+
+
+# --------------------------------------------------------------------------- native-plugins (WI-P2-14)
+def test_native_plugins():
+    """Plan ch. 6 part 7.3: mralignwatch and mrtsdemux of libgstmrtshouse.so, mrducker and
+    mrptskeep of libgstmrducker.so, loaded and used in one module by this binary; the scenario is
+    gst_native_plugins_test.py's, which runs it on the python runner."""
+    sys.path.insert(0, _HERE)
+    from gst_native_plugins_test import native_plugins_case
+    native_plugins_case([_BIN], "native", check)
 
 
 # --------------------------------------------------------------------------- ingest-restamp (WI-P1-4)
@@ -2177,6 +2121,7 @@ test_runner_hooks_concurrent()
 test_deinterlace_guard_hook()
 test_video_gates()
 test_live_input_branches()
+test_aligner_absent()
 test_live_remove_start_time_branch()
 test_transform_producer_align()
 test_cue_pads_retime()
@@ -2185,6 +2130,7 @@ test_mux_aligners_dark()
 test_mux_inputs_retime()
 test_lateness_taps()
 test_mrtshouse_load()
+test_native_plugins()
 test_ingest_restamp()
 
 if _failures:

@@ -4,7 +4,8 @@ audiomixer and mpegtsmux. Live appsrc inputs are fed at real time on the house c
 base_time 0), as WI-P2-1's rig, each buffer k at content time k x 10 ms arriving `lag` late.
 
 Cases: (1) a 1.5 s late but delivering input: nothing dropped, no absence; (2) a silent input,
-and one that never delivers: absent within W + tick, gaps at now - pace, the aggregator goes on;
+and one that never delivers: absent within W + tick, the aggregator goes on, gapped as its data
+would come toward audiomixer (no fence, the mix no later) and to now - pace toward mpegtsmux;
 (3) rejoin: stale buffers discarded and counted, present again, the pace untouched by them,
 (3b) also when the stale backlog comes at real time, (3c) and back later than before, read from
 its own arrivals; (4) an input whose lateness falls is still released at the pace; (5) releasing
@@ -12,9 +13,10 @@ a pad lowers the pace; (6) hold-on-eos; (7) a full queue blocks upstream, full-c
 dropped; (8) sparse: a late cue is forwarded at its own PTS with a message and the pace raised.
 Plus the defaults and the LATENCY answer, and the caps a dark input's gaps go out under: (2c) a
 302M-shaped branch, (2d) 8 channels, (2e) every input dark, (2f) a branch dark at start that
-comes up, (8b) a sparse stream whose caps come with its first cue; (11)-(11e) an input added
-while playing (late, dark, on time, seeded, into gaps alone) is gapped while it waits, so the
-mixer never stalls on it; and (13) a backlog as an input's first data, waited for, the pace from
+comes up, (2g) a hole the input reports, on in block-long pieces (past a second whole, fenced),
+(8b) a sparse stream whose caps come with its first cue; (11)-(11e) an input added while playing
+(late, dark, on time, seeded, into gaps alone) is gapped while it waits, so the mixer never
+stalls on it; and (13) a backlog as an input's first data, waited for, the pace from
 what follows it (an upstream aligner's start, WI-P2-8 B2), (14) inputs held by a paced output
 still report each second.
 Skips (exit 0) without GStreamer, the elements or the built plugin."""
@@ -124,6 +126,17 @@ def payload(i, k):
 def median(v):
     v = sorted(v)
     return v[len(v) // 2] if v else None
+
+
+def in_ms(v):
+    return None if v is None else round(v / MS, 1)
+
+
+def out_lateness(r, a_ms, b_ms):
+    """Median of when each mix output of content a..b ms left the mixer, after its start (ns)."""
+    with r.lock:
+        out = list(r.out)
+    return median([t - pts for t, pts, nf, _d, _c in out if nf and r.at(a_ms) <= pts < r.at(b_ms)])
 
 
 class Rig:
@@ -475,16 +488,33 @@ for kind in KINDS:
           since is not None and w <= since <= w + 20 * MS + SLACK)
     gaps = r.released(1, "gap")
     pace = r.prop(1, "pace")
-    off = [(g[1] - pace) - (g[2] + g[3]) for g in gaps if absent and g[1] > absent[0] + 100 * MS]
-    check(f"{kind}: every tick a GAP reaching now - pace ({pace / MS:.0f} ms; worst "
-          f"{max(off, default=-1) / MS:.1f} ms behind, {len(off)} gaps)",
-          abs(pace - 300 * MS) <= SLACK and len(off) >= 30 and max(off) <= 20 * MS + SLACK
-          and min(off) >= -2 * MS)
-    fences = [g for g in gaps if g[3] == 0]
-    check(f"{kind}: each GAP is followed by a zero-length one at its end (WI-P2-1 F2)",
-          len(fences) >= len(gaps) // 2 and all(
-              gaps[j + 1][2] == gaps[j][2] + gaps[j][3] and gaps[j + 1][3] == 0
-              for j in range(len(gaps) - 1) if gaps[j][3]))
+    later = [g for g in gaps if absent and g[1] > absent[0] + 100 * MS]
+    if mux:
+        off = [(g[1] - pace) - (g[2] + g[3]) for g in later]
+        check(f"{kind}: every tick a GAP reaching now - pace ({pace / MS:.0f} ms; worst "
+              f"{max(off, default=-1) / MS:.1f} ms behind, {len(off)} gaps)",
+              abs(pace - 300 * MS) <= SLACK and len(off) >= 30 and max(off) <= 20 * MS + SLACK
+              and min(off) >= -2 * MS)
+        fences = [g for g in gaps if g[3] == 0]
+        check(f"{kind}: each GAP is followed by a zero-length one at its end (WI-P2-1 F2)",
+              len(fences) >= len(gaps) // 2 and all(
+                  gaps[j + 1][2] == gaps[j][2] + gaps[j][3] and gaps[j + 1][3] == 0
+                  for j in range(len(gaps) - 1) if gaps[j][3]))
+    else:
+        # As the data would have come (WI-P2-14 F1): a buffer's length at its start + pace.
+        off = [g[1] - pace - g[2] for g in later]
+        check(f"{kind}: a GAP per 10 ms buffer, each sent at its start + pace ({pace / MS:.0f} ms; "
+              f"{min(off, default=0) / MS:.1f} to {max(off, default=0) / MS:.1f} ms after it, "
+              f"{len(off)} gaps)",
+              abs(pace - 300 * MS) <= SLACK and len(off) >= 100 and min(off) >= -2 * MS
+              and max(off) <= SLACK and all(g[3] == 10 * MS for g in later)
+              and all(b[2] == a[2] + a[3] for a, b in zip(later, later[1:])))
+        check(f"{kind}: no zero-length GAP: an audio aggregator takes each whole at its start, and "
+              f"a fence would cost it a block", not [g for g in gaps if g[3] == 0])
+        before, during = out_lateness(r, 400, 950), out_lateness(r, 1300, 2400)
+        check(f"{kind}: the mix as late while input 1 is absent as before ({in_ms(before)} -> "
+              f"{in_ms(during)} ms)",
+              before is not None and during is not None and abs(during - before) <= 5 * MS)
     if mux:
         check(f"{kind}: the aggregator goes on: input 0's 250 buffers all written, input 1's 100",
               r.pes_ok(0, range(250)) and r.pes_ok(1, range(100)))
@@ -523,8 +553,10 @@ for kind in KINDS:
            1: [("rt", 0, 100, 0), ("at", 2000), ("now", 100, 200), ("rt", 200, 300, 0), ("eos",)]})
     eos = r.wait(lambda: r.eos_at is not None)
     stale, stale_t = r.prop(1, "stale-buffers"), r.prop(1, "stale-time")
+    # Toward audiomixer the first fresh buffer can go too: it comes as the gap for it is due.
     check(f"{kind}: the second's backlog is stale: discarded and counted ({stale} buffers, "
-          f"{stale_t / MS:.0f} ms)", 80 <= stale <= 100 and stale_t == stale * 10 * MS)
+          f"{stale_t / MS:.0f} ms)", 80 <= stale <= (100 if mux else 101)
+          and stale_t == stale * 10 * MS)
     st = [s for _t, s in r.states(1)]
     check(f"{kind}: absent once, then present again (states {st})",
           st[-2:] == ["absent", "present"] and r.prop(1, "absences") == 1
@@ -777,6 +809,46 @@ def out_late(r, a_ms, b_ms):
         return max((t - pts - nf * S // RATE for t, pts, nf, _d, _c in r.out
                     if nf and r.at(a_ms) <= pts < r.at(b_ms)), default=None)
 
+
+print("\n--- audiomixer: (2g) a hole the input reports goes on in pieces, no fence ---")
+# An ingest's gap marker through mrtsdemux: GAP [1, 1.5) s, sent with the data after it, as a
+# restamp does. W (2 s) outlasts the hole, so the GAP alone carries the mixer over it.
+r = Rig("audiomixer", [{}, {"props": {"silence-floor": 2 * S}}])
+r.run({0: [("rt", 0, 300, 300), ("eos",)],
+       1: [("rt", 0, 100, 0), ("at", 1500),
+           ("call", lambda: r.srcs[1].send_event(Gst.Event.new_gap(r.at(1000), 500 * MS))),
+           ("rt", 150, 300, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+gaps = r.released(1, "gap")
+check(f"hole: the GAP went on as 50 pieces of the 10 ms block, none zero-length (got {len(gaps)}, "
+      f"{sorted({g[3] // MS for g in gaps})} ms)",
+      len(gaps) == 50 and all(g[3] == 10 * MS for g in gaps) and gaps[0][2] == r.at(1000)
+      and all(b[2] == a[2] + a[3] for a, b in zip(gaps, gaps[1:])))
+t1500, pace = out_at(r, 1500), r.prop(1, "pace")
+check(f"hole: the block after it out at the pace, no block more for a fence ("
+      f"{in_ms(t1500 - r.at(1500) - pace) if t1500 else None} ms after it)",
+      t1500 is not None and t1500 - r.at(1500) - pace <= 5 * MS)
+check(f"hole: input 0 alone over it, nothing dropped (got {r.spans()})",
+      r.spans() == [(0, 1000, VAL[0] + VAL[1]), (1000, 1500, VAL[0]),
+                    (1500, 3000, VAL[0] + VAL[1])])
+check("hole: input 1 never absent, EOS, no error",
+      r.prop(1, "absences") == 0 and eos and not r.errors)
+r.stop()
+
+# Past a second (a content jump) one GAP and its fence: a block more once, not a GAP a block.
+r = Rig("audiomixer", [{}, {"props": {"silence-floor": 2 * S}}])
+r.run({0: [("rt", 0, 300, 300), ("eos",)],
+       1: [("rt", 0, 100, 0), ("at", 2500),
+           ("call", lambda: r.srcs[1].send_event(Gst.Event.new_gap(r.at(1000), 1500 * MS))),
+           ("rt", 250, 300, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+gaps = [(g[2] - r.at(0), g[3]) for g in r.released(1, "gap")]
+check(f"jump: a 1.5 s GAP went on whole, then its fence (got "
+      f"{[(a // MS, d // MS) for a, d in gaps]})", gaps == [(1000 * MS, 1500 * MS), (2500 * MS, 0)])
+check(f"jump: input 0 alone over it, nothing dropped (got {r.spans()})",
+      r.spans() == [(0, 1000, VAL[0] + VAL[1]), (1000, 2500, VAL[0]),
+                    (2500, 3000, VAL[0] + VAL[1])] and eos and not r.errors)
+r.stop()
 
 # A live add joins a running mixer: the joiner is gapped at the pace while it waits, so the
 # others never stall on it; what it sends before the gaps' end is stale (the rejoin rule).

@@ -230,6 +230,23 @@ bool GapPlanner::take(int64_t now_ns, int64_t pace_ns, const int64_t* next_ns, G
     return true;
 }
 
+bool GapPlanner::take_piece(int64_t now_ns, int64_t pace_ns, int64_t piece_ns,
+                            const int64_t* next_ns, Gap* out) {
+    const int64_t due = now_ns - pace_ns;
+    if (due < 0 || piece_ns <= 0) return false;
+    const int64_t start = has_ ? horizon_ : due;
+    if (start > due) return false;
+    int64_t end = start + piece_ns;
+    if (next_ns) {
+        if (*next_ns <= start) return false;
+        end = std::min(end, *next_ns);
+    }
+    has_ = true;
+    horizon_ = end;
+    *out = Gap{start, end};
+    return true;
+}
+
 void GapPlanner::reset() {
     has_ = false;
     horizon_ = 0;

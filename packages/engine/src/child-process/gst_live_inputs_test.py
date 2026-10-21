@@ -5,12 +5,18 @@
 branch bins (`sources_by_factory` enters declared bins only,
 `forget_sources_in` releases a leaving branch's heads).
 
+Also the python twins of protocol cases L (live input branches) and aligner-absent (plan ch. 6
+part 7.3): `live_aligned_case` and `aligner_absent_case`, which native_runner_protocol_test.py
+runs on the native runner.
+
 Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run:  python3 gst_live_inputs_test.py
 """
 import importlib.util
 import os
+import re
 import sys
+import time
 
 try:
     import gi
@@ -25,6 +31,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core", "py")))
 sys.path.insert(0, _HERE)
 _RUNNER = os.path.join(_HERE, "gst-pipeline-runner.py")
+_PY_RUNNER = [sys.executable, _RUNNER]
 _spec = importlib.util.spec_from_file_location("gst_pipeline_runner", _RUNNER)
 runner = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(runner)
@@ -171,11 +178,277 @@ def test_gate_sees_declared_bins_only():
     source_gate.live_branches = set()
 
 
-test_add_remove()
-test_containment_helpers()
-test_gate_sees_declared_bins_only()
+def _rig():
+    """aligner_rig, or None (numpy or the native plugins missing: the case skips)."""
+    try:
+        import aligner_rig
+    except ImportError as exc:
+        print(f"SKIP — aligner rig unavailable ({exc})")
+        return None
+    so = os.path.join(aligner_rig.PLUGINS, "mpegts-core", "native", "mrtshouse", "libgstmrtshouse.so")
+    if not os.path.exists(so):
+        print(f"SKIP — {so} not built (make native)")
+        return None
+    lack = [e for e in ("avenc_s302m", "avdec_s302m", "mpegtsmux", "audiomixer", "unixfdsrc")
+            if Gst.ElementFactory.find(e) is None]
+    if lack:
+        print(f"SKIP — {', '.join(lack)} unavailable")
+        return None
+    return aligner_rig
 
-if _failures:
-    print(f"\n{len(_failures)} FAILED: {_failures}")
-    sys.exit(1)
-print("All live input branch tests passed.")
+
+def _mix_of(rig, records, t0):
+    pes = rig.pes_of(records)
+    pid = max(pes, key=lambda k: len(pes[k])) if pes else None
+    return rig.Pcm(pes.get(pid, []), t0)
+
+
+def _missing(rig, pcm, content, lo_ns, hi_ns, lag=0):
+    """20 ms blocks of [lo_ns, hi_ns) where `content` is out of the mix (gain under 0.5)."""
+    return [(b, g) for b, g, _e in pcm.presence(content, rig.sample_of(lo_ns), rig.sample_of(hi_ns), lag=lag)
+            if g is None or g < 0.5]
+
+
+def live_aligned_case(argv, tag, check):
+    """Plan ch. 6 part 7.3 case L through `argv`'s runner: audio-mixer's own start (two start-time
+    bins into the aligned mixer, fixtures/aligner/pipelines.json) takes a third 302M source live with
+    the module's branch (mrtsdemux, then mralignwatch) and lets it go. The joiner is mixed at its
+    PES - 1 h from its first buffer, with no runner retime; the kept sources never break."""
+    rig = _rig()
+    if rig is None:
+        return
+    entry = rig.pipelines()["mixer2"]
+    d = rig.SocketDir()
+    cmd = rig.on_socket_dir(entry, d.path)
+    seconds, add_at, rm_at = 12.0, 4.5, 8.5
+    c = {n: rig.Content(seed) for n, seed in (("in0", 61), ("in1", 62), ("in2", 63))}
+    prods = {n: rig.Producer(n, [d.sock(n)], content=c[n], stop_s=seconds,
+                             start_s=add_at - 0.3 if n == "in2" else 0.0) for n in c}
+    r = None
+    got = {}
+    try:
+        t0 = rig.prepare(prods.values())
+        for p in prods.values():
+            p.listen()
+        rig.until(t0 - 700 * rig.MS)        # start the module just before its producers' data
+        r = rig.Runner(argv, env=cmd.get("env"))
+        check(f"L {tag}: the aligned mixer with two start-time bins reaches PLAYING",
+              r.start(cmd["start"]) is not None)
+        r.attach("busout_41011", d.sock("out"))
+        cons = rig.Consumer(d.sock("out"))
+        cons.start()
+        rig.go(prods.values())
+
+        def at(t_s):
+            while rig.now_ns() < t0 + int(t_s * 1e9):
+                time.sleep(0.005)
+        at(add_at)
+        got["add"] = r.request(dict(cmd["add"], cmd="bus_input_add"), "bus_input_add_done")
+        got["add_t"] = rig.now_ns()
+        got["dup"] = r.request(dict(cmd["add"], cmd="bus_input_add"), "bus_input_add_done")
+        got["nope"] = r.request(dict(cmd["add"], cmd="bus_input_add", element="nope", name="mixin_in_x"),
+                                "bus_input_add_done")
+        at(add_at + 1.5)
+        # Containment: a branch whose producer is gone is dropped and reported, never an error.
+        r.request({"cmd": "bus_input_add", "element": "mixin", "name": "mixin_in_dead",
+                   "description": f"unixfdsrc socket-path={d.sock('dead')} ! queue"}, "bus_input_add_done")
+        got["lost"] = r.wait(lambda e: e.get("event") == "input_branch_lost" and e.get("name") == "mixin_in_dead",
+                             timeout=5)
+        at(rm_at)
+        got["rm"] = r.request(dict(cmd["remove"], cmd="bus_input_remove"), "bus_input_remove_done")
+        got["rm_t"] = rig.now_ns()
+        got["rm2"] = r.request(dict(cmd["remove"], cmd="bus_input_remove"), "bus_input_remove_done")
+        for p in prods.values():
+            p.join(30)
+        time.sleep(0.5)
+        errors = r.errors()
+        t_stop = time.monotonic()
+        rc = r.stop()
+        took = time.monotonic() - t_stop
+        cons.stop()
+    finally:
+        for p in prods.values():
+            p.stop()
+        if r is not None:
+            r.kill()
+        d.close()
+
+    def done(k, ev="bus_input_add_done"):
+        return (got.get(k) or (0, {}))[1].get("event") == ev
+    check(f"L {tag}: bus_input_add of the module's own branch -> bus_input_add_done", done("add"))
+    check(f"L {tag}: a duplicate add is a no-op done, an unknown aggregator a command_error",
+          done("dup") and done("nope", "command_error"))
+    check(f"L {tag}: a branch whose producer is gone is input_branch_lost, not a pipeline error",
+          got.get("lost") is not None and not errors)
+    check(f"L {tag}: bus_input_remove -> done, again a no-op done",
+          done("rm", "bus_input_remove_done") and done("rm2", "bus_input_remove_done"))
+    pcm = _mix_of(rig, cons.records, t0)
+    lo_ns, hi_ns = t0 + 500 * rig.MS, t0 + int((seconds - 0.5) * 1e9)
+    lo, hi = rig.sample_of(lo_ns), rig.sample_of(hi_ns)
+    check(f"L {tag}: the mix is continuous across the add and the remove (holes {pcm.holes(lo, hi)[:3]})",
+          pcm.hi > hi and not pcm.holes(lo, hi))
+    for n in ("in0", "in1"):
+        lag, _g = pcm.best_lag(c[n], lo, hi)
+        miss = _missing(rig, pcm, c[n], lo_ns, hi_ns)
+        check(f"L {tag}: kept source {n} in every block, at its content time (lag {lag}, missing {miss[:3]})",
+              lag == 0 and not miss)
+    # The joiner's first buffer: the first PES its producer sent after the branch connected.
+    first = next((pes["pts"] for a, _st, data in prods["in2"].delivered if a >= got.get("add_t", 0)
+                  for lst in rig.pes_of([(a, 0, 0, data)]).values() for pes in lst
+                  if pes["pts"] is not None), None)
+    first_ns = rig.house_of(rig.sample_of_pts(first, t0)) if first is not None else None
+    rm_ns = got.get("rm_t", hi_ns)
+    lag, _g = pcm.best_lag(c["in2"], rig.sample_of(first_ns or lo_ns), rig.sample_of(rm_ns - 50 * rig.MS))
+    miss = _missing(rig, pcm, c["in2"], (first_ns or lo_ns) + 20 * rig.MS, rm_ns - 50 * rig.MS)
+    after = [g for _b, g, _e in pcm.presence(c["in2"], rig.sample_of(rm_ns + 100 * rig.MS), hi)
+             if g is not None and g > 0.25]
+    check(f"L {tag}: the joiner is mixed at its PES - 1 h from its first buffer "
+          f"({first_ns and round((first_ns - t0) / 1e9, 3)} s; lag {lag}, missing {miss[:3]}), and gone "
+          f"after the remove ({len(after)} blocks)", first_ns is not None and lag == 0 and not miss and not after)
+    reps = rig.aligner_reports(r, rig.aligner_of(cmd["add"]["description"]))
+    stale = max((p.get("stale-buffers") or 0 for _t, p in reps), default=None)
+    # Its gaps lead now - pace by a buffer, as data does; its first buffer comes through a branch
+    # that is still starting, so it may land behind them.
+    check(f"L {tag}: the joiner was on time, so at most its first buffer was stale ({stale})",
+          stale is not None and stale <= 1)
+    check(f"L {tag}: no runner retime: the branch's demux is the formula demux (no branchAlign line)",
+          not any("branchAlign" in line or "retime:" in line for line in r.logs))
+    check(f"L {tag}: exits 0 promptly after stop (eosDrain false from the module; {took:.1f} s)",
+          rc == 0 and took < 3.0)
+
+    # Control: the same add with its PES 5 ms off the content they carry is not on content time,
+    # so the check above can fail.
+    d = rig.SocketDir()
+    cmd = rig.on_socket_dir(entry, d.path)
+    prods = {n: rig.Producer(n, [d.sock(n)], content=c[n], stop_s=6.0, start_s=1.7 if n == "in2" else 0.0,
+                             mistime_ns=5 * rig.MS if n == "in2" else 0) for n in c}
+    r = None
+    try:
+        t0 = rig.prepare(prods.values())
+        for p in prods.values():
+            p.listen()
+        rig.until(t0 - 700 * rig.MS)        # start the module just before its producers' data
+        r = rig.Runner(argv, env=cmd.get("env"))
+        r.start(cmd["start"])
+        r.attach("busout_41011", d.sock("out"))
+        cons = rig.Consumer(d.sock("out"))
+        cons.start()
+        rig.go(prods.values())
+        while rig.now_ns() < t0 + 2 * 10**9:
+            time.sleep(0.005)
+        r.request(dict(cmd["add"], cmd="bus_input_add"), "bus_input_add_done")
+        for p in prods.values():
+            p.join(30)
+        time.sleep(0.3)
+        r.stop()
+        cons.stop()
+    finally:
+        for p in prods.values():
+            p.stop()
+        if r is not None:
+            r.kill()
+        d.close()
+    pcm = _mix_of(rig, cons.records, t0)
+    lag, _g = pcm.best_lag(c["in2"], rig.sample_of(t0 + 2500 * rig.MS), rig.sample_of(t0 + 5500 * rig.MS))
+    check(f"L {tag} control: a joiner whose PES are 5 ms off its content lands {lag} samples off, so the "
+          f"content-time check can fail", lag == 240)
+
+    # The runner's own mechanics: a branch whose src pad comes late (a tsdemux sometimes pad) is
+    # ghosted and linked as well; a plain force-live mixer, no module's shape.
+    caps = "audio/x-raw,rate=48000,channels=2"
+    mixer = ("audiomixer name=mixin force-live=true latency=100000000 start-time-selection=first"
+             f' ! capsfilter caps="{caps}" ! level name=lvl post-messages=true interval=100000000'
+             " ! fakesink sync=false")
+    branch = ("audiotestsrc is-live=true ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2"
+              " ! avenc_s302m strict=experimental ! mpegtsmux ! tsdemux name=mixin_demux_c latency=0"
+              f" ! audio/x-smpte-302m ! avdec_s302m ! audioconvert ! audioresample ! {caps} ! queue")
+    r = rig.Runner(argv)
+    try:
+        r.start({"pipeline": f"{mixer}  ( name=mixin_in_a audiotestsrc is-live=true ! audioconvert"
+                             f" ! {caps} ! queue ) ! mixin.sink_0", "eosDrain": False})
+        added = r.request({"cmd": "bus_input_add", "element": "mixin", "name": "mixin_in_c",
+                           "description": branch}, "bus_input_add_done")
+        t_vu = rig.now_ns()                 # VU is sent on change or once a second
+        deadline = time.monotonic() + 3.0
+        vu = []
+        while not vu and time.monotonic() < deadline:
+            time.sleep(0.1)
+            vu = [t for t, ev in r.snapshot() if ev.get("event") == "vu_data" and t > t_vu]
+        gone = r.request({"cmd": "bus_input_remove", "element": "mixin", "name": "mixin_in_c"},
+                         "bus_input_remove_done")
+        check(f"L {tag}: a branch whose src pad comes late (tsdemux) is added and removed live, the "
+              f"mix flowing (a VU report {vu and round((vu[0] - t_vu) / 1e9, 2)} s after), no error",
+              (added or (0, {}))[1].get("event") == "bus_input_add_done"
+              and (gone or (0, {}))[1].get("event") == "bus_input_remove_done"
+              and vu and not r.errors())
+        r.stop()
+    finally:
+        r.kill()
+
+
+def aligner_absent_case(argv, tag, check):
+    """Plan ch. 6 part 7.3 case aligner-absent through `argv`'s runner: one of audio-mixer's three
+    inputs stops for 2 s (its link stalls, the backlog comes at the end). The mix goes on, the
+    input's mralignwatch reports absent then present and its stale backlog, and nothing errs."""
+    rig = _rig()
+    if rig is None:
+        return
+    d = rig.SocketDir()
+    cmd = rig.on_socket_dir(rig.pipelines()["mixer3"], d.path)
+    seconds, frm, length = 10.0, 4.0, 2.0
+    c = {n: rig.Content(seed) for n, seed in (("in0", 71), ("in1", 72), ("in2", 73))}
+    prods = {n: rig.Producer(n, [d.sock(n)], content=c[n], stop_s=seconds,
+                             knobs=rig.Knobs(silence=[(frm, length, "hold")] if n == "in2" else None))
+             for n in c}
+    r = None
+    try:
+        t0 = rig.prepare(prods.values())
+        for p in prods.values():
+            p.listen()
+        rig.until(t0 - 700 * rig.MS)        # start the module just before its producers' data
+        r = rig.Runner(argv, env=cmd.get("env"))
+        check(f"aligner-absent {tag}: the mixer reaches PLAYING", r.start(cmd["start"]) is not None)
+        r.attach("busout_41010", d.sock("out"))
+        cons = rig.Consumer(d.sock("out"))
+        cons.start()
+        rig.go(prods.values())
+        for p in prods.values():
+            p.join(30)
+        time.sleep(0.5)
+        errors = r.errors()
+        rc = r.stop()
+        cons.stop()
+    finally:
+        for p in prods.values():
+            p.stop()
+        if r is not None:
+            r.kill()
+        d.close()
+    end_ns = t0 + int((seconds - 0.5) * 1e9)
+    pcm = _mix_of(rig, cons.records, t0)
+    lo, hi = rig.sample_of(t0 + 500 * rig.MS), rig.sample_of(end_ns)
+    miss = {n: _missing(rig, pcm, c[n], t0 + 500 * rig.MS, end_ns) for n in ("in0", "in1")}
+    check(f"aligner-absent {tag}: the mix is continuous, the other two inputs in every block "
+          f"(holes {pcm.holes(lo, hi)[:3]}, missing {miss})",
+          pcm.hi > hi and not pcm.holes(lo, hi) and not any(miss.values()))
+    name = re.search(r"mralignwatch name=(\S+) aligner=mixin input=\"conn-in2\"", cmd["start"]["pipeline"]).group(1)
+    reps = rig.aligner_reports(r, name)
+    seq = [p.get("state") for t, p in reps if p.get("reason") == "state" and t < end_ns]
+    stale = max((p.get("stale-buffers") or 0 for t, p in reps if t < end_ns), default=0)
+    check(f"aligner-absent {tag}: its mralignwatch went absent, then present ({seq}); stale {stale} > 0",
+          seq[-2:] == ["absent", "present"] and stale > 0)
+    check(f"aligner-absent {tag}: no error, exit 0 ({[e.get('message') for e in errors][:2]}, rc {rc})",
+          not errors and rc == 0)
+
+
+if __name__ == "__main__":
+    test_add_remove()
+    test_containment_helpers()
+    test_gate_sees_declared_bins_only()
+    live_aligned_case(_PY_RUNNER, "py", check)
+    aligner_absent_case(_PY_RUNNER, "py", check)
+
+    if _failures:
+        print(f"\n{len(_failures)} FAILED: {_failures}")
+        sys.exit(1)
+    print("All live input branch tests passed.")

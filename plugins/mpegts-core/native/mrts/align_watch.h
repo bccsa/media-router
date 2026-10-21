@@ -154,6 +154,11 @@ class GapPlanner {
     // This tick's gap, the horizon to min(now - pace, *next_ns): no gap passes a queued item.
     // Without a horizon, a zero-length one there. Moves the horizon; false: nothing to push.
     bool take(int64_t now_ns, int64_t pace_ns, const int64_t* next_ns, Gap* out);
+    // The next `piece_ns` from the horizon (from now - pace without one), due as data of that
+    // length would be: once now - pace reaches its start. Never past *next_ns; moves the
+    // horizon; false: none due.
+    bool take_piece(int64_t now_ns, int64_t pace_ns, int64_t piece_ns, const int64_t* next_ns,
+                    Gap* out);
     void reset();
 
   private:

@@ -1,0 +1,20 @@
+{
+  "scenario": "scn-837-ducker-mixer",
+  "graph": "programme + key -> audio-processing (ducker, key = the key source) -> audio-mixer beside the key source (#837, R15)",
+  "pipelines": ["ducker", "mixer837"],
+  "seconds": 24,
+  "inputs": {
+    "prog": {"seed": 51},
+    "key": {"seed": 52, "on_s": [[3.0, 5.0], [8.0, 11.0], [14.0, 15.0], [18.0, 21.0]]}
+  },
+  "expect": {
+    "depth_db": -12,
+    "duck_settle_s": 0.1,
+    "release_settle_s": 0.6,
+    "residual_lsb": 3,
+    "gain_tolerance": 0.005,
+    "silent_run_samples": 16,
+    "silent_floor_lsb": 2,
+    "key_lag_samples": 1
+  }
+}
