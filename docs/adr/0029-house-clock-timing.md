@@ -422,8 +422,88 @@ passes over a capture; `--wrap-at <s>` moves its timestamps so a 33-bit
 wrap lands that far in (R19). On the dev Pi 5 (aarch64, GCC 12) it read
 17.6, 41.1 and 58.8 ns per packet on `v1/output.ts`, and 36.4, 54.0 and
 96.3 ns on 300,000 packets of the OCC capture: about a twentieth of the
-Pi 4 budget. The Pi 4 run belongs to the gate (chapter 3 part 11); its
-figures are recorded here when it has run.
+Pi 4 budget.
+
+**On the Pi 4 (10.9.16.108, 2026-10-16) every fixture is inside the
+budget**: the rewrite pass at most 153 ns per packet (15 % of its budget),
+the reassembly at most 268 ns (13 %), over every fixture of plan chapter 3
+part 7.2 that exists (the vMix capture does not, OQ-3), `v1/output.ts` and
+300,000 packets of the OCC capture, at 188, 1,316 and 24,064-byte chunks.
+At 10 Mbit/s that is 0.10 % and 0.18 % of a core, at 30 Mbit/s 0.31 % and
+0.53 %. The box ran a Cortex-A72 at a fixed 1.5 GHz with the Phase 1
+development build beside the bench at 6–14 % per core. The binary was built
+on the dev box from 263bdcd7 with the Makefile's `-O2 -fPIC` (generic
+armv8-a) and pinned to one core. Each figure below is the median of three
+runs at 1,316-byte chunks, each run the median of at least five passes; the
+last column is the worst run at any of the three chunk sizes. The same
+binary on the dev Pi 5 today reads 10.6, 29.8 and 51.5 ns on
+`v1/output.ts` and 25.2, 32.0 and 59.2 ns on the OCC capture: the Pi 4
+takes 1.9 to 3.3 times as long, and 4.3 times for the copy-bound reassembly
+of the 28.6 Mbit/s OCC feed. `--wrap-at` on the box (8 s into the OCC
+capture, 0.3 s into its fixture): every PID that crossed the wrap kept a
+continuous unwrapped PTS, its largest step 360 ms, the stream's own spacing.
+
+| Input | Packets | Walk | Rewrite | Reassembly | Worst rewrite / reassembly |
+|---|---:|---:|---:|---:|---:|
+| `cap-occ-1080i-h264-aac-ttx` | 10,638 | 51.6 | 64.4 | 201.7 | 70.2 / 209.3 |
+| `cap-mux-unbounded-video` | 10,638 | 54.1 | 65.7 | 204.7 | 69.9 / 216.6 |
+| `cap-mux-align7-aac-opus` | 3,191 | 38.7 | 120.2 | 206.4 | 128.1 / 222.5 |
+| `cap-cc-loss` | 3,185 | 40.2 | 121.2 | 206.8 | 127.3 / 219.3 |
+| `cap-302m-bssd` | 10,638 | 53.7 | 70.8 | 112.4 | 76.0 / 128.0 |
+| `cap-klv-sparse` | 1,729 | 24.7 | 141.2 | 147.0 | 153.1 / 163.7 |
+| `cap-srt-ingest-1316` | 10,633 | 53.0 | 71.6 | 188.3 | 77.0 / 202.9 |
+| `syn-mpts-two-programs` | 7,203 | 73.1 | 93.6 | 168.0 | 120.9 / 213.1 |
+| `syn-wrap-33bit` | 5,330 | 55.3 | 102.3 | 237.5 | 110.1 / 264.8 |
+| `syn-pes-header-split` | 687 | 26.5 | 117.3 | 240.1 | 126.2 / 261.0 |
+| `syn-pes-no-pts` | 204 | 23.9 | 119.4 | 214.5 | 125.8 / 225.9 |
+| `syn-source-restart` | 2,894 | 35.6 | 92.2 | 231.0 | 100.9 / 241.4 |
+| `v1/output.ts` | 2,734 | 34.6 | 79.8 | 142.7 | 93.1 / 156.0 |
+| OCC capture, first 300,000 packets | 300,000 | 46.9 | 61.2 | 255.5 | 68.2 / 267.7 |
+
+ns per packet; budget 1,000 for the rewrite, 2,000 for the reassembly.
+
+**In the pipeline the restamp costs more than today's stamper and
+conditioner**, so V-P1-10's criterion is not met as measured (2026-10-16,
+.108). One srt-input with one consumer, an mpegts-ip-output to a local
+port, so the egress stamper is armed, fed by a paced SRT caller on the dev
+box: the OCC capture (28.6 Mbit/s: 1080i H.264 at 20 Mbit/s, 21 AAC PIDs,
+teletext) and a libx264 CBR stream (10 Mbit/s, 720p50 with B-frames, AAC).
+`tools/runner-cpu-profile.sh -t 60`, three windows once the clock had
+locked. Today's side is the run-3 app tree on the same box and module (the
+hot deploy reverted, measured and re-deployed); its stamper ran anchored,
+the conditioner absorbing the OCC feed's ±0.32 s steps throughout.
+
+| Input | Today: anchored `mrtsstamp` + conditioner | Phase 1: `mrtsrestamp` + identity `mrtsstamp` | Source thread | Stamper thread |
+|---|---:|---:|---:|---:|
+| OCC, 28.6 Mbit/s | 0.852 core | 0.927; 0.909 after a restart | 1,045 → 1,309; 1,288 | 823 → 839; 840 |
+| CBR, 10 Mbit/s | 0.379 core | 0.406 | 448 → 543 | 332 → 331 |
+
+The thread columns are ticks per window (60 s; 55 s for the CBR stream).
+The runner is 6–9 % above today's. Most of the difference sits on the
+source thread, where the restamp runs: 0.040–0.044 core at 28.6 Mbit/s and
+0.017 at 10 Mbit/s, 2.1–2.6 µs per packet or 15–18 µs per 1,316-byte
+buffer; the SRT and bus threads differ by −2 to +8 % each, inside what a
+restart moves (a runner by up to 0.035 core). The stamper thread is
+unchanged: the identity stamper saves nothing measurable against the
+anchored one with its conditioner. The runners this change does not touch
+read the same under both trees. In isolation (gst-launch on the same box,
+the OCC feed paced to real time, the process's CPU, two runs each) the
+restamp adds 0.023 core, the identity stamper 0.016 and the anchored
+stamper with its conditioner 0.020, so the Phase 1 pair, at 0.037, costs
+0.017 core more than today's element. `RestampCore` itself is 132 ns per
+packet on the Pi 4, 0.003 core at this rate; the other 7.5 µs per buffer is
+the element's per-buffer work at the feed's 2,700 buffers a second. The
+whole element takes about 0.9 µs per buffer in a hot loop on the dev Pi 5,
+which points at cache misses on every buffer's wakeup rather than at the
+arithmetic; the per-packet budget above does not see this cost. On .111's
+field profile (Pi 4: three SRT audio ingests, two 302M captures, six
+transcoders, a mixer, two SRT outputs) Phase 0 against Phase 1 reads 0.977
+and 1.059 core over all runners (1.099 in a second Phase 1 run, in which
+every runner, touched or not, read 1–5 % higher): 0.003–0.004 more per SRT
+ingest, and 0.033 more per 302M capture, almost all of it on the capture
+thread where the ASRC runs (WI-P1-8's budget). `tools/runner-cpu-profile.sh`
+saw no native runner until it matched `mr-gst-runner` (it looked only for
+`gst-pipeline-runner.py`) and read module names from the engine's journal.
 
 ### Tests and fixtures
 
@@ -849,8 +929,12 @@ design's §5.2 keeps the general rule.
 ### Open at the end of the build
 
 - The capture session (WI-P1-5, WI-S0-9), the tuning sweep (WI-P1-6), the
-  Pi 4 benches (WI-S0-11, WI-P1-8) and the part 11 gate checks, all on the
+  Pi 4 bench of WI-P1-8 and the part 11 gate checks, all on the
   rigs.
+- The restamp's runner CPU is above today's stamper and conditioner on the
+  same wiring (S0 Budget above: +0.04 core per 28.6 Mbit/s ingest on a
+  Pi 4), so V-P1-10 fails as written until the per-buffer cost is cut or
+  the criterion is changed.
 - The degraded-mode lead clamp and its `lead-clamp` event (B-8).
 - `mrasrc` has no row in either runner's stand-in table, so without the
   plugin the three PCM captures fail to parse instead of starting with the

@@ -1,8 +1,9 @@
 #!/bin/sh
-# Per-thread CPU profile of every GStreamer pipeline runner on a media-router
-# box. BusyBox-only (no procps, no strace, no perf): samples /proc over a
-# window and prints, per runner, the module that owns it, its total CPU, and
-# the busiest threads with their wakeup rate. This is the acceptance metric
+# Per-thread CPU profile of every GStreamer pipeline runner (mr-gst-runner and
+# gst-pipeline-runner.py) on a media-router box. BusyBox-only (no procps, no
+# strace, no perf): samples /proc over a window and prints, per runner, the
+# module that owns it, its total CPU, and the busiest threads with their
+# wakeup rate. This is the acceptance metric
 # for the muxer/bus CPU work (docs/research/mpegts-muxer-cpu-baseline.md):
 # run it before and after a change on the same wiring and compare ticks.
 #
@@ -19,10 +20,11 @@
 #           edge at 1316-byte granularity shows ~1 wakeup per TS chunk.
 #   Thread names are GStreamer's: `<element>:src` is that element's streaming
 #   thread (everything downstream of it up to the next queue runs there),
-#   `python3` is the runner's GLib main loop, `watchdog` / `unixfdsink` are
-#   element-owned helper threads.
-# Module ownership comes from /tmp/engine.log ("Allocated port" lines) via the
-# bus socket the runner listens on; a runner with no listening socket (pure
+#   `mr-gst-runner` / `python3` is the runner's GLib main loop, `watchdog` /
+#   `unixfdsink` are element-owned helper threads.
+# Module ownership comes from the engine log ("Allocated port" lines in
+# /tmp/engine.log, else in the engine unit's journal this boot) via the bus
+# socket the runner listens on; a runner with no listening socket (pure
 # consumer, e.g. srt-output) is labelled by its thread names instead.
 
 WINDOW=5
@@ -33,15 +35,22 @@ while [ $# -gt 0 ]; do
         -t) WINDOW="$2"; shift 2 ;;
         -n) TOPN="$2"; shift 2 ;;
         -m) MATCH="$2"; shift 2 ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
 LOG=/tmp/engine.log
+RUNNERS_RE='mr-gst-runner|gst-pipeline-runner\.py'
 TMP=/tmp/runner-cpu-profile.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
+# The image's engine logs to the journal, not /tmp/engine.log.
+if [ ! -r "$LOG" ] && command -v journalctl >/dev/null 2>&1; then
+    journalctl -b _SYSTEMD_USER_UNIT=media-router.service -o cat --no-pager 2>/dev/null \
+        | grep -E '"msg":"(Allocated port|Re-allocated previous port)"' > "$TMP/engine.log"
+    LOG=$TMP/engine.log
+fi
 
 # --- helpers ---------------------------------------------------------------
 
@@ -86,7 +95,7 @@ thread_label() {
 snapshot() {
     out=$1
     : > "$out"
-    for pid in $(pgrep -f gst-pipeline-runner.py); do
+    for pid in $(pgrep -f "$RUNNERS_RE"); do
         for t in /proc/$pid/task/*; do
             [ -r "$t/stat" ] || continue
             echo "$pid $(basename "$t") $(tr ' ' '_' < "$t/comm") $(task_ticks "$t") $(task_ctxt "$t")" >> "$out"
@@ -98,8 +107,8 @@ cpu_line() { head -n 1 /proc/stat; }
 
 # --- sample ------------------------------------------------------------------
 
-RUNNERS=$(pgrep -f gst-pipeline-runner.py | tr '\n' ' ')
-if [ -z "$RUNNERS" ]; then echo "no gst-pipeline-runner.py processes"; exit 1; fi
+RUNNERS=$(pgrep -f "$RUNNERS_RE" | tr '\n' ' ')
+if [ -z "$RUNNERS" ]; then echo "no pipeline runner processes"; exit 1; fi
 
 # Resolve labels once (cheap, and the pid set is fixed for the window).
 : > "$TMP/labels"
