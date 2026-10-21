@@ -30,6 +30,10 @@ TAIL = KEY_BYTES + 184          # payload window kept per open AU
 # A repeated tail is told apart by tsdemux's own PTS: the entry within this of the
 # pad's last (PTS − PES) offset. Well under any access unit's spacing.
 JOIN_TOL_NS = 5_000_000
+# The pads retimed: audio and video, and with `privatePads` the cue pads too
+# (KLV and teletext are private_, DVB subtitles subpicture_).
+RETIMED = ("audio_", "video_")
+CUE_PADS = ("private_", "subpicture_")
 
 
 class Epoch:
@@ -66,6 +70,7 @@ def new_state(name):
     import ts_timeline
     return {"name": name, "ns": ts_timeline.pts90k_to_ns, "prev_stamp": None, "pcr_pid": None,
             "rule": None, "amb": None, "epochs": [], "pid_epoch": {}, "seq": 0, "exact": False,
+            "tpids": set(),                      # PIDs whose PES can read K (`timing_pes`)
             # the join (`join`): pid -> deque of (payload tail, Au)
             "aus": {}, "synced": {}, "open": {}, "psi": [False, False], "indexed": 0,
             "held": [], "hold_t0": None, "released": False, "releasing": False,
@@ -87,11 +92,29 @@ def note(e, pid, u, du):
     e.last[pid], e.lastd[pid] = u, dec
 
 
-def on_pes(st, pid, pts, dts):
-    """The `Au` of one PES. Continuous with its PID: same epoch. Else the
-    newest later epoch it is coherent with, else a fresh one predicted to carry on
-    where the PID left off (until its first exact reading). Pure."""
+def coherent(st, cand, pid, pts, dts, pids=None):
+    """`pts` joined onto epoch `cand` near the last PES of one of its PIDs (of
+    `pids` only, when given), or None. Pure."""
+    q = next((q for p, q in cand.last.items()
+              if (pids is None or p in pids) and abs(fold(pts - q)) <= FWD_TICKS), None)
+    if q is None:
+        return None
+    u = q + fold(pts - q)
+    du = None if dts is None else u + fold(dts - pts)
+    st["pid_epoch"][pid] = cand
+    note(cand, pid, u, du)
+    return Au(cand, u, du)
+
+
+def on_pes(st, pid, pts, dts, timing=True):
+    """The `Au` of one PES: its PID's epoch while continuous. A non-`timing` PES over 5 s
+    after its PID's last was quiet: the newest epoch, its own on, with a timing PID near it.
+    Else the newest later coherent epoch, else a fresh one (quiet: on the last K). Pure."""
+    if timing:
+        st["tpids"].add(pid)
     e = st["pid_epoch"].get(pid)
+    epochs = st["epochs"]
+    quiet = False
     if e is not None:
         d = fold(pts - e.last[pid])
         if -BACK_TICKS <= d <= FWD_TICKS:
@@ -99,25 +122,32 @@ def on_pes(st, pid, pts, dts):
             du = None if dts is None else u + fold(dts - pts)
             note(e, pid, u, du)
             return Au(e, u, du)
-    epochs = st["epochs"]
+        quiet = not timing and d > FWD_TICKS
+        if quiet:
+            for cand in reversed(epochs[epochs.index(e):] if e in epochs else epochs):
+                au = coherent(st, cand, pid, pts, dts, st["tpids"])
+                if au is not None:
+                    return au
     for cand in reversed(epochs[epochs.index(e) + 1:] if e in epochs else epochs):
-        q = next((q for q in cand.last.values()
-                  if abs(fold(pts - q)) <= FWD_TICKS), None)
-        if q is not None:
-            u = q + fold(pts - q)
-            du = None if dts is None else u + fold(dts - pts)
-            st["pid_epoch"][pid] = cand
-            note(cand, pid, u, du)
-            return Au(cand, u, du)
+        au = coherent(st, cand, pid, pts, dts)
+        if au is not None:
+            return au
     du = None if dts is None else pts + fold(dts - pts)
     pred = None
     if e is not None:
-        k = epoch_k(e)
+        k, last = epoch_k(e), e.last[pid]
+        d = fold(pts - last)
         if k is not None:
-            pred = k + st["ns"](e.lastd[pid] + e.cad.get(pid, 0) - (pts if du is None else du))
-        log(st, f"pid=0x{pid:x} PTS discontinuity "
-                        f"{fold(pts - e.last[pid]) / 90000:+.3f} s — stamp epoch "
-                        f"#{st['seq']}" + ("" if pred is None else ", predicted to continue the last"))
+            # Quiet, the PES kept house time (identity): the mapping holds, shifted only by a
+            # wrap the old epoch unwrapped. A cut carries on at the PID's own step.
+            pred = k + st["ns"](last + d - pts if quiet
+                                else e.lastd[pid] + e.cad.get(pid, 0) - (pts if du is None else du))
+        if quiet:
+            log(st, f"pid=0x{pid:x} back after {d / 90000:.3f} s with no timing PES near — stamp "
+                    f"epoch #{st['seq']}" + ("" if pred is None else " on the last K"))
+        else:
+            log(st, f"pid=0x{pid:x} PTS discontinuity {d / 90000:+.3f} s — stamp epoch "
+                    f"#{st['seq']}" + ("" if pred is None else ", predicted to continue the last"))
     new = Epoch(st["seq"], pred)
     st["seq"] += 1
     epochs.append(new)
@@ -251,10 +281,11 @@ def pes_dts(p):
         | (p[17] << 7) | (p[18] >> 1)
 
 
-def install(name, demux, sink_pad, registry, pid_of):
+def install(name, demux, sink_pad, registry, pid_of, private_pads=False):
     """Arm the retime on one transform producer's input demux: a sink-pad index
     (stamp readings + a payload-tail join of every access unit) and a probe on
-    every audio/video src pad that rewrites PTS/DTS. Lives for the pipeline.
+    every audio/video src pad that rewrites PTS/DTS — on its private_/subpicture_
+    pads too with `private_pads` (`privatePads`). Lives for the pipeline.
     The state goes into `registry[name]`; `pid_of` parses a tsdemux pad name."""
     import ts_psi
     import ts_timeline
@@ -316,7 +347,7 @@ def install(name, demux, sink_pad, registry, pid_of):
             pts = ts_psi.read_pes_pts(pkt)
             if pts is None:
                 continue
-            au = on_pes(st, pid, pts, pes_dts(p))
+            au = on_pes(st, pid, pts, pes_dts(p), timing_sid(p[3]) or pid == st["pcr_pid"])
             hdr = 9 + p[8]
             plen = (p[4] << 8) | p[5]
             need = (6 + plen - hdr) if plen and 6 + plen > hdr else None
@@ -427,7 +458,7 @@ def install(name, demux, sink_pad, registry, pid_of):
 
     def on_pad_added(_element, pad):
         pad_name = pad.get_name() or ""
-        if not (pad_name.startswith("audio_") or pad_name.startswith("video_")):
+        if not pad_name.startswith(RETIMED + (CUE_PADS if private_pads else ())):
             return
         pid = pid_of(pad_name)
         if pid is not None:

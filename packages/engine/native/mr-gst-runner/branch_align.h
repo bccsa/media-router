@@ -20,9 +20,9 @@
 
 namespace mr::align {
 
-/** `cfg` = {"demuxes": ["demux_0", …], "transformProducer"?: bool} or nullptr.
- *  Armed before PLAYING. A transform producer's demux is retimed per access unit
- *  (bus input held until the first exact stamp reading), not offset once. */
+/** `cfg` = {"demuxes": ["demux_0", …], "transformProducer"?: bool, "privatePads"?: bool}
+ *  or nullptr. Armed before PLAYING. A transform producer's demux is retimed per access
+ *  unit (bus input held until the first exact stamp reading), not offset once. */
 void install(GstElement* pipe, JsonObject* cfg);
 
 /** Drop every probe and handler (pipeline stop / restart). */

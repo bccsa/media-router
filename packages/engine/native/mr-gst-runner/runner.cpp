@@ -340,7 +340,6 @@ void Runner::handle_start(JsonObject* data) {
     // Multi-branch stamp alignment: armed before PLAYING so
     // the first TS bytes carry the mapping every branch is anchored to.
     align::install(pipeline, json_get_object(data, "alignBranchesToStamps"));
-    stall::start(pipeline, json_get_array(data, "inputStallWatch"));
 
     // The bus egress stamp, spliced before PLAYING so an attach landing the
     // moment the pipeline starts owns its first buffer.
@@ -424,7 +423,6 @@ void Runner::handle_stop() {
     inputs::clear();
     tsprobe::stop();
     render::stop();
-    stall::stop();
     if (pipeline) {
         teardown_pipeline(pipeline);
         running = false;
@@ -512,12 +510,10 @@ void Runner::on_bus_message(GstMessage* msg) {
             json_object_set_string_member(ev, "element", element.c_str());
             g_clear_error(&err);
             g_free(debug);
-            stall::stop();
             fail_pipeline(ev, /*drain=*/true, /*errored=*/true);
             break;
         }
         case GST_MESSAGE_EOS:
-            stall::stop();
             // EOS reached the sinks — already drained; a second EOS would only
             // stall the teardown.
             fail_pipeline(ipc::event("eos"), /*drain=*/false);
@@ -529,7 +525,6 @@ void Runner::on_bus_message(GstMessage* msg) {
             if (new_s == GST_STATE_PLAYING) {
                 cancel_playing_watchdog();
                 gate::on_playing();
-                stall::arm();
             }
             JsonObject* ev = ipc::event("state_change");
             json_object_set_string_member(ev, "state", state_nick(new_s));

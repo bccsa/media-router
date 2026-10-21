@@ -21,9 +21,6 @@
 
 namespace {
 
-constexpr int SPARSE_GAP_MS = 500;
-constexpr int SPARSE_GAP_LEAD_MS = 2 * SPARSE_GAP_MS;
-
 // Class order when one input carries several streams: the first class present
 // takes the input's PID (python `_PRIORITY`, TS `MUX_ROUTE_PRIORITY`).
 const char* const PRIORITY[] = {"video", "audio", "klv", "subtitle"};
@@ -82,14 +79,6 @@ std::string json_escape(const std::string& s) {
 
 // --- state ---------------------------------------------------------------------
 
-struct Sparse {
-    GstPad* pad = nullptr;   // owned ref (request pad)
-    std::string rule_id, media;
-    GstElement* pipe = nullptr;
-    int restamped = 0, gaps = 0, gap_refused = 0;
-    guint timer = 0;
-};
-
 struct PcrPin {
     std::string media, pad;
 };
@@ -112,7 +101,6 @@ struct Input {
 struct State {
     const MrHookCtx* ctx = nullptr;
     std::map<std::string, PcrPin> pcr;            // linkTo → pin
-    std::vector<std::shared_ptr<Sparse>> sparse;
     std::vector<std::pair<GstElement*, gulong>> handlers;
     std::set<std::string> warned;
     std::vector<std::shared_ptr<Input>> inputs;
@@ -178,6 +166,7 @@ std::string caps_name_of(GstCaps* caps) {
     return n ? n : "";
 }
 
+// Caller holds g_state->mu (the `warned` set).
 std::string parser_prefix(GstPad* pad, GstCaps* caps, const std::string& rule_id, const std::string& mode) {
     std::string caps_name = caps_name_of(caps);
     if (mode == "none") {
@@ -203,9 +192,14 @@ std::string parser_prefix(GstPad* pad, GstCaps* caps, const std::string& rule_id
     return parser.empty() ? "" : parser + " ! ";
 }
 
+// Takes g_state->mu for the `warned` set; the caller must not hold it.
 void sink_unrouted(GstElement* pipe, GstPad* pad, const std::string& rule_id, const std::string& why) {
-    std::string key = rule_id + "::" + why;
-    if (g_state->warned.insert(key).second)
+    bool first;
+    {
+        std::lock_guard<std::mutex> lock(g_state->mu);
+        first = g_state->warned.insert(rule_id + "::" + why).second;
+    }
+    if (first)
         emit_msg("warning", fmt("mux_routing: %s not routed on %s — %s; sinking it", GST_PAD_NAME(pad), rule_id.c_str(),
                                 why.c_str()));
     GstElement* fs = gst_element_factory_make("fakesink", nullptr);
@@ -220,7 +214,8 @@ void sink_unrouted(GstElement* pipe, GstPad* pad, const std::string& rule_id, co
 }
 
 /** Point `prog-map`'s `PCR_<program>` of `target_name` at the request pad
- *  about to be linked, video preferred (see the python docstring). */
+ *  about to be linked, video preferred (see the python docstring). Caller
+ *  holds g_state->mu. */
 void pin_pcr_before_link(GstElement* pipe, const std::string& target_name, int program, const std::string& media,
                          const std::string& pad_name, const std::string& rule_id) {
     auto st = g_state->pcr.find(target_name);
@@ -233,86 +228,21 @@ void pin_pcr_before_link(GstElement* pipe, const std::string& target_name, int p
     }
     GstStructure* cur = nullptr;
     g_object_get(target, "prog-map", &cur, nullptr);
-    GstStructure* s = cur ? cur : gst_structure_new_empty("program_map");
-    gst_structure_set(s, ("PCR_" + std::to_string(program)).c_str(), G_TYPE_STRING, pad_name.c_str(), nullptr);
-    g_object_set(target, "prog-map", s, nullptr);
-    gst_structure_free(s);
+    const std::string key = "PCR_" + std::to_string(program);
+    const gchar* was = cur ? gst_structure_get_string(cur, key.c_str()) : nullptr;
+    // A pin the map already holds writes nothing: every set frees the map the mux reads.
+    if (!was || pad_name != was) {
+        GstStructure* s = cur ? cur : gst_structure_new_empty("program_map");
+        gst_structure_set(s, key.c_str(), G_TYPE_STRING, pad_name.c_str(), nullptr);
+        g_object_set(target, "prog-map", s, nullptr);
+        gst_structure_free(s);
+    } else {
+        gst_structure_free(cur);
+    }
     gst_object_unref(target);
     g_state->pcr[target_name] = {media, pad_name};
     log_line(fmt("PCR_%d of %s → %s (%s, %s)", program, target_name.c_str(), pad_name.c_str(), media.c_str(),
                  rule_id.c_str()));
-}
-
-/** The mux's current position in `pad`'s stream time, or -1. */
-gint64 sparse_position(GstElement* pipe, GstPad* pad) {
-    GstClock* clock = gst_element_get_clock(pipe);
-    if (!clock) return -1;
-    gint64 rt = (gint64)gst_clock_get_time(clock) - (gint64)gst_element_get_base_time(pipe);
-    gst_object_unref(clock);
-    if (rt < 0) rt = 0;
-    GstEvent* ev = gst_pad_get_sticky_event(pad, GST_EVENT_SEGMENT, 0);
-    if (ev) {
-        const GstSegment* seg = nullptr;
-        gst_event_parse_segment(ev, &seg);
-        if (seg) {
-            guint64 pos = gst_segment_position_from_running_time(seg, GST_FORMAT_TIME, (guint64)rt);
-            gst_event_unref(ev);
-            if (pos != GST_CLOCK_TIME_NONE) return (gint64)pos;
-        } else {
-            gst_event_unref(ev);
-        }
-    }
-    return rt;
-}
-
-GstPadProbeReturn sparse_probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
-    auto* holder = static_cast<std::shared_ptr<Sparse>*>(user);
-    Sparse& st = **holder;
-    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
-    if (!buf) return GST_PAD_PROBE_OK;
-    gint64 pos = sparse_position(st.pipe, pad);
-    if (pos >= 0) {
-        if (st.restamped == 0) {
-            std::string had = GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buf))
-                                  ? fmt("%.0f ms", (double)GST_BUFFER_PTS(buf) / 1e6)
-                                  : "no PTS";
-            log_line(fmt("sparse %s route on %s restamped to the mux position (first buffer carried %s, now %.0f ms)",
-                         st.media.c_str(), st.rule_id.c_str(), had.c_str(), (double)pos / 1e6));
-        }
-        buf = gst_buffer_make_writable(buf);
-        GST_PAD_PROBE_INFO_DATA(info) = buf;
-        GST_BUFFER_PTS(buf) = (GstClockTime)pos;
-        GST_BUFFER_DTS(buf) = GST_CLOCK_TIME_NONE;
-        st.restamped++;
-    }
-    return GST_PAD_PROBE_OK;
-}
-
-void delete_sparse_holder(gpointer p) { delete static_cast<std::shared_ptr<Sparse>*>(p); }
-
-gboolean sparse_tick_cb(gpointer user) {
-    auto* holder = static_cast<std::shared_ptr<Sparse>*>(user);
-    Sparse& st = **holder;
-    if (!g_state || !st.timer) return G_SOURCE_REMOVE;
-    gint64 pos = sparse_position(st.pipe, st.pad);
-    if (pos < 0) return G_SOURCE_CONTINUE;
-    gboolean ok = gst_pad_send_event(st.pad, gst_event_new_gap((GstClockTime)(pos + (gint64)SPARSE_GAP_LEAD_MS * 1000000), 0));
-    if (ok) st.gaps++;
-    else st.gap_refused++;
-    return G_SOURCE_CONTINUE;
-}
-
-void arm_sparse_pad(GstElement* pipe, GstPad* req_pad, const std::string& rule_id, const std::string& media) {
-    auto st = std::make_shared<Sparse>();
-    st->pad = GST_PAD(gst_object_ref(req_pad));
-    st->rule_id = rule_id;
-    st->media = media;
-    st->pipe = pipe;
-    gst_pad_add_probe(req_pad, GST_PAD_PROBE_TYPE_BUFFER, sparse_probe_cb, new std::shared_ptr<Sparse>(st),
-                      delete_sparse_holder);
-    st->timer = g_timeout_add_full(G_PRIORITY_DEFAULT, SPARSE_GAP_MS, sparse_tick_cb, new std::shared_ptr<Sparse>(st),
-                                   delete_sparse_holder);
-    g_state->sparse.push_back(st);
 }
 
 // --- one PID per input ------------------------------------------------------------
@@ -376,7 +306,8 @@ int plan_output_pid(const Input& in, const std::string& media) {
 
 // Add `sink_<pid>=(int)program` to `target_name`'s prog-map for a PID the
 // builder could not list (a multi-stream input's spill). Same mechanism as
-// the PCR pin: mpegtsmux reads prog-map per pad at stream creation.
+// the PCR pin: mpegtsmux reads prog-map per pad at stream creation. Caller
+// holds g_state->mu: mpegtsmux frees the old map on every set, unlocked.
 void ensure_prog_map(GstElement* pipe, const std::string& target_name, int program, const std::string& pad_name) {
     GstElement* target = gst_bin_get_by_name(GST_BIN(pipe), target_name.c_str());
     if (!target) return;
@@ -437,7 +368,7 @@ void on_sync_message(GstBus*, GstMessage* msg, gpointer) {
 }
 
 bool link_pad(Input& in, GstPad* pad, const std::string& media, const std::string& branch_str,
-              const std::string& pad_name, int pid, int out_pid, bool sparse) {
+              const std::string& pad_name, int pid, int out_pid) {
     GstElement* pipe = in.pipe;
     const std::string& rule_id = in.rule_id;
     GError* err = nullptr;
@@ -489,7 +420,6 @@ bool link_pad(Input& in, GstPad* pad, const std::string& media, const std::strin
             gst_object_unref(target);
             return false;
         }
-        if (sparse) arm_sparse_pad(pipe, req_pad, rule_id, media);
         gst_object_unref(req_pad);
         gst_object_unref(target);
     }
@@ -503,20 +433,12 @@ bool link_pad(Input& in, GstPad* pad, const std::string& media, const std::strin
     return true;
 }
 
-void on_pad_added(GstElement*, GstPad* pad, gpointer user) {
-    auto* holder = static_cast<std::shared_ptr<Input>*>(user);
-    Input& in = **holder;
-    if (!g_state) return;
-    GstCaps* caps = gst_pad_get_current_caps(pad);
-    if (!caps) caps = gst_pad_query_caps(pad, nullptr);
-    std::string caps_name = caps_name_of(caps);
-    int pid = pid_from_pad_name(GST_PAD_NAME(pad));
-    if (pid >= 0 && in.ignore.count(pid)) {
-        sink_unrouted(in.pipe, pad, in.rule_id, fmt("pid 0x%x is excluded", pid));
-        if (caps) gst_caps_unref(caps);
-        return;
-    }
-    std::string media = route_media_for_caps(caps_name);
+/** The routing decision for one demuxed pad, and the mux's prog-map and PCR edits it
+ *  needs: "" with the request pad, output PID and branch to link, else why the pad is
+ *  sunk. Caller holds g_state->mu. */
+std::string plan_route(Input& in, GstPad* pad, GstCaps* caps, const std::string& caps_name, int pid,
+                       const std::string& media, std::string* pad_name, int* out_pid, std::string* branch) {
+    if (pid >= 0 && in.ignore.count(pid)) return fmt("pid 0x%x is excluded", pid);
     JsonObject* route = nullptr;
     if (in.routes && json_object_has_member(in.routes, media.c_str())) {
         JsonNode* n = json_object_get_member(in.routes, media.c_str());
@@ -526,64 +448,74 @@ void on_pad_added(GstElement*, GstPad* pad, gpointer user) {
                                           !JSON_NODE_HOLDS_NULL(json_object_get_member(route, "padName"))
                                       ? json_object_get_string_member(route, "padName")
                                       : nullptr;
-    if (!route || (in.pid < 0 && (!fixed_pad_name || !*fixed_pad_name))) {
-        sink_unrouted(in.pipe, pad, in.rule_id,
-                      fmt("no route for %s (%s)", media.c_str(), caps_name.empty() ? "unknown caps" : caps_name.c_str()));
-        if (caps) gst_caps_unref(caps);
-        return;
-    }
+    if (!route || (in.pid < 0 && (!fixed_pad_name || !*fixed_pad_name)))
+        return fmt("no route for %s (%s)", media.c_str(), caps_name.empty() ? "unknown caps" : caps_name.c_str());
     auto already = in.linked.find(media);
-    if (already != in.linked.end()) {
-        sink_unrouted(in.pipe, pad, in.rule_id,
-                      fmt("second %s stream (already routed %s)", media.c_str(), already->second.c_str()));
-        if (caps) gst_caps_unref(caps);
-        return;
-    }
-    in.linked[media] = GST_PAD_NAME(pad);
+    if (already != in.linked.end())
+        return fmt("second %s stream (already routed %s)", media.c_str(), already->second.c_str());
     // Generic input: the pad name comes from the input's PID and the PMT.
-    std::string pad_name = fixed_pad_name ? fixed_pad_name : "";
-    int out_pid = -1;
+    *pad_name = fixed_pad_name ? fixed_pad_name : "";
     if (in.pid >= 0) {
-        std::lock_guard<std::mutex> lock(g_state->mu);
-        out_pid = plan_output_pid(in, media);
-        if (out_pid < 0) {
+        *out_pid = plan_output_pid(in, media);
+        if (*out_pid < 0) {
             emit_msg("error", fmt("mux_routing: no free output PID above %d for %s on %s", in.pid, media.c_str(),
                                   in.rule_id.c_str()));
             // Sink it (python does the same): an unlinked pad is the tsdemux
             // NOT_LINKED restart loop this hook exists to prevent.
-            in.linked.erase(media);
-            sink_unrouted(in.pipe, pad, in.rule_id, "no free output PID");
-            if (caps) gst_caps_unref(caps);
-            return;
+            return "no free output PID";
         }
-        in.assigned[media] = out_pid;
-        g_state->taken.insert(out_pid);
-        pad_name = "sink_" + std::to_string(out_pid);
-        if (out_pid != in.pid) {
+        in.assigned[media] = *out_pid;
+        g_state->taken.insert(*out_pid);
+        *pad_name = "sink_" + std::to_string(*out_pid);
+        if (*out_pid != in.pid) {
             std::string owner = "a higher class";
             for (const auto& [c, p] : in.assigned)
                 if (p == in.pid) owner = c;
             log_line(fmt("%s: %s spills to output PID %d (input PID %d belongs to %s)", in.rule_id.c_str(),
-                         media.c_str(), out_pid, in.pid, owner.c_str()));
+                         media.c_str(), *out_pid, in.pid, owner.c_str()));
         }
     }
+    in.linked[media] = GST_PAD_NAME(pad);
     std::string parser_mode = "auto";
     if (json_object_has_member(route, "parser") && !JSON_NODE_HOLDS_NULL(json_object_get_member(route, "parser")))
         parser_mode = json_object_get_string_member(route, "parser");
-    std::string branch = "queue";
+    *branch = "queue";
     if (json_object_has_member(route, "branch") && !JSON_NODE_HOLDS_NULL(json_object_get_member(route, "branch"))) {
         const gchar* b = json_object_get_string_member(route, "branch");
-        if (b && *b) branch = b;
+        if (b && *b) *branch = b;
     }
-    branch = parser_prefix(pad, caps, in.rule_id, parser_mode) + branch;
+    *branch = parser_prefix(pad, caps, in.rule_id, parser_mode) + *branch;
+    if (!in.link_to.empty() && in.pid >= 0) ensure_prog_map(in.pipe, in.link_to, in.pcr_program, *pad_name);
+    if (!in.link_to.empty() && in.has_pcr && (media == "video" || media == "audio"))
+        pin_pcr_before_link(in.pipe, in.link_to, in.pcr_program, media, *pad_name, in.rule_id);
+    return "";
+}
+
+void on_pad_added(GstElement*, GstPad* pad, gpointer user) {
+    auto* holder = static_cast<std::shared_ptr<Input>*>(user);
+    Input& in = **holder;
+    if (!g_state) return;
+    GstCaps* caps = gst_pad_get_current_caps(pad);
+    if (!caps) caps = gst_pad_query_caps(pad, nullptr);
+    std::string caps_name = caps_name_of(caps);
+    int pid = pid_from_pad_name(GST_PAD_NAME(pad));
+    std::string media = route_media_for_caps(caps_name);
+    std::string unrouted, pad_name, branch;
+    int out_pid = -1;
+    {
+        // Each demux adds its pads on its own streaming thread: one decision and one
+        // prog-map edit at a time (two inputs' edits at once double-freed the map).
+        std::lock_guard<std::mutex> lock(g_state->mu);
+        unrouted = plan_route(in, pad, caps, caps_name, pid, media, &pad_name, &out_pid, &branch);
+    }
+    if (!unrouted.empty()) {
+        sink_unrouted(in.pipe, pad, in.rule_id, unrouted);
+        if (caps) gst_caps_unref(caps);
+        return;
+    }
     gchar* caps_str = caps ? gst_caps_to_string(caps) : nullptr;
     if (caps) gst_caps_unref(caps);
-    if (!in.link_to.empty() && in.pid >= 0) ensure_prog_map(in.pipe, in.link_to, in.pcr_program, pad_name);
-    if (!in.link_to.empty() && in.has_pcr && (media == "video" || media == "audio"))
-        pin_pcr_before_link(in.pipe, in.link_to, in.pcr_program, media, pad_name, in.rule_id);
-    bool sparse = json_object_has_member(route, "sparse") && !JSON_NODE_HOLDS_NULL(json_object_get_member(route, "sparse")) &&
-                  json_object_get_boolean_member(route, "sparse");
-    bool ok = link_pad(in, pad, media, branch, pad_name, pid, out_pid, sparse);
+    bool ok = link_pad(in, pad, media, branch, pad_name, pid, out_pid);
     if (ok && g_state && g_state->ctx && g_state->ctx->emit_plugin_event) {
         std::string payload = "{\"demux\":\"" + json_escape(in.demux) + "\",\"media\":\"" + media + "\",\"srcPid\":" +
                               (pid >= 0 ? std::to_string(pid) : "null") + ",\"outPid\":" +
@@ -685,14 +617,6 @@ int mr_hook_install(GstElement* pipeline, const char* config_json, const MrHookC
 
 void mr_hook_clear(void) {
     if (!g_state) return;
-    for (auto& st : g_state->sparse) {
-        if (st->timer) {
-            g_source_remove(st->timer);
-            st->timer = 0;
-        }
-        if (st->pad) gst_object_unref(st->pad);
-        st->pad = nullptr;
-    }
     for (auto& [el, id] : g_state->handlers) {
         g_signal_handler_disconnect(el, id);
         gst_object_unref(el);

@@ -488,11 +488,9 @@ def on_bus_message(bus, message):
         # Stop the pipeline on error. `errored`: the source that just failed
         # can no longer carry a pipeline-level EOS, so the drain goes straight
         # at the decoder instead of burning its budget (see _eos_drain).
-        _stop_input_stall_watch()
         _fail_pipeline(ev, errored=True)
 
     elif t == Gst.MessageType.EOS:
-        _stop_input_stall_watch()
         # Already drained by definition — EOS reached the sinks, so the decoder
         # is idle and a second EOS would only stall the teardown.
         _fail_pipeline({"event": "eos"}, drain=False)
@@ -504,7 +502,6 @@ def on_bus_message(bus, message):
             if new == Gst.State.PLAYING:
                 _cancel_playing_watchdog()
                 source_gate.on_playing()
-                _arm_input_stall_watch()
             emit_event({"event": "state_change", "state": state_name})
 
     elif t == Gst.MessageType.ELEMENT:
@@ -1313,9 +1310,10 @@ _BRANCH_ALIGN_KEY_BYTES = branch_retime.KEY_BYTES
 
 
 def _install_branch_stamp_align(pipe, cfg):
-    """cfg = {"demuxes": ["demux_0", ...], "transformProducer"?: bool} from the
-    pipeline description. `transformProducer` retimes every access unit instead
-    (`branch_retime.install`); without it, this mux-branch path."""
+    """cfg = {"demuxes": ["demux_0", ...], "transformProducer"?: bool, "privatePads"?:
+    bool} from the pipeline description. `transformProducer` retimes every access unit
+    instead (`branch_retime.install`), cue pads too under `privatePads`; without it,
+    this mux-branch path."""
     _clear_branch_align()
     if not cfg:
         return
@@ -1323,6 +1321,7 @@ def _install_branch_stamp_align(pipe, cfg):
     if not names:
         return
     producer = bool(cfg.get("transformProducer"))
+    private_pads = bool(cfg.get("privatePads"))
     import ts_psi          # lazy, pure stdlib (embedded-core pattern)
     import ts_timeline
 
@@ -1337,7 +1336,8 @@ def _install_branch_stamp_align(pipe, cfg):
         if sink_pad is None:
             continue
         if producer:
-            branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name)
+            branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name,
+                                  private_pads)
             continue
         state = {
             "name": name,
@@ -1823,7 +1823,6 @@ def handle_start(data):
     # reason — the first TS bytes carry the mapping every branch is anchored to,
     # and a branch that has already emitted cannot be re-zeroed without a jolt).
     _install_branch_stamp_align(pipeline, data.get("alignBranchesToStamps"))
-    _start_input_stall_watch(pipeline, data.get("inputStallWatch"))
 
     # The bus egress stamp, spliced here, before PLAYING, for the same reason as
     # above: an attach can land the moment the pipeline starts and the element must
@@ -1956,7 +1955,6 @@ def handle_stop(data=None):
     _stop_rist()
     _stop_ts_probe()
     _stop_render_watch()
-    _stop_input_stall_watch()
     if pipeline:
         _teardown_pipeline(pipeline)
         running = False
@@ -3545,34 +3543,13 @@ def _stop_render_watch():
 
 
 # ---------------------------------------------------------------------------
-# Input stall watch (`inputStallWatch` config) — lives in gst_input_stall_watch.py
+# Non-live source heads — lives in gst_source_gate.py
 # ---------------------------------------------------------------------------
-# The `watchdog` element's contract without its per-buffer cost, and without
-# restart-looping on an input that never delivered. The module owns the probes
-# and the tick; this file wires in the two things only the runner knows — how
-# to emit an engine event and how to fail the pipeline the way the bus ERROR
-# path does (errored teardown, loop quit → the parent's restartOnError).
-import gst_input_stall_watch as input_stall
 import gst_source_gate as source_gate                       # noqa: E402
-# Non-live source heads (data-gated PLAYING deadline, udpsrc silence) — see
-# gst_source_gate.py. Configured here, once every callable it needs exists.
-# Late-bound `emit_event` (the suites swap it for a collector), same as the
-# stall watch above.
+# Data-gated PLAYING deadline and udpsrc silence. Configured here, once every
+# callable it needs exists; `emit_event` late-bound (the suites swap it).
 source_gate.configure(lambda obj: emit_event(obj), _fail_pipeline, _arm_playing_watchdog,
                       lambda: pipeline)
-
-
-def _fail_pipeline_on_stall():
-    _teardown_pipeline(pipeline, errored=True)
-    if loop and loop.is_running():
-        loop.quit()
-
-
-input_stall.configure(lambda obj: emit_event(obj), _fail_pipeline_on_stall,
-                      lambda: pipeline is not None)
-_start_input_stall_watch = input_stall.start
-_arm_input_stall_watch = input_stall.arm
-_stop_input_stall_watch = input_stall.stop
 
 
 # ---------------------------------------------------------------------------

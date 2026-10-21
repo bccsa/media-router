@@ -251,7 +251,6 @@ export class GstChildProcess extends EventEmitter {
             alignBranchesToStamps: desc.alignBranchesToStamps,
             // Multicast re-join bound for udpsrc silence (undefined = never restart on silence).
             udpSilenceRestartMs: desc.udpSilenceRestartMs,
-            inputStallWatch: desc.inputStallWatch,
             // Plugin-owned runner python (`runnerHooks`, e.g. subtitle-core's
             // bridge) — forwarded verbatim; the runner imports and installs it.
             runnerHooks: desc.runnerHooks,

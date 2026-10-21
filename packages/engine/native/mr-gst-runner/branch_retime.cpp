@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,7 @@ enum class Rule { UNKNOWN, FIRST_TIMING_PES, FIRST_PCR_PID_PES };
 
 struct State {
     std::string name;
+    bool private_pads = false;     // `privatePads`: KLV, teletext and DVB subtitle pads too
     GstElement* demux = nullptr;   // owned
     gulong pad_added_id = 0;
     GstPad* sink_pad = nullptr;    // owned until clear()
@@ -90,6 +92,7 @@ struct State {
     int64_t amb_a = 0, amb_b = 0;
     std::vector<EpochP> epochs;
     std::map<int, EpochP> pid_epoch;
+    std::set<int> tpids;           // PIDs whose PES can read K (`timing_pes`)
     int seq = 0;
     bool exact = false;
     std::map<int, std::deque<std::pair<std::string, AuP>>> aus;   // the join, per pid
@@ -148,10 +151,10 @@ void note(Epoch& e, int pid, int64_t u, const Au& au) {
     e.lastd[pid] = dec;
 }
 
-/** The Au of one PES. Continuous with its PID: same epoch. Else the newest later
- *  epoch it is coherent with, else a fresh one predicted to carry on where the
- *  PID left off (until its first exact reading). Caller holds st.m. */
-AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts) {
+/** The Au of one PES: its PID's epoch while continuous. A non-`timing` PES over 5 s after
+ *  its PID's last was quiet: the newest epoch, its own on, with a timing PID near it. Else
+ *  the newest later coherent epoch, else a fresh one (quiet: on the last K). Caller holds st.m. */
+AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts, bool timing) {
     auto make = [&](const EpochP& e, int64_t u) {
         auto au = std::make_shared<Au>();
         au->e = e;
@@ -163,38 +166,61 @@ AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts) {
         note(*e, pid, u, *au);
         return au;
     };
-    EpochP e;
-    auto pe = st.pid_epoch.find(pid);
-    if (pe != st.pid_epoch.end()) {
-        e = pe->second;
-        int64_t d = fold33(pts - e->last[pid]);
-        if (d >= -BACK_TICKS && d <= FWD_TICKS) return make(e, e->last[pid] + d);
-    }
-    auto it = e ? std::find(st.epochs.begin(), st.epochs.end(), e) : st.epochs.end();
-    size_t from = it == st.epochs.end() ? 0 : (size_t)(it - st.epochs.begin()) + 1;
-    for (size_t i = st.epochs.size(); i-- > from;) {
-        EpochP c = st.epochs[i];
+    // `pts` joined onto epoch `c` near the last PES of one of its PIDs (of its timing PIDs
+    // only, with `timing_only`), or null.
+    auto coherent = [&](const EpochP& c, bool timing_only) -> AuP {
         for (auto& [qpid, q] : c->last) {
+            if (timing_only && !st.tpids.count(qpid)) continue;
             int64_t d = fold33(pts - q);
             if (d >= -FWD_TICKS && d <= FWD_TICKS) {
                 st.pid_epoch[pid] = c;
                 return make(c, q + d);
             }
         }
+        return nullptr;
+    };
+    if (timing) st.tpids.insert(pid);
+    EpochP e;
+    auto it = st.epochs.end();
+    bool quiet = false;
+    auto pe = st.pid_epoch.find(pid);
+    if (pe != st.pid_epoch.end()) {
+        e = pe->second;
+        int64_t d = fold33(pts - e->last[pid]);
+        if (d >= -BACK_TICKS && d <= FWD_TICKS) return make(e, e->last[pid] + d);
+        it = std::find(st.epochs.begin(), st.epochs.end(), e);
+        quiet = !timing && d > FWD_TICKS;
+        if (quiet) {
+            size_t own = it == st.epochs.end() ? 0 : (size_t)(it - st.epochs.begin());
+            for (size_t i = st.epochs.size(); i-- > own;)
+                if (AuP au = coherent(st.epochs[i], true)) return au;
+        }
     }
+    size_t from = it == st.epochs.end() ? 0 : (size_t)(it - st.epochs.begin()) + 1;
+    for (size_t i = st.epochs.size(); i-- > from;)
+        if (AuP au = coherent(st.epochs[i], false)) return au;
     auto fresh = std::make_shared<Epoch>();
     fresh->seq = st.seq++;
     if (e) {
-        int64_t k;
+        int64_t k, last = e->last[pid], d = fold33(pts - last);
         if (epoch_k(*e, &k)) {
-            int64_t dec = has_dts ? pts + fold33(dts - pts) : pts;
-            auto cad = e->cad.find(pid);
             fresh->has_pred = true;
-            fresh->pred = k + ns(e->lastd[pid] + (cad == e->cad.end() ? 0 : cad->second) - dec);
+            if (quiet) {
+                // Quiet, the PES kept house time (identity): the mapping holds, shifted only by
+                // a wrap the old epoch unwrapped. A cut carries on at the PID's own step.
+                fresh->pred = k + ns(last + d - pts);
+            } else {
+                int64_t dec = has_dts ? pts + fold33(dts - pts) : pts;
+                auto cad = e->cad.find(pid);
+                fresh->pred = k + ns(e->lastd[pid] + (cad == e->cad.end() ? 0 : cad->second) - dec);
+            }
         }
-        rlog(st, fmt("pid=0x%x PTS discontinuity %+.3f s — stamp epoch #%d%s", pid,
-                     fold33(pts - e->last[pid]) / 90000.0, fresh->seq,
-                     fresh->has_pred ? ", predicted to continue the last" : ""));
+        if (quiet)
+            rlog(st, fmt("pid=0x%x back after %.3f s with no timing PES near — stamp epoch #%d%s", pid, d / 90000.0,
+                         fresh->seq, fresh->has_pred ? " on the last K" : ""));
+        else
+            rlog(st, fmt("pid=0x%x PTS discontinuity %+.3f s — stamp epoch #%d%s", pid, d / 90000.0, fresh->seq,
+                         fresh->has_pred ? ", predicted to continue the last" : ""));
     }
     st.epochs.push_back(fresh);
     if (st.epochs.size() > EPOCHS) st.epochs.erase(st.epochs.begin(), st.epochs.end() - EPOCHS);
@@ -393,7 +419,7 @@ void index(State& st, GstBuffer* buf) {
         int64_t dts = has_dts ? ((((int64_t)p[14] >> 1) & 0x07) << 30) | ((int64_t)p[15] << 22) |
                                     (((int64_t)p[16] >> 1) << 15) | ((int64_t)p[17] << 7) | ((int64_t)p[18] >> 1)
                               : 0;
-        AuP au = on_pes(st, pid, pts, has_dts, dts);
+        AuP au = on_pes(st, pid, pts, has_dts, dts, mrts::timing_pes(pkt, pid, st.pcr_pid));
         size_t hdr = 9 + (size_t)p[8];
         size_t pes_len = ((size_t)p[4] << 8) | p[5];
         Open rec;
@@ -573,10 +599,16 @@ GstPadProbeReturn out_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     return GST_PAD_PROBE_OK;
 }
 
+/** The pads retimed: audio and video, and with `privatePads` the cue pads too. */
+bool retimed(const gchar* pad_name, bool private_pads) {
+    if (g_str_has_prefix(pad_name, "audio_") || g_str_has_prefix(pad_name, "video_")) return true;
+    return private_pads && (g_str_has_prefix(pad_name, "private_") || g_str_has_prefix(pad_name, "subpicture_"));
+}
+
 void pad_added(GstElement*, GstPad* pad, gpointer user) {
     std::shared_ptr<State> st = *static_cast<std::shared_ptr<State>*>(user);
     const gchar* pad_name = GST_PAD_NAME(pad);
-    if (!pad_name || !(g_str_has_prefix(pad_name, "audio_") || g_str_has_prefix(pad_name, "video_"))) return;
+    if (!pad_name || !retimed(pad_name, st->private_pads)) return;
     int pid = pid_from_pad_name(pad_name);
     if (pid < 0) return;
     auto* oa = new OutArg{st, Pad{}};
@@ -589,9 +621,10 @@ void delete_holder(gpointer p) { delete static_cast<std::shared_ptr<State>*>(p);
 }  // namespace
 
 /** Arm the retime on one transform producer's input demux; owns `demux` and `sink`. */
-void install(const gchar* name, GstElement* demux, GstPad* sink) {
+void install(const gchar* name, GstElement* demux, GstPad* sink, bool private_pads) {
     auto st = std::make_shared<State>();
     st->name = name;
+    st->private_pads = private_pads;
     st->demux = demux;
     st->sink_pad = sink;
     gst_pad_add_probe(sink,

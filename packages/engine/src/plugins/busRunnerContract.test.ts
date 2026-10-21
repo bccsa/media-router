@@ -6,7 +6,6 @@ import {
     BUS_WATCHDOG_PREFIX,
     buildBusSink,
     buildBusSrc,
-    busStallWatch,
     busTeeName,
     latInName,
     latOutName,
@@ -58,27 +57,32 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(name.startsWith(BUS_WATCHDOG_PREFIX)).toBe(true);
     });
 
-    it('the runner-side input stall watch reads the field the parent sends, and tags like the element did', () => {
-        // PipelineDescription.inputStallWatch → GstChildProcess.startPayload →
-        // handle_start's data.get("inputStallWatch"). A rename on any hop
-        // silently disables dark-input recovery on the muxer.
+    it('the input stall watch is gone from both runners (a dark mux input is gapped and rejoins)', () => {
+        // House-clock part 4.6: the muxer's aligners replace the restart on a dark input.
         const childProcess = readFileSync(
             join(__dirname, '..', 'child-process', 'GstChildProcess.ts'),
             'utf8',
         );
-        expect(childProcess).toContain('inputStallWatch: desc.inputStallWatch');
-        expect(runnerSource).toContain('data.get("inputStallWatch")');
-        // The mechanism lives in its own module; the runner aliases it.
-        expect(runnerSource).toContain('import gst_input_stall_watch as input_stall');
-        const stallWatch = readFileSync(
-            join(__dirname, '..', 'child-process', 'gst_input_stall_watch.py'),
+        const native = readFileSync(
+            join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'runner.cpp'),
             'utf8',
         );
-        // Same error shape as the `watchdog` element path: kind + prefixed element.
-        expect(stallWatch).toContain(`ELEMENT_PREFIX = "${BUS_WATCHDOG_PREFIX}_"`);
-        expect(stallWatch).toContain('"element": ELEMENT_PREFIX + name');
-        expect(stallWatch).toContain('"kind": "bus_stall"');
-        expect(busStallWatch('busin_0', 5000)).toEqual({ element: 'busin_0', timeoutMs: 5000 });
+        for (const source of [childProcess, runnerSource, native]) {
+            expect(source).not.toContain('inputStallWatch');
+        }
+        expect(existsSync(join(__dirname, '..', 'child-process', 'gst_input_stall_watch.py'))).toBe(
+            false,
+        );
+    });
+
+    it('both runners read the retime cue-pad flag under the same key', () => {
+        // alignBranchesToStamps travels whole; a rename on one side leaves cues on tsdemux time.
+        const native = readFileSync(
+            join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'branch_align.cpp'),
+            'utf8',
+        );
+        expect(runnerSource).toContain('private_pads = bool(cfg.get("privatePads"))');
+        expect(native).toContain('bool private_pads = json_get_bool(cfg, "privatePads");');
     });
 
     it('the runner group-bind workaround for the removed UDP bus is gone', () => {

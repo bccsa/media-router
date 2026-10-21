@@ -225,7 +225,6 @@ describe('start payload (the wire to the runner)', () => {
             'decoderThreadType',
             'env',
             'eosDrain',
-            'inputStallWatch',
             'keyframeGate',
             'linkOnPadAdded',
             'liveCaptureClock',

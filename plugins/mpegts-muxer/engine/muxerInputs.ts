@@ -41,6 +41,9 @@ export interface UdpInputSource {
     language?: string;
     /** Operator PID for this input's stream — see InputEntry.pid. */
     pid?: number;
+    /** The producer's known output lateness at start (ms): the `seed-lateness` of
+     *  every route aligner of this input (house-clock plan WI-P2-13 fills it). */
+    seedLatenessMs?: number;
 }
 
 const INPUT_PORT_PREFIX = 'input-';

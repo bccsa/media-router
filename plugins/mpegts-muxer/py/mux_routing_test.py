@@ -11,15 +11,22 @@
      error is raised and the mux produces output — the 2026-09-15 restart
      loop (KLV-only TS, tsdemux NOT_LINKED) cannot recur.
   3. PCR pin: audio pins PCR_1 when nothing is pinned, video takes it over,
-     a later audio does not take it back.
-  4. Sparse route: every buffer restamped to the mux position, none dropped,
-     GAP keepalive ticking while idle, no GAP refused.
+     a later audio does not take it back; a pin the map already holds writes
+     nothing.
+  4. Timestamps are the branch's (house-clock WI-P2-12): in the real runs of
+     2 and 2b every cue reaches the mux with its own PTS (no restamp), and the
+     hook adds no timer and no pad probe (no GAP keepalive).
+  5. Inputs adding pads at once: the routing decision and the prog-map edit
+     run one input at a time (mpegtsmux swaps its map unlocked).
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run: python3 mux_routing_test.py   (from plugins/mpegts-muxer/py)
 """
+import contextlib
 import os
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mux_routing as m  # noqa: E402
@@ -100,6 +107,48 @@ Gst.init([])
 
 events = []
 CTX = {"emit_event": events.append, "emit_plugin_event": lambda c, p: None}
+
+# Every GLib timer and pad probe the hook itself adds (none since WI-P2-12: a
+# cue route's aligner fills between cues, so the hook keeps no GAP keepalive).
+hook_added = []
+
+
+def _spy(owner, name):
+    real = getattr(owner, name)
+
+    def wrapper(*args, **kwargs):
+        if sys._getframe(1).f_globals.get("__name__") == m.__name__:
+            hook_added.append(name)
+        return real(*args, **kwargs)
+    setattr(owner, name, wrapper)
+
+
+for _name in ("timeout_add", "timeout_add_seconds", "idle_add"):
+    _spy(GLib, _name)
+_spy(Gst.Pad, "add_probe")
+
+
+def pes_pts(data, pid):
+    """PTS (90 kHz) of every PES that starts on `pid` in a TS byte string."""
+    out = []
+    for off in range(0, len(data) - 187, 188):
+        pkt = data[off:off + 188]
+        if pkt[0] != 0x47 or not pkt[1] & 0x40 or ((pkt[1] & 0x1F) << 8 | pkt[2]) != pid:
+            continue
+        h = pkt[4 + (1 + pkt[4] if pkt[3] & 0x20 else 0):]
+        if h[:3] == b"\x00\x00\x01" and h[7] & 0x80:
+            out.append(((h[9] >> 1) & 7) << 30 | h[10] << 22 | (h[11] >> 1) << 15 | h[12] << 7 | h[13] >> 1)
+    return out
+
+
+def tap_ts(pad, chunks):
+    """Collect every byte `pad` pushes (buffers and buffer lists)."""
+    def on_data(_pad, info):
+        lst = info.get_buffer_list()
+        bufs = [lst.get(i) for i in range(lst.length())] if lst is not None else [info.get_buffer()]
+        chunks.extend(b.extract_dup(0, b.get_size()) for b in bufs if b is not None)
+        return Gst.PadProbeReturn.OK
+    pad.add_probe(Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST, on_data)
 
 
 def run_to_eos(pipe, timeout_s=20):
@@ -183,21 +232,21 @@ def make_klv_ts(n_buffers=40):
 print("2. real pipeline — KLV-only TS through one media-agnostic input")
 ts = make_klv_ts()
 check("generated a TS", len(ts) > 188 * 10 and len(ts) % 188 == 0)
+# Bytes: tsdemux times each cue from its PES PTS, so the mux output shows what the
+# hook did to the timestamps.
 pipe = Gst.parse_launch(
-    'appsrc name=src format=time caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
+    'appsrc name=src format=bytes caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
     "! tsdemux name=demux_0 latency=0 "
     'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_384=(int)1,PCR_1=sink_384" '
     "! fakesink name=out sync=false"
 )
-out_count = {"n": 0}
-pipe.get_by_name("mux").get_static_pad("src").add_probe(
-    Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
-    lambda pad, info: (out_count.__setitem__("n", out_count["n"] + 1), Gst.PadProbeReturn.OK)[1],
-)
+out_ts = []
+tap_ts(pipe.get_by_name("mux").get_static_pad("src"), out_ts)
 events.clear()
+hook_added.clear()
 m.install(pipe, {"inputs": [{
     "demux": "demux_0", "linkTo": "mux",
-    "routes": {"klv": {"padName": "sink_384", "branch": "queue", "sparse": True},
+    "routes": {"klv": {"padName": "sink_384", "branch": "queue"},
                "video": {"padName": "sink_256", "branch": "queue"}},
     "ignorePids": [0x1F0], "pcr": {"program": 1},
 }]}, CTX)
@@ -228,30 +277,34 @@ check("carousel PID 0x1f0 was excluded", any("0x1f0 is excluded" in w for w in w
 check("second klv stream was sunk", any("second klv stream" in w for w in warnings))
 pads = [p.get_name() for p in pipe.get_by_name("mux").sinkpads]
 check("mux got only the pinned request pad", sorted(pads), ["sink_384"])
-check("mux produced output", out_count["n"] > 0)
-check("sparse klv route armed", len(m.state()["sparse"]), 1)
+check("mux produced output", len(out_ts) > 0)
+IN_PTS = pes_pts(ts, 0x180)
+OUT_PTS = pes_pts(b"".join(out_ts), 0x180)
+check(f"every cue written ({len(OUT_PTS)} of {len(IN_PTS)})", len(OUT_PTS) == len(IN_PTS) == 40)
+check("no restamp: each cue keeps its own PTS, one offset for all (the source spacing, 40 ms)",
+      len({o - i for o, i in zip(OUT_PTS, IN_PTS)}) == 1)
+check("no GAP keepalive: the hook added no timer and no pad probe", hook_added, [])
+check("the hook keeps no sparse state", sorted(m.state()), ["bus", "handlers", "inputs", "pcr", "taken", "warned"])
 check("no PCR pin for a klv-only input", m.state()["pcr"].get("mux"), None)
 m.clear()
 check("clear() drops the hook state", m.state(), None)
 
 print("2b. real pipeline — generic input: the klv-only TS lands on exactly the input PID")
 pipe_g = Gst.parse_launch(
-    'appsrc name=src format=time caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
+    'appsrc name=src format=bytes caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
     "! tsdemux name=demux_0 latency=0 "
     'mpegtsmux name=mux alignment=7 prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" '
     "! fakesink name=out sync=false"
 )
-out_g = {"n": 0}
-pipe_g.get_by_name("mux").get_static_pad("src").add_probe(
-    Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
-    lambda pad, info: (out_g.__setitem__("n", out_g["n"] + 1), Gst.PadProbeReturn.OK)[1],
-)
+out_g = []
+tap_ts(pipe_g.get_by_name("mux").get_static_pad("src"), out_g)
 events.clear()
+hook_added.clear()
 plugin_events = []
 m.install(pipe_g, {"inputs": [{
     "demux": "demux_0", "linkTo": "mux", "pid": 300,
     "routes": {"video": {"branch": "queue"}, "audio": {"branch": "queue"},
-               "klv": {"branch": "queue", "sparse": True}, "subtitle": {"branch": "queue", "sparse": True}},
+               "klv": {"branch": "queue"}, "subtitle": {"branch": "queue"}},
     "ignorePids": [0x1F0], "pcr": {"program": 1},
 }]}, {"emit_event": events.append, "emit_plugin_event": lambda c, p: plugin_events.append((c, p))})
 check("PMT watch armed for a generic input", m.state()["bus"] is not None)
@@ -278,14 +331,18 @@ check("generic: PMT classes were read before linking", m.state()["inputs"]["demu
 check("generic: mux got sink_300 only", sorted(p.get_name() for p in pipe_g.get_by_name("mux").sinkpads), ["sink_300"])
 check("generic: mux:routed plugin event", [(c, p["media"], p["outPid"], p["srcPid"]) for c, p in plugin_events],
       [("mux:routed", "klv", 300, 0x180)])
-check("generic: mux produced output", out_g["n"] > 0)
+check("generic: mux produced output", len(out_g) > 0)
+OUT_G = pes_pts(b"".join(out_g), 300)
+check("generic: every cue written on the input PID with its own PTS (no restamp)",
+      len(OUT_G) == len(IN_PTS) and len({o - i for o, i in zip(OUT_G, IN_PTS)}) == 1)
+check("generic: the hook added only its PMT watch — no timer, no pad probe", hook_added, [])
 check("generic: no error events", [e for e in events if e.get("event") == "error"], [])
 m.clear()
 check("generic: clear() drops the bus watch too", m.state(), None)
 
 print("2c. prog-map gains an entry for a spilled PID before the pad is requested")
 p2c = Gst.parse_launch('mpegtsmux name=mux prog-map="program_map,sink_300=(int)1,PCR_1=sink_300" ! fakesink')
-m._state = {"pcr": {}, "sparse": [], "handlers": [], "warned": set(), "taken": set(), "inputs": {}, "bus": None}
+m._state = {"pcr": {}, "handlers": [], "warned": set(), "taken": set(), "inputs": {}, "bus": None}
 m._ensure_prog_map(p2c, "mux", 1, "sink_301")
 pm = p2c.get_by_name("mux").get_property("prog-map").to_string()
 check("spilled PID added to program 1", "sink_301=(int)1" in pm)
@@ -317,49 +374,100 @@ other = [k for k in p3.get_by_name("mux").get_property("prog-map").to_string().s
 check("other prog-map entries survive the edit", len(other), 1)
 p3.set_state(Gst.State.NULL)
 m.clear()
-
-print("4. sparse route — restamp to the mux position, GAP keepalive while idle")
-p4 = Gst.parse_launch(
-    'appsrc name=cue format=time is-live=true caps="meta/x-klv,parsed=true" ! queue name=q4 '
-    'mpegtsmux name=mux alignment=7 latency=1000000000 prog-map="program_map,sink_384=(int)1,PCR_1=sink_384" ! fakesink sync=false'
-)
-mux4 = p4.get_by_name("mux")
-req4 = mux4.request_pad_simple("sink_384")
-p4.get_by_name("q4").get_static_pad("src").link(req4)
-m.install(p4, {"inputs": []}, CTX)
-st4 = m._arm_sparse_pad(p4, req4, "r4", "klv")
-seen4 = []
-req4.add_probe(Gst.PadProbeType.BUFFER,
-               lambda pad, info: (seen4.append((info.get_buffer().pts, p4.get_clock().get_time() - p4.get_base_time())),
-                                  Gst.PadProbeReturn.OK)[1])
-p4.set_state(Gst.State.PLAYING)
-cue = p4.get_by_name("cue")
-loop4 = GLib.MainLoop()
-pushed = {"n": 0}
-
-
-def push_cue():
-    rt = p4.get_clock().get_time() - p4.get_base_time()
-    b = Gst.Buffer.new_wrapped(b"\x06\x0e\x2b\x34" + bytes(28) + b"cue")
-    if pushed["n"] % 2 == 0:          # every other cue carries NO PTS, as tsdemux does
-        b.pts = b.dts = rt + 5 * Gst.SECOND
-    cue.emit("push-buffer", b)
-    pushed["n"] += 1
-    return pushed["n"] < 3
-
-
-GLib.timeout_add(300, push_cue)
-GLib.timeout_add(2600, loop4.quit)
-loop4.run()
-p4.set_state(Gst.State.NULL)
-check("every cue buffer reached the mux (none dropped)", len(seen4), 3)
-check("every cue buffer was restamped", st4["restamped"], 3)
-check("restamped PTS sits at the mux position, PTS or not",
-      all(abs(rt - pts) < 300 * Gst.MSECOND for pts, rt in seen4))
-check("GAP keepalive ticked throughout (>= 3 in 2.6 s at 500 ms)", st4["gaps"] >= 3)
-check("no GAP was refused by the aggregator", st4["gap_refused"], 0)
+# The builder already pins the first input's PID: that pin writes nothing (each write frees the
+# map mpegtsmux reads when a pad's first buffer creates its stream), a changed one still does.
+p3b = Gst.parse_launch('mpegtsmux name=mux prog-map="program_map,sink_256=(int)1,PCR_1=sink_256" ! fakesink')
+m.install(p3b, {"inputs": []}, CTX)
+writes = []
+p3b.get_by_name("mux").connect("notify::prog-map", lambda *_a: writes.append(1))
+m._pin_pcr_before_link(p3b, "mux", 1, "video", "sink_256", "r")
+check("a pin the map already holds writes nothing, and is still the pin", (len(writes), m.state()["pcr"]["mux"]),
+      (0, {"media": "video", "pad": "sink_256"}))
 m.clear()
-check("clear() removed the GAP timer", st4["timer"], None)
+m.install(p3b, {"inputs": []}, CTX)
+m._pin_pcr_before_link(p3b, "mux", 1, "audio", "sink_320", "r")
+check("a pin that changes PCR writes once", (len(writes), pcr_of(p3b)), (1, "sink_320"))
+p3b.set_state(Gst.State.NULL)
+m.clear()
+
+print("4. no sparse machinery left in the hook")
+check("no restamp helper, no GAP cadence", [n for n in ("_sparse_position", "_arm_sparse_pad", "SPARSE_GAP_MS",
+                                                      "SPARSE_GAP_LEAD_MS") if hasattr(m, n)], [])
+
+print("5. inputs adding pads at once: one routing decision and one prog-map edit at a time")
+# Each demux adds its pads on its own streaming thread, and mpegtsmux frees its old prog-map
+# on every set, unlocked: two inputs editing it together double-freed it (native, 2026-10-17).
+# The probe stretches each edit to 50 ms and counts the entries that overlap one in flight;
+# it runs the real edit under a lock of its own, so even the mutant never races in C.
+
+
+def concurrent_run(n_in=4):
+    """`n_in` generic klv-only inputs pushed together: (overlapping edits, linked output
+    PIDs, the mux's prog-map, error events, EOS, GStreamer error)."""
+    pids = [300 + 10 * i for i in range(n_in)]
+    p5 = Gst.parse_launch(
+        " ".join(f'appsrc name=src{i} format=bytes caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
+                 f"! tsdemux name=demux_{i} latency=0" for i in range(n_in))
+        + ' mpegtsmux name=mux alignment=7 prog-map="program_map,PCR_1=sink_300" ! fakesink sync=false')
+    events.clear()
+    m.install(p5, {"inputs": [{
+        "demux": f"demux_{i}", "linkTo": "mux", "pid": pid,
+        "routes": {c: {"branch": "queue"} for c in ("video", "audio", "klv", "subtitle")},
+        "ignorePids": [0x1F0], "pcr": {"program": 1}} for i, pid in enumerate(pids)]}, CTX)
+    real, own, count = m._ensure_prog_map, threading.Lock(), threading.Lock()
+    inside, overlaps = [0], [0]
+
+    def stretched(*args):
+        with count:
+            inside[0] += 1
+            overlaps[0] += inside[0] > 1
+        time.sleep(0.05)
+        try:
+            with own:
+                return real(*args)
+        finally:
+            with count:
+                inside[0] -= 1
+
+    m._ensure_prog_map = stretched
+    srcs = [p5.get_by_name(f"src{i}") for i in range(n_in)]
+    left = [ts[off:off + 188 * 7] for off in range(0, len(ts), 188 * 7)]
+
+    def feed_all():
+        if not left:
+            for s in srcs:
+                s.emit("end-of-stream")
+            return False
+        chunk = left.pop(0)
+        for s in srcs:
+            s.emit("push-buffer", Gst.Buffer.new_wrapped(chunk))
+        return True
+
+    GLib.timeout_add(10, feed_all)
+    try:
+        eos5, err5 = run_to_eos(p5)
+    finally:
+        m._ensure_prog_map = real
+    linked5 = sorted(e.get("outPid") for e in events if e.get("event") == "pad_linked")
+    prog_map = p5.get_by_name("mux").get_property("prog-map").to_string()
+    errors = [e for e in events if e.get("event") == "error"]
+    m.clear()
+    return overlaps[0], linked5 == pids, prog_map, errors, eos5, err5
+
+
+over5, linked_ok, pm5, errors5, eos5, err5 = concurrent_run()
+check("4 inputs: every klv lands on its input's own PID, no error, EOS",
+      (linked_ok, errors5, eos5, err5), (True, [], True, None))
+check("4 inputs: every input PID went into prog-map", all(f"sink_{p}=(int)1" in pm5 for p in (300, 310, 320, 330)))
+check("4 inputs: no prog-map edit overlapped another (the hook lock held across decision and edit)", over5, 0)
+_lock = m._lock
+m._lock = contextlib.nullcontext()
+try:
+    over_mut = concurrent_run()[0]
+finally:
+    m._lock = _lock
+check(f"mutant, the hook lock taken out: the edits overlap ({over_mut}), so the check above can fail",
+      over_mut > 0)
 
 print()
 if failures:
