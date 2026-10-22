@@ -30,7 +30,7 @@
  * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
  */
 import { tsQueueByteCap } from './queueBounds.js';
-import { busLatenessTap, LAT_IN_PREFIX } from './latenessTap.js';
+import { busEgressLatenessTap, busLatenessTap, LAT_IN_PREFIX } from './latenessTap.js';
 
 export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
@@ -200,8 +200,9 @@ export function buildBusSrc(opts: BusSrcOpts): string {
 /**
  * Bus egress (fan-out point) for a producer:
  *   capssetter (replace) ! capsfilter (pinned TS caps) ! mrlateness ! tee busout_<port>
- * The runners splice `mrtsstamp` in before the capssetter, so the lateness tap (`latOutName`)
- * reads the stamped PTS every consumer receives.
+ * The runners splice `mrtsstamp` in before the capssetter. The lateness tap (`latOutName`) reads
+ * running time, which the stamp is written in, and the runners forward its windows only while a
+ * consumer has the stamper armed: before that the PTS are the mux's own (B-26).
  *
  * The actual `unixfdsink` branches are attached one per consumer at runtime
  * via `bus_attach` (`gst-pipeline-runner.py`), each
@@ -232,7 +233,7 @@ export function buildBusSrc(opts: BusSrcOpts): string {
 export function buildBusSink(port: number): string {
     return (
         `capssetter caps="${BUS_TS_CAPS}" replace=true ! ` +
-        `capsfilter caps="${BUS_TS_CAPS}"${busLatenessTap(latOutName(port))} ! ` +
+        `capsfilter caps="${BUS_TS_CAPS}"${busEgressLatenessTap(latOutName(port))} ! ` +
         `tee name=${busTeeName(port)} allow-not-linked=true`
     );
 }

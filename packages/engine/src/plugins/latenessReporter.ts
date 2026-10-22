@@ -30,8 +30,8 @@ interface Entry {
 /** A tap that has not reported for this many windows is gone (input removed or dark). */
 const STALE_WINDOWS = 3;
 const NS_PER_MS = 1_000_000;
-// Past this a window is off the house timeline: a producer egress reads raw mux PTS until its
-// first consumer arms the stamper (measured ~24 days, the uptime), so it is hidden, not shown.
+// Past this a window is off the house timeline. The runners forward no unstamped egress window
+// (B-26), so only a fault makes one now: it is hidden, not shown, and warned once per tap.
 const OFF_TIMELINE_MS = 3_600_000;
 
 /** One `mrlateness` message payload (ns fields) as a ms window; null when it carried no samples. */
@@ -125,10 +125,13 @@ export interface LatenessReporterOptions {
     alignerInput?: (watch: AlignerWatchRef) => AlignerInputRef;
     /** Window length the taps run at; staleness is measured in these. */
     intervalMs?: number;
+    /** A window hidden as off the house timeline: once per tap until `reset`. */
+    onHidden?: (tap: string, window: LatenessWindowMs) => void;
 }
 
 export class LatenessReporter {
     private readonly taps = new Map<string, Entry>();
+    private readonly hidden = new Set<string>();
     private readonly watches = new AlignerWatches();
     private presentationDelayMs: number | undefined;
     private deviceLatencyMs: number | undefined;
@@ -149,9 +152,17 @@ export class LatenessReporter {
         if (!channel.startsWith(`${LATENESS_EVENT}:`)) return false;
         const tap = channel.slice(LATENESS_EVENT.length + 1);
         const window = parseLatenessPayload(payload);
-        if (window && Math.abs(window.meanMs) >= OFF_TIMELINE_MS) this.taps.delete(tap);
+        if (window && Math.abs(window.meanMs) >= OFF_TIMELINE_MS) this.hide(tap, window);
         else if (window) this.addWindow(tap, window, now);
         return true;
+    }
+
+    /** Off the house timeline: not shown, and a tap's first such window goes to `onHidden`. */
+    private hide(tap: string, window: LatenessWindowMs): void {
+        this.taps.delete(tap);
+        if (this.hidden.has(tap)) return;
+        this.hidden.add(tap);
+        this.opts.onHidden?.(tap, window);
     }
 
     /** An `mralignwatch:<element>` report: whether a state or a full episode changed, and the
@@ -197,6 +208,7 @@ export class LatenessReporter {
 
     reset(): void {
         this.taps.clear();
+        this.hidden.clear();
         this.watches.clear();
         this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
         this.deviceLatencyNote = undefined;

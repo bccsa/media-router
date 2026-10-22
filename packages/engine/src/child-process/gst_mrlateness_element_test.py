@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Dataflow tests for the native `mrlateness` tap (WI-P0-7): house/running-time lateness, DTS
-fallback, chain_list (ADR-0011), untimed buffers, post-messages, EOS. The window maths is
-pinned by mrts/tests/lateness_test. Skips (exit 0) without GStreamer or the built plugin."""
+fallback, chain_list (ADR-0011), the egress tap behind an armed stamper under a natural base
+(B-26), untimed buffers, post-messages, EOS. The window maths is pinned by
+mrts/tests/lateness_test. Skips (exit 0) without GStreamer or the built plugin."""
 import os
+import re
 import sys
 import time
 
@@ -49,12 +51,12 @@ def mono_ns():
     return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
 
 
-def build(taps, base_time_zero=False, sink_extra=""):
+def build(taps, base_time_zero=False, sink_extra="", caps="application/x-test"):
     """appsrc ! <taps> ! fakesink. base_time_zero pins the house-clock rule
     (§4.1): monotonic system clock, base_time 0, no start time."""
     pipe = Gst.parse_launch(
         "appsrc name=src is-live=true format=time do-timestamp=false "
-        "caps=application/x-test ! " + " ! ".join(taps)
+        f"caps={caps} ! " + " ! ".join(taps)
         + f" ! fakesink name=fs sync=false async=false {sink_extra}")
     if base_time_zero:
         pipe.use_clock(Gst.SystemClock.obtain())
@@ -198,6 +200,75 @@ check(f"base_time != 0: house stays 300 ms (got {mh and mh / MS:.2f})",
 check("base_time != 0: running-time is off by the base time (so the case is real)",
       mh is not None and mr is not None and abs(mr - mh) > Gst.SECOND)
 stop(pipe)
+
+# --- B-26: behind an armed stamper under a natural base, the egress tap ----------------------
+# mrtsstamp writes running time, PES − 1 h − base (video-encoder keeps its natural base,
+# `liveCaptureClock`), so `house` reads base + λ there. The egress tap is the one the modules
+# build (fixtures/aligner/pipelines.json, which vitest rewrites), whatever its reference.
+_STAMP_PATHS = [os.path.join(_PLUGINS, "mpegts-core", "native", "mrtsstamp", "libgstmrtsstamp.so"),
+                os.path.join(_LIBEXEC, "mpegts-core", "libgstmrtsstamp.so")]
+_FIXTURE = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core",
+                                         "tests", "fixtures", "aligner", "pipelines.json"))
+TS_CAPS = "video/mpegts,systemstream=(boolean)true,packetsize=(int)188"
+MUX_90K = 3600 * 90000   # mpegtsmux's 1 h
+
+
+def pes_packet(pts90k):
+    """One TS packet opening a video PES (stream 0xe0) whose PTS is `pts90k`."""
+    p = pts90k & ((1 << 33) - 1)
+    pts = bytes([0x21 | (((p >> 30) & 0x07) << 1), (p >> 22) & 0xFF,
+                 0x01 | (((p >> 15) & 0x7F) << 1), (p >> 7) & 0xFF, 0x01 | ((p & 0x7F) << 1)])
+    pkt = bytes([0x47, 0x41, 0x00, 0x10]) + b"\x00\x00\x01\xe0\x00\x00\x80\x80\x05" + pts
+    return pkt + b"\xff" * (188 - len(pkt))
+
+
+def feed_pes(src, n, lateness_ns, period_s=0.02):
+    """n buffers, each a PES carrying house time lateness_ns behind CLOCK_MONOTONIC, + 1 h."""
+    for _ in range(n):
+        b = Gst.Buffer.new_wrapped(pes_packet((mono_ns() - lateness_ns) * 9 // 100000 + MUX_90K))
+        b.pts = 0
+        src.emit("push-buffer", b)
+        time.sleep(period_s)
+
+
+if not Gst.ElementFactory.find("mrtsstamp"):
+    for _p in _STAMP_PATHS:
+        if os.path.exists(_p) and Gst.Plugin.load_file(_p) is not None:
+            break
+with open(_FIXTURE, encoding="utf-8") as _fh:
+    _refs = set(re.findall(r"mrlateness name=lat_busout_\d+ reference=(\S+)", _fh.read()))
+check(f"the modules build every egress tap on one reference ({sorted(_refs)})", len(_refs) == 1)
+if Gst.ElementFactory.find("mrtsstamp") is None or len(_refs) != 1:
+    print("SKIP B-26 natural-base case — mrtsstamp plugin not built (make native)")
+else:
+    EGRESS_REF = _refs.pop()
+    STAMPED = ["mrtsstamp active=true", "mrlateness name=h reference=house interval-ms=200",
+               f"mrlateness name=e reference={EGRESS_REF} interval-ms=200"]
+    pipe, src = build(STAMPED, caps=TS_CAPS)
+    base = pipe.get_base_time()
+    time.sleep(1)   # a stamp older than the pipeline's start would clamp to 0
+    feed_pes(src, 30, 300 * MS)
+    by_tap = windows_by_tap(pipe)
+    mh, me = mean_of(by_tap.get("h", [])), mean_of(by_tap.get("e", []))
+    check(f"natural base: the base is real ({base / Gst.SECOND:.0f} s, the clock at PLAYING)",
+          base > 10 * Gst.SECOND)
+    check(f"natural base: house reads base + λ, B-26 (off by "
+          f"{mh is not None and (mh - base - 300 * MS) / MS:.3f} ms)",
+          mh is not None and abs(mh - base - 300 * MS) <= 5 * MS)
+    check(f"natural base: the egress tap (reference={EGRESS_REF}) reads λ = 300 ms "
+          f"(got {me and me / MS:.2f} ms)", me is not None and abs(me - 300 * MS) <= 5 * MS)
+    stop(pipe)
+
+    pipe, src = build(STAMPED, base_time_zero=True, caps=TS_CAPS)
+    feed_pes(src, 30, 300 * MS)
+    by_tap = windows_by_tap(pipe)
+    mh, me = mean_of(by_tap.get("h", [])), mean_of(by_tap.get("e", []))
+    check(f"base 0 control: house reads 300 ms (got {mh and mh / MS:.2f})",
+          mh is not None and abs(mh - 300 * MS) <= 5 * MS)
+    check(f"base 0 control: the egress tap agrees with house within 1 ms (diff "
+          f"{mh is not None and me is not None and (me - mh) / MS:.3f} ms)",
+          mh is not None and me is not None and abs(me - mh) <= 1 * MS)
+    stop(pipe)
 
 # --- buffers with no timestamp count as untimed, not as samples --------------
 # basesrc stamps an untimed FIRST buffer with DTS 0, so lead with a timed one.

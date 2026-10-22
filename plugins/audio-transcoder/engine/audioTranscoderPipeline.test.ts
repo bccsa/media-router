@@ -124,7 +124,7 @@ describe('buildPipeline (audio transcoder)', () => {
             tsAlignment: 7,
         })!;
         expect(r.pipeline).toContain(
-            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=house ! tee name=busout_41000 allow-not-linked=true',
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(r.pipeline).toContain('tee name=busout_41001 allow-not-linked=true');
         expect(r.pipeline).not.toContain('udpsink');

@@ -186,6 +186,14 @@ elements" below do not start.
   the whole engine down, every route on the box with it, until the engine
   restarted. Fixed: the stop completes, and such a helper is restarted by
   its module without the engine going down.
+- **Output lateness of the Video Encoder, and of modules with nothing
+  connected.** The Video Encoder's output lateness showed how long the box
+  had been up when the encoder started (minutes, on a box up less than an
+  hour) and nothing at all on a box up longer. A module whose output had no
+  consumer showed a similar number, about how long the box had been up when
+  the module started. Fixed: the Video Encoder shows its encode latency, and
+  a module's output lateness appears a few seconds after a consumer is
+  connected to it.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

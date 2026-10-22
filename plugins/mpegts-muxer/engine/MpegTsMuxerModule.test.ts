@@ -307,7 +307,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(result.pipeline).toContain(
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                     'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                    'mrlateness name=lat_busout_40010 reference=house ! tee name=busout_40010 allow-not-linked=true',
+                    'mrlateness name=lat_busout_40010 reference=running-time ! tee name=busout_40010 allow-not-linked=true',
             );
             expect(result.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
             expect(result.pipeline.match(/unixfdsrc name=busin_/g)).toHaveLength(2);

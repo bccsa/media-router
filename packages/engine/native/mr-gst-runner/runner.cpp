@@ -539,6 +539,9 @@ void Runner::on_bus_message(GstMessage* msg) {
             if (stamper::is_stamper_message(name)) {
                 stamper::handle_message(src_name, name, s);
             } else if (src_name && forwarded_message(name)) {
+                // An egress tap reads house time only while its stamper is armed (B-26).
+                if (g_str_has_prefix(src_name, stamper::EGRESS_TAP_PREFIX) && !stamper::take_egress_window(src_name))
+                    break;
                 emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));
             } else if (src_name && bus_reports.count({src_name, name})) {
                 emit_plugin_event(std::string(name) + ":" + src_name, gst_structure_to_json(s));

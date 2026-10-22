@@ -64,7 +64,7 @@ CHANNELS = ("mrtsrestamp-stats", "mrtsrestamp-pid", "mrtsrestamp-event")
 
 def bus_sink(port):
     """busHelpers.ts buildBusSink: the pinned caps, the lateness tap where it is built, the tee."""
-    tap = (f" ! mrlateness name=lat_busout_{port} reference=house"
+    tap = (f" ! mrlateness name=lat_busout_{port} reference=running-time"
            if os.path.exists(_LATENESS) else "")
     return (f'capssetter caps="{TS_CAPS}" replace=true ! capsfilter caps="{TS_CAPS}"{tap}'
             f" ! tee name=busout_{port} allow-not-linked=true")

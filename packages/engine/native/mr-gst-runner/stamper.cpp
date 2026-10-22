@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <vector>
 
 #include "ipc.h"
@@ -21,6 +22,7 @@ GstElement* g_pipeline = nullptr;
 int g_native_loaded = -1;          // -1 not tried, 0 failed, 1 loaded
 std::map<std::string, GstElement*> g_elements;   // tee name -> spliced mrtsstamp (owned ref)
 std::vector<std::string> g_armed;                 // tee names armed
+std::set<std::string> g_skip;                     // armed tees whose next egress window is dropped
 
 void log_line(const std::string& tee, const std::string& line) {
     ipc::log("busStamp " + tee + ": " + line);
@@ -198,6 +200,7 @@ void arm(GstElement* tee, const std::string& name) {
     g_object_set(it->second, "active", TRUE, nullptr);
     ipc::log(fmt("busStamp: identity egress armed on %s (PES - 1 h, native mrtsstamp)", name.c_str()));
     g_armed.push_back(name);
+    g_skip.insert(name);
 }
 
 void release(const std::string& name) {
@@ -205,6 +208,7 @@ void release(const std::string& name) {
     auto it = g_elements.find(name);
     if (it != g_elements.end()) g_object_set(it->second, "active", FALSE, nullptr);
     g_armed.erase(std::remove(g_armed.begin(), g_armed.end(), name), g_armed.end());
+    g_skip.erase(name);
     std::string extra;
     if (it != g_elements.end()) {
         guint64 copies = 0;
@@ -220,12 +224,20 @@ void clear() {
         if (it != g_elements.end()) g_object_set(it->second, "active", FALSE, nullptr);
     }
     g_armed.clear();
+    g_skip.clear();
     g_enabled = false;
     g_pipeline = nullptr;
     // The elements belong to the pipeline being torn down; the loaded plugin
     // is process-global and stays loaded.
     for (auto& [name, el] : g_elements) gst_object_unref(el);
     g_elements.clear();
+}
+
+bool take_egress_window(const std::string& tap) {
+    // `lat_busout_<port>` taps `busout_<port>`; the first window after its arm is dropped.
+    const std::string tee = tap.size() > 4 ? tap.substr(4) : std::string();
+    if (!is_armed(tee)) return false;
+    return g_skip.erase(tee) == 0;
 }
 
 GstElement* element_for(const std::string& tee_name) {

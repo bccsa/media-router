@@ -97,6 +97,7 @@ export class ModuleTiming {
             inputs: () => this.inputs(),
             alignerInput: (watch) => this.alignerInput(watch),
             intervalMs: TICK_MS,
+            onHidden: (tap, w) => this.logHidden(tap, w),
         });
     }
 
@@ -244,6 +245,17 @@ export class ModuleTiming {
         if (ref && 'tap' in ref) this.edgeWatches.add(watch.name);
         else if (this.edgeWatches.has(watch.name)) return null;
         return ref;
+    }
+
+    /** A window off the house timeline is a fault since B-26 (the runners forward no unstamped
+     *  egress window), so its hiding is said once per tap and run. */
+    private logHidden(tap: string, w: LatenessWindowMs): void {
+        const meanMs = Math.round(w.meanMs);
+        this.host.log?.(
+            'warn',
+            { latenessOffTimeline: { tap, meanMs } },
+            `Lateness tap ${tap} read ${meanMs} ms, off the house timeline: not shown`,
+        );
     }
 
     private logEvent(e: LabelledAlignerEvent): void {

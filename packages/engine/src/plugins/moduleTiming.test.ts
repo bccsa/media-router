@@ -141,6 +141,31 @@ describe('ModuleTiming', () => {
         expect(t.publication.data.timing).toEqual({ outputMs: 1, outputRange: '-1 – 3' });
         t.stop(false);
     });
+
+    it('a window off the house timeline is a warn line, once per tap and run (B-26)', () => {
+        const log = vi.fn();
+        const t = new ModuleTiming({
+            emit: () => {},
+            getProperty: async () => undefined,
+            busSources: () => [],
+            log,
+        });
+        const hidden = (meanMs: number) => [
+            'warn',
+            { latenessOffTimeline: { tap: 'lat_busout_41000', meanMs } },
+            `Lateness tap lat_busout_41000 read ${meanMs} ms, off the house timeline: not shown`,
+        ];
+        t.start({ pipeline: 'mpegtsmux ! tee name=busout_41000' });
+        t.onEvent('mrlateness:lat_busout_41000', win(2_234_996_888.4));
+        t.onEvent('mrlateness:lat_busout_41000', win(2_234_998_888));
+        t.tick();
+        expect(log.mock.calls).toEqual([hidden(2_234_996_888)]);
+        expect(t.publication.data.timing).toBeUndefined();
+        t.start({ pipeline: 'mpegtsmux ! tee name=busout_41000' });
+        t.onEvent('mrlateness:lat_busout_41000', win(2_235_000_888));
+        expect(log.mock.calls).toEqual([hidden(2_234_996_888), hidden(2_235_000_888)]);
+        t.stop(false);
+    });
 });
 
 describe('input numbering (F8)', () => {

@@ -105,7 +105,7 @@ describe('pipeline fragments', () => {
                 'caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                 'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                'mrlateness name=lat_busout_40200 reference=house ! tee name=busout_40200 allow-not-linked=true',
+                'mrlateness name=lat_busout_40200 reference=running-time ! tee name=busout_40200 allow-not-linked=true',
         );
     });
 

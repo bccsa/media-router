@@ -38,7 +38,14 @@ export function withLatenessTap(name: OutputTapName, sink: string): string {
     return tap ? `${tap} ! ${sink}` : sink;
 }
 
-/** A bus-edge tap: `house` reads raw PTS against CLOCK_MONOTONIC (§4.3). */
+/** A bus-ingress tap: `house` reads raw PTS against CLOCK_MONOTONIC (§4.3). Exact there, since
+ *  no pipeline with a bus ingress has a natural base time (`liveCaptureClock`). */
 export function busLatenessTap(name: string): string {
     return latenessTapAvailable() ? ` ! mrlateness name=${name} reference=house` : '';
+}
+
+/** The bus-egress tap: `running-time`, because the stamper writes running time there (stamp −
+ *  base time), so it is exact under a natural base too (B-26). */
+export function busEgressLatenessTap(name: string): string {
+    return latenessTapAvailable() ? ` ! mrlateness name=${name} reference=running-time` : '';
 }

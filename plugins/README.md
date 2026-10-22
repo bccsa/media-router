@@ -2081,11 +2081,13 @@ pass-through `mrlateness` (`mpegts-core/native/mrlateness`, a plain
 `GstElement` with a `chain_list`, so the mux's buffer lists stay intact —
 ADR-0011) is named in the `buildBusSrc` string ahead of the ingress queue
 (`lat_busin…`, arrival) and in `buildBusSink` after the caps pair, before the
-`busout_*` tee (`lat_busout_<port>`, the stamped PTS every consumer receives),
-both `reference=house` (raw PTS against `CLOCK_MONOTONIC`). One exception, open:
-in a `liveCaptureClock` pipeline (video-encoder) the egress tap reads the
-pipeline's base time plus the latency, because the stamper writes running
-time there, so that card shows no output lateness (ADR-0029 Phase 1). Each
+`busout_*` tee (`lat_busout_<port>`, the stamped PTS every consumer receives).
+The ingress tap is `reference=house` (raw PTS against `CLOCK_MONOTONIC`); the
+egress tap is `reference=running-time`, because the stamper writes running
+time there (stamp − base time), so a natural base such as video-encoder's
+`liveCaptureClock` cancels. An egress tap's window leaves the runner only
+while a consumer has the stamper armed: before that its PTS are the mux's own
+(ADR-0029 Phase 0, B-26). Each
 tap posts one `mrlateness` element message per 2 s window (count, untimed,
 min/mean/max/last ns); both runners forward it as the plugin event `mrlateness:<tap name>` with no `busReports` subscription,
 so dynamic inputs report too, and `GstPluginBase` consumes those events (and

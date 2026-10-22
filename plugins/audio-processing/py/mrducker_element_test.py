@@ -395,8 +395,8 @@ def built(case, aligned=True):
                           % mix, f"appsrc name={src} is-live=true format=time caps={STEREO} ! \\1",
                           desc, count=1)
         assert n == 1, (case, mix)
-    desc, n = re.subn(r"mrlateness name=lat_busout_\d+ reference=house ! tee name=busout_\d+ "
-                      r"allow-not-linked=true", OUT, desc)
+    desc, n = re.subn(r"mrlateness name=lat_busout_\d+ reference=running-time"
+                      r" ! tee name=busout_\d+ allow-not-linked=true", OUT, desc)
     assert n == 1, case
     if not HAS_EGRESS:
         level = desc.index(" ! ", desc.index("level name=outlevel"))

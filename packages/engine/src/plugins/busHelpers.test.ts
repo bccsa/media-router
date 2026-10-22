@@ -137,7 +137,7 @@ describe('buildBusSink', () => {
         expect(buildBusSink(40001)).toBe(
             `capssetter caps="${BUS_TS_CAPS}" replace=true ! ` +
                 `capsfilter caps="${BUS_TS_CAPS}" ! ` +
-                'mrlateness name=lat_busout_40001 reference=house ! ' +
+                'mrlateness name=lat_busout_40001 reference=running-time ! ' +
                 'tee name=busout_40001 allow-not-linked=true',
         );
     });

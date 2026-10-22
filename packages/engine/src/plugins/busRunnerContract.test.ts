@@ -270,7 +270,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(buildBusSink(41000)).toBe(
             'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                 'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
-                'mrlateness name=lat_busout_41000 reference=house ! ' +
+                'mrlateness name=lat_busout_41000 reference=running-time ! ' +
                 'tee name=busout_41000 allow-not-linked=true',
         );
         expect(runnerProcess).not.toContain('mrtsstamp !');

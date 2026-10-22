@@ -178,6 +178,37 @@ describe('LatenessReporter', () => {
         expect(r.summary().output).toBeUndefined();
     });
 
+    it('warns once per tap it hides, and again after a reset (B-26)', () => {
+        const onHidden = vi.fn();
+        const r = new LatenessReporter({ onHidden });
+        const off = (meanMs: number) => ({ count: 100, meanMs, minMs: meanMs, maxMs: meanMs });
+        r.onEvent('mrlateness:lat_busout_41000', win(12));
+        // An egress tap on house time under a 620.8 h base, then an unstamped ingress.
+        r.onEvent('mrlateness:lat_busout_41000', win(2_234_996_888));
+        r.onEvent('mrlateness:lat_busout_41000', win(2_234_998_890));
+        r.onEvent('mrlateness:lat_busin', win(2_108_445_230));
+        r.onEvent('mrlateness:lat_busin', win(2_108_447_230));
+        expect(onHidden.mock.calls).toEqual([
+            ['lat_busout_41000', off(2_234_996_888)],
+            ['lat_busin', off(2_108_445_230)],
+        ]);
+        expect(r.summary()).toMatchObject({ inputs: [] });
+        expect(r.summary().output).toBeUndefined();
+        // A window on the timeline in between changes nothing: the tap stays warned.
+        r.onEvent('mrlateness:lat_busout_41000', win(40));
+        expect(r.summary().output?.meanMs).toBe(40);
+        r.onEvent('mrlateness:lat_busout_41000', win(2_235_000_890));
+        expect(onHidden).toHaveBeenCalledTimes(2);
+        // A just-under-1 h window is shown (a box up less than an hour reads minutes).
+        r.onEvent('mrlateness:lat_busout_41001', win(3_599_999));
+        expect(r.summary().output?.meanMs).toBe(3_599_999);
+        expect(onHidden).toHaveBeenCalledTimes(2);
+        r.reset();
+        r.onEvent('mrlateness:lat_busout_41000', win(2_235_002_890));
+        expect(onHidden).toHaveBeenCalledTimes(3);
+        expect(onHidden).toHaveBeenLastCalledWith('lat_busout_41000', off(2_235_002_890));
+    });
+
     it('two or more bus outputs: each listed by tap name, and merged as before', () => {
         const r = new LatenessReporter();
         r.onEvent('mrlateness:lat_busin', win(100));

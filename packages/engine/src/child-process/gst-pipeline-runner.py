@@ -514,7 +514,10 @@ def on_bus_message(bus, message):
             # segment warning, worded as mr-gst-runner words them.
             gst_bus_stamper.handle_message(src_name, name, structure)
         elif name in FORWARDED_ELEMENT_MESSAGES and src_name:
-            emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))
+            # An egress tap reads house time only while its stamper is armed (B-26).
+            if (not src_name.startswith(gst_bus_stamper.EGRESS_TAP_PREFIX)
+                    or gst_bus_stamper.take_egress_window(src_name)):
+                emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))
         elif name and src_name and (src_name, name) in bus_reports:
             # Subscribed via `busReports` — forward the whole structure on the
             # generic `<structure>:<element>` channel (e.g. `level:sclevel`).

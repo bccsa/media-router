@@ -34,6 +34,14 @@ void release(const std::string& tee_name);
 /** Disarm everything and forget the pipeline (pipeline stop). */
 void clear();
 
+/** Bus-egress lateness taps are `lat_<tee>`, `lat_busout_<port>` (busHelpers.latOutName). */
+constexpr const char* EGRESS_TAP_PREFIX = "lat_busout_";
+
+/** Whether egress tap `tap`'s `mrlateness` window goes to the engine: only while its tee is
+ *  armed, since an unarmed egress carries the mux's own PTS, and not the first window after each
+ *  arm, which holds samples from before it (B-26). */
+bool take_egress_window(const std::string& tap);
+
 /** The `mrtsstamp` spliced in front of `tee_name`, or nullptr. Borrowed. */
 GstElement* element_for(const std::string& tee_name);
 

@@ -37,8 +37,12 @@ from gst_stamp_native import insert_elements, so_paths  # noqa: F401
 enabled = False         # set by `enable` at pipeline start, cleared on stop
 pipeline = None         # pipeline the armed elements belong to
 armed = []              # tee names armed — one per tee that HAS consumers
+skip = set()            # armed tees whose next egress window is dropped (B-26)
 elements = native.elements   # tee name -> inserted `mrtsstamp` element
 native_loaded = None    # None = not tried, True/False = load outcome
+
+# Bus-egress lateness taps are `lat_<tee>`, `lat_busout_<port>` (busHelpers.latOutName).
+EGRESS_TAP_PREFIX = "lat_busout_"
 
 
 def emit(obj):
@@ -69,12 +73,13 @@ def missing():
 
 def clear():
     """Disarm every stamper and forget the pipeline (stop / re-start)."""
-    global armed, enabled, pipeline
+    global armed, enabled, pipeline, skip
     for name in armed:
         el = elements.get(name)
         if el is not None:
             native.deactivate(el)
     armed = []
+    skip = set()
     enabled = False
     pipeline = None
     # The elements belong to the pipeline being torn down / replaced; they go
@@ -107,6 +112,7 @@ def arm(tee, name):
         return None
     native.activate(el, name)
     armed.append(name)
+    skip.add(name)
     return el
 
 
@@ -119,5 +125,19 @@ def release(tee_name):
     if el is not None:
         native.deactivate(el)
     armed.remove(tee_name)
+    skip.discard(tee_name)
     extra = native.copy_count_note(el) if el is not None else ""
     _log(tee_name, f"last consumer edge detached — stamper disarmed{extra}")
+
+
+def take_egress_window(tap):
+    """Whether egress tap `tap`'s `mrlateness` window goes to the engine: only while its tee is
+    armed, since an unarmed egress carries the mux's own PTS, and not the first window after each
+    arm, which holds samples from before it (B-26)."""
+    tee = tap[len("lat_"):]
+    if tee not in armed:
+        return False
+    if tee in skip:
+        skip.discard(tee)
+        return False
+    return True

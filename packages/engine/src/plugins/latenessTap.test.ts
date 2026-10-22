@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
     buildLatenessTap,
+    busEgressLatenessTap,
+    busLatenessTap,
     latenessTapAvailable,
     setLatenessTapAvailable,
     withLatenessTap,
@@ -29,6 +31,17 @@ describe('output lateness taps', () => {
         setLatenessTapAvailable(false);
         expect(buildLatenessTap('lat_render')).toBeNull();
         expect(withLatenessTap('lat_render', 'fakesink')).toBe('fakesink');
+        expect(busLatenessTap('lat_busin')).toBe('');
+        expect(busEgressLatenessTap('lat_busout_41000')).toBe('');
+    });
+
+    it('a bus ingress reads house time, a bus egress running time (B-26)', () => {
+        // Every bus-fed pipeline runs base 0; an egress may not (video-encoder's natural base),
+        // and the stamper writes running time there.
+        expect(busLatenessTap('lat_busin')).toBe(' ! mrlateness name=lat_busin reference=house');
+        expect(busEgressLatenessTap('lat_busout_41000')).toBe(
+            ' ! mrlateness name=lat_busout_41000 reference=running-time',
+        );
     });
 
     it('probes for libgstmrlateness.so once, by path', () => {

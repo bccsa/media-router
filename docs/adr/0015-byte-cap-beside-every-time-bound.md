@@ -37,9 +37,15 @@ failure mode and the byte cap costs nothing on a healthy stream.
 - Raw video (1080p50 I420 ≈ 1.2 Gbit/s) would shed constantly under this cap,
   hence the exemption. `buildLeakyQueue` / `buildBackpressureQueue` default to
   `maxBytes = 0` so an unconverted caller stays exactly as it was.
-- A stalled consumer still pins up to 40 MB of shm per edge on the producer
-  (unixfdsink holds each sent copy until the consumer's 5 s ingress lets it
-  go). Bounded, but a per-consumer budget to remember on busy fan-outs.
+- A stalled consumer still pins up to 40 MB of payload per edge on the
+  producer (unixfdsink holds each sent copy until the consumer's 5 s ingress
+  lets it go). Bounded, but a per-consumer budget to remember on busy
+  fan-outs, and more shm than its payload: each in-flight bus buffer is a
+  memfd of its own, rounded up to whole pages, so a 1,323-byte buffer pins
+  4 KiB on a Pi 4 and 16 KiB on a 16K-page kernel. An edge stalled at the
+  40 MB cap of 1,316-byte buffers therefore pins about 125 MB, or about
+  500 MB, not 40 MB. The fd count per edge is bounded the same way, by the
+  consumer's 5 s ingress queue (plan chapter 15.4 B-91, measured 2026-10-22).
 - Not yet converted (tracked in queueBounds.ts): `buildTsUdpInput`'s jitter
   queue, mpegts-ip-output / mpegts-ip-input back-pressure queues, the
   video-player's compressed pre-decode queue, and the literal queues in

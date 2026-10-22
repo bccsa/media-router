@@ -315,7 +315,7 @@ import gst_lateness_native  # noqa: E402
 if gst_lateness_native.load_plugin():
     p5 = Gst.parse_launch(
         f"appsrc name=src5 caps={TS_CAPS} ! capssetter caps=\"{TS_CAPS}\" replace=true "
-        f"! capsfilter caps={TS_CAPS} ! mrlateness name=lat_busout_41004 reference=house "
+        f"! capsfilter caps={TS_CAPS} ! mrlateness name=lat_busout_41004 reference=running-time "
         f"! tee name=busout_41004 allow-not-linked=true")
     peer5, sink5 = stamper.native.egress_head(p5.get_by_name("busout_41004"))
     check("egress_head walks past the lateness tap to the producer",

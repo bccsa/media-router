@@ -517,31 +517,38 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
 - **The tap is a plain `GstElement`, not a `GstBaseTransform`**, with a
   `chain` and a `chain_list`: basetransform would dismantle the per-AU
   buffer lists `mpegtsmux alignment=7` emits and regress the ADR-0011
-  coalescing. Per buffer (per list: its first buffer) a bus tap costs one
-  `clock_gettime` and a few adds; a running-time tap before a sink adds one
-  element-clock read (`gst_element_get_current_running_time`: object lock,
-  clock ref, a second time read). No allocation on the hot path either way.
+  coalescing. Per buffer (per list: its first buffer) a `house` tap costs one
+  `clock_gettime` and a few adds; a running-time tap (at a bus egress or
+  before a sink) adds one element-clock read
+  (`gst_element_get_current_running_time`: object lock, clock ref, a second
+  time read). No allocation on the hot path either way.
 - **Placement and the `reference` rule.** Three kinds of point, two
   references:
   - every bus ingress: `buildBusSrc()` names `mrlateness` as `lat_busin…`
     with `reference=house` *before* the ingress queue, so it reads arrival;
     a dynamic `bus_input_add` gets it from the same string;
   - every bus egress: `buildBusSink()` names it `lat_busout_<port>` with
-    `reference=house` after the `capssetter ! capsfilter` pair and before
-    the `busout_*` tee, i.e. after the `mrtsstamp` splice, so it reads the
-    stamped PTS every consumer receives;
+    `reference=running-time` after the `capssetter ! capsfilter` pair and
+    before the `busout_*` tee, i.e. after the `mrtsstamp` splice, so it reads
+    the stamp every consumer receives, once a consumer has armed it (below);
   - immediately before an output module's final sink:
     `withLatenessTap('lat_render' | 'lat_egress', sink)` with
     `reference=running-time`.
 
   `house` compares raw buffer PTS with `CLOCK_MONOTONIC`, the bus convention
   (§4.3); `running-time` compares segment running time with the element
-  clock, which is what a sink renders against. Corrected 2026-10-16: the
-  draft said `house` stays correct in `liveCaptureClock` pipelines. At a bus
-  egress it does not: the stamper writes running time (stamp − base time),
-  so video-encoder's `lat_busout` tap reads its base time plus the encode
-  latency (measured in Phase 1, open there). Ingress taps on base-0
-  pipelines are unaffected.
+  clock, which is what a sink renders against. Corrected 2026-10-16 and
+  fixed 2026-10-22 (plan chapter 15.4 B-26): the draft put the egress tap on
+  `house` and said it stays correct in `liveCaptureClock` pipelines. It does
+  not: the stamper writes running time there (stamp − base time), so
+  video-encoder's tap read its base time plus the encode latency. On running
+  time the base cancels. Every pipeline with a bus ingress runs base 0, so
+  the ingress taps stay `house`. An egress with no consumer is not stamped
+  at all (the lazy arm) and carries the mux's own PTS, so both runners
+  forward a `lat_busout_<port>` window only while `busout_<port>` is armed,
+  and drop the first after each arm, which holds samples from before it: a
+  producer shows no output lateness until a consumer is connected, and none
+  without the stamper plugin.
 - **Transport.** The element posts an `mrlateness` element message per
   window (`count`, `untimed`, `min-ns`, `mean-ns`, `max-ns`, `last-ns`,
   `interval-ns`, `reference`) from the streaming thread, only when the
@@ -616,8 +623,9 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
 - **Two guards.** State is emitted only when a displayed value moves by
   ≥ 1 ms or a row comes or goes, bounding manager traffic with 30 modules
   (R-P0-6). A window whose |mean| is ≥ 1 h is not on the house timeline at
-  all (a producer egress reads raw mux PTS until its first consumer arms
-  the stamper) and is dropped rather than shown as lateness.
+  all and is dropped rather than shown as lateness, with one warning per tap
+  and run in the module's log. Since the runners forward no unstamped egress
+  window (B-26), only a fault produces one.
 
 ### Device Manager
 
@@ -1650,10 +1658,11 @@ design's §5.2 keeps the general rule.
 - A sender whose delivery swings by ±300 ms (today's gate egress) lands on
   its lower envelope, so its PES reach a receiver up to 554 ms after their
   house PTS: a Phase 4 output's latency, or the ingest offset, must cover it.
-- The bus-egress lateness tap of a `liveCaptureClock` pipeline reads the base
-  time (Phase 0, corrected above): video-encoder's card shows no output
-  lateness, because the reporter hides a window of 1 h or more. Proposed
-  fix: that tap with `reference=running-time`, exact under any base time.
+- Closed 2026-10-22 (plan chapter 15.4 B-26): the bus-egress lateness tap of
+  a `liveCaptureClock` pipeline read the base time, so video-encoder's card
+  showed minutes on a box up less than an hour and no output lateness after.
+  The egress taps now read running time, exact under any base time (Phase 0,
+  above).
 
 ## Phase 2 (built 2026-10-16 to 2026-10-18, gate pending) — identity only, the splitter passes through, aligners wait
 

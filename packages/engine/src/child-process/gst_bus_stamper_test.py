@@ -13,6 +13,8 @@ What is pinned here:
       pipeline neither loads nor misses the plugin.
   --  Lazy arm: a tee with no consumer edge is untouched, the first attach arms it, the last
       detach disarms it, and a re-attach stamps afresh (a new identity line).
+  --  The egress tap's windows (B-26) reach the engine only while its tee is armed, the first
+      after each arm dropped; without the plugin none at all.
   --  Identity: stamps are PES − 1 h whatever the arrival, PTS and DTS; the identity log
       line names the first PES, in mr-gst-runner's words.
   --  A gap marker (OQ-12) leaves an armed egress with its PTS and no DTS (B-19).
@@ -182,6 +184,20 @@ def house(c90k):
     return _tl.pts90k_to_ns(c90k)
 
 
+# The egress tap's `mrlateness` window, through the runner's REAL handler (B-26). A stand-in
+# element carries the tap's name; the bus is not needed for an element message.
+EGRESS_TAP = Gst.ElementFactory.make("identity", "lat_" + TEE)
+INGRESS_TAP = Gst.ElementFactory.make("identity", "lat_busin_41000_abcdef")
+
+
+def forwarded(tap=EGRESS_TAP):
+    """One window from `tap` into the runner: whether it left as `mrlateness:<tap>`."""
+    n = len(events)
+    s = Gst.Structure.new_from_string("mrlateness, count=(guint64)50, mean-ns=(gint64)40000000")
+    runner.on_bus_message(None, Gst.Message.new_element(tap, s))
+    return [e.get("channel") for e in events[n:]] == [f"mrlateness:{tap.get_name()}"]
+
+
 events = []
 runner.emit_event = events.append
 
@@ -230,6 +246,9 @@ wait_for(seen, 3)
 check("buffers before the first attach keep their own arrival timestamps",
       [p for p, _d, _f in seen[:3]] == [0, 5 * Gst.MSECOND, 10 * Gst.MSECOND])
 check("and nothing is reported while the tee has no consumer", identity_lines(pipe) == "")
+check("no consumer: the egress tap's windows stay in the runner (the mux's own PTS), an "
+      "ingress tap's go out",
+      [forwarded(), forwarded(), forwarded(INGRESS_TAP)] == [False, False, True])
 
 sock_a = os.path.join(sockdir, "edge-a.sock")
 sock_b = os.path.join(sockdir, "edge-b.sock")
@@ -239,6 +258,8 @@ with redirect_stderr(err):
 check("the first consumer edge arms the element",
       stamper.armed == [TEE] and el.get_property("active") is True
       and f"busStamp: identity egress armed on {TEE} (PES - 1 h, native mrtsstamp)" in err.getvalue())
+check("armed: the first window after the arm is dropped (it holds samples from before it), "
+      "the next ones go out", [forwarded(), forwarded(), forwarded()] == [False, True, True])
 for i in range(3, 9):
     ladder_push(i, 5 * i)
 wait_for(seen, 9)
@@ -251,10 +272,11 @@ check("the identity line names the first PES after the arm, in mr-gst-runner's w
 
 with redirect_stderr(io.StringIO()):
     runner.handle_bus_attach({"tee": TEE, "socket": sock_b})
-check("a second consumer on the same tee does not re-arm", stamper.armed == [TEE])
+check("a second consumer on the same tee does not re-arm, nor drop a window",
+      stamper.armed == [TEE] and forwarded())
 runner.handle_bus_detach({"socket": sock_b})
 check("one consumer of two leaving keeps it armed",
-      stamper.armed == [TEE] and el.get_property("active") is True)
+      stamper.armed == [TEE] and el.get_property("active") is True and forwarded())
 for i in range(9, 12):
     ladder_push(i, 5 * i)
 wait_for(seen, 12)
@@ -269,6 +291,7 @@ check("the LAST consumer leaving disarms it",
       stamper.armed == [] and el.get_property("active") is False
       and f"busStamp {TEE}: last consumer edge detached — stamper disarmed (native, 0 "
           "non-writable buffers)" in err.getvalue())
+check("disarmed: no egress window goes out", [forwarded(), forwarded()] == [False, False])
 for i in range(12, 15):
     ladder_push(i, 500 + 5 * i)
 wait_for(seen, 15)
@@ -284,6 +307,7 @@ wait_for(seen, 18)
 check("a re-attach stamps afresh: PES − 1 h again, and a new identity line on its first PES",
       [p for p, _d, _f in seen[15:18]] == [house(c0 + i * STEP) for i in range(15, 18)]
       and f"stamp={house(c0 + 15 * STEP)} " in identity_lines(pipe))
+check("and drops the first window after it again", [forwarded(), forwarded()] == [False, True])
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +326,7 @@ stamper.clear()
 runner.pipeline = None
 shutil.rmtree(sockdir, ignore_errors=True)
 check("clear() forgets the elements and the arm", stamper.elements == {} and stamper.armed == []
-      and stamper.enabled is False)
+      and stamper.enabled is False and not forwarded())
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +356,8 @@ try:
     with redirect_stderr(io.StringIO()):
         runner.handle_bus_attach({"tee": TEE, "socket": sock_d})
     check("an attach arms nothing", stamper.armed == [])
+    check("and no egress window goes out, before or after it (B-26)",
+          [forwarded(), forwarded(), forwarded()] == [False, False, False])
     c0 = pipe.get_pipeline_clock().get_time() * 9 // 100000 + 90000
     for i in range(3):
         push(src, pes_packet(0x100, MUX + c0 + i * STEP, i), 7 * i * Gst.MSECOND, 3 * Gst.SECOND)
