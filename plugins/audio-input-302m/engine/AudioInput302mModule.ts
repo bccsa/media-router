@@ -7,7 +7,7 @@ import {
     buildBusSink,
     buildRestamp,
     isIngestTimingSection,
-    pulsePinnedStreamProps,
+    pipewireStreamProps,
     restampBusReports,
     StreamPortLinker,
     type IngestTimingHost,
@@ -305,7 +305,7 @@ export class AudioInput302mModule extends GstPluginBase {
         // would take the first N device ports by position); the engine does.
         const src =
             `pipewiresrc target-object=${device}` +
-            ` ${pulsePinnedStreamProps({
+            ` ${pipewireStreamProps({
                 'node.latency': `${quantum}/48000`,
                 'node.name': this.pwNodeName,
                 'node.autoconnect': 'false',

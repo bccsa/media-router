@@ -40,10 +40,10 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('udpsink');
     });
 
-    it("captures its own null-sink's monitor (#736): no WirePlumber fallback, linger until the sink exists", () => {
+    it("captures its own null-sink's monitor (#736): no WirePlumber fallback, linger until the sink exists, the node on the RT data loop (B-88)", () => {
         const { module } = makeModule();
         expect(module.buildPipeline({}).pipeline).toMatch(
-            /^pipewiresrc target-object=MR_PW_enc-1 stream-properties="props,node\.dont-fallback=\(string\)true,node\.linger=\(string\)true,stream\.capture\.sink=\(string\)true,node\.latency=\(string\)2880\/48000" ! /,
+            /^pipewiresrc target-object=MR_PW_enc-1 stream-properties="props,node\.dont-fallback=\(string\)true,node\.linger=\(string\)true,node\.loop\.class=\(string\)data\.rt,stream\.capture\.sink=\(string\)true,node\.latency=\(string\)2880\/48000" ! /,
         );
     });
 

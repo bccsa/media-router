@@ -84,9 +84,10 @@ describe('AudioInput302mModule.buildPipeline', () => {
         // pipewiresrc, never pulsesrc: pipewire-pulse cannot create wide record streams.
         expect(desc!.pipeline).toContain('pipewiresrc target-object=alsa_input.usb-mic');
         expect(desc!.pipeline).not.toContain('pulsesrc');
-        // #736 pins, the quantum request, a findable node name, and WirePlumber kept out.
+        // #736 pins, the node on the runner's RT data loop (B-88), the quantum request, a
+        // findable node name, and WirePlumber kept out.
         expect(desc!.pipeline).toContain(
-            `stream-properties="props,${PINS},node.latency=(string)2880/48000,node.name=(string)MR_PW_ain-1,node.autoconnect=(string)false"`,
+            `stream-properties="props,${PINS},node.loop.class=(string)data.rt,node.latency=(string)2880/48000,node.name=(string)MR_PW_ain-1,node.autoconnect=(string)false"`,
         );
         // Exactly as wide as the range, unpositioned → ports input_1..2, re-positioned
         // by an identity matrix for the encoder. Never a device-wide matrix.

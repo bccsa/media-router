@@ -1257,7 +1257,14 @@ stream on a multichannel (AUX-named) card only ever reaches its first two
 ports. When a module must land on channels N..M, create the stream exactly that
 wide and unpositioned (`audio/x-raw,channels=N,channel-mask=(bitmask)0x0`), give
 it `node.name=<this.pwNodeName>` and `node.autoconnect=false` through
-`pulsePinnedStreamProps({...})`, and let the engine link it:
+`pipewireStreamProps({...})`, and let the engine link it. Every `pipewiresrc`
+and `pipewiresink` takes that helper: WirePlumber's pins (no fallback, linger;
+#736), and the stream's node on the runner's real-time data loop (B-88;
+otherwise PipeWire runs it on an ordinary thread that loses cycles on a busy
+box). A `pulsesrc` or `pulsesink` takes `pulsePinnedStreamProps({...})`: its
+node runs inside pipewire-pulse, on that daemon's real-time loop.
+
+In the module:
 
 ```ts
 import { StreamPortLinker, type StreamLinkSpec } from '@media-router/engine';

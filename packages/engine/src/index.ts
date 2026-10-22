@@ -244,7 +244,12 @@ export {
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
-export { pulsePinnedStreamProps, PULSE_PINNED_STREAM_PROPS } from './plugins/pulseStreamProps.js';
+export {
+    pipewireStreamProps,
+    PIPEWIRE_RT_STREAM_PROPS,
+    pulsePinnedStreamProps,
+    PULSE_PINNED_STREAM_PROPS,
+} from './plugins/pulseStreamProps.js';
 export { linkStreamPorts, portsFromDump, StreamPortLinker } from './audio/streamPortLinks.js';
 export type { StreamLinkSpec, StreamLinkResult, StreamLinkDeps } from './audio/streamPortLinks.js';
 export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';

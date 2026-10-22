@@ -225,6 +225,13 @@ elements" below do not start.
   irregularly: gaps up to n, normally every n"). That warning replaces "PCR
   every n ms (spec ≤ 100 ms)", which a bursty link raised on sources whose
   clock was fine.
+- **Audio captures no longer drop sound on a busy box.** On a box working
+  near its limit (a Pi 4 showing video on HDMI while it encodes, for one),
+  Audio Input (302M) and Audio Encoder could lose 50 to 200 ms of sound now
+  and then, up to about a hundred times an hour: each a short gap in the
+  stream, counted under Re-locks on the Clock card. The capture ran at
+  ordinary priority, competing with everything else on the box. Fixed: it
+  now runs at real-time priority, as PipeWire's own audio does.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

@@ -12,7 +12,7 @@ import {
     busTeeName,
     gstInspectMaxChannels,
     isIngestTimingSection,
-    pulsePinnedStreamProps,
+    pipewireStreamProps,
     restampBusReports,
     type IngestTimingHost,
     type PipelineDescription,
@@ -289,7 +289,7 @@ export class AudioEncoderModule extends GstPluginBase {
         );
         const src =
             `pipewiresrc target-object=${this.pwNodeName}` +
-            ` ${pulsePinnedStreamProps({
+            ` ${pipewireStreamProps({
                 'stream.capture.sink': 'true',
                 'node.latency': `${quantum}/48000`,
             })}`;

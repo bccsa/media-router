@@ -34,3 +34,21 @@ export function pulsePinnedStreamProps(extra: Record<string, string | number> = 
         .join(',');
     return `stream-properties="props,${fields}"`;
 }
+
+/**
+ * `pipewiresrc` / `pipewiresink` only (B-88): the stream's node on the runner's RT data loop,
+ * which module-rt gets SCHED_RR through rtkit. Unset, PipeWire runs it on the plugin's
+ * SCHED_OTHER main loop, and an async capture loses whole cycles when the box is busy.
+ */
+export const PIPEWIRE_RT_STREAM_PROPS: Readonly<Record<string, string>> = {
+    'node.loop.class': 'data.rt',
+};
+
+/**
+ * `stream-properties=` clause for a `pipewiresrc` / `pipewiresink`: the #736 pins, the RT
+ * data loop, then `extra`. Pulse elements keep `pulsePinnedStreamProps`: their nodes live
+ * in pipewire-pulse, on its own RT loop.
+ */
+export function pipewireStreamProps(extra: Record<string, string | number> = {}): string {
+    return pulsePinnedStreamProps({ ...PIPEWIRE_RT_STREAM_PROPS, ...extra });
+}
