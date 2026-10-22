@@ -29,9 +29,9 @@ struct ClockLockConfig {
     int64_t step_hold_ns = 10000000000LL;      // ... for this long
     bool step_falls = false;                   // ... or fell this much (mrasrc: two-sided)
     // Two buckets agreeing on a floor this far below the line: a drained backlog, moved onto
-    // in any epoch and phase (B-39). leap_ns's 500 ms: a backlog that relocks lies past it, but
-    // one under 510 ms the acquire slew may first bring under (B-48). 0: off (mrasrc).
-    int64_t backlog_ns = 500000000;
+    // in any epoch and phase (B-39). leap_ns's 500 ms less the acquire slew's 10 ms, so a backlog
+    // that relocks still lies past it when its floor shows (B-48, the owner's). 0: off (mrasrc).
+    int64_t backlog_ns = 490000000;
     int64_t lost_ns = 5000000000LL;            // no sample this long: phase lost
     int64_t residual_window_ns = 2000000000;   // residual stats window (stats-interval-ms)
 };

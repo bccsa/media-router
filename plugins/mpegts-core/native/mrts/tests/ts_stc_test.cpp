@@ -569,11 +569,20 @@ void test_start_burst() {
           s.at(2500 * MS) >= 8 * MS && iabs(s.at(20 * S)) <= 1 * MS);
     const StartRun rl = start_run(stc, 400 * MS, 100 * S, 500 * MS, false, 100 * S, 120);
     const StartRun rl49 = start_run(stc, 490 * MS, 100 * S, 500 * MS, false, 100 * S, 120);
-    std::printf("  burst after a relock at 100 s: house - floor %.3f ms at 102.5 s; 490 ms: %.3f ms\n",
-                rl.at(102500 * MS) / 1e6, rl49.at(102500 * MS) / 1e6);
+    const StartRun rl495 = start_run(stc, 495 * MS, 100 * S, 500 * MS, false, 100 * S, 120);
+    std::printf("  burst after a relock at 100 s: house - floor %.3f ms at 102.5 s; 490 ms: %.3f ms (%.3f at 120 s); "
+                "495 ms: %.3f ms (%.3f at 120 s)\n",
+                rl.at(102500 * MS) / 1e6, rl49.at(102500 * MS) / 1e6, rl49.at(120 * S) / 1e6,
+                rl495.at(102500 * MS) / 1e6, rl495.at(120 * S) / 1e6);
     CHECK("start burst: after a relock a burst under backlog_ns is the acquire slew's (the rule is the pipeline's start)",
           rl.at(102500 * MS) >= 380 * MS);
-    CHECK("start burst: ... 490 ms too, just under backlog_ns (B-48: 500 ms, as leap_ns)", rl49.at(102500 * MS) >= 470 * MS);
+    // backlog_ns (B-48: 490 ms) takes only a floor more than that below: at the second close a
+    // 490 ms burst's two buckets lie 489.4 and 490 ms under the slewed line, so it stays; a 495 ms
+    // one's 494.4 and 495 ms, so it moves (at leap_ns's 500 ms it stayed too).
+    CHECK("start burst: ... 490 ms too, at backlog_ns (still the acquire slew's at 120 s)",
+          rl49.at(102500 * MS) >= 470 * MS && rl49.at(120 * S) >= 470 * MS);
+    CHECK("start burst: ... but 495 ms, past it, moves onto the floor at the second bucket's close (1 ms)",
+          iabs(rl495.at(102500 * MS)) <= 1 * MS && iabs(rl495.at(120 * S)) <= 1 * MS);
     // mrasrc's lock: its 50 ms step is the threshold.
     const StartRun a40 = start_run(asrc, 40 * MS), a80 = start_run(asrc, 80 * MS);
     CHECK("start burst: mrasrc's lock (50 ms step) slews 40 ms and moves onto the floor under 80 ms",
@@ -599,7 +608,7 @@ void test_start_burst() {
     std::printf("  first pair 30 ms and 12 ms late: house - floor %.3f ms at 2.5 s\n", two.at(2500 * MS) / 1e6);
     CHECK("start burst: a first pair with only one bucket past step_ns below the line moves nothing (both must)",
           two.at(2500 * MS) >= 20 * MS && two.at(2500 * MS) <= 30 * MS);
-    for (const StartRun* r : {&b, &d, &s, &rl, &rl49, &a40, &a80, &two})
+    for (const StartRun* r : {&b, &d, &s, &rl, &rl49, &rl495, &a40, &a80, &two})
         for (const auto& o : r->off) g_all.add(o.second);
 }
 
@@ -673,24 +682,28 @@ void test_backlog_floor() {
                 r1.at(94 * S) / 1e6, r5.at(158 * S) / 1e6);
     CHECK("backlog floor: after a relock a backlog past backlog_ns moves too, by 3 s after the drain (1 ms)",
           iabs(r1.at(94 * S)) <= 1 * MS && iabs(r1.at(160 * S)) <= 1 * MS && iabs(r5.at(158 * S)) <= 1 * MS);
-    // Under lead_max_ns too: backlog_ns is leap_ns's 500 ms, past which a reconnect's backlog
-    // relocks (D2); under it the acquire slew keeps a relock's seed (B-37).
+    // Under lead_max_ns too: past leap_ns (500 ms) a reconnect's backlog relocks (D2), and backlog_ns
+    // is 10 ms less, the most the acquire slew takes before the floor shows (B-48: at 500 ms a 505 ms
+    // backlog drained in 2 s stayed 0.5 s early); under it the acquire slew keeps a relock's seed (B-37).
     const BacklogRun r3 = backlog_run(stc, 60 * S, 3 * S, 2 * S, 60 * S, 90);
     const BacklogRun r06 = backlog_run(stc, 60 * S, 600 * MS, 500 * MS, 60 * S, 90);
+    const BacklogRun r505 = backlog_run(stc, 60 * S, 505 * MS, 2 * S, 60 * S, 90);
     const BacklogRun r04 = backlog_run(stc, 60 * S, 400 * MS, 500 * MS, 60 * S, 90);
     std::printf("  relock backlogs: 3 s/2 s house - floor %.3f ms at 67 s; 0.6 s/0.5 s %.3f ms at 64 s; "
-                "0.4 s/0.5 s %.3f ms at 70 s\n",
-                r3.at(67 * S) / 1e6, r06.at(64 * S) / 1e6, r04.at(70 * S) / 1e6);
+                "0.505 s/2 s %.3f ms at 65 s; 0.4 s/0.5 s %.3f ms at 70 s\n",
+                r3.at(67 * S) / 1e6, r06.at(64 * S) / 1e6, r505.at(65 * S) / 1e6, r04.at(70 * S) / 1e6);
     CHECK("backlog floor: after a relock 3 s and 0.6 s backlogs (past backlog_ns) move too, by 3 s after the drain (1 ms)",
           iabs(r3.at(67 * S)) <= 1 * MS && iabs(r3.at(90 * S)) <= 1 * MS && iabs(r06.at(64 * S)) <= 1 * MS &&
               iabs(r06.at(90 * S)) <= 1 * MS);
+    CHECK("backlog floor: ... and a 0.505 s one drained in 2 s, within the acquire slew's 10 ms past leap_ns (1 ms)",
+          iabs(r505.at(65 * S)) <= 1 * MS && iabs(r505.at(90 * S)) <= 1 * MS);
     CHECK("backlog floor: ... a 0.4 s one (under backlog_ns) stays the acquire slew's (380 ms left at 70 s)",
           r04.at(70 * S) >= 380 * MS);
     // mrasrc's lock has no backlog rule: its falls are envelope steps (part 4.5).
     const BacklogRun a1 = backlog_run(asrc, 60 * S, 30 * S, 1 * S, 60 * S, 100);
     CHECK("backlog floor: mrasrc's lock leaves it to its envelope step (29 s left 3 s after the drain)",
           a1.at(94 * S) >= 29 * S);
-    for (const BacklogRun* r : {&f1, &f5, &s3, &r1, &r5, &r3, &r06, &r04, &a1})
+    for (const BacklogRun* r : {&f1, &f5, &s3, &r1, &r5, &r3, &r06, &r505, &r04, &a1})
         for (const auto& o : r->off) g_all.add(o.second);
 }
 

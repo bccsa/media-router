@@ -2266,7 +2266,7 @@ void test_backlog(const char* label, int64_t at, int64_t len, int64_t drain) {
 }
 
 // A reconnect backlog under lead_max_ns (the second review's D2): the relock seeds the new epoch
-// `len` above the floor, and two agreeing buckets past backlog_ns (500 ms) move it there. Never
+// `len` above the floor, and two agreeing buckets past backlog_ns (490 ms) move it there. Never
 // degraded; within 10 s of the reconnect every PID leaves at its source lead (V-P1-3). What left
 // on the seed overlaps the live content after the move, which the guard drops once (B-37's drop);
 // the straddle rule maps the drain's tail on the old epoch, under what left, which goes too.

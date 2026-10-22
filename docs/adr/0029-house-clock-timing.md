@@ -628,18 +628,20 @@ rows B-1 to B-48) holds the same records with their work items.
   buckets agreeing on a floor more than `backlog_ns` below the line move it,
   which is how a reconnect into a running keep-listening listener, a relock
   seeded on the backlog's oldest sample, gets its floor. `backlog_ns` is
-  500 ms, as `leap_ns` (B-47, 2026-10-17; 4 s as first built): a backlog
+  490 ms, the owner's choice (B-48, 2026-10-21; 500 ms, as `leap_ns`, in
+  B-47; 4 s as first built): `leap_ns` less the 10 ms the acquire slew can
+  take from a relock's seed before the backlog's floor shows, so a backlog
   that relocks lies past it, while the largest delivery swing measured (the
   bursty encoder's dips: its line moves at 420 ms, not at 430) stays under
   it. At 4 s a relock backlog of 1–3 s left the egress that early for the
   1.4 days the 20 ppm slew needs, and one of 3.5–3.9 s degraded the
-  program. Not exact at the edge (B-48, for the owner): a backlog within
-  the acquire slew's 10 ms past `leap_ns` relocks but can stay about 0.5 s
-  above the floor (30 of 160 replays at 500–512 ms; none at 490 ms), while
-  at 485 ms a gate PES envelope's dip (a clamped PID's lock, 100 s after a
-  stall relocked it) already moves the line, drops 0.47 s and relocks
-  10 s later; both sides lie within about 15 ms. `mrasrc` has the second
-  rule off: its PTS is the capture time.
+  program; at 500 ms one within those 10 ms past `leap_ns` relocked but
+  could stay about 0.5 s above the floor for the 7 h of the slew (30 of 160
+  replays at 500–512 ms; none at 490 ms). The other edge lies a few ms
+  under 490: at 485 ms a gate PES envelope's dip (a clamped PID's lock,
+  100 s after a stall relocked it) moves the line, drops 0.47 s and
+  relocks 10 s later. `mrasrc` has the second rule off: its PTS is the
+  capture time.
 - **A caller's backlog is stale** (B-39, B-45). While the live line lies
   more than `lead_max_ns` above the floor its open and last closed bucket
   show, or more than `backlog_ns` above it (a backlog's: the floor rule
@@ -1165,12 +1167,14 @@ design's §5.2 keeps the general rule.
   live content once (B-45, as at a start burst, B-37), and a keep-listening
   reconnect loses up to about 2 s more where the straddle rule maps the
   drain's tail on the old epoch (signalled since B-48).
-- `backlog_ns` at the edge (B-48, the owner's): 500 ms leaves a relock
-  backlog within 10 ms past `leap_ns` about 0.5 s early for hours, 485 ms
-  and under moves a gate PES envelope onto a dip; 490 ms clears both on
-  today's traces by 0–5 ms. Alternative: the rule only in an epoch a leap
-  opened (4 s elsewhere), with the stale rule's second clause scoped alike
-  and in the first epoch, so that a stale run never outlasts a move.
+- `backlog_ns` 490 ms (B-48, the owner's, 2026-10-21) clears both of its
+  edges on today's traces by 0–5 ms: a relock backlog within 10 ms past
+  `leap_ns`, which 500 ms left about 0.5 s early for hours, and a gate PES
+  envelope's dip, onto which 485 ms and under moves the line. Should a
+  field trace land in that window, the fallback is the rule only in an
+  epoch a leap opened (4 s elsewhere), with the stale rule's second clause
+  scoped alike and in the first epoch, so that a stale run never outlasts
+  a move.
 - In `stc` mode a source's own PTS step under the leap row passes with no
   marker (fixed mode's jump check is not applied): the gate's own 215–220 ms
   step on every PID at 421 s of `trace-gate01-rist-20010` and at 345 s of
