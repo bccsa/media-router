@@ -2,6 +2,7 @@
 // rhythm, the pace one aggregator's inputs share and the gaps an absent input gets. Times are
 // ns of pipeline running time. No GStreamer, no GLib: mralignwatch is the GStreamer side.
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -42,7 +43,7 @@ class ArrivalRhythm {
 
 // The pace of one aggregator's inputs (part 4.3 job 3): at least 0, each member's seed and
 // each lateness a member showed over a second. It rises only, and is recomputed from the
-// members that remain when one leaves. PaceRegistry's lock guards it.
+// members that remain when one leaves. PaceRegistry's lock guards it, but for `snapshot`.
 //
 // A member's lateness: the median over wall time of its last second, each stretch between two
 // arrivals at its midpoint, leaving out those over which it fell (a backlog draining, at any
@@ -50,6 +51,11 @@ class ArrivalRhythm {
 class PaceGroup {
   public:
     using Member = uint64_t;
+    // What a member's task reads on every pass, without the lock (B-79).
+    struct Snapshot {
+        int64_t pace = 0;
+        bool started = false;
+    };
     static constexpr int64_t WINDOW_NS = 1000000000;   // a member's lateness: over its last 1 s
     // It counts toward the pace once its stretches span half the second: the first arrivals of
     // a run are no lateness over a second.
@@ -68,10 +74,13 @@ class PaceGroup {
     void observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh = false);
     void raise(int64_t pace_ns);
     // A member pushed something timed: the aggregator runs, for the rest of the group's life.
-    void start() { started_ = true; }
+    void start();
     bool started() const { return started_; }
 
     int64_t pace() const { return pace_; }
+    // The last pace and start published, on any thread, lock-free: a seqlock the writers (under
+    // the registry's lock, or one thread) update whenever one of them changes.
+    Snapshot snapshot() const;
     // The member's lateness over the second before its last arrival (that arrival's own
     // before any stretch counts); false before any.
     bool lateness(Member m, int64_t* out) const;
@@ -98,10 +107,15 @@ class PaceGroup {
     };
     static bool median(const std::deque<Stretch>& w, int64_t after, int64_t* out,
                        std::vector<std::pair<int64_t, int64_t>>* scratch);
+    void publish();
     std::map<Member, State> members_;
     std::vector<std::pair<int64_t, int64_t>> scratch_;   // (mid, len), sorted per arrival
     int64_t pace_ = 0;
     bool started_ = false;
+    // The snapshot: odd `seq_` while it is written.
+    std::atomic<uint32_t> seq_{0};
+    std::atomic<int64_t> pub_pace_{0};
+    std::atomic<bool> pub_started_{false};
 };
 
 // The process's pace groups, keyed by pipeline and aligner name ("all watchdogs of one
@@ -112,6 +126,10 @@ class PaceRegistry {
         std::string key;
         PaceGroup::Member member = 0;   // 0: not joined
         bool late = false;              // joined a running group: gapped while it waits
+        // The member's group while joined: only its last member's leave erases it.
+        PaceGroup* group = nullptr;
+        // The group's pace at `now_ns`, lock-free; 0 when not joined.
+        int64_t pace_ns(int64_t now_ns) const;
     };
     struct View {
         int64_t pace_ns = 0;

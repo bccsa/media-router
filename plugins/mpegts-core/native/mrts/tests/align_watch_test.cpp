@@ -1,8 +1,9 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
 // rhythms, the pace's rules (seeds, rises only, recomputed on leave, a lateness over wall time
-// that a backlog's drain does not move), a join into a running group and the gap stretches or
-// pieces an absent input gets.
+// that a backlog's drain does not move), the pace read lock-free (B-79), a join into a running
+// group and the gap stretches or pieces an absent input gets.
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <thread>
@@ -441,6 +442,79 @@ void test_registry() {
           t.view(last).pace_ns == 400 * MS && t.view(last).members == 5);
 }
 
+// A member's task reads the pace through its group pointer, without the lock (B-79).
+void test_registry_snapshot() {
+    PaceRegistry s;
+    PaceRegistry::Membership p = s.join("p/mix", 250 * MS);
+    PaceRegistry::Membership q = s.join("p/mix", -1);
+    PaceRegistry::Membership o = s.join("p/other", -1);
+    CHECK("members of one key share a group, another key has its own",
+          p.group && p.group == q.group && o.group && o.group != p.group);
+    CHECK("the lock-free read is the seed's pace", p.pace_ns(0) == 250 * MS && q.pace_ns(0) == 250 * MS
+                                                       && o.pace_ns(0) == 0);
+    s.raise(q, 400 * MS);
+    s.start(p);
+    const PaceGroup::Snapshot v = p.group->snapshot();
+    CHECK("the snapshot follows a raise and the start, as the locked view does",
+          v.pace == 400 * MS && v.started && s.view(p).pace_ns == 400 * MS);
+    for (int i = 0; i < 100; i++) s.observe(o, i * 10 * MS, 30 * MS);
+    CHECK("... and an arrival that moves the pace", o.pace_ns(0) == 30 * MS
+                                                     && !o.group->snapshot().started);
+    s.raise(q, 500 * MS);
+    s.leave(&q);
+    CHECK("leave clears the group pointer; the one left reads the recomputed pace (the seed)",
+          !q.group && q.member == 0 && q.pace_ns(0) == 0 && p.pace_ns(0) == 250 * MS);
+    s.leave(&p);
+    s.leave(&o);
+    PaceRegistry::Membership none;
+    CHECK("an unjoined membership reads 0 and has no group",
+          !p.group && p.pace_ns(0) == 0 && !none.group && none.pace_ns(0) == 0 && s.groups() == 0);
+
+    // Four tasks read while a fifth raises the pace 10,000 times and starts the group after the
+    // 5,000th: every read is a tuple that was written, and none older than the one before it.
+    PaceRegistry u;
+    PaceRegistry::Membership w = u.join("p/sl", -1);
+    const PaceRegistry::Membership rd = u.join("p/sl", -1);
+    constexpr int N = 10000, FLIP = 5000;
+    std::atomic<int> ready{0}, bad{0};
+    std::atomic<long> reads{0}, changes{0};
+    std::atomic<bool> done{false};
+    std::vector<std::thread> readers;
+    for (int k = 0; k < 4; k++) {
+        readers.emplace_back([&] {
+            int64_t last = 0;
+            bool seen_start = false;
+            long n = 0, c = 0;
+            ready.fetch_add(1);
+            while (!done.load(std::memory_order_acquire)) {
+                const PaceGroup::Snapshot x = rd.group->snapshot();
+                const int64_t i = x.pace / MS;
+                const bool ok = x.pace % MS == 0 && i >= 0 && i <= N && x.pace >= last
+                                && (x.started ? i >= FLIP : i <= FLIP) && (x.started || !seen_start);
+                if (!ok) bad.fetch_add(1);
+                if (x.pace != last || x.started != seen_start) c++;
+                seen_start = seen_start || x.started;
+                last = x.pace;
+                n++;
+            }
+            reads.fetch_add(n);
+            changes.fetch_add(c);
+        });
+    }
+    while (ready.load() < 4) std::this_thread::yield();
+    for (int i = 1; i <= N; i++) {
+        if (i == FLIP + 1) u.start(w);
+        u.raise(w, i * MS);
+    }
+    done.store(true, std::memory_order_release);
+    for (std::thread& x : readers) x.join();
+    CHECK("4 readers, 1 writer, 10,000 raises and a start: every read a written tuple, in order",
+          bad.load() == 0 && reads.load() > 4 && rd.pace_ns(0) == N * MS
+              && rd.group->snapshot().started);
+    std::printf("  (%ld reads, %ld of them a new tuple: the readers ran beside the writer)\n",
+                reads.load(), changes.load());
+}
+
 // A member that joins once the aggregator runs is late: its aligner gaps it while it waits.
 void test_late_join() {
     PaceGroup g;
@@ -556,6 +630,7 @@ int main() {
     test_pace_bursts();
     test_pace_catch_ups();
     test_registry();
+    test_registry_snapshot();
     test_late_join();
     test_gaps();
     test_pieces();

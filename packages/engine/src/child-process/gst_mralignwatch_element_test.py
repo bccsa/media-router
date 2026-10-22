@@ -4,9 +4,10 @@ audiomixer and mpegtsmux. Live appsrc inputs are fed at real time on the house c
 base_time 0), as WI-P2-1's rig, each buffer k at content time k x 10 ms arriving `lag` late.
 
 Cases: (1) a 1.5 s late but delivering input: nothing dropped, no absence; (2) a silent input,
-and one that never delivers: absent within W + tick, the aggregator goes on, gapped as its data
+and one that never delivers: absent within W + 2 ms, the aggregator goes on, gapped as its data
 would come toward audiomixer (no fence, the mix no later) and to now - pace toward mpegtsmux;
-(3) rejoin: stale buffers discarded and counted, present again, the pace untouched by them,
+(3) rejoin: absent at W with nothing queued, whatever the tick (B-79), stale buffers discarded
+and counted, present again, the pace untouched by them,
 (3b) also when the stale backlog comes at real time, (3c) and back later than before, read from
 its own arrivals; (4) an input whose lateness falls is still released at the pace; (5) releasing
 a pad lowers the pace; (6) hold-on-eos; (7) a full queue blocks upstream, full-count 1, nothing
@@ -18,7 +19,9 @@ comes up, (2g) a hole the input reports, on in block-long pieces (past a second 
 (late, dark, on time, seeded, into gaps alone) is gapped while it waits, so the mixer never
 stalls on it; and (13) a backlog as an input's first data, waited for, the pace from
 what follows it (an upstream aligner's start, WI-P2-8 B2), (14) inputs held by a paced output
-still report each second.
+still report each second; (15) at most one task pass per arrival while data flows, whatever the
+tick, an input held behind the pace too, and (16) an absent input's gap pieces the mixer's block
+at least (B-79).
 Skips (exit 0) without GStreamer, the elements or the built plugin."""
 import array
 import os
@@ -161,6 +164,8 @@ class Rig:
             Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST, self._on_out)
         for spec in inputs:
             self.add(spec)
+        # The elements start counting silence between these two (their PLAYING).
+        self.starting_at = self.now()
         self.pipe.set_state(Gst.State.PLAYING)
         self.playing_at = self.now()
         self.t0 = self.now() // (10 * MS) * (10 * MS) + 200 * MS   # content time 0
@@ -483,9 +488,9 @@ for kind in KINDS:
     # The last arrival is the push of content 990 ms, at content 990 ms (lag 0).
     since = absent[0] - r.at(990) if absent else None
     check(f"{kind}: W is the 100 ms floor for a 10 ms rhythm (got {w / MS:.0f} ms)", w == 100 * MS)
-    check(f"{kind}: absent within W + tick after its last arrival (got "
+    check(f"{kind}: absent within W + 2 ms of its last arrival (got "
           f"{since / MS if since is not None else None} ms)",
-          since is not None and w <= since <= w + 20 * MS + SLACK)
+          since is not None and w <= since <= w + 2 * MS + SLACK)
     gaps = r.released(1, "gap")
     pace = r.prop(1, "pace")
     later = [g for g in gaps if absent and g[1] > absent[0] + 100 * MS]
@@ -530,9 +535,10 @@ for kind in KINDS:
     r.wait(lambda: (r.reach() or 0) >= (2990 if mux else 3000))
     absent = [t for t, s in r.states(1) if s == "absent"]
     since = absent[0] - r.playing_at if absent else None
-    check(f"{kind}: absent at the 2 s ceiling + tick after PLAYING, never on a first buffer "
+    check(f"{kind}: absent at the 2 s ceiling after PLAYING, never on a first buffer "
           f"(got {since / MS if since is not None else None} ms)",
-          since is not None and 2000 * MS <= since <= 2020 * MS + 2 * SLACK)
+          since is not None and absent[0] - r.starting_at >= 2000 * MS
+          and since <= 2002 * MS + 2 * SLACK)
     if mux:
         check(f"{kind}: input 0's buffers all written, from its first",
               r.pes_ok(0, range(300)) and not r.pes().get(PID0 + 1))
@@ -548,7 +554,9 @@ for kind in KINDS:
     r.stop()
 
     print(f"\n--- {kind}: (3) rejoin ---")
-    r = Rig(kind, [{}, {}])
+    # Both on time: input 1 has nothing queued when it stops. Toward audiomixer the tick shapes
+    # nothing, so a 1 s one there shows absence comes at W, not at a tick (B-79).
+    r = Rig(kind, [{}, {} if mux else {"props": {"tick": S}}])
     r.run({0: [("rt", 0, 300, 0), ("eos",)],
            1: [("rt", 0, 100, 0), ("at", 2000), ("now", 100, 200), ("rt", 200, 300, 0), ("eos",)]})
     eos = r.wait(lambda: r.eos_at is not None)
@@ -561,6 +569,14 @@ for kind in KINDS:
     check(f"{kind}: absent once, then present again (states {st})",
           st[-2:] == ["absent", "present"] and r.prop(1, "absences") == 1
           and r.prop(1, "state") == "present")
+    if not mux:
+        with r.lock:
+            gone = next(((t, f["silence-limit"]) for t, src, f in r.msgs if src == "aw1"
+                         and f["reason"] == "state" and f["state"] == "absent"), None)
+        since = gone[0] - r.at(990) if gone else None
+        check(f"{kind}: with nothing queued, absent at W after its last arrival, not at its 1 s "
+              f"tick (got {in_ms(since)} ms, W {gone and in_ms(gone[1])} ms)",
+              gone is not None and gone[1] <= since <= gone[1] + 2 * MS + SLACK)
     first = [b for b in r.released(1) if b[2] >= r.at(1000)]
     check(f"{kind}: the first buffer out after the rejoin carries DISCONT (WI-P2-1 F3)",
           bool(first) and first[0][3] & int(Gst.BufferFlags.DISCONT))
@@ -711,7 +727,8 @@ r.wait(lambda: (r.reach() or 0) >= 3000)
 absent = [t for t, s in r.states(1) if s == "absent"]
 check(f"302M-shaped: the silent branch is absent at the 2 s ceiling (got "
       f"{(absent[0] - r.playing_at) / MS if absent else None} ms)",
-      bool(absent) and 2000 * MS <= absent[0] - r.playing_at <= 2020 * MS + 2 * SLACK)
+      bool(absent) and absent[0] - r.starting_at >= 2000 * MS
+      and absent[0] - r.playing_at <= 2002 * MS + 2 * SLACK)
 check(f"302M-shaped: the other mixed from its first buffer (got {r.spans(3000)})",
       r.spans(3000) == [(0, 3000, VAL[0])])
 caps1 = r.aws[1].get_static_pad("src").get_current_caps()
@@ -737,7 +754,8 @@ for label, dark, want in (("unpositioned", BRANCH8, 0),
     absent = [t for t, s in r.states(1) if s == "absent"]
     check(f"8 channels, {label}: the silent branch is absent at the 2 s ceiling (got "
           f"{(absent[0] - r.playing_at) / MS if absent else None} ms)",
-          bool(absent) and 2000 * MS <= absent[0] - r.playing_at <= 2020 * MS + 2 * SLACK)
+          bool(absent) and absent[0] - r.starting_at >= 2000 * MS
+          and absent[0] - r.playing_at <= 2002 * MS + 2 * SLACK)
     caps1 = r.aws[1].get_static_pad("src").get_current_caps()
     check(f"8 channels, {label}: its gaps went out under fixed caps, channel-mask {want:#x} "
           f"({caps_str(caps1)})", caps1 is not None and caps1.is_fixed() and mask_of(caps1) == want
@@ -902,7 +920,7 @@ absent = [t for t, s in r.states(1) if s == "absent"]
 check(f"dark joiner: waiting, then absent at the 2 s ceiling (states {r.states(1)}, "
       f"{(absent[0] - joined[0]) / MS if absent else None} ms)",
       [s for _t, s in r.states(1)] == ["absent"]
-      and 2000 * MS <= absent[0] - joined[0] <= 2020 * MS + 2 * SLACK)
+      and 2000 * MS <= absent[0] - joined[0] <= 2002 * MS + 2 * SLACK)
 check(f"dark joiner: the pace untouched (got {r.prop(0, 'pace') / MS:.1f} ms)",
       r.prop(0, "pace") <= 5 * MS)
 check(f"dark joiner: no error (got {r.errors})", not r.errors)
@@ -1009,6 +1027,62 @@ check(f"paced output: both inputs report each second while they release (got "
       f"{[len(x) for x in reps]} reports in the first 3 s)", all(len(x) >= 2 for x in reps))
 check(f"paced output: all 3 s mixed, no error (got {r.spans()[:2]})",
       r.spans() == [(0, 3000, VAL[0] + VAL[1])] and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (15) at most one task pass per arrival while data flows ---")
+# 10 ms inputs under a 2 ms tick, input 1 5 ms later than input 0: input 1's task runs for its
+# arrival, not for a tick, its head due within the 1 ms slack; input 0, held 4 ms behind the
+# pace, sleeps to its next buffer's release, which its arrival does not cut short (B-79).
+r = Rig("audiomixer", [{"props": {"tick": 2 * MS}}, {"props": {"tick": 2 * MS}}])
+r.run({0: [("rt", 0, 400, 0), ("eos",)], 1: [("rt", 0, 400, 5), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+per = []
+with r.lock:
+    reps = [[(t, f["passes"]) for t, src, f in r.msgs if src == f"aw{i}"
+             and f["reason"] == "interval" and t < r.at(3990)] for i in (0, 1)]
+for i, rep in enumerate(reps):
+    if len(rep) >= 2:
+        (ta, pa), (tb, pb) = rep[0], rep[-1]
+        arrivals = sum(1 for k in range(400) if ta < r.at(k * 10 + 5 * i) <= tb)
+        per.append(round((pb - pa) / max(arrivals, 1), 3))
+held = median([t - p for _k, t, p, _f in r.released(0)[100:]])
+check(f"one pass per arrival: each input's task ran once a buffer between its reports, a "
+      f"report's own wake included, input 0 held {in_ms(held)} ms (got {per} passes per arrival)",
+      len(per) == 2 and all(p <= 1.1 for p in per) and held is not None
+      and 3 * MS <= held <= 5 * MS + SLACK)
+check(f"one pass per arrival: all 4 s mixed, EOS, no error (got {r.spans()[:2]})",
+      r.spans() == [(0, 4000, VAL[0] + VAL[1])] and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (16) an absent input's pieces are the mixer's block at least ---")
+# Its last buffers were 1 ms long: pieces of the 10 ms block, 100 a second, not 1,000 (B-79).
+r = Rig("audiomixer", [{}, {}])
+
+
+def _ms_buffers():
+    """Input 1: content 0..1 s as 1 ms buffers at real time, then silence."""
+    for k in range(1000):
+        r.sleep_until(r.at(k))
+        b = Gst.Buffer.new_wrapped(array.array("h", [VAL[1]] * 2 * (RATE // 1000)).tobytes())
+        b.pts, b.dts, b.duration = r.at(k), NONE, MS
+        r.srcs[1].emit("push-buffer", b)
+
+
+r.run({0: [("rt", 0, 300, 0)], 1: [("call", _ms_buffers)]})
+r.wait(lambda: (r.reach() or 0) >= 3000)
+absent = [t for t, s in r.states(1) if s == "absent"]
+gaps = r.released(1, "gap")
+later = [g for g in gaps if absent and g[1] > absent[0] + 100 * MS]
+span_s = (later[-1][1] - later[0][1]) / S if len(later) > 1 else 0
+check(f"1 ms buffers: absent, then gapped from its last content in pieces of the 10 ms block, "
+      f"about 100 a second (got {sorted({g[3] // MS for g in later})} ms, {len(later)} in "
+      f"{span_s:.2f} s)",
+      bool(absent) and bool(gaps) and gaps[0][2] == r.at(1000) and len(later) >= 100
+      and all(g[3] == 10 * MS for g in later) and len(later) <= 110 * span_s + 2
+      and all(b[2] == a[2] + a[3] for a, b in zip(gaps, gaps[1:])))
+check(f"1 ms buffers: mixed to 1 s, then input 0 alone (got {r.spans(3000)})",
+      r.spans(3000) == [(0, 1000, VAL[0] + VAL[1]), (1000, 3000, VAL[0])])
+check("1 ms buffers: no error", not r.errors)
 r.stop()
 
 print("\n--- (9) a buffer list leaves as one list; its stale members go ---")

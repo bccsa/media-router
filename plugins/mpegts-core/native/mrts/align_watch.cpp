@@ -41,11 +41,37 @@ void ArrivalRhythm::reset() { *this = ArrivalRhythm(); }
 
 // --- PaceGroup ---------------------------------------------------------------------------
 
+// The writer side of the seqlock (Boehm 2012): odd while the fields change, relaxed stores
+// between two fences. One writer at a time.
+void PaceGroup::publish() {
+    if (pub_pace_.load(std::memory_order_relaxed) == pace_ &&
+        pub_started_.load(std::memory_order_relaxed) == started_)
+        return;
+    const uint32_t s = seq_.load(std::memory_order_relaxed);
+    seq_.store(s + 1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    pub_pace_.store(pace_, std::memory_order_relaxed);
+    pub_started_.store(started_, std::memory_order_relaxed);
+    seq_.store(s + 2, std::memory_order_release);
+}
+
+PaceGroup::Snapshot PaceGroup::snapshot() const {
+    Snapshot v;
+    for (;;) {
+        const uint32_t s0 = seq_.load(std::memory_order_acquire);
+        v.pace = pub_pace_.load(std::memory_order_relaxed);
+        v.started = pub_started_.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (!(s0 & 1) && seq_.load(std::memory_order_relaxed) == s0) return v;
+    }
+}
+
 void PaceGroup::join(Member m, int64_t seed_ns) {
     State s;
     s.seed = seed_ns;
     members_[m] = s;
     if (seed_ns >= 0) pace_ = std::max(pace_, seed_ns);
+    publish();
 }
 
 void PaceGroup::leave(Member m) {
@@ -57,6 +83,7 @@ void PaceGroup::leave(Member m) {
         if (s.seed >= 0) pace_ = std::max(pace_, s.seed);
         if (s.has_need) pace_ = std::max(pace_, s.need);
     }
+    publish();
 }
 
 // Of the stretches that count and end after `after`, the smallest mid with at least half their
@@ -118,11 +145,20 @@ void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fres
             s.need = s.level;
             s.has_need = true;
             pace_ = std::max(pace_, s.need);
+            publish();
         }
     }
 }
 
-void PaceGroup::raise(int64_t pace_ns) { pace_ = std::max(pace_, pace_ns); }
+void PaceGroup::raise(int64_t pace_ns) {
+    pace_ = std::max(pace_, pace_ns);
+    publish();
+}
+
+void PaceGroup::start() {
+    started_ = true;
+    publish();
+}
 
 bool PaceGroup::lateness(Member m, int64_t* out) const {
     auto it = members_.find(m);
@@ -139,6 +175,7 @@ PaceRegistry& PaceRegistry::global() {
     return *r;
 }
 
+// A map's node never moves: the pointer holds until the group is erased, at its last leave.
 PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed_ns) {
     std::lock_guard<std::mutex> lk(mu_);
     Membership m;
@@ -146,6 +183,7 @@ PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed
     m.member = ++next_;
     PaceGroup& g = groups_[key];
     m.late = g.started();
+    m.group = &g;
     g.join(m.member, seed_ns);
     return m;
 }
@@ -153,38 +191,38 @@ PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed
 void PaceRegistry::leave(Membership* m) {
     if (!m || !m->member) return;
     std::lock_guard<std::mutex> lk(mu_);
-    auto it = groups_.find(m->key);
-    if (it != groups_.end()) {
-        it->second.leave(m->member);
-        if (it->second.size() == 0) groups_.erase(it);
+    if (m->group) {
+        m->group->leave(m->member);
+        if (m->group->size() == 0) groups_.erase(m->key);
     }
     m->member = 0;
+    m->group = nullptr;
 }
 
 void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns,
                            bool fresh) {
     std::lock_guard<std::mutex> lk(mu_);
-    auto it = groups_.find(m.key);
-    if (m.member && it != groups_.end()) it->second.observe(m.member, now_ns, lateness_ns, fresh);
+    if (m.member && m.group) m.group->observe(m.member, now_ns, lateness_ns, fresh);
 }
 
 void PaceRegistry::raise(const Membership& m, int64_t pace_ns) {
     std::lock_guard<std::mutex> lk(mu_);
-    auto it = groups_.find(m.key);
-    if (m.member && it != groups_.end()) it->second.raise(pace_ns);
+    if (m.member && m.group) m.group->raise(pace_ns);
 }
 
 void PaceRegistry::start(const Membership& m) {
     std::lock_guard<std::mutex> lk(mu_);
-    auto it = groups_.find(m.key);
-    if (m.member && it != groups_.end()) it->second.start();
+    if (m.member && m.group) m.group->start();
+}
+
+int64_t PaceRegistry::Membership::pace_ns(int64_t) const {
+    return member && group ? group->snapshot().pace : 0;
 }
 
 PaceRegistry::View PaceRegistry::view_locked(const Membership& m) const {
     View v;
-    auto it = groups_.find(m.key);
-    if (!m.member || it == groups_.end()) return v;
-    const PaceGroup& g = it->second;
+    if (!m.member || !m.group) return v;
+    const PaceGroup& g = *m.group;
     v.pace_ns = g.pace();
     v.has_lateness = g.lateness(m.member, &v.lateness_ns);
     v.members = g.size();

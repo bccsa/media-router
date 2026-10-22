@@ -42,6 +42,7 @@ enum {
     PROP_LEVEL_TIME,
     PROP_LEVEL_BYTES,
     PROP_FULL_COUNT,
+    PROP_PASSES,
 };
 
 #define DEFAULT_SILENCE_FACTOR 3.0
@@ -55,6 +56,8 @@ enum {
 static const gint64 PIECED_MAX_NS = GST_SECOND;
 /* The `mralignwatch` message's cadence (part 4.3), besides every state change. */
 static const gint64 REPORT_NS = GST_SECOND;
+/* What is due this close to now leaves at once, without a timed wait (B-79). */
+static const gint64 RELEASE_SLACK_NS = GST_MSECOND;
 /* Untimed buffers add no time level: past this many items the FIFO is full anyway (R9). */
 static const size_t ITEMS_MAX = 32768;
 
@@ -103,7 +106,7 @@ struct Snap {
     AwState state = AwState::waiting;
     gint64 lateness = 0, pace = 0, silence_limit = 0;
     guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, level_time = 0,
-            level_bytes = 0, full_count = 0;
+            level_bytes = 0, full_count = 0, passes = 0;
 };
 
 /* The run's state, under `lock`; reset at each start (READY -> PAUSED). */
@@ -129,14 +132,25 @@ struct Run {
     bool quiet_started = false;
     gint64 quiet_from = 0;          // silence counts from here (the last arrival)...
     gint64 held_ns = 0;             // ...less the time we held the input since
+    gint64 silence_limit = 0;       // W, as last taken...
+    bool limit_stale = true;        // ...and an arrival or a setting since
     bool upstream_blocked = false;  // the sink thread waits in us (full, or a query)
     gint64 blocked_since = 0;
     bool report_started = false;
     gint64 report_at = 0;
-    GstClockID clock_id = nullptr;  // the task's wait, unscheduled to wake it
+    /* The pipeline's clock and base time, read once a run (PLAYING, set_clock), and the task's
+     * one wait on it, re-armed each pass (task thread only) and unscheduled while it sleeps. */
+    GstClock* clock = nullptr;
+    gint64 base = 0;
+    GstClockID clock_id = nullptr;
+    GstClock* id_clock = nullptr;   // what clock_id was made on; cleared when the clock changes
+    bool sleeping = false;          // the task waits on clock_id...
+    gint64 wake_at = 0;             // ...to this running time
+    bool cond_waiting = false;      // the task waits on item_added (no clock)
+    bool ahead = false;             // the last data out waited for its release
     GstSegment in_segment;
     gint64 pace = 0, lateness = 0;
-    guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, full_count = 0;
+    guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, full_count = 0, passes = 0;
     gint64 unit_ns = 0;             // the last data buffer's duration, a gap piece's toward audio
     /* What the src pad feeds (task thread only): an audio aggregator takes a GAP whole at the
      * start of its output block, mpegtsmux takes only a GAP's start (WI-P2-1 F2). */
@@ -183,16 +197,30 @@ static void aw_loop(gpointer data);
 
 /* --- time ------------------------------------------------------------------------------- */
 
-/* Pipeline clock - base time, only while PLAYING with a clock: nothing is paced before. */
+/* Under the lock: pipeline clock - base time, only while PLAYING with a clock: nothing is paced
+ * before. */
 static bool aw_now(GstMrAlignWatch* self, gint64* now) {
-    if (!self->playing.load(std::memory_order_acquire)) return false;
-    GstClock* clock = gst_element_get_clock(GST_ELEMENT_CAST(self));
-    if (!clock) return false;
-    const GstClockTime t = gst_clock_get_time(clock);
-    gst_object_unref(clock);
+    const Run& r = *self->run;
+    if (!self->playing.load(std::memory_order_acquire) || !r.clock) return false;
+    const GstClockTime t = gst_clock_get_time(r.clock);
     if (!GST_CLOCK_TIME_IS_VALID(t)) return false;
-    *now = (gint64)t - (gint64)gst_element_get_base_time(GST_ELEMENT_CAST(self));
+    *now = (gint64)t - r.base;
     return true;
+}
+
+/* Under the lock: the run's clock is `clock` from now; the task makes its wait on it anew. */
+static void aw_use_clock(Run& r, GstClock* clock) {
+    if (r.clock == clock) return;
+    gst_object_replace((GstObject**)&r.clock, (GstObject*)clock);
+    r.id_clock = nullptr;
+}
+
+/* Under the lock, the task stopped: the run lets go of the clock and its wait. */
+static void aw_drop_clock(Run& r) {
+    if (r.clock_id) gst_clock_id_unref(r.clock_id);
+    r.clock_id = nullptr;
+    r.id_clock = nullptr;
+    gst_clear_object(&r.clock);
 }
 
 /* A buffer's [start, end) in running time, on its decode time (DTS, else PTS): a B-frame's
@@ -249,16 +277,37 @@ static mrts::ArrivalRhythm::Config aw_rhythm_config(GstMrAlignWatch* self) {
     return c;
 }
 
-/* Under the lock. */
+/* Under the lock: W, taken from the arrivals and the settings only when it can matter: a p95
+ * over 200 gaps at every arrival cost the matrix of n1 at 16 pairs a tenth of a core (B-79). */
+static gint64 aw_limit(GstMrAlignWatch* self) {
+    Run& r = *self->run;
+    if (r.limit_stale) {
+        r.silence_limit = r.rhythm.limit_ns(aw_rhythm_config(self));
+        r.limit_stale = false;
+    }
+    return r.silence_limit;
+}
+
+/* The least W can be: a shorter silence needs no W. */
+static gint64 aw_limit_floor(GstMrAlignWatch* self) {
+    return (gint64)std::min(self->silence_floor.load(std::memory_order_relaxed),
+                            self->silence_ceiling.load(std::memory_order_relaxed));
+}
+
+/* Under the lock. The group's pace and this member's lateness as of now (the task reads only
+ * the pace, lock-free); the last known once it left. */
 static Snap aw_snap(GstMrAlignWatch* self) {
-    const Run& r = *self->run;
+    Run& r = *self->run;
+    const PaceRegistry::View v = PaceRegistry::global().view(r.member);
+    if (v.members) r.pace = v.pace_ns;
+    if (v.has_lateness) r.lateness = v.lateness_ns;
     Snap s;
     s.aligner = r.aligner;
     s.input = r.input;
     s.state = r.state;
     s.lateness = r.lateness;
     s.pace = r.pace;
-    s.silence_limit = r.rhythm.limit_ns(aw_rhythm_config(self));
+    s.silence_limit = aw_limit(self);
     s.absences = r.absences;
     s.stale_buffers = r.stale_buffers;
     s.stale_time = r.stale_time;
@@ -266,6 +315,7 @@ static Snap aw_snap(GstMrAlignWatch* self) {
     s.level_time = aw_level_time(r);
     s.level_bytes = r.level_bytes;
     s.full_count = r.full_count;
+    s.passes = r.passes;
     return s;
 }
 
@@ -278,7 +328,7 @@ static GstStructure* aw_message_structure(const Snap& s, const gchar* reason) {
         "stale-buffers", G_TYPE_UINT64, s.stale_buffers, "stale-time", G_TYPE_UINT64,
         s.stale_time, "gaps", G_TYPE_UINT64, s.gaps, "level-time", G_TYPE_UINT64, s.level_time,
         "level-bytes", G_TYPE_UINT64, s.level_bytes, "full-count", G_TYPE_UINT64, s.full_count,
-        NULL);
+        "passes", G_TYPE_UINT64, s.passes, NULL);
 }
 
 static void aw_post(GstMrAlignWatch* self, GstStructure* st) {
@@ -313,19 +363,23 @@ static void aw_flush_fifo(GstMrAlignWatch* self) {
     g_cond_broadcast(&self->item_removed);
 }
 
-/* Under the lock: wake the task's wait. */
+/* Under the lock: wake the task's wait, whichever it is in (GLib signals cost a syscall). */
 static void aw_wake(GstMrAlignWatch* self) {
-    if (self->run->clock_id) gst_clock_id_unschedule(self->run->clock_id);
-    g_cond_signal(&self->item_added);
+    const Run& r = *self->run;
+    if (r.sleeping) gst_clock_id_unschedule(r.clock_id);
+    if (r.cond_waiting) g_cond_signal(&self->item_added);
 }
 
+/* An item in wakes the task when the queue was empty, unless its wait already ends no later
+ * than the item's release (an input held behind the pace: aw_deadline arms for it, B-79). */
 static void aw_enqueue(GstMrAlignWatch* self, Item&& it) {
     Run& r = *self->run;
     const bool was_empty = r.fifo.empty();
+    const bool armed = r.sleeping && it.timed && it.start + r.pace - RELEASE_SLACK_NS >= r.wake_at;
     if (it.timed) r.tail_end = std::max(r.fifo.empty() ? it.end : r.tail_end, it.end);
     r.level_bytes += it.bytes;
     r.fifo.push_back(std::move(it));
-    if (was_empty) aw_wake(self);
+    if (was_empty && !armed) aw_wake(self);
 }
 
 /* Under the lock: an item left. A full episode ends once the queue drained to half, so a
@@ -334,7 +388,7 @@ static void aw_dequeued(GstMrAlignWatch* self, const Item& it) {
     Run& r = *self->run;
     r.level_bytes -= std::min(r.level_bytes, it.bytes);
     if (r.full_episode && !aw_full(self, 2)) r.full_episode = false;
-    g_cond_broadcast(&self->item_removed);
+    if (r.upstream_blocked) g_cond_broadcast(&self->item_removed);
 }
 
 /* --- arrival ---------------------------------------------------------------------------- */
@@ -343,6 +397,7 @@ static void aw_dequeued(GstMrAlignWatch* self, const Item& it) {
 static void aw_arrival(GstMrAlignWatch* self, gint64 now, guint* pending) {
     Run& r = *self->run;
     r.rhythm.arrive(now);
+    r.limit_stale = true;
     r.quiet_started = true;
     r.quiet_from = now;
     r.held_ns = 0;
@@ -379,12 +434,14 @@ static void aw_block_begin(GstMrAlignWatch* self, bool clocked, gint64 now) {
     r.blocked_since = clocked ? now : 0;
 }
 
+/* Silence counts again: a task with nothing queued slept with no W deadline meanwhile. */
 static void aw_block_end(GstMrAlignWatch* self) {
     Run& r = *self->run;
     gint64 now;
     if (r.upstream_blocked && aw_now(self, &now) && r.quiet_started)
         r.held_ns += std::max<gint64>(now - std::max(r.blocked_since, r.quiet_from), 0);
     r.upstream_blocked = false;
+    if (r.fifo.empty()) aw_wake(self);
 }
 
 /* Data in. Takes `obj` (a buffer, or a list with `is_list`). */
@@ -445,7 +502,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             if (it.timed && clocked) it.lateness = now - it.start;
         }
         if (gst_buffer_list_length(l) == 0) {
-            snap = aw_snap(self);
+            if (pending) snap = aw_snap(self);
             g_mutex_unlock(&self->lock);
             gst_buffer_list_unref(l);
             aw_post_pending(self, pending, snap);
@@ -459,7 +516,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         GST_LOG_OBJECT(self, "stale buffer [%" G_GINT64_FORMAT ", %" G_GINT64_FORMAT
                        ") before horizon %" G_GINT64_FORMAT ": discarded", it.start, it.end,
                        r.planner.horizon_ns());
-        snap = aw_snap(self);
+        if (pending) snap = aw_snap(self);
         g_mutex_unlock(&self->lock);
         gst_mini_object_unref(obj);
         aw_post_pending(self, pending, snap);
@@ -946,6 +1003,8 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                            r.planner.horizon_ns() - it.end);
     }
     if (it.timed) r.planner.emitted(it.end);
+    /* It came ahead of its release by more than the slack: the next is armed for (B-79). */
+    r.ahead = it.timed && it.end > it.start && it.lateness < r.pace - RELEASE_SLACK_NS;
     const bool discont = r.discont;
     r.discont = false;
     gint64 t0 = now;
@@ -968,8 +1027,8 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
     }
 }
 
-/* Under the lock, clocked: the 1 s report, due on every pass of the task, a releasing one too
- * (an input held behind a slower one releases on every pass). */
+/* Under the lock, clocked: the 1 s report, checked on every pass of the task and after every
+ * release (an input held by a paced output releases on within one pass). */
 static void aw_report(GstMrAlignWatch* self, gint64 now, guint* pending) {
     Run& r = *self->run;
     if (!r.report_started) {
@@ -994,24 +1053,42 @@ static bool aw_paced_gaps(const Run& r) {
     return r.down == Run::Down::audio && !r.sparse;
 }
 
+/* Such a gap's piece: the input's last buffer length, the aggregator's block at least (B-79). */
+static gint64 aw_piece(const Run& r) {
+    return std::max(r.unit_ns, r.block_ns);
+}
+
+/* Under the lock: the first timed item queued, which no gap may pass. */
+static const Item* aw_next_timed(const Run& r) {
+    for (const Item& it : r.fifo)
+        if (it.timed) return &it;
+    return nullptr;
+}
+
+/* Under the lock: silence can make the input absent. An input whose EOS is queued ended, it is
+ * not silent; a held EOS turns absent on its pop. */
+static bool aw_silence_counts(const Run& r) {
+    return !r.eos_out && !r.sparse && !r.eos_held && !r.sink_eos && r.state != AwState::absent;
+}
+
 /* Under the lock, clocked: silence -> absent; the gap due now, to push out of the lock: toward
- * an audio aggregator the input's buffer length at its start + pace, else to now - pace. */
+ * an audio aggregator a piece of the input's buffer length (the aggregator's block at least) at
+ * its start + pace, else to now - pace. */
 static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
                      mrts::GapPlanner::Gap* gap) {
     Run& r = *self->run;
-    if (!r.quiet_started) {   // the first tick of a run: silence counts from here
+    if (!r.quiet_started) {   // the first pass of a run: silence counts from here
         r.quiet_started = true;
         r.quiet_from = now;
         r.held_ns = 0;
     }
     if (r.eos_out) return false;
-    /* An input whose EOS is queued ended, it is not silent; a held EOS turns absent on its pop. */
-    if (!r.sparse && !r.eos_held && !r.sink_eos && r.state != AwState::absent) {
+    if (aw_silence_counts(r)) {
         gint64 held = r.held_ns;
         if (r.upstream_blocked)
             held += std::max<gint64>(now - std::max(r.blocked_since, r.quiet_from), 0);
         const gint64 silent = now - r.quiet_from - held;
-        const gint64 w = r.rhythm.limit_ns(aw_rhythm_config(self));
+        const gint64 w = silent >= aw_limit_floor(self) ? aw_limit(self) : G_MAXINT64;
         if (silent >= w) {
             r.state = AwState::absent;
             r.pace_run = false;
@@ -1023,66 +1100,130 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
         }
     }
     if (!aw_gapped(r)) return false;
-    const Item* next = nullptr;
-    for (const Item& it : r.fifo)
-        if (it.timed) {
-            next = &it;
-            break;
-        }
+    const Item* next = aw_next_timed(r);
     const gint64 next_start = next ? next->start : 0;
     const gint64* nx = next ? &next_start : nullptr;
-    const gint64 piece = r.unit_ns > 0 ? std::max<gint64>(r.unit_ns, GST_MSECOND) : r.block_ns;
-    if (!(aw_paced_gaps(r) ? r.planner.take_piece(now, r.pace, piece, nx, gap)
-                           : r.planner.take(now, r.pace, nx, gap)))
+    /* A piece due within the slack goes now, as data does. */
+    if (!(aw_paced_gaps(r)
+              ? r.planner.take_piece(now + RELEASE_SLACK_NS, r.pace, aw_piece(r), nx, gap)
+              : r.planner.take(now, r.pace, nx, gap)))
         return false;
     if (gap->end_ns > gap->start_ns) r.gaps++;
     r.discont = true;
     return true;
 }
 
+/* Under the lock, clocked: when the task must next run, the earliest of what can come due:
+ * the head's release, the next paced gap piece, the W deadline while silence counts, the tick
+ * while gapped otherwise, the next report; and, for an input held behind the pace, the release
+ * of the data that continues it. An arrival due before that wakes it earlier (aw_enqueue). */
+static gint64 aw_deadline(GstMrAlignWatch* self, gint64 now) {
+    const Run& r = *self->run;
+    gint64 at = r.report_at + REPORT_NS;
+    if (!r.fifo.empty()) {
+        const Item& h = r.fifo.front();
+        if (!h.timed) return now;   // it came in while we posted: due at once
+        at = std::min(at, h.start + r.pace - RELEASE_SLACK_NS);
+    }
+    /* Silence stops while the sink thread is held in us; its unblock wakes us (aw_block_end).
+     * W not taken since the last arrival: its least, where aw_watch takes it. */
+    if (aw_silence_counts(r) && r.quiet_started && !r.upstream_blocked)
+        at = std::min(at, r.quiet_from + r.held_ns +
+                              (r.limit_stale ? aw_limit_floor(self) : r.silence_limit));
+    /* Held behind the pace, the next buffer's release is armed: its arrival need not wake us,
+     * so a held input's task runs once a buffer, as a queue's does. */
+    if (r.fifo.empty() && r.ahead && aw_silence_counts(r) && !aw_gapped(r) &&
+        r.planner.has_horizon()) {
+        const gint64 next = r.planner.horizon_ns() + r.pace - RELEASE_SLACK_NS;
+        if (next > now) at = std::min(at, next);
+    }
+    if (aw_gapped(r)) {
+        if (!aw_paced_gaps(r)) {
+            at = std::min(at, now + (gint64)self->tick.load(std::memory_order_relaxed));
+        } else {
+            const gint64 h = r.planner.has_horizon() ? r.planner.horizon_ns() : 0;
+            const Item* next = aw_next_timed(r);
+            if (!next || next->start > h) at = std::min(at, h + r.pace - RELEASE_SLACK_NS);
+        }
+    }
+    return at;
+}
+
+/* Under the lock, back under it: a state change is news now, not after the sleep. */
+static void aw_post_now(GstMrAlignWatch* self, guint* pending) {
+    if (!*pending) return;
+    const Snap snap = aw_snap(self);
+    const guint p = *pending;
+    *pending = 0;
+    g_mutex_unlock(&self->lock);
+    aw_post_pending(self, p, snap);
+    g_mutex_lock(&self->lock);
+}
+
+/* Under the lock: the task's sleep to `deadline` on its one clock id, re-armed. */
+static void aw_sleep(GstMrAlignWatch* self, gint64 deadline) {
+    Run& r = *self->run;
+    const GstClockTime at = (GstClockTime)(r.base + std::max<gint64>(deadline, 0));
+    if (!r.clock_id || r.id_clock != r.clock ||
+        !gst_clock_single_shot_id_reinit(r.clock, r.clock_id, at)) {
+        if (r.clock_id) gst_clock_id_unref(r.clock_id);
+        r.clock_id = gst_clock_new_single_shot_id(r.clock, at);
+        r.id_clock = r.clock;
+    }
+    GstClockID id = r.clock_id;
+    r.sleeping = true;
+    r.wake_at = deadline;
+    g_mutex_unlock(&self->lock);
+    gst_clock_id_wait(id, NULL);
+    g_mutex_lock(&self->lock);
+    r.sleeping = false;
+}
+
+/* One pass a wake: what is due goes, then the task sleeps to the next thing that can come due
+ * (aw_deadline). */
 static void aw_loop(gpointer data) {
     GstMrAlignWatch* self = GST_MRALIGNWATCH(data);
     guint pending = 0;
-    Snap snap, late_snap;
-    LateCue late;
     aw_learn_downstream(self);
     g_mutex_lock(&self->lock);
     Run& r = *self->run;
+    r.passes++;
     if (self->srcresult != GST_FLOW_OK) {
         g_mutex_unlock(&self->lock);
         gst_pad_pause_task(self->srcpad);
         return;
     }
     gint64 now = 0;
-    const bool clocked = aw_now(self, &now);
-    const PaceRegistry::View view = PaceRegistry::global().view(r.member);
-    r.pace = view.pace_ns;
-    if (view.has_lateness) r.lateness = view.lateness_ns;
+    bool clocked = aw_now(self, &now);
+    r.pace = r.member.pace_ns(now);
     if (clocked) aw_report(self, now, &pending);
 
-    /* The head, when due: untimed at once, timed at start + pace. Not PLAYING (no clock): at
-     * once, as from a queue, so a non-live upstream can preroll. */
-    if (!r.fifo.empty()) {
+    /* Every head due: untimed at once, timed within the slack of start + pace. Not PLAYING (no
+     * clock): at once, as from a queue, so a non-live upstream can preroll. */
+    while (self->srcresult == GST_FLOW_OK && !r.fifo.empty()) {
         const Item& h = r.fifo.front();
-        const bool due = !h.timed || !clocked || now >= h.start + r.pace;
-        if (due) {
-            aw_release(self, now, clocked, &pending, &late_snap, &late);
-            aw_mark_running(self);
-            if (pending) snap = aw_snap(self);
+        if (h.timed && clocked && now < h.start + r.pace - RELEASE_SLACK_NS) break;
+        Snap late_snap;
+        LateCue late;
+        aw_release(self, now, clocked, &pending, &late_snap, &late);
+        aw_mark_running(self);
+        clocked = aw_now(self, &now);   // time passed in the push, and PLAYING may have come
+        r.pace = r.member.pace_ns(now);
+        if (late.set) {
             g_mutex_unlock(&self->lock);
-            if (late.set) {
-                GstStructure* st = aw_message_structure(late_snap, "late-cue");
-                gst_structure_set(st, "cue-start", G_TYPE_INT64, late.start, "cue-lateness",
-                                  G_TYPE_INT64, late.lateness, "cue-behind", G_TYPE_INT64,
-                                  late.behind, NULL);
-                aw_post(self, st);
-            }
-            if (pending) aw_post_pending(self, pending, snap);
-            return;
+            GstStructure* st = aw_message_structure(late_snap, "late-cue");
+            gst_structure_set(st, "cue-start", G_TYPE_INT64, late.start, "cue-lateness",
+                              G_TYPE_INT64, late.lateness, "cue-behind", G_TYPE_INT64,
+                              late.behind, NULL);
+            aw_post(self, st);
+            g_mutex_lock(&self->lock);
         }
+        /* An output that paces us keeps data due: one pass releases on, and reports. */
+        if (clocked) aw_report(self, now, &pending);
+        aw_post_now(self, &pending);
     }
 
-    if (clocked) {
+    if (self->srcresult == GST_FLOW_OK && clocked) {
         mrts::GapPlanner::Gap gap{};
         /* Paced gaps: every piece due by now (a late pass catches up); else one gap a tick. */
         while (self->srcresult == GST_FLOW_OK && aw_watch(self, now, &pending, &gap)) {
@@ -1093,40 +1234,20 @@ static void aw_loop(gpointer data) {
             if (!aw_paced_gaps(r)) break;
         }
     }
+    aw_post_now(self, &pending);
 
-    /* A state change is news now, not after the sleep. */
-    if (pending) {
-        snap = aw_snap(self);
-        g_mutex_unlock(&self->lock);
-        aw_post_pending(self, pending, snap);
-        pending = 0;
-        g_mutex_lock(&self->lock);
-    }
-
-    /* Sleep to the head's release, the next paced gap or the next tick, whichever is first. */
+    /* The clock again, under the lock the wait releases: PLAYING may have come while a push
+     * held it off, and its wake found no wait (then the next pass runs at once, clocked). */
+    gint64 t = 0;
+    const bool clocked_now = aw_now(self, &t);
     if (self->srcresult == GST_FLOW_OK) {
-        const gint64 tick = (gint64)self->tick.load(std::memory_order_relaxed);
-        GstClock* clock = clocked ? gst_element_get_clock(GST_ELEMENT_CAST(self)) : NULL;
-        if (clock) {
-            gint64 deadline = now + tick;
-            if (!r.fifo.empty())   // untimed: it came in while we posted, due at once
-                deadline = r.fifo.front().timed
-                               ? std::min(deadline, r.fifo.front().start + r.pace) : now;
-            else if (aw_paced_gaps(r) && aw_gapped(r) && r.planner.has_horizon())
-                deadline = std::min(deadline, r.planner.horizon_ns() + r.pace);
-            const GstClockTime at = gst_element_get_base_time(GST_ELEMENT_CAST(self)) +
-                                    (GstClockTime)std::max<gint64>(deadline, 0);
-            GstClockID id = gst_clock_new_single_shot_id(clock, at);
-            r.clock_id = id;
-            g_mutex_unlock(&self->lock);
-            gst_clock_id_wait(id, NULL);
-            g_mutex_lock(&self->lock);
-            r.clock_id = nullptr;
-            gst_clock_id_unref(id);
-            gst_object_unref(clock);
-        } else if (r.fifo.empty()) {
+        if (clocked && clocked_now) {
+            aw_sleep(self, aw_deadline(self, now));
+        } else if (!clocked_now && r.fifo.empty()) {
             /* Nothing to watch before PLAYING: an item, PLAYING or a flush wakes it. */
+            r.cond_waiting = true;
             g_cond_wait(&self->item_added, &self->lock);
+            r.cond_waiting = false;
         }
     }
     g_mutex_unlock(&self->lock);
@@ -1196,6 +1317,7 @@ static void aw_start(GstMrAlignWatch* self) {
     Run* r = self->run;
     aw_flush_fifo(self);
     PaceRegistry::global().leave(&r->member);
+    aw_drop_clock(*r);
     r->~Run();
     new (r) Run();
     r->aligner = aligner;
@@ -1215,7 +1337,22 @@ static void aw_stop(GstMrAlignWatch* self) {
     g_mutex_lock(&self->lock);
     aw_flush_fifo(self);
     PaceRegistry::global().leave(&self->run->member);
+    aw_drop_clock(*self->run);
     g_mutex_unlock(&self->lock);
+}
+
+/* The clock as the pipeline sets it, a new one while playing too: the task re-arms on it. */
+static gboolean aw_set_clock(GstElement* element, GstClock* clock) {
+    GstMrAlignWatch* self = GST_MRALIGNWATCH(element);
+    const gboolean ret =
+        GST_ELEMENT_CLASS(gst_mralignwatch_parent_class)->set_clock(element, clock);
+    g_mutex_lock(&self->lock);
+    if (self->run->clock != clock) {
+        aw_use_clock(*self->run, clock);
+        aw_wake(self);
+    }
+    g_mutex_unlock(&self->lock);
+    return ret;
 }
 
 static GstStateChangeReturn aw_change_state(GstElement* element, GstStateChange transition) {
@@ -1224,13 +1361,18 @@ static GstStateChangeReturn aw_change_state(GstElement* element, GstStateChange 
         case GST_STATE_CHANGE_READY_TO_PAUSED:
             aw_start(self);
             break;
-        case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
-            /* The clock and base time are set before this; the task re-reads them. */
-            self->playing.store(true, std::memory_order_release);
+        case GST_STATE_CHANGE_PAUSED_TO_PLAYING: {
+            /* The clock and base time are set before this: read once for the run. */
+            GstClock* clock = gst_element_get_clock(element);
             g_mutex_lock(&self->lock);
+            aw_use_clock(*self->run, clock);
+            self->run->base = (gint64)gst_element_get_base_time(element);
+            self->playing.store(true, std::memory_order_release);
             aw_wake(self);
             g_mutex_unlock(&self->lock);
+            if (clock) gst_object_unref(clock);
             break;
+        }
         case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
             self->playing.store(false, std::memory_order_release);
             g_mutex_lock(&self->lock);
@@ -1280,13 +1422,19 @@ static void aw_set_property(GObject* object, guint prop_id, const GValue* value,
             GST_OBJECT_UNLOCK(self);
             break;
         case PROP_SILENCE_FACTOR:
-            self->silence_factor.store(g_value_get_double(value), std::memory_order_relaxed);
-            break;
         case PROP_SILENCE_FLOOR:
-            self->silence_floor.store(g_value_get_uint64(value), std::memory_order_relaxed);
-            break;
         case PROP_SILENCE_CEILING:
-            self->silence_ceiling.store(g_value_get_uint64(value), std::memory_order_relaxed);
+            if (prop_id == PROP_SILENCE_FACTOR)
+                self->silence_factor.store(g_value_get_double(value), std::memory_order_relaxed);
+            else if (prop_id == PROP_SILENCE_FLOOR)
+                self->silence_floor.store(g_value_get_uint64(value), std::memory_order_relaxed);
+            else
+                self->silence_ceiling.store(g_value_get_uint64(value), std::memory_order_relaxed);
+            /* W again, and the task's deadline with it. */
+            g_mutex_lock(&self->lock);
+            self->run->limit_stale = true;
+            aw_wake(self);
+            g_mutex_unlock(&self->lock);
             break;
         case PROP_MAX_SIZE_TIME:
         case PROP_MAX_SIZE_BYTES:
@@ -1327,6 +1475,7 @@ static void aw_get_property(GObject* object, guint prop_id, GValue* value, GPara
             case PROP_LEVEL_TIME: g_value_set_uint64(value, s.level_time); break;
             case PROP_LEVEL_BYTES: g_value_set_uint64(value, s.level_bytes); break;
             case PROP_FULL_COUNT: g_value_set_uint64(value, s.full_count); break;
+            case PROP_PASSES: g_value_set_uint64(value, s.passes); break;
             default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
         }
         return;
@@ -1385,6 +1534,7 @@ static void aw_finalize(GObject* object) {
     GstMrAlignWatch* self = GST_MRALIGNWATCH(object);
     aw_flush_fifo(self);
     PaceRegistry::global().leave(&self->run->member);
+    aw_drop_clock(*self->run);
     delete self->run;
     g_free(self->aligner);
     g_free(self->input);
@@ -1439,6 +1589,7 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
     gobject_class->get_property = aw_get_property;
     gobject_class->finalize = aw_finalize;
     element_class->change_state = aw_change_state;
+    element_class->set_clock = aw_set_clock;
 
     const GParamFlags at_start =
         (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | GST_PARAM_MUTABLE_READY);
@@ -1501,8 +1652,9 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
     g_object_class_install_property(
         gobject_class, PROP_TICK,
         g_param_spec_uint64("tick", "Tick (ns)",
-                            "How often an absent or sparse input gets its gap.", GST_MSECOND,
-                            GST_SECOND, DEFAULT_TICK, live));
+                            "How often a sparse input, or a gapped one toward mpegtsmux, gets "
+                            "its gap (toward an audio aggregator gaps go as the data would).",
+                            GST_MSECOND, GST_SECOND, DEFAULT_TICK, live));
 
     g_object_class_install_property(
         gobject_class, PROP_STATE,
@@ -1551,6 +1703,11 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
         gobject_class, PROP_FULL_COUNT,
         g_param_spec_uint64("full-count", "Full count",
                             "Times the queue filled and held upstream.", 0, G_MAXUINT64, 0, ro));
+    g_object_class_install_property(
+        gobject_class, PROP_PASSES,
+        g_param_spec_uint64("passes", "Passes",
+                            "Times the src task ran, once a wake: about one per arrival while "
+                            "data flows.", 0, G_MAXUINT64, 0, ro));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 
