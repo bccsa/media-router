@@ -135,7 +135,10 @@ export class IngestClock {
         const state = str(p, 'state');
         prog.at = now;
         prog.state = CLOCK_STATES.has(state) ? (state as ClockState) : 'acquiring';
-        prog.reason = str(p, 'reason') === 'none' ? '' : str(p, 'reason');
+        const reason = str(p, 'reason') === 'none' ? '' : str(p, 'reason');
+        // Degraded, the rate is the reference lock's: a switch either way restarts its alarm's hold.
+        if ((reason !== '') !== (prog.reason !== '')) prog.rateOffSince = undefined;
+        prog.reason = reason;
         prog.ppb = num(p, 'ppb');
         prog.residualMs = nsToMs(p, 'residual-p99-ns');
         prog.relocks = num(p, 'relocks');

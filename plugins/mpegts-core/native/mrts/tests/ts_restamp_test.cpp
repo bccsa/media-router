@@ -110,6 +110,11 @@ struct Gen {
     // frames of the slots in v_drops ([from, to), stream time) never made.
     int64_t v_jitter = 0;
     std::vector<std::pair<int64_t, int64_t>> v_drops;
+    // A relay's mux and path (TECH01, B-90): lead > 0 stamps every PES (video by its DTS) that far
+    // ahead of its mux time; from 10 s on, every burst_every the floor delay is burst_rise higher
+    // for burst_len, then what waited arrives at once.
+    int64_t lead = 0;
+    int64_t burst_every = 0, burst_len = 0, burst_rise = 0;
 };
 
 struct Pkt {
@@ -274,7 +279,7 @@ Stream generate(const Gen& g) {
             PesInfo info;
             info.pid = e->pid;
             info.t = t;
-            info.slot_dts = t + e->lead + (video ? jitter_of(k) : 0);
+            info.slot_dts = t + (g.lead > 0 ? g.lead : e->lead) + (video ? jitter_of(k) : 0);
             info.slot_pts = info.slot_dts + reorder;
             info.pts = fmod64(ns_to_pts90k(base + info.slot_pts), PTS_WRAP);
             info.dts = reorder > 0 ? fmod64(ns_to_pts90k(base + info.slot_dts), PTS_WRAP) : -1;
@@ -393,6 +398,7 @@ std::vector<Dg> datagrams(const Stream& st, const Gen& g, int64_t h0, int64_t pp
             const int64_t at = (send - g.delay_from) / US, len = std::max<int64_t>(1, g.delay_ramp / US);
             rise = g.delay_ramp > 0 && at < len ? g.delay_rise * at / len : g.delay_rise;
         }
+        if (g.burst_every > 0 && send >= 10 * S && (send - 10 * S) % g.burst_every < g.burst_len) rise += g.burst_rise;
         int64_t due = send;               // a queued send leaves at its place in the drain
         const int64_t span = g.backlog_len + g.backlog_drain;
         if (g.backlog_at >= 0 && send >= g.backlog_at && send - g.backlog_at < span)
@@ -2042,6 +2048,44 @@ void test_degraded() {
           count_events(a, Ev::Kind::lead_clamp) == 0);
 }
 
+// B-90: TECH01's relay of the gate (a 125 ms mux lead, a bursty path): from 10 s, every 20 s the floor
+// delay 450 ms higher for 8 s. The lead against arrival then sits near -325 ms, which the lead row read
+// as a PCR fault; the PES's lead over its PCR stays 125 ms: nothing moves.
+void test_bursty_relay() {
+    Gen g;
+    g.secs = 120;
+    g.lead = 125 * MS;
+    g.burst_every = 20 * S;
+    g.burst_len = 8 * S;
+    g.burst_rise = 450 * MS;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, true);
+    print_events("relay: 125 ms lead, the path +450 ms for 8 s every 20 s", a, c);
+    // Audio-1's lead against arrival: the longest stretch of arrivals below -200 ms.
+    int64_t run_from = -1, longest = 0, lo = INT64_MAX;
+    for (const OutPes& p : aa.pes) {
+        if (p.pid != PID_A1) continue;
+        const int64_t at = a.arrival_of_out[p.at], lead = house_from_mux_pts(p.pts, at) - at;
+        lo = std::min(lo, lead);
+        if (lead >= -200 * MS) run_from = -1;
+        else if (run_from < 0) run_from = at;
+        else longest = std::max(longest, at - run_from);
+    }
+    const VirtualStc::Stats& k = a.stats.programs[0].clock;
+    std::printf("  relay: audio-1 lead against arrival down to %.1f ms, below -200 ms for up to %.2f s; state %d "
+                "epoch %u, %zu gaps, %llu PES dropped\n",
+                lo / 1e6, longest / 1e9, (int)k.state, k.epoch, a.gaps.size(),
+                (unsigned long long)a.stats.programs[0].dropped_pes);
+    CHECK("bursty relay: its lead against arrival below -200 ms for 7.5 s and more at a time (the old row's fault)",
+          longest >= 7500 * MS && lo < -300 * MS);
+    CHECK("bursty relay: never degraded, no relock, so no gap and nothing dropped (B-90)",
+          count_events(a, Ev::Kind::degraded) == 0 && count_events(a, Ev::Kind::relock) == 0 && a.gaps.empty() &&
+              a.stats.programs[0].dropped_pes == 0 && k.state == VirtualStc::State::locked && k.epoch == 1);
+    CHECK("bursty relay: monotonic, CC intact, bytes as the input's",
+          monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
+}
+
 void test_degraded_ref_pid() {
     // The PCR on a PID of its own (no PES) from 10 s, then stuck 20-30 s: the reference is
     // the first video PID, not the PCR PID, and the degraded event says so.
@@ -3077,6 +3121,7 @@ int main() {
     test_outage();
     test_outage_gaps();
     test_degraded();
+    test_bursty_relay();
     test_degraded_ref_pid();
     test_sparse_pcr();
     test_degraded_relock();

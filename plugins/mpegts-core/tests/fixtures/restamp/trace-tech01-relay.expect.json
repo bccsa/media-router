@@ -1,0 +1,22 @@
+{
+  "note": "The production gate's renditions as TECH01 relays them (SRT listener 10.9.1.131:9000; H.264 720p50 without DTS on the PCR PID 0x64, AAC ADTS on 0xc8), pulled from 10.9.16.108 (Pi 4) by a standalone srtsrc caller (latency 600 ms, as the engine's srt-input there) into mrtsrestamp clock-mode=stc trace-location, the element of the wf11 build (e7b4ee8e), 2026-10-22 02:24:32Z, beside the engine's own caller: its first 734 s (2 MB) of 930 s (chapter 15.4 B-90). Read off the dump: a PCR every 60 ms of source time (40 ms at 110 places) arriving 0-342 ms apart (p50 53, p99 186 ms), no leap, outage or discontinuity; PTS - PCR (DTS for video, none written) 125-165 ms on video, 126-184 ms on audio; the delivery repeats every 150.0 s: some 12 s at 400-600 ms above its floor, then some 10 s on the floor (about 170 ms under its usual level), then the usual level, with a short spike 90 s on. Before B-90 the lead row's lower bound read the lead against arrival, the mux's 125 ms less that delay: degraded (lead) at 91.4 s for good (the bursty delivery's single frozen PCR pairs, about one a second, kept restarting the recovery clock), one relock of the reference lock. As replayed: never degraded, locked at 188 s; the PCR lock relocks on envelope steps in the delivery's 150 s pairs, as the engine's degraded reference lock did (53 an hour): a step in the 12 s rise seeds the new epoch on a late sample, the floor 6.6 s later lies more than backlog_ns under that seed, so the line moves onto it and 560-620 ms per PID are dropped, and the usual level steps again 20 s after the first; 10 relocks, 20 epoch gaps of 132-369 ms, 4.75 s dropped in all (the start burst's 40 ms included); epsilon 19.9-56.6 ppm while locked. Recorded before B-84's recorder change: one PES record carries the restamp's own discontinuity_indicator (92.09 s, the switch to the regenerated PCR); the replay plays it back and uses it for nothing. The bounds keep these results as the ceiling.",
+  "relocks": [0, 10],
+  "envelopeSteps": [0, 10],
+  "degraded": 0,
+  "recovered": 0,
+  "leadClamps": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "overlap", "atS": [1.5, 3]}],
+  "gaps": [0, 20],
+  "gapMs": [0, 400],
+  "overlaps": [0, 10],
+  "droppedMs": [0, 5000],
+  "psiChanges": 1,
+  "lockedWithinS": 200,
+  "mappingPpmMax": 21,
+  "leadMaxMs": 800,
+  "cadenceWarning": true,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

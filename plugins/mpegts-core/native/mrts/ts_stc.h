@@ -157,11 +157,11 @@ struct PcrValidatorConfig {
     int64_t leap_ns = 500000000;                  // above the gate egress's delivery stalls (WI-P1-6)
     int leap_fail_count = 3;
     int64_t leap_window_ns = 60000000000LL;
-    int64_t lead_min_ns = -200000000;
-    int64_t lead_max_ns = 4000000000LL;
+    int64_t lead_min_ns = -200000000;             // the stream lead: PTS (DTS for video) less the last PCR
+    int64_t lead_max_ns = 4000000000LL;           // the lead against arrival under the PCR line
     int64_t lead_median_window_ns = 1000000000;   // the median that must stay out ...
     int64_t lead_hold_ns = 5000000000LL;          // ... this long
-    int64_t recover_ns = 30000000000LL;           // clean PCR before leaving degraded
+    int64_t recover_ns = 30000000000LL;           // no row failing this long before leaving degraded
     // Degraded: a PID further ahead of arrival under the reference mapping gets its own
     // envelope (lead 0), under the 5 s bus ingress queue (part 4.3, B-8).
     int64_t lead_clamp_ns = 4000000000LL;
@@ -175,6 +175,8 @@ class PcrValidator {
     enum class Verdict { ok, discontinuity, leap, fail };
     enum class Reason { none, cadence, rate, freeze, leap, lead };
 
+    static constexpr int64_t NO_LEAD = INT64_MIN;   // feed_lead: that half not measured
+
     explicit PcrValidator(const PcrValidatorConfig& cfg = PcrValidatorConfig());
 
     Verdict feed_pcr(int64_t pcr27, bool di, int64_t arrival_ns);
@@ -182,11 +184,14 @@ class PcrValidator {
     // packets keep arriving, so an outage is not a PCR fault.
     void feed_activity(int64_t arrival_ns);
     void feed_rate(int64_t fit_ppb, int64_t arrival_ns);
-    void feed_lead(int pid, int64_t lead_ns);   // timed by the latest feed
+    // One PES, timed by the latest feed (B-90): its lead against arrival, judged against
+    // lead_max_ns, and its stream lead (its PTS less the program's last PCR), against
+    // lead_min_ns, which a late delivery does not move. Either may be NO_LEAD.
+    void feed_lead(int pid, int64_t arrival_ns, int64_t stream_ns);
     Reason reason() const { return reason_; }   // the first failing row; sticky
     bool failed() const { return reason_ != Reason::none; }
     bool cadence_warning() const { return warn_; }
-    int64_t clean_ns(int64_t now_ns) const;      // since the last bad observation
+    int64_t clean_ns(int64_t now_ns) const;      // since a row last failed (bad())
     void clear_failure() { reason_ = Reason::none; }
     void restart_pcr() { have_pcr_ = false; }    // the PCR PID changed
     int64_t last_leap_ns() const { return last_leap_; }   // Δσ - Δh of the last leap
@@ -194,14 +199,18 @@ class PcrValidator {
     const PcrValidatorConfig& config() const { return cfg_; }
 
   private:
-    struct Lead {
+    struct Window {
         std::deque<std::pair<int64_t, int64_t>> w;   // (time, lead)
         bool bad = false;
         int64_t bad_since = 0;
     };
+    struct Lead {
+        Window arrival, stream;
+    };
     void on_packet(int64_t h);
     void bad(int64_t h);
     bool fail(Reason r);
+    void judge(Window& l, int64_t lead_ns, int64_t lo, int64_t hi);
 
     PcrValidatorConfig cfg_;
     Reason reason_ = Reason::none;

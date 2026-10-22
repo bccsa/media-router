@@ -165,18 +165,20 @@ function networkView(v: View, c: IngestClock, now: number, staleMs: number): voi
             ],
         });
         if (!fresh) continue;
+        const from = p.refPid === undefined ? "the reference PID's" : `PID ${pidHex(p.refPid)}`;
         if (state === 'degraded') {
-            const from = p.refPid === undefined ? "the reference PID's" : `PID ${pidHex(p.refPid)}`;
             const cause = p.reason ? reasonText(p.reason) : 'PCR unusable';
             v.warnings.push(`Degraded clock: ${cause} — timing from ${from} PTS against arrival`);
         }
+        // Degraded, the rate and the re-locks are the reference lock's, not the PCR's (B-90).
+        const subject = state === 'degraded' ? `Timing from ${from} PTS` : 'Source clock';
         const relocks = p.relockLog.length;
         if (relocks > RELOCK_ALARM) {
             const last = reasonText(p.relockLog[relocks - 1].reason) || 'unknown';
-            v.warnings.push(`Source clock unstable: ${relocks} re-locks in 10 min (last: ${last})`);
+            v.warnings.push(`${subject} unstable: ${relocks} re-locks in 10 min (last: ${last})`);
         }
         if (p.ppb !== undefined && held(p.rateOffSince, now)) {
-            v.warnings.push(`Source clock off by ${ppmOff(p.ppb)} ppm`);
+            v.warnings.push(`${subject} off by ${ppmOff(p.ppb)} ppm`);
         }
         // The element's flag is part 10's condition (p99 over 10 s past 150 ms); n is the longest
         // interval of the last report, the only interval the stats carry.

@@ -202,6 +202,18 @@ elements" below do not start.
   unpacks the stream (Video Player, the transcoders, the MPEG-TS Muxer).
   Fixed: on video only a hole of a second or more counts as a gap; a dropped
   frame leaves the previous picture up a moment longer, as before.
+- **A network input on a bursty link no longer sticks on Degraded clock.**
+  An SRT or RIST input whose sender delivers in bursts (a relay of the
+  production gate, for one) showed "Degraded clock: lead out of range" a
+  minute or two after every start and never left it. The check read the
+  late bursts as a fault in the source's clock. Fixed: that check now reads
+  the stream's own timestamps, so such an input stays on its clock; and an
+  input degraded for a real reason returns once 30 s pass with no check
+  failing, which a bursty link's small hiccups used to prevent for good.
+  While an input is degraded, its "unstable" and "off by n ppm" warnings
+  now name the PID its timing follows, not the source clock. Not changed
+  yet: on such a link the clock still re-locks twice every few minutes,
+  with a short gap in picture and sound and about half a second dropped.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

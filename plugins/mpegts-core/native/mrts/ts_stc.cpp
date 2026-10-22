@@ -423,6 +423,9 @@ PcrValidator::PcrValidator(const PcrValidatorConfig& cfg) : cfg_(cfg) {
     cfg_.rate_max_ppm = clamp64(cfg_.rate_max_ppm, 0, 100000);
 }
 
+// A bad observation at which its row's failure condition holds (its count or its hold): the
+// recovery clock restarts. An isolated one (a freeze pair, a crossing, a leap, a short excursion)
+// does not, so a jittery delivery cannot hold a program degraded (B-90).
 void PcrValidator::bad(int64_t h) {
     if (!any_bad_ || h > last_bad_h_) last_bad_h_ = h;
     any_bad_ = true;
@@ -450,13 +453,16 @@ void PcrValidator::on_packet(int64_t h) {
         open_counted_ = std::max(open_counted_, crossed);
         return;
     }
+    const bool late = open_counted_ < crossed;
     while (open_counted_ < crossed) {   // packets keep arriving, the PCR does not
         open_counted_++;
         longs_.push_back(h);
-        bad(h);
     }
     while (!longs_.empty() && longs_.front() < sat_sub(h, cfg_.cadence_fail_window_ns)) longs_.pop_front();
-    if ((int)longs_.size() >= cfg_.cadence_fail_count) fail(Reason::cadence);
+    if ((int)longs_.size() >= cfg_.cadence_fail_count) {
+        if (late) bad(h);
+        fail(Reason::cadence);
+    }
 }
 
 void PcrValidator::feed_activity(int64_t arrival_ns) { on_packet(arrival_ns); }
@@ -501,11 +507,12 @@ PcrValidator::Verdict PcrValidator::feed_pcr(int64_t pcr27, bool di, int64_t h) 
         last_leap_ = sat_sub(ds, dh);
         leaps_.push_back(h);
         while (leaps_.front() < sat_sub(h, cfg_.leap_window_ns)) leaps_.pop_front();
-        bad(h);
         freeze_run_ = 0;
         fz_pcr_ = pcr27;
         fz_h_ = h;
-        return (int)leaps_.size() >= cfg_.leap_fail_count && fail(Reason::leap) ? Verdict::fail : Verdict::leap;
+        if ((int)leaps_.size() < cfg_.leap_fail_count) return Verdict::leap;
+        bad(h);
+        return fail(Reason::leap) ? Verdict::fail : Verdict::leap;
     }
     // Freeze pairs span >= 30 ms, so a dense PCR still shows its stall.
     const int64_t fdh = sat_sub(h, fz_h_);
@@ -515,8 +522,10 @@ PcrValidator::Verdict PcrValidator::feed_pcr(int64_t pcr27, bool di, int64_t h) 
         fz_h_ = h;
         if (fds < fdh / 2) {
             freeze_run_++;
-            bad(h);
-            if (freeze_run_ >= cfg_.freeze_count && fail(Reason::freeze)) return Verdict::fail;
+            if (freeze_run_ >= cfg_.freeze_count) {
+                bad(h);
+                if (fail(Reason::freeze)) return Verdict::fail;
+            }
         } else {
             freeze_run_ = 0;
         }
@@ -532,33 +541,43 @@ void PcrValidator::feed_rate(int64_t fit_ppb, int64_t h) {
         rate_bad_ = false;
         return;
     }
-    bad(h);
     if (!rate_bad_) {
         rate_bad_ = true;
         rate_bad_since_ = h;
     }
-    if (sat_sub(h, rate_bad_since_) >= cfg_.rate_hold_ns) fail(Reason::rate);
+    if (sat_sub(h, rate_bad_since_) >= cfg_.rate_hold_ns) {
+        bad(h);
+        fail(Reason::rate);
+    }
 }
 
-void PcrValidator::feed_lead(int pid, int64_t lead_ns) {
-    const int64_t t = now_;
+void PcrValidator::feed_lead(int pid, int64_t arrival_ns, int64_t stream_ns) {
     Lead& l = leads_[pid];
+    if (arrival_ns != NO_LEAD) judge(l.arrival, arrival_ns, INT64_MIN, cfg_.lead_max_ns);
+    if (stream_ns != NO_LEAD) judge(l.stream, stream_ns, cfg_.lead_min_ns, INT64_MAX);
+}
+
+// One half of the lead row: its 1 s median outside [lo, hi] for lead_hold_ns fails.
+void PcrValidator::judge(Window& l, int64_t lead_ns, int64_t lo, int64_t hi) {
+    const int64_t t = now_;
     if (!l.w.empty() && sat_sub(t, l.w.back().first) >= cfg_.lead_hold_ns) l.bad = false;   // silent PID: start over
     l.w.push_back({t, lead_ns});
     while (l.w.front().first < sat_sub(t, cfg_.lead_median_window_ns)) l.w.pop_front();
     std::vector<int64_t> v;
     for (const auto& p : l.w) v.push_back(p.second);
     const int64_t med = median(std::move(v));
-    if (med >= cfg_.lead_min_ns && med <= cfg_.lead_max_ns) {
+    if (med >= lo && med <= hi) {
         l.bad = false;
         return;
     }
-    bad(t);
     if (!l.bad) {
         l.bad = true;
         l.bad_since = t;
     }
-    if (sat_sub(t, l.bad_since) >= cfg_.lead_hold_ns) fail(Reason::lead);
+    if (sat_sub(t, l.bad_since) >= cfg_.lead_hold_ns) {
+        bad(t);
+        fail(Reason::lead);
+    }
 }
 
 int64_t PcrValidator::clean_ns(int64_t now_ns) const {
@@ -783,11 +802,17 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     val_.feed_activity(h);
     pcr_.tick(h);
     ref_.tick(h);
-    // The lead row judges the PCR mapping, also while degraded (recovery needs it), but not what
-    // that line maps stale: a backlog's lead measures the line, not the source (B-39, B-48).
-    if (lead_row && pcr_.started()) {
-        const int64_t house = pcr_.house_of(sigma);
-        if (!stale(pcr_, house, h)) val_.feed_lead(pid, sat_sub(house, h));
+    // The lead row, also while degraded (recovery needs it): its upper bound on the PCR mapping, but
+    // not what that line maps stale, a backlog's lead measuring the line (B-39, B-48); its lower bound
+    // on the PES's own lead over its last PCR, which no delivery lag moves (B-90).
+    if (lead_row) {
+        int64_t arrival = PcrValidator::NO_LEAD, own = PcrValidator::NO_LEAD;
+        if (pcr_.started()) {
+            const int64_t house = pcr_.house_of(sigma);
+            if (!stale(pcr_, house, h)) arrival = sat_sub(house, h);
+        }
+        if (have_pcr_) own = sat_sub(sigma, pcr27_to_ns(pcr_unwrapped_));
+        val_.feed_lead(pid, arrival, own);
     }
     check_failure(h);
 

@@ -716,11 +716,13 @@ struct VRun {
     bool warned = false;
 };
 
-// PCR every `pcr_ms` (σ = t + pcr_off(t), DI per di(t)), other packets every 20 ms
-// unless silent(t); rate and leads fed as given. Times are ns from 0.
-template <class Off, class Di, class Silent, class Rate, class LeadF>
+// PCR every `pcr_ms` (σ = t + pcr_off(t), DI per di(t)), other packets every 20 ms unless
+// silent(t); rate and leads as given: lead(t) the source's over its PCR, against arrival that
+// less the delay and lag(t), a late delivery's. Times are ns from 0.
+auto no_lag = [](int64_t) { return (int64_t)0; };
+template <class Off, class Di, class Silent, class Rate, class LeadF, class LagF = decltype(no_lag)>
 VRun vrun(const PcrValidatorConfig& cfg, int64_t secs, int64_t pcr_ms, Off pcr_off, Di di, Silent silent,
-          Rate rate, LeadF lead) {
+          Rate rate, LeadF lead, LagF lag = no_lag) {
     PcrValidator v(cfg);
     VRun r;
     Lcg g(3);
@@ -733,8 +735,8 @@ VRun vrun(const PcrValidatorConfig& cfg, int64_t secs, int64_t pcr_ms, Off pcr_o
             v.feed_activity(h + d / 4);
             const int64_t ld = lead(t);
             if (ld != INT64_MIN) {
-                v.feed_lead(0x100, ld - d);
-                v.feed_lead(0x101, ld - 300 * MS - d);
+                v.feed_lead(0x100, ld - d - lag(t), ld);
+                v.feed_lead(0x101, ld - 300 * MS - d - lag(t), ld - 300 * MS);
             }
         }
         if (pcr_every > 0 && t % pcr_every == 0) {
@@ -858,7 +860,14 @@ void test_validator() {
               r.reason == R::lead && r.fail_at >= 15 * S && r.fail_at <= 15600 * MS);
         auto late = [](int64_t t) { return t >= 10 * S ? 0 : 900 * MS; };   // 0x101 at -300 ms
         const VRun rl = vrun(def, 30, 100, no_off, no_di, never, rate_30, late);
-        CHECK("lead: a median lead below -200 ms for 5 s fails as lead", rl.reason == R::lead);
+        CHECK("lead: a median stream lead (PTS less the PCR) below -200 ms for 5 s fails as lead",
+              rl.reason == R::lead && rl.fail_at >= 15 * S && rl.fail_at <= 15600 * MS);
+        // B-90: a delivery 400 ms late for 8 s puts 0x101's lead against arrival at -300 ms; its own
+        // lead over its PCR stays +100 ms, which the lower bound reads.
+        auto mux100 = [](int64_t) { return 400 * MS; };   // 0x100 400 ms, 0x101 100 ms
+        auto lag400 = [](int64_t t) { return t >= 10 * S && t < 18 * S ? 400 * MS : 0; };
+        CHECK("lead: a 100 ms stream lead delivered 400 ms late for 8 s passes (B-90)",
+              clean(vrun(def, 30, 100, no_off, no_di, never, rate_30, mux100, lag400)));
         auto ok3 = [](int64_t t) { return t >= 10 * S ? 3300 * MS : 900 * MS; };
         CHECK("lead: 3.3 s passes", clean(vrun(def, 30, 100, no_off, no_di, never, rate_30, ok3)));
         auto spike = [](int64_t t) { return t >= 10 * S && t < 14 * S ? 5300 * MS : 900 * MS; };
@@ -871,9 +880,56 @@ void test_validator() {
         PcrValidator v(def);
         for (int64_t t = 0; t <= 2 * S; t += 100 * MS) v.feed_pcr(ns_to_pcr27(t), false, t);
         v.feed_rate(2000000, 2 * S);
-        CHECK("recovery clock: a bad observation restarts it", v.clean_ns(5 * S) == 3 * S);
-        v.feed_rate(0, 3 * S);
-        CHECK("recovery clock: ... and good ones do not", v.clean_ns(40 * S) == 38 * S);
+        CHECK("recovery clock: one bad observation alone does not restart it (B-90)", v.clean_ns(5 * S) == 5 * S);
+        v.feed_rate(2000000, 32 * S);
+        CHECK("recovery clock: ... its row failing (the rate held 30 s) does", v.clean_ns(35 * S) == 3 * S);
+        v.feed_rate(0, 33 * S);
+        CHECK("recovery clock: ... and good ones do not", v.clean_ns(70 * S) == 38 * S);
+    }
+    // B-90: per row, what restarts the recovery clock: an observation at the row's failure condition
+    // (its count or its hold), not an isolated one. `pcr(t)` the PCR's σ at arrival t.
+    auto clock_after = [&](int64_t secs, auto pcr, auto lead) {
+        PcrValidator v(def);
+        for (int64_t t = 0; t <= secs * S; t += 20 * MS) {
+            v.feed_activity(t);
+            if (t % (100 * MS) == 0) {
+                const int64_t s = pcr(t);
+                if (s != INT64_MIN) v.feed_pcr(ns_to_pcr27(s), false, t);
+            }
+            v.feed_lead(0x100, PcrValidator::NO_LEAD, lead(t));
+        }
+        return std::make_pair(v.clean_ns(secs * S), v.failed());
+    };
+    auto pcr_ok = [](int64_t t) { return t; };
+    auto lead_ok = [](int64_t) { return 100 * MS; };
+    {
+        auto two = [](int64_t t) { return t >= 10 * S && t < 10300 * MS ? 10 * S : t; };   // frozen at 10.1, 10.2 s
+        auto three = [](int64_t t) { return t >= 10 * S && t < 10400 * MS ? 10 * S : t; };
+        const auto a = clock_after(20, two, lead_ok), b = clock_after(20, three, lead_ok);
+        CHECK("recovery clock: two frozen PCR pairs leave it running; the third (the freeze row) restarts it",
+              a.first == 20 * S && !a.second && b.second && b.first == 20 * S - 10300 * MS);
+    }
+    {
+        // The PCR missing 1.1 s while packets flow: two 500 ms crossings; missing 1.6 s: the third fails.
+        auto gap = [](int64_t lo, int64_t hi) { return [=](int64_t t) { return t > lo && t < hi ? INT64_MIN : t; }; };
+        const auto a = clock_after(20, gap(10 * S, 11100 * MS), lead_ok), b = clock_after(20, gap(10 * S, 11600 * MS), lead_ok);
+        CHECK("recovery clock: two cadence crossings leave it running; the third (the cadence row) restarts it",
+              a.first == 20 * S && !a.second && b.second && b.first == 20 * S - 11520 * MS);
+    }
+    {
+        auto two = [](int64_t t) { return t + (t >= 10 * S ? 1 * S : 0) + (t >= 20 * S ? 1 * S : 0); };
+        auto three = [&](int64_t t) { return two(t) + (t >= 30 * S ? 1 * S : 0); };
+        const auto a = clock_after(40, two, lead_ok), b = clock_after(40, three, lead_ok);
+        CHECK("recovery clock: two leaps in 60 s leave it running; the third (the leap row) restarts it",
+              a.first == 40 * S && !a.second && b.second && b.first == 10 * S);
+    }
+    {
+        auto behind = [](int64_t lo, int64_t hi) {
+            return [=](int64_t t) { return t >= lo && t < hi ? -300 * MS : 100 * MS; };
+        };
+        const auto a = clock_after(30, pcr_ok, behind(10 * S, 14 * S)), b = clock_after(30, pcr_ok, behind(10 * S, 17 * S));
+        CHECK("recovery clock: a stream lead out of range 4 s leaves it running; past the 5 s hold it restarts",
+              a.first == 30 * S && !a.second && b.second && b.first == 30 * S - 17480 * MS);
     }
 }
 
@@ -1528,10 +1584,109 @@ void test_vstc_window() {
               b.stale(PID_A) == 0);
 }
 
-// The restamp maps the PCR too (part 4.2 step 3). map_pcr gives it its PES's epoch
-// choice but keeps it out of the lead row: a PCR's lag behind its mapping is minus the
-// delay above the floor, so a 230 ms re-route re-locks by the envelope step, where the
-// same lag fed as a PID's lead (map) trips the -200 ms row and degrades the program.
+// B-90: the lower bound reads a PES's PTS less its last PCR, not its lead against arrival, which a
+// late delivery moves: a 100 ms mux delivered 400 ms above its floor is no PCR fault; a rise that
+// holds relocks by the envelope step once locked, and a PTS behind its PCR still degrades.
+struct LeadCase {
+    std::vector<StcEvent> ev;
+    VirtualStc::State end = VirtualStc::State::acquiring;
+    int64_t locked_at = -1;   // rel() of the first stats in state locked
+};
+
+template <class F>
+LeadCase lead_case(const char* label, F shape, int64_t secs, uint64_t seed) {
+    VirtualStc v;
+    Fnv f;
+    LeadCase r;
+    drive(v, program(secs, 50000, seed, shape), f, [&](const Pkt& p, const VirtualStc::Mapping&) {
+        if (r.locked_at < 0 && v.state() == VirtualStc::State::locked) r.locked_at = rel(p.h);
+    });
+    r.ev = fold_events(v, f);
+    r.end = v.state();
+    print_events(label, r.ev);
+    g_all.add((int64_t)f.h);
+    return r;
+}
+
+// Every PES 100 ms ahead of the PCR: audio's 500 ms and video's 800 ms less 400 and 700 ms.
+Shape lead100(int pid) {
+    Shape s;
+    s.pts_ns = pid == PID_A ? -400 * MS : pid == PID_V ? -700 * MS : 0;
+    return s;
+}
+
+// ... and from `at` for `len` (0: for good) the path's floor 400 ms higher, the PCR's too.
+Shape late400(int pid, int64_t t, int64_t at, int64_t len) {
+    Shape s = lead100(pid);
+    if (t >= at && (len == 0 || t < at + len)) s.net_ns = 400 * MS;
+    return s;
+}
+
+void test_vstc_stream_lead() {
+    const LeadCase a = lead_case("100 ms lead, delivery +400 ms for 8 s at 10 s (acquiring)",
+                                 [](int pid, int64_t t) { return late400(pid, t, 10 * S, 8 * S); }, 90, 71);
+    CHECK("vstc stream lead: a 100 ms mux delivered 400 ms late for 8 s while acquiring: no event, locked after",
+          a.ev.empty() && a.end == VirtualStc::State::locked && a.locked_at > 18 * S);
+    const LeadCase b = lead_case("... at 60 s (locked)",
+                                 [](int pid, int64_t t) { return late400(pid, t, 60 * S, 8 * S); }, 90, 72);
+    CHECK("vstc stream lead: ... once locked: no event (shorter than the step's 10 s hold), still locked",
+          b.ev.empty() && b.end == VirtualStc::State::locked && b.locked_at < 60 * S);
+    const LeadCase c = lead_case("... from 60 s for good (locked)",
+                                 [](int pid, int64_t t) { return late400(pid, t, 60 * S, 0); }, 90, 73);
+    CHECK("vstc stream lead: a rise that holds is the envelope step's: one relock about 10 s after it, never degraded",
+          kinds_are(c.ev, {StcEvent::Kind::envelope_step, StcEvent::Kind::relock}) &&
+              !std::strcmp(c.ev[1].reason, "envelope-step") && rel(c.ev[1].house_ns) >= 69500 * MS &&
+              rel(c.ev[1].house_ns) <= 71500 * MS && c.ev[0].value_ns > 380 * MS && c.ev[0].value_ns < 420 * MS &&
+              c.end == VirtualStc::State::locked);
+
+    // The PTS 300 ms behind its own PCR (audio -800 ms, video -1100 ms) until 40 s, then 100 ms ahead.
+    auto behind = [](int pid, int64_t t) {
+        Shape s = lead100(pid);
+        if (t < 40 * S && pid != PCR_PID) s.pts_ns -= 400 * MS;
+        return s;
+    };
+    const LeadCase d = lead_case("PTS 300 ms behind its PCR until 40 s, then 100 ms ahead", behind, 90, 74);
+    CHECK("vstc stream lead: a PTS behind its own PCR degrades (lead) at 5 s, recovered 30 s after it is back",
+          kinds_are(d.ev, {StcEvent::Kind::degraded, StcEvent::Kind::recovered}) && !std::strcmp(d.ev[0].reason, "lead") &&
+              rel(d.ev[0].house_ns) >= 5 * S && rel(d.ev[0].house_ns) <= 5600 * MS && rel(d.ev[1].house_ns) >= 70 * S &&
+              rel(d.ev[1].house_ns) <= 71 * S && d.end == VirtualStc::State::locked);
+    // PTS 300 ms behind the PCR throughout, starting on a 90 s caller backlog drained in 5 s, stale
+    // 7 s under the seed line: that keeps the arrival half out, not this, so it degrades 5 s on.
+    auto backlog = [](int pid, int64_t t) {
+        Shape s = queued_at(pid, t, 0, 90 * S, 5 * S);
+        s.pts_ns = lead100(pid).pts_ns - (pid != PCR_PID ? 400 * MS : 0);
+        return s;
+    };
+    const LeadCase e = lead_case("... from a 90 s backlog drained in 5 s", backlog, 120, 76);
+    CHECK("vstc stream lead: ... a backlog's stale PES still show it: degraded (lead) 5 s after they arrive",
+          !e.ev.empty() && e.ev[0].kind == StcEvent::Kind::degraded && !std::strcmp(e.ev[0].reason, "lead") &&
+              rel(e.ev[0].house_ns) >= 95 * S && rel(e.ev[0].house_ns) <= 95600 * MS);
+}
+
+// B-90's exit rule: the PCR stuck 60-61 s degrades the program (freeze); from 62 s the delivery
+// stalls 250 ms every 2 s, each stall one frozen PCR pair, which alone fails no row. The recovery
+// clock runs from the freeze row's last failing pair: recovered 30 s after it, not held for good.
+void test_vstc_recovery() {
+    auto jittery = [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PCR_PID && t >= 60 * S && t < 61 * S) s.pcr_ns = 60 * S - t;
+        if (t >= 62 * S && t % (2 * S) < 4 * MS) s.net_ns = 250 * MS;   // what follows queues behind
+        return s;
+    };
+    const LeadCase r = lead_case("PCR stuck 60-61 s, then a 250 ms stall every 2 s", jittery, 150, 75);
+    CHECK("vstc recovery: degraded (freeze) at the third frozen pair, the PCR's return a leap",
+          r.ev.size() >= 2 && r.ev[0].kind == StcEvent::Kind::degraded && !std::strcmp(r.ev[0].reason, "freeze") &&
+              rel(r.ev[0].house_ns) >= 60200 * MS && rel(r.ev[0].house_ns) <= 60500 * MS &&
+              r.ev[1].kind == StcEvent::Kind::leap);
+    CHECK("vstc recovery: ... recovered 30 s after the freeze row last failed, the stalls' single pairs aside",
+          kinds_are(r.ev, {StcEvent::Kind::degraded, StcEvent::Kind::leap, StcEvent::Kind::recovered}) &&
+              rel(r.ev[2].house_ns) >= 90800 * MS && rel(r.ev[2].house_ns) <= 91500 * MS &&
+              r.end == VirtualStc::State::locked);
+}
+
+// The restamp maps the PCR too (part 4.2 step 3): map_pcr gives it its PES's epoch choice, outside
+// the lead row; its lag is minus the delay above the floor, so a 230 ms re-route relocks by the
+// envelope step. Fed as a PID's lead (map) it now does the same: its stream lead is 0 (B-90).
 void test_vstc_map_pcr() {
     auto reroute = [](int pid, int64_t t) {   // the path's floor rises 230 ms at 30 s
         Shape s;
@@ -1566,10 +1721,9 @@ void test_vstc_map_pcr() {
         const std::vector<StcEvent> ev = fold_events(v, f);
         print_events(own ? "re-route +230 ms at 30 s, PCR by map_pcr" : "... the PCR by map (a PID's lead)", ev);
         if (!own) {
-            CHECK("vstc map_pcr: the PCR's lag fed as a PID's lead degrades the program (lead row)",
-                  std::any_of(ev.begin(), ev.end(), [](const StcEvent& e) {
-                      return e.kind == StcEvent::Kind::degraded && !std::strcmp(e.reason, "lead");
-                  }));
+            CHECK("vstc map_pcr: the PCR's lag fed as a PID's lead no longer degrades: the same step relock (B-90)",
+                  kinds_are(ev, {StcEvent::Kind::envelope_step, StcEvent::Kind::relock}) &&
+                      v.state() == VirtualStc::State::locked);
             continue;
         }
         std::printf("  map_pcr: %d PCRs mapped, house - arrival %.3f..%.3f ms before the re-route, %d audio PES "
@@ -1719,6 +1873,8 @@ int main(int argc, char** argv) {
     test_vstc_backlog();
     test_vstc_lead_clamp();
     test_vstc_window();
+    test_vstc_stream_lead();
+    test_vstc_recovery();
     test_vstc_straddle();
     test_vstc_map_pcr();
     test_vstc_floor_moves();

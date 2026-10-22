@@ -209,6 +209,32 @@ describe('IngestTimingReporter: the warnings of part 10', () => {
         expect(card.warning).toBeNull();
     });
 
+    it("degraded, the re-lock and rate alarms name the reference PID's timing, not the source clock", () => {
+        const { rep, card } = setup();
+        rep.onEvent(CH.event, event('degraded', { pid: 100, reason: 'lead' }), 1000);
+        const deg = { state: 'degraded', reason: 'lead', ppb: -242_300 };
+        for (const t of [2000, 3000, 4000, 5000]) {
+            rep.onEvent(CH.event, event('relock', { reason: 'envelope-step' }), t);
+        }
+        run(rep, 6000, 66_000, deg);
+        expect(card.warning).toBe(
+            'Degraded clock: lead out of range — timing from PID 0x0064 PTS against arrival; ' +
+                'Timing from PID 0x0064 PTS unstable: 4 re-locks in 10 min (last: network delay step); ' +
+                'Timing from PID 0x0064 PTS off by 242 ppm',
+        );
+        // Back on the PCR the re-lock alarm is the source clock's again, and the rate's hold
+        // starts over: the minute behind it was the reference lock's.
+        rep.onEvent(CH.event, event('recovered', { reason: 'lead' }), 67_000);
+        run(rep, 68_000, 126_000, { ppb: -150_000 });
+        expect(card.warning).toBe(
+            'Source clock unstable: 4 re-locks in 10 min (last: network delay step)',
+        );
+        run(rep, 128_000, 128_000, { ppb: -150_000 });
+        expect(card.warning).toBe(
+            'Source clock unstable: 4 re-locks in 10 min (last: network delay step); Source clock off by 150 ppm',
+        );
+    });
+
     it("the PCR cadence flag, with the stats' longest interval", () => {
         const { rep, card } = setup();
         run(rep, 2000, 2000, { 'cadence-warning': true, 'pcr-interval-max-ns': 180 * MS });
