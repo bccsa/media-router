@@ -312,14 +312,20 @@ check(f"mrtsrestamp-pid: one per PID per interval, the core's numbers ({len(_pid
       _pids == [q for _, pids in _want_stats for q in pids] and len(_pids) == 2 * len(_stats))
 _fields = {"program", "state", "reason", "ppb", "offset-drift-ns", "residual-min-ns",
            "residual-p50-ns", "residual-p99-ns", "residual-max-ns", "pcr-interval-max-ns",
-           "cadence-warning", "relocks", "gaps", "gap-ns-total", "dropped-pes",
-           "dropped-ns-total", "cc-lost", "desync-bytes"}
+           "cadence-warning", "pcr-cadence-ns", "pcr-gap-max-ns", "relocks", "gaps",
+           "gap-ns-total", "dropped-pes", "dropped-ns-total", "cc-lost", "desync-bytes"}
 check("every stats message carries part 10's fields, cadence-warning a bool, the element-wide "
       "counters as running totals",
       all(_fields <= set(s) and isinstance(s["cadence-warning"], bool) for s in _stats)
       and all(b["cc-lost"] >= a["cc-lost"] and b["desync-bytes"] >= a["desync-bytes"]
               for a, b in zip(_stats, _stats[1:]))
       and _stats[-1]["desync-bytes"] == 37 and _stats[-1]["cc-lost"] >= 1)
+_cad = sorted({s["pcr-cadence-ns"] for s in _stats})
+check(f"the PCR's own cadence (B-86) an int on every report, the source's 40 ms spacing ({_cad}); "
+      f"no late interval (the outage's crossings are skipped)",
+      all(isinstance(s["pcr-cadence-ns"], int) and isinstance(s["pcr-gap-max-ns"], int) for s in _stats)
+      and _cad == [40 * MS] and {s["pcr-gap-max-ns"] for s in _stats} == {0}
+      and not any(s["cadence-warning"] for s in _stats))
 check("state and reason are part 10's strings",
       {s["state"] for s in _stats} <= {"acquiring", "locked", "degraded", "lost"}
       and {s["reason"] for s in _stats} <= {"none", "cadence", "rate", "freeze", "leap", "lead"})

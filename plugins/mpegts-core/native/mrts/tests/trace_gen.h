@@ -55,7 +55,7 @@ struct Config {
     int64_t wrap_at_ns = -1;              // >= 0: sigma0 so the PCR base wraps this far in
     std::string pids = "v,a1,a2";
     Schedule ppb{{{0, 0}}};               // the source clock's rate error (ppm * 1000; < 0: slow)
-    Schedule pcr_ns{{{0, 100 * MS}}};     // PCR interval
+    Schedule pcr_ns{{{0, 100 * MS}}};     // PCR interval; 0: no PCR
     Schedule delay_ns{{{0, 20 * MS}}};    // the path's floor delay
     int64_t jitter_mean_ns = 5 * MS;      // exponential above the floor, cut at 10 x the mean
     std::vector<Jump> jumps;
@@ -236,6 +236,13 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
     std::stable_sort(jumps.begin(), jumps.end(), [](const Jump& a, const Jump& b) { return a.at_ns < b.at_ns; });
     for (int64_t t = 0; t < c.duration_ns;) {
         while (next_jump < jumps.size() && jumps[next_jump].at_ns <= t) flag_next |= jumps[next_jump++].flagged;
+        if (c.pcr_ns.at(t) == 0) {   // the PCR stops: none until the schedule's next step
+            int64_t next = c.duration_ns;
+            for (const auto& s : c.pcr_ns.steps)
+                if (s.first > t) next = std::min(next, s.first);
+            t = next;
+            continue;
+        }
         if (sent(t)) {
             Ev p{t, 0, TraceRecord()};
             p.r.kind = TraceKind::pcr;

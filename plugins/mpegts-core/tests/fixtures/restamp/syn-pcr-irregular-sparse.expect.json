@@ -1,0 +1,15 @@
+{
+  "source": "fixture_gen --trace --pcr-ms 2000,5000@100,2000@105 --duration 200 --seed 7",
+  "note": "A 2 s PCR with one 5 s interval at 100 s (B-86): one late crossing (4 s), the irregular warning for 60 s (gaps up to 5.0 s, normally every 2.0 s), never degraded, the lock never lost (the sample came at 5.0 s), the 5 s interval teaches nothing (over the cap).",
+  "relocks": 0,
+  "degraded": 0,
+  "gaps": 0,
+  "overlaps": 0,
+  "droppedPes": 0,
+  "lockedWithinS": 80,
+  "pcrCadenceMs": 2000,
+  "cadenceWarning": true,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

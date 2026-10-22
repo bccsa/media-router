@@ -590,9 +590,8 @@ const Knob64 kKnobs64[] = {
     {"backlog_ns", &ClockLockConfig::backlog_ns, nullptr},
     {"lost_ns", &ClockLockConfig::lost_ns, nullptr},
     {"residual_window_ns", &ClockLockConfig::residual_window_ns, nullptr},
-    {"pcr_interval_warn_ns", nullptr, &PcrValidatorConfig::pcr_interval_warn_ns},
     {"pcr_interval_fail_ns", nullptr, &PcrValidatorConfig::pcr_interval_fail_ns},
-    {"cadence_window_ns", nullptr, &PcrValidatorConfig::cadence_window_ns},
+    {"pcr_interval_cap_ns", nullptr, &PcrValidatorConfig::pcr_interval_cap_ns},
     {"cadence_fail_window_ns", nullptr, &PcrValidatorConfig::cadence_fail_window_ns},
     {"rate_hold_ns", nullptr, &PcrValidatorConfig::rate_hold_ns},
     {"freeze_min_dh_ns", nullptr, &PcrValidatorConfig::freeze_min_dh_ns},
@@ -610,6 +609,8 @@ const KnobInt kKnobsInt[] = {
     {"rate_buckets_max", &ClockLockConfig::rate_buckets_max, nullptr},
     {"rate_refit_mads", &ClockLockConfig::rate_refit_mads, nullptr},
     {"offset_buckets", &ClockLockConfig::offset_buckets, nullptr},
+    {"cadence_factor", nullptr, &PcrValidatorConfig::cadence_factor},
+    {"cadence_intervals", nullptr, &PcrValidatorConfig::cadence_intervals},
     {"cadence_fail_count", nullptr, &PcrValidatorConfig::cadence_fail_count},
     {"freeze_count", nullptr, &PcrValidatorConfig::freeze_count},
     {"leap_fail_count", nullptr, &PcrValidatorConfig::leap_fail_count},
@@ -737,14 +738,15 @@ void print_stats(int64_t t, const RestampCore::Stats& s) {
                     "\"residual-p99-ns\":%lld,\"residual-max-ns\":%lld,\"residual-count\":%u,"
                     "\"pcr-interval-max-ns\":%lld,\"cadence-warning\":%s,\"rate-warning\":%s,\"relocks\":%llu,"
                     "\"epoch\":%u,\"gaps\":%llu,\"gap-ns-total\":%lld,\"dropped-pes\":%llu,\"dropped-ns-total\":%lld,"
-                    "\"cc-lost\":%llu,\"desync-bytes\":%llu}\n",
+                    "\"cc-lost\":%llu,\"desync-bytes\":%llu,\"pcr-cadence-ns\":%lld,\"pcr-gap-max-ns\":%lld}\n",
                     (long long)t, p.program, state_name(c.state), reason_name(c.reason), (long long)c.ppb,
                     (long long)c.offset_drift_ns, (long long)c.residual.min_ns, (long long)c.residual.p50_ns,
                     (long long)c.residual.p99_ns, (long long)c.residual.max_ns, c.residual.count,
                     (long long)c.pcr_interval_max_ns, c.cadence_warning ? "true" : "false",
                     c.rate_warning ? "true" : "false", (unsigned long long)c.relocks, c.epoch,
                     (unsigned long long)p.gaps, (long long)p.gap_ns_total, (unsigned long long)p.dropped_pes,
-                    (long long)p.dropped_ns_total, (unsigned long long)s.cc_lost, (unsigned long long)s.desync_bytes);
+                    (long long)p.dropped_ns_total, (unsigned long long)s.cc_lost, (unsigned long long)s.desync_bytes,
+                    (long long)c.pcr_cadence_ns, (long long)c.pcr_gap_max_ns);
     }
     for (const RestampCore::PidStats& q : s.pids)
         std::printf("{\"msg\":\"mrtsrestamp-pid\",\"t\":%lld,\"program\":%d,\"pid\":%d,\"stream-type\":%d,"
@@ -882,6 +884,7 @@ struct ProgramSum {
     int64_t locked_at = -1;               // first stats line locked, ns from the start
     std::string final_state;
     int64_t final_ppb = 0;
+    int64_t pcr_cadence = 0;              // the final stats line's (B-86)
     int64_t ppb_min = 0, ppb_max = 0;     // over the stats lines while locked
     int64_t residual_min = 0;             // lowest residual-min of a locked line
     bool any_locked = false, cadence_warning = false;
@@ -937,6 +940,7 @@ ProgramSum summarize(const Run& run, int program) {
         s.epoch = p.clock.epoch;
         s.final_state = state_name(p.clock.state);
         s.final_ppb = p.clock.ppb;
+        s.pcr_cadence = p.clock.pcr_cadence_ns;
         s.dropped_pes = p.dropped_pes;
         s.dropped_ns = p.dropped_ns_total;
     }
@@ -996,7 +1000,7 @@ void print_program(const ProgramSum& s) {
                 "\"droppedPes\":%llu,\"droppedNsTotal\":%lld,\"lockedAtNs\":%lld,\"finalState\":\"%s\","
                 "\"finalPpb\":%lld,\"lockedPpbMin\":%lld,\"lockedPpbMax\":%lld,\"residualMinNs\":%lld,"
                 "\"cadenceWarning\":%s,\"mappingPpbMax\":%lld,\"pesIn\":%llu,\"pesOut\":%llu,\"backward\":%llu,"
-                "\"leadMaxNs\":%lld,\"pcrFlagged\":%llu,"
+                "\"leadMaxNs\":%lld,\"pcrFlagged\":%llu,\"pcrCadenceNs\":%lld,"
                 "\"ppbAtS\":{",
                 s.epoch, s.degraded, s.recovered, s.steps, s.clamps, s.backlog, s.gaps, (long long)s.gap_ns,
                 (long long)s.gap_min, (long long)s.gap_max, s.overlaps, (long long)s.overlap_ns,
@@ -1005,7 +1009,8 @@ void print_program(const ProgramSum& s) {
                 (long long)s.ppb_min, (long long)s.ppb_max, (long long)s.residual_min,
                 s.cadence_warning ? "true" : "false", (long long)s.mapping_ppb_max, (unsigned long long)s.pes_in,
                 (unsigned long long)s.pes_out, (unsigned long long)s.backward,
-                (long long)(s.lead_max == INT64_MIN ? 0 : s.lead_max), (unsigned long long)s.pcr_flagged);
+                (long long)(s.lead_max == INT64_MIN ? 0 : s.lead_max), (unsigned long long)s.pcr_flagged,
+                (long long)s.pcr_cadence);
     for (int k = 0, n = 0; k < 4; k++)
         if (s.has_at[k]) std::printf("%s\"%lld\":%lld", n++ ? "," : "", (long long)PPB_MARKS_S[k], (long long)s.ppb_at[k]);
     std::printf("}}");
@@ -1086,11 +1091,12 @@ std::vector<std::string> check_expect(const Json& x, const Run& run) {
                                       "lockedWithinS", "residualMinMs", "finalState", "mappingPpmMax", "gapMs",
                                       "gapsPerPid", "ppm", "leadMaxMs"};
     const char* counts[] = {"relocks", "epochs", "degraded", "recovered", "envelopeSteps", "gaps", "overlaps",
-                            "droppedPes", "droppedMs", "psiChanges", "leadClamps", "backlogEvents", "pcrFlagged"};
+                            "droppedPes", "droppedMs", "psiChanges", "leadClamps", "backlogEvents", "pcrFlagged",
+                            "pcrCadenceMs"};
     const double vals[] = {(double)s.relocks, (double)s.epoch, (double)s.degraded, (double)s.recovered,
                            (double)s.steps, (double)s.gaps, (double)s.overlaps, (double)s.dropped_pes,
                            s.dropped_ns / 1e6, (double)s.psi, (double)s.clamps, (double)s.backlog,
-                           (double)s.pcr_flagged};
+                           (double)s.pcr_flagged, s.pcr_cadence / 1e6};
     for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
         count(counts[i], vals[i]);
         known.push_back(counts[i]);

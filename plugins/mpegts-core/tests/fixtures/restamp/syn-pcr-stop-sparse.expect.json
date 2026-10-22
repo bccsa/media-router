@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --pcr-ms 2000,0@100,2000@140 --duration 240 --seed 7",
+  "note": "A 2 s PCR that stops after its PCR at 98 s while every PES keeps coming, back from 140 s (B-86): late at 4 s (the irregular warning from 102 s), the lock lost at 103 s (\"No PCR\"), degraded (cadence) at 110 s (three crossings of 4 s), the switch's overlap of about 0.6 s per PID; the open interval keeps crossing every 4 s until the PCR returns (last crossing 138 s), so recovery comes at 170 s, with the switch back's gap per PID; one degraded/recovered pair; the 42 s interval teaches nothing (over the 4 s cap), the cadence reads 2 s throughout.",
+  "relocks": 0,
+  "degraded": 1,
+  "recovered": 1,
+  "epochs": 3,
+  "overlaps": 3,
+  "gaps": 3,
+  "gapMs": [550, 650],
+  "events": [{"kind": "degraded", "reason": "cadence", "atS": [109.5, 110.5]}, {"kind": "recovered", "reason": "cadence", "atS": [169.5, 170.5]}],
+  "pcrCadenceMs": 2000,
+  "cadenceWarning": true,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

@@ -29,7 +29,7 @@ const CLOCK_STATES: Record<ClockState, { text: string; color: string; rank: numb
 
 // The core's reason codes (ts_stc.cpp: failing validator rows, re-lock triggers) as words.
 const REASONS = new Map([
-    ['cadence', 'PCR too sparse'],
+    ['cadence', 'PCR missing'],
     ['rate', 'PCR rate out of range'],
     ['freeze', 'PCR frozen'],
     ['leap', 'PCR jump'],
@@ -63,6 +63,10 @@ const streamTypeLabel = (t: number): string =>
 
 /** `0x0100`, as the card and the trim widget show a PID. */
 const pidHex = (pid: number): string => `0x${pid.toString(16).toUpperCase().padStart(4, '0')}`;
+/** "40 ms" under a second, "2.0 s" from one second: the PCR cadence and its gaps on the card. */
+const spanText = (ms: number): string =>
+    ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+const PCR_SPEC_MS = 100; // ISO 13818-1's PCR spacing; a steady PCR above it shows its cadence
 
 /** A displayed row. `cmp` holds its values unrounded, in units where 1 is the display step
  *  (1 ms, 0.01 ppm, one count): the throttle publishes a move of 1 or a changed text. */
@@ -142,6 +146,13 @@ function networkView(v: View, c: IngestClock, now: number, staleMs: number): voi
         const state: ClockState = fresh ? p.state : 'lost';
         if (!worst || CLOCK_STATES[state].rank > CLOCK_STATES[worst].rank) worst = state;
         const why = p.reason ? ` (${reasonText(p.reason)})` : '';
+        // A steady PCR sparser than the spec locks (B-86): the State row says how sparse.
+        const sparse =
+            (state === 'locked' || state === 'acquiring') &&
+            p.pcrCadenceMs !== undefined &&
+            p.pcrCadenceMs > PCR_SPEC_MS
+                ? ` (PCR every ${spanText(p.pcrCadenceMs)})`
+                : '';
         const e = p.lastEvent;
         const eventWhy = e?.reason ? ` (${reasonText(e.reason)})` : '';
         const one = programs.length === 1;
@@ -152,7 +163,7 @@ function networkView(v: View, c: IngestClock, now: number, staleMs: number): voi
                 textRow(
                     'state',
                     'State',
-                    CLOCK_STATES[state].text + (state === 'degraded' ? why : ''),
+                    CLOCK_STATES[state].text + (state === 'degraded' ? why : sparse),
                 ),
                 ppmRow('sourceRate', 'Source rate', p.ppb),
                 numRow('residualP99', 'Residual p99', p.residualMs, 'ms'),
@@ -180,10 +191,12 @@ function networkView(v: View, c: IngestClock, now: number, staleMs: number): voi
         if (p.ppb !== undefined && held(p.rateOffSince, now)) {
             v.warnings.push(`${subject} off by ${ppmOff(p.ppb)} ppm`);
         }
-        // The element's flag is part 10's condition (p99 over 10 s past 150 ms); n is the longest
-        // interval of the last report, the only interval the stats carry.
-        if (p.cadence && p.pcrMaxMs !== undefined) {
-            v.warnings.push(`PCR every ${Math.round(p.pcrMaxMs)} ms (spec ≤ 100 ms)`);
+        // One or two late PCR intervals in the last minute (three degrade); while degraded for that
+        // very reason the Degraded warning already says it.
+        if (p.cadence && p.reason !== 'cadence' && p.pcrGapMaxMs !== undefined) {
+            const usual =
+                p.pcrCadenceMs !== undefined ? `, normally every ${spanText(p.pcrCadenceMs)}` : '';
+            v.warnings.push(`PCR comes irregularly: gaps up to ${spanText(p.pcrGapMaxMs)}${usual}`);
         }
     }
     if (worst) {

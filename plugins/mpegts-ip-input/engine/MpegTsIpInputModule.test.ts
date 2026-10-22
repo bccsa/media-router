@@ -532,9 +532,15 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
         expect(module.health).toBe('warning');
         expect(module.error).toMatch(degraded);
         // A second condition replaces the clock's own text.
-        const sparse = { 'cadence-warning': true, 'pcr-interval-max-ns': 300 * MS };
+        const sparse = {
+            'cadence-warning': true,
+            'pcr-gap-max-ns': 700 * MS,
+            'pcr-cadence-ns': 40 * MS,
+        };
         report(module, { state: 'degraded', reason: 'freeze', ...sparse });
-        expect(module.error).toMatch(/^Degraded clock: .*; PCR every 300 ms \(spec ≤ 100 ms\)$/);
+        expect(module.error).toMatch(
+            /^Degraded clock: .*; PCR comes irregularly: gaps up to 700 ms, normally every 40 ms$/,
+        );
         report(module, { state: 'degraded', reason: 'freeze' });
         expect(module.error).toMatch(degraded);
         // The base's own udpsrc-silence warning (its runner events) takes the text, and its clear

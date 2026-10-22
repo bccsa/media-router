@@ -16,8 +16,8 @@ export const CH = {
 
 type Fields = Record<string, unknown>;
 
-/** Every `mrtsrestamp-stats` field of part 10, plus `cadence-warning`, `cc-lost` and
- *  `desync-bytes` that the reporter reads too. */
+/** Every `mrtsrestamp-stats` field of part 10, plus `cadence-warning`, `pcr-cadence-ns`,
+ *  `pcr-gap-max-ns`, `cc-lost` and `desync-bytes` that the reporter reads too. */
 export const stats = (o: Fields = {}) => ({
     program: 1,
     state: 'locked',
@@ -35,6 +35,8 @@ export const stats = (o: Fields = {}) => ({
     'dropped-pes': 0,
     'dropped-ns-total': 0,
     'cadence-warning': false,
+    'pcr-cadence-ns': 40 * MS,
+    'pcr-gap-max-ns': 0,
     'cc-lost': 0,
     'desync-bytes': 0,
     ...o,

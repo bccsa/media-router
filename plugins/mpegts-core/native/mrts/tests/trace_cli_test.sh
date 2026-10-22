@@ -185,15 +185,15 @@ printf '{"events": [{"kind": "relock", "reason": "discontinuity", "atS": [59.9, 
     [ "$(status "$CLI" restamp-replay "$T/disc.stct" --quiet --expect "$T/order2.json")" = 0 ]
 check "expectations: events match in order (the gap after its relock), not anywhere" $?
 # Every key bites: on the re-route trace (locked at ~38 s, a 20 ppm slew, the -30 ms fall
-# leaving a residual of -30 ms, ~35 ms gaps, nothing dropped, the relock's PCR flagged) each of
-# these must fail.
+# leaving a residual of -30 ms, ~35 ms gaps, nothing dropped, the relock's PCR flagged, its PCR
+# every 100 ms) each of these must fail.
 r=$T/syn-reroute-30ms.stct
 all=0
 for want in '"residualMinMs": -1' '"lockedWithinS": 10' '"mappingPpmMax": 5' '"finalState": "degraded"' \
     '"cadenceWarning": true' '"gapMs": [0, 1]' '"droppedPes": 1' '"ppm": [100, 200]' '"monotonic": false' \
     '"faithful": false' '"epochs": 1' '"envelopeSteps": 0' '"recovered": 1' '"overlaps": 1' '"droppedMs": [1, 2]' \
     '"gapsPerPid": 2' '"relockReasons": ["leap"]' '"psiChanges": 0' '"program": 2' '"leadClamps": 1' '"leadMaxMs": 1' \
-    '"backlogEvents": 1' '"pcrFlagged": 0'; do
+    '"backlogEvents": 1' '"pcrFlagged": 0' '"pcrCadenceMs": 1'; do
     printf '{%s}\n' "$want" >"$T/neg.json"
     [ "$(status "$CLI" restamp-replay "$r" --quiet --expect "$T/neg.json")" = 1 ] || { echo "  passed: $want"; all=1; }
 done

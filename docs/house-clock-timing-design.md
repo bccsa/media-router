@@ -361,8 +361,10 @@ Properties:
 - **Only the source clock and the minimum network delay enter the mapping.**
   Encoder buffer fullness (the PTS−PCR lead) does not, so the lead wander behind
   #816 has no effect.
-- **Drift is tracked from the PCR.** PCRs arrive at least ten times a second, so
-  drift is tracked in seconds, not tens of minutes (#812).
+- **Drift is tracked from the PCR.** The spec sends a PCR at least every 100 ms, so
+  drift is tracked in seconds, not tens of minutes (#812); a source with a steady
+  sparser PCR (one per GOP, every 2 s on the owner's vMix) is tracked on its own
+  cadence, in about a minute (§5.3).
 - **Content lands on the source's own presentation schedule, as seen here:**
   arrival plus the source's PTS−PCR lead. A compliant source therefore never
   delivers an AU (access unit: one coded frame) after its house PTS, except for
@@ -397,7 +399,10 @@ The ingest validates the PCR continuously:
 - its rate against arrival stays within a bound;
 - it does not freeze or leap without a discontinuity flag;
 - the PTS−PCR lead stays within a sane range;
-- PCRs arrive at least every 100 ms.
+- PCRs keep their own steady cadence: late is twice that cadence, never under 500 ms
+  nor over 4 s. A steady sparse PCR, such as vMix's one per 2 s GOP, is a usable
+  PCR and locks (decided by the owner 2026-10-22, implementation plan B-86; the
+  draft asked for at least 10 per second).
 
 A PCR that fails, like the vMix PCR that stops and lags (#820), drops the ingest
 to a degraded mode:

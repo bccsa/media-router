@@ -1,0 +1,18 @@
+{
+  "source": "fixture_gen --trace --pcr-ms 40,2000@60 --duration 150 --seed 7",
+  "note": "A 40 ms PCR that turns into a 2 s one at 60 s (B-86): the first 2 s interval crosses the 500 ms threshold three times, so the program degrades (cadence) at 61.5 s and drops the switch's overlap (about 0.6 s per PID, the reference's source lead); the interval teaches the 2 s cadence (threshold 4 s), nothing is late after it, and the program recovers 30 s after the last crossing, at 92 s, with the PCR lock re-acquired (the gap of about 0.6 s per PID at the switch back). One pair only: recovery clears the windowed counts (B-86's fix; before it the row failed again at once, five pairs 8 s apart).",
+  "relocks": 0,
+  "degraded": 1,
+  "recovered": 1,
+  "epochs": 3,
+  "overlaps": 3,
+  "gaps": 3,
+  "gapMs": [550, 650],
+  "pcrFlagged": 2,
+  "events": [{"kind": "degraded", "reason": "cadence", "atS": [61, 62.5]}, {"kind": "recovered", "reason": "cadence", "atS": [91, 93]}],
+  "pcrCadenceMs": 2000,
+  "cadenceWarning": true,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

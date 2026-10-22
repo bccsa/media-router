@@ -73,7 +73,10 @@ export interface ProgramClock {
     ppb?: number;
     residualMs?: number;
     relocks?: number;
-    pcrMaxMs?: number;
+    /** The PCR's own cadence (B-86); unset while unknown. */
+    pcrCadenceMs?: number;
+    /** The longest late PCR interval of the last minute. */
+    pcrGapMaxMs?: number;
     cadence: boolean;
     /** Since when |ppb| is past 100 ppm. */
     rateOffSince?: number;
@@ -142,7 +145,8 @@ export class IngestClock {
         prog.ppb = num(p, 'ppb');
         prog.residualMs = nsToMs(p, 'residual-p99-ns');
         prog.relocks = num(p, 'relocks');
-        prog.pcrMaxMs = nsToMs(p, 'pcr-interval-max-ns');
+        prog.pcrCadenceMs = nsToMs(p, 'pcr-cadence-ns') || undefined;
+        prog.pcrGapMaxMs = nsToMs(p, 'pcr-gap-max-ns');
         prog.cadence = p['cadence-warning'] === true;
         prog.rateOffSince = offSince(prog.ppb, RATE_ALARM_PPB, prog.rateOffSince, now);
         // Chapter 3's counters are element-wide: each program's report carries the same totals.

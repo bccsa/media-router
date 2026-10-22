@@ -106,6 +106,7 @@ struct Gen {
     int64_t backlog_at = -1, backlog_len = 0, backlog_drain = 0;
     int64_t a2_ahead = 0;                 // audio-2 stamped this far ahead of the rest (#820)
     int pcr_every = 1;                    // the PCR on every n-th video PES (50: every 2 s, vMix's)
+    int64_t pcr_stop_from = -1, pcr_stop_to = -1;   // no PCR on the video PES muxed in this span
     // Video as a capture under load (B-89): each frame's time moved by up to +-v_jitter, and the
     // frames of the slots in v_drops ([from, to), stream time) never made.
     int64_t v_jitter = 0;
@@ -294,7 +295,8 @@ Stream generate(const Gen& g) {
             const Bytes data = pes_bytes(e->sid, info.pts, info.dts, payload);
             // A sparse PCR from the second video PES on: the first after the PSI, as vMix's.
             const bool pcr_here = video && (g.pcr_move_at < 0 || mux0 < g.pcr_move_at) &&
-                                  k % g.pcr_every == 1 % g.pcr_every;
+                                  k % g.pcr_every == 1 % g.pcr_every &&
+                                  !(g.pcr_stop_from >= 0 && mux0 >= g.pcr_stop_from && mux0 < g.pcr_stop_to);
             const bool split = e->pid == PID_A2 && g.split_every > 0 && k % g.split_every == g.split_every - 1;
             const std::vector<Bytes> pk =
                 packetize(e->pid, data, pcr_here ? pcr_at(mux0) : -1, split ? 10 : 0, video && k % 12 == 0);
@@ -2107,10 +2109,9 @@ void test_degraded_ref_pid() {
 
 // --- B-84: discontinuity_indicator only where the PCR's timeline breaks --------------
 
-// vMix's VBR mux (B-85): a PCR only on every 50th video PES, every 2 s, steady. Its spacing is
-// no break, so nothing flags a PCR for it: mapped (the cadence fail row out of reach), none;
-// degraded (the shipped constants), the switch to the regenerated PCR alone; an outage, also the
-// first PCR after it. Every step is 2 s or more, each of which the old rule flagged.
+// vMix's VBR mux (B-85): a PCR on every 50th video PES, every 2 s, steady, which no rule flags:
+// mapped (the shipped constants, B-86), none; degraded (the cap at the floor, the row before), the
+// switch to the regenerated PCR alone; an outage, also the first PCR after it.
 void test_sparse_pcr() {
     for (const bool degrade : {false, true})
         for (const bool outage : {false, true}) {
@@ -2121,13 +2122,13 @@ void test_sparse_pcr() {
                 g.outage_to = 33 * S;
             }
             RestampConfig cfg = stc_cfg();
-            if (!degrade) cfg.pcr.pcr_interval_fail_ns = 3 * S;
+            if (degrade) cfg.pcr.pcr_interval_cap_ns = 500 * MS;
             const Case c = make_case(g);
             const Out a = run(c, cfg);
             const Ana aa = analyze(c, a, !degrade);   // degraded: the switch's drop renumbers CC
             char label[96];
-            std::snprintf(label, sizeof label, "PCR every 2 s, %s%s", degrade ? "degraded" : "mapped",
-                          outage ? ", 3 s outage at 30 s" : "");
+            std::snprintf(label, sizeof label, "PCR every 2 s, %s%s",
+                          degrade ? "degraded (the cap at the floor)" : "mapped", outage ? ", 3 s outage at 30 s" : "");
             std::printf("  [%s]\n", label);
             print_events(label, a, c);
             const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
@@ -2149,8 +2150,8 @@ void test_sparse_pcr() {
             std::printf("; want");
             for (size_t i : want) std::printf(" #%zu", i);
             std::printf("\n");
-            CHECK(degrade ? "sparse PCR: degraded on the cadence row, no relock"
-                          : "sparse PCR: mapped (cadence fail row out of reach), no relock",
+            CHECK(degrade ? "sparse PCR, the cap at the floor: degraded on the cadence row, no relock"
+                          : "sparse PCR, the shipped constants: mapped, never degraded, no relock (B-86)",
                   count_events(a, Ev::Kind::degraded, "cadence") == (degrade ? 1 : 0) &&
                       count_events(a, Ev::Kind::degraded) == (degrade ? 1 : 0) && count_events(a, Ev::Kind::relock) == 0);
             CHECK(degrade ? (outage ? "sparse PCR, degraded, outage: the switch and the first PCR after the outage flagged"
@@ -2161,6 +2162,54 @@ void test_sparse_pcr() {
             CHECK("sparse PCR: monotonic, CC intact, bytes as the input's",
                   monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic);
         }
+}
+
+// B-86: that PCR missing 100-140 s (after the lock's first fit, some 70 s) while every PES flows:
+// late at 4 s, degraded (cadence) 12 s after the PCR at 98 s; the open interval crosses every 4 s
+// until the PCR is back, so the recovery comes once, 30 s after the last crossing.
+void test_sparse_pcr_stop() {
+    Gen g;
+    g.pcr_every = 50;
+    g.pcr_stop_from = 100 * S;
+    g.pcr_stop_to = 140 * S;
+    g.secs = 200;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, false);   // the switch's drop renumbers CC
+    print_events("PCR every 2 s, missing 100-140 s", a, c);
+    int64_t deg = -1, rec = -1;
+    std::map<int, int64_t> over, back;   // per PID: dropped at the switch, the gap at the switch back
+    for (const Ev& e : a.events) {
+        const int64_t at = e.house_ns - c.h0 - 20 * MS;
+        if (e.kind == Ev::Kind::degraded && deg < 0) deg = at;
+        if (e.kind == Ev::Kind::recovered && rec < 0) rec = at;
+        if (e.kind == Ev::Kind::overlap && rec < 0) over[e.pid] += e.dropped_ns;
+        if (e.kind == Ev::Kind::gap && rec >= 0) back[e.pid] += e.gap_ns;
+    }
+    bool lead_sized = over.size() == 4 && back.size() == 4;
+    for (const int pid : kPids) {   // the timing follows the video's PTS, 600 ms ahead of the PCR
+        lead_sized &= iabs(over[pid] - kV.lead) <= 20 * MS && iabs(back[pid] - kV.lead) <= 20 * MS;
+        std::printf("  sparse PCR stop: pid 0x%x dropped %.1f ms at the switch, gap %.1f ms at the switch back\n", pid,
+                    over[pid] / 1e6, back[pid] / 1e6);
+    }
+    CHECK("sparse PCR stop: degraded (cadence) 12 s after the last PCR (110 s), recovered once 30 s after the "
+          "last crossing (168-170.5 s)",
+          count_events(a, Ev::Kind::degraded, "cadence") == 1 && count_events(a, Ev::Kind::degraded) == 1 &&
+              count_events(a, Ev::Kind::recovered, "cadence") == 1 && count_events(a, Ev::Kind::recovered) == 1 &&
+              count_events(a, Ev::Kind::relock) == 0 && iabs(deg - 110 * S) <= 100 * MS && rec >= 168 * S &&
+              rec <= 170500 * MS);
+    CHECK("sparse PCR stop: the switch drops the reference's source lead (600 ms) on each PID, the switch back "
+          "leaves that gap",
+          lead_sized);
+    const std::vector<PcrOut> pv = pcrs_of(c, a, aa, PID_V);
+    const std::vector<size_t> want = {first_pcr_after(pv, c.h0 + deg), first_pcr_after(pv, c.h0 + rec)};
+    std::printf("  sparse PCR stop: %zu PCRs; flagged:", pv.size());
+    for (size_t i : flagged(pv)) std::printf(" #%zu at %.3f s", i, (pv[i].arrival - c.h0) / 1e9);
+    std::printf("; want #%zu, #%zu\n", want[0], want[1]);
+    CHECK("sparse PCR stop: two PCRs flagged, the first regenerated one and the first mapped again",
+          flagged(pv) == want && want[1] < pv.size());
+    CHECK("sparse PCR stop: monotonic, CC intact, bytes as the input's",
+          monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic);
 }
 
 // Degraded, a leap on the reference PID relocks the warm reference lock: the regenerated PCR
@@ -3124,6 +3173,7 @@ int main() {
     test_bursty_relay();
     test_degraded_ref_pid();
     test_sparse_pcr();
+    test_sparse_pcr_stop();
     test_degraded_relock();
     test_floor_move_flag();
     test_backlog("fresh, 30 s queued, drained in 1 s", 0, 30 * S, 1 * S);

@@ -339,11 +339,13 @@ static void restamp_post_stats(GstMrtsRestamp* self) {
             "residual-count", G_TYPE_UINT, (guint)c.residual.count, "pcr-interval-max-ns",
             G_TYPE_INT64, (gint64)c.pcr_interval_max_ns, "cadence-warning", G_TYPE_BOOLEAN,
             (gboolean)c.cadence_warning, "rate-warning", G_TYPE_BOOLEAN, (gboolean)c.rate_warning,
-            "relocks", G_TYPE_UINT64, (guint64)c.relocks, "epoch", G_TYPE_UINT, (guint)c.epoch,
-            "gaps", G_TYPE_UINT64, (guint64)p.gaps, "gap-ns-total", G_TYPE_INT64,
-            (gint64)p.gap_ns_total, "dropped-pes", G_TYPE_UINT64, (guint64)p.dropped_pes,
-            "dropped-ns-total", G_TYPE_INT64, (gint64)p.dropped_ns_total, "cc-lost", G_TYPE_UINT64,
-            (guint64)s.cc_lost, "desync-bytes", G_TYPE_UINT64, (guint64)s.desync_bytes, NULL);
+            "pcr-cadence-ns", G_TYPE_INT64, (gint64)c.pcr_cadence_ns, "pcr-gap-max-ns",
+            G_TYPE_INT64, (gint64)c.pcr_gap_max_ns, "relocks", G_TYPE_UINT64, (guint64)c.relocks,
+            "epoch", G_TYPE_UINT, (guint)c.epoch, "gaps", G_TYPE_UINT64, (guint64)p.gaps,
+            "gap-ns-total", G_TYPE_INT64, (gint64)p.gap_ns_total, "dropped-pes", G_TYPE_UINT64,
+            (guint64)p.dropped_pes, "dropped-ns-total", G_TYPE_INT64, (gint64)p.dropped_ns_total,
+            "cc-lost", G_TYPE_UINT64, (guint64)s.cc_lost, "desync-bytes", G_TYPE_UINT64,
+            (guint64)s.desync_bytes, NULL);
         array_take(&programs, gst_structure_copy(st));
         restamp_post(self, st);
     }

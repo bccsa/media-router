@@ -106,6 +106,8 @@ void print_stats(Obj& line, RestampCore& rc) {
         o.i("pcr-interval-max-ns", c.pcr_interval_max_ns);
         o.b("cadence-warning", c.cadence_warning);
         o.b("rate-warning", c.rate_warning);
+        o.i("pcr-cadence-ns", c.pcr_cadence_ns);
+        o.i("pcr-gap-max-ns", c.pcr_gap_max_ns);
         o.u("relocks", c.relocks);
         o.u("epoch", c.epoch);
         o.u("gaps", p.gaps);

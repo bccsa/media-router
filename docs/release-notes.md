@@ -95,7 +95,8 @@ elements" below do not start.
   clamped** (while degraded, a stream more than 4 s ahead of the stream the
   timing follows is timed by its own arrival instead); **Source clock unstable** (more than 3
   re-locks in 10 min); **Source clock off by n ppm** (past 100 ppm for a
-  minute); **PCR every n ms (spec ≤ 100 ms)**; **Transport errors**
+  minute); **PCR comes irregularly: gaps up to n, normally every n** (one or
+  two late clock references in a minute; three degrade); **Transport errors**
   (continuity errors or lost sync on the input); on audio captures **Device
   clock off by n ppm — check the device's sample rate** (past 200 ppm for a
   minute).
@@ -214,6 +215,16 @@ elements" below do not start.
   now name the PID its timing follows, not the source clock. Not changed
   yet: on such a link the clock still re-locks twice every few minutes,
   with a short gap in picture and sound and about half a second dropped.
+- **An input whose source sends its clock reference only every few seconds
+  now locks on it.** Such an input (vMix's SRT output sends one per 2 s
+  picture group) showed "Degraded clock" for good. It now shows a green
+  Clock badge with the state "Locked (PCR every 2.0 s)", after a minute or
+  so of "Acquiring". Amber stays for a reference that stops ("No PCR" after
+  5 s, then "Degraded clock: PCR missing", within 12 s on a 2 s reference
+  and 1.5 s on a dense one), jumps, or comes irregularly ("PCR comes
+  irregularly: gaps up to n, normally every n"). That warning replaces "PCR
+  every n ms (spec ≤ 100 ms)", which a bursty link raised on sources whose
+  clock was fine.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

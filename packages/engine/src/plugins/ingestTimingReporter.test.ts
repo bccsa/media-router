@@ -30,7 +30,11 @@ describe('IngestTimingReporter: what the card follows', () => {
     it('an outage reads No PCR and keeps the last values; a PID that left the PMT goes', () => {
         const { rep, card } = setup();
         run(rep, 2000, 2000);
-        const sparse = { 'cadence-warning': true, 'pcr-interval-max-ns': 300 * MS };
+        const sparse = {
+            'cadence-warning': true,
+            'pcr-gap-max-ns': 700 * MS,
+            'pcr-cadence-ns': 40 * MS,
+        };
         for (let t = 4000; t <= 10_000; t += 2000) {
             rep.onEvent(CH.stats, stats({ state: 'degraded', reason: 'freeze', ...sparse }), t);
             rep.onEvent(CH.pid, pidMsg(256, 0x1b, LEAD), t);
@@ -38,7 +42,9 @@ describe('IngestTimingReporter: what the card follows', () => {
         }
         expect(card.sections.map((s) => s.id)).toEqual(['clock', 'pid-256']);
         expect(card.options.pids).toEqual([{ value: '256', label: '0x0100 H.264 video' }]);
-        expect(card.warning).toMatch(/^Degraded clock: PCR frozen .*; PCR every 300 ms/);
+        expect(card.warning).toMatch(
+            /^Degraded clock: PCR frozen .*; PCR comes irregularly: gaps up to 700 ms, normally every 40 ms$/,
+        );
 
         for (let t = 12_000; t <= 16_000; t += 2000) rep.tick(t);
         expect(card.badges.clock).toMatchObject({ text: 'Degraded' });
@@ -235,12 +241,47 @@ describe('IngestTimingReporter: the warnings of part 10', () => {
         );
     });
 
-    it("the PCR cadence flag, with the stats' longest interval", () => {
+    it('one late PCR interval warns, with its gap and the usual cadence', () => {
         const { rep, card } = setup();
-        run(rep, 2000, 2000, { 'cadence-warning': true, 'pcr-interval-max-ns': 180 * MS });
-        expect(card.warning).toBe('PCR every 180 ms (spec ≤ 100 ms)');
+        const late = {
+            'cadence-warning': true,
+            'pcr-gap-max-ns': 4002 * MS,
+            'pcr-cadence-ns': 2000 * MS,
+        };
+        run(rep, 2000, 2000, late);
+        expect(card.warning).toBe('PCR comes irregularly: gaps up to 4.0 s, normally every 2.0 s');
         run(rep, 4000, 4000);
         expect(card.warning).toBeNull();
+    });
+
+    it('a steady sparse PCR reads Locked with its cadence, no warning (B-86)', () => {
+        const { rep, card } = setup();
+        run(rep, 2000, 2000, { 'pcr-cadence-ns': 2000 * MS });
+        expect(card.badges.clock).toEqual({ icon: 'clock', text: 'Locked', color: '#10b981' });
+        expect(card.data.clock.state).toBe('Locked (PCR every 2.0 s)');
+        expect(card.warning).toBeNull();
+        run(rep, 4000, 4000, { state: 'acquiring', 'pcr-cadence-ns': 2000 * MS });
+        expect(card.data.clock.state).toBe('Acquiring (PCR every 2.0 s)');
+        run(rep, 6000, 6000, { 'pcr-cadence-ns': 600 * MS });
+        expect(card.data.clock.state).toBe('Locked (PCR every 600 ms)');
+        run(rep, 8000, 8000);
+        expect(card.data.clock.state).toBe('Locked');
+    });
+
+    it('degraded on the cadence row says PCR missing, and the irregular text is not repeated', () => {
+        const { rep, card } = setup();
+        rep.onEvent(CH.event, event('degraded', { reason: 'cadence', pid: 257 }), 1000);
+        run(rep, 2000, 2000, {
+            state: 'degraded',
+            reason: 'cadence',
+            'cadence-warning': true,
+            'pcr-gap-max-ns': 12 * 1000 * MS,
+            'pcr-cadence-ns': 2000 * MS,
+        });
+        expect(card.data.clock.state).toBe('Degraded (PCR missing)');
+        expect(card.warning).toBe(
+            'Degraded clock: PCR missing — timing from PID 0x0101 PTS against arrival',
+        );
     });
 
     it('transport errors rising for 10 s; a single glitch does not warn', () => {
@@ -282,10 +323,16 @@ describe('IngestTimingReporter: the warnings of part 10', () => {
     it('several at once share the health text', () => {
         const { rep, card } = setup();
         rep.onEvent(CH.event, event('lead-clamp', { pid: 257 }), 1000);
-        run(rep, 2000, 2000, { state: 'degraded', reason: 'lead', 'cadence-warning': true });
+        run(rep, 2000, 2000, {
+            state: 'degraded',
+            reason: 'lead',
+            'cadence-warning': true,
+            'pcr-gap-max-ns': 700 * MS,
+        });
         expect(card.warning).toBe(
             "Degraded clock: lead out of range — timing from the reference PID's PTS against " +
-                'arrival; PCR every 40 ms (spec ≤ 100 ms); Source lead above 4 s on PID 0x0101 — clamped',
+                'arrival; PCR comes irregularly: gaps up to 700 ms, normally every 40 ms; ' +
+                'Source lead above 4 s on PID 0x0101 — clamped',
         );
     });
 });

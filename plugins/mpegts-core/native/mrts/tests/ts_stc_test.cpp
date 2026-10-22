@@ -764,6 +764,53 @@ auto leads_ok = [](int64_t) { return 600 * MS + 300 * MS; };   // PID 0x100 900 
 
 bool clean(const VRun& r) { return r.fails == 0 && r.leaps == 0 && r.discs == 0; }
 
+// B-86's hand loops: a packet every 20 ms to `secs`, at t a PCR of σ pcr(t) (INT64_MIN: none)
+// arriving t + jit(t); at(t, v) after each step.
+auto no_jit = [](int64_t) { return (int64_t)0; };
+template <class P, class J, class A>
+void hand(PcrValidator& v, int64_t secs, P pcr, J jit, A at) {
+    for (int64_t t = 0; t <= secs * S; t += 20 * MS) {
+        const int64_t s = pcr(t);
+        if (s != INT64_MIN) v.feed_pcr(ns_to_pcr27(s), false, t + jit(t));
+        v.feed_activity(t);
+        at(t, v);
+    }
+}
+
+// What a hand loop showed: the first failure, the warning's first and last packet, the cadence's
+// range from `from` on.
+struct Seen {
+    int64_t fail_at = -1, gap_at_fail = 0, warn_from = -1, warn_last = -1;
+    int64_t cad_lo = INT64_MAX, cad_hi = INT64_MIN;
+    void see(int64_t t, const PcrValidator& v, int64_t from = 0) {
+        if (fail_at < 0 && v.failed()) {
+            fail_at = t;
+            gap_at_fail = v.pcr_gap_max_ns();
+        }
+        if (v.cadence_warning()) {
+            if (warn_from < 0) warn_from = t;
+            warn_last = t;
+        }
+        if (t < from) return;
+        cad_lo = std::min(cad_lo, v.pcr_cadence_ns());
+        cad_hi = std::max(cad_hi, v.pcr_cadence_ns());
+    }
+};
+
+// A PCR on the grid `every` and at the extra times, none in the gaps ([from, to)) nor from `stop`.
+auto grid(int64_t every, int64_t stop = INT64_MAX, std::vector<std::pair<int64_t, int64_t>> gaps = {},
+          std::vector<int64_t> extra = {}) {
+    return [=](int64_t t) {
+        if (t >= stop) return INT64_MIN;
+        for (const auto& g : gaps)
+            if (t >= g.first && t < g.second) return INT64_MIN;
+        if (t % every == 0) return t;
+        for (const int64_t x : extra)
+            if (t == x) return t;
+        return INT64_MIN;
+    };
+}
+
 void test_validator() {
     using R = PcrValidator::Reason;
     const PcrValidatorConfig def;
@@ -771,33 +818,53 @@ void test_validator() {
         const VRun r = vrun(def, 120, 100, no_off, no_di, never, rate_30, leads_ok);
         CHECK("validator: a clean 120 s stream fails no row, warns no cadence", clean(r) && !r.warned);
     }
-    // Cadence.
+    // Cadence (B-86): the PCR judged against its own cadence.
     {
         const VRun r = vrun(def, 60, 600, no_off, no_di, never, rate_30, leads_ok);
-        CHECK("cadence: PCR every 600 ms fails as cadence", r.reason == R::cadence);
-        CHECK("cadence: ... at the third 500 ms gap (1.7 s)", r.fail_at >= 1600 * MS && r.fail_at <= 1800 * MS);
-        PcrValidatorConfig off = def;
-        off.pcr_interval_fail_ns = 100 * S;
-        off.pcr_interval_warn_ns = 100 * S;
-        CHECK("cadence: ... and nothing else fires on it", clean(vrun(off, 60, 600, no_off, no_di, never, rate_30, leads_ok)));
+        PcrValidator v(def);
+        int64_t cad = -1, late = -1;
+        hand(v, 2, grid(600 * MS), no_jit, [&](int64_t t, PcrValidator& x) {
+            if (t != 600 * MS) return;
+            cad = x.pcr_cadence_ns();
+            late = x.late_ns();
+        });
+        CHECK("cadence: a steady 600 ms PCR passes, no warning; cadence 600 ms (late at 1.2 s) from its second PCR",
+              clean(r) && !r.warned && cad == 600 * MS && late == 1200 * MS);
     }
     {
         const VRun r = vrun(def, 120, 200, no_off, no_di, never, rate_30, leads_ok);
-        CHECK("cadence: PCR every 200 ms warns (p99 > 150 ms) but does not fail", r.warned && clean(r));
+        CHECK("cadence: a steady 200 ms PCR passes, no warning", clean(r) && !r.warned);
     }
     {
         auto gap = [](int64_t t) { return t >= 10 * S && t < 13 * S; };
         const VRun r = vrun(def, 60, 100, no_off, no_di, gap, rate_30, leads_ok);
         CHECK("cadence: a 3 s outage (nothing arrives) is not a PCR fault", clean(r) && !r.warned);
     }
-    for (int64_t every : {500 * MS, 520 * MS}) {   // "> 500 ms": the boundary itself passes
+    for (int64_t every : {500 * MS, 520 * MS}) {   // steady: late only past twice its cadence
         PcrValidator v(def);
+        bool warned = false;
         for (int64_t t = 0; t <= 20 * S; t += 20 * MS) {
             if (t % every == 0) v.feed_pcr(ns_to_pcr27(t), false, t);
             v.feed_activity(t);
+            warned |= v.cadence_warning();
         }
-        CHECK(every == 500 * MS ? "cadence: PCR every 500 ms exactly passes" : "cadence: every 520 ms fails",
-              v.failed() == (every != 500 * MS));
+        CHECK(every == 500 * MS ? "cadence: PCR every 500 ms exactly passes" : "cadence: every 520 ms passes too",
+              !v.failed() && !warned);
+    }
+    for (int64_t gap : {500 * MS, 520 * MS}) {   // on a 100 ms PCR (late at 500 ms) the boundary passes
+        PcrValidator v(def);
+        bool warned = false;
+        for (int64_t t = 0, next = 0; t <= 20 * S; t += 20 * MS) {
+            if (t == next) {
+                v.feed_pcr(ns_to_pcr27(t), false, t);
+                next = t + (t == 10 * S ? gap : 100 * MS);
+            }
+            v.feed_activity(t);
+            warned |= v.cadence_warning();
+        }
+        CHECK(gap == 500 * MS ? "cadence: on a 100 ms PCR one interval of exactly 500 ms is on time"
+                              : "cadence: ... one of 520 ms is late: the warning, no failure",
+              !v.failed() && warned == (gap != 500 * MS));
     }
     {
         PcrValidator v(def);
@@ -809,6 +876,158 @@ void test_validator() {
         }
         CHECK("cadence: PCR stops while packets flow: fails 1.5 s after the last PCR",
               v.reason() == R::cadence && fail_at >= 3500 * MS && fail_at <= 3520 * MS);
+    }
+    // B-86: sparse PCRs. A steady one is on time at any cadence up to the cap's half.
+    {
+        PcrValidator v(def);
+        Seen w;
+        hand(v, 120, grid(2 * S), no_jit, [&](int64_t t, PcrValidator& x) { w.see(t, x, 2 * S); });
+        CHECK("cadence: a steady 2 s PCR (vMix's) never fails or warns; cadence 2 s, late at 4 s",
+              w.fail_at < 0 && w.warn_from < 0 && w.cad_lo == 2 * S && w.cad_hi == 2 * S && v.late_ns() == 4 * S);
+    }
+    {
+        // The clip's loop: an extra IDR 60 ms after the PCRs at 20 s and 40 s; arrivals jittered,
+        // so a cadence learned at arrival would not read 2 s exactly.
+        Lcg g(9);
+        auto jit = [&](int64_t) { return (int64_t)(g.next() % 16) * MS; };
+        PcrValidator v(def);
+        Seen w;
+        hand(v, 60, grid(2 * S, INT64_MAX, {}, {20060 * MS, 40060 * MS}), jit,
+             [&](int64_t t, PcrValidator& x) { w.see(t, x, 2 * S); });
+        CHECK("cadence: the loop step (60 ms, then 1.94 s) under jittered arrival: clean, cadence exactly 2 s throughout",
+              w.fail_at < 0 && w.warn_from < 0 && w.cad_lo == 2 * S && w.cad_hi == 2 * S);
+    }
+    {
+        // Scene cuts: an extra IDR 0.4 s after every second PCR (0.4, 1.6, 2.0 s ...): the longest.
+        std::vector<int64_t> cuts;
+        for (int64_t t = 4 * S; t < 60 * S; t += 4 * S) cuts.push_back(t + 400 * MS);
+        PcrValidator v(def);
+        Seen w;
+        hand(v, 60, grid(2 * S, INT64_MAX, {}, cuts), no_jit, [&](int64_t t, PcrValidator& x) { w.see(t, x, 2 * S); });
+        CHECK("cadence: scene cuts under a 2 s keyint (0.4, 1.6, 2.0 s): never late, cadence 2 s (the longest)",
+              w.fail_at < 0 && w.warn_from < 0 && w.cad_lo == 2 * S && w.cad_hi == 2 * S);
+    }
+    {
+        PcrValidator v(def);
+        Seen w;
+        hand(v, 60, grid(2 * S, 20 * S + 1), no_jit, [&](int64_t t, PcrValidator& x) { w.see(t, x); });
+        CHECK("cadence: a 2 s PCR that stops after 20 s: the warning at 24 s (late at 4 s), failed at 32 s, gap 12 s",
+              w.warn_from >= 24 * S && w.warn_from <= 24020 * MS && w.fail_at >= 32 * S && w.fail_at <= 32020 * MS &&
+                  v.reason() == R::cadence && w.gap_at_fail >= 12 * S && w.gap_at_fail <= 12020 * MS);
+        PcrValidatorConfig floor_only = def;
+        floor_only.pcr_interval_cap_ns = 500 * MS;   // the cap at the floor: the row before B-86
+        PcrValidator f(floor_only);
+        Seen wf;
+        hand(f, 60, grid(2 * S, 20 * S + 1), no_jit, [&](int64_t t, PcrValidator& x) { wf.see(t, x); });
+        CHECK("cadence: ... with the cap at the floor (the row before B-86) it fails in its first interval, at 1.5 s",
+              wf.fail_at >= 1500 * MS && wf.fail_at <= 1520 * MS && f.reason() == R::cadence);
+    }
+    {
+        // One 6 s interval at 40 s (no PCR at 42 and 44 s): one crossing, the warning for 60 s.
+        PcrValidator v(def);
+        Seen w;
+        int64_t gap50 = -1, gap110 = -1;
+        hand(v, 120, grid(2 * S, INT64_MAX, {{41 * S, 45 * S}}), no_jit, [&](int64_t t, PcrValidator& x) {
+            w.see(t, x, 2 * S);
+            if (t == 50 * S) gap50 = x.pcr_gap_max_ns();
+            if (t == 110 * S) gap110 = x.pcr_gap_max_ns();
+        });
+        CHECK("cadence: one 6 s interval on a 2 s PCR warns from its crossing at 44 s, never fails",
+              w.fail_at < 0 && w.warn_from >= 44 * S && w.warn_from <= 44020 * MS);
+        CHECK("cadence: ... gaps up to 6 s, the cadence stays 2 s (an interval over the cap teaches nothing)",
+              gap50 == 6 * S && w.cad_lo == 2 * S && w.cad_hi == 2 * S);
+        CHECK("cadence: ... the warning gone 60 s after the crossing, the gap with it",
+              w.warn_last >= 104 * S && w.warn_last <= 104040 * MS && gap110 == 0 && !v.cadence_warning());
+        PcrValidator e(def);
+        Seen we;
+        hand(e, 60, grid(2 * S, INT64_MAX, {{41 * S, 43 * S}}), no_jit, [&](int64_t t, PcrValidator& x) { we.see(t, x); });
+        CHECK("cadence: one PCR skipped (an interval of exactly 4 s, the threshold) is on time: no warning",
+              we.fail_at < 0 && we.warn_from < 0);
+    }
+    {
+        PcrValidator v(def);
+        Seen w;
+        hand(v, 90, grid(2 * S, INT64_MAX, {{41 * S, 45 * S}, {51 * S, 55 * S}, {61 * S, 65 * S}}), no_jit,
+             [&](int64_t t, PcrValidator& x) { w.see(t, x); });
+        CHECK("cadence: three 6 s intervals within 60 s fail as cadence at the third crossing (64 s)",
+              v.reason() == R::cadence && w.fail_at >= 64 * S && w.fail_at <= 64020 * MS);
+    }
+    {
+        PcrValidator v(def);
+        Seen w;
+        bool at_cap = true;
+        hand(v, 20, [](int64_t) { return INT64_MIN; }, no_jit, [&](int64_t t, PcrValidator& x) {
+            w.see(t, x);
+            at_cap &= x.late_ns() == 4 * S;
+        });
+        CHECK("cadence: a program with no PCR at all fails at its first crossing of the cap, 4 s",
+              v.reason() == R::cadence && w.fail_at >= 4 * S && w.fail_at <= 4020 * MS && at_cap);
+    }
+    {
+        // 100 ms until 30 s, then every 2 s: the first long interval crosses 500 ms three times.
+        PcrValidator v(def);
+        Seen w;
+        bool again = false, at4 = true;
+        auto d2s = [](int64_t t) { return (t <= 30 * S ? t % (100 * MS) == 0 : t % (2 * S) == 0) ? t : INT64_MIN; };
+        hand(v, 120, d2s, no_jit, [&](int64_t t, PcrValidator& x) {
+            w.see(t, x);
+            if (t == 62 * S) x.clear_failure();   // as the recovery does
+            if (t > 62 * S) again |= x.failed();
+            if (t >= 32 * S) at4 &= x.late_ns() == 4 * S;
+        });
+        CHECK("cadence: dense to sparse (100 ms, then 2 s from 30 s) fails at 31.5 s, then late at 4 s from 32 s",
+              w.fail_at >= 31500 * MS && w.fail_at <= 31520 * MS && at4);
+        CHECK("cadence: ... cleared at 62 s (the crossings 31 s old), it does not fail again", !again && !v.failed());
+    }
+    {
+        PcrValidator v(def);
+        Seen w;
+        int64_t cad31 = -1;
+        auto s2d = [](int64_t t) { return (t < 30 * S ? t % (2 * S) == 0 : t % (100 * MS) == 0) ? t : INT64_MIN; };
+        hand(v, 60, s2d, no_jit, [&](int64_t t, PcrValidator& x) {
+            w.see(t, x);
+            if (t == 31 * S) cad31 = x.pcr_cadence_ns();
+        });
+        CHECK("cadence: sparse to dense (2 s, then 100 ms from 30 s) never fails or warns; cadence 100 ms by 31 s",
+              w.fail_at < 0 && w.warn_from < 0 && cad31 == 100 * MS);
+    }
+    {
+        // clear_failure() itself: three crossings fail; cleared, the next packet neither fails nor warns.
+        PcrValidator v(def);
+        int64_t t = 0;
+        for (; t <= 20 * S && !v.failed(); t += 20 * MS) {
+            if (t <= 10 * S && t % (100 * MS) == 0) v.feed_pcr(ns_to_pcr27(t), false, t);
+            v.feed_activity(t);
+        }
+        const bool failed = v.failed() && v.cadence_warning() && v.pcr_gap_max_ns() >= 1500 * MS;
+        v.clear_failure();
+        v.feed_activity(t);
+        CHECK("cadence: clear_failure starts the windowed counts afresh: the next packet fails no row, warns not, gap 0",
+              failed && !v.failed() && !v.cadence_warning() && v.pcr_gap_max_ns() == 0);
+    }
+    {
+        // A PCR PID change (restart_pcr): the cadence is learned anew, the cap in force until then.
+        PcrValidator v(def);
+        Seen w;
+        int64_t late_after = -1;
+        hand(v, 30, grid(100 * MS, 20 * S + 1), no_jit, [&](int64_t t, PcrValidator& x) {
+            w.see(t, x);
+            if (t == 20 * S) {
+                x.restart_pcr();
+                late_after = x.late_ns();
+            }
+        });
+        CHECK("cadence: restart_pcr: the cap (4 s) in force; no PCR from the new PID fails at the first crossing",
+              late_after == 4 * S && v.reason() == R::cadence && w.fail_at >= 24 * S && w.fail_at <= 24020 * MS);
+        // One late interval (600 ms at 10 s) shortly before the change, the new PID's PCR at once.
+        PcrValidator r(def);
+        Seen wr;
+        hand(r, 40, grid(100 * MS, INT64_MAX, {{10050 * MS, 10600 * MS}}), no_jit, [&](int64_t t, PcrValidator& x) {
+            wr.see(t, x);
+            if (t == 20 * S) x.restart_pcr();
+        });
+        CHECK("cadence: ... an earlier late crossing still in the window does not fail the new PID at the change",
+              wr.warn_from > 0 && wr.fail_at < 0 && r.pcr_cadence_ns() == 100 * MS);
     }
     // Rate.
     {
@@ -1684,6 +1903,79 @@ void test_vstc_recovery() {
               r.end == VirtualStc::State::locked);
 }
 
+// B-86: program()'s PCR on every 20th slot only, a steady 2 s PCR (vMix's), and none in
+// [from, to) while the PES flow on (audio the reference).
+Shape sparse2s(int pid, int64_t t, int64_t from = -1, int64_t to = -1) {
+    Shape s;
+    s.drop = pid == PCR_PID && (t % (2 * S) != 0 || (from >= 0 && t >= from && t < to));
+    return s;
+}
+
+struct SparseRun {
+    std::vector<StcEvent> ev;
+    int64_t locked_at = -1, resid_min = INT64_MAX;   // rel(); the lowest 2 s residual once locked
+    VirtualStc::State at102 = VirtualStc::State::acquiring, at104 = VirtualStc::State::acquiring;
+    VirtualStc::LeadStats a130, v130;                // the leads at 130 s
+    VirtualStc::Stats end;
+};
+
+template <class F>
+SparseRun sparse_run(const char* label, F shape, int64_t secs, uint64_t seed) {
+    VirtualStc v;
+    Fnv f;
+    SparseRun r;
+    int64_t next = 0;
+    drive(v, program(secs, 50000, seed, shape), f, [&](const Pkt& p, const VirtualStc::Mapping&) {
+        const VirtualStc::State st = v.state();
+        if (r.locked_at < 0 && st == VirtualStc::State::locked) r.locked_at = rel(p.h);
+        if (p.t < 102 * S) r.at102 = st;
+        if (p.t < 104 * S) r.at104 = st;
+        if (p.t < 130 * S) {
+            r.a130 = v.lead(PID_A);
+            r.v130 = v.lead(PID_V);
+        }
+        if (st == VirtualStc::State::locked && p.h >= next) {
+            const VirtualStc::Stats s = v.stats();
+            if (s.residual.count) r.resid_min = std::min(r.resid_min, s.residual.min_ns);
+            next = p.h + 2 * S;
+        }
+    });
+    r.ev = fold_events(v, f);
+    r.end = v.stats();
+    print_events(label, r.ev);
+    std::printf("  %s: locked at %.1f s, residual min %.3f ms once locked, leads a/v %.2f/%.2f ms at 130 s, "
+                "end %s epoch %u cadence %.0f ms\n", label, r.locked_at / 1e9, r.resid_min / 1e6,
+                r.a130.median_ns / 1e6, r.v130.median_ns / 1e6, state_name(r.end.state), r.end.epoch,
+                r.end.pcr_cadence_ns / 1e6);
+    g_all.add((int64_t)f.h);
+    return r;
+}
+
+void test_vstc_sparse() {
+    const SparseRun a = sparse_run("a steady 2 s PCR", [](int pid, int64_t t) { return sparse2s(pid, t); }, 150, 81);
+    CHECK("vstc sparse: a steady 2 s PCR locks (60-80 s: 30 one-sample buckets), no event in 150 s",
+          a.ev.empty() && a.locked_at >= 60 * S && a.locked_at <= 80 * S && a.end.state == VirtualStc::State::locked &&
+              a.end.epoch == 1 && !a.end.cadence_warning && a.end.pcr_cadence_ns == 2 * S);
+    CHECK("vstc sparse: ... source-natural leads (audio 480-500 ms, video 780-800 ms), residual min >= -2 ms",
+          a.a130.median_ns >= 480 * MS && a.a130.median_ns <= 500 * MS && a.v130.median_ns >= 780 * MS &&
+              a.v130.median_ns <= 800 * MS && a.resid_min >= -2 * MS);
+    // The PCR stops after 98 s while the PES flow on, back from 140 s.
+    const SparseRun r = sparse_run("2 s PCR missing 100-140 s",
+                                   [](int pid, int64_t t) { return sparse2s(pid, t, 100 * S, 140 * S); }, 200, 82);
+    CHECK("vstc sparse stop: locked before, lost (No PCR) 5 s after the last PCR",
+          r.locked_at > 0 && r.locked_at < 98 * S && r.at102 == VirtualStc::State::locked &&
+              r.at104 == VirtualStc::State::lost);
+    CHECK("vstc sparse stop: degraded (cadence) at the third 4 s crossing (110 s), recovered 30 s after the last (170 s)",
+          kinds_are(r.ev, {StcEvent::Kind::degraded, StcEvent::Kind::recovered}) &&
+              !std::strcmp(r.ev[0].reason, "cadence") && iabs(rel(r.ev[0].house_ns) - 110 * S) <= 100 * MS &&
+              r.ev[0].epoch == 2 && !std::strcmp(r.ev[1].reason, "cadence") &&
+              iabs(rel(r.ev[1].house_ns) - 170 * S) <= 500 * MS && r.ev[1].epoch == 3);
+    CHECK("vstc sparse stop: degraded, the reference PID at its earliest arrival (audio -15..+2 ms at 130 s); "
+          "locked again at the end, the cadence 2 s (the 42 s interval taught nothing)",
+          r.a130.median_ns >= -15 * MS && r.a130.median_ns <= 2 * MS && r.end.state == VirtualStc::State::locked &&
+              r.end.epoch == 3 && r.end.pcr_cadence_ns == 2 * S);
+}
+
 // The restamp maps the PCR too (part 4.2 step 3): map_pcr gives it its PES's epoch choice, outside
 // the lead row; its lag is minus the delay above the floor, so a 230 ms re-route relocks by the
 // envelope step. Fed as a PID's lead (map) it now does the same: its stream lead is 0 (B-90).
@@ -1875,6 +2167,7 @@ int main(int argc, char** argv) {
     test_vstc_window();
     test_vstc_stream_lead();
     test_vstc_recovery();
+    test_vstc_sparse();
     test_vstc_straddle();
     test_vstc_map_pcr();
     test_vstc_floor_moves();

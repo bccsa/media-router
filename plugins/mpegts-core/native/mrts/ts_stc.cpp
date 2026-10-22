@@ -55,12 +55,6 @@ int64_t median(std::vector<int64_t> v) {
     return v[k];
 }
 
-int64_t p99(std::vector<int64_t> v) {   // nearest rank
-    const size_t k = (99 * v.size() + 99) / 100 - 1;
-    std::nth_element(v.begin(), v.begin() + k, v.end());
-    return v[k];
-}
-
 // Least squares in ms (x) by ns (y), centred on floor means so the cross terms
 // stay tiny: for <= 1000 points, |x| <= 2.2e6 and |y| <= 2^31, every sum < 2^63.
 bool ls_fit(const std::vector<int64_t>& X, const std::vector<int64_t>& Y, const std::vector<char>* keep,
@@ -420,7 +414,20 @@ void ClockLock::step_to_floor() {
 
 PcrValidator::PcrValidator(const PcrValidatorConfig& cfg) : cfg_(cfg) {
     cfg_.pcr_interval_fail_ns = std::max<int64_t>(cfg_.pcr_interval_fail_ns, 1000000);
+    cfg_.pcr_interval_cap_ns = std::max(cfg_.pcr_interval_cap_ns, cfg_.pcr_interval_fail_ns);
+    cfg_.cadence_factor = std::max(cfg_.cadence_factor, 1);
+    cfg_.cadence_intervals = (int)clamp64(cfg_.cadence_intervals, 1, 1000);
     cfg_.rate_max_ppm = clamp64(cfg_.rate_max_ppm, 0, 100000);
+}
+
+// The late threshold (B-86): the cadence's multiple between the floor and the cap; the cap
+// alone while the cadence is unknown (a start, a PCR PID change, a program without PCR).
+int64_t PcrValidator::late_ns() const {
+    if (cadence_ns_ <= 0) return cfg_.pcr_interval_cap_ns;
+    const int64_t by_cadence = cadence_ns_ > cfg_.pcr_interval_cap_ns / cfg_.cadence_factor
+                                   ? cfg_.pcr_interval_cap_ns
+                                   : cadence_ns_ * cfg_.cadence_factor;
+    return std::min(cfg_.pcr_interval_cap_ns, std::max(cfg_.pcr_interval_fail_ns, by_cadence));
 }
 
 // A bad observation at which its row's failure condition holds (its count or its hold): the
@@ -447,7 +454,7 @@ void PcrValidator::on_packet(int64_t h) {
     }
     const int64_t gap = sat_sub(h, last_act_h_);
     last_act_h_ = std::max(last_act_h_, h);
-    const int64_t crossed = std::max<int64_t>(0, (sat_sub(h, open_h_) - 1) / cfg_.pcr_interval_fail_ns);
+    const int64_t crossed = std::max<int64_t>(0, (sat_sub(h, open_h_) - 1) / late_ns());
     if (gap >= cfg_.pcr_interval_fail_ns) {   // silence: an outage, skip what it spanned
         open_outage_ = true;
         open_counted_ = std::max(open_counted_, crossed);
@@ -457,9 +464,14 @@ void PcrValidator::on_packet(int64_t h) {
     while (open_counted_ < crossed) {   // packets keep arriving, the PCR does not
         open_counted_++;
         longs_.push_back(h);
+        gap_max_ = std::max(gap_max_, sat_sub(h, open_h_));
     }
     while (!longs_.empty() && longs_.front() < sat_sub(h, cfg_.cadence_fail_window_ns)) longs_.pop_front();
-    if ((int)longs_.size() >= cfg_.cadence_fail_count) {
+    if (longs_.empty()) gap_max_ = 0;
+    warn_ = !longs_.empty();
+    // A program with no PCR yet, or none since its PCR PID changed, has none to wait for: its
+    // first crossing of the cap fails (a crossing counted before the change does not).
+    if ((int)longs_.size() >= cfg_.cadence_fail_count || (!have_pcr_ && late)) {
         if (late) bad(h);
         fail(Reason::cadence);
     }
@@ -481,13 +493,8 @@ PcrValidator::Verdict PcrValidator::feed_pcr(int64_t pcr27, bool di, int64_t h) 
     }
     const int64_t dh = sat_sub(h, last_pcr_h_);
     interval_max_ = std::max(interval_max_, dh);
-    if (!open_outage_) intervals_.push_back({h, dh});
-    while (!intervals_.empty() && intervals_.front().first < sat_sub(h, cfg_.cadence_window_ns)) intervals_.pop_front();
-    if (!intervals_.empty()) {
-        std::vector<int64_t> v;
-        for (const auto& p : intervals_) v.push_back(p.second);
-        warn_ = p99(std::move(v)) > cfg_.pcr_interval_warn_ns;
-    }
+    const bool late = open_counted_ > 0 && !open_outage_, outage = open_outage_;
+    if (late) gap_max_ = std::max(gap_max_, dh);
     open_h_ = h;
     open_counted_ = 0;
     open_outage_ = false;
@@ -495,15 +502,23 @@ PcrValidator::Verdict PcrValidator::feed_pcr(int64_t pcr27, bool di, int64_t h) 
     const int64_t ds = pcr27_to_ns(pcr_delta(pcr27, last_pcr_));
     last_pcr_ = pcr27;
     last_pcr_h_ = h;
+    // Against the rate in force, so a long outage of a drifting source is no leap.
+    const int64_t miss = sat_sub(sat_add(ds, mul_ppb(ds, rate_ppb_)), dh);
+    const bool leap = miss > cfg_.leap_ns || miss < -cfg_.leap_ns;
+    // The cadence learns from intervals the source timed itself that could be on time at any
+    // accepted cadence (within the cap); a late one still teaches a new cadence (B-86).
+    if (!di && !leap && !outage && ds >= 0 && ds <= cfg_.pcr_interval_cap_ns) {
+        cadence_.push_back(ds);
+        while ((int)cadence_.size() > cfg_.cadence_intervals) cadence_.pop_front();
+        cadence_ns_ = *std::max_element(cadence_.begin(), cadence_.end());
+    }
     if (di) {
         freeze_run_ = 0;
         fz_pcr_ = pcr27;
         fz_h_ = h;
         return Verdict::discontinuity;
     }
-    // Against the rate in force, so a long outage of a drifting source is no leap.
-    const int64_t miss = sat_sub(sat_add(ds, mul_ppb(ds, rate_ppb_)), dh);
-    if (miss > cfg_.leap_ns || miss < -cfg_.leap_ns) {
+    if (leap) {
         last_leap_ = sat_sub(ds, dh);
         leaps_.push_back(h);
         while (leaps_.front() < sat_sub(h, cfg_.leap_window_ns)) leaps_.pop_front();
@@ -977,6 +992,8 @@ VirtualStc::Stats VirtualStc::stats() {
     s.relocks = relocks_;
     s.epoch = epochs_.empty() ? 0 : epochs_.back().id;
     s.cadence_warning = val_.cadence_warning();
+    s.pcr_cadence_ns = val_.pcr_cadence_ns();
+    s.pcr_gap_max_ns = val_.pcr_gap_max_ns();
     const int64_t w = a.config().rate_warn_ppm * 1000;
     s.rate_warning = s.ppb > w || s.ppb < -w;
     return s;

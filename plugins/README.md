@@ -2282,7 +2282,8 @@ exported from `@media-router/engine`; srt-input is the reference):
    clock, a lead clamp (a PID past 4 s ahead under the degraded mapping,
    held while the element keeps posting `lead-clamp`), more than 3 re-locks
    in 10 min, a source rate past 100 ppm or an ASRC ratio past 200 ppm for a
-   minute, PCR cadence, transport errors.
+   minute, a PCR that comes irregularly (a steady sparse one locks, its State
+   row saying "PCR every 2.0 s"), transport errors.
 5. **Live edits.** List `ingestOffsetMs` (and `pidTrimsMs`) in
    `liveUpdatableParams` and call `applyIngestTimingLiveUpdate({
    setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
@@ -2351,8 +2352,10 @@ Element messages, posted from the streaming thread: `mrtsrestamp-stats` per
 program per interval (`program`, `state` acquiring / locked / degraded /
 lost, `reason`, `ppb`, `offset-drift-ns`, `residual-min/p50/p99/max-ns`,
 `residual-count`, `pcr-interval-max-ns`, `cadence-warning`, `rate-warning`,
-`relocks`, `epoch`, `gaps`, `gap-ns-total`, `dropped-pes`,
-`dropped-ns-total`, and the element-wide `cc-lost` and `desync-bytes`);
+`pcr-cadence-ns` (the PCR's own cadence, 0 while unknown), `pcr-gap-max-ns`
+(the longest late PCR interval of the last minute), `relocks`, `epoch`, `gaps`,
+`gap-ns-total`, `dropped-pes`, `dropped-ns-total`, and the element-wide
+`cc-lost` and `desync-bytes`);
 `mrtsrestamp-pid` per PID per interval (`program`, `pid`, `stream-type`,
 `lead-count`, `lead-min/median/max-ns` once the PID has a lead, `trim-ns`,
 `shift-ns`, `dropped-pes`); `mrtsrestamp-event` on occurrence (`kind`

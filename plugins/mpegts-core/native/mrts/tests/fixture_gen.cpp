@@ -32,7 +32,7 @@ const char kUsage[] =
     "  --pids LIST           of v (H.264 IPBB, PID 0x100, carries the PCR), a1 (MPEG audio\n"
     "                        0x101), a2 (AAC 0x102), t (teletext-like 0x103) (v,a1,a2)\n"
     "  --ppm SCHED           the source clock's rate error; -300 = slow (0)\n"
-    "  --pcr-ms SCHED        PCR interval (100)\n"
+    "  --pcr-ms SCHED        PCR interval (100); 0: no PCR from then\n"
     "  --delay-ms SCHED      the path's floor delay (20)\n"
     "  --jitter-ms MEAN      jitter mean above the floor, cut at 10x (5)\n"
     "  --jump S:MS[:di]      the source timeline (PCR and PES) jumps by MS at S seconds;\n"
@@ -146,7 +146,7 @@ int main(int argc, char** argv) {
             ok = trace_gen::parse_schedule(v, 1000, &c.ppb);
         } else if (a == "--pcr-ms") {
             ok = trace_gen::parse_schedule(v, trace_gen::MS, &c.pcr_ns);
-            for (const auto& s : c.pcr_ns.steps) ok &= s.second >= trace_gen::MS;
+            for (const auto& s : c.pcr_ns.steps) ok &= s.second >= trace_gen::MS || s.second == 0;
         } else if (a == "--delay-ms") {
             ok = trace_gen::parse_schedule(v, trace_gen::MS, &c.delay_ns);
             for (const auto& s : c.delay_ns.steps) ok &= s.second >= 0;

@@ -145,9 +145,13 @@ class ClockLock {
 };
 
 struct PcrValidatorConfig {
-    int64_t pcr_interval_warn_ns = 150000000;     // p99 over cadence_window_ns: warning
-    int64_t pcr_interval_fail_ns = 500000000;     // three of these in 60 s: fail
-    int64_t cadence_window_ns = 10000000000LL;
+    // Cadence (B-86): a PCR is late once its open interval passes cadence_factor times the PCR's own
+    // cadence, never under pcr_interval_fail_ns nor over pcr_interval_cap_ns (the threshold while the
+    // cadence is unknown); cadence_fail_count late crossings in the window fail, one warns.
+    int64_t pcr_interval_fail_ns = 500000000;     // the floor; packets this far apart: an outage
+    int cadence_factor = 2;
+    int64_t pcr_interval_cap_ns = 4000000000LL;   // under lost_ns; longer intervals teach nothing
+    int cadence_intervals = 8;                    // the cadence: the longest of this many intervals
     int64_t cadence_fail_window_ns = 60000000000LL;
     int cadence_fail_count = 3;
     int64_t rate_max_ppm = 1000;
@@ -190,10 +194,25 @@ class PcrValidator {
     void feed_lead(int pid, int64_t arrival_ns, int64_t stream_ns);
     Reason reason() const { return reason_; }   // the first failing row; sticky
     bool failed() const { return reason_ != Reason::none; }
-    bool cadence_warning() const { return warn_; }
+    bool cadence_warning() const { return warn_; }          // a late crossing in the fail window
+    int64_t pcr_cadence_ns() const { return cadence_ns_; }  // the PCR's own cadence; 0 while unknown
+    int64_t pcr_gap_max_ns() const { return gap_max_; }     // the longest late interval in the window
+    int64_t late_ns() const;                                // the late threshold in force
     int64_t clean_ns(int64_t now_ns) const;      // since a row last failed (bad())
-    void clear_failure() { reason_ = Reason::none; }
-    void restart_pcr() { have_pcr_ = false; }    // the PCR PID changed
+    // Recovery: the windowed counts start afresh, else a crossing or leap younger than its
+    // window fails the row again at the next packet (B-86).
+    void clear_failure() {
+        reason_ = Reason::none;
+        longs_.clear();
+        leaps_.clear();
+        gap_max_ = 0;
+        warn_ = false;
+    }
+    void restart_pcr() {                         // the PCR PID changed: its cadence is learned anew
+        have_pcr_ = false;
+        cadence_.clear();
+        cadence_ns_ = 0;
+    }
     int64_t last_leap_ns() const { return last_leap_; }   // Δσ - Δh of the last leap
     int64_t take_interval_max();                 // longest PCR interval since the last take
     const PcrValidatorConfig& config() const { return cfg_; }
@@ -222,9 +241,11 @@ class PcrValidator {
     bool have_act_ = false;
     int64_t last_act_h_ = 0;
     int64_t open_h_ = 0;              // start of the open PCR interval
-    int64_t open_counted_ = 0;        // pcr_interval_fail_ns multiples counted in it
+    int64_t open_counted_ = 0;        // late_ns() multiples counted in it
     bool open_outage_ = false;
-    std::deque<std::pair<int64_t, int64_t>> intervals_;   // (arrival, interval)
+    std::deque<int64_t> cadence_;     // PCR-time lengths of the last intervals the source timed itself
+    int64_t cadence_ns_ = 0;
+    int64_t gap_max_ = 0;
     std::deque<int64_t> longs_, leaps_;
     bool warn_ = false;
     int64_t interval_max_ = 0;
@@ -276,6 +297,8 @@ class VirtualStc {
         uint32_t epoch = 0;
         bool cadence_warning = false;
         bool rate_warning = false;
+        int64_t pcr_cadence_ns = 0;         // the PCR's own cadence (B-86); 0 while unknown
+        int64_t pcr_gap_max_ns = 0;         // the longest late PCR interval of the last minute
     };
     struct LeadStats {
         int64_t min_ns = 0, median_ns = 0, max_ns = 0;
