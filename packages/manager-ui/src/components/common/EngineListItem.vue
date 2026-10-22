@@ -5,6 +5,7 @@ import type { EngineState } from '@/stores/engines';
 import { statColorClass } from '@/composables/useStatColor';
 import { getLucideIcon } from '@/composables/useLucideIcons';
 import { engineClockIndicator } from '@/utils/engineClock';
+import MrHelpTip from './MrHelpTip.vue';
 
 const props = defineProps<{ engine: EngineState }>();
 const emit = defineEmits<{ contextmenu: [ev: MouseEvent, engineId: string] }>();
@@ -59,14 +60,17 @@ const clock = computed(() => engineClockIndicator(props.engine));
             >
                 <component :is="getLucideIcon('zap')" :size="11" />
             </span>
-            <span
-                v-if="clock"
-                class="engine-clock shrink-0 inline-flex items-center"
-                :class="clock.colorClass"
-                :aria-label="clock.label"
-            >
-                <component :is="getLucideIcon('clock')" :size="11" />
-            </span>
+            <!-- The sidebar scrolls, so the detail is a teleported MrHelpTip (ADR-0022); its
+                 click pins the tip and stops there, so the row does not navigate. -->
+            <MrHelpTip v-if="clock" :text="clock.detail" width="w-72">
+                <span
+                    class="engine-clock shrink-0 inline-flex items-center"
+                    :class="clock.colorClass"
+                    :aria-label="clock.label"
+                >
+                    <component :is="getLucideIcon('clock')" :size="11" />
+                </span>
+            </MrHelpTip>
         </div>
     </RouterLink>
 </template>

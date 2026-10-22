@@ -608,7 +608,7 @@ export class MediaRouter {
     // --- Playout re-anchor (ADR-0005 amendment 2026-10-08) ---
     // The bookkeeping is `PlayoutRaises`; these are its public surface.
 
-    /** Engine wiring: on only with the contract on and `MR_PLAYOUT_REANCHOR` not 0. */
+    /** Engine wiring: `EngineConfig.playoutReanchor`, else on unless `MR_PLAYOUT_REANCHOR=0`. */
     setPlayoutReanchor(enabled: boolean, defaultOffsetMs = DEFAULT_PLAYOUT_OFFSET_MS): void {
         this.playoutRaises.configure(enabled, defaultOffsetMs);
     }

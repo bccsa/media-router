@@ -15,6 +15,7 @@ export type {
     DynamicPort,
     LiveInputBranch,
     TimingSink,
+    TimingInputRef,
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
@@ -122,6 +123,7 @@ export {
     LATENESS_EVENT,
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
+export { busInputLabel } from './plugins/moduleTiming.js';
 // Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O and trims, the card.
 export {
     INGEST_OFFSET_KEY,

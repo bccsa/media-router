@@ -566,6 +566,25 @@ describe('HlsPlayerModule fan-out sidecar', () => {
         });
     });
 
+    it('the fan-out lateness window (ms) is this module output lateness, as lat_busout_<port>', async () => {
+        const { module, spawn } = makeModule();
+        await module.onStart();
+        const { opts } = sidecarOf(spawn);
+        // mr-bus-fanout's stats line as it writes it (mrts::lateness_json_ms, in ms).
+        opts.onStdout(
+            '{"stats":{"clients":1,"drops":{},' +
+                '"lateness":{"count":50,"untimed":0,"min":-3.250,"mean":12.400,"max":40.000}}}',
+        );
+        module.timing.tick();
+        // No gst pipeline, so this window is the module's only lateness source.
+        expect(module.timing.publication.data.timing).toEqual({
+            outputMs: 12,
+            outputRange: '-3 – 40',
+        });
+        expect(module.timing.publication.badge).toMatchObject({ id: 'lateness', text: '12 ms' });
+        module.timing.stop(false);
+    });
+
     it('onStop drops the fan-out refs so a restart spawns a fresh sidecar', async () => {
         const { module, spawn } = makeModule();
         await module.onStart();

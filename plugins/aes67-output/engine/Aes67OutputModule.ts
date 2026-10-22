@@ -63,9 +63,9 @@ export class Aes67OutputModule extends GstPluginBase {
     /** The house epoch this run claims; null = free-running timestamps. */
     private epoch: Aes67Epoch | null = null;
     private epochError = '';
-    /** A house-clock restart in flight, plus at most one queued behind it. */
+    /** The latest house-clock restart. */
     private epochRestart: Promise<void> | null = null;
-    private epochRestartQueued = false;
+    /** One-shot token for restartForEpoch's own onStop; any other stop is the engine's. */
     private selfRestarting = false;
     private externalStop = false;
 
@@ -79,6 +79,8 @@ export class Aes67OutputModule extends GstPluginBase {
         await this.resolveEpoch();
         await super.onStart();
         this.startSapAnnouncer();
+        // No event-loop turn passes between resolveEpoch()'s read and here (the in-process
+        // runner answers startPipeline at once), so no clock change is missed.
         this.services?.houseClock?.on('epoch', this.onClockChange);
         this.services?.houseClock?.on('state', this.onClockChange);
 
@@ -93,7 +95,10 @@ export class Aes67OutputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        // Consumed on entry, so an engine stop landing mid-restart still counts as external.
         if (!this.selfRestarting) this.externalStop = true;
+        this.selfRestarting = false;
+        // Off before the first await: no clock change reaches a restart in flight.
         this.services?.houseClock?.off('epoch', this.onClockChange);
         this.services?.houseClock?.off('state', this.onClockChange);
         if (this.statsTimer) {
@@ -121,33 +126,26 @@ export class Aes67OutputModule extends GstPluginBase {
     /** A re-latch (or newly traceable epoch) restarts the sender so the new offset lands. */
     private readonly onClockChange = (): void => {
         if (!this.running || this.config.ptpSync !== true) return;
-        if (!epochChangeNeedsRestart(this.epoch, this.services?.houseClock?.epoch() ?? null)) {
+        const clock = this.services?.houseClock;
+        if (!epochChangeNeedsRestart(this.epoch, clock?.epoch() ?? null)) {
+            // Still free-running: the reason follows the clock, not the last start.
+            if (!this.epoch) this.epochError = epochRefusal(clock);
             this.updateStatusData();
             return;
         }
-        if (this.epochRestart) {
-            this.epochRestartQueued = true;
-            return;
-        }
-        this.epochRestart = this.restartForEpoch()
-            .catch((err: unknown) => this.log.error({ err }, 'AES67 epoch restart failed'))
-            .finally(() => (this.epochRestart = null));
+        this.epochRestart = this.restartForEpoch().catch((err: unknown) =>
+            this.log.error({ err }, 'AES67 epoch restart failed'),
+        );
     };
 
+    /** A move made while this stops is not lost: the onStart below reads the clock afresh. */
     private async restartForEpoch(): Promise<void> {
-        do {
-            this.epochRestartQueued = false;
-            this.log.info('House epoch changed — restarting so the new timestamp-offset lands');
-            this.selfRestarting = true;
-            try {
-                await this.onStop();
-            } finally {
-                this.selfRestarting = false;
-            }
-            // Stopped by the engine meanwhile: do not revive it.
-            if (this.externalStop) return;
-            await this.onStart();
-        } while (this.epochRestartQueued);
+        this.log.info('House epoch changed — restarting so the new timestamp-offset lands');
+        this.selfRestarting = true;
+        await this.onStop();
+        // Stopped by the engine meanwhile: do not revive it.
+        if (this.externalStop) return;
+        await this.onStart();
     }
 
     /** SAP announcement sidecar — announces while the module runs, deletes on stop. */

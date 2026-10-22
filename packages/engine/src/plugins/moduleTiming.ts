@@ -2,7 +2,7 @@
 // the sink reads for D and device latency, and the aligners' warnings and events (WI-P2-13).
 // GstPluginBase owns one and merges it into `getState()`, so a subclass's own sections keep it.
 import type { ModuleTimingSummary } from '@media-router/shared-types';
-import type { PipelineDescription, TimingSink } from './PluginModule.js';
+import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
 import { latInName, shortHash } from './busHelpers.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
@@ -17,8 +17,8 @@ import { timingChanged, timingPublication, type TimingPublication } from './timi
 const TICK_MS = 2000;
 /** D moves live (route playout offset pushes), so the sink is re-read every 5 ticks. */
 const SINK_READ_EVERY = 5;
-/** No display mode is known here: one refresh at 60 Hz stands in for the panel. */
-const VIDEO_DEVICE_MS = 1000 / 60;
+/** A video output whose mode is unknown: one refresh at this rate stands in, and says so. */
+const ASSUMED_REFRESH_HZ = 60;
 const PIPEWIRE_POLL_MS = 10_000;
 
 export interface BusSourceRef {
@@ -34,13 +34,23 @@ export function edgeTapName(s: Pick<BusSourceRef, 'port' | 'socketPath'>): strin
     return latInName(`${s.port}_${shortHash(s.socketPath)}`);
 }
 
-/** Label an input tap by the module feeding it, when the tap is keyed by its edge. */
-export function inputLabel(tap: string, sources: BusSourceRef[]): string {
-    for (const s of sources) {
-        if (tap === edgeTapName(s)) return `${s.sourceModuleId} (${s.sinkPortId})`;
-    }
-    if (sources.length === 1) return `${sources[0].sourceModuleId} (${sources[0].sinkPortId})`;
-    return tap.replace(/^lat_/, '');
+/** A bus input's label: the module feeding it, and the port it arrives on. */
+export function busInputLabel(s: { sourceModuleId?: string | null; sinkPortId: string }): string {
+    return s.sourceModuleId ? `${s.sourceModuleId} (${s.sinkPortId})` : s.sinkPortId;
+}
+
+const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The module's bus inputs in a fixed order (sink port, numeric-aware, then connection), each
+ *  under the tap `buildBusSrc` gives an unnamed edge source. */
+export function busInputs(sources: BusSourceRef[]): TimingInputRef[] {
+    return [...sources]
+        .sort(
+            (a, b) =>
+                a.sinkPortId.localeCompare(b.sinkPortId, 'en', { numeric: true }) ||
+                byText(a.connectionId, b.connectionId),
+        )
+        .map((s, i) => ({ tap: edgeTapName(s), n: i + 1, label: busInputLabel(s) }));
 }
 
 /** The engine's rule: a watch whose `input` is a bus connection id serves that edge, whose
@@ -77,10 +87,14 @@ export class ModuleTiming {
     private ticks = 0;
     /** Watches that served a bus edge: once its connection is gone, the input was removed. */
     private readonly edgeWatches = new Set<string>();
+    private declared: TimingInputRef[] | undefined;
+    /** Bus inputs seen this run, by connection: a producer that stops releases its channel and
+     *  leaves the router's list, and its siblings must keep their numbers. */
+    private readonly seen = new Map<string, BusSourceRef>();
 
     constructor(private readonly host: ModuleTimingHost) {
         this.reporter = new LatenessReporter({
-            labelFor: (tap) => inputLabel(tap, host.busSources()),
+            inputs: () => this.inputs(),
             alignerInput: (watch) => this.alignerInput(watch),
             intervalMs: TICK_MS,
         });
@@ -99,6 +113,7 @@ export class ModuleTiming {
     start(desc: PipelineDescription | null): void {
         this.stop(false);
         this.sink = desc?.timingSink;
+        this.declared = desc?.timingInputs;
         // Only modules on the bus carry taps; say so when theirs are missing.
         const onBus = !!desc && /unixfdsrc|tee name=busout_/.test(desc.pipeline);
         this.reporter.setInstrument(!onBus || latenessTapAvailable());
@@ -173,6 +188,12 @@ export class ModuleTiming {
         this.pwGen++;
     }
 
+    private inputs(): TimingInputRef[] {
+        if (this.declared) return this.declared;
+        for (const s of this.host.busSources()) this.seen.set(s.connectionId, s);
+        return busInputs([...this.seen.values()]);
+    }
+
     stop(emit = true): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
@@ -180,6 +201,8 @@ export class ModuleTiming {
         this.reporter.reset();
         this.edgeWatches.clear();
         this.sink = undefined;
+        this.declared = undefined;
+        this.seen.clear();
         this.ticks = 0;
         const had = visible(this.pub);
         this.pub = EMPTY;
@@ -249,16 +272,23 @@ export class ModuleTiming {
         const sink = this.sink;
         if (!sink) return;
         const offset = Number(await this.host.getProperty(sink.element, 'ts-offset'));
-        let device: number | undefined = VIDEO_DEVICE_MS;
+        let device: number | undefined;
+        let note: string | undefined;
         if (sink.kind === 'audio') {
             // Audio base sinks: the ring is `buffer-time` µs deep.
             const bufferUs = Number(await this.host.getProperty(sink.element, 'buffer-time'));
             device = Number.isFinite(bufferUs) ? bufferUs / 1000 : undefined;
+        } else {
+            // Video: one refresh of the output mode the module resolved.
+            const hz = sink.refreshHz && sink.refreshHz > 0 ? sink.refreshHz : undefined;
+            device = 1000 / (hz ?? ASSUMED_REFRESH_HZ);
+            if (!hz) note = `${ASSUMED_REFRESH_HZ} Hz assumed`;
         }
         if (this.sink !== sink) return; // stopped or restarted meanwhile
         this.reporter.setPresentation({
             presentationDelayMs: Number.isFinite(offset) ? offset / 1_000_000 : undefined,
             deviceLatencyMs: device,
+            deviceLatencyNote: note,
         });
     }
 }

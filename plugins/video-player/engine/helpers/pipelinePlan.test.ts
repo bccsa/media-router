@@ -307,6 +307,14 @@ describe('planLivePipeline', () => {
         ).toBeUndefined();
     });
 
+    it('carries the output mode refresh to the timing sink when it is known', () => {
+        expect(planLivePipeline({ ...base, refreshHz: 50 }).timingSink).toEqual({
+            element: 'sink',
+            kind: 'video',
+            refreshHz: 50,
+        });
+    });
+
     it('defaults bufferMs to 200 ms and normalises the threading value', () => {
         const desc = planLivePipeline(base);
         expect(desc.pipeline).toContain('max-size-time=200000000');

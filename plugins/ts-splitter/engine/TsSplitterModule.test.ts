@@ -183,6 +183,38 @@ describe('TsSplitterModule native child (onStart)', () => {
         expect(module.getDynamicPorts().some((p) => p.id === pidPortId(0x65))).toBe(true);
     });
 
+    it('mr-tssplit lateness windows (ms, one per tee) become one timing section per output', async () => {
+        const { module, spawned } = makeModule();
+        (module as any).config = {
+            discoveredStreams: [
+                { pid: 0x65, streamType: 0x1b, media: 'video', codec: 'h264' },
+                { pid: 0xc9, streamType: 0x0f, media: 'audio', codec: 'aac' },
+            ],
+        };
+        await module.onStart();
+        const onStdout = spawned[0].opts.onStdout as (line: string) => void;
+        // emit_stats as mr-tssplit writes it: `lateness` keyed by each --out's tee.
+        onStdout(
+            '{"stats":{"clients":2,"drops":{},"lateness":{' +
+                '"busout_41000":{"count":40,"untimed":0,"min":30.000,"mean":35.500,"max":41.000},' +
+                '"busout_41001":{"count":20,"untimed":2,"min":8.000,"mean":9.000,"max":10.000}' +
+                '},"in_kbps":4000}}',
+        );
+        const timing = (module as any).timing;
+        timing.tick();
+        const pub = timing.publication;
+        expect(pub.sections.map((s: { id: string; label: string }) => [s.id, s.label])).toEqual([
+            ['timing', 'Timing'],
+            ['timing-out-1', 'Output 1 timing: 41000'],
+            ['timing-out-2', 'Output 2 timing: 41001'],
+        ]);
+        expect(pub.data['timing-out-1']).toEqual({ latenessMs: 36, latenessRange: '30 – 41' });
+        expect(pub.data['timing-out-2']).toEqual({ latenessMs: 9, latenessRange: '8 – 10' });
+        // Count-weighted merge: (35.5 × 40 + 9 × 20) / 60.
+        expect(pub.data.timing).toEqual({ outputMs: 27, outputRange: '8 – 41' });
+        timing.stop(false);
+    });
+
     it('input stall events map to warning/ok health', async () => {
         const { module, spawned } = makeModule();
         await module.onStart();

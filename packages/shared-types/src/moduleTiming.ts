@@ -15,6 +15,8 @@ export interface ModuleTimingInput {
     /** The tap it was read at (`lat_busin…`); `mralignwatch:<label>` for an aligner input
      *  that has no tap. */
     tap: string;
+    /** Its fixed place in the module's inputs (`timing-in-<n>`), kept while it is dark. */
+    n: number;
     label: string;
     /** The tap's window; absent while only an aligner reports the input (its tap is quiet). */
     lateness?: LatenessStatsMs;
@@ -58,6 +60,8 @@ export interface ModuleTimingSummary {
     /** The sink's ts-offset (D) while sinks still wait for it. */
     presentationDelayMs?: number;
     deviceLatencyMs?: number;
+    /** Set when the device latency is a stand-in (`60 Hz assumed`: the output mode is unknown). */
+    deviceLatencyNote?: string;
     /** max(λ(render), D) + device: when the content is seen or heard. */
     renderMs?: number;
     /** PipeWire-graph modules carry no PTS; they show the graph's latency. */

@@ -2,18 +2,22 @@ import {
     DEFAULT_MPEGTS_ALIGNMENT,
     GstPluginBase,
     ThroughputPoller,
+    busInputLabel,
     busTeeName,
     capsStreamInfo,
+    latInName,
     type PipelineDescription,
     type ModuleServices,
     type StreamCapsInfo,
     type ThroughputSample,
+    type TimingInputRef,
 } from '@media-router/engine';
 import {
     buildDynamicPorts,
     buildPipeline,
     assignInputPids,
     configPidConflicts,
+    inputBusSrcName,
     inputEntries,
     normalizeKey,
     isInputPort,
@@ -184,6 +188,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                     sinkPortId: s.sinkPortId,
                     port: s.port,
                     socketPath: s.socketPath,
+                    sourceModuleId: s.sourceModuleId,
                     language: entry?.language,
                     ...(entry?.pid !== undefined ? { pid: entry.pid } : {}),
                     ...(s.seedLatenessMs !== undefined ? { seedLatenessMs: s.seedLatenessMs } : {}),
@@ -246,6 +251,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                 transformProducer: true,
                 privatePads: true,
             },
+            timingInputs: timingInputs(sources, entries),
         };
     }
 
@@ -361,5 +367,19 @@ interface BusSource {
     sinkPortId: string;
     port: number;
     socketPath: string;
+    sourceModuleId: string;
     seedLatenessMs?: number;
+}
+
+/** Branch i's tap reads sources[i]: its timing section is numbered like its pin (`Input n`), so
+ *  an unwired or dark pin leaves a gap, and labelled by its feeding module. */
+function timingInputs(sources: UdpInputSource[], entries: InputEntry[]): TimingInputRef[] {
+    return sources.map((s, i) => {
+        const pin = entries.findIndex((e) => e.id === s.sinkPortId);
+        return {
+            tap: latInName(inputBusSrcName(String(i))),
+            n: pin >= 0 ? pin + 1 : entries.length + i + 1,
+            label: busInputLabel(s),
+        };
+    });
 }

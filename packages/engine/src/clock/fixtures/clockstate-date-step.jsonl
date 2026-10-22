@@ -1,0 +1,9 @@
+{"type":"sample","monoNs":"18065264174359","eNs":"1791937204424055332","bracketNs":74,"synced":true,"taiOffsetS":37,"estErrorUs":192,"maxErrorUs":27132,"freqPpm":-8.089,"status":8192,"leap":"ok"}
+{"type":"sample","monoNs":"18066265018169","eNs":"1791937204424055332","bracketNs":74,"synced":true,"taiOffsetS":37,"estErrorUs":192,"maxErrorUs":27632,"freqPpm":-8.089,"status":8192,"leap":"ok"}
+{"type":"sample","monoNs":"18067266015803","eNs":"1791937204424055323","bracketNs":56,"synced":true,"taiOffsetS":37,"estErrorUs":192,"maxErrorUs":28132,"freqPpm":-8.089,"status":8192,"leap":"ok"}
+{"type":"sample","monoNs":"18068266017037","eNs":"1791937204424055332","bracketNs":74,"synced":true,"taiOffsetS":37,"estErrorUs":192,"maxErrorUs":28632,"freqPpm":-8.089,"status":8192,"leap":"ok"}
+{"type":"step","monoNs":"18068282468867"}
+{"type":"sample","monoNs":"18068282490404","eNs":"1791937206424049054","bracketNs":74,"synced":false,"taiOffsetS":37,"estErrorUs":16000000,"maxErrorUs":16000000,"freqPpm":-8.089,"status":8256,"leap":"error"}
+{"type":"sample","monoNs":"18069283026050","eNs":"1791937206424049054","bracketNs":74,"synced":false,"taiOffsetS":37,"estErrorUs":16000000,"maxErrorUs":16000000,"freqPpm":-8.089,"status":8256,"leap":"error"}
+{"type":"sample","monoNs":"18070284012230","eNs":"1791937206424049054","bracketNs":74,"synced":false,"taiOffsetS":37,"estErrorUs":16000000,"maxErrorUs":16000000,"freqPpm":-8.089,"status":8256,"leap":"error"}
+{"type":"sample","monoNs":"18071284014446","eNs":"1791937206424049045","bracketNs":56,"synced":false,"taiOffsetS":37,"estErrorUs":16000000,"maxErrorUs":16000000,"freqPpm":-8.089,"status":8256,"leap":"error"}

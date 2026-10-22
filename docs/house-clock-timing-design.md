@@ -791,6 +791,11 @@ reports for them.
     an NTP server.
   - Nothing checks whether it does.
 - **PTP** (linuxptp, `media-router-ptp`) is opt-in per device and off by default.
+  - Nothing disciplines a grandmaster. Read on 2026-10-14 without changing
+    anything: 10.9.16.46, the domain's grandmaster, had not been disciplined
+    since boot (kernel state `TIME_ERROR`, frequency 0 ppm) and ran 0.2–0.3 s
+    off UTC after 9.7 days of uptime. Every box following it carries that
+    error.
 - **The kernel TAI offset is 0** on every box measured on 2026-10-12, so
   `CLOCK_TAI` reads the same as `CLOCK_REALTIME`. Nothing deployed sets it:
   not htpdate, not timesyncd, and not PTP as deployed (§10.2).
@@ -803,24 +808,42 @@ reports for them.
   PTP). Both must trace to a common reference: UTC (Coordinated Universal Time)
   or TAI through GNSS-backed (satellite-navigation, e.g. GPS) NTP or PTP, or
   the same PTP domain and grandmaster.
-- **Slew only, after the boot-time sync.**
-  - chrony: `makestep` limited to start-up.
+  - A PTP grandmaster is disciplined too. A box that may become grandmaster is
+    kept on NTP time by chrony while its port is neither UNCALIBRATED nor
+    SLAVE, and linuxptp steers it while it follows a better grandmaster; the
+    two never steer the clock at once (2026-10-14).
+- **Slew after the boot-time sync.** A step is the exception, and each one is
+  one engine re-epoch.
+  - chrony: `makestep 1.0 -1`, a step whenever the offset exceeds 1 s (e.g.
+    back from a long offline spell), each settled as one engine re-epoch; slew
+    below that (2026-10-14, an engineering decision open to the owner's veto;
+    ADR-0029).
   - ptp4l / phc2sys: a step on first lock only.
+- **A grandmaster serves a stepped clock.** At boot a box that may become
+  grandmaster starts chrony before ptp4l, waits for its sync (30 s at most) and
+  steps once, so the sub-second offset an RTC leaves at boot is never served to
+  the domain or slewed into it. Without NTP it serves after the 30 s wait and
+  announces itself not traceable.
 - **A bounded slew rate.** A slew changes the house clock's frequency, and every
   output has to follow it. ptp4l is already clamped to 100 ppm.
 - **A correct kernel TAI offset.** Otherwise engines started on opposite sides
   of a leap second sit 1 s apart. None is scheduled, but one remains possible
   until 2035. Under chrony it comes from `leapsectz` (which needs the
-  `right/UTC` zone file in the image) or the newer `leapseclist`. When PTP owns
-  the clock, the PTP setup writes the configured TAI−UTC constant (37 s): a
-  linuxptp grandmaster announces no traceable UTC offset, and ptp4l and phc2sys
-  set the kernel offset only from a traceable one.
+  `right/UTC` zone file in the image) or the newer `leapseclist`. Under PTP a
+  grandmaster announces `timeTraceable`, `currentUtcOffsetValid` and
+  `timeSource` NTP only while chrony keeps it synchronised, by the engine's
+  own test (kernel synchronised, error bound under 1 s), and slaves set their
+  kernel TAI offset from that announcement. The PTP setup still seeds the
+  offset from the same `leap-seconds.list` before ptp4l starts, for a box
+  that boots offline.
 - **The engine reads the daemon's state:** synchronised or not, and the estimated
   error.
 
 The image's time source is decided: chrony. So is the minimum discipline for a
 Trust selection: any continuous discipline, with the transit check of §10.4 as
-the gate (§13.1).
+the gate (§13.1). The PTP election stays on priority alone (decided by the
+owner, 2026-10-14): a grandmaster's sync state is announced, and never changes
+which clock wins.
 
 ### 10.3 Epoch policy
 

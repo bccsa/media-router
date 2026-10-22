@@ -14,9 +14,10 @@ const UNITS = ['chronyd.service', 'media-router-ptp4l.service'];
 /** `systemctl is-active` prints one state per unit, in argument order. */
 export function sourceFromUnits(stdout: string): TimeSyncSource {
     const [chrony, ptp] = stdout.split('\n').map((l) => l.trim());
-    // The PTP setup stops chronyd, so both active is a transition: PTP owns the clock.
-    if (ptp === 'active') return 'ptp';
+    // On a PTP box chronyd runs only while it owns the clock (a master-capable box as
+    // grandmaster, or the boot wait), so chronyd active means chrony.
     if (chrony === 'active') return 'chrony';
+    if (ptp === 'active') return 'ptp';
     return 'none';
 }
 

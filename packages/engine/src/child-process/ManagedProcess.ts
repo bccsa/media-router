@@ -25,6 +25,11 @@ export interface ManagedProcessOptions {
     };
     /** Called for each line of stdout. */
     onStdout?: (line: string) => void;
+    /**
+     * Log each stdout line at debug (default: true). Off for a data stream the owner parses:
+     * a line a second floods the journal, and the owner logs what the lines decide.
+     */
+    logStdout?: boolean;
     /** Called for each line of stderr. */
     onStderr?: (line: string) => void;
     /**
@@ -116,6 +121,7 @@ export class ManagedProcess extends EventEmitter {
 
         // Line-buffered stdout (capped at 64KB to prevent OOM from long lines)
         if (this.child.stdout) {
+            const logLines = this.options.logStdout !== false;
             let buffer = '';
             this.child.stdout.on('data', (chunk: Buffer) => {
                 buffer += chunk.toString();
@@ -124,7 +130,7 @@ export class ManagedProcess extends EventEmitter {
                 buffer = lines.pop() ?? '';
                 for (const line of lines) {
                     if (line.trim()) {
-                        this.log.debug({ stream: 'stdout' }, line);
+                        if (logLines) this.log.debug({ stream: 'stdout' }, line);
                         this.options.onStdout?.(line);
                     }
                 }

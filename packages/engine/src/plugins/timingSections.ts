@@ -91,7 +91,8 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
         rows.push(['presentationDelayMs', 'Presentation delay', ms(s.presentationDelayMs), 'ms']);
     }
     if (s.deviceLatencyMs !== undefined) {
-        rows.push(['deviceLatencyMs', 'Device latency', ms(s.deviceLatencyMs), 'ms']);
+        const note = s.deviceLatencyNote ? ` (${s.deviceLatencyNote})` : '';
+        rows.push(['deviceLatencyMs', `Device latency${note}`, ms(s.deviceLatencyMs), 'ms']);
     }
     if (s.renderMs !== undefined) rows.push(['renderMs', 'Render lateness', ms(s.renderMs), 'ms']);
     if (s.pipeWireLatencyMs !== undefined) {
@@ -99,14 +100,11 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     }
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
-    s.inputs.forEach((input, n) => {
-        section(
-            `${TIMING_SECTION}-in-${n + 1}`,
-            `Input ${n + 1} timing: ${input.label}`,
-            inputRows(input),
-            pub,
-        );
-    });
+    // Numbered by the input's fixed place, so one going dark never renumbers the rest.
+    for (const input of s.inputs) {
+        const label = `Input ${input.n} timing: ${input.label}`;
+        section(`${TIMING_SECTION}-in-${input.n}`, label, inputRows(input), pub);
+    }
     s.outputs?.forEach((output, n) => {
         const label = `Output ${n + 1} timing: ${output.port}`;
         section(`${TIMING_SECTION}-out-${n + 1}`, label, latenessRows(output.lateness), pub);
@@ -135,10 +133,12 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('decode', s.decodeMs);
     put('d', s.presentationDelayMs);
     put('device', s.deviceLatencyMs);
+    put('device.note', s.deviceLatencyNote);
     put('render', s.renderMs);
     put('pw', s.pipeWireLatencyMs);
     put('proc', s.processingLatencyMs);
     for (const i of s.inputs) {
+        put(`${i.tap}.n`, i.n);
         put(`${i.tap}.label`, i.label);
         put(`${i.tap}.mean`, i.lateness?.meanMs);
         put(`${i.tap}.min`, i.lateness?.minMs);

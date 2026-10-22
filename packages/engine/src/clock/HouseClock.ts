@@ -11,9 +11,11 @@ import type { ManagedProcess } from '../child-process/ManagedProcess.js';
 import { resolveNativeBinary } from '../child-process/nativeBinaries.js';
 import { pollClockSource, type ExecStdout } from './clockSource.js';
 import {
+    SETTLE_MAX_MS,
     START_WAIT_MS,
     decide,
     deltaNs,
+    isSynced,
     parseClockLine,
     qualifies,
     type ClockSample,
@@ -24,6 +26,8 @@ const log = createLogger('clock');
 
 const OWNER = '__house_clock__';
 const SOURCE_POLL_MS = 10_000;
+/** The sidecar's stdout is not logged, so an unparseable line is warned, at most this often. */
+const UNREADABLE_WARN_MS = 60_000;
 
 export interface HouseClockOptions {
     processManager: Pick<ProcessManager, 'spawn' | 'kill'>;
@@ -46,11 +50,17 @@ export class HouseClock extends EventEmitter {
     private current: HouseEpoch | null = null;
     private last: ClockSample | null = null;
     private stepped = false;
+    // Untraceable: a moved E latches once, on sync or after SETTLE_MAX_MS. Traceable: at once.
+    private settle: { timer: ReturnType<typeof setTimeout>; stepped: boolean } | null = null;
     private waitExpired = false;
     private startedAt = 0;
     private source: TimeSyncSource = 'none';
     private chrony: ChronyTracking | undefined;
+    // A step's poll can overlap the periodic one: an older answer never overwrites a newer one.
+    private pollSeq = 0;
+    private sourceSeq = 0;
     private sidecar = true;
+    private unreadableWarnedAt = -Infinity;
     private latchedAt: string | undefined;
     private waitTimer: ReturnType<typeof setTimeout> | null = null;
     private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -97,6 +107,8 @@ export class HouseClock extends EventEmitter {
             command: bin,
             autoRestart: true,
             backoff: { baseDelayMs: delay, maxDelayMs: 30 * delay, maxAttempts: 0 },
+            // 1 Hz samples would flood the journal; every decision they drive is logged instead.
+            logStdout: false,
             onStdout: (line) => (this.held ? this.held.push(line) : this.onLine(line)),
         });
         this.proc.on('error', (message: string) =>
@@ -108,6 +120,7 @@ export class HouseClock extends EventEmitter {
         if (this.waitTimer) clearTimeout(this.waitTimer);
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.waitTimer = this.pollTimer = null;
+        this.endSettle();
         if (this.proc) await this.opts.processManager.kill(OWNER, this.proc);
         this.proc = null;
     }
@@ -128,7 +141,7 @@ export class HouseClock extends EventEmitter {
         const waitMs = this.opts.startWaitMs ?? START_WAIT_MS;
         return {
             source: this.source,
-            synced: s?.synced ?? false,
+            synced: s ? isSynced(s) : false,
             traceable: e?.traceable ?? false,
             taiOffsetS: s?.taiOffsetS ?? 0,
             estErrorUs: s?.estErrorUs ?? 0,
@@ -154,45 +167,93 @@ export class HouseClock extends EventEmitter {
 
     private onLine(line: string): void {
         const msg = parseClockLine(line);
-        if (!msg) return;
+        if (!msg) {
+            this.warnUnreadable(line);
+            return;
+        }
         if (msg.type === 'step') {
             this.stepped = true;
+            // A PTP handover can step the clock: report the new owner now, not at the next poll.
+            void this.pollSource();
             return;
         }
         const prev = this.last;
         this.last = msg.sample;
-        const stepped = this.stepped;
+        // A step seen during a settle still names the epoch the settle latches.
+        const stepped = this.stepped || (this.settle?.stepped ?? false);
         this.stepped = false;
-        this.apply(
-            decide(this.current, msg.sample, { waitExpired: this.waitExpired, stepped }),
-            msg.sample,
-        );
-        if (!prev || prev.synced !== msg.sample.synced || prev.taiOffsetS !== msg.sample.taiOffsetS)
+        this.decideAndApply(msg.sample, stepped, false);
+        const syncChanged = prev && isSynced(prev) !== isSynced(msg.sample);
+        if (!prev || syncChanged || prev.taiOffsetS !== msg.sample.taiOffsetS)
             this.emit('state', this.state());
+    }
+
+    private warnUnreadable(line: string): void {
+        const now = performance.now(); // monotonic, so a REALTIME step back cannot mute it
+        if (now - this.unreadableWarnedAt < UNREADABLE_WARN_MS) return;
+        this.unreadableWarnedAt = now;
+        const excerpt = line.length > 120 ? `${line.slice(0, 120)}…` : line;
+        log.warn(`clock: ignored an unreadable mr-clockstate line: ${excerpt}`);
     }
 
     private onWaitExpired(): void {
         this.waitTimer = null;
         this.waitExpired = true;
         const s = this.last;
+        const synced = s ? isSynced(s) : 'unknown';
         log.warn(
             `clock: no time sync after ${Math.round((this.opts.startWaitMs ?? START_WAIT_MS) / 1000)} s ` +
-                `(source=${this.source}, synced=${s?.synced ?? 'unknown'}, tai=${s?.taiOffsetS ?? 'unknown'}) ` +
+                `(source=${this.source}, synced=${synced}, tai=${s?.taiOffsetS ?? 'unknown'}) ` +
                 '— starting untraceable',
         );
-        this.apply(decide(this.current, s, { waitExpired: true, stepped: false }), s);
+        if (s) this.decideAndApply(s, false, false);
         this.markReady(); // no sample yet: modules still go, the first sample latches
     }
 
-    private apply(d: Decision, s: ClockSample | null): void {
+    private decideAndApply(s: ClockSample, stepped: boolean, settleExpired: boolean): void {
+        const d = decide(this.current, s, {
+            waitExpired: this.waitExpired,
+            stepped,
+            settleExpired,
+        });
+        if (d.kind === 'settle') {
+            this.holdForSync(s, stepped);
+            return;
+        }
+        this.endSettle();
+        this.apply(d, s);
+    }
+
+    /** Starts (or carries the step flag of) a settle; at the cap the latest sample latches. */
+    private holdForSync(s: ClockSample, stepped: boolean): void {
+        if (this.settle) {
+            this.settle.stepped = stepped;
+            return;
+        }
+        const dE = ms(s.eNs - this.current!.eNs);
+        log.info(
+            `clock: E moved ${dE} ms while untraceable${stepped ? ' (step)' : ''} — holding ` +
+                `the epoch up to ${SETTLE_MAX_MS / 1000} s for sync`,
+        );
+        const onCap = () => {
+            if (this.last) this.decideAndApply(this.last, !!this.settle?.stepped, true);
+        };
+        this.settle = { timer: setTimeout(onCap, SETTLE_MAX_MS), stepped };
+    }
+
+    private endSettle(): void {
+        if (this.settle) clearTimeout(this.settle.timer);
+        this.settle = null;
+    }
+
+    private apply(d: Exclude<Decision, { kind: 'settle' }>, s: ClockSample): void {
         if (d.kind === 'none') {
-            if (d.stepIgnored && s && this.current)
+            if (d.stepIgnored && this.current)
                 log.info(
                     `clock: realtime step, E unchanged (ΔE=${(Number(deltaNs(s.eNs, this.current.eNs)) / 1e3).toFixed(1)} µs)`,
                 );
             return;
         }
-        if (!s) return;
         if (d.kind === 'traceable') {
             this.current = { ...this.current!, traceable: d.traceable, taiOffsetS: s.taiOffsetS };
             if (d.traceable)
@@ -237,8 +298,11 @@ export class HouseClock extends EventEmitter {
     }
 
     private async pollSource(): Promise<void> {
+        const seq = ++this.pollSeq;
         try {
             const { source, chrony } = await pollClockSource(this.opts.exec);
+            if (seq < this.sourceSeq) return;
+            this.sourceSeq = seq;
             const changed = source !== this.source;
             this.source = source;
             this.chrony = chrony;

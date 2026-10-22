@@ -1278,8 +1278,11 @@ It covers four things:
 
 - chrony becomes the image's only NTP daemon, replacing htpdate and
   systemd-timesyncd. Whichever daemon owns the clock sets the kernel TAI
-  offset: chrony from the leap-second list, or the PTP setup, which writes
-  the TAI−UTC constant (§10.2).
+  offset: chrony from the leap-second list; under PTP the setup seeds it
+  from the same list and a slave then takes a traceable grandmaster's
+  announced value (§10.2). A box that may become PTP grandmaster is kept on
+  NTP time by chrony while it is the grandmaster (WI-P0-2b, added
+  2026-10-14).
 - The engine latches one epoch `E = CLOCK_TAI − CLOCK_MONOTONIC`. It waits
   up to 30 s for sync, then warns and starts untraceable. It watches for
   clock steps and re-latches E by itself (§10.3).
@@ -1300,7 +1303,7 @@ phase is `aes67-output`, which today measures the offset itself.
 | §4.5 | E is applied only at the network boundary, so it is kept in one place and never in pipeline clocks. |
 | §9.5 | Output lateness, added latency per input, the slowest input, the decode and device latency of outputs, PipeWire-graph modules showing PipeWire's latency. Its "alarms at thresholds the operator sets" is deferred by the owner's decision on OQ-8 (2026-10-12); the design document should record that deferral (a doc follow-up, not a work item; the deferred option is in the note after part 13). |
 | §10.1 | The fleet baseline being replaced: htpdate `-t -s` oneshot, systemd-timesyncd, kernel TAI offset 0 everywhere, no sync visibility in the engine. |
-| §10.2 | chrony with `makestep` at start only, a bounded slew rate, the kernel TAI offset from `leapsectz`/`leapseclist`, PTP writing the TAI−UTC constant, the engine reading the daemon's state. |
+| §10.2 | chrony stepping above 1 s at any time (`makestep 1.0 -1`, 2026-10-14), a bounded slew rate, the kernel TAI offset from `leapsectz`/`leapseclist`, PTP writing the TAI−UTC constant, a grandmaster disciplined by chrony and announcing traceable time only while synchronised (WI-P0-2b), the engine reading the daemon's state. |
 | §10.3 | 30 s start wait, warning, untraceable start, `TFD_TIMER_CANCEL_ON_SET` step detection, divergence check, automatic re-epoch with an event. |
 | §11.4 last row | `aes67_clock.py` (TAI − MONOTONIC) is generalised to the engine-wide E. |
 | §11.5 items 5, 6 | Engine clock state; lateness on every module. |
@@ -1345,8 +1348,9 @@ files 930 lines):
 - `files/aes67.conf`, `files/smpte-2059-2.conf` (presets with
   `max_frequency 100000` and `step_threshold 1.0` at `aes67.conf:123`,
   `smpte-2059-2.conf:65`), `mr-ptp-tsinfo.py`, `mr-ptp-tickcheck.py` and
-  the tick-check units. None of these changes in Phase 0; the two presets'
-  step threshold changes in Phase 5 (chapter 9 WI-P5-19, deferred on
+  the tick-check units. None of these changes in Phase 0 apart from the
+  tick check's alarm rule (WI-P0-2b, 2026-10-14); the two presets' step
+  threshold changes in Phase 5 (chapter 9 WI-P5-19, deferred on
   2026-10-12).
 
 #### 3.3 Device Manager (Yocto layer, `meta-layers/meta-custom/recipes-apps/device-manager/files/`)
@@ -1451,22 +1455,29 @@ does not measure house lateness.
 
 - chrony is the only NTP daemon. htpdate is not installed, and
   systemd-timesyncd is not built.
-- chronyd runs on every box *without* `/data/ptp/ptp.env`. A drop-in
-  condition keeps it off where PTP is configured, so the two never steer
-  one clock.
+- chronyd runs on every box *without* `/data/ptp/ptp.env`, and on a
+  master-capable PTP box while it holds the grant token (WI-P0-2b). Its
+  drop-in conditions keep it off everywhere else, so chrony and linuxptp
+  never steer one clock together.
 - The chrony configuration:
   - takes its servers from the Device Manager's list on `/data` (default
     the public pool) and from the DHCP lease (OQ-6);
-  - slews only after start-up (`makestep 1.0 3`);
+  - steps whenever the offset exceeds 1 s and slews below that
+    (`makestep 1.0 -1`);
   - bounds the slew rate (`maxslewrate 100`, OQ-5);
   - sets the kernel TAI offset from `leapseclist`;
   - keeps its drift file and its server list on `/data`.
 - A small wait unit orders chrony's first sync before `time-sync.target`,
-  bounded at 30 s like htpdate's.
+  bounded at 30 s; on timeout it logs one warning and succeeds.
 - The PTP setup script:
-  - stops chronyd if it runs (no record, nothing else to stop);
+  - stops chronyd on a slave-only box (no record, nothing else to stop); on
+    a master-capable box it starts chronyd, waits up to 30 s for its sync
+    and steps once before ptp4l serves (WI-P0-2b);
   - writes the kernel TAI offset (TAI−UTC from the image's
     `leap-seconds.list`, falling back to 37) before ptp4l starts.
+- A master-capable box is disciplined by chrony while its port is neither
+  UNCALIBRATED nor SLAVE, and announces traceable NTP time only while
+  chrony is synchronised (WI-P0-2b).
 - The displaced-services record and its restore logic are gone from the
   script and the Device Manager.
 
@@ -1579,8 +1590,11 @@ tree and to the manager's engine card.
     - chrony's reference, stratum and sources table;
     - an NTP **Servers** list, default the public pool, with the servers
       the DHCP lease offered shown read-only beneath it (OQ-6).
-  - The existing PTP status and settings sit below, unchanged.
-- Enabling PTP stops chronyd. Disabling starts chronyd.
+  - The existing PTP status and settings sit below; the status gains a
+    Time source row (WI-P0-2b).
+- Enabling PTP stops chronyd on a slave-only box; a master-capable box
+  keeps it while it is the grandmaster (WI-P0-2b). Disabling starts
+  chronyd.
 - No record file, no whitelist and no htpdate fallback remain.
 
 ### 5. Work items
@@ -1600,7 +1614,13 @@ one engineer who knows the codebase.
     with `files/media-router-chrony.conf`, `files/10-media-router.conf`
     (chronyd drop-in), `files/media-router-chrony-wait.service`,
     `files/default.sources` (the public pool) and
-    `files/20-media-router-chrony-dhcp` (NetworkManager dispatcher).
+    `files/20-media-router-chrony-dhcp` (NetworkManager dispatcher), with
+    the test harness `files/media-router-chrony_test.py` beside them (not
+    in `SRC_URI`).
+  - `meta-layers/meta-custom/conf/distro/media-router-distro.conf`:
+    `VIRTUAL-RUNTIME_base-utils-syslog = ""` (added 2026-10-14: BusyBox
+    syslogd took `/dev/log` from journald, so chronyd's and phc2sys's
+    syslog lines never reached the journal; ADR-0029).
   - Comment fixes in
     `meta-layers/meta-custom/recipes-core/base-files/base-files_%.bbappend:12`
     and `.../media-router-audio-proxy.service:9-13`.
@@ -1614,12 +1634,12 @@ one engineer who knows the codebase.
     ```
     sourcedir /data/chrony/sources.d           # the Time page's list (WI-P0-12)
     sourcedir /run/chrony-dhcp                 # servers the DHCP lease offered
-    makestep 1.0 3                             # step at start-up only (§10.2)
+    makestep 1.0 -1                            # step whenever > 1 s off, at any time
     maxslewrate 100                            # ppm (R7; OQ-5: 100)
     leapseclist /usr/share/zoneinfo/leap-seconds.list   # sets kernel TAI offset
     leapsecmode system                         # kernel inserts; TAI does not step
     driftfile /data/chrony/drift
-    rtcsync
+    rtcsync                                    # also clears STA_UNSYNC (Linux)
     bindcmdaddress 127.0.0.1
     bindcmdaddress ::1
     cmdallow 127.0.0.1
@@ -1640,46 +1660,68 @@ one engineer who knows the codebase.
     `/etc/NetworkManager/dispatcher.d/`) writes
     `/run/chrony-dhcp/<iface>.sources` from `DHCP4_NTP_SERVERS` on `up`
     and `dhcp4-change`, removes it on `down`, and runs `chronyc reload
-    sources`. NetworkManager is the box's only network manager
+    sources`; it also runs `chronyc onoffline` on `up`, `down`,
+    `connectivity-change`, `dhcp4-change` and `dhcp6-change`, before its
+    interface check (NetworkManager passes no interface for
+    `connectivity-change`), so a name that failed to resolve before the
+    uplink came up is retried at once rather than after chrony's backoff
+    (review F1; upstream `examples/chrony.nm-dispatcher.onoffline`).
+    NetworkManager is the box's only network manager
     (`recipes-core/systemd/systemd_%.bbappend:45`), and its dispatcher
     passes DHCP options as `DHCP4_<OPTION>` (`NetworkManager-dispatcher(8)`);
-    the exact name `DHCP4_NTP_SERVERS` is to verify on a box whose lease
-    carries option 42.
+    the name `DHCP4_NTP_SERVERS` was verified on the fleet on 2026-10-14
+    (V14 on .50, .108 and .211).
   - The drop-in
     `/etc/systemd/system/chronyd.service.d/10-media-router.conf`:
-    - `ConditionPathExists=!/data/ptp/ptp.env`;
+    - `ConditionPathExists=|!/data/ptp/ptp.env` and
+      `ConditionPathExists=|/run/media-router-ptp/chrony.grant`, two
+      triggering conditions: no PTP, or the grant token of a master-capable
+      PTP box (WI-P0-2b);
     - `RequiresMountsFor=/data`;
     - `ExecStartPre=/bin/mkdir -p /data/chrony/sources.d /run/chrony-dhcp`;
     - `ExecStartPre=/bin/sh -c '[ -n "$(ls -A /data/chrony/sources.d)" ] ||
       cp /usr/share/media-router/chrony/default.sources
       /data/chrony/sources.d/media-router.sources'`.
 
-    A *negated condition*, not `Conflicts=`. The PTP unit's comment
-    records why `Conflicts=` killed the clock on PTP-off boxes
+    Conditions, not `Conflicts=`. The PTP unit's comment records why
+    `Conflicts=` killed the clock on PTP-off boxes
     (`media-router-ptp4l.service:16-31`).
   - `media-router-chrony-wait.service`:
     - `Type=oneshot`, `RemainAfterExit=yes`;
     - `After=chronyd.service`, `Wants=time-sync.target`,
       `Before=time-sync.target`;
     - `ConditionPathExists=!/data/ptp/ptp.env`;
-    - `ExecStart=/usr/bin/chronyc -h 127.0.0.1 waitsync 30 0 0 1`;
-    - `TimeoutStartSec=40`, `SYSTEMD_AUTO_ENABLE = "enable"`.
+    - `ExecStart=/bin/sh -c '/usr/bin/chronyc -h 127.0.0.1 waitsync 30 0 0 1 >/dev/null 2>&1 || echo "<4>no NTP sync after 30 s - continuing unsynchronised; the clock will step when NTP is reachable"'`:
+      it never fails, so an offline boot is not degraded (the owner,
+      2026-10-14);
+    - `TimeoutStartSec=90`, `SYSTEMD_AUTO_ENABLE = "enable"`.
 
     It is our own unit: the stock recipe installs no wait unit, and the
     4.8 tarball was not available locally to confirm its example.
 - **Acceptance.**
+  - `media-router-chrony_test.py` passes: 19 cases on the dispatcher, the
+    wait unit and two `chrony.conf` guards (`makestep 1.0 -1`, `rtcsync`),
+    each under dash, BusyBox sh and bash `--posix`.
   - `bitbake core-image-weston` succeeds.
   - On the image:
     - `systemctl list-unit-files | grep -E 'htpdate|timesyncd'` is empty;
     - `systemctl is-active chronyd` reports `active`;
     - `chronyc tracking` shows `Leap status: Normal` and a reference;
     - `mr-clockstate --once` (WI-P0-3) reports `taiOffsetS: 37` within
-      5 min of boot.
+      5 min of boot;
+    - `ls -l /dev/log` points at journald's socket and a `logger` line
+      appears in `journalctl`.
   - `/data/chrony/drift` exists after 1 h.
   - `media-router-audio-proxy` starts after the wait unit
     (`systemd-analyze critical-chain`).
-  - With the uplink unplugged, boot completes, and the wait unit fails
-    after ≤ 40 s without blocking boot.
+  - On a cold online boot the wait unit succeeds (`systemctl status
+    media-router-chrony-wait`).
+  - With the uplink unplugged, boot completes; after ~30 s the wait unit
+    logs `no NTP sync after 30 s - continuing unsynchronised; the clock
+    will step when NTP is reachable` at warning priority and succeeds, so
+    the system is not degraded on its account; when the uplink returns,
+    chrony syncs within ~10 s and steps the clock if it is more than 1 s
+    off.
   - On a fresh `/data`, `chronyc sources` lists the public pool from the
     default fragment; on a box whose DHCP lease offers NTP servers, they
     appear in `chronyc sources` within 10 s of the interface coming up.
@@ -1688,7 +1730,8 @@ one engineer who knows the codebase.
 #### WI-P0-2 — PTP setup: chrony is the only displaced daemon; write the TAI offset
 
 - **What.** Remove the displacement record. Stop chronyd when PTP takes the
-  clock. Set the kernel TAI offset.
+  clock on a slave-only box (a master-capable box keeps it while it is the
+  grandmaster: WI-P0-2b). Set the kernel TAI offset.
 - **Where.** In `meta-layers/meta-custom/recipes-support/media-router-ptp/`:
   `files/media-router-ptp-setup.sh`, `files/media-router-ptp4l.service`,
   new `files/mr-ptp-settai.py`, `media-router-ptp.bb` (SRC_URI, install,
@@ -1705,12 +1748,16 @@ one engineer who knows the codebase.
      ```
 
      Nothing is recorded: chronyd's own condition keeps it off at boot,
-     and the Device Manager starts it on disable.
+     and the Device Manager starts it on disable. Since 2026-10-14 this is
+     the slave-only branch; a master-capable box writes the grant token and
+     starts chronyd instead (WI-P0-2b).
   2. Before the stop, call
      `/usr/libexec/media-router-ptp/mr-ptp-settai.py`. The script (Python
      3, ctypes `adjtimex` with `ADJ_TAI`, about 50 lines) does three things:
      - reads `PTP_TAI_UTC_OFFSET` from `ptp.env` if present (hand-edited,
-       not in the UI; OQ-10, answered: no UI);
+       not in the UI; OQ-10, answered: no UI); since 2026-10-14 only on a
+       slave-only box, while a master-capable box runs it with
+       `--no-override` (WI-P0-2b);
      - otherwise takes the last data line of
        `/usr/share/zoneinfo/leap-seconds.list` (`<ntp-seconds> <offset>`),
        falling back to 37;
@@ -1724,25 +1771,292 @@ one engineer who knows the codebase.
   4. In `media-router-ptp4l.service`, change line 33 to
      `After=chronyd.service` and rewrite the comment at lines 16-31 for
      one daemon.
+  5. Added 2026-10-14: the runtime `[global]` block emits
+     `summary_interval 4` (both presets) and phc2sys runs with `-u 16`, one
+     servo summary per 16 s instead of per second or per update. On .108
+     ptp4l's 1 s summary was 600 of 1,570 journal lines per 10 min, in a
+     volatile 32 MB journal that lost boot logs within ~2 h; the Time page
+     reads only the newest summary.
 
   The ptp4l presets are not touched in Phase 0. §10.2's "a step on first
   lock only" (`step_threshold 0.0` with `first_step_threshold 1.0` in
   `files/aes67.conf:123` and `files/smpte-2059-2.conf:65`) is deferred to
   Phase 5, chapter 9 WI-P5-19 (decided 2026-10-12 by the orchestrator,
   owner delegated); until then a step under PTP is caught by WI-P0-3/4's
-  step detection and re-epoch like any other step.
+  step detection and re-epoch like any other step. phc2sys's `-S 1.0`
+  (WI-P0-2b) matches the presets' `step_threshold 1.0`, so WI-P5-19 has to
+  move it with them.
 - **Acceptance.**
   - On a gate box: write `ptp.env` and `systemctl restart
     media-router-ptp4l`. Then:
-    - `systemctl is-active chronyd` reports `inactive`;
+    - on a slave-only box (`PTP_SLAVE_ONLY=1`) `systemctl is-active
+      chronyd` reports `inactive`; on a master-capable box it stays active
+      while the box is grandmaster (WI-P0-2b);
     - the journal shows `TAI offset set to 37 (was 0)`;
     - `mr-clockstate --once` reports `taiOffsetS: 37` and is still 37
       after 1 h of ptp4l lock (ptp4l/phc2sys must not reset it; R-P0-3).
-  - Reboot with `ptp.env` present: chronyd is skipped ("unmet condition")
-    and ptp4l runs.
+  - Reboot with `ptp.env` present on a slave-only box: chronyd is skipped
+    ("unmet condition": no grant token, and `ptp.env` exists) and ptp4l
+    runs.
+  - ptp4l and, on hardware-timestamping boxes, phc2sys log one summary per
+    16 s.
   - `/data/ptp/displaced-time-services` is never created.
   - `shellcheck` is clean.
 - **Estimate.** +75 / −70 lines, 0.75 d.
+
+#### WI-P0-2b — Grandmaster on chrony: port-state handover
+
+Added on 2026-10-14 after the fleet test found the grandmaster
+undisciplined (10.9.16.46: kernel `TIME_ERROR`, 0 ppm, 0.2–0.3 s off UTC
+after 9.7 days; design §10.1). The decision, its reasons and the rejected
+designs are in ADR-0029, "PTP: a grandmaster on chrony".
+
+- **What.** On a master-capable box (`PTP_SLAVE_ONLY=0`) chronyd owns
+  `CLOCK_REALTIME` whenever the ptp4l port is neither UNCALIBRATED nor
+  SLAVE, and the box announces traceable NTP time only while chrony is
+  synchronised; linuxptp steers it while a better grandmaster wins.
+  Slave-only boxes keep WI-P0-2's path, and `ptp.env` gains no key.
+- **Where.**
+  - `meta-layers/meta-custom/recipes-support/media-router-ptp/`: new
+    `files/mr-ptp-owner.py` (the watcher) and
+    `files/media-router-ptp-owner.service`; new test harnesses
+    `files/mr-ptp-owner_test.py` and `files/mr-ptp-tickcheck_test.py`, not
+    installed, like `mr-ptp-settai_test.py`; `files/media-router-ptp-setup.sh`
+    (+ `media-router-ptp-setup_test.py`), `files/media-router-ptp4l.service`,
+    `files/media-router-phc2sys.service` (comment), `files/mr-ptp-settai.py`
+    (+ test), `files/mr-ptp-tickcheck.py` and `media-router-ptp.bb`.
+  - `meta-layers/meta-custom/recipes-support/chrony/files/10-media-router.conf`;
+    `media-router-chrony-wait.service` (comment only).
+  - Device Manager (`recipes-apps/device-manager/files/`):
+    `api/src/config/PtpConfig.ts` (chronyd stopped only on a slave-only
+    save; ptp4l restart with a 60 s timeout), `PtpStatus.ts` (`pmc -d` from
+    `status.env`; `GET TIME_PROPERTIES_DATA_SET` → `timeProperties`),
+    `TimeStatus.ts` (`timeOwner`: chronyd active wins; `synced` = the
+    engine's `isSynced`, constant mirrored), `TimeConfig.ts` (comment); app
+    `socketClient.ts` (mirrors), `pages/PtpConfigPage.vue` (Time source row;
+    the intro says chrony keeps a grandmaster's time) and
+    `components/TimeStatusCard.vue` (owner "chrony (NTP), served over PTP"
+    while ptp4l runs; servers hint "Used when PTP is off, or while this
+    device is the PTP grandmaster."; badge from `synced`). Tests:
+    `PtpConfig.spec.ts`, `PtpStatus.spec.ts`, `TimeStatus.spec.ts`,
+    `TimeStatusCard.spec.ts`, new `PtpConfigPage.spec.ts`,
+    `socketClient.spec.ts`.
+  - Engine: `packages/engine/src/clock/clockSource.ts` and `HouseClock.ts`
+    (+ tests; WI-P0-4), `packages/shared-types/src/timeSync.ts` (the
+    `TimeSyncSource` doc comment).
+- **How.**
+  - Who writes `CLOCK_REALTIME`, per port state, from the linuxptp 4.4 and
+    chrony 4.8 sources. This is what lets chronyd own the clock in every
+    state but two:
+
+    | Port state | Software timestamping: ptp4l steers REALTIME | Hardware timestamping: ptp4l steers the PHC, phc2sys REALTIME | chronyd |
+    |---|---|---|---|
+    | UNCALIBRATED | ptp4l starts to steer: `clock_synchronize` runs only in UNCALIBRATED and SLAVE (`port.c` `process_sync`, `process_follow_up`). Its first write is the servo's second sample (`pi.c` `pi_sample`); each sample needs a filtered delay (`tsproc_update_offset`), and the first DELAY_REQ leaves at random within (0, 2 s] for AES67, (0, 0.25 s] for ST 2059-2 (`port.c` `port_set_delay_tmo`), so the earliest write is ≥ ~130 ms after the state change. | No REALTIME write: `phc2sys.c` `reconfigure_domain` returns −1 ("source clock not ready"), the rt domain keeps REALTIME as its own source and `update_domain_clocks` skips it. ptp4l steers only the PHC. | Revoked at once: the pushed PORT_DATA_SET (`port.c:3797` `port_notify_event`), the token removed, `systemctl stop --no-block chronyd.service`; chronyd exits within tens of ms. |
+    | SLAVE | ptp4l steers REALTIME. | phc2sys steers REALTIME from the PHC within its ≤ 1 s loop (`servo_add` calls `sysclk_set_leap(0)`; the first update after a phc2sys start steps above 20 µs). | Stopped. |
+    | MASTER, LISTENING, PRE_MASTER, PASSIVE, FAULTY, DISABLED, INITIALIZING | ptp4l only timestamps. Its one kernel write is `sysclk_set_leap(0)` at its own start (`clock.c:1327`): a no-op while chrony is synced; with `maxerror` at the 16 s cap it clears `STA_UNSYNC` for under 1 s (`kernel/time/ntp.c` `second_overflow` sets it again). | REALTIME is phc2sys's source and the PHC its sink, by reversed sysoff (`reconfigure_domain`; `update_needed` excludes UNCALIBRATED and SLAVE PHCs). | Owns REALTIME: adopted if it runs, else granted after the hold. |
+
+    linuxptp clears `STA_UNSYNC` (`sysclk_set_sync`) only on lock
+    (`update_clock`, `clock_synchronize_locked`), and sets the kernel TAI
+    offset (`sysclk_set_tai_offset`) only on a REALTIME sink that follows a
+    traceable grandmaster, with that grandmaster kernel's own value
+    (`clock.c` `clock_utc_correct:933`, `phc2sys.c` `clock_handle_leap:1073`).
+    chrony cannot release the clock at runtime (`-x` is a start-up option;
+    `chronyc offline` only stops polling), so yielding is stopping chronyd
+    and taking is starting it. Its exit writes its base frequency once
+    (`sys_generic.c` `SYS_Generic_Finalise`) and never zeroes TAI
+    (`sys_timex.c` `set_leap` sets `MOD_TAI` only for a non-zero offset;
+    `REF_Finalise` calls `update_leap_status(LEAP_Unsynchronised, 0, 0)`).
+  - The watcher, `mr-ptp-owner.py` (Python 3, root; it never exits on an
+    error, it logs and retries at the next 0.5 s tick):
+    - reads `/run/media-router-ptp/status.env` (`PTP_SLAVE_ONLY`,
+      `PTP_DOMAIN`, `PTP_TIMESTAMPING`, `PTP_PHC`);
+    - runs one interactive `pmc -u -b 0 -d $PTP_DOMAIN`.
+      `SET SUBSCRIBE_EVENTS_NP duration 180 NOTIFY_PORT_STATE on` is re-sent
+      every 5 s until ptp4l confirms it, then every 60 s; `GET PORT_DATA_SET`
+      (and, on a master-capable box, `GET GRANDMASTER_SETTINGS_NP`) every
+      5 s. One command is in flight at a time, because pmc reads stdin with
+      `fgets`;
+    - decides on each pushed PORT_DATA_SET and at every tick:
+
+      | Box and port state | Decision |
+      |---|---|
+      | slave-only, any state | revoke if chronyd is active or the token exists, else keep |
+      | master-capable, UNCALIBRATED or SLAVE | revoke if chronyd is active or the token exists, else keep |
+      | master-capable, no PORT_DATA_SET for 12 s, or none yet | keep, with one warning: ptp4l is single-threaded, so one that answers nothing steers nothing |
+      | master-capable, INITIALIZING, FAULTY, DISABLED, LISTENING, PRE_MASTER, MASTER or PASSIVE | adopt if chronyd is active; grant once the port has been in such a state for the hold; else keep |
+
+    - acts: revoke unlinks the token, then runs
+      `systemctl stop --no-block chronyd.service`; grant writes the token,
+      then runs `systemctl start --no-block chronyd.service`; adopt only
+      writes a missing token and never starts chronyd. Every subprocess
+      call has a 10 s timeout, and every `systemctl` call is `--no-block`,
+      so no job deadlocks;
+    - polls `systemctl is-active chronyd.service media-router-phc2sys.service`
+      every 2 s, and every 0.5 s for 5 s after a grant or revoke: one call
+      costs ~4 ms of CPU on a Pi 5, so a poll at every tick would take
+      ~0.8 % of a core on every PTP box. A revoke never waits for the poll;
+      it fires on the push and the token;
+    - logs every grant, revoke and adopt, every change of the announced
+      flags, and `chronyd exited N ms after the revoke`, read from systemd's
+      `ExecMainExitTimestampMonotonic` (the watcher's own `CLOCK_MONOTONIC`);
+    - writes `/run/media-router-ptp/owner.env` atomically on change:
+      `PTP_PORT_STATE`, `CHRONY_GRANTED`, `GM_TIME_TRACEABLE`,
+      `GM_TIME_SOURCE`, `OWNER_UPDATED`;
+    - on a slave-only box sends no `GET GRANDMASTER_SETTINGS_NP`, runs no
+      `phc_ctl` and sends no SET.
+  - Hold and backoff: the hold is max(2 s, (announceReceiptTimeout + 1) ·
+    2^logAnnounceInterval), from PORT_DATA_SET: 8 s for AES67 (1 and 3),
+    2 s for ST 2059-2 (−2 and 3). It is multiplied by 2^k, where k counts
+    the grants of the last 10 min that ended within 60 s, revoked or not
+    held by chronyd (a new grant follows within 60 s), capped at 4: an
+    AES67 box retries at 8, 16, 32, 64 and 128 s. Adopting a running
+    chronyd is not a grant.
+  - Traceability, recomputed at each tick on a master-capable box:
+    traceable = the token exists ∧ chronyd is active ∧ `STA_UNSYNC` is
+    clear ∧ `maxerror` < `MAX_SYNCED_ERROR_US` (1 s, mirroring
+    `houseClockPolicy.ts`; a test checks they match) ∧ 10 ≤ `tai` ≤ 999 ∧
+    (software timestamping ∨ (phc2sys is active ∧ |`phc_ctl -q <phc> cmp` +
+    `tai` · 10⁹| ≤ 1 ms, read every 10 s; `phc_ctl` prints REALTIME − PHC,
+    ≈ −37 s)). `timeTraceable`, `frequencyTraceable` and
+    `currentUtcOffsetValid` follow it; `timeSource` is 0x50 (NTP) or 0xa0
+    (internal oscillator); `currentUtcOffset` is the kernel's `tai` when
+    traceable, else as ptp4l has it; clockClass, clockAccuracy,
+    offsetScaledLogVariance and ptpTimescale are echoed from the GET.
+    `render_set` gives the 11 values in `pmc_common.c`'s sscanf order:
+    `SET GRANDMASTER_SETTINGS_NP clockClass 248 clockAccuracy 0xfe offsetScaledLogVariance 0xffff currentUtcOffset 37 leap61 0 leap59 0 currentUtcOffsetValid 1 ptpTimescale 1 timeTraceable 1 frequencyTraceable 1 timeSource 0x50`,
+    sent only when it differs from the last GET and never while the port
+    is UNCALIBRATED or SLAVE. One Announce right after a regain can still
+    carry the flags from before the revoke (ptp4l's first Announce leaves
+    ~1 ms after the regain); the next tick corrects them.
+  - Leap gate: leap61 = `STA_INS` set ∧ the UTC time of day ≥ 12:00 ∧
+    `adjtimex` returns neither `TIME_OOP` nor `TIME_WAIT`; leap59 likewise
+    with `STA_DEL`. chrony raises `STA_INS` from 00:00 UTC of the leap day
+    (`reference.c` `update_leap_status`), and `util.c`
+    `leap_second_status` takes a flag first seen before 06:00 as past.
+    After midnight the grandmaster's own `clock_update_leap_status` clears
+    LEAP_61 and sets `utc_offset` 38; the watcher then reads `tai` 38 with
+    the flag gated off, so its settings equal ptp4l's and no SET goes: no
+    double increment.
+  - The setup script's role block, after settai:
+    - slave-only: `rm -f $RUN_DIR/chrony.grant`, and if chronyd is active
+      `systemctl stop --no-block chronyd.service`, as before;
+    - master-capable: `: > $RUN_DIR/chrony.grant`. If chronyd is active it
+      logs `chronyd already running — mr-ptp-owner adopts it`. Otherwise it
+      runs `systemctl start --no-block chronyd.service` and
+      `chronyc waitsync 30 0 0 1`; on success it logs `chrony synchronised`,
+      runs `chronyc makestep` (root, Unix command socket) and logs `stepped
+      the boot offset before ptp4l serves`, or `WARNING: chronyc makestep
+      failed — the boot offset is slewed out instead`; on timeout it logs
+      `WARNING: no NTP sync after 30 s — ptp4l starts anyway; the
+      grandmaster announces not traceable until chrony syncs`. It exits 0
+      either way;
+    - `PHC2SYS_ARGS=-a -r -r -n $PTP_DOMAIN -S 1.0 --max_frequency=100000 -u 16`
+      (each flag's reason is in ADR-0029);
+    - settai gets `--no-override` unless `PTP_SLAVE_ONLY=1`;
+    - the paths can be overridden from the environment (`MR_PTP_ENV`,
+      `MR_PTP_PRESET_DIR`, `MR_PTP_RUN_DIR`, `MR_PTP_TSINFO`,
+      `MR_PTP_SETTAI`) for the test harness; systemd sets none.
+  - Units and recipe: `media-router-ptp-owner.service` is
+    `BindsTo=`/`After=media-router-ptp4l.service`,
+    `ConditionPathExists=/data/ptp/ptp.env`, `Restart=always`,
+    `RestartSec=1`, `ExecStopPost=-/bin/rm -f` the token and `owner.env`,
+    `WantedBy=media-router-ptp4l.service`, and has no `RuntimeDirectory=`
+    (that would delete ptp4l's `/run/media-router-ptp` with it).
+    `media-router-ptp4l.service` gets `TimeoutStartSec=120`; its chronyd
+    comment states the role rule, and `After=chronyd.service` stays.
+    chronyd's drop-in carries the two triggering conditions (WI-P0-1).
+    `media-router-ptp.bb` ships the watcher and its unit (in
+    `SYSTEMD_SERVICE`, auto-enabled; the unit starts only with ptp4l) and
+    adds `python3-json chronyc` to `RDEPENDS`.
+  - The tick check: `reasons_for(state)` alarms only when |tick + freq|
+    exceeds 100 ppm; the tick is reported in the summary.
+  - Device Manager: a slave-only save stops chronyd before the ptp4l
+    restart, a master-capable save never names chronyd, and the restart
+    has a 60 s timeout; the PTP card's pmc carries `-d` and reads
+    `TIME_PROPERTIES_DATA_SET` (WI-P0-12).
+  - Engine: chronyd active wins the owner poll, which also re-runs on a
+    `step` line (WI-P0-4).
+- **Acceptance.**
+  - Unit tests (done 2026-10-14):
+    - `mr-ptp-owner_test.py`, 46 cases: pmc parsing on real pmc 4.4 output
+      (a field capture from 10.9.1.42, and captures from linuxptp 4.4 built
+      from the release tarball and run in user and network namespaces on
+      the development Pi 5: LISTENING, MASTER, UNCALIBRATED and FAULTY
+      pushes, GRANDMASTER_SETTINGS_NP, TIME_PROPERTIES_DATA_SET,
+      SUBSCRIBE_EVENTS_NP, MANAGEMENT_ERROR_STATUS, a SET reply, ST 2059-2
+      on domain 127); the decide table, hold and backoff; the `gm_settings`
+      truth table, including noon, after midnight, the inserted second and
+      `STA_DEL`; `render_set` against `pmc_common.c`'s sscanf; the handover
+      sequencing with a fake `systemctl` and `phc_ctl` (the token goes
+      before the stop and before the start; adopt never starts chronyd);
+      the pmc coprocess against a stand-in that logs each read(2), one line
+      per read; the owner unit, and chronyd's drop-in conditions under the
+      real `systemd-analyze condition`;
+    - `media-router-ptp-setup_test.py`, 10 cases, each under dash, BusyBox
+      sh and bash `--posix`: the 16 s summary for both presets and modes,
+      the phc2sys arguments, no phc2sys in software mode, slave-only with
+      chronyd on and off, master-capable with chronyd stopped (start, wait,
+      step) and running (no wait), the no-NTP warning, a refused
+      `makestep`, and the `status.env` the watcher reads;
+    - `mr-ptp-settai_test.py`, 21 cases; `mr-ptp-tickcheck_test.py`, 9;
+    - all pass under Python 3.11 and the image's 3.14.4, and 38 of 38
+      mutations fail a test;
+    - end to end on the namespace rig, the real watcher against a real
+      ptp4l and pmc: it adopted at boot and announced traceable flags; with
+      a better master, chronyd's stop ran with the token already gone,
+      19 ms after ptp4l's MASTER to UNCALIBRATED; on regain the flags were
+      corrected at once and the grant came 8.1 s later, token first; domain
+      127 behaved the same;
+    - Device Manager vitest: `PtpConfig.spec.ts` (42), `PtpStatus.spec.ts`
+      (36), `TimeStatus.spec.ts` (23), `TimeStatusCard.spec.ts` (12), new
+      `PtpConfigPage.spec.ts` (3) and `socketClient.spec.ts`; each of 26
+      mutations fails a spec. The two TIME_PROPERTIES_DATA_SET fixtures in
+      `PtpStatus.spec.ts` are printed from pmc 4.4's format string
+      (`pmc.c:317-336`) and linuxptp's defaults, not captured; T0/T1 below
+      replaces them with `pmc -u -b 0 -d 10 'GET TIME_PROPERTIES_DATA_SET'`
+      captures from a slave and from the grandmaster;
+    - engine vitest: WI-P0-4's `clockSource.test.ts` and `HouseClock.test.ts`
+      cases; 8 of 8 mutants fail.
+  - On a rig isolated on PTP domain 10, so .46 and domain 0 are untouched:
+    hardware grandmaster .103 (Pi 5 with hardware timestamping; 10.9.1.76
+    if the Pi 5 DELAY_REQ fault appears), software grandmaster .108 (Pi 4),
+    slaves .22 and .111 (`PTP_SLAVE_ONLY=1`), all on the new image. None of
+    this has run yet: the namespace rig had no hardware timestamping, no
+    real chronyd and no real systemd.
+
+    | # | Test | Pass |
+    |---|---|---|
+    | — | Pre-flight, read-only on every PTP box: `mrssh <ip> 'cat /data/ptp/ptp.env; cat /run/media-router-ptp/status.env'` | Only .46 is master-capable today (the slaves have `PTP_SLAVE_ONLY=1`). Any other master-capable box would start chronyd at boot and wait up to 30 s before ptp4l on the new image. |
+    | T0 | The rig's wiring | phc2sys's journal shows `selecting … as domain source clock` (`-n` works); the Device Manager shows the port state and the Time source row (`-d` works); `/run/media-router-ptp/owner.env` on the grandmaster shows `CHRONY_GRANTED=1`. |
+    | T1, T2 | Steady grandmaster for 1 h, hardware, then software | chronyd active, `chronyc tracking` Normal. On a slave `pmc -u -b 0 -d 10 'GET TIME_PROPERTIES_DATA_SET'` shows timeTraceable 1, currentUtcOffsetValid 1, currentUtcOffset 37, timeSource 0x50 and ptpTimescale 1 (hardware) or 0 (software); the slave's kernel `tai` is 37 (`mr-clockstate --once`). On the hardware grandmaster `phc_ctl /dev/ptp0 cmp` reads −37 s ± µs and its engine reports source chrony, synced, traceable. No `System clock interference detected` in chronyd's journal; the tick check is quiet; slave rms within 2× the Phase 0 baseline. |
+    | T3 | Loses the election: start a priority1 5 box on the rig; 10 trials in each mode | chronyd exits tens of ms after ptp4l's `UNCALIBRATED` line: read the watcher's `chronyd exited N ms after the revoke` (systemd's `ExecMainExitTimestampMonotonic` minus the revoke) next to ptp4l's `MASTER to UNCALIBRATED`. The namespace rig's 19 ms includes a fake `systemctl`, so the number has to come from here. Hardware: no interference lines; software: their count reported, expected ≤ 1 in 10. Each grandmaster engine shows source ptp and at most one re-epoch; `chronyc` answers 506 (no daemon) while slaved. |
+    | T4 | Regains: stop the better box; 10 trials | chronyd active within the hold + 1 s of MASTER (8 s for AES67); first NTP update within 15 s; flags traceable within 20 s; the grandmaster engine logs `sync lost`, then `sync arrived, E unchanged`, with no re-epoch; the slaves see no step. |
+    | T5 | Flapping: toggle the better grandmaster every 10 s for 5 min | Sampled at 5 Hz, "chronyd active while the port is UNCALIBRATED or SLAVE" holds in 0 samples in hardware mode and ≤ 1 per flip in software; chronyd starts stay within the backoff (≤ 6 in 5 min). |
+    | T6 | Slave-only for 24 h on .22 and .111, with ptp4l restarts and a 10 min grandmaster outage | chronyd is never active and never started; phc2sys never passes 100 ppm; the tick check is quiet. |
+    | T7 | Boot | (a) Grandmaster reboot with NTP reachable: the setup journal shows `chrony synchronised`, then `stepped the boot offset before ptp4l serves`, and ptp4l starts after; the slaves' offsets stay sub-ms through the grandmaster's return. (b) The same with UDP 123 dropped by nft: `no NTP sync after 30 s`, ptp4l serves, the flags read 0xa0, the grandmaster engine latches untraceable; on unblocking chrony steps if more than 1 s off (one step per slave, one re-epoch per engine) or slews, and the flags flip. (c) A master-capable Pi without an RTC booted offline, then connected: one domain-wide step, logged everywhere. |
+    | T8 | NTP outage of 3 h at the grandmaster (nft drops udp/123) | The flags drop after ~30 min (`maxerror` ≥ 1 s), together with the grandmaster engine's `traceable`; the slaves stay locked; flags and engine are back within one poll after unblocking. chrony's root dispersion growth is logged for the record. |
+    | T9 | Rogue | A default-configured Pi (`PTP_SLAVE_ONLY=0`, priority1 3) joins: the rig follows it, it runs chronyd as grandmaster and announces honest flags, and the old grandmaster revokes; when it leaves, the old grandmaster regains. Then a wrong-clock rogue in the style of a third-party master (an old image, a hand-set date): the slaves follow it, and every Device Manager shows "not traceable". |
+    | T10 | Leap second, on an offline rig: a local chrony server with a test `leap-seconds.list` that schedules the coming midnight | Rig clocks at 11:58 UTC on June 30: leap61 stays 0 until 12:00, then is announced. Then at 23:50 UTC: the slaves' kernels have `STA_INS`; at midnight `tai` goes 37 → 38 everywhere, the grandmaster's phc2sys shows no PHC step and the engines log `realtime step, E unchanged`; after midnight currentUtcOffset is 38 and leap61 0, with no double increment. |
+    | T11, T12 | Device Manager on the grandmaster | Disable leaves chronyd running and the owner chrony; a master-capable settings change adopts chronyd without restarting it and the save returns in < 5 s; a switch to slave-only stops chronyd. The grandmaster shows "chrony (NTP), served over PTP", the slaves "PTP (ptp4l)", each the Time source row; the grandmaster engine's `/system/timeSync` reads source chrony. |
+
+  - In production, after T0–T12 pass and in the owner's window: image
+    10.9.16.46 (intel-corei7-64), keeping `PTP_SLAVE_ONLY=0` and priority1
+    10. Its boot steps its clock before it serves, which moves the domain
+    by the 0.2–0.3 s it is off today. Within 1 min of .46 serving, run
+    `systemctl restart media-router-ptp4l` (and phc2sys on the hardware
+    boxes) on .103, .108, .111 and .22, so each steps once on first lock
+    rather than slewing ~0.3 s for up to an hour with up to ~0.1 s between
+    boxes. The owner accepted the one re-epoch per engine this costs
+    (2026-10-14); the window is still to be set. Then check each Time page
+    (owner; grandmaster traceable) and that .46's engine reports source
+    chrony, traceable, and watch the tick-check flag for 24 h.
+  - Follow-up, not in this item: if the fleet shows the two-lost-polls flap
+    (ADR-0029), raise `MAX_SYNCED_ERROR_US` in `houseClockPolicy.ts` and the
+    watcher's mirror to 8 s together; engine hysteresis for the `sync lost`
+    blip at each takeover.
+- **Estimate.** Not in the original estimate. Landed on 2026-10-14 as about
+  +2,600 / −180 lines across the Yocto layer, the Device Manager and the
+  engine, two thirds of them tests.
 
 #### WI-P0-3 — `mr-clockstate`: the native clock sidecar
 
@@ -1792,10 +2106,12 @@ one engineer who knows the codebase.
       `aes67_clock.py`'s `taiMinusMonotonicNs`, read back-to-back;
     - `sudo date -s "+2 sec"` with chrony stopped yields a `step` line
       within 100 ms and an `eNs` that moved by 2 s ± 1 ms;
-    - setting the TAI offset with `mr-ptp-settai.py` also yields a `step`
-      line (to verify: that the kernel's `do_adjtimex` TAI change cancels
-      the timerfd; the engine's 1 ms divergence poll catches it within 1 s
-      either way).
+    - setting the TAI offset with `mr-ptp-settai.py` yields no `step` line
+      (`ADJ_TAI` leaves REALTIME − MONOTONIC alone, so
+      `timerfd_clock_was_set` does not cancel the timer): E moves by the
+      TAI step on the next 1 Hz sample and is taken as a divergence, held
+      by WI-P0-4's settle rule on an untraceable engine (captured on .50,
+      `clockstate-tai-late.jsonl`; R-P0-5, settled 2026-10-14).
 - **Estimate.** +560 lines, 2.5 d.
 
 #### WI-P0-4 — Engine `HouseClock`: latch, start wait, re-epoch, state
@@ -1803,8 +2119,8 @@ one engineer who knows the codebase.
 - **What.** The engine's single owner of E and of time-sync state.
 - **Where.**
   - New `packages/engine/src/clock/HouseClock.ts` (process and events),
-    `packages/engine/src/clock/houseClockPolicy.ts` (pure decisions) and
-    tests.
+    `packages/engine/src/clock/houseClockPolicy.ts` (pure decisions),
+    `packages/engine/src/clock/clockSource.ts` (the owner poll) and tests.
   - `packages/shared-types/src/` gains `HouseEpoch` and `TimeSyncState`.
   - Edits to `packages/engine/src/Engine.ts`,
     `packages/engine/src/modules/ModuleRunController.ts`,
@@ -1814,25 +2130,42 @@ one engineer who knows the codebase.
 - **How.**
   - `HouseClock`:
     - `start()` spawns `mr-clockstate` via
-      `processManager.spawn('__house_clock__', { autoRestart: true, onStdout })`,
-      resolved with `resolveNativeBinary('mr-clockstate', 'engine')`;
+      `processManager.spawn('__house_clock__', { autoRestart: true, logStdout: false, onStdout })`,
+      with no log line per sample (fleet FF8: at debug the samples were 600
+      of the engine's ~900 journal lines per 10 min on .108 and .22 and
+      pushed boot logs out of the 32 MB volatile journal within ~2 h; the
+      decisions are logged per the part 10 table), resolved with
+      `resolveNativeBinary('mr-clockstate', 'engine')`. A stdout line that
+      does not parse is logged at warn, at most once a minute on the
+      monotonic clock, with its first 120 characters;
     - `ready(): Promise<HouseEpoch>`, `epoch(): HouseEpoch | null`,
       `state(): TimeSyncState`, and the events `epoch` and `state`;
     - a source poll every 10 s: `systemctl is-active chronyd.service` and
       `media-router-ptp4l.service` (unprivileged, read-only), mapped to
-      `'chrony' | 'ptp' | 'none'`. When the source is chrony the same
+      `'chrony' | 'ptp' | 'none'`, chronyd first (on a PTP box chronyd runs
+      only while it owns the clock: a grandmaster, or the setup's boot
+      wait), and run once more on each `step` line; an older answer never
+      overwrites a newer one. When the source is chrony the same
       poll reads `chronyc -c tracking` (reference, stratum, estimated
       error) into `SystemStats.timeSync`, so the engine shows the daemon's
       estimated error as §10.2 asks; the gate stays the kernel state
       (OQ-7).
   - `houseClockPolicy.ts`:
-    - `qualifies(sample)` = `synced && taiOffsetS >= 10` (10 s is
+    - `qualifies(sample)` = `isSynced(sample) && taiOffsetS >= 10` (10 s is
       `aes67_clock.py`'s `MIN_TAI_UTC_OFFSET_S`, kept so a future leap
-      second does not fail the check). OQ-7, answered yes: the daemon's
-      error estimate is shown, not gated.
+      second does not fail the check). `isSynced` is `STA_UNSYNC` clear and
+      `maxerror` under 1 s (`MAX_SYNCED_ERROR_US`): linuxptp's start clears
+      the flag for under a second with `maxerror` at 16 s (fleet fix,
+      ADR-0029). OQ-7, answered yes: the daemon's error estimate is shown,
+      not gated.
     - `decide(latched, sample, now)` returns one of `latch(start)`,
       `latch(timeout)`, `relatch(sync)`, `relatch(step)`,
-      `relatch(divergence)`, `traceable(true/false)` or `none`.
+      `relatch(divergence)`, `traceable(true/false)`, `settle` or `none`.
+      `settle`: while the epoch is untraceable, a move of E whose sample
+      does not qualify is held until the state qualifies or for 10 s
+      (`SETTLE_MAX_MS`), then latched once, as `step` if a step line came
+      since the move, else as `sync` or, at the cap, `divergence`; a boot
+      step, its TAI write and the sync it brings are one re-epoch.
     - The divergence tolerance is `1 ms`, an engineer's choice: E is
       constant under slew, sandwich noise is a few µs, and 1 ms is far
       below a frame.
@@ -1872,9 +2205,24 @@ one engineer who knows the codebase.
     - REALTIME step with E unchanged (leap) → `none`;
     - divergence 1.5 ms → `relatch(divergence)`;
     - divergence 0.2 ms → `none`;
-    - loss of sync after latch → `traceable(false)`, E kept.
-  - `HouseClock.test.ts` drives a fake sidecar through stdout lines, and
-    checks a sidecar crash and restart does not change E.
+    - loss of sync after latch → `traceable(false)`, E kept;
+    - `STA_UNSYNC` clear at `maxerror` 16 s → not synced;
+    - a move while untraceable and unsynced → `settle`; at the 10 s cap →
+      `relatch(step)` or `relatch(divergence)`;
+    - a step while untraceable, then sync → `relatch(step)`;
+    - a move while traceable → re-latches at once, never settles.
+  - `HouseClock.test.ts` drives a fake sidecar through stdout lines,
+    checks a sidecar crash and restart does not change E, and checks
+    through a real `ProcessManager` that samples reach the clock but not
+    the log while the sidecar's stderr does. It replays the four field
+    captures of part 7, and covers linuxptp's start-up false window. A
+    `step` line re-polls the owner at once (state and `state` event before
+    the 10 s poll); an older poll's late answer never overwrites a step's
+    newer one; an unreadable sidecar line warns at most once a minute,
+    timed monotonically, with a 120-character excerpt.
+  - `clockSource.test.ts`: both units active → `chrony`, and
+    `chronyc -c tracking` is read; chronyd `deactivating` with ptp4l active
+    → `ptp`.
   - `Engine.test.ts` checks module start waits for `ready()` and that the
     API is reachable during the wait.
 - **Estimate.** +850 lines (≈ 450 code, 400 tests), 3 d.
@@ -2009,8 +2357,10 @@ one engineer who knows the codebase.
     `count`, `untimed`, `min-ns`, `mean-ns`, `max-ns`, `last-ns`,
     `interval-ns` and `reference`. It is posted from the streaming thread,
     and only when the window had buffers or untimed buffers.
-  - Cost: one `clock_gettime` and a few adds per buffer. No allocation on
-    the hot path.
+  - Cost: one `clock_gettime` and a few adds per buffer at bus taps; the
+    running-time taps before sinks add one element-clock read
+    (`gst_element_get_current_running_time`). No allocation on the hot
+    path either way.
 - **Acceptance.**
   - `lateness_test` covers window boundaries, negative lateness, untimed
     counting and empty windows.
@@ -2146,7 +2496,10 @@ one engineer who knows the codebase.
       Added). Every row carries its label and unit ("Output lateness
       312 ms", "Added latency 48 ms"): the operator reads a number, not a
       colour.
-    - `setBadge('lateness', { icon: 'timer', text: '<mean> ms' })`, grey.
+    - `setBadge('lateness', { icon: 'timer', text: '<n> ms' })`, grey: the
+      render lateness on outputs that render (`lat_render`: video-player,
+      audio-decoder, audio-output-302m), PipeWire latency on PipeWire-graph
+      modules, the mean output lateness otherwise (review F9).
       ADR-0007: plugins compute, UI renders.
     - Ingests show a negative lateness once Phase 1 lands; in Phase 0
       their stamps are arrival-anchored, so they read near 0.
@@ -2183,9 +2536,12 @@ one engineer who knows the codebase.
     It returns `{ quantum, rate, latencyMs }`.
   - Polled every 10 s and published in the same `timing` section as
     "PipeWire latency" (no PTS, so no lateness).
-- **Acceptance.** Unit test on captured `pw-dump` JSON from a gate box
-  (stored as a fixture). On the gate the value matches `pw-top`'s QUANT/RATE
-  for the node.
+- **Acceptance.** Unit test on `pw-dump-fleet.json`, a `pw-dump` captured
+  on fleet box 10.9.16.22 (Pi 5, PipeWire 1.6.3, running audio-decoder,
+  audio-encoder and n1-mixer; provenance in `fixtures/fixture-reduce.py`)
+  rather than a gate box. On .103 or .108 the value matches `pw-top`'s
+  QUANT/RATE for one audio-input or audio-output node (WI-P0-14, still
+  open).
 - **Estimate.** +200 lines, 1 d.
 
 #### WI-P0-11 — Manager UI: the engine's time-sync state
@@ -2219,7 +2575,8 @@ one engineer who knows the codebase.
 #### WI-P0-12 — Device Manager: Time page, chrony status, displacement removed
 
 - **What.** Show chrony, let a site set its NTP servers (OQ-6), and make
-  PTP on/off a two-daemon switch.
+  PTP on/off hand the clock between chrony and PTP (a grandmaster keeps
+  chrony: WI-P0-2b).
 - **Where** (all under
   `meta-layers/meta-custom/recipes-apps/device-manager/files/`):
   - `api/src/config/PtpConfig.ts`, `api/src/config/PtpConfig.spec.ts`;
@@ -2239,10 +2596,14 @@ one engineer who knows the codebase.
     - delete lines 40-96 (`FALLBACK_TIME_SERVICES`,
       `DISPLACED_RECORD_NAME`, `DEFAULT_FALLBACK_TIME_SERVICE`,
       `readDisplacedTimeServices`) and the restore loop at lines 322-364;
-    - enable path: `run("systemctl", ["stop", "chronyd"])` before the
-      ptp4l restart;
-    - disable path: stop the units, remove `ptp.env`, then
-      `systemctl start chronyd` (its condition now passes);
+    - enable path: on a slave-only save, `run("systemctl", ["stop",
+      "chronyd"])` before the ptp4l restart; a master-capable save leaves
+      chronyd to the setup script and `mr-ptp-owner`; the restart is
+      `run("systemctl", ["restart", "media-router-ptp4l"], 60_000)` (the
+      setup script may wait 30 s for NTP);
+    - disable path: stop the units (`mr-ptp-owner` stops with ptp4l),
+      remove `ptp.env`, then `systemctl start chronyd` (its condition now
+      passes; a no-op where it already runs);
     - `fs.rmSync('/data/ptp/displaced-time-services', { force: true })`
       once on load, to clean a stale record left by older builds;
     - rewrite the header comment (lines 12-33).
@@ -2255,10 +2616,21 @@ one engineer who knows the codebase.
       system time offset, RMS offset, frequency, skew, root delay and
       dispersion, leap status) and `chronyc -c sources` (mode, state,
       name, stratum, reach, last sample);
-    - `owner`: `ptp` if `ptp.env` exists and ptp4l is active, else
-      `chrony` if chronyd is active, else `none`.
+    - `owner`: `chrony` if chronyd is active (on a PTP box it runs only
+      while it owns the clock: as grandmaster, or during the setup script's
+      boot wait), else `ptp` if `ptp.env` exists and ptp4l is active, else
+      `none`; `synced`: `isSynced(kernel)`, the engine's predicate
+      (`STA_UNSYNC` clear and `maxerror` < 1 s, `MAX_SYNCED_ERROR_US`
+      mirrored from `houseClockPolicy.ts`).
 
-    `run()` from `PtpExec.ts`; CSV parsing is pure and unit-tested.
+    `run()` from `PtpExec.ts`; CSV parsing is pure and unit-tested. The
+    system-time offset is worded as chronyc 4.8 words it, "x slow/fast of
+    NTP time" (slow only for a positive `current_correction`; an
+    engineering choice, ADR-0029).
+  - `PtpStatus.ts`: `pmc -u -b 0 -d <status.env PTP_DOMAIN, else 0>` plus
+    `GET TIME_PROPERTIES_DATA_SET`, parsed into `timeProperties`; the
+    page's Time source row shows its timeSource and timeTraceable
+    (WI-P0-2b).
   - `TimeConfig.ts` (OQ-6): `TimeConfigDto { ntpServers: string[] }`, 1 to
     8 entries, each a host name or an IP literal, validated by
     `class-validator` decorators on the DTO and by `normalizeTimeConfig()`
@@ -2270,8 +2642,10 @@ one engineer who knows the codebase.
     pattern). `loadTimeConfig()` reads the file back at start, so the file
     on `/data` is authoritative and `config.json` does not carry the
     section, as with `ptp`. DHCP-offered servers (WI-P0-1) are not part
-    of the setting; the page lists them read-only from `chronyc -c
-    sources`.
+    of the setting; the page lists them read-only from the NetworkManager
+    dispatcher's `/run/chrony-dhcp/*.sources` fragments (`chronyc -c
+    sources` has no provenance column and answers nothing under PTP;
+    review F20).
   - Socket: `requestTimeStatus` → `timeStatus`, the same failure policy as
     `emitPtpStatusTo` (log, never drop the socket).
   - App:
@@ -2287,21 +2661,27 @@ one engineer who knows the codebase.
     - the page polls `requestTimeStatus` every 5 s while open, as the PTP
       status does.
 - **Acceptance.**
-  - `PtpConfig.spec.ts` replaces the 8 displacement tests with 4:
-    - enable stops chronyd before restarting ptp4l;
+  - `PtpConfig.spec.ts` replaces the 8 displacement tests with these:
+    - a slave-only enable stops chronyd before restarting ptp4l, also on a
+      switch from master-capable; a master-capable enable never names
+      chronyd; the ptp4l restart uses the 60 s timeout;
     - disable starts chronyd and nothing else;
     - htpdate and timesyncd are never named;
     - a no-change save touches no unit.
-  - `TimeStatus.spec.ts` parses captured `chronyc -c` output (fixtures
-    from a gate box) and the `mr-clockstate --once` JSON, including an
-    unsynced sample and a TAI-offset-0 sample.
+  - `TimeStatus.spec.ts` parses captured `chronyc -c -n` output and the
+    `mr-clockstate --once` JSON, including an unsynced sample and a
+    TAI-offset-0 sample, and reads the .108 false-window sample (flag
+    clear, TAI 37, `maxerror` 16 s) as not synced. The captures are from
+    10.9.16.50, not a gate box (WI-P0-14 record).
   - `TimeConfig.spec.ts`: rendering of names and addresses; validation
     rejects an empty list, a ninth entry and a malformed name; a no-change
     save runs nothing; `chronyc reload sources` runs once per change.
-  - On the gate: toggling PTP on and off flips `owner` and keeps exactly
-    one daemon active (`systemctl is-active chronyd media-router-ptp4l`);
-    setting the server list to the manager host changes `chronyc sources`
-    within 10 s, and restoring the default brings the pool back.
+  - On the gate: toggling PTP on and off flips `owner`; a slave-only box
+    keeps exactly one daemon active (`systemctl is-active chronyd
+    media-router-ptp4l`), while a master-capable box runs both while it is
+    grandmaster and shows "chrony (NTP), served over PTP"; setting the
+    server list to the manager host changes `chronyc sources` within 10 s,
+    and restoring the default brings the pool back.
 - **Estimate.** +750 / −230 lines, 3.5 d.
 
 #### WI-P0-13 — Documents
@@ -2324,13 +2704,15 @@ one engineer who knows the codebase.
     - the 2 s window;
     - chrony config values and the server-list mechanism (`sourcedir`
       fragments, OQ-6);
-    - the TAI source under PTP.
+    - the TAI source under PTP;
+    - the grandmaster on chrony (WI-P0-2b), with the rejected designs.
   - ADR-0005 gets one line per affected note, "superseded by ADR-0029
     (Phase 0)". Nothing else in ADR-0005 changes; the current model is
     frozen and §11.6 is left alone (§13.1).
   - Release notes list:
     - htpdate and timesyncd removed and chrony added;
-    - chrony being off where PTP is on;
+    - chrony being off where PTP is on, except on a grandmaster, which
+      chrony keeps on NTP time (WI-P0-2b);
     - the start wait;
     - the new lateness display, labelled, with no alarm yet (OQ-8);
     - NTP servers set on the Device Manager's Time page (OQ-6);
@@ -2344,6 +2726,25 @@ one engineer who knows the codebase.
 
 See part 11. 2 d, including one full image build and RAUC install on both gate
 boxes.
+
+Record, 2026-10-14 (what is still to confirm on a box is ADR-0029's "Open
+until the fleet check"):
+
+- The engine clock fixtures are raw `mr-clockstate` captures from 10.9.16.50
+  (Pi 5, image v2.0.0.97, engine 1a4c87c), a chrony box, not the gate boxes
+  (`packages/engine/src/clock/fixtures/PROVENANCE.md`).
+- The Device Manager Time-page fixtures are real captures from 10.9.16.50
+  (Raspberry Pi 5, image v2.0.0.97, engine 1a4c87c, chrony 4.8), taken
+  2026-10-14 05:19–05:21 UTC by `fixture-capture.sh`, not on a gate box as
+  WI-P0-12's acceptance says. `clockstate-once-tai0.jsonl` is from the
+  development Pi 5 `mr-test` (2026-10-13 07:24 UTC). No capture had a
+  falseticker (`x`) or too-variable (`~`) source, so `TimeStatus.spec.ts`
+  keeps a two-row synthetic case for those states.
+- The PipeWire fixture `pw-dump-fleet.json` is from fleet box 10.9.16.22;
+  comparing the PipeWire latency row of one audio-input or audio-output
+  with `pw-top` QUANT/RATE on .103 or .108 is still to do.
+- The grandmaster on chrony (WI-P0-2b) passes its rig, T0–T12, before
+  10.9.16.46 is imaged.
 
 ### 6. Deletions
 
@@ -2379,7 +2780,7 @@ deleted here. Those mechanisms go in Phases 2-4.
 | `clock_sample_test` | C++ unit | Sandwich selection, `adjtimex` status decoding, JSON | `packages/engine/native/mr-clockstate/tests/` |
 | `lateness_test` | C++ unit | `LatenessWindow` boundaries, negatives, untimed, empty windows | `plugins/mpegts-core/native/mrts/tests/` |
 | `gst_mrlateness_element_test.py` | GStreamer dataflow | 300 ms injected lateness read back ± 5 ms; lists kept intact; `house` vs `running-time` with `base_time` 0 and ≠ 0 | `packages/engine/src/child-process/` |
-| `houseClockPolicy.test.ts`, `HouseClock.test.ts` | Vitest | The decision table in WI-P0-4; sidecar restart keeps E; 30 s timeout with fake timers | `packages/engine/src/clock/` |
+| `houseClockPolicy.test.ts`, `HouseClock.test.ts`, `clockSource.test.ts` | Vitest | The decision table in WI-P0-4 with the settle rule; sidecar restart keeps E; 30 s timeout with fake timers; the four field captures replayed; samples reach the clock, not the log; the owner poll (chronyd first, re-polled on a step) | `packages/engine/src/clock/` |
 | `Engine.test.ts` (extended) | Vitest | Module start awaits `ready()`; API up during the wait | `packages/engine/src/` |
 | `latenessReporter.test.ts`, `timingSections.test.ts`, `moduleTiming.test.ts` | Vitest | Added latency, slowest input, render formula (reporter); labels, badge, change test (sections); publication tick, sink reads, PipeWire latency (ModuleTiming) | `packages/engine/src/plugins/` |
 | `busRunnerContract.test.ts` (extended) | Vitest | `lat_*` names and the `mrlateness` branch present in both runner sources | `packages/engine/src/plugins/` |
@@ -2388,21 +2789,28 @@ deleted here. Those mechanisms go in Phases 2-4.
 | `unixfdFanout.test.ts`, `mr-tssplit` tests (extended) | Conformance | `lateness` key in stats lines | existing locations under `plugins/unixfdbus-core`, `plugins/ts-splitter` |
 | `pipeWireLatency.test.ts` | Vitest | Parse a fleet `pw-dump` (MR_PW null sinks, runner streams; `fixtures/fixture-reduce.py`) | `packages/engine/src/audio/` |
 | `aes67Helpers.test.ts` (extended) | Vitest | `rtpTimestampOffset()` against the deleted Python's vectors | `packages/engine/src/plugins/` (WI-P0-6) |
-| `PtpConfig.spec.ts`, `TimeStatus.spec.ts`, `TimeConfig.spec.ts` | Vitest (DM) | One-daemon switch; `chronyc -c` and `--once` parsing; server-list rendering and validation | device-manager `api/src/config/` |
+| `PtpConfig.spec.ts`, `TimeStatus.spec.ts`, `TimeConfig.spec.ts` | Vitest (DM) | A slave-only save stops chronyd, a master-capable one never names it; `chronyc -c -n` and `--once` parsing, synced by the engine's `isSynced`; server-list rendering and validation | device-manager `api/src/config/` |
+| `PtpStatus.spec.ts`, `TimeStatusCard.spec.ts`, `PtpConfigPage.spec.ts` (new) | Vitest (DM) | `pmc -d` from `status.env` and `TIME_PROPERTIES_DATA_SET` parsing; the owner text and the `synced` badge; the Time source row (WI-P0-2b) | device-manager `api/src/config/`, `app/src/` |
+| `media-router-chrony_test.py` | Shell harness under dash, BusyBox sh, bash `--posix` | The dispatcher (`onoffline`, fragments), the wait unit's warn-and-succeed, `makestep 1.0 -1` and `rtcsync` | `meta-layers/meta-custom/recipes-support/chrony/files/` |
+| `mr-ptp-owner_test.py`, `media-router-ptp-setup_test.py`, `mr-ptp-settai_test.py`, `mr-ptp-tickcheck_test.py` | Python unit tests; the setup script under dash, BusyBox sh, bash `--posix` | The handover decisions, hold and backoff, what a grandmaster announces, the setup script's role block, `--no-override`, the tick check's total (WI-P0-2b) | `meta-layers/meta-custom/recipes-support/media-router-ptp/files/` |
 | `EngineListItem.test.ts` (extended) | Vitest | 4 clock states, old engine | `packages/manager-ui/src/components/common/` |
 
-**Fixtures captured from the gate** (stored under
-`packages/engine/src/clock/fixtures/` and the Device Manager's
-`api/src/config/fixtures/`):
+**Fixtures captured on the fleet** (stored under
+`packages/engine/src/clock/fixtures/`, `packages/engine/src/audio/fixtures/`
+and the Device Manager's `api/src/config/fixtures/`, each set with its
+provenance; the clock and Device Manager sets come from 10.9.16.50, a chrony
+box, not the gate boxes):
 
 | Fixture | What it pins |
 |---|---|
-| `clockstate-synced.jsonl` | 60 s of `mr-clockstate` on .103 with chrony synced: E constant within 10 µs, `tai = 37`. |
-| `clockstate-offline-boot.jsonl` | Boot with the uplink unplugged, then plugged in at ~90 s: unsynced, then synced plus a `makestep` step, giving `relatch(sync)` and then `none`. |
-| `clockstate-tai-late.jsonl` | Synced with `tai = 0`, then `tai = 37` (the PTP setup path): E moves 37 s, giving `relatch(sync)`. |
-| `clockstate-date-step.jsonl` | A manual `date -s +2s` with chrony stopped: a `step` line, giving `relatch(step)`. |
-| `chronyc-tracking.csv`, `chronyc-sources.csv` | Real `chronyc -c` output, synced and unsynced. |
-| `pw-dump-gate.json` | Node latency params for the four PipeWire-graph modules. |
+| `clockstate-synced.jsonl` | 60 s of `mr-clockstate` on .50 with chrony synced: E constant within 10 µs, `tai = 37`. |
+| `clockstate-offline-boot.jsonl` | The boot state of an RTC-less box (clock 18,521,000 s behind, TAI 0, NTP blocked), then the uplink: the `timeout` latch, then one `relatch(step)` for chrony's step, its TAI write and the sync, which came within 3 s. |
+| `clockstate-tai-late.jsonl` | chronyd stopped, `tai = 0`, then `tai = 37` (the PTP setup path): no `step` line; E moves 37 s, is held for sync, and re-latches as `relatch(divergence)` at the 10 s cap. |
+| `clockstate-date-step.jsonl` | The clock set 2 s ahead with chronyd stopped: a `step` line, giving `relatch(step)`, ΔE 2 s ± 1 ms. |
+| `chronyc-{tracking,sources}-{synced,unsynced}.csv`, `clockstate-once-{synced,unsynced,tai0}.jsonl` | Device Manager: real `chronyc -c -n` output and `mr-clockstate --once` samples, synced and unsynced, plus a synced sample with the kernel TAI offset 0; where each was taken is in `api/src/config/fixtures/PROVENANCE.md`. |
+| `pw-dump-fleet.json` | Node latency params for the PipeWire-graph modules, from fleet box 10.9.16.22 (provenance in `fixture-reduce.py`). |
+| pmc 4.4 output in `mr-ptp-owner_test.py` | A field capture from 10.9.1.42 and captures from linuxptp 4.4 run in namespaces on the development Pi 5 (WI-P0-2b). |
+| `TIME_PROPERTIES_DATA_SET` in `PtpStatus.spec.ts` | Printed from pmc 4.4's format string and linuxptp's defaults, not captured; replaced by the rig's T0/T1 captures (WI-P0-2b). |
 
 No TS stream fixtures are needed. Phase 0 does not change stream timing.
 
@@ -2413,12 +2821,12 @@ No TS stream fixtures are needed. Phase 0 does not change stream timing.
 | Settings added | None on modules. The lateness alarm is deferred (OQ-8; note after part 13). |
 | Settings removed | audio-decoder `clockSync` (OQ-4). No Q9 setting goes in Phase 0. |
 | Settings disabled | None. |
-| Module face | Lateness badge with mean output lateness in ms, labelled. |
+| Module face | Lateness badge in ms, labelled: render lateness on outputs that render (`lat_render`), PipeWire latency on PipeWire-graph modules, the mean output lateness otherwise. |
 | Module stats | A `timing` section with output lateness (mean, min–max), added latency, slowest input. For outputs, also decode, presentation delay (D, still in force), device latency and render lateness. One `timing-in-<n>` section per input. PipeWire-graph modules show PipeWire latency. |
 | Dashboards and LCP | Get the same values with no change (status data and badges already flow). |
 | Engine card and header | Clock indicator: traceable, waiting, untraceable or unsynced, with source, error, TAI−UTC and epoch. |
 | Router tree | `/system/timeSync` (ADR-0024); module `statusData.timing`. |
-| Device Manager | "PTP" page becomes "Time" (OQ-9). A Clock card (owner, synced, errors, TAI−UTC, frequency, chrony reference and sources) with an NTP **Servers** list, default the public pool, DHCP-offered servers shown beneath (OQ-6). The PTP status and settings stay. The displaced-services logic is gone. |
+| Device Manager | "PTP" page becomes "Time" (OQ-9). A Clock card (owner, synced, errors, TAI−UTC, frequency, chrony reference and sources) with an NTP **Servers** list, default the public pool, DHCP-offered servers shown beneath (OQ-6); on a grandmaster the owner reads "chrony (NTP), served over PTP". The PTP status and settings stay; the status gains a **Time source** row with the grandmaster's traceability (WI-P0-2b). The displaced-services logic is gone. |
 
 ### 9. Image and Yocto
 
@@ -2426,8 +2834,9 @@ No TS stream fixtures are needed. Phase 0 does not change stream timing.
 |---|---|
 | `build/conf/local.conf` | Remove `htpdate`; add `chrony chronyc tzdata-core`; `PACKAGECONFIG:remove:pn-systemd = "timesyncd"`. |
 | `meta-layers/meta-custom/recipes-support/htpdate/` | Deleted. |
-| `meta-layers/meta-custom/recipes-support/chrony/chrony_%.bbappend` (new) | Installs `/etc/chrony.conf` (WI-P0-1 text, `sourcedir` fragments), the default `sources` fragment, the NetworkManager dispatcher script for DHCP servers, the chronyd drop-in (`ConditionPathExists=!/data/ptp/ptp.env`, `RequiresMountsFor=/data`, `mkdir /data/chrony/sources.d`, default fragment copied when empty), and `media-router-chrony-wait.service` (enabled). |
-| `meta-layers/meta-custom/recipes-support/media-router-ptp/` | Setup script stops chronyd and writes the TAI offset; new `mr-ptp-settai.py`; the ptp4l unit orders after chronyd. |
+| `meta-layers/meta-custom/recipes-support/chrony/chrony_%.bbappend` (new) | Installs `/etc/chrony.conf` (WI-P0-1 text, `sourcedir` fragments), the default `sources` fragment, the NetworkManager dispatcher script for DHCP servers (with `chronyc onoffline`), the chronyd drop-in (`ConditionPathExists=\|!/data/ptp/ptp.env` or `\|/run/media-router-ptp/chrony.grant`, `RequiresMountsFor=/data`, `mkdir /data/chrony/sources.d`, default fragment copied when empty), and `media-router-chrony-wait.service` (enabled; warns and succeeds on timeout). |
+| `meta-layers/meta-custom/conf/distro/media-router-distro.conf` | `VIRTUAL-RUNTIME_base-utils-syslog = ""`: no BusyBox syslogd, so journald keeps `/dev/log` (2026-10-14). |
+| `meta-layers/meta-custom/recipes-support/media-router-ptp/` | Setup script stops chronyd on a slave-only box, starts it, waits and steps once on a master-capable one, and writes the TAI offset; new `mr-ptp-settai.py`; the ptp4l unit orders after chronyd. New `mr-ptp-owner.py` and `media-router-ptp-owner.service`; phc2sys `-n <domain> -S 1.0 --max_frequency=100000 -u 16`; `summary_interval 4`; the tick check alarms on the total (WI-P0-2b). |
 | `meta-layers/meta-custom/recipes-core/base-files/base-files_%.bbappend` | Comment only (timesyncd no longer the reason for `/var/lib/private`; the directory stays). |
 | `meta-layers/meta-custom/recipes-apps/media-router/media-router.bb` | No change. `mr-clockstate` and `libgstmrlateness.so` come through the existing `oe_runmake` native build and `native-install`. Check that `FILES` covers `/usr/libexec/media-router/engine/mr-clockstate` and `/usr/libexec/media-router/mpegts-core/libgstmrlateness.so`. |
 | `meta-layers/meta-custom/recipes-apps/device-manager/` | App and API changes from WI-P0-12 (Time page, chrony status, the NTP server list); no recipe change. |
@@ -2439,14 +2848,23 @@ No TS stream fixtures are needed. Phase 0 does not change stream timing.
 |---|---|---|
 | `clock: epoch latched seq=1 reason=start source=chrony tai=37 est=±… ms` | engine log → manager logs, router tree `/logs` | info |
 | `clock: no time sync after 30 s (…) — starting untraceable` | engine log; `timeSync.traceable=false`; engine indicator amber or red | warn |
-| `clock: re-epoch seq=n reason=sync|step|divergence ΔE=… ms` | engine log; `timeSync.epochSeq/Reason`; `aes67-output` restarts | info (`step`/`divergence` warn) |
+| `clock: re-epoch seq=n reason=sync\|step\|divergence ΔE=… ms` | engine log; `timeSync.epochSeq/Reason`; `aes67-output` restarts | info (`step`/`divergence` warn) |
 | `clock: realtime step, E unchanged (ΔE=… µs)` | engine log | info |
 | `clock: sync lost (source=…)` | engine log; `traceable=false`, E kept | warn |
 | `clock: mr-clockstate missing — no epoch, modules start at once` | engine log; indicator red | error |
 | Module lateness alarm | deferred by the owner (OQ-8); Phase 0 shows the numbers, labelled | — |
 | `lateness instrument missing` | module `timing` section | info |
+| `clock: ignored an unreadable mr-clockstate line: <first 120 characters>…` | engine log → manager logs, router tree `/logs` | warn, at most once a minute |
+| mr-clockstate `sample`/`step` lines | not logged (data channel, `logStdout: false`); its stderr goes to the engine log | warn (stderr only) |
 | `TAI offset set to N (was M)` | PTP setup journal | info |
+| `chrony's leapseclist owns the TAI offset on a master-capable box; ignoring PTP_TAI_UTC_OFFSET=N` | PTP setup journal | info |
+| `chrony synchronised`, `stepped the boot offset before ptp4l serves` | PTP setup journal, master-capable box | info |
+| `WARNING: no NTP sync after 30 s — ptp4l starts anyway; the grandmaster announces not traceable until chrony syncs` | PTP setup journal, master-capable box | warn |
+| `revoke: …`, `grant: …`, `adopt: …`, `chronyd exited N ms after the revoke`, `announce: timeTraceable …, timeSource 0x…` | journal, `media-router-ptp-owner`; `/run/media-router-ptp/owner.env` | info |
+| `no PORT_DATA_SET from ptp4l for N s - keeping the last decision` | journal, `media-router-ptp-owner` | warn |
+| `no NTP sync after 30 s - continuing unsynchronised; the clock will step when NTP is reachable` | journal, `media-router-chrony-wait` (priority warning) | warn |
 | Kernel TAI offset 0 | Device Manager Clock card, red row; engine `taiOffsetS: 0`, `traceable=false` | warn |
+| Grandmaster not traceable | Device Manager PTP card, Time source row ("Internal oscillator · not traceable") | info |
 
 ### 11. Verification on the test fleet
 
@@ -2457,14 +2875,14 @@ method in `gstmrtsstamp.cpp`'s header), and the existing gate profile.
 
 | # | Measured | How | Pass |
 |---|---|---|---|
-| V1 | Daemons | `systemctl list-unit-files`, `is-active chronyd`, `chronyc tracking` | No htpdate or timesyncd units. chronyd active and synced within 2 min of boot. `Leap status: Normal`. |
-| V2 | Kernel TAI offset under chrony | `mr-clockstate --once` after sync | `taiOffsetS == 37` on both boxes (to verify: `leapseclist` with an expired list — part 12 R-P0-2). |
+| V1 | Daemons | `systemctl list-unit-files`, `is-active chronyd`, `chronyc tracking`, `systemctl status media-router-chrony-wait`, `ls -l /dev/log`, `logger` | No htpdate or timesyncd units. chronyd active and synced within 2 min of boot. `Leap status: Normal`. The wait unit succeeded (not failed) on a cold online boot; `/dev/log` points at journald's socket and a `logger` line appears in `journalctl`. |
+| V2 | Kernel TAI offset under chrony | `mr-clockstate --once` after sync | `taiOffsetS == 37` on both boxes (an expired list is still applied: part 12 R-P0-2, answered from source). |
 | V3 | E agreement between boxes | `mr-clockstate --once` on both, read from the manager host at the same moment; compare `TAI` readings (E + MONO) | Within 10 ms under chrony (NTP-class ε, §9.3). |
 | V4 | Start wait, synced | Restart the engine unit | Modules start in < 2 s; log shows `reason=start`. |
-| V5 | Start wait, offline | Boot .108 with its uplink disconnected (local console or an isolated switch port) | Engine indicator amber ~30 s, then `starting untraceable` at 30 s ± 1 s; modules run. Uplink back: `re-epoch reason=sync` within 5 s of chrony sync; indicator green. |
+| V5 | Start wait, offline | Boot .108 with its uplink disconnected (local console or an isolated switch port) | Engine indicator amber ~30 s, then `starting untraceable` at 30 s ± 1 s; modules run. The wait unit succeeded with its warning line. Uplink back: chrony syncs within ~10 s (`onoffline`); `re-epoch reason=sync` (or `step`) within 5 s of chrony sync; indicator green. |
 | V6 | Step detection | `chronyc makestep` after `chronyc settime`, or with chronyd stopped `date -s "+2 sec"` | `re-epoch reason=step` logged within 1 s; ΔE = 2 s ± 1 ms; `aes67-output` (if configured) restarts once. |
 | V7 | No false re-epochs | 24 h soak on both boxes | `epochSeq` unchanged after the start latch (or after V5's sync), no divergence events. |
-| V8 | PTP owner | Enable PTP on .103 and .108 from the Device Manager, then disable | Enable: chronyd inactive, ptp4l active, `tai == 37` before ptp4l lock and still 37 after 1 h; engine `source=ptp`, `traceable=true` (to verify: linuxptp clears `STA_UNSYNC`; R-P0-3). Disable: chronyd active, one daemon only, no `displaced-time-services` file. |
+| V8 | PTP owner | Enable PTP on .103 and .108 from the Device Manager as slave-only, then disable; the grandmaster cases are WI-P0-2b's rig, T0–T12 | Enable: chronyd inactive, ptp4l active, `tai == 37` before ptp4l lock and still 37 after 1 h; engine `source=ptp`, `traceable=true` (linuxptp clears `STA_UNSYNC`: R-P0-3, settled 2026-10-14). ptp4l (and phc2sys on hardware-timestamping boxes) logs one summary per 16 s; the Time page shows rms and path delay. Disable: chronyd active, one daemon only, no `displaced-time-services` file. Grandmaster: T0–T12 pass (T3 reads chronyd's exit time from the watcher's log, not from the namespace rig). |
 | V9 | Lateness accuracy | Gate rig: a test producer whose stamps are mono − 500 ms (fixed, via the dataflow test's appsrc pattern run in a runner), feeding a pass-through consumer | Consumer input lateness 500 ms ± 5 ms in both runners (`MR_GST_RUNNER_NATIVE=0` and `=1`). |
 | V10 | Added latency adds up | Gate profile route: ingest → transcoder → muxer → srt-output | Sum of added latencies along the route equals egress lateness − ingest output lateness within 5 ms (recomputed by hand from the stats modals). |
 | V11 | Output lateness meaning | video-player and audio-decoder on the gate | Render lateness ≈ max(λ, D) + device; λ at sink rises by the injected delay when a 300 ms `queue min-threshold-time` is added upstream in a dev build. |
@@ -2478,16 +2896,20 @@ method in `gstmrtsstamp.cpp`'s header), and the existing gate profile.
 | # | Level | Risk | Mitigation |
 |---|---|---|---|
 | R-P0-1 | M | **The engine is a user unit and cannot order on `time-sync.target`.** A box that boots offline starts every module 30 s late, at each engine start while unsynced. This is per the decision (§13.1, Q15). | The wait timer runs from engine start, not module start. The API and UI are up during the wait and show it. The release notes say so. |
-| R-P0-2 | M | **`leapseclist` with an expired list.** The image's `tzdata` (2026b, `openembedded-core/meta/recipes-extended/timezone/timezone.inc:9`) ships a `leap-seconds.list` that expires no earlier than late 2026; a box not rebuilt by then runs with an expired list. If chrony ignores an expired list, the kernel TAI offset stays 0 and the box never becomes traceable (R2, §10.2). Training memory; not verified. | V2 checks it. Fallback: `leapsectz right/UTC`, installing only `zoneinfo/right/UTC` from a small bbappend (a few KB) rather than all of `tzdata-right` (rootfs slot headroom is tight). |
-| R-P0-3 | M | **linuxptp and kernel state.** That ptp4l and phc2sys clear `STA_UNSYNC` (`sysclk_set_sync`) and leave a hand-set TAI offset alone when the GM's UTC offset is not traceable is from training memory. If either is wrong, PTP boxes start untraceable or lose TAI. | V8 checks both for 1 h. Fallbacks: the setup script re-asserts TAI from the tick-check timer; `qualifies()` treats `source=ptp` with a running ptp4l as synced. Either needs an ADR note. |
+| R-P0-2 | M | **`leapseclist` with an expired list.** The image's `tzdata` (2026b, `openembedded-core/meta/recipes-extended/timezone/timezone.inc:9`) ships a `leap-seconds.list` that expires no earlier than late 2026; a box not rebuilt by then runs with an expired list. If chrony ignored an expired list, the kernel TAI offset would stay 0 and the box would never become traceable (R2, §10.2). | Answered from chrony 4.8's source (2026-10-14): `leapdb.c:172` logs `Leap second list … needs update` and still applies the list, so the offset stays set; the `leapsectz right/UTC` fallback is not needed. V2 checks the value. |
+| R-P0-3 | M | **linuxptp and kernel state.** That ptp4l and phc2sys clear `STA_UNSYNC` (`sysclk_set_sync`) and leave a hand-set TAI offset alone when the GM's UTC offset is not traceable is from training memory. If either is wrong, PTP boxes start untraceable or lose TAI. Role changes add cases (WI-P0-2b): a master-capable box hands REALTIME between chronyd and linuxptp by port state, and a slave takes the TAI offset from a traceable grandmaster's announcement. | Settled for slaves on 2026-10-14: V8 on .103 and .108 (1.4 h and 4.4 h of lock) read synced and TAI 37, so neither fallback is needed. For role changes, from the linuxptp source: outside SLAVE linuxptp's only kernel-status write is `sysclk_set_leap(0)` at a software ptp4l's start; it sets the TAI offset only from a traceable grandmaster, with that grandmaster kernel's own value; and chronyd's exit never zeroes TAI. Rig T3, T4 and T7 confirm it on boxes. |
 | R-P0-4 | M | **chrony state on a read-only rootfs.** The drift file, the dump directory and the server-list fragment must be on `/data`. A missing `/data` mount starts chrony without its drift file (slower first lock) or without servers, or fails it. | `RequiresMountsFor=/data`; `mkdir` and the default-fragment copy in `ExecStartPre`; V1 after a cold boot. |
-| R-P0-5 | L | **`TFD_TIMER_CANCEL_ON_SET` on a TAI-offset change.** It is not confirmed that `ADJ_TAI` fires `clock_was_set` on this kernel. | The 1 s divergence poll catches any E change within 1 s either way; WI-P0-3's acceptance records which path fired. |
+| R-P0-5 | L | **`TFD_TIMER_CANCEL_ON_SET` on a TAI-offset change.** It is not confirmed that `ADJ_TAI` fires `clock_was_set` on this kernel. | Settled 2026-10-14 on .50: no step line; the divergence path (`clockstate-tai-late.jsonl`, WI-P0-3's acceptance). |
 | R-P0-6 | M | **Telemetry volume.** 30+ modules with per-input sections at 0.5 Hz add state patches on the WAN link to the manager (R14). | Change-only emission (≥ 1 ms), 2 s windows, the existing `StatePatchBatcher`; V13. |
 | R-P0-7 | M | **Image and app skew.** The app's dist tarball is deployed to `/opt` independently of the image (project practice). An app with `HouseClock` on an old image finds no `mr-clockstate` and no chrony. | `HouseClock` degrades to "no epoch" and never blocks modules; the release is one RAUC bundle; deploy notes forbid hot-deploying the Phase 0 app onto an older image. |
 | R-P0-8 | L | **The lateness tap changes pipelines.** One extra element per bus edge and output. A buffer-list mishandling would regress the ADR-0011 coalescing. | `chain_list` passthrough with a test (WI-P0-7); V12 measures CPU. The tap is omitted when the plugin is missing. |
 | R-P0-9 | L | **Phase 0 lateness reads near 0 at ingests and is D-dominated at outputs.** Stamps are still arrival-anchored and sinks still wait for D. Operators may read it as "no latency". | The `timing` section labels presentation delay separately and shows render lateness as `max(λ, D) + device`. The release notes say the numbers become source-natural in Phase 1 and D-free in Phase 4. |
 | R-P0-10 | L | **Slew bound.** `maxslewrate 100` makes a 50 ms correction take 500 s (R7). Outputs ride it; no stream mechanism changes in Phase 0. | OQ-5 answered 100 ppm; the value is a single config line. |
 | R-P0-11 | L | **Removing the kill switch removes a field escape hatch** while the frozen current model still runs (R16). | Rollback is a previous release from the Device Manager (§13.1). |
+| R-P0-12 | L | **A grandmaster handover has two short windows** (WI-P0-2b). In software mode ptp4l's first REALTIME write comes at least ~130 ms after UNCALIBRATED, and chronyd's exit can overlap it by one frequency write; each regain restarts chronyd, whose start sets `STA_UNSYNC`, so the grandmaster's engine reads `sync lost` for 2–8 s. | Accepted as bounded (ADR-0029); rig T3 counts the `System clock interference detected` lines, T4 times the blip. Engine hysteresis for the blip is a follow-up. |
+| R-P0-13 | L | **A ptp4l restart on a master-capable box that follows a better master** (a settings save, or ptp4l's `Restart=`) starts chronyd, waits for NTP and steps to NTP time before ptp4l runs; the port then goes UNCALIBRATED, chronyd is revoked, and linuxptp steers the box back, stepping if more than 1 s off. If NTP and the domain differ by more than 1 ms, that box's engine re-epochs once, or twice if linuxptp steps back. | Inherent to the boot rule (chronyd first, then `makestep`); recorded for the owner, not changed. |
+| R-P0-14 | L | **The tick check can alarm on a chrony grandmaster while chrony slews a large offset**: `maxslewrate 100` plus the crystal's own error passes the 100 ppm guard, e.g. when NTP comes back 0.5 s off after an offline boot (~1.4 h of slew). | The alarm is literally true then: MONOTONIC really runs that far off. Recorded, not changed. |
+| R-P0-15 | L | **The setup script's `phc_ctl <phc> get`/`set` calls also go to syslog**, which now reaches the journal: 2 lines per ptp4l start. | Left as is; the watcher's 10 s `phc_ctl cmp` uses `-q` so it adds nothing. |
 
 ### 13. Open questions
 
@@ -2499,7 +2921,7 @@ method in `gstmrtsstamp.cpp`'s header), and the existing gate profile.
 | OQ-7 | May the kernel's `adjtimex` state stand in for "the daemon reports sync" (§10.2, §10.3)? | §10.2 names the daemon's state as the source ("synchronised or not, and the estimated error"). The plan reads the kernel instead (`STA_UNSYNC`, `tai`) as a daemon-neutral proxy that works under chrony and PTP alike, and reads `chronyc -c tracking` for display only. That is a deviation to confirm; no error bound is given either way. | WI-P0-4 `qualifies()`; V4, V5, V8; ADR-0029 | **Yes**: kernel `STA_UNSYNC` clear and TAI offset ≥ 10 s; the daemon's estimated error is shown, not gated; the proxy and why are recorded in ADR-0029. |
 | OQ-8 | What is the default of the per-module lateness alarm setting (drafted as a threshold in ms)? | That Phase 0 ships the alarm is decided: §14 row 0 cites §9.5 in full, and §9.5 says "Alarms at thresholds the operator sets. They warn; they never drop content." No default value is given. | WI-P0-9 alarm; part 8 settings | **0 (off)**, one integer setting per module. |
 | OQ-9 | Device Manager: rename the "PTP" page to "Time" (chrony and PTP on one page), or add a separate "Time" page? | §10 and §11.5 require sync state to be visible, but not where. | WI-P0-12 app layout | **Rename to "Time"**, `/ptp` redirects. |
-| OQ-10 | Under PTP, is the TAI−UTC constant an operator setting? | §10.2 says the PTP setup writes "the configured TAI−UTC constant (37 s)" but not who configures it. | WI-P0-2 source of the value; WI-P0-12 settings | **No UI.** Read from the image's `leap-seconds.list`, fall back to 37; a hand-edited `PTP_TAI_UTC_OFFSET` in `ptp.env` overrides. |
+| OQ-10 | Under PTP, is the TAI−UTC constant an operator setting? | §10.2 says the PTP setup writes "the configured TAI−UTC constant (37 s)" but not who configures it. | WI-P0-2 source of the value; WI-P0-12 settings | **No UI.** Read from the image's `leap-seconds.list`, fall back to 37; a hand-edited `PTP_TAI_UTC_OFFSET` in `ptp.env` overrides. Since 2026-10-14 the override is honoured on slave-only boxes only: on a master-capable box chrony's leapseclist owns the offset (WI-P0-2b). |
 
 All seven were answered by the owner on 2026-10-12 (chapter 15.1): OQ-4
 Phase 0; OQ-5 100 ppm; OQ-6 a server-list setting on the Time page,
@@ -2507,6 +2929,15 @@ default the public pool, DHCP-provided servers accepted as well; OQ-7 yes,
 the error estimate shown, not gated; OQ-8 display only, no alarm; OQ-9 one
 Time page with `/ptp` redirecting; OQ-10 no UI. The text above follows the
 answers; no item waits.
+
+The owner decided two more on 2026-10-14, for WI-P0-2b: the PTP election
+stays on Priority alone, so sync state never changes the announced
+clockClass ("Keep ptp priority only"); and the one re-epoch per engine on the
+PTP boxes when 10.9.16.46 is imaged is accepted, in a window still to be
+set. Recorded for the owner's veto, as engineering decisions of the same
+day: `makestep 1.0 -1`, the removal of BusyBox syslogd, the grandmaster's
+boot wait and `makestep`, the Time page's "x fast/slow of NTP time"
+wording, and the WI-P0-2b choices ADR-0029 marks.
 
 **Deferred by the owner (OQ-8, 2026-10-12).** Phase 0 shows lateness and
 added latency on every module, with a label, and ships no alarm threshold:
@@ -2536,7 +2967,9 @@ this plan had drafted, `latenessAlarmMs`, is not built in Phase 0.
 | P0-14 Gate verification | 0 | 0 | 2 |
 | **Total** | **≈ 4,450** | **≈ 1,430** | **≈ 28.25** |
 
-About 45 % of the added lines are tests.
+About 45 % of the added lines are tests. WI-P0-2b, added on 2026-10-14, is
+outside these totals: it landed as about +2,600 / −180 lines, two thirds of
+them tests.
 
 **Critical path** (two engineers, ≈ 11.5 working days):
 
@@ -8925,8 +9358,9 @@ the budget, the writer's edit path is reworked before release.
 | `cap-klv-sparse.ts` | a subtitle route on .103 | Sparse private stream, gaps between cues | S0, P2, P3 |
 | `cap-srt-ingest-1316.ts` | srt-input on .108 from a third-party encoder | 1316-byte datagrams, PSI anywhere, ≤ 1 PCR per chunk | S0, P1, P2 |
 | `cap-cc-loss.ts` | `cap-mux-align7-aac-opus.ts` with packets removed by `fixture_gen.cpp --drop` | CC loss mid-PES | S0, P3 |
-| `clockstate-synced.jsonl`, `clockstate-offline-boot.jsonl`, `clockstate-tai-late.jsonl`, `clockstate-date-step.jsonl` | `mr-clockstate` on .103 and .108 | E constant under sync; relatch on sync after an offline boot; TAI set late; a manual step | P0 |
-| `chronyc-tracking.csv`, `chronyc-sources.csv`, `pw-dump-gate.json` | gate boxes | `chronyc -c` parsing, synced and unsynced; PipeWire node latency | P0 |
+| `clockstate-synced.jsonl`, `clockstate-offline-boot.jsonl`, `clockstate-tai-late.jsonl`, `clockstate-date-step.jsonl` | `mr-clockstate` on 10.9.16.50 (Pi 5, v2.0.0.97), 2026-10-14 (`PROVENANCE.md`) | E constant under sync; one relatch(step) after an offline boot; TAI set late, a divergence at the settle cap; a manual step | P0 |
+| `chronyc-{tracking,sources}-{synced,unsynced}.csv`, `clockstate-once-{synced,unsynced}.jsonl`, `clockstate-once-tai0.jsonl` | 10.9.16.50 (Pi 5, v2.0.0.97, chrony 4.8), 2026-10-14; the tai0 sample from the development Pi 5 mr-test, 2026-10-13 | `chronyc -c -n` and `mr-clockstate --once` parsing: synced, unsynced, TAI offset 0 | P0 |
+| `pw-dump-fleet.json` | fleet box 10.9.16.22 (Pi 5, PipeWire 1.6.3), 2026-10-13 | PipeWire node latency | P0 |
 | `trace-816-clean-cbr.stct` | CBR encoder into srt-input on .108, 15 min (#816) | Zero relocks; ppm steady; the lead wanders but the mapping does not | P1 |
 | `trace-820-vmix-pcr.stct` | vMix (#820, #737) in CBR mode, 15 min; to be recorded (B-85) | PCR validation fails; degraded with the lead clamped; recovery after 30 s of good PCR | P1 |
 | `trace-vmix-sparse-pcr.stct` | the owner's vMix, VBR mux, .103 (B-85) | PCR on each IDR every 2 s, steady: degraded (cadence), never recovered, no clamp | P1 |
