@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterEach, afterAll } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -6,6 +6,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ManagedProcess, NativeSinkController } from '@media-router/engine';
+import {
+    holdUntilZombie, uncaughtDuring,
+} from '../../../packages/engine/src/child-process/testing/unreapedChild';
 import { PTS_WRAP } from '../../mpegts-core/tests/tsFixtures';
 
 /**
@@ -885,4 +889,51 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
             for (const pid of OCC_OUTS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
         }, 120_000);
     });
+});
+
+describe.skipIf(!haveBinary)('mr-tssplit stopped from outside (B-87)', () => {
+    it('a bus_detach written after a SIGTERM from outside, before the exit is reaped, is not fatal', async () => {
+        // A systemd stop: the cgroup SIGTERM reaches mr-tssplit with the engine, whose own stop
+        // then detaches every wired output before Node has reaped the child.
+        const d = mkdtempSync(join(tmpdir(), 'mr-tssplit-b87-'));
+        const events: Array<Record<string, unknown>> = [];
+        const proc: ManagedProcess = new ManagedProcess({
+            label: 'mr-tssplit',
+            command: MR_TSSPLIT,
+            args: ['--input', join(d, 'in.sock'), '--caps', CAPS, ...outArgs([0x65])],
+            autoRestart: false,
+            stdin: true,
+            onStdout: (line) => {
+                const msg = ctrl.handleLine(line);
+                if (msg) events.push(msg);
+            },
+        }, 'b87');
+        const ctrl = new NativeSinkController(() => proc);
+        const stopped = new Promise<[number | null, string | null]>((resolve) =>
+            proc.once('stopped', (code: number | null, signal: string | null) =>
+                resolve([code, signal])),
+        );
+        try {
+            proc.start();
+            await waitFor(() => events.find((e) => e.event === 'ready'), 'ready');
+            const edge = join(d, 'edge-101.sock');
+            ctrl.sendBusAttach('busout_101', edge);
+            await waitFor(
+                () => events.find((e) => e.event === 'attached' && e.socket === edge),
+                'attached',
+            );
+            const debug = vi.spyOn(proc['log'], 'debug');
+            const unheard = await uncaughtDuring(async () => {
+                process.kill(proc.pid!, 'SIGTERM');
+                holdUntilZombie(proc.pid!);
+                ctrl.sendBusDetach(edge);
+                expect(await stopped).toEqual([0, null]);   // its own clean exit
+            });
+            expect(unheard).toEqual([]);
+            expect(debug).toHaveBeenCalledWith({ code: 'EPIPE' }, 'stdin closed by the child');
+        } finally {
+            await proc.destroy();
+            rmSync(d, { recursive: true, force: true });
+        }
+    }, 30_000);
 });

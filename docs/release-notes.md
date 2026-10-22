@@ -176,6 +176,17 @@ elements" below do not start.
   loaded", and the MPEG-TS Muxer does not start. Audio Processing's ducker and keyed-gate modes also need
   their own native plugin and otherwise show "Native plugin not loaded".
 
+**Fixed**
+
+- **A stop no longer ends with the engine failed.** Stopping, restarting,
+  rebooting or updating a box whose engine has a wired TS Splitter output,
+  or an HLS Player with a consumer, ended with the engine failed (exit
+  code 1) and skipped the rest of its stop. Likewise, a TS Splitter or HLS
+  Player helper that died while the engine was sending it a command took
+  the whole engine down, every route on the box with it, until the engine
+  restarted. Fixed: the stop completes, and such a helper is restarted by
+  its module without the engine going down.
+
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 
 One RAUC bundle carrying the image and the app. The app's time-sync wait,

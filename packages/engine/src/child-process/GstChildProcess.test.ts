@@ -1,5 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { GstChildProcess, throwIfRpcError } from './GstChildProcess.js';
+import { ForkedRunnerBackend } from './ForkedRunnerBackend.js';
+import { holdUntilZombie, uncaughtDuring } from './testing/unreapedChild.js';
 
 describe('throwIfRpcError', () => {
     it('throws an Error with the Python message when the result carries an error', () => {
@@ -323,4 +328,41 @@ describe('start payload (the wire to the runner)', () => {
         );
         expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('runnerHooks', undefined);
     });
+});
+
+describe('fork backend (MR_GST_RUNNER_FORK=1)', () => {
+    let dir: string;
+    let shim: string;
+
+    beforeAll(() => {
+        // Stands in for gst-runner.js: answers every request and stays up on its IPC channel.
+        dir = mkdtempSync(join(tmpdir(), 'mr-fork-shim-'));
+        shim = join(dir, 'shim.cjs');
+        writeFileSync(
+            shim,
+            "process.on('message', (m) => m.type === 'request' &&\n" +
+                "    process.send({ id: m.id, type: 'response', action: '', data: {} }));\n",
+        );
+    });
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+    it('a send into a shim that died before it is reaped is heard, not fatal (B-87)', async () => {
+        const backend = new ForkedRunnerBackend(shim);
+        const emit = vi.spyOn(backend['child'], 'emit');
+        const exited = new Promise<number | null>((resolve) => backend.onExit(resolve));
+        try {
+            await backend.channel.sendRequest('startPipeline', {}, 10_000);
+            const unheard = await uncaughtDuring(async () => {
+                process.kill(backend.pid!, 'SIGKILL');
+                holdUntilZombie(backend.pid!);
+                // What GstChildProcess.sendBusDetach sends while the exit is not yet processed.
+                backend.channel.sendEvent('busDetach', { socket: '/tmp/mr-bus-edge.sock' });
+                expect(await exited).toBeNull();
+            });
+            expect(unheard).toEqual([]);
+            expect(emit).toHaveBeenCalledWith('error', expect.objectContaining({ code: 'EPIPE' }));
+        } finally {
+            backend.destroy();
+        }
+    }, 15_000);
 });

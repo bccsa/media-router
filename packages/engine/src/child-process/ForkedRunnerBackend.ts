@@ -1,9 +1,12 @@
 import { fork, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createLogger } from '@media-router/shared-types';
 import { ControlIpc } from './ControlIpc.js';
 import type { RunnerBackend } from './RunnerBackend.js';
 import { runnerEnv } from './runnerEnv.js';
+
+const log = createLogger('ForkedRunnerBackend');
 
 /**
  * LEGACY backend (`MR_GST_RUNNER_FORK=1`): the runner behind a forked
@@ -25,6 +28,11 @@ export class ForkedRunnerBackend implements RunnerBackend {
             execArgv,
             env: runnerEnv(),
         });
+        // A send into a shim that died before it is reaped fails EPIPE as an 'error' event on
+        // the child, fatal if unheard (B-87); the exit itself still reaches onExit.
+        this.child.on('error', (err: NodeJS.ErrnoException) =>
+            log.debug({ code: err.code, err: err.message }, 'Runner shim error'),
+        );
         this.channel = new ControlIpc(this.child);
     }
 

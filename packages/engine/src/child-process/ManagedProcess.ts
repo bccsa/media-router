@@ -116,6 +116,12 @@ export class ManagedProcess extends EventEmitter {
             cwd,
         });
 
+        // The child can close its end (exit, crash, systemd's cgroup SIGTERM) before the engine
+        // reaps it; the next write fails EPIPE as an 'error' event, fatal if unheard (B-87).
+        this.child.stdin?.on('error', (err: NodeJS.ErrnoException) =>
+            this.log.debug({ code: err.code }, 'stdin closed by the child'),
+        );
+
         this._startTime = Date.now();
         this._exitCode = null;
 
@@ -180,13 +186,14 @@ export class ManagedProcess extends EventEmitter {
 
     /**
      * Send one line-delimited command to the process's stdin (requires
-     * `stdin: true`). Returns false when the process isn't running or has no
-     * pipe — callers queue/replay on the 'started' event instead of buffering
-     * here, so a command never lands on the wrong incarnation.
+     * `stdin: true`). Returns false when the process isn't running, has no
+     * pipe, or its pipe has failed — callers queue/replay on the 'started'
+     * event instead of buffering here, so a command never lands on the wrong
+     * incarnation.
      */
     writeLine(line: string): boolean {
         const stdin = this.child?.stdin;
-        if (!this.isRunning || !stdin || stdin.destroyed) return false;
+        if (!this.isRunning || !stdin || !stdin.writable) return false;
         stdin.write(line.endsWith('\n') ? line : `${line}\n`);
         return true;
     }

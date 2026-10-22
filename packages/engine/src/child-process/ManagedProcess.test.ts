@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { ManagedProcess } from './ManagedProcess.js';
+import { holdUntilZombie, uncaughtDuring } from './testing/unreapedChild.js';
 
 describe('ManagedProcess', () => {
     const procs: ManagedProcess[] = [];
@@ -25,6 +26,21 @@ describe('ManagedProcess', () => {
             'test-owner',
         );
         procs.push(proc);
+        return proc;
+    }
+
+    /** A running child that closed its stdin: the next write fails EPIPE. */
+    async function closedStdin(label: string): Promise<ManagedProcess> {
+        const lines: string[] = [];
+        const proc = create({
+            label,
+            command: '/bin/sh',
+            args: ['-c', 'exec 0<&-; echo closed; exec sleep 5'],
+            stdin: true,
+            onStdout: (line) => lines.push(line),
+        });
+        proc.start();
+        await vi.waitFor(() => expect(lines).toEqual(['closed']));
         return proc;
     }
 
@@ -257,7 +273,7 @@ describe('ManagedProcess', () => {
         await abandoned;
     }, 15000);
 
-    it('writeLine returns false without a stdin pipe or when not running', async () => {
+    it('writeLine returns false without a stdin pipe, when not running, or once its pipe has failed', async () => {
         const noPipe = create({ label: 'no-stdin', command: 'sleep', args: ['10'] });
         noPipe.start();
         await new Promise((r) => setTimeout(r, 100));
@@ -265,5 +281,54 @@ describe('ManagedProcess', () => {
 
         const dead = create({ label: 'dead-stdin', command: 'cat', stdin: true });
         expect(dead.writeLine('x')).toBe(false); // never started
+
+        const failed = await closedStdin('failed-stdin');
+        const unheard = await uncaughtDuring(async () => {
+            expect(failed.writeLine('x')).toBe(true); // fails EPIPE
+            // The failed write errors the stream at once: refused, not buffered into it.
+            expect(failed.writeLine('y')).toBe(false);
+            await new Promise((r) => setImmediate(r));
+        });
+        expect(unheard).toEqual([]);
+    });
+
+    it('a write into a stdin the child closed is heard at debug, never fatal (B-87)', async () => {
+        const proc = await closedStdin('stdin-closer');
+        const events: string[] = [];
+        proc.on('error', (msg: string) => events.push(msg));
+        const debug = vi.spyOn(proc['log'], 'debug');
+
+        const unheard = await uncaughtDuring(async () => {
+            expect(proc.writeLine('x')).toBe(true); // the guard cannot know yet
+            await new Promise((r) => setImmediate(r));
+        });
+        expect(unheard).toEqual([]);
+        // Not the 'error' event: that sets the module's health to error.
+        expect(events).toEqual([]);
+        expect(debug).toHaveBeenCalledWith({ code: 'EPIPE' }, 'stdin closed by the child');
+        expect(proc.isRunning).toBe(true);
+        expect(proc.writeLine('y')).toBe(false);
+    });
+
+    it('a write to a child killed from outside, before it is reaped, is not fatal (B-87)', async () => {
+        // The field race: systemd's cgroup SIGTERM kills the sidecar while the engine's stop runs
+        // as one promise chain, so the detaches are written before the exit is processed.
+        const proc = create({ label: 'stdin-race', command: 'cat', stdin: true });
+        proc.start();
+        await new Promise((r) => setTimeout(r, 100));
+        const debug = vi.spyOn(proc['log'], 'debug');
+        const stopped = new Promise<string | null>((resolve) =>
+            proc.once('stopped', (_code: number | null, signal: string | null) => resolve(signal)),
+        );
+
+        const unheard = await uncaughtDuring(async () => {
+            process.kill(proc.pid!, 'SIGKILL');
+            holdUntilZombie(proc.pid!);
+            expect(proc.isRunning).toBe(true);
+            expect(proc.writeLine('{"cmd":"bus_detach"}')).toBe(true);
+            expect(await stopped).toBe('SIGKILL');
+        });
+        expect(unheard).toEqual([]);
+        expect(debug).toHaveBeenCalledWith({ code: 'EPIPE' }, 'stdin closed by the child');
     });
 });

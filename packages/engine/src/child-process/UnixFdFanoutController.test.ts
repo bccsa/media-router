@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NativeSinkController, UnixFdFanoutController } from './UnixFdFanoutController.js';
-import type { ManagedProcess } from './ManagedProcess.js';
+import { ManagedProcess } from './ManagedProcess.js';
+import { holdUntilZombie, uncaughtDuring } from './testing/unreapedChild.js';
 
 describe('UnixFdFanoutController', () => {
     let written: string[];
@@ -167,5 +168,48 @@ describe('NativeSinkController reinput RPC', () => {
             tee: 'busout_41000',
             socket: '/tmp/a.sock',
         });
+    });
+});
+
+describe('NativeSinkController on a child that died unreaped (B-87)', () => {
+    it('sendBusDetach does not throw, and the edge leaves the replay set', async () => {
+        // The engine's stop detaching from a splitter systemd's cgroup SIGTERM already killed.
+        const proc = new ManagedProcess(
+            { label: 'cat', command: 'cat', stdin: true, autoRestart: false },
+            'test-owner',
+        );
+        const written: string[] = [];
+        const respawned = {
+            writeLine: (line: string) => {
+                written.push(line);
+                return true;
+            },
+        } as unknown as ManagedProcess;
+        let current = proc;
+        const ctrl = new NativeSinkController(() => current);
+        try {
+            proc.start();
+            await new Promise((r) => setTimeout(r, 100));
+            ctrl.sendBusAttach('busout_41000', '/tmp/a.sock');
+            ctrl.sendBusAttach('busout_41000', '/tmp/b.sock');
+            const debug = vi.spyOn(proc['log'], 'debug');
+            const stopped = new Promise((r) => proc.once('stopped', r));
+            const unheard = await uncaughtDuring(async () => {
+                process.kill(proc.pid!, 'SIGKILL');
+                holdUntilZombie(proc.pid!);
+                expect(() => ctrl.sendBusDetach('/tmp/a.sock')).not.toThrow();
+                await stopped;
+            });
+            expect(unheard).toEqual([]);
+            expect(debug).toHaveBeenCalledWith({ code: 'EPIPE' }, 'stdin closed by the child');
+
+            current = respawned;
+            ctrl.handleLine('{"event":"ready"}');
+            expect(written.map((l) => JSON.parse(l))).toEqual([
+                { cmd: 'bus_attach', tee: 'busout_41000', socket: '/tmp/b.sock' },
+            ]);
+        } finally {
+            await proc.destroy();
+        }
     });
 });
