@@ -84,6 +84,8 @@ class PaceGroup {
     // The member's lateness over the second before its last arrival (that arrival's own
     // before any stretch counts); false before any.
     bool lateness(Member m, int64_t* out) const;
+    // The member's need: its lateness when it last went into the pace; false before any.
+    bool need(Member m, int64_t* out) const;
     size_t size() const { return members_.size(); }
 
   private:
@@ -93,6 +95,14 @@ class PaceGroup {
         int64_t mid;   // the lateness halfway through it
         bool counts;   // the lateness did not fall over it
     };
+    // A stretch that counts, in the order the median reads them: by mid, then length (B-57).
+    // Its end finds it again when it leaves the window.
+    struct Counted {
+        int64_t mid, len, end;
+        bool operator<(const Counted& o) const {
+            return mid != o.mid ? mid < o.mid : len != o.len ? len < o.len : end < o.end;
+        }
+    };
     struct State {
         int64_t seed = -1;
         bool has_last = false;
@@ -100,16 +110,15 @@ class PaceGroup {
         std::deque<Stretch> window;   // the stretches that end in the last second
         int64_t span = 0;             // their total length
         int64_t len = 0;              // the length of those that count
+        std::vector<Counted> counted; // those, in order
         bool has_level = false;
         int64_t level = 0;   // the median at the last arrival, shown
         bool has_need = false;
         int64_t need = 0;    // the last level that counted: an absent member's need
     };
-    static bool median(const std::deque<Stretch>& w, int64_t after, int64_t* out,
-                       std::vector<std::pair<int64_t, int64_t>>* scratch);
+    static bool falling(const State& s, int64_t now_ns);
     void publish();
     std::map<Member, State> members_;
-    std::vector<std::pair<int64_t, int64_t>> scratch_;   // (mid, len), sorted per arrival
     int64_t pace_ = 0;
     bool started_ = false;
     // The snapshot: odd `seq_` while it is written.

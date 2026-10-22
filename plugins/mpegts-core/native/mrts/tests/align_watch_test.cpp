@@ -1,12 +1,16 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
 // rhythms, the pace's rules (seeds, rises only, recomputed on leave, a lateness over wall time
-// that a backlog's drain does not move), the pace read lock-free (B-79), a join into a running
-// group and the gap stretches or pieces an absent input gets.
+// that a backlog's drain does not move, as the sort before a1b found it), the pace read lock-free
+// (B-79), a join into a running group and the gap stretches or pieces an absent input gets.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <deque>
+#include <map>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "../align_watch.h"
@@ -394,6 +398,353 @@ void test_pace_catch_ups() {
           e.pace() >= 100 * MS - 1500000 && e.pace() <= 100 * MS + 1500000);
 }
 
+// --- the median, against the copy and sort it replaced (a1b, B-57) -------------------------
+
+// The estimator before a1b (bbeb9b24), the reference: at every arrival the window's counting
+// stretches copied and sorted, and the newer half's median taken whenever the window qualifies.
+// `Reach` counts the branches it took.
+class RefPace {
+  public:
+    struct Reach {
+        long expired = 0, qualified = 0, taken = 0, none = 0, under = 0, edge = 0, held = 0,
+             moved = 0, zero = 0, tie = 0;
+    };
+    Reach reach;
+
+    void join(uint64_t m, int64_t seed) {
+        State s;
+        s.seed = seed;
+        members_[m] = s;
+        if (seed >= 0) pace_ = std::max(pace_, seed);
+    }
+    void leave(uint64_t m) {
+        if (!members_.erase(m)) return;
+        pace_ = 0;
+        for (const auto& kv : members_) {
+            if (kv.second.seed >= 0) pace_ = std::max(pace_, kv.second.seed);
+            if (kv.second.has_need) pace_ = std::max(pace_, kv.second.need);
+        }
+    }
+    void raise(int64_t p) { pace_ = std::max(pace_, p); }
+    void observe(uint64_t m, int64_t now, int64_t lateness, bool fresh) {
+        auto it = members_.find(m);
+        if (it == members_.end()) return;
+        State& s = it->second;
+        const int64_t l =
+            std::clamp(lateness, -PaceGroup::LATENESS_LIMIT_NS, PaceGroup::LATENESS_LIMIT_NS);
+        const int64_t len = now - s.last_at;
+        if (s.has_last && !fresh && len > 0) {
+            const bool counts = l >= s.last_lateness;
+            s.window.push_back(Stretch{now, len, (s.last_lateness + l) / 2, counts});
+            s.span += len;
+            if (counts) s.len += len;
+        }
+        s.has_last = true;
+        s.last_at = now;
+        s.last_lateness = l;
+        while (!s.window.empty() && s.window.front().end <= now - PaceGroup::WINDOW_NS) {
+            s.span -= s.window.front().len;
+            if (s.window.front().counts) s.len -= s.window.front().len;
+            s.window.pop_front();
+            reach.expired++;
+        }
+        if (!median(s.window, INT64_MIN, &s.level, true)) s.level = l;
+        s.has_level = true;
+        if (s.span >= PaceGroup::SPAN_NS && 3 * s.len >= s.span) {
+            reach.qualified++;
+            int64_t newer = 0;
+            const bool found = median(s.window, now - s.span / 2, &newer, false);
+            const bool falling = !found || newer < s.level - PaceGroup::FALL_NS;
+            reach.none += !found;
+            reach.under += found && falling;
+            reach.edge += found && newer == s.level - PaceGroup::FALL_NS;
+            reach.held += s.has_need && s.level == s.need;
+            if (!falling) {
+                reach.taken++;
+                reach.moved += s.has_need && s.level != s.need;
+                reach.zero += !s.has_need && s.level == 0;
+                s.need = s.level;
+                s.has_need = true;
+                pace_ = std::max(pace_, s.need);
+            }
+        }
+    }
+    bool lateness(uint64_t m, int64_t* out) const {
+        auto it = members_.find(m);
+        if (it == members_.end() || !it->second.has_level) return false;
+        *out = it->second.level;
+        return true;
+    }
+    bool need(uint64_t m, int64_t* out) const {
+        auto it = members_.find(m);
+        if (it == members_.end() || !it->second.has_need) return false;
+        *out = it->second.need;
+        return true;
+    }
+    int64_t pace() const { return pace_; }
+
+  private:
+    struct Stretch {
+        int64_t end, len, mid;
+        bool counts;
+    };
+    struct State {
+        int64_t seed = -1;
+        bool has_last = false;
+        int64_t last_at = 0, last_lateness = 0;
+        std::deque<Stretch> window;
+        int64_t span = 0, len = 0;
+        bool has_level = false;
+        int64_t level = 0;
+        bool has_need = false;
+        int64_t need = 0;
+    };
+    bool median(const std::deque<Stretch>& w, int64_t after, int64_t* out, bool whole) {
+        scratch_.clear();
+        int64_t len = 0;
+        for (const Stretch& st : w) {
+            if (!st.counts || st.end <= after) continue;
+            scratch_.emplace_back(st.mid, st.len);
+            len += st.len;
+        }
+        if (scratch_.empty()) return false;
+        std::sort(scratch_.begin(), scratch_.end());
+        int64_t acc = 0;
+        for (size_t i = 0; i < scratch_.size(); i++) {
+            acc += scratch_[i].second;
+            if (2 * acc >= len) {
+                // Exactly half, and the next mid differs: the boundary of the >= .
+                reach.tie += whole && 2 * acc == len && i + 1 < scratch_.size() &&
+                             scratch_[i + 1].first != scratch_[i].first;
+                *out = scratch_[i].first;
+                return true;
+            }
+        }
+        *out = scratch_.back().first;
+        return true;
+    }
+    std::map<uint64_t, State> members_;
+    std::vector<std::pair<int64_t, int64_t>> scratch_;
+    int64_t pace_ = 0;
+};
+
+// The sequences' randomness, the same on every platform.
+struct Rand {
+    uint64_t x;
+    explicit Rand(uint64_t seed) : x(seed * 0x9E3779B97F4A7C15ull | 1) {}
+    uint64_t next() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        return x;
+    }
+    int64_t in(int64_t lo, int64_t hi) { return lo + (int64_t)(next() % (uint64_t)(hi - lo + 1)); }
+    bool odds(int per_10k) { return (int)(next() % 10000) < per_10k; }
+};
+
+// One member's input: buffers of `period` arriving `behind` their content plus 0..`jitter`, in
+// segments that step up or down, catch up, come in bursts, stall, go absent or arrive shuffled.
+struct Feed {
+    uint64_t id = 0;
+    int64_t period = 10 * MS, content = 0, behind = 0, jitter = 0, grid = 0;
+    int64_t at = 0, prev = 0, late = 0;   // the next arrival and its lateness; the last one
+    int64_t until = 0, drain = 0, target = 0, slot = -1, in_slot = 0;
+    int burst = 0;
+    bool fresh = true, shuffle = false;
+};
+
+int64_t snap(int64_t v, int64_t grid) { return grid ? v / grid * grid : v; }
+
+// A new segment from `now`: jitter, grid, bursts, a step, a stall drained by a catch-up, or an
+// absence after which the input rejoins, fresh or not.
+void segment(Feed& f, Rand& r, int64_t now, bool shuffles) {
+    static const int64_t jitters[] = {0, 0, 20000, 300000, MS, 5 * MS, 20 * MS};
+    f.until = now + r.in(100 * MS, 2 * S);
+    f.jitter = jitters[r.in(0, 6)];
+    f.grid = r.odds(2500) ? MS : 0;
+    f.burst = r.odds(1500) ? (int)r.in(2, 15) : 0;
+    f.shuffle = shuffles && r.odds(1500);
+    f.drain = 0;
+    const int64_t kind = r.in(0, 99);
+    if (kind < 25) {
+        f.behind += r.in(-300 * MS, 300 * MS);   // a step: a rise or a fall
+    } else if (kind < 35) {
+        f.behind = 0;                            // on time: lateness exactly 0
+        f.jitter = 0;
+    } else if (kind < 50) {
+        const int64_t stall = r.in(20 * MS, 2500 * MS);   // a stall, then its backlog drained
+        f.target = f.behind;
+        f.behind += stall;
+        f.drain = std::max<int64_t>(f.period * r.in(1, 95) / 100, 1);
+    } else if (kind < 58) {
+        const int64_t gone = r.in(50 * MS, 3 * S);   // absent: no content, then a rejoin
+        f.content += gone;
+        f.fresh = r.odds(7000);
+    } else if (kind < 62) {
+        f.behind = r.in(-80 * MS, -MS);   // early: lateness below 0
+    }
+}
+
+// The next buffer's arrival and lateness.
+void plan(Feed& f, Rand& r) {
+    f.content += f.period;
+    if (f.drain && f.behind > f.target) f.behind = std::max(f.target, f.behind - f.drain);
+    int64_t delay = f.behind + (f.jitter ? r.in(f.shuffle ? -f.jitter : 0, f.jitter) : 0);
+    delay = snap(delay, f.grid);
+    int64_t at = f.content + delay;
+    if (f.burst) {
+        const int64_t bp = f.burst * f.period, s = at / bp + 1;
+        f.in_slot = s == f.slot ? f.in_slot + 1 : 0;
+        f.slot = s;
+        at = s * bp + f.in_slot * 100000;
+    }
+    if (!f.shuffle) at = std::max(at, f.prev);
+    f.at = at;
+    f.late = at - f.content;
+    if (r.odds(5)) f.late = (r.odds(5000) ? 1 : -1) * PaceGroup::LATENESS_LIMIT_NS * r.in(1, 10);
+}
+
+struct Diff {
+    long sequences = 0, members = 0, arrivals = 0, fresh = 0, back = 0, fast = 0, ops = 0,
+         mismatches = 0;
+    char first[256] = "";
+};
+
+// Both estimators agree on every member's level and need, and on the pace (the lock-free read
+// too), after every call.
+bool same(const PaceGroup& g, const RefPace& ref, const std::vector<Feed>& feeds, Diff* d,
+          long seq, long n) {
+    uint64_t bad = 0;   // the member that differs; 0: the pace
+    bool h[4] = {false, false, false, false};
+    int64_t v[4] = {0, 0, 0, 0};
+    for (const Feed& f : feeds) {
+        v[0] = v[1] = v[2] = v[3] = 0;
+        h[0] = g.lateness(f.id, &v[0]);
+        h[1] = ref.lateness(f.id, &v[1]);
+        h[2] = g.need(f.id, &v[2]);
+        h[3] = ref.need(f.id, &v[3]);
+        if (h[0] != h[1] || v[0] != v[1] || h[2] != h[3] || v[2] != v[3]) {
+            bad = f.id;
+            break;
+        }
+    }
+    if (!bad && g.pace() == ref.pace() && g.snapshot().pace == g.pace()) return true;
+    if (!d->mismatches++)
+        std::snprintf(d->first, sizeof d->first,
+                      "sequence %ld call %ld member %llu: level %d/%lld vs %d/%lld, need %d/%lld vs"
+                      " %d/%lld, pace %lld vs %lld",
+                      seq, n, (unsigned long long)bad, h[0], (long long)v[0], h[1],
+                      (long long)v[1], h[2], (long long)v[2], h[3], (long long)v[3],
+                      (long long)g.pace(), (long long)ref.pace());
+    return false;
+}
+
+void test_pace_median_differential() {
+    Diff d;
+    RefPace::Reach reach;
+    for (long seq = 1; seq <= 240; seq++) {
+        Rand r((uint64_t)seq);
+        PaceGroup g;
+        RefPace ref;
+        std::vector<Feed> feeds;
+        uint64_t next_id = 1;
+        const bool shuffles = seq % 8 == 0;   // time may go back for a member in these
+        const bool fast = seq % 20 == 0;      // one member at 300 to 3,000 a second
+        const int64_t t0 = r.odds(5000) ? 0 : r.in(1, 1000) * S;
+        auto add = [&](int64_t now) {
+            Feed f;
+            f.id = next_id++;
+            // 10 to 300 a second (300 to 3,000 for a fast sequence's first); a seed for some.
+            const double u = (double)r.in(0, 1000) / 1000.0;
+            f.period = (int64_t)(1e9 / (fast && f.id == 1 ? 300.0 * std::pow(10.0, u)
+                                                          : 10.0 * std::pow(30.0, u)));
+            if (r.odds(3000)) f.period = std::max<int64_t>(snap(f.period, MS), MS);
+            f.content = now + r.in(0, 50 * MS);
+            f.behind = r.in(0, 400 * MS);
+            f.prev = now;
+            const int64_t seed = r.odds(3000) ? r.in(0, 600 * MS) : -1;
+            g.join(f.id, seed);
+            ref.join(f.id, seed);
+            segment(f, r, now, shuffles);
+            plan(f, r);
+            feeds.push_back(f);
+            d.members++;
+        };
+        const int n0 = (int)r.in(1, 4);
+        for (int k = 0; k < n0; k++) add(t0);
+        const int64_t end = t0 + r.in(2, 7) * S;
+        const long cap = fast ? 4000 : 7000;
+        long calls = 0;
+        bool ok = true;
+        while (ok && calls < cap) {
+            size_t k = 0;
+            for (size_t i = 1; i < feeds.size(); i++)
+                if (feeds[i].at < feeds[k].at) k = i;
+            Feed& f = feeds[k];
+            if (f.at >= end) break;
+            const int64_t now = f.at;
+            const bool fresh = f.fresh || r.odds(20);
+            g.observe(f.id, now, f.late, fresh);
+            ref.observe(f.id, now, f.late, fresh);
+            d.arrivals++;
+            d.fresh += fresh;
+            d.back += now < f.prev;
+            d.fast += f.period < MS;
+            f.fresh = false;
+            f.prev = std::max(f.prev, now);
+            ok = same(g, ref, feeds, &d, seq, ++calls);
+            if (now >= f.until) segment(f, r, now, shuffles);
+            plan(f, r);
+            // The group's other calls: a raise, a member that leaves (and one that joins).
+            if (r.odds(5)) {
+                const int64_t p = r.in(0, 2 * S);
+                g.raise(p);
+                ref.raise(p);
+                d.ops++;
+            } else if (r.odds(4) && !feeds.empty()) {
+                const size_t j = (size_t)r.in(0, (int64_t)feeds.size() - 1);
+                g.leave(feeds[j].id);
+                ref.leave(feeds[j].id);
+                feeds.erase(feeds.begin() + (long)j);
+                if (feeds.empty() || r.odds(8000)) add(now);
+                d.ops++;
+            } else if (r.odds(2) && feeds.size() < 4) {
+                add(now);
+                d.ops++;
+            }
+            if (ok) ok = same(g, ref, feeds, &d, seq, calls);
+        }
+        d.sequences++;
+        reach.expired += ref.reach.expired;
+        reach.qualified += ref.reach.qualified;
+        reach.taken += ref.reach.taken;
+        reach.none += ref.reach.none;
+        reach.under += ref.reach.under;
+        reach.edge += ref.reach.edge;
+        reach.held += ref.reach.held;
+        reach.moved += ref.reach.moved;
+        reach.zero += ref.reach.zero;
+        reach.tie += ref.reach.tie;
+    }
+    std::printf("  (%ld sequences, %ld members, %ld arrivals: %ld fresh, %ld back in time, %ld at"
+                " over 1,000/s; %ld other calls; %ld stretches expired)\n",
+                d.sequences, d.members, d.arrivals, d.fresh, d.back, d.fast, d.ops, reach.expired);
+    std::printf("  (window qualified %ld: need taken %ld, moved %ld, held %ld, a first of 0 %ld;"
+                " falling with none newer %ld, under %ld, at the edge %ld; level at half %ld)\n",
+                reach.qualified, reach.taken, reach.moved, reach.held, reach.zero, reach.none,
+                reach.under, reach.edge, reach.tie);
+    if (d.mismatches) std::printf("  %ld mismatches, the first: %s\n", d.mismatches, d.first);
+    CHECK("the median against the copy and sort it replaced: level, need and pace identical after"
+          " every call",
+          d.mismatches == 0 && d.arrivals > 100000);
+    CHECK("... over runs that start fresh, go back in time, come over 1,000/s and expire; take,"
+          " move and hold a need, a first of 0; fall with none newer and under the level (at its"
+          " edge too); halve exactly",
+          d.fresh > 0 && d.back > 0 && d.fast > 0 && reach.expired > 0 && reach.taken > 0 &&
+              reach.moved > 0 && reach.held > 0 && reach.zero > 0 && reach.none > 0 &&
+              reach.under > 0 && reach.edge > 0 && reach.tie > 0);
+}
+
 // --- the registry --------------------------------------------------------------------------
 
 void test_registry() {
@@ -629,6 +980,7 @@ int main() {
     test_pace_seeds();
     test_pace_bursts();
     test_pace_catch_ups();
+    test_pace_median_differential();
     test_registry();
     test_registry_snapshot();
     test_late_join();

@@ -86,29 +86,17 @@ void PaceGroup::leave(Member m) {
     publish();
 }
 
-// Of the stretches that count and end after `after`, the smallest mid with at least half their
-// length at or below it; false when none counts.
-bool PaceGroup::median(const std::deque<Stretch>& w, int64_t after, int64_t* out,
-                       std::vector<std::pair<int64_t, int64_t>>* scratch) {
-    scratch->clear();
-    int64_t len = 0;
-    for (const Stretch& st : w) {
-        if (!st.counts || st.end <= after) continue;
-        scratch->emplace_back(st.mid, st.len);
-        len += st.len;
+// Falling: over the newer half (the stretches that end after now - span / 2) nothing counts,
+// or its median is more than FALL_NS under the level: half its counted length lies there.
+bool PaceGroup::falling(const State& s, int64_t now_ns) {
+    const int64_t after = now_ns - s.span / 2, under = s.level - FALL_NS;
+    int64_t newer = 0, below = 0;
+    for (const Counted& c : s.counted) {
+        const int64_t len = c.end > after ? c.len : 0;
+        newer += len;
+        below += c.mid < under ? len : 0;
     }
-    if (scratch->empty()) return false;
-    std::sort(scratch->begin(), scratch->end());
-    int64_t acc = 0;
-    for (const auto& v : *scratch) {
-        acc += v.second;
-        if (2 * acc >= len) {
-            *out = v.first;
-            return true;
-        }
-    }
-    *out = scratch->back().first;
-    return true;
+    return newer == 0 || 2 * below >= newer;
 }
 
 void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh) {
@@ -120,33 +108,48 @@ void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fres
     // The stretch since the run's last arrival; it counts unless the lateness fell over it.
     if (s.has_last && !fresh && len > 0) {
         const bool counts = l >= s.last_lateness;
-        s.window.push_back(Stretch{now_ns, len, (s.last_lateness + l) / 2, counts});
+        const Stretch st{now_ns, len, (s.last_lateness + l) / 2, counts};
+        s.window.push_back(st);
         s.span += len;
-        if (counts) s.len += len;
+        if (counts) {
+            s.len += len;
+            const Counted c{st.mid, len, now_ns};
+            s.counted.insert(std::upper_bound(s.counted.begin(), s.counted.end(), c), c);
+        }
     }
     s.has_last = true;
     s.last_at = now_ns;
     s.last_lateness = l;
     while (!s.window.empty() && s.window.front().end <= now_ns - WINDOW_NS) {
-        s.span -= s.window.front().len;
-        if (s.window.front().counts) s.len -= s.window.front().len;
+        const Stretch& f = s.window.front();
+        s.span -= f.len;
+        if (f.counts) {
+            s.len -= f.len;
+            s.counted.erase(std::lower_bound(s.counted.begin(), s.counted.end(),
+                                             Counted{f.mid, f.len, f.end}));
+        }
         s.window.pop_front();
     }
-    if (!median(s.window, INT64_MIN, &s.level, &scratch_)) s.level = l;
+    // The median: the smallest mid with at least half the counted length at or below it; the
+    // arrival's own lateness while none counts.
+    s.level = l;
+    int64_t acc = 0;
+    for (const Counted& c : s.counted) {
+        acc += c.len;
+        if (2 * acc >= s.len) {
+            s.level = c.mid;
+            break;
+        }
+    }
     s.has_level = true;
     // Taken once the stretches span half a second and a third of that counts (jitter counts
-    // half of a steady input's, a catch-up much less).
-    if (s.span >= SPAN_NS && 3 * s.len >= s.span) {
-        // Falling: over the newer half nothing counts, or what does sits under the whole.
-        int64_t newer = 0;
-        const bool falling = !median(s.window, now_ns - s.span / 2, &newer, &scratch_) ||
-                             newer < s.level - FALL_NS;
-        if (!falling) {
-            s.need = s.level;
-            s.has_need = true;
-            pace_ = std::max(pace_, s.need);
-            publish();
-        }
+    // half of a steady input's, a catch-up much less); taking the need it holds changes nothing.
+    const bool held = s.has_need && s.level == s.need && pace_ >= s.need;
+    if (s.span >= SPAN_NS && 3 * s.len >= s.span && !held && !falling(s, now_ns)) {
+        s.need = s.level;
+        s.has_need = true;
+        pace_ = std::max(pace_, s.need);
+        publish();
     }
 }
 
@@ -164,6 +167,13 @@ bool PaceGroup::lateness(Member m, int64_t* out) const {
     auto it = members_.find(m);
     if (it == members_.end() || !it->second.has_level) return false;
     *out = it->second.level;
+    return true;
+}
+
+bool PaceGroup::need(Member m, int64_t* out) const {
+    auto it = members_.find(m);
+    if (it == members_.end() || !it->second.has_need) return false;
+    *out = it->second.need;
     return true;
 }
 
