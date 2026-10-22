@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeAll, afterEach, afterAll } from 'vitest
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-    existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync,
+    existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ManagedProcess, NativeSinkController } from '@media-router/engine';
 import {
     holdUntilZombie, uncaughtDuring,
@@ -224,6 +224,14 @@ function gapPacket(pid: number, cc: number, lengthNs: bigint): Buffer {
 const lastCc = (buf: Buffer, pid: number) =>
     (packetsOf(buf, pid).filter((p) => p[3] & 0x10).at(-1)?.[3] ?? 0) & 0x0f;
 
+/** A capture client's verdict; `end` is eof when the edge closed between messages. */
+interface Verdict {
+    buffers: number;
+    bytes: number;
+    sha256: string;
+    end: string;
+}
+
 interface WireBuffer {
     pts: bigint;
     flags: number;
@@ -360,7 +368,7 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         edge: (pid: number) => string;
         attach: (pid: number) => Promise<void>;
         captureClient: (pid: number, file: string, expectBytes?: number) => Promise<ChildProcess>;
-        verdictOf: (proc: ChildProcess) => Promise<{ buffers: number; bytes: number; sha256: string }>;
+        verdictOf: (proc: ChildProcess) => Promise<Verdict>;
         /** Per-buffer client: wire pts, flags and size of every buffer, until killed. */
         bufferClient: (pid: number) => Promise<ChildProcess>;
         /** Its reports, once they add up to `bytes` (the same edge's capture size). */
@@ -409,7 +417,7 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         const verdictOf = async (proc: ChildProcess) => {
             const evs = (proc as ChildProcess & { evs: Array<Record<string, unknown>> }).evs;
             const v = await waitFor(() => evs.find((e) => e.captured), 'capture verdict');
-            return v.captured as { buffers: number; bytes: number; sha256: string };
+            return v.captured as Verdict;
         };
         const bufferClient = async (pid: number) => {
             // A count no test reaches: it reports every buffer until it is killed.
@@ -676,6 +684,29 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         r.send({ cmd: 'bus_detach', socket: r.edge(0x65) });
         await r.verdictOf(cap);
     }, 120_000);
+
+    it('detaches each wired output by its own path at its exit: the sockets go, the clients see EOF (B-92)', async () => {
+        const pids = [0x65, 0xc9];
+        const r = await rig([], pids);
+        // 'close', not 'exit': stdout is read to its end first.
+        const closed = new Promise<[number | null, string | null]>((res) =>
+            r.split.once('close', (code, signal) => res([code, signal])),
+        );
+        for (const pid of pids) await r.attach(pid);
+        const caps = await Promise.all(
+            pids.map((pid) => r.captureClient(pid, join(dir, `cap-b92-${pid}.ts`))),
+        );
+
+        // A systemd stop: the SIGTERM comes while both outputs are wired.
+        r.split.kill('SIGTERM');
+        expect(await closed).toEqual([0, null]);
+        const detached = r.events.filter((e) => e.event === 'detached').map((e) => e.socket);
+        expect(detached.sort()).toEqual(pids.map(r.edge).sort());
+        expect(readdirSync(dirname(r.inputSock)).filter((f) => f.endsWith('.sock'))).toEqual([]);
+        for (const c of caps) {
+            expect(await r.verdictOf(c)).toMatchObject({ buffers: 0, end: 'eof' });
+        }
+    }, 30_000);
 
     /** The python core's output per PID over `file` at the rig's chunking. */
     function refSplit(file: string, pids: number[]): Record<number, Buffer> {

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { connect, type Socket } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -399,6 +399,46 @@ describe.skipIf(!havePython || !haveSidecar)('mr-bus-fanout protocol', () => {
 
         const exit = await r.clientExit;
         expect(exit).toBe(0);
+    }, 15000);
+
+    it('detaches each attached edge by its own path at its exit: the sockets go, the clients see EOF (B-92)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'mr-fanout-test-'));
+        cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+        const sidecar = spawn(SIDECAR, ['--ingest', join(dir, 'ingest.sock'), '--caps', CAPS], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        cleanups.push(() => sidecar.kill('SIGKILL'));
+        sidecar.stderr!.on('data', (d: Buffer) => process.stderr.write(d));
+        const events = jsonLines(sidecar);
+        // 'close', not 'exit': stdout is read to its end first.
+        const closed = new Promise<[number | null, string | null]>((res) =>
+            sidecar.once('close', (code, signal) => res([code, signal])),
+        );
+        await waitFor(() => events.find((e) => e.event === 'ready'), 'sidecar ready');
+
+        const edges = [join(dir, 'edge-a.sock'), join(dir, 'edge-b.sock')];
+        const clients: Array<Awaited<ReturnType<typeof client>>> = [];
+        for (const [i, edge] of edges.entries()) {
+            sidecar.stdin!.write(
+                JSON.stringify({ cmd: 'bus_attach', tee: `busout_4100${i}`, socket: edge }) + '\n',
+            );
+            await waitFor(
+                () => events.find((e) => e.event === 'attached' && e.socket === edge),
+                `edge ${i} attached`,
+            );
+            clients.push(await client(cleanups, [edge, '--capture', join(dir, `capture-${i}.ts`)]));
+        }
+
+        // A systemd stop: the SIGTERM comes while both edges are attached.
+        sidecar.kill('SIGTERM');
+        expect(await closed).toEqual([0, null]);
+        const detached = events.filter((e) => e.event === 'detached').map((e) => e.socket);
+        expect(detached.sort()).toEqual(edges);
+        expect(readdirSync(dir).filter((f) => f.endsWith('.sock'))).toEqual([]);
+        for (const c of clients) {
+            const verdict = await waitFor(() => c.events.find((e) => e.captured), 'client verdict');
+            expect(verdict.captured).toMatchObject({ buffers: 0, end: 'eof' });
+        }
     }, 15000);
 
     it("'--stamp-timeline' is a usage error now (the rebase is unconditional)", () => {

@@ -113,7 +113,7 @@ void FanoutServer::attach(const std::string& path) {
     emit_("{\"event\":\"attached\",\"socket\":\"" + json_escape(path) + "\"}");
 }
 
-void FanoutServer::detach(const std::string& path) {
+void FanoutServer::detach(std::string path) {
     auto it = edges_.find(path);
     if (it == edges_.end()) return;
     close(it->second);

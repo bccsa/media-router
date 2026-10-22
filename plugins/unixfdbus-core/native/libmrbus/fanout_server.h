@@ -38,8 +38,9 @@ class FanoutServer {
     // included) or `error`.
     void attach(const std::string& path);
     // Close an edge listener + its clients, unlink the socket, emit
-    // `detached`. Unknown path is silently ignored.
-    void detach(const std::string& path);
+    // `detached`. Unknown path is silently ignored. By value: the entry that
+    // names the edge is erased before the path is used (detach_all, B-92).
+    void detach(std::string path);
     void detach_all();
 
     // Send one buffer to every connected client (one memfd, dup'd per

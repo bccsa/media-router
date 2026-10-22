@@ -14,9 +14,10 @@ Usage: unixfd-fanout.test-client.py <edge socket> [--buffers N]
                                     [--expect-bytes N]
 
 --capture mode (mrTssplit.test.ts): consume NEW_BUFFERs into <file>, releasing
-each buffer, and print a verdict with byte/buffer totals and the stream sha256.
-Ends after --expect-bytes bytes when given (deterministic — required by hash
-comparisons), otherwise when the peer closes the connection.
+each buffer, and print a verdict with byte/buffer totals, the stream sha256 and
+how it ended (`end`: bytes, eof = the peer closed between messages, else the
+error's name). Ends after --expect-bytes bytes when given (deterministic —
+required by hash comparisons), otherwise when the peer closes the connection.
 """
 
 import hashlib
@@ -101,6 +102,7 @@ def capture(sock, path, expect_bytes=0):
     sock.settimeout(15)
     chunks = []
     buffers = total = 0
+    end = 'eof'
     while True:
         # The ENTIRE exchange is guarded: a `bus_detach` closes this socket at
         # an arbitrary point, so the disconnect can land mid-message (between
@@ -134,8 +136,10 @@ def capture(sock, path, expect_bytes=0):
             total += len(data)
             sock.sendall(_RELEASE_HDR + _U64.pack(_U64.unpack_from(payload, 0)[0]))
             if expect_bytes and total >= expect_bytes:
+                end = 'bytes'
                 break                        # deterministic end — see docstring
-        except (OSError, EOFError):
+        except (OSError, EOFError) as e:
+            end = type(e).__name__
             break                            # edge detached — normal end
         finally:
             for fd in fds:
@@ -147,7 +151,8 @@ def capture(sock, path, expect_bytes=0):
     with open(path, 'wb') as out:
         out.write(blob)
     print(json.dumps({'captured': {'buffers': buffers, 'bytes': total,
-                                   'sha256': hashlib.sha256(blob).hexdigest()}}), flush=True)
+                                   'sha256': hashlib.sha256(blob).hexdigest(), 'end': end}}),
+          flush=True)
     return 0
 
 
