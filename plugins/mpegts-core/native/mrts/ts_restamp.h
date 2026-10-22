@@ -42,7 +42,8 @@ class RestampCore {
     static constexpr int64_t TRIM_LIMIT_NS = 2000000000;          // §5.5
     static constexpr int64_t OFFSET_LIMIT_NS = 10000000000LL;     // OQ-14
     static constexpr int64_t OUTAGE_NS = 1000000000;              // part 4.4: no packets this long
-    static constexpr int64_t GAP_FLAG_NS = 1000000000;            // a PES gap this long flags the next PCR
+    static constexpr int64_t GAP_FLAG_NS = 1000000000;            // a PES gap this long flags the next PCR;
+                                                                  // also fixed mode's shortest video jump
     static constexpr int64_t LEAD_WINDOW_NS = 10000000000LL;      // per-PID lead telemetry (part 4.3)
     // Degraded mode writes the conditioner's PCR: the program's PTS floor minus 250 ms,
     // the floor pulled down by a PID with a PES this recent, at most 1 s down.

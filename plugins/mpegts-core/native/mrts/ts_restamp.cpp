@@ -738,9 +738,11 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         // run, a clamped PID back on the program's): the hole it shows, a PES or more (B-48).
         else if (epoch != p.prev_epoch && key > p.last_key + 2 * p.interval) why = "epoch";
         else if (cfg_.mode == RestampConfig::Mode::fixed && p.n_spacing >= 2 &&
-                 key - p.last_key > 2 * upper_median(p.spacing, p.n_spacing)) {
+                 key - p.last_key > 2 * upper_median(p.spacing, p.n_spacing) &&
+                 (p.cls != StreamClass::video || key - (p.last_key + p.interval) >= GAP_FLAG_NS)) {
             // More than two PES lengths, the length being the upper median of the last three
             // spacings: a short PES (an ASRC's first output, a relock's remainder) never sets it.
+            // Video also needs a hole of GAP_FLAG_NS: a dropped frame is no gap (B-89).
             why = "jump";
             jump = true;
         }

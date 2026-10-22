@@ -116,14 +116,22 @@ def packetize(pid, data, pcr27=None, discontinuity=False):
     return out
 
 
+def jitter_of(k, jitter):
+    """Frame k's capture jitter, uniform in ±jitter: ts_restamp_test's Lcg(k + 1), first draw."""
+    s = ((k + 1) * 0x9E3779B97F4A7C15 + 1) % (1 << 64)
+    s = (s * 6364136223846793005 + 1442695040888963407) % (1 << 64)
+    return (s >> 32) % 2001 * jitter // 1000 - jitter if jitter > 0 else 0
+
+
 class Stream:
     """H.264-like video carrying the PCR (DTS one frame behind PTS), MPEG audio and PSI every
     100 ms, on a source clock at 2 h; 7-packet datagrams arriving 20 ms after they were sent.
     `lead_in`: that many PAT+PMT datagrams first, 100 ms apart, each its own datagram (a
-    consumer that joins late misses only those)."""
+    consumer that joins late misses only those). A capture under load (B-89): `jitter_v` moves
+    each frame's time by up to ±that, and the frames numbered in `drop_v` are never made."""
 
     def __init__(self, secs, h0=100 * S, sigma0=7200 * S, outage=None, lead_v=600 * MS,
-                 lead_a=400 * MS, jump=None, pmt_sec=PMT, lead_in=0):
+                 lead_a=400 * MS, jump=None, pmt_sec=PMT, lead_in=0, jitter_v=0, drop_v=()):
         # jump (t, delta): the source clock steps by delta from mux time t, flagged on the PCR.
         def sigma(t):
             return sigma0 + t + (jump[1] if jump and t >= jump[0] else 0)
@@ -132,8 +140,10 @@ class Stream:
             t = 5 * MS + k * 100 * MS
             items += [(t, 0, psi_packet(0, PAT)), (t, 1, psi_packet(PID_PMT, pmt_sec))]
         for k in range(int(secs * 25)):
+            if k in drop_v:
+                continue
             t = k * 40 * MS
-            dts = sigma(t) + lead_v
+            dts = sigma(t) + lead_v + jitter_of(k, jitter_v)
             payload = bytes((k * 7 + i) & 0xFF for i in range(4000 if k % 25 == 0 else 1200))
             data = pes(0xE0, ns90k(dts + 40 * MS), ns90k(dts), payload, bounded=False)
             flag = bool(jump) and jump[0] <= t < jump[0] + 40 * MS

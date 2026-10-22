@@ -106,6 +106,10 @@ struct Gen {
     int64_t backlog_at = -1, backlog_len = 0, backlog_drain = 0;
     int64_t a2_ahead = 0;                 // audio-2 stamped this far ahead of the rest (#820)
     int pcr_every = 1;                    // the PCR on every n-th video PES (50: every 2 s, vMix's)
+    // Video as a capture under load (B-89): each frame's time moved by up to +-v_jitter, and the
+    // frames of the slots in v_drops ([from, to), stream time) never made.
+    int64_t v_jitter = 0;
+    std::vector<std::pair<int64_t, int64_t>> v_drops;
 };
 
 struct Pkt {
@@ -212,6 +216,15 @@ Stream generate(const Gen& g) {
         const bool frozen = g.freeze_from >= 0 && m >= g.freeze_from && m < g.freeze_to;
         return ns_to_pcr27(stc(frozen ? g.freeze_from : m));
     };
+    auto v_dropped = [&](int64_t t) {
+        for (const auto& d : g.v_drops)
+            if (t >= d.first && t < d.second) return true;
+        return false;
+    };
+    auto jitter_of = [&](int64_t k) {   // uniform in +-v_jitter, by the frame's slot alone
+        Lcg r((uint64_t)k + 1);
+        return g.v_jitter > 0 ? (int64_t)(r.next() % 2001) * g.v_jitter / 1000 - g.v_jitter : 0;
+    };
     std::vector<Pkt> raw;
     for (int64_t t = 5 * MS; t < g.secs * S; t += 100 * MS) {   // the first PES come before the PSI
         if (in_outage(t)) continue;
@@ -247,6 +260,7 @@ Stream generate(const Gen& g) {
             if (e->pid == PID_A3 && (g.pmt_change_at < 0 || t < g.pmt_change_at)) continue;
             if (e->pid == PID_B1 && !g.program2) break;
             if (e->pid == PID_A2 && g.gap_from >= 0 && t >= g.gap_from && t < g.gap_to) continue;
+            if (video && v_dropped(t)) continue;
             const bool late = e->pid == PID_A1 && g.late_from >= 0 && t >= g.late_from && t < g.late_to;
             const int64_t mux0 = t + (late ? 300 * MS : 0);
             // IPBB: a P frame shows 3 slots on, a B frame at once; I and P carry a DTS.
@@ -260,7 +274,7 @@ Stream generate(const Gen& g) {
             PesInfo info;
             info.pid = e->pid;
             info.t = t;
-            info.slot_dts = t + e->lead;
+            info.slot_dts = t + e->lead + (video ? jitter_of(k) : 0);
             info.slot_pts = info.slot_dts + reorder;
             info.pts = fmod64(ns_to_pts90k(base + info.slot_pts), PTS_WRAP);
             info.dts = reorder > 0 ? fmod64(ns_to_pts90k(base + info.slot_dts), PTS_WRAP) : -1;
@@ -1438,6 +1452,32 @@ bool moved_by(const Case& c, const Ana& a, int64_t d90) {
     return n > 5000 && m > 1000;
 }
 
+// The input's video decode keys (ns, source time), in decode order.
+std::vector<int64_t> video_keys(const Case& c) {
+    std::vector<int64_t> k;
+    for (const PesInfo& p : c.st.pes)
+        if (p.pid == PID_V) k.push_back(pts90k_to_ns(p.dts >= 0 ? p.dts : p.pts));
+    return k;
+}
+
+// The steps B-21's rule alone marks on the input's video (the core before B-89): past twice the
+// upper median of the three spacings before it, for holes more than three PES apart.
+int b21_marks(const Case& c) {
+    const std::vector<int64_t> k = video_keys(c);
+    int n = 0;
+    for (size_t i = 4; i < k.size(); i++) {
+        const int64_t a = k[i - 3] - k[i - 4], b = k[i - 2] - k[i - 3], d = k[i - 1] - k[i - 2];
+        n += k[i] - k[i - 1] > 2 * std::max(std::min(a, b), std::min(std::max(a, b), d));
+    }
+    return n;
+}
+
+int pcr_flagged(const Ana& a, int pid) {
+    int n = 0;
+    for (const OutPcr& p : a.pcr.at(pid)) n += p.di;
+    return n;
+}
+
 void test_fixed() {
     // A local mux: PES = running time + 1 h; arrival on running time, the base added.
     Gen g;
@@ -1487,6 +1527,63 @@ void test_fixed() {
     const std::map<int, int> nj = gap_count(j, "jump", 100 * MS, 0, &jok);
     CHECK("fixed: 5 missing audio-2 PES: one gap marker of 100 ms on audio-2, reason jump",
           one_each(nj, {PID_A2}) && jok && gaps_placed(j, analyze(cj, j, true)));
+
+    // A video capture under load drops frames (B-89): 40 ms frames, each within +-4 ms of its slot.
+    // A dropped frame is no gap; a video PID's jump needs a hole of GAP_FLAG_NS (1 s).
+    for (const int frames : {1, 2, 5}) {
+        Gen gv = g;
+        gv.v_jitter = 4 * MS;
+        for (int64_t t = 1 * S; t < 59 * S; t += 1500 * MS) gv.v_drops.push_back({t, t + frames * 40 * MS});
+        const Case cv = make_case(gv, 0, 0, 3, false);
+        const Out v = run(cv, fixed_cfg(true, base));
+        const Ana vv = analyze(cv, v, true);
+        const int n = (int)gv.v_drops.size(), old = b21_marks(cv);
+        const int64_t holes = vv.unsignalled.count(PID_V) ? vv.unsignalled.at(PID_V) : 0;
+        std::printf("  video, %d frame(s) missing x%d: %zu marker(s), B-21's rule alone %d; %.1f ms of holes"
+                    " unmarked\n", frames, n, v.gaps.size(), old, holes / 1e6);
+        char name[200];
+        std::snprintf(name, sizeof name,
+                      "fixed video: %d frame(s) missing x%d under +-4 ms jitter: no gap, no marker, no event but "
+                      "the PMT's; the holes left as they are, bytes and PCR moved by the base, no PCR flagged",
+                      frames, n);
+        CHECK(name, v.gaps.empty() && (int)v.events.size() == count_events(v, Ev::Kind::psi_change) &&
+                        iabs(holes - (int64_t)n * frames * 40 * MS) <= n * 8 * MS && vv.matched && vv.ordered &&
+                        vv.atomic && vv.cc_lost == 0 && monotonic(vv) && moved_by(cv, vv, 1111104000LL) &&
+                        pcr_flagged(vv, PID_V) == 0);
+        std::snprintf(name, sizeof name, "fixed video: %d frame(s) missing: B-21's rule alone marks %s (%d of %d)",
+                      frames, frames == 1 ? "some, not all, as on .108" : "every one", old, n);
+        CHECK(name, frames == 1 ? old > 0 && old < n : old == n);
+    }
+    // 30 frames missing: a hole of 1.2 s and the capture's jitter, (next - last) - (last - prev).
+    Gen gh = g;
+    gh.v_jitter = 4 * MS;
+    gh.v_drops = {{30 * S, 31200 * MS}};
+    const Case ch = make_case(gh, 0, 0, 3, false);
+    const Out h = run(ch, fixed_cfg(true, base));
+    const Ana hh = analyze(ch, h, true);
+    const std::vector<int64_t> kh = video_keys(ch);
+    const size_t next = 30 * S / (40 * MS);   // the first PES after the hole
+    const int64_t hole = (kh[next] - kh[next - 1]) - (kh[next - 1] - kh[next - 2]);
+    bool hok = false;
+    const std::map<int, int> nh = gap_count(h, "jump", hole, TICK_NS, &hok);
+    std::printf("  video, 30 frames missing: hole %.3f ms, %zu marker(s)\n", hole / 1e6, h.gaps.size());
+    CHECK("fixed video: a 1.2 s hole (30 frames) is one jump marker on video, its length the hole's, before the PES "
+          "that shows it; one event, the next PCR flagged",
+          one_each(nh, {PID_V}) && hok && iabs(hole - 1200 * MS) <= 16 * MS && gaps_placed(h, hh) &&
+              count_events(h, Ev::Kind::gap) == 1 && count_events(h, Ev::Kind::gap, "jump") == 1 &&
+              pcr_flagged(hh, PID_V) == 1 && hh.matched && hh.cc_lost == 0 && monotonic(hh));
+    // The bound, on exact frames: the hole counts, not the step, and 1 s itself is a jump.
+    for (const int frames : {24, 25}) {
+        Gen gb = g;
+        gb.v_drops = {{30 * S, 30 * S + frames * 40 * MS}};
+        const Case cb = make_case(gb, 0, 0, 3, false);
+        const Out b = run(cb, fixed_cfg(true, base));
+        bool bok = false;
+        const std::map<int, int> nb = gap_count(b, "jump", 1 * S, 0, &bok);
+        CHECK(frames == 24 ? "fixed video: a hole of 960 ms (a step of exactly 1 s) marks nothing"
+                           : "fixed video: a hole of exactly 1 s marks one jump, of exactly 1 s",
+              frames == 24 ? b.gaps.empty() : one_each(nb, {PID_V}) && bok);
+    }
 }
 
 // --- Acceptance: PMT change, discontinuity, straddle, outage, degraded -------------------

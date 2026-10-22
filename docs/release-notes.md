@@ -194,6 +194,14 @@ elements" below do not start.
   the module started. Fixed: the Video Encoder shows its encode latency, and
   a module's output lateness appears a few seconds after a consumer is
   connected to it.
+- **A dropped video frame is no longer reported as a gap.** Under load the
+  Video Encoder drops capture frames by design (on a busy Pi 4, about one in
+  five). Each one went out as a gap in its stream: a line in the engine log
+  every time, thousands an hour, enough to push the rest of a Pi 4's log out
+  within hours, and a resynchronisation at each one in every module that
+  unpacks the stream (Video Player, the transcoders, the MPEG-TS Muxer).
+  Fixed: on video only a hole of a second or more counts as a gap; a dropped
+  frame leaves the previous picture up a moment longer, as before.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

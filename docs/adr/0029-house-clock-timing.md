@@ -1467,7 +1467,14 @@ design's §5.2 keeps the general rule.
   quantum rising from 512 to 2,048 samples gives two markers and then none,
   where "twice the longer of the last two non-jump spacings" gave 299.
   Phase 2's aligners should not lower on a marker shorter than the PID's
-  PES length: those two are false.
+  PES length: those two are false. On a video PID the hole, the step less
+  the PID's last spacing, must also be 1 s or more (`GAP_FLAG_NS`, the
+  restamp's outage and PCR-flag bound; B-89): one dropped frame is a
+  spacing of two frame lengths ± capture jitter, so the 2× rule alone
+  marked about half of a loaded capture's drops (7,655 in 66.7 min of
+  .108's ATEM capture at 19.6 fps), each a `tsdemux` flush downstream and
+  a log line, where a decoder only holds the last frame. A video marker is
+  never shorter than its PES length.
 - **video-encoder keeps `liveCaptureClock`** (its natural base time avoids
   the measured aggregator mis-schedule) and adds the base back:
   `mpegtsmux name=mux latency=0 alignment=0 ! mrtsrestamp clock-mode=fixed

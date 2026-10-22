@@ -11,6 +11,7 @@ not a twin; chapter 3 part 4.5 rule 1):
   - each marker comes through srt-input's queue (leaky=2 max-size-time=100 ms) after a live
     edit and after a simulated 3 s outage, every time;
   - with arrival=clock the element's task marks a real outage at detection and every 250 ms;
+  - fixed mode: video with dropped frames gives no marker, a 1.2 s video hole one (B-89);
   - trace-location records the core's .stct, from the start and from a live change;
   - pid-trims parsing, the counters and the stats snapshot, a restart, a flush;
   - any chunking: packets split over buffers and over memories leave as the core makes them;
@@ -730,6 +731,37 @@ check(f"... every PES before the edit moved by exactly the base time ({_moves})"
 check("... which lands ahead of the arrival by the lead and the edit",
       all(800 * MS < m[1] - m[2] < 1300 * MS for m in _mf))
 hf.stop()
+
+print("\n--- fixed mode: a dropped video frame is no gap (B-89) ---")
+
+
+def dropped_run(drops):
+    """The fixed-mode element, as video-encoder runs it, over a 10 s local mux whose frames each
+    lie within ±4 ms of their slot and whose frames numbered in `drops` are missing: its items,
+    the core's, and its gap events."""
+    hv = Harness(clock_mode="fixed", add_base_time=True, arrival="buffer-pts")
+    base = hv.el.get_base_time()
+    sv = Stream(10, sigma0=100 * S + 3600 * S, jitter_v=4 * MS, drop_v=drops)
+    rec = [("B", a, d) for a, d in sv.datagrams] + [("E",)]
+    ref = reference(rec, fixed=True, base=base)
+    drive(hv, rec)
+    out = (hv.items(), expected_items(rec, ref, base=base),
+           [e for e in hv.messages("mrtsrestamp-event") if e["kind"] == "gap"])
+    hv.stop()
+    return out
+
+
+# B-21's rule alone marked every 2- and 5-frame hole here.
+_gd, _wd, _ed = dropped_run({50} | {100, 101} | set(range(150, 155)))
+check(f"1, 2 and 5 frames missing: no GAP buffer, no gap event; the core's bytes "
+      f"({len(_gd)} items)", _gd == _wd and not [x for x in _gd if x[0] == "gap"] and not _ed)
+_gh, _wh, _eh = dropped_run(set(range(150, 180)))
+_mh = [x for x in _gh if x[0] == "gap"]
+check(f"a 1.2 s hole (30 frames): one GAP buffer, on the video PID, the hole's length "
+      f"({[round(gap_length(x[3]) / MS, 3) for x in _mh]} ms), reason jump; the core's bytes",
+      _gh == _wh and len(_mh) == 1 and fx.pkt_pid(_mh[0][3]) == PID_V
+      and abs(gap_length(_mh[0][3]) - 1200 * MS) <= 16 * MS
+      and [e["reason"] for e in _eh] == ["jump"])
 
 print("\n--- the stats cadence starts at the first buffer ---")
 hc = Harness(arrival="buffer-pts", stats_interval_ms=1000)
