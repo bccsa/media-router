@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeModuleValue, describeModule, checkWrite, metaAt, touchedModules, type DescribableModule } from './describe.js';
+import { describeModuleValue, describeModule, checkWrite, metaAt, settingMaximum, touchedModules, type DescribableModule } from './describe.js';
 import { WriteRequestSchema, PatternListSchema } from './protocol.js';
 
 const mod: DescribableModule = {
@@ -85,6 +85,33 @@ describe('describeModuleValue', () => {
     it('treats module fields as writable only when listed', () => {
         expect(describeModuleValue(mod, ['enabled'])?.access).toBe('write');
         expect(describeModuleValue(mod, ['health'])?.access).toBe('read');
+    });
+});
+
+describe('settingMaximum (B-103)', () => {
+    const volume = { type: 'number', maximum: 150, 'x-maxFrom': 'volumeMax' };
+    const bitrate = { type: 'number', maximum: 510, 'x-maxBy': { field: 'codec', map: { opus: 510, aac: 320 } } };
+
+    it("x-maxFrom's setting, over the static maximum either way", () => {
+        expect(settingMaximum(volume, { volumeMax: 500 })).toBe(500);
+        expect(settingMaximum(volume, { volumeMax: 100 })).toBe(100);
+    });
+
+    it('a missing or non-numeric x-maxFrom setting falls back to the static maximum', () => {
+        expect(settingMaximum(volume, {})).toBe(150);
+        expect(settingMaximum(volume, { volumeMax: '500' })).toBe(150);
+        expect(settingMaximum(volume, { volumeMax: null })).toBe(150);
+    });
+
+    it("x-maxBy's entry for the field's value, else the static maximum", () => {
+        expect(settingMaximum(bitrate, { codec: 'aac' })).toBe(320);
+        expect(settingMaximum(bitrate, { codec: 'mp3' })).toBe(510);
+        expect(settingMaximum(bitrate, {})).toBe(510);
+    });
+
+    it('the static maximum, or none', () => {
+        expect(settingMaximum({ type: 'number', maximum: 85 }, { volumeMax: 500 })).toBe(85);
+        expect(settingMaximum({ type: 'number' }, {})).toBeUndefined();
     });
 });
 

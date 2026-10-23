@@ -32,6 +32,15 @@ function killedAtBound(): Error {
     });
 }
 
+/** The error execFile hands its callback when something else killed the child (the OOM killer). */
+function killedBySignal(signal: string): Error {
+    return Object.assign(new Error('Command failed: gst-inspect-1.0'), {
+        killed: false,
+        signal,
+        code: null,
+    });
+}
+
 describe('probeGstElement', () => {
     beforeEach(() => {
         execFileMock.mockReset();
@@ -93,6 +102,25 @@ describe('probeGstElement', () => {
         );
         await expect(probeGstElement('timed-out-element-5')).resolves.toBe(true);
         await expect(probeGstElement('timed-out-element-5')).resolves.toBe(true);
+        expect(execFileMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('a run killed by a signal (an OOM kill) is no answer either: it rejects and is not cached', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, killedBySignal('SIGKILL')),
+        );
+        const err = await probeGstElement('killed-element-7').catch((e: unknown) => e);
+        expect(isGstInspectTimeout(err)).toBe(true);
+        expect((err as Error).message).toBe(
+            'gst-inspect-1.0 killed-element-7 was killed by SIGKILL, so whether killed-element-7 ' +
+                'is installed is not known',
+        );
+
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null),
+        );
+        await expect(probeGstElement('killed-element-7')).resolves.toBe(true);
+        await expect(probeGstElement('killed-element-7')).resolves.toBe(true);
         expect(execFileMock).toHaveBeenCalledTimes(2);
     });
 
@@ -319,6 +347,7 @@ echo "$1" >> "$FAKE_GST_INSPECT_DIR/runs.log"
 case "$1" in
 slow-*) sleep 2.5 ;;
 hang-*) [ -e "$FAKE_GST_INSPECT_DIR/$1.answers" ] || exec sleep 60 ;;
+oom-*) [ -e "$FAKE_GST_INSPECT_DIR/$1.answers" ] || kill -9 $$ ;;
 *) echo "No such element or plugin '$1'" >&2; exit 255 ;;
 esac
 echo "Factory Details:"
@@ -401,6 +430,18 @@ describe('a slow or hung gst-inspect-1.0 on PATH (B-102)', () => {
             boundMs = null;
         }
     }, 15_000);
+
+    it('a run killed by a signal is not cached as absent: the next call runs it again', async () => {
+        await expect(probeGstElement('oom-element')).rejects.toThrow(
+            'gst-inspect-1.0 oom-element was killed by SIGKILL',
+        );
+        expect(runs('oom-element')).toBe(1);
+
+        fs.writeFileSync(path.join(dir, 'oom-element.answers'), '');
+        await expect(probeGstElement('oom-element')).resolves.toBe(true);
+        await expect(probeGstElement('oom-element')).resolves.toBe(true);
+        expect(runs('oom-element')).toBe(2);
+    });
 
     it('a failed run is absent and cached, as before', async () => {
         await expect(probeGstElement('missing-element')).resolves.toBe(false);

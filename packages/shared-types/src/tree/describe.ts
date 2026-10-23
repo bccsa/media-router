@@ -62,6 +62,20 @@ function num(v: unknown): number | undefined {
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
+/**
+ * A setting's effective maximum: its `x-maxFrom` setting when that holds a number, else its `x-maxBy`
+ * entry, else `maximum`. One rule for the write checks here and the engine's check at a start (B-103).
+ */
+export function settingMaximum(prop: SchemaProp, settings: Record<string, unknown>): number | undefined {
+    const maxFrom = prop['x-maxFrom'] as string | undefined;
+    const maxBy = prop['x-maxBy'] as { field: string; map: Record<string, number> } | undefined;
+    return (
+        (maxFrom ? num(settings[maxFrom]) : undefined) ??
+        (maxBy ? num(maxBy.map[String(settings[maxBy.field] ?? '')]) : undefined) ??
+        num(prop.maximum)
+    );
+}
+
 function describeSetting(mod: DescribableModule, key: string): ValueDescriptor | null {
     const prop = schemaProps(mod)[key];
     if (!prop) return null;
@@ -70,13 +84,7 @@ function describeSetting(mod: DescribableModule, key: string): ValueDescriptor |
     const live = mod.liveUpdatableParams
         ? mod.liveUpdatableParams.includes(key)
         : prop['x-live'] === true || prop['x-liveUpdatable'] === true;
-    const maxFrom = prop['x-maxFrom'] as string | undefined;
-    const maxBy = prop['x-maxBy'] as { field: string; map: Record<string, number> } | undefined;
     const enumBy = prop['x-enumBy'] as { field: string; map: Record<string, unknown[]> } | undefined;
-    const max =
-        (maxFrom ? num(settings[maxFrom]) : undefined) ??
-        (maxBy ? num(maxBy.map[String(settings[maxBy.field] ?? '')]) : undefined) ??
-        num(prop.maximum);
     const d: ValueDescriptor = {
         access: readOnly ? 'read' : 'write',
         type: prop.type as string | undefined,
@@ -84,7 +92,7 @@ function describeSetting(mod: DescribableModule, key: string): ValueDescriptor |
         description: prop.description as string | undefined,
         unit: prop['x-unit'] as string | undefined,
         min: num(prop.minimum),
-        max,
+        max: settingMaximum(prop, settings),
         step: num(prop['x-step']),
         enum: (enumBy ? enumBy.map[String(settings[enumBy.field] ?? '')] : undefined) ?? (prop.enum as unknown[] | undefined),
         enumLabels: prop['x-enumLabels'] as Record<string, string> | undefined,

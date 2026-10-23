@@ -334,10 +334,24 @@ elements" below do not start.
   without the engine. Rebuilding the list takes 2 to 3 s on a busy Pi 4, and
   the engine gave up after 2 s, before the list was saved. Fixed: the engine
   waits up to 30 s, so its first start rebuilds the list and later starts are
-  as quick as before. A check that still runs out of time says so, instead of
-  reporting GStreamer as missing; and a module whose check of the encoders,
-  decoders or 302M support on the box ran out of time checks again when it
-  starts, instead of going without them until the engine restarts.
+  as quick as before. A check that still runs out of time, or is cut short (the
+  box running out of memory, for one), says so, instead of reporting GStreamer
+  as missing; and a module whose check of the encoders, decoders or 302M
+  support on the box did not finish checks again when it starts, instead of
+  going without them until the engine restarts.
+- **An audio volume above 150 % set with a wider Volume Range now survives an
+  engine restart.** On Audio Input (302M) and Audio Output (302M), and on the
+  deprecated Audio Input, Audio Output, Audio Encoder and Audio Decoder, a
+  volume above 150 % (which a Volume Range of 200, 300 or 500 allows) went back
+  to 100 % at every engine restart, while the manager kept showing the value
+  set: on a test box an ATEM's audio input set to 500 % ran at 100 % after a
+  restart. Fixed: the engine checks a volume against the module's Volume Range
+  at a restart, as the manager does when it is set, so the module starts at
+  the value set. A volume above its range (the range lowered after the volume
+  was set) starts at 100 % as before, now also when it is 150 % or less: set
+  the volume within the new range when you lower it. Likewise an Audio Encoder
+  bitrate above 320 kbps with AAC, which the settings refuse, now starts at the
+  default 128 kbps instead of 320 kbps.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

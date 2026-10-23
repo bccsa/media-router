@@ -6,6 +6,7 @@ export { getAt, keysOf, applyTreeOp } from './apply.js';
 export {
     describeModuleValue,
     describeModule,
+    settingMaximum,
     metaAt,
     touchedModules,
     checkWrite,

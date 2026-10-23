@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
-import Ajv from 'ajv';
+import Ajv, { type ValidateFunction } from 'ajv';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
-import { ConfigValidationError, createLogger } from '@media-router/shared-types';
+import { ConfigValidationError, createLogger, settingMaximum } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { PluginLoader } from '../plugins/PluginLoader.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -13,6 +13,39 @@ import { ModuleInstance } from './ModuleInstance.js';
 
 const log = createLogger('ModuleManager');
 const ajv = new Ajv({ allErrors: true, useDefaults: true, strict: false });
+
+type SchemaProps = Record<string, Record<string, unknown>>;
+
+/** Per plugin schema, its validators with moved maxima, by those maxima: ajv keeps every compile. */
+const movedValidators = new WeakMap<object, Map<string, ValidateFunction>>();
+
+/**
+ * A validator of the plugin's schema with each maximum as the manager reads it from these settings
+ * (x-maxFrom, x-maxBy): a value the manager accepts survives a start, one it refuses does not (B-103).
+ */
+function settingsValidator(
+    schema: Record<string, unknown>,
+    settings: Record<string, unknown>,
+): ValidateFunction {
+    const props = (schema.properties ?? {}) as SchemaProps;
+    const moved: Array<[string, number]> = [];
+    for (const [key, prop] of Object.entries(props)) {
+        const maximum = settingMaximum(prop, settings);
+        if (maximum !== undefined && maximum !== prop.maximum) moved.push([key, maximum]);
+    }
+    if (moved.length === 0) return ajv.compile(schema);
+    const byMaxima = movedValidators.get(schema) ?? new Map<string, ValidateFunction>();
+    movedValidators.set(schema, byMaxima);
+    const id = JSON.stringify(moved);
+    let validate = byMaxima.get(id);
+    if (!validate) {
+        const properties = { ...props };
+        for (const [key, maximum] of moved) properties[key] = { ...props[key], maximum };
+        validate = ajv.compile({ ...schema, properties });
+        byMaxima.set(id, validate);
+    }
+    return validate;
+}
 
 /**
  * Manages all module instances.
@@ -82,7 +115,7 @@ export class ModuleManager extends EventEmitter {
         // Validate config against plugin's JSON Schema — reset invalid values to defaults
         const schema = loaded?.manifest?.configSchema;
         if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
-            const validate = ajv.compile(schema);
+            const validate = settingsValidator(schema, config);
             if (!validate(config)) {
                 const errors =
                     validate.errors?.map((e) => `${e.instancePath || '/'} ${e.message}`) ?? [];
@@ -92,12 +125,7 @@ export class ModuleManager extends EventEmitter {
                 );
 
                 // Reset invalid properties to their schema defaults
-                const props =
-                    (
-                        schema as Record<string, unknown> & {
-                            properties?: Record<string, Record<string, unknown>>;
-                        }
-                    ).properties ?? {};
+                const props = (schema.properties ?? {}) as SchemaProps;
                 for (const err of validate.errors ?? []) {
                     const key = (err.instancePath || '').replace(/^\//, '');
                     if (key && props[key]?.default !== undefined) {

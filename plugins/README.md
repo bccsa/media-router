@@ -408,9 +408,9 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
 | `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |
 | `x-debounceMs` | `number` | Live-update strategy for slow underlying APIs: only fire after the value has been idle for N ms (default is a 50 ms throttle that fires the first change immediately). Use for sliders where each change is expensive — e.g. `"x-debounceMs": 300` on video bitrate so the encoder isn't reconfigured on every pixel of slider drag. |
-| `x-maxFrom` | `string` | Key of another setting whose value is this field's maximum (its slider and its typed box), ahead of `x-maxBy` and `maximum` |
+| `x-maxFrom` | `string` | Key of another setting whose value (when it holds a number) is this field's maximum, ahead of `x-maxBy` and `maximum`. One rule, shared-types' `settingMaximum`, for its slider, its typed box, the manager's write check and the engine's check at a module's start, where a stored value above it is reset to its default (B-103) |
 | `x-enumBy` | `{ field, map }` | Field-dependent dropdown options (e.g. `{ "field": "codec", "map": { "opus": [...], "aac": [...] } }`) |
-| `x-maxBy` | `{ field, map }` | Field-dependent max for number inputs (e.g. `{ "field": "codec", "map": { "opus": 8, "aac": 6 } }`) |
+| `x-maxBy` | `{ field, map }` | Field-dependent max for number inputs (e.g. `{ "field": "codec", "map": { "opus": 8, "aac": 6 } }`), read by the same rule as `x-maxFrom` |
 | `x-showWhen` | `string` | Only show field when condition matches (e.g. `"codec=opus"`) |
 | `x-advanced` | `boolean` | **(array-item fields only)** Collapse this property into a per-item **Advanced** section in `MrArrayField`, and treat it as an optional _override_: it is NOT seeded with a default on Add, an absent value means "inherit", and the control offers an explicit way back to inherit ("Inherit (global)" for enums, a ↺ reset button or a cleared box for numbers). Used by the transcoder for per-rendition encoder overrides. |
 | `x-contextMenu` | `boolean` | Show this setting in the module's right-click context menu |

@@ -8,15 +8,17 @@ import { execFile } from 'child_process';
 export const GST_INSPECT_TIMEOUT_MS = 30_000;
 
 /**
- * A gst-inspect-1.0 run killed at GST_INSPECT_TIMEOUT_MS. It says nothing about the element, so
- * no probe caches it: the next call runs gst-inspect again (B-102).
+ * A gst-inspect-1.0 run with no answer: killed at GST_INSPECT_TIMEOUT_MS, or by a signal (an OOM
+ * kill during a cold scan). It says nothing about the element, so no probe caches it (B-102).
  */
 export class GstInspectTimeoutError extends Error {
-    constructor(args: readonly string[]) {
+    constructor(args: readonly string[], signal?: string) {
         const what = args.join(' ');
         super(
-            `gst-inspect-1.0 ${what} timed out after ${GST_INSPECT_TIMEOUT_MS / 1000} s, so whether ` +
-                `${what} is installed is not known (GStreamer's plugin registry scan hung or ran too slow)`,
+            signal
+                ? `gst-inspect-1.0 ${what} was killed by ${signal}, so whether ${what} is installed is not known`
+                : `gst-inspect-1.0 ${what} timed out after ${GST_INSPECT_TIMEOUT_MS / 1000} s, so whether ` +
+                      `${what} is installed is not known (GStreamer's plugin registry scan hung or ran too slow)`,
         );
         this.name = 'GstInspectTimeoutError';
     }
@@ -31,8 +33,8 @@ let firstRun: Promise<unknown> | null = null;
 
 /**
  * One gst-inspect-1.0 run: its stdout on exit 0, null on a failed exit, GstInspectTimeoutError
- * when killed at the bound. The process's first run goes alone: on a cold registry it rescans
- * and saves it, and the rest load it instead of each rescanning at once (B-102).
+ * when killed at the bound or by a signal. The process's first run goes alone: on a cold registry
+ * it rescans and saves it, and the rest load it instead of each rescanning at once (B-102).
  */
 function gstInspect(args: string[]): Promise<string | null> {
     const run = () =>
@@ -44,6 +46,7 @@ function gstInspect(args: string[]): Promise<string | null> {
                 (err, stdout) => {
                     if (!err) resolve(stdout);
                     else if (err.killed) reject(new GstInspectTimeoutError(args));
+                    else if (err.signal) reject(new GstInspectTimeoutError(args, err.signal));
                     else resolve(null);
                 },
             );
