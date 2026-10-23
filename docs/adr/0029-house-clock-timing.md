@@ -1697,7 +1697,9 @@ were rejected: they move the mapping the lead row judges. The design's
   (§5.5); Smoothing Cooldown's box alike, since a value typed on the way (a
   cleared box's 0, the 1 of 10) would reach a held clock line. Each box keeps a draft of its uncommitted text, so a re-render of
   the settings form, which any engine's store patch causes, never resets
-  what is being typed.
+  what is being typed. Since B-104 (2026-10-23, the owner's) every settings
+  box works so, and an entry out of bounds, empty or not a number is
+  refused with its reason, never clamped or read as 0.
 - **The card.** Network ingests: a `clock` badge (Locked, Acquiring,
   Degraded, No PCR), a Clock section (state, source rate in ppm, residual
   p99, re-locks, last event) and one section per PID (lead min, median and

@@ -82,6 +82,11 @@ function setValue(v: unknown) {
 }
 
 const accept = (e: ValueEntry) => e.desc.access === 'write' && e.kind !== 'vu' && isScalar(e.desc);
+// A number to set is read against the target's own rules when it commits (B-104).
+const valueRule = computed(() => {
+    const d = target.desc.value;
+    return d?.type === 'string' ? undefined : { type: d?.type === 'integer' ? 'integer' : 'number', min: d?.min, max: d?.max, unit: d?.unit };
+});
 const enumOptions = computed(() => (target.desc.value?.enum ?? []).map((v) => ({ value: String(v), label: target.desc.value?.enumLabels?.[String(v)] ?? String(v) })));
 </script>
 
@@ -118,6 +123,7 @@ const enumOptions = computed(() => (target.desc.value?.enum ?? []).map((v) => ({
                     :model-value="action.value as string | number"
                     label="Set to"
                     :type="target.desc.value?.type === 'string' ? 'text' : 'number'"
+                    :rule="valueRule"
                     @update:model-value="setValue"
                 />
             </template>

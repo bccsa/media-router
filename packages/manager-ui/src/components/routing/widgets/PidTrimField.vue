@@ -3,11 +3,8 @@
 // stored as one map (decimal PID → ms) and emitted whole. Rows come from the PIDs the plugin
 // publishes (ADR-0007); a trim whose PID left the stream stays in the map, greyed.
 import { computed } from 'vue';
-import {
-    commitNumberBox,
-    useNumberBoxDrafts,
-    type FormField,
-} from '@/composables/useModuleSettingsForm';
+import type { FormField } from '@/composables/useModuleSettingsForm';
+import { useEntryDrafts } from '@/composables/useEntryDrafts';
 
 const props = defineProps<{
     field: FormField;
@@ -77,19 +74,15 @@ const offset = computed(() =>
 const formatMs = (ms: number): string => String(Math.round(ms * 1000) / 1000);
 
 // Drafts by PID: a new O, another PID's trim or a PMT update can re-render this widget mid-typing.
-const drafts = useNumberBoxDrafts();
+const drafts = useEntryDrafts();
 
 // On change only (Enter, blur, a spinner step): each live trim edit is a gap or a drop on the
-// engine (§5.5), so a half-typed value must never reach it.
+// engine (§5.5), so a half-typed value must never reach it, and one out of bounds is refused.
 function commit(row: Row, event: Event): void {
-    drafts.close(row.pid);
     const { minimum: min, maximum: max } = props.field.additionalProperties ?? {};
-    const next = commitNumberBox(event.target as HTMLInputElement, row.trim, {
-        min,
-        max,
-        step: step.value,
-    });
-    if (next === row.trim) return;
+    const rule = { type: 'number', min, max, step: step.value, unit: unit.value };
+    const next = drafts.commit(row.pid, event, row.trim, rule)?.value as number | undefined;
+    if (next === undefined) return;
     const map = { ...trims.value };
     // A zero trim leaves the map, so clearing a stale row removes it.
     if (next === 0) delete map[row.pid];
@@ -117,39 +110,56 @@ function onWheel(event: WheelEvent): void {
                 <span class="w-20">Trim{{ unit && ` (${unit})` }}</span>
                 <span class="w-14 text-right">Shift{{ unit && ` (${unit})` }}</span>
             </div>
-            <div
-                v-for="row in rows"
-                :key="row.pid"
-                :data-pid="row.pid"
-                class="flex items-center gap-2"
-                :class="{ 'opacity-50': disabled || !row.detected }"
-            >
-                <div class="flex-1 min-w-0">
-                    <div class="font-mono text-xs text-foreground">{{ row.hex }}</div>
-                    <div class="truncate text-[10px] text-muted" :title="row.type" data-test="type">
-                        {{ row.type }}
+            <template v-for="row in rows" :key="row.pid">
+                <div
+                    :data-pid="row.pid"
+                    class="flex items-center gap-2"
+                    :class="{ 'opacity-50': disabled || !row.detected }"
+                >
+                    <div class="flex-1 min-w-0">
+                        <div class="font-mono text-xs text-foreground">{{ row.hex }}</div>
+                        <div
+                            class="truncate text-[10px] text-muted"
+                            :title="row.type"
+                            data-test="type"
+                        >
+                            {{ row.type }}
+                        </div>
                     </div>
+                    <input
+                        type="number"
+                        :value="drafts.shown(row.pid, row.trim)"
+                        :min="field.additionalProperties?.minimum"
+                        :max="field.additionalProperties?.maximum"
+                        :step="step"
+                        :disabled="disabled"
+                        :title="disabledReason"
+                        :aria-label="`Trim for PID ${row.hex}`"
+                        class="w-20 px-2 py-1 text-sm rounded-md outline-none transition-colors bg-input border text-foreground tabular-nums"
+                        :class="[
+                            { 'cursor-not-allowed': disabled },
+                            drafts.reason(row.pid, row.trim) ? 'border-error' : 'border-border',
+                        ]"
+                        @input="drafts.onInput(row.pid, $event)"
+                        @change="commit(row, $event)"
+                        @blur="drafts.onBlur(row.pid, $event)"
+                        @wheel="onWheel"
+                    />
+                    <span
+                        class="w-14 text-right text-xs tabular-nums text-subtle"
+                        data-test="shift"
+                    >
+                        {{ formatMs(offset + row.trim) }}
+                    </span>
                 </div>
-                <input
-                    type="number"
-                    :value="drafts.shown(row.pid, row.trim)"
-                    :min="field.additionalProperties?.minimum"
-                    :max="field.additionalProperties?.maximum"
-                    :step="step"
-                    :disabled="disabled"
-                    :title="disabledReason"
-                    :aria-label="`Trim for PID ${row.hex}`"
-                    class="w-20 px-2 py-1 text-sm rounded-md outline-none transition-colors bg-input border border-border text-foreground tabular-nums"
-                    :class="{ 'cursor-not-allowed': disabled }"
-                    @input="drafts.onInput(row.pid, $event)"
-                    @change="commit(row, $event)"
-                    @blur="drafts.onBlur(row.pid, $event)"
-                    @wheel="onWheel"
-                />
-                <span class="w-14 text-right text-xs tabular-nums text-subtle" data-test="shift">
-                    {{ formatMs(offset + row.trim) }}
-                </span>
-            </div>
+                <p
+                    v-if="drafts.reason(row.pid, row.trim)"
+                    class="text-right text-[10px] text-error"
+                    :data-reason-pid="row.pid"
+                >
+                    {{ drafts.reason(row.pid, row.trim) }}
+                </p>
+            </template>
             <p class="text-[9px] text-muted">
                 Shift = Ingest Offset ({{ formatMs(offset) }}{{ unit && ` ${unit}` }}) + trim
             </p>

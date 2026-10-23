@@ -166,6 +166,37 @@ describe('MrContextMenu', () => {
             expect(emitted![0][0]).toBe('setting:volume');
         });
 
+        it("an outside press blurs the slider's typed box first, so its entry commits (B-104)", async () => {
+            const events: string[] = [];
+            const wrapper = mount(MrContextMenu, {
+                props: {
+                    items: sliderItems,
+                    x: 100,
+                    y: 100,
+                    onSliderChange: (action: string, value: number) =>
+                        events.push(`${action}=${value}`),
+                    onClose: () => events.push('close'),
+                },
+                global: { stubs: { Teleport: true } },
+                attachTo: document.body,
+            });
+            // The outside-press listener is installed a frame after mount.
+            await new Promise((r) => requestAnimationFrame(() => r(null)));
+            const box = wrapper.get('input[type="number"]');
+            const el = box.element as HTMLInputElement;
+            el.focus();
+            el.value = '120';
+            await box.trigger('input');
+            expect(events).toEqual([]);
+            // As a browser does: a box left with changed text fires change.
+            el.addEventListener('blur', () => el.dispatchEvent(new Event('change')));
+
+            document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+            expect(events).toEqual(['setting:volume=120', 'close']);
+            wrapper.unmount();
+        });
+
         it('does not render slider as a button', () => {
             const wrapper = mount(MrContextMenu, {
                 props: { items: sliderItems, x: 100, y: 100 },

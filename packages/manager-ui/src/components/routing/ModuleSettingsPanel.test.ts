@@ -209,6 +209,12 @@ function enterUnparseable(el: HTMLInputElement): void {
     Object.defineProperty(el, 'validity', { configurable: true, value: { badInput: true } });
 }
 
+/** Why a setting's last entry was refused, as its block shows it (B-104). */
+function reasonIn(wrapper: VueWrapper, title: string): string | undefined {
+    const reason = settingBlock(wrapper, title).find('[data-test="reason"]');
+    return reason.exists() ? reason.text() : undefined;
+}
+
 describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
     beforeEach(() => {
         setActivePinia(createPinia());
@@ -257,16 +263,16 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         });
     });
 
-    it("clamps a trim to the schema's per-PID bound", async () => {
+    it("refuses a trim past the schema's per-PID bound, with the reason, and writes nothing", async () => {
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
 
         await settingBlock(wrapper, 'Per-PID Trim').get('[data-pid="257"] input').setValue('2500');
 
-        expect(mockModuleSetting).toHaveBeenCalledWith('eng-1', 'srt-input-1', 'pidTrimsMs', {
-            '257': 2000,
-            '300': 15,
-        });
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(settingBlock(wrapper, 'Per-PID Trim').get('[data-reason-pid="257"]').text()).toBe(
+            'Must be between -2000 and 2000 ms',
+        );
     });
 
     it('an Ingest Offset edit moves every shift', async () => {
@@ -443,20 +449,19 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         ]);
     });
 
-    it('clamps the Ingest Offset to ±10,000 ms when it commits', async () => {
+    it('refuses an Ingest Offset past ±10,000 ms: nothing written, the text kept, the reason shown', async () => {
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
-        const input = settingBlock(wrapper, 'Ingest Offset').get('input');
 
-        await input.setValue('-25000');
+        await offsetBox(wrapper).setValue('-25000');
 
-        expect(mockModuleSetting.mock.calls).toEqual([
-            ['eng-1', 'srt-input-1', 'ingestOffsetMs', -10000],
-        ]);
-        expect((input.element as HTMLInputElement).value).toBe('-10000');
+        // Never written as the nearest bound: a live -10000 would be a gap or a drop on the stream.
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect((offsetBox(wrapper).element as HTMLInputElement).value).toBe('-25000');
+        expect(reasonIn(wrapper, 'Ingest Offset')).toBe('Must be between -10000 and 10000 ms');
     });
 
-    it('Ingest Offset text the browser cannot parse keeps the last good value', async () => {
+    it('Ingest Offset text the browser cannot parse, or a cleared box, writes nothing and says why', async () => {
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
         const input = settingBlock(wrapper, 'Ingest Offset').get('input');
@@ -465,18 +470,16 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         enterUnparseable(el);
         await input.trigger('change');
         expect(mockModuleSetting).not.toHaveBeenCalled();
-        expect(el.value).toBe('-40');
+        expect(reasonIn(wrapper, 'Ingest Offset')).toBe('Enter a number');
 
-        // A cleared box, without badInput, commits 0, the default.
+        // A cleared box, without badInput, is refused too: 0 is typed, never assumed.
         Reflect.deleteProperty(el, 'validity');
-        el.value = '';
-        await input.trigger('change');
-        expect(mockModuleSetting.mock.calls).toEqual([
-            ['eng-1', 'srt-input-1', 'ingestOffsetMs', 0],
-        ]);
+        await input.setValue('');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(reasonIn(wrapper, 'Ingest Offset')).toBe('Enter a number');
     });
 
-    it('a stored Ingest Offset that is not a number counts as 0, the default', async () => {
+    it('a stored Ingest Offset that is not a number takes the next number entered', async () => {
         // O alone, as on a capture (OQ-15), so no trim widget is handed the bad value too.
         seedSrtInput({
             configSchema: {
@@ -490,9 +493,14 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
 
         enterUnparseable(el);
         await input.trigger('change');
-
         expect(mockModuleSetting).not.toHaveBeenCalled();
-        expect(el.value).toBe('0');
+
+        // 0 differs from what is stored, so it is written.
+        Reflect.deleteProperty(el, 'validity');
+        await input.setValue('0');
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'ingestOffsetMs', 0],
+        ]);
     });
 
     it("renders Smoothing Cooldown as a live number in min, 0-60, its help the owner's text", () => {
@@ -534,23 +542,25 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         ]);
     });
 
-    it('clamps the Smoothing Cooldown to 0-60 min when it commits', async () => {
+    it('refuses a Smoothing Cooldown outside 0-60 min, and a cleared box, with the reason', async () => {
         vi.useFakeTimers();
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
 
         await cooldownBox(wrapper).setValue('90');
+        expect(reasonIn(wrapper, 'Smoothing Cooldown')).toBe('Must be between 0 and 60 min');
         await cooldownBox(wrapper).setValue('-3');
-        // Past the live-update throttle, which holds the second write back.
+        expect(reasonIn(wrapper, 'Smoothing Cooldown')).toBe('Must be between 0 and 60 min');
+        // Read as 0, a cleared box would have turned smoothing off.
+        await cooldownBox(wrapper).setValue('');
+        expect(reasonIn(wrapper, 'Smoothing Cooldown')).toBe('Enter a number');
+        // Past the live-update throttle, so a held-back write would show here too.
         vi.advanceTimersByTime(1000);
 
-        expect(mockModuleSetting.mock.calls).toEqual([
-            ['eng-1', 'srt-input-1', 'smoothingCooldownMin', 60],
-            ['eng-1', 'srt-input-1', 'smoothingCooldownMin', 0],
-        ]);
+        expect(mockModuleSetting).not.toHaveBeenCalled();
     });
 
-    it('a stored Smoothing Cooldown that is not a number counts as 5, the default', async () => {
+    it('a stored Smoothing Cooldown that is not a number takes the next number entered', async () => {
         seedSrtInput({
             configSchema: {
                 properties: {
@@ -564,12 +574,17 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
 
         enterUnparseable(el);
         await cooldownBox(wrapper).trigger('change');
-
         expect(mockModuleSetting).not.toHaveBeenCalled();
-        expect(el.value).toBe('5');
+        expect(reasonIn(wrapper, 'Smoothing Cooldown')).toBe('Enter a number');
+
+        Reflect.deleteProperty(el, 'validity');
+        await cooldownBox(wrapper).setValue('5');
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'smoothingCooldownMin', 5],
+        ]);
     });
 
-    it('shows the unit beside the change-only boxes, not beside a plain number field', () => {
+    it('shows the unit beside Ingest Offset and Smoothing Cooldown, not beside a plain number field', () => {
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
 
@@ -614,5 +629,228 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         expect(
             (settingBlock(wrapper, 'Ingest Offset').get('input').element as HTMLInputElement).value,
         ).toBe('0');
+    });
+});
+
+/** A module with each kind of typed setting B-104 covers, live and restart-requiring. */
+const TYPED_SCHEMA = {
+    type: 'object',
+    properties: {
+        host: { type: 'string', default: '0.0.0.0', title: 'Host' },
+        port: { type: 'number', default: 9000, minimum: 1, maximum: 65535, title: 'Port' },
+        busBatchMs: { type: 'integer', default: 20, minimum: 0, maximum: 100, title: 'Bus Batch' },
+        playoutOffsetMs: {
+            type: 'number',
+            minimum: 0,
+            maximum: 10000,
+            'x-unit': 'ms',
+            'x-live': true,
+            title: 'Playout Offset',
+        },
+        url: { type: 'string', default: '', 'x-live': true, 'x-debounceMs': 800, title: 'URL' },
+        volume: {
+            type: 'number',
+            default: 100,
+            minimum: 0,
+            maximum: 150,
+            'x-widget': 'slider',
+            'x-maxFrom': 'volumeMax',
+            'x-unit': '%',
+            'x-live': true,
+            title: 'Volume',
+        },
+        volumeMax: { type: 'number', enum: [100, 150, 500], default: 150, title: 'Range' },
+    },
+};
+
+/** One engine holding a module per entry, each with these settings over the defaults. */
+function seedTyped(modules: Record<string, Record<string, unknown>> = { 'typed-1': {} }) {
+    useEngineStore().addEngine({
+        engine_id: 'eng-1',
+        display_name: 'Test Engine',
+        modules: Object.fromEntries(
+            Object.entries(modules).map(([id, settings]) => [
+                id,
+                {
+                    pluginId: 'srt-input',
+                    displayName: id,
+                    configSchema: TYPED_SCHEMA,
+                    liveUpdatableParams: ['playoutOffsetMs', 'url', 'volume'],
+                    settings: { playoutOffsetMs: 120, ...settings },
+                },
+            ]),
+        ),
+    });
+}
+
+const boxIn = (wrapper: VueWrapper, title: string) =>
+    settingBlock(wrapper, title).get('input[type="number"], input[type="text"]');
+
+async function save(wrapper: VueWrapper): Promise<void> {
+    await wrapper
+        .findAll('button')
+        .find((b) => b.text() === 'Save')!
+        .trigger('click');
+}
+
+describe('ModuleSettingsPanel — every typed setting validates and writes at Enter or on leaving it (B-104)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('a live number writes nothing and shows no reason while typed, then once at the commit', async () => {
+        vi.useFakeTimers();
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await typeKeys(boxIn(wrapper, 'Playout Offset'), '250');
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(reasonIn(wrapper, 'Playout Offset')).toBeUndefined();
+
+        await boxIn(wrapper, 'Playout Offset').trigger('change');
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'playoutOffsetMs', 250],
+        ]);
+    });
+
+    it('a live number out of range is refused with the reason; an unchanged commit writes nothing', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await boxIn(wrapper, 'Playout Offset').setValue('20000');
+        expect(reasonIn(wrapper, 'Playout Offset')).toBe('Must be between 0 and 10000 ms');
+        await boxIn(wrapper, 'Playout Offset').setValue('120');
+        expect(reasonIn(wrapper, 'Playout Offset')).toBeUndefined();
+
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+    });
+
+    it("a restart-requiring number reaches the panel's copy once, at the commit, and Save writes it", async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        // Typed but not committed: Save still writes the stored port.
+        await typeKeys(boxIn(wrapper, 'Port'), '9001');
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ port: 9000 })],
+        ]);
+
+        mockModuleSettings.mockReset();
+        await boxIn(wrapper, 'Port').trigger('change');
+        // Not live: no write of its own (the engine would hold it pending a restart).
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ port: 9001 })],
+        ]);
+    });
+
+    it('a restart-requiring number out of range is refused, and Save keeps the stored value', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await boxIn(wrapper, 'Port').setValue('70000');
+        expect(reasonIn(wrapper, 'Port')).toBe('Must be between 1 and 65535');
+        expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('70000');
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ port: 9000 })],
+        ]);
+    });
+
+    it('a live text setting writes nothing while typed and once at the commit, after its debounce', async () => {
+        vi.useFakeTimers();
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await typeKeys(boxIn(wrapper, 'URL'), 'http://feed/a.m3u8');
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+
+        await boxIn(wrapper, 'URL').trigger('change');
+        vi.advanceTimersByTime(800);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'url', 'http://feed/a.m3u8'],
+        ]);
+    });
+
+    it('a restart-requiring text setting commits once into the copy Save writes', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await typeKeys(boxIn(wrapper, 'Host'), '10.0.0.5');
+        await boxIn(wrapper, 'Host').trigger('change');
+        await save(wrapper);
+
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ host: '10.0.0.5' })],
+        ]);
+    });
+
+    it('an integer setting is a number box that takes whole numbers only', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+        const box = () => boxIn(wrapper, 'Bus Batch');
+
+        expect(box().attributes('type')).toBe('number');
+        await box().setValue('2.5');
+        expect(reasonIn(wrapper, 'Bus Batch')).toBe('Enter a whole number');
+        await box().setValue('40');
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ busBatchMs: 40 })],
+        ]);
+    });
+
+    it("a slider's typed box takes the maximum from x-maxFrom: 300 % in a range of 500, not of 150", async () => {
+        seedTyped({ 'typed-1': { volumeMax: 500 }, 'typed-2': { volumeMax: 150 } });
+        const wide = mountPanel('typed-1');
+        const narrow = mountPanel('typed-2');
+        const sliderBox = (w: VueWrapper) => settingBlock(w, 'Volume').get('input[type="number"]');
+
+        expect(sliderBox(wide).attributes('max')).toBe('500');
+        await sliderBox(wide).setValue('300');
+        await sliderBox(narrow).setValue('300');
+
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'volume', 300]]);
+        expect(reasonIn(narrow, 'Volume')).toBe('Must be between 0 and 150 %');
+    });
+
+    it('typed text in a plain number and a text field survives a re-render of the form', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await typeKeys(boxIn(wrapper, 'Playout Offset'), '33');
+        await typeKeys(boxIn(wrapper, 'Host'), 'gate');
+        useEngineStore().applyEnginePatch('eng-1', [
+            { op: 'replace', path: '/modules/typed-1/settings/volume', value: 80 },
+        ]);
+        await nextTick();
+
+        expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('33');
+        expect((boxIn(wrapper, 'Host').element as HTMLInputElement).value).toBe('gate');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+    });
+
+    it('typed text stays with its module when the panel opens another one', async () => {
+        seedTyped({ 'typed-1': {}, 'typed-2': { playoutOffsetMs: 60 } });
+        const wrapper = mountPanel('typed-1');
+
+        await typeKeys(boxIn(wrapper, 'Playout Offset'), '777');
+        await wrapper.setProps({ moduleId: 'typed-2' });
+
+        expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('60');
+        expect(mockModuleSetting).not.toHaveBeenCalled();
     });
 });

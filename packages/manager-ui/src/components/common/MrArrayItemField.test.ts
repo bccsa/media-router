@@ -80,29 +80,53 @@ describe('MrArrayItemField — advanced number', () => {
         await reset.trigger('click');
         expect(wrapper.emitted('clear')).toBeTruthy();
     });
+
+    it('a cleared override box commits as inherit, as its placeholder says (B-104)', async () => {
+        const wrapper = mount(MrArrayItemField, {
+            props: { field: sceneCutField, value: 25 },
+        });
+        const input = wrapper.find('input');
+        (input.element as HTMLInputElement).value = '';
+        await input.trigger('input');
+        expect(wrapper.emitted('clear')).toBeFalsy();
+        await input.trigger('change');
+        expect(wrapper.emitted('clear')).toHaveLength(1);
+        expect(wrapper.emitted('update')).toBeFalsy();
+    });
 });
 
 describe('MrArrayItemField — free number with schema bounds (audio-transcoder bitrate, #664)', () => {
+    const bitrateField: ItemField = {
+        key: 'bitrate',
+        type: 'number',
+        label: 'Bitrate',
+        description: '',
+        default: 128,
+        minimum: 6,
+        maximum: 510,
+        advanced: false,
+    };
+
     it('passes minimum/maximum through to the number input', () => {
-        const wrapper = mount(MrArrayItemField, {
-            props: {
-                field: {
-                    key: 'bitrate',
-                    type: 'number',
-                    label: 'Bitrate',
-                    description: '',
-                    default: 128,
-                    minimum: 6,
-                    maximum: 510,
-                    advanced: false,
-                },
-                value: 48,
-            },
-        });
+        const wrapper = mount(MrArrayItemField, { props: { field: bitrateField, value: 48 } });
         const input = wrapper.find('input');
         expect(input.attributes('type')).toBe('number');
         expect(input.attributes('min')).toBe('6');
         expect(input.attributes('max')).toBe('510');
+    });
+
+    it('refuses a value out of bounds, or a cleared box, with the reason; writes a valid one once (B-104)', async () => {
+        const wrapper = mount(MrArrayItemField, { props: { field: bitrateField, value: 48 } });
+        const input = wrapper.find('input');
+
+        await input.setValue('600');
+        expect(wrapper.text()).toContain('Must be between 6 and 510');
+        await input.setValue('');
+        expect(wrapper.text()).toContain('Enter a number');
+        expect(wrapper.emitted('update')).toBeFalsy();
+
+        await input.setValue('64');
+        expect(wrapper.emitted('update')).toEqual([[64]]);
     });
 });
 

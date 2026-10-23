@@ -118,6 +118,41 @@ describe('DgramListenersCard', () => {
         expect(w.find('[data-test="apply"]').attributes('disabled')).toBeDefined();
     });
 
+    it('a port typed over another row\'s shows no warning until it commits (B-104)', async () => {
+        const w = await mountCard([{ port: 3000 }, { port: 3005 }]);
+        const port = w.findAll('[data-test="listener-row"]')[1].find('input[type="number"]');
+        // "3000" on the way to "30001" is row 1's port.
+        for (const typed of ['3', '30', '300', '3000']) {
+            (port.element as HTMLInputElement).value = typed;
+            await port.trigger('input');
+        }
+        expect(w.find('[data-test="dup-warning"]').exists()).toBe(false);
+        expect(w.find('[data-test="apply"]').attributes('disabled')).toBeDefined();
+        (port.element as HTMLInputElement).value = '30001';
+        await port.trigger('input');
+        await port.trigger('change');
+        expect(w.find('[data-test="dup-warning"]').exists()).toBe(false);
+        expect(w.find('[data-test="apply"]').attributes('disabled')).toBeUndefined();
+    });
+
+    it('refuses a port out of range or a bad address with the reason; the row keeps its value', async () => {
+        const w = await mountCard([{ port: 3000 }]);
+        const row = w.findAll('[data-test="listener-row"]')[0];
+        await row.find('input[type="number"]').setValue('70000');
+        expect(row.text()).toContain('Must be between 1 and 65535');
+        await row.find('input[type="text"]').setValue('10.0.2');
+        expect(row.text()).toContain('Enter an IPv4 address, or leave it empty for all interfaces');
+        // Nothing changed in the rows, so there is nothing to apply.
+        expect(w.find('[data-test="apply"]').attributes('disabled')).toBeDefined();
+
+        await row.find('input[type="text"]').setValue('10.0.2.1');
+        await w.find('[data-test="apply"]').trigger('click');
+        await flushPromises();
+        expect(write).toHaveBeenCalledWith([
+            { op: 'replace', path: '/settings/dgramListeners', value: [{ port: 3000, bindAddress: '10.0.2.1' }] },
+        ]);
+    });
+
     it('shows the server error when the rebind is refused', async () => {
         const w = await mountCard([{ port: 3000 }]);
         write.mockResolvedValue({

@@ -25,6 +25,25 @@ describe('ButtonScript', () => {
         w.unmount();
     });
 
+    it('takes a max run time in whole seconds, 1 to 3600, at Enter or on leaving the box (B-104)', async () => {
+        const w = mount(ButtonScript, {
+            props: { widget: { ...widget, script: { steps: [{ do: 'stop' }] } } as DashboardWidget, source: {} as DashboardSource },
+            global: { stubs: { StepList: true } },
+        });
+        const box = w.get('input[type="number"]');
+        // Cleared on the way to a new value: neither snapped back to 60 nor written.
+        (box.element as HTMLInputElement).value = '';
+        await box.trigger('input');
+        expect((box.element as HTMLInputElement).value).toBe('');
+        for (const [typed, reason] of [['0', 'Must be between 1 and 3600 s'], ['2.5', 'Enter a whole number'], ['', 'Enter a number']]) {
+            await box.setValue(typed);
+            expect(w.text()).toContain(reason);
+        }
+        expect(w.emitted('update')).toBeUndefined();
+        await box.setValue('30');
+        expect(w.emitted('update')).toEqual([[{ steps: [{ do: 'stop' }], timeoutS: 30 }]]);
+    });
+
     it('shows an older single action as the first step', () => {
         const w = mount(ButtonScript, {
             props: { widget: { ...widget, action: { kind: 'call', path: '/modules/m1', method: 'restart' } } as DashboardWidget, source: {} as DashboardSource },

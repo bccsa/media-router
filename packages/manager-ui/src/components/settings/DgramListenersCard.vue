@@ -8,6 +8,7 @@ import { useToast } from '@/composables/useToast';
 import MrInput from '@/components/common/MrInput.vue';
 import MrButton from '@/components/common/MrButton.vue';
 import type { DgramListener } from '@media-router/shared-types';
+import type { EntryRule } from '@/utils/entryRules';
 
 /**
  * The UDP ports engines connect to the manager on (issue #692). One is the
@@ -37,6 +38,7 @@ const removed = computed(() =>
     saved.value.filter((s) => !rows.value.some((r) => key(r) === key(s))),
 );
 const duplicate = computed(() => new Set(rows.value.map((r) => r.port)).size !== rows.value.length);
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const invalid = computed(
     () =>
         duplicate.value ||
@@ -45,9 +47,18 @@ const invalid = computed(
                 !Number.isInteger(r.port) ||
                 r.port < 1 ||
                 r.port > 65535 ||
-                (r.bindAddress !== undefined && !/^\d{1,3}(\.\d{1,3}){3}$/.test(r.bindAddress)),
+                (r.bindAddress !== undefined && !IPV4.test(r.bindAddress)),
         ),
 );
+
+// A row takes a port or an address at Enter or on leaving its box, once valid (B-104).
+const PORT_RULE: EntryRule = { type: 'integer', min: 1, max: 65535 };
+const ADDRESS_RULE: EntryRule = {
+    check: (v) =>
+        String(v).trim() === '' || IPV4.test(String(v).trim())
+            ? undefined
+            : 'Enter an IPv4 address, or leave it empty for all interfaces',
+};
 
 function clone(list: DgramListener[]): DgramListener[] {
     return list.map((l) => ({
@@ -140,14 +151,14 @@ function reset() {
                     <MrInput
                         :model-value="row.port"
                         type="number"
-                        :min="1"
-                        :max="65535"
+                        :rule="PORT_RULE"
                         :label="i === 0 ? 'UDP port' : undefined"
                         @update:model-value="setPort(i, $event)"
                     />
                     <MrInput
                         :model-value="row.bindAddress ?? ''"
                         type="text"
+                        :rule="ADDRESS_RULE"
                         placeholder="all interfaces"
                         :label="i === 0 ? 'Bind address' : undefined"
                         @update:model-value="setAddress(i, $event)"

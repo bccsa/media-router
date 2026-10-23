@@ -8,6 +8,8 @@ defineProps<{ def: OptionDef; value: unknown }>();
 const emit = defineEmits<{ change: [value: unknown] }>();
 
 const num = (v: unknown) => (v === '' || v === undefined ? undefined : Number(v));
+// A number option may be left empty: its default.
+const NUMBER = { type: 'number', optional: true };
 </script>
 
 <template>
@@ -29,6 +31,7 @@ const num = (v: unknown) => (v === '' || v === undefined ? undefined : Number(v)
         :model-value="(value as string | number | undefined) ?? ''"
         :label="def.label"
         :type="def.kind === 'number' ? 'number' : 'text'"
+        :rule="def.kind === 'number' ? NUMBER : undefined"
         @update:model-value="emit('change', def.kind === 'number' ? num($event) : $event)"
     />
 </template>

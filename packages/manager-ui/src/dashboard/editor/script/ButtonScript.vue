@@ -75,7 +75,8 @@ function update(patch: Partial<DashboardScript>) {
             label="Max run time (s)"
             :description="`A run stops after this long (default ${SCRIPT_DEFAULT_TIMEOUT_S} s, up to ${SCRIPT_MAX_TIMEOUT_S} s).`"
             :model-value="script.timeoutS ?? SCRIPT_DEFAULT_TIMEOUT_S"
-            @update:model-value="update({ timeoutS: Math.min(SCRIPT_MAX_TIMEOUT_S, Math.max(1, Math.round(Number($event) || SCRIPT_DEFAULT_TIMEOUT_S))) })"
+            :rule="{ type: 'integer', min: 1, max: SCRIPT_MAX_TIMEOUT_S, unit: 's' }"
+            @update:model-value="update({ timeoutS: $event as number })"
         />
     </div>
 </template>

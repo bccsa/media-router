@@ -164,6 +164,25 @@ describe('MrArrayField — x-unique / x-autoAssign (muxer input PID)', () => {
         expect(wrapper.text()).not.toContain('already used');
     });
 
+    it('checks a duplicate when the entry commits, never per keystroke (B-104)', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ name: 'A', pid: 256 }, { name: 'B', pid: 2560 }], schema: pidSchema },
+        });
+        const input = wrapper.findAll('input[type="number"]')[1];
+        // "256" on the way to "2568" is item 1's PID: no error shown, nothing written.
+        for (const typed of ['2', '25', '256']) {
+            (input.element as HTMLInputElement).value = typed;
+            await input.trigger('input');
+        }
+        expect(wrapper.text()).not.toContain('already used');
+        (input.element as HTMLInputElement).value = '2568';
+        await input.trigger('input');
+        await input.trigger('change');
+        expect(wrapper.emitted('update:modelValue')).toEqual([
+            [[{ name: 'A', pid: 256 }, { name: 'B', pid: 2568 }]],
+        ]);
+    });
+
     it('drops a rejected draft once the list changes, so a freed PID can be typed again', async () => {
         const wrapper = mount(MrArrayField, {
             props: { modelValue: [{ name: 'A', pid: 256 }, { name: 'B', pid: 264 }], schema: pidSchema },

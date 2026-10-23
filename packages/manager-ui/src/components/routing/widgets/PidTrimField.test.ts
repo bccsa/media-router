@@ -45,6 +45,10 @@ const trimInput = (wrapper: ReturnType<typeof mountField>, pid: string) =>
     row(wrapper, pid).get('input');
 const emitted = (wrapper: ReturnType<typeof mountField>) =>
     (wrapper.emitted('update:modelValue') ?? []).map(([map]) => map);
+const reasonOf = (wrapper: ReturnType<typeof mountField>, pid: string) =>
+    wrapper.find(`[data-reason-pid="${pid}"]`).exists()
+        ? wrapper.get(`[data-reason-pid="${pid}"]`).text()
+        : undefined;
 
 describe('PidTrimField', () => {
     it('renders one row per detected PID: hex, type, trim and the shift O + trim', () => {
@@ -82,28 +86,47 @@ describe('PidTrimField', () => {
         expect(input.attributes('disabled')).toBeUndefined();
     });
 
-    it('clamps a typed trim to ±2000 ms in whole ms', async () => {
+    it('refuses a trim past ±2000 ms with the reason, never the bound; rounds to whole ms (B-104)', async () => {
         const wrapper = mountBound({ modelValue: {} });
 
         await trimInput(wrapper, '256').setValue('2500');
         await trimInput(wrapper, '257').setValue('-9999');
-        await trimInput(wrapper, '257').setValue('12.6');
+        expect(emitted(wrapper)).toEqual([]);
+        expect(reasonOf(wrapper, '256')).toBe('Must be between -2000 and 2000 ms');
+        expect(reasonOf(wrapper, '257')).toBe('Must be between -2000 and 2000 ms');
+        expect(trimInput(wrapper, '256').classes()).toContain('border-error');
 
-        expect(emitted(wrapper)).toEqual([
-            { '256': 2000 },
-            { '256': 2000, '257': -2000 },
-            { '256': 2000, '257': 13 },
-        ]);
-        expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('2000');
+        await trimInput(wrapper, '257').setValue('12.6');
+        expect(emitted(wrapper)).toEqual([{ '257': 13 }]);
+        expect(reasonOf(wrapper, '257')).toBeUndefined();
+        // The refused box keeps its text and its reason; the stored trim stays in force.
+        expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('2500');
+        expect(reasonOf(wrapper, '256')).toBe('Must be between -2000 and 2000 ms');
     });
 
-    it('a clamp onto the stored trim emits nothing but puts the bound back in the box', async () => {
+    it('a refused trim leaves the stored one in force and gives way when it changes', async () => {
         const wrapper = mountField({ modelValue: { '256': 2000 } });
 
         await trimInput(wrapper, '256').setValue('3000');
-
         expect(emitted(wrapper)).toEqual([]);
-        expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('2000');
+        expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('3000');
+
+        // Another operator's trim: the box shows it, the reason goes.
+        await wrapper.setProps({ modelValue: { '256': 1500 } });
+        expect((trimInput(wrapper, '256').element as HTMLInputElement).value).toBe('1500');
+        expect(reasonOf(wrapper, '256')).toBeUndefined();
+    });
+
+    it('typing over a refused trim shows no reason until it commits again', async () => {
+        const wrapper = mountField({ modelValue: {} });
+        const input = trimInput(wrapper, '256');
+
+        await input.setValue('2500');
+        (input.element as HTMLInputElement).value = '25';
+        await input.trigger('input');
+        expect(reasonOf(wrapper, '256')).toBeUndefined();
+        await input.trigger('change');
+        expect(emitted(wrapper)).toEqual([{ '256': 25 }]);
     });
 
     it('keeps a trim whose PID left the stream: greyed, "not in stream", in every emit', async () => {
@@ -135,18 +158,15 @@ describe('PidTrimField', () => {
         expect(emitted(wrapper)).toEqual([{ '257': 120 }]);
     });
 
-    it('emits the whole map on edit, and a zero or cleared trim removes its key', async () => {
+    it('emits the whole map on edit; a zero trim removes its key, a cleared box is refused', async () => {
         const wrapper = mountField({ modelValue: { '256': 10, '257': 120 } });
 
         await trimInput(wrapper, '257').setValue('-35');
         await trimInput(wrapper, '257').setValue('0');
         await trimInput(wrapper, '256').setValue('');
 
-        expect(emitted(wrapper)).toEqual([
-            { '256': 10, '257': -35 },
-            { '256': 10 },
-            { '257': 120 },
-        ]);
+        expect(emitted(wrapper)).toEqual([{ '256': 10, '257': -35 }, { '256': 10 }]);
+        expect(reasonOf(wrapper, '256')).toBe('Enter a number');
     });
 
     it('commits on change, never per keystroke: typing "1500" emits once', async () => {
@@ -224,7 +244,7 @@ describe('PidTrimField', () => {
         wrapper.unmount();
     });
 
-    it('text the browser cannot parse keeps the last good trim', async () => {
+    it('text the browser cannot parse is refused: nothing written, the text left in the box', async () => {
         const wrapper = mountField({ modelValue: { '257': 120 } });
         const el = trimInput(wrapper, '257').element as HTMLInputElement;
 
@@ -234,7 +254,9 @@ describe('PidTrimField', () => {
         await trimInput(wrapper, '257').trigger('change');
 
         expect(emitted(wrapper)).toEqual([]);
-        expect(el.value).toBe('120');
+        // Not reset to 120: the browser keeps the typed "-" on screen.
+        expect(el.value).toBe('');
+        expect(reasonOf(wrapper, '257')).toBe('Enter a number');
     });
 
     it('shows "Waiting for the stream\'s PMT" until the plugin publishes PIDs', () => {

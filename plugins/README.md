@@ -408,15 +408,17 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
 | `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |
 | `x-debounceMs` | `number` | Live-update strategy for slow underlying APIs: only fire after the value has been idle for N ms (default is a 50 ms throttle that fires the first change immediately). Use for sliders where each change is expensive — e.g. `"x-debounceMs": 300` on video bitrate so the encoder isn't reconfigured on every pixel of slider drag. |
-| `x-maxFrom` | `string` | Key of another setting that controls slider maximum |
+| `x-maxFrom` | `string` | Key of another setting whose value is this field's maximum (its slider and its typed box), ahead of `x-maxBy` and `maximum` |
 | `x-enumBy` | `{ field, map }` | Field-dependent dropdown options (e.g. `{ "field": "codec", "map": { "opus": [...], "aac": [...] } }`) |
 | `x-maxBy` | `{ field, map }` | Field-dependent max for number inputs (e.g. `{ "field": "codec", "map": { "opus": 8, "aac": 6 } }`) |
 | `x-showWhen` | `string` | Only show field when condition matches (e.g. `"codec=opus"`) |
-| `x-advanced` | `boolean` | **(array-item fields only)** Collapse this property into a per-item **Advanced** section in `MrArrayField`, and treat it as an optional _override_: it is NOT seeded with a default on Add, an absent value means "inherit", and the control offers an explicit way back to inherit ("Inherit (global)" for enums, a ↺ reset button for numbers). Used by the transcoder for per-rendition encoder overrides. |
+| `x-advanced` | `boolean` | **(array-item fields only)** Collapse this property into a per-item **Advanced** section in `MrArrayField`, and treat it as an optional _override_: it is NOT seeded with a default on Add, an absent value means "inherit", and the control offers an explicit way back to inherit ("Inherit (global)" for enums, a ↺ reset button or a cleared box for numbers). Used by the transcoder for per-rendition encoder overrides. |
 | `x-contextMenu` | `boolean` | Show this setting in the module's right-click context menu |
 | `x-unit` | `string` | Unit label displayed next to the value (e.g. `"%"`, `"kbps"`, `"ms"`) |
 | `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable); on dashboards the value is read-only (`access: 'read'`) |
 | `x-enumLabels` | `{ [value]: string }` | Labels for an `enum`'s values, shown by dropdowns here and on dashboards (e.g. `{ "aac": "AAC" }`) |
+
+**Typed values (B-104).** A number, `integer` or text setting is typed into a box that writes nothing and shows no error while typed: at Enter, on leaving the box or at a spinner step the entry is read against the field's rules (its type, `minimum`, the effective maximum, `pattern`, `minLength`/`maxLength`) and written once, live or into the panel's copy that Save writes. An entry outside them is refused with its reason under the box, never clamped; an empty number box is refused too. So `minimum`/`maximum` are the real bounds of a typed value, and an `x-live` text field is written once per entry, not per keystroke. The same holds for a slider's typed box and for array-item fields.
 
 **Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, `minimum`/`maximum`, and item-relative `x-showWhen` / `x-maxBy` are honoured — `x-showWhen` and `x-maxBy` are evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item; a controller change (e.g. codec) pulls a dependent number down to its new `x-maxBy` cap (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
 

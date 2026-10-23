@@ -10,11 +10,8 @@ import MrArrayField from '@/components/common/MrArrayField.vue';
 import MrHelpTip from '@/components/common/MrHelpTip.vue';
 import GraphField from '@/components/routing/widgets/GraphField.vue';
 import PidTrimField from '@/components/routing/widgets/PidTrimField.vue';
-import {
-    commitNumberBox,
-    useNumberBoxDrafts,
-    type FormField,
-} from '@/composables/useModuleSettingsForm';
+import { fieldRule, type FormField } from '@/composables/useModuleSettingsForm';
+import { isNumberType } from '@/utils/entryRules';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
 
@@ -48,30 +45,10 @@ function onUpdate(key: string, value: unknown): void {
     emit('update', key, value);
 }
 
-// Each live write of the Ingest Offset is a gap or a drop on the stream (§5.5), and a Smoothing
-// Cooldown typed through a smaller value or 0 can move a held clock (B-95): their boxes commit on
-// change only.
-const CHANGE_ONLY_KEYS: readonly string[] = [INGEST_OFFSET_KEY, SMOOTHING_COOLDOWN_KEY];
-
-// Any engine's patch re-renders this form, so a change-only box binds its draft while typed in.
-const boxDrafts = useNumberBoxDrafts();
-// The panel reuses this form for the next module it opens; a draft belongs to one module.
-watch([() => props.engineId, () => props.moduleId], () =>
-    CHANGE_ONLY_KEYS.forEach((key) => boxDrafts.close(key)),
-);
-
-// A stored value that is not a finite number counts as the setting's default.
-function commitChangeOnly(field: FormField, event: Event): void {
-    boxDrafts.close(field.key);
-    const stored = Number(props.settings[field.key]);
-    const fallback = typeof field.defaultValue === 'number' ? field.defaultValue : 0;
-    const last = Number.isFinite(stored) ? stored : fallback;
-    const next = commitNumberBox(event.target as HTMLInputElement, last, {
-        min: field.minimum,
-        max: props.getMax(field),
-    });
-    if (next !== last) onUpdate(field.key, next);
-}
+// Every typed box writes once, at Enter or on leaving it, after its field's rules (B-104): a live
+// write of the Ingest Offset is a gap or a drop on the stream (§5.5). These two show their unit
+// beside the box; other number fields keep the bare box.
+const UNIT_BESIDE_KEYS: readonly string[] = [INGEST_OFFSET_KEY, SMOOTHING_COOLDOWN_KEY];
 
 /**
  * Plugin id for the current module. Needed so the upload widget can scope
@@ -254,7 +231,13 @@ function clearUpload(field: FormField): void {
     <div v-if="fields.length === 0" class="text-sm py-4 text-center text-muted">
         No configurable settings.
     </div>
-    <div v-for="field in fields" :key="field.key" v-show="isVisible(field)" class="space-y-1.5">
+    <!-- Keyed by module too: the panel reuses this form for the next module, and a draft belongs to one. -->
+    <div
+        v-for="field in fields"
+        :key="`${engineId}/${moduleId}/${field.key}`"
+        v-show="isVisible(field)"
+        class="space-y-1.5"
+    >
         <label class="flex items-center gap-1.5 text-xs font-medium text-subtle">
             {{ field.label }}
             <MrHelpTip
@@ -351,9 +334,7 @@ function clearUpload(field: FormField): void {
                 v-else-if="field.widget === 'slider'"
                 :model-value="Number(settings[field.key] ?? field.defaultValue ?? 0)"
                 :min="field.minimum"
-                :max="
-                    field.maxFrom ? Number(settings[field.maxFrom] ?? field.maximum) : field.maximum
-                "
+                :max="getMax(field)"
                 :step="field.step"
                 :editable="true"
                 :unit="field.unit ?? '%'"
@@ -426,32 +407,13 @@ function clearUpload(field: FormField): void {
                     />
                 </label>
             </div>
-            <!-- Ingest Offset and Smoothing Cooldown: MrInput emits per keystroke, so these boxes
-                 commit on change (Enter, blur, a spinner step); they drop focus on wheel so a
-                 scroll cannot spin them. -->
-            <div v-else-if="CHANGE_ONLY_KEYS.includes(field.key)" class="flex items-center gap-1.5">
-                <input
-                    type="number"
-                    :value="boxDrafts.shown(field.key, settings[field.key])"
-                    :min="field.minimum"
-                    :max="getMax(field)"
-                    class="flex-1 min-w-0 px-2.5 py-1.5 text-sm rounded-md outline-none transition-colors bg-input border border-border text-foreground"
-                    @input="boxDrafts.onInput(field.key, $event)"
-                    @change="commitChangeOnly(field, $event)"
-                    @blur="boxDrafts.onBlur(field.key, $event)"
-                    @wheel="($event.target as HTMLElement).blur()"
-                />
-                <span v-if="field.unit" class="text-xs text-muted" data-test="unit">
-                    {{ field.unit }}
-                </span>
-            </div>
-            <!-- Plain number input -->
+            <!-- Number box (number or integer) -->
             <MrInput
-                v-else-if="field.type === 'number'"
+                v-else-if="isNumberType(field.type)"
                 type="number"
                 :model-value="settings[field.key] as number"
-                :min="field.minimum"
-                :max="getMax(field)"
+                :rule="fieldRule(field, getMax(field))"
+                :unit="UNIT_BESIDE_KEYS.includes(field.key) ? field.unit : undefined"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Text input (default) -->
@@ -459,6 +421,7 @@ function clearUpload(field: FormField): void {
                 v-else
                 type="text"
                 :model-value="settings[field.key] as string"
+                :rule="fieldRule(field, getMax(field))"
                 @update:model-value="onUpdate(field.key, $event)"
             />
         </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import * as shared from '@media-router/shared-types';
 import type { DashboardAction, ScriptExpr, ScriptStep } from '@media-router/shared-types';
 import MrInput from '@/components/common/MrInput.vue';
 import MrToggle from '@/components/common/MrToggle.vue';
@@ -11,6 +12,9 @@ import StepList from './StepList.vue';
 import { actionFromStep, stepFromAction } from '../../scriptText';
 import type { ValueEntry } from '../../entries';
 import type { DashboardSource } from '../../source';
+
+// shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
+const { SCRIPT_MAX_TIMEOUT_S } = shared;
 
 /** One step of a button's script (ADR-0027); control blocks hold step lists. */
 const props = defineProps<{ step: ScriptStep; source: DashboardSource; pickRouter?: boolean; depth: number }>();
@@ -82,7 +86,7 @@ const accent = computed(() => (['if', 'repeat', 'until', 'waitUntil'].includes(s
         </template>
         <template v-else-if="s.do === 'waitUntil'">
             <ExprInput :model-value="s.cond" :source="source" :pick-router="pickRouter" @update:model-value="expr('cond', $event)" />
-            <MrInput type="number" label="Give up after (s)" :model-value="s.timeoutS" @update:model-value="set({ timeoutS: Math.max(1, Number($event) || 1) })" />
+            <MrInput type="number" label="Give up after (s)" :model-value="s.timeoutS" :rule="{ type: 'number', min: 1, max: SCRIPT_MAX_TIMEOUT_S, unit: 's' }" @update:model-value="set({ timeoutS: $event as number })" />
         </template>
         <div v-else-if="s.do === 'stop'" class="text-xs text-subtle">Ends the run here.</div>
 

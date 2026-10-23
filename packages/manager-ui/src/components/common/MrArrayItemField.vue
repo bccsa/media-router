@@ -12,6 +12,7 @@ import MrInput from './MrInput.vue';
 import MrSelect from './MrSelect.vue';
 import MrToggle from './MrToggle.vue';
 import MrHelpTip from './MrHelpTip.vue';
+import { isNumberType, type EntryRule } from '@/utils/entryRules';
 
 export interface ItemField {
     key: string;
@@ -24,7 +25,7 @@ export interface ItemField {
     default?: unknown;
     enumValues?: unknown[];
     enumLabels?: Record<string, string>;
-    /** Schema `minimum` / `maximum` — number inputs clamp to them. */
+    /** Schema `minimum` / `maximum`: a number outside them is refused at commit (B-104). */
     minimum?: number;
     maximum?: number;
     /** Grouped under the collapsed "Advanced" section. */
@@ -88,15 +89,21 @@ function onSelect(value: string | number): void {
     emit('update', value);
 }
 
+// Read when the entry commits (B-104); an inheritable override may be left blank.
+const rule = computed<EntryRule>(() => ({
+    type: props.field.type,
+    min: props.field.minimum,
+    max: props.field.maximum,
+    optional: props.field.inheritable,
+}));
+
 function onInput(value: string | number): void {
-    // A blank text input on an inheritable field means "inherit" (clear the
-    // key). Number inputs can't use this — MrInput coerces '' to 0 (a
-    // meaningful value), so numeric overrides reset via the ↺ button instead.
-    if (props.field.inheritable && (value === '' || value === undefined)) {
+    // A blank box on an inheritable field means "inherit": the parent drops the key.
+    if (props.field.inheritable && value === '') {
         emit('clear');
         return;
     }
-    emit('update', props.field.type === 'number' ? Number(value) : value);
+    emit('update', value);
 }
 </script>
 
@@ -140,17 +147,15 @@ function onInput(value: string | number): void {
             <div class="flex-1">
                 <MrInput
                     :model-value="isSet ? (value as string | number) : ''"
-                    :type="field.type === 'number' ? 'number' : 'text'"
-                    :min="field.minimum"
-                    :max="field.maximum"
+                    :type="isNumberType(field.type) ? 'number' : 'text'"
+                    :rule="rule"
                     :placeholder="field.inheritable ? 'Inherit (global)' : undefined"
                     :error="error"
                     :disabled="disabled"
                     @update:model-value="onInput"
                 />
             </div>
-            <!-- Explicit reset-to-inherit for advanced number overrides (a blank
-                 number input can't express inherit — MrInput coerces it to 0). -->
+            <!-- Reset-to-inherit for an advanced override (clearing the box does the same). -->
             <button
                 v-if="field.inheritable && isSet"
                 type="button"

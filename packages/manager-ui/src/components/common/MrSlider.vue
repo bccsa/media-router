@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
+import { useEntryDrafts } from '@/composables/useEntryDrafts';
 
 const props = defineProps<{
     modelValue: number;
@@ -20,27 +21,20 @@ const effectivePrecision = computed(() => {
     return Math.max(0, Math.ceil(-Math.log10(s)));
 });
 
-const wasClamped = ref(false);
-let clampTimer: ReturnType<typeof setTimeout> | null = null;
-
-function clamp(v: number): { value: number; clamped: boolean } {
-    const min = props.min ?? 0;
-    const max = props.max ?? 100;
-    if (v > max) return { value: max, clamped: true };
-    if (v < min) return { value: min, clamped: true };
-    return { value: v, clamped: false };
-}
-
 function formatted(v: number) {
     return v.toFixed(effectivePrecision.value);
 }
 
-function flagClamped() {
-    wasClamped.value = true;
-    if (clampTimer) clearTimeout(clampTimer);
-    clampTimer = setTimeout(() => {
-        wasClamped.value = false;
-    }, 600);
+// The typed box commits at Enter or on leaving it (B-104): a value out of range is refused with the
+// reason, never clamped to the nearest bound. The slider itself writes as it is dragged.
+const BOX = 'box';
+const drafts = useEntryDrafts();
+const reason = computed(() => drafts.reason(BOX, props.modelValue));
+
+function onBoxCommit(e: Event) {
+    const rule = { type: 'number', min: props.min ?? 0, max: props.max ?? 100, unit: props.unit };
+    const entry = drafts.commit(BOX, e, props.modelValue, rule);
+    if (entry) emit('update:modelValue', entry.value as number);
 }
 
 // Browsers only change a range/number input on wheel while it is focused, so
@@ -48,50 +42,43 @@ function flagClamped() {
 function onWheel(e: WheelEvent) {
     (e.target as HTMLElement).blur();
 }
-
-function onTextInput(e: Event) {
-    const raw = (e.target as HTMLInputElement).value;
-    if (raw === '') return;
-    const n = Number(raw);
-    if (Number.isNaN(n)) return;
-    const { value, clamped } = clamp(n);
-    if (clamped) flagClamped();
-    emit('update:modelValue', value);
-}
 </script>
 
 <template>
-    <div class="flex items-center gap-2">
-        <input
-            type="range"
-            :min="min ?? 0"
-            :max="max ?? 100"
-            :step="step ?? 1"
-            :value="modelValue"
-            @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))"
-            @wheel="onWheel"
-            class="flex-1 h-1 accent-emerald-500 cursor-pointer"
-        />
-        <div v-if="editable" class="flex items-center gap-0.5 text-xs">
+    <div>
+        <div class="flex items-center gap-2">
             <input
-                type="number"
+                type="range"
                 :min="min ?? 0"
                 :max="max ?? 100"
                 :step="step ?? 1"
-                :value="formatted(modelValue)"
-                @input="onTextInput"
-                @wheel="onWheel"
-                class="w-12 px-1 py-0.5 text-right tabular-nums rounded bg-input border text-foreground outline-none transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                :class="
-                    wasClamped
-                        ? 'border-amber-500 ring-1 ring-amber-500/40'
-                        : 'border-border focus:border-emerald-500'
+                :value="modelValue"
+                @input="
+                    emit('update:modelValue', Number(($event.target as HTMLInputElement).value))
                 "
+                @wheel="onWheel"
+                class="flex-1 h-1 accent-emerald-500 cursor-pointer"
             />
-            <span v-if="unit" class="text-subtle">{{ unit }}</span>
+            <div v-if="editable" class="flex items-center gap-0.5 text-xs">
+                <input
+                    type="number"
+                    :min="min ?? 0"
+                    :max="max ?? 100"
+                    :step="step ?? 1"
+                    :value="drafts.shown(BOX, modelValue, formatted(modelValue))"
+                    @input="drafts.onInput(BOX, $event)"
+                    @change="onBoxCommit"
+                    @blur="drafts.onBlur(BOX, $event)"
+                    @wheel="onWheel"
+                    class="w-12 px-1 py-0.5 text-right tabular-nums rounded bg-input border text-foreground outline-none transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    :class="reason ? 'border-error' : 'border-border focus:border-emerald-500'"
+                />
+                <span v-if="unit" class="text-subtle">{{ unit }}</span>
+            </div>
+            <span v-else-if="showValue" class="text-xs w-10 text-right tabular-nums text-subtle">
+                {{ formatted(modelValue) }}{{ unit ?? '' }}
+            </span>
         </div>
-        <span v-else-if="showValue" class="text-xs w-10 text-right tabular-nums text-subtle">
-            {{ formatted(modelValue) }}{{ unit ?? '' }}
-        </span>
+        <p v-if="reason" class="mt-1 text-[11px] text-error" data-test="reason">{{ reason }}</p>
     </div>
 </template>

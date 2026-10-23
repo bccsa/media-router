@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import type { WidgetProps } from '../../registry';
 import { asNumber, clampNumber, formatValue, numberOption, stepDecimals } from '../../valueTypes';
+import { readEntry, sameValue } from '@/utils/entryRules';
 
 const props = defineProps<WidgetProps>();
 const emit = defineEmits<{ write: [value: number] }>();
 
 const editing = ref(false);
 const draft = ref('');
+/** Why the typed value was refused; the box stays open with it until fixed or Escape. */
+const reason = ref('');
 const input = ref<HTMLInputElement | null>(null);
 
 const step = computed(() => Number(props.options.step) || props.desc?.step || 1);
@@ -33,17 +36,38 @@ async function edit() {
     input.value?.select();
 }
 
+function cancel() {
+    editing.value = false;
+    reason.value = '';
+}
+
+// The bound value's rules as the tree describes them, its effective maximum included.
+const rule = computed(() => {
+    const d = props.desc;
+    return { type: d?.type === 'integer' ? 'integer' : 'number', min: d?.min, max: d?.max, unit: d?.unit, enum: d?.enum };
+});
+
+// At Enter or on leaving the box (B-104): a value outside the rules is refused with the reason,
+// never clamped; an unchanged one writes nothing.
 function commit() {
     if (!editing.value) return;
-    editing.value = false;
-    const v = Number(draft.value);
-    if (draft.value.trim() !== '' && Number.isFinite(v)) emit('write', clamp(v));
+    const entry = readEntry(draft.value, rule.value);
+    if ('reason' in entry) {
+        reason.value = entry.reason;
+        return;
+    }
+    cancel();
+    if (!sameValue(entry.value, num.value)) emit('write', entry.value as number);
 }
+// A refused entry gives way when the value changes under it (another writer).
+watch(num, () => {
+    if (reason.value) cancel();
+});
 </script>
 
 <template>
     <div class="nb">
-        <div class="dw-label">{{ label }}</div>
+        <div class="dw-label" :class="{ 'nb-reason': reason }">{{ reason || label }}</div>
         <div class="nb-row">
             <button type="button" class="nb-step" :disabled="!interactive" :aria-label="`${label}: down`" @click="bump(-1)">−</button>
             <input
@@ -51,9 +75,11 @@ function commit() {
                 ref="input"
                 v-model="draft"
                 class="nb-input"
+                :class="{ 'nb-refused': reason }"
                 inputmode="decimal"
+                @input="reason = ''"
                 @keydown.enter="commit"
-                @keydown.esc="editing = false"
+                @keydown.esc="cancel"
                 @blur="commit"
             />
             <button v-else type="button" class="nb-value dw-value" :class="{ 'nb-live': interactive }" :disabled="!interactive" :aria-label="`${label}: ${text}, edit`" @click="edit">
@@ -97,6 +123,10 @@ function commit() {
 .nb-live {
     cursor: text;
 }
+/* Over `.mr-dash .dw-label`'s muted colour. */
+.dw-label.nb-reason {
+    color: var(--d-error);
+}
 .nb-input {
     background: var(--d-bg);
     color: var(--d-text);
@@ -104,6 +134,9 @@ function commit() {
     border-radius: 6px;
     padding: 2px 4px;
     user-select: text;
+}
+.nb-input.nb-refused {
+    border-color: var(--d-error);
 }
 .nb-step {
     flex: none;

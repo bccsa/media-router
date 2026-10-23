@@ -117,6 +117,20 @@ elements" below do not start.
 - **Mixed versions.** A box on the previous release that receives a stream
   from a box on this release (through SRT, RIST or MPEG-TS IP Output)
   re-anchors it once and then holds.
+- **A typed setting is checked and written when you press Enter or leave
+  the box.** While you type into a setting (a number or text, one that
+  applies live or one that needs a module restart) nothing is written and
+  no error shows; when you press Enter or move to another field the value
+  is checked and written once, and an unchanged value writes nothing. A
+  value the setting cannot take (out of its range, not a number, not a
+  whole number where one is needed, an empty number box) is not written
+  and is no longer changed to the nearest limit: the box keeps what you
+  typed and says why underneath, and the setting keeps its value. The same
+  holds for the box beside a slider (also in a module's right-click menu),
+  list items, Per-PID Trim (type 0 to remove a trim), a dashboard's number
+  box, Settings → Engine Comms and the dashboard editor's number fields. A
+  setting that needs a module restart is still written by Save; Escape
+  still closes the settings panel without writing what was typed.
 - **Rollback** is the previous release, installed from the Device Manager;
   there is no in-app switch.
 

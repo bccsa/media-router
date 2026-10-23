@@ -68,7 +68,11 @@ function onAction(item: MenuItem) {
 }
 
 function onClickOutside(e: MouseEvent) {
-    if (menu.value && !menu.value.contains(e.target as Node)) emit('close');
+    if (!menu.value || menu.value.contains(e.target as Node)) return;
+    // Leaving the menu leaves a slider's typed box too: blurring it first commits it (B-104).
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && menu.value.contains(focused)) focused.blur();
+    emit('close');
 }
 
 let rafId: number | null = null;

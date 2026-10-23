@@ -4,6 +4,7 @@ import { patch } from '@/composables/usePatch';
 import { matchShowWhen } from '@/utils/showWhen';
 import { stripDisplayFields, type GraphSource } from '@/utils/displayWidgets';
 import { fieldLabel } from '@/utils/fieldLabel';
+import type { EntryRule } from '@/utils/entryRules';
 
 /** `x-widget` values a manifest may declare; anything else renders by the field's type. */
 export type SettingsWidget = 'slider' | 'textarea' | 'imageUpload' | 'graph' | 'pidTrim';
@@ -26,6 +27,9 @@ interface SchemaProperty {
     enum?: unknown[];
     minimum?: number;
     maximum?: number;
+    pattern?: string;
+    minLength?: number;
+    maxLength?: number;
     additionalProperties?: boolean | MapEntrySchema;
     'x-live'?: boolean;
     'x-liveUpdatable'?: boolean;
@@ -65,6 +69,9 @@ export interface FormField {
     graph?: GraphSource;
     minimum?: number;
     maximum?: number;
+    pattern?: string;
+    minLength?: number;
+    maxLength?: number;
     step?: number;
     maxFrom?: string;
     enumBy?: { field: string; map: Record<string, unknown[]> };
@@ -124,6 +131,9 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
             graph: prop['x-graph'],
             minimum: prop.minimum,
             maximum: prop.maximum,
+            pattern: prop.pattern,
+            minLength: prop.minLength,
+            maxLength: prop.maxLength,
             step: prop['x-step'],
             maxFrom: prop['x-maxFrom'],
             enumBy: prop['x-enumBy'],
@@ -171,8 +181,10 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         return field.enumValues;
     }
 
-    /** Resolve effective maximum — checks x-maxBy first, falls back to plain maximum. */
+    /** Effective maximum, as the manager describes it: x-maxFrom's setting, else x-maxBy's map, else maximum. */
     function getFieldMax(field: FormField): number | undefined {
+        const from = field.maxFrom ? localSettings.value[field.maxFrom] : undefined;
+        if (typeof from === 'number' && Number.isFinite(from)) return from;
         if (field.maxBy) {
             const val = String(localSettings.value[field.maxBy.field] ?? '');
             return field.maxBy.map[val] ?? field.maximum;
@@ -269,51 +281,15 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     };
 }
 
-/** Where a number box's committed value may land; `step` rounds it to whole steps. */
-export interface NumberBoxBounds {
-    min?: number;
-    max?: number;
-    step?: number;
-}
-
-/**
- * The value a number box commits on change, clamped and written back into the box. Text the
- * browser cannot parse ("-", "1e") reads as '' with `badInput` set and keeps `last`, the last
- * good value; a cleared box commits 0.
- */
-export function commitNumberBox(
-    el: HTMLInputElement,
-    last: number,
-    { min = -Infinity, max = Infinity, step }: NumberBoxBounds = {},
-): number {
-    const typed = el.validity.badInput ? NaN : Number(el.value);
-    const next = Number.isFinite(typed)
-        ? Math.min(max, Math.max(min, step ? Math.round(typed / step) * step : typed))
-        : last;
-    el.value = String(next);
-    return next;
-}
-
-/**
- * Text typed into change-only number boxes and not yet committed, by box id. A box binds
- * `shown(id, stored)`: Vue resets a bound box to its bound value whenever the box's owner
- * re-renders, which would silently drop the typing.
- */
-export function useNumberBoxDrafts() {
-    const drafts = ref<Record<string, string>>({});
+/** A typed field's rule (B-104): its type, bounds with the effective maximum, unit, pattern and lengths. */
+export function fieldRule(field: FormField, max: number | undefined): EntryRule {
     return {
-        shown: (id: string, stored: unknown): unknown => drafts.value[id] ?? stored,
-        onInput(id: string, event: Event): void {
-            drafts.value[id] = (event.target as HTMLInputElement).value;
-        },
-        /** Ends the edit, on commit or by the owner: the box shows its stored value again. */
-        close(id: string): void {
-            delete drafts.value[id];
-        },
-        // Focus moving elsewhere in the page ends the edit. A switch to another window or tab
-        // blurs the box too, with no change event, but leaves it document.activeElement: keep it.
-        onBlur(id: string, event: FocusEvent): void {
-            if (document.activeElement !== event.target) delete drafts.value[id];
-        },
+        type: field.type,
+        min: field.minimum,
+        max,
+        unit: field.unit,
+        pattern: field.pattern,
+        minLength: field.minLength,
+        maxLength: field.maxLength,
     };
 }
