@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ModuleManager } from './ModuleManager.js';
 import { PluginLoader } from '../plugins/PluginLoader.js';
+import { GstInspectTimeoutError } from '../plugins/gstInspect.js';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
 
 describe('ModuleManager', () => {
@@ -75,5 +76,31 @@ describe('ModuleManager', () => {
     it('throws on duplicate instanceId', () => {
         manager.createModule('dup', 'example', {});
         expect(() => manager.createModule('dup', 'example', {})).toThrow('already exists');
+    });
+
+    it("each start waits for the plugin's settle; one that timed out fails the start (B-102)", async () => {
+        let release!: () => void;
+        const settle = vi
+            .spyOn(pluginLoader, 'settle')
+            .mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
+            .mockRejectedValueOnce(new GstInspectTimeoutError(['x264enc']));
+        const mod = manager.createModule('enc', 'video-encoder', {});
+
+        const started = manager.startModule('enc');
+        await new Promise((r) => setTimeout(r, 10));
+        expect(settle).toHaveBeenCalledWith('video-encoder');
+        expect(mod.running).toBe(false);
+        release();
+        await started;
+        expect(mod.running).toBe(true);
+
+        await manager.stopModule('enc');
+        await expect(manager.startModule('enc')).rejects.toThrow('x264enc timed out after 30 s');
+        expect(mod.running).toBe(false);
+
+        // The next start settles again (the real one: nothing due) and runs.
+        await manager.startModule('enc');
+        expect(settle).toHaveBeenCalledTimes(3);
+        expect(mod.running).toBe(true);
     });
 });

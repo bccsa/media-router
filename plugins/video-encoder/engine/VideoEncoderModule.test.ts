@@ -27,6 +27,7 @@ import * as engine from '@media-router/engine';
 import {
     buildEncoderBranch,
     resolveImpl,
+    GstInspectTimeoutError,
     GstPluginBase,
     ModuleInstance,
     PluginLoader,
@@ -77,6 +78,25 @@ describe('VideoEncoderModule', () => {
                 h265: ['software'],
                 av1: [],
             });
+        });
+
+        it('a probe that timed out leaves manifest and host as they were; run again, it narrows both (B-102)', async () => {
+            vi.spyOn(ProbedEncoders, 'probe')
+                .mockRejectedValueOnce(new GstInspectTimeoutError(['v4l2h264enc']))
+                .mockResolvedValueOnce(ProbedEncoders.forTest({ h264: ['software'] }));
+            const manifest: Record<string, any> = {
+                configSchema: { properties: { codec: { enum: ['h264', 'h265', 'av1'] } } },
+            };
+            await expect(VideoEncoderModule.initManifest(manifest)).rejects.toThrow(
+                'gst-inspect-1.0 v4l2h264enc timed out after 30 s',
+            );
+            expect(manifest.configSchema.properties.codec.enum).toEqual(['h264', 'h265', 'av1']);
+            expect(VideoEncoderModule.getAvailableImpls()).toEqual({ h264: [], h265: [], av1: [] });
+
+            // PluginLoader.settle runs it again before the module's next start.
+            await VideoEncoderModule.initManifest(manifest);
+            expect(manifest.configSchema.properties.codec.enum).toEqual(['h264']);
+            expect(VideoEncoderModule.getAvailableImpls().h264).toEqual(['software']);
         });
 
         it('leaves enum untouched when no encoders are installed', async () => {

@@ -347,7 +347,8 @@ export class Engine {
         // The inter-module bus is unixfd-only — fail fast with a clear error
         // instead of every consumer hanging on a socket that will never bind
         // (stock Debian 12 gst 1.22 lacks unixfdsrc; dev boxes install a
-        // 1.28 build to /usr/local, fleet images ship gst 1.28).
+        // 1.28 build to /usr/local, fleet images ship gst 1.28). A probe that
+        // timed out throws its own error, never this one (B-102).
         if (!(await probeGstElement('unixfdsrc'))) {
             throw new Error(
                 'GStreamer unixfdsrc not available — the inter-module bus requires ' +

@@ -69,12 +69,14 @@ export interface EngineServices {
 }
 
 /**
- * Optional static hooks a plugin class may expose. Both run at most once per
- * plugin class during load:
+ * Optional static hooks a plugin class may expose. Both run once per plugin
+ * class during load:
  * - `initManifest(manifest)` — probe the host for runtime capabilities and
  *   mutate the manifest before any module instances are created (used by
  *   video-encoder to detect available HW encoders, audio-encoder to detect
- *   supported codecs, etc.).
+ *   supported codecs, etc.). One that a gst-inspect timeout cut short runs
+ *   again before the plugin's next module start (`PluginLoader.settle`,
+ *   B-102), so it must be safe to run twice and must let that error through.
  * - `registerServices(services)` — register engine-wide contributions like
  *   device providers (used by audio-input/output to expose source/sink
  *   lists to the manager-UI).

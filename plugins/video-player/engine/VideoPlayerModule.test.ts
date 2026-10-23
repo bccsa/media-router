@@ -18,6 +18,8 @@ vi.mock('@media-router/engine', async (importOriginal) => {
         // states; on dev machines the real ones read /sys/class/drm → [].
         listDrmConnectors: vi.fn(actual.listDrmConnectors as (...a: unknown[]) => unknown),
         firstConnectedDisplay: vi.fn(actual.firstConnectedDisplay as (...a: unknown[]) => unknown),
+        // initManifest's sink and decoder probes: no gst-inspect from these tests.
+        probeGstElement: vi.fn(async () => false),
     };
 });
 
@@ -32,8 +34,10 @@ vi.mock('fs', async (importOriginal) => {
 
 import {
     firstConnectedDisplay,
+    GstInspectTimeoutError,
     listDrmConnectors,
     onKernelLogSignal,
+    probeGstElement,
     probeUnixSocket,
     type KernelLogSignalEvent,
 } from '@media-router/engine';
@@ -74,6 +78,36 @@ describe('VideoPlayerModule helpers', () => {
         // override with mockReturnValueOnce.
         (listDrmConnectors as unknown as ReturnType<typeof vi.fn>).mockReturnValue([]);
         (firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+    });
+
+    describe('initManifest', () => {
+        it('a probe that timed out leaves sinks and decoders as they were; run again, it sets both (B-102)', async () => {
+            let answers = false;
+            (probeGstElement as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+                async (element: string) => {
+                    if (element === 'waylandsink' && !answers) {
+                        throw new GstInspectTimeoutError([element]);
+                    }
+                    return true;
+                },
+            );
+            await expect(VideoPlayerModule.initManifest({})).rejects.toThrow(
+                'gst-inspect-1.0 waylandsink timed out after 30 s',
+            );
+            expect(VideoPlayerModule.getSinkAvailability()).toEqual({ wayland: false, kms: false });
+            expect(VideoPlayerModule.getDecoderAvailability()).toEqual({});
+
+            // PluginLoader.settle runs it again before the module's next start.
+            answers = true;
+            await VideoPlayerModule.initManifest({});
+            expect(VideoPlayerModule.getSinkAvailability()).toEqual({ wayland: true, kms: true });
+            expect(VideoPlayerModule.getDecoderAvailability()).toEqual(
+                Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true])),
+            );
+            (probeGstElement as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+                async () => false,
+            );
+        });
     });
 
     describe('buildSink', () => {

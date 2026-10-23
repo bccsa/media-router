@@ -316,4 +316,72 @@ describe('PluginLoader', () => {
             );
         });
     });
+
+    describe('an initManifest cut short by a gst-inspect timeout (B-102)', () => {
+        /** A probing initManifest: times out while `hang` is set, else narrows the manifest. */
+        const probingCode = (fails: 'timeout' | 'error') => `
+            export class TestModule {
+                onInit() {}
+                onStart() {}
+                static async initManifest(m) {
+                    const state = globalThis.__b102[m.pluginId];
+                    state.runs++;
+                    if (state.hang) {
+                        const err = new Error('gst-inspect-1.0 x264enc timed out after 30 s');
+                        if (${JSON.stringify(fails)} === 'timeout') err.name = 'GstInspectTimeoutError';
+                        throw err;
+                    }
+                    m.description = 'probed';
+                }
+            }
+        `;
+        const plugin = (id: string) => ({
+            pluginId: id,
+            displayName: id,
+            engine: './engine/TestModule.js',
+        });
+        const state = (id: string, hang: boolean) => {
+            const g = globalThis as unknown as {
+                __b102?: Record<string, { runs: number; hang: boolean }>;
+            };
+            g.__b102 ??= {};
+            g.__b102[id] = { runs: 0, hang };
+            return g.__b102[id];
+        };
+
+        it('runs again at settle() until it runs through; then settle() is a no-op', async () => {
+            const enc = state('enc-b102', true);
+            createPlugin('enc', plugin('enc-b102'), probingCode('timeout'));
+            const loader = new PluginLoader(tmpDir);
+            await loader.load();
+            expect(enc.runs).toBe(1);
+            expect(loader.get('enc-b102')!.manifest.description).toBeUndefined();
+
+            // Still no answer: the start that waits on it fails with the timeout, and it stays due.
+            await expect(loader.settle('enc-b102')).rejects.toThrow('x264enc timed out after 30 s');
+            expect(enc.runs).toBe(2);
+
+            enc.hang = false;
+            await loader.settle('enc-b102');
+            expect(enc.runs).toBe(3);
+            expect(loader.get('enc-b102')!.manifest.description).toBe('probed');
+            await loader.settle('enc-b102');
+            expect(enc.runs).toBe(3);
+        });
+
+        it('one that failed any other way, and one that ran through, never run again', async () => {
+            const bad = state('bad-b102', true);
+            const good = state('good-b102', false);
+            createPlugin('bad', plugin('bad-b102'), probingCode('error'));
+            createPlugin('good', plugin('good-b102'), probingCode('timeout'));
+            const loader = new PluginLoader(tmpDir);
+            await loader.load();
+
+            await loader.settle('bad-b102');
+            await loader.settle('good-b102');
+            await loader.settle('not-loaded');
+            expect(bad.runs).toBe(1);
+            expect(good.runs).toBe(1);
+        });
+    });
 });

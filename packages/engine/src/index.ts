@@ -72,6 +72,8 @@ export {
     gstInspectMaxChannels,
     gstElementSupportsCaps,
     findLadspaElement,
+    GstInspectTimeoutError,
+    isGstInspectTimeout,
 } from './plugins/gstInspect.js';
 export {
     ENCODER_ELEMENTS,

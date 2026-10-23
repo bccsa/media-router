@@ -287,6 +287,19 @@ elements" below do not start.
   next one: a missed subtitle cue, or a short glitch. Fixed in the
   GStreamer of this release's system image, so it needs the image that
   carries the patch; this app on an older image still loses that packet.
+- **The engine starts when GStreamer has to rebuild its plugin list.**
+  GStreamer keeps a list of its plugins in the box's home directory. When
+  that list was missing or out of date (a freshly flashed or reset box, an
+  update that changes most of GStreamer), the engine could fail to start
+  and restart over and over with "GStreamer unixfdsrc not available" until
+  someone rebuilt the list by hand: on a Pi 4 under test, 8 restarts and 77 s
+  without the engine. Rebuilding the list takes 2 to 3 s on a busy Pi 4, and
+  the engine gave up after 2 s, before the list was saved. Fixed: the engine
+  waits up to 30 s, so its first start rebuilds the list and later starts are
+  as quick as before. A check that still runs out of time says so, instead of
+  reporting GStreamer as missing; and a module whose check of the encoders,
+  decoders or 302M support on the box ran out of time checks again when it
+  starts, instead of going without them until the engine restarts.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

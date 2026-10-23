@@ -1054,13 +1054,15 @@ the restart policy handle recovery.
 
 ### Static Hooks (Class-Level, Not Instance-Level)
 
-Two optional **static** methods on the module class run **once per plugin class** during engine startup — before any module instances exist. They let a plugin probe the host for capabilities and contribute engine-wide services.
+Two optional **static** methods on the module class run **once per plugin class** during engine startup — before any module instances exist (an `initManifest` whose probe timed out runs again, below). They let a plugin probe the host for capabilities and contribute engine-wide services.
 
 #### `static initManifest(manifest)` — Probe host capabilities
 
 Use when the manifest depends on what the host machine actually supports. The method is called once after the manifest is parsed; mutate `manifest` in place to surface detected capabilities (codec lists, encoder enums, hardware presence flags).
 
 The narrowed `configSchema` you produce here is **per-engine**: the engine advertises it to the manager on connect, so the settings panel shows *that* engine's real capabilities even when the manager runs on different hardware (e.g. an Intel engine's HW encoders appear under an ARM manager). The manager only falls back to its own host probe for engines that don't report (older engine versions). You don't need to do anything to opt in — just narrow the manifest as usual.
+
+A probe that gets no answer (`probeGstElement` and the other `gstInspect` helpers reject with `GstInspectTimeoutError` after 30 s: a GStreamer registry scan that hung) is not "not installed": let the error through. The engine runs `initManifest` again before the plugin's next module start until it runs through, so write it to be safe to run twice (assign the statics, narrow the manifest in place).
 
 ```typescript
 import { GstPluginBase, probeGstElement, type PluginManifest } from '@media-router/engine';

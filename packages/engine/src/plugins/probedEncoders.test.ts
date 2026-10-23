@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('./gstInspect.js', async (orig) => ({
+    ...(await orig<typeof import('./gstInspect.js')>()),
+    probeGstElement: vi.fn(),
+}));
+
+import { GstInspectTimeoutError, probeGstElement } from './gstInspect.js';
+import { ENCODER_ELEMENTS } from './encoderElements.js';
 import { ProbedEncoders } from './probedEncoders.js';
+
+const probeMock = probeGstElement as unknown as ReturnType<typeof vi.fn>;
 
 describe('ProbedEncoders.forTest', () => {
     it('fills unnamed codecs with no impls — forTest({}) is the all-empty host', () => {
@@ -55,5 +65,24 @@ describe('ProbedEncoders.applyToManifest', () => {
             'auto',
             'software',
         ]);
+    });
+});
+
+describe('ProbedEncoders.probe', () => {
+    it('a probe that timed out, a scaler too, rejects instead of reading as not installed (B-102)', async () => {
+        probeMock.mockImplementation(async (name: string) => {
+            if (name === 'v4l2convert') throw new GstInspectTimeoutError([name]);
+            return name === 'x264enc';
+        });
+        await expect(
+            ProbedEncoders.probe(ENCODER_ELEMENTS, { probeHwScalers: true }),
+        ).rejects.toThrow('gst-inspect-1.0 v4l2convert timed out after 30 s');
+
+        probeMock.mockImplementation(
+            async (name: string) => name === 'x264enc' || name === 'v4l2convert',
+        );
+        const host = await ProbedEncoders.probe(ENCODER_ELEMENTS, { probeHwScalers: true });
+        expect(host.availability).toEqual({ h264: ['software'], h265: [], av1: [] });
+        expect(host.hwScalers).toEqual({ va: false, v4l2: true });
     });
 });

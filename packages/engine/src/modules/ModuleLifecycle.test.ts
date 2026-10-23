@@ -185,6 +185,7 @@ describe('ModuleLifecycle', () => {
         it('falls back to plugin manifest ports when config ports are empty', async () => {
             // Create a mock PluginLoader that returns manifest ports
             const mockPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue({
                     manifest: {
                         pluginId: 'example',
@@ -255,6 +256,7 @@ describe('ModuleLifecycle', () => {
                 },
             ];
             const mockPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue({
                     manifest: { pluginId: 'example', displayName: 'Example', ports: manifestPorts },
                 }),
@@ -291,6 +293,7 @@ describe('ModuleLifecycle', () => {
 
         it('falls back to plugin manifest ports when config has no ports field', async () => {
             const mockPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue({
                     manifest: {
                         pluginId: 'example',
@@ -429,6 +432,7 @@ describe('ModuleLifecycle', () => {
     describe('startSingle — port fallback', () => {
         it('uses manifest ports when config has none', async () => {
             const mockPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue({
                     manifest: {
                         pluginId: 'example',
@@ -476,6 +480,7 @@ describe('ModuleLifecycle', () => {
     describe('enable — port fallback', () => {
         it('uses manifest ports when config has none', async () => {
             const mockPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue({
                     manifest: {
                         pluginId: 'example',
@@ -730,6 +735,7 @@ describe('ModuleLifecycle', () => {
         it('handles start failure gracefully', async () => {
             // Create a mock pluginLoader that will cause createModule to fail
             const badPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue(null), // no plugin found
             } as any;
             const config = {
@@ -776,6 +782,7 @@ describe('ModuleLifecycle', () => {
     describe('resolvePorts — MPEG-TS classification', () => {
         it('resolves MPEG-TS ports from manifest when config has none', async () => {
             const mockPluginLoader = {
+                settle: vi.fn().mockResolvedValue(undefined),
                 get: vi.fn().mockReturnValue({
                     manifest: {
                         pluginId: 'srt-input',

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
 import { Engine, type EngineConfig } from './Engine.js';
+import { GstInspectTimeoutError } from './plugins/gstInspect.js';
 
 /** Stand-in for the house clock: the test decides when the start wait ends. */
 const { FakeHouseClock } = vi.hoisted(() => {
@@ -36,9 +37,10 @@ vi.mock('./audio/PwLinkOps.js', async (orig) => ({
     ...(await orig<typeof import('./audio/PwLinkOps.js')>()),
     requirePwLink: async () => {},
 }));
+const { probeGstElement } = vi.hoisted(() => ({ probeGstElement: vi.fn(async () => true) }));
 vi.mock('./plugins/gstInspect.js', async (orig) => ({
     ...(await orig<typeof import('./plugins/gstInspect.js')>()),
-    probeGstElement: async () => true,
+    probeGstElement,
 }));
 
 /**
@@ -197,5 +199,42 @@ describe('Engine — house-clock start wait', () => {
                 timeSync: expect.objectContaining({ waitingForSync: true, waitRemainingS: 21 }),
             }),
         );
+    });
+});
+
+/** The bus check at start: a gst-inspect run that timed out is not a missing unixfdsrc (B-102). */
+describe('Engine — the unixfdsrc check at start', () => {
+    let tmpDir: string;
+    let engine: Engine;
+
+    beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-test-'));
+        engine = new Engine({
+            profilesPath: path.join(tmpDir, 'profiles.json'),
+            pluginsDir: tmpDir,
+            apiPort: 0,
+            localPort: 0,
+        });
+        vi.spyOn(engine.pipeWire, 'cleanupOrphans').mockResolvedValue();
+    });
+
+    afterEach(async () => {
+        await engine.stop();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('names the probe that timed out, and loads no plugin', async () => {
+        probeGstElement.mockRejectedValueOnce(new GstInspectTimeoutError(['unixfdsrc']));
+        const load = vi.spyOn(engine.pluginLoader, 'load');
+
+        const err = (await engine.start().catch((e: unknown) => e)) as Error;
+        expect(err.message).toMatch(/^gst-inspect-1\.0 unixfdsrc timed out after 30 s/);
+        expect(err.message).not.toMatch(/not available/);
+        expect(load).not.toHaveBeenCalled();
+    });
+
+    it('still says unixfdsrc is not available when gst-inspect says so', async () => {
+        probeGstElement.mockResolvedValueOnce(false);
+        await expect(engine.start()).rejects.toThrow('GStreamer unixfdsrc not available');
     });
 });

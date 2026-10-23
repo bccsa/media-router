@@ -46,6 +46,18 @@ describe('probeEncoderAvailability', () => {
         const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
         expect(availability).toEqual({ h264: [], h265: [], av1: [] });
     });
+
+    it('a probe that timed out rejects the whole probe: no impl is read as missing (B-102)', async () => {
+        const { GstInspectTimeoutError } =
+            await vi.importActual<typeof import('./gstInspect.js')>('./gstInspect.js');
+        probeMock.mockImplementation(async (name: string) => {
+            if (name === 'v4l2h264enc') throw new GstInspectTimeoutError([name]);
+            return name === 'x264enc';
+        });
+        await expect(probeEncoderAvailability(ENCODER_ELEMENTS)).rejects.toThrow(
+            'gst-inspect-1.0 v4l2h264enc timed out after 30 s',
+        );
+    });
 });
 
 describe('applyEncoderAvailabilityToManifest', () => {

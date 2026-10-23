@@ -124,7 +124,9 @@ export class ModuleManager extends EventEmitter {
                   }
                 : undefined;
 
-        const instance = new ModuleInstance(instanceId, pluginId, plugin, config, services);
+        const instance = new ModuleInstance(instanceId, pluginId, plugin, config, services, () =>
+            this.pluginLoader.settle(pluginId),
+        );
 
         // Forward state changes
         instance.on('stateChange', (id: string, state: ModuleRuntimeState) => {

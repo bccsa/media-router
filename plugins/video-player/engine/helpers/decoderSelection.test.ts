@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { GstInspectTimeoutError } from '@media-router/engine';
 import {
     CODEC_CAPS,
     CPU_DECODE_THREADING,
@@ -492,6 +493,15 @@ describe('probeDecoderAvailability', () => {
             v4l2slh265dec: false,
             avdec_h265: false,
         });
+    });
+
+    it('a probe that timed out rejects: no decoder is read as missing (B-102)', async () => {
+        const timeout = new GstInspectTimeoutError(['v4l2h264dec']);
+        const probe = vi.fn(async (el: string) => {
+            if (el === 'v4l2h264dec') throw timeout;
+            return true;
+        });
+        await expect(probeDecoderAvailability(probe)).rejects.toBe(timeout);
     });
 
     it('feeds selectDecoder — a host with only software decode picks avdec', async () => {

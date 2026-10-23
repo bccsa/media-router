@@ -6,6 +6,7 @@ import {
     parseManifestTiming,
     withIngestTimingSettings,
 } from '@media-router/shared-types';
+import { isGstInspectTimeout } from './gstInspect.js';
 import type { PluginConstructor, EngineServices } from './PluginModule.js';
 
 const log = createLogger('PluginLoader');
@@ -36,6 +37,8 @@ function isPluginConstructor(v: unknown): v is PluginConstructor {
  */
 export class PluginLoader {
     private plugins = new Map<string, LoadedPlugin>();
+    /** initManifest hooks a gst-inspect timeout cut short at load, by plugin id (B-102). */
+    private unsettled = new Map<string, () => void | Promise<void>>();
     private pluginsDir: string;
 
     constructor(pluginsDir?: string) {
@@ -47,6 +50,7 @@ export class PluginLoader {
     /** Discover and load all valid plugins. If `services` is passed, each plugin's static `registerServices` runs once after `initManifest`. */
     async load(services?: EngineServices): Promise<number> {
         this.plugins.clear();
+        this.unsettled.clear();
 
         if (!fs.existsSync(this.pluginsDir)) {
             log.warn({ pluginsDir: this.pluginsDir }, 'Plugins directory not found');
@@ -125,13 +129,23 @@ export class PluginLoader {
                     if (exportedClass) {
                         ModuleClass = exportedClass;
                         if (exportedClass.initManifest) {
+                            const init = exportedClass.initManifest.bind(exportedClass, manifest);
                             try {
-                                await exportedClass.initManifest(manifest);
+                                await init();
                             } catch (err) {
-                                log.warn(
-                                    { err, pluginId: manifest.pluginId },
-                                    'initManifest failed',
-                                );
+                                if (isGstInspectTimeout(err)) {
+                                    // No answer is not "not installed": `settle` runs it again.
+                                    this.unsettled.set(manifest.pluginId, init);
+                                    log.warn(
+                                        { err, pluginId: manifest.pluginId },
+                                        'initManifest timed out — runs again before a module starts',
+                                    );
+                                } else {
+                                    log.warn(
+                                        { err, pluginId: manifest.pluginId },
+                                        'initManifest failed',
+                                    );
+                                }
                             }
                         }
                         if (services && exportedClass.registerServices) {
@@ -166,6 +180,24 @@ export class PluginLoader {
         }
 
         return this.plugins.size;
+    }
+
+    /**
+     * Before each module start (ModuleInstance): run the plugin's initManifest again if a
+     * gst-inspect timeout cut it short at load, so its probe never stands as "nothing installed"
+     * for the engine's life (B-102). A timeout again rejects and waits for the next start.
+     */
+    async settle(pluginId: string): Promise<void> {
+        const init = this.unsettled.get(pluginId);
+        if (!init) return;
+        try {
+            await init();
+            log.info({ pluginId }, 'initManifest ran through before a module start');
+        } catch (err) {
+            if (isGstInspectTimeout(err)) throw err;
+            log.warn({ err, pluginId }, 'initManifest failed');
+        }
+        this.unsettled.delete(pluginId);
     }
 
     /** Get a loaded plugin by ID. */

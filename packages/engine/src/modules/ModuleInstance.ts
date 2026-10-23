@@ -29,6 +29,8 @@ export class ModuleInstance extends EventEmitter {
     private _pendingRestart = false;
     private _initialized = false;
     private services: ModuleServices | null = null;
+    /** Awaited before each start: PluginLoader.settle, which re-runs a timed-out initManifest (B-102). */
+    private readonly beforeStart: () => Promise<void>;
     /** Bound listener refs for cleanup — prevents EventEmitter leaks across start/stop cycles. */
     private pluginListeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
 
@@ -38,6 +40,7 @@ export class ModuleInstance extends EventEmitter {
         plugin: PluginModule,
         config: Record<string, unknown>,
         services?: ModuleServices,
+        beforeStart: () => Promise<void> = async () => {},
     ) {
         super();
         this.instanceId = instanceId;
@@ -45,6 +48,7 @@ export class ModuleInstance extends EventEmitter {
         this.plugin = plugin;
         this.config = config;
         this.services = services ?? null;
+        this.beforeStart = beforeStart;
 
         this.attachPluginListeners();
     }
@@ -117,6 +121,7 @@ export class ModuleInstance extends EventEmitter {
     async start(): Promise<void> {
         if (this._running) return;
         try {
+            await this.beforeStart();
             if (!this._initialized) {
                 await this.plugin.onInit(this.config, this.services ?? undefined);
                 this._initialized = true;
