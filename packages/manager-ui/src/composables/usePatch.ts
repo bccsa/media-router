@@ -1,6 +1,12 @@
+import * as wire from '@media-router/shared-types/browser';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
+import { useToast } from '@/composables/useToast';
+import { fieldLabel } from '@/utils/fieldLabel';
 import { newModuleInstanceId } from '@/utils/ids';
+
+// shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
+const { splitPath } = wire;
 
 // JSON round-trip clone — robust against Vue/Pinia reactive proxies, which can
 // trip `structuredClone` depending on the underlying values. Module state is
@@ -15,10 +21,24 @@ interface PatchOp {
     value?: unknown;
 }
 
+/** "Input Volume (Mic 1) not saved: above maximum 150": a refused op's setting, its module and why. */
+function refusalText(engineId: string, path: string, reason: string): string {
+    const [, , branch, id, field, key] = splitPath(path);
+    const mod =
+        branch === 'modules' ? useEngineStore().getEngine(engineId)?.modules[id] : undefined;
+    const props = (
+        mod?.configSchema as { properties?: Record<string, { title?: unknown }> } | undefined
+    )?.properties;
+    const what =
+        field === 'settings' && key ? fieldLabel(key, props?.[key]) : (field ?? branch ?? path);
+    const where = branch === 'modules' ? ` (${mod?.displayName ?? id})` : '';
+    return `${what}${where} not saved: ${reason}`;
+}
+
 /**
  * Send a patch: apply to the local store first (optimistic), then write it to
  * the tree at `/engines/<id>/…`. The echo brings the stored value back; a
- * rejected op snaps back the same way (ADR-0024).
+ * rejected op snaps back the same way (ADR-0024), and is shown with its reason (B-107).
  */
 function emit(engineId: string, ops: PatchOp[]) {
     useEngineStore().applyEnginePatch(engineId, ops);
@@ -27,6 +47,7 @@ function emit(engineId: string, ops: PatchOp[]) {
         .write(ops.map((op) => ({ ...op, path: prefix + op.path })))
         .then(({ rejected }) => {
             if (rejected.length > 0) console.warn('[patch] rejected by the manager', rejected);
+            for (const r of rejected) useToast().show(refusalText(engineId, r.path, r.reason));
         })
         .catch((err) => console.warn('[patch] write failed', err));
 }

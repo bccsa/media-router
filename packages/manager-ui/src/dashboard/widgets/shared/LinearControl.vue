@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { WidgetProps } from '../../registry';
 import { useTimed } from '../../useTimed';
 import { debounced, dragValue, fraction, throttled } from '../../drag';
@@ -78,6 +78,12 @@ function up() {
     send.end(local.value);
     hold(local.value !== stored.value);
 }
+
+// Gone mid-drag (another dashboard, the widget bound elsewhere): the value held back is written now,
+// to this host's value, as a release would (B-106).
+onBeforeUnmount(() => {
+    if (dragging.value && moved) send.end(local.value);
+});
 
 /** Keys: arrows by a step (1 % of the range without one), Page keys by ten, Home/End to the ends. */
 function key(e: KeyboardEvent) {

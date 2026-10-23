@@ -1307,4 +1307,82 @@ describe('PatchRouter', () => {
             expect(eventForwarder.purgeModuleStates).not.toHaveBeenCalled();
         });
     });
+
+    describe('a setting brought within the maximum its written source sets (B-107)', () => {
+        /** Audio Encoder's two dependents as its manifest declares them. */
+        const ENCODER = {
+            pluginId: 'audio-encoder',
+            displayName: 'Audio Encoder',
+            ports: [],
+            configSchema: {
+                properties: {
+                    codec: { type: 'string', enum: ['opus', 'aac'] },
+                    bitrate: { type: 'number', maximum: 510, 'x-maxBy': { field: 'codec', map: { opus: 510, aac: 320 } } },
+                    volumeMax: { type: 'number', enum: [100, 150, 200, 300, 500] },
+                    volume: { type: 'number', maximum: 150, 'x-maxFrom': 'volumeMax' },
+                },
+            },
+        };
+
+        /** One stored encoder module whose config persists across patches. */
+        function encoder(settings: Record<string, unknown>) {
+            const mocks = createMocks();
+            const config = { modules: { enc: { pluginId: 'audio-encoder', settings } }, connections: [] };
+            mocks.configStore.modifyProfileConfig.mockImplementation((_e: string, _p: string, fn: (c: unknown) => unknown) => fn(config));
+            mocks.pluginRegistry.find.mockImplementation((id: string) => (id === 'audio-encoder' ? ENCODER : undefined));
+            return { ...mocks, config };
+        }
+        const set = (key: string, value: unknown) => ({ op: 'replace' as const, path: `/modules/enc/settings/${key}`, value });
+
+        it("a router's own write (its dashboard, its panel) lowering Volume Range: stored at 150, the router sent only that", () => {
+            const { router, config, engineManager, cascadesOf } = encoder({ volumeMax: 500, volume: 300 });
+
+            router.onPatch(engineSenderId('eng-1'), 'eng-1', [set('volumeMax', 150)]);
+
+            expect(config.modules.enc.settings).toEqual({ volumeMax: 150, volume: 150 });
+            expect(engineManager.sendToEngine).toHaveBeenCalledWith('eng-1', 'patch', { ops: [set('volume', 150)] }, { guaranteeDelivery: true });
+            expect(cascadesOf()).toEqual([set('volume', 150)]);
+        });
+
+        it('a codec change pulls an AAC bitrate down (x-maxBy); Opus keeps it', () => {
+            const { router, config } = encoder({ codec: 'opus', bitrate: 400 });
+
+            router.onPatch('browser-1', 'eng-1', [set('codec', 'aac')]);
+            expect(config.modules.enc.settings).toEqual({ codec: 'aac', bitrate: 320 });
+
+            router.onPatch('browser-1', 'eng-1', [set('codec', 'opus')]);
+            expect(config.modules.enc.settings).toEqual({ codec: 'opus', bitrate: 320 });
+        });
+
+        it('a dependent the same batch sets within the new maximum keeps that value, whichever op comes first', () => {
+            for (const ops of [
+                [set('volumeMax', 150), set('volume', 120)],
+                [set('volume', 120), set('volumeMax', 150)],
+            ]) {
+                const { router, config, cascadesOf } = encoder({ volumeMax: 500, volume: 300 });
+                router.onPatch('browser-1', 'eng-1', ops);
+                expect(config.modules.enc.settings).toEqual({ volumeMax: 150, volume: 120 });
+                expect(cascadesOf()).toEqual([]);
+            }
+        });
+
+        it('only a write of the source moves it: another setting, or a volume at the maximum, moves nothing', () => {
+            const over = encoder({ volumeMax: 150, volume: 300, codec: 'opus' });
+            over.router.onPatch('browser-1', 'eng-1', [set('codec', 'aac')]);
+            expect(over.config.modules.enc.settings).toEqual({ volumeMax: 150, volume: 300, codec: 'aac' });
+
+            const at = encoder({ volumeMax: 500, volume: 150 });
+            at.router.onPatch('browser-1', 'eng-1', [set('volumeMax', 150)]);
+            expect(at.config.modules.enc.settings).toEqual({ volumeMax: 150, volume: 150 });
+            expect(at.cascadesOf()).toEqual([]);
+        });
+
+        it('a plugin the manager does not know, or a module with no settings, is left alone', () => {
+            const { router, config, pluginRegistry, cascadesOf } = encoder({ volumeMax: 500, volume: 300 });
+            pluginRegistry.find.mockReturnValue(undefined);
+            router.onPatch('browser-1', 'eng-1', [set('volumeMax', 150), { op: 'replace', path: '/modules/ghost/settings/volumeMax', value: 100 }]);
+            expect(config.modules.enc.settings).toEqual({ volumeMax: 150, volume: 300 });
+            expect(cascadesOf()).toEqual([]);
+        });
+    });
 });

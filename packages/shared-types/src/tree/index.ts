@@ -7,6 +7,7 @@ export {
     describeModuleValue,
     describeModule,
     settingMaximum,
+    dependentsOverMaximum,
     metaAt,
     touchedModules,
     checkWrite,

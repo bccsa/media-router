@@ -168,3 +168,118 @@ describe('manager tree (integration)', () => {
         expect(res.rejected).toEqual([{ index: 0, path: '/foo', reason: 'not writable' }]);
     });
 });
+
+describe('a write that lowers a maximum brings what it caps down with it, whoever wrote it (B-107)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    const VOL = '/engines/e1/modules/m1/settings/volume';
+    const RANGE = '/engines/e1/modules/m1/settings/volumeMax';
+
+    /** The fixture with Volume Range 500 and the volume at `volume`, as the manager takes them. */
+    async function atRange500(volume: number) {
+        const t = setup();
+        const res = await t.writes.handle({ socketId: 'panel' }, [
+            { op: 'replace', path: RANGE, value: 500 },
+            { op: 'replace', path: VOL, value: volume },
+        ], 1);
+        expect(res.rejected).toEqual([]);
+        t.engineManager.sendToEngine.mockClear();
+        return t;
+    }
+
+    it('a dashboard lowering Volume Range 500 -> 150 with the volume at 300 stores 150 for both, in the same write', async () => {
+        const { writes, stored, engineManager, sock, ops, track } = await atRange500(300);
+        const dash = sock('dash', ['/engines/e1/modules/m1/settings']).s;
+        const other = track('other', ['/engines/e1/modules/m1/settings']);
+
+        const res = await writes.handle({ socketId: 'dash' }, [{ op: 'replace', path: RANGE, value: 150 }], 7);
+
+        expect(res.rejected).toEqual([]);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 150, volume: 150 });
+        expect(engineManager.sendToEngine).toHaveBeenCalledTimes(1);
+        expect(engineManager.sendToEngine).toHaveBeenCalledWith('e1', 'patch', {
+            ops: [
+                { op: 'replace', path: '/modules/m1/settings/volumeMax', value: 150 },
+                { op: 'replace', path: '/modules/m1/settings/volume', value: 150 },
+            ],
+        }, { guaranteeDelivery: true });
+        // The writer gets its own op back tagged and the volume as everyone else does.
+        expect(ops(dash)).toEqual([
+            { op: 'replace', path: RANGE, value: 150, w: 7 },
+            { op: 'replace', path: VOL, value: 150 },
+        ]);
+        expect(other.sync().engines.e1.modules.m1.settings).toMatchObject({ volumeMax: 150, volume: 150 });
+    });
+
+    it('one with the volume at 100 stores 100: the range alone is written', async () => {
+        const { writes, stored, engineManager } = await atRange500(100);
+
+        await writes.handle({ socketId: 'dash' }, [{ op: 'replace', path: RANGE, value: 150 }], 7);
+
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 150, volume: 100 });
+        expect(engineManager.sendToEngine).toHaveBeenCalledWith('e1', 'patch', {
+            ops: [{ op: 'replace', path: '/modules/m1/settings/volumeMax', value: 150 }],
+        }, { guaranteeDelivery: true });
+    });
+
+    it('a script lowering it does the same, and the volume at the new maximum stays', async () => {
+        const { writes, stored } = await atRange500(150);
+        await writes.handle({ socketId: 'script:run' }, [{ op: 'replace', path: RANGE, value: 150 }], 0);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 150, volume: 150 });
+
+        await writes.handle({ socketId: 'script:run' }, [
+            { op: 'replace', path: RANGE, value: 500 },
+            { op: 'replace', path: VOL, value: 400 },
+        ], 0);
+        await writes.handle({ socketId: 'script:run' }, [{ op: 'replace', path: RANGE, value: 200 }], 0);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 200, volume: 200 });
+    });
+
+    it('raising it moves no volume within the old range', async () => {
+        const { writes, stored, engineManager } = await atRange500(300);
+        await writes.handle({ socketId: 'dash' }, [{ op: 'replace', path: RANGE, value: 1000 }], 2);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 1000, volume: 300 });
+        expect(engineManager.sendToEngine.mock.calls[0][2].ops).toHaveLength(1);
+    });
+
+    it("another write moves no volume, even one above its range, and the write check's refusals stand", async () => {
+        const { writes, stored, configStore } = await atRange500(300);
+        // Over its range already, as an old profile or the engine's start can leave it.
+        configStore.modifyProfileConfig('e1', 'default', (c: any) => {
+            c.modules.m1.settings.volumeMax = 100;
+            return c;
+        });
+        await writes.handle({ socketId: 'a' }, [{ op: 'replace', path: '/engines/e1/modules/m1/displayName', value: 'Out 2' }], 1);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 100, volume: 300 });
+
+        const res = await writes.handle({ socketId: 'a' }, [{ op: 'replace', path: VOL, value: 120 }], 2);
+        expect(res.rejected).toEqual([{ index: 0, path: VOL, reason: 'above maximum 100' }]);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 100, volume: 300 });
+
+        // A range written under such a volume, even a higher one, brings it within.
+        await writes.handle({ socketId: 'a' }, [{ op: 'replace', path: RANGE, value: 150 }], 3);
+        expect(stored().modules.m1.settings).toMatchObject({ volumeMax: 150, volume: 150 });
+    });
+
+    it("the engine's own schema is the one read: its x-maxBy codec pulls the bitrate down", async () => {
+        const { writes, stored, engineManager, configStore } = setup();
+        engineManager.emit('engineCapabilities', 'e1', {
+            'audio-output': {
+                properties: {
+                    codec: { type: 'string', enum: ['opus', 'aac'] },
+                    bitrate: { type: 'number', maximum: 510, 'x-maxBy': { field: 'codec', map: { opus: 510, aac: 320 } } },
+                },
+            },
+        });
+        configStore.modifyProfileConfig('e1', 'default', (c: any) => {
+            c.modules.m1.settings = { codec: 'opus', bitrate: 400 };
+            return c;
+        });
+
+        const res = await writes.handle({ socketId: 'dash' }, [{ op: 'replace', path: '/engines/e1/modules/m1/settings/codec', value: 'aac' }], 3);
+
+        expect(res.rejected).toEqual([]);
+        expect(stored().modules.m1.settings).toEqual({ codec: 'aac', bitrate: 320 });
+    });
+});

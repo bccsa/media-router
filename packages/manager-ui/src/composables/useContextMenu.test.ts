@@ -1,14 +1,16 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { computed } from 'vue';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { computed, defineComponent } from 'vue';
+import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import type { EngineState } from '@/stores/engines';
 
 const mockCloneModule = vi.fn();
 const mockModulesField = vi.fn();
 const mockRemoveModules = vi.fn();
+const mockModuleSetting = vi.fn();
 const mockCall = vi.fn(async (..._args: unknown[]) => ({}));
 
 vi.mock('@/composables/usePatch', () => ({
@@ -16,6 +18,7 @@ vi.mock('@/composables/usePatch', () => ({
         cloneModule: (...args: unknown[]) => mockCloneModule(...args),
         modulesField: (...args: unknown[]) => mockModulesField(...args),
         removeModules: (...args: unknown[]) => mockRemoveModules(...args),
+        moduleSetting: (...args: unknown[]) => mockModuleSetting(...args),
     },
 }));
 
@@ -60,7 +63,14 @@ const rightClick = (id: string) => ({
 
 beforeEach(() => {
     setActivePinia(createPinia());
-    for (const m of [mockCloneModule, mockModulesField, mockRemoveModules, mockCall]) m.mockReset();
+    for (const m of [
+        mockCloneModule,
+        mockModulesField,
+        mockRemoveModules,
+        mockModuleSetting,
+        mockCall,
+    ])
+        m.mockReset();
 });
 
 describe('useContextMenu clone action (#675)', () => {
@@ -184,5 +194,64 @@ describe('useContextMenu group actions', () => {
 
         expect(requestDelete).toHaveBeenCalledWith(['a', 'b']);
         expect(mockRemoveModules).not.toHaveBeenCalled();
+    });
+});
+
+describe('useContextMenu inline controls: a held value goes to the module it was made on (B-106)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("A's value held when the menu reopens on another module goes to A; the other's first value is its own write", () => {
+        const { menu } = setup();
+        menu.onNodeContextMenu(rightClick('a'));
+        menu.onContextSliderChange('setting:volume', 10);
+        // Inside the 100 ms window: held for a.
+        menu.onContextSliderChange('setting:volume', 20);
+        menu.onNodeContextMenu(rightClick('c'));
+        menu.onContextSliderChange('setting:volume', 30);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'a', 'volume', 10],
+            ['eng-1', 'c', 'volume', 30],
+        ]);
+
+        vi.advanceTimersByTime(100);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'a', 'volume', 10],
+            ['eng-1', 'c', 'volume', 30],
+            ['eng-1', 'a', 'volume', 20],
+        ]);
+    });
+
+    it('a value held when the editor goes away is written to its module at once', () => {
+        let menu!: ReturnType<typeof setup>['menu'];
+        const host = mount(
+            defineComponent({
+                setup() {
+                    menu = setup().menu;
+                    return () => null;
+                },
+            }),
+        );
+        menu.onNodeContextMenu(rightClick('a'));
+        menu.onContextSliderChange('setting:volume', 10);
+        menu.onContextSliderChange('setting:volume', 20);
+        host.unmount();
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'a', 'volume', 10],
+            ['eng-1', 'a', 'volume', 20],
+        ]);
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting).toHaveBeenCalledTimes(2);
+    });
+
+    it("a toggle writes at once to the open menu's module; nothing without a menu or for a non-setting action", () => {
+        const { menu } = setup();
+        menu.onContextSliderChange('setting:volume', 10);
+        menu.onNodeContextMenu(rightClick('c'));
+        menu.onContextToggleChange('setting:audioEnabled', false);
+        menu.onContextSliderChange('restart', 1);
+
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'c', 'audioEnabled', false]]);
     });
 });

@@ -1,9 +1,10 @@
-import { ref, computed, type ComputedRef } from 'vue';
+import { ref, computed, getCurrentInstance, onUnmounted, type ComputedRef } from 'vue';
 import type { Node } from '@vue-flow/core';
 import type { EngineState, ModuleState } from '@/stores/engines';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { engineActions } from '@/utils/engineActions';
 import { patch } from '@/composables/usePatch';
+import { createLiveWrites } from '@/utils/liveWrites';
 import {
     buildEdgeMenuItems,
     buildGroupMenuItems,
@@ -114,6 +115,29 @@ export function useContextMenu(
         contextMenu.value = null;
     }
 
+    // A menu slider writes as it moves, throttled; each held value goes to the module and key it was
+    // made on, whichever menu is open by then (B-106).
+    const sliderWrites = createLiveWrites(
+        (t, value) => patch.moduleSetting(t.engineId, t.moduleId, t.key, value),
+        100,
+    );
+    if (getCurrentInstance()) onUnmounted(() => sliderWrites.flush());
+
+    /** The `x-contextMenu` setting an inline control's action names, or null. */
+    const settingOf = (action: string) =>
+        contextMenu.value && action.startsWith('setting:') ? action.slice('setting:'.length) : null;
+
+    function onContextSliderChange(action: string, value: number) {
+        const key = settingOf(action);
+        if (!key) return;
+        sliderWrites.throttle({ engineId: engineId(), moduleId: menuModuleId.value, key }, value);
+    }
+
+    function onContextToggleChange(action: string, value: boolean) {
+        const key = settingOf(action);
+        if (key) patch.moduleSetting(engineId(), menuModuleId.value, key, value);
+    }
+
     function eventPoint(e: any): { x: number; y: number } {
         return {
             x: 'clientX' in e ? e.clientX : (e.touches?.[0]?.clientX ?? 0),
@@ -196,6 +220,8 @@ export function useContextMenu(
         openGroupMenuAt: openAt,
         dismissContextMenus,
         onContextAction,
+        onContextSliderChange,
+        onContextToggleChange,
         onEdgeClick,
         onEdgeContextMenu,
         onEdgeContextAction,

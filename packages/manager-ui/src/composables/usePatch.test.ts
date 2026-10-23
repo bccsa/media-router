@@ -5,7 +5,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 const mockApplyEnginePatch = vi.fn();
-const mockWrite = vi.fn(async () => ({ rejected: [] }));
+const mockWrite = vi.fn(
+    async (
+        ..._ops: unknown[]
+    ): Promise<{ rejected: Array<{ index: number; path: string; reason: string }> }> => ({
+        rejected: [],
+    }),
+);
 /** The tree write for engine-relative ops: paths under /engines/<id>. */
 const atEngine = (engineId: string, ops: Array<{ path: string }>) =>
     ops.map((op) => ({ ...op, path: `/engines/${engineId}${op.path}` }));
@@ -23,6 +29,7 @@ vi.mock('@/stores/socket', () => ({
 }));
 
 import { patch } from './usePatch';
+import { useToast } from './useToast';
 
 describe('usePatch', () => {
     beforeEach(() => {
@@ -326,5 +333,78 @@ describe('usePatch', () => {
         const applyOrder = mockApplyEnginePatch.mock.invocationCallOrder[0];
         const emitOrder = mockWrite.mock.invocationCallOrder[0];
         expect(applyOrder).toBeLessThan(emitOrder);
+    });
+});
+
+describe('usePatch: a write the manager refuses is shown (B-107)', () => {
+    const shown = () => useToast().toasts.value.map((t) => [t.kind, t.message]);
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        for (const t of useToast().toasts.value) useToast().dismiss(t.id);
+        mockWrite.mockReset();
+        mockGetEngine.mockReset();
+        mockGetEngine.mockReturnValue({
+            modules: {
+                'mod-1': {
+                    displayName: 'Mic 1',
+                    configSchema: { properties: { volume: { title: 'Input Volume' }, port: {} } },
+                },
+            },
+        });
+    });
+
+    it('each refused op names its setting, its module and why; an accepted one shows nothing', async () => {
+        mockWrite.mockResolvedValue({
+            rejected: [
+                {
+                    index: 0,
+                    path: '/engines/eng-1/modules/mod-1/settings/volume',
+                    reason: 'above maximum 150',
+                },
+                {
+                    index: 2,
+                    path: '/engines/eng-1/modules/mod-1/settings/port',
+                    reason: 'expected number',
+                },
+            ],
+        });
+
+        patch.moduleSettings('eng-1', 'mod-1', { volume: 300, fec: true, port: 'x' });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(shown()).toEqual([
+            ['error', 'Input Volume (Mic 1) not saved: above maximum 150'],
+            ['error', 'Port (Mic 1) not saved: expected number'],
+        ]);
+    });
+
+    it('a write taken whole shows nothing', async () => {
+        mockWrite.mockResolvedValue({ rejected: [] });
+
+        patch.moduleSetting('eng-1', 'mod-1', 'volume', 80);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(shown()).toEqual([]);
+    });
+
+    it('a module the panel no longer knows is named by its id', async () => {
+        mockGetEngine.mockReturnValue({ modules: {} });
+        mockWrite.mockResolvedValue({
+            rejected: [
+                {
+                    index: 0,
+                    path: '/engines/eng-1/modules/gone/settings/volume',
+                    reason: 'unknown module',
+                },
+            ],
+        });
+
+        patch.moduleSetting('eng-1', 'gone', 'volume', 80);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(shown()).toEqual([['error', 'Volume (gone) not saved: unknown module']]);
     });
 });

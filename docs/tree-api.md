@@ -156,6 +156,11 @@ socket.emit('write', {
 - **Order.** Ops apply in order. A setting is checked against the settings
   earlier ops in the same batch have set, so raising a `volumeMax` and then
   `volume` in one batch works.
+- **Dependents.** A write of a setting that sets another's maximum
+  (`x-maxFrom`, `x-maxBy`: a `volumeMax`, a codec) brings a stored value of
+  that other setting above the new maximum down to it in the same write,
+  whoever writes it. Every subscriber gets that change, you included,
+  untagged (B-107).
 - **Echo.** Every op of your write comes back to you in a `tree` frame
   tagged `w: <your write id>`, carrying the stored value. That's true even if
   you are not subscribed to the path. A rejected op comes back the same way

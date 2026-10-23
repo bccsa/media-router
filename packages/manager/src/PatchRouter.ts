@@ -1,4 +1,11 @@
-import { createLogger, applyJsonPatch, LiveArrayIndex } from '@media-router/shared-types';
+import {
+    createLogger,
+    applyJsonPatch,
+    dependentsOverMaximum,
+    joinPath,
+    splitPath,
+    LiveArrayIndex,
+} from '@media-router/shared-types';
 import type { PatchOp } from '@media-router/shared-types';
 import type { ConfigStore } from './config/ConfigStore.js';
 import type { EngineConnectionManager } from './engines/EngineConnectionManager.js';
@@ -72,6 +79,13 @@ export class PatchRouter {
         this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
             result = this.preprocessOps(engineId, config, ops);
             applyJsonPatch(config, result.processed);
+            const clamps = this.clampDependents(engineId, config, result.processed);
+            if (clamps.length > 0) {
+                applyJsonPatch(config, clamps);
+                result.processed.push(...clamps);
+                result.cascades.push(...clamps);
+                result.published.push(...clamps.map((op) => ({ op, fromSender: false })));
+            }
             return config;
         });
 
@@ -82,6 +96,37 @@ export class PatchRouter {
             this.publisher.info(engineId);
         }
         return result.dropped;
+    }
+
+    /**
+     * After the batch, a stored setting above the maximum a source written in it now sets (Volume
+     * Range, a codec) is brought down to it, whoever wrote the source (B-107). Added as cascades.
+     */
+    private clampDependents(engineId: string, config: Record<string, unknown>, ops: PatchOp[]): PatchOp[] {
+        const written = new Map<string, Set<string>>();
+        for (const op of ops) {
+            const [branch, id, field, key, ...deeper] = splitPath(op.path);
+            if (branch !== 'modules' || field !== 'settings' || key === undefined || deeper.length > 0) continue;
+            written.set(id, (written.get(id) ?? new Set<string>()).add(key));
+        }
+        const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
+        const clamps: PatchOp[] = [];
+        for (const [id, sources] of written) {
+            const settings = modules[id]?.settings as Record<string, unknown> | undefined;
+            if (!settings) continue;
+            const over = dependentsOverMaximum(this.schemaProps(engineId, modules[id]), settings, sources);
+            for (const [key, value] of Object.entries(over)) {
+                clamps.push({ op: 'replace', path: joinPath(['modules', id, 'settings', key]), value });
+            }
+        }
+        return clamps;
+    }
+
+    /** A module's settings schema as the write check reads it: the engine's reported one, else the manifest's. */
+    private schemaProps(engineId: string, stored: Record<string, unknown>): Record<string, Record<string, unknown>> {
+        const mod: Record<string, unknown> = { pluginId: stored.pluginId, configSchema: stored.configSchema };
+        this.pluginRegistry.overlayManifest(mod, this.runtime.getPluginSchemas(engineId));
+        return (mod.configSchema as { properties?: Record<string, Record<string, unknown>> } | undefined)?.properties ?? {};
     }
 
     /** Removed modules lose their cached state; re-added ones lose their tombstone. */

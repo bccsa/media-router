@@ -103,7 +103,9 @@ export function useWidgetAction(opts: {
             return;
         }
         try {
-            if ((await busyWhile(source.write([{ op: 'replace', path, value: a.value }]))).rejected.length > 0) opts.flash();
+            // A refused Set to says which setting and why, as a script's failed step does (B-107).
+            const [refused] = (await busyWhile(source.write([{ op: 'replace', path, value: a.value }]))).rejected;
+            if (refused) fail(`${a.path}: ${refused.reason}`);
         } catch {
             opts.flash();
         }

@@ -9,6 +9,7 @@ import { useRouterDown } from './useRouterDown';
 import { useSeries } from './useSeries';
 import { lastSegment } from './paths';
 import { useFlash, useWidgetAction } from './useWidgetAction';
+import { useTimed } from './useTimed';
 import type { DashboardSource } from './source';
 
 // shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
@@ -73,13 +74,18 @@ const locked = computed(() => {
 });
 
 const { on: rejected, flash } = useFlash();
+// A refused write says which setting and why, as a button's failure line does (B-107).
+const { value: refusal, set: refuse } = useTimed('', 8000);
 
 async function write(value: unknown) {
     const path = binding.path.value;
     if (!path || !interactive.value) return;
     try {
         const r = await props.source.write([{ op: 'replace', path, value }]);
-        if (r.rejected.length > 0) flash();
+        if (r.rejected.length > 0) {
+            refuse(`${label.value}: ${r.rejected[0].reason}`);
+            flash();
+        }
     } catch {
         flash();
     }
@@ -127,6 +133,7 @@ const style = computed(() => {
             <Lock v-if="locked" class="dw-lock" :size="12" aria-label="Display only" />
             <div v-if="state === 'missing'" class="dw-flag">Missing</div>
             <div v-else-if="state === 'stale'" class="dw-flag">Stale</div>
+            <div v-if="refusal" class="dw-refusal" role="alert">{{ refusal }}</div>
         </div>
     </div>
 </template>

@@ -334,11 +334,13 @@ elements" below do not start.
   without the engine. Rebuilding the list takes 2 to 3 s on a busy Pi 4, and
   the engine gave up after 2 s, before the list was saved. Fixed: the engine
   waits up to 30 s, so its first start rebuilds the list and later starts are
-  as quick as before. A check that still runs out of time, or is cut short (the
-  box running out of memory, for one), says so, instead of reporting GStreamer
-  as missing; and a module whose check of the encoders, decoders or 302M
-  support on the box did not finish checks again when it starts, instead of
-  going without them until the engine restarts.
+  as quick as before. A check that still runs out of time, or is stopped by
+  the system (when the box runs out of memory, for one), says so, instead of
+  reporting GStreamer as missing; a check that crashes still reads as
+  GStreamer missing, as before, and the engine's log names the crash. A
+  module whose check of the encoders, decoders or 302M support on the box did
+  not finish checks again when it starts, instead of going without them until
+  the engine restarts.
 - **An audio volume above 150 % set with a wider Volume Range now survives an
   engine restart.** On Audio Input (302M) and Audio Output (302M), and on the
   deprecated Audio Input, Audio Output, Audio Encoder and Audio Decoder, a
@@ -349,10 +351,12 @@ elements" below do not start.
   at a restart, as the manager does when it is set, so the module starts at
   the value set. Lowering Volume Range in a module's settings now brings a
   volume above it down to the new range, saved with it. A volume left above
-  its range all the same (the range lowered from a dashboard, for one) starts
-  at the top of the range, and any setting stored outside its limits starts
-  at the nearest limit instead of its default: an Audio Encoder bitrate above
-  320 kbps with AAC starts at 320 kbps, as before.
+  its range all the same (in a profile saved before this release, for one)
+  starts at the top of the range, and a number setting stored past its
+  minimum or maximum, and otherwise valid, starts at that limit instead of
+  its default: an Audio Encoder bitrate above 320 kbps with AAC starts at
+  320 kbps, as before. A number inside a list (an Audio Transcoder
+  rendition's bitrate) is left to its module, as before.
 - **A setting changed in the panel but not saved yet is no longer lost when
   another setting of the same module changes.** A setting that applies at
   the module's restart waits in a module's settings panel for Save (typed and
@@ -361,9 +365,33 @@ elements" below do not start.
   setting moved in the same panel (a volume slider), in the module's
   right-click menu or on a dashboard, or a change by someone else. Fixed: what
   you changed stays until you save or close the panel, the other settings
-  follow the changes made elsewhere, and Save writes yours with theirs. A
+  follow the changes made elsewhere, and Save writes what you changed. A
   setting changed by you and by someone else before you save keeps yours.
   Opening another module in the panel still drops unsaved changes, as before.
+- **A change made on one module's settings is no longer written to another
+  module when the panel switches quickly.** A slider in a module's settings
+  panel writes as it moves, and some settings (an encoder's bitrate, Audio
+  Processing's and Audio Dynamics' controls, a stream URL) wait until you
+  stop: the last change went out up to 0.8 s later, to whichever module the
+  panel showed by then. Opening another module in that moment wrote your
+  change into that module's setting of the same name, or wrote its own value
+  again and lost yours. The same could happen with a slider in a module's
+  right-click menu, with a fader or slider on a dashboard when the dashboard
+  changed under it mid-drag, and with an image still uploading when another
+  module was opened. Fixed: a change goes to the module it was made on, at
+  once when you move on. An image that finishes uploading after you moved on
+  is set on neither module: upload it again on its own.
+- **Lowering a Volume Range from a dashboard brings the volume down with
+  it, and a setting the manager refuses is shown.** A Volume Range lowered
+  under the volume from a dashboard (a dropdown, a button), a script or the
+  router's own screen left the volume above the new range, and every Save in
+  that module's settings then failed on it without a word: the slider jumped
+  back and nothing said why. Fixed: whoever lowers a Volume Range, or picks a
+  codec with a lower bitrate limit (AAC on Audio Encoder), the manager brings
+  the setting down to the new limit in the same change, as the settings panel
+  already did; Save sends only the settings you changed; and a change the
+  manager still refuses says which setting and why, at the foot of the
+  manager's screen, over a dashboard control, or under a dashboard button.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

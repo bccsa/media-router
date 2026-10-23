@@ -236,3 +236,65 @@ describe('WidgetHost: label size and weight', () => {
     });
 });
 
+
+describe('WidgetHost: a refused write names the setting and why (B-107)', () => {
+    const flush = () => new Promise((r) => setTimeout(r));
+    const refusing = (reason: string) => {
+        const write = vi.fn(async (ops: Array<{ path: string }>) => ({ rejected: [{ index: 0, path: ops[0].path, reason }] }));
+        return { source: { ...fakeSource('write'), write } as unknown as DashboardSource, write };
+    };
+
+    it('on a control: its label and the reason over it, and the border flash', async () => {
+        const { source, write } = refusing('above maximum 100');
+        const w = mount(WidgetHost, {
+            props: {
+                widget: { id: 'n', type: 'number', x: 0, y: 0, w: 3, h: 2, bind: VOL, options: { label: 'Mic level' } } as any,
+                source,
+                offline: false,
+                rect: { left: 0, top: 0, width: 200, height: 100 },
+            },
+        });
+        expect(w.find('.dw-refusal').exists()).toBe(false);
+
+        await w.findAll('button').find((b) => b.text() === '+')!.trigger('click');
+        await flush();
+
+        expect(write).toHaveBeenCalledWith([{ op: 'replace', path: VOL, value: 81 }]);
+        expect(w.get('.dw-refusal').text()).toBe('Mic level: above maximum 100');
+        expect(w.find('.dw-rejected').exists()).toBe(true);
+    });
+
+    it('a write taken shows no reason', async () => {
+        const w = host({ type: 'number' });
+        await w.findAll('button').find((b) => b.text() === '+')!.trigger('click');
+        await flush();
+        expect(w.find('.dw-refusal').exists()).toBe(false);
+    });
+
+    it("on a button's Set to: its failure line names the value and the reason", async () => {
+        const { source } = refusing('not an allowed option');
+        const w = mount(WidgetHost, {
+            props: {
+                widget: {
+                    id: 'b',
+                    type: 'button',
+                    x: 0,
+                    y: 0,
+                    w: 3,
+                    h: 2,
+                    options: { text: 'Range 250' },
+                    action: { kind: 'write', path: '/modules/m1/settings/volumeMax', value: 250 },
+                } as any,
+                source,
+                offline: false,
+                rect: { left: 0, top: 0, width: 200, height: 100 },
+            },
+        });
+
+        await w.find('button').trigger('click');
+        await flush();
+
+        expect(w.get('.bt-fail').text()).toBe('/modules/m1/settings/volumeMax: not an allowed option');
+        expect(w.find('.dw-rejected').exists()).toBe(true);
+    });
+});

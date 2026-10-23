@@ -190,6 +190,8 @@ async function onUploadImage(field: FormField, event: Event): Promise<void> {
         input.value = '';
         return;
     }
+    const shown = () => `${props.engineId}/${props.moduleId}`;
+    const madeOn = shown();
     try {
         // Socket.IO encodes Uint8Array as a binary frame on the wire — no
         // base64 round-trip, same channel as every other tree call.
@@ -211,7 +213,9 @@ async function onUploadImage(field: FormField, event: Event): Promise<void> {
                 type: file.type || 'application/octet-stream',
             });
             setPreviewUrl(result.path, URL.createObjectURL(blob));
-            emit('update', field.key, result.path);
+            // The panel moved on meanwhile: this was the old module's unsaved change, dropped with
+            // its others (B-105), and never the new one's (B-106).
+            if (shown() === madeOn) emit('update', field.key, result.path);
         }
     } catch (err) {
         // eslint-disable-next-line no-console

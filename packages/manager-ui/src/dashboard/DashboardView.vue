@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref } from 'vue';
 import { Menu } from 'lucide-vue-next';
-import type { Dashboard } from '@media-router/shared-types';
+import type { Dashboard, DashboardWidget } from '@media-router/shared-types';
 import DashboardGrid from './DashboardGrid.vue';
 import WidgetHost from './WidgetHost.vue';
 import { rectOf } from './grid';
@@ -53,6 +53,9 @@ function answer(yes: boolean) {
 }
 // No zoom while editing: drags move widgets.
 const grid = computed(() => (props.editing ? { ...props.dashboard, zoom: false } : props.dashboard));
+// One host per widget and value it writes: a widget bound elsewhere (another dashboard's copy of it,
+// a save from elsewhere, another router) gets a new host, so a held write goes to its own (B-106).
+const hostKey = (w: DashboardWidget) => `${w.id}:${props.source.prefix}${w.bind ?? ''}`;
 </script>
 
 <template>
@@ -61,7 +64,7 @@ const grid = computed(() => (props.editing ? { ...props.dashboard, zoom: false }
             <template #default="{ metrics }">
                 <WidgetHost
                     v-for="w in dashboard.widgets"
-                    :key="w.id"
+                    :key="hostKey(w)"
                     :widget="w"
                     :rect="rectOf(w, metrics)"
                     :source="source"

@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { describeModuleValue, describeModule, checkWrite, metaAt, settingMaximum, touchedModules, type DescribableModule } from './describe.js';
+import {
+    describeModuleValue,
+    describeModule,
+    checkWrite,
+    dependentsOverMaximum,
+    metaAt,
+    settingMaximum,
+    touchedModules,
+    type DescribableModule,
+} from './describe.js';
 import { WriteRequestSchema, PatternListSchema } from './protocol.js';
 
 const mod: DescribableModule = {
@@ -112,6 +121,28 @@ describe('settingMaximum (B-103)', () => {
     it('the static maximum, or none', () => {
         expect(settingMaximum({ type: 'number', maximum: 85 }, { volumeMax: 500 })).toBe(85);
         expect(settingMaximum({ type: 'number' }, {})).toBeUndefined();
+    });
+});
+
+describe('dependentsOverMaximum (B-107)', () => {
+    const props = {
+        volumeMax: { type: 'number' },
+        volume: { type: 'number', maximum: 150, 'x-maxFrom': 'volumeMax' },
+        codec: { type: 'string' },
+        bitrate: { type: 'number', maximum: 510, 'x-maxBy': { field: 'codec', map: { opus: 510, aac: 320 } } },
+        port: { type: 'number', maximum: 65535 },
+    };
+    const sources = (...keys: string[]) => new Set(keys);
+
+    it("each dependent of a written source above that source's maximum, with the maximum", () => {
+        expect(dependentsOverMaximum(props, { volumeMax: 150, volume: 300 }, sources('volumeMax'))).toEqual({ volume: 150 });
+        expect(dependentsOverMaximum(props, { codec: 'aac', bitrate: 400 }, sources('codec'))).toEqual({ bitrate: 320 });
+    });
+
+    it('nothing at or under the maximum, nothing unset, and nothing whose source was not written', () => {
+        expect(dependentsOverMaximum(props, { volumeMax: 150, volume: 150 }, sources('volumeMax'))).toEqual({});
+        expect(dependentsOverMaximum(props, { volumeMax: 150 }, sources('volumeMax'))).toEqual({});
+        expect(dependentsOverMaximum(props, { volumeMax: 150, volume: 300, port: 70000 }, sources('codec', 'port'))).toEqual({});
     });
 });
 

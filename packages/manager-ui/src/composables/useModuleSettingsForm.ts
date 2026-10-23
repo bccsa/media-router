@@ -7,9 +7,10 @@ import { matchShowWhen } from '@/utils/showWhen';
 import { stripDisplayFields, type GraphSource } from '@/utils/displayWidgets';
 import { fieldLabel } from '@/utils/fieldLabel';
 import type { EntryRule } from '@/utils/entryRules';
+import { createLiveWrites } from '@/utils/liveWrites';
 
 // shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
-const { diffValues } = shared;
+const { dependentsOverMaximum, diffValues } = shared;
 const { settingMaximum } = wire;
 
 const jsonCopy = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -167,6 +168,8 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     });
 
     const localSettings = ref<Record<string, unknown>>({});
+    /** The module the panel shows: engine and module id. */
+    const shownId = () => `${opts.engineId.value}/${opts.moduleId.value}`;
     // The stored settings the panel copy was last in step with, and whose. A copy: a deep watch on
     // settings changed in place is handed the same object as old and new (B-105).
     let synced: { id: string; settings: Record<string, unknown> } | undefined;
@@ -184,7 +187,7 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
                 stripDisplayFields(formFields.value, { ...defaults, ...settings }),
             );
             // Another module's settings replace the copy whole, unsaved changes and all, as before.
-            const id = `${opts.engineId.value}/${opts.moduleId.value}`;
+            const id = shownId();
             localSettings.value = synced?.id === id ? keepChanges(stored, synced.settings) : stored;
             synced = { id, settings: jsonCopy(stored) };
         },
@@ -231,24 +234,16 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         settings: Record<string, unknown>,
         sources: ReadonlySet<string>,
     ): Record<string, unknown> {
-        let next = settings;
-        for (const f of formFields.value) {
-            if (![f.maxFrom, f.maxBy?.field].some((s) => !!s && sources.has(s))) continue;
-            const max = settingMaximum(schemaProps.value[f.key] ?? {}, next);
-            if (max !== undefined && Number(next[f.key] ?? 0) > max) {
-                next = { ...next, [f.key]: max };
-            }
-        }
-        return next;
+        // The manager's rule for every writer (B-107), so the copy Save writes is what it would store.
+        const over = dependentsOverMaximum(schemaProps.value, settings, sources);
+        return Object.keys(over).length > 0 ? { ...settings, ...over } : settings;
     }
 
-    let throttleTimer: ReturnType<typeof setTimeout> | null = null;
-    let throttlePending: { key: string; value: unknown } | null = null;
-    const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-    function sendLiveUpdate(key: string, value: unknown): void {
-        patch.moduleSetting(opts.engineId.value, opts.moduleId.value, key, value);
-    }
+    // A held live write keeps the engine, module and key it was made on (B-106).
+    const live = createLiveWrites(
+        (t, value) => patch.moduleSetting(t.engineId, t.moduleId, t.key, value),
+        DEFAULT_THROTTLE_MS,
+    );
 
     function updateSetting(key: string, value: unknown): void {
         // A controlling field's change brings its dependents within it (codec → bitrate, Volume
@@ -257,61 +252,33 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         localSettings.value = clampDependents(next, new Set([key]));
         const field = formFields.value.find((f) => f.key === key);
         if (!field?.liveUpdatable) return;
-
-        if (field.debounceMs && field.debounceMs > 0) {
-            const existing = debounceTimers.get(key);
-            if (existing) clearTimeout(existing);
-            debounceTimers.set(
-                key,
-                setTimeout(() => {
-                    debounceTimers.delete(key);
-                    sendLiveUpdate(key, localSettings.value[key]);
-                }, field.debounceMs),
-            );
-            return;
-        }
-
-        throttlePending = { key, value };
-        if (!throttleTimer) {
-            sendLiveUpdate(key, value);
-            // Clear pending after the leading-edge send so a no-further-update
-            // window doesn't trail-edge re-send the same value.
-            throttlePending = null;
-            throttleTimer = setTimeout(() => {
-                throttleTimer = null;
-                if (throttlePending) {
-                    sendLiveUpdate(throttlePending.key, throttlePending.value);
-                    throttlePending = null;
-                }
-            }, DEFAULT_THROTTLE_MS);
-        }
+        const target = { engineId: opts.engineId.value, moduleId: opts.moduleId.value, key };
+        const debounceMs = field.debounceMs ?? 0;
+        if (debounceMs > 0) live.debounce(target, value, debounceMs);
+        else live.throttle(target, value);
     }
 
-    onUnmounted(() => {
-        if (throttleTimer) {
-            clearTimeout(throttleTimer);
-            throttleTimer = null;
-        }
-        if (throttlePending) {
-            sendLiveUpdate(throttlePending.key, throttlePending.value);
-            throttlePending = null;
-        }
-        // Flush any pending debounced values on unmount so the user doesn't lose
-        // changes they made right before closing the panel.
-        for (const [key, timer] of debounceTimers) {
-            clearTimeout(timer);
-            sendLiveUpdate(key, localSettings.value[key]);
-        }
-        debounceTimers.clear();
-    });
+    // Leaving a module (another in the panel, or the panel closed) writes what is held for it at
+    // once: the operator is done there, and nothing waits on a module the panel no longer shows.
+    watch(shownId, () => live.flush());
+    onUnmounted(() => live.flush());
+
+    /** The panel's values that differ from the stored ones it last took (B-105's copy). */
+    function changedSettings(): Record<string, unknown> {
+        if (synced?.id !== shownId()) return {};
+        const before = synced.settings;
+        return Object.fromEntries(
+            Object.entries(stripDisplayFields(formFields.value, localSettings.value)).filter(
+                ([key, value]) => diffValues(before[key], value).length > 0,
+            ),
+        );
+    }
 
     function applyAll(): void {
-        // Belt and braces with the hydration strip above — this is the gate.
-        patch.moduleSettings(
-            opts.engineId.value,
-            opts.moduleId.value,
-            stripDisplayFields(formFields.value, localSettings.value),
-        );
+        // Only what the operator changed: an unchanged stored value is never sent again (B-107).
+        const changes = changedSettings();
+        if (Object.keys(changes).length === 0) return;
+        patch.moduleSettings(opts.engineId.value, opts.moduleId.value, changes);
     }
 
     return {

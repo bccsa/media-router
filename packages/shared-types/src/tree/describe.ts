@@ -76,6 +76,26 @@ export function settingMaximum(prop: SchemaProp, settings: Record<string, unknow
     );
 }
 
+/**
+ * The settings whose maximum one of `sources` sets (`x-maxFrom`, `x-maxBy`) and that hold more than
+ * it, each with that maximum: what a change of those sources brings down (the settings form, B-103;
+ * the manager's write path, for every writer, B-107).
+ */
+export function dependentsOverMaximum(
+    props: Record<string, SchemaProp>,
+    settings: Record<string, unknown>,
+    sources: ReadonlySet<string>,
+): Record<string, number> {
+    const over: Record<string, number> = {};
+    for (const [key, prop] of Object.entries(props)) {
+        const maxBy = prop['x-maxBy'] as { field?: unknown } | undefined;
+        if (![prop['x-maxFrom'], maxBy?.field].some((s) => typeof s === 'string' && sources.has(s))) continue;
+        const max = settingMaximum(prop, settings);
+        if (max !== undefined && Number(settings[key] ?? 0) > max) over[key] = max;
+    }
+    return over;
+}
+
 function describeSetting(mod: DescribableModule, key: string): ValueDescriptor | null {
     const prop = schemaProps(mod)[key];
     if (!prop) return null;

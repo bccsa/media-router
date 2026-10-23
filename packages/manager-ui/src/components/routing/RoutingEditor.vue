@@ -87,7 +87,6 @@ const {
 
 const {
     contextMenu,
-    menuModuleId,
     edgeContextMenu,
     settingsPanel,
     contextMenuItems,
@@ -100,6 +99,8 @@ const {
     openGroupMenuAt,
     dismissContextMenus,
     onContextAction,
+    onContextSliderChange,
+    onContextToggleChange,
     onEdgeClick,
     onEdgeContextMenu,
     onEdgeContextAction,
@@ -128,34 +129,6 @@ function formatLayout() {
     // *and* a layout pass, so a single nextTick can fit on stale bounds.
     nextTick(() => fitView({ padding: 0.2 }));
     setTimeout(() => fitView({ padding: 0.2 }), 200);
-}
-
-// Throttled slider change from context menu (volume, etc.)
-let ctxSliderTimer: ReturnType<typeof setTimeout> | null = null;
-let ctxSliderPending: { action: string; value: number } | null = null;
-function onContextSliderChange(action: string, value: number) {
-    if (!contextMenu.value || !action.startsWith('setting:')) return;
-    const key = action.replace('setting:', '');
-    const moduleId = menuModuleId.value;
-    ctxSliderPending = { action, value };
-    if (!ctxSliderTimer) {
-        patch.moduleSetting(props.engineId, moduleId, key, value);
-        ctxSliderTimer = setTimeout(() => {
-            ctxSliderTimer = null;
-            if (ctxSliderPending) {
-                const k = ctxSliderPending.action.replace('setting:', '');
-                patch.moduleSetting(props.engineId, moduleId, k, ctxSliderPending.value);
-                ctxSliderPending = null;
-            }
-        }, 100);
-    }
-}
-
-function onContextToggleChange(action: string, value: boolean) {
-    if (!contextMenu.value || !action.startsWith('setting:')) return;
-    const key = action.replace('setting:', '');
-    const moduleId = menuModuleId.value;
-    patch.moduleSetting(props.engineId, moduleId, key, value);
 }
 
 const moduleListBtnRef = ref<any>(null);

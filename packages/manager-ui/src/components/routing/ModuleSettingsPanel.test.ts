@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
+import { ModuleWriteCheck } from '@media-router/shared-types';
 
 const mockCloneModule = vi.fn();
 const mockModuleSetting = vi.fn();
@@ -598,24 +599,23 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         expect(playout.text()).not.toContain('ms');
     });
 
-    it('Save writes the trim map whole beside the offset', async () => {
-        seedSrtInput();
+    it('Save writes a changed trim map whole beside a changed offset, stale PIDs included', async () => {
+        // Not live here, so both wait in the panel's copy for Save.
+        seedSrtInput({ liveUpdatableParams: [] });
         const wrapper = mountPanel('srt-input-1');
 
-        await wrapper
-            .findAll('button')
-            .find((b) => b.text() === 'Save')!
-            .trigger('click');
+        await settingBlock(wrapper, 'Per-PID Trim').get('[data-pid="256"] input').setValue('30');
+        await settingBlock(wrapper, 'Ingest Offset').get('input').setValue('-100');
+        await save(wrapper);
 
-        expect(mockModuleSettings).toHaveBeenCalledWith(
-            'eng-1',
-            'srt-input-1',
-            expect.objectContaining({
-                ingestOffsetMs: -40,
-                pidTrimsMs: { '257': 120, '300': 15 },
-                smoothingCooldownMin: 5,
-            }),
-        );
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(mockModuleSettings.mock.calls).toEqual([
+            [
+                'eng-1',
+                'srt-input-1',
+                { ingestOffsetMs: -100, pidTrimsMs: { '256': 30, '257': 120, '300': 15 } },
+            ],
+        ]);
     });
 
     it('waits for the PMT until the module publishes its PIDs', () => {
@@ -738,21 +738,16 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
-        // Typed but not committed: Save still writes the stored port.
+        // Typed but not committed: nothing in the copy has changed, so Save writes nothing.
         await typeKeys(boxIn(wrapper, 'Port'), '9001');
         await save(wrapper);
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ port: 9000 })],
-        ]);
+        expect(mockModuleSettings).not.toHaveBeenCalled();
 
-        mockModuleSettings.mockReset();
         await boxIn(wrapper, 'Port').trigger('change');
         // Not live: no write of its own (the engine would hold it pending a restart).
         expect(mockModuleSetting).not.toHaveBeenCalled();
         await save(wrapper);
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ port: 9001 })],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'typed-1', { port: 9001 }]]);
     });
 
     it('a restart-requiring number out of range is refused, and Save keeps the stored value', async () => {
@@ -764,9 +759,8 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
         expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('70000');
         await save(wrapper);
 
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ port: 9000 })],
-        ]);
+        // The refused entry never reached the copy: Save writes nothing, the stored port stays.
+        expect(mockModuleSettings).not.toHaveBeenCalled();
     });
 
     it('a live text setting writes nothing while typed and once at the commit, after its debounce', async () => {
@@ -795,7 +789,7 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
 
         expect(mockModuleSetting).not.toHaveBeenCalled();
         expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ host: '192.0.2.5' })],
+            ['eng-1', 'typed-1', { host: '192.0.2.5' }],
         ]);
     });
 
@@ -810,9 +804,7 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
         await box().setValue('40');
         await save(wrapper);
 
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ busBatchMs: 40 })],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'typed-1', { busBatchMs: 40 }]]);
     });
 
     it("a slider's typed box takes the maximum from x-maxFrom: 300 % in a range of 500, not of 150", async () => {
@@ -918,7 +910,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
         );
     });
 
-    it('a live slider moved in the panel keeps a committed number, choice and toggle; Save writes them with the volume', async () => {
+    it('a live slider moved in the panel keeps a committed number, choice and toggle; Save writes them, the volume written live already', async () => {
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
@@ -930,15 +922,11 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
         expectThreeKept(wrapper);
         await save(wrapper);
         expect(mockModuleSettings.mock.calls).toEqual([
-            [
-                'eng-1',
-                'typed-1',
-                expect.objectContaining({ port: 9001, mode: 'caller', fec: true, volume: 80 }),
-            ],
+            ['eng-1', 'typed-1', { port: 9001, mode: 'caller', fec: true }],
         ]);
     });
 
-    it("another operator's write keeps them too; the key it wrote follows it, and Save writes both", async () => {
+    it("another operator's write keeps them too; the key it wrote follows it, and Save writes only the panel's", async () => {
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
@@ -949,16 +937,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
         expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('300');
         await save(wrapper);
         expect(mockModuleSettings.mock.calls).toEqual([
-            [
-                'eng-1',
-                'typed-1',
-                expect.objectContaining({
-                    port: 9001,
-                    mode: 'caller',
-                    fec: true,
-                    playoutOffsetMs: 300,
-                }),
-            ],
+            ['eng-1', 'typed-1', { port: 9001, mode: 'caller', fec: true }],
         ]);
     });
 
@@ -972,9 +951,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
 
         expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9001');
         await save(wrapper);
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ port: 9001 })],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'typed-1', { port: 9001 }]]);
     });
 
     it('once saved, a key is in step again and follows the next write from outside', async () => {
@@ -989,7 +966,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
         expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9000');
     });
 
-    it("a map changed in place from outside (a PID's trim) reaches the panel beside a committed Latency", async () => {
+    it("a map changed in place from outside (a PID's trim) reaches the panel beside a committed Latency, which Save writes alone", async () => {
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
 
@@ -1004,13 +981,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
             (settingBlock(wrapper, 'Latency').get('input').element as HTMLInputElement).value,
         ).toBe('400');
         await save(wrapper);
-        expect(mockModuleSettings.mock.calls).toEqual([
-            [
-                'eng-1',
-                'srt-input-1',
-                expect.objectContaining({ latency: 400, pidTrimsMs: { '257': 60, '300': 15 } }),
-            ],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'srt-input-1', { latency: 400 }]]);
     });
 
     it('typing not yet committed survives a write from outside to its own key, then commits over it', async () => {
@@ -1024,9 +995,7 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
 
         await boxIn(wrapper, 'Port').trigger('change');
         await save(wrapper);
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ port: 9001, playoutOffsetMs: 300 })],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'typed-1', { port: 9001 }]]);
     });
 
     it('another module in the panel starts from its own stored settings, and coming back drops the edit, as before', async () => {
@@ -1042,13 +1011,8 @@ describe('ModuleSettingsPanel — a setting changed but not saved survives anoth
         await wrapper.setProps({ moduleId: 'typed-1' });
         expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9000');
         await save(wrapper);
-        expect(mockModuleSettings.mock.calls).toEqual([
-            [
-                'eng-1',
-                'typed-1',
-                expect.objectContaining({ port: 9000, mode: 'listener', fec: false }),
-            ],
-        ]);
+        // Nothing changed since it came back: nothing to write.
+        expect(mockModuleSettings).not.toHaveBeenCalled();
     });
 });
 
@@ -1073,7 +1037,7 @@ describe('ModuleSettingsPanel — a maximum set by another setting (B-103)', () 
         await save(wrapper);
 
         expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ volumeMax: 150, volume: 150 })],
+            ['eng-1', 'typed-1', { volumeMax: 150, volume: 150 }],
         ]);
     });
 
@@ -1085,25 +1049,17 @@ describe('ModuleSettingsPanel — a maximum set by another setting (B-103)', () 
         expect(sliderBox(wrapper).attributes('max')).toBe('500');
         await save(wrapper);
 
-        expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ volumeMax: 500, volume: 120 })],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'typed-1', { volumeMax: 500 }]]);
     });
 
-    it('a change of another setting moves no volume, even one above its range (the engine brings it down at a start)', async () => {
+    it('a change of another setting moves no volume, even one above its range, and Save sends only that change (B-107)', async () => {
         seedTyped({ 'typed-1': { volumeMax: 150, volume: 300 } });
         const wrapper = mountPanel('typed-1');
 
         await settingBlock(wrapper, 'FEC').get('[role="switch"]').trigger('click');
         await save(wrapper);
 
-        expect(mockModuleSettings.mock.calls).toEqual([
-            [
-                'eng-1',
-                'typed-1',
-                expect.objectContaining({ fec: true, volumeMax: 150, volume: 300 }),
-            ],
-        ]);
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'typed-1', { fec: true }]]);
     });
 
     it('a volume raised from outside over a range lowered in the panel stays within that range', async () => {
@@ -1116,7 +1072,7 @@ describe('ModuleSettingsPanel — a maximum set by another setting (B-103)', () 
         await save(wrapper);
 
         expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ volumeMax: 150, volume: 150 })],
+            ['eng-1', 'typed-1', { volumeMax: 150, volume: 150 }],
         ]);
     });
 
@@ -1160,7 +1116,204 @@ describe('ModuleSettingsPanel — a maximum set by another setting (B-103)', () 
 
         expect(mockModuleSetting).not.toHaveBeenCalled();
         expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'enc', expect.objectContaining({ codec: 'aac', bitrate: 320 })],
+            ['eng-1', 'enc', { codec: 'aac', bitrate: 320 }],
         ]);
+    });
+});
+
+/** The Volume slider's range input, as an operator drags it. */
+const volumeSlider = (w: VueWrapper) => settingBlock(w, 'Volume').get('input[type="range"]');
+
+/** The URL typed and committed: a live text setting with an 800 ms debounce. */
+async function commitUrl(wrapper: VueWrapper, url: string): Promise<void> {
+    await typeKeys(boxIn(wrapper, 'URL'), url);
+    await boxIn(wrapper, 'URL').trigger('change');
+}
+
+const NEW_URL = 'http://feed/new.m3u8';
+
+describe('ModuleSettingsPanel — a live write lands on the module it was made on (B-106)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+        vi.useFakeTimers();
+        seedTyped({
+            'typed-1': { url: 'http://feed/a.m3u8' },
+            'typed-2': { volume: 40, url: 'http://feed/b.m3u8' },
+        });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const writesTo = (moduleId: string) =>
+        mockModuleSetting.mock.calls.filter(([, id]) => id === moduleId);
+
+    it('a throttled value held at a switch goes to module A at once, never to B', async () => {
+        const wrapper = mountPanel('typed-1');
+
+        await volumeSlider(wrapper).setValue('80');
+        // Inside the 50 ms window: held.
+        await volumeSlider(wrapper).setValue('90');
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'volume', 80]]);
+        await wrapper.setProps({ moduleId: 'typed-2' });
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'volume', 80],
+            ['eng-1', 'typed-1', 'volume', 90],
+        ]);
+        vi.advanceTimersByTime(2000);
+        expect(writesTo('typed-2')).toEqual([]);
+        expect(mockModuleSetting).toHaveBeenCalledTimes(2);
+    });
+
+    it("a debounced value waiting at a switch: A's change goes to A at once, B gets no write", async () => {
+        const wrapper = mountPanel('typed-1');
+
+        await commitUrl(wrapper, NEW_URL);
+        vi.advanceTimersByTime(400);
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        await wrapper.setProps({ moduleId: 'typed-2' });
+
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'url', NEW_URL]]);
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'url', NEW_URL]]);
+    });
+
+    it('a throttled value held when the panel closes goes to A at once', async () => {
+        const wrapper = mountPanel('typed-1');
+
+        await volumeSlider(wrapper).setValue('80');
+        await volumeSlider(wrapper).setValue('90');
+        wrapper.unmount();
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'volume', 80],
+            ['eng-1', 'typed-1', 'volume', 90],
+        ]);
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting).toHaveBeenCalledTimes(2);
+    });
+
+    it('a debounced value waiting when the panel closes goes to A at once', async () => {
+        const wrapper = mountPanel('typed-1');
+
+        await commitUrl(wrapper, NEW_URL);
+        wrapper.unmount();
+
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'url', NEW_URL]]);
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting).toHaveBeenCalledTimes(1);
+    });
+
+    it('both held on A, the panel moved to B and closed inside the window: A gets them, B nothing', async () => {
+        const wrapper = mountPanel('typed-1');
+
+        await volumeSlider(wrapper).setValue('80');
+        await volumeSlider(wrapper).setValue('90');
+        await commitUrl(wrapper, NEW_URL);
+        await wrapper.setProps({ moduleId: 'typed-2' });
+        wrapper.unmount();
+        vi.advanceTimersByTime(2000);
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'volume', 80],
+            ['eng-1', 'typed-1', 'volume', 90],
+            ['eng-1', 'typed-1', 'url', NEW_URL],
+        ]);
+    });
+
+    it("A -> B -> A inside the window: A's held values went at the first switch, the next move is a new write", async () => {
+        const wrapper = mountPanel('typed-1');
+
+        await volumeSlider(wrapper).setValue('80');
+        await volumeSlider(wrapper).setValue('90');
+        await commitUrl(wrapper, NEW_URL);
+        await wrapper.setProps({ moduleId: 'typed-2' });
+        await wrapper.setProps({ moduleId: 'typed-1' });
+        await volumeSlider(wrapper).setValue('95');
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'volume', 80],
+            ['eng-1', 'typed-1', 'volume', 90],
+            ['eng-1', 'typed-1', 'url', NEW_URL],
+            ['eng-1', 'typed-1', 'volume', 95],
+        ]);
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting).toHaveBeenCalledTimes(4);
+        expect(writesTo('typed-2')).toEqual([]);
+    });
+
+    it('the same module id on another engine is another module: a held value stays with its engine', async () => {
+        useEngineStore().addEngine({
+            engine_id: 'eng-2',
+            display_name: 'Other',
+            modules: {
+                'typed-1': {
+                    pluginId: 'srt-input',
+                    displayName: 'typed-1',
+                    configSchema: TYPED_SCHEMA,
+                    liveUpdatableParams: ['playoutOffsetMs', 'url', 'volume'],
+                    settings: { volume: 10 },
+                },
+            },
+        });
+        const wrapper = mountPanel('typed-1');
+
+        await volumeSlider(wrapper).setValue('80');
+        await volumeSlider(wrapper).setValue('90');
+        await wrapper.setProps({ engineId: 'eng-2' });
+        vi.advanceTimersByTime(2000);
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'typed-1', 'volume', 80],
+            ['eng-1', 'typed-1', 'volume', 90],
+        ]);
+    });
+});
+
+describe('ModuleSettingsPanel — Save sends only what changed (B-107)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+    });
+
+    it("a Save after a stored volume went over its range sends nothing unchanged and no op the manager's check refuses", async () => {
+        seedTyped({ 'typed-1': { volumeMax: 500, volume: 300 } });
+        const wrapper = mountPanel('typed-1');
+        // The range lowered under the volume elsewhere (a dashboard before B-107, an old profile).
+        await outsideWrite('typed-1', 'volumeMax', 150);
+
+        await settingBlock(wrapper, 'FEC').get('[role="switch"]').trigger('click');
+        await boxIn(wrapper, 'Port').setValue('9001');
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', { fec: true, port: 9001 }],
+        ]);
+        const stored = useEngineStore().getEngine('eng-1')!.modules['typed-1'];
+        const check = new ModuleWriteCheck(() => stored as never);
+        const [[, , changes]] = mockModuleSettings.mock.calls as [
+            [string, string, Record<string, unknown>],
+        ];
+        const refusals = Object.entries(changes).map(([key, value]) =>
+            check.check('typed-1', ['settings', key], {
+                op: 'replace',
+                path: `/settings/${key}`,
+                value,
+            }),
+        );
+        expect(refusals).toEqual([null, null]);
+    });
+
+    it('a Save with nothing changed writes nothing', async () => {
+        seedTyped({ 'typed-1': { volumeMax: 150, volume: 300 } });
+        const wrapper = mountPanel('typed-1');
+
+        await save(wrapper);
+
+        expect(mockModuleSettings).not.toHaveBeenCalled();
     });
 });

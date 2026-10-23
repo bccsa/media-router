@@ -81,7 +81,7 @@ describe('useModuleSettingsForm — display-widget hydration', () => {
         expect('dynamicsGraph' in localSettings.value).toBe(false);
     });
 
-    it('so a plain Apply cannot write it back to the engine', () => {
+    it('so Apply cannot write it back to the engine: nothing when nothing changed, the change alone after one', () => {
         const module = ref<Record<string, unknown> | undefined>({
             configSchema: {
                 properties: {
@@ -92,9 +92,13 @@ describe('useModuleSettingsForm — display-widget hydration', () => {
             settings: { threshold: -20, dynamicsGraph: STALE_GRAPH_VALUE },
         });
 
-        mountForm(module).applyAll();
+        const form = mountForm(module);
+        form.applyAll();
+        expect(mockModuleSettings).not.toHaveBeenCalled();
 
-        expect(mockModuleSettings).toHaveBeenCalledWith('eng-1', 'mod-1', { threshold: -20 });
+        form.updateSetting('threshold', -10);
+        form.applyAll();
+        expect(mockModuleSettings.mock.calls).toEqual([['eng-1', 'mod-1', { threshold: -10 }]]);
     });
 
     it('a later settings push is stripped too, not just the first', async () => {

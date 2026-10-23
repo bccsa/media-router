@@ -739,9 +739,8 @@ Settled, 2026-10-14 (on the fleet unless marked):
 - `DHCP4_NTP_SERVERS` is the dispatcher's variable for option 42: V14 on
   the AES50 master test box, ivan-test-p4 and TECH01 listed each lease's
   servers (the same one for the first two, another for TECH01) from the
-  dispatcher's
-  `/run/chrony-dhcp/*.sources` fragments, and `chronyc sources` on .50
-  lists the DHCP-offered server.
+  dispatcher's `/run/chrony-dhcp/*.sources` fragments, and
+  `chronyc sources` on .50 lists the DHCP-offered server.
 - `leapseclist` with an expired `leap-seconds.list` (R-P0-2), from chrony
   4.8's source, not on a box: `leapdb.c:172` logs `Leap second list … needs
   update` and still applies the list, so the TAI offset stays set. The
