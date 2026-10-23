@@ -1855,7 +1855,7 @@ Is module running?
                         Manager UI shows "pending restart" indicator
 ```
 
-**Typed values:** a number or text parameter typed in the manager UI counts as changed when the operator presses Enter or leaves its box, once the value passes the parameter's schema rules (type, bounds, pattern, lengths); while it is typed nothing is checked or sent, and a value that fails is refused with its reason, never clamped (B-104). The settings panel's Save then writes the restart-required ones.
+**Typed values:** a number or text parameter typed in the manager UI counts as changed when the operator presses Enter or leaves its box, once the value passes the parameter's schema rules (type, bounds, pattern, lengths); while it is typed nothing is checked or sent, and a value that fails is refused with its reason, never clamped (B-104). The settings panel's Save then writes the restart-required ones; until then they stay in the panel whatever else of the module changes meanwhile (B-105).
 
 **Pending restart state:** When a running module has restart-required changes that have not been applied, the module's runtime state includes `pendingRestart: true`. The manager UI displays a visual indicator (e.g. a restart icon badge on the module node). The pending changes are applied when the user explicitly restarts the module.
 

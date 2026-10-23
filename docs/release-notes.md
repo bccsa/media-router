@@ -347,11 +347,23 @@ elements" below do not start.
   set: on a test box an ATEM's audio input set to 500 % ran at 100 % after a
   restart. Fixed: the engine checks a volume against the module's Volume Range
   at a restart, as the manager does when it is set, so the module starts at
-  the value set. A volume above its range (the range lowered after the volume
-  was set) starts at 100 % as before, now also when it is 150 % or less: set
-  the volume within the new range when you lower it. Likewise an Audio Encoder
-  bitrate above 320 kbps with AAC, which the settings refuse, now starts at the
-  default 128 kbps instead of 320 kbps.
+  the value set. Lowering Volume Range in a module's settings now brings a
+  volume above it down to the new range, saved with it. A volume left above
+  its range all the same (the range lowered from a dashboard, for one) starts
+  at the top of the range, and any setting stored outside its limits starts
+  at the nearest limit instead of its default: an Audio Encoder bitrate above
+  320 kbps with AAC starts at 320 kbps, as before.
+- **A setting changed in the panel but not saved yet is no longer lost when
+  another setting of the same module changes.** A setting that applies at
+  the module's restart waits in a module's settings panel for Save (typed and
+  confirmed, picked from a list or switched). It went back to its saved value,
+  without a word, whenever another setting of the same module changed: a live
+  setting moved in the same panel (a volume slider), in the module's
+  right-click menu or on a dashboard, or a change by someone else. Fixed: what
+  you changed stays until you save or close the panel, the other settings
+  follow the changes made elsewhere, and Save writes yours with theirs. A
+  setting changed by you and by someone else before you save keeps yours.
+  Opening another module in the panel still drops unsaved changes, as before.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

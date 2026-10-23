@@ -660,6 +660,8 @@ const TYPED_SCHEMA = {
             title: 'Volume',
         },
         volumeMax: { type: 'number', enum: [100, 150, 500], default: 150, title: 'Range' },
+        mode: { type: 'string', enum: ['listener', 'caller'], default: 'listener', title: 'Mode' },
+        fec: { type: 'boolean', default: false, title: 'FEC' },
     },
 };
 
@@ -852,5 +854,313 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
 
         expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('60');
         expect(mockModuleSetting).not.toHaveBeenCalled();
+    });
+});
+
+/** Picks `label` in a setting's dropdown, as an operator would. */
+async function choose(wrapper: VueWrapper, title: string, label: string): Promise<void> {
+    await settingBlock(wrapper, title).get('button').trigger('click');
+    const option = settingBlock(wrapper, title)
+        .findAll('div')
+        .find((d) => d.text() === label);
+    if (!option) throw new Error(`no "${label}" in "${title}"`);
+    await option.trigger('click');
+}
+
+const shownIn = (wrapper: VueWrapper, title: string) =>
+    settingBlock(wrapper, title).get('button').text();
+const toggleIn = (wrapper: VueWrapper, title: string) =>
+    settingBlock(wrapper, title).get('[role="switch"]').attributes('aria-checked');
+
+/** Another operator's write, as the tree mirror applies it to the store. */
+async function outsideWrite(moduleId: string, key: string, value: unknown): Promise<void> {
+    useEngineStore().applyEnginePatch('eng-1', [
+        { op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value },
+    ]);
+    await nextTick();
+}
+
+/** Port 9001 typed and committed, Mode set to caller and FEC on: three restart-requiring edits. */
+async function commitThree(wrapper: VueWrapper): Promise<void> {
+    await boxIn(wrapper, 'Port').setValue('9001');
+    await choose(wrapper, 'Mode', 'caller');
+    await settingBlock(wrapper, 'FEC').get('[role="switch"]').trigger('click');
+}
+
+function expectThreeKept(wrapper: VueWrapper): void {
+    expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9001');
+    expect(shownIn(wrapper, 'Mode')).toBe('caller');
+    expect(toggleIn(wrapper, 'FEC')).toBe('true');
+}
+
+describe('ModuleSettingsPanel — a setting changed but not saved survives another write to its module (B-105)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+        // As usePatch does: the store first (optimistic), then the write.
+        mockModuleSetting.mockImplementation(
+            (engineId: string, moduleId: string, key: string, value: unknown) =>
+                useEngineStore().applyEnginePatch(engineId, [
+                    { op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value },
+                ]),
+        );
+        mockModuleSettings.mockImplementation(
+            (engineId: string, moduleId: string, changes: Record<string, unknown>) =>
+                useEngineStore().applyEnginePatch(
+                    engineId,
+                    Object.entries(changes).map(([key, value]) => ({
+                        op: 'replace',
+                        path: `/modules/${moduleId}/settings/${key}`,
+                        value,
+                    })),
+                ),
+        );
+    });
+
+    it('a live slider moved in the panel keeps a committed number, choice and toggle; Save writes them with the volume', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await commitThree(wrapper);
+        await settingBlock(wrapper, 'Volume').get('input[type="range"]').setValue('80');
+        await nextTick();
+
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'volume', 80]]);
+        expectThreeKept(wrapper);
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            [
+                'eng-1',
+                'typed-1',
+                expect.objectContaining({ port: 9001, mode: 'caller', fec: true, volume: 80 }),
+            ],
+        ]);
+    });
+
+    it("another operator's write keeps them too; the key it wrote follows it, and Save writes both", async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await commitThree(wrapper);
+        await outsideWrite('typed-1', 'playoutOffsetMs', 300);
+
+        expectThreeKept(wrapper);
+        expect((boxIn(wrapper, 'Playout Offset').element as HTMLInputElement).value).toBe('300');
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            [
+                'eng-1',
+                'typed-1',
+                expect.objectContaining({
+                    port: 9001,
+                    mode: 'caller',
+                    fec: true,
+                    playoutOffsetMs: 300,
+                }),
+            ],
+        ]);
+    });
+
+    it("a key changed in the panel and by another operator keeps the panel's value, which Save writes", async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await boxIn(wrapper, 'Port').setValue('9001');
+        await outsideWrite('typed-1', 'port', 9100);
+        await outsideWrite('typed-1', 'port', 9200);
+
+        expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9001');
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ port: 9001 })],
+        ]);
+    });
+
+    it('once saved, a key is in step again and follows the next write from outside', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await boxIn(wrapper, 'Port').setValue('9001');
+        await save(wrapper);
+        // The manager refuses it, say: the tree puts the stored value back.
+        await outsideWrite('typed-1', 'port', 9000);
+
+        expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9000');
+    });
+
+    it("a map changed in place from outside (a PID's trim) reaches the panel beside a committed Latency", async () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        await settingBlock(wrapper, 'Latency').get('input').setValue('400');
+        useEngineStore().applyEnginePatch('eng-1', [
+            { op: 'replace', path: '/modules/srt-input-1/settings/pidTrimsMs/257', value: 60 },
+        ]);
+        await nextTick();
+
+        expect(shiftOf(settingBlock(wrapper, 'Per-PID Trim'), '257')).toBe('20');
+        expect(
+            (settingBlock(wrapper, 'Latency').get('input').element as HTMLInputElement).value,
+        ).toBe('400');
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            [
+                'eng-1',
+                'srt-input-1',
+                expect.objectContaining({ latency: 400, pidTrimsMs: { '257': 60, '300': 15 } }),
+            ],
+        ]);
+    });
+
+    it('typing not yet committed survives a write from outside to its own key, then commits over it', async () => {
+        seedTyped();
+        const wrapper = mountPanel('typed-1');
+
+        await typeKeys(boxIn(wrapper, 'Port'), '9001');
+        await outsideWrite('typed-1', 'port', 9100);
+        await outsideWrite('typed-1', 'playoutOffsetMs', 300);
+        expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9001');
+
+        await boxIn(wrapper, 'Port').trigger('change');
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ port: 9001, playoutOffsetMs: 300 })],
+        ]);
+    });
+
+    it('another module in the panel starts from its own stored settings, and coming back drops the edit, as before', async () => {
+        seedTyped({ 'typed-1': {}, 'typed-2': { port: 7000 } });
+        const wrapper = mountPanel('typed-1');
+
+        await commitThree(wrapper);
+        await wrapper.setProps({ moduleId: 'typed-2' });
+        expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('7000');
+        expect(shownIn(wrapper, 'Mode')).toBe('listener');
+        expect(toggleIn(wrapper, 'FEC')).toBe('false');
+
+        await wrapper.setProps({ moduleId: 'typed-1' });
+        expect((boxIn(wrapper, 'Port').element as HTMLInputElement).value).toBe('9000');
+        await save(wrapper);
+        expect(mockModuleSettings.mock.calls).toEqual([
+            [
+                'eng-1',
+                'typed-1',
+                expect.objectContaining({ port: 9000, mode: 'listener', fec: false }),
+            ],
+        ]);
+    });
+});
+
+describe('ModuleSettingsPanel — a maximum set by another setting (B-103)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+    });
+
+    const sliderBox = (w: VueWrapper) => settingBlock(w, 'Volume').get('input[type="number"]');
+
+    it('lowering Volume Range brings the volume down to it in the one write Save makes', async () => {
+        seedTyped({ 'typed-1': { volumeMax: 500, volume: 300 } });
+        const wrapper = mountPanel('typed-1');
+
+        await choose(wrapper, 'Range', '150');
+        expect(sliderBox(wrapper).attributes('max')).toBe('150');
+        expect((sliderBox(wrapper).element as HTMLInputElement).value).toBe('150');
+        // Not live on its own: the volume is written with the range, not before it.
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ volumeMax: 150, volume: 150 })],
+        ]);
+    });
+
+    it('raising Volume Range moves no volume', async () => {
+        seedTyped({ 'typed-1': { volumeMax: 150, volume: 120 } });
+        const wrapper = mountPanel('typed-1');
+
+        await choose(wrapper, 'Range', '500');
+        expect(sliderBox(wrapper).attributes('max')).toBe('500');
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ volumeMax: 500, volume: 120 })],
+        ]);
+    });
+
+    it('a change of another setting moves no volume, even one above its range (the engine brings it down at a start)', async () => {
+        seedTyped({ 'typed-1': { volumeMax: 150, volume: 300 } });
+        const wrapper = mountPanel('typed-1');
+
+        await settingBlock(wrapper, 'FEC').get('[role="switch"]').trigger('click');
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            [
+                'eng-1',
+                'typed-1',
+                expect.objectContaining({ fec: true, volumeMax: 150, volume: 300 }),
+            ],
+        ]);
+    });
+
+    it('a volume raised from outside over a range lowered in the panel stays within that range', async () => {
+        seedTyped({ 'typed-1': { volumeMax: 500, volume: 100 } });
+        const wrapper = mountPanel('typed-1');
+
+        await choose(wrapper, 'Range', '150');
+        await outsideWrite('typed-1', 'volume', 400);
+        expect((sliderBox(wrapper).element as HTMLInputElement).value).toBe('150');
+        await save(wrapper);
+
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'typed-1', expect.objectContaining({ volumeMax: 150, volume: 150 })],
+        ]);
+    });
+
+    it("x-maxBy through the same rule: AAC caps Audio Encoder's bitrate at 320, pulled down with the codec", async () => {
+        useEngineStore().addEngine({
+            engine_id: 'eng-1',
+            display_name: 'Test Engine',
+            modules: {
+                enc: {
+                    pluginId: 'audio-encoder',
+                    configSchema: {
+                        type: 'object',
+                        properties: {
+                            codec: {
+                                type: 'string',
+                                enum: ['opus', 'aac'],
+                                default: 'opus',
+                                title: 'Codec',
+                            },
+                            bitrate: {
+                                type: 'number',
+                                minimum: 6,
+                                maximum: 510,
+                                default: 128,
+                                title: 'Bitrate',
+                                'x-maxBy': { field: 'codec', map: { opus: 510, aac: 320 } },
+                            },
+                        },
+                    },
+                    liveUpdatableParams: ['bitrate'],
+                    settings: { codec: 'opus', bitrate: 400 },
+                },
+            },
+        });
+        const wrapper = mountPanel('enc');
+
+        expect(boxIn(wrapper, 'Bitrate').attributes('max')).toBe('510');
+        await choose(wrapper, 'Codec', 'aac');
+        expect(boxIn(wrapper, 'Bitrate').attributes('max')).toBe('320');
+        await save(wrapper);
+
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(mockModuleSettings.mock.calls).toEqual([
+            ['eng-1', 'enc', expect.objectContaining({ codec: 'aac', bitrate: 320 })],
+        ]);
     });
 });

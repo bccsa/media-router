@@ -1,10 +1,20 @@
 import { computed, onUnmounted, ref, watch, type ComputedRef, type Ref } from 'vue';
+import * as shared from '@media-router/shared-types';
+import * as wire from '@media-router/shared-types/browser';
 import type { ModuleState } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { matchShowWhen } from '@/utils/showWhen';
 import { stripDisplayFields, type GraphSource } from '@/utils/displayWidgets';
 import { fieldLabel } from '@/utils/fieldLabel';
 import type { EntryRule } from '@/utils/entryRules';
+
+// shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
+const { diffValues } = shared;
+const { settingMaximum } = wire;
+
+const jsonCopy = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+type SchemaProps = Record<string, Record<string, unknown>>;
 
 /** `x-widget` values a manifest may declare; anything else renders by the field's type. */
 export type SettingsWidget = 'slider' | 'textarea' | 'imageUpload' | 'graph' | 'pidTrim';
@@ -104,6 +114,12 @@ export interface ModuleSettingsFormOptions {
 export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     const DEFAULT_THROTTLE_MS = 50;
 
+    /** The schema's properties as declared, which the maximum rule reads. */
+    const schemaProps = computed(() => {
+        const schema = opts.module.value?.configSchema as { properties?: SchemaProps } | undefined;
+        return schema?.properties ?? {};
+    });
+
     const formFields = computed<FormField[]>(() => {
         const schema = opts.module.value?.configSchema as
             | { properties?: Record<string, SchemaProperty> }
@@ -151,6 +167,9 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     });
 
     const localSettings = ref<Record<string, unknown>>({});
+    // The stored settings the panel copy was last in step with, and whose. A copy: a deep watch on
+    // settings changed in place is handed the same object as old and new (B-105).
+    let synced: { id: string; settings: Record<string, unknown> } | undefined;
 
     watch(
         () => opts.module.value?.settings,
@@ -161,11 +180,32 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
                 if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
             }
             // Stripped on the way IN too: a seeded virtual key survives to Apply.
-            const merged = { ...defaults, ...settings };
-            localSettings.value = stripDisplayFields(formFields.value, merged);
+            const stored = jsonCopy(
+                stripDisplayFields(formFields.value, { ...defaults, ...settings }),
+            );
+            // Another module's settings replace the copy whole, unsaved changes and all, as before.
+            const id = `${opts.engineId.value}/${opts.moduleId.value}`;
+            localSettings.value = synced?.id === id ? keepChanges(stored, synced.settings) : stored;
+            synced = { id, settings: jsonCopy(stored) };
         },
         { immediate: true, deep: true },
     );
+
+    /** The stored settings with each value the operator changed in the panel since `before` kept. */
+    function keepChanges(
+        stored: Record<string, unknown>,
+        before: Record<string, unknown>,
+    ): Record<string, unknown> {
+        const next = { ...stored };
+        const changed = new Set<string>();
+        for (const [key, value] of Object.entries(localSettings.value)) {
+            if (diffValues(before[key], value).length === 0) continue;
+            next[key] = value;
+            changed.add(key);
+        }
+        // A dependent another writer moved stays within the maximum the operator set here.
+        return clampDependents(next, changed);
+    }
 
     /** Visibility rule for `x-showWhen`, resolved against the live settings. */
     function isFieldVisible(field: FormField): boolean {
@@ -181,15 +221,25 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         return field.enumValues;
     }
 
-    /** Effective maximum, as the manager describes it: x-maxFrom's setting, else x-maxBy's map, else maximum. */
+    /** Effective maximum by the manager's rule (shared-types' `settingMaximum`) on the panel's copy. */
     function getFieldMax(field: FormField): number | undefined {
-        const from = field.maxFrom ? localSettings.value[field.maxFrom] : undefined;
-        if (typeof from === 'number' && Number.isFinite(from)) return from;
-        if (field.maxBy) {
-            const val = String(localSettings.value[field.maxBy.field] ?? '');
-            return field.maxBy.map[val] ?? field.maximum;
+        return settingMaximum(schemaProps.value[field.key] ?? {}, localSettings.value);
+    }
+
+    /** Brings each setting whose maximum one of `sources` sets (x-maxFrom, x-maxBy) down to it. */
+    function clampDependents(
+        settings: Record<string, unknown>,
+        sources: ReadonlySet<string>,
+    ): Record<string, unknown> {
+        let next = settings;
+        for (const f of formFields.value) {
+            if (![f.maxFrom, f.maxBy?.field].some((s) => !!s && sources.has(s))) continue;
+            const max = settingMaximum(schemaProps.value[f.key] ?? {}, next);
+            if (max !== undefined && Number(next[f.key] ?? 0) > max) {
+                next = { ...next, [f.key]: max };
+            }
         }
-        return field.maximum;
+        return next;
     }
 
     let throttleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -201,16 +251,10 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     }
 
     function updateSetting(key: string, value: unknown): void {
-        localSettings.value = { ...localSettings.value, [key]: value };
-        // Clamp dependent fields when a controlling field changes (e.g. codec → channels max)
-        for (const f of formFields.value) {
-            if (!f.maxBy) continue;
-            const max = getFieldMax(f);
-            const cur = Number(localSettings.value[f.key] ?? 0);
-            if (max != null && cur > max) {
-                localSettings.value = { ...localSettings.value, [f.key]: max };
-            }
-        }
+        // A controlling field's change brings its dependents within it (codec → bitrate, Volume
+        // Range → volume), in the copy Save writes.
+        const next = { ...localSettings.value, [key]: value };
+        localSettings.value = clampDependents(next, new Set([key]));
         const field = formFields.value.find((f) => f.key === key);
         if (!field?.liveUpdatable) return;
 

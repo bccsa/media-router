@@ -3,6 +3,8 @@
 export { escapeSegment, unescapeSegment, splitPath, joinPath, isPrefix } from './tree/paths.js';
 export { WILDCARD, parsePattern, covers, isAncestorOf, overlaps } from './tree/patterns.js';
 export { getAt, keysOf, applyTreeOp } from './tree/apply.js';
+// The one rule for a setting's effective maximum (B-103); describe.ts imports nothing node-only.
+export { settingMaximum } from './tree/describe.js';
 export { absolutePath, widgetPaths } from './dashboardPaths.js';
 export { MODULE_HEALTH, type ModuleHealth } from './health.js';
 export { VU_BLOCKS, vuBlockDbfs } from './vu.js';

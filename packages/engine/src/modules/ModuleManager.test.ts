@@ -10,6 +10,7 @@ import { EnginePatchRouter } from '../EnginePatchRouter.js';
 import {
     ModuleWriteCheck,
     parseManifestTiming,
+    setLogTap,
     withIngestTimingSettings,
     type ModuleRuntimeState,
     type PluginManifest,
@@ -157,7 +158,7 @@ function recordingPlugin(
 }
 
 describe("a module's settings at start, by the manager's maxima (B-103)", () => {
-    const manifests = new Map(RANGED.map((id) => [id, manifestOf(id)]));
+    const manifests = new Map([...RANGED, 'audio-transcoder'].map((id) => [id, manifestOf(id)]));
     let pluginLoader: PluginLoader;
     let manager: ModuleManager;
     let n = 0;
@@ -199,18 +200,18 @@ describe("a module's settings at start, by the manager's maxima (B-103)", () => 
         });
     });
 
-    it('resets 500 % in a Volume Range of 150 to its default: the manager refuses it', () => {
+    it('brings 500 % in a Volume Range of 150 down to 150, the maximum the manager refuses it for', () => {
         expect(managerCheck('audio-input-302m', { volumeMax: 150 }, 'volume', 500)).toBe(
             'above maximum 150',
         );
         expect(started('audio-input-302m', { volumeMax: 150, volume: 500 })).toMatchObject({
             volumeMax: 150,
-            volume: 100,
+            volume: 150,
         });
     });
 
-    it('a Volume Range lowered under the volume: the volume resets, as the manager refuses it', () => {
-        // Nothing clamps the stored volume when the range comes down.
+    it('a Volume Range lowered under the volume: the volume starts at the range', () => {
+        // The manager clamps no stored value: a range lowered outside the settings form leaves it.
         expect(managerCheck('audio-output', { volumeMax: 100 }, 'volume', 140)).toBe(
             'above maximum 100',
         );
@@ -218,7 +219,7 @@ describe("a module's settings at start, by the manager's maxima (B-103)", () => 
             volumeMax: 100,
             volume: 100,
         });
-        expect(started('audio-output', { volumeMax: 200, volume: 300 }).volume).toBe(100);
+        expect(started('audio-output', { volumeMax: 200, volume: 300 }).volume).toBe(200);
         expect(started('audio-output', { volumeMax: 200, volume: 200 }).volume).toBe(200);
     });
 
@@ -227,42 +228,105 @@ describe("a module's settings at start, by the manager's maxima (B-103)", () => 
             volumeMax: 150,
             volume: 150,
         });
-        expect(started('audio-output', { volume: 151 }).volume).toBe(100);
+        expect(started('audio-output', { volume: 151 }).volume).toBe(150);
         expect(managerCheck('audio-output', { volumeMax: '500' }, 'volume', 300)).toBe(
             'above maximum 150',
         );
         expect(started('audio-output', { volumeMax: '500', volume: 300 })).toMatchObject({
             volumeMax: 150,
-            volume: 100,
+            volume: 150,
         });
     });
 
-    it('a Volume Range outside its options still bounds the volume as for the manager; it resets', () => {
+    it('a Volume Range outside its options resets to its default; the volume is judged by the range as stored, as the manager judges it', () => {
         expect(managerCheck('audio-output', { volumeMax: 250 }, 'volume', 250)).toBeNull();
         expect(started('audio-output', { volumeMax: 250, volume: 250 })).toMatchObject({
             volumeMax: 150,
             volume: 250,
         });
+        expect(managerCheck('audio-output', { volumeMax: 250 }, 'volume', 300)).toBe(
+            'above maximum 250',
+        );
+        expect(started('audio-output', { volumeMax: 250, volume: 300 })).toMatchObject({
+            volumeMax: 150,
+            volume: 250,
+        });
     });
 
-    it('a maximum no other setting moves is still the bound (Capture Buffer, 40-85 ms)', () => {
+    it('a bound no other setting moves: Capture Buffer (40-85 ms) starts within it', () => {
         const at = (srcBufferMs: number) =>
             started('audio-input-302m', { volumeMax: 500, srcBufferMs }).srcBufferMs;
-        expect([at(85), at(86), at(100)]).toEqual([85, 60, 60]);
+        expect([at(85), at(86), at(100), at(40), at(39), at(0)]).toEqual([85, 85, 85, 40, 40, 40]);
     });
 
-    it("x-maxBy too: Audio Encoder's bitrate is bounded at 320 kbps for AAC, 510 for Opus", () => {
+    it("x-maxBy too: Audio Encoder's bitrate starts within 6-320 kbps for AAC, 6-510 for Opus", () => {
         expect(started('audio-encoder', { codec: 'opus', bitrate: 400 }).bitrate).toBe(400);
+        expect(started('audio-encoder', { codec: 'opus', bitrate: 600 }).bitrate).toBe(510);
         expect(managerCheck('audio-encoder', { codec: 'aac' }, 'bitrate', 400)).toBe(
             'above maximum 320',
         );
-        expect(started('audio-encoder', { codec: 'aac', bitrate: 400 }).bitrate).toBe(128);
+        expect(started('audio-encoder', { codec: 'aac', bitrate: 400 }).bitrate).toBe(320);
         expect(started('audio-encoder', { codec: 'aac', bitrate: 320 }).bitrate).toBe(320);
+        expect(started('audio-encoder', { codec: 'aac', bitrate: 2 }).bitrate).toBe(6);
     });
 
-    it('a wrong type resets to the default and a missing value takes it, as before', () => {
+    it('a wrong type or an option not offered resets to the default and a missing value takes it, as before', () => {
         expect(started('audio-output', { volume: '80' }).volume).toBe(100);
+        expect(started('audio-output', { volume: '500' }).volume).toBe(100);
+        expect(started('audio-encoder', { codec: 'mp3' }).codec).toBe('opus');
         expect(started('audio-output', {})).toMatchObject({ volume: 100, volumeMax: 150 });
+    });
+
+    /** The warnings ModuleManager logs while `run` runs, as JSON. */
+    function warnings(run: () => void): Array<Record<string, unknown>> {
+        const lines: Array<Record<string, unknown>> = [];
+        setLogTap((l) => {
+            const line = JSON.parse(l) as Record<string, unknown>;
+            if (line.name === 'ModuleManager' && line.level === 40) lines.push(line);
+        });
+        try {
+            run();
+        } finally {
+            setLogTap(null);
+        }
+        return lines;
+    }
+
+    it('its log line names each value brought to a bound (key, old, new) and each reset (key, default)', () => {
+        const lines = warnings(() =>
+            started('audio-encoder', { codec: 'aac', bitrate: 400, volumeMax: 250, volume: 300 }),
+        );
+        expect(lines).toEqual([
+            expect.objectContaining({
+                msg: 'Config validation failed — values past a bound brought to it, other invalid values reset to defaults',
+                errors: [
+                    '/bitrate must be <= 320',
+                    '/volumeMax must be equal to one of the allowed values',
+                    '/volume must be <= 250',
+                ],
+                clamped: ['bitrate 400 -> 320', 'volume 300 -> 250'],
+                reset: ['volumeMax -> 150'],
+            }),
+        ]);
+        const valid = warnings(() => started('audio-encoder', { codec: 'aac', bitrate: 320 }));
+        expect(valid).toEqual([]);
+    });
+
+    it("a nested value past its maximum (an Audio Transcoder rendition's bitrate) is logged and left, as before", () => {
+        let config: Record<string, unknown> = {};
+        const lines = warnings(() => {
+            config = started('audio-transcoder', {
+                renditions: [{ name: 'EN', codec: 'opus', bitrate: 600 }],
+            });
+        });
+        expect((config.renditions as Array<{ bitrate: number }>)[0].bitrate).toBe(600);
+        expect(lines).toEqual([
+            expect.objectContaining({
+                errors: ['/renditions/0/bitrate must be <= 510'],
+                clamped: [],
+                reset: [],
+            }),
+        ]);
     });
 
     it('compiles a schema with moved maxima once per set of maxima, not at every start', () => {
@@ -283,25 +347,32 @@ describe("a module's settings at start, by the manager's maxima (B-103)", () => 
     });
 
     it.each(RANGED)(
-        '%s: the start keeps exactly the volumes the manager takes, in every Volume Range',
+        '%s: the start keeps each volume the manager takes and brings one it refuses to the bound it names',
         (pluginId) => {
             const schema = manifests.get(pluginId)!.configSchema as {
                 properties: Record<string, { enum?: number[] }>;
             };
             const ranges = schema.properties.volumeMax.enum!;
             expect(ranges).toEqual([100, 150, 200, 300, 500]);
-            const outcomes = new Set<boolean>();
+            const verdicts = new Set<string>();
             for (const volumeMax of ranges) {
                 for (const volume of [
                     -1, 0, 99, 101, 149, 150, 151, 199, 200, 201, 300, 301, 500, 501,
                 ]) {
-                    const taken = managerCheck(pluginId, { volumeMax }, 'volume', volume) === null;
-                    const kept = started(pluginId, { volumeMax, volume }).volume === volume;
-                    expect({ volumeMax, volume, kept }).toEqual({ volumeMax, volume, kept: taken });
-                    outcomes.add(kept);
+                    const reason = managerCheck(pluginId, { volumeMax }, 'volume', volume);
+                    const bound = /^(above maximum|below minimum) (-?\d+)$/.exec(reason ?? '');
+                    expect(reason === null || bound !== null).toBe(true);
+                    const expected = bound ? Number(bound[2]) : volume;
+                    const volumeAtStart = started(pluginId, { volumeMax, volume }).volume;
+                    expect({ volumeMax, volume, volumeAtStart }).toEqual({
+                        volumeMax,
+                        volume,
+                        volumeAtStart: expected,
+                    });
+                    verdicts.add(bound ? bound[1] : 'taken');
                 }
             }
-            expect(outcomes).toEqual(new Set([true, false]));
+            expect(verdicts).toEqual(new Set(['taken', 'above maximum', 'below minimum']));
         },
     );
 

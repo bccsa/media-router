@@ -68,6 +68,45 @@ describe('MrArrayField — item-relative x-maxBy (audio-transcoder bitrate, #664
     });
 });
 
+describe("MrArrayField — item-relative x-maxFrom, by the manager's rule (B-103)", () => {
+    const rangedSchema = {
+        type: 'object',
+        properties: {
+            levelMax: { type: 'number', enum: [100, 150, 500], description: 'Range' },
+            level: {
+                type: 'number',
+                minimum: 0,
+                maximum: 150,
+                description: 'Level',
+                'x-maxFrom': 'levelMax',
+            },
+        },
+    };
+
+    it("caps the number input by the item's own source, else the module's", () => {
+        const wrapper = mount(MrArrayField, {
+            props: {
+                modelValue: [{ levelMax: 500, level: 300 }, { level: 80 }],
+                schema: rangedSchema,
+                globalConfig: { levelMax: 100 },
+            },
+        });
+        const maxes = wrapper.findAll('input[type="number"]').map((i) => i.attributes('max'));
+        expect(maxes).toEqual(['500', '100']);
+    });
+
+    it('pulls the level down to its source when that comes down', async () => {
+        const wrapper = mount(MrArrayField, {
+            props: { modelValue: [{ levelMax: 500, level: 300 }], schema: rangedSchema },
+        });
+        wrapper.findComponent(MrSelect).vm.$emit('update:modelValue', 150);
+        await wrapper.vm.$nextTick();
+        expect(wrapper.emitted('update:modelValue')!.at(-1)).toEqual([
+            [{ levelMax: 150, level: 150 }],
+        ]);
+    });
+});
+
 describe('MrArrayField', () => {
     it('seeds only primary fields on Add (advanced fields stay absent = inherit)', async () => {
         const wrapper = mount(MrArrayField, { props: { modelValue: [], schema } });

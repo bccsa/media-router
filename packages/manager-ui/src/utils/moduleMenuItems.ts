@@ -1,7 +1,11 @@
+import * as wire from '@media-router/shared-types/browser';
 import type { ModuleState } from '@/stores/engines';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { matchShowWhen } from '@/utils/showWhen';
 import { fieldLabel } from '@/utils/fieldLabel';
+
+// shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
+const { settingMaximum } = wire;
 
 // SVG icon paths (stroke-based, 24×24 viewBox)
 export const menuIcons = {
@@ -38,17 +42,13 @@ function contextSettingItems(mod: ModuleState): MenuItem[] {
                 toggle: { value: !!(mod.settings?.[key] ?? schema.default ?? false) },
             });
         } else if (schema['x-widget'] === 'slider' || schema.type === 'number') {
-            const maxFrom = schema['x-maxFrom'];
-            const maxVal =
-                maxFrom && mod.settings?.[maxFrom] != null
-                    ? Number(mod.settings[maxFrom])
-                    : (schema.maximum ?? 100);
             items.push({
                 label: fieldLabel(key, schema),
                 action: `setting:${key}`,
                 slider: {
                     min: schema.minimum ?? 0,
-                    max: maxVal,
+                    // The manager's rule; the menu's 0-100 slider for a field with no maximum at all.
+                    max: settingMaximum(schema, mod.settings ?? {}) ?? 100,
                     step: schema['x-step'] ?? 1,
                     value: Number(mod.settings?.[key] ?? schema.default ?? 0),
                     unit: schema['x-unit'] as string | undefined,

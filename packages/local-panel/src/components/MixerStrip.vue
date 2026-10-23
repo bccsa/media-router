@@ -18,6 +18,8 @@ const vuStore = useVuStore();
 
 const vuLevels = computed(() => vuStore.get(props.module.instanceId));
 const storeVolume = computed(() => (props.module.settings?.volume as number) ?? 100);
+// Not shared-types' settingMaximum: the LCP is sent no schema. For every mixer-strip plugin this
+// gives that rule's maximum, unless a stored Volume Range is not a number (the rule: 150).
 const volumeMax = computed(() => (props.module.settings?.volumeMax as number) ?? 150);
 const volumeEnabled = computed(() => props.module.settings?.lcpVolumeEnabled !== false);
 const muteEnabled = computed(() => props.module.settings?.lcpMuteEnabled !== false);

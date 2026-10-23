@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
-import Ajv, { type ValidateFunction } from 'ajv';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
-import { ConfigValidationError, createLogger, settingMaximum } from '@media-router/shared-types';
+import { createLogger } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { PluginLoader } from '../plugins/PluginLoader.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -10,42 +9,9 @@ import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 import type { HouseClock } from '../clock/HouseClock.js';
 import { ModuleInstance } from './ModuleInstance.js';
+import { checkStartSettings } from './startSettings.js';
 
 const log = createLogger('ModuleManager');
-const ajv = new Ajv({ allErrors: true, useDefaults: true, strict: false });
-
-type SchemaProps = Record<string, Record<string, unknown>>;
-
-/** Per plugin schema, its validators with moved maxima, by those maxima: ajv keeps every compile. */
-const movedValidators = new WeakMap<object, Map<string, ValidateFunction>>();
-
-/**
- * A validator of the plugin's schema with each maximum as the manager reads it from these settings
- * (x-maxFrom, x-maxBy): a value the manager accepts survives a start, one it refuses does not (B-103).
- */
-function settingsValidator(
-    schema: Record<string, unknown>,
-    settings: Record<string, unknown>,
-): ValidateFunction {
-    const props = (schema.properties ?? {}) as SchemaProps;
-    const moved: Array<[string, number]> = [];
-    for (const [key, prop] of Object.entries(props)) {
-        const maximum = settingMaximum(prop, settings);
-        if (maximum !== undefined && maximum !== prop.maximum) moved.push([key, maximum]);
-    }
-    if (moved.length === 0) return ajv.compile(schema);
-    const byMaxima = movedValidators.get(schema) ?? new Map<string, ValidateFunction>();
-    movedValidators.set(schema, byMaxima);
-    const id = JSON.stringify(moved);
-    let validate = byMaxima.get(id);
-    if (!validate) {
-        const properties = { ...props };
-        for (const [key, maximum] of moved) properties[key] = { ...props[key], maximum };
-        validate = ajv.compile({ ...schema, properties });
-        byMaxima.set(id, validate);
-    }
-    return validate;
-}
 
 /**
  * Manages all module instances.
@@ -112,26 +78,16 @@ export class ModuleManager extends EventEmitter {
             }
         }
 
-        // Validate config against plugin's JSON Schema — reset invalid values to defaults
+        // The plugin's schema with the manager's maxima: a value past a bound starts at that bound,
+        // any other invalid one at its default (B-103).
         const schema = loaded?.manifest?.configSchema;
         if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
-            const validate = settingsValidator(schema, config);
-            if (!validate(config)) {
-                const errors =
-                    validate.errors?.map((e) => `${e.instancePath || '/'} ${e.message}`) ?? [];
+            const fixes = checkStartSettings(schema, config);
+            if (fixes) {
                 log.warn(
-                    { instanceId, pluginId, errors },
-                    'Config validation failed — resetting invalid values to defaults',
+                    { instanceId, pluginId, ...fixes },
+                    'Config validation failed — values past a bound brought to it, other invalid values reset to defaults',
                 );
-
-                // Reset invalid properties to their schema defaults
-                const props = (schema.properties ?? {}) as SchemaProps;
-                for (const err of validate.errors ?? []) {
-                    const key = (err.instancePath || '').replace(/^\//, '');
-                    if (key && props[key]?.default !== undefined) {
-                        (config as Record<string, unknown>)[key] = props[key].default;
-                    }
-                }
             }
         }
 

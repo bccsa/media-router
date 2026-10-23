@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import * as wire from '@media-router/shared-types/browser';
 import MrButton from './MrButton.vue';
 import MrArrayItemField, { type ItemField } from './MrArrayItemField.vue';
 import MrHelpTip from './MrHelpTip.vue';
@@ -7,6 +8,9 @@ import { matchShowWhen } from '@/utils/showWhen';
 import { fieldLabel } from '@/utils/fieldLabel';
 import { fillAutoAssigned, nextFreeValue, type AutoAssign } from '@/utils/uniqueItemValues';
 import { useUniqueItemDrafts } from '@/composables/useUniqueItemDrafts';
+
+// shared-types is CJS: named imports break under Vite's interop (see stores/engines.ts).
+const { settingMaximum } = wire;
 
 interface ItemSchema {
     type?: string;
@@ -60,6 +64,7 @@ const items = computed<Record<string, unknown>[]>(() => {
 interface Field extends ItemField {
     default: unknown;
     showWhen?: string;
+    maxFrom?: string;
     maxBy?: { field: string; map: Record<string, number> };
     /** `x-unique`: no two items may hold the same value. */
     unique?: boolean;
@@ -88,6 +93,7 @@ const fields = computed<Field[]>(() => {
             enumLabels: prop['x-enumLabels'] as Record<string, string> | undefined,
             minimum: prop.minimum as number | undefined,
             maximum: prop.maximum as number | undefined,
+            maxFrom: prop['x-maxFrom'] as string | undefined,
             maxBy: prop['x-maxBy'] as Field['maxBy'],
             advanced: !!prop['x-advanced'],
             inheritable: isInheritable(key, !!prop['x-advanced']),
@@ -125,10 +131,16 @@ function itemValue(item: Record<string, unknown>, key: string): unknown {
     return own !== undefined && own !== '' ? own : props.globalConfig?.[key];
 }
 
-/** Effective `maximum` for this item — item-relative `x-maxBy`, else the schema's. */
+/** An item's own values over the module-global ones it inherits, as `itemValue` reads them. */
+function itemSettings(item: Record<string, unknown>): Record<string, unknown> {
+    const own = Object.entries(item).filter(([, v]) => v !== undefined && v !== '');
+    return { ...props.globalConfig, ...Object.fromEntries(own) };
+}
+
+/** Effective `maximum` for this item: the manager's rule (`settingMaximum`) on its settings. */
 function itemMax(field: Field, item: Record<string, unknown>): number | undefined {
-    if (!field.maxBy) return field.maximum;
-    return field.maxBy.map[String(itemValue(item, field.maxBy.field) ?? '')] ?? field.maximum;
+    const prop = (props.schema.properties?.[field.key] ?? {}) as Record<string, unknown>;
+    return settingMaximum(prop, itemSettings(item));
 }
 
 function fieldForItem(field: Field, item: Record<string, unknown>): Field {
@@ -166,10 +178,11 @@ function updateField(index: number, key: string, value: unknown) {
     const updated = items.value.map((item, i) => {
         if (i !== index) return item;
         const next = { ...(item as Record<string, unknown>), [key]: value };
-        // A controller change (codec) can lower another field's x-maxBy cap;
-        // pull that field down so the saved item never exceeds what it shows.
+        // A controller change (codec) can lower another field's x-maxFrom or x-maxBy
+        // cap; pull that field down so the saved item never exceeds what it shows.
         for (const f of fields.value) {
-            if (f.maxBy?.field !== key || typeof next[f.key] !== 'number') continue;
+            const controlled = f.maxFrom === key || f.maxBy?.field === key;
+            if (!controlled || typeof next[f.key] !== 'number') continue;
             const max = itemMax(f, next);
             if (max !== undefined && (next[f.key] as number) > max) next[f.key] = max;
         }
