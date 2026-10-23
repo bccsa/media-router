@@ -1,7 +1,8 @@
 // fixture_gen: the deterministic generator of the synthetic fixtures (plan ch. 3 part 7, ch. 5
 // part 7.2). --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts
 // fixture from ts_gen.h (WI-S0-9); --drop removes packets from a capture (cap-cc-loss);
-// --shift stamps PIDs of a recorded trace further ahead (B-48's window fixtures).
+// --shift stamps PIDs of a recorded trace further ahead (B-48's window fixtures); --freeze-pcr
+// holds a recorded trace's PCR at one value (B-101's stuck-PCR fixture).
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -24,6 +25,9 @@ const char kUsage[] =
     "       fixture_gen --shift PID:MS[,PID:MS...] -i IN.stct -o OUT.stct\n"
     "  copies an arrival trace, the PES of each PID named stamped MS later (ahead of\n"
     "  the rest, mod 2^33); PIDs decimal or 0x\n"
+    "       fixture_gen --freeze-pcr T:LEN -i IN.stct -o OUT.stct\n"
+    "  copies an arrival trace, every PCR arriving in [T, T+LEN) s after its first record\n"
+    "  carrying the first such PCR's value (LEN 0: to the end)\n"
     "       fixture_gen --trace -o OUT.stct [options]\n"
     "  An arrival trace of one program: the PCR on the video PID, the chosen PES, sent\n"
     "  over a path of floor delay plus exponential jitter, in order.\n"
@@ -112,7 +116,7 @@ bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_ge
 int main(int argc, char** argv) {
     trace_gen::Config c;
     bool trace = false;
-    std::string out, ts_kind_name, drop_spec, shift_spec, in;
+    std::string out, ts_kind_name, drop_spec, shift_spec, freeze_spec, in;
     int64_t restart_ns = 3 * trace_gen::S;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
@@ -134,6 +138,8 @@ int main(int argc, char** argv) {
             drop_spec = v;
         } else if (a == "--shift") {
             shift_spec = v;
+        } else if (a == "--freeze-pcr") {
+            freeze_spec = v;
         } else if (a == "--restart") {
             ok = seconds(v, &restart_ns) && restart_ns > 0;
         } else if (a == "--seed") {
@@ -286,7 +292,49 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
-    if (!trace) return usage("one of --ts, --drop, --shift or --trace is required");
+    if (!freeze_spec.empty()) {
+        if (out.empty() || in.empty()) return usage("--freeze-pcr needs -i IN.stct and -o OUT.stct");
+        const std::vector<std::string> f = split(freeze_spec, ':');
+        int64_t at = 0, len = 0;
+        if (f.size() != 2 || !seconds(f[0], &at) || !seconds(f[1], &len) || at < 0 || len < 0)
+            return usage(("bad --freeze-pcr " + freeze_spec).c_str());
+        mrts::TraceReader r;
+        if (!r.open(in)) {
+            std::fprintf(stderr, "fixture_gen: %s: no arrival trace\n", in.c_str());
+            return 1;
+        }
+        mrts::TraceWriter w;
+        if (!w.open(out)) {
+            std::perror(out.c_str());
+            return 1;
+        }
+        mrts::TraceRecord rec;
+        bool first = true;
+        int64_t t0 = 0;
+        uint64_t stuck = 0;
+        size_t held = 0;
+        while (r.next(&rec)) {
+            if (first) t0 = rec.arrival_ns;
+            first = false;
+            const int64_t t = rec.arrival_ns - t0;   // from the first record, as an expectation's atS
+            if (rec.kind == mrts::TraceKind::pcr && t >= at && (len == 0 || t < at + len)) {
+                if (!held) stuck = rec.value;
+                rec.value = stuck;
+                held++;
+            }
+            w.write(rec);
+        }
+        const bool whole = r.status() == mrts::TraceReader::Status::ok ||
+                           r.status() == mrts::TraceReader::Status::unclosed;
+        const bool wrote = w.close();
+        if (!whole || !held || !wrote) {
+            const char* why = !whole ? "the input trace is damaged" : !held ? "no PCR in the span" : "writing failed";
+            std::fprintf(stderr, "fixture_gen: %s: %s\n", in.c_str(), why);
+            return 1;
+        }
+        return 0;
+    }
+    if (!trace) return usage("one of --ts, --drop, --shift, --freeze-pcr or --trace is required");
     if (out.empty()) return usage("-o OUT.stct is required");
     const std::vector<mrts::TraceRecord> recs = trace_gen::generate(c);
     mrts::TraceWriter w;

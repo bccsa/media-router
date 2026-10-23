@@ -179,6 +179,7 @@ struct PcrValidatorConfig {
     int64_t rate_max_ppm = 1000;
     int64_t rate_hold_ns = 30000000000LL;
     int freeze_count = 3;
+    // A freeze pair spans this much arrival; frozen = the PCR did not advance over it (B-101).
     int64_t freeze_min_dh_ns = 30000000;
     int64_t leap_ns = 500000000;                  // above the gate egress's delivery stalls (WI-P1-6)
     int leap_fail_count = 3;

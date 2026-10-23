@@ -1079,10 +1079,10 @@ rows B-1 to B-48) holds the same records with their work items.
   full, 300 s of house time since the epoch's first sample, on the window's
   densest `step_ns` band, and once a rate is known its fits on no more
   points than the rate in force only pull the rate. On TECH01's relay every
-  fresh start of an hour now locks, 85 of 89 at 306–308 s (the other four
-  after a freeze degrade while acquiring), within 50 ppm of the hour's floor
-  trend and with no rate warning after the lock; before, 56 of 89 locked
-  within 900 s (median 186 s) and 33 never did.
+  fresh start of an hour now locks at 306–308 s (89 of 89; four of them waited
+  to 334–578 s on a freeze degrade while acquiring until B-101), within 50 ppm
+  of the hour's floor trend and with no rate warning after the lock; before,
+  56 of 89 locked within 900 s (median 186 s) and 33 never did.
 - **The first epoch moves onto its floor** (WI-P1-6). In a lock's first
   epoch, the one the pipeline started with, when its first two buckets agree
   within `step_ns` on a floor more than `step_ns` below the line, the line
@@ -1235,7 +1235,8 @@ rows B-1 to B-48) holds the same records with their work items.
   counted only while packets keep arriving, so an outage is not a PCR fault;
   recovery clears the windowed counts. B-86, the owner's: a steady 2 s PCR
   locks); rate (the raw fit past 1,000 ppm for 30 s); freeze (three
-  consecutive PCRs with `Δσ < Δh / 2` and `Δh ≥ 30 ms`); leap
+  consecutive pairs 30 ms apart in which the PCR did not advance, B-101:
+  `Δσ < Δh / 2` read a bursty relay's stalls as a frozen clock); leap
   (`|Δσ − Δh| > 500 ms` without `discontinuity_indicator` re-locks; three in
   60 s fail; the plan's 250 ms read the gate egress's delivery stalls as
   leaps, WI-P1-6 below); lead (a PID's 1 s median stream lead (its PTS, DTS

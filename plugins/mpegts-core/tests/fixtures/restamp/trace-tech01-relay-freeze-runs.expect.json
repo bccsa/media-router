@@ -1,0 +1,13 @@
+{
+  "note": "TECH01's relay, the 2026-10-22 20:33:39Z recording of trace-tech01-relay-no-first-fit from 2590 s to 3320 s (730 s, 2 MB; the PSI re-stamped at the cut's first record), the stretch with the hour's three freeze degrades (chapter 15.4 B-101). Under the old freeze test (frozen = the PCR advanced less than half a 30 ms pair's arrival span) this delivery's single 60 ms PCRs after 120-340 ms gaps were frozen pairs (2819 in the hour), three in a row at 262.8, 412.7 and 712.8 s of the cut, each degrading the program: before B-100 the first two recovered 30 s later and the third held for good (0.56 s dropped, -233 ppm with the rate warning); with B-100 alone the first degrade, while acquiring, held until the relocked lock's own window filled (567.9 s) and the third for good (1.28 s dropped). Live, the engine's own srt-input beside the recorder degraded on the same three runs (21:21:12, 21:23:42 and 21:28:42Z). Since B-101 a pair is frozen only when the PCR did not advance at all: 0 degrades, locked at 308 s (B-100), 2 envelope-step relocks, 0.18 s dropped, +6.2 ppm, no warning.",
+  "degraded": 0,
+  "recovered": 0,
+  "lockedWithinS": 320,
+  "relocks": [0, 3],
+  "droppedMs": [0, 300],
+  "finalState": "locked",
+  "ppm": [-100, 100],
+  "ppmAfterS": 320,
+  "monotonic": true,
+  "faithful": true
+}

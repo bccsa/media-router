@@ -1,0 +1,13 @@
+{
+  "note": "TECH01's recorded delivery on a clean generator trace, its bursts four times as tall (chapter 15.4 B-101): fixture_gen --trace --duration 1800 --pcr-ms 60 --pids v,a2 --jitter-ms 0 --delay-ms 300 --ppm 0 --seed 3 (H.264 + AAC, a flat 300 ms floor, the clock at 0 ppm), then every arrival moved by TECH01's recorded acyclic residual (the 2026-10-22 20:33:39Z hour: each PCR's delay above the hour's trend line with its 150 s fold taken out, the 61 s slow part removed, sampled at the clean trace's arrival times from an offset chosen by seed 2) plus the recorded 150 s fold scaled to a 1.6 s main rise, arrivals kept in order; cut to its first 600 s (the lock and two bursts). Committed because the residual is recorded data no generator reproduces. Under the old freeze test the first burst's tail runs below half speed for over 90 ms: before B-100 degraded (freeze) at 93.6 s for good, never locked (the first fit starved as on the relay); with B-100 alone degraded at 93.6 and 543.8 s, recovered at 425.4 and 575.1 s, 8.4 s dropped; a span coupled to the cadence row's 500 ms (the first B-101 design) degraded at both bursts after the lock. Since B-100 and B-101: locked at 306 s, one envelope-step relock at 314 s (B-95's step on the 1.6 s burst, 1.98 s dropped), 0 degrades, +12 ppm.",
+  "lockedWithinS": 320,
+  "degraded": 0,
+  "recovered": 0,
+  "relocks": [1, 3],
+  "droppedMs": [0, 3000],
+  "finalState": "locked",
+  "ppm": [-100, 100],
+  "ppmAfterS": 320,
+  "monotonic": true,
+  "faithful": true
+}

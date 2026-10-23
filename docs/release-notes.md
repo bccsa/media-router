@@ -267,24 +267,29 @@ elements" below do not start.
   re-locks in pairs. Why the relay delivers in bursts is investigated apart
   (#847; the 150 s cycle is already in NO-OCC-Gate01's output).
 - **An input on a link that delivers in bursts now locks its clock 5 minutes
-  after every start, and keeps its clock rate across the re-locks that
-  follow.** On such a link (TECH01's relay of the production gate; the gate's
-  own RIST output) the input locked only when its first second of delivery
-  happened to land on the link's usual level: 3 minutes on a lucky start, 20
-  minutes or never on the others (on the test box, 1 start of 6), showing
-  Acquiring meanwhile. Fixed: on such a link the clock now waits the full 5
-  minutes of its rate window and reads the rate over the whole window
-  (within 100 ppm of the link's trend over the hour on every replayed start,
-  and no "Source clock off by n ppm" warning on any; before, a lucky start
-  could read 100 to 300 ppm off, and a later re-lock could take the rate 100
-  to 200 ppm off for the rest of the run). Costs: the lock takes 5 minutes on
-  such links (clean links still lock in 35 s), and 5 minutes again after a
-  reconnect or a fault inside those first 5 minutes. A known limit: a source
-  whose clock is genuinely off reads as about zero on such a link and raises
-  no warning; the input's delay then creeps (about 0.27 s an hour when the
-  source runs 100 ppm fast, taken back with about 1 s cut every 100 minutes;
-  when it runs slow, a short re-step about every 30 minutes, nothing cut).
-  The burst cycle itself is the gate's (#847).
+  after every start, keeps its clock rate across the re-locks that follow,
+  and no longer trips "Degraded clock: PCR frozen" on the bursts.** On such a
+  link (TECH01's relay of the production gate; the gate's own RIST output)
+  the input locked only when its first second of delivery happened to land on
+  the link's usual level: 3 minutes on a lucky start, 20 minutes or never on
+  the others (on the test box, 1 start of 6), showing Acquiring meanwhile;
+  and now and then (three times in the recorded hour) a stall in the delivery
+  read as a frozen clock, a short glitch each time, which while the input was
+  still acquiring held it on Degraded clock for hours. Fixed: on such a link
+  the clock now waits the full 5 minutes of its rate window and reads the
+  rate over the whole window (within 100 ppm of the link's trend over the
+  hour on every replayed start, and no "Source clock off by n ppm" warning on
+  any; before, a lucky start could read 100 to 300 ppm off, and a later
+  re-lock could take the rate 100 to 200 ppm off for the rest of the run);
+  and a clock reference counts as frozen only when its value stops
+  advancing, not when the link delivers it slowly. Costs: the lock takes 5
+  minutes on such links (clean links still lock in 35 s), and 5 minutes again
+  after a reconnect or a fault inside those first 5 minutes. A known limit: a
+  source whose clock is genuinely off reads as about zero on such a link and
+  raises no warning; the input's delay then creeps (about 0.27 s an hour when
+  the source runs 100 ppm fast, taken back with about 1 s cut every 100
+  minutes; when it runs slow, a short re-step about every 30 minutes, nothing
+  cut). The burst cycle itself is the gate's (#847).
 - **Fewer glitches when an input's clock fails and when it recovers.** When
   an input's clock reference froze, went missing or failed a check, the
   input changed over to timing from its own streams ("Degraded clock") and

@@ -634,7 +634,8 @@ PcrValidator::Verdict PcrValidator::feed_pcr(int64_t pcr27, bool di, int64_t h) 
     const bool leap = miss > cfg_.leap_ns || miss < -cfg_.leap_ns;
     // The cadence learns from intervals the source timed itself that could be on time at any
     // accepted cadence (within the cap); a late one still teaches a new cadence (B-86).
-    if (!di && !leap && !outage && ds >= 0 && ds <= cfg_.pcr_interval_cap_ns) {
+    // An interval of no PCR time (a stuck or duplicated PCR) is no cadence (B-101).
+    if (!di && !leap && !outage && ds > 0 && ds <= cfg_.pcr_interval_cap_ns) {
         cadence_.push_back(ds);
         while ((int)cadence_.size() > cfg_.cadence_intervals) cadence_.pop_front();
         cadence_ns_ = *std::max_element(cadence_.begin(), cadence_.end());
@@ -656,13 +657,14 @@ PcrValidator::Verdict PcrValidator::feed_pcr(int64_t pcr27, bool di, int64_t h) 
         bad(h);
         return fail(Reason::leap) ? Verdict::fail : Verdict::leap;
     }
-    // Freeze pairs span >= 30 ms, so a dense PCR still shows its stall.
+    // Freeze pairs span >= 30 ms, so a dense PCR still shows its stall; frozen = the PCR did not
+    // advance over the span (a bursty relay's stalls and a lost PCR's long interval are not, B-101).
     const int64_t fdh = sat_sub(h, fz_h_);
     if (fdh >= cfg_.freeze_min_dh_ns) {
         const int64_t fds = pcr27_to_ns(pcr_delta(pcr27, fz_pcr_));
         fz_pcr_ = pcr27;
         fz_h_ = h;
-        if (fds < fdh / 2) {
+        if (fds <= 0) {
             freeze_run_++;
             if (freeze_run_ >= cfg_.freeze_count) {
                 bad(h);

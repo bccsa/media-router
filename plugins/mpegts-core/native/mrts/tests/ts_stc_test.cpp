@@ -1623,6 +1623,157 @@ void test_validator() {
     }
 }
 
+// B-101: a freeze pair (>= 30 ms of arrival) is frozen when the PCR did not advance over it. Packets every
+// 20 ms arriving at arr(t) (FIFO), a PCR of σ pcr(t) on those where it is not INT64_MIN; see(t, v) after each
+// PCR. The first failure, its arrival less `onset`, and its row.
+struct FzRun {
+    int64_t at = -1;
+    PcrValidator::Reason reason = PcrValidator::Reason::none;
+};
+auto on_time = [](int64_t t) { return t; };
+auto no_see = [](int64_t, const PcrValidator&) {};
+template <class P, class A = decltype(on_time), class See = decltype(no_see)>
+FzRun fz_run(int64_t secs, int64_t onset, P pcr, A arr = on_time, See see = no_see,
+             const PcrValidatorConfig& cfg = PcrValidatorConfig()) {
+    PcrValidator v(cfg);
+    FzRun r;
+    int64_t last = INT64_MIN;
+    for (int64_t t = 0; t <= secs * S; t += 20 * MS) {
+        last = std::max(last, arr(t));
+        v.feed_activity(last);
+        const int64_t s = pcr(t);
+        if (s != INT64_MIN) {
+            v.feed_pcr(ns_to_pcr27(3600 * S + s), false, last);
+            see(t, v);
+        }
+        if (r.at < 0 && v.failed()) {
+            r.at = last - onset;
+            r.reason = v.reason();
+        }
+    }
+    return r;
+}
+// A PCR every `every` (on the 20 ms grid), its σ held at its value at `from` for `len` (0: to the end).
+auto held_pcr = [](int64_t every, int64_t from, int64_t len) {
+    return [=](int64_t t) {
+        if (t % every != 0) return INT64_MIN;
+        return t >= from && (len == 0 || t < from + len) ? from : t;
+    };
+};
+const char* row_name(PcrValidator::Reason r) {
+    using R = PcrValidator::Reason;
+    return r == R::freeze ? "freeze" : r == R::leap ? "leap" : r == R::cadence ? "cadence" : r == R::none ? "none" : "other";
+}
+void print_fz(const char* label, const FzRun& r) {
+    if (r.at < 0) std::printf("  %s: no failure\n", label);
+    else std::printf("  %s: fails (%s) %.3f s after the onset\n", label, row_name(r.reason), r.at / 1e9);
+}
+
+void test_freeze_advance() {
+    using R = PcrValidator::Reason;
+    // 9. A slow delivery: each 60 ms PCR alone, `gap` of arrival apart for 3 s from 30 s, advancing 60 ms each.
+    auto slow = [](int64_t gap) {
+        PcrValidator v;
+        FzRun r;
+        for (int64_t t = 0, h = 0; t <= 60 * S; t += 60 * MS) {
+            v.feed_activity(h);
+            v.feed_pcr(ns_to_pcr27(3600 * S + t), false, h);
+            if (r.at < 0 && v.failed()) {
+                r.at = h - 30 * S;
+                r.reason = v.reason();
+            }
+            h += t >= 30 * S && t < 33 * S ? gap : 60 * MS;
+        }
+        return r;
+    };
+    bool slow_ok = true;
+    for (const int64_t gap : {130 * MS, 200 * MS, 500 * MS}) {
+        char lab[96];
+        std::snprintf(lab, sizeof lab, "a 60 ms PCR alone every %lld ms of arrival for 3 s", (long long)(gap / MS));
+        const FzRun r = slow(gap);
+        print_fz(lab, r);
+        slow_ok &= r.at < 0;
+    }
+    CHECK("freeze: a slow delivery is no freeze (each 60 ms PCR alone 130, 200 or 500 ms of arrival apart for 3 s)",
+          slow_ok);
+    const FzRun l600 = slow(600 * MS), l1000 = slow(1000 * MS);
+    print_fz("... 600 ms apart", l600);
+    print_fz("... 1000 ms apart", l1000);
+    CHECK("freeze: ... 600 and 1000 ms apart it is the leap row's, at the third leap (1.8 and 3.0 s in)",
+          l600.reason == R::leap && within(l600.at, 1800 * MS, 1820 * MS) && l1000.reason == R::leap &&
+              within(l1000.at, 3000 * MS, 3020 * MS));
+    // A bursty relay's stalls (TECH01's path: single 60 ms PCRs after 120-340 ms gaps): no frozen pair, so the
+    // row fails not even at a count of one.
+    {
+        const Scatter tech01;
+        Lcg g(11);
+        auto arr = [&](int64_t t) { return tech01.delay(t) + t + (int64_t)(g.next() % 5001) * 1000; };
+        PcrValidatorConfig one;
+        one.freeze_count = 1;
+        const FzRun r = fz_run(700, 0, [](int64_t t) { return t % (60 * MS) == 0 ? t : INT64_MIN; }, arr, no_see, one);
+        print_fz("TECH01's path for 700 s, the freeze row at a count of one", r);
+        CHECK("freeze: a bursty relay's stalls are no freeze: on TECH01's path not one frozen pair in 700 s", r.at < 0);
+    }
+    // The zero-interval guard: a 60 ms PCR stuck 20 s from 60 s keeps its cadence, late_ns() at 500 ms throughout.
+    {
+        int64_t lo = INT64_MAX, hi = INT64_MIN;
+        auto see = [&](int64_t t, const PcrValidator& v) {
+            if (t < 60 * S || t >= 80 * S) return;
+            lo = std::min(lo, v.late_ns());
+            hi = std::max(hi, v.late_ns());
+        };
+        const FzRun r = fz_run(120, 60 * S, held_pcr(60 * MS, 60 * S, 20 * S), on_time, see);
+        std::printf("  a 60 ms PCR stuck 60-80 s: late_ns() %.3f..%.3f s during the freeze\n", lo / 1e9, hi / 1e9);
+        CHECK("freeze: an interval of no PCR time teaches no cadence: a 60 ms PCR stuck 20 s, late_ns() 500 ms at "
+              "every PCR of the freeze (the row fails at the third pair)",
+              lo == 500 * MS && hi == 500 * MS && r.reason == R::freeze && within(r.at, 180 * MS, 180 * MS));
+    }
+    // A stuck sparse PCR is the leap row's: every stuck 2 s PCR misses by its interval.
+    {
+        const FzRun r20 = fz_run(150, 100 * S, held_pcr(2 * S, 100 * S, 20 * S));
+        const FzRun r1 = fz_run(150, 100 * S, held_pcr(2 * S, 100 * S, 2 * S + 1));
+        print_fz("a 2 s PCR stuck 20 s from 100 s", r20);
+        print_fz("a 2 s PCR stuck one interval (the PCR at 102 s repeats 100 s's)", r1);
+        CHECK("freeze: a stuck 2 s PCR is the leap row's: stuck 20 s it fails as leap 6 s in; one stuck PCR "
+              "fails nothing",
+              r20.reason == R::leap && within(r20.at, 6 * S, 6 * S) && r1.at < 0);
+    }
+    // A lost PCR packet (one 240 ms interval among 60 ms ones; the gate's RIST output carries 220 ms ones) and a
+    // cadence change (2 s, then 100 ms): normal advances after the long interval are no frozen pairs.
+    {
+        const FzRun lost = fz_run(120, 60 * S, [](int64_t t) {
+            return t % (60 * MS) == 0 && !(t > 60 * S && t < 60240 * MS) ? t : INT64_MIN;
+        });
+        const FzRun turn = fz_run(120, 60 * S, [](int64_t t) {
+            return t % (t < 60 * S ? 2 * S : 100 * MS) == 0 ? t : INT64_MIN;
+        });
+        print_fz("a 60 ms PCR with one 240 ms interval at 60 s", lost);
+        print_fz("a 2 s PCR turning 100 ms at 60 s", turn);
+        CHECK("freeze: a lost PCR and a cadence change are no freeze (one 240 ms interval among 60 ms ones; 2 s "
+              "turning 100 ms)",
+              lost.at < 0 && turn.at < 0);
+    }
+    // 10. A PCR stuck from its first value, no cadence ever learned: the third pair, as before B-101.
+    {
+        const FzRun r = fz_run(60, 0, held_pcr(60 * MS, 0, 0));
+        print_fz("a 60 ms PCR stuck from its first value", r);
+        CHECK("freeze: a PCR stuck from its first value fails at the third pair (0.18 s)",
+              r.reason == R::freeze && within(r.at, 180 * MS, 180 * MS));
+    }
+    // 12. The known limit: a PCR crawling by a sliver (1 ms per 60 ms interval) advances, so it is no frozen pair.
+    for (const int64_t len : {3 * S, 30 * S}) {
+        auto crawl = [len](int64_t t) {
+            if (t % (60 * MS) != 0) return INT64_MIN;
+            return t >= 60 * S && t < 60 * S + len ? 60 * S + (t - 60 * S) / 60 : t;
+        };
+        const FzRun r = fz_run(120, 60 * S, crawl);
+        print_fz(len == 3 * S ? "a crawling PCR (1/60 speed) for 3 s from 60 s" : "... for 30 s", r);
+        CHECK(len == 3 * S ? "freeze: a crawling PCR is no longer the freeze row's (1/60 speed for 3 s: no failure)"
+                           : "freeze: ... nor for 30 s",
+              r.at < 0);
+    }
+}
+
 // --- VirtualStc ---------------------------------------------------------------------
 
 constexpr int PCR_PID = 0x1ff, PID_V = 0x100, PID_A = 0x101, TICK = -1;
@@ -3233,6 +3384,32 @@ void test_vstc_first_fit() {
               ref_step < rec);
 }
 
+// B-101's known limit on the program harness: a PCR crawling at 1/60 speed advances, so the freeze row never
+// fails; locked, the lead row reports it; acquiring, nothing does until the crawl ends in a leap.
+void test_vstc_crawl() {
+    using K = StcEvent::Kind;
+    const CourseRun a = course("a clean program, the PCR at 1/60 speed 100-160 s", [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PCR_PID && t >= 100 * S && t < 160 * S) s.pcr_ns = -(t - 100 * S) + (t - 100 * S) / 60;
+        return s;
+    }, 300, 7);
+    const int64_t step = a.at(K::relock, "envelope-step"), lead = a.at(K::degraded, "lead");
+    CHECK("vstc crawl: locked, a crawling PCR is no freeze: an envelope-step relock 9.5-11 s in, degraded (lead) "
+          "15-17 s in, recovered 30-31 s after the crawl's end, locked at the end",
+          a.count(K::degraded, "freeze") == 0 && a.count(K::degraded) == 1 && within(step, 109500 * MS, 111 * S) &&
+              within(lead, 115 * S, 117 * S) && within(a.at(K::leap), 160 * S, 160200 * MS) &&
+              within(a.at(K::recovered), 190 * S, 191 * S) && a.end == VirtualStc::State::locked);
+    const CourseRun b = course("the PCR at 1/60 speed from its first value for 120 s", [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PCR_PID && t < 120 * S) s.pcr_ns = -t + t / 60;
+        return s;
+    }, 200, 7);
+    CHECK("vstc crawl: ... acquiring, nothing is reported until the crawl ends in a leap relock (Acquiring "
+          "throughout; no fit forms, so the rate row never judges it)",
+          kinds_are(b.ev, {K::leap, K::relock}) && within(b.at(K::leap), 120 * S, 120200 * MS) &&
+              b.locked_at > 120 * S && b.end == VirtualStc::State::locked);
+}
+
 void test_determinism() {
     const uint64_t d1 = degraded_scenario(false), d2 = degraded_scenario(false);
     const uint64_t s1 = straddle_scenario(false), s2 = straddle_scenario(false);
@@ -3284,6 +3461,7 @@ int main(int argc, char** argv) {
     test_first_fit();
     test_first_fit_keep();
     test_validator();
+    test_freeze_advance();
     test_vstc_clean_and_wrap();
     test_vstc_relocks();
     test_vstc_degraded();
@@ -3300,6 +3478,7 @@ int main(int argc, char** argv) {
     test_vstc_live_hold();
     test_vstc_one_timeline();
     test_vstc_first_fit();
+    test_vstc_crawl();
     test_determinism();
     std::printf("\n  CHECKSUM ts_stc %016llx (compare across machines)\n", (unsigned long long)g_all.h);
     return test_summary("ts_stc");

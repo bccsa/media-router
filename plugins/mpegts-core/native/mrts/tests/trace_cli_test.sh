@@ -33,8 +33,11 @@ cmp -s "$T/a.stct" "$T/b.stct"; check "fixture_gen: the same arguments and seed 
     [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-floor 101)" = 2 ] &&
     [ "$(status "$GEN" --shift 257:x -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --shift 9000:100 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
-    [ "$(status "$GEN" --shift 257:100 -o "$T/x.stct")" = 2 ]
-check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, scatter, shift, no --trace or no -o exit 2" $?
+    [ "$(status "$GEN" --shift 257:100 -o "$T/x.stct")" = 2 ] &&
+    [ "$(status "$GEN" --freeze-pcr 10 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
+    [ "$(status "$GEN" --freeze-pcr 10:-1 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
+    [ "$(status "$GEN" --freeze-pcr 10:1 -o "$T/x.stct")" = 2 ]
+check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, scatter, shift, freeze-pcr, no --trace or no -o exit 2" $?
 # A backlog delays what was queued and keeps its stamps: the records, in order, arrive later.
 "$GEN" --trace -o "$T/q0.stct" --seed 5 --duration 30 && "$GEN" --trace -o "$T/q1.stct" --seed 5 --duration 30 --backlog 10:3000:500 &&
     "$CLI" trace2jsonl "$T/q0.stct" | sed 's/"t":[0-9]*,//' >"$T/q0.v" && "$CLI" trace2jsonl "$T/q1.stct" | grep -v '"kind":"outage"' |
@@ -57,6 +60,15 @@ check "fixture_gen: --scatter-ms moves arrivals only, 0:MS draws as MS; --scatte
         END { exit !(n > 100 && !bad) }' &&
     [ "$(status "$GEN" --shift 300:1000 -i "$T/q0.stct" -o "$T/x.stct")" = 1 ]
 check "fixture_gen: --shift moves that PID's PES PTS alone, by the shift; a PID with no PES exits 1" $?
+# --freeze-pcr (B-101) holds the PCRs arriving in its span at the first one's value: only those records differ.
+"$GEN" --freeze-pcr 10:5 -i "$T/q0.stct" -o "$T/fz.stct" && "$CLI" trace2jsonl "$T/q0.stct" >"$T/fz0.jsonl" &&
+    "$CLI" trace2jsonl "$T/fz.stct" >"$T/fz1.jsonl" && [ "$(wc -l <"$T/fz0.jsonl")" -eq "$(wc -l <"$T/fz1.jsonl")" ] &&
+    paste -d '\n' "$T/fz0.jsonl" "$T/fz1.jsonl" | awk 'NR % 2 { a = $0; next }
+        a != $0 { n++; split(a, x, "\"pcr\":"); split($0, y, "\"pcr\":"); split(y[2], v, ",")
+                  if (a !~ /"kind":"pcr",/ || x[1] != y[1] || (n > 1 && v[1] != held)) bad++; held = v[1] }
+        END { exit !(n >= 45 && n <= 50 && !bad) }' &&
+    [ "$(status "$GEN" --freeze-pcr 100:1 -i "$T/q0.stct" -o "$T/x.stct")" = 1 ]
+check "fixture_gen: --freeze-pcr holds the PCR at one value over its span, arrivals and PES kept; no PCR there exits 1" $?
 
 # .stct -> JSONL -> .stct, every kind; through a pipe too.
 "$CLI" trace2jsonl "$T/a.stct" >"$T/a.jsonl" && "$CLI" jsonl2trace "$T/a.jsonl" "$T/a2.stct" && cmp -s "$T/a.stct" "$T/a2.stct"
