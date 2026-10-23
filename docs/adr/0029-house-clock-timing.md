@@ -93,7 +93,7 @@ current model is frozen, §13.1 Q2). Phase 0 built the measuring instrument.
   `no NTP sync after 30 s - continuing unsynchronised; the clock will step
   when NTP is reachable`, exits 0, and `time-sync.target` is reached, so a
   cold boot whose first sync takes over 30 s is no longer "degraded" (seen
-  on 10.9.16.50 and 10.9.1.211). The later sync steps the clock if it is
+  on the AES50 master test box and TECH01). The later sync steps the clock if it is
   more than 1 s off (`makestep 1.0 -1`), and the engine re-epochs once. On PTP boxes with
   hardware timestamping phc2sys orders the target as before, and a
   master-capable box waits for chrony in its PTP setup (below). The engine is
@@ -106,7 +106,7 @@ current model is frozen, §13.1 Q2). Phase 0 built the measuring instrument.
   `/run/systemd/journal/dev-log` symlink, unlinks journald's socket and
   binds its own there, so every syslog(3) line (chronyd, phc2sys, sshd,
   `logger`) went to `/var/log/messages` and never to the journal (root cause
-  proven on 10.9.16.50, 2026-10-14). Nothing in the layer, the Device
+  proven on the AES50 master test box, 2026-10-14). Nothing in the layer, the Device
   Manager or the app reads `/var/log/messages`, calls `logread` or orders on
   `syslog.service`. chronyd keeps logging through syslog (no `-d`).
   Engineering decision of 2026-10-14, open to the owner's veto.
@@ -124,7 +124,7 @@ only states in which linuxptp writes it, and the box announces traceable NTP
 time only while chrony is synchronised. While a better grandmaster wins,
 linuxptp steers the box as before. Slave-only boxes are unchanged.
 
-**Why.** Nothing disciplined a grandmaster: 10.9.16.46 ran 0.2–0.3 s off
+**Why.** Nothing disciplined a grandmaster: GATE01 ran 0.2–0.3 s off
 UTC after 9.7 days, undisciplined since boot (design §10.1), and the domain
 followed it. Of the three designs weighed, this one fixes only that, inside
 the master-capable model: the slave path (ptp4l's servo, phc2sys `-a -r -r`
@@ -264,7 +264,7 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   block emits `summary_interval 4` (both presets) and phc2sys runs with
   `-u 16` (one rms summary per 16 updates instead of a line per update; it
   logs through syslog, which now reaches the journal). Measured on
-  10.9.16.108 on 2026-10-14: 1,570 journal lines per 10 min, 600 of them
+  ivan-test-p4 on 2026-10-14: 1,570 journal lines per 10 min, 600 of them
   ptp4l's 1 s summary, in a volatile 32 MB journal that lost boot logs
   within ~2 h. The Time page's PTP status reads only the newest summary
   (`parsePtp4lLog`, newest wins), so rms and path delay are at most 16 s
@@ -299,7 +299,7 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
     100 ppm guard, for example when NTP comes back 0.5 s off after an
     offline boot (~1.4 h of slew). The alarm is literally true then, since
     MONOTONIC really runs that far off.
-- **Rollout** (the owner, 2026-10-14). 10.9.16.46 is imaged after the rig
+- **Rollout** (the owner, 2026-10-14). GATE01 is imaged after the rig
   tests (plan WI-P0-2b, T0–T12). Its boot steps it to NTP time before it
   serves, moving the domain by its present 0.2–0.3 s; ptp4l is restarted on
   .103, .108, .111 and .22 within a minute so each steps once on first lock
@@ -447,7 +447,7 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
     if sync lands within the 10 s, else
     `reason=divergence ΔE=37000.000 ms`; with the kernel already synced,
     `reason=sync` comes at once;
-  - pinned by four raw `mr-clockstate` captures from 10.9.16.50, a chrony
+  - pinned by four raw `mr-clockstate` captures from the AES50 master test box, a chrony
     box rather than the plan's gate boxes
     (`packages/engine/src/clock/fixtures/`, provenance in `PROVENANCE.md`),
     each fed through the sidecar's stdout path in `HouseClock.test.ts`:
@@ -613,7 +613,7 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
     `MR_PW` null sink requests nothing, so its own request read the graph
     default (21.3 ms) while its group ran at 512 samples. The test fixture
     and the `pw-top` check (both drivers at 512/48000) come from fleet box
-    10.9.16.22, not a gate box (`packages/engine/src/audio/fixtures/`); the
+    ZA-SCC-FRA-Master01, not a gate box (`packages/engine/src/audio/fixtures/`); the
     gate comparison is open (below).
 - **Display only.** No threshold, no warning, no setting (OQ-8, the owner:
   a feel for the numbers first). The option recorded for later is a
@@ -645,7 +645,7 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   linuxptp's start-up window (flag clear, `maxerror` 16 s) as
   unsynchronised, as the engine does. The chrony view is
   `chronyc -c tracking` and `chronyc -c sources`, parsed from CSV and pinned
-  by raw captures from 10.9.16.50 (`api/src/config/fixtures/PROVENANCE.md`).
+  by raw captures from the AES50 master test box (`api/src/config/fixtures/PROVENANCE.md`).
   chrony's system-time offset is worded as chronyc 4.8 words it, "x
   slow/fast of NTP time": slow only for a positive `current_correction`
   (the system clock behind NTP time), so zero reads fast. That wording is
@@ -663,7 +663,7 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   0xa0 Internal oscillator; any other code in pmc's `0x%02hhx`) and adds
   `timeTraceable`: "NTP · traceable" for a chrony-disciplined grandmaster,
   "Internal oscillator · not traceable" for linuxptp's defaults, which
-  10.9.16.46 announces today. It informs only (the owner: the election stays
+  GATE01 announces today. It informs only (the owner: the election stays
   on Priority alone): no control, no colour.
 - **The server list** (`TimeConfig.ts`): 1 to 8 entries, each a host name
   or an IP literal; a name renders `pool <name> iburst maxsources 4`, an
@@ -718,9 +718,9 @@ verifiable on a development host:
 - `mr-ptp-settai.py` with the engine up on .103 or .108: no `step` line,
   then the hold and `re-epoch … ΔE=37000.000 ms` above (R-P0-5).
 - The PipeWire latency row of one audio-input or audio-output against
-  `pw-top` QUANT/RATE on .103 or .108; so far checked on 10.9.16.22 only.
+  `pw-top` QUANT/RATE on .103 or .108; so far checked on ZA-SCC-FRA-Master01 only.
 - The grandmaster on chrony, on a rig isolated on PTP domain 10 (plan
-  WI-P0-2b, T0–T12), before 10.9.16.46 is imaged. Its evidence so far is a
+  WI-P0-2b, T0–T12), before GATE01 is imaged. Its evidence so far is a
   namespace rig on the development host (linuxptp 4.4 built from the release
   tarball, fake `systemctl`/chronyd, free-running clocks): hardware
   timestamping, a real chronyd and real systemd have not run it. The rig's
@@ -737,8 +737,9 @@ Settled, 2026-10-14 (on the fleet unless marked):
 - An `ADJ_TAI` change does not cancel the `timerfd` (R-P0-5): the
   divergence path, above.
 - `DHCP4_NTP_SERVERS` is the dispatcher's variable for option 42: V14 on
-  10.9.16.50, 10.9.16.108 and 10.9.1.211 listed each lease's servers
-  (10.9.12.1, 10.9.12.1, 10.9.50.1) from the dispatcher's
+  the AES50 master test box, ivan-test-p4 and TECH01 listed each lease's
+  servers (the same one for the first two, another for TECH01) from the
+  dispatcher's
   `/run/chrony-dhcp/*.sources` fragments, and `chronyc sources` on .50
   lists the DHCP-offered server.
 - `leapseclist` with an expired `leap-seconds.list` (R-P0-2), from chrony
@@ -884,7 +885,7 @@ wrap lands that far in (R19). On the dev Pi 5 (aarch64, GCC 12) it read
 96.3 ns on 300,000 packets of the OCC capture: about a twentieth of the
 Pi 4 budget.
 
-**On the Pi 4 (10.9.16.108, 2026-10-16) every fixture is inside the
+**On the Pi 4 (ivan-test-p4, 2026-10-16) every fixture is inside the
 budget**: the rewrite pass at most 153 ns per packet (15 % of its budget),
 the reassembly at most 268 ns (13 %), over every fixture of plan chapter 3
 part 7.2 that exists (the vMix capture does not, OQ-3), `v1/output.ts` and

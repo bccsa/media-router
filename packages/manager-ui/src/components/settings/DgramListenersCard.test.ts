@@ -36,7 +36,7 @@ describe('DgramListenersCard', () => {
     beforeEach(() => setActivePinia(createPinia()));
 
     it('loads the saved listeners into one row each', async () => {
-        const w = await mountCard([{ port: 3000 }, { port: 3002, bindAddress: '10.0.2.1' }]);
+        const w = await mountCard([{ port: 3000 }, { port: 3002, bindAddress: '192.0.2.1' }]);
         expect(subscribe).toHaveBeenCalledWith(['/settings']);
         const rows = w.findAll('[data-test="listener-row"]');
         expect(rows).toHaveLength(2);
@@ -44,7 +44,7 @@ describe('DgramListenersCard', () => {
             '3000',
         );
         expect((rows[1].find('input[type="text"]').element as HTMLInputElement).value).toBe(
-            '10.0.2.1',
+            '192.0.2.1',
         );
     });
 
@@ -87,8 +87,8 @@ describe('DgramListenersCard', () => {
             modules: {},
             connections: [],
             paths: [
-                { remote: '10.0.0.8:47112', listenerPort: 3000 },
-                { remote: '10.0.0.8:42974', listenerPort: 3002 },
+                { remote: '192.0.2.8:47112', listenerPort: 3000 },
+                { remote: '192.0.2.8:42974', listenerPort: 3002 },
             ],
         });
         engines.addEngine({
@@ -97,7 +97,7 @@ describe('DgramListenersCard', () => {
             online: true,
             modules: {},
             connections: [],
-            paths: [{ remote: '10.0.0.9:5000', listenerPort: 3000 }],
+            paths: [{ remote: '192.0.2.9:5000', listenerPort: 3000 }],
         });
         const w = await mountCard([{ port: 3000 }, { port: 3002 }]);
         const notes = w.findAll('[data-test="engines-on"]');
@@ -140,16 +140,16 @@ describe('DgramListenersCard', () => {
         const row = w.findAll('[data-test="listener-row"]')[0];
         await row.find('input[type="number"]').setValue('70000');
         expect(row.text()).toContain('Must be between 1 and 65535');
-        await row.find('input[type="text"]').setValue('10.0.2');
+        await row.find('input[type="text"]').setValue('192.0.2');
         expect(row.text()).toContain('Enter an IPv4 address, or leave it empty for all interfaces');
         // Nothing changed in the rows, so there is nothing to apply.
         expect(w.find('[data-test="apply"]').attributes('disabled')).toBeDefined();
 
-        await row.find('input[type="text"]').setValue('10.0.2.1');
+        await row.find('input[type="text"]').setValue('192.0.2.1');
         await w.find('[data-test="apply"]').trigger('click');
         await flushPromises();
         expect(write).toHaveBeenCalledWith([
-            { op: 'replace', path: '/settings/dgramListeners', value: [{ port: 3000, bindAddress: '10.0.2.1' }] },
+            { op: 'replace', path: '/settings/dgramListeners', value: [{ port: 3000, bindAddress: '192.0.2.1' }] },
         ]);
     });
 

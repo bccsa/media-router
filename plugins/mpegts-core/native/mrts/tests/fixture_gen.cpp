@@ -1,8 +1,6 @@
-// fixture_gen: the deterministic generator of the synthetic fixtures (plan ch. 3 part 7, ch. 5
-// part 7.2). --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts
-// fixture from ts_gen.h (WI-S0-9); --drop removes packets from a capture (cap-cc-loss);
-// --shift stamps PIDs of a recorded trace further ahead (B-48's window fixtures); --freeze-pcr
-// holds a recorded trace's PCR at one value (B-101's stuck-PCR fixture).
+// fixture_gen: the deterministic generator of the synthetic fixtures (plan ch. 3 part 7, ch. 5 part 7.2).
+// --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts fixture from ts_gen.h (WI-S0-9);
+// --drop, --shift and --freeze-pcr edit a capture or a recorded trace (cap-cc-loss, B-48's and B-101's fixtures).
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -115,7 +113,7 @@ bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_ge
 
 int main(int argc, char** argv) {
     trace_gen::Config c;
-    bool trace = false;
+    bool trace = false, scatter_floor = false;
     std::string out, ts_kind_name, drop_spec, shift_spec, freeze_spec, in;
     int64_t restart_ns = 3 * trace_gen::S;
     for (int i = 1; i < argc; i++) {
@@ -205,6 +203,7 @@ int main(int argc, char** argv) {
             const long p = std::strtol(v.c_str(), &end, 10);
             ok = !v.empty() && *end == 0 && p >= 0 && p <= 100;
             c.scatter_floor_pct = (int)p;
+            scatter_floor = true;
         } else if (a == "--wrap-at") {
             ok = seconds(v, &c.wrap_at_ns) && c.wrap_at_ns >= 0;
         } else if (a == "--house0") {
@@ -336,6 +335,7 @@ int main(int argc, char** argv) {
     }
     if (!trace) return usage("one of --ts, --drop, --shift, --freeze-pcr or --trace is required");
     if (out.empty()) return usage("-o OUT.stct is required");
+    if (scatter_floor && c.scatter_ns <= 0) return usage("--scatter-floor needs a --scatter-ms level above 0");
     const std::vector<mrts::TraceRecord> recs = trace_gen::generate(c);
     mrts::TraceWriter w;
     if (!w.open(out)) {

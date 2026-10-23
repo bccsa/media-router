@@ -1064,7 +1064,7 @@ Use when the manifest depends on what the host machine actually supports. The me
 
 The narrowed `configSchema` you produce here is **per-engine**: the engine advertises it to the manager on connect, so the settings panel shows *that* engine's real capabilities even when the manager runs on different hardware (e.g. an Intel engine's HW encoders appear under an ARM manager). The manager only falls back to its own host probe for engines that don't report (older engine versions). You don't need to do anything to opt in — just narrow the manifest as usual.
 
-A probe that gets no answer (`probeGstElement` and the other `gstInspect` helpers reject with `GstInspectTimeoutError` after 30 s: a GStreamer registry scan that hung) is not "not installed": let the error through. The engine runs `initManifest` again before the plugin's next module start until it runs through, so write it to be safe to run twice (assign the statics, narrow the manifest in place).
+A probe that gets no answer (`probeGstElement` and the other `gstInspect` helpers reject with `GstInspectTimeoutError` after 30 s, a GStreamer registry scan that hung, or when SIGKILL or SIGTERM ends the run: an OOM kill, a stop) is not "not installed": let the error through. A run that crashes (any other signal) reads as not installed, as a failed run does. The engine runs `initManifest` again before the plugin's next module start until it runs through, so write it to be safe to run twice (assign the statics, narrow the manifest in place).
 
 ```typescript
 import { GstPluginBase, probeGstElement, type PluginManifest } from '@media-router/engine';

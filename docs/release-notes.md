@@ -129,8 +129,8 @@ elements" below do not start.
   holds for the box beside a slider (also in a module's right-click menu),
   list items, Per-PID Trim (type 0 to remove a trim), a dashboard's number
   box, Settings → Engine Comms and the dashboard editor's number fields. A
-  setting that needs a module restart is still written by Save; Escape
-  still closes the settings panel without writing what was typed.
+  setting that needs a module restart is still written by Save. Escape
+  closes the settings panel; what was typed is not written.
 - **Rollback** is the previous release, installed from the Device Manager;
   there is no in-app switch.
 

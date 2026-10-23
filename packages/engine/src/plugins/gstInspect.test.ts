@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vites
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { setLogTap } from '@media-router/shared-types';
 
 const execFileMock = vi.fn();
 vi.mock('child_process', () => ({
@@ -32,7 +33,7 @@ function killedAtBound(): Error {
     });
 }
 
-/** The error execFile hands its callback when something else killed the child (the OOM killer). */
+/** The error execFile hands its callback when a signal from elsewhere, or a crash, ended the child. */
 function killedBySignal(signal: string): Error {
     return Object.assign(new Error('Command failed: gst-inspect-1.0'), {
         killed: false,
@@ -40,6 +41,30 @@ function killedBySignal(signal: string): Error {
         code: null,
     });
 }
+
+/** The warnings gstInspect logs while `run` runs, as JSON. */
+async function warnings(run: () => Promise<void>): Promise<Array<Record<string, unknown>>> {
+    const lines: Array<Record<string, unknown>> = [];
+    setLogTap((l) => {
+        const line = JSON.parse(l) as Record<string, unknown>;
+        if (line.name === 'gstInspect' && line.level === 40) lines.push(line);
+    });
+    try {
+        await run();
+        await new Promise((r) => setImmediate(r));
+    } finally {
+        setLogTap(null);
+    }
+    return lines;
+}
+
+/** The warning a crashed run of `what` leaves. */
+const crashed = (what: string, signal: string) =>
+    expect.objectContaining({
+        msg: `gst-inspect-1.0 ${what} crashed (${signal}), so ${what} is taken as not installed`,
+        signal,
+        args: [what],
+    });
 
 describe('probeGstElement', () => {
     beforeEach(() => {
@@ -105,7 +130,7 @@ describe('probeGstElement', () => {
         expect(execFileMock).toHaveBeenCalledTimes(2);
     });
 
-    it('a run killed by a signal (an OOM kill) is no answer either: it rejects and is not cached', async () => {
+    it('a run killed by SIGKILL, not at the bound (an OOM kill), is no answer either: it rejects and is not cached', async () => {
         execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
             callBack(cb, killedBySignal('SIGKILL')),
         );
@@ -122,6 +147,58 @@ describe('probeGstElement', () => {
         await expect(probeGstElement('killed-element-7')).resolves.toBe(true);
         await expect(probeGstElement('killed-element-7')).resolves.toBe(true);
         expect(execFileMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('a run killed by SIGTERM, not at the bound (a stop), is no answer likewise', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, killedBySignal('SIGTERM')),
+        );
+        const err = await probeGstElement('stopped-element-8').catch((e: unknown) => e);
+        expect(isGstInspectTimeout(err)).toBe(true);
+        expect((err as Error).message).toBe(
+            'gst-inspect-1.0 stopped-element-8 was killed by SIGTERM, so whether stopped-element-8 ' +
+                'is installed is not known',
+        );
+
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null),
+        );
+        await expect(probeGstElement('stopped-element-8')).resolves.toBe(true);
+        await expect(probeGstElement('stopped-element-8')).resolves.toBe(true);
+        expect(execFileMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('a run that crashed (SIGSEGV, SIGABRT, SIGBUS) is a failed run: absent and cached, as before B-102, its warning naming the signal', async () => {
+        for (const signal of ['SIGSEGV', 'SIGABRT', 'SIGBUS']) {
+            execFileMock.mockReset();
+            execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+                callBack(cb, killedBySignal(signal)),
+            );
+            const name = `crashed-element-9-${signal}`;
+            const lines = await warnings(async () => {
+                await expect(probeGstElement(name)).resolves.toBe(false);
+            });
+            expect(lines).toEqual([crashed(name, signal)]);
+
+            execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+                callBack(cb, null),
+            );
+            await expect(probeGstElement(name)).resolves.toBe(false);
+            expect(execFileMock).toHaveBeenCalledTimes(1);
+        }
+    });
+
+    it('a failed exit logs nothing', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(
+                cb,
+                Object.assign(new Error('exit 255'), { killed: false, signal: null, code: 255 }),
+            ),
+        );
+        const lines = await warnings(async () => {
+            await expect(probeGstElement('missing-element-10')).resolves.toBe(false);
+        });
+        expect(lines).toEqual([]);
     });
 
     it('callers waiting on the same timed-out run all see the timeout', async () => {
@@ -174,6 +251,15 @@ describe('gstElementSupportsCaps', () => {
         expect(execFileMock).toHaveBeenCalledTimes(2);
         expect(execFileMock.mock.calls[0][2]).toEqual({ timeout: GST_INSPECT_TIMEOUT_MS });
     });
+
+    it('a run that crashed reads as unsupported and is cached, as before B-102', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, killedBySignal('SIGSEGV')),
+        );
+        await expect(gstElementSupportsCaps('crashmux', 'audio/x-smpte-302m')).resolves.toBe(false);
+        await expect(gstElementSupportsCaps('crashmux', 'audio/x-smpte-302m')).resolves.toBe(false);
+        expect(execFileMock).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('findLadspaElement', () => {
@@ -207,6 +293,22 @@ describe('findLadspaElement', () => {
         );
         expect(execFileMock).toHaveBeenCalledTimes(2);
         expect(execFileMock.mock.calls[0][2]).toEqual({ timeout: GST_INSPECT_TIMEOUT_MS });
+    });
+
+    it('a run that crashed reads as no wrapper and, as a failed run, is not cached', async () => {
+        vi.resetModules();
+        const fresh = await import('./gstInspect.js');
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, killedBySignal('SIGABRT')),
+        );
+        await expect(fresh.findLadspaElement('sc-gate-stereo')).resolves.toBeNull();
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null, '  ladspa-x-so-sc-gate-stereo: Sidechain Gate Stereo\n'),
+        );
+        await expect(fresh.findLadspaElement('sc-gate-stereo')).resolves.toBe(
+            'ladspa-x-so-sc-gate-stereo',
+        );
+        expect(execFileMock).toHaveBeenCalledTimes(2);
     });
 
     it('resolves versioned element names by suffix and caches the list', async () => {
@@ -290,6 +392,13 @@ Pad Templates:
         );
         expect(execFileMock.mock.calls[0][2]).toEqual({ timeout: GST_INSPECT_TIMEOUT_MS });
     });
+
+    it('a run that crashed reads as 2 channels, as a missing element does', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, killedBySignal('SIGBUS')),
+        );
+        await expect(gstInspectMaxChannels('crashenc')).resolves.toBe(2);
+    });
 });
 
 describe("a process's first gst-inspect-1.0 run (B-102)", () => {
@@ -341,13 +450,15 @@ describe("a process's first gst-inspect-1.0 run (B-102)", () => {
     });
 });
 
-/** A stand-in gst-inspect-1.0: logs each run, then acts by the element's name. */
+/** A stand-in gst-inspect-1.0: logs each run, then acts by the element's name (a crash dumps no core). */
 const FAKE_GST_INSPECT = `#!/bin/sh
 echo "$1" >> "$FAKE_GST_INSPECT_DIR/runs.log"
 case "$1" in
 slow-*) sleep 2.5 ;;
 hang-*) [ -e "$FAKE_GST_INSPECT_DIR/$1.answers" ] || exec sleep 60 ;;
 oom-*) [ -e "$FAKE_GST_INSPECT_DIR/$1.answers" ] || kill -9 $$ ;;
+term-*) [ -e "$FAKE_GST_INSPECT_DIR/$1.answers" ] || kill -TERM $$ ;;
+segv-*) [ -e "$FAKE_GST_INSPECT_DIR/$1.answers" ] || { ulimit -c 0; kill -SEGV $$; } ;;
 *) echo "No such element or plugin '$1'" >&2; exit 255 ;;
 esac
 echo "Factory Details:"
@@ -431,7 +542,7 @@ describe('a slow or hung gst-inspect-1.0 on PATH (B-102)', () => {
         }
     }, 15_000);
 
-    it('a run killed by a signal is not cached as absent: the next call runs it again', async () => {
+    it('a run killed by SIGKILL (an OOM kill) is not cached as absent: the next call runs it again', async () => {
         await expect(probeGstElement('oom-element')).rejects.toThrow(
             'gst-inspect-1.0 oom-element was killed by SIGKILL',
         );
@@ -441,6 +552,30 @@ describe('a slow or hung gst-inspect-1.0 on PATH (B-102)', () => {
         await expect(probeGstElement('oom-element')).resolves.toBe(true);
         await expect(probeGstElement('oom-element')).resolves.toBe(true);
         expect(runs('oom-element')).toBe(2);
+    });
+
+    it('a run killed by SIGTERM (a stop) likewise', async () => {
+        await expect(probeGstElement('term-element')).rejects.toThrow(
+            'gst-inspect-1.0 term-element was killed by SIGTERM',
+        );
+        expect(runs('term-element')).toBe(1);
+
+        fs.writeFileSync(path.join(dir, 'term-element.answers'), '');
+        await expect(probeGstElement('term-element')).resolves.toBe(true);
+        await expect(probeGstElement('term-element')).resolves.toBe(true);
+        expect(runs('term-element')).toBe(2);
+    });
+
+    it('a run that crashes (SIGSEGV) is absent and cached, as before B-102, its warning naming the signal', async () => {
+        const lines = await warnings(async () => {
+            await expect(probeGstElement('segv-element')).resolves.toBe(false);
+        });
+        expect(lines).toEqual([crashed('segv-element', 'SIGSEGV')]);
+
+        // Cached: the answer it would give now is never asked for.
+        fs.writeFileSync(path.join(dir, 'segv-element.answers'), '');
+        await expect(probeGstElement('segv-element')).resolves.toBe(false);
+        expect(runs('segv-element')).toBe(1);
     });
 
     it('a failed run is absent and cached, as before', async () => {

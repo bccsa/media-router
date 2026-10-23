@@ -1,4 +1,7 @@
 import { execFile } from 'child_process';
+import { createLogger } from '@media-router/shared-types';
+
+const log = createLogger('gstInspect');
 
 /**
  * Bound on one gst-inspect-1.0 run. One that finds the registry missing or stale rescans every
@@ -8,8 +11,9 @@ import { execFile } from 'child_process';
 export const GST_INSPECT_TIMEOUT_MS = 30_000;
 
 /**
- * A gst-inspect-1.0 run with no answer: killed at GST_INSPECT_TIMEOUT_MS, or by a signal (an OOM
- * kill during a cold scan). It says nothing about the element, so no probe caches it (B-102).
+ * A gst-inspect-1.0 run with no answer: killed at GST_INSPECT_TIMEOUT_MS, or by SIGKILL or
+ * SIGTERM (an OOM kill during a cold scan, a stop). It says nothing about the element, so no
+ * probe caches it (B-102).
  */
 export class GstInspectTimeoutError extends Error {
     constructor(args: readonly string[], signal?: string) {
@@ -29,12 +33,21 @@ export function isGstInspectTimeout(err: unknown): err is GstInspectTimeoutError
     return err instanceof Error && err.name === 'GstInspectTimeoutError';
 }
 
+/** A run that crashed reads as a failed one; the warning names the signal (B-102). */
+function logCrash(args: readonly string[], signal: string): void {
+    const what = args.join(' ');
+    log.warn(
+        { args, signal },
+        `gst-inspect-1.0 ${what} crashed (${signal}), so ${what} is taken as not installed`,
+    );
+}
+
 let firstRun: Promise<unknown> | null = null;
 
 /**
- * One gst-inspect-1.0 run: its stdout on exit 0, null on a failed exit, GstInspectTimeoutError
- * when killed at the bound or by a signal. The process's first run goes alone: on a cold registry
- * it rescans and saves it, and the rest load it instead of each rescanning at once (B-102).
+ * One gst-inspect-1.0 run: its stdout on exit 0, null on a failed exit or a crash (logged),
+ * GstInspectTimeoutError when killed at the bound or by SIGKILL or SIGTERM. The process's first
+ * run goes alone, so a cold registry is rescanned and saved once, not by every run at once (B-102).
  */
 function gstInspect(args: string[]): Promise<string | null> {
     const run = () =>
@@ -46,8 +59,14 @@ function gstInspect(args: string[]): Promise<string | null> {
                 (err, stdout) => {
                     if (!err) resolve(stdout);
                     else if (err.killed) reject(new GstInspectTimeoutError(args));
-                    else if (err.signal) reject(new GstInspectTimeoutError(args, err.signal));
-                    else resolve(null);
+                    else if (err.signal === 'SIGKILL' || err.signal === 'SIGTERM')
+                        reject(new GstInspectTimeoutError(args, err.signal));
+                    else {
+                        // A crash (a broken element or driver) recurs at every run: a failed
+                        // run, as before B-102.
+                        if (err.signal) logCrash(args, err.signal);
+                        resolve(null);
+                    }
                 },
             );
         });

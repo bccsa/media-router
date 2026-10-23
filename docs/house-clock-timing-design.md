@@ -797,7 +797,7 @@ reports for them.
   - Nothing checks whether it does.
 - **PTP** (linuxptp, `media-router-ptp`) is opt-in per device and off by default.
   - Nothing disciplines a grandmaster. Read on 2026-10-14 without changing
-    anything: 10.9.16.46, the domain's grandmaster, had not been disciplined
+    anything: GATE01, the domain's grandmaster, had not been disciplined
     since boot (kernel state `TIME_ERROR`, frequency 0 ppm) and ran 0.2–0.3 s
     off UTC after 9.7 days of uptime. Every box following it carries that
     error.

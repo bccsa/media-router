@@ -31,13 +31,15 @@ cmp -s "$T/a.stct" "$T/b.stct"; check "fixture_gen: the same arguments and seed 
     [ "$(status "$GEN" --trace -o "$T/x.stct" --ahead zz:100)" = 2 ] &&
     [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-ms 250:50)" = 2 ] &&
     [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-floor 101)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-floor 40)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-ms 0 --scatter-floor 40)" = 2 ] &&
     [ "$(status "$GEN" --shift 257:x -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --shift 9000:100 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --shift 257:100 -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --freeze-pcr 10 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --freeze-pcr 10:-1 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --freeze-pcr 10:1 -o "$T/x.stct")" = 2 ]
-check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, scatter, shift, freeze-pcr, no --trace or no -o exit 2" $?
+check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, scatter (a floor without its level too), shift, freeze-pcr, no --trace or no -o exit 2" $?
 # A backlog delays what was queued and keeps its stamps: the records, in order, arrive later.
 "$GEN" --trace -o "$T/q0.stct" --seed 5 --duration 30 && "$GEN" --trace -o "$T/q1.stct" --seed 5 --duration 30 --backlog 10:3000:500 &&
     "$CLI" trace2jsonl "$T/q0.stct" | sed 's/"t":[0-9]*,//' >"$T/q0.v" && "$CLI" trace2jsonl "$T/q1.stct" | grep -v '"kind":"outage"' |

@@ -789,13 +789,13 @@ describe('ModuleSettingsPanel — every typed setting validates and writes at En
         seedTyped();
         const wrapper = mountPanel('typed-1');
 
-        await typeKeys(boxIn(wrapper, 'Host'), '10.0.0.5');
+        await typeKeys(boxIn(wrapper, 'Host'), '192.0.2.5');
         await boxIn(wrapper, 'Host').trigger('change');
         await save(wrapper);
 
         expect(mockModuleSetting).not.toHaveBeenCalled();
         expect(mockModuleSettings.mock.calls).toEqual([
-            ['eng-1', 'typed-1', expect.objectContaining({ host: '10.0.0.5' })],
+            ['eng-1', 'typed-1', expect.objectContaining({ host: '192.0.2.5' })],
         ]);
     });
 

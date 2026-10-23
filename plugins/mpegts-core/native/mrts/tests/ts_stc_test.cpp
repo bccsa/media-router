@@ -944,12 +944,13 @@ uint64_t sec_mix(int64_t sec, uint64_t salt) {
 }
 
 // A bursty relay's delivery (TECH01's 1 s minima scatter with an IQR of 105-115 ms): per second a level in
-// 0..w ms, or a dense floor edge (the floor on floor_pct % of the seconds, lo..hi ms above it on the rest),
-// plus the cycle (p s, h ms, from `phase` s), on 150 ms of base delay.
+// 0..w ms, a dense floor edge (the floor on floor_pct % of the seconds, lo..hi ms above it on the rest) or half_ms
+// on seconds 1 and 2 of every 4, plus the cycle (p s, h ms, from `phase` s), on 150 ms of base delay.
 struct Scatter {
     int64_t w = 200;
     int floor_pct = 0;
     int64_t lo = 0, hi = 0;
+    int64_t half_ms = 0;
     int64_t p = 150, h = 400, phase = 0;
     int64_t delay(int64_t t) const {
         const int64_t sec = t / S;
@@ -957,6 +958,8 @@ struct Scatter {
         if (floor_pct > 0) {
             if ((int)(sec_mix(sec, 0x12345) % 100) >= floor_pct)
                 lvl = lo + (int64_t)(sec_mix(sec, 0x6789) % (uint64_t)(hi - lo + 1));
+        } else if (half_ms > 0) {
+            lvl = sec % 4 == 1 || sec % 4 == 2 ? half_ms : 0;
         } else if (w > 0) {
             lvl = (int64_t)(sec_mix(sec, 0x12345) % (uint64_t)(w + 1));
         }
@@ -972,6 +975,7 @@ struct FitRun {
     int64_t ppb_lock = 0, ppb_600 = 0, ppb_end = 0;
     int steps = 0;
     int on = 0, since = 0;                      // the level's share at the last close before the first fit
+    int fit_on = 0, fit_since = 0;              // ... at the first fit
     int hi_on = 0, hi_since = 1;                // its largest from 30 s to the first fit
     int64_t jump = 0, jump_at = -1;             // the largest ε move between closes after the first fit
                                                 // where the level held under half
@@ -1005,6 +1009,8 @@ FitRun fit_run(const Scatter& sh, int64_t ppm, int64_t pcr_ms, int64_t secs, int
         const int64_t ppb = lk.ppb();
         if (r.first_fit < 0 && lk.has_fit()) {
             r.first_fit = t;
+            r.fit_on = on;
+            r.fit_since = since;
         } else if (r.first_fit < 0) {
             r.on = on;
             r.since = since;
@@ -1170,6 +1176,16 @@ void test_first_fit_keep() {
           "the rate, as before B-100",
           h.refit_at >= 0 && h.refit_on * 2 >= h.refit_since && iabs(h.refit_raw - h.kept) > 20000 &&
               h.refit_dev > 100000);
+    // A level holding exactly half of the closed buckets at its 30th point is no scattered one: it fits there.
+    Scatter hf;
+    hf.half_ms = 100;
+    hf.p = 0;
+    const FitRun x = fit_run(hf, 50, 60, 300);
+    print_fit("+100 ms on seconds 1 and 2 of every 4 (the level exactly half at every fourth close)", x);
+    CHECK("first fit: a level holding exactly half of the closed buckets fits as before B-100: 30 of 60 at its "
+          "30th point, fitted there (60-61 s) and locked 5 s later",
+          x.fit_on == 30 && x.fit_since == 60 && within(x.first_fit, 60 * S, 61 * S) &&
+              within(x.lock, 65 * S, 66 * S));
     const Scatter bursty;
     const FitRun b = fit_run(bursty, 50, 60, 700, 400);
     print_fit("TECH01's shape, phase 0 s, a relock(true) at 400 s", b);
@@ -1758,6 +1774,19 @@ void test_freeze_advance() {
         const FzRun r = fz_run(60, 0, held_pcr(60 * MS, 0, 0));
         print_fz("a 60 ms PCR stuck from its first value", r);
         CHECK("freeze: a PCR stuck from its first value fails at the third pair (0.18 s)",
+              r.reason == R::freeze && within(r.at, 180 * MS, 180 * MS));
+    }
+    // B-101's rule is the same value again, or an earlier one: a PCR stepping back, each step far inside the
+    // leap row's 500 ms (10 ms an interval at 60 ms from 60 s), is frozen.
+    {
+        auto back = [](int64_t t) {
+            if (t % (60 * MS) != 0) return INT64_MIN;
+            return t < 60 * S ? t : 60 * S - (t - 60 * S) / 6;
+        };
+        const FzRun r = fz_run(120, 60 * S, back);
+        print_fz("a 60 ms PCR stepping back 10 ms an interval from 60 s", r);
+        CHECK("freeze: a PCR stepping back by less than the leap row's bound is frozen: 10 ms an interval fails at "
+              "the third pair (0.18 s)",
               r.reason == R::freeze && within(r.at, 180 * MS, 180 * MS));
     }
     // 12. The known limit: a PCR crawling by a sliver (1 ms per 60 ms interval) advances, so it is no frozen pair.
