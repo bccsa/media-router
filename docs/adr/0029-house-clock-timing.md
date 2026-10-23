@@ -1132,6 +1132,43 @@ rows B-1 to B-48) holds the same records with their work items.
   the drain's tail the straddle rule maps onto the old epoch, whose hole
   carries a gap marker (B-48); the written PCR's step back there carries
   `discontinuity_indicator`, as every PCR step back does (B-47).
+- **A step-seeded line comes down by the window rule** (B-95, the owner's
+  choice of 2026-10-22 over `step_hold_ns` 20 s). On a line an envelope
+  step's sample seeded (the PCR lock's, the reference lock's or a clamp
+  lock's, whether or not the step opened an epoch) the backlog rule gives
+  way to the window rule: the line moves down only onto L*, the highest
+  level some `step_hold_ns` run of the last `step_fall_hold_ns` (300 s, the
+  fit window, kept in the lock's own history of closed buckets) stayed
+  above, once that lies more than `backlog_ns` under it, so the last run
+  that could have stepped ended 300 s before. The stale rule's second
+  clause marking a PES on that line brings the backlog rule back at the
+  next close, for the whole line (B-48 (1): a stale run never outlasts a
+  move). Every other line keeps the backlog rule; the leap row is
+  unchanged. Why: TECH01's relay (B-90) delivers 400–600 ms late for 12 s
+  every 150 s, then runs under its usual level for 6–7 s; the burst's
+  envelope step seeded its epoch on a late sample, the dip lay more than
+  `backlog_ns` under that seed, the line moved onto it (560–620 ms dropped
+  per PID) and the usual level stepped again 20 s on: relocks in pairs, 12
+  of them and 6.0 s dropped in 930 s, now 2 relocks and 0.08 s (the start
+  burst's), the lead median 80 → 392 ms; of 87 replay traces only TECH01's
+  pair changes. The owner's trade: such an input's delay settles at the
+  bursts' full height plus the step's own sample (+0.3–0.6 s on TECH01, out
+  of the 4 s lead headroom; growing bursts ratchet it to the tallest for
+  300 s), re-stepped every 12.5–22.5 min with no drop as the slew lets the
+  burst tops over the line; one PID within the held excess of the 4 s bound
+  brings the pairs back for every PID of its program (the yield); a drained
+  queue's excess above the bursts stays while under 490 ms and is shed
+  5 min later when more; every relock that is not a step (a leap or
+  discontinuity, a degraded entry, an external relock) re-seeds the line at
+  the usual level and drops the held excess once per PID (about 0.36 s on
+  TECH01's shape at a restart or a jump, 0.26 s at a PCR fault). The limit:
+  at a 1–2 s PCR a burst whose tail falls, or whose onset rises, by more
+  than `leap_ns` between two PCRs is a leap and keeps the pairs (TECH01's
+  PCR comes every 60 ms; vMix's 2 s PCR does not burst). The relay's bursts
+  themselves are #847 (the 150 s cycle is already in NO-OCC-Gate01's RIST
+  output). `step_hold_ns` 20 s, measured as the alternative, avoids the
+  steps but also lengthens the rate fit's level hold (18 of 87 traces
+  change, 7 of 38 expectations fail).
 - **The rate fit runs on one floor level.** A bucket more than `step_ns` off
   the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
@@ -1655,17 +1692,6 @@ design's §5.2 keeps the general rule.
   epoch a leap opened (4 s elsewhere), with the stale rule's second clause
   scoped alike and in the first epoch, so that a stale run never outlasts
   a move.
-- TECH01's relay (B-90) relocks in pairs every 150 s on the PCR lock, as the
-  engine's degraded reference lock did: its delivery's 12 s rise is an
-  envelope step whose new epoch starts on a late sample, and the dip after it
-  lies more than `backlog_ns` under that seed, so the line moves onto it and
-  drops 560–620 ms per PID; then the usual level steps again (10 relocks and
-  4.75 s dropped in the fixture's 734 s). Moving, in an epoch an envelope
-  step opened, only past `lead_max_ns` (the fallback above, scoped to such
-  epochs) or only once the deeper floor has held `step_hold_ns` removes it on
-  that trace (2 relocks and 0.08 s dropped in 930 s, about 310 ms more
-  latency, every other trace unchanged); the first keeps a later fall's
-  latency for hours. Not built with B-90.
 - Since B-90 a degraded program recovers once no row failed for 30 s, which
   trades the latch for flapping on a source within its delivery's jitter of
   a bound: the gate window fixtures recover and degrade again, each switch

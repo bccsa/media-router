@@ -35,6 +35,7 @@ ClockLockConfig asrc_lock_config() {
     c.step_ns = 50000000;
     c.step_falls = true;
     c.backlog_ns = 0;   // a capture's PTS is its capture time: a fall is an envelope step
+    c.step_fall_hold_ns = 0;   // so no backlog rule to hold either (B-95)
     return c;
 }
 

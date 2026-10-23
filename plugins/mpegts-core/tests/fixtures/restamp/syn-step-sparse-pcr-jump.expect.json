@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --duration 1000 --pcr-ms 2000 --pids v,a2 --jitter-ms 5 --delay-ms 300,500@101,700@102 --jump 600:1000 --seed 1",
+  "note": "One envelope step at 112.7 s (usual 300 ms, +200/+400 ramped at 101/102 s, held for good), then at 600 s the source timeline (PCR and PES) jumps forward by 1000 ms with no discontinuity flag, a 2 s PCR (chapter 15.4 B-95). The leap row is untouched by B-95: on a step-seeded line at a sparse PCR the jump is a leap and relocks as before (600.7 s, +987.6 ms), no hole, nothing dropped, the lead unchanged; byte-identical to the core before B-95. A leap-fall hold (measured and reverted in the design) held it as a silent 0.99 s hole for 300 s and then dropped 960 ms per PID at 899.7 s.",
+  "relocks": 2,
+  "envelopeSteps": 1,
+  "degraded": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "relock", "reason": "envelope-step", "atS": [111, 114]}, {"kind": "relock", "reason": "leap", "atS": [599.5, 602.5]}],
+  "gaps": 4,
+  "gapMs": [0, 450],
+  "overlaps": 0,
+  "droppedMs": [0, 50],
+  "pcrCadenceMs": 2000,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

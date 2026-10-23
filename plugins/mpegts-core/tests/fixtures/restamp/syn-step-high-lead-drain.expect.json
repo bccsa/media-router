@@ -1,0 +1,11 @@
+{
+  "source": "fixture_gen --trace --duration 900 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --delay-ms 20,220@100,420@130,620@160,520@250,420@251,320@252,220@253,120@254,20@255 --ahead v:2900 --seed 1",
+  "note": "syn-step-genuine-fall with the video PID stamped 2.9 s ahead (true lead 3.5 s, chapter 15.4 B-95): the drain's floor lies more than backlog_ns under the step-seeded line, so the stale rule's second clause marks video stale, and the mark yields the window rule to the backlog rule at the next close: the line moves 2 s after the drain as before B-95 (byte-identical: 2.44 s dropped, 1.84 s of it video's stale run), never degraded. Without the yield video is stale until the held move 300 s on (300.43 s dropped); with D' (the clause scoped to 4 s) the program degrades on the lead row.",
+  "relocks": 3,
+  "degraded": 0,
+  "backlogEvents": [1, 100000],
+  "droppedMs": [2000, 3000],
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

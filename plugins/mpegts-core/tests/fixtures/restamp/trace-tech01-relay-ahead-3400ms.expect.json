@@ -1,0 +1,11 @@
+{
+  "source": "fixture_gen --shift 0x64:3400 -i trace-tech01-relay.stct",
+  "note": "trace-tech01-relay with its video PID 0x64 stamped 3.4 s later (lead about 3.5 s, chapter 15.4 B-95): within the held excess of lead_max_ns under a step-seeded line. Each dip after a burst marks video stale by the stale rule's second clause (B-48 (1)), and the mark brings the backlog rule back at the next close for the whole line (the yield), so a stale run never outlasts a move: the line moves onto the dip and the usual level steps again, today's pairs for every PID of the program: 10 relocks, 13 overlaps 10.47 s (8.06 s of them video's stale runs), never degraded, byte-identical to the core before B-95. Without the yield video stays stale for the whole 300 s hold (2 relocks, 42.85 s dropped).",
+  "relocks": [8, 12],
+  "degraded": 0,
+  "backlogEvents": [1, 100000],
+  "droppedMs": [9000, 10500],
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

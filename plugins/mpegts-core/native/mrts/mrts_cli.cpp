@@ -588,6 +588,7 @@ const Knob64 kKnobs64[] = {
     {"step_ns", &ClockLockConfig::step_ns, nullptr},
     {"step_hold_ns", &ClockLockConfig::step_hold_ns, nullptr},
     {"backlog_ns", &ClockLockConfig::backlog_ns, nullptr},
+    {"step_fall_hold_ns", &ClockLockConfig::step_fall_hold_ns, nullptr},
     {"lost_ns", &ClockLockConfig::lost_ns, nullptr},
     {"residual_window_ns", &ClockLockConfig::residual_window_ns, nullptr},
     {"pcr_interval_fail_ns", nullptr, &PcrValidatorConfig::pcr_interval_fail_ns},

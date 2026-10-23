@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --duration 900 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --delay-ms 300,500@101,700@102,500@114,100@115,300@126,500@251,700@252,500@264,100@265,300@276,500@401,700@402,500@414,100@415,300@426,500@551,700@552,500@564,100@565,300@576,500@701,700@702,500@714,100@715,300@726,500@851,700@852,500@864,100@865,300@876 --jump 600:1000:di --seed 1",
+  "note": "TECH01's bursts at a 60 ms PCR (usual 300 ms; +200/+400 ramped at 101/102 s for 12 s, -200 for 11 s, every 150 s), the window rule holding the line at the bursts' height from the first step (111.3 s); at 600 s the source timeline (PCR and PES) jumps forward by 1000 ms, the first PCR after it flagged (chapter 15.4 B-95). The validator's verdict is discontinuity instead of leap (no leap event, the relock's reason discontinuity) and the relock takes the same path: the held excess dropped once per PID alike (360.0 / 362.7 ms at 600.67 s), every PES line as without the flag. Before B-95 the pairs (13 relocks, 6.81 s) and a 5.3 ms epoch gap per PID at the jump.",
+  "relocks": 3,
+  "envelopeSteps": 2,
+  "degraded": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "relock", "reason": "envelope-step", "atS": [110, 113]}, {"kind": "relock", "reason": "discontinuity", "atS": [599.5, 601.5]}, {"kind": "overlap", "atS": [600.3, 601.5], "droppedMs": [300, 420]}, {"kind": "overlap", "atS": [600.3, 601.5], "droppedMs": [300, 420]}, {"kind": "relock", "reason": "envelope-step", "atS": [710, 713]}],
+  "gaps": 4,
+  "gapMs": [0, 450],
+  "overlaps": 2,
+  "droppedMs": [650, 800],
+  "pcrCadenceMs": 60,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

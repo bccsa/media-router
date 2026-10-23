@@ -1,0 +1,13 @@
+{
+  "source": "fixture_gen --trace --duration 900 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --delay-ms 300,500@100,700@101,500@112,100@113,300@124,500@250,700@251,500@262,100@263,300@274,500@400,700@401,500@412,100@413,300@424,500@550,700@551,500@562,100@563,300@574,500@700,700@701,500@712,100@713,300@724,500@850,700@851,500@862,100@863,300@874 --seed 1",
+  "note": "TECH01's shape on a 60 ms PCR (fixture_gen's v and a2, 5 ms of jitter): the usual level 300 ms, every 150 s from 100 s +200/+400 ms ramped over two seconds (a step, not a leap) for 12 s, then 200 ms under the usual level for 11 s (chapter 15.4 B-95). The first burst's envelope step (110.3 s) seeds the line on a late sample of the rise; the dip 500-600 ms under that seed is no backlog's floor on a step-seeded line, and every later burst is a 10 s run at the line, so the window rule never moves it: 1 relock, nothing dropped, the video lead median 598 -> 988 ms (the bursts' height). Before B-95: the dip moved the line and the usual level stepped again, the 150 s pairs: 12 relocks, 6.88 s dropped.",
+  "relocks": 1,
+  "envelopeSteps": 1,
+  "degraded": 0,
+  "backlogEvents": 0,
+  "overlaps": 0,
+  "droppedMs": [0, 50],
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

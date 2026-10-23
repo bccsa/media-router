@@ -113,9 +113,9 @@ struct Gen {
     std::vector<std::pair<int64_t, int64_t>> v_drops;
     // A relay's mux and path (TECH01, B-90): lead > 0 stamps every PES (video by its DTS) that far
     // ahead of its mux time; from 10 s on, every burst_every the floor delay is burst_rise higher
-    // for burst_len, then what waited arrives at once.
+    // for burst_len, then what waited arrives at once, then burst_dip lower for burst_dip_len (B-95).
     int64_t lead = 0;
-    int64_t burst_every = 0, burst_len = 0, burst_rise = 0;
+    int64_t burst_every = 0, burst_len = 0, burst_rise = 0, burst_dip = 0, burst_dip_len = 0;
 };
 
 struct Pkt {
@@ -400,7 +400,11 @@ std::vector<Dg> datagrams(const Stream& st, const Gen& g, int64_t h0, int64_t pp
             const int64_t at = (send - g.delay_from) / US, len = std::max<int64_t>(1, g.delay_ramp / US);
             rise = g.delay_ramp > 0 && at < len ? g.delay_rise * at / len : g.delay_rise;
         }
-        if (g.burst_every > 0 && send >= 10 * S && (send - 10 * S) % g.burst_every < g.burst_len) rise += g.burst_rise;
+        if (g.burst_every > 0 && send >= 10 * S) {
+            const int64_t ph = (send - 10 * S) % g.burst_every;
+            if (ph < g.burst_len) rise += g.burst_rise;
+            else if (ph < g.burst_len + g.burst_dip_len) rise -= g.burst_dip;
+        }
         int64_t due = send;               // a queued send leaves at its place in the drain
         const int64_t span = g.backlog_len + g.backlog_drain;
         if (g.backlog_at >= 0 && send >= g.backlog_at && send - g.backlog_at < span)
@@ -2088,6 +2092,56 @@ void test_bursty_relay() {
           monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
 }
 
+// B-95: TECH01's shape, the same lead: from 10 s, every 150 s the floor delay 300 ms higher for 12 s, then
+// 200 ms under it for 10 s. Locked by the second burst: its step seeds the line on the burst, and the dip
+// after it, 500 ms under that, is no backlog's floor: held, no move, no second relock.
+void test_bursty_relay_dip() {
+    Gen g;
+    g.secs = 300;
+    g.lead = 125 * MS;
+    g.burst_every = 150 * S;
+    g.burst_len = 12 * S;
+    g.burst_rise = 300 * MS;
+    g.burst_dip = 200 * MS;
+    g.burst_dip_len = 10 * S;
+    const Case c = make_case(g);
+    const Out a = run(c, stc_cfg());
+    const Ana aa = analyze(c, a, true);
+    print_events("relay: 125 ms lead, the path +300 ms for 12 s, then -200 ms for 10 s, every 150 s", a, c);
+    // Per PID the median of house(key) - arrival over its PES arriving in the 5 s before `t`.
+    auto lead_at = [&](int pid, int64_t t) {
+        std::vector<int64_t> v;
+        for (const OutPes& p : aa.pes) {
+            const int64_t at = a.arrival_of_out[p.at], rel = at - c.h0 - 20 * MS;
+            if (p.pid == pid && rel >= t - 5 * S && rel < t) v.push_back(house_from_mux_pts(key33(p), at) - at);
+        }
+        std::sort(v.begin(), v.end());
+        return v.empty() ? INT64_MIN : v[(v.size() - 1) / 2];
+    };
+    int late_overlaps = 0;
+    for (const Ev& e : a.events) late_overlaps += e.kind == Ev::Kind::overlap && e.house_ns - c.h0 - 20 * MS > 10 * S;
+    std::map<int, int> epoch_gaps;
+    for (const RestampCore::Gap& gp : a.gaps) epoch_gaps[gp.pid] += !std::strcmp(gp.reason, "epoch");
+    bool held = true;
+    std::printf("  relay with a dip: leads at 50 / 250 s:");
+    for (const int pid : {PID_V, PID_A1, PID_A2, PID_T}) {
+        const int64_t l50 = lead_at(pid, 50 * S), l250 = lead_at(pid, 250 * S);
+        std::printf(" 0x%x %.1f / %.1f ms;", pid, l50 / 1e6, l250 / 1e6);
+        held &= l50 != INT64_MIN && l250 != INT64_MIN && l250 - l50 >= 280 * MS && l250 - l50 <= 320 * MS;
+    }
+    std::printf(" %zu gaps, %d overlaps after 10 s, %llu PES dropped\n", a.gaps.size(), late_overlaps,
+                (unsigned long long)a.stats.programs[0].dropped_pes);
+    CHECK("bursty relay with a dip: never degraded, one relock (envelope-step) with one gap (epoch) per PID, no "
+          "overlap after 10 s (B-95)",
+          count_events(a, Ev::Kind::degraded) == 0 && count_events(a, Ev::Kind::relock) == 1 &&
+              count_events(a, Ev::Kind::relock, "envelope-step") == 1 && late_overlaps == 0 &&
+              a.gaps.size() == 4 && one_each(epoch_gaps, {PID_V, PID_A1, PID_A2, PID_T}));
+    CHECK("bursty relay with a dip: every PID's lead at 250 s 280-320 ms over its lead at 50 s (the burst held)",
+          held);
+    CHECK("bursty relay with a dip: monotonic, CC intact, bytes as the input's",
+          monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
+}
+
 void test_degraded_ref_pid() {
     // The PCR on a PID of its own (no PES) from 10 s, then stuck 20-30 s: the reference is
     // the first video PID, not the PCR PID, and the degraded event says so.
@@ -3171,6 +3225,7 @@ int main() {
     test_outage_gaps();
     test_degraded();
     test_bursty_relay();
+    test_bursty_relay_dip();
     test_degraded_ref_pid();
     test_sparse_pcr();
     test_sparse_pcr_stop();

@@ -212,9 +212,30 @@ elements" below do not start.
   input degraded for a real reason returns once 30 s pass with no check
   failing, which a bursty link's small hiccups used to prevent for good.
   While an input is degraded, its "unstable" and "off by n ppm" warnings
-  now name the PID its timing follows, not the source clock. Not changed
-  yet: on such a link the clock still re-locks twice every few minutes,
-  with a short gap in picture and sound and about half a second dropped.
+  now name the PID its timing follows, not the source clock.
+- **An input on a link that delivers in bursts no longer re-locks every 2.5
+  minutes.** An SRT input on a relay of the production gate (TECH01), whose
+  delivery runs up to half a second late for 12 s every 150 s and then a
+  little early for a few seconds, re-locked its clock twice in each cycle: a
+  short gap in picture and sound at each re-lock and about half a second
+  dropped in between. Fixed: after the first late burst the input's delay
+  settles at the bursts' full height, plus the one late packet that set it
+  (0.3 to 0.6 s more on that input, out of the 4 s an input may run ahead;
+  taller bursts hold more, and bursts that keep growing raise it to the
+  tallest), and the clock re-steps every 12.5 to 22.5 minutes without
+  dropping anything. On such an input a source restart or a jump in the
+  source's timeline, a clock fault (Degraded clock) or a change of the PCR
+  PID drops that extra delay once (about 0.36 s at a restart or jump, about
+  0.26 s at a clock fault); it builds again at the next burst. A queue that
+  drains afterwards is shed 5 minutes later when it is more than 0.5 s above
+  the bursts' height; a smaller excess stays, held by the bursts. Limits:
+  when one stream of the input is stamped so far ahead that the extra delay
+  takes it near the 4 s limit (3.4 to 3.9 s ahead on TECH01), the whole
+  input re-locks in pairs as before; and a source whose clock reference
+  comes only every 1 to 2 s (vMix's cadence; TECH01's comes every 60 ms) and
+  whose bursts rise or fall by more than 0.5 s between two references still
+  re-locks in pairs. Why the relay delivers in bursts is investigated apart
+  (#847; the 150 s cycle is already in NO-OCC-Gate01's output).
 - **An input whose source sends its clock reference only every few seconds
   now locks on it.** Such an input (vMix's SRT output sends one per 2 s
   picture group) showed "Degraded clock" for good. It now shows a green

@@ -1,0 +1,13 @@
+{
+  "source": "fixture_gen --trace --duration 900 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --delay-ms 20,220@100,420@130,620@160,520@250,420@251,320@252,220@253,120@254,20@255 --seed 1",
+  "note": "A queue built in three 200 ms steps (100, 130, 160 s: three envelope steps), drained over 5 s from 250 s, then the path at its floor for good (60 ms PCR, chapter 15.4 B-95). The fall lies 600 ms under the step-seeded line, past backlog_ns, and no 10 s run comes within backlog_ns of the line after it, so the window rule moves the line onto the floor once the drain's last high run is 300 s old: one overlap per PID at 554.7 s (560 / 597 ms, 1.16 s), the lead back at the floor's. Before B-95 the move came 2 s after the drain (1.20 s at 256.8 s); with no move at all (D', the move only past 4 s) the 600 ms stay for 8 h.",
+  "relocks": 3,
+  "degraded": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "overlap", "atS": [553, 557]}],
+  "overlaps": 2,
+  "droppedMs": [1100, 1300],
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

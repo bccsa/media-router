@@ -707,6 +707,139 @@ void test_backlog_floor() {
         for (const auto& o : r->off) g_all.add(o.second);
 }
 
+// B-95: a PCR every pcr_ms on a 0 ppm source over a FIFO path whose floor delay steps as `sched`
+// (ms from s on, fixture_gen's --delay-ms), net_delay's jitter above it; a step relocks as VirtualStc
+// does. A move: past the first step, house_of(σ) - σ jumping over 10 ms between samples, no relock.
+struct Seg {
+    int64_t at_s, ms;
+};
+
+struct FallRun {
+    struct Ev {
+        int64_t t, v, lvl;   // send time; a step's jump of the mapping, or a move's; the line after it
+    };
+    std::vector<Ev> steps, moves;
+    std::vector<std::pair<int64_t, int64_t>> lvl;   // (send time, the delay the line maps to)
+    int64_t dev(int64_t from, int64_t floor) const {   // the line's farthest from `floor` from `from` on
+        int64_t d = 0;
+        for (const auto& p : lvl)
+            if (p.first >= from) d = std::max(d, iabs(p.second - floor));
+        return d;
+    }
+};
+
+FallRun fall_run(std::vector<Seg> sched, int64_t secs, const ClockLockConfig& cfg = ClockLockConfig(),
+                 int64_t pcr_ms = 60, uint64_t seed = 95) {
+    std::stable_sort(sched.begin(), sched.end(), [](const Seg& a, const Seg& b) { return a.at_s < b.at_s; });
+    ClockLock lk(cfg);
+    Lcg g(seed);
+    FallRun r;
+    int64_t prev_h = INT64_MIN, prev_off = INT64_MIN;
+    for (int64_t t = 0; t <= secs * S; t += pcr_ms * MS) {
+        int64_t floor = sched.front().ms;
+        for (const Seg& s : sched)
+            if (t >= s.at_s * S) floor = s.ms;
+        const int64_t sigma = 7200 * S + t, h = std::max(prev_h, H0 + t + floor * MS + net_delay(g));
+        prev_h = h;
+        lk.feed(sigma, h);
+        if (lk.envelope_step()) {
+            const int64_t before = lk.house_of(sigma);
+            lk.relock(true, true);
+            lk.feed(sigma, h);
+            r.steps.push_back({t, lk.house_of(sigma) - before, lk.house_of(sigma) - H0 - t});
+        } else if (!r.steps.empty() && iabs(lk.house_of(sigma) - sigma - prev_off) > 10 * MS) {
+            r.moves.push_back({t, lk.house_of(sigma) - sigma - prev_off, lk.house_of(sigma) - H0 - t});
+        }
+        prev_off = lk.house_of(sigma) - sigma;
+        r.lvl.push_back({t, lk.house_of(sigma) - H0 - t});
+    }
+    return r;
+}
+
+void print_fall(const char* label, const FallRun& r) {
+    std::printf("  %s:", label);
+    for (const FallRun::Ev& e : r.steps)
+        std::printf(" [step @%.2f s, the line %+.1f ms to %.1f ms]", e.t / 1e9, e.v / 1e6, e.lvl / 1e6);
+    for (const FallRun::Ev& e : r.moves) std::printf(" [move @%.2f s %+.1f ms]", e.t / 1e9, e.v / 1e6);
+    std::printf(" | the line at the end %.1f ms\n", r.lvl.back().second / 1e6);
+}
+
+// The usual level 300 ms; +200/+400 at 60/61 s (a ramp: a step, not a leap), 600 ms under that from 120 s.
+std::vector<Seg> fall_at_120(std::vector<Seg> extra = {}) {
+    std::vector<Seg> s = {{0, 300}, {60, 500}, {61, 700}, {120, 100}};
+    s.insert(s.end(), extra.begin(), extra.end());
+    return s;
+}
+
+bool within(int64_t t, int64_t lo, int64_t hi) { return t >= lo && t <= hi; }
+
+void test_step_epoch() {
+    // C1: TECH01's burst (+200/+400 for 12 s) and its dip (200 ms under the usual level for 11 s).
+    const FallRun c1 = fall_run({{0, 300}, {60, 500}, {61, 700}, {72, 500}, {73, 100}, {84, 300}}, 150);
+    print_fall("burst and dip (C1)", c1);
+    CHECK("step epoch: a burst's dip is no backlog: one step 9-11 s into the rise, seeded 400-440 ms over the old "
+          "floor, no move, no second step",
+          c1.steps.size() == 1 && within(c1.steps[0].t, 69 * S, 71 * S) &&
+              within(c1.steps[0].lvl - 300 * MS, 400 * MS, 440 * MS) && c1.moves.empty());
+    // C2: a genuine fall after the step: shed once no run that could have stepped lies in the 300 s.
+    const FallRun c2 = fall_run(fall_at_120(), 600);
+    print_fall("a fall of 600 ms at 120 s (C2)", c2);
+    CHECK("step epoch: a genuine fall is shed 300 s after its last high run: one move of -580..-620 ms at "
+          "419-421.5 s, the line on the floor (20 ms) from 425 s",
+          c2.steps.size() == 1 && c2.moves.size() == 1 && within(c2.moves[0].t, 419 * S, 421500 * MS) &&
+              within(c2.moves[0].v, -620 * MS, -580 * MS) && c2.dev(425 * S, 100 * MS) <= 20 * MS);
+    ClockLockConfig half;
+    half.bucket_ns = 500 * MS;
+    const FallRun c2h = fall_run(fall_at_120(), 600, half);
+    print_fall("... at a 0.5 s bucket", c2h);
+    CHECK("step epoch: the window is 300 s of house time at any bucket (0.5 s: the move at 419-421.5 s too)",
+          c2h.steps.size() == 1 && c2h.moves.size() == 1 && within(c2h.moves[0].t, 419 * S, 421500 * MS) &&
+              c2h.dev(425 * S, 100 * MS) <= 20 * MS);
+    // C2b: a 3 s dip 100 ms under the floor in the window: L* is no window minimum.
+    const FallRun c2b = fall_run(fall_at_120({{300, 0}, {303, 100}}), 600);
+    print_fall("... and a 3 s dip at 300 s (C2b)", c2b);
+    CHECK("step epoch: the landing is L*, not the window's minimum: the move at 419-421.5 s onto the floor "
+          "(20 ms), no step after it",
+          c2b.steps.size() == 1 && c2b.moves.size() == 1 && within(c2b.moves[0].t, 419 * S, 421500 * MS) &&
+              c2b.dev(425 * S, 100 * MS) <= 20 * MS);
+    // C3: 12 s bursts back to the stepped level every 100 s, ramped as TECH01's (an instant one is a leap).
+    std::vector<Seg> b;
+    for (int64_t t = 150; t <= 650; t += 100) b.insert(b.end(), {{t, 500}, {t + 1, 700}, {t + 12, 100}});
+    const FallRun c3 = fall_run(fall_at_120(b), 700);
+    print_fall("... and a 12 s burst every 100 s (C3)", c3);
+    CHECK("step epoch: a burst in the window keeps the line: one step, no move through 700 s",
+          c3.steps.size() == 1 && c3.moves.empty());
+    // C4: 3 s spikes to 900 ms every 60 s: shorter than a run, so no hold.
+    std::vector<Seg> sp;
+    for (int64_t t = 150; t <= 690; t += 60) sp.insert(sp.end(), {{t, 900}, {t + 3, 100}});
+    const FallRun c4 = fall_run(fall_at_120(sp), 700);
+    print_fall("... and a 3 s spike every 60 s (C4)", c4);
+    CHECK("step epoch: a short rise is tolerated lateness: the move at 419-421.5 s onto the floor (20 ms)",
+          c4.steps.size() == 1 && c4.moves.size() == 1 && within(c4.moves[0].t, 419 * S, 421500 * MS) &&
+              c4.dev(425 * S, 100 * MS) <= 20 * MS);
+    // C5: ov700's ramped bursts (200 -> 900 over 6 s, back over 6 s, a 30 ms dip of 11 s) every 170 s.
+    std::vector<Seg> ov = {{0, 200}};
+    for (int64_t t = 100; t < 1800; t += 170)
+        ov.insert(ov.end(), {{t, 400}, {t + 2, 600}, {t + 4, 800}, {t + 6, 900}, {t + 14, 700}, {t + 16, 500},
+                             {t + 18, 300}, {t + 20, 30}, {t + 31, 200}});
+    const FallRun c5 = fall_run(ov, 1800, ClockLockConfig(), 2000), c5d = fall_run(ov, 1800);
+    print_fall("ov700 bursts every 170 s, a 2 s PCR (C5)", c5);
+    print_fall("... a 60 ms PCR", c5d);
+    CHECK("step epoch: a sparse PCR counts time, not buckets: one step (110 s), no move in 1800 s; at 60 ms alike",
+          c5.steps.size() == 1 && iabs(c5.steps[0].t - 110 * S) <= 1500 * MS && c5.moves.empty() &&
+              c5d.steps.size() == 1 && c5d.moves.empty());
+    // Any other relock (a leap, a discontinuity, a degraded entry, an external one) keeps the backlog
+    // rule: test_backlog_floor's relocks.
+    ClockLock lk;
+    lk.relock(true);
+    const bool plain = !lk.after_step();
+    lk.relock(true, true);
+    CHECK("step epoch: only a step's relock seeds one (after_step); relock(keep_rate) alone does not",
+          plain && lk.after_step());
+    for (const FallRun* r : {&c1, &c2, &c2h, &c2b, &c3, &c4, &c5, &c5d})
+        for (const auto& p : r->lvl) g_all.add(p.second);
+}
+
 // --- PcrValidator, row by row ------------------------------------------------------
 
 struct VRun {
@@ -2112,6 +2245,300 @@ void test_vstc_floor_moves() {
     }
 }
 
+// B-95 on the program: shapes of the path's floor delay against its usual level, from t0. A burst
+// and its dip (C1): +200 for 1 s, +400 for 11 s, +200 for 1 s, 200 under the usual level for 11 s.
+int64_t dip_net(int64_t t, int64_t t0) {
+    const int64_t d = t - t0;
+    if (d < 0 || d >= 24 * S) return 0;
+    return d < 1 * S ? 200 * MS : d < 12 * S ? 400 * MS : d < 13 * S ? 200 * MS : -200 * MS;
+}
+
+// TECH01's plateau as the fixtures have it: +200 for 1 s, +400 for 12 s, +200 for 1 s, -200 for 11 s.
+int64_t plateau_net(int64_t t, int64_t t0) {
+    const int64_t d = t - t0;
+    if (d < 0 || d >= 25 * S) return 0;
+    return d < 1 * S ? 200 * MS : d < 13 * S ? 400 * MS : d < 14 * S ? 200 * MS : -200 * MS;
+}
+
+// A rise that stays: +200 for 1 s, then +400.
+int64_t held_net(int64_t t, int64_t t0) { return t < t0 ? 0 : t - t0 < 1 * S ? 200 * MS : 400 * MS; }
+
+// A steep onset: +275 twice a second apart (a leap only within one 2 s PCR interval), +550 for 12 s
+// from t0, a 200 ms dip of 11 s.
+int64_t steep_net(int64_t t, int64_t t0) {
+    const int64_t d = t - t0;
+    return d < 0 ? 0 : d < 1 * S ? 275 * MS : d < 13 * S ? 550 * MS : d < 24 * S ? -200 * MS : 0;
+}
+
+// The onset within one 2 s PCR interval (+550 at once from an odd second, a leap), 12 s, the tail
+// stepped down 375 + 375 ms over two intervals (no leap), a 200 ms dip of 11 s.
+int64_t onset_net(int64_t t, int64_t t0) {
+    const int64_t d = t - t0;
+    return d < 0 ? 0 : d < 12 * S ? 550 * MS : d < 14 * S ? 175 * MS : d < 25 * S ? -200 * MS : 0;
+}
+
+// Per PID: epoch changes and house PTS stepping back, with their times (rel()); holes, the house
+// advance less the arrival advance between consecutive PES after 10 s; stale PES; leads at 50-190 s.
+struct HeldRun {
+    struct At {
+        int pid;
+        int64_t t, ns;
+    };
+    std::vector<StcEvent> ev;
+    std::vector<At> changes, backs, holes;   // holes over 300 ms
+    std::map<int, int64_t> hole_max, hole_at, stale_first, stale_last, lead50, lead100, lead140, lead190;
+    std::map<int, int> stale;
+    VirtualStc::State end = VirtualStc::State::acquiring;
+    int count(StcEvent::Kind k, const char* why = nullptr) const {
+        int n = 0;
+        for (const StcEvent& e : ev) n += e.kind == k && (!why || !std::strcmp(e.reason, why));
+        return n;
+    }
+    std::vector<int64_t> relocks_at(const char* why = nullptr) const {
+        std::vector<int64_t> v;
+        for (const StcEvent& e : ev)
+            if (e.kind == StcEvent::Kind::relock && (!why || !std::strcmp(e.reason, why)))
+                v.push_back(rel(e.house_ns));
+        return v;
+    }
+    std::vector<const At*> of(const std::vector<At>& v, int pid) const {
+        std::vector<const At*> out;
+        for (const At& a : v)
+            if (a.pid == pid) out.push_back(&a);
+        return out;
+    }
+    int64_t rise(const std::map<int, int64_t>& later, int pid) const { return later.at(pid) - lead50.at(pid); }
+};
+
+template <class F>
+HeldRun held_run(const char* label, F shape, int64_t secs, uint64_t seed) {
+    VirtualStc v;
+    Fnv f;
+    HeldRun r;
+    std::map<int, uint32_t> last_e;
+    std::map<int, int64_t> last_h, last_arr;
+    drive(v, program(secs, 50000, seed, shape), f, [&](const Pkt& p, const VirtualStc::Mapping& m) {
+        if (m.stale) {
+            r.stale[p.pid]++;
+            if (!r.stale_first.count(p.pid)) r.stale_first[p.pid] = p.t;
+            r.stale_last[p.pid] = p.t;
+        }
+        if (m.valid) {
+            if (last_e.count(p.pid) && m.epoch != last_e[p.pid]) r.changes.push_back({p.pid, rel(p.h), 0});
+            if (last_h.count(p.pid) && m.house_ns <= last_h[p.pid])
+                r.backs.push_back({p.pid, rel(p.h), last_h[p.pid] - m.house_ns});
+            if (last_h.count(p.pid) && rel(p.h) > 10 * S) {
+                const int64_t d = (m.house_ns - last_h[p.pid]) - (p.h - last_arr[p.pid]);
+                if (d > 300 * MS) r.holes.push_back({p.pid, rel(p.h), d});
+                if (!r.hole_max.count(p.pid) || d > r.hole_max[p.pid]) {
+                    r.hole_max[p.pid] = d;
+                    r.hole_at[p.pid] = rel(p.h);
+                }
+            }
+            last_e[p.pid] = m.epoch;
+            last_h[p.pid] = m.house_ns;
+            last_arr[p.pid] = p.h;
+        }
+        for (const auto& w : {std::make_pair(50 * S, &r.lead50), std::make_pair(100 * S, &r.lead100),
+                              std::make_pair(140 * S, &r.lead140), std::make_pair(190 * S, &r.lead190)})
+            if (p.t >= w.first && !w.second->count(p.pid)) (*w.second)[p.pid] = v.lead(p.pid).median_ns;
+    });
+    r.ev = fold_events(v, f);
+    r.end = v.state();
+    print_events(label, r.ev);
+    std::printf("  %s:", label);
+    for (const int pid : {PID_V, PID_A}) {
+        std::printf(" pid 0x%x changes", pid);
+        for (const HeldRun::At* a : r.of(r.changes, pid)) std::printf(" %.2f", a->t / 1e9);
+        std::printf(", back");
+        for (const HeldRun::At* a : r.of(r.backs, pid)) std::printf(" %.1f ms @%.2f", a->ns / 1e6, a->t / 1e9);
+        auto ms = [pid](const std::map<int, int64_t>& m) { return m.count(pid) ? m.at(pid) / 1e6 : 0.0; };
+        std::printf(", hole max %.1f ms @%.2f, stale %d, lead 50/100/140/190 s %.0f/%.0f/%.0f/%.0f ms;",
+                    ms(r.hole_max), ms(r.hole_at) / 1e3, r.stale.count(pid) ? r.stale[pid] : 0, ms(r.lead50),
+                    ms(r.lead100), ms(r.lead140), ms(r.lead190));
+    }
+    std::printf(" end %s\n", state_name(r.end));
+    g_all.add((int64_t)f.h);
+    return r;
+}
+
+bool near(int64_t t, int64_t want, int64_t tol) { return iabs(t - want) <= tol; }
+
+// The times in `got` are `want`'s, each within tol, and as many.
+bool times_are(const std::vector<int64_t>& got, std::initializer_list<int64_t> want, int64_t tol) {
+    if (got.size() != want.size()) return false;
+    size_t i = 0;
+    for (const int64_t w : want)
+        if (!near(got[i++], w, tol)) return false;
+    return true;
+}
+
+void test_vstc_step_epoch() {
+    const int64_t T = 1500 * MS;   // the times' tolerance (the jitter's)
+    // 8: case 1's burst and dip on the PCR path.
+    const HeldRun r8 = held_run("vstc step epoch (burst and dip from 60 s)", [](int, int64_t t) {
+        Shape s;
+        s.net_ns = dip_net(t, 60 * S);
+        return s;
+    }, 150, 81);
+    bool rises = true;
+    for (const int pid : {PID_V, PID_A}) rises &= within(r8.rise(r8.lead100, pid), 380 * MS, 440 * MS);
+    CHECK("vstc step epoch: one envelope-step relock, every PID leaves the old epoch once, never back nor steps "
+          "back, locked; the leads at 100 s 380-440 ms over 50 s's (the burst's height held)",
+          kinds_are(r8.ev, {StcEvent::Kind::envelope_step, StcEvent::Kind::relock}) && r8.changes.size() == 2 &&
+              r8.backs.empty() && r8.end == VirtualStc::State::locked && rises);
+    // 9: video 2.9 s further ahead (3,695 ms at 50 s): within the held excess of lead_max_ns.
+    const HeldRun r9 = held_run("vstc step epoch, video +2900 ms", [](int pid, int64_t t) {
+        Shape s;
+        s.net_ns = dip_net(t, 60 * S);
+        if (pid == PID_V) s.pts_ns = 2900 * MS;
+        return s;
+    }, 150, 81);
+    CHECK("vstc step epoch: the stale clause yields: video's stale run ends within 2 s of the dip's first close "
+          "(by 76 s), the line moves as before B-95, the pair follows (relocks at 70.1, 94.2 s), never degraded",
+          r9.stale.count(PID_V) && r9.stale_first.at(PID_V) >= 72 * S && r9.stale_last.at(PID_V) <= 76 * S &&
+              times_are(r9.relocks_at("envelope-step"), {70110 * MS, 94210 * MS}, T) &&
+              r9.count(StcEvent::Kind::relock) == 2 && r9.count(StcEvent::Kind::degraded) == 0);
+    // 10: the PCR frozen 60-61 s (degraded, freeze), the burst while degraded: the PCR lock steps
+    // silently; its line serves the recovery's epoch as a step epoch's (B-95's scope).
+    for (const int64_t t0 : {64 * S, 70 * S}) {
+        const HeldRun r10 = held_run(t0 == 64 * S ? "vstc step epoch, freeze 60 s, burst from 64 s"
+                                                  : "vstc step epoch, freeze 60 s, burst from 70 s",
+                                     [t0](int pid, int64_t t) {
+                                         Shape s;
+                                         if (pid == PCR_PID && t >= 60 * S && t < 61 * S) s.pcr_ns = 60 * S - t;
+                                         s.net_ns = dip_net(t, t0);
+                                         return s;
+                                     }, 200, 82);
+        int64_t rec = -1;
+        for (const StcEvent& e : r10.ev)
+            if (e.kind == StcEvent::Kind::recovered) rec = rel(e.house_ns);
+        bool quiet = rec >= 0;
+        for (const StcEvent& e : r10.ev)
+            quiet &= !(e.kind == StcEvent::Kind::envelope_step && within(rel(e.house_ns), rec + 1, rec + 60 * S));
+        CHECK(t0 == 64 * S ? "vstc step epoch: a line the PCR lock seeded while degraded stays a step epoch's: no "
+                             "step within 60 s of the recovery (the burst from 64 s)"
+                           : "vstc step epoch: ... the burst from 70 s alike",
+              r10.count(StcEvent::Kind::degraded, "freeze") == 1 && r10.count(StcEvent::Kind::recovered) == 1 &&
+                  quiet);
+    }
+    // 11: video 4.5 s ahead: degraded (lead) at 5 s, B-8's clamp on it; the bursts at 100 and 250 s.
+    const HeldRun r11 = held_run("vstc step epoch, video clamped (+4500 ms), bursts at 100 and 250 s",
+                                 [](int pid, int64_t t) {
+                                     Shape s;
+                                     if (pid == PID_V) s.pts_ns = 4500 * MS;
+                                     s.net_ns = dip_net(t, 100 * S) + dip_net(t, 250 * S);
+                                     return s;
+                                 }, 400, 83);
+    const std::vector<const HeldRun::At*> c11 = r11.of(r11.changes, PID_V), b11 = r11.of(r11.backs, PID_V);
+    CHECK("vstc step epoch: the clamp lock: video changes epoch twice (the clamp at 5 s, its lock's step at 110 s) "
+          "and steps back only at the clamp's entry",
+          r11.count(StcEvent::Kind::degraded, "lead") == 1 && c11.size() == 2 && near(c11[0]->t, 5050 * MS, T) &&
+              near(c11[1]->t, 110090 * MS, T) && b11.size() == 1 && near(b11[0]->t, 5050 * MS, 500 * MS) &&
+              b11[0]->ns > 5 * S);
+    // 12a: the PCR every 2 s (sparse2s), TECH01's plateau from 61 s: its tail is a leap-sized fall
+    // between two PCRs, a leap relock as before B-95 (the stated limit).
+    const HeldRun r12a = held_run("vstc step epoch, 2 s PCR, the plateau's tail", [](int pid, int64_t t) {
+        Shape s = sparse2s(pid, t);
+        s.net_ns = plateau_net(t, 61 * S);
+        return s;
+    }, 200, 84);
+    bool a_ok = r12a.count(StcEvent::Kind::leap) == 1;
+    for (const int pid : {PID_V, PID_A}) {
+        const std::vector<const HeldRun::At*> b = r12a.of(r12a.backs, pid);
+        a_ok &= b.size() == 1 && near(b[0]->t, 75820 * MS, 500 * MS) && within(b[0]->ns, 520 * MS, 580 * MS) &&
+                iabs(r12a.rise(r12a.lead190, pid)) <= 10 * MS;
+    }
+    CHECK("vstc step epoch: at a 2 s PCR a burst's leap-sized tail relocks as a leap (the limit): step, leap, step "
+          "(74.4, 75.8, 96.0 s), one step back per PID at the leap, the lead back at 190 s",
+          a_ok && times_are(r12a.relocks_at(), {74400 * MS, 75820 * MS, 96010 * MS}, T) &&
+              r12a.relocks_at("leap").size() == 1);
+    // 12b and 12c: one step held (+400 from 60 s), then the source timeline jumps 1 s forward at 150 s.
+    auto jump = [](int pid, int64_t t, bool sparse) {
+        Shape s = sparse ? sparse2s(pid, t) : Shape();
+        s.net_ns = held_net(t, 60 * S);
+        if (t >= 150 * S) (pid == PCR_PID ? s.pcr_ns : s.pts_ns) = 1000 * MS;
+        return s;
+    };
+    const HeldRun r12b = held_run("vstc step epoch, 2 s PCR, a +1 s jump at 150 s",
+                                  [&](int pid, int64_t t) { return jump(pid, t, true); }, 200, 85);
+    const HeldRun r12c = held_run("vstc step epoch, 100 ms PCR, a +1 s jump at 150 s",
+                                  [&](int pid, int64_t t) { return jump(pid, t, false); }, 200, 85);
+    bool jumps = true;
+    for (const HeldRun* r : {&r12b, &r12c}) {
+        const std::vector<int64_t> l = r->relocks_at("leap");
+        jumps &= r->count(StcEvent::Kind::relock) == 2 && r->relocks_at("envelope-step").size() == 1 &&
+                 l.size() == 1 && within(l[0], 150 * S, 152500 * MS) && r->backs.empty();
+        for (const int pid : {PID_V, PID_A}) jumps &= iabs(r->lead190.at(pid) - r->lead140.at(pid)) <= 50 * MS;
+    }
+    for (const int pid : {PID_V, PID_A})
+        jumps &= near(r12b.hole_at.at(pid), 74410 * MS, 1 * S) && r12b.hole_max.at(pid) < 450 * MS;
+    CHECK("vstc step epoch: a genuine +1 s jump on a held line relocks as a leap within 2.5 s, at a 2 s PCR and at "
+          "100 ms: no step back, the leads as before it, no hole at the jump (the step's own the largest)",
+          jumps && times_are(r12b.relocks_at("envelope-step"), {74410 * MS}, T) &&
+              times_are(r12c.relocks_at("envelope-step"), {70010 * MS}, T));
+    // 12d: a 2 s PCR, the onset over leap_ns within one interval (a leap), the tail stepped down: the leap
+    // epoch keeps the backlog rule, the pair stays (the limit's other half). The same from 131 s.
+    const HeldRun r12d = held_run("vstc step epoch, 2 s PCR, an onset of +550 ms in one interval",
+                                  [](int pid, int64_t t) {
+                                      Shape s = sparse2s(pid, t);
+                                      s.net_ns = onset_net(t, 61 * S) + onset_net(t, 131 * S);
+                                      return s;
+                                  }, 200, 86);
+    bool d_ok = r12d.count(StcEvent::Kind::leap) == 2;
+    for (const StcEvent& e : r12d.ev)
+        if (e.kind == StcEvent::Kind::leap) d_ok &= within(e.value_ns, -600 * MS, -500 * MS);
+    for (const int pid : {PID_V, PID_A}) {
+        const std::vector<const HeldRun::At*> b = r12d.of(r12d.backs, pid), h = r12d.of(r12d.holes, pid);
+        d_ok &= b.size() == 2 && near(b[0]->t, 79815 * MS, 1 * S) && near(b[1]->t, 149820 * MS, 1 * S) &&
+                h.size() == 2 && near(h[0]->t, 62560 * MS, 500 * MS) && near(h[1]->t, 132560 * MS, 500 * MS) &&
+                iabs(r12d.rise(r12d.lead190, pid)) <= 10 * MS;
+        for (const HeldRun::At* x : b) d_ok &= within(x->ns, 700 * MS, 740 * MS);
+        for (const HeldRun::At* x : h) d_ok &= within(x->ns, 545 * MS, 560 * MS);
+    }
+    CHECK("vstc step epoch: ... and a steep onset at a 2 s PCR is a leap and keeps the pair: leap, step twice "
+          "(62.6/96.0, 132.6/166.0 s), a 700-740 ms move per PID 17 s after each leap, a 545-560 ms hole at each",
+          d_ok && times_are(r12d.relocks_at(), {62560 * MS, 96010 * MS, 132560 * MS, 166010 * MS}, T) &&
+              r12d.relocks_at("leap").size() == 2);
+    // 12e: the +275/+275 onset at the harness's 100 ms PCR: no leap, one step, the burst's height held.
+    const HeldRun r12e = held_run("vstc step epoch, 100 ms PCR, a steep onset", [](int, int64_t t) {
+        Shape s;
+        s.net_ns = steep_net(t, 60 * S) + steep_net(t, 130 * S);
+        return s;
+    }, 200, 86);
+    bool e_ok = r12e.backs.empty() && r12e.count(StcEvent::Kind::leap) == 0 &&
+                kinds_are(r12e.ev, {StcEvent::Kind::envelope_step, StcEvent::Kind::relock}) &&
+                within(r12e.ev[0].value_ns, 250 * MS, 300 * MS) && near(rel(r12e.ev[0].house_ns), 70060 * MS, T);
+    for (const int pid : {PID_V, PID_A})
+        e_ok &= within(r12e.rise(r12e.lead100, pid), 540 * MS, 560 * MS) &&
+                within(r12e.rise(r12e.lead190, pid), 540 * MS, 560 * MS);
+    CHECK("vstc step epoch: ... the same onset at a 100 ms PCR is a step: one relock (70.1 s), no step back, the "
+          "leads at 100 and 190 s 540-560 ms over 50 s's",
+          e_ok);
+    // 12f: TECH01's plateau from 61 and 200 s at a 100 ms PCR, the source timeline 1 s forward at 150 s:
+    // the leap relock re-seeds the held line at the usual level, the held excess dropped once per PID.
+    const HeldRun r12f = held_run("vstc step epoch, 100 ms PCR, a +1 s jump on the held line",
+                                  [](int pid, int64_t t) {
+                                      Shape s;
+                                      s.net_ns = plateau_net(t, 61 * S) + plateau_net(t, 200 * S);
+                                      if (t >= 150 * S) (pid == PCR_PID ? s.pcr_ns : s.pts_ns) = 1000 * MS;
+                                      return s;
+                                  }, 260, 87);
+    bool f_ok = r12f.count(StcEvent::Kind::leap) == 1;
+    for (const int pid : {PID_V, PID_A}) {
+        const std::vector<const HeldRun::At*> b = r12f.of(r12f.backs, pid);
+        f_ok &= b.size() == 1 && near(b[0]->t, 150020 * MS, 500 * MS) && within(b[0]->ns, 335 * MS, 390 * MS) &&
+                within(r12f.rise(r12f.lead100, pid), 380 * MS, 420 * MS) &&
+                within(r12f.rise(r12f.lead140, pid), 380 * MS, 420 * MS) &&
+                iabs(r12f.rise(r12f.lead190, pid)) <= 10 * MS && near(r12f.hole_at.at(pid), 71010 * MS, 500 * MS) &&
+                within(r12f.hole_max.at(pid), 380 * MS, 440 * MS);
+    }
+    CHECK("vstc step epoch: a genuine jump on a held line at a 100 ms PCR drops the held excess once: step, leap, "
+          "step (71.0, 150.0, 210.0 s), one 335-390 ms step back per PID at the leap, the leads back at 190 s",
+          f_ok && times_are(r12f.relocks_at(), {71000 * MS, 150010 * MS, 210010 * MS}, T) &&
+              r12f.relocks_at("leap").size() == 1);
+}
+
 void test_determinism() {
     const uint64_t d1 = degraded_scenario(false), d2 = degraded_scenario(false);
     const uint64_t s1 = straddle_scenario(false), s2 = straddle_scenario(false);
@@ -2158,6 +2585,7 @@ int main(int argc, char** argv) {
     test_fit_levels();
     test_start_burst();
     test_backlog_floor();
+    test_step_epoch();
     test_validator();
     test_vstc_clean_and_wrap();
     test_vstc_relocks();
@@ -2171,6 +2599,7 @@ int main(int argc, char** argv) {
     test_vstc_straddle();
     test_vstc_map_pcr();
     test_vstc_floor_moves();
+    test_vstc_step_epoch();
     test_determinism();
     std::printf("\n  CHECKSUM ts_stc %016llx (compare across machines)\n", (unsigned long long)g_all.h);
     return test_summary("ts_stc");

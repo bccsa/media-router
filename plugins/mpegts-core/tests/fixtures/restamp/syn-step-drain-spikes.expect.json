@@ -1,0 +1,13 @@
+{
+  "source": "fixture_gen --trace --duration 900 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --delay-ms 300,500@100,800@101,600@400,400@401,300@402,500@460,700@461,300@463,500@520,700@521,300@523,500@580,700@581,300@583,500@640,700@641,300@643,500@700,700@701,300@703,500@760,700@761,300@763,500@820,700@821,300@823,500@880,700@881,300@883 --seed 1",
+  "note": "A +500 ms queue at 100/101 s (one envelope step, 110.4 s) drained in three steps at 400-402 s, then 3 s spikes to 700 ms every 60 s from 460 s, a 60 ms PCR, 900 s (chapter 15.4 B-95). The window rule's landing L* ignores a rise shorter than step_hold_ns (tolerated lateness, as the step rule has it): the line moves onto the floor 300 s after the drain's last high run, one overlap per PID at 702.9 s (480 / 491 ms). Before B-95 the same drop came at the drain (404.9 s); landing on the window's highest bucket minimum, the spikes would keep the +486 ms for good.",
+  "relocks": 1,
+  "degraded": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "overlap", "atS": [700, 706]}],
+  "overlaps": 2,
+  "droppedMs": [900, 1100],
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

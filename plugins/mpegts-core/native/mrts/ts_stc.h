@@ -32,6 +32,10 @@ struct ClockLockConfig {
     // in any epoch and phase (B-39). leap_ns's 500 ms less the acquire slew's 10 ms, so a backlog
     // that relocks still lies past it when its floor shows (B-48, the owner's). 0: off (mrasrc).
     int64_t backlog_ns = 490000000;
+    // On a line an envelope step's sample seeded, a floor past backlog_ns under it moves the line only
+    // once no step_hold_ns run has come within backlog_ns of it for this long (B-95); the fit
+    // window. 0: the backlog rule as on any other line.
+    int64_t step_fall_hold_ns = 300000000000LL;
     int64_t lost_ns = 5000000000LL;            // no sample this long: phase lost
     int64_t residual_window_ns = 2000000000;   // residual stats window (stats-interval-ms)
 };
@@ -88,10 +92,14 @@ class ClockLock {
     // How far the line lies above the floor its open and last closed buckets show; delay is
     // one-sided, so one early sample proves it. 0 when the line is on or under it.
     int64_t floor_gap_ns() const;
-    // New epoch from the next sample; ε stays as the starting guess with keep_rate. Only
-    // the first epoch moves onto the floor of its first two agreeing buckets (seed_floor);
-    // any epoch moves onto a backlog's (backlog_ns).
-    void relock(bool keep_rate);
+    // New epoch from the next sample; ε stays as the starting guess with keep_rate. The first
+    // epoch moves onto its first two agreeing buckets' floor (seed_floor), any other onto a
+    // backlog's (backlog_ns), one an envelope step's sample seeded by the window rule (held_fall).
+    void relock(bool keep_rate, bool after_step = false);
+    bool after_step() const { return after_step_; }
+    // The stale rule's second clause marked a PES on this line: the next close moves it as the
+    // backlog rule does, so a stale run never outlasts a move (B-48 (1), B-95).
+    void note_stale() const { stale_seen_ = true; }
     // After a step: the mapping onto the floor the step's buckets measured, at once,
     // keeping ε and the phase (mrasrc). A program's STC never steps; it relocks.
     void step_to_floor();
@@ -110,6 +118,7 @@ class ClockLock {
     };
     void close_bucket(int64_t sigma_now, int64_t house_now);
     Pair seed_floor(int64_t below);
+    void held_fall(int64_t house_now);
     void classify(int64_t house_now);
     bool fit(int64_t* ppb, int* n) const;
     int64_t eps_ppb() const;
@@ -118,11 +127,15 @@ class ClockLock {
     bool started_ = false;
     bool fresh_ = true;               // no relock yet: the epoch the pipeline started with
     bool floor_found_ = false;        // its floor decided: two buckets agreed, or a dip passed
+    bool after_step_ = false;         // an envelope step's sample seeded this line (B-95)
+    int64_t fall_since_ = -1;         // the window's left edge: its first close or the last move
+    mutable bool stale_seen_ = false; // a stale mark since the last close (note_stale)
     StcLine line_;
     int64_t origin_h_ = 0;            // bucket grid of this epoch
     int64_t bucket_ = 0;              // index of the open bucket
     Point cur_{0, 0, Level::fit};     // its min-d sample
     std::deque<Point> hist_;          // closed buckets, newest last
+    std::deque<Point> fall_hist_;     // the window rule's own: the hold plus one run of them
     bool cand_ = false;               // a candidate level is open since cand_h_
     int64_t cand_h_ = 0;
     bool rate_known_ = false;

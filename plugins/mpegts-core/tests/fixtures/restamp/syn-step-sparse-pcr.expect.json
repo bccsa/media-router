@@ -1,0 +1,12 @@
+{
+  "source": "fixture_gen --trace --duration 1100 --pcr-ms 2000 --pids v,a2 --jitter-ms 5 --delay-ms 200,400@100,600@102,800@104,900@106,700@114,500@116,300@118,30@120,200@131,400@270,600@272,800@274,900@276,700@284,500@286,300@288,30@290,200@301,400@440,600@442,800@444,900@446,700@454,500@456,300@458,30@460,200@471,400@610,600@612,800@614,900@616,700@624,500@626,300@628,30@630,200@641,400@780,600@782,800@784,900@786,700@794,500@796,300@798,30@800,200@811,400@950,600@952,800@954,900@956,700@964,500@966,300@968,30@970,200@981 --seed 1",
+  "note": "A 2 s PCR (steady, healthy since B-86) under ramped +700 ms bursts (200 -> 400/600/800/900 ms over 6 s, back over 6 s, a 30 ms dip of 11 s) every 170 s from 100 s, 1100 s (chapter 15.4 B-95). The window rule judges its runs by house time, so the PCR's cadence does not enter it: the first burst steps (110.9 s) and every later one holds the line at its height: 1 relock, nothing dropped. A hold counted in closed buckets (D-beta's reset) comes down 310 s after each step and the next burst steps again (3 relocks, 2.66 s); before B-95 the pairs: 12 relocks, 10.24 s dropped.",
+  "relocks": [1, 2],
+  "degraded": 0,
+  "backlogEvents": 0,
+  "droppedMs": [0, 400],
+  "pcrCadenceMs": 2000,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}

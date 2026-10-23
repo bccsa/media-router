@@ -113,6 +113,9 @@ ClockLock::ClockLock(const ClockLockConfig& cfg) : cfg_(cfg) {
     cfg_.offset_buckets = (int)clamp64(cfg_.offset_buckets, 1, 1000);
     cfg_.slew_acquire_ppm = clamp64(cfg_.slew_acquire_ppm, 0, 100000);
     cfg_.slew_track_ppm = clamp64(cfg_.slew_track_ppm, 0, 100000);
+    // The window rule's history (the hold plus one run of buckets) stays within 100,000 buckets.
+    const int64_t room = sat_sub(99998 * cfg_.bucket_ns, std::max<int64_t>(cfg_.step_hold_ns, 0));
+    cfg_.step_fall_hold_ns = clamp64(cfg_.step_fall_hold_ns, 0, clamp64(room, 0, 10000 * E9));
 }
 
 int64_t ClockLock::eps_ppb() const { return floor_div(eps_q16_ + Q16 / 2, Q16); }
@@ -249,6 +252,13 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
     hist_.push_back(cur_);
     const size_t cap = (size_t)std::max(cfg_.rate_buckets_max, cfg_.offset_buckets);
     while (hist_.size() > cap) hist_.pop_front();
+    // The window rule keeps its own span: the fit's hist_ is 300 buckets, 150 s at a 0.5 s bucket.
+    if (after_step_ && cfg_.step_fall_hold_ns > 0) {
+        fall_hist_.push_back(cur_);
+        const int64_t keep =
+            sat_add(cfg_.step_fall_hold_ns, std::max<int64_t>(cfg_.step_hold_ns, 0)) / cfg_.bucket_ns + 2;
+        while ((int64_t)fall_hist_.size() > keep) fall_hist_.pop_front();
+    }
 
     // Re-pivot where the source is now: the mapping stays continuous.
     travel_ns_ += line_.travel(sigma_now);
@@ -294,9 +304,19 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
     // rises (a dip passed, B-37); while the minima keep falling (a backlog draining) it tests
     // again at every close until it locks (B-39). Then any epoch only a backlog's floor.
     if (hist_.size() >= 2) {
-        if (fresh_ && !floor_found_ && !locked_) floor_found_ = seed_floor(cfg_.step_ns) != Pair::fall;
-        else if (cfg_.backlog_ns > 0) seed_floor(cfg_.backlog_ns);
+        if (fresh_ && !floor_found_ && !locked_) {
+            floor_found_ = seed_floor(cfg_.step_ns) != Pair::fall;
+        } else if (cfg_.backlog_ns > 0) {
+            // A step-seeded line takes the window rule, the backlog's after a stale mark (B-95).
+            if (!after_step_ || cfg_.step_fall_hold_ns <= 0 || stale_seen_) {
+                seed_floor(cfg_.backlog_ns);
+                fall_since_ = -1;
+            } else {
+                held_fall(house_now);
+            }
+        }
     }
+    stale_seen_ = false;
 
     // β* - β_applied: min over the last M buckets of d_j - ε·σ_j, against the line
     // through the pivot.
@@ -366,6 +386,34 @@ ClockLock::Pair ClockLock::seed_floor(int64_t below) {
     return Pair::agree;
 }
 
+// B-95: a step seeded this line on a late sample, so a burst's dip is no backlog. The window is the
+// buckets closed in the last step_fall_hold_ns since its first close or the last move; L* is the
+// highest, over it, of each step_hold_ns run's lowest residual: no run there would step from it.
+void ClockLock::held_fall(int64_t house_now) {
+    if (fall_hist_.empty()) return;
+    if (fall_since_ < 0) fall_since_ = fall_hist_.back().house;
+    if (sat_sub(house_now, fall_since_) < cfg_.step_fall_hold_ns) return;
+    // The runs judged end in the window; their members may reach step_hold_ns before it.
+    const int64_t from = std::max(fall_since_, sat_sub(house_now, cfg_.step_fall_hold_ns));
+    const int64_t from_m = std::max(fall_since_, sat_sub(from, cfg_.step_hold_ns));
+    std::vector<std::pair<int64_t, int64_t>> w;   // (house, residual)
+    for (const Point& p : fall_hist_)
+        if (p.house >= from_m) w.emplace_back(p.house, sat_sub(p.house, line_.house_of(p.sigma)));
+    int64_t land = INT64_MIN;
+    for (size_t i = 0, j = 0; i < w.size(); i++) {
+        if (w[i].first < from) continue;
+        while (j < i && w[j].first <= sat_sub(w[i].first, cfg_.step_hold_ns)) j++;
+        int64_t lo = INT64_MAX;
+        for (size_t k = j; k <= i; k++) lo = std::min(lo, w[k].second);
+        land = std::max(land, lo);
+    }
+    // A rise shorter than a run is tolerated lateness; a run that could have stepped holds the line.
+    if (land == INT64_MIN || land >= -cfg_.backlog_ns) return;
+    line_.house_ref = sat_add(line_.house_ref, clamp64(land, -DELTA_LIM, DELTA_LIM));
+    resid_.clear();   // against the held line
+    fall_since_ = -1;
+}
+
 int64_t ClockLock::floor_gap_ns() const {
     if (!started_) return 0;
     int64_t r = sat_sub(cur_.house, line_.house_of(cur_.sigma));
@@ -373,9 +421,13 @@ int64_t ClockLock::floor_gap_ns() const {
     return r < 0 ? sat_sub(0, r) : 0;
 }
 
-void ClockLock::relock(bool keep_rate) {
+void ClockLock::relock(bool keep_rate, bool after_step) {
     started_ = false;
     fresh_ = false;
+    after_step_ = after_step;
+    fall_since_ = -1;
+    stale_seen_ = false;
+    fall_hist_.clear();
     hist_.clear();
     cand_ = false;
     resid_.clear();
@@ -725,7 +777,7 @@ void VirtualStc::feed_pcr(int64_t pcr27, bool discontinuity, int64_t h) {
             pcr_pending_ = true;
             pcr_why_ = "envelope-step";
         }
-        pcr_.relock(true);
+        pcr_.relock(true, true);   // a step-seeded line, also while degraded (B-95)
         pcr_.feed(sigma, h);
     }
     if (!degraded_) {
@@ -784,7 +836,7 @@ void VirtualStc::feed_ref_pes(int pid, int64_t pts90k_unwrapped, int64_t h) {
             pending = true;
             why = "envelope-step";
         }
-        ref_.relock(true);
+        ref_.relock(true, true);   // a step-seeded line, also in PCR mode (B-95)
         ref_.feed(sigma, h);
     }
     if (!degraded_) return;
@@ -907,7 +959,9 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
 bool VirtualStc::stale(const ClockLock& lock, int64_t house, int64_t h) const {
     const int64_t gap = lock.floor_gap_ns(), lim = val_.config().lead_max_ns, lead = sat_sub(house, h);
     const int64_t backlog = std::max(lock.config().step_ns, lock.config().backlog_ns);
-    return gap > lim || (gap > backlog && lead > lim && sat_sub(lead, gap) <= lim);
+    const bool second = gap > backlog && lead > lim && sat_sub(lead, gap) <= lim;
+    if (second) lock.note_stale();   // a step-seeded line then moves as a backlog's (B-95)
+    return gap > lim || second;
 }
 
 // B-8 (part 4.3): degraded, a PID further ahead of arrival than lead_clamp_ns under the
@@ -941,7 +995,7 @@ void VirtualStc::clamp(int pid, int64_t sigma, int64_t h, Mapping& m) {
     c.h = h;
     c.lock.feed(sigma, h);
     if (c.lock.envelope_step()) {
-        c.lock.relock(true);
+        c.lock.relock(true, true);
         c.lock.feed(sigma, h);
         c.epoch = next_epoch_++;
     }

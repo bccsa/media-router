@@ -1,0 +1,17 @@
+{
+  "source": "fixture_gen --trace --duration 1000 --pcr-ms 1000 --pids v,a2 --jitter-ms 5 --delay-ms 300,500@101,700@102 --jump 600:800 --seed 1",
+  "note": "syn-step-sparse-pcr-jump at a 1 s PCR with a +800 ms jump at 600 s (chapter 15.4 B-95): the step at 111.7 s, the leap relock at 600.7 s (+786.0 ms), gaps of 400 and 15 ms per PID, nothing dropped, as before B-95. The reverted leap-fall hold held it as a 0.79 s hole and dropped 760-768 ms per PID 300 s later.",
+  "relocks": 2,
+  "envelopeSteps": 1,
+  "degraded": 0,
+  "backlogEvents": 0,
+  "events": [{"kind": "relock", "reason": "envelope-step", "atS": [111, 114]}, {"kind": "relock", "reason": "leap", "atS": [599.5, 602]}],
+  "gaps": 4,
+  "gapMs": [0, 450],
+  "overlaps": 0,
+  "droppedMs": [0, 50],
+  "pcrCadenceMs": 1000,
+  "finalState": "locked",
+  "monotonic": true,
+  "faithful": true
+}
