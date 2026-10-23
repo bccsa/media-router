@@ -87,11 +87,10 @@ def quad(frames, key, prog=PROG):
 
 
 def find_ladspa(suffix):
-    for f in Gst.Registry.get().get_feature_list(Gst.ElementFactory):
-        name = f.get_name()
-        if name.startswith("ladspa-") and name.endswith(f"-{suffix}"):
-            return name
-    return None
+    # As the engine's findLadspaElement: the first by name, as gst-inspect lists them. The
+    # registry's own order varies, and "sc-limiter-stereo" ends with "-limiter-stereo" too.
+    names = sorted(f.get_name() for f in Gst.Registry.get().get_feature_list(Gst.ElementFactory))
+    return next((n for n in names if n.startswith("ladspa-") and n.endswith(f"-{suffix}")), None)
 
 
 class Direct:

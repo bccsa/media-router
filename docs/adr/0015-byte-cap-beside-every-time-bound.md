@@ -46,6 +46,23 @@ failure mode and the byte cap costs nothing on a healthy stream.
   40 MB cap of 1,316-byte buffers therefore pins about 125 MB, or about
   500 MB, not 40 MB. The fd count per edge is bounded the same way, by the
   consumer's 5 s ingress queue (plan chapter 15.4 B-91, measured 2026-10-22).
+  The producer also keeps each copy the consumer releases in its
+  unixfdsink's allocator pool, mapped, until that sink stops, so a stall's
+  high-water mark stays pinned for the edge's life, and
+  `vm.max_map_count` (65,530; the image does not set it) caps one producer
+  process at about 65,000 copies: the fifth stalled 30 Mbit/s edge at 5 s
+  passes it (measured 2026-10-22; plan 15.4 B-94, open).
+- The bus queues read a silence right only on the image's GStreamer (plan
+  chapter 15.4 B-68). A stock `queue` keeps its src time at the last buffer
+  out once it has drained, so the first buffer back after a silence longer
+  than the time bound reads as the whole silence, and a second buffer that
+  arrives before the queue's thread takes the first leaks it (`leaky=2`; the
+  next one goes out DISCONT). meta-custom's gstreamer1.0 patch 0001 makes a
+  drained queue start its level afresh at the next buffer in. A queue that
+  holds data is unchanged: a stall still sheds at the bound, and a forward
+  stamp step longer than the bound still reads as full, as in any
+  stamp-bounded queue. The bounds, the cost of a stalled edge above and its
+  fd bound are unchanged.
 - Not yet converted (tracked in queueBounds.ts): `buildTsUdpInput`'s jitter
   queue, mpegts-ip-output / mpegts-ip-input back-pressure queues, the
   video-player's compressed pre-decode queue, and the literal queues in
@@ -67,3 +84,7 @@ first, and a healthy re-anchor (which adds timeline, not bytes) never
 approaches the cap. So the two bounds are sized to two different jobs, and the
 formula above ("64 Mbit/s × the time bound") is the default for queues whose
 time bound IS the latency target — not for this one.
+
+With the image's GStreamer (B-68 above) a forward step into a drained queue,
+which is what a silence is under identity egress, is no longer a level. A step
+while the queue holds data still is, so the 5 s stays.

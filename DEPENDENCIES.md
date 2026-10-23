@@ -11,7 +11,7 @@ Media Router is developed and tested on **Debian 12 (Bookworm)** on **Raspberry 
 | **Node.js** | 20.x | 20.19.2 | JavaScript runtime for manager and engine |
 | **Python 3** | 3.10+ | 3.11.2 | GStreamer pipeline runner (GI bindings) |
 | **PipeWire** | 1.0+ | 1.2.7 | Audio routing, null-sinks, loopbacks |
-| **GStreamer** | 1.22+ | 1.22.0 | Media pipeline framework |
+| **GStreamer** | 1.24+ | 1.28.2 | Media pipeline framework. The image's 1.28.2 carries meta-custom's GStreamer patches (yocto repo, `meta-layers/meta-custom/recipes-multimedia/gstreamer/`). The bus needs two of them, core `0001-queue-start-the-time-level-afresh-once-the-queue-has-drained` and plugins-bad `0001-unixfdsink-never-block-slow-consumer-kick` (both below); the others serve the Pi's hardware decode and display (v4l2codecs, waylandsink, the SAND video formats) |
 | **librist** | 0.2.7+ | 0.2.12 | RIST transport for the native `mrristsrc`/`mrristsink` elements (`librist.so.4`; headers at build time) |
 | **SQLite 3** | 3.x | (via better-sqlite3) | Manager config storage |
 
@@ -135,6 +135,14 @@ without it. Hard requirements:
   attachment. The required patch (never block — skip unwritable clients,
   kick after 10 s dead; 4 MB client `SO_SNDBUF`; stale socket unlink before
   bind) is maintained with the deployment tooling, outside this repository.
+- **A patched `queue`** (core, coreelements): stock `queue` (verified through
+  1.28.2) measures its time level from the last buffer out even once it has
+  drained, so after a silence of more than the bus queues' 5 s bound the
+  first buffer back reads as full and one arriving right behind it leaks it
+  (plan 15.4 B-68). The image carries meta-custom's core patch 0001, which
+  starts a drained queue's level afresh. A dev box on stock GStreamer loses
+  that buffer about half the time; the protocol cases that need the fix
+  (`bus-return`, M4) skip there with a line naming the patch.
 - The `wmem` sysctl values above.
 - The `watchdog` element (`plugins-bad` debugutils) — bus source-silent
   stall detection (`buildBusSrc({stallTimeoutMs})`).

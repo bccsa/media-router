@@ -2188,10 +2188,15 @@ work items.
 - **Found.** One 90 kHz tick is lost through any tsdemux → mpegtsmux hop
   (both conversions floor, so a PTS with t mod 9 ≠ 0 comes out t − 1), and
   tsdemux's own time for a cue is its PCR estimate, ±20 ms, which
-  `privatePads` replaces with the cue's PES. Open: the bus ingress `queue
-  leaky=2 max-size-time=5 s` drops the first buffer back after a silence of
-  more than 5 s when a second buffer arrives before the queue's thread
-  takes it (B-68; a byte-only bound is recommended), and mpegtsmux reads
+  `privatePads` replaces with the cue's PES. The bus ingress `queue
+  leaky=2 max-size-time=5 s` dropped the first buffer back after a silence
+  of more than 5 s when a second buffer arrived before the queue's thread
+  took it, about half the time (B-68): a stock queue measures its level
+  from the last buffer out even once drained. The owner's decision
+  (2026-10-22) fixes it in GStreamer, not in the app: meta-custom's
+  gstreamer1.0 patch 0001 starts a drained queue's time level afresh, the
+  bus queues stay stock `queue` with their bounds, and protocol case M4
+  sends its dark input's split back to back. Open: mpegtsmux reads
   `prog-map` under its own lock when it creates a pad's stream, so a hook
   edit after data reached the mux can still race (R1; listing every spill
   PID up front would close it).
@@ -2423,9 +2428,13 @@ twins, and the input stall watch end to end; the settings `mixLatencyMs`
   capture-based conformance runs.
 - For the owner: R-P2-5's fall-back (B-76), the pace-rise slew (B-74), a
   module started more than W before its data (B-73), the seed latch (B-71),
-  the 500 ms matrix floor (B-58), the ingress queue's time bound (B-68), the
-  identity egress findings (B-53), and the engineering choices of rows B-50
-  to B-67, each recorded for the veto.
+  the 500 ms matrix floor (B-58), the identity egress findings (B-53), and
+  the engineering choices of rows B-50 to B-67, each recorded for the veto.
+  The ingress queue's first buffer after a silence (B-68) is the owner's
+  decision (2026-10-22): a patch to GStreamer's queue in the image, so the
+  fix reaches a box with that image.
+- The unixfdsink pool that keeps a stall's high-water mark for the life of
+  the edge (B-94): open for Phase 4, in meta-custom's unixfdsink patch.
 - Engine follow-ups: the muxer's, n1-mixer-302m's and audio-processing's
   `alignerInputOf`, and part 10's demux rows (B-70); the pace estimator's
   third-share threshold, re-derived from real captures with a Pi 4 among

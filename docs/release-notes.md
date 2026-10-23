@@ -232,6 +232,14 @@ elements" below do not start.
   stream, counted under Re-locks on the Clock card. The capture ran at
   ordinary priority, competing with everything else on the box. Fixed: it
   now runs at real-time priority, as PipeWire's own audio does.
+- **A stream that pauses for more than 5 s no longer loses its first packet
+  when it resumes.** When a stream between two modules went quiet for more
+  than 5 seconds and then came back in a burst (a subtitle or data stream
+  between cues, a module whose own input was out), the receiving module
+  lost the first packet back about half the time and resynchronised on the
+  next one: a missed subtitle cue, or a short glitch. Fixed in the
+  GStreamer of this release's system image, so it needs the image that
+  carries the patch; this app on an older image still loses that packet.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

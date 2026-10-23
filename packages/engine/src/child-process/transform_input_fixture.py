@@ -296,7 +296,7 @@ def cue_egress(seconds, target, cue_lead_ms=700.0, start_s=0.0, transit_ms=170.0
 
 def go_dark(bufs, t_from, t_back, pids=CUE_PIDS):
     """`cue_egress` buffers with the producer silent from arrival `t_from` to its first buffer from
-    `t_back` on that opens with a cue on `pids`, split after it (cue-only, the rest a frame later),
+    `t_back` on that opens with a cue on `pids`, split after it (cue-only, the rest at once),
     restamped as `cue_egress` does, each PID's continuity counter carried on; and that arrival."""
     def heads(data):
         return [j for j in range(0, len(data), 188) if ts_psi.read_pes_pts(data[j:j + 188]) is not None]
@@ -306,7 +306,7 @@ def go_dark(bufs, t_from, t_back, pids=CUE_PIDS):
     data, _st, arrival = bufs[back]
     cut = heads(data)[0] + 188
     kept = ([(d, a) for d, _s, a in bufs if a < t_from] + [(data[:cut], arrival)]
-            + ([(data[cut:], arrival + 40_000_000)] if data[cut:] else [])
+            + ([(data[cut:], arrival)] if data[cut:] else [])
             + [(d, a) for d, _s, a in bufs[back + 1:]])
     cc, floor, out = {}, None, []
     for data, arr in kept:

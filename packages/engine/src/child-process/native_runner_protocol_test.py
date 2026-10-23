@@ -1768,9 +1768,10 @@ _M4_SECONDS, _M4_DARK = 16, (4.0, 10.0)     # back at 10.49 s; five clamped stam
 
 
 def test_mux_aligners_dark():
-    """M4, both runners: input 0 silent over 6 s, back with a KLV cue alone in its bus buffer. That
-    cue and input 0's video at their own PES PTS, the pace flat, input 1 not slowed; the cue's own
-    cadence put it 6 s early and raised the pace for good (before the fix: 240 → 5490 ms)."""
+    """M4, both runners: input 0 silent over 6 s, back with a KLV cue alone in its bus buffer and
+    the rest of its buffer at once. That cue and input 0's video at their own PES PTS, the pace
+    flat, input 1 not slowed; the cue's own cadence put it 6 s early and raised the pace for good
+    (before the fix: 240 → 5490 ms). A stock queue can leak that cue (B-68)."""
     for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP M4 — {el} unavailable")
@@ -1778,6 +1779,8 @@ def test_mux_aligners_dark():
     so = os.path.join(_PLUGINS, "mpegts-muxer", "native", "mux-routing", "libmrhook_mux_routing.so")
     if not os.path.exists(so):
         print(f"SKIP M4 — {so} not built")
+        return
+    if not queue_patched("M4"):
         return
     sys.path.insert(0, _HERE)
     import transform_input_fixture as fx  # noqa: E402  (puts mpegts-core/py on the path)
@@ -2106,6 +2109,300 @@ def test_ingest_restamp():
               native == py)
 
 
+# --------------------------------------------------------------------------- the queue patch (B-68)
+# A stock `queue` measures its time level from the last buffer out even once drained, so the
+# first buffer back after a silence reads as the silence, and a second one arriving before the
+# queue's thread takes it leaks it. The image's GStreamer carries the fix.
+_QUEUE_PATCH = ("meta-custom's gstreamer1.0 patch 0001 "
+                "(0001-queue-start-the-time-level-afresh-once-the-queue-has-drained.patch)")
+_SILENCE_NS = 6500 * Gst.MSECOND
+_queue_level = []
+
+
+def _drained_level_ms():
+    """The bus ingress queue's time level with only the first buffer back after a 6.5 s silence
+    in it, read without a race: its src task is held in the push of the last buffer before the
+    silence, so nothing takes the first one back. 0 ms with the patch, 6,500 ms without; None if
+    the read failed. Read once per process."""
+    if _queue_level:
+        return _queue_level[0]
+    sys.path.insert(0, _HERE)
+    from gst_lateness_protocol_test import BUS_SRC, TS_CAPS
+    t0 = 3600 * Gst.SECOND
+    last = t0 + 9 * 40 * Gst.MSECOND
+    p = Gst.parse_launch(f'appsrc name=src format=time caps="{TS_CAPS}" ! {BUS_SRC.split(" ! ")[-1]} name=q'
+                         " ! fakesink name=sink sync=false async=false")
+    hold, held = threading.Event(), threading.Event()
+
+    def on_buf(_pad, info):
+        if info.get_buffer().pts == last:
+            held.set()
+            hold.wait(10)
+        return Gst.PadProbeReturn.OK
+
+    p.get_by_name("sink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+    src, q, level = p.get_by_name("src"), p.get_by_name("q"), None
+
+    def push(pts):
+        b = Gst.Buffer.new_wrapped(bytes(1316))
+        b.pts = b.dts = pts
+        src.emit("push-buffer", b)
+
+    p.set_state(Gst.State.PLAYING)
+    try:
+        for k in range(10):
+            push(t0 + k * 40 * Gst.MSECOND)
+        if held.wait(5):
+            push(last + _SILENCE_NS)
+            deadline = time.monotonic() + 5
+            while q.get_property("current-level-buffers") < 1 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            if q.get_property("current-level-buffers") == 1:
+                level = q.get_property("current-level-time") / 1e6
+    finally:
+        hold.set()
+        p.set_state(Gst.State.NULL)
+    _queue_level.append(level)
+    return level
+
+
+def queue_patched(case):
+    """Whether this GStreamer's queue starts its level afresh once drained; when it does not, the
+    case that needs it says so in its SKIP line."""
+    level = _drained_level_ms()
+    check(f"{case}: the bus ingress queue's level read with the first buffer back after a 6.5 s "
+          f"silence alone in it ({level} ms)", level is not None)
+    if level is not None and level >= _SILENCE_NS / 2e6:
+        print(f"SKIP {case} — this GStreamer's queue reads a silence as its level ({level:.0f} ms with the "
+              f"first buffer back alone in it): it lacks {_QUEUE_PATCH}, so a bus input loses the first "
+              "buffer back after a silence of more than 5 s about half the time (B-68)")
+        return False
+    return level is not None
+
+
+# --------------------------------------------------------------------------- bus-return (B-68)
+_RETURNS, _PACED, _BACK = 30, 10, 8
+
+
+def test_bus_return():
+    """bus-return (B-68), both runners: a relay, its bus ingress (buildBusSrc) into its egress tee
+    (buildBusSink), one consumer edge. 30 returns of ten paced buffers, a silence the stamps show
+    as 6.5 s (0.5 s of real time) and eight back to back. Each leaves the edge on its own stamp,
+    so the ingress and the edge queue both see the silence, and the first buffer back arrives
+    every time; stock queues lost it in 8 and 15 of 30 here (with the queue read bypassed)."""
+    for el in ("unixfdsink", "unixfdsrc", "capssetter"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP bus-return — {el} unavailable")
+            return
+    sys.path.insert(0, _HERE)
+    from gst_lateness_protocol_test import _SO as lateness_so, BUS_SINK, BUS_SRC, TS_CAPS
+    if not os.path.exists(lateness_so):
+        print(f"SKIP bus-return — {lateness_so} not built (make native)")
+        return
+    if not queue_patched("bus-return"):
+        return
+    import transform_input_fixture as fx  # noqa: E402  (puts mpegts-core/py on the path)
+    import ts_psi  # noqa: E402
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+
+    def buf(seq, ticks, cc):
+        # A video PES head carrying `seq`, so the egress stamps it on its own PTS; six null packets.
+        pes = fx._pes(fx.VIDEO_PID, 0xE0, (ticks + fx.MUX_BASE) % (1 << 33), None, seq, 1, cc, False)
+        return b"".join(pes) + ts_psi.null_packet() * 6
+
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        sock, edge = os.path.join(tmp, "in.sock"), os.path.join(tmp, "edge.sock")
+        pipes = []
+        for desc in (f'appsrc name=src format=time caps="{TS_CAPS}" ! unixfdsink socket-path={sock}'
+                     " sync=false async=false", f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false"):
+            p = Gst.parse_launch(desc)
+            p.use_clock(clock)
+            p.set_start_time(Gst.CLOCK_TIME_NONE)
+            p.set_base_time(0)                  # the wire carries the stamps, as between two runners
+            pipes.append(p)
+        feed, consumer = pipes
+        feed.set_state(Gst.State.PLAYING)
+        src, got, sent, cc = feed.get_by_name("src"), [], {}, {fx.VIDEO_PID: 0}
+        ticks = (time.monotonic_ns() + 10**9) * 9 // 100000
+
+        def on_buf(_pad, info):
+            b = info.get_buffer()
+            pkt = b.extract_dup(0, 188)
+            pes = pkt[ts_psi.payload_offset(pkt):]
+            key = fx.au_key(pes[9 + pes[8]:]) if ts_psi.ts_pid(pkt) == fx.VIDEO_PID and pkt[1] & 0x40 else None
+            if key:
+                got.append((key[1], b.pts, bool(b.get_flags() & Gst.BufferFlags.DISCONT)))
+            return Gst.PadProbeReturn.OK
+
+        def push(n, step, gap=None):
+            nonlocal ticks
+            for _ in range(n):
+                seq = len(sent)
+                sent[seq] = fx.ns(ticks)
+                b = Gst.Buffer.new_wrapped(buf(seq, ticks, cc))
+                b.pts = b.dts = sent[seq]
+                src.emit("push-buffer", b)
+                ticks += step
+                if gap:
+                    time.sleep(gap)
+
+        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+        time.sleep(0.3)
+        r = RunnerProc(argv)
+        returns = []
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            r.send({"cmd": "start", "pipeline": f"{BUS_SRC.format(name='busin', socket=sock)} ! {BUS_SINK}"})
+            push(5, fx.FRAME, 0.04)
+            check(f"bus-return {tag}: the relay reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+            r.send({"cmd": "bus_attach", "tee": "busout_41000", "socket": edge})
+            check(f"bus-return {tag}: edge attached, the egress armed",
+                  r.wait_event(ev_is("bus_attached", socket=edge)) is not None
+                  and r.wait_log("identity egress armed on busout_41000", timeout=3))
+            consumer.set_state(Gst.State.PLAYING)
+            warm = len(sent)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not any(s >= warm for s, _p, _d in got):
+                push(1, fx.FRAME, 0.04)
+            for _ in range(_RETURNS):
+                first = len(sent) + _PACED
+                push(_PACED, fx.FRAME, 0.04)
+                ticks += _SILENCE_NS * 9 // 100000 - fx.FRAME
+                time.sleep(0.5)
+                push(_BACK, 90)                         # 1 ms of stamps apart, back to back
+                returns.append(range(first - _PACED, first + _BACK))
+                time.sleep(0.3)
+                r.pump()
+            time.sleep(1.0)
+            check(f"bus-return {tag}: no lifecycle error", not r.has_event(ev_is("error")))
+            check(f"bus-return {tag}: exits 0 after stop", r.stop_and_wait() == 0)
+        finally:
+            consumer.set_state(Gst.State.NULL)
+            feed.set_state(Gst.State.NULL)
+            r.kill()
+            shutil.rmtree(tmp, ignore_errors=True)
+        seen = {s: (pts, d) for s, pts, d in got}
+        lost_first = sum(rng[_PACED] not in seen for rng in returns)
+        lost = sum(any(s not in seen for s in rng) for rng in returns)
+        discont = sum(any(seen.get(s, (0, False))[1] for s in rng) for rng in returns)
+        off = [abs(seen[s][0] - sent[s]) for rng in returns for s in rng if s in seen]
+        check(f"bus-return {tag}: the first buffer back after a 6.5 s silence arrives in "
+              f"{len(returns) - lost_first} of {_RETURNS} returns, nothing after it lost, no DISCONT "
+              f"({lost} returns with a loss, {discont} with a DISCONT)",
+              len(returns) == _RETURNS and lost_first == 0 and lost == 0 and discont == 0)
+        check(f"bus-return {tag}: every buffer leaves the edge on its own stamp, so the edge queue sees each "
+              f"silence too (worst {max(off, default=0) / 1e3:.1f} µs over {len(off)})",
+              len(off) == _RETURNS * (_PACED + _BACK) and max(off) <= 11112)
+
+
+# --------------------------------------------------------------------------- edge-stall-fds (B-68, B-91)
+def _fd_count(pid="self"):
+    return len(os.listdir(f"/proc/{pid}/fd"))
+
+
+def test_edge_stall_fds():
+    """edge-stall-fds (B-68, B-91), both runners: a bus input whose module stalls behind its
+    ingress (`identity sleep-time=1000000`, a buffer a second), fed 1,316-byte buffers at the
+    fleet's fastest edge rate (2,850 a second, a 30 Mbit/s relay), stamped at a rate. Each queued
+    buffer is one fd in the runner and one in the feeder, and the ingress holds 5 s of the edge's
+    own stream however much is fed: 14,250 buffers stamped 2,850 a second (34,000 fed, past the
+    40 MB cap), 976 stamped 195 a second (16,000 fed). Bounded by bytes only it would hold up to
+    30,395 at any rate; by a count of 14,250, that count at 195 a second too."""
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and hard < 32768:
+        print(f"SKIP edge-stall-fds — the hard fd limit is {hard}, below 32,768: a regression to a "
+              "bytes-only bound (about 30,400 fds) would fail on EMFILE, not on the count")
+        return
+    if soft != hard:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))     # the runners inherit it
+    if Gst.ElementFactory.find("unixfdsink") is None:
+        print("SKIP edge-stall-fds — unixfdsink unavailable")
+        return
+    sys.path.insert(0, _HERE)
+    from gst_lateness_protocol_test import _SO as lateness_so, BUS_SRC, TS_CAPS
+    if not os.path.exists(lateness_so):
+        print(f"SKIP edge-stall-fds — {lateness_so} not built (make native)")
+        return
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    data = bytes([0x47, 0x1F, 0xFF, 0x10] + [0xFF] * 184) * 7
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        for rate, n, held in ((2850, 34000, 14250), (195, 16000, 976)):
+            label = f"edge-stall-fds {tag} {rate}/s"
+            tmp = tempfile.mkdtemp(prefix="mrtest-")
+            sock = os.path.join(tmp, "in.sock")
+            feed = Gst.parse_launch(f'appsrc name=src format=time max-bytes=0 caps="{TS_CAPS}"'
+                                    f" ! unixfdsink socket-path={sock} sync=false async=false")
+            feed.use_clock(clock)
+            feed.set_start_time(Gst.CLOCK_TIME_NONE)
+            feed.set_base_time(0)
+            feed.set_state(Gst.State.PLAYING)
+            src, step, t = feed.get_by_name("src"), Gst.SECOND // rate, time.monotonic_ns()
+
+            def push(k):
+                # At 2,850 a second whatever the stamps: faster than its consumer, a stock unixfdsink
+                # blocks in a send under its lock, and the consumer's releases then block too.
+                nonlocal t
+                t0, done = time.monotonic(), 0
+                while done < k:
+                    due = min(k, 1 + int((time.monotonic() - t0) * 2850))
+                    for _ in range(due - done):
+                        b = Gst.Buffer.new_wrapped(data)
+                        b.pts = b.dts = t
+                        src.emit("push-buffer", b)
+                        t += step
+                    done = due
+                    time.sleep(0.005)
+
+            time.sleep(0.3)
+            r = RunnerProc(argv)
+            peak, stop = {}, threading.Event()
+            try:
+                r.wait_event(ev_is("ready"), timeout=10)
+                # No EOS drain at the stop: behind the stalled module it would take hours.
+                r.send({"cmd": "start", "pipeline": f"{BUS_SRC.format(name='busin', socket=sock)}"
+                                                    " ! identity sleep-time=1000000 ! fakesink sync=false async=false",
+                        "eosDrain": False})
+                push(1)
+                check(f"{label}: the stalled input reaches PLAYING",
+                      r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+                base = {"runner": _fd_count(r.proc.pid), "feeder": _fd_count()}
+
+                def sample():
+                    while not stop.is_set():
+                        for k, pid in (("runner", r.proc.pid), ("feeder", "self")):
+                            peak[k] = max(peak.get(k, 0), _fd_count(pid) - base[k])
+                        time.sleep(0.2)
+
+                sampler = threading.Thread(target=sample)
+                sampler.start()
+                push(n)
+                deadline = time.monotonic() + 60
+                while src.get_property("current-level-bytes") > 0 and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                time.sleep(2.0)
+                stop.set()
+                sampler.join()
+                left_bytes = src.get_property("current-level-bytes")
+                check(f"{label}: the feeder sent all it was fed ({left_bytes} bytes left)", left_bytes == 0)
+                check(f"{label}: {n} fed, the runner holds at most {held} + 64 more fds "
+                      f"(+{peak.get('runner')}) and the feeder {held} + 300 (+{peak.get('feeder')})",
+                      0 < peak.get("runner", 0) <= held + 64 and 0 < peak.get("feeder", 0) <= held + 300)
+                check(f"{label}: no lifecycle error", not r.has_event(ev_is("error")))
+                check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+            finally:
+                stop.set()
+                r.kill()
+                feed.set_state(Gst.State.NULL)
+                shutil.rmtree(tmp, ignore_errors=True)
+            left = _fd_count() - base["feeder"]
+            check(f"{label}: the feeder's unixfdsink lets its copies go when it stops ({left:+d} fds)", left <= 64)
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2132,6 +2429,8 @@ test_lateness_taps()
 test_mrtshouse_load()
 test_native_plugins()
 test_ingest_restamp()
+test_bus_return()
+test_edge_stall_fds()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")
