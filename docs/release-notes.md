@@ -236,6 +236,16 @@ elements" below do not start.
   whose bursts rise or fall by more than 0.5 s between two references still
   re-locks in pairs. Why the relay delivers in bursts is investigated apart
   (#847; the 150 s cycle is already in NO-OCC-Gate01's output).
+- **Fewer glitches when an input's clock fails and when it recovers.** When
+  an input's clock reference froze, went missing or failed a check, the
+  input changed over to timing from its own streams ("Degraded clock") and
+  changed back once the reference had been sound for 30 s. On a link that
+  delivers unevenly (a relay of the production gate, for one) each change-over
+  cut picture and sound dozens of times in the seconds after it, a few
+  hundredths of a second each. Fixed: each change-over is one cut per stream
+  (on TECH01's relay about 0.26 s at the change to Degraded clock, the extra
+  delay the fix above holds, and under 0.1 s at the return). A real jump in
+  the source's timeline is handled as before.
 - **An input whose source sends its clock reference only every few seconds
   now locks on it.** Such an input (vMix's SRT output sends one per 2 s
   picture group) showed "Degraded clock" for good. It now shows a green

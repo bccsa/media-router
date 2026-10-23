@@ -695,9 +695,9 @@ void VirtualStc::freeze_current() {
     epochs_.back().live = false;
 }
 
-void VirtualStc::open_epoch(Src src, int64_t sigma, int64_t h, bool step) {
+void VirtualStc::open_epoch(Src src, int64_t sigma, int64_t h, bool continuous) {
     freeze_current();
-    if (step && !epochs_.empty()) epochs_.back().stepped = true;
+    if (continuous && !epochs_.empty()) epochs_.back().continuous = true;
     for (auto& kv : leads_) {   // the straddle tie-break compares against these
         PidLeads& p = kv.second;
         while (!p.w.empty() && p.w.front().first < sat_sub(h, LEAD_WINDOW_NS)) p.w.pop_front();
@@ -734,7 +734,8 @@ void VirtualStc::enter_degraded(int64_t h) {
     pcr_.relock(true);   // the bad PCR must not train it; its ε is the guess on recovery
     pcr_pending_ = false;
     ref_pending_ = !ref_.started();
-    if (!ref_pending_) open_epoch(Src::ref, ref_sigma_, h);
+    // One timeline with the frozen epoch, unless the leap row failed: that timeline jumped (B-96).
+    if (!ref_pending_) open_epoch(Src::ref, ref_sigma_, h, degraded_reason_ != PcrValidator::Reason::leap);
     emit(StcEvent::Kind::degraded, reason_name(degraded_reason_), h, 0);
 }
 
@@ -745,7 +746,7 @@ void VirtualStc::try_recover(int64_t sigma, int64_t h) {
     degraded_ = false;
     ref_pending_ = false;
     clamps_.clear();
-    open_epoch(Src::pcr, sigma, h);
+    open_epoch(Src::pcr, sigma, h, true);   // the estimate moved, not the timeline (B-96)
     emit(StcEvent::Kind::recovered, reason_name(degraded_reason_), h, 0);
     degraded_reason_ = PcrValidator::Reason::none;
 }
@@ -841,7 +842,9 @@ void VirtualStc::feed_ref_pes(int pid, int64_t pts90k_unwrapped, int64_t h) {
     }
     if (!degraded_) return;
     if (pending || ref_pending_) {
-        open_epoch(Src::ref, sigma, h, pending && !std::strcmp(why, "envelope-step"));
+        // An entry that found the reference lock cold opens its epoch here, one timeline alike (B-96).
+        const bool cold = ref_pending_ && !pending && degraded_reason_ != PcrValidator::Reason::leap;
+        open_epoch(Src::ref, sigma, h, (pending && !std::strcmp(why, "envelope-step")) || cold);
         if (pending) {
             relocks_++;
             emit(StcEvent::Kind::relock, why, h, 0);
@@ -907,10 +910,11 @@ VirtualStc::Mapping VirtualStc::map_sigma(int pid, int64_t sigma, int64_t h, boo
     // The tie-break tells timelines apart, so one timeline's older ranges give way.
     const int64_t same = pcr_.config().step_ns;
     auto holds = [&](const Epoch& e) { return sigma >= e.lo && sigma <= e.hi; };
-    // One timeline: closed by an envelope step, or mapping σ within step_ns of a newer
-    // range (a same-clock PCR PID); left to the tie-break, jitter would flip PIDs.
+    // One timeline: closed by an envelope step, a recovery or a degraded entry off the leap row
+    // (B-96), or mapping σ within step_ns of a newer range (a same-clock PCR PID); left to the
+    // tie-break, jitter would flip PIDs.
     auto candidate = [&](size_t i) {
-        if (epochs_[i].stepped || !holds(epochs_[i])) return false;
+        if (epochs_[i].continuous || !holds(epochs_[i])) return false;
         const int64_t at = house_in(epochs_[i], sigma);
         for (size_t j = i + 1; j < epochs_.size(); j++) {
             if (!holds(epochs_[j])) continue;

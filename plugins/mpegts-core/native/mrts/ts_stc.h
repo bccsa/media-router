@@ -360,7 +360,9 @@ class VirtualStc {
         bool live;
         StcLine line;           // frozen copy once superseded
         int64_t lo, hi, last_h;
-        bool stepped = false;   // closed by an envelope step: the floor moved, not the timeline
+        // Closed by an envelope step, a recovery or a degraded entry off the leap row: the
+        // estimate moved, not the timeline (B-1, B-96).
+        bool continuous = false;
     };
     struct PidLeads {
         std::deque<std::pair<int64_t, int64_t>> w;   // (arrival, lead) under the output mapping
@@ -384,7 +386,7 @@ class VirtualStc {
     void clamp(int pid, int64_t sigma, int64_t h, Mapping& m);
     int64_t house_in(const Epoch& e, int64_t sigma) const;
     void freeze_current();
-    void open_epoch(Src src, int64_t sigma, int64_t h, bool step = false);
+    void open_epoch(Src src, int64_t sigma, int64_t h, bool continuous = false);
     void grow_epoch(Src src, int64_t sigma, int64_t h);
     void check_failure(int64_t h);
     void enter_degraded(int64_t h);

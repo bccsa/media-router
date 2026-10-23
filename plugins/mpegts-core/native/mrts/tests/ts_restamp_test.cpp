@@ -2038,20 +2038,63 @@ void test_degraded() {
           regen > 500 && mono && under);
     CHECK("degraded: the two switches (mapped -> regenerated -> mapped) are flagged, nothing else", flags == 2);
     // Video is mapped in decode order, so no epoch switch splits a GOP: the only drops are
-    // the lead clamp's at entry (the reference lock lands content earlier), one run per PID.
+    // the lead clamp's at entry (the reference lock lands content earlier), one run per PID,
+    // at the switch itself: one timeline, nothing maps back on the frozen epoch (B-96).
     std::map<int, int> runs;
     bool runs_at_entry = true;
     for (const Ev& e : a.events) {
         if (e.kind != Ev::Kind::overlap) continue;
         runs[e.pid]++;
-        runs_at_entry &= e.house_ns >= deg_at && e.house_ns <= deg_at + 5 * S;
+        runs_at_entry &= e.house_ns >= deg_at && e.house_ns <= deg_at + 1 * S;
     }
-    CHECK("degraded: drops only where the clamp moves content earlier, one run per PID, none at recovery",
+    CHECK("degraded: drops only where the clamp moves content earlier, one run per PID within 1 s of the entry, "
+          "none at recovery",
           one_each(runs, {PID_V, PID_A1, PID_A2, PID_T}) && runs_at_entry);
+    // The holes: the recovery's (the PCR line maps 600 ms later than the reference's), none under a
+    // tick at the entry (B-96).
+    std::map<int, int> holes;
+    bool holes_at_rec = true;
+    for (const Ev& e : a.events) {
+        if (e.kind != Ev::Kind::gap) continue;
+        holes[e.pid]++;
+        holes_at_rec &= e.house_ns >= rec_at && !std::strcmp(e.reason, "epoch") && iabs(e.gap_ns - 600 * MS) < 1 * MS;
+    }
+    CHECK("degraded: one gap per PID, the recovery's 600 ms, no marker at the entry",
+          one_each(holes, {PID_V, PID_A1, PID_A2, PID_T}) && holes_at_rec);
     CHECK("degraded: content keeps flowing, monotonic, CC continuous", monotonic(aa) && aa.cc_lost == 0 &&
                                                                           aa.matched && aa.atomic);
     CHECK("degraded: no PID past lead_clamp_ns under the reference mapping, so no lead clamp",
           count_events(a, Ev::Kind::lead_clamp) == 0);
+}
+
+// B-96: the guard and the gap rule at a tick. A trim nudging audio-1's next PES onto about 5 us after
+// its last written key makes it overlap (nearer than a tick, two PES could write one PTS); one nudging
+// it 5 us past one PES on leaves no gap marker (a hole needs a PES and a tick).
+void test_tick() {
+    const Case c = make_case(Gen());
+    auto nudged = [&](int64_t trim) {
+        return run(c, stc_cfg(), at(30 * S, [trim](RestampCore& rc) { rc.set_trims({{PID_A1, trim}}); }));
+    };
+    const Out g = nudged(-(24 * MS - 5 * US));   // one PES (24 ms) less 5 us
+    const Ana ga = analyze(c, g, false);
+    print_events("audio-1 trimmed one PES less 5 us at 30 s", g, c);
+    const RestampCore::PidStats* s = pid_stats(g, PID_A1);
+    int runs = 0;
+    int64_t len = 0, worst = 0;
+    for (const Ev& e : g.events)
+        if (e.kind == Ev::Kind::overlap && e.pid == PID_A1) runs++, len += e.dropped_ns;
+    const bool mono = monotonic(ga, &worst);
+    std::printf("  tick: audio-1 dropped %llu PES in %d run(s), %.3f ms; the smallest written step %lld ticks\n",
+                s ? (unsigned long long)s->dropped_pes : 0ULL, runs, len / 1e6, (long long)worst);
+    CHECK("tick: a key 5 us after the PID's last written one is overlap: one audio-1 PES dropped, every written key "
+          "forward, no gap marker, CC continuous",
+          s && s->dropped_pes == 1 && runs == 1 && iabs(len - 24 * MS) <= 50 * US && mono && g.gaps.empty() &&
+              ga.cc_lost == 0 && ga.matched && ga.atomic);
+    const Out m = nudged(5 * US);
+    const Ana ma = analyze(c, m, true);
+    print_events("audio-1 trimmed +5 us at 30 s", m, c);
+    CHECK("tick: a key 5 us past one PES on leaves no gap marker, nothing dropped, every written key forward",
+          m.gaps.empty() && m.stats.programs[0].dropped_pes == 0 && monotonic(ma) && ma.matched && ma.atomic);
 }
 
 // B-90: TECH01's relay of the gate (a 125 ms mux lead, a bursty path): from 10 s, every 20 s the floor
@@ -3224,6 +3267,7 @@ int main() {
     test_outage();
     test_outage_gaps();
     test_degraded();
+    test_tick();
     test_bursty_relay();
     test_bursty_relay_dip();
     test_degraded_ref_pid();

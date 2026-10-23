@@ -1926,14 +1926,12 @@ void test_vstc_window() {
                 lo / 1e6, hi / 1e6);
     CHECK("vstc window: a PID past lead_max_ns under a line less than backlog_ns above its floor is never stale",
           a.ev.empty() && a.stale(PID_V) == 0 && a.stale(PID_A) == 0 && hi > 4 * S && hi < 4100 * MS);
-    // On the frozen PCR epoch (the straddle rule's pick) video still reads past 4 s: clamped.
+    // Degraded, every PES maps on the reference epoch (one timeline, B-96), where video reads 3.95 s:
+    // under lead_clamp_ns, no clamp (the frozen PCR epoch, the straddle pick before, read past 4 s).
     const ClampRun b = clamp_run("... the lead row on", window, 90, 44);
-    bool between = b.ev.size() >= 2;
-    for (size_t i = 1; between && i + 1 < b.ev.size(); i++)
-        between = b.ev[i].kind == StcEvent::Kind::lead_clamp && b.ev[i].pid == PID_V;
-    CHECK("vstc window: ... the lead row degrades the program (lead), video is clamped, it recovers; nothing stale",
-          between && b.degraded_first() && b.ev.back().kind == StcEvent::Kind::recovered && b.stale(PID_V) == 0 &&
-              b.stale(PID_A) == 0);
+    CHECK("vstc window: ... the lead row degrades the program (lead) and it recovers, no clamp, nothing stale",
+          kinds_are(b.ev, {StcEvent::Kind::degraded, StcEvent::Kind::recovered}) && b.degraded_first() &&
+              b.clamps.empty() && b.stale(PID_V) == 0 && b.stale(PID_A) == 0);
 }
 
 // B-90: the lower bound reads a PES's PTS less its last PCR, not its lead against arrival, which a
@@ -2003,15 +2001,16 @@ void test_vstc_stream_lead() {
               rel(d.ev[0].house_ns) >= 5 * S && rel(d.ev[0].house_ns) <= 5600 * MS && rel(d.ev[1].house_ns) >= 70 * S &&
               rel(d.ev[1].house_ns) <= 71 * S && d.end == VirtualStc::State::locked);
     // PTS 300 ms behind the PCR throughout, starting on a 90 s caller backlog drained in 5 s, stale
-    // 7 s under the seed line: that keeps the arrival half out, not this, so it degrades 5 s on.
+    // 7 s under the seed line: that keeps the arrival half out, not this, so it degrades 5 s on; one
+    // timeline (B-96), nothing maps back on the frozen backlog line, whose 89 s ahead drew a clamp.
     auto backlog = [](int pid, int64_t t) {
         Shape s = queued_at(pid, t, 0, 90 * S, 5 * S);
         s.pts_ns = lead100(pid).pts_ns - (pid != PCR_PID ? 400 * MS : 0);
         return s;
     };
     const LeadCase e = lead_case("... from a 90 s backlog drained in 5 s", backlog, 120, 76);
-    CHECK("vstc stream lead: ... a backlog's stale PES still show it: degraded (lead) 5 s after they arrive",
-          !e.ev.empty() && e.ev[0].kind == StcEvent::Kind::degraded && !std::strcmp(e.ev[0].reason, "lead") &&
+    CHECK("vstc stream lead: ... a backlog's stale PES still show it: degraded (lead) 5 s after they arrive, no clamp",
+          kinds_are(e.ev, {StcEvent::Kind::degraded}) && !std::strcmp(e.ev[0].reason, "lead") &&
               rel(e.ev[0].house_ns) >= 95 * S && rel(e.ev[0].house_ns) <= 95600 * MS);
 }
 
@@ -2539,6 +2538,140 @@ void test_vstc_step_epoch() {
               r12f.relocks_at("leap").size() == 1);
 }
 
+// B-96: a packet's arrival jitter by its send time and PID alone, 0..max ms.
+int64_t jitter_ms(int64_t t, int pid, uint32_t max) {
+    uint64_t x = (uint64_t)t * 0x9E3779B97F4A7C15ULL ^ (uint64_t)pid * 0xC2B2AE3D27D4EB4FULL;
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 32;
+    return (int64_t)((uint32_t)x % (max + 1)) * MS;
+}
+
+// B-96: per PID, the PES mapped back on an epoch older than the one a switch opened: while degraded,
+// older than the entry's (the epoch the reference PID maps on from the degraded event: opened at the
+// entry, or at its first PES on a cold lock), and after the recovery, older than the recovery's.
+struct BackRun {
+    std::vector<StcEvent> ev;
+    int64_t opened = -1;           // rel(): the reference PID's first PES on the entry's epoch
+    std::map<int, int> back, back_after;
+};
+
+template <class F>
+BackRun back_run(const char* label, F shape, int64_t secs, uint64_t seed) {
+    VirtualStc v;
+    Fnv f;
+    struct Rec {
+        int pid;
+        int64_t h;
+        uint32_t epoch;
+    };
+    std::vector<Rec> recs;
+    drive(v, program(secs, 50000, seed, shape), f, [&](const Pkt& p, const VirtualStc::Mapping& m) {
+        if (m.valid) recs.push_back(Rec{p.pid, p.h, m.epoch});
+    });
+    BackRun r;
+    r.ev = fold_events(v, f);
+    int64_t deg = -1, rec = -1;
+    uint32_t open_e = 0, rec_e = 0;
+    for (const StcEvent& e : r.ev) {
+        if (e.kind == StcEvent::Kind::degraded && deg < 0) deg = e.house_ns, open_e = e.epoch;
+        if (e.kind == StcEvent::Kind::recovered && rec < 0) rec = e.house_ns, rec_e = e.epoch;
+    }
+    int64_t open = deg;
+    for (const Rec& x : recs)
+        if (deg >= 0 && x.pid == PID_A && x.h >= deg) {
+            open = x.h;
+            open_e = std::max(open_e, x.epoch);
+            break;
+        }
+    for (const Rec& x : recs) {
+        if (deg >= 0 && x.h > open && (rec < 0 || x.h < rec) && x.epoch < open_e) r.back[x.pid]++;
+        if (rec >= 0 && x.h > rec && x.epoch < rec_e) r.back_after[x.pid]++;
+    }
+    r.opened = deg >= 0 ? rel(open) : -1;
+    print_events(label, r.ev);
+    std::printf("  %s: entry's epoch e%u from %.2f s; back on an older one while degraded audio %d video %d, "
+                "after the recovery (e%u) audio %d video %d\n",
+                label, open_e, r.opened / 1e9, r.back[PID_A], r.back[PID_V], rec_e, r.back_after[PID_A],
+                r.back_after[PID_V]);
+    g_all.add((int64_t)f.h);
+    return r;
+}
+
+void test_vstc_one_timeline() {
+    // (a) The degraded scenario's freeze (the PCR stuck 60-80 s), as it is and with 0-150 ms of arrival
+    // jitter: the entry and the recovery estimate the same timeline anew, so no PES maps back.
+    bool a_ok = true;
+    for (const uint32_t j : {0u, 150u}) {
+        BackRun a = back_run(j ? "freeze 60-80 s, 0-150 ms jitter" : "freeze 60-80 s", [j](int pid, int64_t t) {
+            Shape s;
+            if (pid == PCR_PID && t >= 60 * S && t < 80 * S) s.pcr_ns = 60 * S - t;
+            if (j) s.net_ns = jitter_ms(t, pid, j);
+            return s;
+        }, 150, 41);
+        int deg = 0, rec = 0;   // the jitter also steps the envelope once, at 58 s
+        for (const StcEvent& e : a.ev) {
+            deg += e.kind == StcEvent::Kind::degraded && !std::strcmp(e.reason, "freeze");
+            rec += e.kind == StcEvent::Kind::recovered;
+        }
+        a_ok &= deg == 1 && rec == 1 && within(a.opened, 60200 * MS, 60700 * MS);
+        for (const int pid : {PID_V, PID_A}) a_ok &= a.back[pid] == 0 && a.back_after[pid] == 0;
+    }
+    CHECK("vstc one timeline: a freeze entry and its recovery, jittery or not: no PES maps back on the frozen "
+          "epoch, none after the recovery on the reference's",
+          a_ok);
+
+    // (b) Three leaps in 60 s (+1 s on the PCR and every PES at 20, 35, 50 s): the third degrades (leap),
+    // a real jump, so the tie-break stays: the video of 49.8-50 s, muxed 300 ms late, keeps the frozen
+    // PCR epoch at its lead (on the reference epoch the entry opened it would read 0).
+    VirtualStc v;
+    Fnv f;
+    auto leaps = [](int pid, int64_t t) {
+        Shape s;
+        s.pcr_ns = s.pts_ns = ((int64_t)(t >= 20 * S) + (t >= 35 * S) + (t >= 50 * S)) * 1000 * MS;
+        if (pid == PID_V && t >= 49800 * MS && t < 50 * S) s.mux_ns = 300 * MS;
+        return s;
+    };
+    uint32_t before = 0;   // the video's epoch before the entry
+    int late = 0, late_ok = 0;
+    int64_t lo = INT64_MAX, hi = INT64_MIN;
+    drive(v, program(70, 0, 51, leaps), f, [&](const Pkt& p, const VirtualStc::Mapping& m) {
+        if (p.pid != PID_V) return;
+        if (v.state() != VirtualStc::State::degraded) before = m.epoch;
+        if (p.t < 49800 * MS || p.t >= 50 * S) return;
+        late++;
+        late_ok += m.valid && m.epoch == before;
+        lo = std::min(lo, m.house_ns - p.h);
+        hi = std::max(hi, m.house_ns - p.h);
+    });
+    const std::vector<StcEvent> ev = fold_events(v, f);
+    print_events("three leaps in 60 s, the third's video late", ev);
+    std::printf("  leap entry: %d late video PES, %d on the frozen PCR epoch e%u, leads %.1f..%.1f ms\n", late, late_ok,
+                before, lo / 1e6, hi / 1e6);
+    using K = StcEvent::Kind;
+    CHECK("vstc one timeline: a leap entry keeps the tie-break: two leap relocks, degraded (leap) at the third, the "
+          "reference's own leap relock; the late video of the old timeline stays on the frozen PCR epoch at its lead",
+          kinds_are(ev, {K::leap, K::relock, K::leap, K::relock, K::leap, K::degraded, K::leap, K::relock}) &&
+              !std::strcmp(ev[5].reason, "leap") && !std::strcmp(ev[7].reason, "leap") && late > 0 && late_ok == late &&
+              lo > 450 * MS && hi < 510 * MS);
+    g_all.add((int64_t)f.h);
+
+    // (c) The cold reference lock: the PCR stuck from the start and the audio (the reference) PES missing
+    // for the first second, video flowing: the entry finds no reference line, and the first audio PES
+    // opens the entry's epoch, one timeline as on the warm path.
+    BackRun c = back_run("freeze 0-1 s, audio from 1 s", [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PCR_PID && t < 1 * S) s.pcr_ns = -t;
+        if (pid == PID_A && t < 1 * S) s.drop = true;
+        return s;
+    }, 60, 42);
+    CHECK("vstc one timeline: a cold reference lock: degraded (freeze) at 0.3 s, the entry's epoch opens at the "
+          "first audio PES (1.0 s), no video maps back on the frozen PCR epoch after it, none after the recovery",
+          kinds_are(c.ev, {K::degraded, K::leap, K::recovered}) && !std::strcmp(c.ev[0].reason, "freeze") &&
+              within(rel(c.ev[0].house_ns), 200 * MS, 500 * MS) && within(c.opened, 1 * S, 1100 * MS) &&
+              c.back[PID_V] == 0 && c.back[PID_A] == 0 && c.back_after[PID_V] == 0 && c.back_after[PID_A] == 0);
+}
+
 void test_determinism() {
     const uint64_t d1 = degraded_scenario(false), d2 = degraded_scenario(false);
     const uint64_t s1 = straddle_scenario(false), s2 = straddle_scenario(false);
@@ -2600,6 +2733,7 @@ int main(int argc, char** argv) {
     test_vstc_map_pcr();
     test_vstc_floor_moves();
     test_vstc_step_epoch();
+    test_vstc_one_timeline();
     test_determinism();
     std::printf("\n  CHECKSUM ts_stc %016llx (compare across machines)\n", (unsigned long long)g_all.h);
     return test_summary("ts_stc");

@@ -711,9 +711,10 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
     while (p.leads.front().first < arrival_h - LEAD_WINDOW_NS) p.leads.pop_front();
 
     const int64_t key = key_house + p.shift;
-    if (p.have_last && key <= p.last_key) {
+    if (p.have_last && key < p.last_key + pts90k_to_ns(1)) {
         // Overlap (R18): what the bus already carries is not written again, so no
-        // PID's time steps back. Video compares DTS, the rest PTS.
+        // PID's time steps back. Video compares DTS, the rest PTS, and a key must lie
+        // a 90 kHz tick after the last: nearer, two PES could write one tick (B-96).
         const int64_t len = p.interval > 0 ? p.interval : own;
         p.prev_epoch = epoch;
         p.unit = Pid::Unit::drop;
@@ -747,7 +748,8 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
             jump = true;
         }
     }
-    const bool gap = why && key > p.last_key + p.interval;
+    // A hole of a PES and a tick: the guard's tick leaves no sub-tick marker (B-96).
+    const bool gap = why && key > p.last_key + p.interval + pts90k_to_ns(1);
     if (gap) push_gap(p, p.last_key + p.interval, key, why, epoch, arrival_h);
     // The outage check runs until a PES shows its gap, or one comes in a later buffer.
     if (gap || arrival_h > outage_h_) p.outage = false;
