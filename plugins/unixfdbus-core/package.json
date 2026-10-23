@@ -2,5 +2,9 @@
     "name": "@media-router/plugin-unixfdbus-core",
     "version": "2.0.0",
     "private": true,
-    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): GstUnixFd bus transport base code. C++ libmrbus + mr-bus-fanout sidecar and bus test infrastructure."
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): GstUnixFd bus transport base code. C++ libmrbus + mr-bus-fanout sidecar, the python reference of its rebase onto house time (not loaded at runtime) and bus test infrastructure.",
+    "scripts": {
+        "test": "pnpm run test:py",
+        "test:py": "cd py && python3 house_rebase_test.py && python3 house_rebase_parity_test.py"
+    }
 }

@@ -3,6 +3,7 @@
 // before the anchor, split headers and chunking. No sockets.
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -14,10 +15,38 @@
 #include "mrts/ts_pes.h"
 #include "mrts/ts_psi.h"
 
-using mrfanout::HouseRebase;
 using Bytes = std::vector<uint8_t>;
 
 namespace {
+
+// The rebase under test. With HOUSE_REBASE_TRACE=<file> each chunk it is given goes there with
+// its house time, the rebases numbered in construction order, in house_rebase_ref's records:
+// py/house_rebase_parity_test.py feeds them to the Python reference.
+class HouseRebase : public mrfanout::HouseRebase {
+  public:
+    void process(const uint8_t* data, size_t len, int64_t now_ns, std::vector<uint8_t>& out) {
+        if (std::FILE* f = trace()) {
+            uint8_t head[17] = {'C'};
+            for (int i = 0; i < 4; i++) head[1 + i] = (uint8_t)(id_ >> (8 * i));
+            for (int i = 0; i < 8; i++) head[5 + i] = (uint8_t)((uint64_t)now_ns >> (8 * i));
+            for (int i = 0; i < 4; i++) head[13 + i] = (uint8_t)((uint64_t)len >> (8 * i));
+            std::fwrite(head, 1, sizeof head, f);
+            if (len) std::fwrite(data, 1, len, f);
+        }
+        mrfanout::HouseRebase::process(data, len, now_ns, out);
+    }
+
+  private:
+    static std::FILE* trace() {
+        static std::FILE* const f = [] {
+            const char* path = std::getenv("HOUSE_REBASE_TRACE");
+            return path ? std::fopen(path, "wb") : nullptr;
+        }();
+        return f;
+    }
+    static inline uint32_t next_ = 0;
+    uint32_t id_ = next_++;
+};
 
 constexpr int PKT = mrts::PKT;
 constexpr int VID = 0x100, AUD = 0x101, SUB = 0x110, PMT_PID = 0x1000;

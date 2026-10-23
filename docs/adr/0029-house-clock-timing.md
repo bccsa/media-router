@@ -2324,8 +2324,9 @@ sections above give the reasons, the register rows the work item.
   the reference PID only; the landing `max(continuous, house now)`; the
   reference rank; kept PIDs; the spacing as an upper median of three;
   nothing timed before the anchor; garbage not forwarded; flags 0 and no
-  DISCONT; no Python prototype; the missing-binary error text kept; DI on
-  the PCR PID's first PCR on a new mapping.
+  DISCONT; no Python prototype (since the owner's 2026-10-21 decision a
+  Python reference with C++ output parity, B-55); the missing-binary error
+  text kept; DI on the PCR PID's first PCR on a new mapping.
 - **WI-P2-6**: choices 1 to 11 of the aligner section (B-56), among them an
   upstream GAP metered at its end (recorded by its verify); the pace
   estimator it built was replaced in WI-P2-8+11's fix round (B-57);

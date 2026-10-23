@@ -21,6 +21,7 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 MRTS_HDRS = $(addprefix $(MRTS)/,lateness.h ts_house.h ts_packet.h ts_pes.h ts_pcr.h ts_psi.h)
 REBASE = house_rebase.cpp house_rebase.h
 TESTS = tests/house_rebase_test
+REF = tests/house_rebase_ref
 
 ifeq ($(shell uname -s),Linux)
 
@@ -43,11 +44,16 @@ mr-bus-fanout: main.cpp $(REBASE) $(MRTS_HDRS) ../libmrbus/libmrbus.a $(MRTS)/li
 tests/house_rebase_test: tests/house_rebase_test.cpp $(REBASE) $(MRTS_HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $< house_rebase.cpp $(MRTS)/libmrts.a -o $@
 
-test: $(TESTS)
+# What the rebase makes of a chunk sequence, the C++ side of the Python reference's parity
+# (py/house_rebase_parity_test.py). Built with the tests, never run by them; under tests/.
+$(REF): tests/house_rebase_ref.cpp $(REBASE) $(MRTS_HDRS) $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $< house_rebase.cpp $(MRTS)/libmrts.a -o $@
+
+test: $(TESTS) $(REF)
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f mr-bus-fanout $(TESTS)
+	rm -f mr-bus-fanout $(TESTS) $(REF)
 
 install: mr-bus-fanout
 	install -D -m 755 mr-bus-fanout $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/mr-bus-fanout
