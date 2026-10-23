@@ -152,6 +152,7 @@ void ClockLock::feed(int64_t sigma, int64_t h) {
         started_ = true;
         line_ = StcLine{sigma, h, eps_ppb(), 0, 0};
         origin_h_ = epoch_h_ = h;
+        win_h_ = h;
         bucket_ = 0;
         cur_ = Point{sigma, h, Level::fit};
         last_sample_h_ = last_seen_h_ = h;
@@ -241,6 +242,7 @@ void ClockLock::classify(int64_t house_now) {
     const int64_t ub = u(b);
     if (!ref || (sat_sub(ub, u(*ref)) <= step && sat_sub(u(*ref), ub) <= step)) {
         b.level = Level::fit;   // the first bucket opens the level
+        if (!ref) level_h_ = b.house;
         if (cand_) set(Level::candidate, Level::out);   // a burst, or a dip, that passed
         cand_ = false;
         return;
@@ -258,9 +260,56 @@ void ClockLock::classify(int64_t house_now) {
         set(Level::fit, Level::out);
         set(Level::candidate, Level::out);
         b.level = Level::fit;
+        level_h_ = b.house;
         cand_ = false;
         fit_valid_ = false;   // the last fit was of the old level: none until this one has its own
     }
+}
+
+// The fit level's buckets since it opened, of every bucket closed since (B-100).
+void ClockLock::level_share(int* on, int* since) const {
+    *on = *since = 0;
+    for (const Point& p : hist_) {
+        if (p.house < level_h_) continue;
+        (*since)++;
+        if (p.level == Level::fit) (*on)++;
+    }
+}
+
+// The window's densest step_ns band, along the rate in force, becomes the level when it holds
+// more buckets than the level does (B-100).
+void ClockLock::seed_densest() {
+    const size_t n = hist_.size();
+    if (n < 2) return;
+    const int64_t eps = eps_ppb();
+    const Point& z = hist_.back();
+    auto u = [&](const Point& p) {   // minimum delay at the newest bucket's σ along that rate
+        return sat_sub(sat_sub(p.house, p.sigma), mul_ppb(sat_sub(p.sigma, z.sigma), eps));
+    };
+    auto within = [&](int64_t a, int64_t b) {   // within step_ns of each other
+        return sat_sub(a, b) <= cfg_.step_ns && sat_sub(b, a) <= cfg_.step_ns;
+    };
+    int on = 0, since = 0;
+    level_share(&on, &since);
+    int best = -1;
+    int64_t centre = 0;
+    for (size_t i = 0; i < n; i++) {
+        const int64_t ci = u(hist_[i]);
+        int cnt = 0;
+        for (size_t j = 0; j < n; j++) cnt += within(u(hist_[j]), ci);
+        if (cnt > best) {
+            best = cnt;
+            centre = ci;
+        }
+    }
+    if (best <= on) return;
+    int64_t oldest = INT64_MAX;
+    for (Point& p : hist_) {
+        p.level = within(u(p), centre) ? Level::fit : Level::out;
+        if (p.level == Level::fit) oldest = std::min(oldest, p.house);
+    }
+    level_h_ = oldest;
+    cand_ = false;
 }
 
 void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
@@ -282,20 +331,31 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
     line_.slew_ppb = line_.slew_ns = 0;
     hist_.back().eps = eps_ppb();
     classify(house_now);   // before the fit
+    // A scattered delivery's level (under half of the buckets since it opened) holds 4-6 % of them
+    // when a burst or a dip opened it, and 30 points of one burst cycle read its ramp: its first fit
+    // waits for the full window of house time and is made on the window's densest band (B-100).
+    bool wait = false;
+    int on = 0, since = 0;
+    level_share(&on, &since);
+    const bool scattered = on * ClockLockConfig::kScatteredDen < since;
+    if (!rate_known_ && scattered) {
+        wait = sat_sub(house_now, win_h_) < cfg_.rate_buckets_max * cfg_.bucket_ns;
+        if (!wait) seed_densest();
+    }
 
     int64_t f;
     int n;
-    if (fit(&f, &n)) {
+    if (!wait && fit(&f, &n)) {
         fit_valid_ = true;
         fit_ppb_ = f;
         const int64_t lim = cfg_.rate_max_ppm * 1000;
         const int64_t fc = clamp64(f, -lim, lim);
         const int64_t gap = fc - eps_ppb();
-        // A fit on more buckets than the ε in force is strictly better: take it.
-        // So is one the track slew could not absorb. Otherwise the τ loop, scaled
-        // by n / N_max so a short fit after a re-lock pulls a kept ε only gently.
-        if (!rate_known_ || n > rate_n_ || gap > cfg_.slew_track_ppm * 1000 ||
-            gap < -cfg_.slew_track_ppm * 1000) {
+        // A fit on more buckets than the ε in force is strictly better: take it. So is one the
+        // track slew could not absorb, unless a scattered level made it on no more points (it reads
+        // its burst cycle, B-100). Otherwise the τ loop, scaled by n / N_max.
+        const bool off = gap > cfg_.slew_track_ppm * 1000 || gap < -cfg_.slew_track_ppm * 1000;
+        if (!rate_known_ || n > rate_n_ || (off && !scattered)) {
             if (!rate_known_) rate_known_h_ = house_now;
             rate_known_ = true;
             eps_q16_ = fc * Q16;

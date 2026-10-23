@@ -1,0 +1,12 @@
+{
+  "source": "fixture_gen --trace --duration 600 --pcr-ms 2000 --pids v,a2 --jitter-ms 5 --ppm 50 --scatter-ms 200 --delay-ms 300 --seed 11",
+  "note": "A 2 s PCR on a scattered delivery (a level drawn in 0..200 ms per second; the source fast by 50 ppm; chapter 15.4 B-100): one bucket closes per PCR, so a first-fit window counted in buckets would wait 600 s; the window is 300 s of house time and the lock comes at 308 s (today's 30-point fit happened at 592 s on this seed, reading +40 ppm where the truth is -50).",
+  "lockedWithinS": 320,
+  "degraded": 0,
+  "relocks": [0, 2],
+  "finalState": "locked",
+  "ppm": [-100, 100],
+  "ppmAfterS": 320,
+  "monotonic": true,
+  "faithful": true
+}

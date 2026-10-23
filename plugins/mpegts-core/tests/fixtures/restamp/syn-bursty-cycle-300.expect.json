@@ -1,0 +1,13 @@
+{
+  "source": "fixture_gen --trace --duration 1200 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --ppm 50 --scatter-ms 200 --delay-ms 300,500@100,700@101,500@112,100@113,300@124,500@400,700@401,500@412,100@413,300@424,500@700,700@701,500@712,100@713,300@724,500@1000,700@1001,500@1012,100@1013,300@1024 --seed 11",
+  "note": "A bursty relay from the generator (chapter 15.4 B-100): per second of send time a delivery level drawn in 0..200 ms from the seed (the 1 s minima scatter with an IQR of about 100 ms, as TECH01's), on TECH01's burst shape as B-95's syn-step fixtures carry it (usual 300 ms, +200 then +400 for 12 s, a dip to 100 for 11 s) every 300 s; the source clock fast by 50 ppm. The first bucket's level holds under half of the buckets, so the first fit waits for the full 300 s window and is made on its densest band: locked at 306-308 s; the band reads the floor over the window, not the clock (about zero whatever the clock, B-100's known limit), so the rate is pinned to the alarm bound only.",
+  "lockedWithinS": 320,
+  "degraded": 0,
+  "relocks": [1, 3],
+  "droppedMs": [0, 200],
+  "finalState": "locked",
+  "ppm": [-100, 60],
+  "ppmAfterS": 320,
+  "monotonic": true,
+  "faithful": true
+}

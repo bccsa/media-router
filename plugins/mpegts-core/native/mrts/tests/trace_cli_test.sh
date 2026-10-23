@@ -29,15 +29,25 @@ cmp -s "$T/a.stct" "$T/b.stct"; check "fixture_gen: the same arguments and seed 
     [ "$(status "$GEN" --trace -o "$T/x.stct" --backlog 0:0:1000)" = 2 ] &&
     [ "$(status "$GEN" --trace -o "$T/x.stct" --backlog 0:1000)" = 2 ] &&
     [ "$(status "$GEN" --trace -o "$T/x.stct" --ahead zz:100)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-ms 250:50)" = 2 ] &&
+    [ "$(status "$GEN" --trace -o "$T/x.stct" --scatter-floor 101)" = 2 ] &&
     [ "$(status "$GEN" --shift 257:x -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --shift 9000:100 -i "$T/a.stct" -o "$T/x.stct")" = 2 ] &&
     [ "$(status "$GEN" --shift 257:100 -o "$T/x.stct")" = 2 ]
-check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, shift, no --trace or no -o exit 2" $?
+check "fixture_gen: a bad schedule, ES, jump, backlog, ahead, scatter, shift, no --trace or no -o exit 2" $?
 # A backlog delays what was queued and keeps its stamps: the records, in order, arrive later.
 "$GEN" --trace -o "$T/q0.stct" --seed 5 --duration 30 && "$GEN" --trace -o "$T/q1.stct" --seed 5 --duration 30 --backlog 10:3000:500 &&
     "$CLI" trace2jsonl "$T/q0.stct" | sed 's/"t":[0-9]*,//' >"$T/q0.v" && "$CLI" trace2jsonl "$T/q1.stct" | grep -v '"kind":"outage"' |
     sed 's/"t":[0-9]*,//' >"$T/q1.v" && cmp -s "$T/q0.v" "$T/q1.v" && "$CLI" trace2jsonl "$T/q1.stct" | grep -q '"kind":"outage"'
 check "fixture_gen: --backlog moves arrivals only (the same records, an outage where the queue held them)" $?
+# A bursty relay's per-second levels (B-100) move arrivals only; 0:MS draws as MS, the floor edge otherwise.
+"$GEN" --trace -o "$T/s0.stct" --seed 5 --duration 30 --scatter-ms 200 &&
+    "$GEN" --trace -o "$T/s1.stct" --seed 5 --duration 30 --scatter-ms 0:200 && cmp -s "$T/s0.stct" "$T/s1.stct" &&
+    ! cmp -s "$T/q0.stct" "$T/s0.stct" && "$CLI" trace2jsonl "$T/s0.stct" | grep -v '"kind":"outage"' |
+    sed 's/"t":[0-9]*,//' | cmp -s - "$T/q0.v" &&
+    "$GEN" --trace -o "$T/s2.stct" --seed 5 --duration 30 --scatter-ms 50:250 --scatter-floor 40 &&
+    ! cmp -s "$T/s0.stct" "$T/s2.stct"
+check "fixture_gen: --scatter-ms moves arrivals only, 0:MS draws as MS; --scatter-floor draws a floor edge" $?
 # --shift copies a recorded trace with one PID's PES stamped later: only those records differ, by the shift.
 "$GEN" --shift 257:1000 -i "$T/q0.stct" -o "$T/sh.stct" && "$CLI" trace2jsonl "$T/q0.stct" >"$T/sh0.jsonl" &&
     "$CLI" trace2jsonl "$T/sh.stct" >"$T/sh1.jsonl" && [ "$(wc -l <"$T/sh0.jsonl")" -eq "$(wc -l <"$T/sh1.jsonl")" ] &&

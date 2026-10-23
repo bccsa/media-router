@@ -1,0 +1,11 @@
+{
+  "source": "fixture_gen --trace --duration 600 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --ppm 100 --scatter-ms 200 --delay-ms 300,500@100,700@101,500@112,100@113,300@124,500@250,700@251,500@262,100@263,300@274,500@400,700@401,500@412,100@413,300@424,500@550,700@551,500@562,100@563,300@574 --seed 11",
+  "note": "The known limit (chapter 15.4 B-100, owner item): the bursty relay of syn-bursty-cycle-150 with the source clock fast by 100 ppm, so a lock that read the clock would read -100. On a diffuse scatter the densest band is a horizontal slice of a cloud wider than itself and reads about zero whatever the clock: locked at 308 s reading within +-40 of 0, the 'Source clock off' alarm silent. This file pins the limit so that an estimator that one day reads the clock on such a delivery fails it on purpose; today's lucky fits were as blind (+7.6 here).",
+  "lockedWithinS": 320,
+  "degraded": 0,
+  "finalState": "locked",
+  "ppm": [-40, 40],
+  "ppmAfterS": 320,
+  "monotonic": true,
+  "faithful": true
+}

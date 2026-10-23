@@ -16,6 +16,7 @@ namespace mrts {
 struct ClockLockConfig {
     int64_t bucket_ns = 1000000000;            // bucket minima: 1 s of house time
     int rate_buckets_min = 30;                 // first rate fit
+    static constexpr int kScatteredDen = 2;    // a level under 1/2 of its buckets is a scattered delivery's (B-100)
     int rate_buckets_max = 300;                // fit window grows to 5 min (clamped to 1000)
     int64_t rate_tau_ns = 120000000000LL;      // ε_applied's first-order loop
     int64_t rate_warn_ppm = 100;
@@ -107,6 +108,8 @@ class ClockLock {
     // keeping ε and the phase (mrasrc). A program's STC never steps; it relocks.
     void step_to_floor();
     const ClockLockConfig& config() const { return cfg_; }
+    // The fit level's buckets among those closed since it opened (B-100; the tests read it).
+    void level_share(int* on, int* since) const;
 
   private:
     // The rate fit runs on one floor level: a bucket off it by more than step_ns is a
@@ -123,6 +126,7 @@ class ClockLock {
     Pair seed_floor(int64_t below);
     void held_fall(int64_t house_now);
     void classify(int64_t house_now);
+    void seed_densest();
     bool fit(int64_t* ppb, int* n) const;
     int64_t eps_ppb() const;
 
@@ -135,6 +139,8 @@ class ClockLock {
     mutable bool stale_seen_ = false; // a stale mark since the last close (note_stale)
     StcLine line_;
     int64_t origin_h_ = 0;            // bucket grid of this epoch
+    int64_t level_h_ = 0;             // house of the fit level's first bucket (B-100)
+    int64_t win_h_ = 0;               // house of the epoch's first sample: the first-fit window counts from it
     int64_t bucket_ = 0;              // index of the open bucket
     Point cur_{0, 0, Level::fit};     // its min-d sample
     std::deque<Point> hist_;          // closed buckets, newest last
@@ -356,6 +362,9 @@ class VirtualStc {
     std::vector<EpochInfo> epochs() const;
     int64_t source_stc_90k() const;    // seed for the PES Unwrapper
     std::vector<StcEvent> take_events();
+    // The two locks, read-only (the tests: the reference lock's own window while degraded, B-100).
+    const ClockLock& pcr_lock() const { return pcr_; }
+    const ClockLock& ref_lock() const { return ref_; }
 
   private:
     enum class Src { pcr, ref };

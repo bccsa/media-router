@@ -1072,7 +1072,17 @@ rows B-1 to B-48) holds the same records with their work items.
   slew for 5 s and a 20 ppm track slew. Integer arithmetic, so a replay is
   bit-exact on every machine. A program is `locked` once the rate is known
   and the acquire time has passed, and `lost` after 5 s without a sample;
-  the mapping survives `lost`.
+  the mapping survives `lost`. On a scattered delivery the first fit waits
+  (plan chapter 15.4 B-100, 2026-10-23): a level that holds under half of the
+  buckets closed since it opened (`kScatteredDen` 2: a bursty relay, whose
+  1 s minima scatter 90–115 ms) makes its first fit only once the window is
+  full, 300 s of house time since the epoch's first sample, on the window's
+  densest `step_ns` band, and once a rate is known its fits on no more
+  points than the rate in force only pull the rate. On TECH01's relay every
+  fresh start of an hour now locks, 85 of 89 at 306–308 s (the other four
+  after a freeze degrade while acquiring), within 50 ppm of the hour's floor
+  trend and with no rate warning after the lock; before, 56 of 89 locked
+  within 900 s (median 186 s) and 33 never did.
 - **The first epoch moves onto its floor** (WI-P1-6). In a lock's first
   epoch, the one the pipeline started with, when its first two buckets agree
   within `step_ns` on a floor more than `step_ns` below the line, the line
@@ -1761,6 +1771,18 @@ were rejected: they move the mapping the lead row judges. The design's
 - A sender whose delivery swings by ±300 ms (today's gate egress) lands on
   its lower envelope, so its PES reach a receiver up to 554 ms after their
   house PTS: a Phase 4 output's latency, or the ingest offset, must cover it.
+- A known limit, accepted by the owner (2026-10-23, B-100): on a bursty
+  relay the rate the lock reads is the floor's over its window, not the
+  source's clock. The floor's 5 min trend wanders by ±100 ppm on the gate's
+  delivery, and the densest band of a diffuse scatter reads about zero
+  whatever the clock (−12…+31 ppm with the clock at ±50 on TECH01's own
+  residual), so a source clock genuinely off is not read there and its
+  "Source clock off" alarm stays silent: fast by 100 ppm the line climbs
+  about 270 ms an hour and is brought down with about 1 s cut every 100 min,
+  slow by 100 ppm it re-steps about every 30 min with nothing cut.
+  `syn-offset-masked` pins it, so that an estimator that one day reads the
+  clock through such a scatter (it would need the envelope's drift over an
+  hour or more) fails it on purpose; #847 removes the cause.
 - Closed 2026-10-22 (plan chapter 15.4 B-26): the bus-egress lateness tap of
   a `liveCaptureClock` pipeline read the base time, so video-encoder's card
   showed minutes on a box up less than an hour and no output lateness after.

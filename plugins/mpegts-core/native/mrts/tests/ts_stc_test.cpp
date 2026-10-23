@@ -911,6 +911,273 @@ void test_live_hold() {
         for (const auto& p : r->lvl) g_all.add(p.second);
 }
 
+// --- B-100: the first fit on a scattered delivery ---------------------------------
+
+// TECH01's 150 s delivery cycle in outline, stretched to p s, from `phase` s into it, in µs: a two-hump
+// rise to +h ms over 17 s, the floor 150 ms under the usual level for 6 s, a hump to +h/2 at 31 s, a dip
+// and spike at 90 s, a dip at 120 s. Knots: ms of the outline, per mille of h, ms; p 0: none.
+int64_t cycle_us(int64_t t, int64_t p, int64_t h, int64_t phase) {
+    if (p <= 0) return 0;
+    static const int64_t k[][3] = {{0, 300, 0},      {2500, 800, 0},   {4000, 0, -130},   {6000, 400, 0},
+                                   {16000, 1000, 0}, {18000, 500, 0},  {20000, 0, -150},  {26000, 0, -150},
+                                   {28000, 0, 0},    {31000, 500, 0},  {34000, 500, 0},   {36000, 0, 0},
+                                   {89000, 0, 50},   {91000, 0, -140}, {93000, 900, 0},   {95500, 900, 0},
+                                   {97000, 0, 0},    {120000, 0, 50},  {122000, 0, -140}, {124000, 0, 0},
+                                   {149900, 0, 100}, {150000, 300, 0}};
+    const int64_t ph = (t + phase * S) % (p * S) / 1000 * 150 / p;   // µs of the outline
+    for (size_t i = 0; i + 1 < sizeof k / sizeof k[0]; i++) {
+        const int64_t f0 = k[i][0] * 1000, f1 = k[i + 1][0] * 1000;
+        if (ph < f0 || ph > f1) continue;
+        const int64_t a = k[i][1] * h + k[i][2] * 1000, b = k[i + 1][1] * h + k[i + 1][2] * 1000;
+        return a + (b - a) * (ph - f0) / (f1 - f0);
+    }
+    return 0;
+}
+
+// One draw per second of send time, the same on every machine.
+uint64_t sec_mix(int64_t sec, uint64_t salt) {
+    uint64_t x = (uint64_t)sec * 0x9E3779B97F4A7C15ULL + salt;
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 32;
+    return x;
+}
+
+// A bursty relay's delivery (TECH01's 1 s minima scatter with an IQR of 105-115 ms): per second a level in
+// 0..w ms, or a dense floor edge (the floor on floor_pct % of the seconds, lo..hi ms above it on the rest),
+// plus the cycle (p s, h ms, from `phase` s), on 150 ms of base delay.
+struct Scatter {
+    int64_t w = 200;
+    int floor_pct = 0;
+    int64_t lo = 0, hi = 0;
+    int64_t p = 150, h = 400, phase = 0;
+    int64_t delay(int64_t t) const {
+        const int64_t sec = t / S;
+        int64_t lvl = 0;
+        if (floor_pct > 0) {
+            if ((int)(sec_mix(sec, 0x12345) % 100) >= floor_pct)
+                lvl = lo + (int64_t)(sec_mix(sec, 0x6789) % (uint64_t)(hi - lo + 1));
+        } else if (w > 0) {
+            lvl = (int64_t)(sec_mix(sec, 0x12345) % (uint64_t)(w + 1));
+        }
+        return (150 + lvl) * MS + cycle_us(t, p, h, phase) * 1000;
+    }
+};
+
+// ClockLock alone on a Scatter, the source at ppm (the lock reads it), the PCR every pcr_ms, each arrival
+// its own (0..5 ms of jitter); relock(true, true) at an envelope step as the PCR lock does, relock(true) at
+// relock_at s.
+struct FitRun {
+    int64_t lock = -1, first_fit = -1;          // send times
+    int64_t ppb_lock = 0, ppb_600 = 0, ppb_end = 0;
+    int steps = 0;
+    int on = 0, since = 0;                      // the level's share at the last close before the first fit
+    int hi_on = 0, hi_since = 1;                // its largest from 30 s to the first fit
+    int64_t jump = 0, jump_at = -1;             // the largest ε move between closes after the first fit
+                                                // where the level held under half
+    bool relocked = false, locked_end = false;
+    int64_t kept = 0, refit_at = -1, refit_raw = 0, refit_dev = 0;   // relock_at: the kept ε; the next fit,
+    int refit_on = 0, refit_since = 0;          // its share and the ε's largest move off kept within 100 s
+};
+
+FitRun fit_run(const Scatter& sh, int64_t ppm, int64_t pcr_ms, int64_t secs, int64_t relock_at = -1) {
+    ClockLock lk;
+    Lcg g(5);
+    FitRun r;
+    int64_t last_ppb = 0;
+    for (int64_t t = 0; t <= secs * S; t += pcr_ms * MS) {
+        const int64_t sigma = 7200 * S + t;
+        const int64_t jit = (int64_t)(g.next() % 5001) * 1000;
+        const int64_t h = H0 + t + at_ppb(t, ppm * 1000) + 20 * MS + sh.delay(t) + jit;
+        if (relock_at >= 0 && !r.relocked && t >= relock_at * S) {
+            r.relocked = true;
+            r.kept = lk.ppb();
+            lk.relock(true);
+        }
+        lk.feed(sigma, h);
+        if (lk.envelope_step()) {
+            r.steps++;
+            lk.relock(true, true);
+            lk.feed(sigma, h);
+        }
+        int on = 0, since = 0;
+        lk.level_share(&on, &since);
+        const int64_t ppb = lk.ppb();
+        if (r.first_fit < 0 && lk.has_fit()) {
+            r.first_fit = t;
+        } else if (r.first_fit < 0) {
+            r.on = on;
+            r.since = since;
+            if (t >= 30 * S && (int64_t)on * r.hi_since > (int64_t)r.hi_on * since) {
+                r.hi_on = on;
+                r.hi_since = since;
+            }
+        } else if (ppb != last_ppb && on * 2 < since && iabs(ppb - last_ppb) > r.jump) {
+            r.jump = iabs(ppb - last_ppb);
+            r.jump_at = t;
+        }
+        if (r.relocked && r.refit_at < 0 && lk.has_fit()) {
+            r.refit_at = t;
+            r.refit_raw = lk.fit_ppb();
+            r.refit_on = on;
+            r.refit_since = since;
+        }
+        if (r.refit_at >= 0 && t <= r.refit_at + 100 * S) r.refit_dev = std::max(r.refit_dev, iabs(ppb - r.kept));
+        if (r.lock < 0 && lk.phase() == ClockLock::Phase::locked) {
+            r.lock = t;
+            r.ppb_lock = ppb;
+        }
+        if (t == 600 * S) r.ppb_600 = ppb;
+        last_ppb = ppb;
+        g_all.add(ppb);
+    }
+    r.ppb_end = lk.ppb();
+    r.locked_end = lk.phase() == ClockLock::Phase::locked;
+    return r;
+}
+
+void print_fit(const char* label, const FitRun& r) {
+    std::printf("  %s: first fit %.2f s, locked %.2f s at %.3f ppm (600 s %.3f, end %.3f), %d step(s); the level's "
+                "share before the first fit %d/%d, its largest from 30 s %d/%d; the largest scattered move %.3f ppm "
+                "at %.2f s",
+                label, r.first_fit / 1e9, r.lock / 1e9, r.ppb_lock / 1000.0, r.ppb_600 / 1000.0, r.ppb_end / 1000.0,
+                r.steps, r.on, r.since, r.hi_on, r.hi_since, r.jump / 1000.0, r.jump_at / 1e9);
+    if (r.relocked)
+        std::printf("; kept %.3f ppm, the next fit at %.2f s (raw %.3f, the level %d/%d), within %.3f ppm of the "
+                    "kept for 100 s",
+                    r.kept / 1000.0, r.refit_at / 1e9, r.refit_raw / 1000.0, r.refit_on, r.refit_since,
+                    r.refit_dev / 1000.0);
+    std::printf("; %s at the end\n", r.locked_end ? "locked" : "not locked");
+}
+
+void test_first_fit() {
+    // 1. TECH01's shape at +50 ppm: a level a burst or a dip opened holds a few % of the buckets.
+    const Scatter bursty;
+    const FitRun a = fit_run(bursty, 50, 60, 700);
+    print_fit("0..200 ms a second, TECH01's cycle at 400 ms, phase 0 s, +50 ppm", a);
+    CHECK("first fit: a scattered delivery's level waits for the full window (the first fit at 300 s of house "
+          "time) and fits on its densest band, locked 5 s later",
+          within(a.first_fit, 299500 * MS, 301 * S) && within(a.lock, 304 * S, 306 * S));
+    CHECK("first fit: ... its level held under 15 % of the buckets since it opened at every close from 30 s, and "
+          "had 30 points before the window (the wait held the fit, not a want of points)",
+          a.hi_on * 100 < 15 * a.hi_since && a.on >= 30);
+    CHECK("first fit: ... the rate within the 100 ppm alarm bound at the lock; locked at 700 s after one "
+          "envelope-step relock",
+          iabs(a.ppb_lock) < 100000 && a.steps == 1 && a.locked_end);
+    // The band is a horizontal slice of a scatter wider than itself: it reads the floor, not the clock.
+    const FitRun a100 = fit_run(bursty, 100, 60, 700);
+    print_fit("... +100 ppm", a100);
+    CHECK("first fit: ... at +100 ppm the band reads within 40 ppm of zero, the alarm silent (B-100's known limit)",
+          within(a100.lock, 304 * S, 306 * S) && iabs(a100.ppb_lock) <= 40000 && iabs(a100.ppb_end) <= 40000);
+    // 2. From the dip's floor (the chained level 4 of 299 at the window) and from the usual level.
+    bool phases = true;
+    for (const int64_t ph : {20, 60}) {
+        Scatter s;
+        s.phase = ph;
+        const FitRun b = fit_run(s, 50, 60, 700);
+        char lab[96];
+        std::snprintf(lab, sizeof lab, "... phase %lld s", (long long)ph);
+        print_fit(lab, b);
+        phases &= within(b.lock, 304 * S, 306 * S) && iabs(b.ppb_lock) < 100000 && b.locked_end;
+        if (ph == 20) phases &= b.on < 30;
+    }
+    CHECK("first fit: ... from the dip's floor (a chained level of 4 buckets: the re-seed fits) and from the "
+          "usual level too: locked at 304-306 s, within the alarm bound",
+          phases);
+    // 1b. A dense floor edge: 40 % of the seconds on the floor, the rest 50-250 ms above, no cycle.
+    bool edge = true;
+    for (const int64_t ppm : {-50, -150}) {
+        Scatter s;
+        s.floor_pct = 40;
+        s.lo = 50;
+        s.hi = 250;
+        s.p = 0;
+        const FitRun e = fit_run(s, ppm, 60, 600);
+        char lab[96];
+        std::snprintf(lab, sizeof lab, "the floor on 40 %% of the seconds, 50-250 ms on the rest, %lld ppm",
+                      (long long)ppm);
+        print_fit(lab, e);
+        edge &= iabs(e.ppb_lock - ppm * 1000) <= 8000 && iabs(e.ppb_600 - ppm * 1000) <= 1000 &&
+                e.first_fit >= 299 * S && e.on * 2 < e.since;
+    }
+    CHECK("first fit: the band reads the clock where the floor has a dense edge: within 8 ppm at the lock and 1 ppm "
+          "at 600 s, at -50 and -150 ppm (the floor seconds under half here: the window's band)",
+          edge);
+    // 1c. 0..120 ms a second: the level holds a third, so half waits where a fifth would fit at 30 points.
+    Scatter w120;
+    w120.w = 120;
+    w120.p = 0;
+    const FitRun c = fit_run(w120, 50, 60, 600);
+    print_fit("0..120 ms a second, no cycle, +50 ppm", c);
+    CHECK("first fit: half, not a fifth: 0..120 ms a second holds a fifth to a half of its buckets from 30 s, so "
+          "it waits: locked at 303-308 s within the alarm bound",
+          c.hi_on * 2 < c.hi_since && c.on * 5 >= c.since && within(c.lock, 303 * S, 308 * S) &&
+              iabs(c.ppb_lock) < 100000);
+    Scatter w120c = w120;
+    w120c.p = 150;
+    const FitRun cc = fit_run(w120c, 50, 60, 600);
+    print_fit("0..120 ms a second, the cycle, +50 ppm", cc);
+    CHECK("first fit: ... and with TECH01's cycle at that width: locked at 303-308 s within the alarm bound",
+          within(cc.lock, 303 * S, 308 * S) && iabs(cc.ppb_lock) < 100000);
+    // 3. A clean level is never scattered: its fit at 30 buckets, as before B-100.
+    Scatter clean;
+    clean.w = 0;
+    clean.p = 0;
+    const FitRun d = fit_run(clean, 50, 60, 300);
+    print_fit("a clean level, +50 ppm", d);
+    CHECK("first fit: a clean level fits at 30 buckets (30 s) and locks at 35 s, the source's rate +-1 ppm at 300 s",
+          within(d.first_fit, 29 * S, 31 * S) && within(d.lock, 34 * S, 36 * S) && d.on == d.since &&
+              iabs(d.ppb_end - 50000) <= 1000);
+    // 11. A 2 s PCR: 150 buckets in 300 s, the window still 300 s of house time.
+    Scatter sp;
+    sp.p = 0;
+    const FitRun f = fit_run(sp, -50, 2000, 700);
+    print_fit("a 2 s PCR, 0..200 ms a second, -50 ppm", f);
+    CHECK("first fit: a sparse scattered delivery locks at 300 s of house time (150 buckets at a 2 s PCR), within "
+          "the alarm bound",
+          within(f.first_fit, 299 * S, 304 * S) && within(f.lock, 305 * S, 312 * S) && f.since <= 150 &&
+              iabs(f.ppb_lock) < 100000);
+}
+
+// KEEP (B-100): once a rate is known, a scattered level's fit on no more points than it pulls it.
+void test_first_fit_keep() {
+    Scatter w120;
+    w120.w = 120;
+    w120.p = 0;
+    const FitRun a = fit_run(w120, 50, 60, 900, 400);
+    print_fit("0..120 ms a second, no cycle, a relock(true) at 400 s", a);
+    CHECK("relock: a scattered level's fit on no more points pulls the rate, it does not replace it: the relock "
+          "epoch's chained 30-point fit lies over 20 ppm off the kept rate, the rate within 5 ppm of it for 100 s",
+          a.refit_at >= 0 && a.refit_on * 2 < a.refit_since && iabs(a.refit_raw - a.kept) > 20000 &&
+              a.refit_dev <= 5000);
+    // The first epoch: the band's later fits as the window slides, on no more points than the rate in force.
+    const FitRun e = fit_run(w120, 50, 60, 900);
+    print_fit("0..120 ms a second, no cycle, no relock (the first epoch)", e);
+    Scatter b80;
+    b80.phase = 80;
+    const FitRun e80 = fit_run(b80, 50, 60, 900);
+    print_fit("TECH01's shape, phase 80 s, no relock", e80);
+    CHECK("relock: ... in the first epoch too: no move over 20 ppm between closes after the first fit while the "
+          "level holds under half (0..120 ms a second, TECH01's shape at phase 80 s)",
+          e.first_fit >= 0 && e.jump <= 20000 && e80.first_fit >= 0 && e80.jump <= 20000);
+    // Controls: a level that holds half is judged as before B-100; TECH01's relock epoch never reaches 30 points.
+    Scatter w30;
+    w30.w = 30;
+    w30.p = 0;
+    const FitRun h = fit_run(w30, 50, 60, 900, 400);
+    print_fit("0..30 ms a second (the level holds half), a relock(true) at 400 s", h);
+    CHECK("relock: ... a level that holds half its buckets after a relock: its fit off by over 20 ppm replaces "
+          "the rate, as before B-100",
+          h.refit_at >= 0 && h.refit_on * 2 >= h.refit_since && iabs(h.refit_raw - h.kept) > 20000 &&
+              h.refit_dev > 100000);
+    const Scatter bursty;
+    const FitRun b = fit_run(bursty, 50, 60, 700, 400);
+    print_fit("TECH01's shape, phase 0 s, a relock(true) at 400 s", b);
+    CHECK("relock: ... on TECH01's shape the relock epoch's chained level never has 30 points in 300 s: no fit, "
+          "the kept rate to the end",
+          b.relocked && b.refit_at < 0 && b.ppb_end == b.kept);
+}
+
 // --- PcrValidator, row by row ------------------------------------------------------
 
 struct VRun {
@@ -2839,6 +3106,133 @@ void test_vstc_one_timeline() {
               c.back[PID_V] == 0 && c.back[PID_A] == 0 && c.back_after[PID_V] == 0 && c.back_after[PID_A] == 0);
 }
 
+// B-100 on the program harness: TECH01's shape on the path (150 ms, the per-second 0..200 ms level and the
+// cycle at 400 ms), the source at +50 ppm; the stats posted every 2 s, the reference lock read at each.
+struct CourseRun {
+    std::vector<StcEvent> ev;
+    int64_t locked_at = -1, ppb_lock = 0;   // the first Locked stats post (rel)
+    int warn_posts = 0;
+    int ref_acq = 0, ref_locked = 0;        // the reference lock's phase at the posts degraded before 310 s
+    int64_t ref_first_locked = -1;
+    VirtualStc::State end = VirtualStc::State::acquiring;
+    int count(StcEvent::Kind k, const char* why = nullptr) const {
+        int n = 0;
+        for (const StcEvent& e : ev) n += e.kind == k && (!why || !std::strcmp(e.reason, why));
+        return n;
+    }
+    int64_t at(StcEvent::Kind k, const char* why = nullptr) const {   // the first such event (rel), -1: none
+        for (const StcEvent& e : ev)
+            if (e.kind == k && (!why || !std::strcmp(e.reason, why))) return rel(e.house_ns);
+        return -1;
+    }
+};
+
+auto tech01_path = [](int64_t phase) {
+    return [phase](int, int64_t t) {
+        Scatter sc;
+        sc.phase = phase;
+        Shape s;
+        s.net_ns = sc.delay(t);
+        return s;
+    };
+};
+
+template <class F>
+CourseRun course(const char* label, F shape, int64_t secs, uint64_t seed) {
+    VirtualStc v;
+    Fnv f;
+    CourseRun r;
+    int64_t last = INT64_MIN;
+    drive(v, program(secs, 50000, seed, shape), f, [&](const Pkt& p, const VirtualStc::Mapping&) {
+        if (last != INT64_MIN && p.h - last < 2 * S) return;
+        last = p.h;
+        const VirtualStc::Stats s = v.stats();
+        if (r.locked_at < 0 && s.state == VirtualStc::State::locked) {
+            r.locked_at = rel(p.h);
+            r.ppb_lock = s.ppb;
+        }
+        r.warn_posts += s.state == VirtualStc::State::locked && s.rate_warning;
+        if (s.state != VirtualStc::State::degraded || rel(p.h) >= 310 * S) return;
+        if (v.ref_lock().phase() != ClockLock::Phase::locked) {
+            r.ref_acq++;
+        } else {
+            r.ref_locked++;
+            if (r.ref_first_locked < 0) r.ref_first_locked = rel(p.h);
+        }
+    });
+    r.ev = fold_events(v, f);
+    r.end = v.state();
+    print_events(label, r.ev);
+    std::printf("  %s: the first Locked post at %.2f s, %.3f ppm; %d rate-warning post(s); the reference lock "
+                "while degraded before 310 s: acquiring at %d posts, locked at %d (from %.2f s); end %s\n",
+                label, r.locked_at / 1e9, r.ppb_lock / 1000.0, r.warn_posts, r.ref_acq, r.ref_locked,
+                r.ref_first_locked / 1e9, state_name(r.end));
+    g_all.add((int64_t)f.h);
+    return r;
+}
+
+void test_vstc_first_fit() {
+    using K = StcEvent::Kind;
+    // 6. A periodic bursty delivery from three phases of its cycle: the lock at 300 s of house time.
+    bool all = true;
+    for (const int64_t ph : {0, 20, 60}) {
+        char lab[96];
+        std::snprintf(lab, sizeof lab, "TECH01's path from phase %lld s", (long long)ph);
+        const CourseRun r = course(lab, tech01_path(ph), 700, 7);
+        all &= within(r.locked_at, 304 * S, 308 * S) && iabs(r.ppb_lock) < 100000 && r.count(K::degraded) == 0 &&
+               r.count(K::relock) >= 1 && r.count(K::relock) == r.count(K::relock, "envelope-step") &&
+               r.warn_posts == 0 && r.end == VirtualStc::State::locked;
+    }
+    CHECK("vstc first fit: a periodic bursty delivery locks at 304-308 s from any phase of its cycle, within the "
+          "alarm bound, no degrade, envelope-step relocks only, no rate warning",
+          all);
+    const CourseRun nc = course("0..200 ms a second, no cycle", [](int, int64_t t) {
+        Scatter sc;
+        sc.p = 0;
+        Shape s;
+        s.net_ns = sc.delay(t);
+        return s;
+    }, 700, 7);
+    CHECK("vstc first fit: ... the scatter without a cycle likewise, no rate-warning post",
+          within(nc.locked_at, 304 * S, 308 * S) && nc.warn_posts == 0 && nc.end == VirtualStc::State::locked);
+    // Controls: a level that holds its buckets locks as before B-100.
+    const CourseRun cl = course("clean", plain, 700, 7);
+    const CourseRun q = course("a +100 ms queue over 30 s from 10 s", [](int, int64_t t) {
+        Shape s;
+        s.net_ns = t < 10 * S ? 0 : t < 40 * S ? 100 * MS * (t - 10 * S) / (30 * S) : 100 * MS;
+        return s;
+    }, 700, 7);
+    const CourseRun sp = course("a steady 2 s PCR", [](int pid, int64_t t) { return sparse2s(pid, t); }, 700, 81);
+    CHECK("vstc first fit: ... a clean path, a queue building up and a steady 2 s PCR lock as before (36, 82, 66 s)",
+          within(cl.locked_at, 35 * S, 37 * S) && within(q.locked_at, 81 * S, 83 * S) &&
+              within(sp.locked_at, 65 * S, 67 * S) && cl.ev.empty() && q.ev.empty() && sp.ev.empty());
+    // 7, 7b. The PCR stuck 100-103 s while acquiring: degraded (freeze); the relocked PCR lock's window restarts
+    // at the freeze's leap, so the program recovers once it locks; meanwhile the reference lock waits its own.
+    const CourseRun fz = course("TECH01's path, the PCR stuck 100-103 s", [](int pid, int64_t t) {
+        Scatter sc;
+        Shape s;
+        s.net_ns = sc.delay(t);
+        if (pid == PCR_PID && t >= 100 * S && t < 103 * S) s.pcr_ns = 100 * S - t;
+        return s;
+    }, 900, 7);
+    const int64_t deg = fz.at(K::degraded, "freeze"), leap = fz.at(K::leap), rec = fz.at(K::recovered);
+    CHECK("vstc first fit x freeze: a freeze while acquiring degrades at the third frozen pair, recovers once the "
+          "relocked lock locks (its window from the leap at the freeze's end: 300-310 s after it), locked at the end",
+          fz.count(K::degraded) == 1 && within(deg, 100300 * MS, 100700 * MS) && within(leap, 103 * S, 103500 * MS) &&
+              fz.count(K::recovered) == 1 && within(rec - leap, 300 * S, 310 * S) &&
+              within(fz.locked_at, rec, rec + 2500 * MS) && fz.end == VirtualStc::State::locked);
+    const int64_t ref_step = [&] {
+        for (const StcEvent& e : fz.ev)
+            if (e.kind == K::relock && !std::strcmp(e.reason, "envelope-step") && rel(e.house_ns) > deg)
+                return rel(e.house_ns);
+        return (int64_t)-1;
+    }();
+    CHECK("vstc first fit: a degrade in the first 300 s runs on an acquiring reference lock until its own window: "
+          "acquiring at every post to 304 s, locked from 304-308 s, its first envelope step after that",
+          fz.ref_acq >= 95 && within(fz.ref_first_locked, 304 * S, 308 * S) && ref_step > fz.ref_first_locked &&
+              ref_step < rec);
+}
+
 void test_determinism() {
     const uint64_t d1 = degraded_scenario(false), d2 = degraded_scenario(false);
     const uint64_t s1 = straddle_scenario(false), s2 = straddle_scenario(false);
@@ -2887,6 +3281,8 @@ int main(int argc, char** argv) {
     test_backlog_floor();
     test_step_epoch();
     test_live_hold();
+    test_first_fit();
+    test_first_fit_keep();
     test_validator();
     test_vstc_clean_and_wrap();
     test_vstc_relocks();
@@ -2903,6 +3299,7 @@ int main(int argc, char** argv) {
     test_vstc_step_epoch();
     test_vstc_live_hold();
     test_vstc_one_timeline();
+    test_vstc_first_fit();
     test_determinism();
     std::printf("\n  CHECKSUM ts_stc %016llx (compare across machines)\n", (unsigned long long)g_all.h);
     return test_summary("ts_stc");

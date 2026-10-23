@@ -43,6 +43,9 @@ const char kUsage[] =
     "                        then drains: all sent until then arrives over the second MS,\n"
     "                        in order (a caller that queues; S 0: the trace starts on it)\n"
     "  --ahead ES:MS         that ES's PES stamped MS ahead of the others (#820)\n"
+    "  --scatter-ms MS|LO:HI a bursty relay (B-100): per second sent a level in 0..MS (or LO..HI)\n"
+    "                        from the seed, added to every arrival of that second\n"
+    "  --scatter-floor PCT   with it, that share of the seconds on the floor: a dense floor edge\n"
     "  --wrap-at S           the PCR's 33-bit base wraps S seconds in\n"
     "  --house0 S            house time of the first send (1000)\n"
     "  --sigma0 S            source time of the first send (7200; --wrap-at replaces it)\n"
@@ -184,6 +187,18 @@ int main(int argc, char** argv) {
             ok = f.size() == 3 && seconds(f[0], &b.at_ns) && millis(f[1], &b.len_ns) && millis(f[2], &b.drain_ns) &&
                  b.at_ns >= 0 && b.len_ns > 0 && b.drain_ns >= 0;
             c.backlogs.push_back(b);
+        } else if (a == "--scatter-ms") {
+            const std::vector<std::string> f = split(v, ':');
+            if (f.size() == 2)
+                ok = millis(f[0], &c.scatter_lo_ns) && millis(f[1], &c.scatter_ns) && c.scatter_lo_ns >= 0 &&
+                     c.scatter_ns >= c.scatter_lo_ns;
+            else
+                ok = f.size() == 1 && millis(v, &c.scatter_ns) && c.scatter_ns >= 0;
+        } else if (a == "--scatter-floor") {
+            char* end = nullptr;
+            const long p = std::strtol(v.c_str(), &end, 10);
+            ok = !v.empty() && *end == 0 && p >= 0 && p <= 100;
+            c.scatter_floor_pct = (int)p;
         } else if (a == "--wrap-at") {
             ok = seconds(v, &c.wrap_at_ns) && c.wrap_at_ns >= 0;
         } else if (a == "--house0") {

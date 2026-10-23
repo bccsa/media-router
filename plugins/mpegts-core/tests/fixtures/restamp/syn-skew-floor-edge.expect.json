@@ -1,0 +1,11 @@
+{
+  "source": "fixture_gen --trace --duration 600 --pcr-ms 60 --pids v,a2 --jitter-ms 5 --ppm -50 --scatter-ms 50:250 --scatter-floor 40 --delay-ms 300 --seed 11",
+  "note": "A scattered delivery with a dense floor edge (chapter 15.4 B-100): per second of send time 40 % of the seconds sit on the floor and the rest 50-250 ms above it; the source clock slow by 50 ppm, so the lock must read +50. The floor seconds hold under half of the buckets, so the first fit waits for the full window; its densest band is the floor's edge and reads the clock: +49.5 ppm at 306 s (the accuracy pin: a zero first fit or a whole-window fit fails it). Today's rule never locks this trace in 600 s.",
+  "lockedWithinS": 320,
+  "degraded": 0,
+  "finalState": "locked",
+  "ppm": [45, 55],
+  "ppmAfterS": 310,
+  "monotonic": true,
+  "faithful": true
+}

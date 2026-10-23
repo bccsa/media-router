@@ -63,6 +63,10 @@ struct Config {
     std::vector<Late> late;
     std::vector<Backlog> backlogs;
     std::vector<std::pair<int, int64_t>> ahead;   // (PID, ns): its PES stamped that far ahead (#820)
+    // A bursty relay (B-100): per second of send time a level drawn in [scatter_lo_ns, scatter_ns] from the
+    // seed, added to every arrival of that second; on scatter_floor_pct % of the seconds the floor (0) instead.
+    int64_t scatter_ns = 0, scatter_lo_ns = 0;
+    int scatter_floor_pct = 0;
 };
 
 // H.264 IPBB carrying the PCR, MPEG-1 audio, AAC, a teletext-like private stream.
@@ -297,6 +301,22 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
         }
         return t;
     };
+    // A bursty relay's level for the second a send leaves in (B-100): one draw per second and seed.
+    auto scatter = [&](int64_t leave) {
+        if (c.scatter_ns <= 0) return (int64_t)0;
+        uint64_t x = (uint64_t)(leave / S) * 0x9E3779B97F4A7C15ULL + c.seed * 0x632BE59BD9B4E019ULL;
+        x ^= x >> 29;
+        x *= 0xBF58476D1CE4E5B9ULL;
+        x ^= x >> 32;
+        if (c.scatter_floor_pct > 0) {
+            uint64_t y = (uint64_t)(leave / S) * 0xD6E8FEB86659FD93ULL + c.seed * 0x9E3779B97F4A7C15ULL;
+            y ^= y >> 32;
+            y *= 0x94D049BB133111EBULL;
+            y ^= y >> 29;
+            if ((int)(y % 100) < c.scatter_floor_pct) return (int64_t)0;
+        }
+        return c.scatter_lo_ns + (int64_t)(x % (uint64_t)(c.scatter_ns - c.scatter_lo_ns + 1));
+    };
 
     // Arrivals: one delay per send (one datagram), never before the previous (FIFO).
     Lcg g(c.seed);
@@ -309,7 +329,7 @@ inline std::vector<mrts::TraceRecord> generate(const Config& c) {
             const int64_t jitter =
                 std::min<int64_t>(10 * c.jitter_mean_ns, (c.jitter_mean_ns * neg_ln_q24(g.next())) >> 24);
             const int64_t leave = due(e.send);
-            arrival = house(leave) + c.delay_ns.at(leave) + jitter;
+            arrival = house(leave) + c.delay_ns.at(leave) + jitter + scatter(leave);
             if (any && arrival < last) arrival = last;
             if (any && arrival - last >= mrts::RestampCore::OUTAGE_NS) {
                 TraceRecord o;

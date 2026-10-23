@@ -1,10 +1,10 @@
 {
   "source": "fixture_gen --shift 0x64:3400 -i trace-tech01-relay.stct",
-  "note": "trace-tech01-relay with its video PID 0x64 stamped 3.4 s later (lead about 3.5 s, chapter 15.4 B-95): within the held excess of lead_max_ns under a step-seeded line. Each dip after a burst marks video stale by the stale rule's second clause (B-48 (1)), and the mark brings the backlog rule back at the next close for the whole line (the yield), so a stale run never outlasts a move: the line moves onto the dip and the usual level steps again, today's pairs for every PID of the program: 10 relocks, 13 overlaps 10.47 s (8.06 s of them video's stale runs), never degraded, byte-identical to the core before B-95. Without the yield video stays stale for the whole 300 s hold (2 relocks, 42.85 s dropped).",
-  "relocks": [8, 12],
+  "note": "trace-tech01-relay with its video PID 0x64 stamped 3.4 s later (lead about 3.5 s, chapter 15.4 B-95): within the held excess of lead_max_ns under a step-seeded line. A dip after a burst marks video stale by the stale rule's second clause (B-48 (1)), and the mark brings the backlog rule back at the next close for the whole line (the yield), so a stale run never outlasts a move. Since B-100 the lock comes at 308 s on the window's densest band and the line is seeded by the step at 315 s: the yield then shows on this trace as a second step relock at 716 s and 27 overlaps of 1.57 s (video's stale runs); without the yield 1 relock and 0.88 s. Before B-100 (the lock at 188 s, the steps at 198 and 247 s) the yield gave today's 150 s pairs for every PID of the program, 10 relocks and 10.47 s, and without it video stayed stale for the whole 300 s hold (2 relocks, 42.85 s dropped). The yield's rule itself is pinned at ClockLock level in ts_stc_test (B-95); this fixture is its field witness.",
+  "relocks": 2,
   "degraded": 0,
   "backlogEvents": [1, 100000],
-  "droppedMs": [9000, 10500],
+  "droppedMs": [1400, 1700],
   "finalState": "locked",
   "monotonic": true,
   "faithful": true

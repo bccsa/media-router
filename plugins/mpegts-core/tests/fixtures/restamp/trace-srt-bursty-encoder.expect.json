@@ -1,16 +1,18 @@
 {
-  "note": "A live software encoder over SRT into 10.9.16.108's srt-input (listener, latency 500 ms), recorded by its restamp, 2026-10-16 07:49:30Z, 908 s: ffmpeg on the dev box (libx264 CBR 2.5 Mbit/s 640x360p25, GOP 50, 2 B-frames, AAC 128k, lavf mpegts muxrate 3 Mbit/s, PCR every 40 ms) writing straight to its SRT caller, which sends as the muxer writes, not at the mux rate. Read off the dump: PCR median every 42 ms (p99 85, max 158 ms), no leap; but the delivery stalls and bursts: the per-second delay floor moves by up to 440 ms within a second (stalls of ~400 ms, then catch-up), with a -40 ms base and dips to -80 ms every 80-120 s; video lead 257-860 ms (the VBV), audio 47-536 ms. As replayed: acquiring until 244 s (the floor keeps moving the rate fit), one envelope-step relock at 254 s (+40.9 ms) with a 205.7 ms gap on both PIDs, locked from 258 s, epsilon wandering -11.6..+16.1 ppm from 300 s, nothing dropped. The same encoder settings sent at the mux rate are trace-816-clean-cbr. The bounds keep today's results as the ceiling.",
+  "note": "A live software encoder over SRT into the Pi 4 test box's srt-input (listener, latency 500 ms), recorded by its restamp, 2026-10-16 07:49:30Z, 908 s: ffmpeg on the dev box (libx264 CBR 2.5 Mbit/s 640x360p25, GOP 50, 2 B-frames, AAC 128k, lavf mpegts muxrate 3 Mbit/s, PCR every 40 ms) writing straight to its SRT caller, which sends as the muxer writes, not at the mux rate. Read off the dump: PCR median every 42 ms (p99 85, max 158 ms), no leap; but the delivery stalls and bursts: the per-second delay floor moves by up to 440 ms within a second (stalls of ~400 ms, then catch-up), with a -40 ms base and dips to -80 ms every 80-120 s; video lead 257-860 ms (the VBV), audio 47-536 ms; the 1 s minima scatter with an IQR of 89 ms. As replayed since B-100: the level a lucky candidate adoption gave this start held 49 % of its buckets, so the first fit waits for the full 300 s window and is made on its densest band: locked at 308 s (before: acquiring until 244 s, the floor moving the rate fit, locked from 258 s), one envelope-step relock at 315 s (+149.5 ms) with a 229 ms gap on both PIDs, nothing dropped; epsilon -1.2 at the lock and -2.8 at the end, within 5 ppm of the encoder's clock (the same encoder sent at the mux rate, trace-816-clean-cbr, pins -2.2..-0.3; before B-100 the 30-point fits wandered -11.6..+16.1 from 300 s, which this file's ppm bound refuses). The bounds keep these results as the ceiling.",
   "relocks": [0, 1],
   "envelopeSteps": [0, 1],
   "degraded": 0,
   "backlogEvents": 0,
   "gaps": [0, 2],
-  "gapMs": [0, 210],
+  "gapMs": [0, 250],
   "overlaps": 0,
   "droppedPes": 0,
-  "lockedWithinS": 250,
+  "lockedWithinS": 320,
   "finalState": "locked",
   "cadenceWarning": false,
   "monotonic": true,
-  "faithful": true
+  "faithful": true,
+  "ppm": [-10, 5],
+  "ppmAfterS": 320
 }
