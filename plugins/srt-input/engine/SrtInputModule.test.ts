@@ -178,6 +178,16 @@ const pidMsg = (pid: number, type: number) => ({
 });
 const DEGRADED = 'Degraded clock: PCR frozen — timing from PID 0x0100 PTS against arrival';
 const factories = (pipeline: string) => pipeline.split(' ! ').map((el) => el.split(' ')[0]);
+/** Smoothing Cooldown as the loader injects it (b95s): minutes, 5 by default, live. */
+const COOLDOWN_SCHEMA = {
+    type: 'number',
+    default: 5,
+    minimum: 0,
+    maximum: 60,
+    'x-unit': 'min',
+    'x-live': true,
+    title: 'Smoothing Cooldown',
+};
 
 /** A playing module on the base's own state methods: what its card shows is `getState()`. */
 function cardModule() {
@@ -219,7 +229,8 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
             'tee',
         ]);
         expect(desc!.pipeline).toContain(
-            ' ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=2 ',
+            ' ! mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 ' +
+                'offset-ns=0 ! queue leaky=2 ',
         );
         expect(desc!.busReports).toEqual([
             { element: 'restamp', structure: 'mrtsrestamp-stats' },
@@ -228,15 +239,16 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         ]);
     });
 
-    it('starts the restamp on the configured offset and trims', () => {
+    it('starts the restamp on the configured offset, trims and smoothing cooldown', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({
             ingestOffsetMs: -250,
             pidTrimsMs: { 257: 40, 256: -12 },
+            smoothingCooldownMin: 10,
         });
         expect(desc!.pipeline).toContain(
-            'mrtsrestamp name=restamp clock-mode=stc offset-ns=-250000000 ' +
-                'pid-trims="256=-12000000;257=40000000" ! queue',
+            'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=600000000000 ' +
+                'offset-ns=-250000000 pid-trims="256=-12000000;257=40000000" ! queue',
         );
     });
 
@@ -257,7 +269,7 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         );
     });
 
-    it('a live edit of O or a trim sets the restamp property, with no restart', async () => {
+    it('a live edit of O, a trim or the cooldown sets the restamp property, with no restart', async () => {
         const { module } = makeModule();
         const setElementProperty = vi.fn(async () => {});
         module.setElementProperty = setElementProperty;
@@ -270,15 +282,17 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
             'pid-trims',
             '257=-40000000',
         );
-        expect(setElementProperty).toHaveBeenCalledTimes(2);
+        await instance.applyConfigUpdate({ smoothingCooldownMin: 0 });
+        expect(setElementProperty).toHaveBeenLastCalledWith('restamp', 'smoothing-cooldown-ns', 0);
+        expect(setElementProperty).toHaveBeenCalledTimes(3);
         expect(instance.getState().pendingRestart).toBe(false);
         // A later rebuild starts on the edited values.
         expect(module.buildPipeline(module.config)!.pipeline).toContain(
-            'offset-ns=500000000 pid-trims="257=-40000000"',
+            'smoothing-cooldown-ns=0 offset-ns=500000000 pid-trims="257=-40000000"',
         );
     });
 
-    it('declares ingest timing: the loader adds O and the trims, and each is live here', async () => {
+    it('declares ingest timing: the loader adds O, the trims and the cooldown, each live here', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'srt-input-manifest-'));
         try {
             mkdirSync(join(dir, 'srt-input'));
@@ -291,8 +305,11 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
                 'x-widget': 'pidTrim',
                 'x-optionsFrom': 'pids',
             });
+            expect(props.smoothingCooldownMin).toMatchObject(COOLDOWN_SCHEMA);
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
-            expect(live).toEqual(expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs']));
+            expect(live).toEqual(
+                expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs', 'smoothingCooldownMin']),
+            );
             expect(new SrtInputModule().getLiveUpdatableParams()).toEqual(
                 expect.arrayContaining(live),
             );

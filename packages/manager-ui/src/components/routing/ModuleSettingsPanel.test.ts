@@ -19,6 +19,7 @@ vi.mock('@/composables/usePatch', () => ({
 }));
 
 import ModuleSettingsPanel from './ModuleSettingsPanel.vue';
+import MrHelpTip from '@/components/common/MrHelpTip.vue';
 import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
 import { useEngineStore } from '@/stores/engines';
 
@@ -91,7 +92,10 @@ describe('ModuleSettingsPanel', () => {
     });
 });
 
-/** srt-input's schema with the two ingest timing settings as WI-P1-9 injects them. */
+const COOLDOWN_HELP =
+    "Adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.";
+
+/** srt-input's schema with the ingest timing settings as WI-P1-9 and b95s inject them. */
 const SRT_INPUT_SCHEMA = {
     type: 'object',
     properties: {
@@ -126,6 +130,16 @@ const SRT_INPUT_SCHEMA = {
             'x-unit': 'ms',
             title: 'Per-PID Trim',
         },
+        smoothingCooldownMin: {
+            type: 'number',
+            default: 5,
+            minimum: 0,
+            maximum: 60,
+            'x-unit': 'min',
+            'x-live': true,
+            title: 'Smoothing Cooldown',
+            description: COOLDOWN_HELP,
+        },
     },
 };
 
@@ -143,7 +157,12 @@ function seedSrtInput(mod: Record<string, unknown> = {}) {
                 pluginId: 'srt-input',
                 displayName: 'Venue feed',
                 configSchema: SRT_INPUT_SCHEMA,
-                liveUpdatableParams: ['playoutOffsetMs', 'ingestOffsetMs', 'pidTrimsMs'],
+                liveUpdatableParams: [
+                    'playoutOffsetMs',
+                    'ingestOffsetMs',
+                    'pidTrimsMs',
+                    'smoothingCooldownMin',
+                ],
                 settings: {
                     mode: 'listener',
                     ingestOffsetMs: -40,
@@ -168,6 +187,8 @@ const shiftOf = (block: DOMWrapper<Element>, pid: string) =>
 
 // Looked up afresh each time, so a replaced element cannot pass for the box on screen.
 const offsetBox = (wrapper: VueWrapper) => settingBlock(wrapper, 'Ingest Offset').get('input');
+const cooldownBox = (wrapper: VueWrapper) =>
+    settingBlock(wrapper, 'Smoothing Cooldown').get('input');
 const trimBox = (wrapper: VueWrapper, pid: string) =>
     settingBlock(wrapper, 'Per-PID Trim').get(`[data-pid="${pid}"] input`);
 
@@ -474,11 +495,88 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
         expect(el.value).toBe('0');
     });
 
-    it('shows the unit beside Ingest Offset only, not beside a plain number field', () => {
+    it("renders Smoothing Cooldown as a live number in min, 0-60, its help the owner's text", () => {
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        const block = settingBlock(wrapper, 'Smoothing Cooldown');
+        const input = block.get('input[type="number"]').element as HTMLInputElement;
+        // Not saved yet: the schema default hydrates it.
+        expect(input.value).toBe('5');
+        expect(input.min).toBe('0');
+        expect(input.max).toBe('60');
+        expect(block.get('[data-test="unit"]').text()).toBe('min');
+        const tips = block
+            .findAllComponents(MrHelpTip)
+            .map((t: { props(name: string): unknown }) => t.props('text'));
+        expect(tips).toEqual([
+            'Live update — changes apply instantly without restarting the module',
+            COOLDOWN_HELP,
+        ]);
+    });
+
+    it('typing "10" into Smoothing Cooldown writes once, on change, never the 1 on the way', async () => {
+        vi.useFakeTimers();
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        // Cleared first, as an operator does: an emitted 0 would turn smoothing off.
+        (cooldownBox(wrapper).element as HTMLInputElement).value = '';
+        await cooldownBox(wrapper).trigger('input');
+        await typeKeys(cooldownBox(wrapper), '10');
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+
+        await cooldownBox(wrapper).trigger('change');
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'smoothingCooldownMin', 10],
+        ]);
+    });
+
+    it('clamps the Smoothing Cooldown to 0-60 min when it commits', async () => {
+        vi.useFakeTimers();
+        seedSrtInput();
+        const wrapper = mountPanel('srt-input-1');
+
+        await cooldownBox(wrapper).setValue('90');
+        await cooldownBox(wrapper).setValue('-3');
+        // Past the live-update throttle, which holds the second write back.
+        vi.advanceTimersByTime(1000);
+
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'srt-input-1', 'smoothingCooldownMin', 60],
+            ['eng-1', 'srt-input-1', 'smoothingCooldownMin', 0],
+        ]);
+    });
+
+    it('a stored Smoothing Cooldown that is not a number counts as 5, the default', async () => {
+        seedSrtInput({
+            configSchema: {
+                properties: {
+                    smoothingCooldownMin: SRT_INPUT_SCHEMA.properties.smoothingCooldownMin,
+                },
+            },
+            settings: { smoothingCooldownMin: 'x' },
+        });
+        const wrapper = mountPanel('srt-input-1');
+        const el = cooldownBox(wrapper).element as HTMLInputElement;
+
+        enterUnparseable(el);
+        await cooldownBox(wrapper).trigger('change');
+
+        expect(mockModuleSetting).not.toHaveBeenCalled();
+        expect(el.value).toBe('5');
+    });
+
+    it('shows the unit beside the change-only boxes, not beside a plain number field', () => {
         seedSrtInput();
         const wrapper = mountPanel('srt-input-1');
 
         expect(settingBlock(wrapper, 'Ingest Offset').get('[data-test="unit"]').text()).toBe('ms');
+        expect(settingBlock(wrapper, 'Smoothing Cooldown').get('[data-test="unit"]').text()).toBe(
+            'min',
+        );
         // Playout Offset declares x-unit ms as well and keeps the bare MrInput.
         const playout = settingBlock(wrapper, 'Playout Offset');
         expect(playout.find('[data-test="unit"]').exists()).toBe(false);
@@ -500,6 +598,7 @@ describe('ModuleSettingsPanel — srt-input ingest timing settings', () => {
             expect.objectContaining({
                 ingestOffsetMs: -40,
                 pidTrimsMs: { '257': 120, '300': 15 },
+                smoothingCooldownMin: 5,
             }),
         );
     });

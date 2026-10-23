@@ -14,6 +14,8 @@ not a twin; chapter 3 part 4.5 rule 1):
   - fixed mode: video with dropped frames gives no marker, a 1.2 s video hole one (B-89);
   - trace-location records the core's .stct, from the start and from a live change;
   - pid-trims parsing, the counters and the stats snapshot, a restart, a flush;
+  - smoothing-cooldown-ns at the start and set live: the core's bytes, markers and events, and 0
+    moving a step-seeded line at a burst's dip as the backlog rule does (b95s);
   - any chunking: packets split over buffers and over memories leave as the core makes them;
   - gst-inspect-1.0 lists every property.
 
@@ -190,6 +192,8 @@ def drive(h, records):
             h.el.set_property("offset-ns", r[1])
         elif r[0] == "T":
             h.el.set_property("pid-trims", ";".join(f"{p}={ns}" for p, ns in sorted(r[1].items())))
+        elif r[0] == "C":
+            h.el.set_property("smoothing-cooldown-ns", r[1])
         elif r[0] == "R":
             h.el.set_property("trace-location", r[1])
         elif r[0] == "F":
@@ -223,7 +227,8 @@ for arrival, data in st.datagrams:
 REC.append(("E",))
 
 print("\n--- gst-inspect-1.0 and the property contract ---")
-PROPS = ["clock-mode", "arrival", "add-base-time", "offset-ns", "pid-trims", "stats-interval-ms",
+PROPS = ["clock-mode", "arrival", "add-base-time", "offset-ns", "pid-trims",
+         "smoothing-cooldown-ns", "stats-interval-ms",
          "trace-location", "stats", "abi", "desync-bytes", "cc-lost", "pes-oversize",
          "pes-dropped-cc", "header-spans", "psi-unsupported-sections", "pes-no-pts",
          "dts-discarded"]
@@ -240,13 +245,15 @@ check("the factory table registers mrtsrestamp at rank NONE",
       _f is not None and _f.get_rank() == Gst.Rank.NONE and _f.get_plugin_name() == "mrtshouse")
 _el = Gst.ElementFactory.make("mrtsrestamp", None)
 _defaults = {p: _el.get_property(p) for p in ("add-base-time", "offset-ns", "pid-trims",
-                                              "stats-interval-ms", "trace-location")}
-check(f"defaults: stc, arrival clock, no base time, O 0, no trims, stats every 2 s, no trace "
-      f"({_defaults})",
+                                              "smoothing-cooldown-ns", "stats-interval-ms",
+                                              "trace-location")}
+check(f"defaults: stc, arrival clock, no base time, O 0, no trims, a 300 s smoothing cooldown, "
+      f"stats every 2 s, no trace ({_defaults})",
       _el.get_property("clock-mode").value_nick == "stc"
       and _el.get_property("arrival").value_nick == "clock"
       and _defaults == {"add-base-time": False, "offset-ns": 0, "pid-trims": "",
-                        "stats-interval-ms": 2000, "trace-location": None})
+                        "smoothing-cooldown-ns": 300 * S, "stats-interval-ms": 2000,
+                        "trace-location": None})
 
 
 def _flags(name):
@@ -254,14 +261,18 @@ def _flags(name):
 
 
 _live = all(_flags(p) & Gst.PARAM_MUTABLE_PLAYING for p in
-            ("offset-ns", "pid-trims", "stats-interval-ms", "trace-location"))
+            ("offset-ns", "pid-trims", "smoothing-cooldown-ns", "stats-interval-ms",
+             "trace-location"))
 _at_start = all(_flags(p) & Gst.PARAM_MUTABLE_READY for p in
                 ("clock-mode", "arrival", "add-base-time"))
 _ro = not _flags("stats") & GObject.ParamFlags.WRITABLE
 _off = _el.find_property("offset-ns")
-check("offset-ns, pid-trims, stats-interval-ms and trace-location are live; clock-mode, arrival "
-      "and add-base-time apply at a start; stats is read-only; O within ±10 s",
-      _live and _at_start and _ro and _off.minimum == -10 * S and _off.maximum == 10 * S)
+_cool = _el.find_property("smoothing-cooldown-ns")
+check("offset-ns, pid-trims, smoothing-cooldown-ns, stats-interval-ms and trace-location are live; "
+      "clock-mode, arrival and add-base-time apply at a start; stats is read-only; O within ±10 s, "
+      "the cooldown within 0-3600 s",
+      _live and _at_start and _ro and _off.minimum == -10 * S and _off.maximum == 10 * S
+      and _cool.minimum == 0 and _cool.maximum == 3600 * S)
 _s0 = _el.get_property("stats")
 check("a fresh element's stats: its mode and arrival, no programs, no PIDs",
       _s0.get_name() == "mrtsrestamp-stats" and _s0.get_value("mode") == "stc"
@@ -689,6 +700,62 @@ _q = {q["pid"]: q for q in hp.messages("mrtsrestamp-pid")[-2:]}
 check("an empty string clears them",
       all(q["trim-ns"] == 0 and q["shift-ns"] == 0 for q in _q.values()))
 hp.stop()
+
+print("\n--- smoothing-cooldown-ns: a step-seeded line's hold, at the start and live (b95s) ---")
+# The path +300 ms for 1 s, +600 ms to 52 s from 40 s, +300 ms 1 s more (an envelope step once
+# locked, no leap), then back: the dip lies 600 ms under the step's seed, past backlog_ns. The
+# default hold keeps the line; at 0 the backlog rule moves it, its overlap dropped per PID.
+def _burst(t):
+    if 41 * S <= t < 52 * S:
+        return 600 * MS
+    return 300 * MS if 40 * S <= t < 41 * S or 52 * S <= t < 53 * S else 0
+
+
+_sb = Stream(70, delay=_burst)
+
+
+def _cool_rec(at=None):
+    """The burst's records; with `at`, ("C", 0) before the first buffer arriving at h0 + at."""
+    rec, done = [], at is None
+    for a, d in _sb.datagrams:
+        if not done and a - _sb.h0 >= at:
+            rec.append(("C", 0))
+            done = True
+        rec.append(("B", a, d))
+    return rec + [("E",)]
+
+
+def _dropped_after(events, t):
+    """Per PID, the overlap dropped from house time h0 + t on (the start burst's is before)."""
+    out = {}
+    for e in events:
+        if e["kind"] == "overlap" and e["house-ns"] - _sb.h0 >= t:
+            out[e["pid"]] = out.get(e["pid"], 0) + e["dropped-ns"]
+    return out
+
+
+for _label, _rec, _props in (("the default 300 s", _cool_rec(), {}),
+                             ("0 set live at 45 s", _cool_rec(45 * S), {}),
+                             ("0 from the start", [("C", 0)] + _cool_rec(),
+                              {"smoothing_cooldown_ns": 0})):
+    _refb = reference(_rec)
+    hb = Harness(arrival="buffer-pts", **_props)
+    drive(hb, [r for r in _rec if not (_props and r[0] == "C")])
+    _evb = hb.messages("mrtsrestamp-event")
+    _relocks = [round((e["house-ns"] - _sb.h0) / S, 2) for e in _evb if e["kind"] == "relock"]
+    _drop = _dropped_after(_evb, 45 * S)
+    _shown = [(hex(p), round(n / MS, 1)) for p, n in _drop.items()]
+    check(f"{_label}: bytes, markers and events are the core's ({len(_evb)} events; relocks at "
+          f"{_relocks} s; dropped after 45 s {_shown})",
+          hb.items() == expected_items(_rec, _refb) and _evb == ref_events(_refb))
+    if not _props and _label.startswith("the default"):
+        check("... the default keeps the step's line through the dip: one relock, nothing dropped "
+              "after 45 s", len(_relocks) == 1 and not _drop)
+    else:
+        check("... 0 moves it at the dip as the backlog rule does: 550-650 ms dropped per PID",
+              len(_relocks) >= 1 and sorted(_drop) == [PID_V, PID_A]
+              and all(550 * MS <= n <= 650 * MS for n in _drop.values()))
+    hb.stop()
 
 print("\n--- fixed mode with add-base-time: PES and PCR move by the base, markers on the bus "
       "convention ---")

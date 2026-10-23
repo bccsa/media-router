@@ -8,10 +8,10 @@ Stream: an SPTS in 7-packet (1316-byte) datagrams, the shape of chapter 3's
 cap-srt-ingest-1316.ts (PES headers and PSI anywhere, at most one PCR per datagram): H.264-like
 video carrying the PCR (DTS one frame behind PTS), MPEG audio and PSI every 100 ms, on a source
 clock at 2 h, each datagram arriving 20 ms after it was sent. Options: an outage, a flagged
-source clock jump, extra PMT entries, PSI-only lead-in datagrams.
+source clock jump, extra PMT entries, PSI-only lead-in datagrams, a path delay that moves.
 
 Reference: `reference()` runs mrtshouse/tests/restamp_ref (the core, no GStreamer) over records
-("B", arrival, bytes), ("O", ns), ("T", {pid: ns}), ("R", path), ("F",), ("E",).
+("B", arrival, bytes), ("O", ns), ("T", {pid: ns}), ("C", ns), ("R", path), ("F",), ("E",).
 `expected_items` is what the element pushes for them: each buffer's bytes split around its
 markers, a marker's PTS the gap's end on the bus convention. `identity_stamps` is what an
 identity egress then stamps on each data buffer (ts_timeline.cpp `stamp_house`)."""
@@ -128,10 +128,13 @@ class Stream:
     100 ms, on a source clock at 2 h; 7-packet datagrams arriving 20 ms after they were sent.
     `lead_in`: that many PAT+PMT datagrams first, 100 ms apart, each its own datagram (a
     consumer that joins late misses only those). A capture under load (B-89): `jitter_v` moves
-    each frame's time by up to ±that, and the frames numbered in `drop_v` are never made."""
+    each frame's time by up to ±that, and the frames numbered in `drop_v` are never made. A path
+    whose delay moves: `delay(t)` more ns for the datagram sent at mux time t, FIFO (what waited
+    arrives at once when the delay falls)."""
 
     def __init__(self, secs, h0=100 * S, sigma0=7200 * S, outage=None, lead_v=600 * MS,
-                 lead_a=400 * MS, jump=None, pmt_sec=PMT, lead_in=0, jitter_v=0, drop_v=()):
+                 lead_a=400 * MS, jump=None, pmt_sec=PMT, lead_in=0, jitter_v=0, drop_v=(),
+                 delay=None):
         # jump (t, delta): the source clock steps by delta from mux time t, flagged on the PCR.
         def sigma(t):
             return sigma0 + t + (jump[1] if jump and t >= jump[0] else 0)
@@ -171,8 +174,12 @@ class Stream:
         groups = [(i, i + 2) for i in range(0, 2 * lead_in, 2)]
         for lo, hi in ((2 * lead_in, cut), (cut, len(pk))):
             groups += [(i, min(i + 7, hi)) for i in range(lo, hi, 7)]
-        self.datagrams = [(h0 + 20 * MS + pk[hi - 1][0], b"".join(p for _, p in pk[lo:hi]))
-                          for lo, hi in groups]
+        self.datagrams, last = [], None
+        for lo, hi in groups:
+            sent = pk[hi - 1][0]
+            at = h0 + 20 * MS + sent + (delay(sent) if delay else 0)
+            last = at if last is None else max(last, at)
+            self.datagrams.append((last, b"".join(p for _, p in pk[lo:hi])))
 
     def mux(self, arrival):
         return arrival - self.h0 - 20 * MS
@@ -213,8 +220,8 @@ def reference(records, tmp, fixed=False, stats_ms=2000, base=None):
         for r in records:
             if r[0] == "B":
                 fh.write(b"B" + struct.pack("<qI", r[1], len(r[2])) + r[2])
-            elif r[0] == "O":
-                fh.write(b"O" + struct.pack("<q", r[1]))
+            elif r[0] in ("O", "C"):
+                fh.write(r[0].encode() + struct.pack("<q", r[1]))
             elif r[0] == "T":
                 fh.write(b"T" + struct.pack("<I", len(r[1]))
                          + b"".join(struct.pack("<iq", p, ns) for p, ns in sorted(r[1].items())))

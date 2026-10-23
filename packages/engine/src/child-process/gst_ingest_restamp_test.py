@@ -8,7 +8,8 @@ over unixfdsink -> unixfdsrc, and must arrive as mrts::RestampCore makes it:
       exactly (the identity egress, ts_timeline.cpp `stamp_house`), with the core's bytes;
   (b) the gap markers of a live offset-ns edit, a live pid-trims edit and an outage reach the
       consumer with GAP|DISCONT, their PTS and their encoded length, also through srt-input's
-      own queue (SrtInputModule.ts) between the restamp and the bus;
+      own queue (SrtInputModule.ts) between the restamp and the bus; a live
+      smoothing-cooldown-ns edit at its widest, 60 min, is taken as well (b95s);
   (c) mrtsrestamp-stats, -pid and -event reach the engine as plugin events `<name>:restamp`,
       each equal to the core's.
 
@@ -57,6 +58,7 @@ SRT_QUEUE = "queue leaky=2 max-size-time=100000000 flush-on-eos=true"
 STATS_MS = 1000
 EDIT_NS = 500 * MS
 TRIM_NS = 200 * MS   # on the audio PID, as the engine writes it (ingestTiming.ts)
+COOLDOWN_NS = 3600 * S   # Smoothing Cooldown's 60 min, past 32 bits through the runner's JSON
 GARBAGE = 37         # bytes the walker skips to regain sync: the core's copy path
 LEAD_IN = 15   # PAT CCs 0..14 name the lead-in datagram a consumer's first buffer is
 CHANNELS = ("mrtsrestamp-stats", "mrtsrestamp-pid", "mrtsrestamp-event")
@@ -72,10 +74,12 @@ def bus_sink(port):
 
 def plan(now):
     """The records: lead-in, 10 s of stream, O +500 ms at 3 s, a +200 ms audio trim at 4.5 s,
-    1.5 s of silence at 6 s, 37 bytes of garbage at 8.5 s, a lost packet at 9 s, EOS. Arrival
-    runs a minute ahead of the egress's clock, so no stamp meets its first floor."""
+    the smoothing cooldown 60 min at 5 s, 1.5 s of silence at 6 s, 37 bytes of garbage at
+    8.5 s, a lost packet at 9 s, EOS. Arrival runs a minute ahead of the egress's clock, so no
+    stamp meets its first floor."""
     st = fx.Stream(10, h0=now + 60 * S, outage=(6 * S, 7500 * MS), lead_in=LEAD_IN)
-    edits = [(3 * S, ("O", EDIT_NS)), (4500 * MS, ("T", {PID_A: TRIM_NS}))]
+    edits = [(3 * S, ("O", EDIT_NS)), (4500 * MS, ("T", {PID_A: TRIM_NS})),
+             (5 * S, ("C", COOLDOWN_NS))]
     records, garbage, lost = [], False, False
     for i, (arrival, data) in enumerate(st.datagrams):
         t = st.mux(arrival)
@@ -249,17 +253,21 @@ def ingest_restamp_case(argv, tag, check, srt_queue=False, now=None):
                 conn.sendall(chunk_of[id(rec)])
                 if not wait_for(lambda n=counts[i] - lost: len(got) >= n, 5.0):
                     break
-            elif rec[0] in "OT":
+            elif rec[0] in "OTC":
                 # Live, between two buffers: the element takes it at the next one.
-                prop, value = (("offset-ns", rec[1]) if rec[0] == "O" else
-                               ("pid-trims", ";".join(f"{p}={ns}" for p, ns in rec[1].items())))
+                if rec[0] == "T":
+                    prop, value = "pid-trims", ";".join(f"{p}={ns}" for p, ns in rec[1].items())
+                else:
+                    prop = "offset-ns" if rec[0] == "O" else "smoothing-cooldown-ns"
+                    value = rec[1]
                 r.send({"cmd": "set_property", "id": prop, "element": "restamp",
                         "property": prop, "value": value})
                 acked &= r.wait_event(ev_is("property_set", id=prop)) is not None
             else:
                 conn.close()   # EOS
                 conn = None
-        check(f"{label}: the live offset-ns and pid-trims edits are acknowledged", acked)
+        check(f"{label}: the live offset-ns, pid-trims and smoothing-cooldown-ns edits are "
+              "acknowledged", acked)
         check(f"{label}: the input runs to EOS", r.wait_event(ev_is("eos"), timeout=10) is not None)
         want_n = {c: n for c, n in zip(CHANNELS, (
             sum(len(p) for p, _ in fx.ref_stats(ref)), sum(len(q) for _, q in fx.ref_stats(ref)),

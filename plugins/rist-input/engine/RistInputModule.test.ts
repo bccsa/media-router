@@ -538,6 +538,16 @@ const pidMsg = (pid: number, type: number) => ({
     'dropped-pes': 0,
 });
 const factories = (pipeline: string) => pipeline.split(' ! ').map((el) => el.split(' ')[0]);
+/** Smoothing Cooldown as the loader injects it (b95s): minutes, 5 by default, live. */
+const COOLDOWN_SCHEMA = {
+    type: 'number',
+    default: 5,
+    minimum: 0,
+    maximum: 60,
+    'x-unit': 'min',
+    'x-live': true,
+    title: 'Smoothing Cooldown',
+};
 /** librist's receiver stats for one flow with one peer. */
 const flowStats = (quality: number, missing = 0, received = 1000) => ({
     'receiver-stats': {
@@ -588,37 +598,47 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
             'tee',
         ]);
         expect(desc.pipeline).toContain(
-            ' ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=downstream ',
+            ' ! mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 ' +
+                'offset-ns=0 ! queue leaky=downstream ',
         );
     });
 
-    it('starts the restamp on the configured offset and trims', () => {
+    it('starts the restamp on the configured offset, trims and smoothing cooldown', () => {
         const { module } = makeModule();
-        module.config = { ingestOffsetMs: 1500, pidTrimsMs: { 4097: 2500, 256: 0 } };
+        module.config = {
+            ingestOffsetMs: 1500,
+            pidTrimsMs: { 4097: 2500, 256: 0 },
+            smoothingCooldownMin: 2,
+        };
         // Clamped to ±2 s; a zero trim is no trim.
         expect(module.buildPipeline({})!.pipeline).toContain(
-            'mrtsrestamp name=restamp clock-mode=stc offset-ns=1500000000 ' +
-                'pid-trims="4097=2000000000" ! queue',
+            'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=120000000000 ' +
+                'offset-ns=1500000000 pid-trims="4097=2000000000" ! queue',
         );
     });
 
-    it('a live edit of O or a trim sets the restamp property, with no restart', async () => {
+    it('a live edit of O, a trim or the cooldown sets the restamp property, with no restart', async () => {
         const { module } = makeModule();
         const setElementProperty = vi.fn(async () => {});
         module.setElementProperty = setElementProperty;
         const instance = new ModuleInstance('rist-in-1', 'rist-input', module, {});
-        await instance.applyConfigUpdate({ ingestOffsetMs: -300, pidTrimsMs: { 257: 120 } });
+        await instance.applyConfigUpdate({
+            ingestOffsetMs: -300,
+            pidTrimsMs: { 257: 120 },
+            smoothingCooldownMin: 30,
+        });
         expect(setElementProperty.mock.calls).toEqual([
             ['restamp', 'offset-ns', -300_000_000],
             ['restamp', 'pid-trims', '257=120000000'],
+            ['restamp', 'smoothing-cooldown-ns', 1_800_000_000_000],
         ]);
         expect(instance.getState().pendingRestart).toBe(false);
         expect(module.buildPipeline({})!.pipeline).toContain(
-            'offset-ns=-300000000 pid-trims="257=120000000"',
+            'smoothing-cooldown-ns=1800000000000 offset-ns=-300000000 pid-trims="257=120000000"',
         );
     });
 
-    it('declares ingest timing: the loader adds O and the trims, and each is live here', async () => {
+    it('declares ingest timing: the loader adds O, the trims and the cooldown, each live here', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'rist-input-manifest-'));
         try {
             mkdirSync(join(dir, 'rist-input'));
@@ -631,8 +651,11 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
                 'x-widget': 'pidTrim',
                 'x-optionsFrom': 'pids',
             });
+            expect(props.smoothingCooldownMin).toMatchObject(COOLDOWN_SCHEMA);
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
-            expect(live).toEqual(expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs']));
+            expect(live).toEqual(
+                expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs', 'smoothingCooldownMin']),
+            );
             expect(new RistInputModule().getLiveUpdatableParams()).toEqual(
                 expect.arrayContaining(live),
             );

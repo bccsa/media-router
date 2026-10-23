@@ -411,6 +411,8 @@ describe('Aes67InputModule on house time (WI-P1-11)', () => {
             const props = (loader.getPluginSchemas()['aes67-input'] as any).properties;
             expect(props.ingestOffsetMs).toMatchObject({ minimum: -10000, maximum: 10000 });
             expect(props.pidTrimsMs).toBeUndefined();
+            // No clock lock to smooth (b95s).
+            expect(props.smoothingCooldownMin).toBeUndefined();
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
             expect(live).toEqual(expect.arrayContaining(['playoutOffsetMs', 'ingestOffsetMs']));
             expect(new Aes67InputModule().getLiveUpdatableParams()).toEqual(

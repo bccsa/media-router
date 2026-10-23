@@ -4,10 +4,11 @@
 // test`, never installed.
 //   restamp_ref in.bin [--fixed] [--base-time NS] [--stats-ms N]
 // in.bin, little-endian records: 'B' i64 arrival u32 len bytes (a buffer); 'O' i64 ns
-// (set_offset before the next buffer); 'T' u32 n, n x (i32 pid, i64 ns) (set_trims); 'F'
-// (flush); 'R' u32 len path (record the trace from here, as trace-location); 'E' (EOS: the
-// last stats, the trace closed). One JSON line per buffer and at EOS: the bytes out, the
-// gaps, the events, and the stats when the element's cadence posts them.
+// (set_offset before the next buffer); 'T' u32 n, n x (i32 pid, i64 ns) (set_trims); 'C' i64 ns
+// (set_step_fall_hold, as smoothing-cooldown-ns); 'F' (flush); 'R' u32 len path (record the trace
+// from here, as trace-location); 'E' (EOS: the last stats, the trace closed). One JSON line per
+// buffer and at EOS: the bytes out, the gaps, the events, and the stats when the element's cadence
+// posts them.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -239,6 +240,10 @@ int main(int argc, char** argv) {
                 trims[pid] = ns;
             }
             rc.set_trims(trims);
+        } else if (kind == 'C') {
+            int64_t ns = 0;
+            if (!get_le(f, &ns)) return 1;
+            rc.set_step_fall_hold(ns);
         } else if (kind == 'F') {
             rc.flush();
         } else if (kind == 'R') {

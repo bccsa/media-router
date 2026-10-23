@@ -2185,6 +2185,71 @@ void test_bursty_relay_dip() {
           monotonic(aa) && aa.cc_lost == 0 && aa.matched && aa.atomic && aa.ordered);
 }
 
+// b95s: the hold set live (an ingest's Smoothing Cooldown) reaches every program's clock, the PAT's later ones
+// too: test_bursty_relay_dip's path with program 2 on a clock of its own, the hold 0 before any program
+// exists or at 171 s (after the second burst's steps). Either way both programs move at the dip and step
+// again, the pair as before B-95; at 300 s neither does.
+void test_live_hold() {
+    Gen g;
+    g.secs = 300;
+    g.lead = 125 * MS;
+    g.burst_every = 150 * S;
+    g.burst_len = 12 * S;
+    g.burst_rise = 300 * MS;
+    g.burst_dip = 200 * MS;
+    g.burst_dip_len = 10 * S;
+    g.program2 = true;
+    const Case c = make_case(g);
+    auto off_at = [](int64_t at) -> Edit {
+        return [at, done = false](RestampCore& rc, int64_t send) mutable {
+            if (done || send < at) return;
+            rc.set_step_fall_hold(0);
+            done = true;
+        };
+    };
+    const Out held = run(c, stc_cfg()), early = run(c, stc_cfg(), off_at(0)), late = run(c, stc_cfg(), off_at(171 * S));
+    // Per program: relocks; per PID, the overlap dropped after 10 s (the start burst's before it).
+    struct Seen {
+        std::map<int, int> relocks;
+        std::map<int, int64_t> dropped;
+    };
+    auto seen = [&](const Out& o) {
+        Seen s;
+        for (const Ev& e : o.events) {
+            if (e.kind == Ev::Kind::relock) s.relocks[e.program]++;
+            if (e.kind == Ev::Kind::overlap && e.house_ns - c.h0 - 20 * MS > 10 * S) s.dropped[e.pid] += e.dropped_ns;
+        }
+        return s;
+    };
+    const Seen h = seen(held), e = seen(early), l = seen(late);
+    print_events("live hold: relay with a dip, two programs, the hold 0 from the start", early, c);
+    print_events("live hold: ... the hold 0 at 171 s", late, c);
+    auto line = [](const char* label, const Seen& s) {
+        std::printf("  live hold, %s: relocks p1 %d p2 %d; dropped after 10 s:", label,
+                    s.relocks.count(PROGRAM) ? s.relocks.at(PROGRAM) : 0,
+                    s.relocks.count(PROGRAM2) ? s.relocks.at(PROGRAM2) : 0);
+        for (const auto& kv : s.dropped) std::printf(" 0x%x %.1f ms", kv.first, kv.second / 1e6);
+        std::printf("\n");
+    };
+    line("300 s", h);
+    line("0 from the start", e);
+    line("0 at 171 s", l);
+    auto pair = [](const Seen& s) {
+        bool ok = s.relocks.count(PROGRAM) && s.relocks.at(PROGRAM) == 2 && s.relocks.count(PROGRAM2) &&
+                  s.relocks.at(PROGRAM2) == 2;
+        for (const int pid : {PID_V, PID_A1, PID_A2, PID_T, PID_B1})
+            ok &= s.dropped.count(pid) && s.dropped.at(pid) >= 400 * MS && s.dropped.at(pid) <= 700 * MS;
+        return ok;
+    };
+    CHECK("live hold: at 300 s neither program moves at the dip: one relock each, nothing dropped after 10 s",
+          h.relocks.count(PROGRAM) && h.relocks.at(PROGRAM) == 1 && h.relocks.count(PROGRAM2) &&
+              h.relocks.at(PROGRAM2) == 1 && h.dropped.empty());
+    CHECK("live hold: the hold 0 before any program exists reaches the PAT's programs: both relock in the pair, "
+          "every PID of both drops 400-700 ms at the move",
+          pair(e));
+    CHECK("live hold: the hold 0 at 171 s reaches both programs' clocks alike", pair(l));
+}
+
 void test_degraded_ref_pid() {
     // The PCR on a PID of its own (no PES) from 10 s, then stuck 20-30 s: the reference is
     // the first video PID, not the PCR PID, and the degraded event says so.
@@ -3270,6 +3335,7 @@ int main() {
     test_tick();
     test_bursty_relay();
     test_bursty_relay_dip();
+    test_live_hold();
     test_degraded_ref_pid();
     test_sparse_pcr();
     test_sparse_pcr_stop();

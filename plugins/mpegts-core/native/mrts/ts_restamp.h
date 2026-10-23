@@ -122,6 +122,9 @@ class RestampCore {
     Result process(uint8_t* data, size_t len, int64_t arrival_ns);
     void set_offset(int64_t ns);                      // live: per PID from its next PUSI
     void set_trims(const std::map<int, int64_t>& trims_ns);   // replaces the set; live
+    // Live ClockLockConfig::step_fall_hold_ns: every program's clock from its next close, and any
+    // program the PAT adds later.
+    void set_step_fall_hold(int64_t ns);
     void tick(int64_t now_ns);                        // no input: lets a clock go lost
     // During an outage (OQ-17): per PID that emitted a PES, the gap from the end of what it
     // emitted to `now_ns` (arrival time, as process()), where that end is before now. A

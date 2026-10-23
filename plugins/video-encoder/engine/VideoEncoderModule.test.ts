@@ -796,6 +796,8 @@ describe('VideoEncoderModule on house time (WI-P1-13)', () => {
                 'x-live': true,
             });
             expect(props).not.toHaveProperty('pidTrimsMs');
+            // No clock lock to smooth (b95s).
+            expect(props).not.toHaveProperty('smoothingCooldownMin');
             for (const [codec, encoderImpl] of ENCODERS) {
                 expect(configured({ codec, encoderImpl }).getLiveUpdatableParams()).toContain(
                     'ingestOffsetMs',

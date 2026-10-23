@@ -16,7 +16,8 @@
         ],
         "timing": {
             "role": "ingest",
-            "pidTrims": true
+            "pidTrims": true,
+            "pcrLock": true
         },
         "ports": [
             {

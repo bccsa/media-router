@@ -34,6 +34,12 @@ int64_t sat_sub(int64_t a, int64_t b) {
     return a - b;
 }
 
+// The window rule's history (the hold plus one run of buckets) stays within 100,000 buckets.
+int64_t fall_hold_bound(const ClockLockConfig& c, int64_t ns) {
+    const int64_t room = sat_sub(99998 * c.bucket_ns, std::max<int64_t>(c.step_hold_ns, 0));
+    return clamp64(ns, 0, clamp64(room, 0, 10000 * E9));
+}
+
 // floor(x * ppb / 1e9) without forming x * ppb: x = q * 1e9 + r, 0 <= r < 1e9.
 int64_t mul_ppb(int64_t x, int64_t ppb) {
     x = clamp64(x, -DELTA_LIM, DELTA_LIM);
@@ -113,9 +119,18 @@ ClockLock::ClockLock(const ClockLockConfig& cfg) : cfg_(cfg) {
     cfg_.offset_buckets = (int)clamp64(cfg_.offset_buckets, 1, 1000);
     cfg_.slew_acquire_ppm = clamp64(cfg_.slew_acquire_ppm, 0, 100000);
     cfg_.slew_track_ppm = clamp64(cfg_.slew_track_ppm, 0, 100000);
-    // The window rule's history (the hold plus one run of buckets) stays within 100,000 buckets.
-    const int64_t room = sat_sub(99998 * cfg_.bucket_ns, std::max<int64_t>(cfg_.step_hold_ns, 0));
-    cfg_.step_fall_hold_ns = clamp64(cfg_.step_fall_hold_ns, 0, clamp64(room, 0, 10000 * E9));
+    cfg_.step_fall_hold_ns = fall_hold_bound(cfg_, cfg_.step_fall_hold_ns);
+}
+
+// A shorter hold trims the history at the next close. A longer one lets it grow: the run that held
+// the line under the old hold is kept in it and holds the line until it is the new hold old.
+void ClockLock::set_step_fall_hold(int64_t ns) {
+    const int64_t v = fall_hold_bound(cfg_, ns);
+    if (v == cfg_.step_fall_hold_ns) return;
+    cfg_.step_fall_hold_ns = v;
+    if (v > 0) return;
+    fall_hist_.clear();   // off: the backlog rule; a later hold starts a window of its own
+    fall_since_ = -1;
 }
 
 int64_t ClockLock::eps_ppb() const { return floor_div(eps_q16_ + Q16 / 2, Q16); }
@@ -1027,6 +1042,12 @@ void VirtualStc::relock() {
     }
     pcr_.relock(true);
     val_.restart_pcr();
+}
+
+void VirtualStc::set_step_fall_hold(int64_t ns) {
+    pcr_.set_step_fall_hold(ns);
+    ref_.set_step_fall_hold(ns);   // a clamp lock made later copies its config
+    for (auto& kv : clamps_) kv.second.lock.set_step_fall_hold(ns);
 }
 
 VirtualStc::State VirtualStc::state() const {

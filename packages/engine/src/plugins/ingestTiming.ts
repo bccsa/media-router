@@ -1,16 +1,19 @@
 // Ingest timing (house-clock plan WI-P1-9): the `mrtsrestamp` and `mrasrc` pipeline fragments,
-// their bus reports and the live edits of O and the per-PID trims, for the seven ingest modules.
-// The card is IngestTimingReporter; the settings are injected from shared-types.
+// their bus reports and the live edits of O, the per-PID trims and the smoothing cooldown, for the
+// seven ingest modules. The card is IngestTimingReporter; the settings are injected from shared-types.
 import {
     INGEST_OFFSET_KEY,
     INGEST_OFFSET_MAX_MS,
     PID_TRIMS_KEY,
     PID_TRIM_MAX_MS,
+    SMOOTHING_COOLDOWN_DEFAULT_MIN,
+    SMOOTHING_COOLDOWN_KEY,
+    SMOOTHING_COOLDOWN_MAX_MIN,
 } from '@media-router/shared-types';
 import { quoteGstString } from './busHelpers.js';
 import type { BusReport } from './PluginModule.js';
 
-export { INGEST_OFFSET_KEY, PID_TRIMS_KEY };
+export { INGEST_OFFSET_KEY, PID_TRIMS_KEY, SMOOTHING_COOLDOWN_KEY };
 
 export const RESTAMP_ELEMENT = 'restamp';
 export const ASRC_ELEMENT = 'asrc';
@@ -25,6 +28,7 @@ export const ASRC_EVENT = 'mrasrc-event';
 export type RestampMode = 'stc' | 'fixed';
 
 const NS_PER_MS = 1_000_000;
+const NS_PER_MIN = 60_000_000_000;
 const MAX_PID = 0x1fff;
 const clampMs = (ms: number, max: number): number => Math.min(max, Math.max(-max, ms));
 
@@ -33,6 +37,15 @@ const clampMs = (ms: number, max: number): number => Math.min(max, Math.max(-max
 function ingestOffsetNs(ms: unknown): number {
     if (typeof ms !== 'number' || !Number.isFinite(ms)) return 0;
     return Math.round(clampMs(ms, INGEST_OFFSET_MAX_MS) * NS_PER_MS);
+}
+
+/** The cooldown as `smoothing-cooldown-ns`, clamped to 0-60 min as O is; anything but a finite
+ *  number is the default 5 min (B-95's 300 s, the element's own default). */
+function smoothingCooldownNs(min: unknown): number {
+    if (typeof min !== 'number' || !Number.isFinite(min)) {
+        return SMOOTHING_COOLDOWN_DEFAULT_MIN * NS_PER_MIN;
+    }
+    return Math.round(Math.min(SMOOTHING_COOLDOWN_MAX_MIN, Math.max(0, min)) * NS_PER_MIN);
 }
 
 /** The trims as `pid-trims`: `<pid>=<ns>;…` in PID order, each clamped to ±2 s. Keys that are
@@ -61,20 +74,27 @@ export interface RestampOptions {
     offsetMs?: unknown;
     /** The module's `pidTrimsMs` as configured. */
     pidTrimsMs?: unknown;
+    /** `stc` only: the module's `smoothingCooldownMin` as configured. */
+    smoothingCooldownMin?: unknown;
     name?: string;
 }
 
 /** The restamp goes right after the transport element, before any queue: it reads arrival
- *  itself (part 4.1). No trims leaves `pid-trims` at its empty default. */
+ *  itself (part 4.1). No trims leaves `pid-trims` at its empty default; a capture (`fixed`) has
+ *  no clock lock, so no cooldown. */
 export function buildRestamp({
     mode,
     addBaseTime = false,
     offsetMs,
     pidTrimsMs,
+    smoothingCooldownMin,
     name = RESTAMP_ELEMENT,
 }: RestampOptions): string {
     const props = [`name=${name}`, `clock-mode=${mode}`];
     if (addBaseTime) props.push('add-base-time=true');
+    if (mode === 'stc') {
+        props.push(`smoothing-cooldown-ns=${smoothingCooldownNs(smoothingCooldownMin)}`);
+    }
     props.push(`offset-ns=${ingestOffsetNs(offsetMs)}`);
     const trims = pidTrimsProperty(pidTrimsMs);
     if (trims) props.push(`pid-trims=${quoteGstString(trims)}`);
@@ -107,8 +127,9 @@ export interface RestampControl {
     setElementProperty(element: string, property: string, value: unknown): Promise<void>;
 }
 
-/** Live edits of O and the trims, from `onLiveConfigUpdate`; other keys are ignored. The
- *  restamp applies them from each PID's next PES: a gap, or a dropped overlap (§5.5). */
+/** Live edits of O, the trims and the cooldown, from `onLiveConfigUpdate`; other keys are ignored.
+ *  The restamp applies O and the trims from each PID's next PES: a gap, or a dropped overlap
+ *  (§5.5); the cooldown from each clock's next 1 s close. */
 export async function applyIngestTimingLiveUpdate(
     module: RestampControl,
     changes: Record<string, unknown>,
@@ -126,6 +147,13 @@ export async function applyIngestTimingLiveUpdate(
             name,
             'pid-trims',
             pidTrimsProperty(changes[PID_TRIMS_KEY]),
+        );
+    }
+    if (SMOOTHING_COOLDOWN_KEY in changes) {
+        await module.setElementProperty(
+            name,
+            'smoothing-cooldown-ns',
+            smoothingCooldownNs(changes[SMOOTHING_COOLDOWN_KEY]),
         );
     }
 }

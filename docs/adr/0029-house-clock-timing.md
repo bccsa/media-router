@@ -1137,8 +1137,9 @@ rows B-1 to B-48) holds the same records with their work items.
   step's sample seeded (the PCR lock's, the reference lock's or a clamp
   lock's, whether or not the step opened an epoch) the backlog rule gives
   way to the window rule: the line moves down only onto L*, the highest
-  level some `step_hold_ns` run of the last `step_fall_hold_ns` (300 s, the
-  fit window, kept in the lock's own history of closed buckets) stayed
+  level some `step_hold_ns` run of the last `step_fall_hold_ns` (300 s by
+  default, the fit window, kept in the lock's own history of closed
+  buckets; the ingest's Smoothing Cooldown, below) stayed
   above, once that lies more than `backlog_ns` under it, so the last run
   that could have stepped ended 300 s before. The stale rule's second
   clause marking a PES on that line brings the backlog rule back at the
@@ -1169,6 +1170,22 @@ rows B-1 to B-48) holds the same records with their work items.
   output). `step_hold_ns` 20 s, measured as the alternative, avoids the
   steps but also lengthens the rate fit's level hold (18 of 87 traces
   change, 7 of 38 expectations fail).
+- **The hold is each network ingest's Smoothing Cooldown** (the owner,
+  2026-10-23; plan chapter 15.4 B-95). `smoothingCooldownMin` on srt-input,
+  rist-input and mpegts-ip-input, minutes, 0–60, default 5 (the 300 s),
+  live; 0 turns smoothing off: the backlog rule on every line, as before
+  B-95. Its help says what the owner asked it to: it adds latency only when
+  the stream is bursty. The element's `smoothing-cooldown-ns` takes it into
+  every program's PCR, reference and clamp locks from their next close; a
+  shorter hold acts on the history the lock keeps, a longer one waits for
+  its own span (the run that held the line stays in the history and holds
+  it until that run is the new hold old), a hold back from 0 starts afresh.
+  Its length counts where the floor lies more than `backlog_ns` under the
+  held line for longer than it: on TECH01 every value tried from 1 to
+  60 min gives the default's output byte for byte (30 s one move more, where
+  its usual delay sagged for a while), and 0 brings the pairs back (byte for
+  byte the core before B-95); on +700 ms bursts every 170 s a cooldown under
+  170 s cycles again (6 relocks in 1100 s), 180 s and over holds (1 relock).
 - **The rate fit runs on one floor level.** A bucket more than `step_ns` off
   the fit's level opens a candidate level; a candidate held for
   `step_hold_ns` replaces it and the fit restarts there; one that ends
@@ -1659,21 +1676,26 @@ were rejected: they move the mapping the lead row judges. The design's
 
 - **One TypeScript home**, `packages/engine/src/plugins/ingestTiming.ts`:
   `buildRestamp`, `buildAsrc`, the bus reports, and
-  `applyIngestTimingLiveUpdate`, which sets `offset-ns` or `pid-trims` on
-  the element named `restamp` with no restart. `IngestTimingReporter` turns
-  the element messages into the card, throttled to changes of 1 ms or a
-  state flip; each module binds it to its own health, badge and sections
+  `applyIngestTimingLiveUpdate`, which sets `offset-ns`, `pid-trims` or
+  `smoothing-cooldown-ns` on the element named `restamp` with no restart.
+  `IngestTimingReporter` turns the element messages into the card,
+  throttled to changes of 1 ms or a state flip; each module binds it to its
+  own health, badge and sections
   (the binding is repeated in seven modules, a refactor candidate for the
   base class).
 - **The settings are injected, not declared.** A manifest declaring
-  `"timing": { "role": "ingest", "pidTrims": true|false }` gets Ingest
-  Offset (`ingestOffsetMs`, ±10,000 ms, live) and, with `pidTrims`, Per-PID
-  Trim (`pidTrimsMs`, ±2,000 ms per PID, live, the `pidTrim` widget) from
-  `withIngestTimingSettings`, in both the engine's loader and the manager's
-  registry: the three network ingests have both, the four captures O only.
+  `"timing": { "role": "ingest", "pidTrims": true|false, "pcrLock":
+  true|false }` gets Ingest Offset (`ingestOffsetMs`, ±10,000 ms, live),
+  with `pidTrims` Per-PID Trim (`pidTrimsMs`, ±2,000 ms per PID, live, the
+  `pidTrim` widget) and with `pcrLock` Smoothing Cooldown
+  (`smoothingCooldownMin`, 0–60 min, default 5, live; B-95, the owner's of
+  2026-10-23) from `withIngestTimingSettings`, in both the engine's loader
+  and the manager's registry: the three network ingests have all three, the
+  four captures O only (they keep PES − 1 h, no clock lock to smooth).
 - **The box writes on change only** (Enter, blur or a spinner step), never
   per keystroke, because every live write is a gap or a drop on the stream
-  (§5.5). Each box keeps a draft of its uncommitted text, so a re-render of
+  (§5.5); Smoothing Cooldown's box alike, since a value typed on the way (a
+  cleared box's 0, the 1 of 10) would reach a held clock line. Each box keeps a draft of its uncommitted text, so a re-render of
   the settings form, which any engine's store patch causes, never resets
   what is being typed.
 - **The card.** Network ingests: a `clock` badge (Locked, Acquiring,

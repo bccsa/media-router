@@ -728,14 +728,21 @@ struct FallRun {
     }
 };
 
+// A live set_step_fall_hold before the sample sent at or after at_ns, in order (the Smoothing Cooldown).
+struct Hold {
+    int64_t at_ns, hold_ns;
+};
+
 FallRun fall_run(std::vector<Seg> sched, int64_t secs, const ClockLockConfig& cfg = ClockLockConfig(),
-                 int64_t pcr_ms = 60, uint64_t seed = 95) {
+                 int64_t pcr_ms = 60, uint64_t seed = 95, const std::vector<Hold>& live = {}) {
     std::stable_sort(sched.begin(), sched.end(), [](const Seg& a, const Seg& b) { return a.at_s < b.at_s; });
     ClockLock lk(cfg);
     Lcg g(seed);
     FallRun r;
     int64_t prev_h = INT64_MIN, prev_off = INT64_MIN;
+    size_t li = 0;
     for (int64_t t = 0; t <= secs * S; t += pcr_ms * MS) {
+        while (li < live.size() && t >= live[li].at_ns) lk.set_step_fall_hold(live[li++].hold_ns);
         int64_t floor = sched.front().ms;
         for (const Seg& s : sched)
             if (t >= s.at_s * S) floor = s.ms;
@@ -837,6 +844,70 @@ void test_step_epoch() {
     CHECK("step epoch: only a step's relock seeds one (after_step); relock(keep_rate) alone does not",
           plain && lk.after_step());
     for (const FallRun* r : {&c1, &c2, &c2h, &c2b, &c3, &c4, &c5, &c5d})
+        for (const auto& p : r->lvl) g_all.add(p.second);
+}
+
+// The hold set live (an ingest's Smoothing Cooldown, b95s), on test_step_epoch's paths.
+void test_live_hold() {
+    // A shorter hold acts from the next close: C2's fall, the hold 300 -> 60 s at 250 s.
+    const FallRun d = fall_run(fall_at_120(), 600, ClockLockConfig(), 60, 95, {{250 * S, 60 * S}});
+    print_fall("C2's fall, the hold 300 -> 60 s at 250 s", d);
+    CHECK("live hold: a shorter hold acts at the next close: C2's fall shed at 250-251.5 s (not 420 s), one move "
+          "of -580..-620 ms, the line on the floor (20 ms) from 255 s",
+          d.steps.size() == 1 && d.moves.size() == 1 && within(d.moves[0].t, 250 * S, 251500 * MS) &&
+              within(d.moves[0].v, -620 * MS, -580 * MS) && d.dev(255 * S, 100 * MS) <= 20 * MS);
+    // A longer one waits for its own span: a 30 s hold kept up by 12 s bursts every 25 s to 312 s, the hold
+    // 120 s at 310 s; the last burst's run (to 311 s) then holds the line until 431 s.
+    ClockLockConfig h30;
+    h30.step_fall_hold_ns = 30 * S;
+    std::vector<Seg> b25;
+    for (int64_t t = 125; t <= 300; t += 25) b25.insert(b25.end(), {{t, 500}, {t + 1, 700}, {t + 12, 100}});
+    const FallRun i0 = fall_run(fall_at_120(b25), 600, h30);
+    const FallRun i = fall_run(fall_at_120(b25), 600, h30, 60, 95, {{310 * S, 120 * S}});
+    print_fall("a 30 s hold and bursts every 25 s to 312 s", i0);
+    print_fall("... the hold 30 -> 120 s at 310 s", i);
+    CHECK("live hold: at 30 s the bursts every 25 s hold the line, the fall shed 30 s after the last (342-344 s)",
+          i0.steps.size() == 1 && i0.moves.size() == 1 && within(i0.moves[0].t, 342 * S, 344 * S));
+    CHECK("live hold: a longer hold never moves on a shorter history: the last burst's run holds the line 120 s, "
+          "one move at 431-433.5 s onto the floor (20 ms)",
+          i.steps.size() == 1 && i.moves.size() == 1 && within(i.moves[0].t, 431 * S, 433500 * MS) &&
+              within(i.moves[0].v, -620 * MS, -580 * MS) && i.dev(440 * S, 100 * MS) <= 20 * MS);
+    // 0 is the backlog rule from the next close; a hold again starts the window afresh. C1's burst and
+    // dip at 60 s and again at 160 s, the hold 0 at 71 s (after the step), 300 s at 100 s.
+    const std::vector<Seg> two = {{0, 300},   {60, 500},  {61, 700},  {72, 500},  {73, 100}, {84, 300},
+                                  {160, 500}, {161, 700}, {172, 500}, {173, 100}, {184, 300}};
+    const FallRun z0 = fall_run(two, 300);
+    const FallRun z = fall_run(two, 300, ClockLockConfig(), 60, 95, {{71 * S, 0}, {100 * S, 300 * S}});
+    print_fall("C1's burst and dip at 60 and 160 s", z0);
+    print_fall("... the hold 0 at 71 s, 300 s at 100 s", z);
+    CHECK("live hold: at 300 s C1's two bursts give one step, no move (the second at the line's height)",
+          z0.steps.size() == 1 && z0.moves.empty());
+    CHECK("live hold: 0 is the backlog rule at the dip's second close: a move of -580..-620 ms at 74-76 s and "
+          "the pair's second step (93-95 s); 300 s again from 100 s: the next burst steps (169-171 s), its dip held",
+          z.steps.size() == 3 && within(z.steps[1].t, 93 * S, 95 * S) && within(z.steps[2].t, 169 * S, 171 * S) &&
+              z.moves.size() == 1 && within(z.moves[0].t, 74 * S, 76 * S) &&
+              within(z.moves[0].v, -620 * MS, -580 * MS));
+    // Off and on again between two closes: the window starts afresh, so C2's fall is shed 300 s later.
+    const FallRun o = fall_run(fall_at_120(), 700, ClockLockConfig(), 60, 95, {{250 * S, 0}, {250 * S, 300 * S}});
+    print_fall("C2's fall, the hold 0 and back to 300 s at 250 s", o);
+    CHECK("live hold: a hold back from 0 starts its window afresh, between two closes too: C2's fall shed at "
+          "549-551.5 s (not 420 s)",
+          o.steps.size() == 1 && o.moves.size() == 1 && within(o.moves[0].t, 549 * S, 551500 * MS));
+    // The constructor's bound applies to a live value: 0-10,000 s, and 100,000 buckets of history.
+    ClockLock lk;
+    lk.set_step_fall_hold(20000 * S);
+    const int64_t hi = lk.config().step_fall_hold_ns;
+    lk.set_step_fall_hold(-1);
+    const int64_t lo = lk.config().step_fall_hold_ns;
+    ClockLockConfig fine;
+    fine.bucket_ns = 1 * MS;
+    ClockLock lf(fine);
+    const int64_t built = lf.config().step_fall_hold_ns;
+    lf.set_step_fall_hold(3600 * S);
+    CHECK("live hold: clamped as the constructor clamps: 20,000 s -> 10,000 s, -1 -> 0; at 1 ms buckets 300 s and "
+          "3,600 s -> 89.998 s (99,998 buckets less the 10 s run)",
+          hi == 10000 * S && lo == 0 && built == 89998 * MS && lf.config().step_fall_hold_ns == 89998 * MS);
+    for (const FallRun* r : {&d, &i0, &i, &z0, &z, &o})
         for (const auto& p : r->lvl) g_all.add(p.second);
 }
 
@@ -2310,13 +2381,16 @@ struct HeldRun {
 };
 
 template <class F>
-HeldRun held_run(const char* label, F shape, int64_t secs, uint64_t seed) {
+HeldRun held_run(const char* label, F shape, int64_t secs, uint64_t seed, const std::vector<Hold>& live = {}) {
     VirtualStc v;
     Fnv f;
     HeldRun r;
     std::map<int, uint32_t> last_e;
     std::map<int, int64_t> last_h, last_arr;
+    size_t li = 0;
     drive(v, program(secs, 50000, seed, shape), f, [&](const Pkt& p, const VirtualStc::Mapping& m) {
+        // A live hold after the first PES sent at or after its time (the restamp's next buffer).
+        while (li < live.size() && p.t >= live[li].at_ns) v.set_step_fall_hold(live[li++].hold_ns);
         if (m.stale) {
             r.stale[p.pid]++;
             if (!r.stale_first.count(p.pid)) r.stale_first[p.pid] = p.t;
@@ -2415,11 +2489,15 @@ void test_vstc_step_epoch() {
         bool quiet = rec >= 0;
         for (const StcEvent& e : r10.ev)
             quiet &= !(e.kind == StcEvent::Kind::envelope_step && within(rel(e.house_ns), rec + 1, rec + 60 * S));
+        // The recovered line holds the burst's height, as case 8's at 100 s (b95s: B-95's review).
+        bool held = rec >= 0 && rec < 140 * S;
+        for (const int pid : {PID_V, PID_A}) held &= within(r10.rise(r10.lead140, pid), 380 * MS, 440 * MS);
         CHECK(t0 == 64 * S ? "vstc step epoch: a line the PCR lock seeded while degraded stays a step epoch's: no "
-                             "step within 60 s of the recovery (the burst from 64 s)"
+                             "step within 60 s of the recovery, every PID's lead at 140 s 380-440 ms over 50 s's "
+                             "(the burst from 64 s)"
                            : "vstc step epoch: ... the burst from 70 s alike",
               r10.count(StcEvent::Kind::degraded, "freeze") == 1 && r10.count(StcEvent::Kind::recovered) == 1 &&
-                  quiet);
+                  quiet && held);
     }
     // 11: video 4.5 s ahead: degraded (lead) at 5 s, B-8's clamp on it; the bursts at 100 and 250 s.
     const HeldRun r11 = held_run("vstc step epoch, video clamped (+4500 ms), bursts at 100 and 250 s",
@@ -2536,6 +2614,95 @@ void test_vstc_step_epoch() {
           "step (71.0, 150.0, 210.0 s), one 335-390 ms step back per PID at the leap, the leads back at 190 s",
           f_ok && times_are(r12f.relocks_at(), {71000 * MS, 150010 * MS, 210010 * MS}, T) &&
               r12f.relocks_at("leap").size() == 1);
+}
+
+// The hold set live on a VirtualStc (b95s): every lock that runs the window rule takes it.
+void test_vstc_live_hold() {
+    const int64_t T = 1500 * MS;
+    auto backs_in = [](const HeldRun& r, int pid, int64_t from, int64_t to) {
+        std::vector<const HeldRun::At*> out;
+        for (const HeldRun::At* a : r.of(r.backs, pid))
+            if (a->t >= from && a->t < to) out.push_back(a);
+        return out;
+    };
+    // The PCR lock: case 8's burst and dip at 60 and 150 s, the hold 0 at 71 s and 300 s at 100 s.
+    const HeldRun p = held_run("vstc live hold: bursts at 60 and 150 s, the hold 0 at 71 s, 300 s at 100 s",
+                               [](int, int64_t t) {
+                                   Shape s;
+                                   s.net_ns = dip_net(t, 60 * S) + dip_net(t, 150 * S);
+                                   return s;
+                               }, 260, 81, {{71 * S, 0}, {100 * S, 300 * S}});
+    const HeldRun p0 = held_run("vstc live hold: ... at 300 s throughout", [](int, int64_t t) {
+        Shape s;
+        s.net_ns = dip_net(t, 60 * S) + dip_net(t, 150 * S);
+        return s;
+    }, 260, 81);
+    auto print_backs = [](const char* label, const HeldRun& r) {
+        std::printf("  %s: relocks", label);
+        for (const int64_t t : r.relocks_at()) std::printf(" %.2f", t / 1e9);
+        for (const int pid : {PID_V, PID_A}) {
+            std::printf("; pid 0x%x back", pid);
+            for (const HeldRun::At* a : r.of(r.backs, pid)) std::printf(" %.1f ms @%.2f", a->ns / 1e6, a->t / 1e9);
+        }
+        std::printf("\n");
+    };
+    print_backs("PCR lock, live", p);
+    print_backs("PCR lock, 300 s", p0);
+    bool p_ok = times_are(p.relocks_at("envelope-step"), {70110 * MS, 94210 * MS, 160210 * MS}, T) &&
+                p.count(StcEvent::Kind::relock) == 3 && times_are(p0.relocks_at(), {70110 * MS}, T) &&
+                p.count(StcEvent::Kind::degraded) == 0;
+    for (const int pid : {PID_V, PID_A}) {
+        const std::vector<const HeldRun::At*> b = p.of(p.backs, pid);
+        p_ok &= b.size() == 1 && near(b[0]->t, 75120 * MS, T) && within(b[0]->ns, 540 * MS, 600 * MS) &&
+                p0.of(p0.backs, pid).empty();
+    }
+    CHECK("vstc live hold: the PCR lock: the hold 0 brings the pair back (relocks at 70.1 and 94.2 s, one 540-600 "
+          "ms step back per PID at the dip's move, 75.1 s); 300 s again: the next burst's step (160.2 s), its dip "
+          "held; at 300 s throughout one relock and no step back",
+          p_ok);
+    // The reference lock: case 10's freeze at 60 s and burst from 64 s, the hold 0 at 61 s (degraded).
+    auto freeze_burst = [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PCR_PID && t >= 60 * S && t < 61 * S) s.pcr_ns = 60 * S - t;
+        s.net_ns = dip_net(t, 64 * S);
+        return s;
+    };
+    const HeldRun r = held_run("vstc live hold: freeze 60 s, burst from 64 s, the hold 0 at 61 s", freeze_burst, 200,
+                               82, {{61 * S, 0}});
+    const HeldRun r0 = held_run("vstc live hold: ... at 300 s throughout", freeze_burst, 200, 82);
+    print_backs("reference lock, live", r);
+    print_backs("reference lock, 300 s", r0);
+    int64_t rec = -1;
+    for (const StcEvent& e : r.ev)
+        if (e.kind == StcEvent::Kind::recovered) rec = rel(e.house_ns);
+    bool r_ok = r.count(StcEvent::Kind::degraded, "freeze") == 1 && near(rec, 90905 * MS, T) &&
+                times_are(r.relocks_at("envelope-step"), {74020 * MS, 98110 * MS}, T);
+    for (const int pid : {PID_V, PID_A}) {
+        const std::vector<const HeldRun::At*> b = backs_in(r, pid, 61 * S, rec);
+        r_ok &= b.size() == 1 && near(b[0]->t, 79020 * MS, T) && within(b[0]->ns, 540 * MS, 600 * MS) &&
+                backs_in(r0, pid, 61 * S, 200 * S).empty();
+    }
+    CHECK("vstc live hold: the reference lock while degraded: the hold 0 moves its step-seeded line at the dip, one "
+          "540-600 ms step back per PID at 79.0 s before the recovery (90.9 s); at 300 s none",
+          r_ok);
+    // The clamp lock: case 11's video 4.5 s ahead, clamped from 5 s, the hold 0 at 105 s.
+    auto clamped = [](int pid, int64_t t) {
+        Shape s;
+        if (pid == PID_V) s.pts_ns = 4500 * MS;
+        s.net_ns = dip_net(t, 100 * S) + dip_net(t, 250 * S);
+        return s;
+    };
+    const HeldRun c = held_run("vstc live hold: video clamped, bursts at 100 and 250 s, the hold 0 at 105 s",
+                               clamped, 400, 83, {{105 * S, 0}});
+    print_backs("clamp lock, live", c);
+    const std::vector<const HeldRun::At*> cv = c.of(c.backs, PID_V), cc = c.of(c.changes, PID_V);
+    CHECK("vstc live hold: the clamp lock: the hold 0 at 105 s (the clamp made at 5 s) moves the clamped video at "
+          "each dip, 540-600 ms back at 115.1 and 265.1 s, the pair's step 24 s after each (134.1, 284.1 s); at "
+          "300 s case 11 pins the clamp's entry as the one step back",
+          c.count(StcEvent::Kind::degraded, "lead") == 1 && cv.size() == 3 && near(cv[0]->t, 5050 * MS, 500 * MS) &&
+              near(cv[1]->t, 115090 * MS, T) && within(cv[1]->ns, 540 * MS, 600 * MS) &&
+              near(cv[2]->t, 265100 * MS, T) && within(cv[2]->ns, 540 * MS, 600 * MS) && cc.size() == 5 &&
+              near(cc[2]->t, 134090 * MS, T) && near(cc[4]->t, 284100 * MS, T));
 }
 
 // B-96: a packet's arrival jitter by its send time and PID alone, 0..max ms.
@@ -2719,6 +2886,7 @@ int main(int argc, char** argv) {
     test_start_burst();
     test_backlog_floor();
     test_step_epoch();
+    test_live_hold();
     test_validator();
     test_vstc_clean_and_wrap();
     test_vstc_relocks();
@@ -2733,6 +2901,7 @@ int main(int argc, char** argv) {
     test_vstc_map_pcr();
     test_vstc_floor_moves();
     test_vstc_step_epoch();
+    test_vstc_live_hold();
     test_vstc_one_timeline();
     test_determinism();
     std::printf("\n  CHECKSUM ts_stc %016llx (compare across machines)\n", (unsigned long long)g_all.h);

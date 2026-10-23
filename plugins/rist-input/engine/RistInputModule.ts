@@ -3,6 +3,7 @@ import {
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
     PID_TRIMS_KEY,
+    SMOOTHING_COOLDOWN_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
     buildRestamp,
@@ -64,9 +65,14 @@ const PEER_FIELDS = [
 
 export class RistInputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. O and the trims are
-     *  the restamp's live properties (§5.5). */
-    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY, PID_TRIMS_KEY];
+     *  never by this pipeline, so it is live and never pends a restart. O, the trims and the
+     *  smoothing cooldown are the restamp's live properties (§5.5, B-95). */
+    protected liveUpdatableParams = [
+        'playoutOffsetMs',
+        INGEST_OFFSET_KEY,
+        PID_TRIMS_KEY,
+        SMOOTHING_COOLDOWN_KEY,
+    ];
     private linkHealth = new RistLinkHealth();
     private flows = new RistFlowTracker();
     private peerNames = new Map<number, string>();
@@ -160,6 +166,7 @@ export class RistInputModule extends GstPluginBase {
             mode: 'stc',
             offsetMs: this.config[INGEST_OFFSET_KEY],
             pidTrimsMs: this.config[PID_TRIMS_KEY],
+            smoothingCooldownMin: this.config[SMOOTHING_COOLDOWN_KEY],
         });
         const pipeline =
             `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ${restamp} ! ` +

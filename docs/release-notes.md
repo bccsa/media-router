@@ -61,6 +61,14 @@ elements" below do not start.
   with their type ("Waiting for the stream's PMT" until it arrives); a trim
   kept for a stream the source no longer carries shows greyed as "not in
   stream".
+- **Smoothing Cooldown** (min, default 5, 0 to 60, live) on SRT Input, RIST
+  Input and MPEG-TS IP Input. It adds latency only when the input's stream
+  is bursty (packets arriving in bursts, as through some relays): the input
+  then runs at its bursts' height and comes back down no sooner than this
+  long after the last burst, instead of skipping and re-syncing after every
+  burst. A steady stream gets no added latency. Set it longer than the time
+  between bursts; 0 turns smoothing off. It applies live, when you press
+  Enter or leave the box.
 - **Audio Encoder, Capture Buffer** is now the capture quantum: 40–85 ms,
   default 60 (was 40–1000 ms, default 200). A stored value above 85 ms is
   reset to the default.
@@ -222,13 +230,21 @@ elements" below do not start.
   settles at the bursts' full height, plus the one late packet that set it
   (0.3 to 0.6 s more on that input, out of the 4 s an input may run ahead;
   taller bursts hold more, and bursts that keep growing raise it to the
-  tallest), and the clock re-steps every 12.5 to 22.5 minutes without
-  dropping anything. On such an input a source restart or a jump in the
-  source's timeline, a clock fault (Degraded clock) or a change of the PCR
-  PID drops that extra delay once (about 0.36 s at a restart or jump, about
-  0.26 s at a clock fault); it builds again at the next burst. A queue that
-  drains afterwards is shed 5 minutes later when it is more than 0.5 s above
-  the bursts' height; a smaller excess stays, held by the bursts. Limits:
+  tallest), and the clock re-steps every 12.5 to 22.5 minutes without dropping
+  anything. How long the input holds that height after the last burst is the
+  new Smoothing Cooldown setting of the three network inputs (5 minutes by
+  default, live; see New settings): it adds latency only on such a bursty
+  input, and 0 turns it off, which brings back the re-locks in pairs. On
+  TECH01's relay every value tried from 1 to 60 minutes gives the same result;
+  under a minute it can come down between bursts (at 30 s, one more cut of
+  half a second and two more re-locks in 15 minutes). Taller bursts need a
+  cooldown longer than the time between them. On such an input a source
+  restart or a jump in the source's timeline, a clock fault (Degraded clock)
+  or a change of the PCR PID drops that extra delay once (about 0.36 s at a
+  restart or jump, about 0.26 s at a clock fault); it builds again at the next
+  burst. A queue that drains afterwards is shed one Smoothing Cooldown later
+  (5 minutes by default) when it is more than 0.5 s above the bursts' height;
+  a smaller excess stays, held by the bursts. Limits:
   when one stream of the input is stamped so far ahead that the extra delay
   takes it near the 4 s limit (3.4 to 3.9 s ahead on TECH01), the whole
   input re-locks in pairs as before; and a source whose clock reference

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     INGEST_OFFSET_KEY,
     PID_TRIMS_KEY,
+    SMOOTHING_COOLDOWN_KEY,
     applyIngestTimingLiveUpdate,
     asrcBusReports,
     buildAsrc,
@@ -10,7 +11,9 @@ import {
 } from './ingestTiming.js';
 import { CH, MS, event, pidMsg, setup, stats } from './testing/ingestTimingFixtures.js';
 
-const STC = 'mrtsrestamp name=restamp clock-mode=stc';
+const MIN = 60_000 * MS;
+// The default cooldown, 5 min: B-95's 300 s.
+const STC = `mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=${5 * MIN}`;
 
 describe('buildRestamp', () => {
     it('a network ingest: STC mode, O and the trims in ns, in PID order', () => {
@@ -24,9 +27,12 @@ describe('buildRestamp', () => {
         expect(buildRestamp({ mode: 'stc', pidTrimsMs: {} })).toBe(`${STC} offset-ns=0`);
     });
 
-    it('a capture: fixed mode, and the base time for the video-encoder', () => {
+    it('a capture: fixed mode, and the base time for the video-encoder; no clock lock, no cooldown', () => {
         expect(buildRestamp({ mode: 'fixed', offsetMs: -20 })).toBe(
             'mrtsrestamp name=restamp clock-mode=fixed offset-ns=-20000000',
+        );
+        expect(buildRestamp({ mode: 'fixed', smoothingCooldownMin: 2 })).toBe(
+            'mrtsrestamp name=restamp clock-mode=fixed offset-ns=0',
         );
         expect(buildRestamp({ mode: 'fixed', addBaseTime: true, name: 'rs' })).toBe(
             'mrtsrestamp name=rs clock-mode=fixed add-base-time=true offset-ns=0',
@@ -40,6 +46,29 @@ describe('buildRestamp', () => {
         expect(buildRestamp({ mode: 'stc', offsetMs: -10_001 })).toBe(
             `${STC} offset-ns=-10000000000`,
         );
+    });
+
+    it('the smoothing cooldown in ns, clamped to 0-60 min; 0 is off', () => {
+        const cooldown = (smoothingCooldownMin: unknown) =>
+            buildRestamp({ mode: 'stc', smoothingCooldownMin }).replace(
+                /.* smoothing-cooldown-ns=(\d+) .*/,
+                '$1',
+            );
+        expect(cooldown(2)).toBe(String(2 * MIN));
+        expect(cooldown(2.5)).toBe(String(150_000 * MS));
+        expect(cooldown(0)).toBe('0');
+        expect(cooldown(60)).toBe(String(60 * MIN));
+        expect(cooldown(90)).toBe(String(60 * MIN));
+        expect(cooldown(-5)).toBe('0');
+        expect(buildRestamp({ mode: 'stc', smoothingCooldownMin: 10, offsetMs: 5 })).toBe(
+            `mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=${10 * MIN} offset-ns=5000000`,
+        );
+    });
+
+    it('anything but a finite number is the default 5 min', () => {
+        for (const smoothingCooldownMin of [undefined, null, '2', NaN, Infinity, -Infinity, {}]) {
+            expect(buildRestamp({ mode: 'stc', smoothingCooldownMin })).toBe(`${STC} offset-ns=0`);
+        }
     });
 
     it('drops what is not a setting: junk O is 0; bad keys, values and zero trims go', () => {
@@ -100,6 +129,19 @@ describe('applyIngestTimingLiveUpdate', () => {
         expect(m.calls).toEqual([
             ['restamp', 'pid-trims', '256=2000000000;257=-12000000'],
             ['rs', 'pid-trims', ''],
+        ]);
+    });
+
+    it('the cooldown goes to smoothing-cooldown-ns in ns, clamped to 0-60 min, junk the default', async () => {
+        const m = control();
+        for (const v of [10, 0, 120, 'x']) {
+            await applyIngestTimingLiveUpdate(m, { [SMOOTHING_COOLDOWN_KEY]: v });
+        }
+        expect(m.calls).toEqual([
+            ['restamp', 'smoothing-cooldown-ns', 10 * MIN],
+            ['restamp', 'smoothing-cooldown-ns', 0],
+            ['restamp', 'smoothing-cooldown-ns', 60 * MIN],
+            ['restamp', 'smoothing-cooldown-ns', 5 * MIN],
         ]);
     });
 

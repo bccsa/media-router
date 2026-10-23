@@ -450,6 +450,8 @@ describe('AudioEncoderModule on house time (WI-P1-12)', () => {
             const props = (loader.getPluginSchemas()['audio-encoder'] as any).properties;
             expect(props.ingestOffsetMs).toMatchObject({ minimum: -10000, maximum: 10000 });
             expect(props.pidTrimsMs).toBeUndefined();
+            // No clock lock to smooth (b95s).
+            expect(props.smoothingCooldownMin).toBeUndefined();
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
             expect(live).toEqual(expect.arrayContaining(['volume', 'ingestOffsetMs']));
             expect(new AudioEncoderModule().getLiveUpdatableParams()).toEqual(

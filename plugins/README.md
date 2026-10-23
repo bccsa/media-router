@@ -2243,7 +2243,7 @@ Phase 1):
 
 | Module | Restamp | ASRC | Settings injected |
 |---|---|---|---|
-| srt-input, rist-input, mpegts-ip-input | `clock-mode=stc`, directly after the transport element (`srtsrc`, `mrristsrc`, `udpsrc`, or `rtpjitterbuffer ! rtpmp2tdepay` for RTP) and before the module's queue | — | Ingest Offset, Per-PID Trim |
+| srt-input, rist-input, mpegts-ip-input | `clock-mode=stc`, directly after the transport element (`srtsrc`, `mrristsrc`, `udpsrc`, or `rtpjitterbuffer ! rtpmp2tdepay` for RTP) and before the module's queue | — | Ingest Offset, Per-PID Trim, Smoothing Cooldown |
 | audio-input-302m, aes67-input | `clock-mode=fixed`, after the 302M encode branch's `mpegtsmux` | `mrasrc` in place of `audioresample` in that branch | Ingest Offset |
 | audio-encoder | `clock-mode=fixed`, after its `mpegtsmux` | `mrasrc out-rate=<sampleRate>` after the `pipewiresrc` capture | Ingest Offset |
 | video-encoder | `clock-mode=fixed add-base-time=true`, after its `mpegtsmux` (the `liveCaptureClock` base time added back) | — | Ingest Offset |
@@ -2251,16 +2251,23 @@ Phase 1):
 Wiring one (helpers in `packages/engine/src/plugins/ingestTiming.ts`,
 exported from `@media-router/engine`; srt-input is the reference):
 
-1. **Manifest.** Declare `"timing": { "role": "ingest", "pidTrims": true }`
-   under `mediaRouter` (`false` for a capture: one PID, where O does the
-   same job). The engine's `PluginLoader` and the manager's `PluginRegistry`
-   then inject `ingestOffsetMs` (Ingest Offset, ±10,000 ms, live) and, with
-   `pidTrims`, `pidTrimsMs` (Per-PID Trim, ±2,000 ms per PID, live, the
-   `pidTrim` widget fed from the `pids` field options) through
+1. **Manifest.** Declare `"timing": { "role": "ingest", "pidTrims": true,
+   "pcrLock": true }` under `mediaRouter` for a network ingest
+   (`"pidTrims": false` and no `pcrLock` for a capture: one PID, where O does
+   the same job, and no clock lock). The engine's `PluginLoader` and the
+   manager's `PluginRegistry` then inject `ingestOffsetMs` (Ingest Offset,
+   ±10,000 ms, live), with `pidTrims` `pidTrimsMs` (Per-PID Trim, ±2,000 ms
+   per PID, live, the `pidTrim` widget fed from the `pids` field options) and
+   with `pcrLock` `smoothingCooldownMin` (Smoothing Cooldown, 0–60 min,
+   default 5, live: how long a clock line a burst raised holds before it may
+   come down, plan chapter 15.4 B-95; 0 off) through
    `withIngestTimingSettings` (shared-types). Do not declare them in your
    `configSchema`.
-2. **Pipeline.** `buildRestamp({ mode, addBaseTime, offsetMs, pidTrimsMs })`
-   returns `mrtsrestamp name=restamp clock-mode=… offset-ns=… [pid-trims="…"]`.
+2. **Pipeline.** `buildRestamp({ mode, addBaseTime, offsetMs, pidTrimsMs,
+   smoothingCooldownMin })` returns `mrtsrestamp name=restamp clock-mode=…
+   [smoothing-cooldown-ns=…] offset-ns=… [pid-trims="…"]` (the cooldown in
+   `stc` mode only, clamped to 0–60 min, the default 5 min for anything but
+   a number).
    A network ingest places it right after the transport element, before any
    queue, because it reads arrival itself (the clock at chain entry, after
    the transport's recovery buffer; `srtsrc`'s own buffer PTS is the
@@ -2291,14 +2298,16 @@ exported from `@media-router/engine`; srt-input is the reference):
    in 10 min, a source rate past 100 ppm or an ASRC ratio past 200 ppm for a
    minute, a PCR that comes irregularly (a steady sparse one locks, its State
    row saying "PCR every 2.0 s"), transport errors.
-5. **Live edits.** List `ingestOffsetMs` (and `pidTrimsMs`) in
-   `liveUpdatableParams` and call `applyIngestTimingLiveUpdate({
-   setElementProperty: (e, p, v) => this.setElementProperty(e, p, v) },
-   changes)` from `onLiveConfigUpdate`; it sets `offset-ns` or `pid-trims` on
-   the element named `restamp`, clamped, with no restart. Each PID takes the
-   new shift at its next PES: a positive change leaves a gap (a marker), a
-   negative change drops the overlap (§5.5). The settings form writes on
-   Enter, blur or a spinner step only, never per keystroke.
+5. **Live edits.** List `ingestOffsetMs` (and `pidTrimsMs`,
+   `smoothingCooldownMin`) in `liveUpdatableParams` and call
+   `applyIngestTimingLiveUpdate({ setElementProperty: (e, p, v) =>
+   this.setElementProperty(e, p, v) }, changes)` from `onLiveConfigUpdate`;
+   it sets `offset-ns`, `pid-trims` or `smoothing-cooldown-ns` on the element
+   named `restamp`, clamped, with no restart. Each PID takes the new shift
+   at its next PES: a positive change leaves a gap (a marker), a negative
+   change drops the overlap (§5.5); each clock takes the cooldown at its next
+   1 s close. The settings form writes all three on Enter, blur or a spinner
+   step only, never per keystroke.
 
 What the consumers see: a network ingest's content lands where its source
 scheduled it (arrival plus the source's PTS − PCR lead, "source-natural"),

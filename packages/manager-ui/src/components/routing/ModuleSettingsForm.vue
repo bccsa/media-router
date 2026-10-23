@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue';
-import { INGEST_OFFSET_KEY } from '@media-router/shared-types';
+import { INGEST_OFFSET_KEY, SMOOTHING_COOLDOWN_KEY } from '@media-router/shared-types';
 import MrInput from '@/components/common/MrInput.vue';
 import MrSelect from '@/components/common/MrSelect.vue';
 import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
@@ -48,17 +48,24 @@ function onUpdate(key: string, value: unknown): void {
     emit('update', key, value);
 }
 
-// Any engine's patch re-renders this form, so the Ingest Offset box binds its draft while typed in.
-const offsetDrafts = useNumberBoxDrafts();
-// The panel reuses this form for the next module it opens; a draft belongs to one module.
-watch([() => props.engineId, () => props.moduleId], () => offsetDrafts.close(INGEST_OFFSET_KEY));
+// Each live write of the Ingest Offset is a gap or a drop on the stream (§5.5), and a Smoothing
+// Cooldown typed through a smaller value or 0 can move a held clock (B-95): their boxes commit on
+// change only.
+const CHANGE_ONLY_KEYS: readonly string[] = [INGEST_OFFSET_KEY, SMOOTHING_COOLDOWN_KEY];
 
-// Each live write of the Ingest Offset is a gap or a drop on the stream (§5.5), so its box
-// commits on change only. A stored value that is not a finite number counts as 0, the default.
-function commitOffset(field: FormField, event: Event): void {
-    offsetDrafts.close(field.key);
+// Any engine's patch re-renders this form, so a change-only box binds its draft while typed in.
+const boxDrafts = useNumberBoxDrafts();
+// The panel reuses this form for the next module it opens; a draft belongs to one module.
+watch([() => props.engineId, () => props.moduleId], () =>
+    CHANGE_ONLY_KEYS.forEach((key) => boxDrafts.close(key)),
+);
+
+// A stored value that is not a finite number counts as the setting's default.
+function commitChangeOnly(field: FormField, event: Event): void {
+    boxDrafts.close(field.key);
     const stored = Number(props.settings[field.key]);
-    const last = Number.isFinite(stored) ? stored : 0;
+    const fallback = typeof field.defaultValue === 'number' ? field.defaultValue : 0;
+    const last = Number.isFinite(stored) ? stored : fallback;
     const next = commitNumberBox(event.target as HTMLInputElement, last, {
         min: field.minimum,
         max: props.getMax(field),
@@ -419,18 +426,19 @@ function clearUpload(field: FormField): void {
                     />
                 </label>
             </div>
-            <!-- Ingest Offset: MrInput emits per keystroke, so this box commits on change (Enter,
-                 blur, a spinner step); it drops focus on wheel so a scroll cannot spin it. -->
-            <div v-else-if="field.key === INGEST_OFFSET_KEY" class="flex items-center gap-1.5">
+            <!-- Ingest Offset and Smoothing Cooldown: MrInput emits per keystroke, so these boxes
+                 commit on change (Enter, blur, a spinner step); they drop focus on wheel so a
+                 scroll cannot spin them. -->
+            <div v-else-if="CHANGE_ONLY_KEYS.includes(field.key)" class="flex items-center gap-1.5">
                 <input
                     type="number"
-                    :value="offsetDrafts.shown(field.key, settings[field.key])"
+                    :value="boxDrafts.shown(field.key, settings[field.key])"
                     :min="field.minimum"
                     :max="getMax(field)"
                     class="flex-1 min-w-0 px-2.5 py-1.5 text-sm rounded-md outline-none transition-colors bg-input border border-border text-foreground"
-                    @input="offsetDrafts.onInput(field.key, $event)"
-                    @change="commitOffset(field, $event)"
-                    @blur="offsetDrafts.onBlur(field.key, $event)"
+                    @input="boxDrafts.onInput(field.key, $event)"
+                    @change="commitChangeOnly(field, $event)"
+                    @blur="boxDrafts.onBlur(field.key, $event)"
                     @wheel="($event.target as HTMLElement).blur()"
                 />
                 <span v-if="field.unit" class="text-xs text-muted" data-test="unit">

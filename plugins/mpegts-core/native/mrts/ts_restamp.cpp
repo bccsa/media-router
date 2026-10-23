@@ -121,6 +121,11 @@ void RestampCore::set_trims(const std::map<int, int64_t>& trims_ns) {
     for (auto& g : progs_) update_pcr_shift(*g);
 }
 
+void RestampCore::set_step_fall_hold(int64_t ns) {
+    cfg_.clock.step_fall_hold_ns = ns;
+    for (auto& g : progs_) g->stc.set_step_fall_hold(ns);
+}
+
 int64_t RestampCore::target_shift(int pid) const {
     const auto it = trims_.find(pid);
     return offset_ + (it == trims_.end() ? 0 : it->second);

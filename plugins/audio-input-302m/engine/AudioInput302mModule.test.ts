@@ -591,6 +591,8 @@ describe('AudioInput302mModule on house time (WI-P1-11)', () => {
             const props = (loader.getPluginSchemas()['audio-input-302m'] as any).properties;
             expect(props.ingestOffsetMs).toMatchObject({ minimum: -10000, maximum: 10000 });
             expect(props.pidTrimsMs).toBeUndefined();
+            // No clock lock to smooth (b95s).
+            expect(props.smoothingCooldownMin).toBeUndefined();
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
             expect(live).toEqual(expect.arrayContaining(['volume', 'ingestOffsetMs']));
             expect(new AudioInput302mModule().getLiveUpdatableParams()).toEqual(

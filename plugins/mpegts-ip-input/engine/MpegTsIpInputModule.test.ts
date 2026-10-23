@@ -365,6 +365,16 @@ const pidMsg = (pid: number, type: number) => ({
     'dropped-pes': 0,
 });
 const factories = (pipeline: string) => pipeline.split(' ! ').map((el) => el.split(' ')[0]);
+/** Smoothing Cooldown as the loader injects it (b95s): minutes, 5 by default, live. */
+const COOLDOWN_SCHEMA = {
+    type: 'number',
+    default: 5,
+    minimum: 0,
+    maximum: 60,
+    'x-unit': 'min',
+    'x-live': true,
+    title: 'Smoothing Cooldown',
+};
 const BUS = ['queue', 'capssetter', 'capsfilter', 'mrlateness', 'tee'];
 const TAP = ' busout_41000. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe';
 
@@ -412,7 +422,8 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
             ...BUS,
         ]);
         expect(rtp.pipeline).toContain(
-            'rtpmp2tdepay ! mrtsrestamp name=restamp clock-mode=stc offset-ns=0 ! queue leaky=0',
+            'rtpmp2tdepay ! mrtsrestamp name=restamp clock-mode=stc ' +
+                'smoothing-cooldown-ns=300000000000 offset-ns=0 ! queue leaky=0',
         );
         for (const desc of [raw, rtp]) {
             expect(desc.busReports).toEqual([
@@ -424,30 +435,39 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
         }
     });
 
-    it('starts the restamp on the configured offset and trims', () => {
+    it('starts the restamp on the configured offset, trims and smoothing cooldown', () => {
         const { module } = makeModule();
-        const desc = module.buildPipeline({ ingestOffsetMs: 12.4, pidTrimsMs: { 256: 7, x: 9 } });
+        const desc = module.buildPipeline({
+            ingestOffsetMs: 12.4,
+            pidTrimsMs: { 256: 7, x: 9 },
+            smoothingCooldownMin: 0,
+        });
         expect(desc.pipeline).toContain(
-            'mrtsrestamp name=restamp clock-mode=stc offset-ns=12400000 pid-trims="256=7000000" ! ',
+            'mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=0 offset-ns=12400000 ' +
+                'pid-trims="256=7000000" ! ',
         );
     });
 
-    it('a live edit of O or a trim sets the restamp property, with no restart', async () => {
+    it('a live edit of O, a trim or the cooldown sets the restamp property, with no restart', async () => {
         const { module } = makeModule();
         const setElementProperty = vi.fn(async () => {});
         module.setElementProperty = setElementProperty;
         const instance = new ModuleInstance('mpegts-ip-in-1', 'mpegts-ip-input', module, {});
         await instance.applyConfigUpdate({ pidTrimsMs: {} });
         await instance.applyConfigUpdate({ ingestOffsetMs: 40 });
+        await instance.applyConfigUpdate({ smoothingCooldownMin: 60 });
         expect(setElementProperty.mock.calls).toEqual([
             ['restamp', 'pid-trims', ''],
             ['restamp', 'offset-ns', 40_000_000],
+            ['restamp', 'smoothing-cooldown-ns', 3_600_000_000_000],
         ]);
         expect(instance.getState().pendingRestart).toBe(false);
-        expect(module.buildPipeline(module.config).pipeline).toContain('offset-ns=40000000 ! ');
+        expect(module.buildPipeline(module.config).pipeline).toContain(
+            'smoothing-cooldown-ns=3600000000000 offset-ns=40000000 ! ',
+        );
     });
 
-    it('declares ingest timing: the loader adds O and the trims, and each is live here', async () => {
+    it('declares ingest timing: the loader adds O, the trims and the cooldown, each live here', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'mpegts-ip-input-manifest-'));
         try {
             mkdirSync(join(dir, 'mpegts-ip-input'));
@@ -463,8 +483,11 @@ describe('MpegTsIpInputModule on the restamp (WI-P1-10)', () => {
                 'x-widget': 'pidTrim',
                 'x-optionsFrom': 'pids',
             });
+            expect(props.smoothingCooldownMin).toMatchObject(COOLDOWN_SCHEMA);
             const live = Object.keys(props).filter((k) => props[k]['x-live'] === true);
-            expect(live).toEqual(expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs']));
+            expect(live).toEqual(
+                expect.arrayContaining(['ingestOffsetMs', 'pidTrimsMs', 'smoothingCooldownMin']),
+            );
             expect(new MpegTsIpInputModule().getLiveUpdatableParams()).toEqual(
                 expect.arrayContaining(live),
             );

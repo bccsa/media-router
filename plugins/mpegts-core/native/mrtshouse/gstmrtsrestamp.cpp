@@ -30,12 +30,15 @@ enum {
     PROP_ADD_BASE_TIME,
     PROP_OFFSET_NS,
     PROP_PID_TRIMS,
+    PROP_SMOOTHING_COOLDOWN_NS,
     PROP_STATS_INTERVAL_MS,
     PROP_TRACE_LOCATION,
     PROP_STATS,
 };
 
 #define DEFAULT_STATS_INTERVAL_MS 2000
+/* The ingest's Smoothing Cooldown: up to its 60 min; the default is the core's 300 s. */
+static const gint64 MAX_SMOOTHING_COOLDOWN_NS = 3600 * GST_SECOND;
 /* OQ-17: during an outage a marker at detection, then every 250 ms. */
 static const gint64 OUTAGE_MARK_NS = 250 * GST_MSECOND;
 /* The task's longest sleep: it recomputes its deadlines at least this often. */
@@ -88,8 +91,9 @@ struct _GstMrtsRestamp {
     gint64 offset_ns;
     gchar* pid_trims;
     std::map<int, int64_t>* trims;
+    gint64 smoothing_cooldown_ns;
     gchar* trace_location;
-    gboolean edits_pending, trace_pending;
+    gboolean edits_pending, cooldown_pending, trace_pending;
     std::atomic<bool> dirty;
     std::atomic<guint> stats_interval_ms;
 
@@ -260,8 +264,9 @@ static void restamp_build(GstMrtsRestamp* self) {
     cfg.add_base_time = cfg.mode == mrts::RestampConfig::Mode::fixed && self->add_base_time;
     cfg.offset_ns = self->offset_ns;
     cfg.trims_ns = *self->trims;
+    cfg.clock.step_fall_hold_ns = self->smoothing_cooldown_ns;
     self->run_arrival = self->arrival;
-    self->edits_pending = FALSE;
+    self->edits_pending = self->cooldown_pending = FALSE;
     self->trace_pending = TRUE;   // the trace of this run opens below
     GST_OBJECT_UNLOCK(self);
     self->dirty.store(true, std::memory_order_relaxed);
@@ -275,17 +280,19 @@ static void restamp_build(GstMrtsRestamp* self) {
 static void restamp_apply(GstMrtsRestamp* self) {
     if (!self->dirty.exchange(false, std::memory_order_acq_rel)) return;
     GST_OBJECT_LOCK(self);
-    const gboolean edits = self->edits_pending, retrace = self->trace_pending;
-    const gint64 offset = self->offset_ns;
+    const gboolean edits = self->edits_pending, cooldown = self->cooldown_pending,
+                   retrace = self->trace_pending;
+    const gint64 offset = self->offset_ns, hold = self->smoothing_cooldown_ns;
     std::map<int, int64_t> trims;
     if (edits) trims = *self->trims;
     const std::string path = self->trace_location ? self->trace_location : "";
-    self->edits_pending = self->trace_pending = FALSE;
+    self->edits_pending = self->cooldown_pending = self->trace_pending = FALSE;
     GST_OBJECT_UNLOCK(self);
     if (edits) {
         self->core->set_offset(offset);
         self->core->set_trims(trims);
     }
+    if (cooldown) self->core->set_step_fall_hold(hold);
     if (retrace) restamp_set_trace(self, path);
 }
 
@@ -778,6 +785,13 @@ static void restamp_set_property(GObject* object, guint prop_id, const GValue* v
             self->dirty.store(true, std::memory_order_release);
             break;
         }
+        case PROP_SMOOTHING_COOLDOWN_NS:
+            GST_OBJECT_LOCK(self);
+            self->smoothing_cooldown_ns = g_value_get_int64(value);
+            self->cooldown_pending = TRUE;
+            GST_OBJECT_UNLOCK(self);
+            self->dirty.store(true, std::memory_order_release);
+            break;
         case PROP_STATS_INTERVAL_MS:
             self->stats_interval_ms.store(g_value_get_uint(value), std::memory_order_relaxed);
             break;
@@ -838,6 +852,11 @@ static void restamp_get_property(GObject* object, guint prop_id, GValue* value, 
         case PROP_PID_TRIMS:
             GST_OBJECT_LOCK(self);
             g_value_set_string(value, self->pid_trims);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_SMOOTHING_COOLDOWN_NS:
+            GST_OBJECT_LOCK(self);
+            g_value_set_int64(value, self->smoothing_cooldown_ns);
             GST_OBJECT_UNLOCK(self);
             break;
         case PROP_STATS_INTERVAL_MS:
@@ -903,8 +922,9 @@ static void gst_mrtsrestamp_init(GstMrtsRestamp* self) {
     self->offset_ns = 0;
     self->pid_trims = g_strdup("");
     self->trims = new std::map<int, int64_t>();
+    self->smoothing_cooldown_ns = mrts::ClockLockConfig().step_fall_hold_ns;
     self->trace_location = NULL;
-    self->edits_pending = self->trace_pending = FALSE;
+    self->edits_pending = self->cooldown_pending = self->trace_pending = FALSE;
     self->core = NULL;
     self->run_arrival = MRTSRESTAMP_ARRIVAL_CLOCK;
     self->trace = new mrts::TraceWriter();
@@ -974,6 +994,15 @@ static void gst_mrtsrestamp_class_init(GstMrtsRestampClass* klass) {
                             "\"<pid>=<ns>;...\" on top of O, live, each clamped to +-2 s; a "
                             "malformed entry is skipped with a warning.",
                             "", live));
+    g_object_class_install_property(
+        gobject_class, PROP_SMOOTHING_COOLDOWN_NS,
+        g_param_spec_int64("smoothing-cooldown-ns", "Smoothing cooldown (ns)",
+                           "stc only: a clock line an envelope step seeded comes down only once "
+                           "no run that could have stepped lies within this much of the past "
+                           "(B-95's window rule, the ingest's Smoothing Cooldown); 0: off, the "
+                           "backlog rule. Live, from each program's next bucket close.",
+                           0, MAX_SMOOTHING_COOLDOWN_NS, mrts::ClockLockConfig().step_fall_hold_ns,
+                           live));
     g_object_class_install_property(
         gobject_class, PROP_STATS_INTERVAL_MS,
         g_param_spec_uint("stats-interval-ms", "Stats interval (ms)",

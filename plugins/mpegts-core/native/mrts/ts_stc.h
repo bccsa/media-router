@@ -34,7 +34,7 @@ struct ClockLockConfig {
     int64_t backlog_ns = 490000000;
     // On a line an envelope step's sample seeded, a floor past backlog_ns under it moves the line only
     // once no step_hold_ns run has come within backlog_ns of it for this long (B-95); the fit
-    // window. 0: the backlog rule as on any other line.
+    // window. 0: the backlog rule as on any other line. A network ingest's live Smoothing Cooldown.
     int64_t step_fall_hold_ns = 300000000000LL;
     int64_t lost_ns = 5000000000LL;            // no sample this long: phase lost
     int64_t residual_window_ns = 2000000000;   // residual stats window (stats-interval-ms)
@@ -100,6 +100,9 @@ class ClockLock {
     // The stale rule's second clause marked a PES on this line: the next close moves it as the
     // backlog rule does, so a stale run never outlasts a move (B-48 (1), B-95).
     void note_stale() const { stale_seen_ = true; }
+    // Live step_fall_hold_ns, within the constructor's bound, from the next close: a longer hold
+    // waits until the history spans it, 0 is the backlog rule, and a return from 0 starts afresh.
+    void set_step_fall_hold(int64_t ns);
     // After a step: the mapping onto the floor the step's buckets measured, at once,
     // keeping ε and the phase (mrasrc). A program's STC never steps; it relocks.
     void step_to_floor();
@@ -345,6 +348,8 @@ class VirtualStc {
     Mapping map_pcr(int64_t arrival_ns);
     void tick(int64_t now_ns);
     void relock();   // external trigger (the PMT's PCR PID changed): the next PCR opens an epoch
+    // Live: the window rule's hold on the PCR lock, the reference lock and every clamp lock.
+    void set_step_fall_hold(int64_t ns);
     State state() const;
     Stats stats();
     LeadStats lead(int pid) const;

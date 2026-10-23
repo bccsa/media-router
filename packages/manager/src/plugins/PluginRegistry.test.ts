@@ -259,6 +259,17 @@ describe('PluginRegistry', () => {
             description:
                 "Shifts one stream against the others, on top of Ingest Offset, to correct a source's fixed A/V error.",
         };
+        const COOLDOWN = {
+            type: 'number',
+            default: 5,
+            minimum: 0,
+            maximum: 60,
+            'x-unit': 'min',
+            'x-live': true,
+            title: 'Smoothing Cooldown',
+            description:
+                "Adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
+        };
         const manifest = (id: string, timing?: unknown) => ({
             pluginId: id,
             displayName: id,
@@ -268,9 +279,14 @@ describe('PluginRegistry', () => {
             ...(timing ? { timing } : {}),
         });
 
-        it('only the manifests declaring `timing` get them; the trim only with pidTrims', () => {
-            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }));
+        it('only the manifests declaring `timing` get them; the trim only with pidTrims, the cooldown only with pcrLock', () => {
+            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true, pcrLock: true }));
             createPlugin('cap', manifest('cap', { role: 'ingest', pidTrims: false }));
+            createPlugin('trim', manifest('trim', { role: 'ingest', pidTrims: true }));
+            createPlugin(
+                'lock',
+                manifest('lock', { role: 'ingest', pidTrims: false, pcrLock: true }),
+            );
             createPlugin('out', manifest('out', { role: 'egress' }));
             createPlugin('plain', manifest('plain'));
 
@@ -281,16 +297,59 @@ describe('PluginRegistry', () => {
             expect(schemas).toEqual({
                 net: {
                     type: 'object',
-                    properties: { port: PORT, ingestOffsetMs: OFFSET, pidTrimsMs: TRIMS },
+                    properties: {
+                        port: PORT,
+                        ingestOffsetMs: OFFSET,
+                        pidTrimsMs: TRIMS,
+                        smoothingCooldownMin: COOLDOWN,
+                    },
                 },
                 cap: { type: 'object', properties: { port: PORT, ingestOffsetMs: OFFSET } },
+                trim: {
+                    type: 'object',
+                    properties: { port: PORT, ingestOffsetMs: OFFSET, pidTrimsMs: TRIMS },
+                },
+                lock: {
+                    type: 'object',
+                    properties: {
+                        port: PORT,
+                        ingestOffsetMs: OFFSET,
+                        smoothingCooldownMin: COOLDOWN,
+                    },
+                },
                 out: { type: 'object', properties: { port: PORT } },
                 plain: { type: 'object', properties: { port: PORT } },
             });
         });
 
+        it('on the real manifests: Smoothing Cooldown on the three network ingests, not the four captures', () => {
+            const schemas = new PluginRegistry(path.resolve(__dirname, '../../../../plugins'))
+                .getAll()
+                .filter((p) => (p.configSchema as any)?.properties?.ingestOffsetMs);
+            const withCooldown = (want: boolean) =>
+                schemas
+                    .filter(
+                        (p) =>
+                            'smoothingCooldownMin' in (p.configSchema as any).properties === want,
+                    )
+                    .map((p) => p.pluginId)
+                    .sort();
+            expect(withCooldown(true)).toEqual(['mpegts-ip-input', 'rist-input', 'srt-input']);
+            expect(withCooldown(false)).toEqual([
+                'aes67-input',
+                'audio-encoder',
+                'audio-input-302m',
+                'video-encoder',
+            ]);
+            for (const p of schemas.filter(
+                (x) => 'smoothingCooldownMin' in (x.configSchema as any).properties,
+            )) {
+                expect((p.configSchema as any).properties.smoothingCooldownMin).toEqual(COOLDOWN);
+            }
+        });
+
         it('a module gets them through overlayManifest, and initManifest sees them', async () => {
-            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }));
+            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true, pcrLock: true }));
             const dist = path.join(tmpDir, 'net', 'dist');
             fs.mkdirSync(dist);
             fs.writeFileSync(
@@ -303,7 +362,9 @@ describe('PluginRegistry', () => {
             );
             const registry = new PluginRegistry(tmpDir);
             await registry.init();
-            expect(registry.find('net')!.description).toBe('port,ingestOffsetMs,pidTrimsMs');
+            expect(registry.find('net')!.description).toBe(
+                'port,ingestOffsetMs,pidTrimsMs,smoothingCooldownMin',
+            );
 
             const mod: Record<string, unknown> = { pluginId: 'net' };
             registry.overlayManifest(mod);

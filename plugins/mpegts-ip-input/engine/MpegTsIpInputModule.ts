@@ -3,6 +3,7 @@ import {
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
     PID_TRIMS_KEY,
+    SMOOTHING_COOLDOWN_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
     buildNetUdpSrc,
@@ -40,9 +41,14 @@ const DETECT_TIMEOUT_MS = 2000;
 
 export class MpegTsIpInputModule extends GstPluginBase {
     /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
-     *  never by this pipeline, so it is live and never pends a restart. O and the trims are
-     *  the restamp's live properties (§5.5). */
-    protected liveUpdatableParams = ['playoutOffsetMs', INGEST_OFFSET_KEY, PID_TRIMS_KEY];
+     *  never by this pipeline, so it is live and never pends a restart. O, the trims and the
+     *  smoothing cooldown are the restamp's live properties (§5.5, B-95). */
+    protected liveUpdatableParams = [
+        'playoutOffsetMs',
+        INGEST_OFFSET_KEY,
+        PID_TRIMS_KEY,
+        SMOOTHING_COOLDOWN_KEY,
+    ];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     /** Encapsulation detected this run when the operator left it on `auto`. */
     private detectedEncap: Encapsulation | null = null;
@@ -238,6 +244,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
             mode: 'stc',
             offsetMs: config[INGEST_OFFSET_KEY],
             pidTrimsMs: config[PID_TRIMS_KEY],
+            smoothingCooldownMin: config[SMOOTHING_COOLDOWN_KEY],
         });
         const pipeline = [
             netSrc,

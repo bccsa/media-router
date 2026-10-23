@@ -232,6 +232,17 @@ describe('PluginLoader', () => {
             description:
                 "Shifts one stream against the others, on top of Ingest Offset, to correct a source's fixed A/V error.",
         };
+        const COOLDOWN = {
+            type: 'number',
+            default: 5,
+            minimum: 0,
+            maximum: 60,
+            'x-unit': 'min',
+            'x-live': true,
+            title: 'Smoothing Cooldown',
+            description:
+                "Adds latency only when this input's stream is bursty (packets arriving in bursts, as through some relays). The input then runs at its bursts' height and comes back down no sooner than this long after the last burst, instead of skipping and re-syncing after every burst. A steady stream gets no added latency. Set it longer than the time between bursts; 0 turns smoothing off.",
+        };
         const manifest = (id: string, timing?: unknown) => ({
             pluginId: id,
             displayName: id,
@@ -240,9 +251,15 @@ describe('PluginLoader', () => {
             ...(timing ? { timing } : {}),
         });
 
-        it('only the manifests declaring `timing` get them; the trim only with pidTrims', async () => {
-            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }));
+        it('only the manifests declaring `timing` get them; the trim only with pidTrims, the cooldown only with pcrLock', async () => {
+            const net = { role: 'ingest', pidTrims: true, pcrLock: true };
+            createPlugin('net', manifest('net', net));
             createPlugin('cap', manifest('cap', { role: 'ingest', pidTrims: false }));
+            createPlugin('trim', manifest('trim', { role: 'ingest', pidTrims: true }));
+            createPlugin(
+                'lock',
+                manifest('lock', { role: 'ingest', pidTrims: false, pcrLock: true }),
+            );
             createPlugin('out', manifest('out', { role: 'egress' }));
             createPlugin('plain', manifest('plain'));
 
@@ -252,9 +269,26 @@ describe('PluginLoader', () => {
             expect(loader.getPluginSchemas()).toEqual({
                 net: {
                     type: 'object',
-                    properties: { port: PORT, ingestOffsetMs: OFFSET, pidTrimsMs: TRIMS },
+                    properties: {
+                        port: PORT,
+                        ingestOffsetMs: OFFSET,
+                        pidTrimsMs: TRIMS,
+                        smoothingCooldownMin: COOLDOWN,
+                    },
                 },
                 cap: { type: 'object', properties: { port: PORT, ingestOffsetMs: OFFSET } },
+                trim: {
+                    type: 'object',
+                    properties: { port: PORT, ingestOffsetMs: OFFSET, pidTrimsMs: TRIMS },
+                },
+                lock: {
+                    type: 'object',
+                    properties: {
+                        port: PORT,
+                        ingestOffsetMs: OFFSET,
+                        smoothingCooldownMin: COOLDOWN,
+                    },
+                },
                 out: { type: 'object', properties: { port: PORT } },
                 plain: { type: 'object', properties: { port: PORT } },
             });
@@ -271,12 +305,15 @@ describe('PluginLoader', () => {
                     }
                 }
             `;
-            createPlugin('net', manifest('net', { role: 'ingest', pidTrims: true }), engineCode);
+            const net = { role: 'ingest', pidTrims: true, pcrLock: true };
+            createPlugin('net', manifest('net', net), engineCode);
 
             const loader = new PluginLoader(tmpDir);
             await loader.load();
 
-            expect(loader.get('net')!.manifest.description).toBe('port,ingestOffsetMs,pidTrimsMs');
+            expect(loader.get('net')!.manifest.description).toBe(
+                'port,ingestOffsetMs,pidTrimsMs,smoothingCooldownMin',
+            );
         });
     });
 });

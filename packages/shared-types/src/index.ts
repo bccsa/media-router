@@ -749,7 +749,8 @@ export interface PluginManifest {
     uploads?: UploadsPolicy;
     /**
      * An ingest's timing (house-clock WI-P1-9): the engine's loader and the manager's registry
-     * inject Ingest Offset, and Per-PID Trim when `pidTrims` is set, into `configSchema`.
+     * inject Ingest Offset, Per-PID Trim when `pidTrims` is set and Smoothing Cooldown when
+     * `pcrLock` is, into `configSchema`.
      */
     timing?: ManifestTiming;
 }
