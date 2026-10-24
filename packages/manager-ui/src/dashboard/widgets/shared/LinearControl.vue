@@ -65,7 +65,8 @@ function down(e: PointerEvent) {
 function move(e: PointerEvent) {
     if (!dragging.value) return;
     const next = dragValue(start.value, along(e) - start.pos, length(), min.value, max.value, step.value);
-    if (!moved && next === start.value) return;
+    // A move inside one step changes nothing and sends nothing (B-108).
+    if (next === local.value) return;
     moved = true;
     local.value = next;
     send.push(next);

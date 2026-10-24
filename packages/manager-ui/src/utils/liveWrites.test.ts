@@ -90,3 +90,89 @@ describe('createLiveWrites: a held value goes where it was made (B-106)', () => 
         expect(sent.at(-1)).toBe('eng-1/a.volume=9');
     });
 });
+
+describe('createLiveWrites: a held value the window sent already is not written again (B-108)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('one value: one write, nothing when the window closes', () => {
+        const { live, sent } = setup(100);
+        live.throttle(A, 120);
+        vi.advanceTimersByTime(1000);
+        expect(sent).toEqual(['eng-1/a.volume=120']);
+    });
+
+    it('n steps inside one window: the first and the last, each once', () => {
+        const { live, sent } = setup(100);
+        for (let v = 101; v <= 110; v++) live.throttle(A, v);
+        vi.advanceTimersByTime(1000);
+        expect(sent).toEqual(['eng-1/a.volume=101', 'eng-1/a.volume=110']);
+    });
+
+    it('moved back inside the window to its first value: nothing more is written', () => {
+        const { live, sent } = setup(100);
+        live.throttle(A, 101);
+        live.throttle(A, 102);
+        live.throttle(A, 101);
+        vi.advanceTimersByTime(1000);
+        expect(sent).toEqual(['eng-1/a.volume=101']);
+    });
+
+    it('moved back inside the window to where it started: written, as the first is stored by then', () => {
+        const { live, sent } = setup(100);
+        // Stored 100: 101 goes at once, then the slider returns to 100.
+        live.throttle(A, 101);
+        live.throttle(A, 100);
+        vi.advanceTimersByTime(1000);
+        expect(sent).toEqual(['eng-1/a.volume=101', 'eng-1/a.volume=100']);
+    });
+
+    it('moved away and back over two windows: each value is a write of its own', () => {
+        const { live, sent } = setup(100);
+        live.throttle(A, 10);
+        live.throttle(A, 20);
+        vi.advanceTimersByTime(100);
+        live.throttle(A, 10);
+        vi.advanceTimersByTime(1000);
+        expect(sent).toEqual(['eng-1/a.volume=10', 'eng-1/a.volume=20', 'eng-1/a.volume=10']);
+    });
+
+    it('flush: a held value equal to the one its window sent goes nowhere', () => {
+        const { live, sent } = setup(100);
+        live.throttle(A, 10);
+        live.throttle(A, 20);
+        live.throttle(A, 10);
+        live.flush();
+        vi.advanceTimersByTime(1000);
+        expect(sent).toEqual(['eng-1/a.volume=10']);
+    });
+
+    it("per target: another module's equal value is its own write", () => {
+        const { live, sent } = setup(100);
+        live.throttle(A, 10);
+        live.throttle(B, 10);
+        expect(sent).toEqual(['eng-1/a.volume=10', 'eng-1/b.volume=10']);
+    });
+
+    it('per target: each window is judged by its own first value, not the last one sent anywhere', () => {
+        const { live, sent } = setup(100);
+        live.throttle(A, 10);
+        live.throttle(B, 20);
+        // A back to its own first; B on to a new value.
+        live.throttle(A, 15);
+        live.throttle(A, 10);
+        live.throttle(B, 30);
+        vi.advanceTimersByTime(100);
+        expect(sent).toEqual(['eng-1/a.volume=10', 'eng-1/b.volume=20', 'eng-1/b.volume=30']);
+    });
+
+    it('a list moved back to the same content is not written again', () => {
+        const MAP: LiveTarget = { ...A, key: 'channelMap' };
+        const { live, sent } = setup(100);
+        live.throttle(MAP, [0, 1]);
+        live.throttle(MAP, [1, 0]);
+        live.throttle(MAP, [0, 1]);
+        vi.advanceTimersByTime(100);
+        expect(sent).toEqual(['eng-1/a.channelMap=0,1']);
+    });
+});

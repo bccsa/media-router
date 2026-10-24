@@ -62,6 +62,25 @@ describe('grab and drag', () => {
         expect(sent).toEqual([1, 3, 4, 5, 6]);
         vi.useRealTimers();
     });
+
+    it('a value moved back inside the window to the one just sent is not sent again (B-108)', () => {
+        vi.useFakeTimers();
+        const sent: number[] = [];
+        const t = throttled((v: number) => sent.push(v), 100);
+        t.push(1);
+        t.push(2);
+        t.push(1);
+        vi.advanceTimersByTime(100);
+        t.end(1);
+        expect(sent).toEqual([1]);
+        // Away and back over two windows: each is a change of the stored value.
+        t.push(2);
+        vi.advanceTimersByTime(100);
+        t.push(1);
+        t.end(1);
+        expect(sent).toEqual([1, 2, 1]);
+        vi.useRealTimers();
+    });
 });
 
 describe('entries', () => {

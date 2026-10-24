@@ -392,6 +392,25 @@ elements" below do not start.
   already did; Save sends only the settings you changed; and a change the
   manager still refuses says which setting and why, at the foot of the
   manager's screen, over a dashboard control, or under a dashboard button.
+- **A context-menu or slider change is written once, not twice.** A value
+  set in a module's right-click menu (Input Volume, by its slider or typed
+  into its box) was sent to the router twice, the same value a tenth of a
+  second apart. A slider in a module's settings panel, in its right-click
+  menu or on a dashboard did the same when moved and moved back within that
+  moment, and a slow drag of a dashboard fader or slider that moves in steps
+  sent each value several times. Fixed: each change is sent once.
+- **A listener in Engine Comms can be moved to one address without an
+  'address in use' error.** Moving a listener's port from all interfaces to
+  one address, or back, was refused with "Could not bind listeners: bind
+  EADDRINUSE …" and nothing changed; so was swapping ports or addresses
+  between two listeners. Fixed: such a change applies. As with any change
+  there, every router reconnects to the manager within about a second:
+  meanwhile the manager shows it offline and its modules stopped, though they
+  keep running, and its log list in the manager starts afresh. A router that
+  reached the manager on that port through another of the manager's
+  addresses loses that path until the port moves back (one with another path
+  stays connected through it). Applying the listeners unchanged changes
+  nothing, and no router reconnects.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

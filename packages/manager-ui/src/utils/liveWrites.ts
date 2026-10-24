@@ -1,3 +1,7 @@
+import * as shared from '@media-router/shared-types';
+
+const { diffValues } = shared;
+
 /** One setting of one module on one engine: where a live write goes. */
 export interface LiveTarget {
     engineId: string;
@@ -9,25 +13,35 @@ type Send = (target: LiveTarget, value: unknown) => void;
 
 const idOf = (t: LiveTarget) => JSON.stringify([t.engineId, t.moduleId, t.key]);
 
+/** A target's throttle window: the value its first edge sent, and the latest held since. */
+interface ThrottleWindow {
+    target: LiveTarget;
+    timer: ReturnType<typeof setTimeout>;
+    sent: unknown;
+    held?: { value: unknown };
+}
+
 /**
  * Live setting writes held back by a throttle (the first at once, then the latest each window) or a
  * debounce (once the value rests). Each held value keeps the target it was made on and goes there,
  * whatever the caller shows by then (B-106).
  */
 export function createLiveWrites(send: Send, throttleMs: number) {
-    const throttles = new Map<
-        string,
-        { target: LiveTarget; timer: ReturnType<typeof setTimeout>; held?: { value: unknown } }
-    >();
+    const throttles = new Map<string, ThrottleWindow>();
     const debounces = new Map<
         string,
         { target: LiveTarget; timer: ReturnType<typeof setTimeout>; value: unknown }
     >();
 
+    // The value the window opened with is written already: moved back to it, nothing goes (B-108).
+    function sendHeld(w: ThrottleWindow): void {
+        if (w.held && diffValues(w.sent, w.held.value).length > 0) send(w.target, w.held.value);
+    }
+
     function closeWindow(id: string): void {
-        const t = throttles.get(id);
+        const w = throttles.get(id);
         throttles.delete(id);
-        if (t?.held) send(t.target, t.held.value);
+        if (w) sendHeld(w);
     }
 
     return {
@@ -40,7 +54,11 @@ export function createLiveWrites(send: Send, throttleMs: number) {
                 return;
             }
             send(target, value);
-            throttles.set(id, { target, timer: setTimeout(() => closeWindow(id), throttleMs) });
+            throttles.set(id, {
+                target,
+                sent: value,
+                timer: setTimeout(() => closeWindow(id), throttleMs),
+            });
         },
 
         /** Sent once its target has had no new value for `ms`. */
@@ -57,9 +75,9 @@ export function createLiveWrites(send: Send, throttleMs: number) {
 
         /** Every held value to its own target now, and no window left open. */
         flush(): void {
-            for (const t of throttles.values()) {
-                clearTimeout(t.timer);
-                if (t.held) send(t.target, t.held.value);
+            for (const w of throttles.values()) {
+                clearTimeout(w.timer);
+                sendHeld(w);
             }
             throttles.clear();
             for (const d of debounces.values()) {

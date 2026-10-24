@@ -48,6 +48,9 @@ operator change it from the UI without a Yocto build.
   broadcasts `engine:paths`, shown per engine in the detail view and per
   listener in the Engine Comms card.
 - A rebind probe-binds the ports it does not hold yet before stopping the live
-  server; a bind failure after that restores the previous set.
+  server; a bind failure after that restores the previous set. Amended
+  2026-10-24 (B-110): a port it holds at another address (a move to or from all
+  interfaces, a swap) probes its address alone, the port being the live
+  server's until it closes, and a set of the same sockets rebinds nothing.
 - Firewall allow rules for extra UDP ports are the operator's job
   (device-manager).

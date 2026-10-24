@@ -2,10 +2,11 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { computed, defineComponent } from 'vue';
+import { computed, defineComponent, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import type { EngineState } from '@/stores/engines';
+import MrContextMenu from '@/components/common/MrContextMenu.vue';
 
 const mockCloneModule = vi.fn();
 const mockModulesField = vi.fn();
@@ -253,5 +254,89 @@ describe('useContextMenu inline controls: a held value goes to the module it was
         menu.onContextSliderChange('restart', 1);
 
         expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'c', 'audioEnabled', false]]);
+    });
+});
+
+describe('useContextMenu inline slider: a change is written once (B-108)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    const VOLUME = [
+        {
+            label: 'Input Volume',
+            action: 'setting:volume',
+            slider: { min: 0, max: 150, step: 1, value: 100, unit: '%' },
+        },
+    ];
+    const volumes = (moduleId: string) =>
+        mockModuleSetting.mock.calls.filter(([, id]) => id === moduleId).map(([, , , v]) => v);
+
+    it('one commit is one op: 120 typed in the menu box, then a press outside the menu', async () => {
+        const { menu } = setup();
+        menu.onNodeContextMenu(rightClick('a'));
+        // The real Teleport, as in the browser: the menu lands in <body>.
+        const wrapper = mount(MrContextMenu, {
+            props: {
+                items: VOLUME,
+                x: 5,
+                y: 6,
+                onSliderChange: menu.onContextSliderChange,
+                onClose: () => (menu.contextMenu.value = null),
+            },
+            attachTo: document.body,
+        });
+        // The outside-press listener is installed a frame after mount.
+        vi.advanceTimersToNextFrame();
+        const el = document.querySelector('input[type="number"]') as HTMLInputElement;
+        el.focus();
+        for (const text of ['1', '12', '120']) {
+            el.value = text;
+            el.dispatchEvent(new Event('input'));
+            await nextTick();
+        }
+        // As a browser does: a box left with changed text fires change.
+        el.addEventListener('blur', () => el.dispatchEvent(new Event('change')));
+        document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        vi.advanceTimersByTime(1000);
+
+        expect(menu.contextMenu.value).toBeNull();
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'a', 'volume', 120]]);
+        wrapper.unmount();
+    });
+
+    it('a drag of n steps inside one window: the first and the last value, each once', () => {
+        const { menu } = setup();
+        menu.onNodeContextMenu(rightClick('a'));
+        for (let v = 101; v <= 108; v++) menu.onContextSliderChange('setting:volume', v);
+        expect(volumes('a')).toEqual([101]);
+        vi.advanceTimersByTime(1000);
+        expect(volumes('a')).toEqual([101, 108]);
+    });
+
+    it('a value moved and moved back inside the window: the one write it made already', () => {
+        const { menu } = setup();
+        menu.onNodeContextMenu(rightClick('a'));
+        menu.onContextSliderChange('setting:volume', 101);
+        menu.onContextSliderChange('setting:volume', 110);
+        menu.onContextSliderChange('setting:volume', 101);
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'a', 'volume', 101]]);
+    });
+
+    it("a module switch inside the window: A's moved-back value writes nothing more, C's first is its own write", () => {
+        const { menu } = setup();
+        menu.onNodeContextMenu(rightClick('a'));
+        menu.onContextSliderChange('setting:volume', 101);
+        menu.onContextSliderChange('setting:volume', 110);
+        menu.onContextSliderChange('setting:volume', 101);
+        menu.onNodeContextMenu(rightClick('c'));
+        menu.onContextSliderChange('setting:volume', 101);
+        menu.onContextSliderChange('setting:volume', 90);
+        vi.advanceTimersByTime(1000);
+        expect(mockModuleSetting.mock.calls).toEqual([
+            ['eng-1', 'a', 'volume', 101],
+            ['eng-1', 'c', 'volume', 101],
+            ['eng-1', 'c', 'volume', 90],
+        ]);
     });
 });

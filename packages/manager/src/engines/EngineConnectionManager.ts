@@ -7,6 +7,15 @@ import { reconcileInterlocks } from '../config/reconcileInterlocks.js';
 
 const log = createLogger('EngineConnectionManager');
 
+/** The socket a listener binds: its address (none = every interface) and port. */
+const socketKey = (l: ListenerSpec) => `${l.bindAddress ?? '0.0.0.0'}:${l.port}`;
+
+/** Two listener sets bind the same sockets, in any order. */
+function sameSockets(a: ListenerSpec[], b: ListenerSpec[]): boolean {
+    const keys = (set: ListenerSpec[]) => set.map(socketKey).sort().join(',');
+    return keys(a) === keys(b);
+}
+
 /** Engine→manager topics forwarded 1:1 as `engine<Topic>` events. */
 const FORWARDED_TOPICS: Array<[topic: string, event: string]> = [
     ['state', 'engineState'],
@@ -159,23 +168,33 @@ export class EngineConnectionManager extends EventEmitter {
     }
 
     /**
-     * Rebind to a new listener set while running. Every engine drops for
-     * ~1 RTT: its next packet on the old socketID draws a `reset` from the
-     * new server and it re-handshakes immediately. Listeners we do not hold
-     * yet are probe-bound FIRST, so a port in use elsewhere is rejected while
-     * the live server is still up. Should the real bind still fail, the old
-     * set is restored; if even that fails the error names both causes and
-     * `started` is false — the operator must restart the manager.
+     * Rebind to a new listener set while running. Every engine drops for up
+     * to about a second: its next packet on the old socketID draws a `reset`
+     * from the new server and it re-handshakes. The same sockets rebind
+     * nothing. Listeners we do not hold yet are probe-bound FIRST, so a port
+     * in use elsewhere is rejected while the live server is still up; on a
+     * port we hold under another address only the address is (B-110), the
+     * port being ours until the live server closes. Should the real bind
+     * still fail, the old set is restored; if even that fails the error names
+     * both causes and `started` is false — the operator must restart the
+     * manager.
      */
     async setListeners(listeners: ListenerSpec[]): Promise<void> {
         const previous = this._listeners;
+        if (sameSockets(previous, listeners)) {
+            this._listeners = listeners.map((l) => ({ ...l }));
+            return;
+        }
         const wasStarted = this.started;
         if (wasStarted) {
-            const held = new Set(previous.map((l) => `${l.bindAddress ?? '0.0.0.0'}:${l.port}`));
+            const held = new Set(previous.map(socketKey));
+            const heldPorts = new Set(previous.map((l) => l.port));
             for (const spec of listeners) {
-                if (!held.has(`${spec.bindAddress ?? '0.0.0.0'}:${spec.port}`)) {
-                    await Server.canBind(spec);
-                }
+                if (held.has(socketKey(spec))) continue;
+                const probe = heldPorts.has(spec.port)
+                    ? { port: 0, bindAddress: spec.bindAddress }
+                    : spec;
+                await Server.canBind(probe);
             }
             await this.stop();
         }

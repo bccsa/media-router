@@ -1273,6 +1273,45 @@ describe('ModuleSettingsPanel — a live write lands on the module it was made o
     });
 });
 
+describe('ModuleSettingsPanel — a live slider change is written once (B-108)', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        mockModuleSetting.mockReset();
+        mockModuleSettings.mockReset();
+        vi.useFakeTimers();
+        seedTyped({ 'typed-1': { volume: 40 }, 'typed-2': { volume: 40 } });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('one step of the slider: one write', async () => {
+        const wrapper = mountPanel('typed-1');
+        await volumeSlider(wrapper).setValue('80');
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'volume', 80]]);
+    });
+
+    it('moved and moved back inside the 50 ms window: the one write made at once', async () => {
+        const wrapper = mountPanel('typed-1');
+        await volumeSlider(wrapper).setValue('80');
+        await volumeSlider(wrapper).setValue('90');
+        await volumeSlider(wrapper).setValue('80');
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'volume', 80]]);
+    });
+
+    it('moved back, then a switch inside the window: nothing more to A, nothing to B', async () => {
+        const wrapper = mountPanel('typed-1');
+        await volumeSlider(wrapper).setValue('80');
+        await volumeSlider(wrapper).setValue('90');
+        await volumeSlider(wrapper).setValue('80');
+        await wrapper.setProps({ moduleId: 'typed-2' });
+        vi.advanceTimersByTime(2000);
+        expect(mockModuleSetting.mock.calls).toEqual([['eng-1', 'typed-1', 'volume', 80]]);
+    });
+});
+
 describe('ModuleSettingsPanel — Save sends only what changed (B-107)', () => {
     beforeEach(() => {
         setActivePinia(createPinia());

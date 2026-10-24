@@ -18,8 +18,8 @@ export function fraction(value: number, min: number, max: number): number {
 }
 
 /**
- * At most one send per `ms` while moving, the latest value winning, and the
- * final value always sent on release.
+ * At most one send per `ms` while moving, the latest value winning unless it
+ * is the one just sent, and the final value always sent on release.
  */
 export function throttled<T>(send: (v: T) => void, ms = 100) {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -35,7 +35,8 @@ export function throttled<T>(send: (v: T) => void, ms = 100) {
                 fire(v);
                 timer = setTimeout(() => {
                     timer = null;
-                    if (pending) fire(pending.v);
+                    // Moved back to the value the window opened with: written already (B-108).
+                    if (pending && pending.v !== last?.v) fire(pending.v);
                     pending = null;
                 }, ms);
             } else pending = { v };

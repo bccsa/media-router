@@ -51,6 +51,39 @@ describe('LinearControl (grab and drag)', () => {
         expect(onWrite).toHaveBeenLastCalledWith(70);
     });
 
+    it('a slow drag writes each value once: a move inside one step sends nothing (B-108)', async () => {
+        vi.useFakeTimers();
+        const onWrite = vi.fn();
+        const wrapper = mount(fader.component, {
+            props: { ...fader.componentProps, widget, value: 100, desc: { ...desc, step: 10 }, interactive: true, label: 'Vol', options: {}, onWrite },
+        });
+        const track = wrapper.find('.lc-track').element as HTMLElement;
+        track.getBoundingClientRect = () => ({ height: 150, width: 20, top: 0, left: 0, bottom: 150, right: 20, x: 0, y: 0, toJSON() {} }) as DOMRect;
+        const el = wrapper.find('.lc').element;
+        await pointer(el, 'pointerdown', 75);
+        // 1 px is 1 of 150: 110 from 5 px up, 120 from 15 px; each window closes between moves.
+        for (const y of [74, 72, 70, 69, 67, 66, 64, 60, 59]) {
+            await pointer(el, 'pointermove', y);
+            vi.advanceTimersByTime(100);
+        }
+        await pointer(el, 'pointerup', 59);
+        vi.advanceTimersByTime(1000);
+        expect(onWrite.mock.calls).toEqual([[110], [120]]);
+    });
+
+    it('moved and moved back inside one window: the one write made at once (B-108)', async () => {
+        vi.useFakeTimers();
+        const { at, onWrite } = setup(100);
+        await at('pointerdown', 75);
+        await at('pointermove', 65);
+        await at('pointermove', 55);
+        await at('pointermove', 65);
+        vi.advanceTimersByTime(100);
+        await at('pointerup', 65);
+        vi.advanceTimersByTime(1000);
+        expect(onWrite.mock.calls).toEqual([[110]]);
+    });
+
     it('takes no input when not interactive', async () => {
         const wrapper = mount(LinearControl, { props: { widget, value: 100, desc, interactive: false, label: 'Vol', options: {} } });
         const el = wrapper.find('.lc').element;
