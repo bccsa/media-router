@@ -3,7 +3,13 @@ import { EventEmitter } from 'node:events';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GstPluginBase, ModuleInstance, PluginLoader } from '@media-router/engine';
+import {
+    GstPluginBase,
+    ModuleInstance,
+    PluginLoader,
+    REDACTED,
+    redactSecrets,
+} from '@media-router/engine';
 import { SrtInputModule } from './SrtInputModule.js';
 
 // pollStats logic moved to packages/engine/src/plugins/srtHelpers.ts (SrtStatPoller)
@@ -73,6 +79,32 @@ describe('SrtInputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('passphrase=shared-secret');
         expect(desc!.pipeline).toContain('pbkeylen=16');
     });
+
+    // Test secrets, unique so the test output can be searched for them; srtsrc keeps a passphrase
+    // typed with a space, `;` or `'` whole, so its logged form must hold none of it.
+    it.each([
+        ['as one word', 'zq109-srt-in-V5g1'],
+        ['with a space', 'zq109-srt-in-sp-B2c4 zq109-srt-in-sp-D6f8'],
+        ['with a ;', 'zq109-srt-in-sc-F1g3;zq109-srt-in-sc-H5j7'],
+        ["with a '", "zq109-srt-in-qt-K9m2'zq109-srt-in-qt-L4n6"],
+    ])(
+        'logs a passphrase typed %s as <redacted>, the pipeline keeps it (B-109)',
+        (_kind, passphrase) => {
+            const { module } = makeModule();
+            const desc = module.buildPipeline({
+                mode: 'caller',
+                host: 'srt-peer.example',
+                port: 4200,
+                passphrase,
+                pbKeyLen: 16,
+            });
+            const pipeline: string = desc!.pipeline;
+            expect(pipeline.includes(`&passphrase=${passphrase}&pbkeylen=16"`)).toBe(true);
+            const logged = redactSecrets(pipeline);
+            expect(logged.includes('zq109')).toBe(false);
+            expect(logged).toBe(pipeline.replace(passphrase, REDACTED));
+        },
+    );
 
     it('omits streamId/passphrase/pbkeylen params when not set or zero', () => {
         const { module } = makeModule();

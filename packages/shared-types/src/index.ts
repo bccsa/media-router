@@ -6,6 +6,7 @@ import type { ModuleHealth } from './health.js';
 import type { ManifestTiming } from './ingestTimingSettings.js';
 
 export { createLogger, setLogTap } from './logger.js';
+export { REDACTED, isSecretKey, redactSecrets, redactValue } from './redact.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
 export { LiveArrayIndex } from './LiveArrayIndex.js';
 export { diffConfig, GRAPH_KEYS } from './configDiff.js';

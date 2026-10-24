@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GstPluginBase, ModuleInstance, PluginLoader } from '@media-router/engine';
+import {
+    GstPluginBase,
+    ModuleInstance,
+    PluginLoader,
+    REDACTED,
+    redactSecrets,
+} from '@media-router/engine';
 import { RistInputModule } from './RistInputModule.js';
 
 function makeModule() {
@@ -81,6 +87,18 @@ describe('RistInputModule.buildPipeline', () => {
         expect(src).toContain(' secret="s3cret" ');
         expect(src).toContain(' aes-type=128 ');
         expect(src).toContain(' stats-interval=500');
+    });
+
+    it('logs the passphrase as <redacted>, the pipeline keeps it (B-109)', () => {
+        const { module } = makeModule();
+        // A test secret (unique, so the test output can be searched for it), with a space and quotes.
+        module.config = { secret: 'zq109-rist-in-P2w8 "q" x', encryptionType: 256 };
+        const pipeline: string = module.buildPipeline({})!.pipeline;
+        const quoted = 'secret="zq109-rist-in-P2w8 \\"q\\" x"';
+        expect(pipeline.includes(quoted)).toBe(true);
+        const logged = redactSecrets(pipeline);
+        expect(logged.includes('zq109')).toBe(false);
+        expect(logged).toBe(pipeline.replace(quoted, `secret="${REDACTED}"`));
     });
 
     it('omits session-timeout when unset/zero (librist default applies)', () => {

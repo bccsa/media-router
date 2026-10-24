@@ -221,6 +221,8 @@ export { formatBytes, formatBitrate, bitrateBadge, SrtStatPoller } from './plugi
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
 export { PacedTsSink, packetizeTs, TS_PACKET_BYTES } from './plugins/PacedTsSink.js';
 export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';
+// The logs' redaction step (B-109), for a plugin that prints a launch string or URI itself.
+export { REDACTED, redactSecrets } from '@media-router/shared-types';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export {

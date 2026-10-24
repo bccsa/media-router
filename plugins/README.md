@@ -394,6 +394,8 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 }
 ```
 
+**A secret is marked by its name.** A setting that holds a secret (a passphrase, a password, a token, a key) is named so: its key, case, `-`, `_`, `.` and spaces aside, ends in a word such as `secret`, `passphrase`, `password`, `token`, `apiKey`, `streamKey`, `privateKey`, `encryptionKey`, `signature` or `credential` (the full list, with the few short names it also takes such as `psk` and `user-pw`: `isSecretKey` in shared-types' `redact.ts`). Every log line, launch string and runner message the engine and the manager write passes one redaction step (B-109) that shows such a value as `<redacted>`, as it does an element property or URI parameter of such a name (`secret="…"`, `?passphrase=…`), a URI's `user:password@` and an RTMP stream key; the pipeline gets the real value. `manifestHelpText.test.ts` lists the settings so marked: add a new one there.
+
 ### Custom Schema Extensions
 
 | Extension | Type | Description |

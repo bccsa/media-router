@@ -2,6 +2,7 @@ import {
     createLogger,
     isPlainObject,
     joinPath,
+    redactValue,
     safeParse,
     type PatchOp,
     EngineRunningStateSchema,
@@ -128,8 +129,10 @@ export class EngineEventForwarder {
 
         em.on('engineLogs', (engineId: string, batch: unknown) => {
             if (!Array.isArray(batch)) return;
-            this.runtime.appendLogs(engineId, batch);
-            this.publisher.logs(engineId, batch);
+            // An engine of any release: what every viewer reads loses its secrets here (B-109).
+            const entries = redactValue(batch);
+            this.runtime.appendLogs(engineId, entries);
+            this.publisher.logs(engineId, entries);
         });
 
         em.on('engineDeviceList', (engineId: string, data: unknown) => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { REDACTED, redactSecrets } from '@media-router/engine';
 import { RistOutputModule } from './RistOutputModule.js';
 
 function makeModule() {
@@ -93,6 +94,17 @@ describe('RistOutputModule.buildPipeline', () => {
         module.config = { secret: 'say "hi" there', encryptionType: 128 };
         const sink = module.buildPipeline({})!.pipeline.split(' ! ').pop()!;
         expect(sink).toContain('secret="say \\"hi\\" there"');
+    });
+
+    it('logs the passphrase as <redacted>, the pipeline keeps it (B-109)', () => {
+        const { module } = makeModule();
+        // A test secret, unique so the test output can be searched for it.
+        module.config = { secret: 'zq109-rist-out-D3k7', encryptionType: 128 };
+        const pipeline: string = module.buildPipeline({})!.pipeline;
+        expect(pipeline.includes(' secret="zq109-rist-out-D3k7" ')).toBe(true);
+        const logged = redactSecrets(pipeline);
+        expect(logged.includes('zq109')).toBe(false);
+        expect(logged).toBe(pipeline.replace('zq109-rist-out-D3k7', REDACTED));
     });
 
     it("renders stats from the element's mrrist-stats bus message", () => {

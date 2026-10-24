@@ -1,5 +1,6 @@
 import pino from 'pino';
 import { Transform } from 'stream';
+import { redactSecrets, redactValue } from './redact.js';
 
 /**
  * Global log tap — when set, receives a copy of every log JSON line
@@ -11,6 +12,18 @@ export function setLogTap(tap: ((line: string) => void) | null): void {
     globalLogTap = tap;
 }
 
+/** One JSON log line with every secret redacted (B-109); a line that is not JSON goes as text. */
+function redactLine(line: string): string {
+    let entry: unknown;
+    try {
+        entry = JSON.parse(line);
+    } catch {
+        return redactSecrets(line);
+    }
+    const clean = redactValue(entry);
+    return clean === entry ? line : JSON.stringify(clean) + (line.endsWith('\n') ? '\n' : '');
+}
+
 /**
  * Create a named logger instance.
  *
@@ -18,7 +31,7 @@ export function setLogTap(tap: ((line: string) => void) | null): void {
  * across engine, manager, and plugins. Output is structured JSON via pino.
  *
  * If a global log tap is set (via setLogTap), every JSON log line is
- * also forwarded to the tap function.
+ * also forwarded to the tap function; the tap and stderr get it with its secrets redacted.
  *
  * @param name  Component name (e.g. 'Engine', 'ModuleManager', 'PipeWireManager')
  */
@@ -26,14 +39,15 @@ export function createLogger(name: string): pino.Logger {
     // Create a transform stream that tees to the tap
     const tee = new Transform({
         transform(chunk, _encoding, callback) {
+            const line = redactLine(chunk.toString());
             if (globalLogTap) {
                 try {
-                    globalLogTap(chunk.toString());
+                    globalLogTap(line);
                 } catch {
                     /* never block */
                 }
             }
-            callback(null, chunk);
+            callback(null, line);
         },
     });
     tee.pipe(process.stderr);

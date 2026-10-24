@@ -399,6 +399,17 @@ elements" below do not start.
   menu or on a dashboard did the same when moved and moved back within that
   moment, and a slow drag of a dashboard fader or slider that moves in steps
   sent each value several times. Fixed: each change is sent once.
+- **Stream secrets and passphrases no longer appear in the logs.** Each start
+  of a RIST input or output wrote its passphrase into the box's log in plain
+  text, and an SRT input's or output's passphrase went there the same way, so
+  anyone who could read the log, download it from the Device Manager's Logs
+  page or open a saved copy could read the stream's secret. Fixed: the box's
+  log, the manager's log list and a module's error text show `<redacted>` in
+  its place, and the stream still uses the real value. The same holds for a
+  password in a URL (`user:password@`), a signed URL's token or signature, a
+  stream key in an RTMP URL and an access token. Lines written before the
+  update keep what they held until the log rotates. A module's settings still
+  show its passphrase to whoever can open them, as before.
 - **A listener in Engine Comms can be moved to one address without an
   'address in use' error.** Moving a listener's port from all interfaces to
   one address, or back, was refused with "Could not bind listeners: bind

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { REDACTED, redactSecrets } from '@media-router/engine';
 import { SrtOutputModule } from './SrtOutputModule.js';
 
 // pollStats logic moved to packages/engine/src/plugins/srtHelpers.ts (SrtStatPoller)
@@ -104,6 +105,32 @@ describe('SrtOutputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('passphrase=shared-secret');
         expect(desc!.pipeline).toContain('pbkeylen=16');
     });
+
+    // Test secrets, unique so the test output can be searched for them; srtsink keeps a passphrase
+    // typed with a space, `;` or `'` whole, so its logged form must hold none of it.
+    it.each([
+        ['as one word', 'zq109-srt-out-J6e4'],
+        ['with a space', 'zq109-srt-out-sp-P3q5 zq109-srt-out-sp-S7t9'],
+        ['with a ;', 'zq109-srt-out-sc-U2w4;zq109-srt-out-sc-X6y8'],
+        ["with a '", "zq109-srt-out-qt-Z1a3'zq109-srt-out-qt-C5e7"],
+    ])(
+        'logs a passphrase typed %s as <redacted>, the pipeline keeps it (B-109)',
+        (_kind, passphrase) => {
+            const { module } = makeModule();
+            const desc = module.buildPipeline({
+                mode: 'caller',
+                host: 'srt-peer.example',
+                port: 4200,
+                streamId: 'mr/out-a',
+                passphrase,
+            });
+            const pipeline: string = desc!.pipeline;
+            expect(pipeline.includes(`&passphrase=${passphrase}"`)).toBe(true);
+            const logged = redactSecrets(pipeline);
+            expect(logged.includes('zq109')).toBe(false);
+            expect(logged).toBe(pipeline.replace(passphrase, REDACTED));
+        },
+    );
 
     it('omits streamId/passphrase/pbkeylen params when not set', () => {
         const { module } = makeModule();

@@ -2031,6 +2031,7 @@ interface User {
 - Persisted to disk with log rotation (size and time-based)
 - All modules use the same logger interface (NestJS DI on manager, explicit injection on engine)
 - Queryable via Local API (`/api/v1/logs`)
+- No secret in a log (B-109): every line of the engine, its runners, the plugins and the manager, and a module's error text, passes one redaction step (shared-types `redact.ts`) that writes `<redacted>` for the value of a setting, property, URI parameter or field named as a secret, a URI's `user:password@` and an RTMP stream key; the pipeline gets the real value
 
 ### 11.2 Health Checks
 

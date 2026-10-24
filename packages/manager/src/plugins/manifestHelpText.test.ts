@@ -2,11 +2,13 @@
  * Guards the settings-panel text contract across every plugin manifest:
  * `description` is the "?" popover (one or two sentences), `title` is the
  * field heading. Long paragraphs used to sit inline under each heading;
- * this keeps them from creeping back.
+ * this keeps them from creeping back. Also pins which settings their names
+ * mark as secrets for the logs' redaction (B-109).
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isSecretKey } from '@media-router/shared-types';
 
 const PLUGINS_DIR = path.resolve(__dirname, '../../../../plugins');
 const MAX_DESCRIPTION = 120;
@@ -72,5 +74,15 @@ describe('plugin manifest help text', () => {
             );
             expect(texts.size, `${key} wording differs: ${[...texts].join(' || ')}`).toBe(1);
         }
+    });
+
+    it('marks by name exactly the passphrases the logs redact (B-109)', () => {
+        const secrets = all.filter((e) => isSecretKey(e.key)).map((e) => `${e.where}.${e.key}`);
+        expect(secrets.sort()).toEqual([
+            'rist-input.secret',
+            'rist-output.secret',
+            'srt-input.passphrase',
+            'srt-output.passphrase',
+        ]);
     });
 });

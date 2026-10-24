@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
+import { redactSecrets, redactValue } from '@media-router/shared-types';
 import type {
     PadLinkRule,
     BusReport,
@@ -117,12 +118,14 @@ export class PythonProcess {
         // everything below is binary-agnostic.
         const runner = selectRunner(opts, this.options.pythonRunnerPath);
         // Log the full pipeline string — truncating it hides the failing element
-        // when a plugin's pipeline is rejected by parse_launch.
+        // when a plugin's pipeline is rejected by parse_launch. Secrets redacted (B-109).
         console.error(
-            `[gst-runner] Starting pipeline (${mode}, ${runner.kind} runner): ${pipeline}`,
+            `[gst-runner] Starting pipeline (${mode}, ${runner.kind} runner): ${redactSecrets(pipeline)}`,
         );
         if (linkOnPadAdded.length > 0) {
-            console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(linkOnPadAdded)}`);
+            console.error(
+                `[gst-runner] Pad-link rules: ${JSON.stringify(redactValue(linkOnPadAdded))}`,
+            );
         }
 
         const spawnEnv = { ...runnerEnv(), ...env };
@@ -305,11 +308,10 @@ export class PythonProcess {
             if (trimmed.startsWith('GST_JSON:')) {
                 this.dispatch(trimmed.substring(9));
             } else {
-                // Forward raw GStreamer / Python stderr to engine logs so plugin
-                // pipeline errors are visible. Without this, anything that doesn't
-                // come through the bus (parse errors, GStreamer warnings, Python
-                // tracebacks) is silently dropped.
-                console.error(`[gst-py] ${trimmed}`);
+                // Forward raw GStreamer / Python stderr (parse errors, GStreamer warnings, Python
+                // tracebacks: what does not come through the bus) to the engine logs, so plugin
+                // pipeline errors are visible. Secrets redacted (B-109).
+                console.error(`[gst-py] ${redactSecrets(trimmed)}`);
             }
         }
     };
@@ -336,6 +338,10 @@ export class PythonProcess {
             json = JSON.parse(jsonText);
         } catch {
             return; // not valid JSON — ignore
+        }
+        // An event's texts reach the logs and the module's health: their secrets go here (B-109).
+        for (const key of ['message', 'debug']) {
+            if (typeof json[key] === 'string') json[key] = redactSecrets(json[key] as string);
         }
         try {
             this.options.onEvent(json);

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { REDACTED } from '@media-router/shared-types';
 import { EngineEventForwarder } from './EngineEventForwarder.js';
 import { RuntimeCache } from '../tree/RuntimeCache.js';
 
@@ -233,6 +234,25 @@ describe('EngineEventForwarder', () => {
         engineManager.emit('engineLogs', 'eng-1', { msg: 'b' });
         expect(runtime.getLogs('eng-1')).toEqual([{ msg: 'a' }]);
         expect(publisher.logs).toHaveBeenCalledTimes(1);
+    });
+
+    it('stores and publishes an engine\'s logs without their secrets (B-109)', () => {
+        const { engineManager, runtime, publisher } = createMocks();
+        // A test secret, unique so the test output can be searched for it.
+        const secret = 'zq109-mgr-log-U7h3';
+        engineManager.emit('engineLogs', 'eng-1', [
+            { level: 30, msg: `[gst-runner] Starting pipeline: mrristsrc secret="${secret}" ! queue` },
+            { level: 20, msg: 'Plugin auto-detected config', changes: { passphrase: secret } },
+            { level: 30, msg: 'Started module' },
+        ]);
+        const stored = runtime.getLogs('eng-1');
+        expect(JSON.stringify(stored).includes(secret)).toBe(false);
+        expect(stored).toEqual([
+            { level: 30, msg: `[gst-runner] Starting pipeline: mrristsrc secret="${REDACTED}" ! queue` },
+            { level: 20, msg: 'Plugin auto-detected config', changes: { passphrase: REDACTED } },
+            { level: 30, msg: 'Started module' },
+        ]);
+        expect(publisher.logs).toHaveBeenCalledWith('eng-1', stored);
     });
 
     it('caches and publishes device lists once per change; ignores a missing type', () => {
