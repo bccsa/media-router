@@ -2403,6 +2403,240 @@ def test_edge_stall_fds():
             check(f"{label}: the feeder's unixfdsink lets its copies go when it stops ({left:+d} fds)", left <= 64)
 
 
+
+# --------------------------------------------------------------------------- mrtsdemux (WI-P3-2)
+_FIX = os.path.join(_PLUGINS, "mpegts-core", "tests", "fixtures")
+_MRTS_CLI = os.path.join(_PLUGINS, "mpegts-core", "native", "mrts", "mrts_cli")
+_DEMUX_PY = ["env", "PYTHONPATH=" + ":".join(os.path.join(_PLUGINS, p, "py") for p in ("mpegts-core", "mpegts-muxer")),
+             sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
+
+
+def _rebased(name, to_ns, out):
+    """Fixture `name` moved by mrts_cli rebase so its first PES is house time `to_ns` (any clock)."""
+    subprocess.run([_MRTS_CLI, "rebase", os.path.join(_FIX, name + ".ts"), out, "--to-ns", str(to_ns)],
+                   check=True, capture_output=True)
+    with open(out, "rb") as fh:
+        return fh.read()
+
+
+def _house_chunks(data, ref_ns, lead_ns=400_000_000, size=1316):
+    """`data` in `size`-byte chunks, each with the house time to send it: the newest PES PTS so
+    far (unwrapped nearest `ref_ns`, less 1 h, as mrtsdemux reads it) less `lead_ns`."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    wrap, base = 1 << 33, 3600 * 90000
+    ref90 = (ref_ns * 9 // 100_000 + base) % wrap
+    out, newest = [], ref_ns
+    for i in range(0, len(data), size):
+        chunk = data[i:i + size]
+        for pkt in ts_psi.iter_packets(chunk):
+            pts = ts_psi.read_pes_pts(pkt)
+            if pts is not None:
+                d = (pts - ref90 + wrap // 2) % wrap - wrap // 2
+                newest = max(newest, ref_ns + d * 100_000 // 9)
+        out.append((chunk, newest - lead_ns))
+    return out
+
+
+def _bus_feeders(socks, clock):
+    feeders = []
+    for sock in socks:
+        f = Gst.parse_launch('appsrc name=src format=time block=true max-bytes=8000000 '
+                             'caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188"'
+                             f" ! unixfdsink socket-path={sock} sync=false async=false")
+        f.use_clock(clock)
+        f.set_start_time(Gst.CLOCK_TIME_NONE)
+        f.set_base_time(0)
+        f.set_state(Gst.State.PLAYING)
+        feeders.append(f)
+    return feeders
+
+
+def _feed_paced(feeder, chunks, clock):
+    src = feeder.get_by_name("src")
+    for chunk, at in chunks:
+        ahead = at - clock.get_time()
+        if ahead > 0:
+            time.sleep(ahead / 1e9)
+        b = Gst.Buffer.new_wrapped(chunk)
+        b.pts = b.dts = max(at, 0)
+        src.emit("push-buffer", b)
+
+
+def _demux_events(r, name):
+    r.pump()
+    return [e["payload"] for e in r.events
+            if e.get("event") == "plugin_event" and e.get("channel") == f"mrtsdemux:{name}"]
+
+
+def _pmt_change_run(argv, tag):
+    """The muxer's string (pipelines.json muxKlv, its tsdemux strings as mrtsdemux, the retime
+    off) with the mux_routing hook. Input 0: syn-pmt-version-bump (a version-only PMT, then a
+    stream-type change, then a PCR PID change); input 1: cap-vmix-h264-aac, audio before video
+    in its PMT, five times over. Both at house time, paced as they would arrive."""
+    with open(os.path.join(_FIX, "aligner", "pipelines.json"), encoding="utf-8") as fh:
+        start = dict(json.load(fh)["muxKlv"]["start"])
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    socks = [os.path.join(tmp, f"klv{i}.sock") for i in range(2)]
+    edge = os.path.join(tmp, "edge.sock")
+    start["pipeline"] = start["pipeline"].replace("@SOCK@", tmp).replace("tsdemux latency=0", "mrtsdemux")
+    start.pop("alignBranchesToStamps", None)
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    feeders = _bus_feeders(socks, clock)
+    r = RunnerProc(argv)
+    consumer, rows, props = None, [], {}
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", **start})
+        check(f"mrtsdemux-pmt-change {tag}: the muxer on mrtsdemux reaches PLAYING",
+              r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+        r.send({"cmd": "bus_attach", "tee": "busout_41030", "socket": edge})
+        check(f"mrtsdemux-pmt-change {tag}: edge attached", r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
+        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! queue max-size-buffers=0 max-size-bytes=0 "
+                                    "max-size-time=0 ! fakesink name=csink sync=false")
+        sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+        import ts_psi  # noqa: E402
+
+        def on_buf(_pad, info):
+            now = clock.get_time()
+            b = info.get_buffer()
+            for pkt in ts_psi.iter_packets(b.extract_dup(0, b.get_size())):
+                if pkt[1] & 0x40 and ts_psi.read_pes_pts(pkt) is not None:
+                    rows.append((((pkt[1] & 0x1F) << 8) | pkt[2], now))
+            return Gst.PadProbeReturn.OK
+
+        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+        consumer.set_state(Gst.State.PLAYING)
+        now0 = clock.get_time() + 1_500_000_000
+        bump = _house_chunks(_rebased("syn-pmt-version-bump", now0, os.path.join(tmp, "bump.ts")), now0)
+        vmix = []
+        for k in range(5):
+            at = now0 + k * 2_040_000_000
+            vmix += _house_chunks(_rebased("cap-vmix-h264-aac", at, os.path.join(tmp, f"vmix{k}.ts")), at)
+        threads = [threading.Thread(target=_feed_paced, args=(f, c, clock))
+                   for f, c in zip(feeders, (bump, vmix))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        time.sleep(2.0)
+        for el, name in (("demux_0", "pes"), ("demux_0", "generation"), ("demux_1", "pes"),
+                         ("demux_1", "generation")):
+            rid = f"pc{el}{name}"
+            r.send({"cmd": "get_property", "id": rid, "element": el, "property": name})
+            ev = r.wait_event(lambda e, rid=rid: e.get("id") == rid and e.get("event") in ("property", "command_error"))
+            props[(el, name)] = ev.get("value") if ev and ev.get("event") == "property" else None
+        check(f"mrtsdemux-pmt-change {tag}: no lifecycle error", not r.has_event(ev_is("error")))
+        check(f"mrtsdemux-pmt-change {tag}: exits 0 after stop", r.stop_and_wait() == 0)
+    finally:
+        if consumer is not None:
+            consumer.set_state(Gst.State.NULL)
+        for f in feeders:
+            f.set_state(Gst.State.NULL)
+        r.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+    return r, rows, props, now0
+
+
+def test_mrtsdemux_pmt_change():
+    """mrtsdemux-pmt-change, both runners: the muxer's inputs on mrtsdemux with the mux_routing
+    hook. A version-only PMT re-plans nothing, a stream-type change and a PCR PID change one
+    program each; no error, no stall: the demux takes every PES, the mux keeps writing the other
+    input after the changes. The hook knows each input's classes before its first pad (audio
+    first on input 1, yet video takes its PID). It sinks a re-planned pad as a second stream of
+    its class (it frees no class at pad-removed; B-123, for p3-14)."""
+    for el in ("unixfdsink", "unixfdsrc", "mpegtsmux", "capssetter"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP mrtsdemux-pmt-change — {el} unavailable")
+            return
+    so = os.path.join(_PLUGINS, "mpegts-muxer", "native", "mux-routing", "libmrhook_mux_routing.so")
+    if not os.path.exists(so) or not os.path.exists(_MRTS_CLI):
+        print("SKIP mrtsdemux-pmt-change — the mux_routing hook or mrts_cli not built")
+        return
+    with open(os.path.join(_FIX, "syn-pmt-version-bump.demux.jsonl"), encoding="utf-8") as fh:
+        units = sum(1 for line in fh if '"unit"' in line)
+    for tag, argv in (("native", None), ("python", _DEMUX_PY)):
+        r, rows, props, now0 = _pmt_change_run(argv, tag)
+        progs = [(m.get("generation"), m.get("pads")) for m in _demux_events(r, "demux_0")
+                 if m.get("reason") == "program"]
+        check(f"mrtsdemux-pmt-change {tag}: input 0 planned three times, at its first PMT, its "
+              f"stream-type change and its PCR PID change, never at the version-only bump ({progs})",
+              progs == [(0, "video_0_0100,audio_0_0101"), (1, "video_1_0100,audio_1_0101"),
+                        (2, "video_2_0100,audio_2_0101")])
+        # The last video PES is unbounded: only a PUSI or EOS closes it, and a live input sends neither.
+        check(f"mrtsdemux-pmt-change {tag}: no stall: the demux took every PES of input 0 but its open "
+              f"last one ({props.get(('demux_0', 'pes'))} of {units}), generation 2, and input 1's",
+              props.get(("demux_0", "pes")) == units - 1 and props.get(("demux_0", "generation")) == 2
+              and (props.get(("demux_1", "pes")) or 0) > 0 and props.get(("demux_1", "generation")) == 0)
+        routed = {(ev.get("payload") or {}).get("demux") + ":" + (ev.get("payload") or {}).get("media", ""):
+                  (ev.get("payload") or {}).get("outPid") for ev in r.events
+                  if ev.get("event") == "plugin_event" and ev.get("channel") == "mux:routed"}
+        check(f"mrtsdemux-pmt-change {tag}: the hook read each class set before the first pad: input "
+              f"1's audio pad came first, yet video took its PID ({routed})",
+              routed.get("demux_1:video") == 264 and routed.get("demux_1:audio") == 265
+              and routed.get("demux_0:video") == 256 and routed.get("demux_0:audio") == 257)
+        late = [t for pid, t in rows if pid in (264, 265) and t > now0 + 6_500_000_000]
+        check(f"mrtsdemux-pmt-change {tag}: the mux still writes input 1 after the last change "
+              f"({len(late)} PES past it)", len(late) > 20)
+
+
+def test_mrtsdemux_messages():
+    """mrtsdemux-messages, both runners: a demux-mode input's `mrtsdemux` messages forwarded
+    unsubscribed as `mrtsdemux:<name>`: program at its plan, unknown-stream (tp-h264-dts's DTS
+    stream), not-house-time (the recording 2 h behind the clock), and the interval report."""
+    if not os.path.exists(_MRTS_CLI) or Gst.ElementFactory.find("unixfdsink") is None:
+        print("SKIP mrtsdemux-messages — mrts_cli or unixfdsink unavailable")
+        return
+    seen = {}
+    for tag, argv in (("native", None), ("python", _DEMUX_PY)):
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        sock = os.path.join(tmp, "in.sock")
+        clock = Gst.SystemClock.obtain()
+        clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+        feeder = _bus_feeders([sock], clock)[0]
+        r = RunnerProc(argv)
+        try:
+            r.wait_event(ev_is("ready"))
+            r.send({"cmd": "start", "pipeline": f"unixfdsrc name=busin socket-path={sock} ! queue ! "
+                                                "mrtsdemux name=dm ! queue ! fakesink sync=false async=false"})
+            check(f"mrtsdemux-messages {tag}: reaches PLAYING",
+                  r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+            now0 = clock.get_time() + 500_000_000
+            behind = now0 - 2 * 3600 * 1_000_000_000
+            chunks = _house_chunks(_rebased("tp-h264-dts", behind, os.path.join(tmp, "dts.ts")), behind)
+            _feed_paced(feeder, [(c, at + 2 * 3600 * 1_000_000_000) for c, at in chunks
+                                 if at - behind < 2_600_000_000], clock)
+            time.sleep(0.5)
+            got = _demux_events(r, "dm")
+            check(f"mrtsdemux-messages {tag}: no lifecycle error", not r.has_event(ev_is("error")))
+            check(f"mrtsdemux-messages {tag}: exits 0 after stop", r.stop_and_wait() == 0)
+        finally:
+            feeder.set_state(Gst.State.NULL)
+            r.kill()
+            shutil.rmtree(tmp, ignore_errors=True)
+        by = {}
+        for m in got:
+            by.setdefault(m.get("reason"), []).append(m)
+        prog = [(m.get("generation"), m.get("pads"), m.get("pcr-pid")) for m in by.get("program", [])]
+        unk = [(m.get("pid"), m.get("stream-type"), m.get("registration"), m.get("generation"))
+               for m in by.get("unknown-stream", [])]
+        nh = [(m.get("pid"), m.get("offset-ms")) for m in by.get("not-house-time", [])]
+        iv = by.get("interval", [])
+        check(f"mrtsdemux-messages {tag}: program at the plan ({prog})", prog == [(0, "video_0_0100", 256)])
+        check(f"mrtsdemux-messages {tag}: unknown-stream once for the DTS PID ({unk})", unk == [(257, 130, "", 0)])
+        check(f"mrtsdemux-messages {tag}: not-house-time once, 2 h behind ({nh})",
+              len(nh) == 1 and nh[0][0] == 256 and abs(nh[0][1] + 7_200_000) < 60_000)
+        check(f"mrtsdemux-messages {tag}: the interval report each second, its counters, generation and "
+              f"pads ({len(iv)})", len(iv) >= 1 and all(m.get("pads") == "video_0_0100" and m.get("generation") == 0
+                                                       and m.get("unknown-streams") == 1 and m.get("pes", 0) > 0
+                                                       for m in iv))
+        seen[tag] = (prog, unk, [p for p, _ in nh], sorted(by))
+    if len(seen) == 2:
+        check(f"mrtsdemux-messages: both runners forward the same messages ({seen['native'][3]})",
+              seen["native"] == seen["python"])
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2431,6 +2665,8 @@ test_native_plugins()
 test_ingest_restamp()
 test_bus_return()
 test_edge_stall_fds()
+test_mrtsdemux_pmt_change()
+test_mrtsdemux_messages()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

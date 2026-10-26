@@ -27,9 +27,10 @@ SRCS = gstmrtshouse.cpp gstmrtsrestamp.cpp gstmrasrc.cpp gstmralignwatch.cpp gst
 HDRS = mrtshouse.h mrtshouse_abi.h mrasrc_resampler.h $(MRTS)/ts_packet.h $(MRTS)/ts_restamp.h \
        $(MRTS)/ts_stc.h $(MRTS)/ts_trace.h $(MRTS)/ts_gap.h $(MRTS)/asrc_servo.h \
        $(MRTS)/align_watch.h $(MRTS)/demux_core.h
-# gstreamer-audio-1.0 for mrasrc's GstAudioResampler; Phase 3 adds gstreamer-mpegts-1.0
-# (section messages).
-PKGS = gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0
+# gstreamer-audio-1.0 for mrasrc's GstAudioResampler and mrtsdemux's Opus clipping meta;
+# mrtsdemux's section messages and KLV meta (mpegts), Opus/AV1 caps and codec tags (pbutils, tag).
+PKGS = gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0 gstreamer-mpegts-1.0 \
+       gstreamer-pbutils-1.0 gstreamer-tag-1.0
 
 ifeq ($(shell pkg-config --exists $(PKGS) 2>/dev/null && echo yes),yes)
 
@@ -87,7 +88,7 @@ install: $(SO)
 
 else
 all test stub clean install:
-	@echo "mrtshouse: gstreamer-1.0/-base-1.0/-audio-1.0 dev packages not found — skipped"
+	@echo "mrtshouse: gstreamer-1.0/-base/-audio/-mpegts/-pbutils/-tag dev packages not found — skipped"
 endif
 
 .PHONY: all test stub clean install

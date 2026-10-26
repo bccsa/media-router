@@ -329,11 +329,11 @@ void ensure_prog_map(GstElement* pipe, const std::string& target_name, int progr
     gst_object_unref(target);
 }
 
-// tsdemux posts every PSI section it parses as an element message; with sync
-// emission it arrives on the demuxer's streaming thread BEFORE that thread
-// adds any pad, so plan_output_pid always knows the class set first. (The
-// python form degrades to pad order when its GstMpegts binding is missing;
-// this form links libgstmpegts at load, so there is no such path here.)
+// The demuxer posts each PSI section as an element message; with sync emission
+// it arrives on the demuxer's streaming thread. mrtsdemux posts the PMT BEFORE
+// the program's pads, so plan_output_pid knows the class set first; stock tsdemux
+// posts it after no-more-pads, where the pads plan in PMT order. (The python form
+// degrades to pad order without its GstMpegts binding; this form links libgstmpegts.)
 void on_sync_message(GstBus*, GstMessage* msg, gpointer) {
     if (!g_state || GST_MESSAGE_TYPE(msg) != GST_MESSAGE_ELEMENT) return;
     GstObject* src = GST_MESSAGE_SRC(msg);

@@ -33,11 +33,13 @@ What one input does at pad-added time:
     input's OWN `pid` goes to its highest-priority class (video, audio, klv,
     subtitle — `_PRIORITY`) and every further class takes the next free PID
     above it. Which classes the input carries is read from the source PMT
-    (tsdemux posts every section on the bus; `sync-message::element`) BEFORE
-    any pad appears, so the choice never depends on which pad shows up first
-    and a subtitle-only input lands on exactly the PID the operator set. Once
-    a class has a PID in this run it keeps it. `prog-map` gets an entry for
-    every extra PID before the pad is requested;
+    (the demuxer posts each section on the bus; `sync-message::element`):
+    `mrtsdemux` posts it BEFORE the program's first pad, so the choice never
+    depends on which pad shows up first and a subtitle-only input lands on
+    exactly the PID the operator set; stock `tsdemux` posts it only after
+    `no-more-pads`, so there the pads take PIDs in PMT order. Once a class
+    has a PID in this run it keeps it. `prog-map` gets an entry for every
+    extra PID before the pad is requested;
   * everything else — a class without a route, a second pad of a routed
     class, an ignored PID — is sunk into a `fakesink` so the demuxer keeps
     flowing: tsdemux combines its pads' flow returns, a TS whose ONLY pad is
@@ -280,10 +282,11 @@ def clear():
 
 
 def _watch_pmts(pipe):
-    """Read each generic input's stream classes off its demuxer's PMT: tsdemux
-    posts every PSI section it parses as an element message; sync emission
-    delivers it on the demuxer's streaming thread, before that thread adds any
-    pad, so `plan_output_pid` always knows the class set first."""
+    """Read each generic input's stream classes off its demuxer's PMT, an
+    element message that sync emission delivers on the demuxer's streaming
+    thread. `mrtsdemux` posts it before it adds the program's pads, so
+    `plan_output_pid` knows the class set first; stock `tsdemux` posts it after
+    `no-more-pads` (mpegtsbase.c), so there the pads plan in PMT order."""
     try:
         import gi
         gi.require_version("GstMpegts", "1.0")
