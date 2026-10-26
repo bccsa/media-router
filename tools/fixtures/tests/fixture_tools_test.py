@@ -4,7 +4,8 @@
   - record-bus.py against a local unixfdsink playing syn-gap-marker (rebased to now + 200 ms
     with its sidecar, as tests replay recordings): the bytes, every buffer's PTS and flags (its
     two GAP|DISCONT markers among them) as played; it stops at SIGTERM and at its duration;
-    --demux select on the 302M mixer trim: one pad line per PES, each joined by pes_formula.sh;
+    --demux select on the 302M mixer trim: one pad line per PES, each joined and exact (the
+    ceil, B-122) by pes_formula.sh;
   - trim.sh: a capture cut from a PAT before a keyframe, <= 2 MB; a recording cut with its
     sidecar on whole buffers; no PAT before any random access point refused;
   - record-bus.sh refuses too few arguments; every shell tool parses (sh -n).
@@ -211,9 +212,9 @@ def test_demux(tmp):
     r = run("sh", os.path.join(ROOT, "tools", "align-check", "pes_formula.sh"), stem)
     res = [json.loads(x) for x in r.stdout.splitlines()]
     pad = res[0] if res else {}
-    # Phase 2's select mode floors the ns, Phase 3's ceils (S12): joined and one of the two exact.
-    check(f"pes_formula.sh on the recording: every buffer joined, on one rounding ({pad})",
-          pad.get("joined") == len(pads) > 0 and len(pads) in (pad.get("exact"), pad.get("floor")))
+    # Select mode runs on DemuxCore since B-122: Phase 3's ceil (S12), every buffer exact.
+    check(f"pes_formula.sh on the recording: every buffer joined and exact on the ceil ({pad})",
+          pad.get("joined") == len(pads) > 0 and pad.get("exact") == len(pads))
 
 
 def test_trim(tmp):

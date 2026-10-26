@@ -180,6 +180,11 @@ class PsiDiscovery {
     // Bumps on every PMT change, any field: the first parse, the changes feed()
     // reports, and version- or program_info-only ones.
     int generation() const { return generation_; }
+    // Bumps each time a new PAT section is parsed and names the followed program.
+    int pat_generation() const { return pat_generation_; }
+    // The retained PAT / own-PMT section 0, CRC included; false while none is whole.
+    bool pat_section(std::vector<uint8_t>& section) const;
+    bool pmt_section(std::vector<uint8_t>& section) const;
     // Current PAT / own-PMT section starts with section_number != 0, every
     // repeat: the parsers here understand section 0 only (R1, now visible).
     uint64_t unsupported_sections() const { return unsupported_; }
@@ -200,6 +205,7 @@ class PsiDiscovery {
     SectionSig pat_sig_, pat_new_sig_, pmt_sig_, pmt_new_sig_;
     bool pat_resync_ = false, pmt_resync_ = false;
     int generation_ = 0;
+    int pat_generation_ = 0;
     uint64_t unsupported_ = 0;
 };
 

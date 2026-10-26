@@ -297,6 +297,17 @@ void PesAssembler::flush(std::vector<PesUnit>& out) {
     }
 }
 
+void PesAssembler::close(int pid, std::vector<PesUnit>& out) {
+    const auto it = pids_.find(pid);
+    if (it != pids_.end() && it->second.open) close(it->second, out);
+}
+
+std::vector<int> PesAssembler::selected() const {
+    std::vector<int> pids;
+    for (const auto& kv : pids_) pids.push_back(kv.first);
+    return pids;
+}
+
 void PesAssembler::reset() {
     for (auto& kv : pids_) {
         const uint64_t seq = kv.second.next_seq;

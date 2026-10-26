@@ -265,6 +265,28 @@ int main() {
               pk.size() == 2 && pk[1] == fx[5] && g.desync_bytes() == 50 && g.carried() == 0);
     }
 
+    // --- PacketWalker: the read-only walk (B-15; moved here from ts_select_test) -----
+    {
+        // The same packets as the mutable walk, joins and resyncs included; the input unwritten.
+        Bytes bytes = stream;
+        bytes.insert(bytes.begin() + 400, {0x00, 0x47, 0x12});   // garbage mid-stream
+        const Bytes copy = bytes;
+        std::vector<int> want, got;
+        PacketWalker mw, cw;
+        Bytes mut = bytes;
+        for (size_t at = 0; at < mut.size(); at += 77)
+            mw.feed(mut.data() + at, std::min<size_t>(77, mut.size() - at),
+                    [&](PacketView& v) { want.push_back(v.pid * 16 + v.cc); });
+        const uint8_t* ro = bytes.data();
+        for (size_t at = 0; at < bytes.size(); at += 77)
+            cw.feed(ro + at, std::min<size_t>(77, bytes.size() - at),
+                    [&](const PacketView& v) { got.push_back(v.pid * 16 + v.cc); });
+        CHECK("const feed: the same packets as the mutable walk (77-byte feeds, garbage)",
+              want.size() == fx.size() && got == want && cw.desync_bytes() == mw.desync_bytes() &&
+                  cw.desync_bytes() == 3);
+        CHECK("const feed: the input is untouched", bytes == copy);
+    }
+
     // --- CcTracker ---------------------------------------------------------------
     {
         CcTracker t;

@@ -39,6 +39,8 @@ int64_t pes_pts(const uint8_t* pkt) {
 
 int64_t pts90k_to_ns(int64_t ticks) { return scale_floor(ticks, 100000, 9); }
 
+int64_t pts90k_to_ns_ceil(int64_t ticks) { return -scale_floor(-ticks, 100000, 9); }
+
 int64_t ns_to_pts90k(int64_t ns) { return scale_floor(ns, 9, 100000); }
 
 int64_t ns_to_pcr27(int64_t ns) { return floor_mod(scale_floor(ns, 27, 1000), PCR_MODULO); }

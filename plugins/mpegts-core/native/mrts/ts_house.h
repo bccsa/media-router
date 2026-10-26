@@ -20,6 +20,9 @@ constexpr int64_t PCR_MAX_INTERVAL_NS = 40 * 1000000LL;   // §7
 // Exact for any value whose result fits 64 bits: TAI-scale ns (~1.8e18) would
 // overflow a plain `v * 27` or `v * 100000`.
 int64_t pts90k_to_ns(int64_t ticks);      // floor division, as today
+// ceil(ticks x 100000 / 9): the ns mpegtsmux's floor turns back into `ticks` (S12, B-69),
+// the formula demux's PTS and DTS.
+int64_t pts90k_to_ns_ceil(int64_t ticks);
 int64_t ns_to_pts90k(int64_t ns);         // floor; inverse within 11.1 us
 int64_t ns_to_pcr27(int64_t ns);          // mod PCR_MODULO
 int64_t pcr27_to_ns(int64_t pcr27);

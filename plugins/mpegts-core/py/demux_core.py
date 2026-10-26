@@ -8,14 +8,16 @@ first PES of a pad unwrapped nearest house now + 1 h (B-14), every later one nea
 previous, a DTS nearest its own PTS; the bus stamps are never read. Pads are named and capped as
 tsdemux 1.28.2 names and caps them (part 4.2); a program is new only when its PCR PID or its (PID,
 stream type) list changes, tsdemux's rule (S13). Gaps: a hole in an audio pad of more than two
-frames, in a video pad of 1 s or more (S5, B-89); a bus gap marker on a pad's PID (S4, B-60); a
-sparse pad behind program time (B-86). With `select` set it is mrts::SelectDemux, on the ceil.
+frames, in a video pad of 1 s or more (S5, B-89), the frame learned from a video pad's DTS (B-122);
+a bus gap marker on a pad's PID (S4, B-60); a sparse pad behind program time (B-86). With
+`select` set it is Phase 2's mrts::SelectDemux (folded into DemuxCore, B-122), on the ceil.
 
 The mrts pieces house_rebase.py ports (B-55) are imported from it: the packet walk, the unwrap,
 the PES header parse, the PCR read and the PSI section parse. What it does not carry is ported
 here as built: CcTracker (ts_packet), PesAssembler (ts_pes), PsiDiscovery in full (ts_psi),
-read_gap_length (ts_gap), s302m_frames (ts_select). demux_core_test.py holds the cases the C++
-suite ports one for one.
+read_gap_length (ts_gap), s302m_frames (ts_select's, now demux_core's). demux_core_test.py holds
+the cases the C++ suite (tests/demux_core_test.cpp) ports one for one, and
+demux_core_parity_test.py holds `mrts_cli demux` to this module's output.
 
 Run as a script it prints a fixture's .demux.jsonl (tests/fixtures/README.md has the format):
     demux_core.py in.ts [--chunk N] [--media M] [--select CAPS] [--program P] [--house-ns T]
@@ -817,7 +819,7 @@ class Config:
 class _Pad:
     """One output pad's stream state; select mode's one pad keeps its horizon across PIDs."""
     __slots__ = ("name", "pid", "stype", "es", "cls", "sparse", "s302m", "uw", "emitted", "discont",
-                 "have_horizon", "horizon", "have_last", "clean", "last_pts", "spacings",
+                 "have_horizon", "horizon", "have_last", "clean", "last_t", "spacings",
                  "next_spacing", "house_checked")
 
     def __init__(self, name, pid, stype, es):
@@ -828,13 +830,14 @@ class _Pad:
         self.have_horizon = False                 # the end of what it emitted, data or gap
         self.horizon = 0
         self.have_last = self.clean = False       # clean: nothing came between it and the next
-        self.last_pts = 0
+        self.last_t = 0                           # the last spacing time: DTS on video, else PTS
         self.spacings = []
         self.next_spacing = 0
         self.house_checked = False
 
     def frame(self):
-        """The upper median of its last 8 clean spacings, -1 before two (SelectDemux::frame_ns)."""
+        """The upper median of its last 8 clean spacings in decode order (a video pad's DTS, else
+        its PTS), -1 before two (SelectDemux::frame_ns)."""
         if len(self.spacings) < 2:
             return -1
         return sorted(self.spacings)[len(self.spacings) // 2]
@@ -1225,15 +1228,17 @@ class DemuxCore:
                 jump = hole > self.JUMP_FRAMES * frame
             if jump:
                 self._gap(pad, pad.horizon, pts, "jump", out)
-        # A jump's own spacing joins (a cadence rise is learned, B-21); a gap's or a loss's does not.
-        if not pad.sparse and clean and 0 < pts - pad.last_pts <= self.SPACING_MAX_NS:
-            pad.learn(pts - pad.last_pts)
+        # Spacing in decode order: a video pad's DTS, so reordered B-frame PTS do not widen its
+        # frame; a jump's own spacing joins (a cadence rise is learned, B-21), a gap's or a loss's not.
+        t = dts if pad.cls == "video" else pts
+        if not pad.sparse and clean and 0 < t - pad.last_t <= self.SPACING_MAX_NS:
+            pad.learn(t - pad.last_t)
         discont = not pad.emitted or pad.discont or u.discont
         out.append(self._unit(pad, u, pts, dts, dur if dur >= 0 else None, discont, raw))
         pad.emitted = True
         pad.discont = False
         pad.have_last = pad.clean = True
-        pad.last_pts = pts
+        pad.last_t = t
         # Its end: the 302M duration, else one learned frame (none on a sparse pad), else its start.
         end = pts + (dur if dur >= 0 else 0 if pad.sparse else max(frame, 0))
         if not pad.have_horizon or end > pad.horizon:

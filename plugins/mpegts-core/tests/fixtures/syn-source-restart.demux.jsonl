@@ -347,7 +347,7 @@
 {"unit":{"pad":"audio_0_0102","pts":14403458000000,"dts":14403458000000,"dur":null,"len":333,"crc32":"04b2f59a","discont":true}}
 {"unit":{"pad":"audio_0_0101","pts":14403424000000,"dts":14403424000000,"dur":null,"len":384,"crc32":"b71e3a8e","discont":false}}
 {"unit":{"pad":"audio_0_0102","pts":14403479333334,"dts":14403479333334,"dur":null,"len":346,"crc32":"dd48fe5f","discont":false}}
-{"gap":{"pad":"video_0_0100","pts":3603800000000,"dur":10799800000000,"reason":"jump"}}
+{"gap":{"pad":"video_0_0100","pts":3603680000000,"dur":10799920000000,"reason":"jump"}}
 {"unit":{"pad":"video_0_0100","pts":14403600000000,"dts":14403600000000,"dur":null,"len":1675,"crc32":"66a00726","discont":true}}
 {"unit":{"pad":"audio_0_0101","pts":14403448000000,"dts":14403448000000,"dur":null,"len":384,"crc32":"434974ed","discont":false}}
 {"unit":{"pad":"audio_0_0102","pts":14403500666667,"dts":14403500666667,"dur":null,"len":359,"crc32":"7764a174","discont":false}}

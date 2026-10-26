@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""The reference's own suite (plan ch. 7 WI-P3-1, register B-121): the cases
+"""The reference's own suite (plan ch. 7 WI-P3-1, register B-121, B-122): the cases
 ../native/mrts/tests/demux_core_test.cpp ports one for one, same names, same order (B-55's
-pattern), on demux_core.py and the conformance fixtures (../tests/fixtures). Case 12 is every
-case of tests/ts_select_test.cpp in the select configuration, on the ceil.
+pattern; demux_core_parity_test.py holds the two lists equal), on demux_core.py and the
+conformance fixtures (../tests/fixtures). Case 12 is every case of Phase 2's
+tests/ts_select_test.cpp (gone with SelectDemux, B-122) in the select configuration, on the ceil.
 
 Run:  python3 demux_core_test.py
 """
@@ -76,7 +77,7 @@ def h(s):
     return bytes.fromhex(s)
 
 
-# --- the stream builder (tests/ts_select_test.cpp's Ts) -------------------------------------------
+# --- the stream builder (Phase 2's ts_select_test.cpp Ts) ------------------------------------------
 
 PMT_PID, PID_A, PID_V, PID_B = 0x1000, 0x41, 0x100, 0x42
 TICKS_20MS = 1800                                 # 960 frames: exact in ns and in ticks
@@ -474,6 +475,15 @@ def test_video_hole():
     check("8 syn-video-hole-1s: the 1.2 s hole gives one jump gap of it, none on audio",
           len(gaps) == 1 and gaps[0]["pad"] == "video_0_0100" and gaps[0]["reason"] == "jump" and
           abs(gaps[0]["dur"] - 1200 * MS) < 10 * MS)
+    # B-frames (IBBP): the PTS in decode order step 3 frames up, 2 down; the DTS one frame each.
+    ev, _ = replay("syn-source-restart")
+    jump = of(ev, "gap", "video_0_0100")
+    before = [u for u in of(ev[:ev.index(jump[0])] if jump else [], "unit", "video_0_0100")]
+    reordered = sum(1 for u in before if u["dts"] != u["pts"])
+    check("8 syn-source-restart (B-frames): the +3 h jump's gap starts one frame (40 ms) past the "
+          "newest PTS: video spacing in DTS, not the reordered PTS (%d of %d)" % (reordered, len(before)),
+          len(jump) == 1 and reordered > 20 and
+          jump[0]["pts"] == max(u["pts"] for u in before) + 40 * MS)
 
 
 # --- 9 PMT changes --------------------------------------------------------------------------------
@@ -507,6 +517,34 @@ def test_pmt_change():
     ev = run(dc.DemuxCore(), t.b, 100 * SEC)
     check("9 pmt change: the streams reordered and a language changed is the same program (pads kept)",
           len(of(ev, "plan")) == 1 and len(of(ev, "section")) == 3)
+    t = Ts()
+    t.pat()
+    t.pmt([(PID_V, 0x1B, b""), (0x101, 0x0F, b""), (0x102, 0x0F, b"")], PID_V, 0)
+    t.pmt([(PID_V, 0x1B, b""), (0x101, 0x0F, b"")], PID_V, 1)
+    ev = run(dc.DemuxCore(), t.b, 100 * SEC)
+    check("9 pmt change: a stream removed, the PCR PID and the rest kept, is a new program: plan(1), "
+          "then gone(0) (tsdemux's stream count)",
+          [(e.kind, e["gen"]) for e in ev if e.kind in ("plan", "gone")] ==
+          [("plan", 0), ("plan", 1), ("gone", 0)] and
+          [p["pad"] for p in of(ev, "plan")[1]["pads"]] == ["video_1_0100", "audio_1_0101"])
+    t = Ts()
+    t.pat()
+    t.pmt([(PID_V, 0x1B, b"")], PID_V, 0)
+    t.pmt([], PID_V, 1)
+    t.pmt([(PID_V, 0x1B, b"")], PID_V, 2)
+    d = dc.DemuxCore()
+    ev = run(d, t.b, 100 * SEC)
+    e = Ts()
+    e.pat()
+    e.pmt([], PID_V, 0)
+    ed, sd = dc.DemuxCore(), sel()
+    out = run(ed, e.b, 50 * SEC) + run(ed, e.b, 53 * SEC)
+    sout = run(sd, e.b, 50 * SEC) + run(sd, e.b, 53 * SEC)
+    check("9 pmt change: a PMT without streams is skipped (tsdemux rejects one): no plan, the pads kept; "
+          "no no-stream in demux mode, one in select mode",
+          [x.kind for x in ev] == ["section", "section", "plan", "section", "section"] and
+          d.pads() == ["video_0_0100"] and not of(out, "nostream") and ed.state() == ed.WAITING and
+          len(of(sout, "nostream")) == 1)
 
 
 # --- 10 the formula -------------------------------------------------------------------------------
@@ -601,7 +639,7 @@ def _shifted(data, ticks):
     return bytes(out)
 
 
-# --- 12 the select configuration (tests/ts_select_test.cpp) ---------------------------------------
+# --- 12 the select configuration (Phase 2's ts_select_test.cpp) -----------------------------------
 
 def _raises(f):
     try:

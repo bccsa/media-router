@@ -5,6 +5,8 @@
 //        mrts_cli jsonl2trace input.jsonl|- output.stct
 //        mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] [--expect file]
 //        mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]
+//        mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] [--house-ns T]
+//                           [--bus in.bus.jsonl]
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -19,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "demux_core.h"
 #include "ts_dump.h"
 #include "ts_house.h"
 #include "ts_packet.h"
@@ -1402,6 +1405,36 @@ bool bus_from_json(const Json& j, BusLine* out, std::string* err) {
     return true;
 }
 
+// A sidecar's lines, each buffer inside the `size` bytes of its recording; false, the reason
+// printed, on any bad line.
+bool read_bus(const std::string& path, const std::string& ts_name, size_t size, std::vector<BusLine>* bus) {
+    std::string text;
+    if (!read_file(path, &text)) {
+        std::perror(path.c_str());
+        return false;
+    }
+    size_t line = 0;
+    for (size_t at = 0; at < text.size();) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string l = text.substr(at, nl - at);
+        at = nl + 1;
+        line++;
+        if (l.find_first_not_of(" \t\r") == std::string::npos) continue;
+        Json j;
+        std::string err;
+        BusLine b;
+        if (parse_json(l, &j, &err) && bus_from_json(j, &b, &err) && (b.off > size || b.len > size - b.off))
+            err = "a buffer past the end of " + ts_name;
+        if (!err.empty()) {
+            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", path.c_str(), line, err.c_str());
+            return false;
+        }
+        bus->push_back(b);
+    }
+    return true;
+}
+
 bool write_bytes(const std::string& path, const char* data, size_t n) {
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
@@ -1455,33 +1488,7 @@ int rebase_main(int argc, char** argv) {
         return 1;
     }
     std::vector<BusLine> bus;
-    if (!bus_in.empty()) {
-        std::string text;
-        if (!read_file(bus_in, &text)) {
-            std::perror(bus_in.c_str());
-            return 1;
-        }
-        size_t line = 0;
-        for (size_t at = 0; at < text.size();) {
-            size_t nl = text.find('\n', at);
-            if (nl == std::string::npos) nl = text.size();
-            const std::string l = text.substr(at, nl - at);
-            at = nl + 1;
-            line++;
-            if (l.find_first_not_of(" \t\r") == std::string::npos) continue;
-            Json j;
-            std::string err;
-            BusLine b;
-            if (parse_json(l, &j, &err) && bus_from_json(j, &b, &err) &&
-                (b.off > ts.size() || b.len > ts.size() - b.off))
-                err = "a buffer past the end of " + in;
-            if (!err.empty()) {
-                std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", bus_in.c_str(), line, err.c_str());
-                return 1;
-            }
-            bus.push_back(b);
-        }
-    }
+    if (!bus_in.empty() && !read_bus(bus_in, in, ts.size(), &bus)) return 1;
     // The first PES's house time on the recording's own clock: unwrapped near its first stamp.
     int64_t ref = to;
     for (const BusLine& b : bus)
@@ -1520,6 +1527,97 @@ int rebase_main(int argc, char** argv) {
     return 0;
 }
 
+// --- demux: a recording through mrts::DemuxCore, as .demux.jsonl (WI-P3-1) --------------
+
+const char kDemuxUsage[] =
+    "usage: mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] [--house-ns T]\n"
+    "                            [--bus in.bus.jsonl]\n"
+    "  Every event of mrts::DemuxCore on the recording, then its counters, as .demux.jsonl lines\n"
+    "  (py/demux_core.py's, the reference): fed in N-byte pieces (default 1316), or per bus buffer\n"
+    "  of a sidecar (its GAP buffers as markers, DISCONT kept), at house time T (default: the first\n"
+    "  PES - 1 h). M: of video,audio,private,subpicture (default all); CAPS: audio/x-smpte-302m.\n";
+
+int demux_main(int argc, char** argv) {
+    std::string in, bus_in;
+    DemuxCore::Config cfg;
+    int64_t chunk = 1316, house = -1, v = 0;
+    bool have_house = false;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        const bool arg = i + 1 < argc;
+        if (a == "--chunk" && arg && parse_int(argv[i + 1], &chunk) && chunk >= 1) {
+            i++;
+        } else if (a == "--media" && arg) {
+            cfg.media_mask = 0;
+            const std::string m = argv[++i];
+            for (size_t at = 0; at <= m.size();) {
+                size_t comma = m.find(',', at);
+                if (comma == std::string::npos) comma = m.size();
+                const std::string name = m.substr(at, comma - at);
+                at = comma + 1;
+                EsClass c;
+                if (name.empty()) continue;
+                if (!es_class_from_name(name, &c)) return std::fputs(kDemuxUsage, stderr), 2;
+                cfg.media_mask |= media_bit(c);
+            }
+        } else if (a == "--select" && arg) {
+            cfg.select = argv[++i];
+        } else if (a == "--program" && arg && parse_int(argv[i + 1], &v) && v >= INT32_MIN && v <= INT32_MAX) {
+            cfg.program = (int)v;
+            i++;
+        } else if (a == "--house-ns" && arg && parse_int(argv[i + 1], &house)) {
+            have_house = true;
+            i++;
+        } else if (a == "--bus" && arg) {
+            bus_in = argv[++i];
+        } else if (a[0] != '-' && in.empty()) {
+            in = a;
+        } else {
+            return std::fputs(kDemuxUsage, stderr), 2;
+        }
+    }
+    if (in.empty()) return std::fputs(kDemuxUsage, stderr), 2;
+    if (!DemuxCore::selectable(cfg.select)) {
+        std::fprintf(stderr, "select \"%s\" names no stream the demux can select\n", cfg.select.c_str());
+        return 2;
+    }
+    std::string ts;
+    if (!read_file(in, &ts)) {
+        std::perror(in.c_str());
+        return 1;
+    }
+    std::vector<BusLine> bus;
+    if (!bus_in.empty() && !read_bus(bus_in, in, ts.size(), &bus)) return 1;
+    const uint8_t* d = reinterpret_cast<const uint8_t*>(ts.data());
+    const int64_t now = have_house ? house : first_pes_house_ns(d, ts.size());
+    DemuxCore core(cfg);
+    std::vector<DemuxEvent> out;
+    std::string text;
+    auto print = [&]() {
+        for (const DemuxEvent& e : out) text += demux_jsonl(e) + "\n";
+        out.clear();
+    };
+    if (bus_in.empty()) {
+        for (size_t at = 0; at < ts.size(); at += (size_t)chunk) {
+            core.feed(d + at, std::min((size_t)chunk, ts.size() - at), false, now, out);
+            print();
+        }
+    } else {
+        for (const BusLine& b : bus) {
+            if (b.flags & 2048)                   // GST_BUFFER_FLAG_GAP: a marker, its PTS the end
+                core.marker(d + b.off, b.len, b.pts, out);
+            else
+                core.feed(d + b.off, b.len, (b.flags & 64) != 0, now, out);
+            print();
+        }
+    }
+    core.drain(out);
+    print();
+    text += demux_jsonl(core.counters()) + "\n";
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1528,12 +1626,15 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "jsonl2trace") == 0) return jsonl2trace_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "restamp-replay") == 0) return restamp_replay_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "rebase") == 0) return rebase_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "demux") == 0) return demux_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
                  "       mrts_cli jsonl2trace input.jsonl|- output.stct\n"
                  "       mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] "
                  "[--expect file] ...\n"
-                 "       mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]\n");
+                 "       mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]\n"
+                 "       mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] "
+                 "[--house-ns T] [--bus in.bus.jsonl]\n");
     return 2;
 }

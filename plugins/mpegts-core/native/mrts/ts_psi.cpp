@@ -309,6 +309,14 @@ void PsiDiscovery::select_program(int program_number) {
     pmt_.reset();
 }
 
+bool PsiDiscovery::pat_section(std::vector<uint8_t>& section) const {
+    return first_section(pat_pkts_, PID_PAT, section);
+}
+
+bool PsiDiscovery::pmt_section(std::vector<uint8_t>& section) const {
+    return pmt_pid_ >= 0 && first_section(pmt_pkts_, pmt_pid_, section);
+}
+
 bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
     for (const auto& p : packets) {
         int pid = ts_pid(p.b);
@@ -353,6 +361,7 @@ bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
             if (pat_resync_) {
                 pat_sig_ = pat_new_sig_;
                 pat_resync_ = false;
+                pat_generation_++;
             }
             if (it->second != pmt_pid_) {
                 // A new PAT may also move the program to a different PMT PID;

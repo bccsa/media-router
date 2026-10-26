@@ -388,6 +388,21 @@ int main() {
         CHECK("ns -> 90k -> ns is within one tick, never above", within);
         CHECK("the round trips are exact on their grids", grid);
     }
+    {
+        // S12: the demux's ceil; ns_to_pts90k (mpegtsmux's floor) gives every tick back.
+        bool back = true, above = true;
+        for (int64_t t = -1000; t <= 1000; t++)
+            for (int64_t base : {(int64_t)0, (int64_t)(3 * PTS_WRAP + MUX), (int64_t)158425489361111LL}) {
+                const int64_t ns = pts90k_to_ns_ceil(base + t);
+                back &= ns_to_pts90k(ns) == base + t;
+                above &= ns - pts90k_to_ns(base + t) == ((base + t) % 9 != 0 ? 1 : 0);
+            }
+        CHECK("90k->ns ceil: one tick 11112, a negative like -(-t // 9), 9 ticks exact",
+              pts90k_to_ns_ceil(1) == 11112 && pts90k_to_ns_ceil(-1) == -11111 &&
+                  pts90k_to_ns_ceil(9) == 100000 && pts90k_to_ns_ceil(0) == 0);
+        CHECK("90k->ns ceil: ns_to_pts90k gives every tick back (TAI scale too), 1 ns above the "
+              "floor off the 9-tick grid", back && above);
+    }
 
     // --- fold33 and unwrap_near ----------------------------------------------
     CHECK("fold33 passes small deltas through", fold33(5) == 5 && fold33(-5) == -5);

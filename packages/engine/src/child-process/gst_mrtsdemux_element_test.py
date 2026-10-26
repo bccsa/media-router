@@ -4,8 +4,9 @@ runner's interpreter, driving the element over its pads (a harness, not a twin; 
 4.5 rule 1):
 
   - a 302M stream GStreamer makes (audiotestsrc ! avenc_s302m ! mpegtsmux, alignment 7 and 0,
-    16 and 24 bits): one buffer per PES, PTS = DTS = PES - 1 h exactly, the PES payload, one TIME
-    segment from 0; any chunking, a buffer list; through avdec_s302m too;
+    16 and 24 bits): one buffer per PES, PTS = DTS = PES - 1 h on the ceil (S12: mpegtsmux's floor
+    gives every tick back), the PES payload, one TIME segment from 0; any chunking, a buffer list;
+    through avdec_s302m too;
   - hand-built 302M programs (PMT stream type 0x06 with registration BSSD): a 500 ms hole gives
     one GAP of 500 ms; a CC loss DISCONT; a ladder across 2^33 no step; 30 h of house time
     (B-14) no 2^33 period lost; the bus stamps and upstream's segment are ignored;
@@ -72,7 +73,8 @@ def check(name, cond):
 
 
 def pts90k_to_ns(t):
-    return t * 100_000 // 9
+    """The formula demux's ns of a 90 kHz tick count: the ceil (S12, B-122)."""
+    return -(-t * 100_000 // 9)
 
 
 def sdict(st):
@@ -356,7 +358,7 @@ for align, fmt in (("7", "S16LE"), ("0", "S32LE")):
         h.eos()
         got = [(b[1], b[5]) for b in h.bufs()]
         check(f"{tag}, {how}: {len(got)} buffers for {len(PES)} PES, each PTS = PES - 1 h "
-              f"exactly and its payload", len(PES) >= 50 and got == want)
+              f"on the ceil and its payload", len(PES) >= 50 and got == want)
         if how == "as muxed":
             bufs = h.bufs()
             check(f"{tag}: DTS = PTS, the AES3 duration (1024 frames), DISCONT on the first only",

@@ -28,12 +28,12 @@
 {"unit":{"pad":"video_0_0100","pts":1000680000000,"dts":1000680000000,"dur":null,"len":2399,"crc32":"992c1cdc","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1000760000000,"dts":1000720000000,"dur":null,"len":2459,"crc32":"5e31b838","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1000960000000,"dts":1000760000000,"dur":null,"len":4311,"crc32":"cd4d5a80","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1000000000000,"dur":660000000,"reason":"sparse"}}
 {"unit":{"pad":"audio_0_0101","pts":1000661333334,"dts":1000661333334,"dur":null,"len":2782,"crc32":"d9e32c96","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1000880000000,"dts":1000800000000,"dur":null,"len":2661,"crc32":"83bb4da3","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1000840000000,"dts":1000840000000,"dur":null,"len":2204,"crc32":"25dd571f","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1000920000000,"dts":1000880000000,"dur":null,"len":2361,"crc32":"ea5c615a","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1001000000000,"dts":1000920000000,"dur":null,"len":8167,"crc32":"0324f43f","discont":false}}
+{"gap":{"pad":"subpicture_0_0102","pts":1000000000000,"dur":540000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1001080000000,"dts":1000960000000,"dur":null,"len":3664,"crc32":"f11baf51","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1000832000000,"dts":1000832000000,"dur":null,"len":2803,"crc32":"3c3dc355","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1001040000000,"dts":1001000000000,"dur":null,"len":2086,"crc32":"4f54716b","discont":false}}
@@ -50,7 +50,7 @@
 {"unit":{"pad":"video_0_0100","pts":1001480000000,"dts":1001360000000,"dur":null,"len":3553,"crc32":"f83382c4","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1001440000000,"dts":1001400000000,"dur":null,"len":2380,"crc32":"3b5d0081","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1001560000000,"dts":1001440000000,"dur":null,"len":3966,"crc32":"58be9218","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1000660000000,"dur":520000000,"reason":"sparse"}}
+{"gap":{"pad":"subpicture_0_0102","pts":1000540000000,"dur":560000000,"reason":"sparse"}}
 {"unit":{"pad":"subpicture_0_0102","pts":1001500000000,"dts":1001500000000,"dur":null,"len":17,"crc32":"72b3f8a3","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1001344000000,"dts":1001344000000,"dur":null,"len":2811,"crc32":"7db562a9","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1001520000000,"dts":1001480000000,"dur":null,"len":2250,"crc32":"7ea3a442","discont":false}}
@@ -94,12 +94,12 @@
 {"unit":{"pad":"video_0_0100","pts":1002680000000,"dts":1002680000000,"dur":null,"len":2495,"crc32":"7ac826fb","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1002760000000,"dts":1002720000000,"dur":null,"len":2532,"crc32":"93654bf3","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1002960000000,"dts":1002760000000,"dur":null,"len":4709,"crc32":"905d869a","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1002000000000,"dur":660000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1002880000000,"dts":1002800000000,"dur":null,"len":2709,"crc32":"588e0cfa","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1002840000000,"dts":1002840000000,"dur":null,"len":2205,"crc32":"67332518","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1002709333334,"dts":1002709333334,"dur":null,"len":2794,"crc32":"586558c4","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1002920000000,"dts":1002880000000,"dur":null,"len":2488,"crc32":"efabfaff","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1003000000000,"dts":1002920000000,"dur":null,"len":9783,"crc32":"fb77e12c","discont":false}}
+{"gap":{"pad":"subpicture_0_0102","pts":1002000000000,"dur":540000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1003160000000,"dts":1002960000000,"dur":null,"len":4181,"crc32":"3701bf09","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1003080000000,"dts":1003000000000,"dur":null,"len":2196,"crc32":"c0a93ebc","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1002880000000,"dts":1002880000000,"dur":null,"len":2786,"crc32":"6cb376f6","discont":false}}
@@ -116,7 +116,7 @@
 {"unit":{"pad":"video_0_0100","pts":1003360000000,"dts":1003360000000,"dur":null,"len":2495,"crc32":"8721526f","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1003440000000,"dts":1003400000000,"dur":null,"len":2264,"crc32":"339feba7","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1003640000000,"dts":1003440000000,"dur":null,"len":4712,"crc32":"01844604","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1002660000000,"dur":560000000,"reason":"sparse"}}
+{"gap":{"pad":"subpicture_0_0102","pts":1002540000000,"dur":640000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1003560000000,"dts":1003480000000,"dur":null,"len":2653,"crc32":"11d5cb70","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1003520000000,"dts":1003520000000,"dur":null,"len":2202,"crc32":"2c70c7ec","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1003392000000,"dts":1003392000000,"dur":null,"len":2802,"crc32":"0dbeafa5","discont":false}}
@@ -178,7 +178,7 @@
 {"unit":{"pad":"video_0_0100","pts":1005320000000,"dts":1005280000000,"dur":null,"len":2233,"crc32":"21e482b1","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1005360000000,"dts":1005320000000,"dur":null,"len":2206,"crc32":"5f66f220","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1005560000000,"dts":1005360000000,"dur":null,"len":3833,"crc32":"052b0d93","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1004500000000,"dur":640000000,"reason":"sparse"}}
+{"gap":{"pad":"subpicture_0_0102","pts":1004500000000,"dur":600000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1005480000000,"dts":1005400000000,"dur":null,"len":2203,"crc32":"1d5c0e4c","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1005269333334,"dts":1005269333334,"dur":null,"len":2784,"crc32":"29c58c7e","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1005440000000,"dts":1005440000000,"dur":null,"len":2188,"crc32":"db1ca890","discont":false}}
@@ -198,7 +198,7 @@
 {"unit":{"pad":"audio_0_0101","pts":1005781333334,"dts":1005781333334,"dur":null,"len":2783,"crc32":"0b40443d","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006000000000,"dts":1005920000000,"dur":null,"len":10336,"crc32":"5bb69e42","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006160000000,"dts":1005960000000,"dur":null,"len":4175,"crc32":"acece469","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1005140000000,"dur":600000000,"reason":"sparse"}}
+{"gap":{"pad":"subpicture_0_0102","pts":1005100000000,"dur":600000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1006080000000,"dts":1006000000000,"dur":null,"len":2471,"crc32":"2d328238","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006040000000,"dts":1006040000000,"dur":null,"len":2362,"crc32":"a4f5da20","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006120000000,"dts":1006080000000,"dur":null,"len":2414,"crc32":"7e6e8e75","discont":false}}
@@ -217,9 +217,9 @@
 {"unit":{"pad":"video_0_0100","pts":1006560000000,"dts":1006480000000,"dur":null,"len":2421,"crc32":"fdc4b62b","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006520000000,"dts":1006520000000,"dur":null,"len":2063,"crc32":"7a3e2299","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006600000000,"dts":1006560000000,"dur":null,"len":2501,"crc32":"9b5e9bbd","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1005740000000,"dur":520000000,"reason":"sparse"}}
 {"unit":{"pad":"audio_0_0101","pts":1006464000000,"dts":1006464000000,"dur":null,"len":2798,"crc32":"0b9fa3a4","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006800000000,"dts":1006600000000,"dur":null,"len":4099,"crc32":"109ba9eb","discont":false}}
+{"gap":{"pad":"subpicture_0_0102","pts":1005700000000,"dur":640000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1006720000000,"dts":1006640000000,"dur":null,"len":2353,"crc32":"c4a3a7ca","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006680000000,"dts":1006680000000,"dur":null,"len":2227,"crc32":"699249bb","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1006760000000,"dts":1006720000000,"dur":null,"len":2377,"crc32":"b81c4988","discont":false}}
@@ -236,7 +236,7 @@
 {"unit":{"pad":"video_0_0100","pts":1007120000000,"dts":1007080000000,"dur":null,"len":2191,"crc32":"06717ee8","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1006976000000,"dts":1006976000000,"dur":null,"len":2801,"crc32":"ccb9ab0e","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007320000000,"dts":1007120000000,"dur":null,"len":4288,"crc32":"a87ec54b","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1006260000000,"dur":640000000,"reason":"sparse"}}
+{"gap":{"pad":"subpicture_0_0102","pts":1006340000000,"dur":520000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1007240000000,"dts":1007160000000,"dur":null,"len":2566,"crc32":"49bfc1e7","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007200000000,"dts":1007200000000,"dur":null,"len":2053,"crc32":"92257f01","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007280000000,"dts":1007240000000,"dur":null,"len":2266,"crc32":"3d58a509","discont":false}}
@@ -254,7 +254,7 @@
 {"unit":{"pad":"audio_0_0101","pts":1007488000000,"dts":1007488000000,"dur":null,"len":2786,"crc32":"8764aecd","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007680000000,"dts":1007640000000,"dur":null,"len":2493,"crc32":"74cc1f35","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007840000000,"dts":1007680000000,"dur":null,"len":3964,"crc32":"10c9f2a1","discont":false}}
-{"gap":{"pad":"subpicture_0_0102","pts":1006900000000,"dur":560000000,"reason":"sparse"}}
+{"gap":{"pad":"subpicture_0_0102","pts":1006860000000,"dur":520000000,"reason":"sparse"}}
 {"unit":{"pad":"video_0_0100","pts":1007760000000,"dts":1007720000000,"dur":null,"len":2648,"crc32":"1c88854f","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007800000000,"dts":1007760000000,"dur":null,"len":2013,"crc32":"dfa4bd93","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1007658666667,"dts":1007658666667,"dur":null,"len":2777,"crc32":"4022d25a","discont":false}}

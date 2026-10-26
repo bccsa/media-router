@@ -1,20 +1,21 @@
-/* mrtsdemux (plan ch. 6 WI-P2-7): mrts::SelectDemux as an element, the formula demux in select
- * mode. One ALWAYS src pad carries the selected stream on the formula timeline (PTS = DTS =
- * unwrap(PES PTS) - 1 h, one buffer per PES, its own TIME segment from 0), with GAP events for
- * a hole in its PTS and for the bus gap markers on its PID. The bus stamps are never read.
- * Phase 3 adds the demux mode to this element (WI-P3-2). */
+/* mrtsdemux (plan ch. 6 WI-P2-7): the formula demux in select mode, mrts::DemuxCore in its
+ * select configuration (B-122). One ALWAYS src pad carries the selected stream on the formula
+ * timeline (PTS = DTS = ceil(unwrap(PES PTS) - 1 h), one buffer per PES, its own TIME segment
+ * from 0), with GAP events for a hole in its PTS and for the bus gap markers on its PID. The
+ * bus stamps are never read. Phase 3 adds the demux mode to this element (WI-P3-2). */
 #include <atomic>
 #include <cstring>
 #include <new>
 #include <utility>
 #include <vector>
 
-#include "mrts/ts_select.h"
+#include "mrts/demux_core.h"
 #include "mrtshouse.h"
 
 #define GST_CAT_DEFAULT mrtshouse_debug
 
-using mrts::SelectDemux;
+using mrts::DemuxCore;
+using mrts::DemuxEvent;
 
 enum {
     PROP_0,
@@ -45,8 +46,9 @@ struct _GstMrtsDemux {
     GstCaps* caps;
 
     /* Streaming state, under the sink pad's stream lock; a start resets it. */
-    SelectDemux* core;                     // null outside PAUSED and PLAYING
-    std::vector<SelectDemux::Out>* outs;
+    DemuxCore* core;                       // null outside PAUSED and PLAYING
+    std::vector<DemuxEvent>* outs;
+    gint found_pid;                        // the PID the head was pushed for, -1 none
     GstSegment in_segment;                 // upstream's: places a marker's PTS
     gchar* stream_id;                      // ours, from upstream's STREAM_START
     guint group_id;
@@ -81,10 +83,10 @@ static gboolean demux_clock_now(GstMrtsDemux* self, gint64* now) {
     return TRUE;
 }
 
-static const gchar* stream_state_name(SelectDemux::State s) {
+static const gchar* stream_state_name(DemuxCore::State s) {
     switch (s) {
-        case SelectDemux::State::found: return "found";
-        case SelectDemux::State::missing: return "missing";
+        case DemuxCore::State::found: return "found";
+        case DemuxCore::State::missing: return "missing";
         default: return "waiting";
     }
 }
@@ -113,7 +115,7 @@ static GstStructure* demux_message(GstMrtsDemux* self, const gchar* reason) {
 /* The counter properties now; the `mrtsdemux` interval message every 1 s of running time from
  * the first buffer, or now (`force`, EOS). */
 static void demux_report(GstMrtsDemux* self, gboolean have_now, gint64 now, gboolean force) {
-    const SelectDemux::Counters c = self->core->counters();
+    const DemuxCore::Counters c = self->core->counters();
     self->pid.store(self->core->pid(), std::memory_order_relaxed);
     self->pes.store(c.pes, std::memory_order_relaxed);
     self->gaps.store(c.gaps, std::memory_order_relaxed);
@@ -189,12 +191,12 @@ static void demux_push_head(GstMrtsDemux* self) {
 
 static void free_payload(gpointer p) { delete static_cast<std::vector<uint8_t>*>(p); }
 
-static GstBuffer* demux_unit_buffer(SelectDemux::Out& o) {
+static GstBuffer* demux_unit_buffer(DemuxEvent& o) {
     GstBuffer* b;
-    if (o.payload.empty()) {
+    if (o.bytes.empty()) {
         b = gst_buffer_new();
     } else {
-        auto* v = new std::vector<uint8_t>(std::move(o.payload));
+        auto* v = new std::vector<uint8_t>(std::move(o.bytes));
         b = gst_buffer_new_wrapped_full((GstMemoryFlags)0, v->data(), v->size(), 0, v->size(), v,
                                         free_payload);
     }
@@ -205,22 +207,25 @@ static GstBuffer* demux_unit_buffer(SelectDemux::Out& o) {
     return b;
 }
 
-/* The core's outputs in order, emptied. After a failed push the rest are dropped and the flow
+/* The core's outputs in order, emptied; the head first once the core has found a stream on a
+ * new PID (its PMT seen, no data yet). After a failed push the rest are dropped and the flow
  * goes upstream. */
 static GstFlowReturn demux_push_outs(GstMrtsDemux* self) {
     GstFlowReturn ret = GST_FLOW_OK;
-    for (SelectDemux::Out& o : *self->outs) {
+    const gint pid = self->core->pid();
+    if (pid >= 0 && pid != self->found_pid) {
+        GST_INFO_OBJECT(self, "selected stream on PID 0x%04x", pid);
+        demux_push_head(self);
+    }
+    self->found_pid = pid;
+    for (DemuxEvent& o : *self->outs) {
         switch (o.kind) {
-            case SelectDemux::Out::Kind::found:
-                GST_INFO_OBJECT(self, "selected stream on PID 0x%04x", o.pid);
-                demux_push_head(self);
-                break;
-            case SelectDemux::Out::Kind::unit:
+            case DemuxEvent::Kind::unit:
                 if (ret != GST_FLOW_OK) break;
                 demux_push_head(self);
                 ret = gst_pad_push(self->srcpad, demux_unit_buffer(o));
                 break;
-            case SelectDemux::Out::Kind::gap:
+            case DemuxEvent::Kind::gap:
                 if (ret != GST_FLOW_OK) break;
                 GST_DEBUG_OBJECT(self, "gap (%s) %" G_GINT64_FORMAT " ns from %" G_GINT64_FORMAT,
                                  o.reason, (gint64)o.dur_ns, (gint64)o.pts_ns);
@@ -228,11 +233,12 @@ static GstFlowReturn demux_push_outs(GstMrtsDemux* self) {
                 gst_pad_push_event(self->srcpad, gst_event_new_gap((GstClockTime)o.pts_ns,
                                                                    (GstClockTime)o.dur_ns));
                 break;
-            case SelectDemux::Out::Kind::no_stream: {
+            case DemuxEvent::Kind::no_stream:
                 GST_WARNING_OBJECT(self, "no stream matches select within 2 s of the PMT");
                 demux_post(self, demux_message(self, "no-stream"));
                 break;
-            }
+            default:                           // the demux mode's events: none in select mode
+                break;
         }
     }
     self->outs->clear();
@@ -364,7 +370,7 @@ static gboolean demux_src_query(GstPad* pad, GstObject* parent, GstQuery* query)
 
 /* A start: the core from the properties as they are now; false when `select` names no stream. */
 static gboolean demux_start(GstMrtsDemux* self) {
-    SelectDemux::Config cfg;
+    DemuxCore::Config cfg;
     GST_OBJECT_LOCK(self);
     gchar* select = g_strdup(self->select ? self->select : "");
     cfg.program = self->program_number;
@@ -372,9 +378,10 @@ static gboolean demux_start(GstMrtsDemux* self) {
     GstCaps* parsed = *select ? gst_caps_from_string(select) : NULL;
     const GstStructure* st =
         parsed && gst_caps_get_size(parsed) == 1 ? gst_caps_get_structure(parsed, 0) : NULL;
-    cfg.stream = st ? mrts::select_stream(gst_structure_get_name(st)) : mrts::SelectStream::none;
+    if (st && g_strcmp0(gst_structure_get_name(st), mrts::CAPS_302M) == 0)
+        cfg.select = mrts::CAPS_302M;
     if (parsed) gst_caps_unref(parsed);
-    if (cfg.stream == mrts::SelectStream::none) {
+    if (cfg.select.empty()) {
         GST_ELEMENT_ERROR(self, LIBRARY, SETTINGS,
                           ("select \"%s\" names no stream mrtsdemux can select", select),
                           ("select mode knows audio/x-smpte-302m; the demux mode is Phase 3's"));
@@ -382,14 +389,15 @@ static gboolean demux_start(GstMrtsDemux* self) {
         return FALSE;
     }
     g_free(select);
-    GstCaps* caps = gst_caps_new_empty_simple(mrts::select_caps_name(cfg.stream));
+    GstCaps* caps = gst_caps_new_empty_simple(mrts::CAPS_302M);
     GST_OBJECT_LOCK(self);
     if (self->caps) gst_caps_unref(self->caps);
     self->caps = caps;
     GST_OBJECT_UNLOCK(self);
     delete self->core;
-    self->core = new SelectDemux(cfg);
+    self->core = new DemuxCore(cfg);
     self->outs->clear();
+    self->found_pid = -1;
     gst_segment_init(&self->in_segment, GST_FORMAT_UNDEFINED);
     self->started = self->caps_sent = self->segment_sent = FALSE;
     self->have_report = FALSE;
@@ -497,7 +505,8 @@ static void gst_mrtsdemux_init(GstMrtsDemux* self) {
     self->program_number = -1;
     self->caps = NULL;
     self->core = NULL;
-    self->outs = new std::vector<SelectDemux::Out>();
+    self->outs = new std::vector<DemuxEvent>();
+    self->found_pid = -1;
     gst_segment_init(&self->in_segment, GST_FORMAT_UNDEFINED);
     self->stream_id = NULL;
     self->group_id = 0;

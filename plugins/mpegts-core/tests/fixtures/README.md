@@ -62,6 +62,13 @@ gap; `syn-video-hole-1s` one 1.205 s jump on video, none for its 1-, 2- and 5-fr
 the AAC pad, the gate source's own 100 ms steps; `syn-source-restart` its +3 h jump on each pad;
 sparse gaps behind program time on the teletext, DVB subtitle and ID3 pads.
 
+`plugins/mpegts-core/native/mrts/mrts_cli demux` prints the same lines from `mrts::DemuxCore` (the
+same options; `py/demux_core_parity_test.py` holds the two equal at every chunking). Since B-122 a
+video pad learns its frame from the DTS, not from the PTS in decode order (on B-frame content that
+read three frames), which moved four expectations: one teletext sparse gap each in the two OCC trims
+(40 ms longer and shorter), `syn-source-restart`'s video jump gap (from the newest PTS + one frame,
+40 ms, not + 160 ms) and the DVB subtitle sparse gaps' cadence of `tp-h264-dvbsub`.
+
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|
 | `syn-mpts-two-programs.ts` | `fixture_gen --ts mpts-two-programs` | The parity stream's program 1 (sparse PSI, PCR jitter, Opus, KLV, CC gaps, desync garbage, AVC → HEVC: PMT generation 2) and a second program (H.264 with DTS, MPEG-1 audio) in one PAT |

@@ -118,7 +118,10 @@ class PesAssembler {
     void feed(const PacketView& v, CcTracker::Result cc,
               std::vector<PesUnit>& out);
     void flush(std::vector<PesUnit>& out);  // EOS / PMT change
+    // The PID's open unit closed as at its next PUSI: an unbounded one out, a cut one dropped.
+    void close(int pid, std::vector<PesUnit>& out);
     void reset();                           // open units dropped; seq, counters go on
+    std::vector<int> selected() const;      // the selected PIDs, ascending
     uint64_t oversize() const { return oversize_; }      // payload past max_bytes
     uint64_t dropped_cc() const { return dropped_cc_; }  // open units cut by Lost/Reset
     // Units dropped otherwise: no PES at a PUSI, or a header or declared length

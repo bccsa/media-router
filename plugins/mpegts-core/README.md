@@ -54,15 +54,16 @@ it at runtime stop doing so phase by phase (below).
 | `ts_dump.h`, `ts_dump.cpp` | `PesIndex`: the PES index of a TS as JSON lines (every PES of the followed program, each PAT/PMT change, the counters), what `mrts_cli dump` prints and `ts_conformance_test` compares; `crc32_zlib` |
 | `asrc_servo.h`, `asrc_servo.cpp` | `AsrcServo`: `ClockLock` on input frame count against buffer PTS, and the phase servo that commands `mrasrc`'s ratio |
 | `align_watch.h`, `align_watch.cpp` | What `mralignwatch` decides (Phase 2): W from the arrival rhythm (`ArrivalRhythm`), the pace group and its process-wide registry (`PaceGroup`, `PaceRegistry`), the gap planner (`GapPlanner`) |
-| `ts_select.h`, `ts_select.cpp` | `SelectDemux`, what `mrtsdemux` does in select mode (Phase 2): one stream of one program on the formula timeline (`PES − 1 h`, unwrapped from the clock), the jump rule, bus gap markers turned into gaps, the no-stream warning; Phase 3's `DemuxCore` generalises it |
-| `mrts_cli.cpp` | Test harness, never installed: `dump` (`PesIndex`; `--program N` follows that program of the PAT), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
+| `demux_core.h`, `demux_core.cpp` | `DemuxCore`, the formula demux `mrtsdemux` runs (plan ch. 7 WI-P3-1, B-122): one program's streams on the formula timeline (`ceil(PES − 1 h)`, unwrapped from the clock), pads named and capped as tsdemux's (`classify`, `pad_name`, the part 4.2 table), tsdemux's program identity (`same_program`), the jump rule (audio past two frames, video a hole of 1 s, the frame from a video pad's DTS), bus gap markers and sparse pads turned into gaps, the unknown-stream, not-house-time and no-stream warnings; with `select` set Phase 2's select mode (`SelectDemux` folded in); the AU parses the element applies (`adts_mpegversion`, `opus_access_units`, `klv_metadata_cells`); the `.demux.jsonl` lines. Ports `py/demux_core.py` rule for rule |
+| `mrts_cli.cpp` | Test harness, never installed: `dump` (`PesIndex`; `--program N` follows that program of the PAT), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`), `rebase` (a recording onto another house clock), `demux` (`DemuxCore`'s events as `.demux.jsonl`, `py/demux_core.py`'s lines: `--chunk`, `--media`, `--select`, `--program`, `--house-ns`, `--bus`) |
 
 ### `native/mrts/tests/` — C++ unit tests (`make -C native/mrts test`, root `make native-test`)
 
 | Path | What |
 |---|---|
 | `check.h` | The assertion harness |
-| `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp`, `align_watch_test.cpp`, `ts_select_test.cpp` | The 16 suites, one per module |
+| `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp`, `align_watch_test.cpp`, `ts_rebase_test.cpp` | Suites, one per module |
+| `demux_core_test.cpp` | `DemuxCore`: `py/demux_core_test.py`'s cases one for one, the same checks in the same order (case 12 is Phase 2's select-mode suite), on hand-built programs and every fixture's `.demux.jsonl`; `MRTS_FIXTURES` names another fixture directory |
 | `ts_conformance_test.cpp` | Every `tests/fixtures/<name>.ts` through `PesIndex` at 188, 1316 and 24 576-byte chunks against `<name>.expect.jsonl` (and `<name>.p<N>.expect.jsonl` for program N), line by line; the synthetic fixtures must be `fixture_gen`'s bytes, `cap-cc-loss` its source with the named packets removed, the parity port `py/native_parity_fixture.py`'s length and CRC-32. `MRTS_FIXTURES` names another fixture directory |
 | `trace_gen.h`, `ts_gen.h`, `fixture_gen.cpp` | The deterministic generators: arrival traces (`fixture_gen --trace`, with outages, jumps, late PES, a queuing caller's backlog `--backlog` and a PID stamped ahead `--ahead`; `--shift PID:MS -i IN.stct` stamps PIDs of a recorded trace further ahead, the derived fixtures), the synthetic `.ts` fixtures (`--ts KIND`: `parity`, the byte-for-byte port of `py/native_parity_fixture.py`, LCG and all; `mpts-two-programs`, `wrap-33bit`, `pes-header-split`, `pes-no-pts`, `source-restart`) and packets removed from a capture (`--drop PID@N,...`) |
 | `trace_cli_test.sh` | `mrts_cli`'s trace verbs, and every `tests/fixtures/restamp/*.expect.json` against its regenerated trace |
@@ -80,7 +81,7 @@ it at runtime stop doing so phase by phase (below).
 | `gstmrasrc.cpp` | `mrasrc`: the capture ASRC, `AsrcServo` driving `GstAudioResampler` (Phase 1) |
 | `mrasrc_resampler.h` | `mrasrc`'s resampler settings, in one place so the bench measures exactly them |
 | `gstmralignwatch.cpp` | `mralignwatch`: the input of a non-live aggregator. A FIFO released at the pace its pace group shares, the silence watchdog and the gap fill, LATENCY answered as non-live (Phase 2) |
-| `gstmrtsdemux.cpp` | `mrtsdemux`: the formula demux, select mode (`select="audio/x-smpte-302m"`, Phase 2): one ALWAYS pad, `SelectDemux` on it, GAP events, the `mrtsdemux` message; no stand-in |
+| `gstmrtsdemux.cpp` | `mrtsdemux`: the formula demux, select mode (`select="audio/x-smpte-302m"`, Phase 2): one ALWAYS pad, `DemuxCore`'s select configuration on it, GAP events, the `mrtsdemux` message; no stand-in |
 | `tests/restamp_ref.cpp` | `RestampCore` without GStreamer: the reference the element and protocol tests hold `mrtsrestamp` to |
 | `tests/asrc_bench.c` | `GstAudioResampler` CPU at `mrasrc`'s settings, against the Pi 4 budget; run by hand |
 
@@ -101,6 +102,7 @@ it at runtime stop doing so phase by phase (below).
 | `demux_core.py` | The reference of Phase 3's `mrts::DemuxCore` (plan ch. 7 WI-P3-1, register B-121), written first, which the C++ ports rule for rule: tsdemux's pads and caps (the part 4.2 table), program identity, the formula on the ceil, gaps, the guards, select mode as `SelectDemux`, the AU post-processing. It imports `unixfdbus-core/py/house_rebase.py`'s mrts ports; nothing loads it at runtime. As a script it prints a fixture's `.demux.jsonl` |
 | `native_parity_fixture.py`, `native_parity_ref.py` | The synthetic MPTS generator and the Python splitter whose output `ts-splitter`'s `mrTssplit.test.ts` expects (the parity vitest went in Phase 2) |
 | `ts_psi_test.py`, `ts_split_test.py`, `ts_video_info_test.py`, `ts_timeline_test.py`, `demux_core_test.py` | The reference suites (`test:py`); `demux_core_test.py`'s cases are the list `tests/demux_core_test.cpp` ports one for one |
+| `demux_core_parity_test.py` | `DemuxCore`'s C++ output parity (B-122, B-55's pattern, `test:py`): the two suites' checks equal; `mrts_cli demux` and the reference line for line on every fixture at four chunkings, in select mode and three media sets, and on 120 random programs through their bus sidecars; then the reference's mutants, each one the parity must catch |
 
 ### `engine/` and `tests/`
 
