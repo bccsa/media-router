@@ -1,0 +1,33 @@
+{"section":{"table":"pat","pid":0,"version":0,"len":20,"crc32":"3bc8f091"}}
+{"section":{"table":"pmt","pid":48,"version":0,"len":46,"crc32":"368a43d2"}}
+{"plan":{"gen":0,"program":1,"pcrPid":101,"pads":[{"pad":"video_0_0065","pid":101,"type":27,"caps":"video/x-h264, stream-format=(string)byte-stream","sparse":false,"lang":"","post":"none"},{"pad":"audio_0_00c9","pid":201,"type":15,"caps":"audio/mpeg, mpegversion=(int)4, stream-format=(string)adts","sparse":false,"lang":"","post":"adts"},{"pad":"audio_0_00ca","pid":202,"type":6,"caps":"audio/x-opus, rate=(int)48000, channels=(int)2, channel-mapping-family=(int)0, stream-count=(int)1, coupled-count=(int)1","sparse":false,"lang":"","post":"opus"}]}}
+{"unknown":{"pid":496,"type":21,"reg":"","gen":0}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":true}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"section":{"table":"pmt","pid":48,"version":0,"len":46,"crc32":"0e38aa52"}}
+{"unit":{"pad":"video_0_0065","pts":null,"dts":null,"dur":null,"len":7167,"crc32":"b7d5e0d7","discont":false}}
+{"plan":{"gen":1,"program":1,"pcrPid":101,"pads":[{"pad":"video_1_0065","pid":101,"type":36,"caps":"video/x-h265, stream-format=(string)byte-stream","sparse":false,"lang":"","post":"none"},{"pad":"audio_1_00c9","pid":201,"type":15,"caps":"audio/mpeg, mpegversion=(int)4, stream-format=(string)adts","sparse":false,"lang":"","post":"adts"},{"pad":"audio_1_00ca","pid":202,"type":6,"caps":"audio/x-opus, rate=(int)48000, channels=(int)2, channel-mapping-family=(int)0, stream-count=(int)1, coupled-count=(int)1","sparse":false,"lang":"","post":"opus"}]}}
+{"unknown":{"pid":496,"type":21,"reg":"","gen":1}}
+{"gone":{"gen":0}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":true}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":29247,"crc32":"6e5861bc","discont":false}}
+{"unit":{"pad":"video_1_0065","pts":null,"dts":null,"dur":null,"len":7167,"crc32":"b7d5e0d7","discont":false}}
+{"counters":{"pes":24,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":24,"desyncBytes":1063,"ccLost":128,"pesOversize":0,"pesDroppedCc":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":2,"generation":1}}

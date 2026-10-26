@@ -26,6 +26,42 @@ source's. Of the committed traces, `trace-gate01-rist-20010` (1 such record),
 of its 433 IDR records) and `trace-tech01-relay` (1) carry such flags, the rest none; a replay
 plays them back and uses them for nothing.
 
+Each `<name>.demux.jsonl` (and `syn-mpts-two-programs.p2.demux.jsonl`, program 2) is Phase 3's
+expectation (ch. 7 WI-P3-1, register B-121): the events of `py/demux_core.py`, `mrts::DemuxCore`'s
+Python reference, on the fixture, regenerated from the plugin's directory with `python3
+py/demux_core.py tests/fixtures/<name>.ts [--bus tests/fixtures/<name>.bus.jsonl] [--program N] >
+tests/fixtures/<name>[.pN].demux.jsonl` and held to it by `py/demux_core_test.py` (case 16). The
+replay runs at the recording's own house time (its first PES - 1 h, the one clock reading for every
+feed) in 1316-byte feeds (any chunking gives the same lines), every media class exposed; where a
+sidecar exists, a GAP buffer is a marker and a DISCONT flag is kept. One JSON object a line, times
+in ns: `{"section":{table,pid,version,len,crc32}}` when a new PAT or a changed PMT of the program
+parses; `{"plan":{gen,program,pcrPid,pads:[{pad,pid,type,caps,sparse,lang,post}]}}` when the
+program is new (tsdemux's rule: its PCR PID or its (PID, stream type) list changed), `gen` counting
+from 0 and its low 4 bits in the pad names, `lang` the ISO 639-2 code tsdemux tags, `post` none,
+adts, opus or klv; `{"unit":{pad,pts,dts,dur,len,crc32,discont}}` per PES, `crc32` of its payload,
+`dur` from a 302M header, else null; `{"gap":{pad,pts,dur,reason}}`, `reason` jump, marker or
+sparse; `{"gone":{gen}}`; `{"unknown":{pid,type,reg,gen}}`, `reg` the registration's four
+characters; `{"nothouse":{pid,offsetMs}}`; `{"nostream":{}}`; then the `{"counters":{...}}` line.
+
+Reviewed by hand on 2026-10-26 (B-121): every plan's pad names and caps, in order, are stock
+tsdemux 1.28.2's at pad-added on every fixture but one, `syn-mpts-two-programs`, whose AVC to HEVC
+change comes at an unchanged PMT version that tsdemux's section filter skips (it reads a version it
+has seen as the same table) and DemuxCore acts on. Each `unknown` line here is a stream tsdemux has
+no pad for either (0x06 without a descriptor, `tp-h264-dts`'s 0x82 outside a BluRay program, 0x15
+without a metadata descriptor); tsdemux pads DTS as 0x8A or 0x06 + DTS1 and AC-4, which DemuxCore
+names with an `unknown` line (OQ-27), measured on a synthetic PMT. Every unit is its dump's PES
+(length and CRC-32), and its PTS and DTS through the floor back to 90 kHz plus 1 h are the PES's
+own, on every pad of every fixture, so ffprobe's differences are the dumps' (a trim's cut last PES,
+PES cut by a CC loss, OCC's PES before its PMT, ID3's 5 bytes). tsdemux refines OCC's and
+`syn-adts-mpeg2`'s AAC to `mpegversion=(int)2` at the first buffer, as `adts_mpegversion` does, and
+tags `lang` in ISO 639-1 (nor no, eng en, swa sw). The gaps: `syn-gap-500ms` one 512 ms jump on its
+AAC pad, none on video (520 ms) or teletext; `syn-gap-marker` its two marker gaps, each from its
+pad's horizon, the last video PES before the hole (unbounded, ended by the next PUSI) before its
+gap; `syn-video-hole-1s` one 1.205 s jump on video, none for its 1-, 2- and 5-frame holes;
+`cap-mux-align7-aac-opus`, `cap-cc-loss` and `syn-foreign-clock-aac` two jumps of about 80 ms on
+the AAC pad, the gate source's own 100 ms steps; `syn-source-restart` its +3 h jump on each pad;
+sparse gaps behind program time on the teletext, DVB subtitle and ID3 pads.
+
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|
 | `syn-mpts-two-programs.ts` | `fixture_gen --ts mpts-two-programs` | The parity stream's program 1 (sparse PSI, PCR jitter, Opus, KLV, CC gaps, desync garbage, AVC → HEVC: PMT generation 2) and a second program (H.264 with DTS, MPEG-1 audio) in one PAT |
