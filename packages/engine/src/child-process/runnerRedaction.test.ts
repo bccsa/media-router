@@ -9,6 +9,8 @@ import { PythonProcess } from './PythonProcess.js';
 // Test secrets (B-109): unique, so the whole test output can be searched for them.
 const RIST = 'zq109-runner-rist-B4m6';
 const SRT = 'zq109-runner-srt-pass-C9t3';
+// An SRT passphrase of any character, as the SRT modules percent-encode it (B-112).
+const SRT_ENCODED = encodeURIComponent(`zq112-runner #&"; %41+=?/\\'é-D2w8`);
 // A spawned node runner can take seconds to start on a loaded Pi.
 const WAIT = { timeout: 15_000 };
 const TEST_MS = 30_000;
@@ -22,6 +24,11 @@ const PIPELINES = [
         'an SRT passphrase',
         SRT,
         `srtsrc name=src uri="srt://h:4200?mode=caller&passphrase=${SRT}&pbkeylen=16" auto-reconnect=false ! fakesink`,
+    ],
+    [
+        'a percent-encoded SRT passphrase',
+        SRT_ENCODED,
+        `srtsink name=sink uri="srt://h:4200?mode=caller&latency=125&passphrase=${SRT_ENCODED}&pbkeylen=16" sync=false`,
     ],
 ];
 

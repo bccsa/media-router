@@ -88,11 +88,12 @@ export class SrtOutputModule extends GstPluginBase {
             return null;
         }
 
-        // Build SRT URI
+        // Build the SRT URI. Free text is percent-encoded (B-112): srtsink decodes each value,
+        // which a `#`, `&`, `"`, `\` or `%` typed into it would otherwise cut, change or break.
         let uri = `srt://${host}:${port}`;
         const params: string[] = [`mode=${mode}`, `latency=${latency}`];
-        if (streamId) params.push(`streamid=${streamId}`);
-        if (passphrase) params.push(`passphrase=${passphrase}`);
+        if (streamId) params.push(`streamid=${encodeURIComponent(streamId)}`);
+        if (passphrase) params.push(`passphrase=${encodeURIComponent(passphrase)}`);
         if (pbKeyLen > 0) params.push(`pbkeylen=${pbKeyLen}`);
         // maxbw=0 lifts libsrt's sender pacing. By default (maxbw=-1) libsrt
         // throttles sending to its running input-rate estimate plus 25 %, so a

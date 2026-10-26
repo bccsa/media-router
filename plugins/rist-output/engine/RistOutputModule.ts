@@ -246,7 +246,9 @@ function parseStatsMessage(payload: unknown): Record<string, any> | null {
 function buildRistUrl(link: RistLink): string {
     const params: string[] = [];
     if (link.weight !== undefined) params.push(`weight=${link.weight}`);
-    if (link.cname) params.push(`cname=${link.cname}`);
+    // Percent-encoded (B-112): mrrist decodes it, so a space or comma (the URL list's separators)
+    // or an `&` in it leaves the URL whole.
+    if (link.cname) params.push(`cname=${encodeURIComponent(link.cname)}`);
     // RIST URL: rist://@host:port for listener, rist://host:port for caller
     const addr =
         link.mode === 'listener' ? `@${link.address || '0.0.0.0'}` : link.address || 'localhost';

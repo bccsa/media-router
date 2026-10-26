@@ -422,6 +422,24 @@ elements" below do not start.
   addresses loses that path until the port moves back (one with another path
   stays connected through it). Applying the listeners unchanged changes
   nothing, and no router reconnects.
+- **An SRT passphrase may contain any character.** SRT Input and SRT Output
+  handed the passphrase and the Stream ID to the stream as typed, and some
+  characters were lost on the way without a word: a `#` or an `&` cut the
+  passphrase short (a `#` also lost the Key Length set after it), a `\` was
+  dropped, a `%` followed by two of the digits 0-9 and letters A-F became
+  another character, a `%` not followed by them left no passphrase at all, and
+  a `"` followed by a space stopped the module from starting. Two routers given
+  the same passphrase cut it alike and could still connect, while equipment of
+  another make refused it as the wrong passphrase; a Stream ID was cut the same
+  way. A RIST passphrase was cut at an `&` the same way, and a RIST link's CNAME
+  with a space or a comma in it stopped the module from starting (one with an
+  `&` was cut).
+  Fixed: the passphrase, the Stream ID and the CNAME arrive exactly as typed,
+  whatever characters they hold. When you update: a link between two routers
+  whose SRT passphrase holds a `#`, an `&`, a `\` or a `%`, or whose RIST
+  passphrase holds an `&`, ran on the shortened passphrase until now; update
+  both routers together, or the link stops until the second one runs this
+  release.
 - **The engine's local API answers only the box itself.** The engine's local
   API (port 3001), which the Device Manager's Manager Profile page uses, now
   listens on the box's own loopback addresses (127.0.0.1 and ::1) and nowhere

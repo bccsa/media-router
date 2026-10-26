@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFile, spawnSync } from 'node:child_process';
+import { createSocket } from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,6 +10,7 @@ import {
     ModuleInstance,
     PluginLoader,
     REDACTED,
+    quoteGstString,
     redactSecrets,
 } from '@media-router/engine';
 import { SrtInputModule } from './SrtInputModule.js';
@@ -18,6 +21,39 @@ import { SrtInputModule } from './SrtInputModule.js';
 // `as any` lets us reach private fields/methods on the module without
 // re-declaring them in a typed intersection (TS would collapse the
 // intersection to `never` over private members).
+
+/** Each character a passphrase or stream ID may hold, and its percent-encoded form (B-112). */
+const SPECIAL: Array<[string, string]> = [
+    ['#', '%23'],
+    ['&', '%26'],
+    ['"', '%22'],
+    [' ', '%20'],
+    [';', '%3B'],
+    ['%', '%25'],
+    ['+', '%2B'],
+    ['=', '%3D'],
+    ['?', '%3F'],
+    ['/', '%2F'],
+    ['\\', '%5C'],
+    ["'", "'"],
+    ['é', '%C3%A9'],
+    ['中', '%E4%B8%AD'],
+    ['\u{1F600}', '%F0%9F%98%80'],
+];
+
+/** The query of srtsrc's `uri` as GstUri reads it: one launch-string token, its query up to a `#`
+ *  split at each `&`, then at the first `=`, each value percent-decoded. */
+function srtQuery(pipeline: string): Record<string, string> {
+    const uri = / uri="([^"\\\s]*)"(?:\s|$)/.exec(pipeline)?.[1];
+    expect(uri).toBeDefined();
+    const query = uri!.slice(uri!.indexOf('?') + 1).split('#')[0];
+    return Object.fromEntries(
+        query.split('&').map((kv) => {
+            const eq = kv.indexOf('=');
+            return [kv.slice(0, eq), decodeURIComponent(kv.slice(eq + 1))];
+        }),
+    );
+}
 
 function makeModule(opts: { udpPort?: number | null; instanceId?: string } = {}) {
     const module = new SrtInputModule() as any;
@@ -75,10 +111,43 @@ describe('SrtInputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('srt://203.0.113.5:4200?');
         expect(desc!.pipeline).toContain('mode=caller');
         expect(desc!.pipeline).toContain('latency=200');
-        expect(desc!.pipeline).toContain('streamid=mr/feed-a');
+        expect(desc!.pipeline).toContain('streamid=mr%2Ffeed-a');
         expect(desc!.pipeline).toContain('passphrase=shared-secret');
         expect(desc!.pipeline).toContain('pbkeylen=16');
     });
+
+    // B-112: each character, percent-encoded as `encodeURIComponent` writes it.
+    it.each(SPECIAL)(
+        'puts a passphrase and a stream ID holding %s into the URI percent-encoded (B-112)',
+        (ch, encoded) => {
+            const { module } = makeModule();
+            const passphrase = `zq112-in-${ch}-K8r2`;
+            const streamId = `feed-${ch}-a`;
+            const pipeline: string = module.buildPipeline({
+                mode: 'caller',
+                host: 'srt-peer.example',
+                port: 4200,
+                streamId,
+                passphrase,
+                pbKeyLen: 16,
+            }).pipeline;
+            expect(pipeline).toContain(
+                `?mode=caller&latency=125&streamid=feed-${encoded}-a` +
+                    `&passphrase=zq112-in-${encoded}-K8r2&pbkeylen=16" auto-reconnect=false`,
+            );
+            // What srtsrc reads out of the URI: each value as typed.
+            expect(srtQuery(pipeline)).toEqual({
+                mode: 'caller',
+                latency: '125',
+                streamid: streamId,
+                passphrase,
+                pbkeylen: '16',
+            });
+            const logged = redactSecrets(pipeline);
+            expect(logged.includes('zq112')).toBe(false);
+            expect(logged).toBe(pipeline.replace(`zq112-in-${encoded}-K8r2`, REDACTED));
+        },
+    );
 
     // Test secrets, unique so the test output can be searched for them; srtsrc keeps a passphrase
     // typed with a space, `;` or `'` whole, so its logged form must hold none of it.
@@ -99,10 +168,11 @@ describe('SrtInputModule.buildPipeline', () => {
                 pbKeyLen: 16,
             });
             const pipeline: string = desc!.pipeline;
-            expect(pipeline.includes(`&passphrase=${passphrase}&pbkeylen=16"`)).toBe(true);
+            const encoded = encodeURIComponent(passphrase);
+            expect(pipeline.includes(`&passphrase=${encoded}&pbkeylen=16"`)).toBe(true);
             const logged = redactSecrets(pipeline);
             expect(logged.includes('zq109')).toBe(false);
-            expect(logged).toBe(pipeline.replace(passphrase, REDACTED));
+            expect(logged).toBe(pipeline.replace(encoded, REDACTED));
         },
     );
 
@@ -469,4 +539,93 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         expect(faulted.health).toBe('warning');
         expect(faulted.error).toMatch(/^Degraded clock: PCR frozen/);
     });
+});
+
+// --- On a real srtsrc (B-112) ------------------------------------------------------------------
+
+const HAVE_SRT = ['srtsrc', 'srtsink'].every(
+    (el) => spawnSync('gst-inspect-1.0', ['--exists', el], { timeout: 60_000 }).status === 0,
+);
+
+/** A UDP port free on 127.0.0.1 right now. */
+function freeUdpPort(): Promise<number> {
+    const s = createSocket('udp4');
+    return new Promise((resolve) =>
+        s.bind(0, '127.0.0.1', () => {
+            const { port } = s.address();
+            s.close(() => resolve(port));
+        }),
+    );
+}
+
+/** gst-launch-1.0 on a description, no shell between: its exit code, null once killed. Its argv
+ *  is the description split at each space outside double quotes, as a shell would split it. */
+function launch(desc: string): { exit: Promise<number | null>; kill: () => void } {
+    const argv = desc.match(/(?:[^\s"]+|"(?:[^"\\]|\\.)*")+/g) ?? [];
+    let done: (code: number | null) => void = () => {};
+    const exit = new Promise<number | null>((r) => (done = r));
+    const p = execFile('gst-launch-1.0', ['-q', ...argv], (err) =>
+        done(err ? (typeof err.code === 'number' ? err.code : null) : 0),
+    );
+    return { exit, kill: () => p.kill('SIGKILL') };
+}
+
+/** Whether `listener`, which ends after a few buffers, receives them from `caller` within `ms`; a
+ *  caller that ends first (the listener not up yet, or refused) is started again. */
+async function receives(listener: string, caller: string, ms: number): Promise<boolean> {
+    const rx = launch(listener);
+    let ended: number | null | undefined;
+    void rx.exit.then((code) => (ended = code));
+    const deadline = Date.now() + ms;
+    while (ended === undefined && Date.now() < deadline) {
+        const tx = launch(caller);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = new Promise(
+            (r) => (timer = setTimeout(r, Math.max(0, deadline - Date.now()))),
+        );
+        await Promise.race([tx.exit, rx.exit, late]);
+        clearTimeout(timer);
+        tx.kill();
+        await tx.exit;
+    }
+    rx.kill();
+    await rx.exit;
+    return ended === 0;
+}
+
+describe.skipIf(!HAVE_SRT)('SrtInputModule on a real srtsrc (B-112)', () => {
+    // Every character of SPECIAL; the caller is given the passphrase as typed, as a property.
+    const PASSPHRASE = `zq112-e2e ${SPECIAL.map(([ch]) => ch).join('')} in-T4w9`;
+
+    async function listenerAndCaller(callerPassphrase: string) {
+        const port = await freeUdpPort();
+        const { module } = makeModule();
+        const pipeline: string = module.buildPipeline({
+            mode: 'listener',
+            host: '127.0.0.1',
+            port,
+            passphrase: PASSPHRASE,
+            pbKeyLen: 16,
+        }).pipeline;
+        const srtsrc = pipeline.split(' ! ')[0];
+        expect(srtsrc).toMatch(/^srtsrc name=src uri="srt:\/\/127\.0\.0\.1:/);
+        return {
+            listener: `${srtsrc} num-buffers=20 ! fakesink sync=false`,
+            caller:
+                'fakesrc is-live=true sizetype=fixed sizemax=1316 datarate=1316000 ! ' +
+                `srtsink uri="srt://127.0.0.1:${port}?mode=caller&latency=125&pbkeylen=16" ` +
+                `passphrase=${quoteGstString(callerPassphrase)} sync=false wait-for-connection=false ` +
+                'auto-reconnect=false',
+        };
+    }
+
+    it('its listener takes a caller given the passphrase as typed, every character in it', async () => {
+        const { listener, caller } = await listenerAndCaller(PASSPHRASE);
+        expect(await receives(listener, caller, 15_000)).toBe(true);
+    }, 30_000);
+
+    it('its listener takes nothing from a caller whose passphrase is one character longer', async () => {
+        const { listener, caller } = await listenerAndCaller(`${PASSPHRASE}x`);
+        expect(await receives(listener, caller, 4_000)).toBe(false);
+    }, 30_000);
 });

@@ -15,12 +15,16 @@ const SRT_SPACE = 'zq109-sp-A6u2 zq109-sp-E3r7 zq109-sp-G5y2';
 const SRT_SEMI = 'zq109-sc-H4k8;zq109-sc-M8w1;zq109-sc-T2v6';
 const SRT_QUOTE = "zq109-qt-N7c3'zq109-qt-R5d9'zq109-qt-W1x4";
 const SRT_INNER = 'zq109-in-B8d2;secret=zq109-in-F4h6';
+// Every character an SRT passphrase may hold (B-112), as the SRT modules percent-encode it.
+const SRT_ANY = `zq112-any #&"; %41+=?/\\'é中-K3p9`;
+const SRT_ENCODED = encodeURIComponent(SRT_ANY);
 const ALL = [RIST, SRT, PW, RTMP, BEARER, CF, SIG, SRT_SPACE, SRT_SEMI, SRT_QUOTE, SRT_INNER];
 
 /** Passes when no test secret, nor a word of one, is in `text`; a failure names one by number. */
 function expectClean(text: string): void {
     expect(ALL.flatMap((s, i) => (text.includes(s) ? [`test secret #${i}`] : []))).toEqual([]);
     expect(text.includes('zq109')).toBe(false);
+    expect(text.includes('zq112')).toBe(false);
 }
 
 describe('isSecretKey (B-109)', () => {
@@ -37,6 +41,8 @@ describe('isSecretKey (B-109)', () => {
         'X-Amz-Signature',
         'Authorization',
         'encryptionKey',
+        'secret_key',
+        'X-Secret-Key',
         'sig',
     ])('%s is a secret', (name) => expect(isSecretKey(name)).toBe(true));
 
@@ -99,6 +105,21 @@ describe('redactSecrets (B-109)', () => {
             'an SRT passphrase typed with spaces, last, up to the closing quote',
             `srtsink uri="srt://h:4200?mode=caller&passphrase=${SRT_SPACE}" auto-reconnect=false`,
             `srtsink uri="srt://h:4200?mode=caller&passphrase=${REDACTED}" auto-reconnect=false`,
+        ],
+        [
+            'an SRT passphrase as the SRT modules percent-encode it (B-112)',
+            `srtsrc uri="srt://h:4200?mode=caller&latency=125&passphrase=${SRT_ENCODED}&pbkeylen=16" auto-reconnect=false`,
+            `srtsrc uri="srt://h:4200?mode=caller&latency=125&passphrase=${REDACTED}&pbkeylen=16" auto-reconnect=false`,
+        ],
+        [
+            'an SRT passphrase URI parameter after a ;, up to the next parameter',
+            `srt://h:4200?mode=caller;passphrase=${SRT_SPACE}&pbkeylen=16`,
+            `srt://h:4200?mode=caller;passphrase=${REDACTED}&pbkeylen=16`,
+        ],
+        [
+            'an encoded SRT passphrase URI parameter after a ;',
+            `srtsink uri="srt://h:4200?mode=caller;passphrase=${SRT_ENCODED};pbkeylen=16"`,
+            `srtsink uri="srt://h:4200?mode=caller;passphrase=${REDACTED}"`,
         ],
         [
             'an SRT passphrase that holds a secret parameter of its own',

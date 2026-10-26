@@ -52,5 +52,8 @@ operator change it from the UI without a Yocto build.
   2026-10-24 (B-110): a port it holds at another address (a move to or from all
   interfaces, a swap) probes its address alone, the port being the live
   server's until it closes, and a set of the same sockets rebinds nothing.
+  Amended 2026-10-26 (B-113): applies run one at a time, each after the last
+  has settled, and a move between two addresses on one port (neither all
+  interfaces) probes the new address with its port.
 - Firewall allow rules for extra UDP ports are the operator's job
   (device-manager).

@@ -16,6 +16,15 @@ function sameSockets(a: ListenerSpec[], b: ListenerSpec[]): boolean {
     return keys(a) === keys(b);
 }
 
+const isWildcard = (l: ListenerSpec) => (l.bindAddress ?? '0.0.0.0') === '0.0.0.0';
+
+/** What `spec` can be probe-bound as beside the live set: whole, or its address alone (port 0) where
+ *  it shares a port with a live listener and all interfaces is one of the two (Linux refuses that). */
+function probeFor(spec: ListenerSpec, live: ListenerSpec[]): ListenerSpec {
+    const clash = live.some((l) => l.port === spec.port && (isWildcard(l) || isWildcard(spec)));
+    return clash ? { port: 0, bindAddress: spec.bindAddress } : spec;
+}
+
 /** Engine→manager topics forwarded 1:1 as `engine<Topic>` events. */
 const FORWARDED_TOPICS: Array<[topic: string, event: string]> = [
     ['state', 'engineState'],
@@ -64,6 +73,8 @@ export class EngineConnectionManager extends EventEmitter {
     private engineSockets = new Map<string, unknown>();
     private _listeners: ListenerSpec[];
     private started = false;
+    /** The last listener apply; the next one runs after it has settled (B-113). */
+    private applying: Promise<void> = Promise.resolve();
 
     /** Whether a router keeps its interlocks itself (ADR-0028); then the connect push leaves its mutes to it. */
     keepsInterlocks: (engineId: string) => boolean = () => false;
@@ -167,34 +178,29 @@ export class EngineConnectionManager extends EventEmitter {
         this.engineSockets.clear();
     }
 
-    /**
-     * Rebind to a new listener set while running. Every engine drops for up
-     * to about a second: its next packet on the old socketID draws a `reset`
-     * from the new server and it re-handshakes. The same sockets rebind
-     * nothing. Listeners we do not hold yet are probe-bound FIRST, so a port
-     * in use elsewhere is rejected while the live server is still up; on a
-     * port we hold under another address only the address is (B-110), the
-     * port being ours until the live server closes. Should the real bind
-     * still fail, the old set is restored; if even that fails the error names
-     * both causes and `started` is false — the operator must restart the
-     * manager.
-     */
-    async setListeners(listeners: ListenerSpec[]): Promise<void> {
+    /** Rebind to a new listener set while running; every engine reconnects within about a second.
+     *  One apply at a time, each after the last has settled (B-113). A set is probed before the live
+     *  server closes, and a bind that fails after it restores the old set (B-110). */
+    setListeners(listeners: ListenerSpec[]): Promise<void> {
+        const run = this.applying.then(() => this.applyListeners(listeners));
+        // A failed apply is its caller's to report; the next one runs all the same.
+        this.applying = run.catch(() => {});
+        return run;
+    }
+
+    private async applyListeners(listeners: ListenerSpec[]): Promise<void> {
         const previous = this._listeners;
+        // The same sockets rebind nothing.
         if (sameSockets(previous, listeners)) {
             this._listeners = listeners.map((l) => ({ ...l }));
             return;
         }
         const wasStarted = this.started;
         if (wasStarted) {
+            // A port in use elsewhere is refused while the engines are still connected.
             const held = new Set(previous.map(socketKey));
-            const heldPorts = new Set(previous.map((l) => l.port));
             for (const spec of listeners) {
-                if (held.has(socketKey(spec))) continue;
-                const probe = heldPorts.has(spec.port)
-                    ? { port: 0, bindAddress: spec.bindAddress }
-                    : spec;
-                await Server.canBind(probe);
+                if (!held.has(socketKey(spec))) await Server.canBind(probeFor(spec, previous));
             }
             await this.stop();
         }

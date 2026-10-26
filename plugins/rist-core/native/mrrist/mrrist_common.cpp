@@ -44,24 +44,25 @@ static std::vector<std::string> mrrist_split_urls(const gchar *urls) {
     return out;
 }
 
+/* Whole-param match: a bare substring test would let librist's
+ * `reorder-buffer=` suppress `buffer=`. */
+static bool mrrist_url_has(const std::string &url, const char *key) {
+    std::string k(key);
+    return url.find("?" + k + "=") != std::string::npos || url.find("&" + k + "=") != std::string::npos;
+}
+
 /* Fold the element-level knobs into a rist:// URL as query params (urlparam.h),
- * the same way librist.py::augment_url did: params already present win. */
+ * the same way librist.py::augment_url did: params already present win. The
+ * secret itself goes on the peer's config (mrrist_common_open), never in here. */
 static std::string mrrist_augment_url(const std::string &url, const MrRistCommon *c) {
     std::string extra;
-    /* Whole-param match: a bare substring test would let librist's
-     * `reorder-buffer=` suppress `buffer=`. */
-    auto has = [&](const char *key) {
-        std::string k(key);
-        return url.find("?" + k + "=") != std::string::npos || url.find("&" + k + "=") != std::string::npos;
-    };
+    auto has = [&](const char *key) { return mrrist_url_has(url, key); };
     auto add = [&](const std::string &kv) { extra += (extra.empty() ? "" : "&") + kv; };
     if (c->buffer_ms > 0 && !has("buffer")) add("buffer=" + std::to_string(c->buffer_ms));
     if (c->session_timeout_ms > 0 && !has("session-timeout"))
         add("session-timeout=" + std::to_string(c->session_timeout_ms));
-    if (c->secret && *c->secret && !has("secret")) {
-        add(std::string("secret=") + c->secret);
-        if (c->aes_type > 0 && !has("aes-type")) add("aes-type=" + std::to_string(c->aes_type));
-    }
+    if (c->secret && *c->secret && !has("secret") && c->aes_type > 0 && !has("aes-type"))
+        add("aes-type=" + std::to_string(c->aes_type));
     if (extra.empty()) return url;
     return url + (url.find('?') == std::string::npos ? "?" : "&") + extra;
 }
@@ -181,6 +182,14 @@ gboolean mrrist_common_open(GstElement *el, MrRistCommon *c, gboolean sender) {
         if (rist_parse_address2(full.c_str(), &cfg) < 0 || !cfg) {
             GST_ELEMENT_ERROR(el, RESOURCE, SETTINGS, ("rist_parse_address2 failed for %s", u.c_str()), (nullptr));
             return FALSE;
+        }
+        /* librist takes a URL's values as they stand, split at every '&' (B-112): the secret
+         * goes on the config whole, and the cname arrives percent-encoded. */
+        if (c->secret && *c->secret && !mrrist_url_has(u, "secret"))
+            g_strlcpy(cfg->secret, c->secret, sizeof cfg->secret);
+        if (gchar *cname = g_uri_unescape_string(cfg->cname, nullptr)) {
+            g_strlcpy(cfg->cname, cname, sizeof cfg->cname);
+            g_free(cname);
         }
         /* An unresolvable host works for neither role; librist swallows it, never
          * re-resolves, and a listener's teardown then closes fd 0 (the runner's command

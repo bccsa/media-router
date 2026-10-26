@@ -101,6 +101,27 @@ describe('RistInputModule.buildPipeline', () => {
         expect(logged).toBe(pipeline.replace(quoted, `secret="${REDACTED}"`));
     });
 
+    it("percent-encodes a link's cname: a space, comma or & leaves its URL whole (B-112)", () => {
+        const { module } = makeModule();
+        module.config = {
+            links: [
+                {
+                    mode: 'listener',
+                    address: '0.0.0.0',
+                    port: 5004,
+                    weight: 50,
+                    cname: 'Studio A, cam 1',
+                },
+                { mode: 'caller', address: 'rist.example.net', port: 5006, cname: 'a&b=c #%41 é' },
+            ],
+        };
+        const src: string = module.buildPipeline({})!.pipeline.split(' ! ')[0];
+        expect(src).toContain(
+            'urls="rist://@0.0.0.0:5004?weight=50&cname=Studio%20A%2C%20cam%201 ' +
+                'rist://rist.example.net:5006?cname=a%26b%3Dc%20%23%2541%20%C3%A9"',
+        );
+    });
+
     it('omits session-timeout when unset/zero (librist default applies)', () => {
         const { module } = makeModule();
         module.config = { sessionTimeout: 0 };

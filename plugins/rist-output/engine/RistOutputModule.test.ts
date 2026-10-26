@@ -81,6 +81,25 @@ describe('RistOutputModule.buildPipeline', () => {
         expect(sink).toMatch(/ stats-interval=1000$/);
     });
 
+    it("percent-encodes a link's cname: a space, comma or & leaves its URL whole (B-112)", () => {
+        const { module } = makeModule();
+        module.config = {
+            links: [
+                {
+                    mode: 'caller',
+                    address: 'rist.example.net',
+                    port: 5004,
+                    weight: 5,
+                    cname: 'Truck 2, a&b %41',
+                },
+            ],
+        };
+        const sink = module.buildPipeline({})!.pipeline.split(' ! ').pop()!;
+        expect(sink).toContain(
+            'urls="rist://rist.example.net:5004?weight=5&cname=Truck%202%2C%20a%26b%20%2541"',
+        );
+    });
+
     it('omits secret and aes-type when encryption is off', () => {
         const { module } = makeModule();
         module.config = { secret: '', encryptionType: 0 };

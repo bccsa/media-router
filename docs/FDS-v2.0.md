@@ -1578,7 +1578,8 @@ interface ManagerConnectionProfile {
 listeners (`port` + optional `bindAddress`), stored in `manager_settings` and
 edited in the manager UI (Settings → Engine Comms); a change rebinds live, every
 engine re-handshaking within about a second, and a port can move between all
-interfaces and one address (B-110); the same listeners rebind nothing. All
+interfaces and one address (B-110); the same listeners rebind nothing, and
+changes apply one at a time, in the order they came (B-113). All
 of an engine's paths belong to ONE session: every path's `connect` carries the
 client's session nonce, and a nonce the server already knows joins the existing
 session as another endpoint (same socketID) instead of replacing it. The server
