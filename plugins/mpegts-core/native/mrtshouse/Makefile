@@ -23,10 +23,11 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 # libgst<name>.so: GStreamer derives the entry symbol (gst_plugin_mrtshouse_get_desc) from it.
 SO   = libgstmrtshouse.so
 # One file per element: a phase adds its source here and its row to gstmrtshouse.cpp.
-SRCS = gstmrtshouse.cpp gstmrtsrestamp.cpp gstmrasrc.cpp gstmralignwatch.cpp gstmrtsdemux.cpp
+SRCS = gstmrtshouse.cpp gstmrtsrestamp.cpp gstmrasrc.cpp gstmralignwatch.cpp gstmrtsdemux.cpp \
+       gstmrvideopace.cpp
 HDRS = mrtshouse.h mrtshouse_abi.h mrasrc_resampler.h $(MRTS)/ts_packet.h $(MRTS)/ts_restamp.h \
        $(MRTS)/ts_stc.h $(MRTS)/ts_trace.h $(MRTS)/ts_gap.h $(MRTS)/asrc_servo.h \
-       $(MRTS)/align_watch.h $(MRTS)/demux_core.h $(MRTS)/pcm_fade.h
+       $(MRTS)/align_watch.h $(MRTS)/demux_core.h $(MRTS)/pcm_fade.h $(MRTS)/video_pace.h
 # gstreamer-audio-1.0 for mrasrc's GstAudioResampler and mrtsdemux's Opus clipping meta;
 # mrtsdemux's section messages and KLV meta (mpegts), Opus/AV1 caps and codec tags (pbutils, tag).
 PKGS = gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0 gstreamer-mpegts-1.0 \
@@ -80,15 +81,24 @@ TESTPLUGIN = tests/libgstmrtest.so
 $(TESTPLUGIN): tests/mrtestaudiosink.c
 	$(CC) $(CFLAGS) -fPIC $(GST_CFLAGS) -shared -Wl,-z,defs $< $(GST_LIBS) -o $@
 
+# Test-only display sinks (tests/mrtestvideosink.c: mrtestvideosink, 0008's model, and
+# mrtestkmssink): mrvideopace's measured period without Weston. Never installed, and in a
+# directory of its own, so a test's GST_PLUGIN_PATH entry finds it and nothing else.
+TESTVIDEO = tests/mrtestvideo/libgstmrtestvideo.so
+$(TESTVIDEO): tests/mrtestvideosink.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -fPIC $(GST_CFLAGS) -shared -Wl,-z,defs $< $(GST_LIBS) -o $@
+
 # Builds the plugin, so native-test fails on a plugin that does not link. Its contract and
 # dataflow run from packages/engine/src/child-process/gst_mrtshouse_element_test.py,
 # gst_mrtsrestamp_element_test.py, gst_ingest_restamp_test.py, gst_mrasrc_element_test.py,
-# gst_mralignwatch_element_test.py and gst_mrtsdemux_element_test.py (test:py).
-test: $(SO) $(STUB) $(REF) $(BENCH) $(TESTPLUGIN)
+# gst_mralignwatch_element_test.py, gst_mrtsdemux_element_test.py and
+# gst_mrvideopace_element_test.py (test:py).
+test: $(SO) $(STUB) $(REF) $(BENCH) $(TESTPLUGIN) $(TESTVIDEO)
 
 clean:
 	rm -f $(SO) $(REF) $(BENCH) $(TESTPLUGIN)
-	rm -rf $(dir $(STUB))
+	rm -rf $(dir $(STUB)) $(dir $(TESTVIDEO))
 
 install: $(SO)
 	install -D -m 755 $(SO) $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/$(SO)
