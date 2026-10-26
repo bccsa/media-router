@@ -98,8 +98,9 @@ it at runtime stop doing so phase by phase (below).
 |---|---|
 | `ts_psi.py`, `ts_split.py`, `ts_video_info.py`, `sps_parse.py` | References of the PSI, splitter and SPS code. `ts_psi.py`, `ts_video_info.py` and `sps_parse.py` also serve the Python runner's `tsProbe`, which is not timing |
 | `ts_timeline.py` | Reference of `ts_timeline`. Still imported at runtime by branch alignment and retime, for its helpers, until Phase 3 |
+| `video_pace.py` | Reference of `mrts::VideoPace` (plan ch. 8 WI-P4-3, ch. 15.4 B-161), written before its C++ port: when each decoded frame leaves `mrvideopace`, and which frames go so that a slower display keeps up; the display period from presentation feedback or a blocking sink's returns. Never loaded. As a script it replays a recorded call sequence, the line format `mrts_cli pace` reads |
 | `native_parity_fixture.py`, `native_parity_ref.py` | The synthetic MPTS generator and the Python splitter whose output `ts-splitter`'s `mrTssplit.test.ts` expects (the parity vitest went in Phase 2) |
-| `ts_psi_test.py`, `ts_split_test.py`, `ts_video_info_test.py`, `ts_timeline_test.py` | The reference suites (`test:py`) |
+| `ts_psi_test.py`, `ts_split_test.py`, `ts_video_info_test.py`, `ts_timeline_test.py`, `video_pace_test.py` | The reference suites (`test:py`). `video_pace_test.py --mutants` checks that each of its mutants fails its case; with `VIDEO_PACE_TRACE=<file>` it records every call for the C++ parity |
 
 ### `engine/` and `tests/`
 
