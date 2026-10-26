@@ -372,13 +372,14 @@ def scn_align_slow_joiner(tag, argv, exp):
     reps = {n: rig.aligner_reports(s.runner, nm) for n, nm in names.items()}
     t_add, t_rm = t0 + int(add_at * S), t0 + int(remove_at * S)
 
-    # One stop of the output for the joiner's lateness, then the pace that much higher.
+    # B-80: the joiner stays gapped while it catches up and the pace slews to it, so the output
+    # slows and never stops; then the pace is that much higher.
     gaps = [(a, g) for a, g in rig.arrival_gaps_ms(cons.records, t0 + S, t0 + int((exp["seconds"] - 0.3) * S))]
-    big = [(round(sec(a, t0), 3), round(g, 1)) for a, g in gaps if g > x["gap_floor_ms"]]
-    want, tol = x["gap_ms"], x["gap_tolerance_ms"]
-    check(f"{label} {tag}: one output gap of {want} ± {tol} ms after the join (gaps over "
-          f"{x['gap_floor_ms']} ms: {big})",
-          len(big) == 1 and abs(big[0][1] - want) <= tol and big[0][0] >= add_at)
+    worst = max(gaps, key=lambda ag: ag[1], default=None)
+    want, tol = x["rise_ms"], x["rise_tolerance_ms"]
+    check(f"{label} {tag}: no output gap over {x['max_gap_ms']} ms across the join and the remove "
+          f"(the largest {worst and round(worst[1], 1)} ms at {worst and round(sec(worst[0], t0), 3)} s)",
+          worst is not None and worst[1] <= x["max_gap_ms"])
     group = [p for n in reps for p in reps[n]]
     p_before = pace_at(group, t_add - S, t_add)
     p_after = pace_at(group, t_add + 2 * S, t_rm)
@@ -396,10 +397,10 @@ def scn_align_slow_joiner(tag, argv, exp):
     lo, hi = rig.sample_of(t0 + S // 2), rig.sample_of(t0 + int((exp["seconds"] - 0.5) * S))
     check(f"{label} {tag}: the output is continuous across the join and the remove (holes "
           f"{pcm.holes(lo, hi)[:3]})", pcm.hi > hi and not pcm.holes(lo, hi))
-    # The joiner's content reaches the mix its lateness after it was captured: none after
-    # the remove less that.
+    # The joiner is mixed once caught up: 0.5 s to count its lateness, 2 x that to slew, by
+    # joiner_by_s after its add; none after the remove less its lateness.
     late_ns = int(inp[joiner].get("delay_ms", 0) * MS)
-    a_lo, a_hi = rig.sample_of(t_add + int(x["settle_s"] * S)), rig.sample_of(t_rm - late_ns - 200 * MS)
+    a_lo, a_hi = rig.sample_of(t_add + int(x["joiner_by_s"] * S)), rig.sample_of(t_rm - late_ns - 200 * MS)
     for n, c in contents.items():
         if n == joiner:
             lag, gain = pcm.best_lag(c, a_lo, a_hi)
@@ -414,8 +415,9 @@ def scn_align_slow_joiner(tag, argv, exp):
     kept = {n: ((last_report(reps[n], before=end_ns).get("stale-buffers") or 0),
                 [round(sec(t, t0), 2) for t, st in states(reps[n]) if st == "absent" and t0 < t < end_ns])
             for n in reps if n != joiner}
-    check(f"{label} {tag}: the joiner loses at most its lateness at the join ({stale} ms stale), the "
-          f"kept inputs nothing (stale buffers, absences: {kept})", stale <= want + tol
+    check(f"{label} {tag}: the joiner loses what came before it caught up, at most 2 x its lateness"
+          f" + 0.5 s ({stale} ms stale, at most {x['stale_max_ms']}), the kept inputs nothing (stale"
+          f" buffers, absences: {kept})", stale <= x["stale_max_ms"]
           and all(v == (0, []) for v in kept.values()))
     lat_b = rig.median(rig.lateness_ms(cons.records, t_add - 2 * S, t_add))
     lat_a = rig.median(rig.lateness_ms(cons.records, t_add + 2 * S, t_rm))

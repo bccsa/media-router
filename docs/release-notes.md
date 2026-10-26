@@ -145,10 +145,16 @@ elements" below do not start.
   silence and dropped what came later, and the muxer stopped waiting after
   2.4 s and muxed what came later out of order. Now the module adds the
   latency of its slowest input instead, and shows it.
-- **The added latency does not come down by itself.** Once a slower input
-  has raised it, it stays until that input is removed or the module is
-  restarted. The module's timing popup shows it as **Pace**, and **Waiting
-  for** names the input it waits on.
+- **The added latency comes down by itself.** Once every input has been
+  steady under it for about three minutes, the module drops it in one step
+  (at most a second at a time); nothing is lost or repeated. It also drops
+  when the slow input is removed. The timing popup shows it as **Pace**, and
+  **Waiting for** names the input it waits on.
+- **A slower input that joins no longer stops the mix.** The module eases its
+  latency up to the newcomer over about twice the difference; the newcomer is
+  heard from then on (what it sent before is discarded and counted under
+  **Discarded on rejoin**). A newcomer less than about 50 ms later is simply
+  waited for.
 - **An input that goes silent is left out, not waited for.** After its
   silence limit (three times the input's usual gap between arrivals, 100 ms
   to 2 s; 2 s at start) the module carries a warning, "Input <name> silent

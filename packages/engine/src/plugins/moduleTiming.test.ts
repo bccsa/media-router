@@ -523,6 +523,37 @@ describe('aligner inputs (WI-P2-13)', () => {
         t.stop(false);
     });
 
+    it('a pace fall is an info line with the fall and the steady window (B-82)', () => {
+        const { t, host } = make();
+        const fell = (fellMs: number, fallAfterMs: number) => ({
+            ...awMsg(A.connectionId, 'present', { reason: 'pace-fell', paceMs: 20 }),
+            'pace-target': 20 * MS,
+            fell: fellMs * MS,
+            'fall-after': fallAfterMs * MS,
+        });
+        t.onEvent('mralignwatch:mixin_aw_a', fell(280.4, 180_000));
+        expect(host.log).toHaveBeenLastCalledWith(
+            'info',
+            {
+                alignerPaceFell: {
+                    name: 'mixin_aw_a',
+                    aligner: 'mixin',
+                    fellMs: 280,
+                    fallAfterMs: 180_000,
+                },
+            },
+            'Pace fell by 280 ms: every input steady for 3 min',
+        );
+        t.onEvent('mralignwatch:mixin_aw_a', fell(1000, 4000));
+        expect(host.log).toHaveBeenLastCalledWith(
+            'info',
+            expect.anything(),
+            'Pace fell by 1000 ms: every input steady for 4 s',
+        );
+        expect(host.log).toHaveBeenCalledTimes(2);
+        t.stop(false);
+    });
+
     it('a removed edge: its watch names nothing and warns no more while it expires', () => {
         const sources = [A, B];
         const { t, host } = make(sources);

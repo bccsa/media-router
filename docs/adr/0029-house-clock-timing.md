@@ -2070,12 +2070,20 @@ work items.
       joiner later than the pace by Δ loses its first Δ, which a seed saves.
   11. *Not PLAYING*, items leave at once, as from a queue, so a non-live
       upstream can preroll.
-- **The pace never falls by itself** (R-P2-5, §6 item 4). It rises when an
-  input slows or a slower one joins, and comes down only when a member
-  leaves (its pad released). So after a transient the module's added latency
-  stays until the slow input is removed or the module restarts; "Pace" and
-  "Waiting for" show it (below). An automatic fall-back after a steady
-  spell is with the owner (B-76) and not built.
+- **The pace falls by itself** (R-P2-5, B-82, the owner's Q4). Each member
+  keeps the peak of what entered its window (its seed, each lateness that
+  counted, a late cue's): three buckets of `fall-after` / 2 (180 s by
+  default) on the group's clock, so a value goes 180–270 s after it came; the
+  target is the members' largest peak. A rise a member behind the gaps makes
+  (a joiner, a rejoin, a seed into a running group, a late cue) slews at 0.5,
+  one a present input makes steps, its data being waited for already (B-80).
+  Once every member has been steady 10 ms or more under the pace for
+  fall-after, the pace falls to the target in one skip of at most 1 s, skips
+  2 s apart; a leave falls the same way at once. A fall is a burst of
+  continuous content: nothing is lost or repeated. An absent input's last
+  level holds the pace for fall-after, a seeded member that never delivers
+  goes the same way, and a chain of n aligners recovers in about
+  n × fall-after. "Pace" and "Waiting for" show it (below).
 - **A rejoin.** When data returns after an absence, buffers ending before
   the emitted horizon are discarded and counted (`stale-buffers`,
   `stale-time`): the only discard after ingest (R21).

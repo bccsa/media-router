@@ -41,6 +41,12 @@ export function busInputLabel(s: { sourceModuleId?: string | null; sinkPortId: s
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/** An aligner's fall-after as the log says it: whole minutes, else seconds. */
+function steadyFor(ms: number): string {
+    const s = Math.round(ms / 1000);
+    return s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${s} s`;
+}
+
 /** The module's bus inputs in a fixed order (sink port, numeric-aware, then connection), each
  *  under the tap `buildBusSrc` gives an unnamed edge source. */
 export function busInputs(sources: BusSourceRef[]): TimingInputRef[] {
@@ -268,6 +274,16 @@ export class ModuleTiming {
                 'info',
                 { alignerRejoin: { name, aligner, input, absentMs, discardedMs } },
                 `Input ${e.label} back after ${absentMs} ms absent${stale}`,
+            );
+            return;
+        }
+        if (e.kind === 'pace-fell') {
+            const fellMs = Math.round(e.fellMs);
+            const steady = steadyFor(e.fallAfterMs);
+            this.host.log?.(
+                'info',
+                { alignerPaceFell: { name, aligner, fellMs, fallAfterMs: e.fallAfterMs } },
+                `Pace fell by ${fellMs} ms: every input steady for ${steady}`,
             );
             return;
         }

@@ -1277,6 +1277,24 @@ def test_aligner_absent():
     aligner_absent_case([_BIN], "native", check)
 
 
+def test_aligner_join_chain():
+    """B-74's reproduction, native (gst_live_inputs_test.py runs it on the python runner): a source
+    300 ms later joins audio-mixer live; the pace slews to it, the mix never stops, and a fan-in
+    downstream keeps both other sources in every block (B-80)."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import aligner_join_chain_case
+    aligner_join_chain_case([_BIN], "native", check)
+
+
+def test_aligner_fall():
+    """The pace falls by itself, native (gst_live_inputs_test.py runs it on the python runner): an
+    input 300 ms late recovers, the pace falls once the window lets it, in one skip, the mix
+    continuous (B-82)."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import aligner_fall_case
+    aligner_fall_case([_BIN], "native", check)
+
+
 # --------------------------------------------------------------------------- M: transform producer retime (2026-10-08)
 _AV_BRANCHES = (' demux. ! video/x-h264 ! capssetter caps="video/x-h264,alignment=(string)au" ! queue ! mux.',
                 ' demux. ! audio/mpeg ! capssetter caps="audio/mpeg,framed=(boolean)true" ! queue ! mux.')
@@ -2419,6 +2437,8 @@ test_deinterlace_guard_hook()
 test_video_gates()
 test_live_input_branches()
 test_aligner_absent()
+test_aligner_join_chain()
+test_aligner_fall()
 test_live_remove_start_time_branch()
 test_transform_producer_align()
 test_cue_pads_retime()

@@ -41,16 +41,42 @@ void ArrivalRhythm::reset() { *this = ArrivalRhythm(); }
 
 // --- PaceGroup ---------------------------------------------------------------------------
 
+// Before the group runs, the target; then a rise is a slew from (base, base_at), and once the
+// target is at or under base the pace holds there until a skip lowers it.
+int64_t PaceGroup::Snapshot::pace_at(int64_t now_ns) const {
+    if (!started) return target;
+    if (target <= base) return base;
+    const int64_t rise = now_ns > base_at ? (now_ns - base_at) / RISE_DIV : 0;
+    return std::min(target, base + rise);
+}
+
+PaceGroup::PaceGroup(int64_t fall_after_ns)
+    : fall_after_ns_(fall_after_ns), bucket_ns_(std::max<int64_t>(fall_after_ns / 2, 1)) {}
+
+int64_t PaceGroup::next_at() const {
+    if (!has_clock_) return 0;   // the first time a member has starts the clock
+    int64_t at = next_rotation_;
+    if (started_ && target_ <= base_ - FALL_MIN_NS) at = std::min(at, next_skip_);
+    return at;
+}
+
 // The writer side of the seqlock (Boehm 2012): odd while the fields change, relaxed stores
 // between two fences. One writer at a time.
 void PaceGroup::publish() {
-    if (pub_pace_.load(std::memory_order_relaxed) == pace_ &&
+    const int64_t next = next_at();
+    if (pub_target_.load(std::memory_order_relaxed) == target_ &&
+        pub_base_.load(std::memory_order_relaxed) == base_ &&
+        pub_base_at_.load(std::memory_order_relaxed) == base_at_ &&
+        pub_next_at_.load(std::memory_order_relaxed) == next &&
         pub_started_.load(std::memory_order_relaxed) == started_)
         return;
     const uint32_t s = seq_.load(std::memory_order_relaxed);
     seq_.store(s + 1, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
-    pub_pace_.store(pace_, std::memory_order_relaxed);
+    pub_target_.store(target_, std::memory_order_relaxed);
+    pub_base_.store(base_, std::memory_order_relaxed);
+    pub_base_at_.store(base_at_, std::memory_order_relaxed);
+    pub_next_at_.store(next, std::memory_order_relaxed);
     pub_started_.store(started_, std::memory_order_relaxed);
     seq_.store(s + 2, std::memory_order_release);
 }
@@ -59,31 +85,120 @@ PaceGroup::Snapshot PaceGroup::snapshot() const {
     Snapshot v;
     for (;;) {
         const uint32_t s0 = seq_.load(std::memory_order_acquire);
-        v.pace = pub_pace_.load(std::memory_order_relaxed);
+        v.target = pub_target_.load(std::memory_order_relaxed);
+        v.base = pub_base_.load(std::memory_order_relaxed);
+        v.base_at = pub_base_at_.load(std::memory_order_relaxed);
+        v.next_at = pub_next_at_.load(std::memory_order_relaxed);
         v.started = pub_started_.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
         if (!(s0 & 1) && seq_.load(std::memory_order_relaxed) == s0) return v;
     }
 }
 
-void PaceGroup::join(Member m, int64_t seed_ns) {
-    State s;
-    s.seed = seed_ns;
-    members_[m] = s;
-    if (seed_ns >= 0) pace_ = std::max(pace_, seed_ns);
+int64_t PaceGroup::pace_at(int64_t now_ns) const {
+    Snapshot s;
+    s.target = target_;
+    s.base = base_;
+    s.base_at = base_at_;
+    s.started = started_;
+    return s.pace_at(now_ns);
+}
+
+int64_t PaceGroup::pace() const { return pace_at(has_clock_ ? clock_ : -1); }
+
+// The clock never runs back: members' calls cross on the lock in any order.
+int64_t PaceGroup::advance(int64_t now_ns) {
+    if (now_ns >= 0) {
+        if (!has_clock_) {
+            has_clock_ = true;
+            clock_ = now_ns;
+            next_rotation_ = now_ns + bucket_ns_;
+        } else if (now_ns > clock_) {
+            clock_ = now_ns;
+        }
+    }
+    return has_clock_ ? clock_ : -1;
+}
+
+// Each due rotation drops every member's oldest bucket and opens a new one; a value so ages
+// out two to three buckets after it came.
+void PaceGroup::rotate() {
+    if (!has_clock_ || clock_ < next_rotation_) return;
+    const int64_t n = (clock_ - next_rotation_) / bucket_ns_ + 1;
+    next_rotation_ += n * bucket_ns_;
+    for (auto& kv : members_) {
+        int64_t* p = kv.second.peaks;
+        for (int64_t k = 0; k < std::min<int64_t>(n, BUCKETS); k++) {
+            for (int i = 0; i + 1 < BUCKETS; i++) p[i] = p[i + 1];
+            p[BUCKETS - 1] = NONE;
+        }
+    }
+    const int64_t was = target_;
+    target_ = window_target();
+    if (target_ < was) quiet_ = false;   // the window's own fall: reported
+}
+
+void PaceGroup::enter(State& s, int64_t v) {
+    int64_t& open = s.peaks[BUCKETS - 1];
+    open = std::max(open, v);
+    target_ = std::max(target_, v);
+}
+
+int64_t PaceGroup::window_target() const {
+    int64_t t = 0;
+    for (const auto& kv : members_)
+        for (const int64_t p : kv.second.peaks) t = std::max(t, p);
+    return t;
+}
+
+void PaceGroup::settle(int64_t t, int64_t cur, int64_t was, Event* ev, bool skip, int64_t floor) {
+    if (started_) {
+        if (t < 0) {
+            base_ = target_;   // no time yet: nothing is paced, it steps
+        } else if (target_ > cur) {
+            const int64_t to = std::max(cur, std::min(floor, target_));
+            if (to > cur || was <= cur) {   // a step or a new rise; one under way keeps its line
+                base_ = to;
+                base_at_ = t;
+            }
+        } else {
+            if (target_ != was) {   // a rise ends where it is
+                base_ = cur;
+                base_at_ = t;
+            }
+            if (skip && cur - target_ >= FALL_MIN_NS && t >= next_skip_) {
+                base_ = std::max(target_, cur - FALL_MAX_NS);
+                base_at_ = t;
+                next_skip_ = t + FALL_SPACING_NS;
+                if (ev && !quiet_) ev->fell_ns = cur - base_;
+            }
+        }
+    }
     publish();
 }
 
-void PaceGroup::leave(Member m) {
-    if (!members_.erase(m)) return;
-    // The only way down: what the members that remain need, an absent one's held need included.
-    pace_ = 0;
-    for (const auto& kv : members_) {
-        const State& s = kv.second;
-        if (s.seed >= 0) pace_ = std::max(pace_, s.seed);
-        if (s.has_need) pace_ = std::max(pace_, s.need);
-    }
-    publish();
+void PaceGroup::join(Member m, int64_t seed_ns, int64_t now_ns) {
+    const int64_t t = advance(now_ns);
+    const int64_t cur = pace_at(t), was = target_;
+    rotate();
+    State& s = members_[m];
+    s = State();
+    if (seed_ns >= 0) enter(s, seed_ns);
+    // A fall a rotation made due waits for the members' next tick: the joiner reports none.
+    settle(t, cur, was, nullptr, false);
+}
+
+void PaceGroup::leave(Member m, int64_t now_ns) {
+    auto it = members_.find(m);
+    if (it == members_.end()) return;
+    const int64_t t = advance(now_ns);
+    const int64_t cur = pace_at(t), was = target_;
+    rotate();
+    const int64_t kept = target_;
+    members_.erase(it);
+    target_ = window_target();
+    if (target_ < kept) quiet_ = true;
+    settle(t, cur, was, nullptr);
 }
 
 // Falling: over the newer half (the stretches that end after now - span / 2) nothing counts,
@@ -99,9 +214,13 @@ bool PaceGroup::falling(const State& s, int64_t now_ns) {
     return newer == 0 || 2 * below >= newer;
 }
 
-void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh) {
+void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh, bool gapped,
+                        Event* ev) {
     auto it = members_.find(m);
     if (it == members_.end()) return;
+    const int64_t t = advance(now_ns);
+    const int64_t cur = pace_at(t), was = target_;
+    rotate();
     State& s = it->second;
     const int64_t l = std::clamp(lateness_ns, -LATENESS_LIMIT_NS, LATENESS_LIMIT_NS);
     const int64_t len = now_ns - s.last_at;
@@ -143,23 +262,41 @@ void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fres
     }
     s.has_level = true;
     // Taken once the stretches span half a second and a third of that counts (jitter counts
-    // half of a steady input's, a catch-up much less); taking the need it holds changes nothing.
-    const bool held = s.has_need && s.level == s.need && pace_ >= s.need;
+    // half of a steady input's, a catch-up much less); taking again the need the open bucket
+    // holds changes nothing.
+    const bool held = s.has_need && s.level == s.need && s.peaks[BUCKETS - 1] >= s.need;
+    int64_t floor = NONE;
     if (s.span >= SPAN_NS && 3 * s.len >= s.span && !held && !falling(s, now_ns)) {
         s.need = s.level;
         s.has_need = true;
-        pace_ = std::max(pace_, s.need);
-        publish();
+        enter(s, s.need);
+        if (!gapped) floor = s.need;   // the aggregator waits on its data: a step stops nothing
     }
+    settle(t, cur, was, ev, true, floor);
 }
 
-void PaceGroup::raise(int64_t pace_ns) {
-    pace_ = std::max(pace_, pace_ns);
-    publish();
+void PaceGroup::raise(Member m, int64_t pace_ns, int64_t now_ns, Event* ev) {
+    auto it = members_.find(m);
+    if (it == members_.end()) return;
+    const int64_t t = advance(now_ns);
+    const int64_t cur = pace_at(t), was = target_;
+    rotate();
+    enter(it->second, std::clamp(pace_ns, -LATENESS_LIMIT_NS, LATENESS_LIMIT_NS));
+    settle(t, cur, was, ev);
+}
+
+void PaceGroup::tick(int64_t now_ns, Event* ev) {
+    const int64_t t = advance(now_ns);
+    const int64_t cur = pace_at(t), was = target_;
+    rotate();
+    settle(t, cur, was, ev);
 }
 
 void PaceGroup::start() {
+    if (started_) return;
     started_ = true;
+    base_ = target_;
+    base_at_ = has_clock_ ? clock_ : 0;
     publish();
 }
 
@@ -177,6 +314,16 @@ bool PaceGroup::need(Member m, int64_t* out) const {
     return true;
 }
 
+bool PaceGroup::peak(Member m, int64_t* out) const {
+    auto it = members_.find(m);
+    if (it == members_.end()) return false;
+    int64_t p = NONE;
+    for (const int64_t v : it->second.peaks) p = std::max(p, v);
+    if (p == NONE) return false;
+    *out = p;
+    return true;
+}
+
 // --- PaceRegistry ------------------------------------------------------------------------
 
 PaceRegistry& PaceRegistry::global() {
@@ -186,38 +333,45 @@ PaceRegistry& PaceRegistry::global() {
 }
 
 // A map's node never moves: the pointer holds until the group is erased, at its last leave.
-PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed_ns) {
+PaceRegistry::Membership PaceRegistry::join(const std::string& key, int64_t seed_ns,
+                                            int64_t fall_after_ns, int64_t now_ns) {
     std::lock_guard<std::mutex> lk(mu_);
     Membership m;
     m.key = key;
     m.member = ++next_;
-    PaceGroup& g = groups_[key];
+    PaceGroup& g = groups_.try_emplace(key, fall_after_ns).first->second;
     m.late = g.started();
     m.group = &g;
-    g.join(m.member, seed_ns);
+    g.join(m.member, seed_ns, now_ns);
     return m;
 }
 
-void PaceRegistry::leave(Membership* m) {
+void PaceRegistry::leave(Membership* m, int64_t now_ns) {
     if (!m || !m->member) return;
     std::lock_guard<std::mutex> lk(mu_);
     if (m->group) {
-        m->group->leave(m->member);
+        m->group->leave(m->member, now_ns);
         if (m->group->size() == 0) groups_.erase(m->key);
     }
     m->member = 0;
     m->group = nullptr;
 }
 
-void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns,
-                           bool fresh) {
+void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh,
+                           bool gapped, PaceGroup::Event* ev) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (m.member && m.group) m.group->observe(m.member, now_ns, lateness_ns, fresh);
+    if (m.member && m.group) m.group->observe(m.member, now_ns, lateness_ns, fresh, gapped, ev);
 }
 
-void PaceRegistry::raise(const Membership& m, int64_t pace_ns) {
+void PaceRegistry::raise(const Membership& m, int64_t pace_ns, int64_t now_ns,
+                         PaceGroup::Event* ev) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (m.member && m.group) m.group->raise(pace_ns);
+    if (m.member && m.group) m.group->raise(m.member, pace_ns, now_ns, ev);
+}
+
+void PaceRegistry::tick(const Membership& m, int64_t now_ns, PaceGroup::Event* ev) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (m.member && m.group) m.group->tick(now_ns, ev);
 }
 
 void PaceRegistry::start(const Membership& m) {
@@ -225,23 +379,24 @@ void PaceRegistry::start(const Membership& m) {
     if (m.member && m.group) m.group->start();
 }
 
-int64_t PaceRegistry::Membership::pace_ns(int64_t) const {
-    return member && group ? group->snapshot().pace : 0;
+int64_t PaceRegistry::Membership::pace_ns(int64_t now_ns) const {
+    return member && group ? group->snapshot().pace_at(now_ns) : 0;
 }
 
-PaceRegistry::View PaceRegistry::view_locked(const Membership& m) const {
+PaceGroup::Snapshot PaceRegistry::Membership::snapshot() const {
+    return member && group ? group->snapshot() : PaceGroup::Snapshot();
+}
+
+PaceRegistry::View PaceRegistry::view(const Membership& m, int64_t now_ns) const {
+    std::lock_guard<std::mutex> lk(mu_);
     View v;
     if (!m.member || !m.group) return v;
     const PaceGroup& g = *m.group;
-    v.pace_ns = g.pace();
+    v.pace_ns = now_ns >= 0 ? g.pace_at(now_ns) : g.pace();
+    v.target_ns = g.target();
     v.has_lateness = g.lateness(m.member, &v.lateness_ns);
     v.members = g.size();
     return v;
-}
-
-PaceRegistry::View PaceRegistry::view(const Membership& m) const {
-    std::lock_guard<std::mutex> lk(mu_);
-    return view_locked(m);
 }
 
 size_t PaceRegistry::groups() const {

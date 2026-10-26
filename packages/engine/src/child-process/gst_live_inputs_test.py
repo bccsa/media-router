@@ -5,9 +5,10 @@
 branch bins (`sources_by_factory` enters declared bins only,
 `forget_sources_in` releases a leaving branch's heads).
 
-Also the python twins of protocol cases L (live input branches) and aligner-absent (plan ch. 6
-part 7.3): `live_aligned_case` and `aligner_absent_case`, which native_runner_protocol_test.py
-runs on the native runner.
+Also the python twins of protocol cases L (live input branches), aligner-absent (plan ch. 6
+part 7.3), the B-74 join chain (B-80) and the fall (B-82): `live_aligned_case`,
+`aligner_absent_case`, `aligner_join_chain_case` and `aligner_fall_case`, which
+native_runner_protocol_test.py runs on the native runner.
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run:  python3 gst_live_inputs_test.py
@@ -441,12 +442,274 @@ def aligner_absent_case(argv, tag, check):
           not errors and rc == 0)
 
 
+class _ChainConsumer:
+    """Another module's 302M fan-in on an output (B-74's downstream): mrtsdemux, its mralignwatch
+    and an aligned mixer from the same plugin, on the house clock; the mix as (PTS, samples). Its
+    appsink keeps what it gets until the run ends: no python in its streaming path."""
+
+    def __init__(self, rig, socket):
+        Gst.Plugin.load_file(os.path.join(rig.RUNNER_PLUGINS, "mpegts-core", "native", "mrtshouse",
+                                          "libgstmrtshouse.so"))
+        self.rig, self.bufs = rig, []
+        self.pipe = rig._monotonic_pipeline(
+            f"unixfdsrc socket-path={socket} ! mrtsdemux select=audio/x-smpte-302m ! avdec_s302m"
+            " ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2"
+            " ! mralignwatch name=daw aligner=dmix input=up hold-on-eos=true"
+            " ! audiomixer name=dmix latency=0 start-time-selection=first ! audioconvert"
+            f" ! {rig.PCM_CAPS} ! appsink name=sink sync=false max-buffers=0 drop=false")
+
+    def start(self):
+        self.pipe.set_state(Gst.State.PLAYING)
+
+    def watch(self):
+        aw = self.pipe.get_by_name("daw")
+        return {k: aw.get_property(k) for k in ("absences", "stale-buffers", "state")}
+
+    def stop(self):
+        sink = self.pipe.get_by_name("sink")
+        while True:
+            sample = sink.emit("try-pull-sample", 0)
+            if sample is None:
+                break
+            buf = sample.get_buffer()
+            self.bufs.append((buf.pts, buf.extract_dup(0, buf.get_size())))
+        self.pipe.set_state(Gst.State.NULL)
+
+    def pcm(self):
+        """The mix on the absolute sample axis, as the rig's Pcm (gaps left absent)."""
+        import numpy as np
+        pieces = [(self.rig.sample_of(pts), np.frombuffer(data, dtype=np.int16).reshape(-1, 2))
+                  for pts, data in self.bufs if pts is not None and pts != Gst.CLOCK_TIME_NONE]
+        p = self.rig.Pcm([], 0)
+        if not pieces:
+            return p
+        p.lo = min(n for n, _ in pieces)
+        p.hi = max(n + len(s) for n, s in pieces)
+        p.y = np.zeros((p.hi - p.lo, 2))
+        p.have = np.zeros(p.hi - p.lo, dtype=bool)
+        for n0, s in pieces:
+            p.y[n0 - p.lo:n0 - p.lo + len(s)] = s / 32767.0
+            p.have[n0 - p.lo:n0 - p.lo + len(s)] = True
+        return p
+
+
+# A run whose producers fell this far behind their schedule tests the harness, not the module
+# (aligner_conformance_test.py's rule): it is run again, three times at most.
+HARNESS_LATE_MS = 30
+
+
+def _attempts(rig, label, run, check):
+    """`run()` -> (producers, results) until its producers kept their schedule; its results, or
+    None after three late runs (a failed check)."""
+    for _ in range(3):
+        prods, res = run()
+        late = max(p.late_ns for p in prods.values()) / 1e6
+        if late <= HARNESS_LATE_MS:
+            return res
+        print(f"RETRY {label}: the harness fed {late:.0f} ms behind its schedule "
+              f"(load {os.getloadavg()[0]:.1f})", flush=True)
+    check(f"{label}: the harness kept its schedule in one of three runs", False)
+    return None
+
+
+def aligner_join_chain_case(argv, tag, check):
+    """B-74's reproduction (B-80) through `argv`'s runner: audio-mixer's own start (two start-time
+    sources, fixtures/aligner/pipelines.json) takes a third live at 4.5 s, 300 ms later than they
+    are. The joiner stays gapped while its content is behind, its arrivals there give its lateness
+    and the pace slews to it at half speed: the mix slows and never stops, so another module's
+    fan-in downstream never goes absent and keeps both sources in every block; the joiner is mixed
+    once it caught up."""
+    rig = _rig()
+    if rig is None:
+        return
+    seconds, add_at, late_ms = 10.0, 4.5, 300.0
+    c = {n: rig.Content(seed) for n, seed in (("in0", 81), ("in1", 82), ("in2", 83))}
+    cmd0 = rig.pipelines()["mixer2"]
+
+    def run():
+        d = rig.SocketDir()
+        cmd = rig.on_socket_dir(cmd0, d.path)
+        prods = {n: rig.Producer(n, [d.sock(n)], content=c[n], stop_s=seconds,
+                                 start_s=add_at - 0.3 if n == "in2" else 0.0,
+                                 knobs=rig.Knobs(delay_ms=late_ms if n == "in2" else 0.0))
+                 for n in c}
+        r = chain = cons = None
+        got = {"cmd": cmd}
+        try:
+            got["t0"] = t0 = rig.prepare(prods.values())
+            for p in prods.values():
+                p.listen()
+            rig.until(t0 - 700 * rig.MS)        # start the module just before its producers' data
+            r = got["r"] = rig.Runner(argv, env=cmd.get("env"))
+            got["playing"] = r.start(cmd["start"]) is not None
+            r.attach("busout_41011", d.sock("out"))
+            r.attach("busout_41011", d.sock("chain"))
+            cons = got["cons"] = rig.Consumer(d.sock("out"))
+            cons.start()
+            chain = got["chain"] = _ChainConsumer(rig, d.sock("chain"))
+            chain.start()
+            rig.go(prods.values())
+            rig.until(t0 + int(add_at * 1e9))
+            got["add"] = r.request(dict(cmd["add"], cmd="bus_input_add"), "bus_input_add_done")
+            for p in prods.values():
+                p.join(30)
+            time.sleep(0.5)
+            got["errors"] = r.errors()
+            got["down"] = chain.watch()
+            got["rc"] = r.stop()
+        finally:
+            for p in prods.values():
+                p.stop()
+            if r is not None:
+                r.kill()
+            for x in (cons, chain):
+                if x is not None:
+                    x.stop()
+            d.close()
+        return prods, got
+    got = _attempts(rig, f"join-chain {tag}", run, check)
+    if got is None:
+        return
+    r, cons, chain, cmd, t0 = got["r"], got["cons"], got["chain"], got["cmd"], got["t0"]
+    check(f"join-chain {tag}: audio-mixer with two start-time sources reaches PLAYING, the 300 ms "
+          f"later source added live (bus_input_add_done)",
+          got["playing"] and (got.get("add") or (0, {}))[1].get("event") == "bus_input_add_done")
+    add_ns, end_ns = t0 + int(add_at * 1e9), t0 + int((seconds - 0.5) * 1e9)
+    gaps = rig.arrival_gaps_ms(cons.records, add_ns - 10**9, add_ns + 3 * 10**9)
+    worst = max((g for _a, g in gaps), default=None)
+    # The slew halves the mix's rhythm (20 ms); a step stopped it for 290 ms (B-74).
+    check(f"join-chain {tag}: the mix never stops over the add, it slows (largest arrival gap "
+          f"{worst and round(worst, 1)} ms, under 60)", worst is not None and worst <= 60)
+    pcm = chain.pcm()
+    lo, hi, at = rig.sample_of(add_ns - 10**9), rig.sample_of(end_ns), rig.sample_of(add_ns)
+    miss = {n: [round((b - at) / rig.RATE, 3) for b, _g in _missing(rig, pcm, c[n], add_ns - 10**9,
+                                                                     end_ns)]
+            for n in ("in0", "in1")}
+    check(f"join-chain {tag}: downstream, both kept sources in every 20 ms block from 1 s before "
+          f"the add to the end (holes {pcm.holes(lo, hi)[:3]}, blocks missing, s after the add: "
+          f"{[(n, v[:3]) for n, v in miss.items() if v]})",
+          pcm.hi > hi and not pcm.holes(lo, hi) and not any(miss.values()))
+    by = add_ns + int((0.3 + 0.5 + 0.6 + 0.3) * 1e9)
+    joined = _missing(rig, pcm, c["in2"], by, end_ns)
+    check(f"join-chain {tag}: the joiner in the mix downstream from content add + 1.7 s at the "
+          f"latest (missing {joined[:3]})", not joined)
+    # The two start-time sources' own lateness (transport, framing, decode) is the pace before.
+    starts = re.findall(r"mralignwatch name=(\S+)", cmd["start"]["pipeline"])
+    was = rig.median([p.get("pace") for nm in starts for t, p in rig.aligner_reports(r, nm)
+                      if add_ns - 2 * 10**9 <= t < add_ns and isinstance(p.get("pace"), int)])
+    last = (rig.aligner_reports(r, rig.aligner_of(cmd["add"]["description"])) or [(0, {})])[-1][1]
+    pace, target = (last.get("pace") or 0) / 1e6, (last.get("pace-target") or 0) / 1e6
+    rise = pace - (was or 0) / 1e6
+    check(f"join-chain {tag}: the module's pace ends the joiner's 300 ms over what it was, at its "
+          f"target ({round((was or 0) / 1e6, 1)} -> {round(pace, 1)} ms, +{round(rise, 1)}; target "
+          f"{round(target, 1)} ms)", was is not None and abs(rise - late_ms) <= 20
+          and abs(target - pace) <= 1)
+    down = got["down"]
+    check(f"join-chain {tag}: downstream the fan-in never absent, nothing stale ({down})",
+          down.get("absences") == 0 and down.get("stale-buffers") == 0)
+    errors, rc = got["errors"], got["rc"]
+    check(f"join-chain {tag}: no error, exit 0 ({[e.get('message') for e in errors][:2]}, rc {rc})",
+          not errors and rc == 0)
+
+
+def aligner_fall_case(argv, tag, check):
+    """B-82 through `argv`'s runner: audio-mixer's three fan-in aligners (fixtures/aligner/
+    pipelines.json's mixer3, with fall-after 4 s added to each) and in2 300 ms late for 5 s, then
+    on time (what was due meanwhile at once). The pace holds in2's 300 ms while its window does,
+    then falls by itself in one skip that one aligner reports; the mix stays continuous with every
+    input in every block."""
+    rig = _rig()
+    if rig is None:
+        return
+
+    class Recovers(rig.Knobs):
+        """`delay_ms` late until `until_s` of content, then on time: the backlog comes at once."""
+
+        def __init__(self, until_s, delay_ms):
+            super().__init__(delay_ms=delay_ms)
+            self.until_ns = int(until_s * 1e9)
+
+        def delivery(self, rel_ready_ns):
+            if rel_ready_ns < self.until_ns:
+                return super().delivery(rel_ready_ns)
+            return max(rel_ready_ns, self.until_ns + self.delay_ns) + self.transit_ns
+
+    seconds, swap, fall_after = 15.0, 5.0, 4.0
+    c = {n: rig.Content(seed) for n, seed in (("in0", 91), ("in1", 92), ("in2", 93))}
+    cmd0 = rig.pipelines()["mixer3"]
+
+    def run():
+        d = rig.SocketDir()
+        cmd = rig.on_socket_dir(cmd0, d.path)
+        cmd["start"]["pipeline"] = re.sub(r"(mralignwatch name=\S+)", r"\1 fall-after=4000000000",
+                                          cmd["start"]["pipeline"])
+        prods = {n: rig.Producer(n, [d.sock(n)], content=c[n], stop_s=seconds,
+                                 knobs=Recovers(swap, 300.0) if n == "in2" else None) for n in c}
+        r = cons = None
+        got = {"cmd": cmd}
+        try:
+            got["t0"] = t0 = rig.prepare(prods.values())
+            for p in prods.values():
+                p.listen()
+            rig.until(t0 - 700 * rig.MS)
+            r = got["r"] = rig.Runner(argv, env=cmd.get("env"))
+            got["playing"] = r.start(cmd["start"]) is not None
+            r.attach("busout_41010", d.sock("out"))
+            cons = got["cons"] = rig.Consumer(d.sock("out"))
+            cons.start()
+            rig.go(prods.values())
+            for p in prods.values():
+                p.join(40)
+            time.sleep(0.5)
+            got["errors"] = r.errors()
+            got["rc"] = r.stop()
+        finally:
+            for p in prods.values():
+                p.stop()
+            if r is not None:
+                r.kill()
+            if cons is not None:
+                cons.stop()
+            d.close()
+        return prods, got
+    got = _attempts(rig, f"aligner-fall {tag}", run, check)
+    if got is None:
+        return
+    r, cons, cmd, t0 = got["r"], got["cons"], got["cmd"], got["t0"]
+    check(f"aligner-fall {tag}: the mixer with fall-after 4 s reaches PLAYING", got["playing"])
+    names = re.findall(r"mralignwatch name=(\S+)", cmd["start"]["pipeline"])
+    reps = [(t, p) for nm in names for t, p in rig.aligner_reports(r, nm)]
+    swap_ns, end_ns = t0 + int(swap * 1e9), t0 + int((seconds - 0.5) * 1e9)
+    before = [p.get("pace") for t, p in reps if t0 + 2 * 10**9 <= t < swap_ns]
+    by = swap_ns + int((fall_after * 1.5 + 2) * 1e9)
+    after = [p.get("pace") for t, p in reps if by <= t < end_ns]
+    fell = [(t, p) for t, p in reps if p.get("reason") == "pace-fell"]
+    check(f"aligner-fall {tag}: the pace holds in2's 300 ms before it recovers ({len(before)} reports, "
+          f"least {min(before, default=0) / 1e6:.1f} ms)", before and min(before) >= 280 * rig.MS)
+    check(f"aligner-fall {tag}: and has fallen to 30 ms or less within 1.5 x fall-after + 2 s of it "
+          f"({len(after)} reports, most {max(after, default=0) / 1e6:.1f} ms)",
+          after and max(after) <= 30 * rig.MS)
+    check(f"aligner-fall {tag}: one pace-fell report, of about 300 ms "
+          f"({[(round((t - swap_ns) / 1e9, 2), round(p.get('fell', 0) / 1e6)) for t, p in fell]})",
+          len(fell) == 1 and 250 * rig.MS <= fell[0][1].get("fell", 0) <= 340 * rig.MS)
+    pcm = _mix_of(rig, cons.records, t0)
+    lo, hi = rig.sample_of(t0 + 500 * rig.MS), rig.sample_of(end_ns)
+    miss = {n: _missing(rig, pcm, c[n], t0 + 500 * rig.MS, end_ns) for n in c}
+    check(f"aligner-fall {tag}: the mix continuous across the fall, every input in every block "
+          f"(holes {pcm.holes(lo, hi)[:3]}, missing {[(n, v[:2]) for n, v in miss.items() if v]})",
+          pcm.hi > hi and not pcm.holes(lo, hi) and not any(miss.values()))
+    errors, rc = got["errors"], got["rc"]
+    check(f"aligner-fall {tag}: no error, exit 0 ({[e.get('message') for e in errors][:2]}, rc {rc})",
+          not errors and rc == 0)
+
 if __name__ == "__main__":
     test_add_remove()
     test_containment_helpers()
     test_gate_sees_declared_bins_only()
     live_aligned_case(_PY_RUNNER, "py", check)
     aligner_absent_case(_PY_RUNNER, "py", check)
+    aligner_join_chain_case(_PY_RUNNER, "py", check)
+    aligner_fall_case(_PY_RUNNER, "py", check)
 
     if _failures:
         print(f"\n{len(_failures)} FAILED: {_failures}")

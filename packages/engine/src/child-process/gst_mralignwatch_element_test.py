@@ -7,21 +7,28 @@ Cases: (1) a 1.5 s late but delivering input: nothing dropped, no absence; (2) a
 and one that never delivers: absent within W + 2 ms, the aggregator goes on, gapped as its data
 would come toward audiomixer (no fence, the mix no later) and to now - pace toward mpegtsmux;
 (3) rejoin: absent at W with nothing queued, whatever the tick (B-79), stale buffers discarded
-and counted, present again, the pace untouched by them,
-(3b) also when the stale backlog comes at real time, (3c) and back later than before, read from
-its own arrivals; (4) an input whose lateness falls is still released at the pace; (5) releasing
-a pad lowers the pace; (6) hold-on-eos; (7) a full queue blocks upstream, full-count 1, nothing
-dropped; (8) sparse: a late cue is forwarded at its own PTS with a message and the pace raised.
-Plus the defaults and the LATENCY answer, and the caps a dark input's gaps go out under: (2c) a
-302M-shaped branch, (2d) 8 channels, (2e) every input dark, (2f) a branch dark at start that
-comes up, (2g) a hole the input reports, on in block-long pieces (past a second whole, fenced),
-(8b) a sparse stream whose caps come with its first cue; (11)-(11e) an input added while playing
-(late, dark, on time, seeded, into gaps alone) is gapped while it waits, so the mixer never
-stalls on it; and (13) a backlog as an input's first data, waited for, the pace from
-what follows it (an upstream aligner's start, WI-P2-8 B2), (14) inputs held by a paced output
-still report each second; (15) at most one task pass per arrival while data flows, whatever the
-tick, an input held behind the pace too, and (16) an absent input's gap pieces the mixer's block
-at least (B-79).
+and counted, present again, the pace untouched by the backlog's drain,
+(3b) a stale replay at real time counts as its lateness (B-81), (3c) back later than before:
+gapped until the pace reaches it, the mixer never waits (B-80), (3d) also when it went absent
+with data still queued; (4) an input whose lateness falls is still released at the pace;
+(5) releasing a pad lowers the pace, by 1 s at once and the rest 2 s later (B-82);
+(6) hold-on-eos; (7) a full queue blocks upstream, full-count 1, nothing dropped; (8) sparse: a
+late cue is forwarded at its own PTS with a message and the pace's target raised. Plus the
+defaults and the LATENCY answer, and
+the caps a dark input's gaps go out under: (2c) a 302M-shaped branch, (2d) 8 channels, (2e) every
+input dark, (2f) a branch dark at start that comes up, (2g) a hole the input reports, on in
+block-long pieces (past a second whole, fenced), (8b) a sparse stream whose caps come with its
+first cue; (11)-(11e) an input added while playing (late, dark, on time, seeded, into gaps alone)
+is gapped until it catches up, the pace slewing to a late one, so the mixer never stops on it,
+(11f) the same into mpegtsmux, (11g) a rejoin's 2 s backlog moves no pace, (11h) a joiner within
+50 ms of the pace is waited for; and (13) a backlog as an input's first data, waited for, the
+pace from what follows it (an upstream aligner's start, WI-P2-8 B2), (14) inputs held by a paced
+output still report each second; (15) at most one task pass per arrival while data flows,
+whatever the tick, an input held behind the pace too, and (16) an absent input's gap pieces the
+mixer's block at least (B-79); (17) the pace falls by itself once every input is steady under it
+for fall-after, in one skip, content continuous (B-82), (17b) into mpegtsmux; (18) a fall wakes
+an input held behind the pace at its next arrival, not at its old release (the armed check reads
+the pace as of the arrival).
 Skips (exit 0) without GStreamer, the elements or the built plugin."""
 import array
 import os
@@ -140,6 +147,37 @@ def out_lateness(r, a_ms, b_ms):
     with r.lock:
         out = list(r.out)
     return median([t - pts for t, pts, nf, _d, _c in out if nf and r.at(a_ms) <= pts < r.at(b_ms)])
+
+
+def out_gap(r, a_ms, b_ms):
+    """The longest wait between two aggregator outputs (ns): of the mix's content a..b ms, or of
+    the muxer's buffers arriving between content times a and b."""
+    with r.lock:
+        out = list(r.out)
+    if r.mux:
+        ts = [t for t, _p, _n, _d, _c in out if r.at(a_ms) <= t < r.at(b_ms)]
+    else:
+        ts = [t for t, pts, nf, _d, _c in out if nf and r.at(a_ms) <= pts < r.at(b_ms)]
+    return max((b - a for a, b in zip(ts, ts[1:])), default=None)
+
+
+class Poller:
+    """Reads an element's pace every 50 ms on a thread of its own: (clock, ns)."""
+
+    def __init__(self, r, i):
+        self.r, self.i, self.reads, self.done = r, i, [], threading.Event()
+        self.thread = threading.Thread(target=self._run)
+        self.thread.start()
+
+    def _run(self):
+        while not self.done.is_set():
+            self.reads.append((self.r.now(), self.r.prop(self.i, "pace")))
+            time.sleep(0.05)
+
+    def stop(self):
+        self.done.set()
+        self.thread.join()
+        return self.reads
 
 
 class Rig:
@@ -431,7 +469,8 @@ aw = Gst.ElementFactory.make("mralignwatch")
 for prop, want in (("silence-factor", 3.0), ("silence-floor", 100 * MS), ("silence-ceiling", 2 * S),
                    ("max-size-time", 5 * S), ("max-size-bytes", 0), ("tick", 20 * MS),
                    ("seed-lateness", -1), ("sparse", False), ("hold-on-eos", False),
-                   ("state", "waiting"), ("pace", 0), ("full-count", 0), ("abi", 1)):
+                   ("fall-after", 180 * S), ("state", "waiting"), ("pace", 0), ("pace-target", 0),
+                   ("full-count", 0), ("abi", 1)):
     check(f"mralignwatch {prop} defaults to {want}", aw.get_property(prop) == want)
 q = Gst.Query.new_latency()
 check("LATENCY on the src pad: live=false, min 0, max none, not forwarded (no peer needed)",
@@ -598,7 +637,8 @@ for kind in KINDS:
     if not mux:
         print(f"\n--- {kind}: (3b) a rejoin that replays its stale backlog at real time ---")
         # Back after an absence with 0.7 s it missed, at real time and 0.8 s late, then live: all
-        # of the replay ends behind the horizon, discarded; it says nothing of the lateness.
+        # of the replay ends behind the horizon, discarded, and says how late the input came: its
+        # 0.8 s for 0.7 s counts (B-81), the target takes it and the pace slews to it.
         r = Rig(kind, [{}, {}])
         r.run({0: [("rt", 0, 400, 0), ("eos",)],
                1: [("rt", 0, 100, 0), ("at", 2000), ("rt", 120, 190, 800), ("rt", 270, 400, 0),
@@ -606,13 +646,16 @@ for kind in KINDS:
         eos = r.wait(lambda: r.eos_at is not None)
         check(f"{kind}: the replay's 70 buffers are stale (got {r.prop(1, 'stale-buffers')})",
               r.prop(1, "stale-buffers") == 70)
-        check(f"{kind}: the pace stays (got {r.prop(1, 'pace') / MS:.1f} ms)",
-              r.prop(1, "pace") <= SLACK)
+        target, pace = r.prop(1, "pace-target"), r.prop(1, "pace")
+        check(f"{kind}: its 0.8 s replay counted: the target {in_ms(target)} ms, the pace slewing "
+              f"to it ({in_ms(pace)} ms)", abs(target - 800 * MS) <= SLACK and 0 < pace <= target)
         check(f"{kind}: EOS, no error", eos and not r.errors)
         r.stop()
 
         print(f"\n--- {kind}: (3c) back later than before: read from its own arrivals ---")
-        # On time, silent, then back 300 ms late: no stretch reaches back across the absence.
+        # On time, silent, then back 300 ms late: no stretch reaches back across the absence. It
+        # stays gapped while it catches up (B-80): its arrivals behind the gaps give its 300 ms,
+        # the pace slews to it, and the mixer slows but never waits for it.
         reading = []
         r = Rig(kind, [{}, {}])
         r.run({0: [("rt", 0, 330, 0), ("call", lambda: reading.append(r.prop(1, "lateness"))),
@@ -624,6 +667,41 @@ for kind in KINDS:
               bool(reading) and abs(reading[0] - 300 * MS) <= SLACK)
         check(f"{kind}: absent once; EOS, no error",
               r.prop(1, "absences") == 1 and eos and not r.errors)
+        gap = out_gap(r, 1900, 4300)
+        check(f"{kind}: the mixer never waits for its return (largest gap between outputs "
+              f"{in_ms(gap)} ms)", gap is not None and gap <= 20 * MS + SLACK)
+        sp, stale = r.spans(4400), r.prop(1, "stale-buffers")
+        h = sp[2][0] if len(sp) == 3 else None
+        # 0.5 s to count, then 2 x 300 ms of slew: mixed again from about content 3.1 s.
+        check(f"{kind}: mixed again once caught up, at about content 3.1 s, before that stale "
+              f"({stale}; got {sp})",
+              len(sp) == 3 and sp[1][2] == VAL[0] and sp[2] == (h, 4400, VAL[0] + VAL[1])
+              and 3050 <= h <= 3150 + SLACK / MS and stale == int(h - 2000) // 10)
+        check(f"{kind}: the pace is its 300 ms (got {in_ms(r.prop(0, 'pace'))} ms)",
+              abs(r.prop(0, "pace") - 300 * MS) <= SLACK)
+        r.stop()
+
+        print(f"\n--- {kind}: (3d) absent with data still queued, back later than the pace ---")
+        # Input 0 300 ms late holds input 1's queue 300 ms deep when it goes silent: what was still
+        # queued leaves during its absence and is no catch-up. Back 500 ms late it is gapped until
+        # the pace reaches it (B-80), so the mixer never waits for it.
+        r = Rig(kind, [{}, {}])
+        r.run({0: [("rt", 0, 500, 300), ("eos",)],
+               1: [("rt", 0, 150, 0), ("at", 2500), ("rt", 250, 500, 500), ("eos",)]})
+        eos = r.wait(lambda: r.eos_at is not None)
+        gap = out_gap(r, 2400, 4800)
+        check(f"{kind}: queued at its absence, the mixer never waits for its later return (longest "
+              f"wait between outputs {in_ms(gap)} ms)", gap is not None and gap <= 20 * MS + SLACK)
+        sp = r.spans(5000)
+        h = sp[2][0] if len(sp) == 3 else None
+        check(f"{kind}: mixed to 1.5 s, then from where it caught up, about content 3.4 s "
+              f"(got {sp})",
+              len(sp) == 3 and sp[0] == (0, 1500, VAL[0] + VAL[1]) and sp[1][2] == VAL[0]
+              and sp[2] == (h, 5000, VAL[0] + VAL[1]) and 3330 <= h <= 3450 + SLACK / MS)
+        check(f"{kind}: the pace its 500 ms, absent once, EOS, no error "
+              f"(pace {in_ms(r.prop(0, 'pace'))})",
+              abs(r.prop(0, "pace") - 500 * MS) <= SLACK and r.prop(1, "absences") == 1
+              and eos and not r.errors)
         r.stop()
 
     print(f"\n--- {kind}: (4) an input whose lateness falls ---")
@@ -654,21 +732,26 @@ for kind in KINDS:
     r.stop()
 
     print(f"\n--- {kind}: (5) releasing a pad lowers the pace ---")
+    # The fall is a skip of at most 1 s, the rest 2 s later (B-82): 1.5 s -> 0.5 s at the release,
+    # then input 0's own need.
     r = Rig(kind, [{}, {}])
-    r.run({0: [("rt", 0, 300, 0), ("call", lambda: r.remove(1)), ("rt", 300, 400, 0), ("eos",)],
+    r.run({0: [("rt", 0, 300, 0), ("call", lambda: r.remove(1)), ("rt", 300, 600, 0), ("eos",)],
            1: [("rt", 0, 141, 1500)]})
     eos = r.wait(lambda: r.eos_at is not None)
     pace = r.prop(0, "pace")
-    rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(3100)]
+    mid = [t - p for _k, t, p, _f in r.released(0) if r.at(3200) <= p < r.at(4400)]
+    rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(5200)]
     check(f"{kind}: input 1 released: the pace falls to input 0's need (got {pace / MS:.1f} ms)",
           pace <= SLACK)
-    check(f"{kind}: input 0 now leaves on arrival (median {median(rel) / MS:.1f} ms)",
-          len(rel) > 50 and median(rel) <= SLACK)
+    check(f"{kind}: ... 1 s at once (input 0 then 0.5 s behind, median "
+          f"{in_ms(median(mid))} ms), the rest 2 s later: it leaves on arrival (median "
+          f"{in_ms(median(rel))} ms)", len(mid) > 50 and abs(median(mid) - 500 * MS) <= SLACK
+          and len(rel) > 50 and median(rel) <= SLACK)
     if mux:
-        check(f"{kind}: nothing dropped", r.pes_ok(0, range(400)) and r.pes_ok(1, range(141)))
+        check(f"{kind}: nothing dropped", r.pes_ok(0, range(600)) and r.pes_ok(1, range(141)))
     else:
         check(f"{kind}: both mixed to 1.41 s, then input 0 alone (got {r.spans()})",
-              r.spans() == [(0, 1410, VAL[0] + VAL[1]), (1410, 4000, VAL[0])])
+              r.spans() == [(0, 1410, VAL[0] + VAL[1]), (1410, 6000, VAL[0])])
     check(f"{kind}: EOS, no error", eos and not r.errors)
     r.stop()
 
@@ -868,30 +951,43 @@ check(f"jump: input 0 alone over it, nothing dropped (got {r.spans()})",
                     (2500, 3000, VAL[0] + VAL[1])] and eos and not r.errors)
 r.stop()
 
-# A live add joins a running mixer: the joiner is gapped at the pace while it waits, so the
-# others never stall on it; what it sends before the gaps' end is stale (the rejoin rule).
+# A live add joins a running mixer: the joiner is gapped until its content catches up, so the
+# others never stall on it; what it sends behind the gaps is stale (the rejoin rule) and gives its
+# lateness, which the pace slews to at half speed (B-80): 0.5 s to count, 2 x 300 ms to slew.
 print("\n--- audiomixer: (11) an input added while playing, 300 ms late ---")
 r = Rig("audiomixer", [{}])
+poll = Poller(r, 0)
 r.run({0: [("rt", 0, 300, 0), ("eos",)],
        1: [("at", 950), ("call", lambda: r.add({}, live=True)), ("rt", 100, 300, 300), ("eos",)]})
 eos = r.wait(lambda: r.eos_at is not None)
-rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(1500)]
-check(f"joined: the pace rose to the joiner's 300 ms (got {r.prop(0, 'pace') / MS:.0f} ms)",
+reads = poll.stop()
+rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(2500)]
+check(f"joined: the pace rose to the joiner's 300 ms (got {r.prop(0, 'pace') / MS:.0f} ms, target "
+      f"{r.prop(0, 'pace-target') / MS:.0f} ms)",
       abs(r.prop(0, "pace") - 300 * MS) <= SLACK
-      and abs(r.prop(1, "pace") - r.prop(0, "pace")) <= 2 * MS)
+      and abs(r.prop(1, "pace") - r.prop(0, "pace")) <= 2 * MS
+      and abs(r.prop(0, "pace-target") - 300 * MS) <= SLACK)
 check(f"joined: the first input is held to it (median {median(rel) / MS:.0f} ms)",
-      len(rel) > 50 and abs(median(rel) - 300 * MS) <= SLACK)
-t1200 = out_at(r, 1200)
-check(f"joined: the mixer did not wait for the joiner's first data (content 1200 ms out at "
-      f"{(t1200 - r.at(1200)) / MS if t1200 else None} ms)",
-      t1200 is not None and t1200 - r.at(1200) <= 20 * MS + SLACK)
+      len(rel) > 30 and abs(median(rel) - 300 * MS) <= SLACK)
+gap = out_gap(r, 900, 2900)
+check(f"joined: the mixer never stops for the joiner, it slows: the longest wait between its "
+      f"outputs {in_ms(gap)} ms", gap is not None and gap <= 20 * MS + SLACK)
+lo = next((t for t, v in reversed(reads) if v <= 10 * MS), None)
+hi = next((t for t, v in reads if v >= 290 * MS), None)
+steps = [(b[1] - a[1]) - (b[0] - a[0]) // 2 for a, b in zip(reads, reads[1:])]
+mono = all(b[1] >= a[1] for a, b in zip(reads, reads[1:]))
+check(f"joined: the pace polled every 50 ms rises from 10 to 290 ms over 0.5-0.7 s, monotone, "
+      f"never faster than the slew (rise {in_ms(hi - lo) if lo and hi else None} ms, largest "
+      f"excess {in_ms(max(steps, default=0))} ms over half the time between reads)",
+      lo is not None and hi is not None and 500 * MS <= hi - lo <= 700 * MS + SLACK and mono
+      and max(steps, default=0) <= 10 * MS)
 sp = r.spans()
 h = sp[1][0] if len(sp) == 2 else None
 stale = r.prop(1, "stale-buffers")
-check(f"joined: mixed from where its gaps reached when its data came, before that stale "
+check(f"joined: mixed from where it caught up, about content 2.1 s, before that stale "
       f"({stale} buffers; got {sp})",
       len(sp) == 2 and sp[0] == (0, h, VAL[0]) and sp[1] == (h, 3000, VAL[0] + VAL[1])
-      and 1250 <= h <= 1300 + SLACK / MS and stale == int(h - 1000) // 10)
+      and 2050 <= h <= 2150 + SLACK / MS and stale == int(h - 1000) // 10)
 check("joined: no absence, EOS, no error",
       r.prop(1, "absences") == 0 and eos and not r.errors)
 r.stop()
@@ -944,23 +1040,28 @@ check("on time: no absence, EOS, no error", r.prop(1, "absences") == 0 and eos a
 r.stop()
 
 print("\n--- audiomixer: (11d) a seeded input added while playing, 300 ms late ---")
-# Its seed raises the pace at the join: one wait for the others, and its content all kept.
+# Its seed raises the target at the join (B-80): the pace slews from there, so it is 300 ms 0.6 s
+# later and the joiner's content, which comes 0.35 s after its join, is kept from about 1.25 s.
 r = Rig("audiomixer", [{}])
 r.run({0: [("rt", 0, 300, 0), ("eos",)],
        1: [("at", 950), ("call", lambda: r.add({"props": {"seed-lateness": 300 * MS}}, live=True)),
            ("rt", 100, 300, 300), ("eos",)]})
 eos = r.wait(lambda: r.eos_at is not None)
-rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(1100)]
-check(f"seeded: the pace is the seed from the join (got {r.prop(0, 'pace') / MS:.0f} ms), the "
-      f"first input held to it (median {median(rel) / MS if rel else None} ms)",
+rel = [t - p for _k, t, p, _f in r.released(0) if p >= r.at(1700)]
+check(f"seeded: the pace is the seed from the join + 0.6 s (got {r.prop(0, 'pace') / MS:.0f} ms), "
+      f"the first input held to it (median {median(rel) / MS if rel else None} ms)",
       abs(r.prop(0, "pace") - 300 * MS) <= SLACK
       and bool(rel) and abs(median(rel) - 300 * MS) <= SLACK)
 sp = r.spans()
 h = sp[1][0] if len(sp) == 2 else None
-check(f"seeded: mixed from its first buffer, nothing stale (got {sp}, stale "
-      f"{r.prop(1, 'stale-buffers')})",
+stale = r.prop(1, "stale-buffers")
+check(f"seeded: mixed from where it caught up, about content 1.25 s, before that stale (got {sp}, "
+      f"stale {stale})",
       len(sp) == 2 and sp[0] == (0, h, VAL[0]) and sp[1] == (h, 3000, VAL[0] + VAL[1])
-      and 1000 <= h <= 1020 and r.prop(1, "stale-buffers") <= 1)
+      and 1200 <= h <= 1300 + SLACK / MS and stale == int(h - 1000) // 10)
+gap = out_gap(r, 900, 2900)
+check(f"seeded: the mixer never stops for it (longest wait between outputs {in_ms(gap)} ms)",
+      gap is not None and gap <= 20 * MS + SLACK)
 check("seeded: no absence, EOS, no error", r.prop(1, "absences") == 0 and eos and not r.errors)
 r.stop()
 
@@ -973,6 +1074,69 @@ late = out_late(r, 2400, 4500)
 check(f"gaps alone: the silent mix never waits for the dark joiner (output at most "
       f"{late / MS if late else None} ms late)", late is not None and late <= 20 * MS + SLACK)
 check(f"gaps alone: no error (got {r.errors})", not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (11f) an input added while playing, 300 ms late ---")
+# The same into the muxer (B-80, the round's F7): the TS slows, never stops, and the joiner's PES
+# start where it caught up.
+r = Rig("mpegtsmux", [{}])
+r.run({0: [("rt", 0, 300, 0), ("eos",)],
+       1: [("at", 950), ("call", lambda: r.add({}, live=True)), ("rt", 100, 300, 300), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+gap = out_gap(r, 900, 2900)
+check(f"mux joiner: the TS never stops (longest wait between its buffers {in_ms(gap)} ms)",
+      gap is not None and gap <= 20 * MS + SLACK)
+k0 = 300 - len(r.pes().get(PID0 + 1, []))
+stale = r.prop(1, "stale-buffers")
+check(f"mux joiner: its PES from where it caught up, about content 2.1 s, each at its PTS, intact; "
+      f"before that stale ({stale}; the first at {k0 * 10} ms)",
+      r.pes_ok(1, range(k0, 300)) and 200 <= k0 <= 220 + SLACK // (10 * MS) and stale == k0 - 100)
+check(f"mux joiner: the other input's buffers all written, the pace 300 ms (got "
+      f"{in_ms(r.prop(0, 'pace'))} ms)",
+      r.pes_ok(0, range(300)) and abs(r.prop(0, "pace") - 300 * MS) <= SLACK)
+check("mux joiner: no absence, EOS, no error", r.prop(1, "absences") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (11g) a rejoin with a 2 s backlog: its drain moves no pace ---")
+# Its stale arrivals are observed (B-81), but a backlog that comes at once falls over every
+# stretch, so none counts (B-57): the target stays, and the input is kept from its first buffer
+# past the gaps.
+r = Rig("audiomixer", [{}, {}])
+r.run({0: [("rt", 0, 450, 0), ("eos",)],
+       1: [("rt", 0, 100, 0), ("at", 3000), ("now", 100, 300), ("rt", 300, 450, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+target, stale = r.prop(1, "pace-target"), r.prop(1, "stale-buffers")
+sp = r.spans(4500)
+h = sp[2][0] if len(sp) == 3 else None
+check(f"backlog rejoin: kept from its first buffer past the gaps, about content 3 s, the rest "
+      f"stale ({stale}; got {sp})",
+      len(sp) == 3 and sp[0] == (0, 1000, VAL[0] + VAL[1]) and sp[1][2] == VAL[0]
+      and sp[2] == (h, 4500, VAL[0] + VAL[1]) and 2980 <= h <= 3020 + SLACK / MS
+      and stale == int(h - 1000) // 10)
+check(f"backlog rejoin: the drain moved the target by at most 5 ms (got {in_ms(target)} ms)",
+      target <= 5 * MS)
+check("backlog rejoin: absent once, EOS, no error",
+      r.prop(1, "absences") == 1 and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (11h) a joiner 40 ms later than the pace is waited for ---")
+# Within 50 ms of the gaps' end and no rise under way, its catch-up ends at its first arrival
+# (B-80): the mixer waits about 40 ms for it, under any downstream W, and keeps all but its first
+# buffers, where a slew would have cost it half a second.
+r = Rig("audiomixer", [{}])
+r.run({0: [("rt", 0, 300, 0), ("eos",)],
+       1: [("at", 950), ("call", lambda: r.add({}, live=True)), ("rt", 100, 300, 40), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+sp, stale, gap = r.spans(), r.prop(1, "stale-buffers"), out_gap(r, 900, 2900)
+h = sp[1][0] if len(sp) == 2 else None
+check(f"close joiner: mixed from about its first buffer, at most 6 stale ({stale}; got {sp})",
+      len(sp) == 2 and sp[1] == (h, 3000, VAL[0] + VAL[1]) and 1000 <= h <= 1060 and stale <= 6
+      and stale == int(h - 1000) // 10)
+check(f"close joiner: the mixer waits for it about 40 ms, once (longest wait {in_ms(gap)} ms)",
+      gap is not None and gap <= 60 * MS + SLACK)
+check(f"close joiner: the pace its 40 ms, stepped (got {in_ms(r.prop(0, 'pace'))} ms); no absence, "
+      f"EOS, no error", abs(r.prop(0, "pace") - 40 * MS) <= SLACK and r.prop(1, "absences") == 0
+      and eos and not r.errors)
 r.stop()
 
 print("\n--- audiomixer: (12) a seed sets the pace from the start ---")
@@ -1085,6 +1249,89 @@ check(f"1 ms buffers: mixed to 1 s, then input 0 alone (got {r.spans(3000)})",
 check("1 ms buffers: no error", not r.errors)
 r.stop()
 
+# B-82: input 1 300 ms late for 2 s, then on time (its backlog at once). Its 300 ms holds the pace
+# 2 to 3 buckets of fall-after / 2 after its last count, then falls in one skip; the FIFOs release
+# what became due at once, nothing lost or repeated, and one input's message says by how much.
+FA = {"props": {"fall-after": 3 * S}}
+N17 = 850
+for kind in KINDS:
+    mux = kind == "mpegtsmux"
+    print(f"\n--- {kind}: (17) the pace falls by itself (fall-after 3 s) ---")
+    r = Rig(kind, [FA, FA])
+    r.run({0: [("rt", 0, N17, 0), ("eos",)],
+           1: [("rt", 0, 200, 300), ("rt", 200, N17, 0), ("eos",)]})
+    eos = r.wait(lambda: r.eos_at is not None)
+    steady = r.at(2290)   # input 1's last late buffer; its backlog, then on time
+    with r.lock:
+        fell = [(t, f) for t, _src, f in r.msgs if f["reason"] == "pace-fell"]
+    at = fell[0][0] if fell else None
+    with r.lock:
+        before = [f["pace"] for t, src, f in r.msgs if src == "aw0" and f["reason"] == "interval"
+                  and r.at(1600) <= t < (at or 0) - 200 * MS]
+    check(f"{kind}: the pace holds input 1's 300 ms while its window holds it ({len(before)} "
+          f"reports from 1.6 s, {in_ms(min(before, default=None))} to "
+          f"{in_ms(max(before, default=None))} ms)",
+          len(before) >= 3 and all(abs(p - 300 * MS) <= SLACK for p in before))
+    got = [(in_ms(t - steady), in_ms(f["fell"])) for t, f in fell]
+    check(f"{kind}: one fall, of about 300 ms, 3 to 5 s after input 1 went steady (half a second "
+          f"to count, two to three buckets of 1.5 s; got {got})",
+          len(fell) == 1 and 250 * MS <= fell[0][1]["fell"] <= 310 * MS
+          and fell[0][1]["fall-after"] == 3 * S and 3 * S <= at - steady <= 5 * S + SLACK)
+    check(f"{kind}: the pace after it at most 20 ms (got {in_ms(r.prop(0, 'pace'))} ms)",
+          r.prop(0, "pace") <= 20 * MS and abs(r.prop(1, "pace") - r.prop(0, "pace")) <= 2 * MS)
+    if mux:
+        check(f"{kind}: every buffer of both inputs one PES at its PTS, intact, across the fall",
+              r.pes_ok(0, range(N17)) and r.pes_ok(1, range(N17)))
+    else:
+        check(f"{kind}: the mix continuous, both inputs throughout, nothing lost or repeated "
+              f"(got {r.spans()[:3]})", r.spans() == [(0, N17 * 10, VAL[0] + VAL[1])])
+        c = (at - r.t0) // MS - 30 if at else 0
+        t_out = out_at(r, c)
+        check(f"{kind}: what the fall made due left at once: content {c} ms out "
+              f"{in_ms(t_out - at) if t_out else None} ms after the fall",
+              t_out is not None and t_out - at <= 30 * MS + SLACK)
+    check(f"{kind}: EOS, no error", eos and not r.errors)
+    r.stop()
+
+print("\n--- audiomixer: (18) a fall wakes an input held behind the pace at its next arrival ---")
+# 400 ms buffers: input 0 5 ms late, held 200 ms behind input 1's 205 ms, so its task sleeps to
+# its next buffer's release (B-79). Input 1 leaves while it sleeps: the pace falls to 5 ms at once
+# (B-82), and the next arrival is released as it comes, not at the release the task armed.
+BIG = 400
+r = Rig("audiomixer", [{}, {}])
+
+
+def _big(i, k0, k1, lag_ms):
+    def go():
+        for k in range(k0, k1):
+            r.sleep_until(r.at(k * BIG + lag_ms))
+            frames = RATE * BIG // 1000
+            b = Gst.Buffer.new_wrapped(array.array("h", [VAL[i]] * 2 * frames).tobytes())
+            b.pts, b.dts, b.duration = r.at(k * BIG), NONE, BIG * MS
+            r.srcs[i].emit("push-buffer", b)
+    return go
+
+
+r.run({0: [("call", _big(0, 0, 9, 5)), ("eos",)],
+       1: [("call", _big(1, 0, 5, 205)), ("at", 4 * BIG + 300), ("call", lambda: r.remove(1))]})
+eos = r.wait(lambda: r.eos_at is not None)
+rel = {p: t for _k, t, p, _f in r.released(0)}
+# Input 1's lateness counts at its third arrival (1.0 s): from content 1.2 s on input 0 is held.
+held = [rel[r.at(k * BIG)] - r.at(k * BIG) for k in (3, 4) if r.at(k * BIG) in rel]
+check(f"armed fall: input 0 held to input 1's 205 ms before it leaves "
+      f"(got {[in_ms(h) for h in held]})",
+      len(held) == 2 and all(abs(h - 205 * MS) <= SLACK for h in held))
+nxt = rel.get(r.at(5 * BIG))
+check(f"armed fall: after the leave its next buffer leaves on arrival (5 ms late, got "
+      f"{in_ms(nxt - r.at(5 * BIG)) if nxt else None} ms), not at the 205 ms release armed",
+      nxt is not None and nxt - r.at(5 * BIG) <= 5 * MS + SLACK)
+check(f"armed fall: the pace 5 ms, both mixed to 2 s, then input 0 alone (got "
+      f"{in_ms(r.prop(0, 'pace'))} ms, {r.spans()})",
+      r.prop(0, "pace") <= 10 * MS
+      and r.spans() == [(0, 2000, VAL[0] + VAL[1]), (2000, 9 * BIG, VAL[0])])
+check("armed fall: EOS, no error", eos and not r.errors)
+r.stop()
+
 print("\n--- (9) a buffer list leaves as one list; its stale members go ---")
 pipe = Gst.parse_launch(f"appsrc name=src is-live=true format=time caps=\"{CAPS['audiomixer']}\""
                         " ! mralignwatch name=aw ! fakesink sync=false async=false")
@@ -1174,9 +1421,10 @@ check(f"sparse: one late-cue message, the cue 800 ms late (got "
       f"{[round(f['cue-lateness'] / MS) for f in late]})",
       len(late) == 1 and abs(late[0]["cue-lateness"] - 800 * MS) <= SLACK
       and late[0]["cue-start"] == r.at(1500))
-check(f"sparse: the pace is raised by it (got {r.prop(1, 'pace') / MS:.0f} ms)",
-      r.prop(1, "pace") >= 800 * MS - SLACK
-      and abs(r.prop(0, "pace") - r.prop(1, "pace")) <= 2 * MS)
+target, pace = r.prop(1, "pace-target"), r.prop(1, "pace")
+check(f"sparse: the pace's target is raised by it (got {target / MS:.0f} ms), the pace slewing to "
+      f"it ({pace / MS:.0f} ms, B-80)", target >= 800 * MS - SLACK and 0 < pace <= target
+      and abs(r.prop(0, "pace") - pace) <= 2 * MS)
 klv = r.pes().get(PID0 + 1, [])
 check(f"sparse: every cue written at its own PTS, intact, the late one included (got "
       f"{[(t, d) for t, d in klv]})",

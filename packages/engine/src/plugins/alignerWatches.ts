@@ -1,6 +1,6 @@
 // The aligner inputs' `mralignwatch` reports (house-clock WI-P2-13): state, pace, W, absences
 // and stale discards, on a change and every second, kept per element. LatenessReporter maps them
-// to the module's inputs; the rejoin and late-cue events go to the module's log.
+// to the module's inputs; the rejoin, late-cue and pace-fell events go to the module's log.
 import type { AlignerInputState } from '@media-router/shared-types';
 
 /** Plugin-event channel prefix: `mralignwatch:<element name>`. */
@@ -28,6 +28,8 @@ export interface AlignerReport {
     state: AlignerInputState;
     latenessMs: number;
     paceMs: number;
+    /** Where the pace is going (B-80, B-82): the most an input showed over fall-after. */
+    paceTargetMs?: number;
     silenceLimitMs: number;
     absences: number;
     staleMs: number;
@@ -36,12 +38,16 @@ export interface AlignerReport {
     levelBytes: number;
     /** `reason=late-cue`: how late the cue came. */
     cueLatenessMs?: number;
+    /** `reason=pace-fell`: by how much, and the window every input was steady under it. */
+    fellMs?: number;
+    fallAfterMs?: number;
 }
 
 /** What goes in the module's log (chapter 6 part 10's events). */
 export type AlignerEvent =
     | { kind: 'rejoin'; watch: AlignerWatchRef; absentMs: number; discardedMs: number }
-    | { kind: 'late-cue'; watch: AlignerWatchRef; cueLatenessMs: number; raisedMs: number };
+    | { kind: 'late-cue'; watch: AlignerWatchRef; cueLatenessMs: number; raisedMs: number }
+    | { kind: 'pace-fell'; watch: AlignerWatchRef; fellMs: number; fallAfterMs: number };
 
 export interface AlignerWatch {
     ref: AlignerWatchRef;
@@ -86,7 +92,12 @@ export function parseAlignerPayload(payload: unknown): AlignerReport | null {
         levelTimeMs: num('level-time') / NS_PER_MS,
         levelBytes: num('level-bytes'),
     };
+    if ('pace-target' in p) report.paceTargetMs = num('pace-target') / NS_PER_MS;
     if (report.reason === 'late-cue') report.cueLatenessMs = num('cue-lateness') / NS_PER_MS;
+    if (report.reason === 'pace-fell') {
+        report.fellMs = num('fell') / NS_PER_MS;
+        report.fallAfterMs = num('fall-after') / NS_PER_MS;
+    }
     return report;
 }
 
@@ -110,7 +121,7 @@ export class AlignerWatches {
         const old = this.entries.get(name);
         const prev = old && !restarted(old.report, r) ? old : undefined;
         const ref = { name, aligner: r.aligner, input: r.input };
-        const groupPace = this.groupPace(r.aligner);
+        const groupTarget = this.groupTarget(r.aligner);
         const e: Entry = { ref, report: r, at: now, full: prev?.full ?? false };
         e.absentSince = prev?.absentSince;
         e.rejoin = prev?.rejoin;
@@ -149,7 +160,15 @@ export class AlignerWatches {
                 kind: 'late-cue',
                 watch: ref,
                 cueLatenessMs: r.cueLatenessMs ?? 0,
-                raisedMs: Math.max(0, r.paceMs - groupPace),
+                raisedMs: Math.max(0, (r.paceTargetMs ?? r.paceMs) - groupTarget),
+            });
+        }
+        if (r.reason === 'pace-fell') {
+            events.push({
+                kind: 'pace-fell',
+                watch: ref,
+                fellMs: r.fellMs ?? 0,
+                fallAfterMs: r.fallAfterMs ?? 0,
             });
         }
         this.entries.set(name, e);
@@ -168,13 +187,14 @@ export class AlignerWatches {
         e.rejoin = undefined;
     }
 
-    /** The pace an aligner's members reported last. */
-    private groupPace(aligner: string): number {
-        let pace = 0;
+    /** The target an aligner's members reported last (a rise slews: the pace follows it). */
+    private groupTarget(aligner: string): number {
+        let target = 0;
         for (const e of this.entries.values()) {
-            if (e.report.aligner === aligner) pace = Math.max(pace, e.report.paceMs);
+            const r = e.report;
+            if (r.aligner === aligner) target = Math.max(target, r.paceTargetMs ?? r.paceMs);
         }
-        return pace;
+        return target;
     }
 
     /** Forget watches that stopped reporting (input removed, pipeline gone). */

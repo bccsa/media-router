@@ -267,6 +267,7 @@ interface AwOpts {
     levelTimeMs?: number;
     levelBytes?: number;
     cueLatenessMs?: number;
+    paceTargetMs?: number;
 }
 /** An `mralignwatch` message payload as the runners forward it (ns fields). */
 const aw = (input: string, state: AwState, o: AwOpts = {}) => ({
@@ -287,6 +288,7 @@ const aw = (input: string, state: AwState, o: AwOpts = {}) => ({
     ...(o.cueLatenessMs !== undefined
         ? { 'cue-start': 0, 'cue-lateness': o.cueLatenessMs * MS, 'cue-behind': 0 }
         : {}),
+    ...(o.paceTargetMs !== undefined ? { 'pace-target': o.paceTargetMs * MS } : {}),
 });
 
 /** A mixer's fan-in: watches labelled by connection id, each joining its edge's tap. */
@@ -616,6 +618,48 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
                 raisedMs: 680,
             },
         ]);
+    });
+
+    it('a late cue under a slewing pace: the raise is read off the targets (B-80)', () => {
+        const r = fanIn();
+        const k = { aligner: 'mux' };
+        r.onEvent(
+            'mralignwatch:aw_v',
+            aw('demux_0_video', 'present', { ...k, paceMs: 120, paceTargetMs: 120 }),
+        );
+        const cue = aw('demux_1_klv', 'present', {
+            ...k,
+            reason: 'late-cue',
+            paceMs: 121,
+            paceTargetMs: 800,
+            cueLatenessMs: 800,
+        });
+        expect(r.onAligner('mralignwatch:aw_k', cue)?.events).toMatchObject([
+            { kind: 'late-cue', cueLatenessMs: 800, raisedMs: 680 },
+        ]);
+        expect(r.summary().paceMs).toBe(121);
+    });
+
+    it('a pace fall is one event from the member that applied it (B-82)', () => {
+        const r = fanIn();
+        r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { paceMs: 300 }));
+        const fell = {
+            ...aw('c2', 'present', { reason: 'pace-fell', paceMs: 20, paceTargetMs: 20 }),
+            fell: 280 * MS,
+            'fall-after': 180_000 * MS,
+        };
+        expect(r.onAligner('mralignwatch:mixin_aw_2', fell)?.events).toEqual([
+            {
+                kind: 'pace-fell',
+                watch: { name: 'mixin_aw_2', aligner: 'mixin', input: 'c2' },
+                label: 'enc-b (audio-in)',
+                fellMs: 280,
+                fallAfterMs: 180_000,
+            },
+        ]);
+        // The next interval report carries the fallen pace and no event.
+        const next = aw('c2', 'present', { paceMs: 20, paceTargetMs: 20 });
+        expect(r.onAligner('mralignwatch:mixin_aw_2', next)?.events).toEqual([]);
     });
 
     it('a watch that stopped reporting goes (input removed), and with it its warning', () => {
