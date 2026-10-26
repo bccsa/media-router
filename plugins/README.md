@@ -1267,8 +1267,12 @@ it `node.name=<this.pwNodeName>` and `node.autoconnect=false` through
 and `pipewiresink` takes that helper: WirePlumber's pins (no fallback, linger;
 #736), and the stream's node on the runner's real-time data loop (B-88;
 otherwise PipeWire runs it on an ordinary thread that loses cycles on a busy
-box). A `pulsesrc` or `pulsesink` takes `pulsePinnedStreamProps({...})`: its
-node runs inside pipewire-pulse, on that daemon's real-time loop.
+box). The runner also runs the capture's own GStreamer tasks, each one from the
+`pipewiresrc` down to its first muxer, at real-time priority just below
+PipeWire's (B-111): nothing to set, and whatever a module puts on that stretch
+runs at that priority too. A `pulsesrc` or `pulsesink` takes
+`pulsePinnedStreamProps({...})`: its node runs inside pipewire-pulse, on that
+daemon's real-time loop.
 
 In the module:
 

@@ -12,7 +12,8 @@
 //   (branch_align.cpp); the backlog shedder (backlog_shed.cpp); pad-link
 //   rules and stream discovery (pad_link.cpp); the keyframe gate, render
 //   keep-up watch and TS video-info probe, and the mrrist plugin loader
-//   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020).
+//   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020); a
+//   PipeWire capture's tasks at real-time priority (capture_rt.cpp, B-111).
 // A start payload naming what it does NOT implement — the legacy python RIST
 // drain (`rist`), `readKlvNames`/`set_klv_payload`,
 // `useStdioForData`, or a hook with no native form — is refused

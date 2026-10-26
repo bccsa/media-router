@@ -962,7 +962,9 @@ transcoders, a mixer, two SRT outputs) Phase 0 against Phase 1 reads 0.977
 and 1.059 core over all runners (1.099 in a second Phase 1 run, in which
 every runner, touched or not, read 1–5 % higher): 0.003–0.004 more per SRT
 ingest, and 0.033 more per 302M capture, almost all of it on the capture
-thread where the ASRC runs (WI-P1-8's budget). `tools/runner-cpu-profile.sh`
+thread where the ASRC runs (WI-P1-8's budget). That thread now runs SCHED_RR
+19, just below PipeWire's data loops (B-111), so on a busy box this share is
+taken ahead of every ordinary thread. `tools/runner-cpu-profile.sh`
 saw no native runner until it matched `mr-gst-runner` (it looked only for
 `gst-pipeline-runner.py`) and read module names from the engine's journal.
 

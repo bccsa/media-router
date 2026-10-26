@@ -317,6 +317,18 @@ elements" below do not start.
   stream, counted under Re-locks on the Clock card. The capture ran at
   ordinary priority, competing with everything else on the box. Fixed: it
   now runs at real-time priority, as PipeWire's own audio does.
+- **Audio captures keep their timing on a heavily loaded box.** Even with the
+  fix above, on a box busy nearly all the time (a Pi 4 showing video on HDMI
+  while it encodes and takes two captures, for one), Audio Input (302M) lost a
+  short piece of sound about 50 times an hour, each counted under Re-locks on
+  the Clock card: the capture's own processing, from the device to the stream
+  it sends, ran at ordinary priority and waited for the processor a quarter of
+  the time. Fixed: that processing now runs at real-time priority too, just
+  below PipeWire's own audio, in Audio Input (302M) and Audio Encoder alike.
+  Should the box refuse it, the engine's log says so once and the capture runs
+  as before. On an older system image, a box with more than four of these
+  modules can run out of real-time grants, and its later captures then lose
+  the fix above as well; this release's image has room for many more.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
