@@ -27,7 +27,6 @@
         "dev": "bash -c '[ -f .env.local ] && . ./.env.local; exec tsx watch examples/test-engine.ts'"
     },
     "dependencies": {
-        "@fastify/cors": "^11.2.0",
         "@media-router/dgram-comms": "workspace:*",
         "@media-router/shared-types": "workspace:*",
         "@media-router/topic-tree": "workspace:*",

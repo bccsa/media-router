@@ -422,6 +422,13 @@ elements" below do not start.
   addresses loses that path until the port moves back (one with another path
   stays connected through it). Applying the listeners unchanged changes
   nothing, and no router reconnects.
+- **The engine's local API answers only the box itself.** The engine's local
+  API (port 3001), which the Device Manager's Manager Profile page uses, now
+  listens on the box's own loopback addresses (127.0.0.1 and ::1) and nowhere
+  else, and refuses any request that does not come from the box itself. It no
+  longer sends CORS headers, as no web page calls it. The Device Manager works
+  as before. A script that called the API from another computer must now run
+  on the box, for example over SSH.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

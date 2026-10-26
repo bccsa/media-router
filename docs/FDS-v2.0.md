@@ -1422,6 +1422,8 @@ Dashboards will replace the LCP. Until the fleet has moved both run: the LCP at 
 
 The Local API is a REST API served by the engine's embedded Fastify instance on a configurable port. It replaces the v1.0 profile manager (local-profileman).
 
+It answers only the box itself (B-114, the owner's decision): it listens on 127.0.0.1 and ::1 and nowhere else, answers 403 with no body to any request whose peer (the socket's address, never a forwarded header) is not loopback, and sends no CORS headers. Its one caller is the Device Manager's API on the same box. The remote access with a login below (the middleware's session auth, §7.3's footnote, §10.1.2) is not built.
+
 ```
 ┌────────────────────────────────────────────────────┐
 │           Engine (TypeScript + Fastify)              │
@@ -1957,6 +1959,8 @@ Allow request
 ```
 
 A default local user account with a randomly generated password is created by the manager when a new engine profile is created. This ensures non-localhost access always requires authentication.
+
+Not built: the Local API answers only the box itself (B-114, §7.1), so no request from another host reaches it.
 
 ### 10.2 Role-Based Access Control
 

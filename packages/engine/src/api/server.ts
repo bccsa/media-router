@@ -1,17 +1,21 @@
+import { createServer, type Server } from 'http';
+import { isIPv4, type AddressInfo } from 'net';
 import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
-import cors from '@fastify/cors';
 import { createLogger, CreateEngineProfileSchema } from '@media-router/shared-types';
 import type { Engine } from '../Engine.js';
 
 const log = createLogger('ApiServer');
 
+/** A refused peer is logged at most once a minute per address. */
+const REFUSAL_LOG_MS = 60_000;
+
 /**
- * Create and configure the Fastify Local API server.
+ * Create and configure the Fastify Local API server. It answers only the box itself (B-114):
+ * it listens on 127.0.0.1 and ::1, refuses any other peer and sends no CORS headers.
  */
 export async function createApiServer(engine: Engine, port = 3001) {
     const app = Fastify({ logger: false });
-
-    await app.register(cors, { origin: true });
+    refuseOtherHosts(app);
 
     // Register route modules
     registerHealthRoutes(app, engine);
@@ -20,9 +24,81 @@ export async function createApiServer(engine: Engine, port = 3001) {
     registerSystemRoutes(app, engine);
     registerAudioRoutes(app, engine);
 
-    await app.listen({ port, host: '0.0.0.0' });
-    log.info({ port }, 'Local API listening');
+    let ipv6: Server | null = null;
+    app.addHook('onClose', async () => {
+        const server = ipv6;
+        if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    await app.listen({ port, host: '127.0.0.1' });
+    try {
+        ipv6 = await listenIpv6Loopback(app, (app.server.address() as AddressInfo).port);
+    } catch (err) {
+        await app.close();
+        throw err;
+    }
+    log.info({ port, hosts: ipv6 ? ['127.0.0.1', '::1'] : ['127.0.0.1'] }, 'Local API listening');
     return app;
+}
+
+/**
+ * ::1 beside Fastify's 127.0.0.1, on the same routes: Fastify binds both only for 'localhost',
+ * which follows /etc/hosts. A host without IPv6 serves 127.0.0.1 alone.
+ */
+async function listenIpv6Loopback(
+    app: ReturnType<typeof Fastify>,
+    port: number,
+): Promise<Server | null> {
+    const server = createServer((req, res) => app.routing(req, res));
+    server.keepAliveTimeout = app.server.keepAliveTimeout;
+    server.requestTimeout = app.server.requestTimeout;
+    try {
+        await new Promise<void>((resolve, reject) => {
+            server.once('error', reject);
+            server.listen({ port, host: '::1' }, () => {
+                server.off('error', reject);
+                resolve();
+            });
+        });
+        return server;
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EADDRNOTAVAIL' && code !== 'EAFNOSUPPORT') throw err;
+        log.warn({ code }, 'No IPv6 loopback: the Local API listens on 127.0.0.1 only');
+        return null;
+    }
+}
+
+/**
+ * 403 with no body to every request whose peer is not loopback. The peer is the raw socket's
+ * address, never a forwarded header, so a DNAT to loopback is refused too.
+ */
+function refuseOtherHosts(app: ReturnType<typeof Fastify>): void {
+    const lastLogged = new Map<string, number>();
+    app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
+        const peer = req.raw.socket.remoteAddress;
+        if (isLoopback(peer)) return;
+        logRefusal(lastLogged, peer ?? 'unknown');
+        return reply.code(403).send();
+    });
+}
+
+/** 127.0.0.0/8, ::1 and the IPv4-mapped ::ffff:127.0.0.0/104. */
+function isLoopback(address: string | undefined): boolean {
+    if (address === '::1') return true;
+    const v4 = address?.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address;
+    return v4 !== undefined && isIPv4(v4) && v4.startsWith('127.');
+}
+
+/** One line per refused address a minute; entries a minute old go at each line. */
+function logRefusal(lastLogged: Map<string, number>, peer: string): void {
+    const now = Date.now();
+    const last = lastLogged.get(peer);
+    if (last !== undefined && now - last < REFUSAL_LOG_MS) return;
+    for (const [address, at] of lastLogged) {
+        if (now - at >= REFUSAL_LOG_MS) lastLogged.delete(address);
+    }
+    lastLogged.set(peer, now);
+    log.warn({ peer }, 'Local API refused a request from another host');
 }
 
 function registerHealthRoutes(app: ReturnType<typeof Fastify>, engine: Engine): void {

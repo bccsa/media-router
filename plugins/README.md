@@ -2893,7 +2893,7 @@ For processes that aren't the module's health-defining producer (auxiliary tools
 | Port | Service |
 |------|---------|
 | 3000 | dgram-comms (engine ↔ manager UDP) |
-| 3001 | Engine Local API (Fastify) |
+| 3001 | Engine Local API (Fastify), the box itself only: 127.0.0.1 and ::1 (B-114) |
 | 8080 | Manager HTTP + Socket.IO |
 | 8081 | Local Control Panel (Socket.IO); dashboards at `/d/`; router tree (Socket.IO path `/tree`) |
 | 8082 | Profile Manager |

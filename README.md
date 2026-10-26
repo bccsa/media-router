@@ -65,7 +65,7 @@ See [plugins/README.md](plugins/README.md) for the full plugin development guide
 | Port | Service |
 |------|---------|
 | 3000 | dgram-comms (engine ↔ manager encrypted UDP) |
-| 3001 | Engine Local API (Fastify REST) |
+| 3001 | Engine Local API (Fastify REST), the box itself only: 127.0.0.1 and ::1 (B-114) |
 | 5173 | Manager UI dev server (Vite) |
 | 5174 | Local Panel dev server (Vite) |
 | 8080 | Manager HTTP + Socket.IO ([tree API](docs/tree-api.md)) |
