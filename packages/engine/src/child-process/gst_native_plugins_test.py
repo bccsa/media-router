@@ -109,6 +109,9 @@ REWRITE_CASES = [
      '! taginject tags="title=x" ! mux.',
      'parse ! identity name=aw_v ! taginject tags="title=x" ! mux.', ["aw_v"], None),
     ("src ! mralignwatch name=a ! mrtsdemux ! sink", None, [], "mrtsdemux"),
+    # The video pace (WI-P4-3): identity, so frames pass as they come; its properties dropped.
+    ("dec ! mrvideopace name=vp refresh-mhz=50000 gap-threshold-ms=250 ! sink",
+     "dec ! identity name=vp ! sink", ["vp"], None),
 ]
 
 # Runs once rewritten (the dropped properties would fail on the real element).

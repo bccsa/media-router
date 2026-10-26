@@ -31,7 +31,7 @@ const std::vector<Row>& table() {
     static const std::vector<Row> rows = {
         {"mpegts-core", "mrtshouse", "libgstmrtshouse.so", true, MRTSHOUSE_MIN_ABI,
          {{"mrtsrestamp", "identity"}, {"mrasrc", "audioresample"}, {"mrtsdemux", nullptr},
-          {"mralignwatch", "identity"}}},
+          {"mralignwatch", "identity"}, {"mrvideopace", "identity"}}},
         // The ducker and the keyed gate's PTS keeper (WI-P2-10): neither has a stand-in.
         {"audio-processing", "mrducker", "libgstmrducker.so", false, MRDUCKER_MIN_ABI,
          {{"mrducker", nullptr}, {"mrptskeep", nullptr}}},

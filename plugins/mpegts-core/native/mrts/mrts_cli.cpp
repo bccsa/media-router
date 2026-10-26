@@ -4,6 +4,7 @@
 //        mrts_cli trace2jsonl input.stct
 //        mrts_cli jsonl2trace input.jsonl|- output.stct
 //        mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] [--expect file]
+//        mrts_cli pace seq.jsonl|-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -26,6 +27,7 @@
 #include "ts_restamp.h"
 #include "ts_stc.h"
 #include "ts_trace.h"
+#include "video_pace.h"
 
 using namespace mrts;
 
@@ -1362,6 +1364,153 @@ int restamp_replay_main(int argc, char** argv) {
     return 0;
 }
 
+// --- pace: a call sequence through mrts::VideoPace (WI-P4-3), video_pace.py's replay format --
+
+bool op_i64(const Json& op, const char* key, int64_t* v, std::string* err) {
+    const Json* j = op.get(key);
+    if (j && j->i64(v)) return true;
+    *err = std::string("\"") + key + "\" must be an integer";
+    return false;
+}
+
+// Python's bool(): true or a number other than 0.
+bool op_flag(const Json& op, const char* key, bool* v, std::string* err) {
+    const Json* j = op.get(key);
+    int64_t x = 0;
+    if (j && j->type == Json::Type::boolean) {
+        *v = j->b;
+    } else if (j && j->i64(&x)) {
+        *v = x != 0;
+    } else {
+        *err = std::string("\"") + key + "\" must be a number or a boolean";
+        return false;
+    }
+    return true;
+}
+
+void print_period(const DisplayPeriod& p) {
+    std::printf("{\"period\":%lld,\"short\":%d}\n", (long long)p.period_ns, p.short_span ? 1 : 0);
+}
+
+// One op of the sequence; the lines it prints are video_pace.py's, byte for byte.
+bool pace_op(const Json& op, VideoPace* pace, std::vector<PresentedSample>* samples,
+             std::vector<int64_t>* times, std::string* err) {
+    const Json* kind = op.get("op");
+    if (!kind || kind->type != Json::Type::string) {
+        *err = "no \"op\"";
+        return false;
+    }
+    const std::string& k = kind->s;
+    if (k == "config") {
+        int64_t gap = VideoPace::GAP_THRESHOLD_NS;
+        if (op.get("gap_threshold") && !op_i64(op, "gap_threshold", &gap, err)) return false;
+        *pace = VideoPace(gap);
+    } else if (k == "display") {
+        int64_t period = 0;
+        DisplaySource source = DisplaySource::none;
+        const Json* s = op.get("source");
+        if (!op_i64(op, "period", &period, err)) return false;
+        if (!s || s->type != Json::Type::string || !parse_display_source(s->s.c_str(), &source)) {
+            *err = "\"source\" must be none, nominal or measured";
+            return false;
+        }
+        pace->set_display(period, source);
+    } else if (k == "gap") {
+        pace->on_gap();
+    } else if (k == "frame") {
+        int64_t pts = 0, dur = 0, arrival = 0;
+        bool discont = false;
+        if (!op_i64(op, "pts", &pts, err) || !op_i64(op, "dur", &dur, err) ||
+            !op_i64(op, "arrival", &arrival, err) || !op_flag(op, "discont", &discont, err))
+            return false;
+        const PaceDecision d = pace->on_frame(pts, dur, arrival, discont);
+        std::printf("{\"release\":%lld,\"drop\":%d}\n", (long long)d.release_ns, d.rate_drop ? 1 : 0);
+    } else if (k == "take") {
+        const PaceSummary s = pace->take();
+        std::printf("{\"released\":%llu,\"late\":%llu,\"rate_drops\":%llu,\"gaps_collapsed\":%llu,"
+                    "\"content_period\":%lld,\"display_period\":%lld,\"display_source\":\"%s\","
+                    "\"mean_hold\":%lld}\n",
+                    (unsigned long long)s.released, (unsigned long long)s.late,
+                    (unsigned long long)s.rate_drops, (unsigned long long)s.gaps_collapsed,
+                    (long long)s.content_period, (long long)s.display_period,
+                    display_source_name(s.display_source), (long long)s.mean_hold);
+    } else if (k == "feedback") {
+        const Json* pairs = op.get("pairs");
+        if (!pairs || pairs->type != Json::Type::array) return *err = "\"pairs\" must be an array", false;
+        samples->clear();
+        for (const Json& p : pairs->items) {
+            PresentedSample x{};
+            if (p.type != Json::Type::array || p.items.size() != 2 || !p.items[0].i64(&x.presented_ns) ||
+                !p.items[1].i64(&x.seq))
+                return *err = "a pair must be [presented ns, seq]", false;
+            samples->push_back(x);
+        }
+        print_period(display_period_from_feedback(samples->data(), samples->size()));
+    } else if (k == "returns") {
+        const Json* ts = op.get("times");
+        int64_t prior = 0;
+        if (!ts || ts->type != Json::Type::array) return *err = "\"times\" must be an array", false;
+        if (op.get("prior") && !op_i64(op, "prior", &prior, err)) return false;
+        times->clear();
+        for (const Json& t : ts->items) {
+            int64_t v = 0;
+            if (!t.i64(&v)) return *err = "a time must be an integer", false;
+            times->push_back(v);
+        }
+        print_period(display_period_from_returns(times->data(), times->size(), prior));
+    } else {
+        *err = "unknown op \"" + k + "\"";
+        return false;
+    }
+    return true;
+}
+
+int pace_main(int argc, char** argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: mrts_cli pace seq.jsonl|-\n");
+        return 2;
+    }
+    const std::string path = argv[1];
+    std::FILE* f = path == "-" ? stdin : std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    static char out[1 << 16];
+    std::setvbuf(stdout, out, _IOFBF, sizeof out);
+    VideoPace pace;
+    std::vector<PresentedSample> samples;
+    std::vector<int64_t> times;
+    std::string line, err;
+    char buf[1 << 16];
+    size_t lineno = 0;
+    int rc = 0;
+    while (rc == 0) {
+        line.clear();
+        bool got = false;
+        while (std::fgets(buf, sizeof buf, f)) {
+            got = true;
+            line += buf;
+            if (!line.empty() && line.back() == '\n') break;
+        }
+        if (!got) break;
+        lineno++;
+        if (line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        Json op;
+        if (!parse_json(line, &op, &err) || !pace_op(op, &pace, &samples, &times, &err)) {
+            std::fflush(stdout);
+            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+            rc = 1;
+        }
+    }
+    if (std::ferror(f)) {
+        std::perror(argv[1]);
+        rc = 1;
+    }
+    if (f != stdin) std::fclose(f);
+    return rc;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1369,11 +1518,13 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "trace2jsonl") == 0) return trace2jsonl_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "jsonl2trace") == 0) return jsonl2trace_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "restamp-replay") == 0) return restamp_replay_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "pace") == 0) return pace_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
                  "       mrts_cli jsonl2trace input.jsonl|- output.stct\n"
                  "       mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] "
-                 "[--expect file] ...\n");
+                 "[--expect file] ...\n"
+                 "       mrts_cli pace seq.jsonl|-\n");
     return 2;
 }

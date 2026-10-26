@@ -55,14 +55,15 @@ it at runtime stop doing so phase by phase (below).
 | `asrc_servo.h`, `asrc_servo.cpp` | `AsrcServo`: `ClockLock` on input frame count against buffer PTS, and the phase servo that commands `mrasrc`'s ratio |
 | `align_watch.h`, `align_watch.cpp` | What `mralignwatch` decides (Phase 2): W from the arrival rhythm (`ArrivalRhythm`), the pace group and its process-wide registry (`PaceGroup`, `PaceRegistry`), the gap planner (`GapPlanner`) |
 | `ts_select.h`, `ts_select.cpp` | `SelectDemux`, what `mrtsdemux` does in select mode (Phase 2): one stream of one program on the formula timeline (`PES − 1 h`, unwrapped from the clock), the jump rule, bus gap markers turned into gaps, the no-stream warning; Phase 3's `DemuxCore` generalises it |
-| `mrts_cli.cpp` | Test harness, never installed: `dump` (`PesIndex`; `--program N` follows that program of the PAT), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`) |
+| `video_pace.h`, `video_pace.cpp` | `VideoPace`, what `mrvideopace` decides (Phase 4, port of `py/video_pace.py` with parity): each frame's release on the content cadence, the rate drops that match a slower display, and the display period from presentation feedback or a blocking sink's returns |
+| `mrts_cli.cpp` | Test harness, never installed: `dump` (`PesIndex`; `--program N` follows that program of the PAT), `trace2jsonl` / `jsonl2trace`, `restamp-replay` (`--config`, `--sweep`, `--expect`), `pace` (a call sequence through `VideoPace` in `py/video_pace.py`'s replay format) |
 
 ### `native/mrts/tests/` — C++ unit tests (`make -C native/mrts test`, root `make native-test`)
 
 | Path | What |
 |---|---|
 | `check.h` | The assertion harness |
-| `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp`, `align_watch_test.cpp`, `ts_select_test.cpp` | The 16 suites, one per module |
+| `ts_house_test.cpp`, `ts_packet_test.cpp`, `ts_pes_test.cpp`, `ts_pcr_test.cpp`, `ts_psi_test.cpp`, `ts_split_test.cpp`, `ts_timeline_test.cpp`, `ts_video_info_test.cpp`, `lateness_test.cpp`, `ts_stc_test.cpp`, `ts_trace_test.cpp`, `ts_restamp_test.cpp`, `asrc_servo_test.cpp`, `ts_gap_test.cpp`, `align_watch_test.cpp`, `ts_select_test.cpp`, `video_pace_test.cpp` | The 17 suites, one per module (`video_pace_test` is `py/video_pace_test.py`'s cases one for one) |
 | `ts_conformance_test.cpp` | Every `tests/fixtures/<name>.ts` through `PesIndex` at 188, 1316 and 24 576-byte chunks against `<name>.expect.jsonl` (and `<name>.p<N>.expect.jsonl` for program N), line by line; the synthetic fixtures must be `fixture_gen`'s bytes, `cap-cc-loss` its source with the named packets removed, the parity port `py/native_parity_fixture.py`'s length and CRC-32. `MRTS_FIXTURES` names another fixture directory |
 | `trace_gen.h`, `ts_gen.h`, `fixture_gen.cpp` | The deterministic generators: arrival traces (`fixture_gen --trace`, with outages, jumps, late PES, a queuing caller's backlog `--backlog` and a PID stamped ahead `--ahead`; `--shift PID:MS -i IN.stct` stamps PIDs of a recorded trace further ahead, the derived fixtures), the synthetic `.ts` fixtures (`--ts KIND`: `parity`, the byte-for-byte port of `py/native_parity_fixture.py`, LCG and all; `mpts-two-programs`, `wrap-33bit`, `pes-header-split`, `pes-no-pts`, `source-restart`) and packets removed from a capture (`--drop PID@N,...`) |
 | `trace_cli_test.sh` | `mrts_cli`'s trace verbs, and every `tests/fixtures/restamp/*.expect.json` against its regenerated trace |
@@ -72,7 +73,7 @@ it at runtime stop doing so phase by phase (below).
 
 | Path | What |
 |---|---|
-| `Makefile` | Builds the plugin (gstreamer-1.0, -base-1.0, -audio-1.0) against `libmrts.a`, `-Wl,-z,defs`. `test` also builds `tests/abi0/libgstmrtshouse.so` (the same plugin at ABI 0, for the loader tests), `tests/restamp_ref` and `tests/asrc_bench`. Installs only the plugin, to `/usr/libexec/media-router/mpegts-core/` |
+| `Makefile` | Builds the plugin (gstreamer-1.0, -base-1.0, -audio-1.0) against `libmrts.a`, `-Wl,-z,defs`. `test` also builds `tests/abi0/libgstmrtshouse.so` (the same plugin at ABI 0, for the loader tests), `tests/restamp_ref`, `tests/asrc_bench` and `tests/mrtestvideo/libgstmrtestvideo.so`. Installs only the plugin, to `/usr/libexec/media-router/mpegts-core/` |
 | `mrtshouse_abi.h` | `MRTSHOUSE_ABI` (1) and `MRTSHOUSE_VERSION`: the element protocol both runners check at load |
 | `mrtshouse.h` | What every element shares: the read-only `abi` property, the counter properties, the debug category, the element types |
 | `gstmrtshouse.cpp` | `GST_PLUGIN_DEFINE` and the factory table `kFactories`, one row per element |
@@ -81,8 +82,10 @@ it at runtime stop doing so phase by phase (below).
 | `mrasrc_resampler.h` | `mrasrc`'s resampler settings, in one place so the bench measures exactly them |
 | `gstmralignwatch.cpp` | `mralignwatch`: the input of a non-live aggregator. A FIFO released at the pace its pace group shares, the silence watchdog and the gap fill, LATENCY answered as non-live (Phase 2) |
 | `gstmrtsdemux.cpp` | `mrtsdemux`: the formula demux, select mode (`select="audio/x-smpte-302m"`, Phase 2): one ALWAYS pad, `SelectDemux` on it, GAP events, the `mrtsdemux` message; no stand-in |
+| `gstmrvideopace.cpp` | `mrvideopace`: `VideoPace` as an element (Phase 4). Waits for each decoded frame's release on the element clock, drops the rate drops, proxies caps, allocation and scheduling (dmabuf passes untouched); the display period from the first `GstBaseSink` downstream: 0008's `display-stats`, else a sink with kmssink's `skip-vsync` off timed by its returns, else `refresh-mhz` (nominal); frames pass unpaced while that sink counts frames not presented. `stats`, the `mrvideopace` message every 2 s; stand-in `identity` |
 | `tests/restamp_ref.cpp` | `RestampCore` without GStreamer: the reference the element and protocol tests hold `mrtsrestamp` to |
 | `tests/asrc_bench.c` | `GstAudioResampler` CPU at `mrasrc`'s settings, against the Pi 4 budget; run by hand |
+| `tests/mrtestvideosink.c` | The test display sinks of `tests/mrtestvideo/libgstmrtestvideo.so` (its own directory, so a test's `GST_PLUGIN_PATH` entry finds nothing else), never installed: `mrtestvideosink`, 0008's model (each frame waits for the previous one's presentation on a refresh grid, `period-ns`, `drift-ppm`; `display-stats` in 0008's fields and types; `stall-ms`, an output switched off with 0008's 1 s timeout rule), and `mrtestkmssink`, kmssink's (returns at the next refresh unless `skip-vsync`) |
 
 ### The other native tools
 
@@ -101,6 +104,7 @@ it at runtime stop doing so phase by phase (below).
 | `video_pace.py` | Reference of `mrts::VideoPace` (plan ch. 8 WI-P4-3, ch. 15.4 B-161), written before its C++ port: when each decoded frame leaves `mrvideopace`, and which frames go so that a slower display keeps up; the display period from presentation feedback or a blocking sink's returns. Never loaded. As a script it replays a recorded call sequence, the line format `mrts_cli pace` reads |
 | `native_parity_fixture.py`, `native_parity_ref.py` | The synthetic MPTS generator and the Python splitter whose output `ts-splitter`'s `mrTssplit.test.ts` expects (the parity vitest went in Phase 2) |
 | `ts_psi_test.py`, `ts_split_test.py`, `ts_video_info_test.py`, `ts_timeline_test.py`, `video_pace_test.py` | The reference suites (`test:py`). `video_pace_test.py --mutants` checks that each of its mutants fails its case; with `VIDEO_PACE_TRACE=<file>` it records every call for the C++ parity |
+| `video_pace_parity_test.py` | `mrts_cli pace` against `video_pace.py`, line for line, on `video_pace_test.py`'s recorded cases and 120 seeded random sequences; then every reference mutant must differ from the C++ (`test:py`) |
 
 ### `engine/` and `tests/`
 
@@ -131,12 +135,12 @@ checkout, never from `/opt`.
 ## Consumers
 
 - **Both pipeline runners** load `native/mrtshouse/libgstmrtshouse.so`
-  (`mrtsrestamp`, `mrasrc`, `mralignwatch`, `mrtsdemux`), `native/mrtsstamp/libgstmrtsstamp.so` and
+  (`mrtsrestamp`, `mrasrc`, `mralignwatch`, `mrtsdemux`, `mrvideopace`), `native/mrtsstamp/libgstmrtsstamp.so` and
   `native/mrlateness/libgstmrlateness.so` by explicit path, never
   `GST_PLUGIN_PATH`: the plugins tree first, then
   `/usr/libexec/media-router/mpegts-core/`. Without `libgstmrtshouse.so`, or
   with one below the runner's ABI, a module starts with `identity` in the
-  restamp's and every `mralignwatch`'s place, `audioresample` in `mrasrc`'s
+  restamp's, every `mralignwatch`'s and `mrvideopace`'s place, `audioresample` in `mrasrc`'s
   (the PCM captures run unlocked at their device's nominal rate), and the
   alarm "Native TS module not loaded" (a pipeline naming `mrtsdemux`, which
   has no stand-in by design, is refused with that alarm); a live input add
