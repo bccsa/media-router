@@ -1,6 +1,7 @@
 // fixture_gen: the deterministic generator of the synthetic fixtures (plan ch. 3 part 7, ch. 5 part 7.2).
-// --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts fixture from ts_gen.h (WI-S0-9);
-// --drop, --shift and --freeze-pcr edit a capture or a recorded trace (cap-cc-loss, B-48's and B-101's fixtures).
+// --trace writes an arrival trace (.stct, WI-P1-2) from trace_gen.h; --ts a .ts fixture from ts_gen.h (WI-S0-9,
+// WI-P3-3); --drop, --shift, --freeze-pcr and --respace edit a capture or a recorded trace (cap-cc-loss, B-48's
+// and B-101's fixtures, syn-foreign-clock-aac).
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "../ts_house.h"
+#include "../ts_rebase.h"
 #include "../ts_trace.h"
 #include "trace_gen.h"
 #include "ts_gen.h"
@@ -17,7 +19,11 @@ namespace {
 const char kUsage[] =
     "usage: fixture_gen --ts KIND -o OUT.ts\n"
     "  KIND: parity (py/native_parity_fixture.py's bytes), mpts-two-programs, wrap-33bit\n"
-    "  [--wrap-at S], pes-header-split, pes-no-pts, source-restart [--restart S]\n"
+    "  [--wrap-at S], pes-header-split, pes-no-pts, source-restart [--restart S], gap-500ms,\n"
+    "  gap-marker (also writes OUT's .bus.jsonl sidecar), video-hole-1s, private-novdesc,\n"
+    "  pmt-version-bump, adts-mpeg2\n"
+    "       fixture_gen --respace PPM -i IN.ts -o OUT.ts\n"
+    "  every PES PTS/DTS and PCR at (1 + PPM 1e-6) times its distance from the first PES\n"
     "       fixture_gen --drop PID@N[,PID@N...] -i IN.ts -o OUT.ts\n"
     "  removes the N-th packet (from 0) of each PID named; PIDs decimal or 0x\n"
     "       fixture_gen --shift PID:MS[,PID:MS...] -i IN.stct -o OUT.stct\n"
@@ -97,16 +103,29 @@ bool read_file(const std::string& path, ts_gen::Bytes* b) {
     return ok;
 }
 
-// The --ts kinds by name; restart_ns and wrap_ns as given (or the kind's default).
-bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_gen::Bytes* out) {
+// The --ts kinds by name; restart_ns and wrap_ns as given (or the kind's default). A kind with
+// a bus sidecar leaves it in *bus.
+bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_gen::Bytes* out, std::string* bus) {
     if (kind == "parity") *out = ts_gen::parity();
     else if (kind == "mpts-two-programs") *out = ts_gen::mpts_two_programs();
     else if (kind == "wrap-33bit") *out = ts_gen::wrap_33bit(wrap_ns);
     else if (kind == "pes-header-split") *out = ts_gen::pes_header_split();
     else if (kind == "pes-no-pts") *out = ts_gen::pes_no_pts();
     else if (kind == "source-restart") *out = ts_gen::source_restart(restart_ns);
+    else if (kind == "gap-500ms") *out = ts_gen::gap_500ms();
+    else if (kind == "gap-marker") *out = ts_gen::gap_marker(bus);
+    else if (kind == "video-hole-1s") *out = ts_gen::video_hole_1s();
+    else if (kind == "private-novdesc") *out = ts_gen::private_novdesc();
+    else if (kind == "pmt-version-bump") *out = ts_gen::pmt_version_bump();
+    else if (kind == "adts-mpeg2") *out = ts_gen::adts_mpeg2();
     else return false;
     return true;
+}
+
+// OUT.ts's sidecar: OUT.bus.jsonl.
+std::string bus_path(const std::string& ts) {
+    const bool dot_ts = ts.size() > 3 && ts.compare(ts.size() - 3, 3, ".ts") == 0;
+    return (dot_ts ? ts.substr(0, ts.size() - 3) : ts) + ".bus.jsonl";
 }
 
 }  // namespace
@@ -114,7 +133,7 @@ bool ts_kind(const std::string& kind, int64_t wrap_ns, int64_t restart_ns, ts_ge
 int main(int argc, char** argv) {
     trace_gen::Config c;
     bool trace = false, scatter_floor = false;
-    std::string out, ts_kind_name, drop_spec, shift_spec, freeze_spec, in;
+    std::string out, ts_kind_name, drop_spec, shift_spec, freeze_spec, respace_spec, in;
     int64_t restart_ns = 3 * trace_gen::S;
     for (int i = 1; i < argc; i++) {
         const std::string a = argv[i];
@@ -138,6 +157,8 @@ int main(int argc, char** argv) {
             shift_spec = v;
         } else if (a == "--freeze-pcr") {
             freeze_spec = v;
+        } else if (a == "--respace") {
+            respace_spec = v;
         } else if (a == "--restart") {
             ok = seconds(v, &restart_ns) && restart_ns > 0;
         } else if (a == "--seed") {
@@ -218,8 +239,26 @@ int main(int argc, char** argv) {
     if (!ts_kind_name.empty()) {
         if (out.empty()) return usage("-o OUT.ts is required");
         ts_gen::Bytes b;
+        std::string bus;
         const int64_t wrap_ns = c.wrap_at_ns >= 0 ? c.wrap_at_ns : 5 * trace_gen::S;
-        if (!ts_kind(ts_kind_name, wrap_ns, restart_ns, &b)) return usage(("unknown --ts kind " + ts_kind_name).c_str());
+        if (!ts_kind(ts_kind_name, wrap_ns, restart_ns, &b, &bus))
+            return usage(("unknown --ts kind " + ts_kind_name).c_str());
+        if (!bus.empty() && !write_file(bus_path(out), ts_gen::Bytes(bus.begin(), bus.end()))) return 1;
+        return write_file(out, b) ? 0 : 1;
+    }
+    if (!respace_spec.empty()) {
+        if (out.empty() || in.empty()) return usage("--respace needs -i IN.ts and -o OUT.ts");
+        char* end = nullptr;
+        const long ppm = std::strtol(respace_spec.c_str(), &end, 10);
+        if (*end || ppm < -100000 || ppm > 100000) return usage(("bad --respace " + respace_spec).c_str());
+        ts_gen::Bytes b;
+        if (!read_file(in, &b)) return 1;
+        const int64_t origin = mrts::first_pes_pts(b.data(), b.size());
+        if (origin < 0) {
+            std::fprintf(stderr, "fixture_gen: %s: no PES with a PTS\n", in.c_str());
+            return 1;
+        }
+        mrts::respace_ts(b.data(), b.size(), origin, ppm);
         return write_file(out, b) ? 0 : 1;
     }
     if (!drop_spec.empty()) {
@@ -333,7 +372,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
-    if (!trace) return usage("one of --ts, --drop, --shift, --freeze-pcr or --trace is required");
+    if (!trace) return usage("one of --ts, --drop, --shift, --freeze-pcr, --respace or --trace is required");
     if (out.empty()) return usage("-o OUT.stct is required");
     if (scatter_floor && c.scatter_ns <= 0) return usage("--scatter-floor needs a --scatter-ms level above 0");
     const std::vector<mrts::TraceRecord> recs = trace_gen::generate(c);

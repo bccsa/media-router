@@ -1,13 +1,15 @@
 #!/bin/sh
 # trace_cli_test: the arrival-trace tools at the command line (WI-P1-2): generator and replay
 # determinism, the .stct <-> JSONL round trip, every expectation in tests/fixtures/restamp (a
-# synthetic trace regenerated from its "source" line), bad input refused; check.h's output.
-#   MRTS_CLI, FIXTURE_GEN, RESTAMP_FIXTURES override the default paths.
+# synthetic trace regenerated from its "source" line), bad input refused; the replay rebase,
+# Phase 3's --ts kinds and --respace (WI-P3-3); check.h's output.
+#   MRTS_CLI, FIXTURE_GEN, RESTAMP_FIXTURES, TS_FIXTURES override the default paths.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 CLI=${MRTS_CLI:-$HERE/../mrts_cli}
 GEN=${FIXTURE_GEN:-$HERE/fixture_gen}
 FIX=${RESTAMP_FIXTURES:-$HERE/../../../tests/fixtures/restamp}
+TSFIX=${TS_FIXTURES:-$HERE/../../../tests/fixtures}
 T=$(mktemp -d "${TMPDIR:-/tmp}/trace_cli_test.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT
 fails=0
@@ -231,6 +233,82 @@ printf '{"relocks": 0, "envelopeSteps": 0}\n' >"$T/none.json"
     [ "$(status "$CLI" restamp-replay "$r" --quiet --config clock.step_ns=50000000 --expect "$T/none.json")" = 0 ] &&
     [ "$(status "$CLI" restamp-replay "$r" --quiet --config pcr.step_ns=50000000)" = 2 ]
 check "restamp-replay: --config sets the clock's constants (step_falls, clock.step_ns; pcr. has none)" $?
+
+# --- rebase (WI-P3-3): every committed .ts moved +1 h and back, and onto the 2^33 wrap and back.
+key() { sed -n "s/.*\"$1\":\(-\{0,1\}[0-9]*\).*/\1/p" "$2"; }   # a number from a rebase report
+n=0 bad=0
+for f in "$TSFIX"/*.ts; do
+    [ -e "$f" ] || continue
+    "$CLI" rebase "$f" "$T/r1.ts" --to-ns 5000000000000 >"$T/r1.json" || { bad=$((bad + 1)); continue; }
+    from=$(key fromNs "$T/r1.json")
+    "$CLI" rebase "$f" "$T/r2.ts" --to-ns $((from + 3600000000000)) >"$T/r2.json" &&
+        [ "$(key shiftNs "$T/r2.json")" = 3600000000000 ] && [ "$(key shift90k "$T/r2.json")" = 324000000 ] &&
+        "$CLI" rebase "$T/r2.ts" "$T/r3.ts" --to-ns "$from" >/dev/null && cmp -s "$f" "$T/r3.ts" &&
+        ! cmp -s "$f" "$T/r2.ts" || { echo "  +1 h and back: $f"; bad=$((bad + 1)); }
+    # The first PES 1 s before 2^33 on the bus (house = PES - 1 h): the stream crosses the wrap.
+    wrap=$(( (8589934592 - 90000 - 324000000) * 100000 / 9 ))
+    "$CLI" rebase "$f" "$T/w.ts" --to-ns "$wrap" >"$T/w.json" &&
+        [ "$(key toNs "$T/w.json")" -le $((wrap + 50000)) ] && [ "$(key toNs "$T/w.json")" -ge $((wrap - 50000)) ] &&
+        "$CLI" rebase "$T/w.ts" "$T/w2.ts" --to-ns "$from" >/dev/null && cmp -s "$f" "$T/w2.ts" ||
+        { echo "  across 2^33 and back: $f"; bad=$((bad + 1)); }
+    n=$((n + 1))
+done
+[ "$n" -ge 14 ] && [ "$bad" -eq 0 ]
+check "rebase: $n committed .ts moved +1 h and back and across 2^33 and back, byte-identical; the first PES within 50 us of T" $?
+# The dump of a rebased file: every PES PTS and DTS by the shift mod 2^33, a split header's too,
+# every other field unchanged.
+"$CLI" rebase "$TSFIX/syn-pes-header-split.ts" "$T/s.ts" --to-ns 7777777777777 >"$T/s.json" &&
+    d=$(key shift90k "$T/s.json") && [ "$(key spans "$T/s.json")" = 72 ] && [ "$(key broken "$T/s.json")" = 0 ] &&
+    "$CLI" dump "$TSFIX/syn-pes-header-split.ts" >"$T/s0.jsonl" && "$CLI" dump "$T/s.ts" >"$T/s1.jsonl" &&
+    paste -d '\n' "$T/s0.jsonl" "$T/s1.jsonl" | awk -v d="$d" '
+        function f(l, k,  x) { x = l; if (!sub(".*\"" k "\":", "", x)) return "-"; sub("[,}].*", "", x); return x }
+        function cut(l) { gsub("\"(pts|dts|ptsUnwrapped|dtsUnwrapped)\":[-0-9a-z]*", "", l); return l }
+        function moved(a, b) { return a == "null" ? b == "null" : (a + d) % 8589934592 + 0 == b + 0 }
+        NR % 2 { a = $0; next }
+        { n++; if (cut(a) != cut($0)) bad++; else if ($0 ~ /^\{"pid"/ && !(moved(f(a, "pts"), f($0, "pts")) && moved(f(a, "dts"), f($0, "dts")))) bad++ }
+        END { exit !(n > 140 && !bad) }'
+check "rebase: syn-pes-header-split's dump moved PES for PES by the shift (72 split headers), nothing else" $?
+# The sidecar: pts by shiftNs exactly, every other field kept, and back again byte for byte.
+"$CLI" rebase "$TSFIX/syn-gap-marker.ts" "$T/g.ts" --to-ns 123456789000000 --bus "$TSFIX/syn-gap-marker.bus.jsonl" "$T/g.bus.jsonl" >"$T/g.json" &&
+    sh_ns=$(key shiftNs "$T/g.json") && [ "$(key busLines "$T/g.json")" = "$(wc -l <"$TSFIX/syn-gap-marker.bus.jsonl" | tr -d ' ')" ] &&
+    paste -d '\n' "$TSFIX/syn-gap-marker.bus.jsonl" "$T/g.bus.jsonl" | awk -v d="$sh_ns" '
+        NR % 2 { a = $0; next }
+        { n++; x = a; y = $0; sub(".*\"pts\":", "", x); sub(",.*", "", x); sub(".*\"pts\":", "", y); sub(",.*", "", y)
+          ra = a; rb = $0; sub("\"pts\":[0-9]*", "", ra); sub("\"pts\":[0-9]*", "", rb)
+          if (ra != rb || x + d != y) bad++; if ($0 ~ /"flags":2112/) gaps++ }
+        END { exit !(n > 400 && gaps == 2 && !bad) }' &&
+    "$CLI" rebase "$T/g.ts" "$T/g2.ts" --to-ns "$(key fromNs "$T/g.json")" --bus "$T/g.bus.jsonl" "$T/g2.bus.jsonl" >/dev/null &&
+    cmp -s "$TSFIX/syn-gap-marker.ts" "$T/g2.ts" && cmp -s "$TSFIX/syn-gap-marker.bus.jsonl" "$T/g2.bus.jsonl"
+check "rebase --bus: the sidecar's pts moved by the shift in ns, its GAP|DISCONT markers and the rest kept; back again byte-identical" $?
+{ head -n 2 "$TSFIX/syn-gap-marker.bus.jsonl"; echo '{"off":0,"len":188,"pts":1,"flags":0,"extra":1}'; } >"$T/bad.bus.jsonl"
+echo '{"off":535000,"len":188,"pts":1,"flags":0}' >"$T/past.bus.jsonl"
+echo '{"off":0,"len":188,"pts":1,"flags":0}' >"$T/early.bus.jsonl"
+"$CLI" rebase "$TSFIX/syn-gap-marker.ts" "$T/x.ts" --to-ns 1 --bus "$T/bad.bus.jsonl" "$T/x.bus.jsonl" 2>"$T/bad.err"
+[ $? -eq 1 ] && grep -q 'bad.bus.jsonl:3: unknown key "extra"' "$T/bad.err" &&
+    [ "$(status "$CLI" rebase "$TSFIX/syn-gap-marker.ts" "$T/x.ts" --to-ns 1 --bus "$T/past.bus.jsonl" "$T/x.bus.jsonl")" = 1 ] &&
+    [ "$(status "$CLI" rebase "$TSFIX/syn-gap-marker.ts" "$T/x.ts" --to-ns 0 --bus "$T/early.bus.jsonl" "$T/x.bus.jsonl")" = 1 ] &&
+    [ "$(status "$CLI" rebase "$TSFIX/syn-gap-marker.ts" "$T/x.ts")" = 2 ] &&
+    [ "$(status "$CLI" rebase "$TSFIX/syn-gap-marker.ts" "$T/x.ts" --to-ns 5x)" = 2 ] &&
+    [ "$(status "$CLI" rebase "$TSFIX/syn-gap-marker.ts" --to-ns 5)" = 2 ] &&
+    [ "$(status "$CLI" rebase "$T/junk.stct" "$T/x.ts" --to-ns 5)" = 1 ]
+check "rebase: a bad sidecar line (named), a buffer past the end or before house time 0, no PES, a bad or missing --to-ns refused" $?
+
+# --- Phase 3's --ts kinds and --respace (WI-P3-3): deterministic, the marker kind with its sidecar.
+all=0
+for k in gap-500ms gap-marker video-hole-1s private-novdesc pmt-version-bump adts-mpeg2; do
+    "$GEN" --ts "$k" -o "$T/k1.ts" && "$GEN" --ts "$k" -o "$T/k2.ts" && cmp -s "$T/k1.ts" "$T/k2.ts" &&
+        cmp -s "$T/k1.ts" "$TSFIX/syn-$k.ts" || { echo "  kind $k"; all=1; }
+done
+"$GEN" --ts gap-marker -o "$T/gm.ts" && cmp -s "$T/gm.bus.jsonl" "$TSFIX/syn-gap-marker.bus.jsonl" || all=1
+[ "$all" -eq 0 ] && [ "$(status "$GEN" --ts gap-501ms -o "$T/x.ts")" = 2 ]
+check "fixture_gen --ts: Phase 3's six kinds write the committed bytes, gap-marker its sidecar beside OUT; an unknown kind exits 2" $?
+"$GEN" --respace 40 -i "$TSFIX/cap-mux-align7-aac-opus.ts" -o "$T/fc.ts" && cmp -s "$T/fc.ts" "$TSFIX/syn-foreign-clock-aac.ts" &&
+    "$GEN" --respace -40 -i "$TSFIX/cap-mux-align7-aac-opus.ts" -o "$T/fc2.ts" && ! cmp -s "$T/fc.ts" "$T/fc2.ts" &&
+    [ "$(status "$GEN" --respace 4x -i "$TSFIX/cap-mux-align7-aac-opus.ts" -o "$T/x.ts")" = 2 ] &&
+    [ "$(status "$GEN" --respace 200000 -i "$TSFIX/cap-mux-align7-aac-opus.ts" -o "$T/x.ts")" = 2 ] &&
+    [ "$(status "$GEN" --respace 40 -o "$T/x.ts")" = 2 ] &&
+    [ "$(status "$GEN" --respace 40 -i "$T/junk.stct" -o "$T/x.ts")" = 1 ]
+check "fixture_gen --respace: +40 ppm writes syn-foreign-clock-aac.ts, -40 another; a bad PPM, no -i or no PES refused" $?
 
 echo
 if [ "$fails" -ne 0 ]; then

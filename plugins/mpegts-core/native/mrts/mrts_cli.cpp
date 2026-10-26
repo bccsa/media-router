@@ -4,6 +4,7 @@
 //        mrts_cli trace2jsonl input.stct
 //        mrts_cli jsonl2trace input.jsonl|- output.stct
 //        mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] [--expect file]
+//        mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -23,6 +24,7 @@
 #include "ts_packet.h"
 #include "ts_pes.h"
 #include "ts_psi.h"
+#include "ts_rebase.h"
 #include "ts_restamp.h"
 #include "ts_stc.h"
 #include "ts_trace.h"
@@ -1362,6 +1364,162 @@ int restamp_replay_main(int argc, char** argv) {
     return 0;
 }
 
+// --- rebase: a recording's house time moved onto another clock (WI-P3-3) ----------------
+
+// One bus buffer of a recording's sidecar (<name>.bus.jsonl): its bytes in the .ts, its
+// timestamps in ns (-1: none) and its GstBufferFlags.
+struct BusLine {
+    uint64_t off = 0, len = 0, flags = 0;
+    int64_t pts = -1, dts = -1, dur = -1;
+};
+
+std::string bus_json(const BusLine& b) {
+    auto t = [](int64_t v) { return v < 0 ? std::string("null") : std::to_string(v); };
+    return "{\"off\":" + std::to_string(b.off) + ",\"len\":" + std::to_string(b.len) + ",\"pts\":" + t(b.pts) +
+           ",\"dts\":" + t(b.dts) + ",\"dur\":" + t(b.dur) + ",\"flags\":" + std::to_string(b.flags) + "}";
+}
+
+bool bus_from_json(const Json& j, BusLine* out, std::string* err) {
+    if (j.type != Json::Type::object) return *err = "not an object", false;
+    BusLine b;
+    for (const auto& kv : j.keys) {
+        const std::string& k = kv.first;
+        const Json& v = kv.second;
+        bool ok;
+        if (k == "off") ok = v.u64(&b.off);
+        else if (k == "len") ok = v.u64(&b.len);
+        else if (k == "flags") ok = v.u64(&b.flags);
+        else if (k == "pts" || k == "dts" || k == "dur") {
+            int64_t* t = k == "pts" ? &b.pts : k == "dts" ? &b.dts : &b.dur;
+            ok = v.type == Json::Type::null || (v.i64(t) && *t >= 0);
+        } else {
+            return *err = "unknown key \"" + k + "\"", false;
+        }
+        if (!ok) return *err = "bad \"" + k + "\"", false;
+    }
+    if (!j.get("off") || !j.get("len") || !j.get("flags")) return *err = "missing \"off\", \"len\" or \"flags\"", false;
+    *out = b;
+    return true;
+}
+
+bool write_bytes(const std::string& path, const char* data, size_t n) {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fwrite(data, 1, n, f) == n;
+    if (std::fclose(f) == 0 && ok) return true;
+    std::remove(path.c_str());
+    return false;
+}
+
+const char kRebaseUsage[] =
+    "usage: mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]\n"
+    "  Moves a recording onto another house clock by one shift, a whole number of 100 us, so\n"
+    "  its first PES lands within 50 us of house time T (ns): every PES PTS/DTS and PCR base\n"
+    "  mod 2^33 (a header split over two packets too), every other byte kept; --bus moves the\n"
+    "  sidecar's pts and dts by the same shift in ns, exactly, whatever its buffers' sizes. The\n"
+    "  bus formula on the result is PES - 1 h. Prints one JSON line: the first PES, the shift,\n"
+    "  what was rewritten.\n";
+
+int rebase_main(int argc, char** argv) {
+    std::string in, out, bus_in, bus_out;
+    int64_t to = 0;
+    bool have_to = false;
+    for (int i = 1; i < argc; i++) {
+        const std::string a = argv[i];
+        if (a == "--to-ns" && i + 1 < argc) {
+            // Any value: a recording of another clock's PES may sit before house time 0.
+            have_to = parse_int(argv[++i], &to) && to > INT64_MIN / 2 && to < INT64_MAX / 2;
+            if (!have_to) return std::fputs(kRebaseUsage, stderr), 2;
+        } else if (a == "--bus" && i + 2 < argc) {
+            bus_in = argv[++i];
+            bus_out = argv[++i];
+        } else if (a[0] != '-' && in.empty()) {
+            in = a;
+        } else if (a[0] != '-' && out.empty()) {
+            out = a;
+        } else {
+            return std::fputs(kRebaseUsage, stderr), 2;
+        }
+    }
+    if (in.empty() || out.empty() || !have_to) return std::fputs(kRebaseUsage, stderr), 2;
+    std::string ts;
+    if (!read_file(in, &ts)) {
+        std::perror(in.c_str());
+        return 1;
+    }
+    uint8_t* data = reinterpret_cast<uint8_t*>(&ts[0]);
+    int pid = -1;
+    const int64_t p0 = first_pes_pts(data, ts.size(), &pid);
+    if (p0 < 0) {
+        std::fprintf(stderr, "mrts_cli: %s: no PES with a PTS\n", in.c_str());
+        return 1;
+    }
+    std::vector<BusLine> bus;
+    if (!bus_in.empty()) {
+        std::string text;
+        if (!read_file(bus_in, &text)) {
+            std::perror(bus_in.c_str());
+            return 1;
+        }
+        size_t line = 0;
+        for (size_t at = 0; at < text.size();) {
+            size_t nl = text.find('\n', at);
+            if (nl == std::string::npos) nl = text.size();
+            const std::string l = text.substr(at, nl - at);
+            at = nl + 1;
+            line++;
+            if (l.find_first_not_of(" \t\r") == std::string::npos) continue;
+            Json j;
+            std::string err;
+            BusLine b;
+            if (parse_json(l, &j, &err) && bus_from_json(j, &b, &err) &&
+                (b.off > ts.size() || b.len > ts.size() - b.off))
+                err = "a buffer past the end of " + in;
+            if (!err.empty()) {
+                std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", bus_in.c_str(), line, err.c_str());
+                return 1;
+            }
+            bus.push_back(b);
+        }
+    }
+    // The first PES's house time on the recording's own clock: unwrapped near its first stamp.
+    int64_t ref = to;
+    for (const BusLine& b : bus)
+        if (b.pts >= 0) {
+            ref = b.pts;
+            break;
+        }
+    const int64_t from = house_from_mux_pts(p0, ref);
+    // 100 us is 9 ticks: on that grid the PES and the sidecar's ns move by the same exact amount.
+    const int64_t step = 100000, d = to - from;
+    const int64_t shift_ns = (d >= 0 ? (d + step / 2) / step : -((-d + step / 2) / step)) * step;
+    const int64_t shift_90k = shift_ns / step * 9;
+    for (BusLine& b : bus)
+        for (int64_t* t : {&b.pts, &b.dts}) {
+            if (*t < 0) continue;
+            *t += shift_ns;
+            if (*t < 0) {
+                std::fprintf(stderr, "mrts_cli: %s: a buffer would land before house time 0\n", bus_in.c_str());
+                return 1;
+            }
+        }
+    const TsRewrite r = rebase_ts(data, ts.size(), shift_90k);
+    std::string lines;
+    for (const BusLine& b : bus) lines += bus_json(b) + "\n";
+    if (!write_bytes(out, ts.data(), ts.size()) ||
+        (!bus_out.empty() && !write_bytes(bus_out, lines.data(), lines.size()))) {
+        std::fprintf(stderr, "mrts_cli: writing %s failed\n", out.c_str());
+        return 1;
+    }
+    std::printf("{\"msg\":\"rebase\",\"firstPid\":%d,\"firstPts\":%lld,\"fromNs\":%lld,\"toNs\":%lld,"
+                "\"shiftNs\":%lld,\"shift90k\":%lld,\"pes\":%llu,\"pcr\":%llu,\"spans\":%llu,\"broken\":%llu,"
+                "\"busLines\":%zu}\n",
+                pid, (long long)p0, (long long)from, (long long)(from + shift_ns), (long long)shift_ns,
+                (long long)shift_90k, (unsigned long long)r.pes, (unsigned long long)r.pcr,
+                (unsigned long long)r.spans, (unsigned long long)r.broken, bus.size());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1369,11 +1527,13 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "trace2jsonl") == 0) return trace2jsonl_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "jsonl2trace") == 0) return jsonl2trace_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "restamp-replay") == 0) return restamp_replay_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "rebase") == 0) return rebase_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
                  "       mrts_cli jsonl2trace input.jsonl|- output.stct\n"
                  "       mrts_cli restamp-replay input.stct [--config k=v...] [--sweep grid.json] "
-                 "[--expect file] ...\n");
+                 "[--expect file] ...\n"
+                 "       mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]\n");
     return 2;
 }

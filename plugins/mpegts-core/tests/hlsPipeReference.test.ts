@@ -45,6 +45,8 @@ const ALLOWLIST = {
         'hls-pipe never reads PES_packet_length: a bounded PES cut short, by the next PUSI or by the end of the input (an HLS segment is self-contained), comes back as it is where the dump drops it as malformed, and bytes past the length stay where the dump cuts them',
     'no-resync':
         'hls-pipe finds the packet grid once per segment (hls.js syncOffset) and steps 188 bytes from there, so after garbage that is not whole packets it reads nothing until a step lands on the grid again; the dump resyncs at once',
+    'refuses-ec3':
+        'hls-pipe throws PmtParseError on a PMT that lists E-AC-3 as stream type 0x87 (pat-pmt.ts parsePMT), so it demuxes nothing of that stream; the dump reads it',
 } as const;
 type Entry = keyof typeof ALLOWLIST;
 
@@ -303,6 +305,10 @@ function compare(file: string, Demux: Demuxer): Report {
     if (long) {
         allow('single-section-psi');
         return { ...r, skip: `single-section-psi: a ${pmtBytes(long)}-byte PMT` };
+    }
+    if (pmts.some((p) => p.streams.some((st) => st.type === 0x87))) {
+        allow('refuses-ec3');
+        return { ...r, skip: 'refuses-ec3: an E-AC-3 stream of type 0x87' };
     }
     const bytes = readFileSync(file);
     const out = new Demux().demux(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length));

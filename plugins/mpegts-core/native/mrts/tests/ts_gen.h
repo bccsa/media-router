@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "../ts_gap.h"
 #include "../ts_house.h"
 #include "../ts_packet.h"
 #include "../ts_pcr.h"
@@ -26,15 +28,24 @@ inline void put(Bytes& out, const uint8_t* p, size_t n = mrts::PKT) { out.insert
 // --- Elementary-stream bytes that ffprobe and hls-pipe accept ----------------------------
 
 // A real 1080i50 H.264 SPS, as py/native_parity_fixture.py carries it.
-inline Bytes h264_sps() {
-    static const char hex[] =
-        "67640028ad843fff9087fff210ffffffffffffffff087fffffffffffffff"
-        "2cc501e0113f780a10101014000003000400000300ca50";
+inline Bytes hex_bytes(const char* hex) {
     Bytes b;
     auto v = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
     for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) b.push_back((uint8_t)(v(hex[i]) << 4 | v(hex[i + 1])));
     return b;
 }
+
+inline Bytes h264_sps() {
+    return hex_bytes("67640028ad843fff9087fff210ffffffffffffffff087fffffffffffffff"
+                     "2cc501e0113f780a10101014000003000400000300ca50");
+}
+
+// libx265's VPS, SPS and PPS of a 64x64 stream (ffmpeg 5.1 on the dev Pi), start codes cut.
+inline Bytes h265_vps() { return hex_bytes("40010c01ffff01600000030090000003000003001e959809"); }
+inline Bytes h265_sps() {
+    return hex_bytes("42010101600000030090000003000003001ea020810596566924caf0168080000003008000000c84");
+}
+inline Bytes h265_pps() { return hex_bytes("4401c172b42240"); }
 
 // Seeded filler with the top bit set: no zero byte, so no start code is emulated, and
 // every PES gets a crc32 of its own.
@@ -46,9 +57,10 @@ inline void fill(Bytes& b, size_t n, uint32_t seed) {
     }
 }
 
-enum class Es { h264_idr, h264, mp2, aac, teletext, data };
+enum class Es { h264_idr, h264, mp2, aac, teletext, data, hevc_irap, hevc, aac_mpeg2, dts };
 
-// n bytes of that ES (mp2: one 384-byte frame whatever n; teletext: 1 + 46 k bytes).
+// n bytes of that ES (mp2: one 384-byte frame whatever n; teletext: 1 + 46 k bytes). aac_mpeg2
+// is ADTS with the ID bit set (MPEG-2 AAC); dts a DTS sync word, then filler.
 inline Bytes es_bytes(Es kind, size_t n, uint32_t seed) {
     Bytes b;
     switch (kind) {
@@ -61,10 +73,22 @@ inline Bytes es_bytes(Es kind, size_t n, uint32_t seed) {
             break;
         }
         case Es::h264: b = {0, 0, 0, 1, 0x09, 0x30, 0, 0, 1, 0x41}; break;
+        case Es::hevc_irap: {              // AUD, VPS, SPS, PPS, IDR_W_RADL
+            b = {0, 0, 0, 1, 0x46, 0x01, 0x10};
+            for (const Bytes& ps : {h265_vps(), h265_sps(), h265_pps()}) {
+                b.insert(b.end(), {0, 0, 0, 1});
+                b.insert(b.end(), ps.begin(), ps.end());
+            }
+            b.insert(b.end(), {0, 0, 1, 0x26, 0x01});
+            break;
+        }
+        case Es::hevc: b = {0, 0, 0, 1, 0x46, 0x01, 0x50, 0, 0, 1, 0x02, 0x01}; break;   // AUD, TRAIL_R
+        case Es::dts: b = {0x7F, 0xFE, 0x80, 0x01}; break;
         case Es::mp2: b = {0xFF, 0xFD, 0x84, 0x00}; n = 384; break;   // Layer II, 128 kb/s, 48 kHz
-        case Es::aac: {                    // ADTS, LC, 48 kHz, stereo, one raw block
+        case Es::aac:
+        case Es::aac_mpeg2: {              // ADTS, LC, 48 kHz, stereo, one raw block
             n = std::max<size_t>(n, 8);
-            b = {0xFF, 0xF1, 0x4C, (uint8_t)(0x80 | (n >> 11)), (uint8_t)(n >> 3),
+            b = {0xFF, (uint8_t)(kind == Es::aac ? 0xF1 : 0xF9), 0x4C, (uint8_t)(0x80 | (n >> 11)), (uint8_t)(n >> 3),
                  (uint8_t)(((n & 7) << 5) | 0x1F), 0xFC};
             break;
         }
@@ -132,6 +156,18 @@ class Mux {
         uint8_t p[mrts::PKT];
         mrts::build_pcr_packet(pid, pcr27, (cc_[pid] + 15) & 0x0F, discontinuity, p);
         put(out_, p);
+    }
+    // A bus gap marker (OQ-12), adaptation only, with the CC of the PID's last payload.
+    void gap(int pid, int64_t length_ns) {
+        uint8_t p[mrts::PKT];
+        mrts::build_gap_packet(pid, (uint8_t)((cc_[pid] + 15) & 0x0F), length_ns, p);
+        put(out_, p);
+    }
+    // A PSI section of any table on `pid`, pointer_field 0, 0xFF stuffing.
+    void section(int pid, const Bytes& s) {
+        uint8_t cc = (uint8_t)cc_[pid];
+        mrts::packetise_section(pid, s, cc, out_);
+        cc_[pid] = cc;
     }
     // One packet with n payload bytes (<= 184; <= 176 with a PCR, <= 182 with the flag), the
     // adaptation field taking the rest. False, nothing written, when n does not fit.
@@ -519,6 +555,269 @@ inline Bytes pes_no_pts() {
         pts += 2160;
     }
     return out;
+}
+
+// --- Phase 3's shapes (plan ch. 7 WI-P3-3): house PES, as a restamped ingest puts them ----
+
+constexpr int64_t HOUSE0_90K = 1000LL * 90000;   // the first PES at house 1000 s
+constexpr int64_t LEAD_90K = 9000;               // each PES sent 100 ms ahead of its PTS
+constexpr uint64_t BUS_GAP_DISCONT = 2048 | 64;  // GST_BUFFER_FLAG_GAP | GST_BUFFER_FLAG_DISCONT
+
+// House ns of content tick c, and its PES PTS (house + 1 h, as mpegtsmux writes).
+inline int64_t house_ns(int64_t c) { return mrts::pts90k_to_ns(HOUSE0_90K + c); }
+inline int64_t house_pts(int64_t c) { return HOUSE0_90K + mrts::MUX_CLOCK_BASE_90K + c; }
+
+struct HousePmt {
+    int version = 0, pcr_pid = 0;
+    std::vector<mrts::PmtStream> streams;
+};
+
+// A PES every `step` ticks of content time; frame k's bytes from es(k).
+struct HouseTrack {
+    int pid = 0;
+    uint8_t sid = 0xBD;
+    int64_t step = 0;
+    bool bounded = true;
+    std::function<Bytes(uint32_t)> es;
+    std::function<bool(uint32_t)> skip = [](uint32_t) { return false; };      // frame k left out
+    std::function<int64_t(uint32_t)> jitter = [](uint32_t) { return int64_t(0); };   // ticks on its PTS
+};
+
+// One program as a bus recording: PAT and PMT every 500 ms and at a PMT change, a PCR-only
+// packet every 40 ms on the PMT's PCR PID, each PES 100 ms ahead of its PTS. With `markers`,
+// a gap marker (OQ-12) before a track's first PES after frames left out: from the end of its
+// last PES to this one's PTS, in house ns.
+struct HouseProgram {
+    int64_t duration = 0;                           // ticks of content
+    std::vector<HouseTrack> tracks;
+    std::function<HousePmt(int64_t)> pmt;           // the PMT at send tick t
+    std::function<void(Mux&, int64_t)> with_psi;    // more packets after each PAT and PMT
+    bool markers = false;
+};
+
+// `bus`, when given, gets the recording's sidecar (<name>.bus.jsonl, mrts_cli rebase's form): up
+// to 7 data packets a buffer, stamped by IdentityStamp at the send time of its last packet, and
+// each marker a buffer of its own, flagged GAP|DISCONT, its PTS the gap's end, no DTS (B-19).
+inline Bytes house_program(const HouseProgram& p, std::string* bus = nullptr) {
+    constexpr int PMT_PID = 0x1000;
+    Bytes out;
+    Mux m(out);
+    std::vector<int64_t> sent_at, marker_end;       // per packet: its send tick; a marker's end ns or -1
+    auto note = [&](int64_t t, int64_t end) {
+        while (sent_at.size() < out.size() / mrts::PKT) {
+            sent_at.push_back(t);
+            marker_end.push_back(end);
+        }
+    };
+    std::vector<uint32_t> next(p.tracks.size(), 0);
+    std::vector<int64_t> last(p.tracks.size(), -1);    // the last PES's content tick
+    std::vector<bool> held(p.tracks.size(), false);    // frames left out since it
+    int version = -1;
+    // From a PCR before the first PES on; every step and time here is a multiple of 120 ticks.
+    for (int64_t t = -LEAD_90K - 1800; t < p.duration; t += 120) {
+        const HousePmt now = p.pmt(t);
+        if (t % 45000 == 0 || now.version != version) {
+            m.pat(1, {{1, PMT_PID}});
+            m.pmt(PMT_PID, 1, now.pcr_pid, now.streams, now.version);
+            if (p.with_psi) p.with_psi(m, t);
+            version = now.version;
+        }
+        if (t % 3600 == 0) m.pcr(now.pcr_pid, house_pts(t) * 300);
+        note(t, -1);
+        for (size_t i = 0; i < p.tracks.size(); i++) {
+            const HouseTrack& tr = p.tracks[i];
+            for (; (int64_t)next[i] * tr.step - LEAD_90K <= t && (int64_t)next[i] * tr.step < p.duration; next[i]++) {
+                const uint32_t k = next[i];
+                if (tr.skip(k)) {
+                    held[i] = true;
+                    continue;
+                }
+                const int64_t c = (int64_t)k * tr.step + tr.jitter(k);
+                if (p.markers && held[i] && last[i] >= 0) {
+                    const int64_t start = house_ns(last[i] + tr.step), end = house_ns(c);
+                    m.gap(tr.pid, end - start);
+                    note(t, end);
+                }
+                m.pes(tr.pid, pes(tr.sid, house_pts(c), -1, tr.es(k), tr.bounded));
+                note(t, -1);
+                last[i] = c;
+                held[i] = false;
+            }
+        }
+    }
+    if (!bus) return out;
+    bus->clear();
+    mrts::IdentityStamp stamp;
+    auto line = [&](size_t from, size_t to, int64_t pts, uint64_t flags) {
+        *bus += "{\"off\":" + std::to_string(from * mrts::PKT) + ",\"len\":" + std::to_string((to - from) * mrts::PKT) +
+                ",\"pts\":" + std::to_string(pts) + ",\"dts\":null,\"dur\":null,\"flags\":" + std::to_string(flags) + "}\n";
+    };
+    size_t from = 0;
+    auto flush = [&](size_t to) {
+        if (to == from) return;
+        const int64_t now = mrts::pts90k_to_ns(HOUSE0_90K + sent_at[to - 1]);
+        line(from, to, stamp.stamp(out.data() + from * mrts::PKT, (to - from) * mrts::PKT, now), 0);
+        from = to;
+    };
+    for (size_t i = 0; i < sent_at.size(); i++) {
+        if (marker_end[i] < 0) {
+            if (i - from == 7) flush(i);
+            continue;
+        }
+        flush(i);
+        line(i, i + 1, marker_end[i], BUS_GAP_DISCONT);
+        from = i + 1;
+    }
+    flush(sent_at.size());
+    return out;
+}
+
+inline HouseTrack house_h264(int pid) {
+    HouseTrack t;
+    t.pid = pid;
+    t.sid = 0xE0;
+    t.step = 3600;
+    t.bounded = false;
+    t.es = [pid](uint32_t k) {
+        return es_bytes(k % 12 == 0 ? Es::h264_idr : Es::h264, k % 12 == 0 ? 3000 : 1000 + (k * 37) % 700,
+                        (uint32_t)pid * 100000u + k);
+    };
+    return t;
+}
+
+inline HouseTrack house_aac(int pid, Es kind = Es::aac) {
+    HouseTrack t;
+    t.pid = pid;
+    t.sid = 0xC0;
+    t.step = 1920;                                  // 1024 samples at 48 kHz
+    t.es = [pid, kind](uint32_t k) { return es_bytes(kind, 300 + (k * 13) % 200, (uint32_t)pid * 100000u + k); };
+    return t;
+}
+
+inline HouseTrack house_data(int pid, Es kind, int64_t step, size_t n) {
+    HouseTrack t;
+    t.pid = pid;
+    t.step = step;
+    t.es = [pid, kind, n](uint32_t k) { return es_bytes(kind, n, (uint32_t)pid * 100000u + k); };
+    return t;
+}
+
+inline mrts::PmtStream pmt_stream(int pid, int type, Bytes es_info = {}) {
+    mrts::PmtStream s;
+    s.pid = pid;
+    s.stream_type = type;
+    s.es_info = std::move(es_info);
+    return s;
+}
+
+inline std::function<HousePmt(int64_t)> fixed_pmt(int pcr_pid, std::vector<mrts::PmtStream> streams) {
+    HousePmt m;
+    m.pcr_pid = pcr_pid;
+    m.streams = std::move(streams);
+    return [m](int64_t) { return m; };
+}
+
+inline Bytes teletext_desc() { return {0x56, 0x05, 'e', 'n', 'g', 0x09, 0x88}; }
+
+// syn-gap-500ms / syn-gap-marker: H.264 without DTS (the PCR, 0x100), AAC (0x102) and teletext
+// (0x103, every 500 ms), 8 s; the PES with content in [3 s, 3.5 s) on video and AAC left out.
+inline HouseProgram gap_program(bool markers) {
+    HouseProgram p;
+    p.duration = 8 * 90000;
+    p.tracks = {house_h264(0x100), house_aac(0x102), house_data(0x103, Es::teletext, 45000, 1 + 46 * 7)};
+    for (size_t i = 0; i < 2; i++) {
+        const int64_t step = p.tracks[i].step;
+        p.tracks[i].skip = [step](uint32_t k) { return k * step >= 270000 && k * step < 315000; };
+    }
+    p.pmt = fixed_pmt(0x100, {pmt_stream(0x100, mrts::STREAM_TYPE_AVC), pmt_stream(0x102, mrts::STREAM_TYPE_AAC),
+                              pmt_stream(0x103, mrts::STREAM_TYPE_PRIVATE_PES, teletext_desc())});
+    p.markers = markers;
+    return p;
+}
+inline Bytes gap_500ms() { return house_program(gap_program(false)); }
+// The same hole with a marker on video and AAC before each one's first PES after it; `bus` the sidecar.
+inline Bytes gap_marker(std::string* bus) { return house_program(gap_program(true), bus); }
+
+// syn-video-hole-1s: H.264 (the PCR) under +-4 ms capture jitter and continuous AAC, 11 s; video
+// frames missing 1 (at 1.0, 1.6, 2.2 s), 2 (3.0, 3.6, 4.2 s) and 5 (5.0, 6.0, 7.0 s) at a time,
+// then 30 (a 1.2 s hole at 8 s): B-89's video bound, a hole of 1 s or more.
+inline Bytes video_hole_1s() {
+    HouseProgram p;
+    p.duration = 11 * 90000;
+    p.tracks = {house_h264(0x100), house_aac(0x102)};
+    p.tracks[0].skip = [](uint32_t k) {
+        static const uint32_t runs[][2] = {{25, 1}, {40, 1}, {55, 1}, {75, 2}, {90, 2}, {105, 2},
+                                           {125, 5}, {150, 5}, {175, 5}, {200, 30}};
+        for (const auto& r : runs)
+            if (k >= r[0] && k < r[0] + r[1]) return true;
+        return false;
+    };
+    p.tracks[0].jitter = [](uint32_t k) {
+        const uint32_t s = (k * 2654435761u + 12345u) * 1664525u + 1013904223u;
+        return (int64_t)((s >> 16) % 721) - 360;
+    };
+    p.pmt = fixed_pmt(0x100, {pmt_stream(0x100, mrts::STREAM_TYPE_AVC), pmt_stream(0x102, mrts::STREAM_TYPE_AAC)});
+    return house_program(p);
+}
+
+// SCTE-35's splice_null (ANSI/SCTE 35 9.2): a section no PES carries.
+inline Bytes splice_null_section() {
+    Bytes s = {0xFC, 0x30, 17, 0x00, 0x00, 0, 0, 0, 0, 0x00, 0xFF, 0xF0, 0x00, 0x00, 0x00, 0x00};
+    const uint32_t crc = mrts::crc32_mpeg(s.data(), s.size());
+    for (int i = 3; i >= 0; i--) s.push_back((uint8_t)(crc >> (8 * i)));
+    return s;
+}
+
+// syn-private-novdesc: AAC (0x102, the PCR) beside three streams no demux row names: 0x06 without
+// a descriptor (0x104, a PES every 100 ms), 0x86 with SCTE-35 sections only (0x105, every 1 s) and
+// 0x82 (0x106, DTS frames every 10.67 ms); 4 s.
+inline Bytes private_novdesc() {
+    HouseProgram p;
+    p.duration = 4 * 90000;
+    p.tracks = {house_aac(0x102), house_data(0x104, Es::data, 9000, 120), house_data(0x106, Es::dts, 960, 512)};
+    p.pmt = fixed_pmt(0x102, {pmt_stream(0x102, mrts::STREAM_TYPE_AAC), pmt_stream(0x104, mrts::STREAM_TYPE_PRIVATE_PES),
+                              pmt_stream(0x105, 0x86), pmt_stream(0x106, 0x82)});
+    p.with_psi = [](Mux& m, int64_t t) {
+        if (t % 90000 == 0) m.section(0x105, splice_null_section());
+    };
+    return house_program(p);
+}
+
+// syn-pmt-version-bump: H.264 (0x100) and AAC (0x101), 8 s, the PMT at version 0, then at 2 s
+// version 1 alone, at 4 s version 2 with 0x100 as HEVC (what is sent from then is HEVC, an IRAP
+// first), at 6 s version 3 with the PCR on 0x101.
+inline Bytes pmt_version_bump() {
+    HouseProgram p;
+    p.duration = 8 * 90000;
+    HouseTrack v = house_h264(0x100);
+    const uint32_t hevc_from = (uint32_t)((4 * 90000 + LEAD_90K + 3599) / 3600);   // sent at 4 s or later
+    v.es = [hevc_from](uint32_t k) {
+        if (k < hevc_from)
+            return es_bytes(k % 12 == 0 ? Es::h264_idr : Es::h264, k % 12 == 0 ? 3000 : 1000 + (k * 37) % 700,
+                            0x100u * 100000u + k);
+        const uint32_t i = k - hevc_from;
+        return es_bytes(i % 12 == 0 ? Es::hevc_irap : Es::hevc, i % 12 == 0 ? 3000 : 1000 + (k * 37) % 700,
+                        0x100u * 100000u + k);
+    };
+    p.tracks = {v, house_aac(0x101)};
+    p.pmt = [](int64_t t) {
+        HousePmt m;
+        m.version = t < 2 * 90000 ? 0 : t < 4 * 90000 ? 1 : t < 6 * 90000 ? 2 : 3;
+        m.pcr_pid = m.version < 3 ? 0x100 : 0x101;
+        m.streams = {pmt_stream(0x100, m.version < 2 ? mrts::STREAM_TYPE_AVC : mrts::STREAM_TYPE_HEVC),
+                     pmt_stream(0x101, mrts::STREAM_TYPE_AAC)};
+        return m;
+    };
+    return house_program(p);
+}
+
+// syn-adts-mpeg2: AAC ADTS with the ID bit set, MPEG-2 AAC (0x101, the PCR), 4 s.
+inline Bytes adts_mpeg2() {
+    HouseProgram p;
+    p.duration = 4 * 90000;
+    p.tracks = {house_aac(0x101, Es::aac_mpeg2)};
+    p.pmt = fixed_pmt(0x101, {pmt_stream(0x101, mrts::STREAM_TYPE_AAC)});
+    return house_program(p);
 }
 
 // --- --drop: packets removed from a capture -----------------------------------------------
