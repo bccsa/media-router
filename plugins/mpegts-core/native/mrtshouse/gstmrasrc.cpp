@@ -1,7 +1,8 @@
 /* mrasrc (plan ch. 5 WI-P1-8, part 4.5): the ASRC at PCM captures. mrts::AsrcServo locks the
  * input frame count to the buffer PTS and commands GstAudioResampler's ratio, so the output is a
  * house-rate sample counter labelled with capture time, PTS_out(m) = T0 + m / out_rate. Steering
- * only moves the ratio; a relock's overlap (Command::skip) is the one drop. */
+ * only moves the ratio; a relock's overlap (Command::skip) is the one drop. With cycle-input
+ * (a pipewiresrc capture, B-180) lost cycles jump the output by their length, without a relock. */
 #include <gst/base/gstbasetransform.h>
 
 #include <atomic>
@@ -20,6 +21,7 @@ enum {
     PROP_0,
     PROP_OUT_RATE,
     PROP_QUALITY,
+    PROP_CYCLE_INPUT,
     PROP_STATS,
 };
 
@@ -41,10 +43,11 @@ G_DECLARE_FINAL_TYPE(GstMrAsrc, gst_mrasrc, GST, MRASRC, GstBaseTransform)
 struct _GstMrAsrc {
     GstBaseTransform parent;
 
-    /* Properties, under the object lock; both apply when a run is next built (a start, a caps
+    /* Properties, under the object lock; they apply when a run is next built (a start, a caps
      * change or a flush). */
     gint out_rate;
     gint quality;
+    gboolean cycle_input;
 
     /* Streaming state: set_caps, the transform and the serialized events, all on the streaming
      * thread. Built at negotiation, rebuilt by a flush. */
@@ -94,7 +97,8 @@ static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s) {
         "relocks", G_TYPE_UINT64, (guint64)s.relocks, "in-frames", G_TYPE_UINT64,
         (guint64)s.in_frames, "out-frames", G_TYPE_UINT64, (guint64)s.out_frames, "discont-in",
         G_TYPE_UINT64, (guint64)s.discont_in, "dropped-frames", G_TYPE_UINT64,
-        (guint64)s.dropped_frames, NULL);
+        (guint64)s.dropped_frames, "gaps", G_TYPE_UINT64, (guint64)s.gaps, "lost-frames",
+        G_TYPE_INT64, (gint64)s.lost_frames, NULL);
 }
 
 /* The message, then the snapshot: the message's fields plus the run's configuration. */
@@ -130,7 +134,7 @@ static void asrc_report(GstMrAsrc* self, gboolean force) {
 }
 
 /* mrasrc-event at once: a relock with its new T0, the output PTS jump and the input dropped as
- * overlap; a device rate fit past the ratio clamp. */
+ * overlap; a gap's jump and the frames lost; a stamp shift; a device rate fit past the clamp. */
 static void asrc_post_events(GstMrAsrc* self) {
     for (const AsrcEvent& e : self->servo->take_events()) {
         const gchar* kind = mrts::asrc_event_name(e.kind);
@@ -143,6 +147,16 @@ static void asrc_post_events(GstMrAsrc* self) {
             GST_INFO_OBJECT(self, "relock (%s): T0 %" G_GINT64_FORMAT ", jump %" G_GINT64_FORMAT
                             " ns, dropped %" G_GINT64_FORMAT " ns", e.reason,
                             (gint64)e.house_ns, (gint64)e.value, (gint64)e.dropped_ns);
+        } else if (e.kind == AsrcEvent::Kind::gap) {
+            gst_structure_set(s, "jump-ns", G_TYPE_INT64, (gint64)e.value, "dropped-ns",
+                              G_TYPE_INT64, (gint64)e.dropped_ns, "lost-frames", G_TYPE_INT64,
+                              (gint64)e.lost_frames, NULL);
+            GST_INFO_OBJECT(self, "gap (%s): %" G_GINT64_FORMAT " frames, jump %" G_GINT64_FORMAT
+                            " ns", e.reason, (gint64)e.lost_frames, (gint64)e.value);
+        } else if (e.kind == AsrcEvent::Kind::shift) {
+            gst_structure_set(s, "shift-ns", G_TYPE_INT64, (gint64)e.value, NULL);
+            GST_INFO_OBJECT(self, "stamps shifted %" G_GINT64_FORMAT " ns (%s)", (gint64)e.value,
+                            e.reason);
         } else {
             gst_structure_set(s, "fit-ppb", G_TYPE_INT64, (gint64)e.value, NULL);
             GST_WARNING_OBJECT(self, "device rate %" G_GINT64_FORMAT " ppb past the ratio clamp",
@@ -167,6 +181,8 @@ static void asrc_free_run(GstMrAsrc* self) {
 static gboolean asrc_build_run(GstMrAsrc* self) {
     GST_OBJECT_LOCK(self);
     const guint quality = (guint)self->quality;
+    mrts::AsrcServoConfig cfg;
+    cfg.cycle_input = self->cycle_input != FALSE;
     GST_OBJECT_UNLOCK(self);
     const gint in_hz = GST_AUDIO_INFO_RATE(&self->in_info);
     const gint out_hz = GST_AUDIO_INFO_RATE(&self->out_info);
@@ -176,7 +192,7 @@ static gboolean asrc_build_run(GstMrAsrc* self) {
                                            GST_AUDIO_INFO_CHANNELS(&self->in_info), quality,
                                            in_hz, out_hz);
     if (!self->resampler) return FALSE;
-    self->servo = new AsrcServo(in_hz, out_hz);
+    self->servo = new AsrcServo(in_hz, out_hz, cfg);
     const gsize delay = gst_audio_resampler_get_max_latency(self->resampler);
     self->servo->set_delay((uint32_t)delay);
     self->cur_in_rate = in_hz * MRASRC_RATE_SCALE;
@@ -352,13 +368,15 @@ static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuff
     const gint64 pts = asrc_input_pts(self, in, frames);
     self->buffers++;
     self->started = TRUE;
-    self->cmd = self->servo->push(pts, (uint32_t)frames, GST_BUFFER_IS_DISCONT(in));
+    /* The duration as the source stamped it: pipewiresrc's is the cycle's size (B-180). */
+    const gint64 dur = GST_BUFFER_DURATION_IS_VALID(in) ? (gint64)GST_BUFFER_DURATION(in) : -1;
+    self->cmd = self->servo->push(pts, (uint32_t)frames, GST_BUFFER_IS_DISCONT(in), dur);
     if (self->cmd.in_rate != self->cur_in_rate) {
         gst_audio_resampler_update(self->resampler, self->cmd.in_rate, self->cmd.out_rate, NULL);
         self->cur_in_rate = self->cmd.in_rate;
         self->updates++;
     }
-    if (self->cmd.relock) self->need_discont = TRUE;
+    if (self->cmd.relock || self->cmd.gap) self->need_discont = TRUE;
     asrc_post_events(self);
     gsize outsize = 0;
     asrc_transform_size(trans, GST_PAD_SINK, NULL, size, NULL, &outsize);
@@ -518,6 +536,11 @@ static void asrc_set_property(GObject* object, guint prop_id, const GValue* valu
             self->quality = g_value_get_int(value);
             GST_OBJECT_UNLOCK(self);
             break;
+        case PROP_CYCLE_INPUT:
+            GST_OBJECT_LOCK(self);
+            self->cycle_input = g_value_get_boolean(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -536,6 +559,11 @@ static void asrc_get_property(GObject* object, guint prop_id, GValue* value, GPa
         case PROP_QUALITY:
             GST_OBJECT_LOCK(self);
             g_value_set_int(value, self->quality);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_CYCLE_INPUT:
+            GST_OBJECT_LOCK(self);
+            g_value_set_boolean(value, self->cycle_input);
             GST_OBJECT_UNLOCK(self);
             break;
         case PROP_STATS: {
@@ -564,6 +592,7 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     new (&self->delay_ns) std::atomic<guint64>(0);
     self->out_rate = 0;
     self->quality = DEFAULT_QUALITY;
+    self->cycle_input = FALSE;
     gst_audio_info_init(&self->in_info);
     gst_audio_info_init(&self->out_info);
     self->bpf = 0;
@@ -609,12 +638,20 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
                          GST_AUDIO_RESAMPLER_QUALITY_MIN, GST_AUDIO_RESAMPLER_QUALITY_MAX,
                          DEFAULT_QUALITY, at_start));
     g_object_class_install_property(
+        gobject_class, PROP_CYCLE_INPUT,
+        g_param_spec_boolean("cycle-input", "Cycle input",
+                             "The input is one buffer per graph cycle stamped with the cycle's "
+                             "time (pipewiresrc): whole cycles missing at a steady size are a gap "
+                             "of their length, a cycle-size change moves the stamps only; neither "
+                             "relocks. Applies at the next start or caps change.",
+                             FALSE, at_start));
+    g_object_class_install_property(
         gobject_class, PROP_STATS,
         g_param_spec_boxed("stats", "Stats",
                            "The last mrasrc-stats post (state, ratio-ppb, phase-err-ns, relocks, "
-                           "in-frames, out-frames, discont-in, dropped-frames) with the run's "
-                           "format, channels, in-rate, out-rate, delay-frames, buffers and "
-                           "resampler-updates.",
+                           "in-frames, out-frames, discont-in, dropped-frames, gaps, lost-frames) "
+                           "with the run's format, channels, in-rate, out-rate, delay-frames, "
+                           "buffers and resampler-updates.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */

@@ -335,6 +335,18 @@ elements" below do not start.
   as before. On an older system image, a box with more than four of these
   modules can run out of real-time grants, and its later captures then lose
   the fix above as well; this release's image has room for many more.
+- **Audio captures keep their timing when the box is briefly too busy, and two
+  captures of the same input line up exactly.** On a box busy nearly all the
+  time, Audio Input (302M) still lost a 43 ms piece of sound a few times an
+  hour, and each time its timing went wrong by that much: for 10 seconds, until
+  a jump counted under Re-locks set it right, or for some four minutes while
+  the Clock card said the device clock was off by about 230 ppm. Two captures
+  of the same input also carried the same sound up to 12 ms apart, an amount
+  set by how quickly each one started. Fixed: a lost piece is now a gap of
+  exactly its length where it was lost, and the timing does not move; fewer
+  pieces are lost, as the capture keeps more room for a moment's delay; and
+  every capture of an input takes the input's own time, so two of them line
+  up to the sample. Audio Encoder captures the same way.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

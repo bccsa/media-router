@@ -246,9 +246,11 @@ _LEVEL = "level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=1
 
 
 def _capture(tag):
-    # audio-encoder's capture string (B-88's probe): the dummy sink's monitor, which WirePlumber links.
-    return ("pipewiresrc target-object=auto_null stream-properties=\"props,node.dont-fallback=(string)true,"
-            "node.linger=(string)true,node.loop.class=(string)data.rt,stream.capture.sink=(string)true,"
+    # audio-encoder's capture string (B-88's probe; 16 buffers, not live, B-180): the dummy sink's
+    # monitor, which WirePlumber links.
+    return ("pipewiresrc target-object=auto_null min-buffers=16 stream-properties=\"props,"
+            "node.dont-fallback=(string)true,node.linger=(string)true,node.loop.class=(string)data.rt,"
+            "stream.is-live=(string)false,stream.capture.sink=(string)true,"
             f"node.latency=(string)2048/48000,node.name=(string)MR_PW_b111-{tag}\""
             " ! audio/x-raw,format=F32LE,channels=2,channel-mask=(bitmask)0x3")
 
@@ -265,7 +267,7 @@ _POST_MUX = " busout_47001. ! queue name=postmux ! fakesink sync=false async=fal
 
 def _s302m_tail(port):
     # audio-input-302m's: volume, level, the ASRC, the 302M encoder, the mux and the restamp.
-    return (f" ! volume name=vol volume=1.00 ! {_LEVEL} ! audioconvert ! mrasrc name=asrc"
+    return (f" ! volume name=vol volume=1.00 ! {_LEVEL} ! audioconvert ! mrasrc name=asrc cycle-input=true"
             " ! audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m strict=experimental" + _egress(port))
 
 
@@ -275,7 +277,7 @@ def pipe_302m(tag):
 
 def pipe_encoder(tag):
     # audio-encoder's: the ASRC, volume, level, the 50 ms leaky queue, opusenc, the mux.
-    return (_capture(tag) + " ! audioconvert ! mrasrc name=asrc out-rate=48000"
+    return (_capture(tag) + " ! audioconvert ! mrasrc name=asrc out-rate=48000 cycle-input=true"
             f" ! audio/x-raw,rate=48000,channels=2 ! volume name=vol volume=1.00 ! {_LEVEL}"
             " ! queue max-size-time=50000000 leaky=2 flush-on-eos=true ! opusenc bitrate=128000 frame-size=20"
             + _egress(47002))

@@ -16,6 +16,8 @@ int64_t floor_div(int64_t a, int64_t b) {
 
 int64_t clamp64(int64_t v, int64_t lo, int64_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+int64_t iabs64(int64_t v) { return v < 0 ? -v : v; }
+
 int64_t sat_sub(int64_t a, int64_t b) {
     if (b < 0 && a > INT64_MAX + b) return INT64_MAX;
     if (b > 0 && a < INT64_MIN + b) return INT64_MIN;
@@ -40,7 +42,12 @@ ClockLockConfig asrc_lock_config() {
 }
 
 const char* asrc_event_name(AsrcEvent::Kind k) {
-    return k == AsrcEvent::Kind::relock ? "relock" : "ratio-out-of-bounds";
+    switch (k) {
+        case AsrcEvent::Kind::relock: return "relock";
+        case AsrcEvent::Kind::gap: return "gap";
+        case AsrcEvent::Kind::shift: return "shift";
+        default: return "ratio-out-of-bounds";
+    }
 }
 
 const char* asrc_state_name(AsrcServo::State s) { return s == AsrcServo::State::locked ? "locked" : "acquiring"; }
@@ -59,7 +66,7 @@ int64_t AsrcServo::pts_at(uint64_t m) const { return t0_ + half_frames_ns(2 * (i
 // earlier still, 2.6 us at 48 kHz). Before the first output it is the epoch's first.
 int64_t AsrcServo::next_pos2() const {
     // A drop still to come counts as made: the frames held back before it are the splice.
-    return std::max(2 * (n_in_ + drop_left_ - delay_) - 1, start2_);
+    return std::max(2 * (n_in_ + lost_ + drop_left_ - delay_) - 1, start2_);
 }
 
 // Input frames spanning `ns` of house time at the lock's rate, rounded down so the next
@@ -116,11 +123,69 @@ void AsrcServo::check_bounds(int64_t h) {
     }
 }
 
-AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont) {
-    const int64_t sigma = half_frames_ns(2 * n_in_, in_hz_);
-    bool relocked = false;
+// Lost cycles: the input position moves on by them, so the lock sees no step, and the output
+// jumps their length on the lock's line, so the phase stays where it was (B-180).
+void AsrcServo::lose(int64_t frames) {
+    const int64_t before = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_));
+    lost_ += frames;
+    const int64_t span = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_)) - before;
+    const int64_t from = next_pts();
+    m_ += (uint64_t)((clamp64(span, 0, DROP_MAX_NS) * out_hz_ + E9 / 2) / E9);
+    gaps_++;
+    AsrcEvent e{AsrcEvent::Kind::gap, "lost-cycle", next_pts(), next_pts() - from};
+    e.lost_frames = frames;
+    events_.push_back(e);
+}
+
+// The duration a source stamped fits the frames to a frame; none (< 0) fits.
+bool AsrcServo::fits(int64_t dur_ns, uint32_t frames) const {
+    return dur_ns < 0 || iabs64(dur_ns - half_frames_ns(2 * (int64_t)frames, in_hz_)) <= E9 / in_hz_ + 1;
+}
+
+// cycle_input (B-180): this buffer's stamp against the end of the last one. Whole cycles missing at
+// a steady size are lost; any step where the size changes is the stamps' (an async follower's
+// quantum change); a fall that undoes the last gap at once was a late stamp. Else the lock's.
+bool AsrcServo::check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns) {
+    const int64_t pending = cycle_, pending_gap = cycle_gap_;
+    cycle_ = 0;
+    if (last_frames_ == 0 || frames == 0) return false;
+    const int64_t len = half_frames_ns(2 * (int64_t)last_frames_, in_hz_);
+    const int64_t gap = pts_ns - (last_pts_ + len);
+    const int64_t tol = std::min(CYCLE_TOL_NS, len / 8);
+    if (iabs64(gap) <= tol) return false;
+    // A source whose durations fit its frames stamps a new cycle size on the buffers before their
+    // frames show it; durations that never fit tell nothing (dur_trust_).
+    if (frames != last_frames_ || (dur_trust_ && (!fits(dur_ns, frames) || !last_fit_))) {
+        shift_ += gap;
+        events_.push_back(AsrcEvent{AsrcEvent::Kind::shift, "cycle-size", pts_ns - shift_, gap});
+        return false;
+    }
+    if (gap > 0) {
+        const int64_t n = (gap + len / 2) / len;
+        if (n >= 1 && iabs64(gap - n * len) <= tol && n * len <= DROP_MAX_NS) {
+            lose(n * last_frames_);
+            cycle_ = n * last_frames_;
+            cycle_gap_ = gap;
+            return true;
+        }
+    } else if (pending > 0 && iabs64(gap + pending_gap) <= tol) {
+        // Not lost after all: the frames come back off the input position, and as many are
+        // dropped so the content returns to the labels the jump already gave out.
+        lost_ -= pending;
+        drop_left_ += pending;
+        AsrcEvent e{AsrcEvent::Kind::gap, "reverted", pts_ns - shift_, 0};
+        e.dropped_ns = half_frames_ns(2 * pending, in_hz_);
+        e.lost_frames = -pending;
+        events_.push_back(e);
+    }
+    return false;
+}
+
+AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont, int64_t dur_ns) {
+    bool relocked = false, gapped = false;
     if (!started_) {   // a first buffer's DISCONT is no discontinuity
         started_ = true;
+        const int64_t sigma = half_frames_ns(2 * (n_in_ + lost_), in_hz_);
         lock_.feed(sigma, pts_ns);
         t0_ = lock_.house_of(sigma);
     } else {
@@ -129,8 +194,11 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
             discont_in_++;
             lock_.relock(true);
             why = "discont";
+            cycle_ = 0;
+        } else if (cfg_.cycle_input) {
+            gapped = check_cycle(pts_ns, frames, dur_ns);
         }
-        lock_.feed(sigma, pts_ns);
+        lock_.feed(half_frames_ns(2 * (n_in_ + lost_), in_hz_), pts_ns - shift_);
         if (!why && lock_.envelope_step()) {
             // step_hold_ns of the new floor is measured: the lock moves onto it, where a
             // relock would start from this one PTS and its jitter.
@@ -140,9 +208,20 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
         if (why) {
             open_epoch(why);
             relocked = true;
+            cycle_ = 0;
         }
     }
-    check_bounds(pts_ns);
+    if (frames > 0) {
+        last_pts_ = pts_ns;
+        last_frames_ = frames;
+        last_fit_ = fits(dur_ns, frames);
+        // Trusted after 8 fitting buffers in a row; a misfit lasting past a size change ends it.
+        fit_run_ = last_fit_ ? std::min(fit_run_ + 1, 8) : 0;
+        miss_run_ = last_fit_ ? 0 : std::min(miss_run_ + 1, 8);
+        if (fit_run_ >= 8) dur_trust_ = true;
+        if (miss_run_ > 4) dur_trust_ = false;
+    }
+    check_bounds(pts_ns - shift_);
     phase_err_ = measure_phase();
     const int64_t lim = cfg_.ratio_max_ppm * 1000;
     const int64_t p = clamp64(phase_err_, -9 * E9, 9 * E9);   // far past the clamp either way
@@ -151,7 +230,7 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
     drop_left_ -= skip;
     dropped_ += skip;
     n_in_ += frames;
-    return Command{in_rate(), (int32_t)(out_hz_ * 1000), relocked, skip};
+    return Command{in_rate(), (int32_t)(out_hz_ * 1000), relocked, skip, gapped && !relocked};
 }
 
 void AsrcServo::produced(uint32_t frames) {
@@ -170,6 +249,8 @@ AsrcServo::Stats AsrcServo::stats() const {
     s.out_frames = n_out_;
     s.discont_in = discont_in_;
     s.dropped_frames = dropped_;
+    s.gaps = gaps_;
+    s.lost_frames = lost_;
     return s;
 }
 

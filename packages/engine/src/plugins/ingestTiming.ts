@@ -101,13 +101,15 @@ export function buildRestamp({
     return `mrtsrestamp ${props.join(' ')}`;
 }
 
-/** `outRate` unset or 0: the rate the caps after it negotiate. */
+/** `outRate` unset or 0: the rate the caps after it negotiate. `cycleInput`: a `pipewiresrc`
+ *  capture, one buffer per graph cycle, so lost cycles are a gap and no relock (B-180). */
 export function buildAsrc({
     name = ASRC_ELEMENT,
     outRate,
-}: { name?: string; outRate?: number } = {}): string {
+    cycleInput = false,
+}: { name?: string; outRate?: number; cycleInput?: boolean } = {}): string {
     const rate = outRate && outRate > 0 ? ` out-rate=${Math.round(outRate)}` : '';
-    return `mrasrc name=${name}${rate}`;
+    return `mrasrc name=${name}${rate}${cycleInput ? ' cycle-input=true' : ''}`;
 }
 
 export function restampBusReports(name = RESTAMP_ELEMENT): BusReport[] {

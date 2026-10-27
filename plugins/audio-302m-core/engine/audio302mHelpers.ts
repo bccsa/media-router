@@ -322,6 +322,8 @@ export interface Audio302mEncodeOpts {
     /** A PCM capture (house-clock plan WI-P1-11): `mrasrc` in place of `audioresample`, the one
      *  resample of the path, locking the device clock to the capture PTS (P7). */
     asrc?: boolean;
+    /** With `asrc`, the input is a `pipewiresrc` capture: `mrasrc cycle-input` (B-180). */
+    cycleInput?: boolean;
     /** Appended after the mux: the capture's `buildRestamp({ mode: 'fixed', … })`. */
     restamp?: string;
 }
@@ -342,7 +344,7 @@ export function build302mEncodeBranch(opts: Audio302mEncodeOpts = {}): string {
     const format = opts.format ?? 'S32LE';
     const channels = normalize302mChannels(opts.channels ?? 2);
     // No out-rate: the caps after it pin 302M's 48 kHz.
-    const resample = opts.asrc ? buildAsrc() : 'audioresample';
+    const resample = opts.asrc ? buildAsrc({ cycleInput: opts.cycleInput }) : 'audioresample';
     // `strict=experimental`: ffmpeg flags its s302m ENCODER experimental and
     // refuses to run at normal compliance ("Codec is experimental, but
     // settings don't allow…" — verified gate01 gst 1.28). The bitstream it

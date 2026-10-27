@@ -251,7 +251,9 @@ export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogS
 export { GstPluginBase } from './plugins/GstPluginBase.js';
 export {
     pipewireStreamProps,
+    PIPEWIRE_CYCLE_TIME_PROPS,
     PIPEWIRE_RT_STREAM_PROPS,
+    PIPEWIRE_SRC_MIN_BUFFERS,
     pulsePinnedStreamProps,
     PULSE_PINNED_STREAM_PROPS,
 } from './plugins/pulseStreamProps.js';

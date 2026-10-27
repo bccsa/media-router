@@ -32,7 +32,7 @@ describe('AudioEncoderModule.buildPipeline', () => {
     it('builds an opus path by default with the encoder bitrate, ts mux, restamp and bus fan-out tee', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
-        expect(desc.pipeline).toContain('pipewiresrc target-object=MR_PW_enc-1 ');
+        expect(desc.pipeline).toContain('pipewiresrc target-object=MR_PW_enc-1 min-buffers=16 ');
         expect(desc.pipeline).toContain('opusenc bitrate=128000');
         expect(desc.pipeline).toContain(
             'mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true',
@@ -40,10 +40,10 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('udpsink');
     });
 
-    it("captures its own null-sink's monitor (#736): no WirePlumber fallback, linger until the sink exists, the node on the RT data loop (B-88)", () => {
+    it("captures its own null-sink's monitor (#736): no WirePlumber fallback, linger until the sink exists, the node on the RT data loop (B-88), 16 buffers, not live (B-180)", () => {
         const { module } = makeModule();
         expect(module.buildPipeline({}).pipeline).toMatch(
-            /^pipewiresrc target-object=MR_PW_enc-1 stream-properties="props,node\.dont-fallback=\(string\)true,node\.linger=\(string\)true,node\.loop\.class=\(string\)data\.rt,stream\.capture\.sink=\(string\)true,node\.latency=\(string\)2880\/48000" ! /,
+            /^pipewiresrc target-object=MR_PW_enc-1 min-buffers=16 stream-properties="props,node\.dont-fallback=\(string\)true,node\.linger=\(string\)true,node\.loop\.class=\(string\)data\.rt,stream\.is-live=\(string\)false,stream\.capture\.sink=\(string\)true,node\.latency=\(string\)2880\/48000" ! /,
         );
     });
 
@@ -120,11 +120,11 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('aac-is=false');
     });
 
-    it('falls back to fakesink when no bus channel can be assigned', () => {
+    it('falls back to fakesink when no bus channel can be assigned, one that never prerolls (B-180)', () => {
         const { module } = makeModule({ busPort: null });
         const desc = module.buildPipeline({});
         expect(desc.pipeline).toContain(
-            '! mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! fakesink name=usink sync=false',
+            '! mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! fakesink name=usink sync=false async=false',
         );
         expect(desc.pipeline).not.toContain('tee name=busout');
     });
@@ -378,11 +378,11 @@ describe('AudioEncoderModule on house time (WI-P1-12)', () => {
     it('the ASRC counts at sampleRate, whatever rate the null-sink monitor runs at', () => {
         const { module } = makeModule();
         expect(module.buildPipeline({}).pipeline).toContain(
-            '! audioconvert ! mrasrc name=asrc out-rate=48000 ! audio/x-raw,rate=48000,channels=2 ! volume ',
+            '! audioconvert ! mrasrc name=asrc out-rate=48000 cycle-input=true ! audio/x-raw,rate=48000,channels=2 ! volume ',
         );
         const p: string = module.buildPipeline({ codec: 'aac', sampleRate: 44100 }).pipeline;
         expect(p).toContain(
-            '! mrasrc name=asrc out-rate=44100 ! audio/x-raw,rate=44100,channels=2 !',
+            '! mrasrc name=asrc out-rate=44100 cycle-input=true ! audio/x-raw,rate=44100,channels=2 !',
         );
         // The capture's rate stays open: PipeWire hands over the monitor's own.
         expect(p).toMatch(/! audio\/x-raw,format=F32LE,channels=2,channel-mask=\(bitmask\)0x3 ! /);
@@ -397,7 +397,7 @@ describe('AudioEncoderModule on house time (WI-P1-12)', () => {
         expect(capture(6)).toBe('audio/x-raw,format=F32LE,channels=6,channel-mask=(bitmask)0x3f');
         expect(capture(8)).toBe('audio/x-raw,format=F32LE,channels=8,channel-mask=(bitmask)0xc3f');
         expect(module.buildPipeline({ channels: 6 }).pipeline).toContain(
-            '! mrasrc name=asrc out-rate=48000 ! audio/x-raw,rate=48000,channels=6 !',
+            '! mrasrc name=asrc out-rate=48000 cycle-input=true ! audio/x-raw,rate=48000,channels=6 !',
         );
     });
 

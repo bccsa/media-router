@@ -501,6 +501,12 @@ describe('build302mEncodeBranch', () => {
         );
         // The ASRC converts the nominal rate too, so nothing resamples twice (§13.1).
         expect(build302mEncodeBranch({ asrc: true })).not.toContain('audioresample');
+        // A pipewiresrc capture names its cycle input; the network ingest (AES67) does not (B-180).
+        expect(build302mEncodeBranch({ asrc: true, cycleInput: true })).toContain(
+            'audioconvert ! mrasrc name=asrc cycle-input=true ! audio/x-raw,format=S32LE',
+        );
+        expect(build302mEncodeBranch({ asrc: true })).not.toContain('cycle-input');
+        expect(build302mEncodeBranch({ cycleInput: true })).toContain('! audioresample !');
         // The restamp follows the mux whichever resampler runs.
         expect(build302mEncodeBranch({ restamp })).toMatch(
             /audioresample .* alignment=7 ! mrtsrestamp /,
