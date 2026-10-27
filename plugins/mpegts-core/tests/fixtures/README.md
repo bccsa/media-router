@@ -15,6 +15,13 @@ source's. Of the committed traces, `trace-gate01-rist-20010` (1 such record),
 `trace-gate01-rist-20046` (1), `trace-srt-reconnect-backlog` (2), `trace-vmix-sparse-pcr` (427
 of its 433 IDR records) and `trace-tech01-relay` (1) carry such flags, the rest none; a replay
 plays them back and uses them for nothing.
+Sink clocks for the audio outputs' device term are in `clock/` (ch. 8 WI-P4-4, B-165), recorded
+by DEV-P4a on 2026-10-27 with `tools/output-check/sink_clock_trace.py` (3600 s, `--hole 600:300
+--hole 1200:1000 --restart 1800`, a 40 ms prefill, `pulsesink sync=false provide-clock=false
+buffer-time=100000`): the sink's provided clock against CLOCK_MONOTONIC, a line per 100 ms
+(`mono_ns`, `clock_ns`, `delay_ns`, `next_sample`) and a line per event (the start, the two holes,
+the restart). Each is its recording's first lines byte for byte, cut at 2 MB about 300 s after
+the restart; `py/asrc_device_ref_test.py` replays them.
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|
@@ -51,3 +58,7 @@ plays them back and uses them for nothing.
 | `restamp/syn-sparse-bursty` | `fixture_gen --trace --pcr-ms 2000 --scatter-ms 200`, +50 ppm, 600 s (B-100) | One bucket per 2 s PCR: the window is 300 s of house time, so the lock comes at 308 s (a window of 300 buckets would wait 600 s) |
 | `restamp/syn-skew-floor-edge` | `fixture_gen --trace --scatter-ms 50:250 --scatter-floor 40` (40 % of the seconds on the floor, the rest 50-250 ms above), -50 ppm, 600 s (B-100) | The band reads the clock where the floor has a dense edge: +49.5 ppm at 306 s, pinned to 45-55 |
 | `restamp/syn-offset-masked` | as `syn-bursty-cycle-150` with the source +100 ppm, 600 s (B-100) | The known limit, pinned on purpose: on a diffuse scatter the band reads about zero whatever the clock (-12.7 ppm where the truth is -100), the 'Source clock off' alarm silent |
+| `clock/sink-clock-pi4-hdmi.jsonl` | The Pi 4 test box (ivan-test-p4), 2026-10-27: a null sink loaded as an audio-decoder loads its own, its monitor linked to the HDMI sink so that it runs on HDMI's clock, the trace stream muted; the recording's first 21,040 lines (2103.5 s, 1,999,935 B) | HDMI's clock, +7.5 ppm over the cut. Interpolated: corrections of +4..+7 and -4..-6 ms about every 1.5 s, 0.13-0.17 ms sd between them; 0 for 302 ms at the start and 498 ms at the restart, all before the first write; from a start up to 42 ms behind within 5 s, then corrections of up to +23 ms until about 13 s. Runs on through the 300 ms hole and the 1 s underrun |
+| `clock/sink-clock-pi4-kt.jsonl` | The same box and run: its KT USB output, the trace stream muted beside the box's own; the first 21,040 lines (2103.5 s, 1,999,989 B) | -136.4 ppm; start-up corrections of +3.5..+6.9 ms; otherwise as the HDMI-linked sink |
+| `clock/sink-clock-pi4-null.jsonl` | The same box and run: a null sink linked to nothing, on PipeWire's own timer; the first 21,040 lines (2103.5 s, 1,999,908 B) | -0.2 ppm: the interpolation's noise alone, whose 10-minute least-squares slopes run from -2.1 to +0.9 ppm; 0 for 411 and 422 ms at the start and the restart |
+| `clock/sink-clock-pi5-null.jsonl` | The Pi 5 test box, 2026-10-27 (it has no USB DAC): an unlinked null sink, the same schedule; the first 21,263 lines (2125.8 s, 1,999,918 B) | +0.5 ppm; 0 for 100 ms at the start and 99 ms at the restart; up to 36 ms behind its steady level in the first 13 s |
