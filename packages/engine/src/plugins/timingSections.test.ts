@@ -371,3 +371,66 @@ describe('timingPublication: aligner modules (WI-P2-13)', () => {
         expect(timingChanged(mixer, { ...mixer, inputs: [mixer.inputs[0], noState] })).toBe(true);
     });
 });
+
+describe('timingPublication: demux and ASRC rows (WI-P3-6)', () => {
+    const demux = { pesPerS: 46.875, gaps: 2, ccLost: 14, unknownStreams: 1 };
+    const s: ModuleTimingSummary = {
+        instrument: true,
+        output: lat(40),
+        inputs: [
+            { ...input('lat_busin_0', 20, 40, 1), demux, clockCorrection: { sourcePpm: 23.44 } },
+            { ...input('lat_busin_1', 22, 40, 2), clockCorrection: {} },
+        ],
+        clockCorrection: { sourcePpm: -0.31 },
+        deviceClockPpm: -12.1,
+    };
+
+    it('each input: its Demux rows and its clock correction, signed, the source named', () => {
+        const pub = timingPublication(s);
+        expect(pub.data['timing-in-1']).toMatchObject({
+            demuxPesPerS: 47,
+            demuxGaps: 2,
+            demuxCcLost: 14,
+            demuxUnknownStreams: 1,
+            clockCorrection: '+23.4 ppm (source)',
+        });
+        expect(pub.data['timing-in-2']).toMatchObject({ clockCorrection: 'none (house rate)' });
+        expect(pub.data['timing-in-2'].demuxGaps).toBeUndefined();
+        const in1 = pub.sections.find((x) => x.id === 'timing-in-1')!;
+        expect(in1.fields.slice(-5)).toEqual([
+            { key: 'demuxPesPerS', label: 'Demux rate', unit: 'PES/s' },
+            { key: 'demuxGaps', label: 'Demux gaps' },
+            { key: 'demuxCcLost', label: 'Demux CC lost', unit: 'packets' },
+            { key: 'demuxUnknownStreams', label: 'Demux unknown streams' },
+            { key: 'clockCorrection', label: 'Clock correction' },
+        ]);
+    });
+
+    it("the module's own ASRC and the device clock in the timing section", () => {
+        const pub = timingPublication(s);
+        expect(pub.data.timing).toMatchObject({
+            clockCorrection: '−0.3 ppm (source)',
+            deviceClock: '−12.1 ppm',
+        });
+        expect(timingPublication({ ...s, deviceClockPpm: 40 }).data.timing.deviceClock).toBe(
+            '+40.0 ppm',
+        );
+    });
+
+    it('timingChanged: 0.1 ppm, an engage, a PES/s or a counter is a change; less is not', () => {
+        const at = (patch: Partial<ModuleTimingSummary>, in0: object = {}) => ({
+            ...s,
+            ...patch,
+            inputs: [{ ...s.inputs[0], ...in0 }, s.inputs[1]],
+        });
+        expect(timingChanged(s, at({ deviceClockPpm: -12.15 }))).toBe(false);
+        expect(timingChanged(s, at({ deviceClockPpm: -12.2 }))).toBe(true);
+        expect(timingChanged(s, at({ clockCorrection: {} }))).toBe(true);
+        expect(timingChanged(s, at({}, { clockCorrection: { sourcePpm: 23.5 } }))).toBe(false);
+        expect(timingChanged(s, at({}, { clockCorrection: { sourcePpm: 23.6 } }))).toBe(true);
+        expect(timingChanged(s, at({}, { demux: { ...demux, pesPerS: 47.5 } }))).toBe(false);
+        expect(timingChanged(s, at({}, { demux: { ...demux, pesPerS: 48 } }))).toBe(true);
+        expect(timingChanged(s, at({}, { demux: { ...demux, ccLost: 15 } }))).toBe(true);
+        expect(timingChanged(s, at({}, { demux: undefined }))).toBe(true);
+    });
+});

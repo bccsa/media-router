@@ -179,6 +179,23 @@ elements" below do not start.
 - **TS Splitter passes its streams through untouched**: every output
   carries the input's PES bytes and the program's clock unchanged.
 
+**What each input's demux shows (Phase 3)**
+
+- **Each input shows its demux counters.** In a module's timing popup, each
+  input that the module unpacks adds **Demux rate** (PES per second),
+  **Demux gaps** (holes in its timeline), **Demux CC lost** (packets lost on
+  the way, by the stream's continuity count) and **Demux unknown streams**.
+  A program change on an input, such as a source switching codec, is a line
+  in the engine log: "Input <name>: program changed (generation <n>)".
+- **An input whose producer is not on house time, or that carries a stream
+  type the demux does not know, says so on the module**: "Input <name> is
+  <n> s off house time — its producer does not stamp house time", and
+  "Input <name>: PID 0x0123: stream type 0x06 with no known descriptor is
+  not demuxed". An input that carries none of the streams the module takes
+  says so too ("Input <name> carries no 302M audio stream" on the 302M
+  modules). None of these drops anything; each goes at the input's next
+  program change or a restart, and the last also once the stream is there.
+
 **Removed settings (Phase 2), nothing migrated**
 
 - **Mix Latency** on Audio Mixer, N-1 Audio Mixer (302M), Audio Processing

@@ -2159,6 +2159,41 @@ lateness. What a plugin author does:
   the worst `PipeWire latency` of those nodes (one cycle of the node's driver
   group plus the node's own `Latency` param, from `pw-dump`, polled every
   10 s) — audio-input, audio-output, n1-mixer and audio-dynamics do.
+- **Demuxes and consumer ASRCs report themselves** (house-clock Phase 3,
+  B-126): both runners forward `mrtsdemux` and `mrasrc-stats`/`mrasrc-event`
+  unsubscribed as `<structure>:<element>`, and `GstPluginBase` reads them
+  (an `mrasrc-*` event still reaches your `onPluginEvent`: an ingest's card
+  reads its capture ASRC's, which the display leaves alone). A demux adds
+  Demux rate (PES/s over the last 10 s), Demux gaps, Demux CC lost (packets)
+  and Demux unknown streams (the current program's) to its input's section,
+  and each new program after the first is a log line, `Input <n>: program
+  changed (generation g)`. A decode ASRC adds Clock correction: `none (house
+  rate)` while its buffers pass, `+23.4 ppm (source)` once it resamples
+  (positive when the source runs fast), on its input's section where each
+  input has its own (the 302M fan-ins) and on the `timing` section otherwise;
+  an ASRC with a device term adds Device clock (`−12.1 ppm`) to the `timing`
+  section, and an engage is logged as `source clock +x ppm: resampling`. The
+  terms are read off the description at start (`bypass-below-ppm`,
+  `device-sink`), since `mode` reads `device` for a decode + device ASRC
+  whose source still passes; so is a demux's `media`. Which input an element
+  serves: one named for a bus connection (`…_<shortHash(connectionId)>`, as
+  the live fan-in branches are) serves that edge; else a demux serves the
+  module's one input and an ASRC the module. A module that names them
+  otherwise answers `demuxInputOf(element)` with `{ tap }`, `{ connection }`,
+  `{ port }` (the one connection on that sink port), a `{ label }` of its
+  own or `null`: mpegts-muxer maps `demux_<i>` to its pin, audio-processing
+  and audio-output-302m their fan-ins' `<mixer>_demux<i>` by connection
+  (`mixInputDemuxes`), and the subtitle renderers `subdemux` to Subtitles In
+  (`renderDemuxInput`). Their warnings join the aligners' in one health text
+  the module owns, taken only over ok or its own (ADR-0010 rule 2):
+  `demux-unknown-stream` (`Input <n>: PID 0x0123: stream type 0x06 with no
+  known descriptor is not demuxed`), `input-not-house-time` (`Input <n> is
+  <x> s off house time — its producer does not stamp house time`) and
+  `input-no-stream` (`Input <n> carries no audio stream`, the kind from the
+  demux's `select` or `media`), each gone at the demux's next program, a
+  start or a respawn, the last also once a report finds the stream; and
+  `asrc-out-of-bounds` (a consumer ASRC's `ratio-out-of-bounds`) until its
+  locked source is back below 900 ppm, the element's own hysteresis.
 
 Reading the numbers: a network ingest reads negative, early by its source's
 PTS − PCR lead (its content lands source-natural, Phase 1); a capture reads

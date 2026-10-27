@@ -1,8 +1,11 @@
 // LatenessReporter (§9.5, WI-P0-9): taps' and sidecars' `mrlateness` windows as the timing
 // summary (`lat_busin…` in; `lat_render`/`lat_egress`/`lat_busout…` out), no threshold (OQ-8);
-// aligner modules add their `mralignwatch` reports and warnings (WI-P2-13).
+// aligner modules add their `mralignwatch` reports and warnings (WI-P2-13), consumers their
+// demuxes' counters and their ASRCs' clocks (WI-P3-6).
 import type {
     AlignerInputState,
+    ClockCorrection,
+    DemuxCounters,
     LatenessStatsMs,
     ModuleTimingInput,
     ModuleTimingSummary,
@@ -17,6 +20,22 @@ import {
 } from './alignerWatches.js';
 import type { TimingInputRef } from './PluginModule.js';
 import { LAT_IN_PREFIX, LAT_OUT_PREFIX, LATENESS_EVENT } from './latenessTap.js';
+import {
+    DEMUX_EVENT,
+    DemuxWatches,
+    demuxWarningText,
+    type DemuxProgram,
+    type DemuxWatch,
+} from './demuxWatches.js';
+import {
+    ASRC_EVENT,
+    ASRC_STATS,
+    AsrcWatches,
+    asrcWarningText,
+    type AsrcLogEvent,
+    type AsrcWatch,
+} from './asrcWatches.js';
+import { launchElements } from './launchElements.js';
 
 export interface LatenessWindowMs extends LatenessStatsMs {
     count: number;
@@ -66,6 +85,48 @@ export type LabelledAlignerEvent = AlignerEvent & { label: string };
 export interface AlignerWarnings {
     absent: string | null;
     full: string | null;
+}
+
+/** What the demuxes and the consumer ASRCs warn of (WI-P3-6), each kind owned by the module. */
+export type StreamWarningKind =
+    | 'demux-unknown-stream'
+    | 'input-not-house-time'
+    | 'input-no-stream'
+    | 'asrc-out-of-bounds';
+
+export interface StreamWarning {
+    kind: StreamWarningKind;
+    text: string;
+}
+
+/** A demux's new program or a consumer ASRC's event, with the input it names (none: the
+ *  module's own ASRC). */
+export type StreamLogEvent =
+    | { source: 'demux'; label: string; program: DemuxProgram }
+    | { source: 'asrc'; label?: string; event: AsrcLogEvent };
+
+const STREAM_CHANNELS = [DEMUX_EVENT, ASRC_STATS, ASRC_EVENT].map((c) => `${c}:`);
+
+/** Several demuxes on one input (none today): their counters add up. */
+function sumDemux(watches: DemuxWatch[]): DemuxCounters | undefined {
+    const c = watches.flatMap((w) => (w.counters ? [w.counters] : []));
+    if (!c.length) return undefined;
+    const add = (k: keyof DemuxCounters): number => c.reduce((s, x) => s + x[k], 0);
+    return {
+        pesPerS: add('pesPerS'),
+        gaps: add('gaps'),
+        ccLost: add('ccLost'),
+        unknownStreams: add('unknownStreams'),
+    };
+}
+
+/** Several decode terms in one place: the largest correction, else none. */
+function mergeCorrection(watches: AsrcWatch[]): ClockCorrection | undefined {
+    const c = watches.flatMap((w) => (w.correction ? [w.correction] : []));
+    if (!c.length) return undefined;
+    const engaged = c.filter((x) => x.sourcePpm !== undefined);
+    if (!engaged.length) return {};
+    return engaged.reduce((a, b) => (Math.abs(b.sourcePpm!) > Math.abs(a.sourcePpm!) ? b : a));
 }
 
 /** One input on display: its key (a tap, or `mralignwatch:<label>`), place and label, and the
@@ -123,6 +184,9 @@ export interface LatenessReporterOptions {
     inputs?: () => TimingInputRef[];
     /** Which input an aligner watch serves; default an input of its own, by its label. */
     alignerInput?: (watch: AlignerWatchRef) => AlignerInputRef;
+    /** Which input a demux, or an ASRC on one input's branch, serves (WI-P3-6). Undefined: a
+     *  demux serves the module's one input (several: a row of its own), an ASRC the module. */
+    branchInput?: (element: string) => AlignerInputRef | undefined;
     /** Window length the taps run at; staleness is measured in these. */
     intervalMs?: number;
     /** A window hidden as off the house timeline: once per tap until `reset`. */
@@ -133,6 +197,10 @@ export class LatenessReporter {
     private readonly taps = new Map<string, Entry>();
     private readonly hidden = new Set<string>();
     private readonly watches = new AlignerWatches();
+    private readonly demuxes = new DemuxWatches();
+    private readonly asrcs = new AsrcWatches();
+    /** Each demux's `media` as the description builds it, for the no-stream text. */
+    private demuxMedia = new Map<string, string>();
     private presentationDelayMs: number | undefined;
     private deviceLatencyMs: number | undefined;
     private deviceLatencyNote: string | undefined;
@@ -145,10 +213,11 @@ export class LatenessReporter {
         this.intervalMs = opts.intervalMs ?? 2000;
     }
 
-    /** Takes `mrlateness:<tap>` and `mralignwatch:<element>` plugin events; false for any
-     *  other channel. */
+    /** Takes `mrlateness:<tap>`, `mralignwatch:<element>`, `mrtsdemux:<element>` and the
+     *  `mrasrc-*:<element>` plugin events; false for any other channel. */
     onEvent(channel: string, payload: unknown, now = Date.now()): boolean {
         if (this.onAligner(channel, payload, now)) return true;
+        if (this.onStream(channel, payload, now)) return true;
         if (!channel.startsWith(`${LATENESS_EVENT}:`)) return false;
         const tap = channel.slice(LATENESS_EVENT.length + 1);
         const window = parseLatenessPayload(payload);
@@ -176,6 +245,44 @@ export class LatenessReporter {
         const taken = this.watches.take(channel.slice(ALIGNER_EVENT.length + 1), payload, now);
         if (!taken) return { changed: false, events: [] };
         const events = taken.events.map((e) => ({ ...e, label: this.labelOf(e.watch) }));
+        return { changed: taken.changed, events };
+    }
+
+    /** The run's elements as its description builds them (an ASRC's terms, a demux's `media`):
+     *  what their messages do not carry. */
+    configure(pipeline: string | undefined): void {
+        this.asrcs.configure(pipeline);
+        this.demuxMedia = new Map(
+            [...launchElements(pipeline ?? '', 'mrtsdemux')].flatMap(([name, p]) =>
+                p.media ? [[name, p.media] as [string, string]] : [],
+            ),
+        );
+    }
+
+    /** An `mrtsdemux:<element>` or `mrasrc-stats`/`mrasrc-event:<element>` message: whether a
+     *  warning changed, and what it completes for the log. Null for any other channel, and for
+     *  a capture ASRC's (its ingest card's alone). */
+    onStream(
+        channel: string,
+        payload: unknown,
+        now = Date.now(),
+    ): { changed: boolean; events: StreamLogEvent[] } | null {
+        const prefix = STREAM_CHANNELS.find((c) => channel.startsWith(c));
+        if (!prefix) return null;
+        const name = channel.slice(prefix.length);
+        if (prefix === `${DEMUX_EVENT}:`) {
+            const taken = this.demuxes.take(name, payload, now);
+            if (!taken) return { changed: false, events: [] };
+            const { program } = taken;
+            const label = program ? this.labelOfKey(this.demuxKey(name), name) : '';
+            const events: StreamLogEvent[] = program ? [{ source: 'demux', label, program }] : [];
+            return { changed: taken.changed, events };
+        }
+        const taken = this.asrcs.take(prefix.slice(0, -1), name, payload, now);
+        if (!taken) return null;
+        const events: StreamLogEvent[] = taken.event
+            ? [{ source: 'asrc', label: this.asrcLabel(name), event: taken.event }]
+            : [];
         return { changed: taken.changed, events };
     }
 
@@ -210,6 +317,9 @@ export class LatenessReporter {
         this.taps.clear();
         this.hidden.clear();
         this.watches.clear();
+        this.demuxes.clear();
+        this.asrcs.clear();
+        this.configure(undefined);
         this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
         this.deviceLatencyNote = undefined;
         this.processingLatencyMs = undefined;
@@ -222,6 +332,8 @@ export class LatenessReporter {
             if (now - e.at > staleMs) this.taps.delete(tap);
         }
         this.watches.expire(now, staleMs);
+        this.demuxes.expire(now, staleMs);
+        this.asrcs.expire(now, staleMs);
     }
 
     private labelOf(watch: AlignerWatchRef): string {
@@ -233,6 +345,68 @@ export class LatenessReporter {
 
     private resolve(watch: AlignerWatchRef): AlignerInputRef {
         return this.opts.alignerInput ? this.opts.alignerInput(watch) : { label: watch.input };
+    }
+
+    /** The row a demux joins (null: none): the module's answer, else its one input's, else a
+     *  row of its own. A single-input module's tap is its input whatever it is called. */
+    private demuxKey(name: string): string | null {
+        const ref = this.opts.branchInput?.(name);
+        if (ref !== undefined) return ref && rowKey(ref);
+        const known = this.opts.inputs?.() ?? [];
+        const taps = [...this.taps.keys()].filter((t) => t.startsWith(LAT_IN_PREFIX));
+        if (known.length <= 1 && taps.length === 1) return taps[0];
+        if (known.length === 1) return known[0].tap;
+        return rowKey({ label: name });
+    }
+
+    /** The row an ASRC on one input's branch joins; null: the module's section. */
+    private asrcKey(name: string): string | null {
+        const ref = this.opts.branchInput?.(name);
+        return ref && 'tap' in ref ? ref.tap : null;
+    }
+
+    /** The input a row key names: on display, else among the module's inputs (its row not
+     *  shown yet). */
+    private inputOf(
+        key: string | null,
+        rows = this.inputRows().rows,
+    ): { n: number; label: string } | undefined {
+        if (key === null) return undefined;
+        return rows.find((r) => r.key === key) ?? this.opts.inputs?.().find((k) => k.tap === key);
+    }
+
+    /** A row's label by its key, else its own; `fallback` names what has no row. */
+    private labelOfKey(key: string | null, fallback: string): string {
+        if (key === null) return fallback;
+        return this.inputOf(key)?.label ?? ownLabel(key);
+    }
+
+    /** An ASRC's input label while it serves one of the module's inputs; none: the module's own. */
+    private asrcLabel(name: string): string | undefined {
+        return this.inputOf(this.asrcKey(name))?.label;
+    }
+
+    /** The demuxes' and the consumer ASRCs' warnings, in the order of the inputs they name. */
+    streamWarnings(now = Date.now()): StreamWarning[] {
+        this.expire(now);
+        const out: Array<StreamWarning & { n: number }> = [];
+        const { rows } = this.inputRows();
+        for (const d of this.demuxes.list()) {
+            const key = this.demuxKey(d.name);
+            const input = this.inputOf(key, rows);
+            const name = input?.label ?? (key === null ? d.name : ownLabel(key));
+            for (const w of d.warnings) {
+                const text = demuxWarningText(w, name, this.demuxMedia.get(d.name));
+                out.push({ kind: w.kind, text, n: input?.n ?? Infinity });
+            }
+        }
+        for (const a of this.asrcs.list()) {
+            if (a.outOfBoundsPpm === undefined) continue;
+            const input = this.inputOf(this.asrcKey(a.name), rows);
+            const text = asrcWarningText(a.outOfBoundsPpm, input?.label);
+            out.push({ kind: 'asrc-out-of-bounds', text, n: input?.n ?? Infinity });
+        }
+        return out.sort((a, b) => a.n - b.n).map(({ kind, text }) => ({ kind, text }));
     }
 
     /** Every input on display, at its place and in its order: the live input taps and the inputs
@@ -251,6 +425,11 @@ export class LatenessReporter {
         }
         const keys = new Set(served.keys());
         for (const tap of this.taps.keys()) if (tap.startsWith(LAT_IN_PREFIX)) keys.add(tap);
+        // A demux reports on its input even while that input's tap is not there.
+        for (const d of this.demuxes.list()) {
+            const key = d.counters ? this.demuxKey(d.name) : null;
+            if (key !== null) keys.add(key);
+        }
         const sorted = [...keys].sort((a, b) => a.localeCompare(b));
         const placed = sorted.length ? placeInputs(sorted, this.opts.inputs?.() ?? []) : [];
         const rows = sorted.map((key, i) => ({
@@ -330,6 +509,7 @@ export class LatenessReporter {
         // An aligner input joins its tap's row, or is a row of its own (a dark input's tap
         // goes quiet, its watch reports on).
         const { rows, internal } = this.inputRows();
+        const streams = this.streamFields(rows);
         const inputs: ModuleTimingInput[] = rows.map((row) => {
             const tap = row.key.startsWith(LAT_IN_PREFIX) ? this.taps.get(row.key) : undefined;
             return {
@@ -339,6 +519,7 @@ export class LatenessReporter {
                 ...(tap ? { lateness: tap.window } : {}),
                 ...(tap && output ? { addedMs: output.meanMs - tap.window.meanMs } : {}),
                 ...(row.watches.length ? alignerFields(row.watches) : {}),
+                ...streams.inputs.get(row.key),
             };
         });
         const tapped = inputs.filter((i) => i.lateness !== undefined);
@@ -372,6 +553,48 @@ export class LatenessReporter {
             summary.pipeWireLatencyMs = this.pipeWireLatencyMs;
         if (this.processingLatencyMs !== undefined)
             summary.processingLatencyMs = this.processingLatencyMs;
+        Object.assign(summary, streams.module);
         return summary;
+    }
+
+    /** Each row's demux counters and clock correction; the module's own ASRC and its device
+     *  clock (the largest of several). */
+    private streamFields(rows: InputRow[]): {
+        inputs: Map<string, Partial<ModuleTimingInput>>;
+        module: Partial<ModuleTimingSummary>;
+    } {
+        const onRow = new Set(rows.map((r) => r.key));
+        const demuxes = new Map<string, DemuxWatch[]>();
+        for (const d of this.demuxes.list()) {
+            const key = this.demuxKey(d.name);
+            if (key !== null) demuxes.set(key, [...(demuxes.get(key) ?? []), d]);
+        }
+        const asrcs = new Map<string | null, AsrcWatch[]>();
+        let devicePpm: number | undefined;
+        for (const a of this.asrcs.list()) {
+            const key = this.asrcKey(a.name);
+            const place = key !== null && onRow.has(key) ? key : null;
+            asrcs.set(place, [...(asrcs.get(place) ?? []), a]);
+            if (a.devicePpm !== undefined && Math.abs(a.devicePpm) >= Math.abs(devicePpm ?? 0)) {
+                devicePpm = a.devicePpm;
+            }
+        }
+        const inputs = new Map<string, Partial<ModuleTimingInput>>();
+        for (const key of onRow) {
+            const demux = sumDemux(demuxes.get(key) ?? []);
+            const clockCorrection = mergeCorrection(asrcs.get(key) ?? []);
+            inputs.set(key, {
+                ...(demux ? { demux } : {}),
+                ...(clockCorrection ? { clockCorrection } : {}),
+            });
+        }
+        const clockCorrection = mergeCorrection(asrcs.get(null) ?? []);
+        return {
+            inputs,
+            module: {
+                ...(clockCorrection ? { clockCorrection } : {}),
+                ...(devicePpm !== undefined ? { deviceClockPpm: devicePpm } : {}),
+            },
+        };
     }
 }

@@ -638,3 +638,196 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.summary().inputs).toEqual([]);
     });
 });
+
+describe('LatenessReporter: demuxes and consumer ASRCs (WI-P3-6)', () => {
+    const iv = (pes: number, o: Record<string, unknown> = {}) => ({
+        reason: 'interval',
+        select: '',
+        stream: 'found',
+        pes,
+        gaps: 1,
+        'cc-lost': 4,
+        generation: 0,
+        ...o,
+    });
+    const st = (mode: string, o: Record<string, number> = {}) => ({
+        state: 'locked',
+        mode,
+        relocks: 0,
+        'in-frames': 1000,
+        'source-ppb': 0,
+        'device-ppb': 0,
+        ...o,
+    });
+    /** Two reports a second apart: the demux row shows from the second. */
+    const feed = (r: LatenessReporter, name: string, at = 0, o: Record<string, unknown> = {}) => {
+        r.onEvent(`mrtsdemux:${name}`, iv(0, o), at);
+        r.onEvent(`mrtsdemux:${name}`, iv(47, o), at + 1000);
+    };
+
+    it("a single-input module: the demux joins its one input's row, whatever the tap is called", () => {
+        const r = new LatenessReporter({
+            inputs: () => [{ tap: 'lat_busin_41000_aa11bb', n: 1, label: 'srt-1 (mpegts-in)' }],
+        });
+        r.onEvent('mrlateness:lat_busin', win(30), 1000);
+        feed(r, 'demux');
+        const s = r.summary(1000);
+        expect(s.inputs).toHaveLength(1);
+        expect(s.inputs[0]).toMatchObject({
+            tap: 'lat_busin',
+            n: 1,
+            label: 'srt-1 (mpegts-in)',
+            lateness: lat(30, 30, 30),
+            demux: { pesPerS: 47, gaps: 1, ccLost: 4, unknownStreams: 0 },
+        });
+        // Its tap quiet (no instrument): the demux keeps the input's row.
+        const dark = new LatenessReporter({
+            inputs: () => [{ tap: 'lat_busin_41000_aa11bb', n: 1, label: 'srt-1 (mpegts-in)' }],
+        });
+        feed(dark, 'demux');
+        expect(dark.summary(1000).inputs.map((i) => [i.tap, i.label])).toEqual([
+            ['lat_busin_41000_aa11bb', 'srt-1 (mpegts-in)'],
+        ]);
+    });
+
+    it("several inputs: the module's answer places a demux, one it does not place has its own row", () => {
+        const r = new LatenessReporter({
+            inputs: () => [
+                { tap: 'lat_busin_0', n: 1, label: 'srt-a (input-0)' },
+                { tap: 'lat_busin_1', n: 2, label: 'srt-b (input-1)' },
+            ],
+            branchInput: (el) => (el === 'demux_1' ? { tap: 'lat_busin_1' } : undefined),
+        });
+        r.onEvent('mrlateness:lat_busin_0', win(20), 1000);
+        r.onEvent('mrlateness:lat_busin_1', win(40), 1000);
+        feed(r, 'demux_1');
+        feed(r, 'probe_demux');
+        const rows = r.summary(1000).inputs.map((i) => [i.n, i.label, i.demux?.pesPerS]);
+        expect(rows).toEqual([
+            [1, 'srt-a (input-0)', undefined],
+            [2, 'srt-b (input-1)', 47],
+            [3, 'probe_demux', 47],
+        ]);
+        // null: no row; its warning names it.
+        const internal = new LatenessReporter({ branchInput: () => null });
+        feed(internal, 'dm');
+        internal.onEvent(
+            'mrtsdemux:dm',
+            { reason: 'no-stream', select: 'audio/mpeg', stream: 'missing' },
+            1500,
+        );
+        expect(internal.summary(1500).inputs).toEqual([]);
+        expect(internal.streamWarnings(1500)).toEqual([
+            { kind: 'input-no-stream', text: 'Input dm carries no audio stream' },
+        ]);
+    });
+
+    it('a branch ASRC on its input row; the module own ASRC and the device clock on the module', () => {
+        const r = new LatenessReporter({
+            inputs: () => [
+                { tap: 'lat_busin_a', n: 1, label: 'enc-a (audio-in)' },
+                { tap: 'lat_busin_b', n: 2, label: 'enc-b (audio-in)' },
+            ],
+            branchInput: (el) =>
+                el === 'mixin_asrc_a'
+                    ? { tap: 'lat_busin_a' }
+                    : el === 'gone'
+                      ? { tap: 'x' }
+                      : undefined,
+        });
+        r.onEvent('mrlateness:lat_busin_a', win(20), 1000);
+        r.onEvent('mrlateness:lat_busin_b', win(20), 1000);
+        r.onEvent('mrasrc-stats:mixin_asrc_a', st('decode', { 'source-ppb': 23_400 }), 1000);
+        r.onEvent('mrasrc-stats:gone', st('bypass'), 1000);
+        r.onEvent('mrasrc-stats:outasrc', st('device', { 'device-ppb': -12_100 }), 1000);
+        const s = r.summary(1000);
+        expect(s.inputs.map((i) => i.clockCorrection)).toEqual([{ sourcePpm: 23.4 }, undefined]);
+        // An ASRC whose row is not on display shows on the module's.
+        expect(s.clockCorrection).toEqual({});
+        expect(s.deviceClockPpm).toBe(-12.1);
+        // A capture ASRC shows nowhere (its ingest card's).
+        const ingest = new LatenessReporter();
+        ingest.configure('pulsesrc ! mrasrc name=asrc out-rate=48000 ! fakesink');
+        expect(ingest.onEvent('mrasrc-stats:asrc', st('capture'), 0)).toBe(false);
+        expect(ingest.summary(0)).toEqual({ inputs: [], instrument: true });
+    });
+
+    it('the warnings name their inputs, in their order; each goes with its condition', () => {
+        const r = new LatenessReporter({
+            inputs: () => [
+                { tap: 'lat_busin_0', n: 1, label: 'srt-a (input-0)' },
+                { tap: 'lat_busin_1', n: 2, label: 'srt-b (input-1)' },
+            ],
+            branchInput: (el) => ({ tap: `lat_busin_${el.slice(-1)}` }),
+        });
+        r.configure('unixfdsrc ! mrtsdemux name=demux_1 media=audio ! fakesink');
+        r.onEvent('mrlateness:lat_busin_0', win(20), 0);
+        r.onEvent('mrlateness:lat_busin_1', win(20), 0);
+        r.onEvent('mrtsdemux:demux_1', { reason: 'no-stream', stream: 'missing' }, 0);
+        r.onEvent(
+            'mrtsdemux:demux_0',
+            { reason: 'program', generation: 0, pads: 'video_0_0100' },
+            0,
+        );
+        r.onEvent(
+            'mrtsdemux:demux_0',
+            { reason: 'not-house-time', pid: 256, 'offset-ms': 7_200_000 },
+            0,
+        );
+        expect(r.streamWarnings(0)).toEqual([
+            {
+                kind: 'input-not-house-time',
+                text: 'Input srt-a (input-0) is 7200 s off house time — its producer does not stamp house time',
+            },
+            { kind: 'input-no-stream', text: 'Input srt-b (input-1) carries no audio stream' },
+        ]);
+        const next = r.onStream(
+            'mrtsdemux:demux_0',
+            { reason: 'program', generation: 1, pads: 'video_1_0100' },
+            1,
+        );
+        expect(next).toEqual({
+            changed: true,
+            events: [
+                {
+                    source: 'demux',
+                    label: 'srt-a (input-0)',
+                    program: { name: 'demux_0', generation: 1, pads: 'video_1_0100', pcrPid: 0 },
+                },
+            ],
+        });
+        r.onEvent('mrtsdemux:demux_1', iv(5), 2);
+        expect(r.streamWarnings(2)).toEqual([]);
+        r.onEvent('mrasrc-stats:asrc_1', st('decode', { 'source-ppb': 1_300_000 }), 3);
+        r.onEvent('mrasrc-event:asrc_1', { kind: 'ratio-out-of-bounds', 'fit-ppb': -1_298_312 }, 3);
+        expect(r.streamWarnings(3)).toEqual([
+            {
+                kind: 'asrc-out-of-bounds',
+                text:
+                    "Input srt-b (input-1): source clock +1300.0 ppm off house time, past the ASRC's 1000 ppm" +
+                    " — check the source's sample rate",
+            },
+        ]);
+    });
+
+    it('a demux that stopped reporting goes with its row and warnings; a reset forgets all', () => {
+        const r = new LatenessReporter();
+        feed(r, 'demux');
+        r.onEvent(
+            'mrtsdemux:demux',
+            { reason: 'unknown-stream', pid: 0x101, 'stream-type': 6, generation: 0 },
+            1000,
+        );
+        expect(r.summary(1000).inputs[0].demux!.unknownStreams).toBe(1);
+        expect(r.streamWarnings(7000)).toHaveLength(1);
+        expect(r.streamWarnings(7001)).toEqual([]);
+        expect(r.summary(7001).inputs).toEqual([]);
+        feed(r, 'demux', 8000);
+        r.onEvent('mrasrc-stats:asrc', st('bypass'), 8000);
+        r.configure('mrtsdemux name=demux media=video');
+        r.reset();
+        expect(r.summary(9000)).toEqual({ inputs: [], instrument: true });
+        r.onEvent('mrtsdemux:demux', { reason: 'no-stream', stream: 'missing' }, 9000);
+        expect(r.streamWarnings(9000)[0].text).toBe('Input demux carries no stream');
+    });
+});

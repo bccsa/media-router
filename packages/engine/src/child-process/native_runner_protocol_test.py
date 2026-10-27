@@ -2469,6 +2469,23 @@ def _demux_events(r, name):
             if e.get("event") == "plugin_event" and e.get("channel") == f"mrtsdemux:{name}"]
 
 
+def _shape(payload):
+    """A payload's fields and their JSON types: what the engine's readers parse."""
+    return {k: type(v).__name__ for k, v in payload.items()}
+
+
+def _engine_shapes():
+    """forwarded-messages.json (WI-P3-6): one payload per reason or kind, as the engine's demux
+    and ASRC readers take them in their tests."""
+    with open(os.path.join(_FIX, "forwarded-messages.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _off_shape(payloads, shapes, key):
+    """The payloads whose fields or types differ from their entry (or that have none)."""
+    return [p for p in payloads if p.get(key) not in shapes or _shape(p) != _shape(shapes[p[key]])]
+
+
 def _pmt_change_run(argv, tag):
     """The muxer's string (pipelines.json muxKlv, its tsdemux strings as mrtsdemux, the retime
     off) with the mux_routing hook. Input 0: syn-pmt-version-bump (a version-only PMT, then a
@@ -2584,7 +2601,8 @@ def test_mrtsdemux_pmt_change():
 def test_mrtsdemux_messages():
     """mrtsdemux-messages, both runners: a demux-mode input's `mrtsdemux` messages forwarded
     unsubscribed as `mrtsdemux:<name>`: program at its plan, unknown-stream (tp-h264-dts's DTS
-    stream), not-house-time (the recording 2 h behind the clock), and the interval report."""
+    stream), not-house-time (the recording 2 h behind the clock), and the interval report, each
+    in the shape the engine reads (forwarded-messages.json, WI-P3-6)."""
     if not os.path.exists(_MRTS_CLI) or Gst.ElementFactory.find("unixfdsink") is None:
         print("SKIP mrtsdemux-messages — mrts_cli or unixfdsink unavailable")
         return
@@ -2631,6 +2649,9 @@ def test_mrtsdemux_messages():
               f"pads ({len(iv)})", len(iv) >= 1 and all(m.get("pads") == "video_0_0100" and m.get("generation") == 0
                                                        and m.get("unknown-streams") == 1 and m.get("pes", 0) > 0
                                                        for m in iv))
+        off = _off_shape(got, _engine_shapes()["mrtsdemux"], "reason")
+        check(f"mrtsdemux-messages {tag}: every message in the engine's shape, its fields and their types "
+              f"({len(got)} messages; off: {off[:1]})", bool(got) and not off)
         seen[tag] = (prog, unk, [p for p, _ in nh], sorted(by))
     if len(seen) == 2:
         check(f"mrtsdemux-messages: both runners forward the same messages ({seen['native'][3]})",
@@ -2655,7 +2676,8 @@ def test_mrasrc_device():
     """mrasrc-device (WI-P3-5), both runners: `audiotestsrc ! mrasrc device-sink=sink ! pulsesink
     name=sink slave-method=custom` on a null sink (tests/libgstmrtest.so's mrtestaudiosink without
     one): the sink's custom-slaving callback is set and never asks a skew (audiobasesink's own lines),
-    and mrasrc-stats shows mode device with the device lock fed."""
+    and mrasrc-stats shows mode device with the device lock fed. No busReports: both runners forward
+    the ASRC's messages unsubscribed, in the shape the engine reads (WI-P3-6, S19)."""
     null = _pulse_null_sink() if Gst.ElementFactory.find("pulsesink") else None
     env = {"GST_DEBUG": "audiobasesink:5", "GST_DEBUG_NO_COLOR": "1"}
     tmp = None
@@ -2679,11 +2701,14 @@ def test_mrasrc_device():
         try:
             r.wait_event(ev_is("ready"))
             r.send({"cmd": "start", "pipeline": pipeline, "useStdioForData": False, "linkOnPadAdded": [],
-                    "busReports": [{"element": "asrc", "structure": "mrasrc-stats"},
-                                   {"element": "asrc", "structure": "mrasrc-event"}],
                     "decoderThreadType": "auto"})
             playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
-            time.sleep(6)
+            # Two stats posts (every 2 s of labels), not a fixed sleep: a loaded box posts late.
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and sum(
+                    ev.get("channel") == "mrasrc-stats:asrc" for ev in r.events) < 2:
+                r.pump()
+                time.sleep(0.1)
             r.send({"cmd": "get_stats", "id": "as1", "element": "asrc"})
             st = r.wait_event(ev_is("stats", id="as1"))
             snap = (st or {}).get("data") or {}
@@ -2709,6 +2734,11 @@ def test_mrasrc_device():
         check(f"mrasrc-device {tag}: device relocks only from the sink's start ({reasons})",
               "sync-latency" in reasons and set(reasons) <= {"new-caps", "sync-latency"}
               and all(e.get("kind") == "device-relock" for e in events))
+        shapes = _engine_shapes()
+        off = [p for p in stats if _shape(p) != _shape(shapes["mrasrc-stats"])]
+        off += _off_shape(events, shapes["mrasrc-event"], "kind")
+        check(f"mrasrc-device {tag}: forwarded unsubscribed, in the engine's shape ({len(stats)} stats, "
+              f"{len(events)} events; off: {off[:1]})", bool(stats and events) and not off)
         seen[tag] = (sorted({s.get("mode") for s in stats}), reasons)
     if tmp:
         shutil.rmtree(tmp, ignore_errors=True)

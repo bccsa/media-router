@@ -33,6 +33,7 @@ export {
     SUBTITLE_DEMUX_NAME,
     SUBTITLE_OVERLAY_NAME,
     applySubtitleLiveUpdates,
+    renderDemuxInput,
     subtitleRenderPlan,
     type SubtitleRenderPlan,
     type SubtitleSource,

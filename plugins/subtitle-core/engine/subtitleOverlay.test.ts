@@ -10,7 +10,7 @@ import {
     subtitleRunnerHook,
 } from './subtitleOverlay.js';
 import { buildSubtitlePayTail } from './subtitlePay.js';
-import { subtitleRenderPlan } from './subtitleRender.js';
+import { SUBTITLE_DEMUX_NAME, renderDemuxInput, subtitleRenderPlan } from './subtitleRender.js';
 
 describe('subtitle overlay schema', () => {
     it('every key is live-updatable and has a default', () => {
@@ -111,6 +111,18 @@ describe('pipeline fragments', () => {
 
     it('render plan pins the python runner (python-only hook by decision, ADR-0016 2026-10-09)', () => {
         expect(subtitleRenderPlan({ port: 5600 }, {}).runner).toBe('python');
+    });
+
+    it("a renderer's demuxes: the cue demux serves Subtitles In, its own its video input (WI-P3-6)", () => {
+        const main = { demux: 'vpdemux', port: 'mpegts-in' };
+        expect(subtitleRenderPlan({ port: 5600 }, {}).inputFragment).toContain(
+            `name=${SUBTITLE_DEMUX_NAME} `,
+        );
+        expect(renderDemuxInput(SUBTITLE_DEMUX_NAME, main)).toEqual({
+            port: SUBTITLE_INPUT_PORT.id,
+        });
+        expect(renderDemuxInput('vpdemux', main)).toEqual({ port: 'mpegts-in' });
+        expect(renderDemuxInput('subov', main)).toBeUndefined();
     });
 
     it('declares the shared subtitle input port', () => {

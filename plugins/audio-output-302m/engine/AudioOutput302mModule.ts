@@ -6,7 +6,7 @@ import {
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { buildAudioMixInput } from '@media-router/plugin-audio-302m-core';
+import { buildAudioMixInput, mixInputDemuxes } from '@media-router/plugin-audio-302m-core';
 import { SINK_BUFFER_US, SLAVE_METHOD_SKEW, audio302mTsOffsetNs } from './audio302mTiming.js';
 import { buildOutputPlacement } from './outputPlacement.js';
 
@@ -56,6 +56,14 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
 
     private deviceName = '';
+    /** The fan-in's demuxes and the connection each decodes, from the last build (WI-P3-6). */
+    private demuxes = new Map<string, string>();
+
+    /** A fan-in branch's demux serves its connection's row. */
+    protected demuxInputOf(element: string): { connection: string } | undefined {
+        const connection = this.demuxes.get(element);
+        return connection ? { connection } : undefined;
+    }
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -164,6 +172,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         }
 
         const { fragment, continuationName } = buildAudioMixInput({ sources, channels });
+        this.demuxes = mixInputDemuxes({ sources, channels });
         const tsOffsetNs = audio302mTsOffsetNs(this.services, config);
 
         // Present at stamped time + D on the house clock (see the class comment). `name=sink` is

@@ -18,6 +18,7 @@ import {
     SUBTITLE_OVERLAY_LIVE_KEYS,
     SUBTITLE_OVERLAY_NAME,
     applySubtitleLiveUpdates,
+    renderDemuxInput,
 } from '@media-router/plugin-subtitle-core';
 import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
 import { renditionSummary, throughputSection } from './transcoderStatus.js';
@@ -52,6 +53,11 @@ import {
  * empty `liveUpdatableParams` default is exactly right, so it isn't overridden.
  */
 export class TranscoderModule extends GstPluginBase {
+    /** The input demux serves the TS input, the cue demux Subtitles In (WI-P3-6). */
+    protected demuxInputOf(element: string): { port: string } | undefined {
+        return renderDemuxInput(element, { demux: DEMUX_NAME, port: 'mpegts-in' });
+    }
+
     /** Bus-egress tee names captured at build time (`busout_<port>`), one per rendition. */
     private sinkNames: string[] = [];
     /** Renditions captured at build time, index-aligned with `sinkNames`. */

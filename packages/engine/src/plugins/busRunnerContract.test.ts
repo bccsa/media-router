@@ -376,17 +376,18 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         });
 
         it('both runners forward mrlateness unsubscribed, as mrlateness:<tap>', () => {
-            // One list per runner since WI-P2-6 (the aligner's and the demux's messages too);
-            // gst_native_plugins_test.py pins the two lists equal.
+            // One list per runner since WI-P2-6 (the aligner's, the demux's and, since WI-P3-6,
+            // the ASRC's messages too); the twin test below and gst_native_plugins_test.py pin
+            // the two lists equal.
             expect(runnerSource).toContain(
-                'FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux")',
+                'FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event")',
             );
             expect(runnerSource).toContain('elif name in FORWARDED_ELEMENT_MESSAGES and src_name:');
             expect(runnerSource).toContain(
                 'emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))',
             );
-            expect(native).toContain(
-                'kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux"}',
+            expect(native).toMatch(
+                /kForwardedMessages\[\] = \{lateness::MESSAGE, "mralignwatch", "mrtsdemux",\s+"mrasrc-stats", "mrasrc-event"\}/,
             );
             expect(native).toContain('} else if (src_name && forwarded_message(name)) {');
             expect(native).toContain('emit_plugin_event(std::string(name) + ":" + src_name');
@@ -397,6 +398,26 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
             expect(native.indexOf('forwarded_message(name)) {')).toBeLessThan(
                 native.indexOf('bus_reports.count({src_name, name})'),
             );
+        });
+
+        it('the two lists are twins: every message the engine reads unsubscribed, in both (S19)', () => {
+            const py = /FORWARDED_ELEMENT_MESSAGES = \(([^)]*)\)/.exec(runnerSource)![1];
+            const cpp = /kForwardedMessages\[\] = \{([^}]*)\}/.exec(native)![1];
+            const names = (list: string, lateness: string) =>
+                list
+                    .split(',')
+                    .map((x) => x.trim())
+                    .map((x) => (x === lateness ? 'mrlateness' : x.replace(/^"|"$/g, '')));
+            const both = names(cpp, 'lateness::MESSAGE');
+            expect(names(py, '')).toEqual(both);
+            // A live-added branch has no busReports: its demux and its ASRC must reach the engine.
+            expect(both).toEqual([
+                'mrlateness',
+                'mralignwatch',
+                'mrtsdemux',
+                'mrasrc-stats',
+                'mrasrc-event',
+            ]);
         });
 
         it('both runners load libgstmrlateness.so by path at start, never GST_PLUGIN_PATH', () => {

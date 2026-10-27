@@ -150,6 +150,17 @@ export function liveDemuxName(mixerName: string, connectionId: string): string {
     return `${mixerName}_demux_${shortHash(connectionId)}`;
 }
 
+/** `name=` of the mrtsdemux decoding `sources[i]`: by its connection in live-input mode, else by
+ *  its place. */
+function branchDemuxName(
+    mixerName: string,
+    i: number,
+    source: AudioMixSource,
+    live: boolean,
+): string {
+    return live ? liveDemuxName(mixerName, source.connectionId) : `${mixerName}_demux${i}`;
+}
+
 /** The live-input branch of ONE wired connection (`getLiveInputBranch` shape).
  *  `buildAudioMixInput` in live-input mode renders every start-time branch
  *  through this too, so a module's hook and its `buildPipeline` agree. */
@@ -287,8 +298,9 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         // transparent to negotiation), so the branch pins the same format the
         // mixer arm publishes, with one element fewer.
         const queueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
+        const demuxName = branchDemuxName(mixerName, 0, opts.sources[0], false);
         const fragment =
-            `${decode302m(opts.sources[0], `${mixerName}_demux0`, channels)}` +
+            `${decode302m(opts.sources[0], demuxName, channels)}` +
             ` ! queue leaky=0 max-size-time=${queueNs} max-size-buffers=0 max-size-bytes=0` +
             ` ! capsfilter name=${outName} caps="${caps}"`;
         return { fragment, continuationName: outName };
@@ -303,7 +315,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     // the exact string a hot add sends — so a later live remove finds it.
     const branches = opts.sources.map((s, i) => {
         if (!live) {
-            const demuxName = `${mixerName}_demux${i}`;
+            const demuxName = branchDemuxName(mixerName, i, s, false);
             return `${build302mMixBranch(s, { channels, mixerName, demuxName })} ! ${mixerName}.`;
         }
         const b = liveMixInputBranch(mixerName, s, { channels });
@@ -311,6 +323,16 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     });
 
     return { fragment: [mixer, ...branches].join(' '), continuationName: outName };
+}
+
+/** Which connection each `mrtsdemux` of `buildAudioMixInput(opts)` decodes, by its `name=`: a
+ *  module's `demuxInputOf` answer (house-clock WI-P3-6). */
+export function mixInputDemuxes(opts: AudioMixInputOpts): Map<string, string> {
+    const mixerName = opts.mixerName ?? 'mixin';
+    const live = opts.liveInputs === true;
+    return new Map(
+        opts.sources.map((s, i) => [branchDemuxName(mixerName, i, s, live), s.connectionId]),
+    );
 }
 
 export interface Audio302mEncodeOpts {

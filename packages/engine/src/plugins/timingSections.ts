@@ -1,13 +1,16 @@
 // A module's timing summary as status sections and a face badge (ADR-0007: the plugin
 // computes, the UI renders). Every row is labelled with its unit, so the operator reads a
-// number, not a colour. House-clock plan WI-P0-9; the aligner rows WI-P2-13.
+// number, not a colour. House-clock plan WI-P0-9; the aligner rows WI-P2-13; the demux and
+// ASRC rows WI-P3-6.
 import type {
+    ClockCorrection,
     LatenessStatsMs,
     ModuleBadge,
     ModuleTimingInput,
     ModuleTimingSummary,
     StatusValue,
 } from '@media-router/shared-types';
+import { clockCorrectionText, signedPpm } from './asrcWatches.js';
 
 export const TIMING_SECTION = 'timing';
 export const TIMING_BADGE = 'lateness';
@@ -58,8 +61,23 @@ function inputRows(input: ModuleTimingInput): Row[] {
     if (input.staleMs !== undefined) {
         rows.push(['staleMs', 'Discarded on rejoin', ms(input.staleMs), 'ms']);
     }
+    if (input.demux) {
+        rows.push(
+            ['demuxPesPerS', 'Demux rate', Math.round(input.demux.pesPerS), 'PES/s'],
+            ['demuxGaps', 'Demux gaps', input.demux.gaps],
+            ['demuxCcLost', 'Demux CC lost', input.demux.ccLost, 'packets'],
+            ['demuxUnknownStreams', 'Demux unknown streams', input.demux.unknownStreams],
+        );
+    }
+    if (input.clockCorrection) rows.push(correctionRow(input.clockCorrection));
     return rows;
 }
+
+const correctionRow = (c: ClockCorrection): Row => [
+    'clockCorrection',
+    'Clock correction',
+    clockCorrectionText(c),
+];
 
 export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     const pub: TimingPublication = { sections: [], data: {}, badge: null };
@@ -97,6 +115,10 @@ export function timingPublication(s: ModuleTimingSummary): TimingPublication {
     if (s.renderMs !== undefined) rows.push(['renderMs', 'Render lateness', ms(s.renderMs), 'ms']);
     if (s.pipeWireLatencyMs !== undefined) {
         rows.push(['pipeWireLatencyMs', 'PipeWire latency', ms(s.pipeWireLatencyMs), 'ms']);
+    }
+    if (s.clockCorrection) rows.push(correctionRow(s.clockCorrection));
+    if (s.deviceClockPpm !== undefined) {
+        rows.push(['deviceClock', 'Device clock', signedPpm(s.deviceClockPpm)]);
     }
     if (rows.length) section(TIMING_SECTION, 'Timing', rows, pub);
 
@@ -137,6 +159,11 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('render', s.renderMs);
     put('pw', s.pipeWireLatencyMs);
     put('proc', s.processingLatencyMs);
+    // ppm in tenths, its display step; a correction's `none` is a value of its own.
+    const tenths = (c: ClockCorrection | undefined): number | string | undefined =>
+        c && (c.sourcePpm === undefined ? 'none' : c.sourcePpm * 10);
+    put('cc', tenths(s.clockCorrection));
+    put('deviceClock', s.deviceClockPpm === undefined ? undefined : s.deviceClockPpm * 10);
     for (const i of s.inputs) {
         put(`${i.tap}.n`, i.n);
         put(`${i.tap}.label`, i.label);
@@ -148,6 +175,11 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
         put(`${i.tap}.w`, i.silenceLimitMs);
         put(`${i.tap}.absences`, i.absences); // a count: each new absence moves it by 1
         put(`${i.tap}.stale`, i.staleMs);
+        put(`${i.tap}.pesPerS`, i.demux?.pesPerS);
+        put(`${i.tap}.gaps`, i.demux?.gaps);
+        put(`${i.tap}.ccLost`, i.demux?.ccLost);
+        put(`${i.tap}.unknownStreams`, i.demux?.unknownStreams);
+        put(`${i.tap}.cc`, tenths(i.clockCorrection));
     }
     for (const o of s.outputs ?? []) {
         put(`${o.tap}.mean`, o.lateness.meanMs);

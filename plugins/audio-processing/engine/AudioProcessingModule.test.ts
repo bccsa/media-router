@@ -226,6 +226,26 @@ describe('AudioProcessingModule — buildPipeline', () => {
         await module.onStop();
     });
 
+    it("each fan-in's demux serves its connection's timing row (WI-P3-6)", async () => {
+        const program = [mkSource('program-in'), mkSource('program-in', 1)];
+        const key = mkSource('sidechain-in', 2);
+        const { module } = await createModule({ mode: 'gate', gateKey: 'sidechain' }, [
+            ...program,
+            key,
+        ]);
+        await startModule(module);
+        const p = module.buildPipeline((module as any).config)!.pipeline;
+        const of = (el: string) => (module as any).demuxInputOf(el);
+        for (const [i, el] of ['progmix_demux0', 'progmix_demux1'].entries()) {
+            expect(p).toContain(`mrtsdemux name=${el} `);
+            expect(of(el)).toEqual({ connection: program[i].connectionId });
+        }
+        expect(p).toContain('mrtsdemux name=scmix_demux0 ');
+        expect(of('scmix_demux0')).toEqual({ connection: key.connectionId });
+        expect(of('il')).toBeUndefined();
+        await module.onStop();
+    });
+
     it('allocates one bus channel and reports the chain', async () => {
         const { module, assignBusChannel, setHealth } = await createModule(
             { mode: 'compressor', eqEnabled: true, hpfEnabled: true, limiterEnabled: true },

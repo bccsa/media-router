@@ -882,6 +882,24 @@ describe('MpegTsMuxerModule', () => {
             );
         });
 
+        it("branch i's demux serves the row of branch i's tap, numbered like its pin (WI-P3-6)", () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'input-2', port: 40003 },
+                    { sinkPortId: 'input-0', port: 40001 },
+                ],
+            });
+            (module as any).config = { inputs: [{}, {}, {}], alignment: 7 };
+            const desc = module.buildPipeline((module as any).config)!;
+            const of = (el: string) => (module as any).demuxInputOf(el);
+            for (const i of [0, 1]) {
+                expect(desc.pipeline).toContain(`name=demux_${i}`);
+                expect(of(`demux_${i}`)).toEqual({ tap: desc.timingInputs![i].tap });
+            }
+            expect(of('demux_x')).toBeUndefined();
+            expect(of('mux')).toBeUndefined();
+        });
+
         it('declares the input arrays (generic and legacy) as live-updatable, so a legacy rename stays live', () => {
             const { module } = makeModule();
             expect(module.getLiveUpdatableParams()).toEqual([

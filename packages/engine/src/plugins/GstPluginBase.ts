@@ -26,6 +26,8 @@ import {
 import { PlayoutReanchorState, type PlayoutWarningKind } from './playoutReanchorState.js';
 import { ModuleTiming } from './moduleTiming.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
+import type { DemuxInputRef } from './demuxWatches.js';
+import type { StreamWarning } from './latenessReporter.js';
 import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
 
 /** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
@@ -43,7 +45,8 @@ type OwnedWarning =
     | 'rebase'
     | 'timing-plugin'
     | 'input-absent'
-    | 'aligner-full';
+    | 'aligner-full'
+    | StreamWarning['kind'];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -53,6 +56,16 @@ import {
 } from './liveInputBranches.js';
 
 const defaultLog = createLogger('GstPluginBase');
+
+/** The timing display's warnings (WI-P2-13, WI-P3-6): one health text, owned by the module. */
+const TIMING_WARNINGS: ReadonlySet<OwnedWarning> = new Set<OwnedWarning>([
+    'input-absent',
+    'aligner-full',
+    'demux-unknown-stream',
+    'input-not-house-time',
+    'input-no-stream',
+    'asrc-out-of-bounds',
+]);
 
 /**
  * Abstract base class for GStreamer-based plugins.
@@ -94,12 +107,21 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
         alignerInput: (watch) => this.alignerInputOf(watch),
+        streamWarnings: (warnings) => this.onStreamWarnings(warnings),
+        demuxInput: (element) => this.demuxInputOf(element),
     });
 
     /** Which input an aligner watch serves (WI-P2-13): `{ tap }`, `{ label }` of its own, or
      *  `null` (internal). Undefined: the engine's rule, a watch labelled with a bus connection
      *  id serves that edge (the 302M fan-ins); a module whose watches say otherwise answers. */
     protected alignerInputOf(_watch: AlignerWatchRef): AlignerInputRef | undefined {
+        return undefined;
+    }
+
+    /** Which input a demux, or an ASRC on one input's branch, serves (WI-P3-6): `{ tap }`,
+     *  `{ connection }`, `{ port }`, `{ label }` or `null`. Undefined: the engine's rule (one
+     *  named `…_<shortHash(connectionId)>` serves that edge; else the one input, or the module). */
+    protected demuxInputOf(_element: string): DemuxInputRef | undefined {
         return undefined;
     }
 
@@ -411,22 +433,45 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.health !== 'error') this.ownWarning('timing-plugin', this.timingPluginAlarm);
     }
 
-    /**
-     * The aligners' `input-absent` and `aligner-full` warnings (WI-P2-13) as one health text.
-     * Taken only over ok or our own text (ADR-0010 rule 2), so another writer's warning or an
-     * error stands; the next tick takes over once it clears. Withdrawn when neither stands.
-     */
+    /** The timing display's warnings as last reported: the aligners', the demuxes' and ASRCs'. */
+    private readonly timingWarnings = {
+        absent: null as string | null,
+        full: null as string | null,
+        stream: [] as StreamWarning[],
+    };
+
     private onAlignerWarnings(absent: string | null, full: string | null): void {
-        const text = [absent, full].filter((t): t is string => t !== null).join('; ');
-        const ours = this.ownedWarning === 'input-absent' || this.ownedWarning === 'aligner-full';
+        this.timingWarnings.absent = absent;
+        this.timingWarnings.full = full;
+        this.showTimingWarnings();
+    }
+
+    private onStreamWarnings(warnings: StreamWarning[]): void {
+        this.timingWarnings.stream = warnings;
+        this.showTimingWarnings();
+    }
+
+    /** The aligners' (WI-P2-13), demuxes' and ASRCs' (WI-P3-6) warnings as one health text owned
+     *  by its first: only over ok or our own text (ADR-0010 rule 2), never over a stopped or failed
+     *  module, so another writer's stands until the next tick; withdrawn when none stands. */
+    private showTimingWarnings(): void {
+        const { absent, full, stream } = this.timingWarnings;
+        const parts: Array<{ kind: OwnedWarning; text: string }> = [
+            ...(absent !== null ? [{ kind: 'input-absent' as const, text: absent }] : []),
+            ...(full !== null ? [{ kind: 'aligner-full' as const, text: full }] : []),
+            ...stream,
+        ];
+        const text = parts.map((p) => p.text).join('; ');
+        const owned = this.ownedWarning;
+        const ours = owned !== null && TIMING_WARNINGS.has(owned);
         if (!text) {
-            this.clearOwnWarning('input-absent');
-            this.clearOwnWarning('aligner-full');
+            if (ours) this.clearOwnWarning(owned);
             return;
         }
+        if (this.health === 'stopped' || this.health === 'error') return;
         if (!ours && this.health !== 'ok') return;
         if (ours && this.health === 'warning' && this.error === text) return;
-        this.ownWarning(absent !== null ? 'input-absent' : 'aligner-full', text);
+        this.ownWarning(parts[0].kind, text);
     }
 
     /** `ok`, or the rule-6 alarm while it stands (no state change emitted). */
@@ -739,8 +784,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * do more with it.
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
-        // Lateness windows and aligner reports are the base class's alone (WI-P0-9,
-        // WI-P2-13): no subclass hook.
+        // Lateness windows, aligner reports and demux messages are the base class's alone
+        // (WI-P0-9, WI-P2-13, WI-P3-6): no subclass hook. An ASRC's go on to it too.
         if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
         if (channel === PLAYOUT_REANCHOR_EVENT) {

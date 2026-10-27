@@ -9,6 +9,7 @@ import {
     liveInputBranchFor,
     liveMixInputBranch,
     mixInputBranchName,
+    mixInputDemuxes,
     normalize302mChannels,
     type AudioMixSource,
 } from './audio302mHelpers.js';
@@ -166,6 +167,25 @@ describe('helper strings carry none of the replaced mechanisms', () => {
         }
     });
 
+    it("names each branch's demux and the connection it decodes, as the fragment has it", () => {
+        for (let n = 1; n <= SOURCES.length; n++) {
+            for (const liveInputs of [false, true]) {
+                const opts = { sources: SOURCES.slice(0, n), liveInputs, mixerName: 'progmix' };
+                const named = [
+                    ...buildAudioMixInput(opts).fragment.matchAll(/mrtsdemux name=(\S+)/g),
+                ];
+                const demuxes = mixInputDemuxes(opts);
+                expect([...demuxes.keys()]).toEqual(named.map((m) => m[1]));
+                expect([...demuxes.values()]).toEqual(opts.sources.map((x) => x.connectionId));
+                // A live branch's ends in its connection's hash: the engine's rule needs no hook.
+                for (const [name, c] of demuxes) {
+                    if (liveInputs) expect(name.endsWith(`_${shortHash(c)}`)).toBe(true);
+                }
+            }
+        }
+        expect(mixInputDemuxes({ sources: [] })).toEqual(new Map());
+    });
+
     it('exports no paced mixer; a new builder must join the test above', () => {
         expect(Object.keys(core).sort()).toEqual([
             'DEFAULT_302M_BIT_DEPTH',
@@ -179,6 +199,7 @@ describe('helper strings carry none of the replaced mechanisms', () => {
             'liveInputBranchFor',
             'liveMixInputBranch',
             'mixInputBranchName',
+            'mixInputDemuxes',
             'mixMatrixClause',
             'normalize302mChannels',
             'positionedChannelsClause',

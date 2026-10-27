@@ -79,7 +79,7 @@ bus_reports = set()
 
 # Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
 # no busReports entry. Equal to runner.cpp's kForwardedMessages.
-FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux")
+FORWARDED_ELEMENT_MESSAGES = ("mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event")
 
 # VU throttle: only send when changed, heartbeat every 1s
 last_vu = None

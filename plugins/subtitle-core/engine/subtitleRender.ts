@@ -9,6 +9,7 @@
 
 import type { RunnerHook } from '@media-router/engine';
 import {
+    SUBTITLE_INPUT_PORT_ID,
     buildSubtitleInput,
     buildSubtitleOverlayElement,
     subtitleOverlayLiveUpdates,
@@ -58,6 +59,16 @@ export function subtitleRenderPlan(
         ],
         runner: 'python',
     };
+}
+
+/** A renderer's `demuxInputOf` (house-clock WI-P3-6): the cue demux serves Subtitles In, the
+ *  renderer's `main` demux its video input. */
+export function renderDemuxInput(
+    element: string,
+    main: { demux: string; port: string },
+): { port: string } | undefined {
+    if (element === SUBTITLE_DEMUX_NAME) return { port: SUBTITLE_INPUT_PORT_ID };
+    return element === main.demux ? { port: main.port } : undefined;
 }
 
 /**

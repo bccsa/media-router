@@ -14,6 +14,7 @@ import {
     SUBTITLE_OVERLAY_LIVE_KEYS,
     SUBTITLE_OVERLAY_NAME,
     applySubtitleLiveUpdates,
+    renderDemuxInput,
 } from '@media-router/plugin-subtitle-core';
 import {
     bootNowMs,
@@ -24,7 +25,7 @@ import {
     processStartMs,
     waitForWaylandSocket,
 } from './helpers/wayland.js';
-import { resolveFallbackImagePath, RESUME_SINK_NAME } from './helpers/pipelines.js';
+import { resolveFallbackImagePath, RESUME_SINK_NAME, VP_DEMUX_NAME } from './helpers/pipelines.js';
 import {
     decoderDemotionNote,
     probeDecoderAvailability,
@@ -104,6 +105,14 @@ type RunnerErrorEvent = { kind?: string; message?: string; element?: string };
 export class VideoPlayerModule extends GstPluginBase {
     /** The video input port; the subtitle input is SUBTITLE_INPUT_PORT_ID. */
     static readonly VIDEO_INPUT_PORT_ID = 'mpegts-in';
+
+    /** The video demux serves the video input, the cue demux Subtitles In (WI-P3-6). */
+    protected demuxInputOf(element: string): { port: string } | undefined {
+        return renderDemuxInput(element, {
+            demux: VP_DEMUX_NAME,
+            port: VideoPlayerModule.VIDEO_INPUT_PORT_ID,
+        });
+    }
 
     // `fallbackText` is "live" only in the *fallback* pipeline — the `nov`
     // textoverlay element doesn't exist in the live (bus → decodebin)

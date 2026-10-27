@@ -28,6 +28,7 @@ import { buildBusSink, busTeeName, type BusReport } from '@media-router/engine';
 import {
     buildAudioMixInput,
     build302mEncodeBranch,
+    mixInputDemuxes,
     type AudioMixSource,
     s302mFormatFor,
 } from '@media-router/plugin-audio-302m-core';
@@ -50,6 +51,8 @@ export interface ProcessingPipelineResult {
     /** Throughput counter element on the output (bus fan-out tee). */
     sinkName: string;
     busReports?: BusReport[];
+    /** Each fan-in branch's demux and the connection it decodes (house-clock WI-P3-6). */
+    demuxes: Map<string, string>;
 }
 
 const PROGRAM_MIXER = 'progmix';
@@ -100,12 +103,10 @@ export function buildProcessingPipeline(
     const programSources = input.programSources.filter((s) => !sidechainIds.has(s.connectionId));
     if (programSources.length === 0) return null;
 
-    const program = buildAudioMixInput({
-        sources: programSources,
-        channels: 2,
-        mixerName: PROGRAM_MIXER,
-    });
+    const programIn = { sources: programSources, channels: 2, mixerName: PROGRAM_MIXER };
+    const program = buildAudioMixInput(programIn);
     parts.push(program.fragment);
+    const demuxes = mixInputDemuxes(programIn);
 
     // A sidechain edge is consumed ONLY by a mode that keys off it. Under any
     // other mode the edge stays unbuilt — unconsumed, not re-purposed (the
@@ -113,12 +114,15 @@ export function buildProcessingPipeline(
     const needsSidechain = stages.keyedGate || stages.duckerKey;
     let sidechainName = '';
     if (needsSidechain && input.sidechainSources.length > 0) {
-        const sidechain = buildAudioMixInput({
+        const sidechainIn = {
             sources: input.sidechainSources,
             channels: 2,
             mixerName: SIDECHAIN_MIXER,
-        });
+        };
+        const sidechain = buildAudioMixInput(sidechainIn);
         parts.push(sidechain.fragment);
+        for (const [name, connection] of mixInputDemuxes(sidechainIn))
+            demuxes.set(name, connection);
         sidechainName = sidechain.continuationName;
     }
 
@@ -196,5 +200,6 @@ export function buildProcessingPipeline(
         pipeline: parts.join(' '),
         sinkName: busTeeName(input.outputPort),
         busReports: busReports.length > 0 ? busReports : undefined,
+        demuxes,
     };
 }

@@ -1,0 +1,99 @@
+{
+  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the mrasrc events but device-relock are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind.",
+  "mrtsdemux": {
+    "interval": {
+      "cc-lost": 0,
+      "desync-bytes": 0,
+      "frame-ns": -1,
+      "gaps": 0,
+      "generation": 0,
+      "markers": 0,
+      "markers-dropped": 0,
+      "pads": "video_0_0100",
+      "pes": 26,
+      "pes-dropped-cc": 0,
+      "pes-no-pts": 0,
+      "pid": -1,
+      "program": 1,
+      "reason": "interval",
+      "select": "",
+      "stream": "found",
+      "unknown-streams": 1
+    },
+    "program": {
+      "generation": 0,
+      "pads": "video_0_0100",
+      "pcr-pid": 256,
+      "pid": -1,
+      "program": 1,
+      "reason": "program",
+      "select": "",
+      "stream": "found"
+    },
+    "unknown-stream": {
+      "generation": 0,
+      "pid": 257,
+      "program": 1,
+      "reason": "unknown-stream",
+      "registration": "",
+      "select": "",
+      "stream": "found",
+      "stream-type": 130
+    },
+    "not-house-time": {
+      "offset-ms": -7199680,
+      "pid": 256,
+      "program": 1,
+      "reason": "not-house-time",
+      "select": "",
+      "stream": "found"
+    },
+    "no-stream": {
+      "pid": -1,
+      "program": 1,
+      "reason": "no-stream",
+      "select": "",
+      "stream": "missing"
+    }
+  },
+  "mrasrc-stats": {
+    "device-ppb": 0,
+    "discont-in": 0,
+    "dropped-frames": 0,
+    "in-frames": 97280,
+    "mode": "device",
+    "out-frames": 97248,
+    "phase-err-ns": 0,
+    "ratio-ppb": 0,
+    "relocks": 0,
+    "source-ppb": 0,
+    "state": "acquiring"
+  },
+  "mrasrc-event": {
+    "device-relock": {
+      "house-ns": 3335492352325885,
+      "kind": "device-relock",
+      "reason": "sync-latency"
+    },
+    "engaged": {
+      "house-ns": 3335517352325885,
+      "kind": "engaged",
+      "phase-ns": 41250,
+      "reason": "ratio",
+      "source-ppb": 3000
+    },
+    "relock": {
+      "dropped-ns": 0,
+      "house-ns": 3335520002325885,
+      "jump-ns": 512000000,
+      "kind": "relock",
+      "reason": "gap"
+    },
+    "ratio-out-of-bounds": {
+      "fit-ppb": -1298312,
+      "house-ns": 3335530002325885,
+      "kind": "ratio-out-of-bounds",
+      "reason": ""
+    }
+  }
+}

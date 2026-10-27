@@ -91,6 +91,12 @@ export class MpegTsMuxerModule extends GstPluginBase {
         return buildDynamicPorts(inputEntries(config));
     }
 
+    /** Branch i's demux `demux_<i>` serves its pin's row, the tap of that branch (WI-P3-6). */
+    protected demuxInputOf(element: string): { tap: string } | undefined {
+        const branch = /^demux_(\d+)$/.exec(element)?.[1];
+        return branch !== undefined ? { tap: latInName(inputBusSrcName(branch)) } : undefined;
+    }
+
     /** Input-array edits are live only when the length is unchanged (rename)
      *  AND no entry's `language` or PID override changed. A grown/shrunk
      *  array means a different port set; a PID change alters the pad-link

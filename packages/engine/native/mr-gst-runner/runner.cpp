@@ -42,7 +42,8 @@ namespace {
 
 /** Element messages forwarded unsubscribed as `<name>:<element>`: inputs added at runtime have
  *  no busReports entry. Equal to gst-pipeline-runner.py's FORWARDED_ELEMENT_MESSAGES. */
-const char* const kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux"};
+const char* const kForwardedMessages[] = {lateness::MESSAGE, "mralignwatch", "mrtsdemux",
+                                          "mrasrc-stats", "mrasrc-event"};
 
 bool forwarded_message(const char* name) {
     for (const char* f : kForwardedMessages)

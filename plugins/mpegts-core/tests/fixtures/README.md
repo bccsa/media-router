@@ -79,6 +79,14 @@ be used by the run; `measuredEqual` says why the brief's other expected differen
 here joins the run by its name; a difference it brings fails until the element changes or an entry
 says why.
 
+`forwarded-messages.json` holds one `mrtsdemux` message per `reason` and one `mrasrc-stats` and
+`mrasrc-event` per `kind` as both runners forward them, unsubscribed (ch. 7 WI-P3-6, register
+B-126): the engine's `demuxWatches` and `asrcWatches` tests read them, and the engine's
+`native_runner_protocol_test.py` holds every payload of its mrtsdemux-messages and mrasrc-device
+cases to its entry's fields and their types, so a field the element renames fails there before
+the engine reads it wrong. Recorded on the dev Pi from those two cases (2026-10-27); the entries no
+run of theirs posts (no-stream, the mrasrc events but device-relock) are as the elements post them.
+
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|
 | `syn-mpts-two-programs.ts` | `fixture_gen --ts mpts-two-programs` | The parity stream's program 1 (sparse PSI, PCR jitter, Opus, KLV, CC gaps, desync garbage, AVC → HEVC: PMT generation 2) and a second program (H.264 with DTS, MPEG-1 audio) in one PAT |

@@ -125,6 +125,18 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40100-x.sock');
     });
 
+    it("each branch's demux serves its connection's timing row, in both arms (WI-P3-6)", () => {
+        for (const n of [1, 3]) {
+            const { module } = makeModule({ sources: n });
+            const p: string = module.buildPipeline({ device: 'alsa_output.usb-foo' })!.pipeline;
+            for (let i = 0; i < n; i++) {
+                expect(p).toContain(`mrtsdemux name=mixin_demux${i} `);
+                expect(module.demuxInputOf(`mixin_demux${i}`)).toEqual({ connection: `c-${i}` });
+            }
+            expect(module.demuxInputOf('sink')).toBeUndefined();
+        }
+    });
+
     it('default stereo range keeps the string byte-for-byte, even on a 32-channel card', () => {
         const narrow = makeModule({ sources: 1 }).module.buildPipeline({
             device: 'alsa_output.usb-foo',

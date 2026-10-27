@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
     ModuleTiming,
     alignerInputFor,
+    branchInputFor,
     busInputs,
     edgeTapName,
     type BusSourceRef,
@@ -535,6 +536,168 @@ describe('aligner inputs (WI-P2-13)', () => {
         t.tick();
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null);
         expect(t.summary()!.inputs).toEqual([]);
+        t.stop(false);
+    });
+});
+
+describe('demuxes and consumer ASRCs (WI-P3-6)', () => {
+    const edge = (connectionId: string, port: number, sinkPortId = 'audio-in') => ({
+        port,
+        connectionId,
+        socketPath: busEdgeSocketPath(port, connectionId),
+        sourceModuleId: connectionId.split(':')[0],
+        sinkPortId,
+    });
+    const A = edge('enc-a:out-mix:audio-in', 41000);
+    const B = edge('enc-b:out-mix:audio-in', 41001);
+    const iv = (pes: number) => ({ reason: 'interval', stream: 'found', pes, generation: 0 });
+
+    function make(
+        sources: BusSourceRef[],
+        demuxInput?: ModuleTimingHost['demuxInput'],
+        pipeline = 'unixfdsrc ! fakesink',
+    ) {
+        const host = {
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: vi.fn(() => sources),
+            alignerWarnings: vi.fn(),
+            streamWarnings: vi.fn(),
+            log: vi.fn(),
+            ...(demuxInput ? { demuxInput } : {}),
+        };
+        const t = new ModuleTiming(host);
+        t.start({ pipeline });
+        host.streamWarnings.mockClear();
+        return { t, host };
+    }
+    const demuxRows = (t: ModuleTiming) =>
+        t.summary()!.inputs.map((i) => [i.label, i.demux?.pesPerS ?? null]);
+
+    it("the engine's rule: a branch named for its connection (a live fan-in) serves that edge", () => {
+        vi.useFakeTimers();
+        const { t } = make([A, B]);
+        for (const [name, c] of [
+            [`mixin_demux_${shortHash(B.connectionId)}`, 0],
+            [`mixin_demux_${shortHash(B.connectionId)}`, 48],
+        ] as const) {
+            t.onEvent(`mrtsdemux:${name}`, iv(c));
+            vi.advanceTimersByTime(1000);
+        }
+        t.onEvent(`mrlateness:${edgeTapName(A)}`, win(10));
+        t.onEvent(`mrlateness:${edgeTapName(B)}`, win(10));
+        t.tick();
+        expect(demuxRows(t)).toEqual([
+            ['enc-a (audio-in)', null],
+            ['enc-b (audio-in)', 48],
+        ]);
+        expect(branchInputFor('mixin_demux_000000', [A, B])).toBeUndefined();
+        expect(branchInputFor(`x_${shortHash(A.connectionId)}`, [A, B])).toEqual({
+            tap: edgeTapName(A),
+        });
+        t.stop(false);
+        vi.useRealTimers();
+    });
+
+    it("a module's answer: a connection or a sink port, resolved to its edge", () => {
+        vi.useFakeTimers();
+        const SUB = edge('ttx:out:subtitles-in', 41002, 'subtitles-in');
+        const own = vi.fn((el: string) =>
+            el === 'mixin_demux1'
+                ? { connection: A.connectionId }
+                : el === 'subdemux'
+                  ? { port: 'subtitles-in' }
+                  : el === 'probe'
+                    ? null
+                    : undefined,
+        );
+        const { t } = make([A, SUB], own);
+        for (const pes of [0, 30]) {
+            for (const el of ['mixin_demux1', 'subdemux', 'probe'])
+                t.onEvent(`mrtsdemux:${el}`, iv(pes));
+            vi.advanceTimersByTime(1000);
+        }
+        t.tick();
+        expect(demuxRows(t)).toEqual([
+            ['enc-a (audio-in)', 30],
+            ['ttx (subtitles-in)', 30],
+        ]);
+        t.stop(false);
+        vi.useRealTimers();
+    });
+
+    it('a program change goes to the log naming the input; the warnings to the module at once', () => {
+        const { t, host } = make([A]);
+        t.onEvent('mrlateness:lat_busin', win(10));
+        t.onEvent('mrtsdemux:demux', { reason: 'program', generation: 0, pads: 'audio_0_0101' });
+        expect(host.log).not.toHaveBeenCalled();
+        t.onEvent('mrtsdemux:demux', {
+            reason: 'unknown-stream',
+            pid: 0x102,
+            'stream-type': 0x06,
+            generation: 0,
+        });
+        expect(host.streamWarnings).toHaveBeenLastCalledWith([
+            {
+                kind: 'demux-unknown-stream',
+                text: 'Input enc-a (audio-in): PID 0x0102: stream type 0x06 with no known descriptor is not demuxed',
+            },
+        ]);
+        expect(
+            t.onEvent('mrtsdemux:demux', {
+                reason: 'program',
+                generation: 1,
+                'pcr-pid': 257,
+                pads: 'audio_1_0101',
+            }),
+        ).toBe(true);
+        expect(host.log).toHaveBeenCalledWith(
+            'info',
+            { demuxProgram: { name: 'demux', generation: 1, pads: 'audio_1_0101', pcrPid: 257 } },
+            'Input enc-a (audio-in): program changed (generation 1)',
+        );
+        expect(host.streamWarnings).toHaveBeenLastCalledWith([]);
+        t.stop(false);
+        expect(host.streamWarnings).toHaveBeenLastCalledWith([]);
+    });
+
+    it("an ASRC's messages are read and passed on; an engage is logged as part 10 words it", () => {
+        const { t, host } = make(
+            [A],
+            undefined,
+            'avdec_aac ! mrasrc name=asrc bypass-below-ppm=0.5 ! fakesink',
+        );
+        const stats = { mode: 'device', state: 'locked', 'device-ppb': -12_100, 'in-frames': 10 };
+        expect(t.onEvent('mrasrc-stats:asrc', stats)).toBe(false);
+        expect(
+            t.onEvent('mrasrc-event:asrc', {
+                kind: 'engaged',
+                reason: 'ratio',
+                'source-ppb': 3000,
+            }),
+        ).toBe(false);
+        expect(host.log).toHaveBeenCalledWith(
+            'info',
+            { asrcEvent: { name: 'asrc', kind: 'engaged', reason: 'ratio', 'source-ppb': 3000 } },
+            'Source clock +3.0 ppm: resampling',
+        );
+        t.tick();
+        expect(t.summary()).toMatchObject({ clockCorrection: {}, deviceClockPpm: -12.1 });
+        expect(t.publication.data.timing).toMatchObject({
+            clockCorrection: 'none (house rate)',
+            deviceClock: '−12.1 ppm',
+        });
+        t.onEvent('mrasrc-event:asrc', { kind: 'ratio-out-of-bounds', 'fit-ppb': -1_200_000 });
+        expect(host.log).toHaveBeenLastCalledWith(
+            'warn',
+            expect.objectContaining({
+                asrcEvent: expect.objectContaining({ kind: 'ratio-out-of-bounds' }),
+            }),
+            'mrasrc-event ratio-out-of-bounds',
+        );
+        expect(host.streamWarnings).toHaveBeenLastCalledWith([
+            expect.objectContaining({ kind: 'asrc-out-of-bounds' }),
+        ]);
         t.stop(false);
     });
 });

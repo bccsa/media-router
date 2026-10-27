@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
+    SUBTITLE_DEMUX_NAME,
     SUBTITLE_INPUT_PORT,
     SUBTITLE_OVERLAY_LIVE_KEYS,
     SUBTITLE_OVERLAY_SCHEMA,
 } from '@media-router/plugin-subtitle-core';
+import { TranscoderModule } from './TranscoderModule.js';
+import { DEMUX_NAME } from './transcoderPipeline.js';
 import { buildDynamicPorts } from './transcoderPorts.js';
 
 /**
@@ -22,6 +25,14 @@ describe('transcoder ↔ subtitle-core', () => {
         const ports = buildDynamicPorts([{ name: '', width: 1280, height: 720, bitrate: 2500 }]);
         expect(ports.map((p) => p.id)).toEqual(['mpegts-in', 'subtitles-in', 'out-0']);
         expect(ports[1]).toEqual(SUBTITLE_INPUT_PORT);
+    });
+
+    it('its demuxes serve its two input ports, the TS input and Subtitles In (WI-P3-6)', () => {
+        const [input, subtitles] = buildDynamicPorts([]);
+        const of = (el: string) => (new TranscoderModule() as any).demuxInputOf(el);
+        expect(of(DEMUX_NAME)).toEqual({ port: input.id });
+        expect(of(SUBTITLE_DEMUX_NAME)).toEqual({ port: subtitles.id });
+        expect(of('deint')).toBeUndefined();
     });
 
     it('carries every shared overlay control verbatim in its manifest', () => {

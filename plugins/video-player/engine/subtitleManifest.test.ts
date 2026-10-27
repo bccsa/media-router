@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
+    SUBTITLE_DEMUX_NAME,
     SUBTITLE_INPUT_PORT,
     SUBTITLE_OVERLAY_LIVE_KEYS,
     SUBTITLE_OVERLAY_SCHEMA,
 } from '@media-router/plugin-subtitle-core';
+import { VideoPlayerModule } from './VideoPlayerModule.js';
+import { VP_DEMUX_NAME } from './helpers/pipelines.js';
 
 /**
  * The manifest cannot import from subtitle-core (it is JSON the loader reads
@@ -24,6 +27,15 @@ describe('video-player manifest ↔ subtitle-core', () => {
         expect(manifest.ports.find((p: { id: string }) => p.id === SUBTITLE_INPUT_PORT.id)).toEqual(
             SUBTITLE_INPUT_PORT,
         );
+    });
+
+    it('its demuxes serve its two input ports, the video input and Subtitles In (WI-P3-6)', () => {
+        const of = (el: string) => (new VideoPlayerModule() as any).demuxInputOf(el);
+        const ids = manifest.ports.map((p: { id: string }) => p.id);
+        expect(ids).toContain(VideoPlayerModule.VIDEO_INPUT_PORT_ID);
+        expect(of(VP_DEMUX_NAME)).toEqual({ port: VideoPlayerModule.VIDEO_INPUT_PORT_ID });
+        expect(of(SUBTITLE_DEMUX_NAME)).toEqual({ port: SUBTITLE_INPUT_PORT.id });
+        expect(of('subov')).toBeUndefined();
     });
 
     it('carries every shared overlay control verbatim', () => {

@@ -1,15 +1,19 @@
 // Per-module lateness display (WI-P0-9): the reporter, the 2 s tick with its change throttle,
-// the sink reads for D and device latency, and the aligners' warnings and events (WI-P2-13).
-// GstPluginBase owns one and merges it into `getState()`, so a subclass's own sections keep it.
+// the sink reads for D and device latency, the aligners' warnings and events (WI-P2-13), and the
+// demuxes' and ASRCs' (WI-P3-6). GstPluginBase owns one and merges it into `getState()`.
 import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
 import { latInName, shortHash } from './busHelpers.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
+import { DEMUX_EVENT, type DemuxInputRef } from './demuxWatches.js';
+import { signedPpm } from './asrcWatches.js';
 import {
     LatenessReporter,
     type LabelledAlignerEvent,
     type LatenessWindowMs,
+    type StreamLogEvent,
+    type StreamWarning,
 } from './latenessReporter.js';
 import { latenessTapAvailable } from './latenessTap.js';
 import { timingChanged, timingPublication, type TimingPublication } from './timingSections.js';
@@ -60,6 +64,17 @@ export function alignerInputFor(watch: AlignerWatchRef, sources: BusSourceRef[])
     return s ? { tap: edgeTapName(s) } : { label: watch.input };
 }
 
+/** The engine's rule for a branch element (WI-P3-6): one named for a bus connection, as the live
+ *  fan-in branches are (`…_<shortHash(connectionId)>`), serves that edge; undefined otherwise. */
+export function branchInputFor(
+    element: string,
+    sources: BusSourceRef[],
+): AlignerInputRef | undefined {
+    const hash = /_([0-9a-f]{6})$/.exec(element)?.[1];
+    const s = hash ? sources.find((x) => shortHash(x.connectionId) === hash) : undefined;
+    return s ? { tap: edgeTapName(s) } : undefined;
+}
+
 export interface ModuleTimingHost {
     /** Push the module's state (the publication changed). */
     emit(): void;
@@ -71,6 +86,11 @@ export interface ModuleTimingHost {
     log?(level: 'info' | 'warn', obj: Record<string, unknown>, msg: string): void;
     /** The module's own answer for which input a watch serves; undefined: the engine's rule. */
     alignerInput?(watch: AlignerWatchRef): AlignerInputRef | undefined;
+    /** The demuxes' and consumer ASRCs' warnings (WI-P3-6), empty when none stands. */
+    streamWarnings?(warnings: StreamWarning[]): void;
+    /** The module's own answer for which input a demux, or an ASRC on one input's branch,
+     *  serves; undefined: the engine's rule. */
+    demuxInput?(element: string): DemuxInputRef | undefined;
 }
 
 const EMPTY: TimingPublication = { sections: [], data: {}, badge: null };
@@ -96,6 +116,7 @@ export class ModuleTiming {
         this.reporter = new LatenessReporter({
             inputs: () => this.inputs(),
             alignerInput: (watch) => this.alignerInput(watch),
+            branchInput: (element) => this.branchInput(element),
             intervalMs: TICK_MS,
             onHidden: (tap, w) => this.logHidden(tap, w),
         });
@@ -115,6 +136,7 @@ export class ModuleTiming {
         this.stop(false);
         this.sink = desc?.timingSink;
         this.declared = desc?.timingInputs;
+        this.reporter.configure(desc?.pipeline);
         // Only modules on the bus carry taps; say so when theirs are missing.
         const onBus = !!desc && /unixfdsrc|tee name=busout_/.test(desc.pipeline);
         this.reporter.setInstrument(!onBus || latenessTapAvailable());
@@ -129,10 +151,17 @@ export class ModuleTiming {
         this.syncWarnings();
     }
 
-    /** `mrlateness:<tap>` and `mralignwatch:<element>` plugin events; false for any other
-     *  channel. A watch's state or full change is published at once, not at the next tick. */
+    /** `mrlateness:`, `mralignwatch:` and `mrtsdemux:<element>` events, false for others; a state,
+     *  full or warning change goes out at once. `mrasrc-*` are read and passed on (false): an
+     *  ingest's card reads its capture ASRC's. */
     onEvent(channel: string, payload: unknown): boolean {
         const aligner = this.reporter.onAligner(channel, payload);
+        const stream = aligner ? null : this.reporter.onStream(channel, payload);
+        if (stream) {
+            for (const e of stream.events) this.logStream(e);
+            if (stream.changed) this.syncWarnings();
+            return channel.startsWith(`${DEMUX_EVENT}:`);
+        }
         if (!aligner) return this.reporter.onEvent(channel, payload);
         for (const e of aligner.events) this.logEvent(e);
         if (aligner.changed) this.publish();
@@ -208,6 +237,8 @@ export class ModuleTiming {
         const had = visible(this.pub);
         this.pub = EMPTY;
         this.last = null;
+        // The demuxes' first: what the module shows only loses parts, never shows an old one.
+        this.host.streamWarnings?.([]);
         this.host.alignerWarnings?.(null, null);
         if (emit && had) this.host.emit();
     }
@@ -231,6 +262,7 @@ export class ModuleTiming {
     }
 
     private syncWarnings(now = Date.now()): void {
+        this.host.streamWarnings?.(this.reporter.streamWarnings(now));
         if (!this.host.alignerWarnings) return;
         const w = this.reporter.alignerWarnings(now);
         this.host.alignerWarnings(w.absent, w.full);
@@ -245,6 +277,20 @@ export class ModuleTiming {
         if (ref && 'tap' in ref) this.edgeWatches.add(watch.name);
         else if (this.edgeWatches.has(watch.name)) return null;
         return ref;
+    }
+
+    /** The module's answer, a connection or a port's one connection resolved to its edge; else
+     *  the engine's rule. */
+    private branchInput(element: string): AlignerInputRef | undefined {
+        const sources = this.host.busSources();
+        const own = this.host.demuxInput?.(element);
+        if (own === undefined) return branchInputFor(element, sources);
+        if (own === null || 'tap' in own || 'label' in own) return own;
+        const on =
+            'connection' in own
+                ? sources.filter((x) => x.connectionId === own.connection)
+                : sources.filter((x) => x.sinkPortId === own.port);
+        return on.length === 1 ? { tap: edgeTapName(on[0]) } : undefined;
     }
 
     /** A window off the house timeline is a fault since B-26 (the runners forward no unstamped
@@ -277,6 +323,31 @@ export class ModuleTiming {
             'warn',
             { alignerLateCue: { name, aligner, input, cueLatenessMs, raisedMs } },
             `Input ${e.label}: cue after its time, forwarded late, pace raised by ${raisedMs} ms`,
+        );
+    }
+
+    /** A demux's new program; a consumer ASRC's event (an engage worded as part 10 words it). */
+    private logStream(e: StreamLogEvent): void {
+        if (e.source === 'demux') {
+            const { name, generation, pads, pcrPid } = e.program;
+            this.host.log?.(
+                'info',
+                { demuxProgram: { name, generation, pads, pcrPid } },
+                `Input ${e.label}: program changed (generation ${generation})`,
+            );
+            return;
+        }
+        const { kind, reason, payload, sourcePpm } = e.event;
+        const who = e.label ? `Input ${e.label}: ` : '';
+        const source = e.label ? `${who}source clock` : 'Source clock';
+        const text =
+            kind === 'engaged' && sourcePpm !== undefined
+                ? `${source} ${signedPpm(sourcePpm)}: resampling`
+                : `${who}mrasrc-event ${kind}${reason ? ` (${reason})` : ''}`;
+        this.host.log?.(
+            kind === 'ratio-out-of-bounds' ? 'warn' : 'info',
+            { asrcEvent: { name: e.event.name, ...payload } },
+            text,
         );
     }
 

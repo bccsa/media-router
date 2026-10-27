@@ -57,6 +57,14 @@ export class AudioProcessingModule extends GstPluginBase {
      *  has resolved the LADSPA elements. */
     private stages: ChainStages | null = null;
     private sinkName: string | null = null;
+    /** The fan-ins' demuxes and the connection each decodes, from the last build (WI-P3-6). */
+    private demuxes = new Map<string, string>();
+
+    /** A fan-in branch's demux serves its connection's row. */
+    protected demuxInputOf(element: string): { connection: string } | undefined {
+        const connection = this.demuxes.get(element);
+        return connection ? { connection } : undefined;
+    }
 
     /** Meter + throughput polls and the settings-panel graphs. */
     private readonly telemetry = new ChainTelemetry({
@@ -200,6 +208,7 @@ export class AudioProcessingModule extends GstPluginBase {
         if (!result) return null;
 
         this.sinkName = result.sinkName;
+        this.demuxes = result.demuxes;
         const { data, health } = chainSummary(
             this.stages,
             this.config.gateKey,

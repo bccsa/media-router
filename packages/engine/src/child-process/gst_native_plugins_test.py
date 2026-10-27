@@ -760,7 +760,7 @@ def unit_cases(check):
     py_names = re.findall(r'"([\w-]+)"', re.search(
         r"FORWARDED_ELEMENT_MESSAGES = \(([^)]*)\)", runner_py).group(1))
     check(f"the unsubscribed element messages are twins (native {cpp_names}, python {py_names})",
-          cpp_names == py_names == ["mrlateness", "mralignwatch", "mrtsdemux"])
+          cpp_names == py_names == ["mrlateness", "mralignwatch", "mrtsdemux", "mrasrc-stats", "mrasrc-event"])
     # Every element the plugin registers has a row, so a module naming it starts on rule 6 (B-23).
     with open(os.path.join(_HOUSE, "gstmrtshouse.cpp"), encoding="utf-8") as fh:
         registered = re.findall(r'\{"([\w-]+)", gst_\w+_get_type\}', fh.read())

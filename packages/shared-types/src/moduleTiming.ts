@@ -11,6 +11,25 @@ export interface LatenessStatsMs {
 /** An aligner input as its `mralignwatch` reports it: `waiting` until its first arrival. */
 export type AlignerInputState = 'waiting' | 'present' | 'absent';
 
+/** An input's demux as its `mrtsdemux` interval reports show it (house-clock WI-P3-6). */
+export interface DemuxCounters {
+    /** PES per second over the last 10 s of reports. */
+    pesPerS: number;
+    /** Holes on the timeline (a jump, a bus gap marker), since the demux started. */
+    gaps: number;
+    /** TS packets lost by continuity count, since the demux started. */
+    ccLost: number;
+    /** Streams of the current program that the demux does not demux (no known stream type). */
+    unknownStreams: number;
+}
+
+/** What a consumer's decode ASRC does to its source (WI-P3-6). */
+export interface ClockCorrection {
+    /** The source clock against house time (ppm, positive when fast) while the ASRC resamples
+     *  it; absent while its buffers pass at house rate. */
+    sourcePpm?: number;
+}
+
 export interface ModuleTimingInput {
     /** The tap it was read at (`lat_busin…`); `mralignwatch:<label>` for an aligner input
      *  that has no tap. */
@@ -30,6 +49,10 @@ export interface ModuleTimingInput {
     absences?: number;
     /** Content discarded as stale when the input rejoined, in total (ms). */
     staleMs?: number;
+    /** Its demux's counters (house-clock Phase 3). */
+    demux?: DemuxCounters;
+    /** Its decode ASRC, where each input has its own (the 302M fan-ins). */
+    clockCorrection?: ClockCorrection;
 }
 
 /** One bus output (`lat_busout_<port>`), listed when a module has two or more. */
@@ -69,6 +92,10 @@ export interface ModuleTimingSummary {
     /** What the module's processing delays its content by that its PTS do not carry (a
      *  limiter's lookahead, filters): reported, not corrected (house-clock OQ-22). */
     processingLatencyMs?: number;
+    /** The module's decode ASRC, where it is not one per input (house-clock Phase 3). */
+    clockCorrection?: ClockCorrection;
+    /** An audio output's device clock against house time (ppm, positive when fast). */
+    deviceClockPpm?: number;
     /** False when libgstmrlateness.so is not installed. */
     instrument: boolean;
 }

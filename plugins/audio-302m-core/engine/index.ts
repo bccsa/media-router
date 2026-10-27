@@ -15,6 +15,7 @@ export {
     liveInputBranchFor,
     liveMixInputBranch,
     mixInputBranchName,
+    mixInputDemuxes,
     normalize302mChannels,
     probe302mSupport,
 } from './audio302mHelpers.js';
