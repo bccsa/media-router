@@ -716,8 +716,6 @@ def unit_cases(check):
         check(f"rewrite {desc!r} -> {got[0]!r} {got[1]} {got[2]}", got == (want, names, refused))
     with open(os.path.join(_NATIVE, "native_plugins.h"), encoding="utf-8") as fh:
         header = fh.read()
-    with open(os.path.join(_NATIVE, "native_plugins.cpp"), encoding="utf-8") as fh:
-        source = fh.read()
     native_min = int(re.search(r"MRTSHOUSE_MIN_ABI = (\d+);", header).group(1))
     check(f"MRTSHOUSE_MIN_ABI is one number in both runners ({gnp.MRTSHOUSE_MIN_ABI}, "
           f"{native_min}), at most the plugin's ABI {ABI}",

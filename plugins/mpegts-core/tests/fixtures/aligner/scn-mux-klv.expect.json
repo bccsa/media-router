@@ -8,6 +8,7 @@
   "expect": {
     "cue_ticks": 0,
     "video_gap_ms": 200,
-    "pace_rise_ms": 50
+    "pace_rise_ms": 50,
+    "buffer_s": 0.28
   }
 }

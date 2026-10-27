@@ -41,9 +41,9 @@ elements" below do not start.
 - **Sources with a sparse clock reference** (vMix's SRT output sends one
   every 2 s) now feed the modules behind the input smoothly. The input marks
   a break in the source's clock only where there is one (an outage, a
-  re-lock, an offset change); earlier builds of this release marked every
-  one of these sparse references, and a player or transcoder on such an
-  input stepped by up to 18 ms every 2 s.
+  re-lock, an offset change); earlier builds of this release marked nearly
+  every one of these sparse references, and a player or transcoder on such
+  an input stepped by up to 18 ms every 2 s.
 
 **New settings**
 
@@ -131,6 +131,19 @@ elements" below do not start.
   box, Settings → Engine Comms and the dashboard editor's number fields. A
   setting that needs a module restart is still written by Save. Escape
   closes the settings panel; what was typed is not written.
+- **Device Manager: a typed setting is checked and kept when you press Enter
+  or leave the box.** While you type in the Device Manager (log sizes, PTP,
+  NTP servers, network addresses and the hostname, firewall rules, manager
+  profiles, displays) nothing is checked and no error shows. When you press
+  Enter or move to another field the value is checked: a value the setting
+  cannot take stays in the box with the reason underneath, and the setting
+  keeps its value. Save works in one click straight after typing: it saves,
+  or tells you why not, and it waits while any box holds a value it cannot
+  take. Spaces typed before or after an address, host name, port or server
+  are dropped. A blank PTP Domain now means the profile's default, as the
+  page says (it used to be saved as domain 0). The password pages say "At
+  least 8 characters." or "Passwords don't match." once you leave the box,
+  not while you type.
 - **Rollback** is the previous release, installed from the Device Manager;
   there is no in-app switch.
 
@@ -315,11 +328,11 @@ elements" below do not start.
   picture group) showed "Degraded clock" for good. It now shows a green
   Clock badge with the state "Locked (PCR every 2.0 s)", after a minute or
   so of "Acquiring". Amber stays for a reference that stops ("No PCR" after
-  5 s, then "Degraded clock: PCR missing", within 12 s on a 2 s reference
-  and 1.5 s on a dense one), jumps, or comes irregularly ("PCR comes
-  irregularly: gaps up to n, normally every n"). That warning replaces "PCR
-  every n ms (spec ≤ 100 ms)", which a bursty link raised on sources whose
-  clock was fine.
+  5 s, or as soon as an SRT input's link drops, then "Degraded clock: PCR
+  missing", within 12 s on a 2 s reference and 1.5 s on a dense one), jumps,
+  or comes irregularly ("PCR comes irregularly: gaps up to n, normally every
+  n"). That warning replaces "PCR every n ms (spec ≤ 100 ms)", which a bursty
+  link raised on sources whose clock was fine.
 - **Audio captures no longer drop sound on a busy box.** On a box working
   near its limit (a Pi 4 showing video on HDMI while it encodes, for one),
   Audio Input (302M) and Audio Encoder could lose 50 to 200 ms of sound now
@@ -390,6 +403,18 @@ elements" below do not start.
   follow the changes made elsewhere, and Save writes what you changed. A
   setting changed by you and by someone else before you save keeps yours.
   Opening another module in the panel still drops unsaved changes, as before.
+- **Device Manager: a change you have not saved yet is kept when the device
+  sends its settings again.** The Device Manager page receives the device's
+  settings again whenever the connection comes back, when another browser
+  saves, and when the Device Manager service restarts. Each time, it used to
+  throw away any change you had made but not saved yet. Now your change
+  stays, and every setting you did not touch shows the device's value, so
+  Save sends your change together with the others. Text you are still typing
+  stays in its box, and a new manager profile you have not saved stays too.
+  "Settings saved successfully" appears only in the browser that saved. The
+  firewall dialog's Close no longer puts back rules that another browser has
+  since saved, and one click closes it after a port it refused. On the Logs
+  and PTP pages, a box no longer jumps when a message appears under it.
 - **A change made on one module's settings is no longer written to another
   module when the panel switches quickly.** A slider in a module's settings
   panel writes as it moves, and some settings (an encoder's bitrate, Audio

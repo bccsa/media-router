@@ -83,6 +83,8 @@ export class SrtInputModule extends GstPluginBase {
                 this.clearBadge('callers');
                 this.setCallerSections([]);
                 this.statPoller.reset();
+                // libsrt dropped the link: no PCR comes until a new pipeline reports (B-118).
+                this.ingestTiming.down();
             }
         });
 

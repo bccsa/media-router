@@ -715,8 +715,14 @@ verifiable on a development host:
 - On the image: `/dev/log` is journald's (no `busybox-syslog`), a `logger`
   line and chronyd's own lines reach the journal, and ptp4l (with phc2sys on
   hardware-timestamping boxes) logs one summary per 16 s.
-- `mr-ptp-settai.py` with the engine up on .103 or .108: no `step` line,
-  then the hold and `re-epoch … ΔE=37000.000 ms` above (R-P0-5).
+- `mr-ptp-settai.py` with the engine up: no `step` line, then the hold and
+  `re-epoch … ΔE=37000.000 ms` above (R-P0-5). The policy holds only an
+  untraceable engine on an unsynced kernel, so the hold needs such a start: a
+  boot-time run on a chrony box (.50, say) or an engine started before sync.
+  On a PTP slave ptp4l keeps the kernel synced, and only the `reason=sync`
+  re-epoch shows (DEV1 on .108, 2026-10-22: TAI 37 → 0 → 37, `re-epoch
+  reason=sync ΔE=37000.000 ms` at the next sample, no hold; the orchestrator's
+  re-specification, for the owner's veto).
 - The PipeWire latency row of one audio-input or audio-output against
   `pw-top` QUANT/RATE on .103 or .108; so far checked on ZA-SCC-FRA-Master01 only.
 - The grandmaster on chrony, on a rig isolated on PTP domain 10 (plan
@@ -1309,7 +1315,10 @@ rows B-1 to B-48) holds the same records with their work items.
   re-route's +30 ms rise is no step). M and τ pass at every value. τ sets
   the worst seed at 600 s: 0.33–0.41 ppm at 30 s, 0.27–0.34 at 60 s,
   0.16–0.25 at 120 s; the median at 300 s is 0.17–0.24 ppm at every τ, the
-  fit window still growing.
+  fit window still growing. Re-pinned 2026-10-27 over the tree's 60
+  expectation traces and the 36 seeds: 6 of 243 pass; the shipped point
+  passes every expectation file and fails C4 only on five sparse-PCR or
+  tall-burst traces, which the criterion predates (B-95's row).
 - **The set shipped:** 1 s buckets, `offset_buckets` 10, **`rate_tau_ns`
   120 s** (was 60 s), a 20 ppm track slew, a 20 ms step,
   `rate_buckets_min` 30, the start rule above, and **`leap_ns` 500 ms**
@@ -1453,10 +1462,11 @@ rows B-1 to B-48) holds the same records with their work items.
   still run `tsdemux` in PCR mode and would otherwise read a PCR jump as an
   error. A source's own PCR spacing is no break. `tsdemux` re-bases at
   every flagged PCR, and the build before, which also flagged any PCR 1 s or
-  more after the one before, flagged every PCR of a source that sends one
-  every 2 s (vMix's VBR mux): a consumer's output stepped by 1.7–18 ms at
-  each. The trace recorder writes a PES's `di` as the source sent it, read
-  before the restamp may set the bit on the same packet (B-84).
+  more after the one before, flagged 427 of the 433 PCRs of the vMix
+  recording, a source that sends one every 2 s (vMix's VBR mux): a
+  consumer's output stepped by 1.7–18 ms at each. The trace recorder writes
+  a PES's `di` as the source sent it, read before the restamp may set the
+  bit on the same packet (B-84).
 
 ### The straddle rule (OQ-11, refined 2026-10-14 and 2026-10-23)
 
@@ -1724,6 +1734,8 @@ were rejected: they move the mapping the lead row judges. The design's
   instead: "Locked (PCR every 2.0 s)"), and
   transport errors (`cc-lost` or `desync-bytes` rising for 10 s, read as
   running totals from every program's stats message). None drops content.
+  The card goes as a module's stop begins, not once its runner has stopped
+  (B-117), and an SRT input whose link drops reads No PCR at once (B-118).
 
 ### Open at the end of the build
 
@@ -1998,23 +2010,29 @@ work items.
   pad and not forwarded. Properties: `aligner` (the pace group, keyed with
   the topmost bin), `input` (the label), `sparse`, `hold-on-eos`,
   `seed-lateness`, `silence-factor`, `silence-floor`, `silence-ceiling`,
-  `max-size-time`, `max-size-bytes`, `tick`; read-only `state` (`waiting`,
-  `present`, `absent`), `lateness`, `pace`, `silence-limit`, `absences`,
-  `stale-buffers`, `stale-time`, `gaps`, `level-time`, `level-bytes`,
-  `full-count`, and the plugin's `abi` and counters. The `mralignwatch`
-  message carries those with `aligner`, `input` and a `reason` (`state`,
-  `interval`, `full`, `late-cue`), at every state change and every second;
-  both runners forward it unsubscribed, as they do `mrlateness` and
+  `max-size-time`, `max-size-bytes`, `tick` (the gap step of a sparse input
+  and of a gapped one toward `mpegtsmux`), `fall-after` (B-82); read-only
+  `state` (`waiting`, `present`, `absent`), `lateness`, `pace`,
+  `pace-target` (B-80), `silence-limit`, `absences`, `stale-buffers`,
+  `stale-time`, `gaps`, `level-time`, `level-bytes`, `full-count`, `passes`
+  (the task's runs, B-79), `fades` (B-83), and the plugin's `abi` and
+  counters. The `mralignwatch` message carries those with `aligner`,
+  `input` and a `reason` (`state`, `interval`, `full`, `late-cue`,
+  `pace-fell` with `fell` and `fall-after`), at every state change and every
+  second; both runners forward it unsubscribed, as they do `mrlateness` and
   `mrtsdemux`.
 
 | Constant | Value |
 |---|---|
-| W, the silence limit | clamp(3.0 × p95 of the last 200 gaps between arrivals, 100 ms, 2 s), p95 by nearest rank; 2 s until 10 arrivals |
-| A member's lateness | The median over wall time of its last second: each stretch between two arrivals at the lateness halfway through it, a stretch over which the lateness fell left out; kept data only |
+| W, the silence limit | clamp(3.0 × p95 of the last 200 gaps between arrivals, 100 ms, 2 s), p95 by nearest rank; 2 s until 10 arrivals; absent at W itself (B-79) |
+| A member's lateness | The median over wall time of its last second: each stretch between two arrivals at the lateness halfway through it, a stretch over which the lateness fell left out; stale arrivals and passed GAPs count at their own lateness (B-81), so that rule alone keeps a draining backlog out |
 | What counts toward the pace | That lateness, once its stretches span 0.5 s, a third of the window counts and it is not falling (the newer half's median at most 2 ms under the window's) |
-| The pace | max(0, its last value, every counted lateness, every seed); on a member's leave, max(0, the remaining members' seeds and last counted lateness); samples clamped to ±1 h |
-| Release | An item at its decode time (DTS, else PTS) + the pace; untimed items and events at once |
-| Tick | 20 ms |
+| The target | The members' largest peak over the fall window: each member's seed, every lateness that counted and a late cue's raise, kept in three buckets of `fall-after` / 2 on the group's clock (`fall-after` 180 s, 1 s to 1 h), so a value goes 180–270 s after it came; at least 0; samples clamped to ±1 h (B-82) |
+| The pace | Before the group runs, the target. Then a rise a member behind the gaps makes (a joiner, a rejoin, a seed into a running group, a late cue) slews at 0.5 (`RISE_DIV` 2: half a ns a ns, B-80), one a present member makes steps; once the target is 10 ms or more under it (`FALL_MIN`) it falls by at most 1 s a skip (`FALL_MAX`), skips 2 s apart (`FALL_SPACING`); a leave falls the same way at once (B-82) |
+| Catching up | A member that joins a group that runs is gapped until its data reaches the gaps' end: within its own length while a rise is under way, else within 50 ms (`CATCH_UP_NS`) (B-80) |
+| Release | An item at its decode time (DTS, else PTS) + the pace, within 1 ms (`RELEASE_SLACK`, B-79); untimed items and events at once |
+| Tick | 20 ms: a sparse input's gap step, and a gapped one's toward `mpegtsmux`; toward an audio aggregator gaps go in pieces as the data would (B-59, B-79) |
+| PCM edges | Toward an audio aggregator: the last 5 ms of sound before a gap, a hole, an EOS or a forwarded GAP fade out, the first data after silence fades in over 5 ms (`FADE` 5 ms, a half-Hann window); a hole is 1 ms or more (`HOLE_MIN`); a tail under 1 ms fades nothing (`TAIL_MIN`) (B-83) |
 | Report | Every state change, and every second of running time |
 | Queue | `max-size-time` 5 s, `max-size-bytes` 0 (none; 40 MB on the muxer's routes), at most 32,768 items; full blocks upstream and counts once per episode, until drained to half of every limit |
 
@@ -2038,8 +2056,8 @@ work items.
      `mpegtsmux`, and for a sparse input, each tick's GAP reaches now − pace
      and is followed by a zero-length GAP (F2's fence). The first shape had
      the mix 21 ms later while an input was absent; the pieces hold it
-     within 0.1 ms (B-59). The cost: an input that rejoins or joins can lose
-     one buffer more.
+     within 1 ms, the release slack (B-59, B-79). The cost: an input that
+     rejoins or joins can lose one buffer more.
   5. *Silence* counts only while the task is not in a push and the sink
      thread is not held in the element (a full queue, a serialized query):
      held upstream is not silent.
@@ -2063,13 +2081,38 @@ work items.
      time.
   10. *A member that joins a running group* (a group runs once any member
       has pushed something timed; a live add, a relink, a channel-map
-      replace) is gapped at the pace from its first tick while it waits, and
-      goes absent at W as before; what it then delivers before the gaps'
-      horizon is stale. Start-time members are waited for up to W. A fresh
-      joiner used to stop a running mixer for the 2 s ceiling (B-58). A
-      joiner later than the pace by Δ loses its first Δ, which a seed saves.
+      replace) is gapped from its first tick while it catches up, and goes
+      absent at W as before; what it then delivers before the gaps' horizon
+      is stale, and its arrivals there give its lateness, which the pace
+      slews to at 0.5, so the others' output slows and never stops (B-80;
+      the old step stopped the mix for the rise, B-74). A joiner later than
+      the pace by Δ loses its first 2Δ + 0.5 s (a seed saves the half
+      second); one within 50 ms of the gaps' end is waited for. One that
+      joins between the group's first push and its first count catches up
+      against a pace of 0, so it loses its content up to that count and the
+      pace it sets (the start window; making it a start-time member instead
+      would stall the output for its lateness, so it is not). Start-time
+      members are waited for up to W. A fresh joiner used to stop a running
+      mixer for the 2 s ceiling (B-58).
   11. *Not PLAYING*, items leave at once, as from a queue, so a non-live
       upstream can preroll.
+  12. *PCM edges fade* (B-83, the owner's decision on B-43). Toward an audio
+      aggregator with interleaved S16, S32, F32 or F64 caps, the last 5 ms
+      of sound before an edge the element makes or forwards (a gap, a hole,
+      an EOS, a forwarded GAP) play back time-reversed under a 5 ms
+      half-Hann window, and the first data after silence fades in over
+      5 ms, carried over short buffers; nothing is delayed, the fade leaving
+      when the gap would. A fall or a slew of the pace is no edge (the
+      content stays continuous), and `mpegtsmux` and sparse inputs are not
+      touched.
+  13. *One task run a wake* (B-79). The src task releases every item due
+      within 1 ms of its running time + pace (the owner's number) and sleeps
+      to the earliest of the head's release, the next gap piece, the W
+      deadline while silence counts, the tick only while gapped toward
+      `mpegtsmux` or sparse, and the next report; a held input arms the
+      release of the buffer that continues it, so its task runs once a
+      buffer too. An input goes absent at W, not at the next tick. The pace
+      is read lock-free from the group's snapshot.
 - **The pace falls by itself** (R-P2-5, B-82, the owner's Q4). Each member
   keeps the peak of what entered its window (its seed, each lateness that
   counted, a late cue's): three buckets of `fall-after` / 2 (180 s by
@@ -2095,19 +2138,21 @@ work items.
   which has no stand-in, so that restart is refused with the same alarm;
   elsewhere `mralignwatch` would get the `identity` stand-in both loader
   tables carry.
-- **Found, open.** A pace rise loses content downstream (B-74): the mixer's
-  output stops once for the rise, and an aligner downstream whose W is
-  shorter reads that as silence and discards as much at its return; a
-  slewed rise is the recommended follow-up. The aligners' CPU (B-75): about
-  5.5 ms of CPU per second per element on the Pi 5, against 2 for a queue, so
-  n1-mixer-302m's N × (N − 1) matrix aligners cost 0.17 cores at 4 pairs and
-  2.2–2.6 at 16; V9 decides. A module PLAYING more than W before its inputs'
-  first data starts its aggregator on a gap's grid (B-73). A pace raised by
-  a late sparse cue is lost when a member leaves, since the recompute reads
-  seeds and counted lateness only, and the next late cue raises it again. A
-  live remove of an input whose task is blocked in a push waits until the
-  aggregator advances: up to W when another input is silent but not yet
-  absent.
+- **Found, resolved since.** A pace rise lost content downstream (B-74): the
+  mixer's output stopped once for the rise, and an aligner downstream whose
+  W was shorter read that as silence; the rise slews now (B-80). The
+  aligners' CPU (B-75: about 5.5 ms of CPU per second per element on the
+  Pi 5 against 2 for a queue, n1-mixer-302m's matrix aligners 2.2–2.6 cores
+  at 16 pairs): fixed by B-79 and a1b's median (B-57), judged per box by V9.
+  A pace raised by a late sparse cue was lost when a member left: the cue's
+  raise is a peak in its member's window now, and stays while that member
+  does (B-82).
+- **Found, open.** A module PLAYING more than W before its inputs' first
+  data starts its aggregator on a gap's grid (B-73). A live remove of an
+  input whose task is blocked in a push waits until the aggregator
+  advances: up to W when another input is silent but not yet absent. A
+  present input that slows in one step still holds the aggregator by its
+  shortfall (the round's flag F3; the overdue rule, A6, is not built).
 
 ### 302M fan-ins on content time (WI-P2-7, -8, -9, -11; OQ-20)
 
@@ -2167,7 +2212,8 @@ work items.
   link is `in<i>t. ! mralignwatch name=omix<o>_aw<i> aligner=omix<o>
   input=in<i> silence-floor=500000000 ! omix<o>.`, in place of the 500 ms
   queues and the 20 ms budget. The 500 ms floor covers `inmix<i>`'s own
-  holds (a source's W plus a tick, a pace rise); it also turns a
+  holds (a source's W, which since B-79 ends at W itself, not a tick later;
+  a pace rise, which since B-80 slews); it also turns a
   single-source relink into a 0.5 s stop at every aligned consumer
   downstream, a trade-off for the owner (B-58). `mixLatencyMs` is gone from
   all four modules.
@@ -2324,8 +2370,10 @@ and no pace rise after a 7 s pause.
   published timing. `MediaRouter.getModuleBusSources` adds `seedLatenessMs`
   while the producer runs: the mean of its own output when it lists one per
   bus port, else its merged output mean. The 302M helper and the muxer render
-  it as `seed-lateness`. A seed is a floor of the pace for the member's life,
-  so a consumer built during a producer's transient keeps it (B-71).
+  it as `seed-lateness`. A seed is a peak in its member's fall window: it
+  holds the pace for fall-after unless the member shows more, so a
+  consumer built during a producer's transient keeps it 180–270 s, not for
+  its life (B-71, B-82).
 - **Rows.** The engine consumes `mralignwatch:<element>` before
   `onPluginEvent`, as it does `mrlateness`. Per input (`timing-in-<n>`):
   State (waiting, present or absent), Silence limit (ms), Absences and
@@ -2346,20 +2394,32 @@ and no pace rise after a 7 s pause.
   stays display only (OQ-8): these warn of an absent input and a full
   queue, never of lateness. Log events: "Input <label> back after <ms> ms
   absent[; <ms> ms discarded as stale]" (only absent → present: a late
-  joiner's trim, a flush or a runner respawn is no rejoin) and the late cue
-  above.
-- **Not built yet.** The muxer's route watches, n1's matrix links and
-  audio-processing's interleave carry internal labels, so they show as rows
-  of their own, and one dark muxer input is named once per route (`Input
-  demux_1_video silent …`); an `alignerInputOf` of about 8 lines per module
-  is the follow-up (B-70). Part 10's "No matching stream" warning and the
-  demux counters: both runners forward `mrtsdemux:<name>`, and no engine
-  code reads it yet.
+  joiner's trim, a flush or a runner respawn is no rejoin), the late cue
+  above, and "Pace fell by <ms> ms: every input steady for <fall-after>"
+  at each `pace-fell` (B-82).
+- **Row rules** (B-93). An input keeps the number it got when first seen
+  in a run, and one wired later takes the next, so no other input changes
+  number. A watch whose edge left the router's list keeps its row while
+  the edge stands in the module's stored graph (`MediaRouter.hasStoredEdge`,
+  ADR-0021's oracle): a producer stopped while wired shows State absent,
+  with the warning and in Waiting for; gone from the stored graph, the
+  operator removed it and the row goes. An input tap that reported this run
+  and went stale under watches that report on makes its row absent too
+  (the quiet tap: a dark muxer pin, whose routes end at EOS and stay
+  present), warned with the tap's 6000 ms. `alignerInputOf` maps the
+  muxer's route watches (`demux_<i>_<class>`, a legacy slot's PID) to their
+  pin's row (`lat_busin_<i>`) and makes n1's matrix links and
+  audio-processing's interleave internal (B-70). Not built: part 10's
+  "No matching stream" warning and the demux counters (both runners
+  forward `mrtsdemux:<name>`, no engine code reads it yet: a warning kind,
+  a map from each demux to its input and two row fields, B-70).
 
 ### Conformance (WI-P2-14)
 
-- **Synthetic streams.** None of part 7.4's field captures exist yet, so
-  every scenario runs on streams the harness builds: 302M through
+- **Synthetic streams.** Part 7.4's new captures (the gate's and .108's,
+  taken after Phase 1) do not exist yet; S0's `cap-302m-bssd.ts`,
+  `cap-klv-sparse.ts` and the OCC trims do since the merge. Every scenario
+  runs on streams the harness builds: 302M through
   `avenc_s302m ! mpegtsmux alignment=7` with each input's content keyed to
   its absolute sample index, so it is found in a mix to the sample, on the
   10 ms grid where ticks, ns and samples convert exactly; KLV and teletext
@@ -2371,23 +2431,26 @@ and no pace rise after a 7 s pause.
 - **Eight scenarios in both runners** (`aligner_conformance_test.py`, 157
   checks): `scn-align-absent-rejoin` (absent about 101 ms after its last
   data left its watchdog at W = 100 ms, output lateness while absent
-  22.8 → 22.8 ms, 199–200 stale buffers at the return),
-  `scn-align-slow-joiner` (one output gap of 500 ± 25 ms, the pace up
-  500 ms), `scn-align-late-delivering` (1.5 s late: every block mixed, no
-  absence), `scn-align-bursty` (W within 3 % of 3 × p95), `scn-align-wrap`
-  (the house clock really crosses 2^33, in a time namespace, `unshare -T`:
-  no step), `scn-mux-klv`, `scn-837-ducker-mixer` (the ducker's egress PES
+  22.8 → 22.8 ms, 199–200 stale buffers at the return; since B-83 its
+  edges within 1 LSB of the fade model),
+  `scn-align-slow-joiner` (since B-80 no output gap over 60 ms, the joiner
+  present from 1.8 s after its add, the pace up 500 ms; it was one gap of
+  500 ± 25 ms), `scn-align-late-delivering` (1.5 s late: every block mixed,
+  no absence), `scn-align-bursty` (W within 3 % of 3 × p95), `scn-align-wrap`
+  (the house clock really crosses 2^33, in a time namespace, `unshare -T`,
+  a fresh one for each attempt: no step), `scn-mux-klv`,
+  `scn-837-ducker-mixer` (the ducker's egress PES
   PTS equal its input's, 2,250 of 2,250; the mix equals the ducker output
   plus the key in every sample) and `scn-split-passthrough`. Lengths are cut
   for CI (16–60 s; the plan's 90 s and 10 min belong to the rigs). The
   module starts 0.7 s before its producers' data, as on a box.
 - **Protocol cases in both runners:** L rebuilt on the helper's live branch
-  (add, remove, a dead producer's branch, the joiner at `PES − 1 h` from its
-  first kept buffer); L2 (a start-time branch removed); P with a third input
-  carrying KLV under `privatePads` (67 of 67 cues at 0 ticks; P's flake 0 in
-  200 legs, against 3 in 200 at the W0 baseline); `aligner-absent`;
-  `native-plugins` (the four elements of both plugins in one module, their
-  messages forwarded).
+  (add, remove, a dead producer's branch, the joiner at `PES − 1 h` from the
+  first table its demux receives); L2 (a start-time branch removed); P with
+  a third input carrying KLV under `privatePads` (67 of 67 cues at 0 ticks;
+  P's flake 0 in 200 legs, against 3 in 200 at the W0 baseline);
+  `aligner-absent`; `native-plugins` (the four elements of both plugins in
+  one module, their messages forwarded).
 - **For WI-P2-16:** the capture list of part 7.4, now recorded on .103,
   .111, .22 or .50 (.108 is in production); a PES PTS maps to the sample
   `ceil(ticks × 48000 / 90000)`.
@@ -2429,7 +2492,8 @@ sections above give the reasons, the register rows the work item.
   text kept; DI on the PCR PID's first PCR on a new mapping.
 - **WI-P2-6**: choices 1 to 11 of the aligner section (B-56), among them an
   upstream GAP metered at its end (recorded by its verify); the pace
-  estimator it built was replaced in WI-P2-8+11's fix round (B-57);
+  estimator it built was replaced in WI-P2-8+11's fix round (B-57), its
+  median kept in order since a1b;
   `busRunnerContract.test.ts`, the mpegts-core README and a `.gitignore`
   line edited outside its ownership.
 - **WI-P2-7**: no PCR-PID fallback for markers; the no-stream warning as
@@ -2525,27 +2589,29 @@ twins, and the input stall watch end to end; the settings `mixLatencyMs`
 
 ### Open at the end of the build
 
-- WI-P2-16 on the rigs (V1–V12), the part 7.4 captures and the
-  capture-based conformance runs.
-- For the owner: R-P2-5's fall-back (B-76), the pace-rise slew (B-74), a
-  module started more than W before its data (B-73), the seed latch (B-71),
-  the 500 ms matrix floor (B-58), the identity egress findings (B-53), and
-  the engineering choices of rows B-50 to B-67, each recorded for the veto.
+- WI-P2-16 on the rigs (V1–V12), the part 7.4 captures taken after
+  Phase 1 (S0's exist) and the capture-based conformance runs.
+- For the owner: a module started more than W before its data (B-73), the
+  500 ms matrix floor (B-58), the identity egress findings (B-53), the
+  engineering choices of rows B-50 to B-67 and the aligner round's (B-79 to
+  B-83: its flags F2, F3 with A6 not built, F7, and `fall-after` 180 s), each
+  recorded for the veto. R-P2-5's fall-back (B-76), the pace-rise slew
+  (B-74) and the seed latch (B-71) are decided and built (B-80, B-82).
   The ingress queue's first buffer after a silence (B-68) is the owner's
   decision (2026-10-22): a patch to GStreamer's queue in the image, so the
   fix reaches a box with that image.
 - The unixfdsink pool that keeps a stall's high-water mark for the life of
   the edge (B-94): open for Phase 4, in meta-custom's unixfdsink patch.
-- Engine follow-ups: the muxer's, n1-mixer-302m's and audio-processing's
-  `alignerInputOf`, and part 10's demux rows (B-70); the pace estimator's
-  third-share threshold, re-derived from real captures with a Pi 4 among
-  them, and an incremental median in place of a sort per arrival (B-57); a
-  floor for the gap piece's length, which a short last buffer before an
-  absence can bring to 1,000 GAP events a second, and the audio gap shape's
-  need for a directly linked aggregator (B-59).
+- Engine follow-ups: part 10's demux rows (B-70; the `alignerInputOf` of
+  the muxer, n1-mixer-302m and audio-processing are built, B-93); the pace
+  estimator's third-share threshold, re-derived from real captures with a
+  Pi 4 among them (B-57; its median is incremental since a1b); the audio
+  gap shape's need for a directly linked aggregator (B-59; the piece's
+  floor, an output block, is built, B-79).
 - B-20 is unchanged in code: markers carry GAP | DISCONT, every Phase 2
   reader keys on GAP, and dropping DISCONT is still one line. B-23
-  (`mrasrc`'s stand-in) belongs to the Phase 1 close.
+  (`mrasrc`'s stand-in) is settled by the Phase 1 close, merged before this
+  phase.
 - Comments that still name a deleted mechanism wait for a code change:
   `PluginModule.ts` (the `eosDrain` comment blames a force-live aggregator,
   which drained in 0.01–0.03 s on the dev box's 1.28.2; the `hold-on-eos`

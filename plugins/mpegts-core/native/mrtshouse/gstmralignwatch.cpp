@@ -491,10 +491,9 @@ static void aw_observe(GstMrAlignWatch* self, gint64 now, gint64 lateness, guint
     aw_fell(self, ev, pending);
 }
 
-/* Under the lock: a stale arrival of an input catching up that ends near the gaps' end. Its next
- * buffer is kept once they stop: it caught up (B-80). Near is its own length during a rise (the
- * gaps go out as data would, so an input at the pace races its own piece by the slack), else
- * CATCH_UP_NS: a joiner that close is waited for rather than slewed to. */
+/* Under the lock: a stale arrival of an input catching up that ends near the gaps' end ends the
+ * catch-up, so its next buffer is kept (B-80). Near: its own length during a rise (an input at the
+ * pace races its own gap piece by the slack), else CATCH_UP_NS: so close a joiner is waited for. */
 static void aw_caught_up(GstMrAlignWatch* self, bool clocked, gint64 now, gint64 start,
                          gint64 end) {
     Run& r = *self->run;
@@ -1370,10 +1369,9 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
     return true;
 }
 
-/* Under the lock, clocked: when the task must next run, the earliest of what can come due:
- * the head's release, the next paced gap piece, the W deadline while silence counts, the tick
- * while gapped otherwise, the next report; and, for an input held behind the pace, the release
- * of the data that continues it. An arrival due before that wakes it earlier (aw_enqueue). */
+/* Under the lock, clocked: the task's next run, the earliest of the head's release, the next gap
+ * piece, the W deadline while silence counts, the tick while gapped otherwise, the next report and
+ * a held input's next release; an arrival due before it wakes the task earlier (aw_enqueue). */
 static gint64 aw_deadline(GstMrAlignWatch* self, gint64 now) {
     const Run& r = *self->run;
     gint64 at = r.report_at + REPORT_NS;
@@ -1972,7 +1970,7 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
         gobject_class, PROP_LATENESS,
         g_param_spec_int64("lateness", "Lateness (ns)",
                            "This input's lateness: the median over the last second of wall "
-                           "time it delivered; a catch-up (a burst) and stale data left out.",
+                           "time it delivered, stale data included; a draining burst left out.",
                            G_MININT64, G_MAXINT64, 0, ro));
     g_object_class_install_property(
         gobject_class, PROP_PACE,

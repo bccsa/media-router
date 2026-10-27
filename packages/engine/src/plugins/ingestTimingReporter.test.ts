@@ -61,6 +61,21 @@ describe('IngestTimingReporter: what the card follows', () => {
         expect(card.warning).toBeNull();
     });
 
+    it('a dropped transport reads No PCR at once, keeping the last values, until a report (B-118)', () => {
+        const { rep, card } = setup();
+        run(rep, 2000, 4000, { state: 'degraded', reason: 'freeze' });
+        expect(card.badges.clock).toMatchObject({ text: 'Degraded' });
+        rep.down(4100);
+        expect(card.badges.clock).toEqual({ icon: 'clock', text: 'No PCR', color: '#f59e0b' });
+        expect(card.data.clock).toMatchObject({ state: 'No PCR', sourceRate: 1.23 });
+        expect(card.data['pid-256'].lead).toBe('300 / 340 / 420');
+        expect(card.warning).toBeNull();
+        rep.tick(6000);
+        expect(card.data.clock.state).toBe('No PCR');
+        run(rep, 8000, 8000);
+        expect(card.badges.clock).toMatchObject({ text: 'Locked' });
+    });
+
     it('several programs get a Clock section each and the badge shows the worst', () => {
         const { rep, card } = setup();
         rep.onEvent(CH.stats, stats({ program: 2, state: 'acquiring' }), 2000);
@@ -414,7 +429,25 @@ describe('IngestTimingReporter: lifecycle', () => {
         rep.stop();
         rep.onEvent(CH.stats, stats({ state: 'degraded' }));
         vi.advanceTimersByTime(10_000);
-        expect(card.badges.clock).toMatchObject({ text: 'Locked' });
+        expect(card.badges.clock).toBeUndefined();
+    });
+
+    it('takes its card down at once on stop, leaving its warning to the module (B-117)', () => {
+        const { rep, card } = setup();
+        run(rep, 2000, 2000, { state: 'degraded', reason: 'rate' });
+        expect(card.sections.map((s) => s.id)).toEqual(['clock', 'pid-256', 'pid-257']);
+        expect(card.badges.clock).toMatchObject({ text: 'Degraded' });
+        expect(card.options.pids).toHaveLength(2);
+        const warning = card.warning;
+        rep.stop();
+        expect(card.sections).toEqual([]);
+        expect(card.badges.clock).toBeUndefined();
+        expect(card.options.pids).toEqual([]);
+        expect([card.warning, card.clears]).toEqual([warning, 0]);
+        // Nothing shown, nothing to take down.
+        const emits = card.emits;
+        rep.stop();
+        expect(card.emits).toBe(emits);
     });
 
     it("re-sends its sections whole on a change, after another writer replaced the module's", () => {

@@ -1252,7 +1252,8 @@ r.stop()
 print("\n--- audiomixer: (13) a backlog as an input's first data leaves the pace alone ---")
 # What an upstream aligner emits after waiting at its start (WI-P2-8 B2): 1.8 s of content at
 # once, then 40 ms late. The pace is the 40 ms, not the backlog's (by arrivals about 700 ms).
-r = Rig("audiomixer", [{}, {}])
+# That first push comes 2.0 s after PLAYING (t0 is 0.2 s on): a 3 s start ceiling keeps it in.
+r = Rig("audiomixer", [{}, {"props": {"silence-ceiling": 3 * S}}])
 r.run({0: [("rt", 0, 300, 0), ("eos",)],
        1: [("at", 1800), ("now", 0, 180), ("rt", 180, 300, 40), ("eos",)]})
 eos = r.wait(lambda: r.eos_at is not None)
@@ -1396,10 +1397,10 @@ BIG = 400
 r = Rig("audiomixer", [{}, {}])
 
 
-def _big(i, k0, k1, lag_ms):
+def _big(i, k0, k1, lag_ms, rise_ms=0):
     def go():
         for k in range(k0, k1):
-            r.sleep_until(r.at(k * BIG + lag_ms))
+            r.sleep_until(r.at(k * BIG + lag_ms + k * rise_ms))
             frames = RATE * BIG // 1000
             b = Gst.Buffer.new_wrapped(array.array("h", [VAL[i]] * 2 * frames).tobytes())
             b.pts, b.dts, b.duration = r.at(k * BIG), NONE, BIG * MS
@@ -1408,12 +1409,13 @@ def _big(i, k0, k1, lag_ms):
 
 
 r.run({0: [("call", _big(0, 0, 9, 5)), ("eos",)],
-       1: [("call", _big(1, 0, 5, 205)), ("at", 4 * BIG + 300), ("call", lambda: r.remove(1))]})
+       1: [("call", _big(1, 0, 5, 205, 1)), ("at", 4 * BIG + 300), ("call", lambda: r.remove(1))]})
 eos = r.wait(lambda: r.eos_at is not None)
 rel = {p: t for _k, t, p, _f in r.released(0)}
 # Input 1's lateness counts at its third arrival (1.0 s): from content 1.2 s on input 0 is held.
+# It rises 1 ms a buffer: a stretch over which it fell, push jitter alone, would not count (B-57).
 held = [rel[r.at(k * BIG)] - r.at(k * BIG) for k in (3, 4) if r.at(k * BIG) in rel]
-check(f"armed fall: input 0 held to input 1's 205 ms before it leaves "
+check(f"armed fall: input 0 held to input 1's 205-209 ms before it leaves "
       f"(got {[in_ms(h) for h in held]})",
       len(held) == 2 and all(abs(h - 205 * MS) <= SLACK for h in held))
 nxt = rel.get(r.at(5 * BIG))

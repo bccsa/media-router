@@ -108,12 +108,24 @@ export class IngestTimingReporter {
         this.timer.unref?.();
     }
 
-    /** From the module's stop: forget everything. GstPluginBase's stop clears what was shown. */
+    /** From the module's stop: the card goes at once, as the base clears it only once the runner
+     *  is down, seconds later, and a restart showed the last run's Locked (B-117); its warning
+     *  stays to the base's stop. Then forget everything. */
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
+        const { sections, badge, options } = this.shown;
+        if (sections.length || badge || options.length) {
+            this.publish({ ...EMPTY_VIEW, warnings: this.shown.warnings });
+        }
         this.clock = new IngestClock();
         this.shown = EMPTY_VIEW;
+    }
+
+    /** The transport dropped, its runner down: No PCR at once, the last values kept (B-118). */
+    down(now = Date.now()): void {
+        this.clock.down();
+        this.tick(now);
     }
 
     /** From `onPipelinePlaying`: every PLAYING sets health ok, so put the warning back. */

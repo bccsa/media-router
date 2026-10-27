@@ -84,6 +84,8 @@ export interface ProgramClock {
     lastEvent?: { at: number; kind: string; reason: string };
     /** The PID the `degraded` event named: the one whose PTS the timing follows. */
     refPid?: number;
+    /** Its transport dropped since its last stats: it reads as stale (B-118). */
+    down?: boolean;
 }
 
 export interface PidClock {
@@ -137,6 +139,7 @@ export class IngestClock {
         const prog = this.program(num(p, 'program') ?? 0);
         const state = str(p, 'state');
         prog.at = now;
+        prog.down = undefined;
         prog.state = CLOCK_STATES.has(state) ? (state as ClockState) : 'acquiring';
         const reason = str(p, 'reason') === 'none' ? '' : str(p, 'reason');
         // Degraded, the rate is the reference lock's: a switch either way restarts its alarm's hold.
@@ -202,6 +205,12 @@ export class IngestClock {
             relocks: num(p, 'relocks'),
             offSince: offSince(ratioPpb, ASRC_ALARM_PPB, this.asrc?.offSince, now),
         };
+    }
+
+    /** The transport dropped (the runner went down): each program reads as stale until its next
+     *  stats, not only once its reports age out (B-118). */
+    down(): void {
+        for (const p of this.programs.values()) if (p.at !== undefined) p.down = true;
     }
 
     /** Drop what is behind the newest report by `staleMs` (gone from the stream; a silent
