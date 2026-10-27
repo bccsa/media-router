@@ -6,6 +6,8 @@ import {
     busTeeName,
     capsStreamInfo,
     latInName,
+    type AlignerInputRef,
+    type AlignerWatchRef,
     type PipelineDescription,
     type ModuleServices,
     type StreamCapsInfo,
@@ -23,6 +25,7 @@ import {
     isInputPort,
     isLegacyConfig,
     MuxerPidConflictError,
+    routeSeedNs,
     sortSources,
     type DynamicPort,
     type InputEntry,
@@ -68,6 +71,8 @@ export class MpegTsMuxerModule extends GstPluginBase {
     private discovered = new Map<number, StreamCapsInfo>();
     /** Per demux: the classes the hook routed and their output PIDs. */
     private routed = new Map<string, Array<{ media: MuxRouteMedia; outPid: number }>>();
+    /** Per input branch: the seed its route aligners were built with (ms). */
+    private seeds: Array<number | undefined> = [];
     private connectedInputs = 0;
     private legacyNoted = false;
 
@@ -231,6 +236,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         // Discovery is per-pipeline (a rebuild re-fires every pad-added), so
         // stale entries must not leak across builds.
         this.slots = result.slots;
+        this.seeds = sources.map((s) => s.seedLatenessMs);
         this.discovered.clear();
         this.routed.clear();
         this.connectedInputs = sources.length;
@@ -327,6 +333,16 @@ export class MpegTsMuxerModule extends GstPluginBase {
         });
     }
 
+    /** A route's watch (`demux_<i>_<class>`, or a legacy slot's PID) joins its pin's row, the tap
+     *  of its input branch: one row per pin, numbered like it (B-70, B-93). */
+    protected alignerInputOf(watch: AlignerWatchRef): AlignerInputRef | undefined {
+        const demux =
+            /^(demux_\d+)_[a-z]+$/.exec(watch.input)?.[1] ??
+            this.slots.find((s) => String(s.pid) === watch.input)?.demux;
+        const branch = demux ? /^demux_(\d+)$/.exec(demux)?.[1] : undefined;
+        return branch !== undefined ? { tap: latInName(inputBusSrcName(branch)) } : undefined;
+    }
+
     /** `mux:routed` — the hook linked one pad: which demux, its route class,
      *  the pad's caps and the OUTPUT PID it went to (the input's own PID for
      *  the primary class, the next free one for a further class of a
@@ -351,6 +367,20 @@ export class MpegTsMuxerModule extends GstPluginBase {
         const list = this.routed.get(event.demux) ?? [];
         list.push({ media: event.media as MuxRouteMedia, outPid });
         this.routed.set(event.demux, list);
+        // The hook built the route's aligner from the branch: its seed, for the B-26 check.
+        const seedNs = routeSeedNs(this.seeds[Number(/^demux_(\d+)$/.exec(event.demux)?.[1])]);
+        this.log.debug(
+            {
+                muxRoute: {
+                    demux: event.demux,
+                    media: event.media,
+                    outPid,
+                    seedLatenessNs: seedNs,
+                },
+            },
+            `Route ${event.demux} ${event.media} → PID ${outPid}: seed-lateness ` +
+                (seedNs === undefined ? 'none' : `${Math.round(seedNs / 1_000_000)} ms`),
+        );
         this.publishPidStatus(inputEntries(this.config));
         this.publishInputStatus(isLegacyConfig(this.config));
     }

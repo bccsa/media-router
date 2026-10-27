@@ -453,9 +453,13 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         report(module, { state: 'acquiring' });
         expect(sectionIds(module)).toEqual(['caller-0', 'clock', 'pid-256']);
         expect(module.getState().statusData['caller-0']).toBeDefined();
-        // The runner going down drops the callers, not the clock (it reads No PCR when stale).
+        // The runner going down drops the callers, not the clock, which reads No PCR at once (B-118).
         child.emit('stateChange', { state: 'error' });
         expect(sectionIds(module)).toEqual(['clock', 'pid-256']);
+        expect(module.getState().statusData.clock).toMatchObject({
+            state: 'No PCR',
+            sourceRate: 1.23,
+        });
 
         // Every program stopped reporting (its PIDs report on): the badge is withdrawn.
         for (let i = 0; i < 4; i++) {
@@ -471,6 +475,32 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         vi.advanceTimersByTime(4000);
         expect(module.getState().badges).toEqual([]);
         expect(sectionIds(module)).toEqual([]);
+    });
+
+    it('a stop takes the clock card down at once, while the runner still stops (B-117)', async () => {
+        vi.useFakeTimers();
+        let down = () => {};
+        const child = Object.assign(new EventEmitter(), {
+            stop: vi.fn(() => new Promise<void>((r) => (down = r))),
+        });
+        vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+            this.childProcess = child;
+        });
+        const module = cardModule();
+        await module.onStart();
+        report(module);
+        expect(module.getState().statusData.clock).toMatchObject({ state: 'Locked' });
+        // A restart's stop waits seconds for the runner: the last run's card must not show meanwhile.
+        const stopping = module.onStop();
+        const state = module.getState();
+        expect(state.badges.map((b: { id: string }) => b.id)).not.toContain('clock');
+        expect(state.statusData.clock).toBeUndefined();
+        expect(state.statusData['pid-256']).toBeUndefined();
+        expect(sectionIds(module)).toEqual([]);
+        expect(state.fieldOptions.pids).toEqual([]);
+        down();
+        await stopping;
+        expect(module.getState().badges).toEqual([]);
     });
 
     it('logs the restamp events, and leaves other plugin events alone', () => {

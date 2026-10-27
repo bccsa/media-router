@@ -214,7 +214,8 @@ def live_aligned_case(argv, tag, check):
     """Plan ch. 6 part 7.3 case L through `argv`'s runner: audio-mixer's own start (two start-time
     bins into the aligned mixer, fixtures/aligner/pipelines.json) takes a third 302M source live with
     the module's branch (mrtsdemux, then mralignwatch) and lets it go. The joiner is mixed at its
-    PES - 1 h from its first buffer, with no runner retime; the kept sources never break."""
+    PES - 1 h from the first table its demux receives, with no runner retime; the kept sources never
+    break."""
     rig = _rig()
     if rig is None:
         return
@@ -293,19 +294,21 @@ def live_aligned_case(argv, tag, check):
         miss = _missing(rig, pcm, c[n], lo_ns, hi_ns)
         check(f"L {tag}: kept source {n} in every block, at its content time (lag {lag}, missing {miss[:3]})",
               lag == 0 and not miss)
-    # The joiner's first buffer: the first PES its producer sent after the branch connected.
-    first = next((pes["pts"] for a, _st, data in prods["in2"].delivered if a >= got.get("add_t", 0)
-                  for lst in rig.pes_of([(a, 0, 0, data)]).values() for pes in lst
-                  if pes["pts"] is not None), None)
-    first_ns = rig.house_of(rig.sample_of_pts(first, t0)) if first is not None else None
-    rm_ns = got.get("rm_t", hi_ns)
-    lag, _g = pcm.best_lag(c["in2"], rig.sample_of(first_ns or lo_ns), rig.sample_of(rm_ns - 50 * rig.MS))
-    miss = _missing(rig, pcm, c["in2"], (first_ns or lo_ns) + 20 * rig.MS, rm_ns - 50 * rig.MS)
+    # The branch's demux takes its stream at the first PMT it receives (select mode). The producer's
+    # mux repeats its tables every 100 ms and its unixfdsink takes the branch on its own thread, so
+    # the joiner starts within a table interval of the add, then is mixed in every block.
+    add_t, rm_ns = got.get("add_t", lo_ns), got.get("rm_t", hi_ns)
+    on = [b for b, g, _e in pcm.presence(c["in2"], rig.sample_of(add_t), rig.sample_of(rm_ns - 50 * rig.MS))
+          if g is not None and g >= 0.5]
+    on_ns = rig.house_of(on[0]) if on else None
+    lag, _g = pcm.best_lag(c["in2"], rig.sample_of(on_ns or lo_ns), rig.sample_of(rm_ns - 50 * rig.MS))
+    miss = _missing(rig, pcm, c["in2"], on_ns or lo_ns, rm_ns - 50 * rig.MS)
     after = [g for _b, g, _e in pcm.presence(c["in2"], rig.sample_of(rm_ns + 100 * rig.MS), hi)
              if g is not None and g > 0.25]
-    check(f"L {tag}: the joiner is mixed at its PES - 1 h from its first buffer "
-          f"({first_ns and round((first_ns - t0) / 1e9, 3)} s; lag {lag}, missing {miss[:3]}), and gone "
-          f"after the remove ({len(after)} blocks)", first_ns is not None and lag == 0 and not miss and not after)
+    check(f"L {tag}: the joiner is mixed at its PES - 1 h from its first table on, within 150 ms of the add "
+          f"({on_ns and round((on_ns - add_t) / 1e6)} ms; lag {lag}, missing {miss[:3]}), and gone after the "
+          f"remove ({len(after)} blocks)", on_ns is not None and on_ns - add_t <= 150 * rig.MS and lag == 0
+          and not miss and not after)
     reps = rig.aligner_reports(r, rig.aligner_of(cmd["add"]["description"]))
     stale = max((p.get("stale-buffers") or 0 for _t, p in reps), default=None)
     # Its gaps lead now - pace by a buffer, as data does; its first buffer comes through a branch
@@ -390,7 +393,8 @@ def live_aligned_case(argv, tag, check):
 def aligner_absent_case(argv, tag, check):
     """Plan ch. 6 part 7.3 case aligner-absent through `argv`'s runner: one of audio-mixer's three
     inputs stops for 2 s (its link stalls, the backlog comes at the end). The mix goes on, the
-    input's mralignwatch reports absent then present and its stale backlog, and nothing errs."""
+    input's mralignwatch reports absent then present and its stale backlog, its edges fade (B-83),
+    and nothing errs."""
     rig = _rig()
     if rig is None:
         return
@@ -438,6 +442,17 @@ def aligner_absent_case(argv, tag, check):
     stale = max((p.get("stale-buffers") or 0 for t, p in reps if t < end_ns), default=0)
     check(f"aligner-absent {tag}: its mralignwatch went absent, then present ({seq}); stale {stale} > 0",
           seq[-2:] == ["absent", "present"] and stale > 0)
+    # B-83: in2's part of the mix (the mix less in0's and in1's content) is its content faded out
+    # where it stops and back in where it returns, to the LSB; in0 and in1 untouched throughout.
+    em = rig.edge_model(pcm, [c["in0"], c["in1"]], c["in2"], lo, hi)
+    at = {k: em[k] and round((em[k] - rig.sample_of(t0)) / rig.RATE, 3) for k in ("out", "back")}
+    fades = max((p.get("fades") or 0 for t, p in reps if t < end_ns), default=0)
+    check(f"aligner-absent {tag}: in2 fades out where its content stops and in where it is back, to the "
+          f"LSB, the other two untouched (out at {at['out']} s, back at {at['back']} s, the largest "
+          f"deviation {em['dev']} LSB, the mix against its inputs before {em['steady']} LSB; fades "
+          f"{fades})",
+          em["dev"] is not None and em["dev"] <= 1 and abs(at["out"] - frm) <= 0.05
+          and frm + length - 0.05 <= at["back"] <= frm + length + 0.5 and fades >= 2)
     check(f"aligner-absent {tag}: no error, exit 0 ({[e.get('message') for e in errors][:2]}, rc {rc})",
           not errors and rc == 0)
 

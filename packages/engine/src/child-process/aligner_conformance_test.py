@@ -50,6 +50,8 @@ _failures = []
 # A run whose producers fell this far behind their schedule tests the harness, not the module:
 # it is run again (W is 100 ms for a 10 ms rhythm).
 HARNESS_LATE_MS = 30
+# A time-namespace run's exit code for that: the outer run starts it again in a fresh namespace.
+RETRY_RC = 75
 
 
 class Retry(Exception):
@@ -266,8 +268,8 @@ def scn_align_absent_rejoin(tag, argv, exp):
     reps = {n: rig.aligner_reports(s.runner, aligner_name(s.entry["start"], f"conn-{n}")) for n in inp}
     end_ns = t0 + int((exp["seconds"] - 0.5) * S)
 
-    # Absent within W + one tick of going silent: once its last data has left its watchdog, at its
-    # end + pace (a push blocked in the mixer is held, not silent: WI-P2-6).
+    # Absent at W of going silent (B-79; `tick_ms` is the runners' slack now): once its last data has
+    # left its watchdog, at its end + pace (a push blocked in the mixer is held, not silent: WI-P2-6).
     absent = rig.first_state(reps[gone], "absent", after=t_from)
     w = (absent[1].get("silence-limit") or 0) / 1e6 if absent else None
     pace = (absent[1].get("pace") or 0) if absent else 0
@@ -320,6 +322,16 @@ def scn_align_absent_rejoin(tag, argv, exp):
                   f"{leak:.3f} at {at and round(at * 1000 / rig.RATE)} ms; its fresh content found at "
                   f"{ctrl_at} samples, gain {ctrl:.3f})",
                   leak < x["backlog_gain_max"] and ctrl_at == 0 and ctrl > 0.9)
+            # B-83: its part of the mix is its content faded out and back in, to the LSB.
+            em = rig.edge_model(pcm, [contents[k] for k in inp if k != gone], c, lo, hi,
+                                fade=x["fade_samples"])
+            edge = {k: em[k] and round(sec(rig.house_of(em[k]), t0), 3) for k in ("out", "back")}
+            check(f"{label} {tag}: {gone} fades out where its content stops, in where it is back, the "
+                  f"others untouched (out at {edge['out']} s, back at {edge['back']} s, the largest "
+                  f"deviation {em['dev']} LSB, within {x['fade_lsb']})",
+                  em["dev"] is not None and em["dev"] <= x["fade_lsb"]
+                  and abs(edge["out"] - frm) <= 0.05 and frm + length - 0.05 <= edge["back"]
+                  <= frm + length + 0.5)
         else:
             miss = presence_gaps(pcm, c, lo, hi)
             check(f"{label} {tag}: {n} in every block of the mix at its content time (lag {lag}, gain "
@@ -713,10 +725,21 @@ def scn_mux_klv(tag, argv, exp):
     def before_tail(k):
         p = kin[k][0]                   # by decode time: a cut by PTS leaves holes among B-frames
         return rig.unwrap(p["dts"] if p["dts"] is not None else p["pts"], t0) < tail_ns
+    # The pace before the pause and after the cues that end it: a mistimed cue raises it for good.
+    reps = rig.aligner_reports(s.runner, "aw_demux_0_video")
+    resume = next(c for a, c in zip(cues, cues[1:]) if c - a > 5)
+    p0 = pace_at(reps, t0 + 4 * S, t0 + int((resume - 0.5) * S))
+    p1 = pace_at(reps, t0 + int((cues[-1] + 0.5) * S), t0 + int((seconds - 1) * S))
+    # A route the mux links after the group's first push (its demux's pad comes later under load)
+    # joins late: it catches up and never stalls the mux, losing at most its first 2D + 0.5 s and the
+    # buffer that ends the catch-up, D its lateness (B-80, F7). A start is all it may lose.
+    cost_s = 2 * max(p0 or 0, p1 or 0) / 1000 + 0.5 + x["buffer_s"]
     for pid_ in (fx.VIDEO_PID, 0x105):
         keys = sorted(k for k in kin if k[0] == pid_ and k in kout and before_tail(k))
         sent_n = sum(1 for k in kin if k[0] == pid_ and before_tail(k))
         lost = sorted(k[1] for k in kin if k[0] == pid_ and k not in kout and before_tail(k))
+        later = [n for n in lost if not keys or n > keys[0][1]]
+        start_s = (len(lost) - len(later)) * fx.FRAME / 90000
         off = [ticks(kout[k][0]["pts"], kin[k][0]["pts"]) for k in keys]
         dts = []
         for k in keys:
@@ -724,20 +747,17 @@ def scn_mux_klv(tag, argv, exp):
             dts.append((q["arrival"], q["dts"] if q["dts"] is not None else q["pts"]))
         dts.sort()
         steps = {(b - a) % wrap for (_x, a), (_y, b) in zip(dts, dts[1:])}
-        check(f"{label} {tag}: video 0x{pid_:x}: every AU at its input PES PTS ({len(keys)} of {sent_n}, not "
-              f"out {lost[:4]}, worst {max(map(abs, off), default=None)} ticks), its decode cadence one frame "
+        check(f"{label} {tag}: video 0x{pid_:x}: every AU from its first out at its input PES PTS ({len(keys)} "
+              f"of {sent_n}, not out after it {later[:4]}, worst {max(map(abs, off), default=None)} ticks; "
+              f"its start lost {start_s:.2f} s, at most {cost_s:.2f} s), its decode cadence one frame "
               f"between cues (steps {sorted(steps)[:4]})",
-              keys and not lost and all(t == 0 for t in off) and steps == {fx.FRAME})
+              keys and not later and start_s <= cost_s and all(t == 0 for t in off)
+              and steps == {fx.FRAME})
     vid = sorted(q["arrival"] for k, v in kout.items() if k[0] == fx.VIDEO_PID for q in v[:1])
     lo_ns = t0 + int((cues[0] - 0.5) * S)
     gaps = [(b - a) / 1e6 for a, b in zip(vid, vid[1:]) if a >= lo_ns]
     check(f"{label} {tag}: the video never stalls between cues (largest arrival gap "
           f"{max(gaps, default=0):.1f} ms)", gaps and max(gaps) <= x["video_gap_ms"])
-    # The pace before the pause and after the cues that end it: a mistimed cue raises it for good.
-    reps = rig.aligner_reports(s.runner, "aw_demux_0_video")
-    resume = next(c for a, c in zip(cues, cues[1:]) if c - a > 5)
-    p0 = pace_at(reps, t0 + 4 * S, t0 + int((resume - 0.5) * S))
-    p1 = pace_at(reps, t0 + int((cues[-1] + 0.5) * S), t0 + int((seconds - 1) * S))
     check(f"{label} {tag}: the cues after the pause do not raise the mux pace ({p0 and round(p0, 1)} -> "
           f"{p1 and round(p1, 1)} ms)", p0 is not None and p1 is not None
           and p1 - p0 <= x["pace_rise_ms"])
@@ -990,29 +1010,40 @@ SCENARIOS = {
 def in_time_namespace(name, tag):
     """Run `name` on runner `tag` in a time namespace whose CLOCK_MONOTONIC puts the 33-bit PES
     wrap about 12 s after it starts, so the house clock really crosses it mid-run; the inner run
-    prints its own checks."""
+    prints its own checks. Each attempt gets a fresh namespace: a retry in the same one would
+    start after the wrap."""
     if not shutil.which("unshare"):
         print(f"SKIP {name} {tag} — no unshare for a time namespace")
         return
-    m = time.monotonic_ns()
-    offset = (wrap_house_ns(m + 60 * S) - m) // S - 12
-    ns = ["unshare", "-U", "-r", "-T", f"--monotonic={offset}"]
-    # Whether this box gives one at all; past this, a run that fails is a failure.
-    probe = subprocess.run(ns + ["true"], capture_output=True, text=True, timeout=30)
-    if probe.returncode != 0:
-        print(f"SKIP {name} {tag} — no time namespace here ({(probe.stderr.strip() or '?').splitlines()[-1]})")
+    for attempt in range(3):
+        while os.getloadavg()[0] >= 3.0:
+            time.sleep(5)
+        m = time.monotonic_ns()
+        offset = (wrap_house_ns(m + 60 * S) - m) // S - 12
+        ns = ["unshare", "-U", "-r", "-T", f"--monotonic={offset}"]
+        # Whether this box gives one at all; past this, a run that fails is a failure.
+        probe = subprocess.run(ns + ["true"], capture_output=True, text=True, timeout=30)
+        if probe.returncode != 0:
+            print(f"SKIP {name} {tag} — no time namespace here ({(probe.stderr.strip() or '?').splitlines()[-1]})")
+            return
+        cmd = ns + [sys.executable, os.path.abspath(__file__), "--only", name, "--runner", tag, "--in-time-ns"]
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        lines = done.stdout.splitlines()
+        # A retried attempt's lines count too, as a retry outside a namespace does.
+        for line in lines:
+            if line.startswith(("PASS ", "FAIL ", "RETRY ", "SKIP ", "    ")):
+                print(line, flush=True)
+            if line.startswith("FAIL "):
+                _failures.append(line[5:])
+        if done.returncode == RETRY_RC:
+            if attempt == 2:
+                late = next((l[6:] for l in lines if l.startswith("RETRY ")), "the harness fell behind")
+                check(f"{late}, three runs in a row", False)
+            continue
+        if done.returncode != 0 and not any(l.startswith("FAIL ") for l in lines):
+            check(f"{name} {tag}: the time-namespace run exits 0 (rc {done.returncode}: "
+                  f"{done.stderr.strip()[-300:]})", False)
         return
-    cmd = ns + [sys.executable, os.path.abspath(__file__), "--only", name, "--runner", tag, "--in-time-ns"]
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    lines = done.stdout.splitlines()
-    for line in lines:
-        if line.startswith(("PASS ", "FAIL ", "RETRY ", "SKIP ", "    ")):
-            print(line, flush=True)
-        if line.startswith("FAIL "):
-            _failures.append(line[5:])
-    if done.returncode != 0 and not any(l.startswith("FAIL ") for l in lines):
-        check(f"{name} {tag}: the time-namespace run exits 0 (rc {done.returncode}: "
-              f"{done.stderr.strip()[-300:]})", False)
 
 
 def main():
@@ -1053,13 +1084,16 @@ def main():
             continue
         for tag, argv in kinds:
             for attempt in range(3):
-                while os.getloadavg()[0] >= 3.0:
+                # Inside a time namespace its clock runs to the wrap: the outer run waited.
+                while not args.in_time_ns and os.getloadavg()[0] >= 3.0:
                     time.sleep(5)
                 try:
                     SCENARIOS[name](tag, argv, exp)
                     break
                 except Retry as late:
                     print(f"RETRY {late}", flush=True)
+                    if args.in_time_ns:
+                        return RETRY_RC         # the outer run retries in a fresh namespace
                     if attempt == 2:
                         check(f"{late}, three runs in a row", False)
     if _failures:

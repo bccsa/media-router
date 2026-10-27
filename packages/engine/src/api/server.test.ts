@@ -373,7 +373,8 @@ describe('Engine API Server', () => {
     });
 
     it('logs a refused peer once per address and minute', async () => {
-        const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        // Only the clock is faked: the inject keeps its own timers. 59 s and 61 s pin the minute.
+        vi.useFakeTimers({ toFake: ['Date'], now: 1_000_000 });
         const refused = (remoteAddress: string) =>
             app.inject({ method: 'GET', url: '/api/v1/health', remoteAddress });
         try {
@@ -382,20 +383,23 @@ describe('Engine API Server', () => {
                 await refused('10.1.2.3');
                 await refused('198.51.100.123');
                 await app.inject({ method: 'GET', url: '/api/v1/health' });
-                now.mockReturnValue(1_059_999);
+                vi.setSystemTime(1_059_000);
                 await refused('10.1.2.3');
-                now.mockReturnValue(1_060_000);
+                vi.setSystemTime(1_061_000);
                 await refused('10.1.2.3');
                 await refused('198.51.100.123');
+                vi.setSystemTime(1_062_000);
+                await refused('10.1.2.3');
             });
-            expect(lines.map((l) => [l.peer, l.msg])).toEqual([
-                ['10.1.2.3', 'Local API refused a request from another host'],
-                ['198.51.100.123', 'Local API refused a request from another host'],
-                ['10.1.2.3', 'Local API refused a request from another host'],
-                ['198.51.100.123', 'Local API refused a request from another host'],
+            const at = (ms: number) => new Date(ms).toISOString();
+            expect(lines.map((l) => [l.peer, l.msg, l.time])).toEqual([
+                ['10.1.2.3', 'Local API refused a request from another host', at(1_000_000)],
+                ['198.51.100.123', 'Local API refused a request from another host', at(1_000_000)],
+                ['10.1.2.3', 'Local API refused a request from another host', at(1_061_000)],
+                ['198.51.100.123', 'Local API refused a request from another host', at(1_061_000)],
             ]);
         } finally {
-            now.mockRestore();
+            vi.useRealTimers();
         }
     });
 });

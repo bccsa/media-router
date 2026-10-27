@@ -239,6 +239,46 @@ describe('input numbering (F8)', () => {
         t.stop(false);
     });
 
+    it('an input wired later takes the next number; none renumbers within the run (F8)', () => {
+        let sources = [b, d];
+        const t = new ModuleTiming({
+            emit: () => {},
+            getProperty: async () => undefined,
+            busSources: () => sources,
+        });
+        const inputSections = () =>
+            t.publication.sections
+                .filter((s) => s.id.startsWith('timing-in-'))
+                .map((s) => [s.id, s.label]);
+        t.start({ pipeline: 'audiomixer ! fakesink' });
+        for (const s of [b, d]) t.onEvent(`mrlateness:${tapOf(s)}`, win(10));
+        t.tick();
+        expect(inputSections()).toEqual([
+            ['timing-in-1', 'Input 1 timing: enc-b (in-1)'],
+            ['timing-in-2', 'Input 2 timing: enc-d (in-2)'],
+        ]);
+        // enc-a's edge sorts first (in-0): wired now, it is the third, the others keep theirs.
+        sources = [a, b, d];
+        for (const s of [a, b, d]) t.onEvent(`mrlateness:${tapOf(s)}`, win(10));
+        t.tick();
+        expect(inputSections()).toEqual([
+            ['timing-in-1', 'Input 1 timing: enc-b (in-1)'],
+            ['timing-in-2', 'Input 2 timing: enc-d (in-2)'],
+            ['timing-in-3', 'Input 3 timing: enc-a (in-0)'],
+        ]);
+        // A restart numbers the inputs it is built with, in their order.
+        t.start({ pipeline: 'audiomixer ! fakesink' });
+        for (const s of [a, b, d]) t.onEvent(`mrlateness:${tapOf(s)}`, win(10));
+        t.tick();
+        expect(inputSections().map(([id]) => id)).toEqual([
+            'timing-in-1',
+            'timing-in-2',
+            'timing-in-3',
+        ]);
+        expect(inputSections()[0][1]).toBe('Input 1 timing: enc-a (in-0)');
+        t.stop(false);
+    });
+
     it('a module that names its taps per branch declares their numbers and labels', () => {
         const t = new ModuleTiming({
             emit: () => {},
@@ -554,7 +594,91 @@ describe('aligner inputs (WI-P2-13)', () => {
         t.stop(false);
     });
 
+    it('a producer stopped while wired keeps its row: absent, warned, waited for (B-93)', () => {
+        let sources = [A, B];
+        const host = {
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: vi.fn(() => sources),
+            alignerWarnings: vi.fn(),
+            log: vi.fn(),
+            wired: vi.fn((s: BusSourceRef) => s.connectionId === B.connectionId),
+        };
+        const t = new ModuleTiming(host);
+        t.start({ pipeline: 'unixfdsrc ! fakesink' });
+        t.onEvent('mralignwatch:mixin_aw_a', awMsg(A.connectionId, 'present'));
+        t.onEvent('mralignwatch:mixin_aw_b', awMsg(B.connectionId, 'present'));
+        // enc-b stops: its channel is released and the router lists its edge no more; the edge
+        // stands in the module's graph, and its watch goes absent.
+        sources = [A];
+        t.onEvent('mralignwatch:mixin_aw_b', awMsg(B.connectionId, 'absent', { absences: 1 }));
+        const s = t.summary()!;
+        expect(s.inputs.map((i) => [i.n, i.label, i.state])).toEqual([
+            [1, 'enc-a (audio-in)', 'present'],
+            [2, 'enc-b (audio-in)', 'absent'],
+        ]);
+        expect(s.waitingFor).toBe('enc-b (audio-in)');
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(
+            'Input enc-b (audio-in) silent for 100 ms — continuing without it',
+            null,
+        );
+        expect(host.wired).toHaveBeenCalledWith(
+            expect.objectContaining({ connectionId: B.connectionId }),
+        );
+        t.stop(false);
+    });
+
+    it('an input whose tap went quiet under watches that report on shows absent (a dark muxer pin)', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+        const pin = (input: string) =>
+            input.startsWith('demux_0') ? { tap: 'lat_busin_0' } : undefined;
+        const { t, host } = make([A, B], (w) => pin(w.input));
+        t.start({
+            pipeline: 'unixfdsrc ! fakesink',
+            timingInputs: [{ tap: 'lat_busin_0', n: 1, label: 'enc-a (input-0)' }],
+        });
+        const route = (state: 'present' | 'absent') =>
+            t.onEvent('mralignwatch:aw_demux_0_video', {
+                ...awMsg('demux_0_video', state, { reason: 'interval', latenessMs: 150 }),
+                aligner: 'mux',
+            });
+        t.onEvent('mrlateness:lat_busin_0', win(140));
+        route('present');
+        t.tick();
+        expect(t.summary()!.inputs.map((i) => [i.n, i.label, i.state])).toEqual([
+            [1, 'enc-a (input-0)', 'present'],
+        ]);
+        // The pin's producer stops: its routes end at EOS and report on as present; the tap goes
+        // quiet, and once it is stale the row is absent, named and warned.
+        for (let i = 0; i < 4; i++) {
+            vi.advanceTimersByTime(2000);
+            route('present');
+        }
+        const s = t.summary()!;
+        expect(s.inputs.map((i) => [i.n, i.state, i.lateness])).toEqual([[1, 'absent', undefined]]);
+        expect(s.waitingFor).toBe('enc-a (input-0)');
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(
+            'Input enc-a (input-0) silent for 6000 ms — continuing without it',
+            null,
+        );
+        // Before its first window a tap is not quiet: a fresh run shows the route present; nor is
+        // one hidden as off the house timeline.
+        t.start({
+            pipeline: 'unixfdsrc ! fakesink',
+            timingInputs: [{ tap: 'lat_busin_0', n: 1, label: 'enc-a (input-0)' }],
+        });
+        route('present');
+        expect(t.summary()!.inputs.map((i) => i.state)).toEqual(['present']);
+        t.onEvent('mrlateness:lat_busin_0', win(140));
+        t.onEvent('mrlateness:lat_busin_0', win(4_000_000));
+        route('present');
+        expect(t.summary()!.inputs.map((i) => i.state)).toEqual(['present']);
+        t.stop(false);
+    });
+
     it('a removed edge: its watch names nothing and warns no more while it expires', () => {
+        // Gone from the module's graph (no `wired`): the operator removed it.
         const sources = [A, B];
         const { t, host } = make(sources);
         t.onEvent('mralignwatch:mixin_aw_b', awMsg(B.connectionId, 'absent', { absences: 1 }));

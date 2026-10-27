@@ -1,7 +1,8 @@
 /* mralignwatch (plan ch. 6 part 4.3, WI-P2-6): a non-live aggregator's input. A FIFO released
  * at running time + the shared pace; silent past W, gapped, and so is an input that joins or
- * rejoins a running aggregator until it catches up (B-80); LATENCY non-live. A plain GstElement:
- * lists stay lists, every push leaves from the src task, in order. */
+ * rejoins a running aggregator until it catches up (B-80); toward an audio aggregator its PCM edges
+ * fade (B-83); LATENCY non-live. A plain GstElement: lists stay lists, every push leaves from the
+ * src task, in order. */
 #include <gst/audio/audio.h>
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "mrts/align_watch.h"
+#include "mrts/pcm_fade.h"
 #include "mrtshouse.h"
 
 #define GST_CAT_DEFAULT mrtshouse_debug
@@ -47,6 +49,7 @@ enum {
     PROP_LEVEL_BYTES,
     PROP_FULL_COUNT,
     PROP_PASSES,
+    PROP_FADES,
 };
 
 #define DEFAULT_SILENCE_FACTOR 3.0
@@ -67,6 +70,11 @@ static const gint64 RELEASE_SLACK_NS = GST_MSECOND;
  * this (a tick more toward mpegtsmux), half the 100 ms floor of any downstream W, where a slew
  * would cost it half a second (B-80). */
 static const gint64 CATCH_UP_NS = 50 * GST_MSECOND;
+/* PCM edges toward an audio aggregator (B-83): faded out and in over this; a hole this long in
+ * the data is an edge too; a tail shorter than TAIL_MIN_NS fades nothing out. */
+static const gint64 FADE_NS = 5 * GST_MSECOND;
+static const gint64 HOLE_MIN_NS = GST_MSECOND;
+static const gint64 TAIL_MIN_NS = GST_MSECOND;
 /* Untimed buffers add no time level: past this many items the FIFO is full anyway (R9). */
 static const size_t ITEMS_MAX = 32768;
 
@@ -115,7 +123,7 @@ struct Snap {
     AwState state = AwState::waiting;
     gint64 lateness = 0, pace = 0, pace_target = 0, silence_limit = 0, fell = 0;
     guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, level_time = 0,
-            level_bytes = 0, full_count = 0, passes = 0, fall_after = 0;
+            level_bytes = 0, full_count = 0, passes = 0, fall_after = 0, fades = 0;
 };
 
 /* The run's state, under `lock`; reset at each start (READY -> PAUSED). */
@@ -166,11 +174,18 @@ struct Run {
     gint64 fell = 0;                  // the last skip down this member's call applied (B-82)
     guint64 fall_after = 0;           // the group's
     guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, full_count = 0, passes = 0;
+    guint64 fades = 0;              // fade-outs and fade-ins (B-83)
     gint64 unit_ns = 0;             // the last data buffer's duration, a gap piece's toward audio
     /* What the src pad feeds (task thread only): an audio aggregator takes a GAP whole at the
      * start of its output block, mpegtsmux takes only a GAP's start (WI-P2-1 F2). */
     enum class Down { unknown, audio, other } down = Down::unknown;
     gint64 block_ns = 0;            // the audio aggregator's output block
+    /* PCM out (B-83, task thread only): the caps' rate and the last FADE_NS of sound out; the next
+     * edge fades that out while `sounding`, and data after silence fades in over `fade_in_left`. */
+    bool pcm = false, pcm_noted = false, sounding = false;
+    gint rate = 0;
+    mrts::PcmTail tail;
+    gsize fade_in_left = 0, fade_in_total = 0;
 };
 
 #define GST_TYPE_MRALIGNWATCH (gst_mralignwatch_get_type())
@@ -341,6 +356,7 @@ static Snap aw_snap(GstMrAlignWatch* self) {
     s.level_bytes = r.level_bytes;
     s.full_count = r.full_count;
     s.passes = r.passes;
+    s.fades = r.fades;
     return s;
 }
 
@@ -354,7 +370,7 @@ static GstStructure* aw_message_structure(const Snap& s, const gchar* reason) {
         "stale-buffers", G_TYPE_UINT64, s.stale_buffers, "stale-time", G_TYPE_UINT64,
         s.stale_time, "gaps", G_TYPE_UINT64, s.gaps, "level-time", G_TYPE_UINT64, s.level_time,
         "level-bytes", G_TYPE_UINT64, s.level_bytes, "full-count", G_TYPE_UINT64, s.full_count,
-        "passes", G_TYPE_UINT64, s.passes, NULL);
+        "passes", G_TYPE_UINT64, s.passes, "fades", G_TYPE_UINT64, s.fades, NULL);
 }
 
 static void aw_post(GstMrAlignWatch* self, GstStructure* st) {
@@ -475,10 +491,9 @@ static void aw_observe(GstMrAlignWatch* self, gint64 now, gint64 lateness, guint
     aw_fell(self, ev, pending);
 }
 
-/* Under the lock: a stale arrival of an input catching up that ends near the gaps' end. Its next
- * buffer is kept once they stop: it caught up (B-80). Near is its own length during a rise (the
- * gaps go out as data would, so an input at the pace races its own piece by the slack), else
- * CATCH_UP_NS: a joiner that close is waited for rather than slewed to. */
+/* Under the lock: a stale arrival of an input catching up that ends near the gaps' end ends the
+ * catch-up, so its next buffer is kept (B-80). Near: its own length during a rise (an input at the
+ * pace races its own gap piece by the slack), else CATCH_UP_NS: so close a joiner is waited for. */
 static void aw_caught_up(GstMrAlignWatch* self, bool clocked, gint64 now, gint64 start,
                          gint64 end) {
     Run& r = *self->run;
@@ -763,6 +778,9 @@ static gboolean aw_sink_event(GstPad* pad, GstObject* parent, GstEvent* event) {
             r.planner.reset();
             r.sink_eos = r.eos_out = r.eos_held = false;
             r.discont = r.primed = r.caps_primed = false;
+            r.sounding = false;      // nothing before the flush fades out or in
+            r.fade_in_left = 0;
+            r.tail.reset();
             r.catching_up = false;   // nothing is stale after a flush
             r.pace_run = false;
             r.quiet_started = false;
@@ -947,6 +965,102 @@ static void aw_push_gap(GstMrAlignWatch* self, gint64 start, gint64 end) {
     }
 }
 
+/* --- PCM edges (B-83) ------------------------------------------------------------------ */
+
+/* Task thread: the edges are smoothed, toward an audio aggregator under caps the fades take. */
+static bool aw_smoothing(const Run& r) {
+    return r.pcm && r.down == Run::Down::audio && !r.sparse;
+}
+
+static gsize aw_frames(const Run& r, gint64 ns) {
+    return ns > 0 && r.rate > 0 ? (gsize)gst_util_uint64_scale((guint64)ns, r.rate, GST_SECOND) : 0;
+}
+
+/* Task thread, as a CAPS goes out: interleaved S16, S32, F32 or F64 are PCM; new caps start the
+ * tail afresh. */
+static void aw_pcm_caps(GstMrAlignWatch* self, GstCaps* caps) {
+    Run& r = *self->run;
+    GstAudioInfo info;
+    bool ok = caps && gst_audio_info_from_caps(&info, caps) && info.rate > 0 &&
+              info.channels > 0 && GST_AUDIO_INFO_LAYOUT(&info) == GST_AUDIO_LAYOUT_INTERLEAVED;
+    mrts::PcmFormat f = mrts::PcmFormat::s16;
+    if (ok) {
+        switch (GST_AUDIO_INFO_FORMAT(&info)) {
+            case GST_AUDIO_FORMAT_S16: f = mrts::PcmFormat::s16; break;
+            case GST_AUDIO_FORMAT_S32: f = mrts::PcmFormat::s32; break;
+            case GST_AUDIO_FORMAT_F32: f = mrts::PcmFormat::f32; break;
+            case GST_AUDIO_FORMAT_F64: f = mrts::PcmFormat::f64; break;
+            default: ok = false; break;
+        }
+    }
+    if (!ok && r.down == Run::Down::audio && !r.pcm_noted && caps && !gst_caps_is_empty(caps) &&
+        gst_structure_has_name(gst_caps_get_structure(caps, 0), "audio/x-raw")) {
+        r.pcm_noted = true;
+        GST_DEBUG_OBJECT(self, "edges not smoothed under %" GST_PTR_FORMAT, caps);
+    }
+    if (ok && r.pcm && r.tail.format() == f && r.tail.channels() == info.channels &&
+        r.rate == info.rate)
+        return;
+    r.pcm = ok;
+    r.sounding = false;
+    r.fade_in_left = 0;
+    if (!ok) return;
+    r.rate = info.rate;
+    r.tail.configure(f, info.channels, aw_frames(r, FADE_NS));
+}
+
+/* Task thread, not under the lock: an edge at running time `at` after PCM data fades its last
+ * sound out over up to FADE_NS of `span`, in place of that much of the edge: no GAP, no DISCONT,
+ * so the aggregator places it by sample count. Its length in ns; 0: no fade, the edge as before. */
+static gint64 aw_push_fade(GstMrAlignWatch* self, gint64 at, gint64 span) {
+    Run& r = *self->run;
+    const bool due = r.sounding && aw_smoothing(r);
+    r.sounding = false;
+    r.fade_in_left = 0;
+    const gsize n = std::min(r.tail.frames(), aw_frames(r, std::min(span, FADE_NS)));
+    GstSegment seg;
+    if (!due || r.tail.frames() < std::max<gsize>(aw_frames(r, TAIL_MIN_NS), 1) || !n ||
+        !aw_out_segment(self, &seg))
+        return 0;
+    const guint64 pts = gst_segment_position_from_running_time(&seg, GST_FORMAT_TIME, at);
+    if (!GST_CLOCK_TIME_IS_VALID(pts)) return 0;
+    GstBuffer* b = gst_buffer_new_allocate(NULL, n * r.tail.frame_bytes(), NULL);
+    GstMapInfo m;
+    if (!gst_buffer_map(b, &m, GST_MAP_WRITE)) {
+        gst_buffer_unref(b);
+        return 0;
+    }
+    mrts::fade_out(r.tail, m.data, n);
+    gst_buffer_unmap(b, &m);
+    const gint64 dur = (gint64)gst_util_uint64_scale(n, GST_SECOND, r.rate);
+    GST_BUFFER_PTS(b) = pts;
+    GST_BUFFER_DURATION(b) = dur;
+    const GstFlowReturn ret = gst_pad_push(self->srcpad, b);
+    if (ret != GST_FLOW_OK) GST_DEBUG_OBJECT(self, "fade-out: %s", gst_flow_get_name(ret));
+    return dur;
+}
+
+/* Task thread: a PCM buffer out after the frames before `skip`, which the aggregator clips. The
+ * fade-in still due is laid over it, and its sound from there becomes the tail. */
+static GstBuffer* aw_pcm_out(Run& r, GstBuffer* b, gsize skip) {
+    const gsize fb = r.tail.frame_bytes();
+    const bool fade = r.fade_in_left > 0;
+    if (fade) b = gst_buffer_make_writable(b);
+    GstMapInfo m;
+    if (!fb || !gst_buffer_map(b, &m, fade ? GST_MAP_READWRITE : GST_MAP_READ)) return b;
+    const gsize n = m.size / fb;
+    skip = std::min(skip, n);
+    if (fade)
+        r.fade_in_left = mrts::fade_in(r.tail.format(), r.tail.channels(), m.data, n, skip,
+                                       r.fade_in_left, r.fade_in_total);
+    if (n > skip) {
+        r.tail.push(m.data + skip * fb, n - skip);
+        r.sounding = true;
+    }
+    gst_buffer_unmap(b, &m);
+    return b;
+}
+
 /* A flow return of a push, under the lock: anything but OK stops the task. */
 static void aw_flow(GstMrAlignWatch* self, GstFlowReturn ret) {
     if (ret == GST_FLOW_OK) return;
@@ -954,10 +1068,14 @@ static void aw_flow(GstMrAlignWatch* self, GstFlowReturn ret) {
     g_cond_broadcast(&self->item_removed);
 }
 
-/* Not under the lock: a data item out, DISCONT on its first buffer when asked. */
-static GstFlowReturn aw_push_data(GstMrAlignWatch* self, Item& it, bool discont) {
+/* Not under the lock: a data item out, DISCONT on its first buffer when asked; `pcm`: through
+ * aw_pcm_out from frame `skip` of its first buffer. */
+static GstFlowReturn aw_push_data(GstMrAlignWatch* self, Item& it, bool discont, bool pcm,
+                                  gsize skip) {
+    Run& r = *self->run;
     if (it.kind == Kind::buffer) {
         GstBuffer* b = GST_BUFFER_CAST(it.obj);
+        if (pcm) b = aw_pcm_out(r, b, skip);
         if (discont) {
             b = gst_buffer_make_writable(b);
             GST_BUFFER_FLAG_SET(b, GST_BUFFER_FLAG_DISCONT);
@@ -965,6 +1083,13 @@ static GstFlowReturn aw_push_data(GstMrAlignWatch* self, Item& it, bool discont)
         return gst_pad_push(self->srcpad, b);
     }
     GstBufferList* l = GST_BUFFER_LIST_CAST(it.obj);
+    if (pcm) {
+        if (r.fade_in_left) l = gst_buffer_list_make_writable(l);
+        for (guint i = 0; i < gst_buffer_list_length(l); i++)
+            aw_pcm_out(r, r.fade_in_left ? gst_buffer_list_get_writable(l, i)
+                                         : gst_buffer_list_get(l, i),
+                       i ? 0 : skip);
+    }
     if (discont && gst_buffer_list_length(l) > 0) {
         l = gst_buffer_list_make_writable(l);
         GstBuffer* b = gst_buffer_list_get_writable(l, 0);
@@ -1019,13 +1144,16 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                     return;
                 }
                 const gint64 start = h ? std::max(it.start, r.planner.horizon_ns()) : it.start;
+                const gint64 h0 = h ? r.planner.horizon_ns() : start;
                 r.planner.emitted(it.end);
                 r.gaps++;
                 r.discont = true;
                 g_mutex_unlock(&self->lock);
                 gst_event_unref(ev);
-                aw_push_gap(self, start, it.end);
+                const gint64 fade = aw_push_fade(self, h0, it.end - h0);
+                aw_push_gap(self, std::max(start, h0 + fade), it.end);
                 g_mutex_lock(&self->lock);
+                if (fade) r.fades++;
                 return;
             }
             case GST_EVENT_EOS:
@@ -1044,11 +1172,23 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                     return;
                 }
                 r.eos_out = true;
+                if (r.planner.has_horizon()) {
+                    const gint64 h0 = r.planner.horizon_ns();
+                    g_mutex_unlock(&self->lock);
+                    const gint64 fade = aw_push_fade(self, h0, FADE_NS);
+                    gst_pad_push_event(self->srcpad, ev);
+                    g_mutex_lock(&self->lock);
+                    if (fade) r.fades++;
+                    return;
+                }
                 break;
             case GST_EVENT_STREAM_START:
                 r.eos_out = r.eos_held = false;
                 break;
-            case GST_EVENT_CAPS:
+            case GST_EVENT_CAPS: {
+                GstCaps* caps = NULL;
+                gst_event_parse_caps(ev, &caps);
+                aw_pcm_caps(self, caps);
                 if (r.caps_primed) {
                     /* The first caps after primed ones go only if they differ: on a pad with a
                      * stream, mpegtsmux answers a CAPS by resending PAT and PMT. */
@@ -1062,6 +1202,7 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                     return;
                 }
                 break;
+            }
             default:
                 break;
         }
@@ -1095,6 +1236,14 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                            "forwarded at its own PTS", r.input.c_str(),
                            r.planner.horizon_ns() - it.end);
     }
+    /* PCM toward an audio aggregator (B-83): data more than HOLE_MIN_NS past the horizon is an
+     * edge, faded out at the horizon and placed by PTS; data after silence fades in, and what the
+     * aggregator clips of a DISCONT buffer (before the horizon) is no sound out. */
+    const bool pcm = aw_smoothing(r);
+    const bool has_h = r.planner.has_horizon();
+    const gint64 h0 = has_h ? r.planner.horizon_ns() : 0;
+    const bool hole = pcm && it.timed && has_h && it.start >= h0 + HOLE_MIN_NS;
+    if (hole) r.discont = true;
     if (it.timed) {
         r.planner.emitted(it.end);
         /* Kept timed data from a present input: caught up, its gaps end (B-80). What an absent
@@ -1105,10 +1254,19 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
     r.ahead = it.timed && it.end > it.start && it.lateness < r.pace - RELEASE_SLACK_NS;
     const bool discont = r.discont;
     r.discont = false;
+    const gsize skip =
+        pcm && discont && has_h && it.timed && it.start < h0 ? aw_frames(r, h0 - it.start) : 0;
     gint64 t0 = now;
     g_mutex_unlock(&self->lock);
-    const GstFlowReturn ret = aw_push_data(self, it, discont);
+    guint fades = 0;
+    if (hole && aw_push_fade(self, h0, it.start - h0)) fades++;
+    if (pcm && discont && !r.sounding) {
+        r.fade_in_left = r.fade_in_total = aw_frames(r, FADE_NS);
+        fades++;
+    }
+    const GstFlowReturn ret = aw_push_data(self, it, discont, pcm, skip);
     g_mutex_lock(&self->lock);
+    r.fades += fades;
     /* Blocked in the push is not silence: the time counts as held. */
     gint64 t1;
     if (clocked && aw_now(self, &t1) && r.quiet_started)
@@ -1211,10 +1369,9 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
     return true;
 }
 
-/* Under the lock, clocked: when the task must next run, the earliest of what can come due:
- * the head's release, the next paced gap piece, the W deadline while silence counts, the tick
- * while gapped otherwise, the next report; and, for an input held behind the pace, the release
- * of the data that continues it. An arrival due before that wakes it earlier (aw_enqueue). */
+/* Under the lock, clocked: the task's next run, the earliest of the head's release, the next gap
+ * piece, the W deadline while silence counts, the tick while gapped otherwise, the next report and
+ * a held input's next release; an arrival due before it wakes the task earlier (aw_enqueue). */
 static gint64 aw_deadline(GstMrAlignWatch* self, gint64 now) {
     const Run& r = *self->run;
     gint64 at = r.report_at + REPORT_NS;
@@ -1328,8 +1485,11 @@ static void aw_loop(gpointer data) {
         /* Paced gaps: every piece due by now (a late pass catches up); else one gap a tick. */
         while (self->srcresult == GST_FLOW_OK && aw_watch(self, now, &pending, &gap)) {
             g_mutex_unlock(&self->lock);
-            aw_push_gap(self, gap.start_ns, gap.end_ns);
+            /* The first after PCM data begins with the fade-out (B-83). */
+            const gint64 fade = aw_push_fade(self, gap.start_ns, gap.end_ns - gap.start_ns);
+            aw_push_gap(self, gap.start_ns + fade, gap.end_ns);
             g_mutex_lock(&self->lock);
+            if (fade) r.fades++;
             aw_mark_running(self);
             if (!aw_paced_gaps(r)) break;
         }
@@ -1609,6 +1769,7 @@ static void aw_get_property(GObject* object, guint prop_id, GValue* value, GPara
             case PROP_LEVEL_BYTES: g_value_set_uint64(value, s.level_bytes); break;
             case PROP_FULL_COUNT: g_value_set_uint64(value, s.full_count); break;
             case PROP_PASSES: g_value_set_uint64(value, s.passes); break;
+            case PROP_FADES: g_value_set_uint64(value, s.fades); break;
             default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
         }
         return;
@@ -1809,7 +1970,7 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
         gobject_class, PROP_LATENESS,
         g_param_spec_int64("lateness", "Lateness (ns)",
                            "This input's lateness: the median over the last second of wall "
-                           "time it delivered; a catch-up (a burst) and stale data left out.",
+                           "time it delivered, stale data included; a draining burst left out.",
                            G_MININT64, G_MAXINT64, 0, ro));
     g_object_class_install_property(
         gobject_class, PROP_PACE,
@@ -1860,6 +2021,12 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
         g_param_spec_uint64("passes", "Passes",
                             "Times the src task ran, once a wake: about one per arrival while "
                             "data flows.", 0, G_MAXUINT64, 0, ro));
+    g_object_class_install_property(
+        gobject_class, PROP_FADES,
+        g_param_spec_uint64("fades", "Fades",
+                            "Fade-outs and fade-ins at the edges of PCM data toward an audio "
+                            "aggregator: a dropout, a hole, an EOS, a return or a join.",
+                            0, G_MAXUINT64, 0, ro));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 

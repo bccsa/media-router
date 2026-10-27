@@ -13,6 +13,7 @@ signal per input, a function of the absolute sample index (`n = house_ns * 48 kH
 analysis finds each input in a mix by correlation, to the sample.
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -797,6 +798,47 @@ class Pcm:
         seg = content.expected(np.arange(lo - lag, hi - lag, dtype=np.int64))
         energy = sum(float(np.dot(s, s)) for s in seg)
         return lag, (float(window[k]) / energy if energy > 0 else 0.0)
+
+
+def fade_window(n):
+    """The half-Hann window of an aligner's fades (B-83), w(k) for k in [0, n), as libm gives it."""
+    return np.array([0.5 * (1.0 + math.cos(math.pi * k / n)) for k in range(n)])
+
+
+def edge_model(pcm, kept, gone, lo, hi, fade=240):
+    """`gone`'s part of the mix over samples [lo, hi) (the mix less the `kept` inputs' content, in
+    LSB) against its own content faded at its one dropout (B-83): out over `fade` samples where it
+    first is no longer its content (the last `fade` before, reversed under the window), 0, then in
+    under the window's complement where it is back. -> {"out", "back": samples or None, "dev": the
+    largest deviation from that model, "steady": the mix against every input's content before}."""
+    n = np.arange(lo, hi, dtype=np.int64)
+    if pcm.lo > lo or pcm.hi < hi:
+        return {"out": None, "back": None, "dev": None, "steady": None}
+    y = np.rint(pcm.y[lo - pcm.lo:hi - pcm.lo] * 32767.0)
+    lsb = lambda c: np.stack([np.rint(v * 32767.0) for v in c.expected(n)], axis=1)
+    part = y - sum(lsb(c) for c in kept)
+    g = lsb(gone)
+    off = np.flatnonzero(np.any(np.abs(part - g) > 1, axis=1))
+    res = {"out": None, "back": None, "dev": None,
+           "steady": float(np.max(np.abs(part - g)[:off[0]])) if len(off) and off[0] else None}
+    if not len(off) or off[0] < fade:
+        return res
+    i = int(off[0])
+    on = np.flatnonzero(np.any(np.abs(part[i + fade:]) > 1, axis=1))
+    if not len(on) or i + fade + int(on[0]) + fade > len(g):
+        return res
+    w = fade_window(fade)[:, None]
+    # The fade-in's first samples round to 0: its start is the best fit within a ms before the
+    # first sample seen back.
+    seen = i + fade + int(on[0])
+    j = min(range(max(i + fade, seen - 48), seen + 1),
+            key=lambda c: float(np.max(np.abs(part[c:c + fade] - np.rint(g[c:c + fade] * (1.0 - w))))))
+    model = g.copy()
+    model[i:i + fade] = np.rint(g[i - 1::-1][:fade] * w)
+    model[i + fade:j] = 0
+    model[j:j + fade] = np.rint(g[j:j + fade] * (1.0 - w))
+    res.update(out=lo + i, back=lo + j, dev=float(np.max(np.abs(part - model))))
+    return res
 
 
 def lateness_ms(records, lo_ns=None, hi_ns=None):

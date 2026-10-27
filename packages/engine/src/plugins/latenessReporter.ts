@@ -68,13 +68,14 @@ export interface AlignerWarnings {
     full: string | null;
 }
 
-/** One input on display: its key (a tap, or `mralignwatch:<label>`), place and label, and the
- *  aligner watches that serve it (none for a tap alone). */
+/** One input on display: its key (a tap, or `mralignwatch:<label>`), place and label, the
+ *  aligner watches that serve it (none for a tap alone) and, with watches, its state. */
 interface InputRow {
     key: string;
     n: number;
     label: string;
     watches: AlignerWatch[];
+    state?: AlignerInputState;
 }
 
 /** Several watches on one input (a muxer input's routes): absent when any is. */
@@ -84,10 +85,10 @@ function rowState(watches: AlignerWatch[]): AlignerInputState {
     return states.has('present') ? 'present' : 'waiting';
 }
 
-function alignerFields(watches: AlignerWatch[]): Partial<ModuleTimingInput> {
-    const r = watches.map((w) => w.report);
+function alignerFields(row: InputRow): Partial<ModuleTimingInput> {
+    const r = row.watches.map((w) => w.report);
     return {
-        state: rowState(watches),
+        state: row.state ?? rowState(row.watches),
         silenceLimitMs: Math.min(...r.map((x) => x.silenceLimitMs)),
         absences: Math.max(...r.map((x) => x.absences)),
         staleMs: Math.max(...r.map((x) => x.staleMs)),
@@ -131,6 +132,9 @@ export interface LatenessReporterOptions {
 
 export class LatenessReporter {
     private readonly taps = new Map<string, Entry>();
+    /** Input taps that reported this run: one gone quiet under watches that report on is an
+     *  input whose stream stopped (a muxer pin whose producer stopped: its routes ended). */
+    private readonly tapped = new Set<string>();
     private readonly hidden = new Set<string>();
     private readonly watches = new AlignerWatches();
     private presentationDelayMs: number | undefined;
@@ -160,6 +164,7 @@ export class LatenessReporter {
     /** Off the house timeline: not shown, and a tap's first such window goes to `onHidden`. */
     private hide(tap: string, window: LatenessWindowMs): void {
         this.taps.delete(tap);
+        this.tapped.delete(tap); // hidden, not quiet
         if (this.hidden.has(tap)) return;
         this.hidden.add(tap);
         this.opts.onHidden?.(tap, window);
@@ -182,6 +187,7 @@ export class LatenessReporter {
     /** A window from any source: a tap, or a sidecar's stats line. */
     addWindow(tap: string, window: LatenessWindowMs, now = Date.now()): void {
         this.taps.set(tap, { window, at: now });
+        if (tap.startsWith(LAT_IN_PREFIX)) this.tapped.add(tap);
     }
 
     setPresentation(p: {
@@ -208,6 +214,7 @@ export class LatenessReporter {
 
     reset(): void {
         this.taps.clear();
+        this.tapped.clear();
         this.hidden.clear();
         this.watches.clear();
         this.presentationDelayMs = this.deviceLatencyMs = this.pipeWireLatencyMs = undefined;
@@ -253,12 +260,17 @@ export class LatenessReporter {
         for (const tap of this.taps.keys()) if (tap.startsWith(LAT_IN_PREFIX)) keys.add(tap);
         const sorted = [...keys].sort((a, b) => a.localeCompare(b));
         const placed = sorted.length ? placeInputs(sorted, this.opts.inputs?.() ?? []) : [];
-        const rows = sorted.map((key, i) => ({
-            key,
-            n: placed[i].n,
-            label: placed[i].label,
-            watches: served.get(key) ?? [],
-        }));
+        const rows = sorted.map((key, i): InputRow => {
+            const watches = served.get(key) ?? [];
+            const quiet = watches.length > 0 && this.tapped.has(key) && !this.taps.has(key);
+            return {
+                key,
+                n: placed[i].n,
+                label: placed[i].label,
+                watches,
+                ...(watches.length ? { state: quiet ? 'absent' : rowState(watches) } : {}),
+            };
+        });
         return { rows: rows.sort((a, b) => a.n - b.n), internal };
     }
 
@@ -290,7 +302,7 @@ export class LatenessReporter {
             );
             if (!held || addedMs > held.addedMs) held = { addedMs, label: slowest.label! };
         }
-        const absent = rows.filter((r) => rowState(r.watches) === 'absent').map((r) => r.label);
+        const absent = rows.filter((r) => r.state === 'absent').map((r) => r.label);
         const waitingFor = absent.length ? absent.join(', ') : held?.label;
         return {
             ...(paceMs !== undefined ? { paceMs } : {}),
@@ -303,10 +315,13 @@ export class LatenessReporter {
         this.expire(now);
         const { rows, internal } = this.inputRows();
         const absent = rows
-            .filter((r) => rowState(r.watches) === 'absent')
+            .filter((r) => r.state === 'absent')
             .map((r) => {
                 const w = r.watches.filter((x) => x.report.state === 'absent');
-                const limitMs = Math.round(Math.min(...w.map((x) => x.report.silenceLimitMs)));
+                // Its watches report on (a quiet tap): silent for as long as a tap takes to go stale.
+                const limitMs = w.length
+                    ? Math.round(Math.min(...w.map((x) => x.report.silenceLimitMs)))
+                    : STALE_WINDOWS * this.intervalMs;
                 return `Input ${r.label} silent for ${limitMs} ms — continuing without it`;
             });
         const full = [
@@ -338,7 +353,7 @@ export class LatenessReporter {
                 label: row.label,
                 ...(tap ? { lateness: tap.window } : {}),
                 ...(tap && output ? { addedMs: output.meanMs - tap.window.meanMs } : {}),
-                ...(row.watches.length ? alignerFields(row.watches) : {}),
+                ...(row.watches.length ? alignerFields(row) : {}),
             };
         });
         const tapped = inputs.filter((i) => i.lateness !== undefined);

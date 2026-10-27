@@ -26,7 +26,7 @@ SO   = libgstmrtshouse.so
 SRCS = gstmrtshouse.cpp gstmrtsrestamp.cpp gstmrasrc.cpp gstmralignwatch.cpp gstmrtsdemux.cpp
 HDRS = mrtshouse.h mrtshouse_abi.h mrasrc_resampler.h $(MRTS)/ts_packet.h $(MRTS)/ts_restamp.h \
        $(MRTS)/ts_stc.h $(MRTS)/ts_trace.h $(MRTS)/ts_gap.h $(MRTS)/asrc_servo.h \
-       $(MRTS)/align_watch.h $(MRTS)/ts_select.h
+       $(MRTS)/align_watch.h $(MRTS)/ts_select.h $(MRTS)/pcm_fade.h
 # gstreamer-audio-1.0 for mrasrc's GstAudioResampler; Phase 3 adds gstreamer-mpegts-1.0
 # (section messages).
 PKGS = gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0

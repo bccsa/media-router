@@ -94,6 +94,17 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
         alignerInput: (watch) => this.alignerInputOf(watch),
+        wired: (s) => {
+            const id = this.services?.instanceId;
+            const router = this.services?.mediaRouter;
+            if (!id || !router || s.sourcePortId === undefined) return false;
+            return router.hasStoredEdge({
+                sourceModuleId: s.sourceModuleId,
+                sourcePortId: s.sourcePortId,
+                sinkModuleId: id,
+                sinkPortId: s.sinkPortId,
+            });
+        },
     });
 
     /** Which input an aligner watch serves (WI-P2-13): `{ tap }`, `{ label }` of its own, or
