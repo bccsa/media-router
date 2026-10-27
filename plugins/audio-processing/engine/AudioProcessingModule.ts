@@ -1,6 +1,12 @@
-import { GstPluginBase, findLadspaElement, type PipelineDescription } from '@media-router/engine';
+import {
+    GstPluginBase,
+    findLadspaElement,
+    type AlignerInputRef,
+    type AlignerWatchRef,
+    type PipelineDescription,
+} from '@media-router/engine';
 import { probe302mSupport, type AudioMixSource } from '@media-router/plugin-audio-302m-core';
-import { buildProcessingPipeline } from './audioProcessingPipeline.js';
+import { INTERLEAVE, buildProcessingPipeline } from './audioProcessingPipeline.js';
 import {
     chainSummary,
     partitionBusSources,
@@ -40,6 +46,12 @@ import type { ChainStages, DynamicsMode } from './lspProcessing.js';
  */
 export class AudioProcessingModule extends GstPluginBase {
     protected liveUpdatableParams = LIVE_PARAMS;
+
+    /** The interleave's channels (programme and key) are an internal stage: their pace counts,
+     *  they name nothing; the fan-ins' watches name the edges (B-70). */
+    protected alignerInputOf(watch: AlignerWatchRef): AlignerInputRef | undefined {
+        return watch.aligner === INTERLEAVE ? null : undefined;
+    }
 
     /** gst runtime support for 302M-in-TS, probed once at plugin load. */
     private static s302mSupported = false;

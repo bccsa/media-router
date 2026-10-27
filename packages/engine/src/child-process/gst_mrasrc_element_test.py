@@ -12,6 +12,8 @@ known PTS jitter, so the capture time of every input frame is known:
   - relocks: an xrun (DISCONT + 20 ms) jumps the PTS forward by 20 ms; a DISCONT stepping back
     and a -60 ms capture-latency fall without one drop the overlap, the PTS never going back;
     a device past the +-1000 ppm clamp raises ratio-out-of-bounds;
+  - cycle-input (B-180): a lost cycle is one gap of its length and no relock, a cycle-size change
+    moves the stamps only; without the property the same input is the lock's, as before;
   - mrasrc-stats and mrasrc-event as part 10 names them; offsets; the `stats` snapshot;
   - caps: out-rate=0 keeps the input's rate or takes downstream's (44.1 kHz into the capture
     branches' rate=48000 capsfilter), out-rate converts, format and channels pass through,
@@ -212,9 +214,10 @@ class Harness:
             self.msgs.append((st.get_name(), sdict(st)))
         return Gst.BusSyncReply.DROP
 
-    def push(self, pts, data, discont=False):
+    def push(self, pts, data, discont=False, dur=None):
         b = Gst.Buffer.new_wrapped(data)
-        b.pts, b.dts, b.duration = pts, Gst.CLOCK_TIME_NONE, Gst.CLOCK_TIME_NONE
+        b.pts, b.dts = pts, Gst.CLOCK_TIME_NONE
+        b.duration = Gst.CLOCK_TIME_NONE if dur is None else dur
         if discont:
             b.set_flags(Gst.BufferFlags.DISCONT)
         self.in_mem.append(hash(b.peek_memory(0)))
@@ -329,9 +332,9 @@ def discont_at(out):
 
 # --- the property contract -------------------------------------------------------------------
 print("--- gst-inspect-1.0 and the property contract ---")
-PROPS = ["out-rate", "quality", "stats", "bypass-below-ppm", "device-sink", "abi", "desync-bytes",
-         "cc-lost", "pes-oversize", "pes-dropped-cc", "header-spans", "psi-unsupported-sections",
-         "pes-no-pts", "dts-discarded"]
+PROPS = ["out-rate", "quality", "cycle-input", "stats", "bypass-below-ppm", "device-sink", "abi",
+         "desync-bytes", "cc-lost", "pes-oversize", "pes-dropped-cc", "header-spans",
+         "psi-unsupported-sections", "pes-no-pts", "dts-discarded"]
 _inspect = subprocess.run(["gst-inspect-1.0", f"--gst-plugin-load={_SO}", "mrasrc"],
                           capture_output=True, text=True)
 _listed = [p for p in PROPS if f"\n  {p} " in _inspect.stdout or f"\n  {p}:" in _inspect.stdout]
@@ -346,15 +349,17 @@ check("the factory table registers mrasrc at rank NONE in mrtshouse",
       _f is not None and _f.get_rank() == Gst.Rank.NONE and _f.get_plugin_name() == "mrtshouse")
 _el = Gst.ElementFactory.make("mrasrc", None)
 _or, _q = _el.find_property("out-rate"), _el.find_property("quality")
-check("out-rate: 0 (the input's rate) by default, 0..768000; quality 4 by default, 0..10; both "
-      "apply at a start",
+_ci = _el.find_property("cycle-input")
+check("out-rate: 0 (the input's rate) by default, 0..768000; quality 4 by default, 0..10; "
+      "cycle-input off by default (B-180); all apply at a start",
       _el.get_property("out-rate") == 0 and _or.minimum == 0 and _or.maximum == 768000
       and _el.get_property("quality") == 4 and _q.minimum == 0 and _q.maximum == 10
-      and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_or, _q)))
+      and _el.get_property("cycle-input") is False
+      and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_or, _q, _ci)))
 _st = _el.find_property("stats")
 _s0 = _el.get_property("stats")
 STATS_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
-                "discont-in", "dropped-frames", "mode", "source-ppb", "device-ppb"]
+                "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb"]
 COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k != "mode"]
 check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
@@ -513,6 +518,99 @@ _after = [e for _, e in label_errors(y[t >= _t1], t[t >= _t1], cap.house_hz(),
 check(f"labels within 1 frame of capture time from the relock on, on the new floor "
       f"({min(_after):+.2f} .. {max(_after):+.2f} us)" if _after else "labels: no windows",
       bool(_after) and max(abs(e) for e in _after) * US < FRAME_NS)
+h.stop()
+
+# --- cycle input (B-180) ----------------------------------------------------------------------
+def cycle_buffers(cap, secs, cycle=2048, lost_s=(), durations=True):
+    """pipewiresrc's shape: a buffer per cycle of `cycle` frames, stamped with the capture time of
+    its first frame (+ jitter), its duration the cycle's; a cycle at a capture second in `lost_s`
+    never arrives (its frames are gone, the next stamp shows it)."""
+    out, i, lost = [], 0, sorted(lost_s)
+    end = H0 + int(secs * S)
+    while cap.capture_ns(i) < end:
+        if lost and cap.capture_ns(i) >= H0 + lost[0] * S:
+            lost.pop(0)
+            i += cycle
+            continue
+        pts = cap.capture_ns(i) + (int(cap.rng.integers(0, cap.jitter)) if cap.jitter else 0)
+        out.append((pts, cap.render(i, cycle), not out, cycle * S // cap.rate if durations else None))
+        cap.pushed += cycle
+        cap.nbuf += 1
+        i += cycle
+    return out
+
+
+print("\n--- cycle input: 2048-frame cycles, 0.5 ms jitter, cycles lost at 20 s (acquiring) and "
+      "45 s (locked), 60 s ---")
+cap = Capture(jitter=MS // 2, seed=11, tone=100.0)
+h = Harness(cap.caps(), cycle_input=True)
+h.drive(cycle_buffers(cap, 60, lost_s=(20, 45)))
+ev = h.messages("mrasrc-event")
+d = discont_at(h.out)
+Q = 2048 * S // FS
+jumps = [h.out[i]["pts"] - (h.out[i - 1]["pts"] + h.out[i - 1]["dur"]) for i in d[1:]]
+check(f"two gap events (lost-cycle, 2048 frames each), no relock "
+      f"({[(e['kind'], e['reason']) for e in ev]})",
+      len(ev) == 2 and all(e["kind"] == "gap" and e["reason"] == "lost-cycle"
+                           and e["lost-frames"] == 2048 and e["dropped-ns"] == 0
+                           and sorted(e) == ["dropped-ns", "house-ns", "jump-ns", "kind",
+                                             "lost-frames", "reason"] for e in ev))
+check(f"the output jumps the cycle's length on one DISCONT buffer each ({[j / MS for j in jumps]} ms,"
+      " the cycle 42.666667 +-1 frame), the events' jump-ns and house-ns those buffers'",
+      len(d) == 3 and all(abs(j - Q) <= FRAME_NS for j in jumps) and len(ev) == 2
+      and [e["jump-ns"] for e in ev] == jumps
+      and [e["house-ns"] for e in ev] == [h.out[i]["pts"] for i in d[1:]] and contiguous(h.out))
+y, t = samples(h, cap)
+errs = label_errors(y, t, cap.house_hz(), skip_near=[h.out[i]["pts"] for i in d[1:]])
+_late = [e for at, e in errs if at >= 40 * S] or [1e9]
+check(f"labels within 1 frame of capture time from the lock on, before and after the lost cycle "
+      f"({max(map(abs, _late)):.2f} us)", max(map(abs, _late)) * US < FRAME_NS)
+final = h.messages("mrasrc-stats")[-1]
+check(f"stats: locked, gaps 2, lost-frames 4096, relocks 0, every pushed frame in ({final})",
+      final["state"] == "locked" and final["gaps"] == 2 and final["lost-frames"] == 4096
+      and final["relocks"] == 0 and final["in-frames"] == cap.pushed and final["discont-in"] == 0)
+h.stop()
+
+print("\n--- the same capture without cycle-input: the lock's, as before (AES67's input) ---")
+cap = Capture(jitter=MS // 2, seed=11, tone=100.0)
+h = Harness(cap.caps())
+h.drive(cycle_buffers(cap, 60, lost_s=(20, 45)))
+ev = h.messages("mrasrc-event")
+final = h.messages("mrasrc-stats")[-1]
+check(f"no gap and no shift: the first output alone DISCONT, one counter "
+      f"({[(e['kind'], e['reason']) for e in ev]})",
+      not [e for e in ev if e["kind"] in ("gap", "shift")] and len(discont_at(h.out)) == 1
+      and contiguous(h.out) and on_formula(h.out) and final["gaps"] == 0 and final["lost-frames"] == 0)
+h.stop()
+
+print("\n--- cycle input: at 40 s the cycle 1024 -> 2048 frames, stamps +21.333 ms twice, no frame "
+      "lost ---")
+cap = Capture(jitter=0, tone=100.0)
+bufs, i, q1 = [], 0, 1024 * S // FS
+while cap.capture_ns(i) < H0 + 40 * S:                       # 40 s of 1024-frame cycles: locked
+    bufs.append((cap.capture_ns(i), cap.render(i, 1024), not bufs, q1))
+    i += 1024
+bufs.append((cap.capture_ns(i), cap.render(i, 1024), False, Q))  # the new duration first
+i += 1024
+bufs.append((cap.capture_ns(i) + q1, cap.render(i, 1024), False, Q))
+i += 1024
+while cap.capture_ns(i) < H0 + 55 * S:                       # then 2048-frame cycles, 42.667 ms later
+    bufs.append((cap.capture_ns(i) + 2 * q1, cap.render(i, 2048), False, Q))
+    i += 2048
+h = Harness(cap.caps(), cycle_input=True)
+h.drive(bufs)
+ev = h.messages("mrasrc-event")
+check(f"two shift events of +21.333 ms (cycle-size), nothing else "
+      f"({[(e['kind'], e['reason'], e.get('shift-ns')) for e in ev]})",
+      len(ev) == 2 and all(e["kind"] == "shift" and e["reason"] == "cycle-size"
+                           and abs(e["shift-ns"] - q1) <= 1000
+                           and sorted(e) == ["house-ns", "kind", "reason", "shift-ns"] for e in ev))
+y, t = samples(h, cap)
+errs = [e for at, e in label_errors(y, t, cap.house_hz()) if at >= 5 * S] or [1e9]
+check(f"one counter, no DISCONT after the first, labels within 1 frame of capture time through the "
+      f"change: the stamps moved, the samples did not ({max(map(abs, errs)):.2f} us)",
+      len(discont_at(h.out)) == 1 and contiguous(h.out) and on_formula(h.out)
+      and max(map(abs, errs)) * US < FRAME_NS)
 h.stop()
 
 print("\n--- a device past the ratio clamp: +1500 ppm, 1 ms jitter, 40 s ---")

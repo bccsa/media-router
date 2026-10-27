@@ -16,6 +16,8 @@
     "stale_ms_min": 1000,
     "lag_samples": 0,
     "backlog_gain_max": 0.1,
-    "lateness_delta_ms": 5
+    "lateness_delta_ms": 5,
+    "fade_samples": 240,
+    "fade_lsb": 1
   }
 }

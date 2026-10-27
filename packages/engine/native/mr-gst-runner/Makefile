@@ -27,10 +27,10 @@ CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 SRCS = main.cpp ipc.cpp json_util.cpp runner.cpp commands.cpp stamper.cpp \
        bus_edges.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp branch_retime.cpp backlog_shed.cpp hooks.cpp \
-       pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp native_plugins.cpp
+       pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp native_plugins.cpp capture_rt.cpp
 HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h bus_inputs.h source_gate.h \
        branch_align.h branch_retime.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h \
-       native_plugins.h paths.h \
+       native_plugins.h paths.h capture_rt.h \
        $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
        $(MRTS)/ts_pcr.h $(MRTS)/ts_pes.h $(MRTS)/ts_video_info.h $(MRTS)/sps_parse.h
 PKGS = gstreamer-1.0 gstreamer-base-1.0 glib-2.0 gio-2.0 json-glib-1.0

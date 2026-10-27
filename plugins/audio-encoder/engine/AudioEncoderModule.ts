@@ -2,6 +2,7 @@ import {
     GstPluginBase,
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
+    PIPEWIRE_SRC_MIN_BUFFERS,
     ThroughputPoller,
     applyIngestTimingLiveUpdate,
     asrcBusReports,
@@ -212,7 +213,7 @@ export class AudioEncoderModule extends GstPluginBase {
         const source = this.buildCapture(channels, config.srcBufferMs);
         // The one resample of the path (§13.1): the device's rate to `sampleRate`, as a
         // sample counter labelled with capture time (P7).
-        const format = `audioconvert ! ${buildAsrc({ outRate: sampleRate })} ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
+        const format = `audioconvert ! ${buildAsrc({ outRate: sampleRate, cycleInput: true })} ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
         const vol = `volume name=vol volume=${gstVolume}`;
         const level =
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
@@ -225,7 +226,10 @@ export class AudioEncoderModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.assignBusChannel(instanceId);
         this.busSinkName = endpoint ? busTeeName(endpoint.port) : undefined;
-        const udpSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
+        // async=false: the capture is not live (B-180), so a sink that prerolls would hold PAUSED.
+        const udpSink = endpoint
+            ? buildBusSink(endpoint.port)
+            : 'fakesink name=usink sync=false async=false';
 
         const tsAlignment = (config.tsAlignment as number) ?? 7;
         // The PES carry capture time, so the restamp only moves them by O (part 4.2's fixed mode).
@@ -288,7 +292,7 @@ export class AudioEncoderModule extends GstPluginBase {
             Math.max(SRC_BUFFER_MS.min, Math.min(SRC_BUFFER_MS.max, ms)) * 48,
         );
         const src =
-            `pipewiresrc target-object=${this.pwNodeName}` +
+            `pipewiresrc target-object=${this.pwNodeName} min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}` +
             ` ${pipewireStreamProps({
                 'stream.capture.sink': 'true',
                 'node.latency': `${quantum}/48000`,

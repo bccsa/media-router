@@ -16,6 +16,10 @@ A paced fakesrc feeds `mrristsink` (caller) over 127.0.0.1 to `mrristsrc`
   --  The receiver (and only the receiver) posts `mrrist-peer` {id, cname}
       with the sender's cname (lifted from librist's log): the RIST input's
       per-peer row label.
+  --  A secret and a cname may hold any character (B-112): the secret reaches
+      librist whole (two that differ only after an '&' pass nothing), and the
+      cname, percent-encoded in the URL as the RIST modules build it, arrives
+      decoded.
   --  Tearing both pipelines down does not hang (src `unlock` works).
   --  A caller or listener whose host does not resolve posts an element ERROR
       naming the host (librist alone would go PLAYING silently, never
@@ -30,6 +34,7 @@ import os
 import socket
 import sys
 import time
+import urllib.parse
 
 # Bound glibc's resolver (read at first lookup) so an unreachable nameserver
 # cannot stall the unresolvable-host case below.
@@ -52,7 +57,8 @@ if not gst_rist_native.load_plugin():
     sys.exit(0)
 
 PORT = 15977
-SECRET = "loopback-test-secret"
+# Any character (B-112): librist splits a URL's values at each '&' and decodes nothing.
+SECRET = 'loopback test&secret=#%41"\\ é-0'
 PKT = 1316
 PPS = 1000
 SECONDS = 3.0
@@ -65,7 +71,17 @@ def fail(msg):
 
 received = {"bytes": 0, "buffers": 0, "multi": 0, "unaligned": 0}
 stats = {"sender": 0, "receiver": 0, "peer_names": []}
-TX_CNAME = "loop-tx"
+TX_CNAME = "loop tx, a&b %41 é"
+
+
+def gst_quoted(s):
+    """A launch-string value, as the engine's quoteGstString writes it."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def url_value(s):
+    """A URL query value, as the RIST modules' encodeURIComponent writes it."""
+    return urllib.parse.quote(s, safe="-_.!~*'()")
 
 
 def on_rx(pad, info):
@@ -105,7 +121,7 @@ def watch_stats(bus, who):
 
 rx = Gst.parse_launch(
     f'mrristsrc name=src urls="rist://@127.0.0.1:{PORT}?cname=loop" profile=1 buffer=300 '
-    f'secret="{SECRET}" aes-type=128 stats-interval=500 ! fakesink sync=false')
+    f'secret={gst_quoted(SECRET)} aes-type=128 stats-interval=500 ! fakesink sync=false')
 src = rx.get_by_name("src")
 src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_rx)
 watch_stats(rx.get_bus(), "receiver")
@@ -118,8 +134,8 @@ tx = Gst.parse_launch(
     f'fakesrc is-live=true sync=true sizetype=fixed sizemax={PKT} datarate={PKT * PPS} ! '
     f'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! '
     f'valve name=gate drop=true ! '
-    f'mrristsink name=snk urls="rist://127.0.0.1:{PORT}?cname={TX_CNAME}&weight=5" profile=1 buffer=300 '
-    f'secret="{SECRET}" aes-type=128 stats-interval=500')
+    f'mrristsink name=snk urls="rist://127.0.0.1:{PORT}?cname={url_value(TX_CNAME)}&weight=5" profile=1 '
+    f'buffer=300 secret={gst_quoted(SECRET)} aes-type=128 stats-interval=500')
 snk = tx.get_by_name("snk")
 gate = tx.get_by_name("gate")
 watch_stats(tx.get_bus(), "sender")
@@ -185,6 +201,40 @@ def free_udp_port():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+# Before B-112 the elements cut a secret at its first '&' on both ends alike, so two secrets that
+# differ only after one connected; taken whole they do not, and nothing arrives.
+mm_port = free_udp_port()
+mm_rx = Gst.parse_launch(
+    f'mrristsrc name=src urls="rist://@127.0.0.1:{mm_port}" profile=1 buffer=300 '
+    f'secret={gst_quoted("loopback-test&rx-tail")} aes-type=128 ! fakesink sync=false')
+mm_received = [0]
+
+
+def on_mm_rx(_pad, info):
+    mm_received[0] += info.get_buffer().get_size()
+    return Gst.PadProbeReturn.OK
+
+
+mm_rx.get_by_name("src").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, on_mm_rx)
+mm_tx = Gst.parse_launch(
+    f'fakesrc is-live=true sync=true sizetype=fixed sizemax={PKT} datarate={PKT * PPS} ! '
+    f'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! '
+    f'mrristsink name=snk urls="rist://127.0.0.1:{mm_port}" profile=1 buffer=300 '
+    f'secret={gst_quoted("loopback-test&tx-tail")} aes-type=128')
+mm_rx.set_state(Gst.State.PLAYING)
+pump(0.5)
+mm_tx.set_state(Gst.State.PLAYING)
+pump(1.5 + SECONDS)
+mm_sent = mm_tx.get_by_name("snk").get_property("packets")
+mm_tx.set_state(Gst.State.NULL)
+mm_rx.set_state(Gst.State.NULL)
+print(f"secrets that differ after an '&': sent {mm_sent} pkts, received {mm_received[0]} B")
+if mm_sent < int(PPS * SECONDS * 0.8):
+    fail(f"the mismatched sink wrote only {mm_sent} payloads")
+if mm_received[0]:
+    fail(f"secrets that differ after an '&' passed {mm_received[0]} B: the secret was cut")
 
 
 def start_and_watch(desc, seconds):

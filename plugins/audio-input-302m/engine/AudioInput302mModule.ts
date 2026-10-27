@@ -2,6 +2,7 @@ import {
     GstPluginBase,
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
+    PIPEWIRE_SRC_MIN_BUFFERS,
     applyIngestTimingLiveUpdate,
     asrcBusReports,
     buildBusSink,
@@ -232,7 +233,7 @@ export class AudioInput302mModule extends GstPluginBase {
             `${capture.clause}` +
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-            ` ! ${build302mEncodeBranch({ channels, asrc: true, restamp })} ! ${sink}`;
+            ` ! ${build302mEncodeBranch({ channels, asrc: true, cycleInput: true, restamp })} ! ${sink}`;
 
         this.linkPlan = capture.plan;
         this.setStatusData('input', {
@@ -304,7 +305,7 @@ export class AudioInput302mModule extends GstPluginBase {
         // `node.autoconnect=false`: WirePlumber must not link this stream (it
         // would take the first N device ports by position); the engine does.
         const src =
-            `pipewiresrc target-object=${device}` +
+            `pipewiresrc target-object=${device} min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}` +
             ` ${pipewireStreamProps({
                 'node.latency': `${quantum}/48000`,
                 'node.name': this.pwNodeName,

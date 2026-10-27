@@ -126,6 +126,8 @@ export {
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
 export { busInputLabel } from './plugins/moduleTiming.js';
+export type { AlignerInputRef, AlignerWatchRef } from './plugins/alignerWatches.js';
+export type { DemuxInputRef } from './plugins/demuxWatches.js';
 // Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O, trims, cooldown, card;
 // the ASRC's decode and device modes (WI-P3-5).
 export {
@@ -257,7 +259,9 @@ export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogS
 export { GstPluginBase } from './plugins/GstPluginBase.js';
 export {
     pipewireStreamProps,
+    PIPEWIRE_CYCLE_TIME_PROPS,
     PIPEWIRE_RT_STREAM_PROPS,
+    PIPEWIRE_SRC_MIN_BUFFERS,
     pulsePinnedStreamProps,
     PULSE_PINNED_STREAM_PROPS,
 } from './plugins/pulseStreamProps.js';

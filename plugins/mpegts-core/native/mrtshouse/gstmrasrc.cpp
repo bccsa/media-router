@@ -1,7 +1,8 @@
 /* mrasrc (plan ch. 5 WI-P1-8, part 4.5; ch. 7 WI-P3-5, part 4.4): mrts::AsrcServo locks the input frame
  * count to the buffer PTS and commands GstAudioResampler's ratio: a house-rate counter, PTS_out(m) = T0 +
  * m / out_rate. Modes (S17): capture; decode (`bypass-below-ppm`: passed unchanged until the source is
- * measured off house time); device (`device-sink`: the sink's clock in the ratio; with decode, the product). */
+ * measured off house time); device (`device-sink`: the sink's clock in the ratio; with decode, the product).
+ * Capture with cycle-input (a pipewiresrc, B-180): lost cycles jump the output by their length, no relock. */
 #include <gst/audio/gstaudiobasesink.h>
 #include <gst/base/gstbasetransform.h>
 
@@ -27,6 +28,7 @@ enum {
     PROP_0,
     PROP_OUT_RATE,
     PROP_QUALITY,
+    PROP_CYCLE_INPUT,
     PROP_STATS,
     PROP_BYPASS_BELOW_PPM,
     PROP_DEVICE_SINK,
@@ -110,6 +112,7 @@ struct _GstMrAsrc {
      * change or a flush), device-sink at READY->PAUSED. */
     gint out_rate;
     gint quality;
+    gboolean cycle_input;
     gdouble bypass_below_ppm;
     gchar* device_sink;
 
@@ -174,7 +177,8 @@ static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, const AsrcD
         (gint64)s.ratio_ppb, "phase-err-ns", G_TYPE_INT64, (gint64)s.phase_err_ns, "relocks",
         G_TYPE_UINT64, (guint64)s.relocks, "in-frames", G_TYPE_UINT64, (guint64)s.in_frames,
         "out-frames", G_TYPE_UINT64, (guint64)s.out_frames, "discont-in", G_TYPE_UINT64,
-        (guint64)s.discont_in, "dropped-frames", G_TYPE_UINT64, (guint64)s.dropped_frames, "mode",
+        (guint64)s.discont_in, "dropped-frames", G_TYPE_UINT64, (guint64)s.dropped_frames, "gaps",
+        G_TYPE_UINT64, (guint64)s.gaps, "lost-frames", G_TYPE_INT64, (gint64)s.lost_frames, "mode",
         G_TYPE_STRING, mrts::asrc_mode_name(s.mode), "source-ppb", G_TYPE_INT64,
         (gint64)s.source_ppb, "device-ppb", G_TYPE_INT64, (gint64)(t ? t->rate_ppb.load() : 0),
         NULL);
@@ -214,9 +218,9 @@ static void asrc_report(GstMrAsrc* self, gboolean force) {
     }
 }
 
-/* mrasrc-event at once: a relock with its new T0, the output PTS jump and the input dropped as
- * overlap; a device rate fit past the ratio clamp; an engage with the source's rate and the
- * phase it reached; a device relock (a sink discontinuity) with its reason. */
+/* mrasrc-event at once: a relock (its new T0, the output PTS jump, the input dropped as overlap); a
+ * gap's jump and the frames lost; a stamp shift; a device rate fit past the ratio clamp; an engage
+ * (the source's rate, the phase it reached); a device relock (a sink discontinuity), its reason. */
 static void asrc_post_events(GstMrAsrc* self, gint64 house_ns) {
     for (const AsrcEvent& e : self->servo->take_events()) {
         const gchar* kind = mrts::asrc_event_name(e.kind);
@@ -234,6 +238,16 @@ static void asrc_post_events(GstMrAsrc* self, gint64 house_ns) {
                               G_TYPE_INT64, (gint64)e.phase_ns, NULL);
             GST_INFO_OBJECT(self, "engaged (%s): source %+" G_GINT64_FORMAT " ppb, phase %+"
                             G_GINT64_FORMAT " ns", e.reason, (gint64)e.value, (gint64)e.phase_ns);
+        } else if (e.kind == AsrcEvent::Kind::gap) {
+            gst_structure_set(s, "jump-ns", G_TYPE_INT64, (gint64)e.value, "dropped-ns",
+                              G_TYPE_INT64, (gint64)e.dropped_ns, "lost-frames", G_TYPE_INT64,
+                              (gint64)e.lost_frames, NULL);
+            GST_INFO_OBJECT(self, "gap (%s): %" G_GINT64_FORMAT " frames, jump %" G_GINT64_FORMAT
+                            " ns", e.reason, (gint64)e.lost_frames, (gint64)e.value);
+        } else if (e.kind == AsrcEvent::Kind::shift) {
+            gst_structure_set(s, "shift-ns", G_TYPE_INT64, (gint64)e.value, NULL);
+            GST_INFO_OBJECT(self, "stamps shifted %" G_GINT64_FORMAT " ns (%s)", (gint64)e.value,
+                            e.reason);
         } else {
             gst_structure_set(s, "fit-ppb", G_TYPE_INT64, (gint64)e.value, NULL);
             GST_WARNING_OBJECT(self, "device rate %" G_GINT64_FORMAT " ppb past the ratio clamp",
@@ -269,6 +283,7 @@ static gboolean asrc_build_run(GstMrAsrc* self) {
     GST_OBJECT_LOCK(self);
     const guint quality = (guint)self->quality;
     const int64_t bypass_ppb = std::llround(self->bypass_below_ppm * 1000.0);
+    const bool cycle_input = self->cycle_input != FALSE;
     GST_OBJECT_UNLOCK(self);
     const gint in_hz = GST_AUDIO_INFO_RATE(&self->in_info);
     const gint out_hz = GST_AUDIO_INFO_RATE(&self->out_info);
@@ -282,6 +297,7 @@ static gboolean asrc_build_run(GstMrAsrc* self) {
     mrts::AsrcServoConfig cfg = bypass_ppb > 0 ? mrts::asrc_decode_config(bypass_ppb, device)
                                                : mrts::AsrcServoConfig();
     cfg.device = device;
+    cfg.cycle_input = cycle_input;
     self->device_only = device && bypass_ppb <= 0;
     self->servo = new AsrcServo(in_hz, out_hz, cfg);
     const gsize delay = gst_audio_resampler_get_max_latency(self->resampler);
@@ -631,7 +647,9 @@ static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuff
     if (discont && self->started && self->servo->end_epoch()) asrc_drain_tail(self);
     self->started = TRUE;
     const int64_t dev = self->term ? self->term->eps_ppb.load() : 0;
-    self->cmd = self->servo->push(pts, (uint32_t)frames, discont, dev);
+    /* The duration as the source stamped it: pipewiresrc's is the cycle's size (B-180). */
+    const gint64 dur = GST_BUFFER_DURATION_IS_VALID(in) ? (gint64)GST_BUFFER_DURATION(in) : -1;
+    self->cmd = self->servo->push(pts, (uint32_t)frames, discont, dev, dur);
     if (self->cmd.drain) asrc_drain_tail(self);
     if (self->cmd.engage) asrc_prime(self);
     if (!self->cmd.pass && self->cmd.in_rate != self->cur_in_rate) {
@@ -639,7 +657,7 @@ static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuff
         self->cur_in_rate = self->cmd.in_rate;
         self->updates++;
     }
-    if (self->cmd.relock) self->need_discont = TRUE;
+    if (self->cmd.relock || self->cmd.gap) self->need_discont = TRUE;
     asrc_post_events(self, pts);
     if (self->cmd.pass) {
         *out = in;   // the base class pushes it as it came: no copy, no new metadata
@@ -839,6 +857,11 @@ static void asrc_set_property(GObject* object, guint prop_id, const GValue* valu
             self->quality = g_value_get_int(value);
             GST_OBJECT_UNLOCK(self);
             break;
+        case PROP_CYCLE_INPUT:
+            GST_OBJECT_LOCK(self);
+            self->cycle_input = g_value_get_boolean(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
         case PROP_BYPASS_BELOW_PPM:
             GST_OBJECT_LOCK(self);
             self->bypass_below_ppm = g_value_get_double(value);
@@ -868,6 +891,11 @@ static void asrc_get_property(GObject* object, guint prop_id, GValue* value, GPa
         case PROP_QUALITY:
             GST_OBJECT_LOCK(self);
             g_value_set_int(value, self->quality);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_CYCLE_INPUT:
+            GST_OBJECT_LOCK(self);
+            g_value_set_boolean(value, self->cycle_input);
             GST_OBJECT_UNLOCK(self);
             break;
         case PROP_BYPASS_BELOW_PPM:
@@ -909,6 +937,7 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     new (&self->delay_ns) std::atomic<guint64>(0);
     self->out_rate = 0;
     self->quality = DEFAULT_QUALITY;
+    self->cycle_input = FALSE;
     self->bypass_below_ppm = 0.0;
     self->device_sink = NULL;
     self->term = NULL;
@@ -962,12 +991,20 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
                          GST_AUDIO_RESAMPLER_QUALITY_MIN, GST_AUDIO_RESAMPLER_QUALITY_MAX,
                          DEFAULT_QUALITY, at_start));
     g_object_class_install_property(
+        gobject_class, PROP_CYCLE_INPUT,
+        g_param_spec_boolean("cycle-input", "Cycle input",
+                             "The input is one buffer per graph cycle stamped with the cycle's "
+                             "time (pipewiresrc): whole cycles missing at a steady size are a gap "
+                             "of their length, a cycle-size change moves the stamps only; neither "
+                             "relocks. Capture mode only. Applies at the next start or caps change.",
+                             FALSE, at_start));
+    g_object_class_install_property(
         gobject_class, PROP_STATS,
         g_param_spec_boxed("stats", "Stats",
                            "The last mrasrc-stats post (state, ratio-ppb, phase-err-ns, relocks, "
-                           "in-frames, out-frames, discont-in, dropped-frames, mode, source-ppb, "
-                           "device-ppb) with the run's format, channels, in-rate, out-rate, "
-                           "delay-frames, buffers, resampler-updates and device-pairs.",
+                           "in-frames, out-frames, discont-in, dropped-frames, gaps, lost-frames, "
+                           "mode, source-ppb, device-ppb) with the run's format, channels, in-rate, "
+                           "out-rate, delay-frames, buffers, resampler-updates and device-pairs.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(

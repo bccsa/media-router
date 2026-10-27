@@ -141,8 +141,9 @@ function networkView(v: View, c: IngestClock, now: number, staleMs: number): voi
     const programs = sorted(c.programs).filter(([, p]) => p.at !== undefined);
     let worst: ClockState | undefined;
     for (const [n, p] of programs) {
-        // The element posts from the streaming thread: no stats means no packets.
-        const fresh = now - (p.at ?? 0) <= staleMs;
+        // The element posts from the streaming thread: no stats means no packets, as does a
+        // transport that dropped since the last (B-118).
+        const fresh = now - (p.at ?? 0) <= staleMs && !p.down;
         const state: ClockState = fresh ? p.state : 'lost';
         if (!worst || CLOCK_STATES[state].rank > CLOCK_STATES[worst].rank) worst = state;
         const why = p.reason ? ` (${reasonText(p.reason)})` : '';

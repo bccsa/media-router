@@ -12,9 +12,10 @@
     "in2": {"seed": 23, "start_s": 5.5, "delay_ms": 500}
   },
   "expect": {
-    "gap_ms": 500,
-    "gap_tolerance_ms": 25,
-    "gap_floor_ms": 100,
-    "settle_s": 1.0
+    "rise_ms": 500,
+    "rise_tolerance_ms": 25,
+    "max_gap_ms": 60,
+    "joiner_by_s": 1.8,
+    "stale_max_ms": 1550
   }
 }

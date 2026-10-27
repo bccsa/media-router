@@ -3,7 +3,9 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
     pipewireStreamProps,
+    PIPEWIRE_CYCLE_TIME_PROPS,
     PIPEWIRE_RT_STREAM_PROPS,
+    PIPEWIRE_SRC_MIN_BUFFERS,
     pulsePinnedStreamProps,
     PULSE_PINNED_STREAM_PROPS,
 } from './pulseStreamProps.js';
@@ -38,15 +40,16 @@ describe('pulsePinnedStreamProps (#736)', () => {
     });
 });
 
-describe('pipewireStreamProps (B-88)', () => {
-    it('the #736 pins, then the node on the RT data loop', () => {
+describe('pipewireStreamProps (B-88, B-180)', () => {
+    it('the #736 pins, then the node on the RT data loop, then not live', () => {
         expect(PIPEWIRE_RT_STREAM_PROPS).toEqual({ 'node.loop.class': 'data.rt' });
+        expect(PIPEWIRE_CYCLE_TIME_PROPS).toEqual({ 'stream.is-live': 'false' });
         expect(pipewireStreamProps()).toBe(
-            'stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true,node.loop.class=(string)data.rt"',
+            'stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true,node.loop.class=(string)data.rt,stream.is-live=(string)false"',
         );
     });
 
-    it('merges extra node properties after the pins and the loop class', () => {
+    it('merges extra node properties after the pins, the loop class and the cycle time', () => {
         expect(
             pipewireStreamProps({
                 'node.latency': '2880/48000',
@@ -54,14 +57,22 @@ describe('pipewireStreamProps (B-88)', () => {
                 'node.autoconnect': 'false',
             }),
         ).toBe(
-            'stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true,node.loop.class=(string)data.rt,node.latency=(string)2880/48000,node.name=(string)MR_PW_ain-1,node.autoconnect=(string)false"',
+            'stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true,node.loop.class=(string)data.rt,stream.is-live=(string)false,node.latency=(string)2880/48000,node.name=(string)MR_PW_ain-1,node.autoconnect=(string)false"',
         );
     });
 
-    it('an extra entry cannot silently drop a pin or the loop class', () => {
-        expect(pipewireStreamProps({ 'node.linger': 'true', 'node.loop.class': 'data.rt' })).toBe(
-            pipewireStreamProps(),
-        );
+    it('an extra entry cannot silently drop a pin, the loop class or the cycle time', () => {
+        expect(
+            pipewireStreamProps({
+                'node.linger': 'true',
+                'node.loop.class': 'data.rt',
+                'stream.is-live': 'false',
+            }),
+        ).toBe(pipewireStreamProps());
+    });
+
+    it("a pipewiresrc keeps 16 buffers: PipeWire 1.6 would give a capture its converter's 2 (B-180)", () => {
+        expect(PIPEWIRE_SRC_MIN_BUFFERS).toBe(16);
     });
 });
 
@@ -100,7 +111,12 @@ describe('every PipeWire client element in the tree takes its own helper (B-88)'
                 const ends = [tail.indexOf(';'), tail.search(OPEN)].filter((i) => i >= 0);
                 const clause = tail.slice(0, ends.length ? Math.min(...ends) : tail.length);
                 const line = src.slice(0, m.index).split('\n').length;
-                return { at: `${file}:${line}`, element: m[1], helper: HELPER.exec(clause)?.[1] };
+                return {
+                    at: `${file}:${line}`,
+                    element: m[1],
+                    clause,
+                    helper: HELPER.exec(clause)?.[1],
+                };
             }),
     );
 
@@ -119,6 +135,16 @@ describe('every PipeWire client element in the tree takes its own helper (B-88)'
         const want = (element: string) =>
             element.startsWith('pulse') ? 'pulsePinnedStreamProps' : 'pipewireStreamProps';
         expect(elements.filter((e) => e.helper !== want(e.element))).toEqual([]);
+    });
+
+    it('every pipewiresrc keeps PIPEWIRE_SRC_MIN_BUFFERS buffers, and no pulse element names any (B-180)', () => {
+        const buffers = (e: (typeof elements)[number]) => e.clause.includes('min-buffers=');
+        expect(
+            elements
+                .filter((e) => e.element === 'pipewiresrc')
+                .filter((e) => !e.clause.includes('min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}')),
+        ).toEqual([]);
+        expect(elements.filter((e) => e.element.startsWith('pulse') && buffers(e))).toEqual([]);
     });
 
     it('no other source names a node loop in code, so no pulse stream gains one', () => {

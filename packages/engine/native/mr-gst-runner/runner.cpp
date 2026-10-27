@@ -13,6 +13,7 @@
 #include "branch_align.h"
 #include "bus_edges.h"
 #include "bus_inputs.h"
+#include "capture_rt.h"
 #include "gates.h"
 #include "hooks.h"
 #include "pad_link.h"
@@ -383,6 +384,8 @@ void Runner::handle_start(JsonObject* data) {
     gst_bus_add_signal_watch(bus);
     g_signal_connect(bus, "message", G_CALLBACK(on_bus_message_cb), nullptr);
     gst_object_unref(bus);
+    // A PipeWire capture's tasks ask for real-time priority as they enter (B-111).
+    capture_rt::install(pipeline);
 
     GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -424,6 +427,7 @@ void Runner::handle_stop() {
     inputs::clear();
     tsprobe::stop();
     render::stop();
+    capture_rt::clear();
     if (pipeline) {
         teardown_pipeline(pipeline);
         running = false;

@@ -37,6 +37,7 @@ import collections
 import json
 import math
 import os
+import resource
 import signal
 import socket as pysocket
 import sys
@@ -1766,6 +1767,152 @@ def _clear_runner_hooks():
     _runner_hooks = []
 
 
+# ---------------------------------------------------------------------------
+# A PipeWire capture's streaming tasks at real-time priority (B-111)
+# ---------------------------------------------------------------------------
+# Each task from a `pipewiresrc` down to its mux runs SCHED_RR, granted by rtkit as
+# module-rt's data loop is (B-88). Twin of mr-gst-runner's capture_rt.cpp.
+# Below PipeWire's data loops (RR 20, rtkit's maximum): a cycle always preempts the capture.
+CAPTURE_RT_PRIORITY = 19
+# The RLIMIT_RTTIME bound, us: rtkit's RTTimeUSecMax, the limit module-rt sets (B-88).
+CAPTURE_RT_RTTIME_US = 200000
+# How long a request waits for rtkit's answer before it counts as refused.
+CAPTURE_RT_TIMEOUT_MS = 5000
+_RTKIT = "org.freedesktop.RealtimeKit1"
+_capture_rt_lock = threading.Lock()   # the marks: written before PLAYING, read by entering tasks
+_capture_rt_path = set()
+# Main loop only: the requests run there, so no streaming thread waits on rtkit or the bus.
+_capture_rt_refused = False
+_capture_rt_bus = None
+# Gio, imported at the first request: only a capture's runner pays its ~1 MB (False: no typelib).
+_capture_rt_gio = None
+
+
+def _capture_rt_mark(el):
+    """`el` and everything downstream of it; a muxer ends its branch."""
+    if el in _capture_rt_path:
+        return
+    _capture_rt_path.add(el)
+    factory = el.get_factory()
+    if factory is not None and factory.list_is_type(Gst.ELEMENT_FACTORY_TYPE_MUXER):
+        return
+    for pad in el.srcpads:
+        peer = pad.get_peer()
+        nxt = peer.get_parent_element() if peer is not None else None
+        if nxt is not None:
+            _capture_rt_mark(nxt)
+
+
+def _install_capture_rt(pipe):
+    """Mark every element from each `pipewiresrc` down to its first muxer, and ask rtkit for
+    each of their tasks as it enters. A pipeline without a `pipewiresrc` asks nothing."""
+    with _capture_rt_lock:
+        it = pipe.iterate_recurse()
+        while True:
+            result, el = it.next()
+            if result == Gst.IteratorResult.OK:
+                factory = el.get_factory()
+                if factory is not None and factory.get_name() == "pipewiresrc":
+                    _capture_rt_mark(el)
+            elif result == Gst.IteratorResult.RESYNC:
+                it.resync()
+            else:
+                break
+        if not _capture_rt_path:
+            return
+    bus = pipe.get_bus()
+    bus.enable_sync_message_emission()
+    bus.connect("sync-message::stream-status", _on_capture_stream_status)
+
+
+def _clear_capture_rt():
+    with _capture_rt_lock:
+        _capture_rt_path.clear()
+
+
+def _on_capture_stream_status(_bus, message):
+    """On the entering task's own thread: its tid, then the request on the main loop."""
+    kind, owner = message.parse_stream_status()
+    if kind != Gst.StreamStatusType.ENTER:
+        return
+    with _capture_rt_lock:
+        if owner not in _capture_rt_path:
+            return
+    GLib.idle_add(_capture_rt_request, threading.get_native_id(),
+                  f"{owner.get_name()}:{message.src.get_name()}")
+
+
+def _capture_rt_refuse(task, why):
+    """Said once per runner; the capture runs on at normal priority."""
+    global _capture_rt_refused
+    if _capture_rt_refused:
+        return
+    _capture_rt_refused = True
+    emit_event({"event": "warning", "message": f"real-time priority refused for {task} ({why}): "
+                                               "the capture runs at normal priority"})
+
+
+def _capture_rt_bound_rttime():
+    """rtkit grants only to a process whose RLIMIT_RTTIME hard limit is within its maximum."""
+    _soft, hard = resource.getrlimit(resource.RLIMIT_RTTIME)
+    if hard != resource.RLIM_INFINITY and hard <= CAPTURE_RT_RTTIME_US:
+        return None
+    try:
+        resource.setrlimit(resource.RLIMIT_RTTIME, (CAPTURE_RT_RTTIME_US, CAPTURE_RT_RTTIME_US))
+    except (OSError, ValueError) as e:
+        return f"RLIMIT_RTTIME: {e}"
+    return None
+
+
+def _capture_rt_request(tid, task):
+    global _capture_rt_gio
+    if _capture_rt_gio is None:
+        try:
+            from gi.repository import Gio
+            _capture_rt_gio = Gio
+        except ImportError:
+            _capture_rt_gio = False
+    why = "no Gio" if not _capture_rt_gio else _capture_rt_bound_rttime()
+    if why:
+        _capture_rt_refuse(task, why)
+    elif _capture_rt_bus is not None:
+        _capture_rt_call(tid, task)
+    else:
+        _capture_rt_gio.bus_get(_capture_rt_gio.BusType.SYSTEM, None, _capture_rt_on_bus, (tid, task))
+    return False
+
+
+def _capture_rt_on_bus(_source, res, req):
+    global _capture_rt_bus
+    try:
+        bus = _capture_rt_gio.bus_get_finish(res)
+    except GLib.Error as e:
+        _capture_rt_refuse(req[1], e.message)
+        return
+    # The shared connection would SIGTERM the runner if the bus went away.
+    bus.set_exit_on_close(False)
+    _capture_rt_bus = bus
+    _capture_rt_call(*req)
+
+
+def _capture_rt_call(tid, task):
+    """module-rt's call (B-88), inside the same rtkit limits."""
+    _capture_rt_bus.call(_RTKIT, "/org/freedesktop/RealtimeKit1", _RTKIT, "MakeThreadRealtimeWithPID",
+                         GLib.Variant("(ttu)", (os.getpid(), tid, CAPTURE_RT_PRIORITY)), None,
+                         _capture_rt_gio.DBusCallFlags.NONE, CAPTURE_RT_TIMEOUT_MS, None, _capture_rt_on_reply,
+                         task)
+
+
+def _capture_rt_on_reply(bus, res, task):
+    try:
+        bus.call_finish(res)
+    except GLib.Error as e:
+        _capture_rt_refuse(task, e.message)
+        return
+    sys.stderr.write(f"[gst-runner.py] real-time: {task} at SCHED_RR {CAPTURE_RT_PRIORITY} (rtkit)\n")
+    sys.stderr.flush()
+
+
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
@@ -1908,6 +2055,8 @@ def handle_start(data):
     bus = pipeline.get_bus()
     bus.add_signal_watch()
     bus.connect("message", on_bus_message)
+    # A PipeWire capture's tasks ask for real-time priority as they enter (B-111).
+    _install_capture_rt(pipeline)
 
     # Start playing
     ret = pipeline.set_state(Gst.State.PLAYING)
@@ -1958,6 +2107,7 @@ def handle_stop(data=None):
     _stop_rist()
     _stop_ts_probe()
     _stop_render_watch()
+    _clear_capture_rt()
     if pipeline:
         _teardown_pipeline(pipeline)
         running = False

@@ -1,5 +1,7 @@
 import {
     GstPluginBase,
+    type AlignerInputRef,
+    type AlignerWatchRef,
     type LiveInputBranch,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -17,6 +19,7 @@ import {
     n1PortId,
     readChannels,
     readPairCount,
+    isMatrixAligner,
     type DynamicPort,
     type N1Output,
 } from './n1Mixer302mPipeline.js';
@@ -38,6 +41,12 @@ import {
  */
 export class N1Mixer302mModule extends GstPluginBase {
     protected liveUpdatableParams: string[] = [];
+
+    /** A matrix link (`omix<o>_aw<i>`) is an internal stage: its pace counts, it names nothing;
+     *  the fan-ins' watches name the edges (B-70). */
+    protected alignerInputOf(watch: AlignerWatchRef): AlignerInputRef | undefined {
+        return isMatrixAligner(watch.aligner) ? null : undefined;
+    }
 
     /** Live input add/remove on `in-<i>` — see `n1InputBranch`. */
     getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {

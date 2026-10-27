@@ -394,7 +394,7 @@ Each property renders as a heading plus a control. The heading is the JSON Schem
 }
 ```
 
-**A secret is marked by its name.** A setting that holds a secret (a passphrase, a password, a token, a key) is named so: its key, case, `-`, `_`, `.` and spaces aside, ends in a word such as `secret`, `passphrase`, `password`, `token`, `apiKey`, `streamKey`, `privateKey`, `encryptionKey`, `signature` or `credential` (the full list, with the few short names it also takes such as `psk` and `user-pw`: `isSecretKey` in shared-types' `redact.ts`). Every log line, launch string and runner message the engine and the manager write passes one redaction step (B-109) that shows such a value as `<redacted>`, as it does an element property or URI parameter of such a name (`secret="…"`, `?passphrase=…`), a URI's `user:password@` and an RTMP stream key; the pipeline gets the real value. `manifestHelpText.test.ts` lists the settings so marked: add a new one there.
+**A secret is marked by its name.** A setting that holds a secret (a passphrase, a password, a token, a key) is named so: its key, case, `-`, `_`, `.` and spaces aside, ends in a word such as `secret`, `passphrase`, `password`, `token`, `apiKey`, `secretKey`, `streamKey`, `privateKey`, `encryptionKey`, `signature` or `credential` (the full list, with the few short names it also takes such as `psk` and `user-pw`: `isSecretKey` in shared-types' `redact.ts`). Every log line, launch string and runner message the engine and the manager write passes one redaction step (B-109) that shows such a value as `<redacted>`, as it does an element property or URI parameter of such a name (`secret="…"`, `?passphrase=…`), a URI's `user:password@` and an RTMP stream key; the pipeline gets the real value. `manifestHelpText.test.ts` lists the settings so marked: add a new one there.
 
 ### Custom Schema Extensions
 
@@ -1267,8 +1267,12 @@ it `node.name=<this.pwNodeName>` and `node.autoconnect=false` through
 and `pipewiresink` takes that helper: WirePlumber's pins (no fallback, linger;
 #736), and the stream's node on the runner's real-time data loop (B-88;
 otherwise PipeWire runs it on an ordinary thread that loses cycles on a busy
-box). A `pulsesrc` or `pulsesink` takes `pulsePinnedStreamProps({...})`: its
-node runs inside pipewire-pulse, on that daemon's real-time loop.
+box). The runner also runs the capture's own GStreamer tasks, each one from the
+`pipewiresrc` down to its first muxer, at real-time priority just below
+PipeWire's (B-111): nothing to set, and whatever a module puts on that stretch
+runs at that priority too. A `pulsesrc` or `pulsesink` takes
+`pulsePinnedStreamProps({...})`: its node runs inside pipewire-pulse, on that
+daemon's real-time loop.
 
 In the module:
 
@@ -1924,7 +1928,7 @@ Volume is in percentage (0-500+).
 
 ## The Inter-Module Bus (Generic Plugin Infrastructure)
 
-String-valued pipeline properties (URLs, passphrases) go through `quoteGstString(value)` from `@media-router/engine`, which double-quotes and backslash-escapes for `Gst.parse_launch`.
+String-valued pipeline properties (URLs, passphrases) go through `quoteGstString(value)` from `@media-router/engine`, which double-quotes and backslash-escapes for `Gst.parse_launch`. Free text inside a URI (an SRT passphrase or stream ID, a RIST link's CNAME) is percent-encoded first, with `encodeURIComponent` (B-112): srtsrc and srtsink decode each query value, and `mrristsrc` / `mrristsink` decode the CNAME, as librist decodes nothing and splits a URL's query at every `&`; so a RIST passphrase goes in as the element's `secret` property, never into a URL.
 
 Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime (500 ms, byte-capped — every leaky queue on the bus carries a `max-size-bytes` next to its time bound, because a time-only bound goes unbounded once the stream's timestamps stall; see `packages/engine/src/plugins/queueBounds.ts`), and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
@@ -2094,7 +2098,7 @@ pass-through `mrlateness` (`mpegts-core/native/mrlateness`, a plain
 `GstElement` with a `chain_list`, so the mux's buffer lists stay intact —
 ADR-0011) is named in the `buildBusSrc` string ahead of the ingress queue
 (`lat_busin…`, arrival) and in `buildBusSink` after the caps pair, before the
-`busout_*` tee (`lat_busout_<port>`, the stamped PTS every consumer receives).
+`busout_*` tee (`lat_busout_<port>`, the stamp every consumer receives once one has armed it).
 The ingress tap is `reference=house` (raw PTS against `CLOCK_MONOTONIC`); the
 egress tap is `reference=running-time`, because the stamper writes running
 time there (stamp − base time), so a natural base such as video-encoder's
@@ -2111,20 +2115,24 @@ lateness mean and min–max; Added latency = output mean − the slowest input's
 mean; Slowest input, with two or more inputs; and for outputs Decode,
 Presentation delay, Device latency and Render lateness); one `timing-in-<n>`
 section per input (Lateness, Added), labelled `<source module> (<sink port>)`
-and numbered by the input's fixed place — bus inputs by sink port,
-numeric-aware, then connection id — so a dark input leaves a gap rather than
-renumbering the rest; on a module with two or more bus outputs, one
-`timing-out-<n>` section per output tee (Lateness, min–max; the `timing`
-section keeps their count-weighted merge); and a grey `lateness` face badge:
-render lateness on outputs, PipeWire latency on PipeWire-graph modules, the
-output lateness mean otherwise. A module with aligners also shows Pace and
-Waiting for (which replaces Slowest input when shown) and, per input, State,
-Silence limit, Absences and Discarded on rejoin, a dark input keeping its
-section; audio-processing adds Processing latency (its LSP chain's reported
-lookahead, OQ-22). Lateness is display only: no threshold and no warning on
-it (OQ-8, deferred until the fleet has numbers); the aligners'
-`input-absent` and `aligner-full` warnings (below) are about an input, not
-lateness. What a plugin author does:
+and numbered by the input's fixed place — the bus inputs a run starts with by
+sink port, numeric-aware, then connection id, one wired later after them — so a
+dark input leaves a gap and no input renumbers within a run; on a module with
+two or more bus outputs, one `timing-out-<n>` section per output tee
+(Lateness, min–max; the `timing` section keeps their count-weighted merge);
+and a grey `lateness` face badge: render lateness on outputs, PipeWire
+latency on PipeWire-graph modules, the output lateness mean otherwise. A
+module with aligners also shows Pace and Waiting for (which replaces Slowest
+input when shown) and, per input, State, Silence limit, Absences and
+Discarded on rejoin, a dark input keeping its section (so does one whose
+producer stopped while still wired, and an input whose tap has gone quiet
+under watches that report on, such as a muxer pin whose producer stopped,
+shows absent: B-93), and a pace that falls by itself logs "Pace fell by <ms>
+ms: every input steady for <fall-after>" (B-82); audio-processing adds
+Processing latency (its LSP chain's reported lookahead, OQ-22). Lateness is
+display only: no threshold and no warning on it (OQ-8, deferred until the
+fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
+(below) are about an input, not lateness. What a plugin author does:
 
 - **Output modules** wrap their final sink in
   `withLatenessTap('lat_render' | 'lat_egress', sink)`
@@ -2146,7 +2154,9 @@ lateness. What a plugin author does:
   declared on the description as `timingInputs: [{ tap, n, label }]`
   (engine-side, read at module start): `n` the input's fixed number,
   `label` from the engine's `busInputLabel(source)` so it reads like
-  everyone else's. mpegts-muxer does, with `n` its pin number.
+  everyone else's. mpegts-muxer does, with `n` its pin number, and its
+  `alignerInputOf` puts each route's watch under its branch's tap, so a pin
+  is one row whatever it carries.
 - **Sidecar producers** keep one `mrts::LatenessWindow` per output at their
   stamping point and add `"lateness": {count, untimed, min, mean, max}` (ms,
   `mrts::lateness_json_ms`) to their 2 s stats line — `mr-bus-fanout` and
@@ -2323,7 +2333,10 @@ exported from `@media-router/engine`; srt-input is the reference):
    `mrtsrestamp-event:restamp`, `mrasrc-stats:asrc`, `mrasrc-event:asrc`.
 4. **Card.** Feed those events to an `IngestTimingReporter` (mode `stc` or
    `fixed`) from `onPluginEvent`, `start()` it in `onStart` and `stop()` it
-   in `onStop`, and `reassert()` its warning from `onPipelinePlaying` and on
+   in `onStop` before `super.onStop()` (the card goes at once, while the
+   runner still stops: B-117), call `down()` when the runner goes down with
+   its transport, as SRT Input does (No PCR at once, B-118), and
+   `reassert()` its warning from `onPipelinePlaying` and on
    any return to health `ok` (every PLAYING sets ok). Its host binds your
    dynamic sections (replace only the reporter's ids, those
    `isIngestTimingSection` matches, and keep your own and the base's), the
@@ -2500,18 +2513,24 @@ audiomixer name=<agg> latency=0 start-time-selection=first ! …     (or audioin
 ```
 
 It answers LATENCY as non-live, so the aggregator never times out. The
-watchdogs with one `aligner` (per pipeline) share a pace, the largest
-lateness any of them shows over a second, and release data at its running
-time plus the pace, so all inputs reach the aggregator at the same lateness.
-An input silent for W (3 × the p95 of its gaps between arrivals, 100 ms to
-2 s) is absent: it is gapped at the pace and the aggregator goes on without
-it; when it comes back, what it sends that ends before the gaps' horizon is
-discarded as stale and counted, and it rejoins at the current position. An
-input added to a running aggregator is gapped from its first tick while it
-starts. The queue holds 5 s (`max-size-time`), blocks upstream when full and
-never drops. The pace never falls by itself: it comes down only when an input
-leaves (its pad released), so a module keeps the latency of its slowest input
-until that input is removed or the module restarts. Rules:
+watchdogs with one `aligner` (per pipeline) share a pace and release data at
+its running time plus the pace, so all inputs reach the aggregator at the
+same lateness. The pace follows the most lateness any of them showed over the
+last `fall-after` (180 s; an input's lateness is the median over its last
+second): a rise from an input the aggregator waits on steps, one from an
+input behind the gaps (a joiner, a rejoin) eases up at half a millisecond a
+millisecond, so the output slows and never stops (B-80); once every input has
+stayed 10 ms or more under it for `fall-after` it falls, at most 1 s at a time
+(B-82), and it falls when an input leaves (its pad released). An input silent
+for W (3 × the p95 of its gaps between arrivals, 100 ms to 2 s) is absent: it
+is gapped at the pace and the aggregator goes on without it; when it comes
+back, what it sends that ends before the gaps' horizon is discarded as stale
+and counted, and it rejoins at the current position. An input added to a
+running aggregator catches up the same way: gapped until its data reaches the
+gaps, it loses its first 2Δ + 0.5 s when Δ later than the pace, and one within
+50 ms of it is waited for. Toward an audio aggregator an input's PCM edges
+fade over 5 ms (B-83). The queue holds 5 s (`max-size-time`), blocks upstream
+when full and never drops. Rules:
 
 - **Every pad, live-added ones included.** One input that answers LATENCY
   live turns the whole aggregator live, and it then times out and drops late
@@ -2548,7 +2567,10 @@ until that input is removed or the module restarts. Rules:
   with no `busReports` subscription) into the timing section and two
   warnings. Label an input with its bus connection id, as the 302M helpers do,
   and it joins that edge's row; for any other label answer
-  `alignerInputOf(watch)` on your module.
+  `alignerInputOf(watch)` on your module: `{ tap }` to join an input's row
+  (mpegts-muxer's routes their pin's), `null` for an internal stage whose pace
+  counts and which names nothing (n1-mixer-302m's matrix links,
+  audio-processing's interleave).
 - **Without the plugin**, a start description naming `mrtsdemux` is refused
   with the "Native TS module not loaded" alarm (no stand-in), and
   `mralignwatch` gets an `identity` stand-in in a start description only: a
@@ -2642,6 +2664,9 @@ paths that still import `py/ts_timeline.py` stop in Phases 2 and 3.)
 
    The Yocto recipe runs the same targets; `make native-install` places
    binaries at `/usr/libexec/media-router/<plugin>/<tool>` on the image.
+   `make native-test` builds each tool's test target only, so on a clean tree
+   run `make native` first: the Python element and protocol suites load the
+   plugins and runners it builds, and skip without them.
 
 4. Run it from your engine module:
 

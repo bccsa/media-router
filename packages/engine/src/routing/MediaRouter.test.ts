@@ -865,3 +865,35 @@ describe('MediaRouter.hasStoredConnection', () => {
         expect(router.hasStoredConnection('encoder', 'mpegts-out')).toBe(true);
     });
 });
+
+describe('MediaRouter.hasStoredEdge (B-93)', () => {
+    const edge = {
+        sourceModuleId: 'enc-1',
+        sourcePortId: 'mpegts-out',
+        sinkModuleId: 'mux-1',
+        sinkPortId: 'input-0',
+    };
+
+    it('answers for exactly that edge from the persisted graph, applied or not', () => {
+        const router = new MediaRouter();
+        router.setStoredConnectionsProvider(() => [edge]);
+        expect(router.getConnections()).toHaveLength(0);
+        expect(router.hasStoredEdge(edge)).toBe(true);
+        expect(router.hasStoredEdge({ ...edge, sinkPortId: 'input-1' })).toBe(false);
+        expect(router.hasStoredEdge({ ...edge, sourcePortId: 'other-out' })).toBe(false);
+    });
+
+    it('falls back to the live map without a provider', async () => {
+        const router = new MediaRouter();
+        registerMpegtsPair(router);
+        const live = {
+            sourceModuleId: 'encoder',
+            sourcePortId: 'mpegts-out',
+            sinkModuleId: 'decoder',
+            sinkPortId: 'mpegts-in',
+        };
+        expect(router.hasStoredEdge(live)).toBe(false);
+        await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
+        expect(router.hasStoredEdge(live)).toBe(true);
+    });
+});

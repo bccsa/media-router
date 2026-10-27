@@ -83,6 +83,8 @@ export class SrtInputModule extends GstPluginBase {
                 this.clearBadge('callers');
                 this.setCallerSections([]);
                 this.statPoller.reset();
+                // libsrt dropped the link: no PCR comes until a new pipeline reports (B-118).
+                this.ingestTiming.down();
             }
         });
 
@@ -127,11 +129,12 @@ export class SrtInputModule extends GstPluginBase {
         const passphrase = (config.passphrase as string) ?? '';
         const pbKeyLen = (config.pbKeyLen as number) ?? 0;
 
-        // Build SRT URI with parameters
+        // Build the SRT URI. Free text is percent-encoded (B-112): srtsrc decodes each value,
+        // which a `#`, `&`, `"`, `\` or `%` typed into it would otherwise cut, change or break.
         let uri = `srt://${host}:${port}`;
         const params: string[] = [`mode=${mode}`, `latency=${latency}`];
-        if (streamId) params.push(`streamid=${streamId}`);
-        if (passphrase) params.push(`passphrase=${passphrase}`);
+        if (streamId) params.push(`streamid=${encodeURIComponent(streamId)}`);
+        if (passphrase) params.push(`passphrase=${encodeURIComponent(passphrase)}`);
         if (pbKeyLen > 0) params.push(`pbkeylen=${pbKeyLen}`);
         uri += '?' + params.join('&');
 

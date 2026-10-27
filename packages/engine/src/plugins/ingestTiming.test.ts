@@ -93,6 +93,14 @@ describe('buildAsrc and the bus reports', () => {
         expect(buildAsrc({ name: 'asrc2', outRate: 0 })).toBe('mrasrc name=asrc2');
     });
 
+    it('a pipewiresrc capture names its cycle input; any other input does not (B-180)', () => {
+        expect(buildAsrc({ cycleInput: true })).toBe('mrasrc name=asrc cycle-input=true');
+        expect(buildAsrc({ outRate: 48000, cycleInput: true })).toBe(
+            'mrasrc name=asrc out-rate=48000 cycle-input=true',
+        );
+        expect(buildAsrc({ cycleInput: false })).toBe('mrasrc name=asrc');
+    });
+
     it('builds the decode and device modes (WI-P3-5) in the consumer strings', () => {
         expect(buildAsrc({ bypassBelowPpm: 0.5, outRate: 48000 })).toBe(
             'mrasrc name=asrc bypass-below-ppm=0.5 out-rate=48000',

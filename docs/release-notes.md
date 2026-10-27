@@ -41,9 +41,9 @@ elements" below do not start.
 - **Sources with a sparse clock reference** (vMix's SRT output sends one
   every 2 s) now feed the modules behind the input smoothly. The input marks
   a break in the source's clock only where there is one (an outage, a
-  re-lock, an offset change); earlier builds of this release marked every
-  one of these sparse references, and a player or transcoder on such an
-  input stepped by up to 18 ms every 2 s.
+  re-lock, an offset change); earlier builds of this release marked nearly
+  every one of these sparse references, and a player or transcoder on such
+  an input stepped by up to 18 ms every 2 s.
 
 **New settings**
 
@@ -131,6 +131,19 @@ elements" below do not start.
   box, Settings → Engine Comms and the dashboard editor's number fields. A
   setting that needs a module restart is still written by Save. Escape
   closes the settings panel; what was typed is not written.
+- **Device Manager: a typed setting is checked and kept when you press Enter
+  or leave the box.** While you type in the Device Manager (log sizes, PTP,
+  NTP servers, network addresses and the hostname, firewall rules, manager
+  profiles, displays) nothing is checked and no error shows. When you press
+  Enter or move to another field the value is checked: a value the setting
+  cannot take stays in the box with the reason underneath, and the setting
+  keeps its value. Save works in one click straight after typing: it saves,
+  or tells you why not, and it waits while any box holds a value it cannot
+  take. Spaces typed before or after an address, host name, port or server
+  are dropped. A blank PTP Domain now means the profile's default, as the
+  page says (it used to be saved as domain 0). The password pages say "At
+  least 8 characters." or "Passwords don't match." once you leave the box,
+  not while you type.
 - **Rollback** is the previous release, installed from the Device Manager;
   there is no in-app switch.
 
@@ -145,10 +158,16 @@ elements" below do not start.
   silence and dropped what came later, and the muxer stopped waiting after
   2.4 s and muxed what came later out of order. Now the module adds the
   latency of its slowest input instead, and shows it.
-- **The added latency does not come down by itself.** Once a slower input
-  has raised it, it stays until that input is removed or the module is
-  restarted. The module's timing popup shows it as **Pace**, and **Waiting
-  for** names the input it waits on.
+- **The added latency comes down by itself.** Once every input has been
+  steady under it for about three minutes, the module drops it in one step
+  (at most a second at a time); nothing is lost or repeated. It also drops
+  when the slow input is removed. The timing popup shows it as **Pace**, and
+  **Waiting for** names the input it waits on.
+- **A slower input that joins no longer stops the mix.** The module eases its
+  latency up to the newcomer over about twice the difference; the newcomer is
+  heard from then on (what it sent before is discarded and counted under
+  **Discarded on rejoin**). A newcomer less than about 50 ms later is simply
+  waited for.
 - **An input that goes silent is left out, not waited for.** After its
   silence limit (three times the input's usual gap between arrivals, 100 ms
   to 2 s; 2 s at start) the module carries a warning, "Input <name> silent
@@ -158,6 +177,10 @@ elements" below do not start.
   discarded, and the popup counts it as **Discarded on rejoin**. A queue
   that fills (5 s) holds the input back and warns
   "Input <name> queue full — upstream held"; nothing is dropped.
+- **Dropouts on a mixer input are faded, not cut.** When an input goes
+  silent, comes back, ends, or has a hole in its stream, the mix fades its
+  sound out over 5 ms and back in over 5 ms, so a loss is heard as a short
+  dip rather than a click. The MPEG-TS Muxer's inputs are not touched.
 - **The MPEG-TS Muxer no longer restarts on a dark input.** It continues
   with the other inputs and warns. An input that is connected but stuck is
   therefore no longer restarted automatically: the warning names it for the
@@ -322,11 +345,11 @@ elements" below do not start.
   picture group) showed "Degraded clock" for good. It now shows a green
   Clock badge with the state "Locked (PCR every 2.0 s)", after a minute or
   so of "Acquiring". Amber stays for a reference that stops ("No PCR" after
-  5 s, then "Degraded clock: PCR missing", within 12 s on a 2 s reference
-  and 1.5 s on a dense one), jumps, or comes irregularly ("PCR comes
-  irregularly: gaps up to n, normally every n"). That warning replaces "PCR
-  every n ms (spec ≤ 100 ms)", which a bursty link raised on sources whose
-  clock was fine.
+  5 s, or as soon as an SRT input's link drops, then "Degraded clock: PCR
+  missing", within 12 s on a 2 s reference and 1.5 s on a dense one), jumps,
+  or comes irregularly ("PCR comes irregularly: gaps up to n, normally every
+  n"). That warning replaces "PCR every n ms (spec ≤ 100 ms)", which a bursty
+  link raised on sources whose clock was fine.
 - **Audio captures no longer drop sound on a busy box.** On a box working
   near its limit (a Pi 4 showing video on HDMI while it encodes, for one),
   Audio Input (302M) and Audio Encoder could lose 50 to 200 ms of sound now
@@ -334,6 +357,30 @@ elements" below do not start.
   stream, counted under Re-locks on the Clock card. The capture ran at
   ordinary priority, competing with everything else on the box. Fixed: it
   now runs at real-time priority, as PipeWire's own audio does.
+- **Audio captures keep their timing on a heavily loaded box.** Even with the
+  fix above, on a box busy nearly all the time (a Pi 4 showing video on HDMI
+  while it encodes and takes two captures, for one), Audio Input (302M) lost a
+  short piece of sound about 50 times an hour, each counted under Re-locks on
+  the Clock card: the capture's own processing, from the device to the stream
+  it sends, ran at ordinary priority and waited for the processor a quarter of
+  the time. Fixed: that processing now runs at real-time priority too, just
+  below PipeWire's own audio, in Audio Input (302M) and Audio Encoder alike.
+  Should the box refuse it, the engine's log says so once and the capture runs
+  as before. On an older system image, a box with more than four of these
+  modules can run out of real-time grants, and its later captures then lose
+  the fix above as well; this release's image has room for many more.
+- **Audio captures keep their timing when the box is briefly too busy, and two
+  captures of the same input line up exactly.** On a box busy nearly all the
+  time, Audio Input (302M) still lost a 43 ms piece of sound a few times an
+  hour, and each time its timing went wrong by that much: for 10 seconds, until
+  a jump counted under Re-locks set it right, or for some four minutes while
+  the Clock card said the device clock was off by about 230 ppm. Two captures
+  of the same input also carried the same sound up to 12 ms apart, an amount
+  set by how quickly each one started. Fixed: a lost piece is now a gap of
+  exactly its length where it was lost, and the timing does not move; fewer
+  pieces are lost, as the capture keeps more room for a moment's delay; and
+  every capture of an input takes the input's own time, so two of them line
+  up to the sample. Audio Encoder captures the same way.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
@@ -385,6 +432,18 @@ elements" below do not start.
   follow the changes made elsewhere, and Save writes what you changed. A
   setting changed by you and by someone else before you save keeps yours.
   Opening another module in the panel still drops unsaved changes, as before.
+- **Device Manager: a change you have not saved yet is kept when the device
+  sends its settings again.** The Device Manager page receives the device's
+  settings again whenever the connection comes back, when another browser
+  saves, and when the Device Manager service restarts. Each time, it used to
+  throw away any change you had made but not saved yet. Now your change
+  stays, and every setting you did not touch shows the device's value, so
+  Save sends your change together with the others. Text you are still typing
+  stays in its box, and a new manager profile you have not saved stays too.
+  "Settings saved successfully" appears only in the browser that saved. The
+  firewall dialog's Close no longer puts back rules that another browser has
+  since saved, and one click closes it after a port it refused. On the Logs
+  and PTP pages, a box no longer jumps when a message appears under it.
 - **A change made on one module's settings is no longer written to another
   module when the panel switches quickly.** A slider in a module's settings
   panel writes as it moves, and some settings (an encoder's bitrate, Audio
@@ -439,6 +498,35 @@ elements" below do not start.
   addresses loses that path until the port moves back (one with another path
   stays connected through it). Applying the listeners unchanged changes
   nothing, and no router reconnects.
+- **An SRT passphrase may contain any character.** SRT Input and SRT Output
+  handed the passphrase and the Stream ID to the stream as typed, and some
+  characters were lost on the way without a word: a `#` or an `&` cut the
+  passphrase short (a `#` also lost the Key Length set after it), a `\` was
+  dropped, a `%` followed by two of the digits 0-9 and letters A-F became
+  another character, a `%` not followed by them left no passphrase at all, and
+  a `"` followed by a space stopped the module from starting. Two routers given
+  the same passphrase cut it alike and could still connect, while equipment of
+  another make refused it as the wrong passphrase; a Stream ID was cut the same
+  way. A RIST passphrase was cut at an `&` the same way, and a RIST link's CNAME
+  with a space or a comma in it stopped the module from starting (one with an
+  `&` was cut).
+  Fixed: the passphrase, the Stream ID and the CNAME arrive exactly as typed,
+  whatever characters they hold. When you update: a link between two routers
+  whose SRT passphrase holds a `#`, an `&`, a `\` or a `%`, or whose RIST
+  passphrase holds an `&`, ran on the shortened passphrase until now; update
+  both routers together, or the link stops until the second one runs this
+  release.
+- **Each input keeps one row in the timing popup, and its number.** The
+  MPEG-TS Muxer listed a row per stream as well as one per input ("Input 4
+  timing: demux_0_video"), numbered afresh at every restart, and an input
+  whose source had stopped stayed "present"; N-1 Audio Mixer (302M) and
+  Audio Processing listed their internal stages as inputs; and an input
+  whose source module was stopped while still connected vanished from a
+  mixer's popup with no warning. Now every input has one row, numbered like
+  its pin or its place and named by the module feeding it; an input whose
+  source stops shows State absent, with the "silent" warning and under
+  **Waiting for**; and an input connected while the module runs takes the
+  next number, so no other input changes number.
 - **The engine's local API answers only the box itself.** The engine's local
   API (port 3001), which the Device Manager's Manager Profile page uses, now
   listens on the box's own loopback addresses (127.0.0.1 and ::1) and nowhere

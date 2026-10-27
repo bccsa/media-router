@@ -60,6 +60,8 @@ const char* asrc_event_name(AsrcEvent::Kind k) {
         case AsrcEvent::Kind::relock: return "relock";
         case AsrcEvent::Kind::ratio_out_of_bounds: return "ratio-out-of-bounds";
         case AsrcEvent::Kind::engaged: return "engaged";
+        case AsrcEvent::Kind::gap: return "gap";
+        case AsrcEvent::Kind::shift: return "shift";
     }
     return "";
 }
@@ -111,7 +113,7 @@ int64_t AsrcServo::house_pts() const {
 int64_t AsrcServo::next_pos2() const {
     if (passing_) return 2 * n_in_;   // no resampler: the next buffer's first frame
     // A drop still to come counts as made: the frames held back before it are the splice.
-    return std::max(2 * (n_in_ + drop_left_ - delay_) - 1, start2_);
+    return std::max(2 * (n_in_ + lost_ + drop_left_ - delay_) - 1, start2_);
 }
 
 // Input frames spanning `ns` of house time at the lock's rate, rounded down so the next
@@ -242,11 +244,72 @@ void AsrcServo::engage(int64_t pts, const char* why, Command* cmd) {
     start2_ = 2 * n_in_;
 }
 
-AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb) {
+// Lost cycles: the input position moves on by them, so the lock sees no step, and the output
+// jumps their length on the lock's line, so the phase stays where it was (B-180).
+void AsrcServo::lose(int64_t frames) {
+    const int64_t before = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_));
+    lost_ += frames;
+    const int64_t span = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_)) - before;
+    const int64_t from = next_pts();
+    const uint64_t jump = (uint64_t)((clamp64(span, 0, DROP_MAX_NS) * out_hz_ + E9 / 2) / E9);
+    m_ += jump;
+    mh_ += jump;   // the phase reads the house-rate counter: capture mode's is m_ itself
+    gaps_++;
+    AsrcEvent e{AsrcEvent::Kind::gap, "lost-cycle", next_pts(), next_pts() - from};
+    e.lost_frames = frames;
+    events_.push_back(e);
+}
+
+// The duration a source stamped fits the frames to a frame; none (< 0) fits.
+bool AsrcServo::fits(int64_t dur_ns, uint32_t frames) const {
+    return dur_ns < 0 || iabs(dur_ns - half_frames_ns(2 * (int64_t)frames, in_hz_)) <= E9 / in_hz_ + 1;
+}
+
+// cycle_input (B-180): this buffer's stamp against the end of the last one. Whole cycles missing at
+// a steady size are lost; any step where the size changes is the stamps' (an async follower's
+// quantum change); a fall that undoes the last gap at once was a late stamp. Else the lock's.
+bool AsrcServo::check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns) {
+    const int64_t pending = cycle_, pending_gap = cycle_gap_;
+    cycle_ = 0;
+    if (last_frames_ == 0 || frames == 0) return false;
+    const int64_t len = half_frames_ns(2 * (int64_t)last_frames_, in_hz_);
+    const int64_t gap = pts_ns - (last_pts_ + len);
+    const int64_t tol = std::min(CYCLE_TOL_NS, len / 8);
+    if (iabs(gap) <= tol) return false;
+    // A source whose durations fit its frames stamps a new cycle size on the buffers before their
+    // frames show it; durations that never fit tell nothing (dur_trust_).
+    if (frames != last_frames_ || (dur_trust_ && (!fits(dur_ns, frames) || !last_fit_))) {
+        shift_ += gap;
+        events_.push_back(AsrcEvent{AsrcEvent::Kind::shift, "cycle-size", pts_ns - shift_, gap});
+        return false;
+    }
+    if (gap > 0) {
+        const int64_t n = (gap + len / 2) / len;
+        if (n >= 1 && iabs(gap - n * len) <= tol && n * len <= DROP_MAX_NS) {
+            lose(n * last_frames_);
+            cycle_ = n * last_frames_;
+            cycle_gap_ = gap;
+            return true;
+        }
+    } else if (pending > 0 && iabs(gap + pending_gap) <= tol) {
+        // Not lost after all: the frames come back off the input position, and as many are
+        // dropped so the content returns to the labels the jump already gave out.
+        lost_ -= pending;
+        drop_left_ += pending;
+        AsrcEvent e{AsrcEvent::Kind::gap, "reverted", pts_ns - shift_, 0};
+        e.dropped_ns = half_frames_ns(2 * pending, in_hz_);
+        e.lost_frames = -pending;
+        events_.push_back(e);
+    }
+    return false;
+}
+
+AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont, int64_t device_ppb,
+                                   int64_t dur_ns) {
     const int64_t lim = cfg_.ratio_max_ppm * 1000;
     dev_ppb_ = cfg_.device ? clamp64(device_ppb, -lim, lim) : 0;
     const int64_t sigma = half_frames_ns(2 * n_in_, in_hz_);
-    bool relocked = false, drain = false;
+    bool relocked = false, drain = false, gapped = false;
     if (capture_) {
         if (!started_) {   // a first buffer's DISCONT is no discontinuity
             started_ = true;
@@ -258,8 +321,11 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
                 discont_in_++;
                 lock_.relock(true);
                 why = "discont";
+                cycle_ = 0;
+            } else if (cfg_.cycle_input) {
+                gapped = check_cycle(pts_ns, frames, dur_ns);
             }
-            lock_.feed(sigma, pts_ns);
+            lock_.feed(half_frames_ns(2 * (n_in_ + lost_), in_hz_), pts_ns - shift_);
             if (!why && lock_.envelope_step()) {
                 // step_hold_ns of the new floor is measured: the lock moves onto it, where a
                 // relock would start from this one PTS and its jitter.
@@ -269,6 +335,7 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
             if (why) {
                 open_epoch(why);
                 relocked = true;
+                cycle_ = 0;
             }
         }
     } else if (!started_) {
@@ -294,10 +361,21 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
         }
     }
     ended_ = false;
-    if (has_lock_) check_bounds(pts_ns);
+    if (frames > 0) {
+        last_pts_ = pts_ns;
+        last_frames_ = frames;
+        last_fit_ = fits(dur_ns, frames);
+        // Trusted after 8 fitting buffers in a row; a misfit lasting past a size change ends it.
+        fit_run_ = last_fit_ ? std::min(fit_run_ + 1, 8) : 0;
+        miss_run_ = last_fit_ ? 0 : std::min(miss_run_ + 1, 8);
+        if (fit_run_ >= 8) dur_trust_ = true;
+        if (miss_run_ > 4) dur_trust_ = false;
+    }
+    if (has_lock_) check_bounds(pts_ns - shift_);
     phase_err_ = measure_phase();
     Command cmd{0, (int32_t)(out_hz_ * 1000), relocked, 0};
     cmd.drain = drain;
+    cmd.gap = gapped && !relocked;
     if (decode_ && !engaged_) {
         // Engage once |ε| has stayed past the bound for the hold while locked, or the phase passed.
         if (lock_.phase() == ClockLock::Phase::locked && iabs(lock_.ppb()) > cfg_.bypass_ppb) {
@@ -348,6 +426,8 @@ AsrcServo::Stats AsrcServo::stats() const {
     s.out_frames = n_out_;
     s.discont_in = discont_in_;
     s.dropped_frames = dropped_;
+    s.gaps = gaps_;
+    s.lost_frames = lost_;
     s.mode = mode();
     s.source_ppb = has_lock_ ? asrc_rate_of(lock_.ppb()) : 0;
     s.decode_ppb = eps_cmd_;

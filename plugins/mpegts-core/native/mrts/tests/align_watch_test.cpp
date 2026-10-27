@@ -1,7 +1,8 @@
 // ArrivalRhythm, PaceGroup, PaceRegistry and GapPlanner (plan ch. 6 WI-P2-6): W on synthetic
-// rhythms, the pace's rules (seeds, rises only, recomputed on leave, a lateness over wall time
+// rhythms, the pace's rules (seeds, the window, recomputed on leave, a lateness over wall time
 // that a backlog's drain does not move, as the sort before a1b found it), the pace read lock-free
-// (B-79), a join into a running group and the gap stretches or pieces an absent input gets.
+// (B-79), the slew (B-80), stale arrivals (B-81), the fall (B-82), a join into a running group
+// and the gap stretches or pieces an absent input gets.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -122,7 +123,7 @@ void test_rhythm_window_and_rank() {
 
 // --- the pace ------------------------------------------------------------------------------
 
-void test_pace_rises_only() {
+void test_pace_window() {
     PaceGroup g;
     g.join(1, -1);
     g.join(2, -1);
@@ -137,7 +138,7 @@ void test_pace_rises_only() {
     for (int i = 100; i < 300; i++) g.observe(1, i * 10 * MS, 1500 * MS);
     CHECK("member 1 slows to 1.5 s: the pace follows", g.pace() == 1500 * MS);
     for (int i = 300; i < 600; i++) g.observe(1, i * 10 * MS, 100 * MS);
-    CHECK("member 1 speeds up to 100 ms: the pace holds 1.5 s (rises only)",
+    CHECK("member 1 speeds up to 100 ms: the pace holds 1.5 s (in its window)",
           g.pace() == 1500 * MS);
     CHECK("... while member 1's own lateness reads 100 ms", g.lateness(1, &l) && l == 100 * MS);
 
@@ -173,9 +174,9 @@ void test_pace_rises_only() {
     e.join(1, -1);
     for (int i = 0; i < 100; i++) e.observe(1, i * 10 * MS, -40 * MS);
     CHECK("an early member (lateness -40 ms) leaves the pace at 0", e.pace() == 0);
-    e.raise(300 * MS);
+    e.raise(1, 300 * MS);
     CHECK("raise (a late sparse cue): pace 300 ms", e.pace() == 300 * MS);
-    e.raise(100 * MS);
+    e.raise(1, 100 * MS);
     CHECK("a lower raise changes nothing", e.pace() == 300 * MS);
 
     PaceGroup x;
@@ -402,33 +403,33 @@ void test_pace_catch_ups() {
 
 // The estimator before a1b (bbeb9b24), the reference: at every arrival the window's counting
 // stretches copied and sorted, and the newer half's median taken whenever the window qualifies.
-// `Reach` counts the branches it took.
+// The target (B-82): each member's largest entry per bucket index of the group's clock, kept
+// while fewer than BUCKETS rotations passed since. `Reach` counts the branches it took.
 class RefPace {
   public:
     struct Reach {
         long expired = 0, qualified = 0, taken = 0, none = 0, under = 0, edge = 0, held = 0,
-             moved = 0, zero = 0, tie = 0;
+             moved = 0, zero = 0, tie = 0, aged = 0;
     };
     Reach reach;
 
+    explicit RefPace(int64_t fall_after = PaceGroup::FALL_AFTER_NS) : bucket_(fall_after / 2) {}
     void join(uint64_t m, int64_t seed) {
-        State s;
-        s.seed = seed;
-        members_[m] = s;
-        if (seed >= 0) pace_ = std::max(pace_, seed);
+        members_[m] = State();
+        if (seed >= 0) enter(members_[m], seed);
     }
-    void leave(uint64_t m) {
-        if (!members_.erase(m)) return;
-        pace_ = 0;
-        for (const auto& kv : members_) {
-            if (kv.second.seed >= 0) pace_ = std::max(pace_, kv.second.seed);
-            if (kv.second.has_need) pace_ = std::max(pace_, kv.second.need);
-        }
+    void leave(uint64_t m) { members_.erase(m); }
+    void raise(uint64_t m, int64_t now, int64_t p) {
+        auto it = members_.find(m);
+        if (it == members_.end()) return;
+        clock(now);
+        enter(it->second,
+              std::clamp(p, -PaceGroup::LATENESS_LIMIT_NS, PaceGroup::LATENESS_LIMIT_NS));
     }
-    void raise(int64_t p) { pace_ = std::max(pace_, p); }
     void observe(uint64_t m, int64_t now, int64_t lateness, bool fresh) {
         auto it = members_.find(m);
         if (it == members_.end()) return;
+        clock(now);
         State& s = it->second;
         const int64_t l =
             std::clamp(lateness, -PaceGroup::LATENESS_LIMIT_NS, PaceGroup::LATENESS_LIMIT_NS);
@@ -465,7 +466,7 @@ class RefPace {
                 reach.zero += !s.has_need && s.level == 0;
                 s.need = s.level;
                 s.has_need = true;
-                pace_ = std::max(pace_, s.need);
+                enter(s, s.need);
             }
         }
     }
@@ -481,7 +482,19 @@ class RefPace {
         *out = it->second.need;
         return true;
     }
-    int64_t pace() const { return pace_; }
+    bool peak(uint64_t m, int64_t* out) const {
+        auto it = members_.find(m);
+        if (it == members_.end() || it->second.buckets.empty()) return false;
+        *out = INT64_MIN;
+        for (const auto& b : it->second.buckets) *out = std::max(*out, b.second);
+        return true;
+    }
+    int64_t target() const {
+        int64_t t = 0, p = 0;
+        for (const auto& kv : members_)
+            if (peak(kv.first, &p)) t = std::max(t, p);
+        return t;
+    }
 
   private:
     struct Stretch {
@@ -489,7 +502,6 @@ class RefPace {
         bool counts;
     };
     struct State {
-        int64_t seed = -1;
         bool has_last = false;
         int64_t last_at = 0, last_lateness = 0;
         std::deque<Stretch> window;
@@ -498,7 +510,28 @@ class RefPace {
         int64_t level = 0;
         bool has_need = false;
         int64_t need = 0;
+        std::map<int64_t, int64_t> buckets;   // by rotation index: the largest entry
     };
+    // The clock: rotations since its first time; a bucket BUCKETS rotations old is gone.
+    void clock(int64_t now) {
+        if (!has_clock_) {
+            has_clock_ = true;
+            origin_ = clock_ = now;
+        }
+        clock_ = std::max(clock_, now);
+        rotations_ = (clock_ - origin_) / bucket_;
+        for (auto& kv : members_) {
+            auto& b = kv.second.buckets;
+            while (!b.empty() && rotations_ - b.begin()->first >= PaceGroup::BUCKETS) {
+                reach.aged += b.begin()->second > 0;
+                b.erase(b.begin());
+            }
+        }
+    }
+    void enter(State& s, int64_t v) {
+        auto ins = s.buckets.emplace(rotations_, v);
+        if (!ins.second) ins.first->second = std::max(ins.first->second, v);
+    }
     bool median(const std::deque<Stretch>& w, int64_t after, int64_t* out, bool whole) {
         scratch_.clear();
         int64_t len = 0;
@@ -525,7 +558,9 @@ class RefPace {
     }
     std::map<uint64_t, State> members_;
     std::vector<std::pair<int64_t, int64_t>> scratch_;
-    int64_t pace_ = 0;
+    const int64_t bucket_;
+    bool has_clock_ = false;
+    int64_t origin_ = 0, clock_ = 0, rotations_ = 0;
 };
 
 // The sequences' randomness, the same on every platform.
@@ -610,32 +645,38 @@ struct Diff {
     char first[256] = "";
 };
 
-// Both estimators agree on every member's level and need, and on the pace (the lock-free read
-// too), after every call.
+// Both estimators agree on every member's level, need and window peak, and on the target (the
+// lock-free read too), after every call; the groups never start, so the pace is the target.
 bool same(const PaceGroup& g, const RefPace& ref, const std::vector<Feed>& feeds, Diff* d,
           long seq, long n) {
-    uint64_t bad = 0;   // the member that differs; 0: the pace
-    bool h[4] = {false, false, false, false};
-    int64_t v[4] = {0, 0, 0, 0};
+    uint64_t bad = 0;   // the member that differs; 0: the target
+    bool h[6] = {false, false, false, false, false, false};
+    int64_t v[6] = {0, 0, 0, 0, 0, 0};
     for (const Feed& f : feeds) {
-        v[0] = v[1] = v[2] = v[3] = 0;
+        for (int64_t& x : v) x = 0;
         h[0] = g.lateness(f.id, &v[0]);
         h[1] = ref.lateness(f.id, &v[1]);
         h[2] = g.need(f.id, &v[2]);
         h[3] = ref.need(f.id, &v[3]);
-        if (h[0] != h[1] || v[0] != v[1] || h[2] != h[3] || v[2] != v[3]) {
+        h[4] = g.peak(f.id, &v[4]);
+        h[5] = ref.peak(f.id, &v[5]);
+        if (h[0] != h[1] || v[0] != v[1] || h[2] != h[3] || v[2] != v[3] || h[4] != h[5] ||
+            v[4] != v[5]) {
             bad = f.id;
             break;
         }
     }
-    if (!bad && g.pace() == ref.pace() && g.snapshot().pace == g.pace()) return true;
+    if (!bad && g.target() == ref.target() && g.pace() == g.target() &&
+        g.snapshot().target == g.target())
+        return true;
     if (!d->mismatches++)
         std::snprintf(d->first, sizeof d->first,
                       "sequence %ld call %ld member %llu: level %d/%lld vs %d/%lld, need %d/%lld vs"
-                      " %d/%lld, pace %lld vs %lld",
+                      " %d/%lld, peak %d/%lld vs %d/%lld, target %lld vs %lld",
                       seq, n, (unsigned long long)bad, h[0], (long long)v[0], h[1],
-                      (long long)v[1], h[2], (long long)v[2], h[3], (long long)v[3],
-                      (long long)g.pace(), (long long)ref.pace());
+                      (long long)v[1], h[2], (long long)v[2], h[3], (long long)v[3], h[4],
+                      (long long)v[4], h[5], (long long)v[5], (long long)g.target(),
+                      (long long)ref.target());
     return false;
 }
 
@@ -644,8 +685,10 @@ void test_pace_median_differential() {
     RefPace::Reach reach;
     for (long seq = 1; seq <= 240; seq++) {
         Rand r((uint64_t)seq);
-        PaceGroup g;
-        RefPace ref;
+        // A third of the sequences with a 2 s window: their values age out (B-82).
+        const int64_t fall_after = seq % 3 == 1 ? 2 * S : PaceGroup::FALL_AFTER_NS;
+        PaceGroup g(fall_after);
+        RefPace ref(fall_after);
         std::vector<Feed> feeds;
         uint64_t next_id = 1;
         const bool shuffles = seq % 8 == 0;   // time may go back for a member in these
@@ -695,11 +738,12 @@ void test_pace_median_differential() {
             ok = same(g, ref, feeds, &d, seq, ++calls);
             if (now >= f.until) segment(f, r, now, shuffles);
             plan(f, r);
-            // The group's other calls: a raise, a member that leaves (and one that joins).
-            if (r.odds(5)) {
+            // The group's other calls: a member's raise, a member that leaves (and one that joins).
+            if (r.odds(5) && !feeds.empty()) {
+                const size_t j = (size_t)r.in(0, (int64_t)feeds.size() - 1);
                 const int64_t p = r.in(0, 2 * S);
-                g.raise(p);
-                ref.raise(p);
+                g.raise(feeds[j].id, p, now);
+                ref.raise(feeds[j].id, now, p);
                 d.ops++;
             } else if (r.odds(4) && !feeds.empty()) {
                 const size_t j = (size_t)r.in(0, (int64_t)feeds.size() - 1);
@@ -725,24 +769,26 @@ void test_pace_median_differential() {
         reach.moved += ref.reach.moved;
         reach.zero += ref.reach.zero;
         reach.tie += ref.reach.tie;
+        reach.aged += ref.reach.aged;
     }
     std::printf("  (%ld sequences, %ld members, %ld arrivals: %ld fresh, %ld back in time, %ld at"
                 " over 1,000/s; %ld other calls; %ld stretches expired)\n",
                 d.sequences, d.members, d.arrivals, d.fresh, d.back, d.fast, d.ops, reach.expired);
     std::printf("  (window qualified %ld: need taken %ld, moved %ld, held %ld, a first of 0 %ld;"
-                " falling with none newer %ld, under %ld, at the edge %ld; level at half %ld)\n",
+                " falling with none newer %ld, under %ld, at the edge %ld; level at half %ld;"
+                " %ld bucket peaks aged out)\n",
                 reach.qualified, reach.taken, reach.moved, reach.held, reach.zero, reach.none,
-                reach.under, reach.edge, reach.tie);
+                reach.under, reach.edge, reach.tie, reach.aged);
     if (d.mismatches) std::printf("  %ld mismatches, the first: %s\n", d.mismatches, d.first);
-    CHECK("the median against the copy and sort it replaced: level, need and pace identical after"
-          " every call",
+    CHECK("the median against the copy and sort it replaced: level, need, window peak and target"
+          " identical after every call",
           d.mismatches == 0 && d.arrivals > 100000);
     CHECK("... over runs that start fresh, go back in time, come over 1,000/s and expire; take,"
           " move and hold a need, a first of 0; fall with none newer and under the level (at its"
-          " edge too); halve exactly",
+          " edge too); halve exactly; age a peak out of the window",
           d.fresh > 0 && d.back > 0 && d.fast > 0 && reach.expired > 0 && reach.taken > 0 &&
               reach.moved > 0 && reach.held > 0 && reach.zero > 0 && reach.none > 0 &&
-              reach.under > 0 && reach.edge > 0 && reach.tie > 0);
+              reach.under > 0 && reach.edge > 0 && reach.tie > 0 && reach.aged > 0);
 }
 
 // --- the registry --------------------------------------------------------------------------
@@ -805,12 +851,13 @@ void test_registry_snapshot() {
                                                        && o.pace_ns(0) == 0);
     s.raise(q, 400 * MS);
     s.start(p);
-    const PaceGroup::Snapshot v = p.group->snapshot();
+    const PaceGroup::Snapshot v = p.snapshot();
     CHECK("the snapshot follows a raise and the start, as the locked view does",
-          v.pace == 400 * MS && v.started && s.view(p).pace_ns == 400 * MS);
+          v.target == 400 * MS && v.pace_at(0) == 400 * MS && v.started
+              && s.view(p).pace_ns == 400 * MS && s.view(p).target_ns == 400 * MS);
     for (int i = 0; i < 100; i++) s.observe(o, i * 10 * MS, 30 * MS);
     CHECK("... and an arrival that moves the pace", o.pace_ns(0) == 30 * MS
-                                                     && !o.group->snapshot().started);
+                                                     && !o.snapshot().started);
     s.raise(q, 500 * MS);
     s.leave(&q);
     CHECK("leave clears the group pointer; the one left reads the recomputed pace (the seed)",
@@ -819,14 +866,38 @@ void test_registry_snapshot() {
     s.leave(&o);
     PaceRegistry::Membership none;
     CHECK("an unjoined membership reads 0 and has no group",
-          !p.group && p.pace_ns(0) == 0 && !none.group && none.pace_ns(0) == 0 && s.groups() == 0);
+          !p.group && p.pace_ns(0) == 0 && !none.group && none.pace_ns(0) == 0
+              && s.groups() == 0 && none.snapshot().target == 0);
 
-    // Four tasks read while a fifth raises the pace 10,000 times and starts the group after the
-    // 5,000th: every read is a tuple that was written, and none older than the one before it.
+    // Four tasks read while a fifth raises the target 10,000 times, 2 ms apart, and starts the
+    // group after the 5,000th (the slew then moves the base each time): every read is a tuple
+    // that was written, in order. The tuples come from the same history run on one thread.
+    constexpr int N = 10000, FLIP = 5000;
+    auto history = [](PaceRegistry& reg, const PaceRegistry::Membership& m, int i) {
+        reg.raise(m, i * MS, 2 * i * MS);
+    };
+    auto eq = [](const PaceGroup::Snapshot& a, const PaceGroup::Snapshot& b) {
+        return a.target == b.target && a.base == b.base && a.base_at == b.base_at
+               && a.next_at == b.next_at && a.started == b.started;
+    };
+    std::vector<PaceGroup::Snapshot> want(N + 1);
+    PaceGroup::Snapshot flip;   // the start's own, between raises FLIP and FLIP + 1
+    {
+        PaceRegistry t;
+        const PaceRegistry::Membership m = t.join("p/sl", -1);
+        want[0] = m.snapshot();
+        for (int i = 1; i <= N; i++) {
+            if (i == FLIP + 1) {
+                t.start(m);
+                flip = m.snapshot();
+            }
+            history(t, m, i);
+            want[i] = m.snapshot();
+        }
+    }
     PaceRegistry u;
     PaceRegistry::Membership w = u.join("p/sl", -1);
     const PaceRegistry::Membership rd = u.join("p/sl", -1);
-    constexpr int N = 10000, FLIP = 5000;
     std::atomic<int> ready{0}, bad{0};
     std::atomic<long> reads{0}, changes{0};
     std::atomic<bool> done{false};
@@ -834,18 +905,16 @@ void test_registry_snapshot() {
     for (int k = 0; k < 4; k++) {
         readers.emplace_back([&] {
             int64_t last = 0;
-            bool seen_start = false;
             long n = 0, c = 0;
             ready.fetch_add(1);
             while (!done.load(std::memory_order_acquire)) {
                 const PaceGroup::Snapshot x = rd.group->snapshot();
-                const int64_t i = x.pace / MS;
-                const bool ok = x.pace % MS == 0 && i >= 0 && i <= N && x.pace >= last
-                                && (x.started ? i >= FLIP : i <= FLIP) && (x.started || !seen_start);
+                const int64_t i = x.target / MS;
+                const bool ok = x.target % MS == 0 && i >= 0 && i <= N && i >= last
+                                && (eq(x, want[i]) || (i == FLIP && eq(x, flip)));
                 if (!ok) bad.fetch_add(1);
-                if (x.pace != last || x.started != seen_start) c++;
-                seen_start = seen_start || x.started;
-                last = x.pace;
+                if (i != last) c++;
+                last = i;
                 n++;
             }
             reads.fetch_add(n);
@@ -855,13 +924,13 @@ void test_registry_snapshot() {
     while (ready.load() < 4) std::this_thread::yield();
     for (int i = 1; i <= N; i++) {
         if (i == FLIP + 1) u.start(w);
-        u.raise(w, i * MS);
+        history(u, w, i);
     }
     done.store(true, std::memory_order_release);
     for (std::thread& x : readers) x.join();
     CHECK("4 readers, 1 writer, 10,000 raises and a start: every read a written tuple, in order",
-          bad.load() == 0 && reads.load() > 4 && rd.pace_ns(0) == N * MS
-              && rd.group->snapshot().started);
+          bad.load() == 0 && reads.load() > 4 && eq(rd.snapshot(), want[N])
+              && want[N].started && want[N].base_at == 2 * N * MS);
     std::printf("  (%ld reads, %ld of them a new tuple: the readers ran beside the writer)\n",
                 reads.load(), changes.load());
 }
@@ -894,6 +963,264 @@ void test_late_join() {
     PaceRegistry::Membership none;
     r.start(none);
     CHECK("an unjoined membership starts nothing", !r.join("p/x", -1).late);
+}
+
+// --- the slew (B-80), stale arrivals (B-81), the fall (B-82) -------------------------------
+
+// Once the group runs, a target over the pace is a slew, half a ns a ns; before, a step.
+void test_slew() {
+    PaceGroup g;
+    g.join(1, -1);
+    g.join(2, -1);
+    g.raise(1, 10 * MS, 0);
+    CHECK("slew: not started, a rise steps (10 ms at once)",
+          g.pace_at(0) == 10 * MS && g.target() == 10 * MS);
+    g.start();
+    const int64_t t0 = S;
+    g.raise(2, 310 * MS, t0);
+    CHECK("slew: started, the target is 310 ms at once, the pace slews from 10",
+          g.target() == 310 * MS && g.pace_at(t0) == 10 * MS);
+    CHECK("slew: 160 ms 300 ms later", g.pace_at(t0 + 300 * MS) == 160 * MS);
+    CHECK("slew: 310 ms 600 ms later, then flat",
+          g.pace_at(t0 + 600 * MS) == 310 * MS && g.pace_at(t0 + 5 * S) == 310 * MS);
+    const PaceGroup::Snapshot sn = g.snapshot();
+    bool formula = true;
+    for (int64_t dt = -2 * MS; dt <= 900 * MS; dt += 7 * MS)
+        formula = formula && sn.pace_at(t0 + dt) == g.pace_at(t0 + dt);
+    CHECK("slew: the snapshot's formula is pace_at", formula && sn.target == 310 * MS);
+    g.raise(1, 510 * MS, t0 + 200 * MS);
+    CHECK("slew: raised mid-slew (510 ms at 110): on from the pace it has, at the same rate",
+          g.pace_at(t0 + 200 * MS) == 110 * MS && g.pace_at(t0 + 600 * MS) == 310 * MS
+              && g.pace_at(t0 + S) == 510 * MS && g.pace_at(t0 + 2 * S) == 510 * MS);
+    g.raise(2, 610 * MS, t0 + 3 * S);
+    CHECK("slew: raised once it ended: from 510 at that time, not on the old line",
+          g.pace_at(t0 + 3 * S) == 510 * MS && g.pace_at(t0 + 3 * S + 100 * MS) == 560 * MS
+              && g.pace_at(t0 + 3 * S + 200 * MS) == 610 * MS);
+
+    // A gapped member's lateness (a joiner or a rejoin catching up) slews as a seed or a cue
+    // does; a present member's steps, its data being waited for anyway.
+    PaceGroup o;
+    o.join(1, -1);
+    o.join(2, -1);
+    o.start();
+    int64_t when = -1;
+    for (int i = 0; i < 200; i++) {
+        o.observe(1, i * 10 * MS, 300 * MS, false, true);
+        if (when < 0 && o.target() == 300 * MS) when = i * 10 * MS;
+    }
+    CHECK("slew: a gapped member's lateness counts at 0.5 s and the pace slews to it over 0.6 s",
+          when == 500 * MS && o.pace_at(when) == 0 && o.pace_at(when + 300 * MS) == 150 * MS
+              && o.pace_at(when + 600 * MS) == 300 * MS);
+    int64_t stepped = -1;
+    for (int i = 200; i < 300; i++) {
+        o.observe(2, i * 10 * MS, 500 * MS);
+        if (stepped < 0 && o.target() == 500 * MS) stepped = o.pace_at(i * 10 * MS);
+    }
+    CHECK("slew: a present member's lateness steps the pace at once (500 ms)", stepped == 500 * MS);
+    PaceGroup sd;
+    sd.join(1, -1);
+    sd.start();
+    sd.tick(10 * S);
+    sd.join(2, 300 * MS, 10 * S);
+    CHECK("slew: a seed into a running group slews from the join",
+          sd.target() == 300 * MS && sd.pace_at(10 * S) == 0
+              && sd.pace_at(10 * S + 300 * MS) == 150 * MS && sd.pace_at(10 * S + 600 * MS) == 300 * MS);
+    sd.join(3, 500 * MS);
+    CHECK("slew: ... and a seed without a time of its own from the group's clock, on the same line",
+          sd.target() == 500 * MS && sd.pace_at(10 * S + 600 * MS) == 300 * MS
+              && sd.pace_at(11 * S) == 500 * MS);
+
+    // The slow member leaves mid-slew: at once to the target that remains, in one skip.
+    PaceGroup l;
+    l.join(1, -1);
+    l.join(2, -1);
+    l.raise(1, 20 * MS, 0);
+    l.start();
+    l.raise(2, 320 * MS, S);
+    PaceGroup::Event ev;
+    l.leave(2, S + 200 * MS);
+    CHECK("slew: the slow member leaves mid-slew (at 120 ms): the pace at once the 20 ms left",
+          l.target() == 20 * MS && l.pace_at(S + 200 * MS) == 20 * MS && l.pace_at(5 * S) == 20 * MS);
+    l.raise(1, 30 * MS, S + 300 * MS, &ev);
+    CHECK("slew: what remains rises by a slew again (20 -> 30 ms over 20 ms)",
+          l.pace_at(S + 310 * MS) == 25 * MS && l.pace_at(S + 320 * MS) == 30 * MS && !ev.fell_ns);
+    PaceGroup n;
+    n.join(1, -1);
+    n.raise(1, 700 * MS, 0);
+    CHECK("slew: a group never started keeps stepping", n.pace_at(0) == 700 * MS
+                                                           && n.pace() == 700 * MS);
+}
+
+// B-81: the element observes stale arrivals too. A joiner's steady lateness counts though every
+// one of its buffers is discarded; a rejoin's backlog, drained at once, moves nothing.
+void test_stale_observed() {
+    PaceGroup g;
+    g.join(1, -1);
+    g.start();
+    for (int i = 0; i < 300; i++) g.observe(1, i * 10 * MS, 20 * MS);
+    g.join(2, -1, 3 * S);
+    int64_t counted = -1;
+    for (int i = 0; i < 100; i++) {
+        const int64_t t = 3 * S + i * 10 * MS;
+        g.observe(1, t, 20 * MS);
+        g.observe(2, t + 5 * MS, 300 * MS, i == 0, true);
+        if (counted < 0 && g.target() == 300 * MS) counted = t + 5 * MS - 3 * S;
+    }
+    CHECK("stale observed: a joiner's 300 ms counts 0.5 s after its first arrival, stale or kept",
+          counted >= 500 * MS && counted <= 510 * MS);
+    PaceGroup r;
+    r.join(1, -1);
+    for (int i = 0; i < 100; i++) r.observe(1, i * 10 * MS, 20 * MS);
+    // Absent 2 s, then its 2 s backlog in 200 ms (stale, observed), then 20 ms again.
+    for (int k = 0; k < 200; k++)
+        r.observe(1, 3 * S + k * MS, 2 * S + 20 * MS - k * 9 * MS, k == 0, true);
+    for (int k = 0; k < 150; k++) r.observe(1, 3200 * MS + k * 10 * MS, 20 * MS);
+    CHECK("stale observed: a rejoin's 2 s backlog drained in 200 ms leaves the target at 20 ms",
+          r.target() == 20 * MS);
+}
+
+// B-82: each member's peak over its window (three buckets of fall-after / 2); once the target
+// is FALL_MIN under the pace, the pace falls to it by at most FALL_MAX a skip, 2 s apart.
+struct FallRun {
+    PaceGroup g;
+    int64_t t = 0;
+    std::vector<std::pair<int64_t, int64_t>> fell;   // (when, by)
+    explicit FallRun(int64_t fall_after = PaceGroup::FALL_AFTER_NS) : g(fall_after) {}
+    // Member m at `late` every 10 ms until `until`; the others say nothing.
+    void feed(PaceGroup::Member m, int64_t until, int64_t late, bool gapped = false) {
+        for (; t < until; t += 10 * MS) {
+            PaceGroup::Event ev;
+            g.observe(m, t, late, false, gapped, &ev);
+            if (ev.fell_ns) fell.emplace_back(t, ev.fell_ns);
+        }
+    }
+};
+
+void test_fall() {
+    const int64_t B = PaceGroup::FALL_AFTER_NS / 2;   // a bucket: 90 s
+    FallRun a;
+    a.g.join(1, -1);
+    a.g.start();
+    a.feed(1, 2 * S, 300 * MS);
+    a.feed(1, 3 * B - 10 * MS, 20 * MS);
+    CHECK("fall: a member at 300 ms for 2 s, then 20 ms: the pace holds 300 while its peak is in"
+          " the window",
+          a.g.pace_at(a.t) == 300 * MS && a.g.target() == 300 * MS && a.fell.empty());
+    a.feed(1, 3 * B + 10 * MS, 20 * MS);
+    CHECK("fall: ... and falls to 20 at the third rotation, 270 s (between 2 and 3 buckets after"
+          " its last 300), in one skip, one event",
+          a.fell.size() == 1 && a.fell[0] == std::make_pair(3 * B, 280 * MS)
+              && a.g.pace_at(a.t) == 20 * MS);
+    const PaceGroup::Snapshot sn = a.g.snapshot();
+    CHECK("fall: the snapshot's next time is the next rotation, 360 s", sn.next_at == 4 * B);
+
+    FallRun big;
+    big.g.join(1, -1);
+    big.g.start();
+    big.feed(1, S, 2520 * MS);
+    big.feed(1, 3 * B + 5 * S, 20 * MS);
+    const std::vector<std::pair<int64_t, int64_t>> want = {
+        {3 * B, 1000 * MS}, {3 * B + 2 * S, 1000 * MS}, {3 * B + 4 * S, 500 * MS}};
+    CHECK("fall: 2.5 s comes as 1 s, 1 s and 0.5 s, two seconds apart, an event each",
+          big.fell == want && big.g.pace_at(big.t) == 20 * MS);
+
+    FallRun x;
+    x.g.join(1, -1);
+    x.g.start();
+    x.feed(1, S, 25 * MS);
+    x.feed(1, 4 * B, 20 * MS);
+    CHECK("fall: a 5 ms excess never falls (FALL_MIN 10 ms)",
+          x.fell.empty() && x.g.target() == 20 * MS && x.g.pace_at(x.t) == 25 * MS
+              && x.g.snapshot().next_at == 4 * B);
+
+    FallRun sd;
+    sd.g.join(1, -1);
+    sd.g.join(2, 400 * MS);
+    sd.g.start();
+    sd.feed(1, 3 * B + 10 * MS, 20 * MS);
+    CHECK("fall: a seed ages out on another member's clock (400 -> 20 ms at 270 s)",
+          sd.fell.size() == 1 && sd.fell[0].first == 3 * B && sd.g.pace_at(sd.t) == 20 * MS);
+
+    FallRun ab;
+    ab.g.join(1, -1);
+    ab.g.join(2, -1);
+    ab.g.start();
+    for (; ab.t < S; ab.t += 10 * MS) {
+        ab.g.observe(1, ab.t, 20 * MS);
+        ab.g.observe(2, ab.t, 300 * MS);
+    }
+    ab.feed(1, 3 * B + 10 * MS, 20 * MS);
+    CHECK("fall: an absent member's need ages out (its last arrival at 1 s; down at 270 s)",
+          ab.fell.size() == 1 && ab.fell[0].first == 3 * B && ab.g.pace_at(ab.t) == 20 * MS);
+
+    FallRun cue;
+    cue.g.join(1, -1);
+    cue.g.join(2, -1);
+    cue.g.start();
+    cue.feed(1, 10 * S, 20 * MS);
+    cue.g.raise(2, 800 * MS, 10 * S);
+    cue.feed(1, 2 * B + 5 * S, 20 * MS);
+    CHECK("fall: a late cue's raise holds the pace while its member's window holds it",
+          cue.fell.empty() && cue.g.pace_at(cue.t) == 800 * MS);
+    cue.feed(1, 3 * B + 10 * MS, 20 * MS);
+    CHECK("fall: ... and ages out (its member's bucket gone at 270 s)",
+          cue.fell.size() == 1 && cue.g.pace_at(cue.t) == 20 * MS);
+
+    // A leave falls at once, by at most FALL_MAX, and reports nothing; the rest follows 2 s apart.
+    FallRun lv;
+    lv.g.join(1, -1);
+    lv.g.join(2, -1);
+    lv.g.start();
+    for (; lv.t < 7 * S; lv.t += 10 * MS) {
+        lv.g.observe(1, lv.t, 20 * MS);
+        lv.g.observe(2, lv.t, 2520 * MS);
+    }
+    const int64_t at = lv.t;
+    lv.g.leave(2, at);
+    CHECK("fall: a leave falls at once, bounded: 2520 -> 1520 ms",
+          lv.g.pace_at(at) == 1520 * MS && lv.g.target() == 20 * MS);
+    std::vector<int64_t> steps;
+    for (const int64_t until : {at + 2 * S, at + 2 * S + 10 * MS, at + 4 * S + 10 * MS}) {
+        lv.feed(1, until, 20 * MS);
+        steps.push_back(lv.g.pace_at(lv.t - 10 * MS));
+    }
+    CHECK("fall: ... then 1 s and 0.5 s two seconds apart, all without an event (no member's"
+          " steadiness)",
+          lv.fell.empty() && steps == std::vector<int64_t>{1520 * MS, 520 * MS, 20 * MS});
+
+    // Time alone: a group whose members say nothing falls at a tick.
+    FallRun tk(4 * S);
+    tk.g.join(1, 300 * MS);
+    tk.g.start();
+    tk.g.tick(0);
+    PaceGroup::Event e1, e2;
+    tk.g.tick(6 * S - MS, &e1);
+    const bool held = tk.g.pace_at(6 * S - MS) == 300 * MS && !e1.fell_ns;
+    tk.g.tick(6 * S, &e2);
+    CHECK("fall: with fall-after 4 s (buckets of 2 s), a seed alone falls at the tick of its third"
+          " rotation, 6 s",
+          held && e2.fell_ns == 300 * MS && tk.g.pace_at(6 * S) == 0 && tk.g.fall_after() == 4 * S);
+
+    // A rise and a fall never cross: a fall under way, then a member 1.8 s late: gapped, the pace
+    // slews up from where it stands; present, it steps there.
+    for (const bool gapped : {true, false}) {
+        FallRun rf;
+        rf.g.join(1, -1);
+        rf.g.join(2, -1);
+        rf.g.start();
+        rf.feed(1, S, 2520 * MS);
+        rf.feed(1, 3 * B + 10 * MS, 20 * MS);
+        const int64_t mid = rf.g.pace_at(rf.t);
+        rf.feed(2, 3 * B + 800 * MS, 1800 * MS, gapped);
+        const int64_t rising = rf.g.pace_at(rf.t - 10 * MS);
+        rf.feed(2, 3 * B + 2500 * MS, 1800 * MS, gapped);
+        CHECK(gapped ? "fall: a fall under way (at 1520 ms), then a gapped member 1.8 s late: the pace"
+                       " slews up from 1520 to it, no more skips"
+                     : "fall: ... a present one: the pace steps to 1.8 s",
+              mid == 1520 * MS && rf.fell.size() == 1 && rf.g.target() == 1800 * MS
+                  && (gapped ? rising > 1520 * MS && rising < 1800 * MS : rising == 1800 * MS)
+                  && rf.g.pace_at(rf.t) == 1800 * MS);
+    }
 }
 
 // --- gaps ----------------------------------------------------------------------------------
@@ -975,7 +1302,7 @@ int main() {
     test_rhythm_cbr();
     test_rhythm_bursts();
     test_rhythm_window_and_rank();
-    test_pace_rises_only();
+    test_pace_window();
     test_pace_leave();
     test_pace_seeds();
     test_pace_bursts();
@@ -984,6 +1311,9 @@ int main() {
     test_registry();
     test_registry_snapshot();
     test_late_join();
+    test_slew();
+    test_stale_observed();
+    test_fall();
     test_gaps();
     test_pieces();
     return test_summary("align_watch");

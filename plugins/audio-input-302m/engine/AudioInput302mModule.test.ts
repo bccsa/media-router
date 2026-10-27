@@ -81,13 +81,16 @@ describe('AudioInput302mModule.buildPipeline', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ device: 'alsa_input.usb-mic', volume: 100 });
         expect(desc).not.toBeNull();
-        // pipewiresrc, never pulsesrc: pipewire-pulse cannot create wide record streams.
-        expect(desc!.pipeline).toContain('pipewiresrc target-object=alsa_input.usb-mic');
-        expect(desc!.pipeline).not.toContain('pulsesrc');
-        // #736 pins, the node on the runner's RT data loop (B-88), the quantum request, a
-        // findable node name, and WirePlumber kept out.
+        // pipewiresrc, never pulsesrc: pipewire-pulse cannot create wide record streams. 16
+        // buffers behind the stream, not the 2 PipeWire 1.6 would give it (B-180).
         expect(desc!.pipeline).toContain(
-            `stream-properties="props,${PINS},node.loop.class=(string)data.rt,node.latency=(string)2880/48000,node.name=(string)MR_PW_ain-1,node.autoconnect=(string)false"`,
+            'pipewiresrc target-object=alsa_input.usb-mic min-buffers=16 stream-properties=',
+        );
+        expect(desc!.pipeline).not.toContain('pulsesrc');
+        // #736 pins, the node on the runner's RT data loop (B-88), not live (the driver's cycle
+        // time, B-180), the quantum request, a findable node name, and WirePlumber kept out.
+        expect(desc!.pipeline).toContain(
+            `stream-properties="props,${PINS},node.loop.class=(string)data.rt,stream.is-live=(string)false,node.latency=(string)2880/48000,node.name=(string)MR_PW_ain-1,node.autoconnect=(string)false"`,
         );
         // Exactly as wide as the range, unpositioned → ports input_1..2, re-positioned
         // by an identity matrix for the encoder. Never a device-wide matrix.
@@ -531,7 +534,7 @@ describe('AudioInput302mModule on house time (WI-P1-11)', () => {
         expect(desc!.pipeline).not.toContain('audioresample');
         expect(desc!.pipeline).toContain(
             '! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ' +
-                '! audioconvert ! mrasrc name=asrc ! audio/x-raw,format=S32LE,rate=48000,channels=2 !',
+                '! audioconvert ! mrasrc name=asrc cycle-input=true ! audio/x-raw,format=S32LE,rate=48000,channels=2 !',
         );
         expect(desc!.pipeline).toContain(
             '! mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter ',
@@ -555,7 +558,7 @@ describe('AudioInput302mModule on house time (WI-P1-11)', () => {
             pidTrimsMs: { 65: 40 },
         })!.pipeline;
         expect(p).toContain(
-            '! mrasrc name=asrc ! audio/x-raw,format=S32LE,rate=48000,channels=8 ! avenc_s302m',
+            '! mrasrc name=asrc cycle-input=true ! audio/x-raw,format=S32LE,rate=48000,channels=8 ! avenc_s302m',
         );
         expect(p).toContain(' ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=-120000000 ! ');
         // A capture has one PID, where O is the trim (OQ-15).

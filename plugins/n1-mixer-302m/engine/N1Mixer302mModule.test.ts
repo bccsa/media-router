@@ -220,3 +220,13 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         expect(p).not.toMatch(/audiomixer [^!]*latency=[1-9]/);
     });
 });
+
+describe('N1Mixer302mModule timing rows (B-70)', () => {
+    it("a matrix link's watch is internal; a fan-in's watch is the engine's rule", () => {
+        const of = (aligner: string, input: string) =>
+            (new N1Mixer302mModule() as any).alignerInputOf({ name: 'x', aligner, input });
+        expect(of('omix0', 'in1')).toBeNull();
+        expect(of('omix12', 'in3')).toBeNull();
+        expect(of('inmix1', 'enc-a:out:in-1')).toBeUndefined();
+    });
+});

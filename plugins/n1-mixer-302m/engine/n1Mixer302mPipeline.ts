@@ -136,6 +136,11 @@ export function activeOutputIndices(
  *  its sources' W or a pace rise: no silence, and a false absence would drop it. */
 const N1_MATRIX_SILENCE_FLOOR_NS = 500_000_000;
 
+/** The pace group of output `o`'s matrix links: its feature mixer `omix<o>`. */
+export function isMatrixAligner(aligner: string): boolean {
+    return /^omix\d+$/.test(aligner);
+}
+
 /** Input `i`'s link into output `o`'s mixer: its watchdog, in that mixer's pace
  *  group (house-clock part 4.4). Its FIFO replaced the 500 ms matrix queue. */
 function n1MatrixLink(i: number, o: number): string {

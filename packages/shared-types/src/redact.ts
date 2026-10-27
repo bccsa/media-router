@@ -14,6 +14,7 @@ const SECRET_ENDINGS = [
     'passwd',
     'token',
     'apikey',
+    'secretkey',
     'streamkey',
     'privatekey',
     'encryptionkey',
@@ -43,8 +44,8 @@ const USERINFO = /(?<![\w+.-])([A-Za-z][\w+.-]*:\/\/[^\s/?#@:"'<>]*):([^\s/?#"'<
 // An RTMP(S) stream key: everything after the application in the path.
 const RTMP_KEY = /(?<![\w+.-])(rtmp[a-z]*:\/\/[^\s/"'<>]+\/[^\s/?#"'<>]+\/)[^\s"'<>]+/gi;
 // A URI parameter's name, after `?`, `&` or `;`. A secret's value runs to the next `&`, `#`, double
-// quote or line end: an SRT passphrase goes in as typed, and srtsrc and srtsink keep `;`, `'` or a
-// space in it.
+// quote or line end: the SRT modules percent-encode a passphrase (B-112), and one typed into a URI
+// by hand keeps `;`, `'` or a space in srtsrc and srtsink.
 const URI_PARAM = /[?&;]([A-Za-z][\w.-]*)=/g;
 const URI_VALUE = /[^&#"\r\n]*/y;
 // `name=value`: a launch-string property (quoted or bare), an environment variable, a `--flag=`.
@@ -80,9 +81,12 @@ export function redactSecrets(text: string): string {
         .replace(BEARER, `$1${REDACTED}`)
         .replace(USERINFO, `$1:${REDACTED}@`)
         .replace(RTMP_KEY, `$1${REDACTED}`);
+    // An assignment the URI rule redacted keeps the parameters after it (`;passphrase=…&pbkeylen=`).
     return redactUriParams(head)
         .replace(ASSIGNMENT, (m, pre: string, name: string, value: string) =>
-            hasText(value) && isSecretKey(name) ? `${pre}${name}=${masked(value)}` : m,
+            hasText(value) && isSecretKey(name) && !value.startsWith(REDACTED)
+                ? `${pre}${name}=${masked(value)}`
+                : m,
         )
         .replace(PAIR, (m, q: string, name: string, sep: string, value: string) =>
             hasText(value) && isSecretKey(name) ? `${q}${name}${q}${sep}${masked(value)}` : m,

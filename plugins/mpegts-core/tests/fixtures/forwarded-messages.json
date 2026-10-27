@@ -1,5 +1,5 @@
 {
-  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the mrasrc events but device-relock are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind.",
+  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the mrasrc events but device-relock are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0).",
   "mrtsdemux": {
     "interval": {
       "cc-lost": 0,
@@ -60,7 +60,9 @@
     "device-ppb": 0,
     "discont-in": 0,
     "dropped-frames": 0,
+    "gaps": 0,
     "in-frames": 97280,
+    "lost-frames": 0,
     "mode": "device",
     "out-frames": 97248,
     "phase-err-ns": 0,

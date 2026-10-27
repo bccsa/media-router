@@ -45,10 +45,29 @@ export const PIPEWIRE_RT_STREAM_PROPS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * A `pipewiresrc` not live (B-180): GstBaseSrc then adds no startup offset, which it fixes at a
+ * live source's first buffer (how late that buffer came), so every stream of a node carries the
+ * driver's own cycle time. A `pipewiresink` ignores it.
+ */
+export const PIPEWIRE_CYCLE_TIME_PROPS: Readonly<Record<string, string>> = {
+    'stream.is-live': 'false',
+};
+
+/**
+ * `pipewiresrc` buffers between its stream and the element (B-180): PipeWire 1.6 otherwise
+ * negotiates its converter's 2, and a source task late by one cycle loses the next.
+ */
+export const PIPEWIRE_SRC_MIN_BUFFERS = 16;
+
+/**
  * `stream-properties=` clause for a `pipewiresrc` / `pipewiresink`: the #736 pins, the RT
- * data loop, then `extra`. Pulse elements keep `pulsePinnedStreamProps`: their nodes live
- * in pipewire-pulse, on its own RT loop.
+ * data loop, the cycle time, then `extra`. Pulse elements keep `pulsePinnedStreamProps`:
+ * their nodes live in pipewire-pulse, on its own RT loop.
  */
 export function pipewireStreamProps(extra: Record<string, string | number> = {}): string {
-    return pulsePinnedStreamProps({ ...PIPEWIRE_RT_STREAM_PROPS, ...extra });
+    return pulsePinnedStreamProps({
+        ...PIPEWIRE_RT_STREAM_PROPS,
+        ...PIPEWIRE_CYCLE_TIME_PROPS,
+        ...extra,
+    });
 }

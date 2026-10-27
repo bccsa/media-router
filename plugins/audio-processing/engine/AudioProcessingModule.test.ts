@@ -474,3 +474,12 @@ describe('AudioProcessingModule — ducker wiring', () => {
         expect(keys.filter((k) => /LatencyMs$/.test(k))).toEqual([]);
     });
 });
+
+describe('AudioProcessingModule — timing rows (B-70)', () => {
+    it("the interleave's channels are internal; a fan-in's watch is the engine's rule", () => {
+        const of = (aligner: string, input: string) =>
+            (new TestModule() as any).alignerInputOf({ name: 'x', aligner, input });
+        for (const input of ['prog0', 'prog1', 'key0', 'key1']) expect(of('il', input)).toBeNull();
+        expect(of('progmix', 'enc-a:out:program')).toBeUndefined();
+    });
+});
