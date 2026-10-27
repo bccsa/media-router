@@ -390,7 +390,8 @@ def live_aligned_case(argv, tag, check):
 def aligner_absent_case(argv, tag, check):
     """Plan ch. 6 part 7.3 case aligner-absent through `argv`'s runner: one of audio-mixer's three
     inputs stops for 2 s (its link stalls, the backlog comes at the end). The mix goes on, the
-    input's mralignwatch reports absent then present and its stale backlog, and nothing errs."""
+    input's mralignwatch reports absent then present and its stale backlog, its edges fade (B-83),
+    and nothing errs."""
     rig = _rig()
     if rig is None:
         return
@@ -438,6 +439,17 @@ def aligner_absent_case(argv, tag, check):
     stale = max((p.get("stale-buffers") or 0 for t, p in reps if t < end_ns), default=0)
     check(f"aligner-absent {tag}: its mralignwatch went absent, then present ({seq}); stale {stale} > 0",
           seq[-2:] == ["absent", "present"] and stale > 0)
+    # B-83: in2's part of the mix (the mix less in0's and in1's content) is its content faded out
+    # where it stops and back in where it returns, to the LSB; in0 and in1 untouched throughout.
+    em = rig.edge_model(pcm, [c["in0"], c["in1"]], c["in2"], lo, hi)
+    at = {k: em[k] and round((em[k] - rig.sample_of(t0)) / rig.RATE, 3) for k in ("out", "back")}
+    fades = max((p.get("fades") or 0 for t, p in reps if t < end_ns), default=0)
+    check(f"aligner-absent {tag}: in2 fades out where its content stops and in where it is back, to the "
+          f"LSB, the other two untouched (out at {at['out']} s, back at {at['back']} s, the largest "
+          f"deviation {em['dev']} LSB, the mix against its inputs before {em['steady']} LSB; fades "
+          f"{fades})",
+          em["dev"] is not None and em["dev"] <= 1 and abs(at["out"] - frm) <= 0.05
+          and frm + length - 0.05 <= at["back"] <= frm + length + 0.5 and fades >= 2)
     check(f"aligner-absent {tag}: no error, exit 0 ({[e.get('message') for e in errors][:2]}, rc {rc})",
           not errors and rc == 0)
 

@@ -180,6 +180,52 @@ describe('GstPluginBase aligner warnings', () => {
         expect(m.getState().health).toBe('stopped');
     });
 
+    it('a producer stopped while wired is still named; once unwired, no more (B-93)', async () => {
+        vi.useFakeTimers();
+        h.FakeChildProcess.instances = [];
+        const m = new Mixer();
+        let live = SOURCES;
+        let stored = SOURCES.map((s) => s.connectionId);
+        const hasStoredEdge = vi.fn(
+            (e: { sourceModuleId: string; sinkModuleId: string; sinkPortId: string }) =>
+                e.sinkModuleId === 'mix-1' &&
+                stored.some(
+                    (c) => c.startsWith(`${e.sourceModuleId}:`) && c.endsWith(e.sinkPortId),
+                ),
+        );
+        await m.onInit({}, {
+            instanceId: 'mix-1',
+            mediaRouter: {
+                getModuleBusSources: () => live,
+                onProducerPlaying: () => {},
+                hasStoredEdge,
+            },
+        } as unknown as ModuleServices);
+        await m.onStart();
+        const child = h.FakeChildProcess.instances[0]!;
+        child.emit('stateChange', { state: 'playing' });
+        send(child, 'mixin_aw_a', report(CONN_A, 'present'));
+        send(child, 'mixin_aw_b', report(CONN_B, 'present'));
+        // enc-b stopped: the router lists its edge no more, the stored graph still has it.
+        live = SOURCES.slice(0, 1);
+        send(child, 'mixin_aw_b', report(CONN_B, 'absent'));
+        expect(m.getState()).toMatchObject({ health: 'warning', error: ABSENT_B });
+        expect(m.getState().statusData!['timing-in-2']).toMatchObject({ state: 'absent' });
+        expect(hasStoredEdge).toHaveBeenCalledWith({
+            sourceModuleId: 'enc-b',
+            sourcePortId: 'out',
+            sinkModuleId: 'mix-1',
+            sinkPortId: 'audio-in',
+        });
+        // The operator removes the wire: its watch is internal, the warning goes at the tick.
+        stored = [CONN_A];
+        send(child, 'mixin_aw_b', report(CONN_B, 'absent', { reason: 'interval' }));
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(m.getState()).toMatchObject({ health: 'ok', error: null });
+        expect(m.getState().statusData!['timing-in-2']).toBeUndefined();
+        await m.onStop();
+    });
+
     it("a module's resolver names its own inputs", async () => {
         const { m, child } = await started();
         m.own = (w) => (w.input === 'demux_1_audio' ? { label: 'Input 2' } : undefined);

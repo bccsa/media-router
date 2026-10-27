@@ -97,11 +97,15 @@ export function inputBusSrcName(branchId: string): string {
     return `busin_${branchId}`;
 }
 
-/** `seed-lateness` in ns, within the element's 0..1 h; none without a finite seed. */
+/** A route's `seed-lateness` in ns, within the element's 0..1 h; undefined without a finite seed. */
+export function routeSeedNs(seedMs: number | undefined): number | undefined {
+    if (typeof seedMs !== 'number' || !Number.isFinite(seedMs)) return undefined;
+    return Math.round(Math.min(Math.max(seedMs, 0), 3_600_000) * 1_000_000);
+}
+
 function seedClause(seedMs: number | undefined): string {
-    if (typeof seedMs !== 'number' || !Number.isFinite(seedMs)) return '';
-    const ms = Math.min(Math.max(seedMs, 0), 3_600_000);
-    return ` seed-lateness=${Math.round(ms * 1_000_000)}`;
+    const ns = routeSeedNs(seedMs);
+    return ns === undefined ? '' : ` seed-lateness=${ns}`;
 }
 
 /** One route's branch after the hook's parser: its `mralignwatch` in the mux's pace group, then

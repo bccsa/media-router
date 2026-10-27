@@ -26,6 +26,7 @@ export interface BusSourceRef {
     socketPath: string;
     connectionId: string;
     sourceModuleId: string;
+    sourcePortId?: string;
     sinkPortId: string;
 }
 
@@ -47,15 +48,19 @@ function steadyFor(ms: number): string {
     return s >= 60 && s % 60 === 0 ? `${s / 60} min` : `${s} s`;
 }
 
-/** The module's bus inputs in a fixed order (sink port, numeric-aware, then connection), each
- *  under the tap `buildBusSrc` gives an unnamed edge source. */
+/** Bus inputs' fixed order: sink port, numeric-aware, then connection. */
+function byPlace(a: BusSourceRef, b: BusSourceRef): number {
+    return (
+        a.sinkPortId.localeCompare(b.sinkPortId, 'en', { numeric: true }) ||
+        byText(a.connectionId, b.connectionId)
+    );
+}
+
+/** The module's bus inputs in their fixed order, each under the tap `buildBusSrc` gives an
+ *  unnamed edge source. */
 export function busInputs(sources: BusSourceRef[]): TimingInputRef[] {
     return [...sources]
-        .sort(
-            (a, b) =>
-                a.sinkPortId.localeCompare(b.sinkPortId, 'en', { numeric: true }) ||
-                byText(a.connectionId, b.connectionId),
-        )
+        .sort(byPlace)
         .map((s, i) => ({ tap: edgeTapName(s), n: i + 1, label: busInputLabel(s) }));
 }
 
@@ -77,6 +82,9 @@ export interface ModuleTimingHost {
     log?(level: 'info' | 'warn', obj: Record<string, unknown>, msg: string): void;
     /** The module's own answer for which input a watch serves; undefined: the engine's rule. */
     alignerInput?(watch: AlignerWatchRef): AlignerInputRef | undefined;
+    /** The edge stands in the module's stored graph, whether or not it is applied now (its
+     *  producer disabled, stopped or restarting): its input keeps its row (B-93). */
+    wired?(source: BusSourceRef): boolean;
 }
 
 const EMPTY: TimingPublication = { sections: [], data: {}, badge: null };
@@ -94,9 +102,10 @@ export class ModuleTiming {
     /** Watches that served a bus edge: once its connection is gone, the input was removed. */
     private readonly edgeWatches = new Set<string>();
     private declared: TimingInputRef[] | undefined;
-    /** Bus inputs seen this run, by connection: a producer that stops releases its channel and
-     *  leaves the router's list, and its siblings must keep their numbers. */
-    private readonly seen = new Map<string, BusSourceRef>();
+    /** Bus inputs seen this run, by connection, each with the number it got when first seen: a
+     *  producer that stops releases its channel and leaves the router's list, and an input wired
+     *  later takes the next number, so no input ever changes number within a run. */
+    private readonly seen = new Map<string, { source: BusSourceRef; n: number }>();
 
     constructor(private readonly host: ModuleTimingHost) {
         this.reporter = new LatenessReporter({
@@ -197,8 +206,29 @@ export class ModuleTiming {
 
     private inputs(): TimingInputRef[] {
         if (this.declared) return this.declared;
-        for (const s of this.host.busSources()) this.seen.set(s.connectionId, s);
-        return busInputs([...this.seen.values()]);
+        this.noteSources();
+        return [...this.seen.values()]
+            .sort((a, b) => a.n - b.n)
+            .map(({ source, n }) => ({
+                tap: edgeTapName(source),
+                n,
+                label: busInputLabel(source),
+            }));
+    }
+
+    /** The router's bus sources now, each new one numbered after those already seen (in the
+     *  fixed order among themselves). */
+    private noteSources(): BusSourceRef[] {
+        const now = this.host.busSources();
+        const fresh = now.filter((s) => !this.seen.has(s.connectionId));
+        let next = this.seen.size;
+        for (const s of now) {
+            const had = this.seen.get(s.connectionId);
+            if (had) had.source = s;
+        }
+        for (const s of fresh.sort(byPlace))
+            this.seen.set(s.connectionId, { source: s, n: ++next });
+        return now;
     }
 
     stop(emit = true): void {
@@ -242,12 +272,16 @@ export class ModuleTiming {
         this.host.alignerWarnings(w.absent, w.full);
     }
 
-    /** The module's answer, else the engine's rule. A watch whose edge is gone served an input
-     *  that was removed: internal until it expires, so it names nothing. */
+    /** The module's answer, else the engine's rule. A watch whose edge left the router's list
+     *  but stands in the module's graph serves it still (its producer stopped: B-93); one whose
+     *  edge is gone from the graph served an input that was removed: internal until it expires. */
     private alignerInput(watch: AlignerWatchRef): AlignerInputRef {
         const own = this.host.alignerInput?.(watch);
         if (own !== undefined) return own;
-        const ref = alignerInputFor(watch, this.host.busSources());
+        let ref = alignerInputFor(watch, this.noteSources());
+        const stopped = this.seen.get(watch.input)?.source;
+        if (!(ref && 'tap' in ref) && stopped && this.host.wired?.(stopped))
+            ref = { tap: edgeTapName(stopped) };
         if (ref && 'tap' in ref) this.edgeWatches.add(watch.name);
         else if (this.edgeWatches.has(watch.name)) return null;
         return ref;

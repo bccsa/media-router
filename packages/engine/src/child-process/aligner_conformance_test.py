@@ -320,6 +320,16 @@ def scn_align_absent_rejoin(tag, argv, exp):
                   f"{leak:.3f} at {at and round(at * 1000 / rig.RATE)} ms; its fresh content found at "
                   f"{ctrl_at} samples, gain {ctrl:.3f})",
                   leak < x["backlog_gain_max"] and ctrl_at == 0 and ctrl > 0.9)
+            # B-83: its part of the mix is its content faded out and back in, to the LSB.
+            em = rig.edge_model(pcm, [contents[k] for k in inp if k != gone], c, lo, hi,
+                                fade=x["fade_samples"])
+            edge = {k: em[k] and round(sec(rig.house_of(em[k]), t0), 3) for k in ("out", "back")}
+            check(f"{label} {tag}: {gone} fades out where its content stops, in where it is back, the "
+                  f"others untouched (out at {edge['out']} s, back at {edge['back']} s, the largest "
+                  f"deviation {em['dev']} LSB, within {x['fade_lsb']})",
+                  em["dev"] is not None and em["dev"] <= x["fade_lsb"]
+                  and abs(edge["out"] - frm) <= 0.05 and frm + length - 0.05 <= edge["back"]
+                  <= frm + length + 0.5)
         else:
             miss = presence_gaps(pcm, c, lo, hi)
             check(f"{label} {tag}: {n} in every block of the mix at its content time (lag {lag}, gain "

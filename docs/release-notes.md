@@ -164,6 +164,10 @@ elements" below do not start.
   discarded, and the popup counts it as **Discarded on rejoin**. A queue
   that fills (5 s) holds the input back and warns
   "Input <name> queue full — upstream held"; nothing is dropped.
+- **Dropouts on a mixer input are faded, not cut.** When an input goes
+  silent, comes back, ends, or has a hole in its stream, the mix fades its
+  sound out over 5 ms and back in over 5 ms, so a loss is heard as a short
+  dip rather than a click. The MPEG-TS Muxer's inputs are not touched.
 - **The MPEG-TS Muxer no longer restarts on a dark input.** It continues
   with the other inputs and warns. An input that is connected but stuck is
   therefore no longer restarted automatically: the warning names it for the
@@ -458,6 +462,17 @@ elements" below do not start.
   passphrase holds an `&`, ran on the shortened passphrase until now; update
   both routers together, or the link stops until the second one runs this
   release.
+- **Each input keeps one row in the timing popup, and its number.** The
+  MPEG-TS Muxer listed a row per stream as well as one per input ("Input 4
+  timing: demux_0_video"), numbered afresh at every restart, and an input
+  whose source had stopped stayed "present"; N-1 Audio Mixer (302M) and
+  Audio Processing listed their internal stages as inputs; and an input
+  whose source module was stopped while still connected vanished from a
+  mixer's popup with no warning. Now every input has one row, numbered like
+  its pin or its place and named by the module feeding it; an input whose
+  source stops shows State absent, with the "silent" warning and under
+  **Waiting for**; and an input connected while the module runs takes the
+  next number, so no other input changes number.
 - **The engine's local API answers only the box itself.** The engine's local
   API (port 3001), which the Device Manager's Manager Profile page uses, now
   listens on the box's own loopback addresses (127.0.0.1 and ::1) and nowhere

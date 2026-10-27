@@ -55,7 +55,7 @@ export interface ProcessingPipelineResult {
 const PROGRAM_MIXER = 'progmix';
 const SIDECHAIN_MIXER = 'scmix';
 /** The interleave that joins programme and key by PTS: its inputs' pace group. */
-const INTERLEAVE = 'il';
+export const INTERLEAVE = 'il';
 
 /** F32LE stereo with an explicit mask — `deinterleave` needs positioned
  *  channels, and the LSP elements are F32LE-only. */

@@ -166,6 +166,19 @@ export class MediaRouter {
         return this.portRegistry.getConnectionCount(moduleId, portId, edges) > 0;
     }
 
+    /** True when the persisted graph has exactly `edge`, applied now or not: a consumer's timing
+     *  keeps the row of a producer that stopped while still wired (B-93). */
+    hasStoredEdge(edge: PortEdge): boolean {
+        const edges = this.storedConnectionsProvider?.() ?? this.getConnections();
+        return edges.some(
+            (e) =>
+                e.sourceModuleId === edge.sourceModuleId &&
+                e.sourcePortId === edge.sourcePortId &&
+                e.sinkModuleId === edge.sinkModuleId &&
+                e.sinkPortId === edge.sinkPortId,
+        );
+    }
+
     setDependencies(
         pipeWire: PipeWireManager,
         moduleGetter: (id: string) => ModuleInstance | undefined,

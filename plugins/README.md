@@ -2115,20 +2115,23 @@ lateness mean and min–max; Added latency = output mean − the slowest input's
 mean; Slowest input, with two or more inputs; and for outputs Decode,
 Presentation delay, Device latency and Render lateness); one `timing-in-<n>`
 section per input (Lateness, Added), labelled `<source module> (<sink port>)`
-and numbered by the input's fixed place — bus inputs by sink port,
-numeric-aware, then connection id — so a dark input leaves a gap rather than
-renumbering the rest; on a module with two or more bus outputs, one
-`timing-out-<n>` section per output tee (Lateness, min–max; the `timing`
-section keeps their count-weighted merge); and a grey `lateness` face badge:
-render lateness on outputs, PipeWire latency on PipeWire-graph modules, the
-output lateness mean otherwise. A module with aligners also shows Pace and
-Waiting for (which replaces Slowest input when shown) and, per input, State,
-Silence limit, Absences and Discarded on rejoin, a dark input keeping its
-section; audio-processing adds Processing latency (its LSP chain's reported
-lookahead, OQ-22). Lateness is display only: no threshold and no warning on
-it (OQ-8, deferred until the fleet has numbers); the aligners'
-`input-absent` and `aligner-full` warnings (below) are about an input, not
-lateness. What a plugin author does:
+and numbered by the input's fixed place — the bus inputs a run starts with by
+sink port, numeric-aware, then connection id, one wired later after them — so a
+dark input leaves a gap and no input renumbers within a run; on a module with
+two or more bus outputs, one `timing-out-<n>` section per output tee
+(Lateness, min–max; the `timing` section keeps their count-weighted merge);
+and a grey `lateness` face badge: render lateness on outputs, PipeWire
+latency on PipeWire-graph modules, the output lateness mean otherwise. A
+module with aligners also shows Pace and Waiting for (which replaces Slowest
+input when shown) and, per input, State, Silence limit, Absences and
+Discarded on rejoin, a dark input keeping its section (so does one whose
+producer stopped while still wired, and an input whose tap has gone quiet
+under watches that report on, such as a muxer pin whose producer stopped,
+shows absent: B-93); audio-processing adds Processing latency (its LSP
+chain's reported lookahead, OQ-22). Lateness is display
+only: no threshold and no warning on it (OQ-8, deferred until the fleet has
+numbers); the aligners' `input-absent` and `aligner-full` warnings (below)
+are about an input, not lateness. What a plugin author does:
 
 - **Output modules** wrap their final sink in
   `withLatenessTap('lat_render' | 'lat_egress', sink)`
@@ -2150,7 +2153,9 @@ lateness. What a plugin author does:
   declared on the description as `timingInputs: [{ tap, n, label }]`
   (engine-side, read at module start): `n` the input's fixed number,
   `label` from the engine's `busInputLabel(source)` so it reads like
-  everyone else's. mpegts-muxer does, with `n` its pin number.
+  everyone else's. mpegts-muxer does, with `n` its pin number, and its
+  `alignerInputOf` puts each route's watch under its branch's tap, so a pin
+  is one row whatever it carries.
 - **Sidecar producers** keep one `mrts::LatenessWindow` per output at their
   stamping point and add `"lateness": {count, untimed, min, mean, max}` (ms,
   `mrts::lateness_json_ms`) to their 2 s stats line — `mr-bus-fanout` and
@@ -2494,7 +2499,10 @@ until that input is removed or the module restarts. Rules:
   with no `busReports` subscription) into the timing section and two
   warnings. Label an input with its bus connection id, as the 302M helpers do,
   and it joins that edge's row; for any other label answer
-  `alignerInputOf(watch)` on your module.
+  `alignerInputOf(watch)` on your module: `{ tap }` to join an input's row
+  (mpegts-muxer's routes their pin's), `null` for an internal stage whose pace
+  counts and which names nothing (n1-mixer-302m's matrix links,
+  audio-processing's interleave).
 - **Without the plugin**, a start description naming `mrtsdemux` is refused
   with the "Native TS module not loaded" alarm (no stand-in), and
   `mralignwatch` gets an `identity` stand-in in a start description only: a

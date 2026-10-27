@@ -991,6 +991,125 @@ describe('MpegTsMuxerModule', () => {
         });
     });
 
+    describe('timing rows (B-70, B-93)', () => {
+        const MS = 1_000_000;
+        const source = (sinkPortId: string, port: number) => ({
+            port,
+            connectionId: 'c-' + sinkPortId,
+            sourceModuleId: 'enc-' + sinkPortId,
+            sourcePortId: 'mpegts-out',
+            sinkPortId,
+            socketPath: `/tmp/mr-bus-${port}-edge.sock`,
+        });
+        /** A route watch's report, as the runners forward `mralignwatch:<element>`. */
+        const route = (input: string, state = 'present') => ({
+            reason: 'state',
+            aligner: 'mux',
+            input,
+            state,
+            lateness: 140 * MS,
+            pace: 150 * MS,
+            'silence-limit': 190 * MS,
+            absences: 0,
+            'stale-time': 0,
+            'full-count': 0,
+            'level-time': 0,
+            'level-bytes': 0,
+        });
+
+        it("a route's watch joins its pin's row: one row per pin, numbered like it, whichever route reports first", () => {
+            const { module, getModuleBusSources } = makeModule({
+                sources: [
+                    { sinkPortId: 'input-2', port: 40003 },
+                    { sinkPortId: 'input-0', port: 40001 },
+                ],
+            });
+            (module as any).config = { inputs: [{}, {}, {}], alignment: 7 };
+            const timing = (module as any).timing;
+            const rows = () =>
+                timing.publication.sections
+                    .filter((x: { id: string }) => x.id.startsWith('timing-in-'))
+                    .map((x: { id: string; label: string }) => [x.id, x.label]);
+            for (const first of ['demux_1_audio', 'demux_0_video']) {
+                timing.start(module.buildPipeline((module as any).config)!);
+                timing.onEvent(`mralignwatch:aw_${first}`, route(first));
+                for (const r of ['demux_0_video', 'demux_1_audio', 'demux_1_klv'])
+                    timing.onEvent(`mralignwatch:aw_${r}`, route(r));
+                timing.tick();
+                expect(rows()).toEqual([
+                    ['timing-in-1', 'Input 1 timing: enc-input-0 (input-0)'],
+                    ['timing-in-3', 'Input 3 timing: enc-input-2 (input-2)'],
+                ]);
+            }
+            expect(timing.summary().waitingFor).toBe('enc-input-0 (input-0)');
+            // Pin 1 unwired: pin 3 is branch 0 now, and its routes stay under its own row.
+            getModuleBusSources.mockImplementation(() => [source('input-2', 40003)]);
+            timing.start(module.buildPipeline((module as any).config)!);
+            timing.onEvent('mralignwatch:aw_demux_0_audio', route('demux_0_audio'));
+            timing.tick();
+            expect(rows()).toEqual([['timing-in-3', 'Input 3 timing: enc-input-2 (input-2)']]);
+            timing.stop(false);
+        });
+
+        it('maps a generic route by its demux and a legacy slot by its PID; anything else is the engine rule', () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                ],
+            });
+            (module as any).config = { videoStreams: [{}], audioStreams: [{}], alignment: 7 };
+            module.buildPipeline((module as any).config);
+            const of = (input: string) =>
+                (module as any).alignerInputOf({ name: `aw_${input}`, aligner: 'mux', input });
+            const slots = (module as any).slots as Array<{ pid: number; demux: string }>;
+            for (const s of slots) {
+                expect(of(String(s.pid))).toEqual({ tap: `lat_busin_${s.demux.slice(6)}` });
+            }
+            expect(of('demux_7_subtitle')).toEqual({ tap: 'lat_busin_7' });
+            expect(of('somewhere-else')).toBeUndefined();
+        });
+
+        it('logs each route the hook linked with the seed-lateness its aligner got, at debug', () => {
+            const { module, getModuleBusSources } = makeModule({
+                sources: [
+                    { sinkPortId: 'input-0', port: 40001 },
+                    { sinkPortId: 'input-1', port: 40002 },
+                ],
+            });
+            const plain = getModuleBusSources.getMockImplementation()!;
+            getModuleBusSources.mockImplementation(() =>
+                plain().map((x, i) => (i === 1 ? { ...x, seedLatenessMs: 152.4 } : x)),
+            );
+            const debug = vi.fn();
+            (module as any).log = { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+            (module as any).config = { inputs: [{}, {}], alignment: 7 };
+            module.buildPipeline((module as any).config);
+            const ev = (demux: string, media: string, outPid: number) =>
+                (module as any).onPluginEvent('mux:routed', {
+                    demux,
+                    media,
+                    outPid,
+                    srcPid: 1,
+                    caps: '',
+                });
+            ev('demux_0', 'video', 0x100);
+            ev('demux_1', 'audio', 0x108);
+            expect(debug.mock.calls.map((c) => c[1])).toEqual([
+                'Route demux_0 video → PID 256: seed-lateness none',
+                'Route demux_1 audio → PID 264: seed-lateness 152 ms',
+            ]);
+            expect(debug.mock.calls[1][0]).toEqual({
+                muxRoute: {
+                    demux: 'demux_1',
+                    media: 'audio',
+                    outPid: 264,
+                    seedLatenessNs: 152_400_000,
+                },
+            });
+        });
+    });
+
     describe('stream discovery → status', () => {
         it('counts the streams routed per (demux, class) once each — later same-class pads were sunk', () => {
             const { module } = makeModule({
