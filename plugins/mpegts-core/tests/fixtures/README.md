@@ -69,6 +69,16 @@ read three frames), which moved four expectations: one teletext sparse gap each 
 (40 ms longer and shorter), `syn-source-restart`'s video jump gap (from the newest PTS + one frame,
 40 ms, not + 160 ms) and the DVB subtitle sparse gaps' cadence of `tp-h264-dvbsub`.
 
+`demux_parity_allow.json` is the allowlist of the engine's `gst_mrtsdemux_parity_test.py` (ch. 7
+WI-P3-4, register B-124), which replays every recorded fixture (`cap-*`, `tp-*`, `bus-*`; a bus
+recording also from its sidecar) into stock tsdemux 1.28.2 and into `mrtsdemux` at 188, 1000, 1316
+and 24 576-byte feeds, each feed stamped with its arrival on the recording's PCR, and compares what
+every pad and the bus see. Each entry is one rule of that comparison with its reason, and each must
+be used by the run; `measuredEqual` says why the brief's other expected differences need no entry
+(so the harness holds them equal), and `excluded` why the `syn-*` set is left out. A recording added
+here joins the run by its name; a difference it brings fails until the element changes or an entry
+says why.
+
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|
 | `syn-mpts-two-programs.ts` | `fixture_gen --ts mpts-two-programs` | The parity stream's program 1 (sparse PSI, PCR jitter, Opus, KLV, CC gaps, desync garbage, AVC → HEVC: PMT generation 2) and a second program (H.264 with DTS, MPEG-1 audio) in one PAT |
