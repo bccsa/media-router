@@ -1,4 +1,4 @@
-// Ingest timing (house-clock plan WI-P1-9): the `mrtsrestamp` and `mrasrc` pipeline fragments,
+// Ingest timing (house-clock plan WI-P1-9; WI-P3-5): the `mrtsrestamp` and `mrasrc` fragments,
 // their bus reports and the live edits of O, the per-PID trims and the smoothing cooldown, for the
 // seven ingest modules. The card is IngestTimingReporter; the settings are injected from shared-types.
 import {
@@ -101,13 +101,43 @@ export function buildRestamp({
     return `mrtsrestamp ${props.join(' ')}`;
 }
 
-/** `outRate` unset or 0: the rate the caps after it negotiate. */
+/** The element's bound on `bypass-below-ppm`. */
+const BYPASS_MAX_PPM = 1000;
+
+export interface AsrcOptions {
+    name?: string;
+    /** Unset or 0: the rate the caps after it negotiate (B-22). */
+    outRate?: number;
+    /** Decode mode above 0 (WI-P3-5): buffers pass unchanged while their source measures within
+     *  this many ppm of house time; resampled once it does not. Unset or 0: capture mode. */
+    bypassBelowPpm?: number;
+    /** The `GstAudioBaseSink` downstream (with `slave-method=custom`) whose clock the output
+     *  follows; with no bypass, that device term alone (S17). */
+    deviceSink?: string;
+}
+
+/** `mrasrc` with its mode: capture (no option), decode (`bypassBelowPpm`), device (`deviceSink`). */
 export function buildAsrc({
     name = ASRC_ELEMENT,
     outRate,
-}: { name?: string; outRate?: number } = {}): string {
-    const rate = outRate && outRate > 0 ? ` out-rate=${Math.round(outRate)}` : '';
-    return `mrasrc name=${name}${rate}`;
+    bypassBelowPpm,
+    deviceSink,
+}: AsrcOptions = {}): string {
+    const props = [`name=${name}`];
+    if (
+        typeof bypassBelowPpm === 'number' &&
+        Number.isFinite(bypassBelowPpm) &&
+        bypassBelowPpm > 0
+    ) {
+        props.push(`bypass-below-ppm=${Math.min(bypassBelowPpm, BYPASS_MAX_PPM)}`);
+    }
+    if (deviceSink) {
+        props.push(
+            `device-sink=${/^[\w.-]+$/.test(deviceSink) ? deviceSink : quoteGstString(deviceSink)}`,
+        );
+    }
+    if (outRate && outRate > 0) props.push(`out-rate=${Math.round(outRate)}`);
+    return `mrasrc ${props.join(' ')}`;
 }
 
 export function restampBusReports(name = RESTAMP_ELEMENT): BusReport[] {

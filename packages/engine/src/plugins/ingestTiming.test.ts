@@ -93,6 +93,29 @@ describe('buildAsrc and the bus reports', () => {
         expect(buildAsrc({ name: 'asrc2', outRate: 0 })).toBe('mrasrc name=asrc2');
     });
 
+    it('builds the decode and device modes (WI-P3-5) in the consumer strings', () => {
+        expect(buildAsrc({ bypassBelowPpm: 0.5, outRate: 48000 })).toBe(
+            'mrasrc name=asrc bypass-below-ppm=0.5 out-rate=48000',
+        );
+        expect(buildAsrc({ bypassBelowPpm: 0.5, deviceSink: 'sink' })).toBe(
+            'mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink',
+        );
+        expect(buildAsrc({ name: 'outasrc', deviceSink: 'sink' })).toBe(
+            'mrasrc name=outasrc device-sink=sink',
+        );
+    });
+
+    it('leaves out a bypass that is no number above 0, holds it to 1000 ppm, quotes an odd sink name', () => {
+        for (const bypassBelowPpm of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(buildAsrc({ bypassBelowPpm })).toBe('mrasrc name=asrc');
+        }
+        expect(buildAsrc({ bypassBelowPpm: 5000 })).toBe('mrasrc name=asrc bypass-below-ppm=1000');
+        expect(buildAsrc({ deviceSink: '' })).toBe('mrasrc name=asrc');
+        expect(buildAsrc({ deviceSink: 'out sink' })).toBe(
+            'mrasrc name=asrc device-sink="out sink"',
+        );
+    });
+
     it('subscribes to the three restamp messages and the two ASRC messages', () => {
         expect(restampBusReports()).toEqual([
             { element: 'restamp', structure: 'mrtsrestamp-stats' },

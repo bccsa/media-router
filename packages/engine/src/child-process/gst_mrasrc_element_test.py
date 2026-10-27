@@ -16,7 +16,13 @@ known PTS jitter, so the capture time of every input frame is known:
   - caps: out-rate=0 keeps the input's rate or takes downstream's (44.1 kHz into the capture
     branches' rate=48000 capsfilter), out-rate converts, format and channels pass through,
     anything else is refused;
-  - the latency query, the drained tail at EOS, a flush, gst-inspect-1.0.
+  - the latency query, the drained tail at EOS, a flush, gst-inspect-1.0;
+  - decode mode (WI-P3-5, part 4.4): a source 10 ppm fast through formula PTS engages and then
+    counts 48,000 frames per house second; real decoders (avdec_aac, opusdec) pass their input PTS
+    through and a house-rate stream passes mrasrc unchanged, the same memory (zero copy), while a
+    foreign one engages; device mode into tests/libgstmrtest.so's mrtestaudiosink 40 ppm fast on a
+    2x clock: no skew, no resync, the ring's fill held; decode and device in one ratio; a
+    device-sink that cannot be followed is an error naming it.
 
 Skips (exit 0) without GStreamer, numpy or the built plugin."""
 import os
@@ -80,8 +86,9 @@ class Capture:
     buffer DISCONT. Content: a tone at `tone` Hz of the device's own time, `amp` of full scale."""
 
     def __init__(self, num=1, den=1, jitter=0, seed=1, tone=1000.0, amp=0.891, fmt="F32LE",
-                 channels=1, rate=FS):
+                 channels=1, rate=FS, formula=False):
         self.num, self.den, self.jitter, self.tone, self.amp = num, den, jitter, tone, amp
+        self.formula = formula   # PTS: capture time through a producer's mux and the demux (S12)
         self.fmt, self.channels, self.rate = fmt, channels, rate
         self.rng = np.random.default_rng(seed)
         self.step_at, self.step, self.step_discont = None, 0, True
@@ -120,6 +127,8 @@ class Capture:
                 c = self.capture_ns(i)
                 self.xrun_at, disc = None, True
             pts = c + (int(self.rng.integers(0, self.jitter)) if self.jitter else 0)
+            if self.formula:
+                pts = -((-(pts * 9 // 100000) * 100000) // 9)
             if self.step_at is not None and c >= self.step_at:
                 pts += self.step
                 disc = disc or (self.step_discont and not self.stepped)
@@ -138,14 +147,15 @@ class Harness:
     in this thread, outputs and messages arrive in order. The sink pad answers caps queries with
     `sink_caps`; the src pad answers latency queries with 10 ms .. 30 ms, live."""
 
-    def __init__(self, caps, sink_caps=None, **props):
+    def __init__(self, caps, sink_caps=None, keep=None, **props):
+        self.keep = keep   # keep(pts) -> whether to keep an output's samples (None: all)
         self.pipe = Gst.Pipeline.new(None)
         self.el = Gst.ElementFactory.make("mrasrc", "asrc")
         self.pipe.add(self.el)
         self.src = Gst.Pad.new("h_src", Gst.PadDirection.SRC)
         self.sink = Gst.Pad.new("h_sink", Gst.PadDirection.SINK)
         self.sink_caps = Gst.Caps.from_string(sink_caps) if sink_caps else Gst.Caps.new_any()
-        self.out, self.msgs, self.events, self.out_caps = [], [], [], None
+        self.out, self.msgs, self.events, self.out_caps, self.in_mem, self.in_pts = [], [], [], None, [], []
         self.sink.set_chain_function_full(self._chain)
         self.sink.set_event_function_full(self._event)
         self.sink.set_query_function_full(self._sink_query)
@@ -167,9 +177,11 @@ class Harness:
         self.src.push_event(Gst.Event.new_segment(seg))
 
     def _chain(self, pad, parent, buf):
+        keep = self.keep is None or self.keep(buf.pts)
         self.out.append({"pts": buf.pts, "dur": buf.duration, "flags": int(buf.get_flags()),
-                         "offset": buf.offset, "offset_end": buf.offset_end,
-                         "data": buf.extract_dup(0, buf.get_size())})
+                         "offset": buf.offset, "offset_end": buf.offset_end, "size": buf.get_size(),
+                         "mem": hash(buf.peek_memory(0)) if buf.n_memory() else 0,
+                         "data": buf.extract_dup(0, buf.get_size()) if keep else b""})
         return Gst.FlowReturn.OK
 
     def _event(self, pad, parent, event):
@@ -205,6 +217,8 @@ class Harness:
         b.pts, b.dts, b.duration = pts, Gst.CLOCK_TIME_NONE, Gst.CLOCK_TIME_NONE
         if discont:
             b.set_flags(Gst.BufferFlags.DISCONT)
+        self.in_mem.append(hash(b.peek_memory(0)))
+        self.in_pts.append(pts)
         return self.src.push(b)
 
     def drive(self, bufs, eos=True):
@@ -315,9 +329,9 @@ def discont_at(out):
 
 # --- the property contract -------------------------------------------------------------------
 print("--- gst-inspect-1.0 and the property contract ---")
-PROPS = ["out-rate", "quality", "stats", "abi", "desync-bytes", "cc-lost", "pes-oversize",
-         "pes-dropped-cc", "header-spans", "psi-unsupported-sections", "pes-no-pts",
-         "dts-discarded"]
+PROPS = ["out-rate", "quality", "stats", "bypass-below-ppm", "device-sink", "abi", "desync-bytes",
+         "cc-lost", "pes-oversize", "pes-dropped-cc", "header-spans", "psi-unsupported-sections",
+         "pes-no-pts", "dts-discarded"]
 _inspect = subprocess.run(["gst-inspect-1.0", f"--gst-plugin-load={_SO}", "mrasrc"],
                           capture_output=True, text=True)
 _listed = [p for p in PROPS if f"\n  {p} " in _inspect.stdout or f"\n  {p}:" in _inspect.stdout]
@@ -340,12 +354,18 @@ check("out-rate: 0 (the input's rate) by default, 0..768000; quality 4 by defaul
 _st = _el.find_property("stats")
 _s0 = _el.get_property("stats")
 STATS_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
-                "discont-in", "dropped-frames"]
-check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, every count 0",
+                "discont-in", "dropped-frames", "mode", "source-ppb", "device-ppb"]
+COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k != "mode"]
+check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
       and [_s0.nth_field_name(i) for i in range(_s0.n_fields())] == STATS_FIELDS
-      and _s0.get_value("state") == "acquiring"
-      and all(_s0.get_value(k) == 0 for k in STATS_FIELDS[1:]))
+      and _s0.get_value("state") == "acquiring" and _s0.get_value("mode") == "capture"
+      and all(_s0.get_value(k) == 0 for k in COUNT_FIELDS))
+_bp, _ds = _el.find_property("bypass-below-ppm"), _el.find_property("device-sink")
+check("bypass-below-ppm: 0 (capture) by default, 0..1000; device-sink: \"\" by default; both apply at "
+      "a start (WI-P3-5)",
+      _el.get_property("bypass-below-ppm") == 0.0 and _bp.minimum == 0.0 and _bp.maximum == 1000.0
+      and _el.get_property("device-sink") == "" and all(p.flags & Gst.PARAM_MUTABLE_READY for p in (_bp, _ds)))
 
 # --- the acceptance: THD+N and the PTS formula at a 1.0002 ratio -----------------------------
 print("\n--- a 1 kHz sine at a 1.0002 ratio (device 199.96 ppm slow, 1 ms jitter), 60 s ---")
@@ -516,9 +536,10 @@ posts = h.messages("mrasrc-stats")
 _gaps = [b["out-frames"] - a["out-frames"] for a, b in zip(posts, posts[1:-1])]
 check(f"mrasrc-stats every 2 s of output ({len(posts)} posts, {sorted(set(_gaps))} frames "
       "apart) and once more at EOS", len(posts) == 6 and all(abs(g - 2 * FS) <= BUF for g in _gaps))
-check("each carries part 10's fields, in order and typed",
-      all(list(p) == STATS_FIELDS and isinstance(p["state"], str)
-          and all(isinstance(p[k], int) for k in STATS_FIELDS[1:]) for p in posts))
+check("each carries part 10's fields and WI-P3-5's mode and clocks, in order and typed (capture: "
+      "mode capture, no device)",
+      all(list(p) == STATS_FIELDS and isinstance(p["state"], str) and p["mode"] == "capture"
+          and all(isinstance(p[k], int) for k in COUNT_FIELDS) and p["device-ppb"] == 0 for p in posts))
 _ev = h.messages("mrasrc-event")
 check(f"mrasrc-event relock: kind, reason, house-ns, jump-ns, dropped-ns "
       f"({sorted(_ev[0]) if _ev else []})",
@@ -532,7 +553,7 @@ check(f"the stats snapshot is the last post plus the run's setup ({_sd})",
       {k: _sd[k] for k in STATS_FIELDS} == posts[-1] and _sd["format"] == "F32LE"
       and _sd["channels"] == 1 and _sd["in-rate"] == FS and _sd["out-rate"] == FS
       and _sd["delay-frames"] == DELAY and _sd["buffers"] == cap.nbuf
-      and 0 < _sd["resampler-updates"] <= cap.nbuf)
+      and 0 < _sd["resampler-updates"] <= cap.nbuf and _sd["device-pairs"] == 0)
 h.stop()
 
 print("\n--- buffers that make no output (single frames, +900 ppm device) ---")
@@ -740,6 +761,354 @@ check(f"after a flush a fresh run: the first output DISCONT (no input was) at th
       _first["flags"] & int(Gst.BufferFlags.DISCONT) and _first["pts"] == H0 + 500 * S
       and _fin["in-frames"] == cap2.pushed and _fin["relocks"] == 0)
 h.stop()
+
+# --- WI-P3-5: decode mode ----------------------------------------------------------------------
+print("\n--- decode mode: a source 10 ppm fast (48,000.48 Hz) through formula PTS, 12 min ---")
+DEC_PPB = 10000
+cap = Capture(num=1000000 + DEC_PPB // 1000, den=1000000, tone=1000.0, formula=True)
+
+
+def keep_window(pts):
+    """20-30 s (the engage), then half a second each minute: the label checks' windows."""
+    return 20 * S <= pts - H0 < 30 * S or (pts - H0 >= 30 * S and (pts - H0) % (60 * S) < S // 2)
+
+
+h = Harness(cap.caps(), keep=keep_window, bypass_below_ppm=0.5)
+h.drive(cap.buffers(730))
+ev = [e for e in h.messages("mrasrc-event") if e["kind"] == "engaged"]
+n_passed = next((i for i, o in enumerate(h.out) if o["mem"] != h.in_mem[i]), len(h.out))
+_at = (ev[0]["house-ns"] - H0) / S if ev else -1
+check(f"one engage on the ratio rule within 30 s ({_at:.2f} s, {[e['reason'] for e in ev]}), the source "
+      f"measured at {ev[0]['source-ppb'] / 1000 if ev else 0:+.3f} ppm (+10)",
+      len(ev) == 1 and ev[0]["reason"] == "ratio" and 0 < _at <= 30
+      and abs(ev[0]["source-ppb"] - DEC_PPB) <= 500)
+check(f"bypassed until then: each of the {n_passed} outputs before it the input buffer itself, its memory and PTS "
+      "(zero copy); the first after it at the engaging buffer's PTS",
+      n_passed > 1000 and all(h.out[i]["pts"] == h.in_pts[i] for i in range(n_passed))
+      and n_passed < len(h.out) and h.out[n_passed]["pts"] == (ev[0]["house-ns"] if ev else -1)
+      and h.out[n_passed]["pts"] == h.in_pts[n_passed])
+_eng = h.out[n_passed:]
+check("from the engaging buffer's PTS one counter (T0 + floor(m x 1e9 / 48000)), contiguous, no DISCONT on the "
+      "engage", bool(_eng) and on_formula(_eng) and contiguous(_eng)
+      and not any(o["flags"] & int(Gst.BufferFlags.DISCONT) for o in _eng))
+# Across the engage, sample for sample: the passed buffers are the input itself, and the primed
+# resampler's first outputs go on with its next frame (an unprimed filter's read 0.01 to 0.11 off,
+# with the tone's phase; 64 frames, before the 10 ppm correction moves them).
+_k = n_passed
+_before = np.frombuffer(b"".join(o["data"] for o in h.out[_k - 12:_k]), dtype="<f4").astype(np.float64)
+_after = np.frombuffer(b"".join(o["data"] for o in h.out[_k:_k + 1]), dtype="<f4").astype(np.float64)[:64]
+_e = sum(o["size"] // 4 for o in h.out[:_k])   # the engaging buffer's first input frame
+_ideal_b = cap.amp * np.sin(2 * np.pi * cap.tone * np.arange(_e - len(_before), _e) / FS)
+_ideal_a = cap.amp * np.sin(2 * np.pi * cap.tone * (np.arange(_e, _e + len(_after)) - 0.125) / FS)
+_dev_b = float(np.max(np.abs(_before - _ideal_b))) if len(_before) else 9.0
+_dev_a = float(np.max(np.abs(_after - _ideal_a))) if len(_after) == 64 else 9.0
+check(f"the engage is seamless: the 12 buffers before it the source's samples exactly ({_dev_b:.2e}), the first 64 "
+      f"frames after it the source's next ({_dev_a:.4f} of full scale; GStreamer centres 1/8 frame early; an unprimed "
+      "filter reads 0.01 or more off)", _dev_b < 1e-6 and _dev_a < 0.002)
+# Label errors in each kept window from 60 s after the engage: label minus content time.
+_wins, cur = [], []
+for o in _eng:
+    if o["data"]:
+        cur.append(o)
+    elif cur:
+        _wins.append(cur)
+        cur = []
+if cur:
+    _wins.append(cur)
+_rows = []
+for w in _wins:
+    if w[0]["pts"] - H0 < (_at + 60) * S:
+        continue
+    y = np.frombuffer(b"".join(o["data"] for o in w), dtype="<f4").astype(np.float64)
+    t = np.concatenate([o["pts"] + (np.arange(len(o["data"]) // 4, dtype=np.int64) * S) // FS for o in w])
+    errs = [e for _, e in label_errors(y, t, cap.house_hz())]
+    _rows.append((w[0]["offset"], w[0]["pts"], float(np.mean(errs)), max(abs(e) for e in errs)))
+_worst = max((r[3] for r in _rows), default=1e9)
+check(f"labels within 1 frame of content time in every window from 60 s after the engage ({len(_rows)} windows, "
+      f"worst {_worst:.2f} us)", len(_rows) >= 9 and _worst * US < FRAME_NS)
+if len(_rows) >= 2:
+    (o_a, p_a, e_a, _), (o_b, p_b, e_b, _) = _rows[0], _rows[-1]
+    _span = (p_b - e_b * US) - (p_a - e_a * US)   # content (house) time between the two windows
+    _err = (o_b - o_a) - _span * FS / S
+else:
+    _span, _err = 0, 9e9
+check(f"48,000 frames per house second +-1 over {_span / S / 60:.1f} min of content time after the engage "
+      f"({_err:+.3f} frames)", _span >= 599 * S and abs(_err) <= 1)
+_fin = h.messages("mrasrc-stats")[-1]
+check(f"mrasrc-stats: mode decode, the source at {_fin['source-ppb'] / 1000:+.3f} ppm, the ratio its correction "
+      f"({_fin['ratio-ppb'] / 1000:+.3f} ppm), no device term",
+      _fin["mode"] == "decode" and abs(_fin["source-ppb"] - DEC_PPB) <= 200
+      and abs(_fin["ratio-ppb"] + DEC_PPB) <= 3000 and _fin["device-ppb"] == 0)
+h.stop()
+
+print("\n--- decode mode: a house-rate source, formula PTS, 40 s: bypassed, zero copy ---")
+for name, kw in (("48 kHz", {}), ("44.1 kHz, PTS quantised to ticks", {"rate": 44100})):
+    cap = Capture(formula=True, **kw)
+    h = run(cap, 40, bypass_below_ppm=0.5)
+    _fin = h.messages("mrasrc-stats")[-1]
+    same = len(h.out) == len(h.in_mem) and all(o["mem"] == m for o, m in zip(h.out, h.in_mem))
+    check(f"{name}: never engages, mode bypass and locked at 40 s, every output the input buffer itself "
+          f"({len(h.out)} buffers, the same memory)",
+          not [e for e in h.messages("mrasrc-event") if e["kind"] == "engaged"] and _fin["mode"] == "bypass"
+          and _fin["state"] == "locked" and same and abs(_fin["source-ppb"]) < 100)
+    h.stop()
+
+print("\n--- decode mode with a rate conversion: 44.1 kHz house rate into a 48 kHz downstream ---")
+cap = Capture(rate=44100, formula=True, tone=100.0)
+h = Harness(cap.caps(), sink_caps="audio/x-raw,rate=48000", bypass_below_ppm=0.5)
+h.drive(cap.buffers(40))
+_fin = h.messages("mrasrc-stats")[-1]
+_n = sum(len(o["data"]) for o in h.out) // 4
+y, t = samples(h, cap)
+_e = [e for _, e in label_errors(y, t, cap.house_hz())]
+check(f"bypassed (no clock correction, mode {_fin['mode']}) yet resampled at the nominal ratio: 48 kHz out "
+      f"({h.out_caps.get_value('rate') if h.out_caps else None}), {_n} frames for 40 s, one counter, labels within a "
+      f"frame of content time ({max(map(abs, _e)):.2f} us), no engage",
+      _fin["mode"] == "bypass" and h.out_caps is not None and h.out_caps.get_value("rate") == 48000
+      and abs(_n - 40 * 48000) <= 64 and on_formula(h.out, 48000) and contiguous(h.out)
+      and max(map(abs, _e)) * US < FRAME_NS and not [e for e in h.messages("mrasrc-event") if e["kind"] == "engaged"]
+      and _fin["ratio-ppb"] == 0)
+h.stop()
+
+# --- WI-P3-5: real decoders --------------------------------------------------------------------
+_FX = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core", "tests", "fixtures"))
+_GEN = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "..", "plugins", "mpegts-core", "native", "mrts",
+                                     "tests", "fixture_gen"))
+
+
+class Probe:
+    """Buffers through a pad: (pts, memory) each."""
+
+    def __init__(self, pad):
+        self.bufs = []
+        pad.add_probe(Gst.PadProbeType.BUFFER, self._on)
+
+    def _on(self, _pad, info):
+        b = info.get_buffer()
+        self.bufs.append((b.pts, hash(b.peek_memory(0)) if b.n_memory() else 0))
+        return Gst.PadProbeReturn.OK
+
+
+def decode_chain(path, caps, dec, asrc="bypass-below-ppm=0.5"):
+    """path through mrtsdemux, the decoder, audioconvert and mrasrc to EOS: the probes, the
+    mrasrc-event messages and the last stats."""
+    p = Gst.parse_launch(f"filesrc location={path} ! mrtsdemux name=d media=audio d. ! capsfilter name=pes "
+                         f"caps={caps} ! {dec} ! audioconvert name=conv ! audio/x-raw,format=F32LE,"
+                         f"layout=interleaved ! mrasrc name=asrc {asrc} ! fakesink sync=false")
+    pes = Probe(p.get_by_name("pes").get_static_pad("src"))
+    dec_el = p.get_by_name("conv").get_static_pad("sink").get_peer().get_parent_element()
+    din = Probe(dec_el.get_static_pad("sink"))
+    dout = Probe(p.get_by_name("conv").get_static_pad("sink"))
+    ain = Probe(p.get_by_name("asrc").get_static_pad("sink"))
+    aout = Probe(p.get_by_name("asrc").get_static_pad("src"))
+    events = []
+    p.set_state(Gst.State.PLAYING)
+    bus = p.get_bus()
+    err = None
+    while True:
+        m = bus.timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR
+                                   | Gst.MessageType.ELEMENT)
+        if m is None or m.type == Gst.MessageType.EOS:
+            break
+        if m.type == Gst.MessageType.ERROR:
+            err = m.parse_error()[0].message
+            break
+        st = m.get_structure()
+        if st and st.get_name() == "mrasrc-event":
+            events.append(sdict(st))
+    stats = sdict(p.get_by_name("asrc").get_property("stats"))
+    p.set_state(Gst.State.NULL)
+    return pes.bufs, din.bufs, dout.bufs, ain.bufs, aout.bufs, events, stats, err
+
+
+print("\n--- real decoders pass their input PTS through; a house-rate decode passes mrasrc unchanged ---")
+_have = all(Gst.ElementFactory.find(e) for e in ("aacparse", "avdec_aac", "opusdec"))
+if not _have:
+    print("SKIP real decoders — aacparse, avdec_aac or opusdec unavailable")
+for fx, caps, dec in (("tp-hevc-aac.ts", "audio/mpeg", "aacparse ! avdec_aac"),
+                      ("cap-mux-align7-aac-opus.ts", "audio/x-opus", "opusdec")) if _have else ():
+    pes, din, dout, ain, aout, events, stats, err = decode_chain(os.path.join(_FX, fx), caps, dec)
+    name = dec.split()[-1]
+    _out = {t for t, _ in dout}
+    check(f"{name} ({fx}): its output PTS are its input frames', frame for frame ({len(dout)} of {len(din)}; "
+          f"GstAudioDecoder's tolerance 0), and every PES PTS reaches mrasrc ({len(pes)} PES)",
+          err is None and len(din) > 100 and [t for t, _ in dout] == [t for t, _ in din]
+          and all(t in _out for t, _ in pes))
+    check(f"{name}: mrasrc passes every decoded buffer unchanged, the same memory and PTS (zero copy), mode "
+          f"{stats.get('mode')}, no engage",
+          len(aout) == len(ain) > 100 and aout == ain and stats.get("mode") == "bypass"
+          and not [e for e in events if e["kind"] == "engaged"])
+if _have:
+    # Found (B-125): this recording's AAC timeline steps back 14-18 ms inside its segments (B-121's
+    # 100 ms steps are its two gaps); within 7.6 s no rule engages, and each gap measures afresh.
+    pes, din, dout, ain, aout, events, stats, err = decode_chain(os.path.join(_FX, "cap-mux-align7-aac-opus.ts"),
+                                                                 "audio/mpeg", "aacparse ! avdec_aac")
+    rel = [e for e in events if e["kind"] == "relock"]
+    check(f"avdec_aac on cap-mux-align7's AAC: each of its two gaps measures afresh, a relock on the DISCONT after "
+          f"it ({[(e['reason'], round(e['jump-ns'] / MS, 1)) for e in rel]} ms), passed unchanged throughout",
+          err is None and len(rel) == 2 and all(e["reason"] == "discont" and e["jump-ns"] > 0 for e in rel)
+          and stats.get("mode") == "bypass" and aout == ain)
+
+print("\n--- a 35 s AAC encode at house rate stays bypassed; the same respaced 40 ppm engages ---")
+_enc = all(Gst.ElementFactory.find(e) for e in ("avenc_aac", "mpegtsmux", "aacparse", "avdec_aac"))
+if not _enc or not os.path.exists(_GEN):
+    print(f"SKIP the encode — avenc_aac, mpegtsmux or {_GEN} unavailable")
+else:
+    import tempfile
+
+    _tmp = tempfile.mkdtemp(prefix="mrasrc-")
+    _house, _foreign = os.path.join(_tmp, "house.ts"), os.path.join(_tmp, "foreign.ts")
+    _p = Gst.parse_launch(f"audiotestsrc num-buffers={35 * FS // 1024} samplesperbuffer=1024 wave=sine freq=1000 ! "
+                          "audio/x-raw,format=S16LE,rate=48000,channels=2 ! audioconvert ! avenc_aac ! aacparse ! "
+                          "mpegtsmux ! "
+                          f"filesink location={_house}")
+    _p.set_state(Gst.State.PLAYING)
+    _p.get_bus().timed_pop_filtered(60 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    _p.set_state(Gst.State.NULL)
+    _resp = subprocess.run([_GEN, "--respace", "40", "-i", _house, "-o", _foreign], capture_output=True, text=True)
+    for label, path in (("house rate", _house), ("respaced +40 ppm", _foreign)):
+        pes, din, dout, ain, aout, events, stats, err = decode_chain(path, "audio/mpeg", "aacparse ! avdec_aac")
+        eng = [e for e in events if e["kind"] == "engaged"]
+        _t0 = pes[0][0] if pes else 0
+        if label == "house rate":
+            check(f"{label}: 35 s through avdec_aac never engage, mode bypass and locked at the end, every buffer passed "
+                  f"unchanged ({len(aout)}), the source at {stats.get('source-ppb', 0) / 1000:+.3f} ppm",
+                  err is None and not eng and stats.get("mode") == "bypass" and stats.get("state") == "locked"
+                  and aout == ain and len(ain) > 1500 and abs(stats.get("source-ppb", 9e9)) < 100)
+        else:
+            _at = (eng[0]["house-ns"] - _t0) / S if eng else -1
+            check(f"{label} (respace rc {_resp.returncode}): engages within 30 s ({_at:.2f} s, "
+                  f"{eng[0]['reason'] if eng else None}), the source at {eng[0]['source-ppb'] / 1000 if eng else 0:+.3f} "
+                  f"ppm (-40: its PTS 40 ppm long), mode {stats.get('mode')} at the end",
+                  err is None and _resp.returncode == 0 and len(eng) == 1 and 0 < _at <= 30
+                  and abs(eng[0]["source-ppb"] + 40000) <= 2000 and stats.get("mode") == "decode")
+    import shutil
+
+    shutil.rmtree(_tmp, ignore_errors=True)
+
+# --- WI-P3-5: device mode ----------------------------------------------------------------------
+_TEST_SO = os.path.join(os.path.dirname(_SO), "tests", "libgstmrtest.so")
+# 10 min of house time in 5 min: a faster clock magnifies the scheduling noise the fill shows.
+_SPEED, _DEV_S = 2, 610
+print(f"\n--- device mode: mrtestaudiosink 40 ppm fast, a {_SPEED}x clock, {_DEV_S - 10} s past the settle ---")
+if not os.path.exists(_TEST_SO):
+    print(f"SKIP device mode — {_TEST_SO} not built (make -C plugins/mpegts-core/native/mrtshouse test)")
+else:
+    Gst.Plugin.load_file(_TEST_SO)
+    _clk = GObject.new(GObject.type_from_name("MrTestClock"))
+    _clk.set_property("speed", _SPEED)
+    _p = Gst.parse_launch(
+        "audiotestsrc is-live=true samplesperbuffer=1024 wave=sine freq=1000 ! "
+        "audio/x-raw,format=F32LE,rate=48000,channels=2 ! mrasrc name=asrc device-sink=sink ! "
+        "mrtestaudiosink name=sink ppm=40 device-ns=1000000000 slave-method=custom sync=true buffer-time=2000000 "
+        "latency-time=20000")
+    _p.use_clock(_clk)
+    _bus = _p.get_bus()
+    _p.set_state(Gst.State.PLAYING)
+    _sink, _asrc = _p.get_by_name("sink"), _p.get_by_name("asrc")
+    _start = _clk.get_time()
+    _dev_events, _errors = [], []
+    while _clk.get_time() - _start < _DEV_S * S:
+        m = _bus.timed_pop(200 * Gst.MSECOND)
+        if m is None:
+            continue
+        if m.type == Gst.MessageType.ERROR:
+            _errors.append(m.parse_error()[0].message)
+            break
+        if m.type == Gst.MessageType.ELEMENT and m.get_structure().get_name() == "mrasrc-event":
+            _dev_events.append(sdict(m.get_structure()))
+    _st = sdict(_asrc.get_property("stats"))
+    _f = {k: _sink.get_property(k) for k in ("fill-first-ns", "fill-min-ns", "fill-max-ns", "fill-p05-ns",
+                                              "fill-p95-ns", "fill-last-ns", "resyncs", "calibrations",
+                                              "underruns", "renders")}
+    _p.set_state(Gst.State.NULL)
+    check(f"the sink never asked to skew: its clock's calibration unchanged after the first render "
+          f"({_f['calibrations']} changes in {_f['renders']} renders); no resync, no underrun "
+          f"({_f['resyncs']}, {_f['underruns']})",
+          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and _f["resyncs"] == 0
+          and _f["underruns"] == 0)
+    _rel = {k: (_f[f"fill-{k}-ns"] - _f["fill-first-ns"]) / MS for k in ("p05", "p95", "last", "min", "max")}
+    # Each 5 s window keeps its top fill, its most punctual render's: a producer held late reads low,
+    # never high. The 5th to 95th percentile and the last window show the fill; the extremes, windows
+    # starved throughout.
+    check(f"the ring's fill held within +-2 ms of its first settled value over {_DEV_S - 10} s of house time: "
+          f"5 s windows' tops p05 {_rel['p05']:+.3f}, p95 {_rel['p95']:+.3f}, the last {_rel['last']:+.3f} ms around "
+          f"{_f['fill-first-ns'] / MS:.1f} ms (extremes {_rel['min']:+.3f} .. {_rel['max']:+.3f}; 40 ppm uncorrected "
+          f"drains 24 ms; load {os.getloadavg()[0]:.1f}: a starved producer dips the fill)",
+          all(abs(_rel[k]) <= 2 for k in ("p05", "p95", "last")))
+    check(f"mrasrc-stats: mode device, the device lock locked at {_st.get('device-ppb', 0) / 1000:+.3f} ppm (+40), "
+          f"the ratio its term ({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), {_st.get('device-pairs', 0)} pairs, no source "
+          "lock", _st.get("mode") == "device" and _st.get("state") == "locked"
+          and abs(_st.get("device-ppb", 0) - 40000) <= 100 and abs(_st.get("ratio-ppb", 0) - 40000) <= 200
+          and _st.get("device-pairs", 0) > 20000 and _st.get("source-ppb") == 0)
+    _reasons = [e["reason"] for e in _dev_events if e["kind"] == "device-relock"]
+    check(f"device relocks only at the start, from the sink's own calibration ({_reasons})",
+          set(_reasons) <= {"new-caps", "sync-latency"} and "sync-latency" in _reasons
+          and not [e for e in _dev_events if e["kind"] != "device-relock"])
+
+print("\n--- decode and device together: a source 40 ppm fast into a device 20 ppm slow (2x clock, 90 s) ---")
+if os.path.exists(_TEST_SO):
+    import threading
+
+    _clk = GObject.new(GObject.type_from_name("MrTestClock"))
+    _clk.set_property("speed", 2)
+    _p = Gst.parse_launch(
+        "appsrc name=src format=time block=true max-bytes=65536 ! mrasrc name=asrc bypass-below-ppm=0.5 "
+        "device-sink=sink ! mrtestaudiosink name=sink ppm=-20 device-ns=1000000000 slave-method=custom "
+        "sync=true buffer-time=2000000 latency-time=20000")
+    _p.use_clock(_clk)
+    _src = _p.get_by_name("src")
+    cap = Capture(num=1000040, den=1000000, formula=True, channels=2)
+    _src.set_property("caps", Gst.Caps.from_string(cap.caps()))
+    _stop = threading.Event()
+
+    def _feed():
+        i = 0
+        while not _stop.is_set():   # the sink's ring paces the pushes
+            c = cap.capture_ns(i)
+            b = Gst.Buffer.new_wrapped(cap.render(i, BUF))
+            b.pts = -((-(c * 9 // 100000) * 100000) // 9) - H0
+            if i == 0:
+                b.set_flags(Gst.BufferFlags.DISCONT)
+            if _src.emit("push-buffer", b) != Gst.FlowReturn.OK:
+                break
+            i += BUF
+
+    _p.set_state(Gst.State.PLAYING)
+    _th = threading.Thread(target=_feed, daemon=True)
+    _th.start()
+    _bus = _p.get_bus()
+    _start, _ev = _clk.get_time(), []
+    while _clk.get_time() - _start < 90 * S:   # the engage's 1 ms phase steered out (tau 10 s)
+        m = _bus.timed_pop(200 * Gst.MSECOND)
+        if m is not None and m.type == Gst.MessageType.ELEMENT and m.get_structure().get_name() == "mrasrc-event":
+            _ev.append(sdict(m.get_structure()))
+    _st = sdict(_p.get_by_name("asrc").get_property("stats"))
+    _sk = {k: _p.get_by_name("sink").get_property(k) for k in ("calibrations", "resyncs")}
+    _stop.set()
+    _p.set_state(Gst.State.NULL)
+    _eng = [e for e in _ev if e["kind"] == "engaged"]
+    check(f"engaged ({[e['reason'] for e in _eng]}, source {_eng[0]['source-ppb'] / 1000 if _eng else 0:+.2f} ppm), then "
+          f"mode {_st.get('mode')}: the source term and the device term ({_st.get('device-ppb', 0) / 1000:+.3f} ppm) "
+          f"in one ratio ({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm: -40 + -20 within 1 ppm, 65 s after the engage), "
+          f"no skew, no resync ({_sk})",
+          len(_eng) == 1 and abs(_eng[0]["source-ppb"] - 40000) <= 2000 and _st.get("mode") == "decode+device"
+          and abs(_st.get("device-ppb", 0) + 20000) <= 500 and abs(_st.get("ratio-ppb", 0) + 60000) <= 1000
+          and _sk == {"calibrations": 0, "resyncs": 0})
+
+print("\n--- a device-sink that cannot be followed is an error naming it ---")
+_rows = [("mrtestaudiosink name=sink slave-method=skew", "its slave-method is not custom (3)"),
+         ("fakesink name=sink", "not a GstAudioBaseSink"),
+         ("fakesink name=other", "no element of that name downstream")]
+for desc, what in _rows if os.path.exists(_TEST_SO) else _rows[1:]:
+    _p = Gst.parse_launch(f"audiotestsrc num-buffers=4 ! mrasrc name=asrc device-sink=sink ! {desc}")
+    ret = _p.set_state(Gst.State.PAUSED)
+    m = _p.get_bus().timed_pop_filtered(2 * Gst.SECOND, Gst.MessageType.ERROR)
+    msg = m.parse_error()[0].message if m else ""
+    check(f"{desc.split()[0]} {desc.split()[-1]}: the state change fails, an error from asrc naming it "
+          f"({msg!r})", ret == Gst.StateChangeReturn.FAILURE and m is not None and m.src.get_name() == "asrc"
+          and 'device-sink "sink"' in msg and what in msg)
+    _p.set_state(Gst.State.NULL)
 
 if _failures:
     print(f"\n{len(_failures)} FAILURE(S) in gst_mrasrc_element_test.py")

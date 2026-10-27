@@ -1,7 +1,7 @@
-// asrc_servo: the ASRC phase servo (WI-P1-8, portable part). A synthetic capture runs
-// through a model of GstAudioResampler's frame accounting; the ground truth is the
-// capture time of each output frame's content. Integer-only, so the printed checksums
-// compare across machines. `--sweep N` prints seed statistics.
+// asrc_servo: the ASRC phase servo (WI-P1-8, portable part; WI-P3-5's decode bypass, device term and
+// product ratio, as py/asrc_bypass_ref_test.py holds them). A synthetic capture or decode runs through a
+// model of GstAudioResampler's frame accounting against each output frame's capture or content time.
+// Integer-only, so the printed checksums compare across machines. `--sweep N` prints seed statistics.
 #include <algorithm>
 #include <climits>
 #include <cstdint>
@@ -108,6 +108,8 @@ class ModelResampler {
         return (hist0_ + TAPS / 2 - 1) * SUB - SUB / OVERSAMPLE + phase_ * (full_ / out_) * SUB / full_;
     }
     uint64_t updates() const { return updates_; }
+    int64_t in() const { return in_; }     // the reduced rates
+    int64_t out() const { return out_; }
 
   private:
     int64_t full_;                          // out_rate as passed: out_hz * 1000
@@ -719,6 +721,513 @@ void test_determinism() {
     std::printf("  checksum %016llx\n", (unsigned long long)a.sum);
 }
 
+// --- Phase 3 (WI-P3-5): decode bypass, the device term, the product ratio ------------------
+// The reference test's cases: a source fast by p runs fs (1 + p) frames per house second, its PTS floored
+// to 90 kHz ticks (a mux) and ceil'd back to ns (the formula demux); the driver is the element's flow.
+
+Fnv g_dec;   // Phase 3's runs fold in here, beside Phase 1's g_all
+
+constexpr int64_t T0 = H0 + 7 * US;
+
+int64_t source_time(int64_t t0, int64_t fs, int64_t ppb, int64_t n) {
+    return t0 + (int64_t)((__int128)n * S * S / ((__int128)fs * (S + ppb)));
+}
+
+int64_t content_of(int64_t pos, int64_t fs, int64_t ppb, int64_t t0 = T0) {
+    __int128 num = (__int128)pos * S * S, den = (__int128)SUB * fs * (S + ppb);
+    __int128 q = num / den;
+    if (num % den != 0 && (num < 0) != (den < 0)) q -= 1;
+    return t0 + (int64_t)q;
+}
+
+int64_t formula_pts(int64_t t) {
+    const int64_t ticks = floor_div(t * 9, 100000);
+    return -floor_div(-ticks * 100000, 9);
+}
+
+struct DOut {
+    int64_t label, end;   // its PTS, and the counter's label after it (0 when passed)
+    int64_t frames;
+    bool discont;
+    int64_t pos;          // input position of its first frame, 1/SUB frames of the global index
+    int64_t buf;          // the push it came from; -1 a drained tail
+};
+
+// mrasrc's flow (gstmrasrc.cpp) on the servo and the resampler model.
+class Driver {
+  public:
+    static constexpr int64_t HISTORY = 64;
+    Driver(int64_t in_hz, int64_t out_hz, int64_t bypass_ppb, bool device)
+        : sv((int32_t)in_hz, (int32_t)out_hz, cfg(bypass_ppb, device)), in_hz_(in_hz), out_hz_(out_hz) {
+        sv.set_delay(ModelResampler::DELAY);
+    }
+    static AsrcServoConfig cfg(int64_t bypass_ppb, bool device) {
+        AsrcServoConfig c;
+        c.lock = bypass_ppb > 0 ? asrc_decode_lock_config() : asrc_lock_config();
+        c.bypass_ppb = bypass_ppb;
+        c.device = device;
+        return c;
+    }
+    void device_pair(int64_t itime, int64_t etime, int64_t read = 0) { dev.feed(itime, etime, read); }
+    void gap() {
+        if (sv.end_epoch()) drain();
+    }
+    AsrcServo::Command push(int64_t pts, uint32_t frames, bool discont) {
+        if (discont && !cmds.empty()) gap();   // the element ends the epoch before a DISCONT buffer
+        const int64_t dppb = sv.config().device ? dev.ppb() : 0;
+        const AsrcServo::Command c = sv.push(pts, frames, discont, dppb);
+        if (locked_at < 0 && sv.lock().phase() == ClockLock::Phase::locked) locked_at = pts;
+        const int64_t i = (int64_t)cmds.size();
+        cmds.push_back(c);
+        this->pts.push_back(pts);
+        dppbs.push_back(dppb);
+        for (const AsrcEvent& e : sv.take_events()) {
+            events.push_back({i, e});
+            g_dec.add((int64_t)e.kind);
+            g_dec.add(e.house_ns);
+            g_dec.add(e.value);
+            g_dec.add(e.phase_ns);
+        }
+        ratios.push_back(sv.stats().ratio_ppb);
+        g_dec.add(c.in_rate);
+        g_dec.add((int64_t)c.pass * 4 + c.engage * 2 + c.relock);
+        if (c.drain) drain();
+        if (c.relock) passed_ = 0;
+        if (c.engage) {
+            const int64_t h = std::min(passed_, HISTORY);
+            rs.reset(new ModelResampler(c.in_rate, c.out_rate));
+            base_ = n_ - h;
+            cur_ = c.in_rate;
+            const int64_t k0 = rs->out_frames(h);
+            rs->resample(h, k0);
+            discard_ = h - k0;
+        }
+        if (c.pass) {
+            outputs.push_back({pts, 0, frames, discont, n_ * SUB, i});
+            sv.produced(frames);
+            passed_ += frames;
+            n_ += frames;
+            return c;
+        }
+        if (!rs) {
+            rs.reset(new ModelResampler(c.in_rate, c.out_rate));
+            base_ = n_;
+            cur_ = c.in_rate;
+        }
+        if (c.in_rate != cur_) {
+            rs->update(c.in_rate, c.out_rate);
+            cur_ = c.in_rate;
+        }
+        const int64_t fed = frames - c.skip, k = rs->out_frames(fed);
+        int64_t pos = base_ * SUB + rs->position();
+        rs->resample(fed, k);
+        const int64_t d = std::min(discard_, k);
+        discard_ -= d;
+        pos += d * SUB * rs->in() / rs->out();   // the first kept output: d outputs on
+        const int64_t label = sv.next_pts();
+        sv.produced((uint32_t)(k - d));
+        if (k - d) outputs.push_back({label, sv.next_pts(), k - d, c.relock, pos, i});
+        g_dec.add(label);
+        g_dec.add(k - d);
+        n_ += frames;
+        return c;
+    }
+    std::vector<std::pair<int64_t, AsrcEvent>> of(AsrcEvent::Kind k) const {
+        std::vector<std::pair<int64_t, AsrcEvent>> out;
+        for (const auto& e : events)
+            if (e.second.kind == k) out.push_back(e);
+        return out;
+    }
+
+    AsrcServo sv;
+    AsrcDeviceLock dev;
+    std::vector<DOut> outputs;
+    std::vector<AsrcServo::Command> cmds;
+    std::vector<int64_t> pts, dppbs, ratios;
+    std::vector<std::pair<int64_t, AsrcEvent>> events;
+    int64_t locked_at = -1;   // the PTS of the first buffer the lock was locked after
+
+  private:
+    void drain() {
+        if (rs) {
+            const int64_t k = rs->out_frames(ModelResampler::DELAY);
+            const int64_t pos = base_ * SUB + rs->position(), label = sv.tail_pts_at(0);
+            rs->resample(ModelResampler::DELAY, k);
+            sv.tail_produced((uint32_t)k);
+            if (k) outputs.push_back({label, sv.tail_pts_at(0), k, false, pos, -1});
+            g_dec.add(label);
+            g_dec.add(k);
+        }
+        rs.reset();
+    }
+
+    int64_t in_hz_, out_hz_;
+    std::unique_ptr<ModelResampler> rs;
+    int64_t base_ = 0, cur_ = 0, n_ = 0, passed_ = 0, discard_ = 0;
+};
+
+// Frames of `frame` samples of a source fast by ppb, from frame `start`; the first DISCONT.
+// `stop` ends the run; `pairs` feeds the device lock before each buffer.
+template <typename Stop, typename Pairs>
+int64_t feed(Driver& d, int64_t fs, int64_t frame, int64_t ppb, int64_t secs, Stop stop, Pairs pairs,
+             int64_t t0 = T0, int64_t start = 0) {
+    int64_t k = start / frame;
+    for (; k * frame < start + secs * fs; k++) {
+        const int64_t t = source_time(t0, fs, ppb, k * frame);
+        pairs(d, t);
+        d.push(formula_pts(t), (uint32_t)frame, k * frame == start);
+        if (stop(d)) {
+            k++;
+            break;
+        }
+    }
+    return k * frame;
+}
+
+auto no_stop = [](const Driver&) { return false; };
+auto no_pairs = [](Driver&, int64_t) {};
+
+// A sink's custom-slaving readings: device time fast by ppb.
+auto device_pairs(int64_t ppb) {
+    return [ppb](Driver& d, int64_t t) {
+        const int64_t e = t - T0;
+        if (e >= 0) d.device_pair(e + (int64_t)((__int128)e * ppb / S), e);
+    };
+}
+
+bool engaged_at(const Driver& d, int64_t* at, const char** why, AsrcEvent* ev) {
+    const auto e = d.of(AsrcEvent::Kind::engaged);
+    if (e.empty()) return false;
+    *at = e[0].second.house_ns - T0;
+    *why = e[0].second.reason;
+    *ev = e[0].second;
+    return true;
+}
+
+void test_decode_constants() {
+    std::printf("\n  Phase 3: decode bypass, device term, product ratio\n");
+    const ClockLockConfig d = asrc_decode_lock_config(), c = asrc_lock_config();
+    CHECK("decode lock: the capture lock with a 10-bucket first fit (S16; capture 30)",
+          d.rate_buckets_min == 10 && c.rate_buckets_min == 30 && d.step_ns == c.step_ns &&
+              d.step_falls == c.step_falls && d.bucket_ns == c.bucket_ns && d.rate_buckets_max == c.rate_buckets_max &&
+              d.rate_tau_ns == c.rate_tau_ns && d.offset_buckets == c.offset_buckets && d.acquire_ns == c.acquire_ns &&
+              d.slew_track_ppm == c.slew_track_ppm && d.step_hold_ns == c.step_hold_ns && d.backlog_ns == 0 &&
+              d.step_fall_hold_ns == 0);
+    const AsrcServoConfig dc = asrc_decode_config(500, false);
+    CHECK("decode servo: phase bound 1 ms, hold 10 s, on the decode lock (C-7)",
+          dc.bypass_phase_ns == MS && dc.bypass_hold_ns == 10 * S && dc.lock.rate_buckets_min == 10 &&
+              dc.bypass_ppb == 500 && !dc.device);
+    CHECK("asrc_rate_of: a lock's eps to its clock's rate, positive fast, rounded",
+          asrc_rate_of(0) == 0 && asrc_rate_of(-40000) == 40002 && asrc_rate_of(40000) == -39998 &&
+              asrc_rate_of(-1) == 1);
+    const char* m[4];
+    int i = 0;
+    for (int64_t b : {0LL, 500LL})
+        for (bool dv : {false, true}) m[i++] = asrc_mode_name(AsrcServo(48000, 48000, Driver::cfg(b, dv)).mode());
+    CHECK("modes before any buffer: capture, device, bypass, device (S17: bypass 0 without device-sink is capture, "
+          "with it the device term alone)",
+          !std::strcmp(m[0], "capture") && !std::strcmp(m[1], "device") && !std::strcmp(m[2], "bypass") &&
+              !std::strcmp(m[3], "device") && !std::strcmp(asrc_event_name(AsrcEvent::Kind::engaged), "engaged") &&
+              !std::strcmp(asrc_mode_name(AsrcServo::Mode::decode), "decode") &&
+              !std::strcmp(asrc_mode_name(AsrcServo::Mode::decode_device), "decode+device"));
+}
+
+void test_decode_house_rate() {
+    std::printf("\n  house-rate streams never engage, 1 h simulated (0.5 ppm bound)\n");
+    struct Row {
+        const char* name;
+        int64_t fs;
+    };
+    for (const Row& w : {Row{"48 kHz AAC, exact 1,920-tick frames", 48000},
+                         Row{"44.1 kHz AAC, PTS quantised to ticks (+-5.5 us)", 44100}}) {
+        Driver d(w.fs, w.fs, 500, false);
+        int64_t worst = 0;
+        feed(d, w.fs, 1024, 0, 3600,
+             [&](const Driver& x) {
+                 if (x.sv.lock().phase() == ClockLock::Phase::locked) worst = std::max(worst, iabs(x.sv.lock().ppb()));
+                 return false;
+             },
+             no_pairs);
+        const AsrcServo::Stats st = d.sv.stats();
+        bool all_passed = true;
+        for (const auto& c : d.cmds) all_passed = all_passed && c.pass;
+        char name[300];
+        std::snprintf(name, sizeof name, "%s: never engages (%zu engages, mode %s), every buffer passed unchanged, "
+                      "max |eps| once locked %lld ppb, phase %+.1f us at 1 h", w.name,
+                      d.of(AsrcEvent::Kind::engaged).size(), asrc_mode_name(st.mode), (long long)worst,
+                      st.phase_err_ns / 1e3);
+        CHECK(name, d.of(AsrcEvent::Kind::engaged).empty() && st.mode == AsrcServo::Mode::bypass && all_passed &&
+                        worst < 100 && st.out_frames == st.in_frames && st.relocks == 0 &&
+                        iabs(st.phase_err_ns) < 50 * US);
+    }
+}
+
+void test_decode_foreign() {
+    std::printf("\n  a source on its own clock engages\n");
+    for (int64_t ppb : {3000LL, -3000LL}) {
+        Driver d(48000, 48000, 500, false);
+        feed(d, 48000, 1024, ppb, 60, [](const Driver& x) { return !x.of(AsrcEvent::Kind::engaged).empty(); },
+             no_pairs);
+        int64_t at = 0;
+        const char* why = "";
+        AsrcEvent e{};
+        const bool ok = engaged_at(d, &at, &why, &e);
+        const int64_t held = ok && d.locked_at >= 0 ? at - (d.locked_at - T0) : -1;
+        char name[260];
+        std::snprintf(name, sizeof name, "%+.0f ppm: engages within 30 s on the ratio rule, held 10 s of lock first "
+                      "(%.3f s, %.3f s after the lock, %s; source %+.3f ppm, phase %+.1f us)", ppb / 1e3, at / 1e9,
+                      held / 1e9, why, e.value / 1e3, e.phase_ns / 1e3);
+        CHECK(name, ok && at <= 30 * S && held >= 10 * S && !std::strcmp(why, "ratio") && iabs(e.value - ppb) <= 500);
+    }
+    Driver d(48000, 48000, 500, false);
+    feed(d, 48000, 1024, 300, 3600, [](const Driver& x) { return !x.of(AsrcEvent::Kind::engaged).empty(); }, no_pairs);
+    int64_t at = 0;
+    const char* why = "";
+    AsrcEvent e{};
+    const bool ok = engaged_at(d, &at, &why, &e);
+    char name[240];
+    std::snprintf(name, sizeof name, "+0.3 ppm: inside the ratio bound, engages when the phase passes 1 ms (%.2f min, "
+                  "%s, phase %+.1f us; 1 ms at 0.3 ppm is 55.6 min)", at / 60e9, why, e.phase_ns / 1e3);
+    CHECK(name, ok && !std::strcmp(why, "phase") && at >= 54 * 60 * S && at <= 57 * 60 * S && iabs(e.phase_ns) > MS);
+}
+
+void test_decode_engaged() {
+    std::printf("\n  engaged: a house-rate counter (+40 ppm source, 10 min after the engage)\n");
+    Driver d(48000, 48000, 500, false);
+    feed(d, 48000, 1024, 40000, 690, no_stop, no_pairs);
+    int64_t at = 0;
+    const char* why = "";
+    AsrcEvent e{};
+    const bool ok = engaged_at(d, &at, &why, &e);
+    std::vector<DOut> late;
+    for (const DOut& o : d.outputs)
+        if (ok && o.label - T0 >= at + 60 * S) late.push_back(o);
+    int64_t lo = INT64_MAX, hi = INT64_MIN;
+    for (const DOut& o : late) {
+        const int64_t err = o.label - content_of(o.pos, 48000, 40000);
+        lo = std::min(lo, err);
+        hi = std::max(hi, err);
+    }
+    char name[300];
+    std::snprintf(name, sizeof name, "+40 ppm: engaged at %.2f s (%s); from 60 s after it every output labelled within "
+                  "1 frame of its content time (%+.2f .. %+.2f us)", at / 1e9, why, lo / 1e3, hi / 1e3);
+    CHECK(name, ok && at <= 30 * S && !late.empty() && in_frame(lo, 48000) && in_frame(hi, 48000) &&
+                    d.sv.mode() == AsrcServo::Mode::decode);
+    const int64_t span = late.empty() ? 0 : content_of(late.back().pos, 48000, 40000) - content_of(late[0].pos, 48000, 40000);
+    int64_t frames = 0;
+    for (size_t i = 0; i + 1 < late.size(); i++) frames += late[i].frames;
+    std::snprintf(name, sizeof name, "... %lld frames over %.6f s of content (house) time: 48,000 per house second +-1 "
+                  "(%+.3f frames)", (long long)frames, span / 1e9, (frames * S - span * 48000) / 1e9);
+    CHECK(name, span >= 600 * S && iabs(frames * S - span * 48000) <= S);
+    size_t i_late = 0;
+    while (i_late < d.pts.size() && d.pts[i_late] - T0 < at + 60 * S) i_late++;
+    int64_t sum = 0, n = 0, dev = 0;
+    for (size_t i = i_late; i < d.ratios.size(); i++, n++) {
+        sum += d.ratios[i];
+        dev = std::max(dev, iabs(d.ratios[i] + 39998));
+    }
+    const int64_t mean = n ? floor_div(sum, n) : 0;
+    std::snprintf(name, sizeof name, "... the ratio follows the source: out/in - 1 averages %+.4f ppm from 60 s after "
+                  "the engage (-39.998 for +40 ppm, +-0.02), each buffer within 3 ppm of it", mean / 1e3);
+    CHECK(name, n > 0 && iabs(mean + 39998) <= 20 && dev <= 3000);
+    bool contiguous = true, discont = false;
+    const int64_t i0 = ok ? d.of(AsrcEvent::Kind::engaged)[0].first : 0;
+    for (size_t i = 1; i < d.outputs.size(); i++) {
+        discont = discont || d.outputs[i].discont;
+        if (d.outputs[i - 1].buf >= i0 && d.outputs[i].buf >= i0)
+            contiguous = contiguous && d.outputs[i - 1].end == d.outputs[i].label;
+    }
+    CHECK("... no relock, no DISCONT after the first output, the counter contiguous from the engage",
+          d.sv.stats().relocks == 0 && !discont && contiguous);
+}
+
+void test_decode_seamless() {
+    std::printf("\n  the engage is seamless (from pass-through)\n");
+    Driver d(48000, 48000, 500, false);
+    feed(d, 48000, 1024, 40000, 40,
+         [](const Driver& x) {
+             const auto e = x.of(AsrcEvent::Kind::engaged);
+             return !e.empty() && (int64_t)x.cmds.size() > e[0].first + 2;
+         },
+         no_pairs);
+    const auto eng = d.of(AsrcEvent::Kind::engaged);
+    const int64_t i0 = eng.empty() ? 0 : eng[0].first;
+    const DOut* last = nullptr;
+    const DOut* first = nullptr;
+    for (const DOut& o : d.outputs) {
+        if (o.buf == i0 - 1) last = &o;
+        if (o.buf == i0 && !first) first = &o;
+    }
+    const bool have = !eng.empty() && last && first;
+    const AsrcServo::Command c0 = have ? d.cmds[i0] : AsrcServo::Command{};
+    char name[300];
+    std::snprintf(name, sizeof name, "the engaging buffer is primed (engage, not passed) and its first output labelled "
+                  "with its PTS (%lld ns = %lld ns), no DISCONT", have ? (long long)(first->label - T0) : 0LL,
+                  have ? (long long)(d.pts[i0] - T0) : 0LL);
+    CHECK(name, have && c0.engage && !c0.pass && first->label == d.pts[i0] && !first->discont);
+    const double pos = have ? (double)first->pos / SUB - (double)i0 * 1024 : 9;
+    std::snprintf(name, sizeof name, "... that output is the engaging buffer's first frame: nothing dropped or repeated "
+                  "(position %+.4f frames from it; GStreamer centres 1/8 frame early)", pos);
+    CHECK(name, have && pos > -0.225 && pos < -0.025);
+    std::snprintf(name, sizeof name, "... after the last passed buffer, which ended on that frame (%lld = %lld); the "
+                  "engaging buffer gives its frames less the lookahead (%lld: 1024 - 32 +-1)",
+                  have ? (long long)(last->pos / SUB + last->frames) : 0LL, (long long)(i0 * 1024),
+                  have ? (long long)first->frames : 0LL);
+    CHECK(name, have && last->pos / SUB + last->frames == i0 * 1024 && iabs(first->frames - (1024 - 32)) <= 1);
+}
+
+void test_decode_breaks() {
+    std::printf("\n  engaged until a DISCONT or GAP, then measured afresh\n");
+    for (const bool gap : {false, true}) {
+        Driver d(48000, 48000, 500, false);
+        const int64_t n = feed(d, 48000, 1024, 40000, 40, no_stop, no_pairs);
+        const AsrcServo::Mode before = d.sv.mode();
+        const int64_t end = d.sv.next_pts();
+        const size_t nout = d.outputs.size();
+        if (gap) d.gap();
+        const int64_t t = source_time(T0, 48000, 40000, n) + 300 * MS;
+        const AsrcServo::Command c = d.push(formula_pts(t), 1024, !gap);
+        const auto rel = d.of(AsrcEvent::Kind::relock);
+        const AsrcServo::Stats st = d.sv.stats();
+        const bool two = d.outputs.size() == nout + 2;
+        const char* kind = gap ? "gap" : "discont";
+        char name[300];
+        std::snprintf(name, sizeof name, "%s: engaged before (%s); the resampler's tail leaves first on the old counter "
+                      "(%lld frames at %lld ns from its end), then the buffer passes unchanged: mode %s, one relock",
+                      kind, asrc_mode_name(before), two ? (long long)d.outputs[nout].frames : 0LL,
+                      two ? (long long)(d.outputs[nout].label - end) : 0LL, asrc_mode_name(st.mode));
+        CHECK(name, before == AsrcServo::Mode::decode && two && d.outputs[nout].buf == -1 &&
+                        d.outputs[nout].label == end && iabs(d.outputs[nout].frames - 32) <= 1 && c.pass &&
+                        d.outputs[nout + 1].label == formula_pts(t) && st.mode == AsrcServo::Mode::bypass &&
+                        rel.size() == 1 && !std::strcmp(rel[0].second.reason, kind) && !c.drain);
+        std::snprintf(name, sizeof name, "%s: the lock measured afresh (source %lld ppb, %s), the jump against the "
+                      "tail's end %.3f ms", kind, (long long)st.source_ppb, asrc_state_name(st.state),
+                      rel.empty() ? 0.0 : rel[0].second.value / 1e6);
+        CHECK(name, st.source_ppb == 0 && st.state == AsrcServo::State::acquiring && !rel.empty() &&
+                        rel[0].second.value == formula_pts(t) - d.sv.tail_pts_at(0));
+    }
+}
+
+void test_decode_composite() {
+    std::printf("\n  one resampler: the commanded ratio is the decode term times the device term\n");
+    const int64_t combos[4][2] = {{500000, -300000}, {-500000, 300000}, {40000, -40000}, {-800000, -150000}};
+    for (const auto& cb : combos) {
+        const int64_t src = cb[0], devp = cb[1];
+        Driver d(48000, 48000, 500, true);
+        feed(d, 48000, 1024, src, 60, no_stop, device_pairs(devp));
+        const AsrcServo::Stats st = d.sv.stats();
+        const int64_t dppb = d.dppbs.back(), dec = st.decode_ppb, total = st.ratio_ppb;
+        const int64_t exact = floor_div((S + dec) * S + (S + dppb) / 2, S + dppb) - S;
+        // The product in ppb to 1e-3 ppb, and the sum a mutant would command.
+        const int64_t product = (int64_t)(((__int128)(S + dec) * S * 1000 + (S + dppb) / 2) / (S + dppb)) - S * 1000;
+        const int64_t sum = dec - dppb;
+        char name[300];
+        std::snprintf(name, sizeof name, "source %+.0f ppm, device %+.0f ppm: mode %s, ratio %+.4f ppm = (1 + decode "
+                      "%+.4f) / (1 + device eps %+.4f) - 1 within 0.01 ppm (a sum is %+.4f ppm off)", src / 1e3, devp / 1e3,
+                      asrc_mode_name(st.mode), total / 1e3, dec / 1e3, dppb / 1e3, (sum - total) / 1e3);
+        CHECK(name, st.mode == AsrcServo::Mode::decode_device && total == exact && iabs(total * 1000 - product) <= 10000 &&
+                        (iabs(src) < 100000 || iabs(sum - total) > 10) && iabs(asrc_rate_of(dppb) - devp) <= 1000);
+        const int32_t rate = d.cmds.back().in_rate;
+        const int64_t want = (2 * 48000LL * 1000 * (S + dppb) + (S + dec)) / (2 * (S + dec));
+        std::snprintf(name, sizeof name, "... in_rate %d = round(48,000,000 x (1 + device eps) / (1 + decode eps)) = %lld",
+                      rate, (long long)want);
+        CHECK(name, iabs(rate - want) <= 1);
+    }
+}
+
+void test_device_only() {
+    std::printf("\n  bypass-below-ppm 0 with device-sink: the device term alone (S17)\n");
+    Driver d(48000, 48000, 0, true);
+    auto pairs = device_pairs(40000);
+    Lcg g(5);
+    for (int64_t k = 0; k < 4000; k++) {   // PTS with 1 ms of jitter: nothing locks to them
+        const int64_t t = T0 + k * 1024 * S / 48000;
+        pairs(d, t);
+        if (k == 2500) d.gap();
+        d.push(t + (int64_t)(g.next() % (uint32_t)MS), 1024, k == 0);
+    }
+    const AsrcServo::Stats st = d.sv.stats();
+    size_t same = 0;
+    for (size_t i = 0; i < d.cmds.size(); i++) {
+        int64_t want = (2 * 48000LL * 1000 * (S + d.dppbs[i]) + S) / (2 * S);
+        if (want == 48000LL * 1000) want--;
+        same += d.cmds[i].in_rate == want;
+    }
+    const int64_t dppb = d.dppbs.back();
+    char name[300];
+    std::snprintf(name, sizeof name, "mode device, no source lock (source %lld ppb), every buffer's ratio the device term "
+                  "alone (in_rate = round(48,000,000 x (1 + device eps)), %zu of %zu; at the end %d for eps %lld ppb); "
+                  "jittered PTS steer nothing", (long long)st.source_ppb, same, d.cmds.size(), d.cmds.back().in_rate,
+                  (long long)dppb);
+    CHECK(name, st.mode == AsrcServo::Mode::device && st.source_ppb == 0 && same == d.cmds.size() &&
+                    iabs(st.ratio_ppb - asrc_rate_of(dppb)) <= 1 && iabs(asrc_rate_of(dppb) - 40000) <= 200);
+    std::vector<size_t> starts;
+    bool contiguous = true;
+    for (size_t i = 0; i < d.outputs.size(); i++) {
+        if (i == 0 || d.outputs[i].discont) starts.push_back(i);
+        else contiguous = contiguous && d.outputs[i - 1].end == d.outputs[i].label;
+    }
+    const auto rel = d.of(AsrcEvent::Kind::relock);
+    std::snprintf(name, sizeof name, "labels: a contiguous counter from the first PTS, re-anchored at the GAP alone "
+                  "(%zu relock(s); %zu epochs from the PTS)", rel.size(), starts.size());
+    CHECK(name, rel.size() == 1 && !std::strcmp(rel[0].second.reason, "gap") && starts.size() == 2 && contiguous &&
+                    d.outputs[starts[0]].label == d.pts[0] && d.outputs[starts[1]].label == d.pts[2500]);
+}
+
+// A sink's readings every 21 ms: etime, then itime read up to 2 us later, 1 in 50 after a preemption
+// of up to `preempt` ns; read the caller's re-read after them. The first reads the device early.
+struct Reading {
+    int64_t itime, etime, read;
+};
+std::vector<Reading> device_readings(int64_t ppm, int64_t secs, uint64_t seed, int64_t preempt, int64_t first_early) {
+    Lcg g(seed);
+    std::vector<Reading> out;
+    for (int64_t t = 0; t < secs * S; t += 21333333) {
+        int64_t lag = (int64_t)(g.next() % (uint32_t)(2 * US));
+        if (preempt && g.next() % 50 == 0) lag += (int64_t)(g.next() % (uint32_t)preempt);
+        const int64_t ti = t + lag;   // house time of itime's read
+        const int64_t itime = ti + ti * ppm / 1000000 + (t == 0 ? first_early : 0);
+        out.push_back({itime, t, lag + (int64_t)(g.next() % (uint32_t)(2 * US))});
+    }
+    return out;
+}
+
+void test_device_lock() {
+    std::printf("\n  the device lock on (itime, etime)\n");
+    for (int64_t ppm : {40LL, -40LL}) {
+        AsrcDeviceLock dl;
+        int64_t first_fit = -1;
+        for (const Reading& r : device_readings(ppm, 120, (uint64_t)(ppm + 100), 500 * US, 330 * US)) {
+            dl.feed(r.itime, r.etime, r.read);
+            if (first_fit < 0 && dl.lock().has_fit()) first_fit = r.etime;
+        }
+        char name[240];
+        std::snprintf(name, sizeof name, "device %+lld ppm, 1 in 50 readings preempted up to 0.5 ms, the first 0.33 ms "
+                      "early: first fit at %.1f s, rate %+.4f ppm at 120 s (within 0.01 ppm), locked", (long long)ppm,
+                      first_fit / 1e9, dl.rate_ppb() / 1e3);
+        CHECK(name, iabs(dl.rate_ppb() - ppm * 1000) <= 10 && dl.locked() && first_fit >= 0 && first_fit <= 12 * S);
+        const int64_t before = dl.ppb();
+        dl.discont();
+        std::snprintf(name, sizeof name, "device %+lld ppm: a sink discontinuity relocks it, keeping the rate "
+                      "(%lld -> %lld ppb)", (long long)ppm, (long long)before, (long long)dl.ppb());
+        CHECK(name, dl.ppb() == before && dl.relocks() == 1 && !dl.locked());
+        g_dec.add(before);
+    }
+    // The re-read's own effect: the same readings at their etime.
+    int64_t worst[2] = {0, 0};
+    for (int k = 0; k < 2; k++) {
+        AsrcDeviceLock dl;
+        for (const Reading& r : device_readings(40, 30, 7, 500 * US, 330 * US)) {
+            dl.feed(r.itime, r.etime, k == 0 ? r.read : 0);
+            if (r.etime >= 15 * S && dl.lock().has_fit()) worst[k] = std::max(worst[k], iabs(dl.rate_ppb() - 40000));
+        }
+    }
+    char name[200];
+    std::snprintf(name, sizeof name, "the re-read matters: worst rate error 15-30 s %lld ppb with it, %lld ppb at etime "
+                  "alone", (long long)worst[0], (long long)worst[1]);
+    CHECK(name, worst[0] <= 50 && worst[1] > 100);
+}
+
 int sweep(int n) {
     std::printf("sweep: %d seeds x 3600 s per device rate, 1024-frame buffers, 1 ms jitter; |e| in us\n", n);
     for (int64_t ppb : {0LL, 50000LL, -50000LL, 500000LL, -500000LL}) {
@@ -768,5 +1277,15 @@ int main(int argc, char** argv) {
     test_shapes();
     test_determinism();
     std::printf("\n  CHECKSUM asrc_servo %016llx (compare across machines)\n", (unsigned long long)g_all.h);
+    test_decode_constants();
+    test_decode_house_rate();
+    test_decode_foreign();
+    test_decode_engaged();
+    test_decode_seamless();
+    test_decode_breaks();
+    test_decode_composite();
+    test_device_only();
+    test_device_lock();
+    std::printf("\n  CHECKSUM asrc_decode %016llx (compare across machines)\n", (unsigned long long)g_dec.h);
     return test_summary("asrc_servo");
 }

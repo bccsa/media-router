@@ -7,6 +7,7 @@
 //        mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]
 //        mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] [--house-ns T]
 //                           [--bus in.bus.jsonl]
+//        mrts_cli asrc seq.txt|-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -16,11 +17,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "asrc_servo.h"
 #include "demux_core.h"
 #include "ts_dump.h"
 #include "ts_house.h"
@@ -1618,6 +1621,116 @@ int demux_main(int argc, char** argv) {
     return 0;
 }
 
+// --- asrc: a call sequence through mrts::AsrcServo and AsrcDeviceLock (WI-P3-5) -----------
+
+const char kAsrcUsage[] =
+    "usage: mrts_cli asrc seq.txt|-\n"
+    "  Replays a call sequence and prints what py/asrc_bypass_ref.py's replay() prints for it:\n"
+    "    cfg IN OUT BYPASS_PPB DEVICE DELAY [FIRST_FIT]   the servo (DEVICE 0/1)\n"
+    "    b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command\n"
+    "    o K / t K                                        produced(K) / tail_produced(K)\n"
+    "    g                                                end_epoch(); prints its result\n"
+    "    d ITIME ETIME [READ] / x                         the device lock: a pair / a discontinuity\n"
+    "    p                                                prints the stats and the device lock\n";
+
+int asrc_main(int argc, char** argv) {
+    if (argc != 2) return std::fputs(kAsrcUsage, stderr), 2;
+    std::string text;
+    if (!read_file(argv[1], &text)) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    std::unique_ptr<AsrcServo> sv;
+    std::unique_ptr<AsrcDeviceLock> dev;
+    std::string out;
+    char line[512];
+    uint64_t n = 0;
+    size_t at = 0, lineno = 0;
+    while (at < text.size()) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        std::vector<std::string> f;
+        for (size_t i = at; i < nl;) {
+            while (i < nl && (text[i] == ' ' || text[i] == '\t' || text[i] == '\r')) i++;
+            size_t j = i;
+            while (j < nl && text[j] != ' ' && text[j] != '\t' && text[j] != '\r') j++;
+            if (j > i) f.push_back(text.substr(i, j - i));
+            i = j;
+        }
+        at = nl + 1;
+        lineno++;
+        if (f.empty() || f[0][0] == '#') continue;
+        std::vector<int64_t> v(f.size(), 0);
+        for (size_t i = 1; i < f.size(); i++)
+            if (!parse_int(f[i], &v[i])) {
+                std::fprintf(stderr, "mrts_cli asrc: line %zu: not a number: %s\n", lineno, f[i].c_str());
+                return 2;
+            }
+        const std::string& k = f[0];
+        if (k != "cfg" && !sv) {
+            std::fprintf(stderr, "mrts_cli asrc: line %zu: no cfg line yet\n", lineno);
+            return 2;
+        }
+        if (k == "cfg" && f.size() >= 6) {
+            AsrcServoConfig c;
+            c.lock = v[3] > 0 ? asrc_decode_lock_config() : asrc_lock_config();
+            ClockLockConfig dc = asrc_decode_lock_config();
+            if (f.size() > 6) c.lock.rate_buckets_min = dc.rate_buckets_min = (int)v[6];
+            c.bypass_ppb = v[3];
+            c.device = v[4] != 0;
+            sv.reset(new AsrcServo((int32_t)v[1], (int32_t)v[2], c));
+            sv->set_delay((uint32_t)v[5]);
+            dev.reset(new AsrcDeviceLock(dc));
+        } else if (k == "b" && f.size() == 5) {
+            const AsrcServo::Command c = sv->push(v[1], (uint32_t)v[2], v[3] != 0, v[4]);
+            const AsrcServo::Stats s = sv->stats();
+            std::snprintf(line, sizeof line,
+                          "b %llu %s in=%d out=%d relock=%d skip=%u pass=%d engage=%d drain=%d t0=%lld m=%llu "
+                          "phase=%lld ratio=%lld src=%lld\n",
+                          (unsigned long long)n++, asrc_mode_name(s.mode), c.in_rate, c.out_rate, (int)c.relock,
+                          c.skip, (int)c.pass, (int)c.engage, (int)c.drain, (long long)sv->t0(),
+                          (unsigned long long)sv->epoch_frames(), (long long)s.phase_err_ns,
+                          (long long)s.ratio_ppb, (long long)s.source_ppb);
+            out += line;
+            for (const AsrcEvent& e : sv->take_events()) {
+                std::snprintf(line, sizeof line, "e %s %s %lld %lld %lld %lld\n", asrc_event_name(e.kind),
+                              e.reason && *e.reason ? e.reason : "-", (long long)e.house_ns, (long long)e.value,
+                              (long long)e.dropped_ns, (long long)e.phase_ns);
+                out += line;
+            }
+        } else if (k == "o" && f.size() == 2) {
+            sv->produced((uint32_t)v[1]);
+        } else if (k == "t" && f.size() == 2) {
+            sv->tail_produced((uint32_t)v[1]);
+        } else if (k == "g" && f.size() == 1) {
+            const bool drain = sv->end_epoch();
+            std::snprintf(line, sizeof line, "g %d %lld\n", (int)drain, (long long)sv->tail_pts_at(0));
+            out += line;
+        } else if (k == "d" && (f.size() == 3 || f.size() == 4)) {
+            dev->feed(v[1], v[2], f.size() == 4 ? v[3] : 0);
+        } else if (k == "x" && f.size() == 1) {
+            dev->discont();
+        } else if (k == "p" && f.size() == 1) {
+            const AsrcServo::Stats s = sv->stats();
+            std::snprintf(line, sizeof line,
+                          "p state=%s ratio-ppb=%lld phase-err-ns=%lld relocks=%llu in-frames=%llu out-frames=%llu "
+                          "discont-in=%llu dropped-frames=%llu mode=%s source-ppb=%lld dev-ppb=%lld dev-rate=%lld "
+                          "dev-locked=%d\n",
+                          asrc_state_name(s.state), (long long)s.ratio_ppb, (long long)s.phase_err_ns,
+                          (unsigned long long)s.relocks, (unsigned long long)s.in_frames,
+                          (unsigned long long)s.out_frames, (unsigned long long)s.discont_in,
+                          (unsigned long long)s.dropped_frames, asrc_mode_name(s.mode), (long long)s.source_ppb,
+                          (long long)dev->ppb(), (long long)dev->rate_ppb(), (int)dev->locked());
+            out += line;
+        } else {
+            std::fprintf(stderr, "mrts_cli asrc: line %zu: unknown line\n", lineno);
+            return 2;
+        }
+    }
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1627,6 +1740,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "restamp-replay") == 0) return restamp_replay_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "rebase") == 0) return rebase_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "demux") == 0) return demux_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "asrc") == 0) return asrc_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -1635,6 +1749,7 @@ int main(int argc, char** argv) {
                  "[--expect file] ...\n"
                  "       mrts_cli rebase in.ts out.ts --to-ns T [--bus in.bus.jsonl out.bus.jsonl]\n"
                  "       mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] "
-                 "[--house-ns T] [--bus in.bus.jsonl]\n");
+                 "[--house-ns T] [--bus in.bus.jsonl]\n"
+                 "       mrts_cli asrc seq.txt|-\n");
     return 2;
 }

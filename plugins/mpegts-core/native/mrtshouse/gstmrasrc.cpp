@@ -1,11 +1,17 @@
-/* mrasrc (plan ch. 5 WI-P1-8, part 4.5): the ASRC at PCM captures. mrts::AsrcServo locks the
- * input frame count to the buffer PTS and commands GstAudioResampler's ratio, so the output is a
- * house-rate sample counter labelled with capture time, PTS_out(m) = T0 + m / out_rate. Steering
- * only moves the ratio; a relock's overlap (Command::skip) is the one drop. */
+/* mrasrc (plan ch. 5 WI-P1-8, part 4.5; ch. 7 WI-P3-5, part 4.4): mrts::AsrcServo locks the input frame
+ * count to the buffer PTS and commands GstAudioResampler's ratio: a house-rate counter, PTS_out(m) = T0 +
+ * m / out_rate. Modes (S17): capture; decode (`bypass-below-ppm`: passed unchanged until the source is
+ * measured off house time); device (`device-sink`: the sink's clock in the ratio; with decode, the product). */
+#include <gst/audio/gstaudiobasesink.h>
 #include <gst/base/gstbasetransform.h>
 
 #include <atomic>
+#include <cmath>
+#include <cstring>
+#include <mutex>
 #include <new>
+#include <set>
+#include <vector>
 
 #include "mrasrc_resampler.h"
 #include "mrts/asrc_servo.h"
@@ -13,6 +19,7 @@
 
 #define GST_CAT_DEFAULT mrtshouse_debug
 
+using mrts::AsrcDeviceLock;
 using mrts::AsrcEvent;
 using mrts::AsrcServo;
 
@@ -21,6 +28,8 @@ enum {
     PROP_OUT_RATE,
     PROP_QUALITY,
     PROP_STATS,
+    PROP_BYPASS_BELOW_PPM,
+    PROP_DEVICE_SINK,
 };
 
 /* AsrcServo clamps its rates to this range, so the caps keep to it. */
@@ -29,11 +38,67 @@ enum {
 #define DEFAULT_QUALITY GST_AUDIO_RESAMPLER_QUALITY_DEFAULT
 /* Part 4.3's stats interval, on the output labels (house time, never backwards). */
 static const gint64 STATS_INTERVAL_NS = 2 * GST_SECOND;
+/* What passed, kept to prime the resampler at an engage: more than the filter's half length. */
+static const gsize HISTORY_FRAMES = 64;
+#define BYPASS_MAX_PPM 1000.0
 
-/* What the capture branches produce (WI-P1-8); the format passes through unchanged. */
+/* What the capture branches produce (WI-P1-8), and a decoder through audioconvert (S15); the
+ * format passes through unchanged. */
 #define MRASRC_CAPS                                                                   \
     "audio/x-raw, format = (string) { S16LE, S32LE, F32LE }, rate = (int) [ 1000, 768000 ], " \
     "channels = (int) [ 1, MAX ], layout = (string) interleaved"
+
+/* The device term (WI-P3-5): the sink's custom-slaving callback feeds the lock on its streaming
+ * thread (or any thread, for a device failure); the transform reads the atomics. The element owns
+ * it; the sink holds the pointer from READY->PAUSED to PAUSED->READY, when no callback runs. */
+struct AsrcDeviceTerm {
+    std::mutex mu;               // the lock: callbacks may come from more than one thread
+    AsrcDeviceLock lock;
+    std::atomic<int64_t> eps_ppb{0}, rate_ppb{0};
+    std::atomic<bool> locked{false};
+    std::atomic<uint64_t> pairs{0}, relocks{0};
+    std::atomic<int> last_reason{0};
+};
+
+static const gchar* asrc_discont_name(int reason) {
+    switch (reason) {
+        case GST_AUDIO_BASE_SINK_DISCONT_REASON_NEW_CAPS: return "new-caps";
+        case GST_AUDIO_BASE_SINK_DISCONT_REASON_FLUSH: return "flush";
+        case GST_AUDIO_BASE_SINK_DISCONT_REASON_SYNC_LATENCY: return "sync-latency";
+        case GST_AUDIO_BASE_SINK_DISCONT_REASON_ALIGNMENT: return "alignment";
+        case GST_AUDIO_BASE_SINK_DISCONT_REASON_DEVICE_FAILURE: return "device-failure";
+        default: return "";
+    }
+}
+
+/* Each callback: (etime, itime), house and device time since the sink's calibration, and how
+ * long after etime's read the house clock reads now, after itime's read (AsrcDeviceLock::feed).
+ * The resampler follows the device, so the sink is never asked to skew (C-6). */
+static void asrc_slaving_cb(GstAudioBaseSink* sink, GstClockTime etime, GstClockTime itime,
+                            GstClockTimeDiff* requested_skew,
+                            GstAudioBaseSinkDiscontReason reason, gpointer data) {
+    AsrcDeviceTerm* t = static_cast<AsrcDeviceTerm*>(data);
+    if (reason != GST_AUDIO_BASE_SINK_DISCONT_REASON_NO_DISCONT) {
+        std::lock_guard<std::mutex> g(t->mu);
+        t->lock.discont();
+        t->locked.store(false);
+        t->last_reason.store((int)reason);
+        t->relocks.fetch_add(1);
+        return;
+    }
+    if (requested_skew) *requested_skew = 0;
+    GstClock* clock = GST_ELEMENT_CLOCK(sink);
+    if (!GST_CLOCK_TIME_IS_VALID(etime) || !GST_CLOCK_TIME_IS_VALID(itime) || !clock) return;
+    GstClockTime cint, cext, rnum, rden;
+    gst_clock_get_calibration(sink->provided_clock, &cint, &cext, &rnum, &rden);
+    const gint64 read_ns = (gint64)gst_clock_get_time(clock) - (gint64)cext - (gint64)etime;
+    std::lock_guard<std::mutex> g(t->mu);
+    t->lock.feed((int64_t)itime, (int64_t)etime, read_ns);
+    t->eps_ppb.store(t->lock.ppb());
+    t->rate_ppb.store(t->lock.rate_ppb());
+    t->locked.store(t->lock.locked());
+    t->pairs.fetch_add(1);
+}
 
 #define GST_TYPE_MRASRC (gst_mrasrc_get_type())
 G_DECLARE_FINAL_TYPE(GstMrAsrc, gst_mrasrc, GST, MRASRC, GstBaseTransform)
@@ -41,19 +106,29 @@ G_DECLARE_FINAL_TYPE(GstMrAsrc, gst_mrasrc, GST, MRASRC, GstBaseTransform)
 struct _GstMrAsrc {
     GstBaseTransform parent;
 
-    /* Properties, under the object lock; both apply when a run is next built (a start, a caps
-     * change or a flush). */
+    /* Properties, under the object lock; they apply when a run is next built (a start, a caps
+     * change or a flush), device-sink at READY->PAUSED. */
     gint out_rate;
     gint quality;
+    gdouble bypass_below_ppm;
+    gchar* device_sink;
+
+    /* The device term, from READY->PAUSED to PAUSED->READY. */
+    AsrcDeviceTerm* term;
+    GstAudioBaseSink* sink;   // a ref, to take the callback back
+    uint64_t term_relocks;    // the term's relocks the events have told
+    gboolean device_only;     // the device term alone (bypass-below-ppm 0): no source lock
 
     /* Streaming state: set_caps, the transform and the serialized events, all on the streaming
      * thread. Built at negotiation, rebuilt by a flush. */
     GstAudioInfo in_info, out_info;
     gint bpf;
     AsrcServo* servo;               // null until negotiated
-    GstAudioResampler* resampler;   // never reset inside a run: a relock keeps its history
+    GstAudioResampler* resampler;   // capture mode never resets it inside a run: a relock keeps its history
     gint32 cur_in_rate;             // the in_rate last given to the resampler
     AsrcServo::Command cmd;         // the command of the buffer being transformed
+    gsize total;                    // ... the resampler's output for it, the first `discard` dropped
+    gsize discard;                  // outputs still to drop after an engage's priming
     gboolean started;               // a buffer came since the build: there is a tail to drain
     gboolean need_discont;          // the next output opens an epoch (start, relock, flush)
     gboolean have_pts;              // a PTS-less buffer continues the previous one's ...
@@ -64,6 +139,7 @@ struct _GstMrAsrc {
     gint64 stats_at;
     guint64 buffers, updates;
     std::atomic<guint64> delay_ns;   // the filter's lookahead, for the latency query
+    std::vector<guint8>* history;    // the last frames passed, at most HISTORY_FRAMES
 
     /* The `stats` snapshot, written at each stats post. */
     GMutex snap_lock;
@@ -86,21 +162,28 @@ static void asrc_post(GstMrAsrc* self, GstStructure* s) {
                              gst_message_new_element(GST_OBJECT_CAST(self), s));
 }
 
-/* Part 10's mrasrc-stats fields, from the servo (a fresh one before any buffer). */
-static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s) {
+/* Part 10's mrasrc-stats fields, from the servo (a fresh one before any buffer), then WI-P3-5's
+ * mode and the two clocks against house time (ppb, positive fast; 0 where none is measured). The
+ * device term alone has no source lock: its state is the device lock's. */
+static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, const AsrcDeviceTerm* t,
+                                          bool device_only) {
+    const gchar* state = t && device_only ? (t->locked.load() ? "locked" : "acquiring")
+                                          : mrts::asrc_state_name(s.state);
     return gst_structure_new(
-        "mrasrc-stats", "state", G_TYPE_STRING, mrts::asrc_state_name(s.state), "ratio-ppb",
-        G_TYPE_INT64, (gint64)s.ratio_ppb, "phase-err-ns", G_TYPE_INT64, (gint64)s.phase_err_ns,
-        "relocks", G_TYPE_UINT64, (guint64)s.relocks, "in-frames", G_TYPE_UINT64,
-        (guint64)s.in_frames, "out-frames", G_TYPE_UINT64, (guint64)s.out_frames, "discont-in",
-        G_TYPE_UINT64, (guint64)s.discont_in, "dropped-frames", G_TYPE_UINT64,
-        (guint64)s.dropped_frames, NULL);
+        "mrasrc-stats", "state", G_TYPE_STRING, state, "ratio-ppb", G_TYPE_INT64,
+        (gint64)s.ratio_ppb, "phase-err-ns", G_TYPE_INT64, (gint64)s.phase_err_ns, "relocks",
+        G_TYPE_UINT64, (guint64)s.relocks, "in-frames", G_TYPE_UINT64, (guint64)s.in_frames,
+        "out-frames", G_TYPE_UINT64, (guint64)s.out_frames, "discont-in", G_TYPE_UINT64,
+        (guint64)s.discont_in, "dropped-frames", G_TYPE_UINT64, (guint64)s.dropped_frames, "mode",
+        G_TYPE_STRING, mrts::asrc_mode_name(s.mode), "source-ppb", G_TYPE_INT64,
+        (gint64)s.source_ppb, "device-ppb", G_TYPE_INT64, (gint64)(t ? t->rate_ppb.load() : 0),
+        NULL);
 }
 
 /* The message, then the snapshot: the message's fields plus the run's configuration. */
 static void asrc_post_stats(GstMrAsrc* self) {
     const AsrcServo::Stats s = self->servo->stats();
-    GstStructure* snap = asrc_stats_structure(s);
+    GstStructure* snap = asrc_stats_structure(s, self->term, self->device_only);
     asrc_post(self, gst_structure_copy(snap));
     gst_structure_set(snap, "format", G_TYPE_STRING,
                       gst_audio_format_to_string(GST_AUDIO_INFO_FORMAT(&self->in_info)),
@@ -109,29 +192,32 @@ static void asrc_post_stats(GstMrAsrc* self) {
                       GST_AUDIO_INFO_RATE(&self->out_info), "delay-frames", G_TYPE_UINT,
                       (guint)gst_audio_resampler_get_max_latency(self->resampler), "buffers",
                       G_TYPE_UINT64, self->buffers, "resampler-updates", G_TYPE_UINT64,
-                      self->updates, NULL);
+                      self->updates, "device-pairs", G_TYPE_UINT64,
+                      (guint64)(self->term ? self->term->pairs.load() : 0), NULL);
     g_mutex_lock(&self->snap_lock);
     if (self->snapshot) gst_structure_free(self->snapshot);
     self->snapshot = snap;
     g_mutex_unlock(&self->snap_lock);
 }
 
-/* Stats every 2 s of output labels from the first output, or now (`force`). */
+/* Stats every 2 s of output labels from the first output (of the input's, while passing), or
+ * now (`force`). */
 static void asrc_report(GstMrAsrc* self, gboolean force) {
     const gint64 now = self->servo->next_pts();
     if (!self->have_stats_at) {
         self->have_stats_at = TRUE;
         self->stats_at = now;
     }
-    if (force || now - self->stats_at >= STATS_INTERVAL_NS) {
+    if (force || now - self->stats_at >= STATS_INTERVAL_NS || now < self->stats_at) {
         asrc_post_stats(self);
         self->stats_at = now;
     }
 }
 
 /* mrasrc-event at once: a relock with its new T0, the output PTS jump and the input dropped as
- * overlap; a device rate fit past the ratio clamp. */
-static void asrc_post_events(GstMrAsrc* self) {
+ * overlap; a device rate fit past the ratio clamp; an engage with the source's rate and the
+ * phase it reached; a device relock (a sink discontinuity) with its reason. */
+static void asrc_post_events(GstMrAsrc* self, gint64 house_ns) {
     for (const AsrcEvent& e : self->servo->take_events()) {
         const gchar* kind = mrts::asrc_event_name(e.kind);
         GstStructure* s = gst_structure_new("mrasrc-event", "kind", G_TYPE_STRING, kind, "reason",
@@ -143,12 +229,27 @@ static void asrc_post_events(GstMrAsrc* self) {
             GST_INFO_OBJECT(self, "relock (%s): T0 %" G_GINT64_FORMAT ", jump %" G_GINT64_FORMAT
                             " ns, dropped %" G_GINT64_FORMAT " ns", e.reason,
                             (gint64)e.house_ns, (gint64)e.value, (gint64)e.dropped_ns);
+        } else if (e.kind == AsrcEvent::Kind::engaged) {
+            gst_structure_set(s, "source-ppb", G_TYPE_INT64, (gint64)e.value, "phase-ns",
+                              G_TYPE_INT64, (gint64)e.phase_ns, NULL);
+            GST_INFO_OBJECT(self, "engaged (%s): source %+" G_GINT64_FORMAT " ppb, phase %+"
+                            G_GINT64_FORMAT " ns", e.reason, (gint64)e.value, (gint64)e.phase_ns);
         } else {
             gst_structure_set(s, "fit-ppb", G_TYPE_INT64, (gint64)e.value, NULL);
             GST_WARNING_OBJECT(self, "device rate %" G_GINT64_FORMAT " ppb past the ratio clamp",
                                (gint64)e.value);
         }
         asrc_post(self, s);
+    }
+    AsrcDeviceTerm* t = self->term;
+    const uint64_t r = t ? t->relocks.load() : 0;
+    if (t && r != self->term_relocks) {
+        self->term_relocks = r;
+        const gchar* why = asrc_discont_name(t->last_reason.load());
+        GST_INFO_OBJECT(self, "device relock (%s)", why);
+        asrc_post(self, gst_structure_new("mrasrc-event", "kind", G_TYPE_STRING, "device-relock",
+                                          "reason", G_TYPE_STRING, why, "house-ns", G_TYPE_INT64,
+                                          house_ns, NULL));
     }
 }
 
@@ -167,6 +268,7 @@ static void asrc_free_run(GstMrAsrc* self) {
 static gboolean asrc_build_run(GstMrAsrc* self) {
     GST_OBJECT_LOCK(self);
     const guint quality = (guint)self->quality;
+    const int64_t bypass_ppb = std::llround(self->bypass_below_ppm * 1000.0);
     GST_OBJECT_UNLOCK(self);
     const gint in_hz = GST_AUDIO_INFO_RATE(&self->in_info);
     const gint out_hz = GST_AUDIO_INFO_RATE(&self->out_info);
@@ -176,11 +278,18 @@ static gboolean asrc_build_run(GstMrAsrc* self) {
                                            GST_AUDIO_INFO_CHANNELS(&self->in_info), quality,
                                            in_hz, out_hz);
     if (!self->resampler) return FALSE;
-    self->servo = new AsrcServo(in_hz, out_hz);
+    const bool device = self->term != NULL;
+    mrts::AsrcServoConfig cfg = bypass_ppb > 0 ? mrts::asrc_decode_config(bypass_ppb, device)
+                                               : mrts::AsrcServoConfig();
+    cfg.device = device;
+    self->device_only = device && bypass_ppb <= 0;
+    self->servo = new AsrcServo(in_hz, out_hz, cfg);
     const gsize delay = gst_audio_resampler_get_max_latency(self->resampler);
     self->servo->set_delay((uint32_t)delay);
     self->cur_in_rate = in_hz * MRASRC_RATE_SCALE;
     self->cmd = AsrcServo::Command{self->cur_in_rate, out_hz * MRASRC_RATE_SCALE, false, 0};
+    self->total = self->discard = 0;
+    self->history->clear();
     self->started = FALSE;
     self->need_discont = TRUE;
     self->have_pts = FALSE;
@@ -190,10 +299,10 @@ static gboolean asrc_build_run(GstMrAsrc* self) {
     if (old_delay >= 0 && (guint64)old_delay != delay_ns)
         gst_element_post_message(GST_ELEMENT_CAST(self),
                                  gst_message_new_latency(GST_OBJECT_CAST(self)));
-    GST_INFO_OBJECT(self, "%s %d ch, %d -> %d Hz, quality %u, filter delay %u frames",
+    GST_INFO_OBJECT(self, "%s %d ch, %d -> %d Hz, quality %u, filter delay %u frames, mode %s",
                     gst_audio_format_to_string(GST_AUDIO_INFO_FORMAT(&self->in_info)),
                     GST_AUDIO_INFO_CHANNELS(&self->in_info), in_hz, out_hz, quality,
-                    (guint)delay);
+                    (guint)delay, mrts::asrc_mode_name(self->servo->mode()));
     return TRUE;
 }
 
@@ -217,6 +326,165 @@ static gint64 asrc_input_pts(GstMrAsrc* self, GstBuffer* buf, guint64 frames) {
     self->last_pts = pts;
     self->last_frames = frames;
     return pts;
+}
+
+/* An epoch's end in decode and device modes (a GAP, a DISCONT): the filter's lookahead of zeros
+ * brings the held tail out on the counter that ended, then the resampler starts afresh. */
+static void asrc_drain_tail(GstMrAsrc* self) {
+    const gsize delay = gst_audio_resampler_get_max_latency(self->resampler);
+    const gsize k = gst_audio_resampler_get_out_frames(self->resampler, delay);
+    GstBuffer* out = k ? gst_buffer_new_allocate(NULL, k * self->bpf, NULL) : NULL;
+    GstMapInfo om;
+    if (out && gst_buffer_map(out, &om, GST_MAP_WRITE)) {
+        gpointer op = om.data;
+        gst_audio_resampler_resample(self->resampler, NULL, delay, &op, k);
+        gst_buffer_unmap(out, &om);
+        const gint64 pts = self->servo->tail_pts_at(0), end = self->servo->tail_pts_at(k);
+        const guint64 offset = self->servo->stats().out_frames;
+        GST_BUFFER_PTS(out) = (GstClockTime)MAX(pts, 0);
+        GST_BUFFER_DURATION(out) = (GstClockTime)(end - pts);
+        GST_BUFFER_OFFSET(out) = offset;
+        GST_BUFFER_OFFSET_END(out) = offset + k;
+        if (self->need_discont) {   // an epoch shorter than the lookahead: its first output
+            GST_BUFFER_FLAG_SET(out, GST_BUFFER_FLAG_DISCONT);
+            self->need_discont = FALSE;
+        }
+        self->servo->tail_produced((uint32_t)k);
+        const GstFlowReturn ret = gst_pad_push(GST_BASE_TRANSFORM_SRC_PAD(self), out);
+        if (ret != GST_FLOW_OK)
+            GST_DEBUG_OBJECT(self, "the drained tail was refused: %s", gst_flow_get_name(ret));
+    } else if (out) {
+        gst_buffer_unref(out);
+    }
+    gst_audio_resampler_reset(self->resampler);
+    self->discard = 0;
+}
+
+/* An engage from passing: the resampler, reset, takes the passed history at the commanded rate
+ * and drops as many outputs as frames it took, so its next output is the engaging buffer's first
+ * frame (seamless: nothing dropped or repeated). */
+static void asrc_prime(GstMrAsrc* self) {
+    gst_audio_resampler_reset(self->resampler);
+    gst_audio_resampler_update(self->resampler, self->cmd.in_rate, self->cmd.out_rate, NULL);
+    self->cur_in_rate = self->cmd.in_rate;
+    self->updates++;
+    const gsize h = self->history->size() / self->bpf;
+    const gsize k0 = gst_audio_resampler_get_out_frames(self->resampler, h);
+    std::vector<guint8> scratch(MAX(k0, (gsize)1) * self->bpf);
+    gpointer ip = self->history->data(), op = scratch.data();
+    if (h > 0) gst_audio_resampler_resample(self->resampler, &ip, h, &op, k0);
+    self->discard = h - k0;
+    self->history->clear();
+}
+
+/* The last frames passed: at most HISTORY_FRAMES, the newest last. */
+static void asrc_keep_history(GstMrAsrc* self, GstBuffer* buf, gboolean fresh) {
+    std::vector<guint8>& h = *self->history;
+    if (fresh) h.clear();
+    GstMapInfo im;
+    if (!gst_buffer_map(buf, &im, GST_MAP_READ)) return;
+    const gsize keep = HISTORY_FRAMES * self->bpf, n = MIN(im.size, keep);
+    h.insert(h.end(), im.data + im.size - n, im.data + im.size);
+    if (h.size() > keep) h.erase(h.begin(), h.begin() + (h.size() - keep));
+    gst_buffer_unmap(buf, &im);
+}
+
+/* --- the device term ------------------------------------------------------------------- */
+
+/* The element downstream of this one named `name`, through each element's src pads; into a bin
+ * by its ghost pad's target, out of one by the ghost pad. A new ref, or NULL. */
+static GstElement* asrc_find_downstream(GstMrAsrc* self, const gchar* name) {
+    std::vector<GstPad*> todo{GST_PAD(gst_object_ref(GST_BASE_TRANSFORM_SRC_PAD(self)))};
+    std::set<GstElement*> seen;   // compared only: the pipeline keeps them alive
+    GstElement* found = NULL;
+    while (!todo.empty() && !found) {
+        GstPad* pad = todo.back();
+        todo.pop_back();
+        GstPad* peer = gst_pad_get_peer(pad);
+        gst_object_unref(pad);
+        while (peer && GST_IS_GHOST_PAD(peer)) {
+            GstPad* target = gst_ghost_pad_get_target(GST_GHOST_PAD(peer));
+            gst_object_unref(peer);
+            peer = target;
+        }
+        if (!peer) continue;
+        GstObject* parent = gst_object_get_parent(GST_OBJECT(peer));
+        if (parent && GST_IS_GHOST_PAD(parent)) {   // a ghost src pad's inside: on from the ghost pad
+            todo.push_back(GST_PAD(parent));
+            gst_object_unref(peer);
+            continue;
+        }
+        gst_object_unref(peer);
+        if (!parent || !GST_IS_ELEMENT(parent)) {
+            if (parent) gst_object_unref(parent);
+            continue;
+        }
+        GstElement* el = GST_ELEMENT(parent);
+        if (!seen.insert(el).second) {
+            gst_object_unref(el);
+            continue;
+        }
+        if (!g_strcmp0(GST_OBJECT_NAME(el), name)) {
+            found = el;
+            break;
+        }
+        GstIterator* it = gst_element_iterate_src_pads(el);
+        GValue v = G_VALUE_INIT;
+        while (gst_iterator_next(it, &v) == GST_ITERATOR_OK) {
+            todo.push_back(GST_PAD(gst_object_ref(g_value_get_object(&v))));
+            g_value_reset(&v);
+        }
+        g_value_unset(&v);
+        gst_iterator_free(it);
+        gst_object_unref(el);
+    }
+    for (GstPad* p : todo) gst_object_unref(p);
+    return found;
+}
+
+/* READY->PAUSED: the named sink must be a GstAudioBaseSink downstream with slave-method=custom
+ * (a builder bug otherwise, posted as an error naming it); its callback feeds the device lock. */
+static gboolean asrc_install_device(GstMrAsrc* self) {
+    GST_OBJECT_LOCK(self);
+    gchar* name = g_strdup(self->device_sink);
+    GST_OBJECT_UNLOCK(self);
+    if (!name || !*name) {
+        g_free(name);
+        return TRUE;
+    }
+    GstElement* el = asrc_find_downstream(self, name);
+    gint method = -1;
+    if (el && GST_IS_AUDIO_BASE_SINK(el)) g_object_get(el, "slave-method", &method, NULL);
+    if (!el || !GST_IS_AUDIO_BASE_SINK(el) || method != GST_AUDIO_BASE_SINK_SLAVE_CUSTOM) {
+        const gchar* what = !el ? "no element of that name downstream"
+                            : !GST_IS_AUDIO_BASE_SINK(el) ? "not a GstAudioBaseSink"
+                                                          : "its slave-method is not custom (3)";
+        GST_ELEMENT_ERROR(self, CORE, FAILED, ("device-sink \"%s\": %s", name, what),
+                          ("mrasrc follows that sink's clock through its custom slaving callback "
+                           "(found: %s)", el ? G_OBJECT_TYPE_NAME(el) : "none"));
+        if (el) gst_object_unref(el);
+        g_free(name);
+        return FALSE;
+    }
+    AsrcDeviceTerm* t = new AsrcDeviceTerm();
+    gst_audio_base_sink_set_custom_slaving_callback(GST_AUDIO_BASE_SINK(el), asrc_slaving_cb, t, NULL);
+    self->term = t;
+    self->term_relocks = 0;
+    self->sink = GST_AUDIO_BASE_SINK(el);
+    GST_INFO_OBJECT(self, "device-sink %s: following its clock (custom slaving)", name);
+    g_free(name);
+    return TRUE;
+}
+
+/* PAUSED->READY: the sink's streaming has stopped; the callback is taken back under its lock. */
+static void asrc_remove_device(GstMrAsrc* self) {
+    if (self->sink) {
+        gst_audio_base_sink_set_custom_slaving_callback(self->sink, NULL, NULL, NULL);
+        gst_object_unref(self->sink);
+        self->sink = NULL;
+    }
+    delete self->term;
+    self->term = NULL;
 }
 
 /* --- GstBaseTransform ----------------------------------------------------------------- */
@@ -326,15 +594,21 @@ static gboolean asrc_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps*
     return TRUE;
 }
 
-/* SINK: what the buffer being prepared makes, its relock overlap skipped first. */
+/* SINK: what the buffer being prepared makes, its relock overlap skipped first and an engage's
+ * remaining discard taken off; a passed buffer, its own size. */
 static gboolean asrc_transform_size(GstBaseTransform* trans, GstPadDirection direction,
                                     GstCaps*, gsize size, GstCaps*, gsize* othersize) {
     GstMrAsrc* self = GST_MRASRC(trans);
     if (!self->resampler || self->bpf <= 0) return FALSE;
     const gsize frames = size / self->bpf;
     if (direction == GST_PAD_SINK) {
+        if (self->cmd.pass) {
+            *othersize = size;
+            return TRUE;
+        }
         const gsize skip = MIN((gsize)self->cmd.skip, frames);
-        *othersize = gst_audio_resampler_get_out_frames(self->resampler, frames - skip) * self->bpf;
+        const gsize k = gst_audio_resampler_get_out_frames(self->resampler, frames - skip);
+        *othersize = (k - MIN(self->discard, k)) * self->bpf;
     } else {
         *othersize = gst_audio_resampler_get_in_frames(self->resampler, frames) * self->bpf;
     }
@@ -342,7 +616,8 @@ static gboolean asrc_transform_size(GstBaseTransform* trans, GstPadDirection dir
 }
 
 /* The servo runs here, once per buffer the base class transforms, so every frame it counts
- * reaches the resampler; its command moves the ratio before the output size is known. */
+ * reaches the resampler; its command moves the ratio before the output size is known. A passed
+ * buffer is its own output (zero copy). */
 static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuffer* in,
                                                 GstBuffer** out) {
     GstMrAsrc* self = GST_MRASRC(trans);
@@ -350,16 +625,28 @@ static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuff
     const gsize size = gst_buffer_get_size(in);
     const guint64 frames = size / self->bpf;
     const gint64 pts = asrc_input_pts(self, in, frames);
+    const gboolean discont = GST_BUFFER_IS_DISCONT(in);
     self->buffers++;
+    // Decode and device modes: the epoch ends before a DISCONT buffer, the tail out first.
+    if (discont && self->started && self->servo->end_epoch()) asrc_drain_tail(self);
     self->started = TRUE;
-    self->cmd = self->servo->push(pts, (uint32_t)frames, GST_BUFFER_IS_DISCONT(in));
-    if (self->cmd.in_rate != self->cur_in_rate) {
+    const int64_t dev = self->term ? self->term->eps_ppb.load() : 0;
+    self->cmd = self->servo->push(pts, (uint32_t)frames, discont, dev);
+    if (self->cmd.drain) asrc_drain_tail(self);
+    if (self->cmd.engage) asrc_prime(self);
+    if (!self->cmd.pass && self->cmd.in_rate != self->cur_in_rate) {
         gst_audio_resampler_update(self->resampler, self->cmd.in_rate, self->cmd.out_rate, NULL);
         self->cur_in_rate = self->cmd.in_rate;
         self->updates++;
     }
     if (self->cmd.relock) self->need_discont = TRUE;
-    asrc_post_events(self);
+    asrc_post_events(self, pts);
+    if (self->cmd.pass) {
+        *out = in;   // the base class pushes it as it came: no copy, no new metadata
+        return GST_FLOW_OK;
+    }
+    const gsize skip = MIN((gsize)self->cmd.skip, (gsize)frames);
+    self->total = gst_audio_resampler_get_out_frames(self->resampler, frames - skip);
     gsize outsize = 0;
     asrc_transform_size(trans, GST_PAD_SINK, NULL, size, NULL, &outsize);
     GstAllocator* allocator = NULL;
@@ -391,6 +678,13 @@ static GstFlowReturn asrc_transform(GstBaseTransform* trans, GstBuffer* in, GstB
     GstMrAsrc* self = GST_MRASRC(trans);
     const gsize bpf = (gsize)self->bpf;
     const gsize frames = gst_buffer_get_size(in) / bpf;
+    if (out == in) {   // passed: what it held is the history an engage primes with
+        asrc_keep_history(self, in, self->cmd.relock);
+        self->need_discont = FALSE;   // an output: its epoch's DISCONT is the input's own
+        self->servo->produced((uint32_t)frames);
+        asrc_report(self, FALSE);
+        return GST_FLOW_OK;
+    }
     const gsize skip = MIN((gsize)self->cmd.skip, frames), fed = frames - skip;
     const gsize k = gst_buffer_get_size(out) / bpf;   // asrc_prepare_output_buffer's count
     if (fed > 0) {
@@ -401,8 +695,18 @@ static GstFlowReturn asrc_transform(GstBaseTransform* trans, GstBuffer* in, GstB
             return GST_FLOW_ERROR;
         }
         /* The overlap leaves unresampled, from the head (part 4.5). */
-        gpointer ip = im.data + skip * bpf, op = om.data;
-        gst_audio_resampler_resample(self->resampler, &ip, fed, &op, k);
+        gpointer ip = im.data + skip * bpf;
+        if (self->total == k) {
+            gpointer op = om.data;
+            gst_audio_resampler_resample(self->resampler, &ip, fed, &op, k);
+        } else {   // an engage's first outputs repeat what passed: dropped
+            std::vector<guint8> all(MAX(self->total, (gsize)1) * bpf);
+            gpointer op = all.data();
+            gst_audio_resampler_resample(self->resampler, &ip, fed, &op, self->total);
+            const gsize d = self->total - k;
+            if (k > 0) std::memcpy(om.data, all.data() + d * bpf, k * bpf);
+            self->discard -= MIN(self->discard, d);
+        }
         if (k > 0) gst_buffer_unmap(out, &om);
         gst_buffer_unmap(in, &im);
     }
@@ -425,7 +729,7 @@ static GstFlowReturn asrc_generate_output(GstBaseTransform* trans, GstBuffer** o
 
 /* At EOS the filter's lookahead of zeros brings the last input out, on the same counter. */
 static void asrc_drain(GstMrAsrc* self) {
-    if (!self->servo || !self->started) return;
+    if (!self->servo || !self->started || self->servo->passing()) return;
     const gsize delay = gst_audio_resampler_get_max_latency(self->resampler);
     const gsize k = gst_audio_resampler_get_out_frames(self->resampler, delay);
     if (k == 0) return;
@@ -452,6 +756,10 @@ static gboolean asrc_sink_event(GstBaseTransform* trans, GstEvent* event) {
             if (self->servo && !asrc_build_run(self))
                 GST_ELEMENT_ERROR(self, CORE, FAILED, ("Cannot make the resampler"), (NULL));
             break;
+        case GST_EVENT_GAP:
+            /* Decode and device modes: the content breaks; the tail leaves before the GAP. */
+            if (self->servo && self->started && self->servo->end_epoch()) asrc_drain_tail(self);
+            break;
         case GST_EVENT_EOS:
             /* The last stats first: the drained tail moves the counter without input, which
              * would read as a phase error. */
@@ -464,7 +772,8 @@ static gboolean asrc_sink_event(GstBaseTransform* trans, GstEvent* event) {
     return GST_BASE_TRANSFORM_CLASS(gst_mrasrc_parent_class)->sink_event(trans, event);
 }
 
-/* Upstream's latency plus the filter's lookahead, as audioresample reports it. */
+/* Upstream's latency plus the filter's lookahead, as audioresample reports it; in decode mode
+ * too while passing, since it may engage. */
 static gboolean asrc_query(GstBaseTransform* trans, GstPadDirection direction, GstQuery* query) {
     GstMrAsrc* self = GST_MRASRC(trans);
     const gboolean res =
@@ -502,6 +811,18 @@ static gboolean asrc_stop(GstBaseTransform* trans) {
     return TRUE;
 }
 
+static GstStateChangeReturn asrc_change_state(GstElement* element, GstStateChange transition) {
+    GstMrAsrc* self = GST_MRASRC(element);
+    if (transition == GST_STATE_CHANGE_READY_TO_PAUSED && !asrc_install_device(self))
+        return GST_STATE_CHANGE_FAILURE;
+    const GstStateChangeReturn ret =
+        GST_ELEMENT_CLASS(gst_mrasrc_parent_class)->change_state(element, transition);
+    if (transition == GST_STATE_CHANGE_PAUSED_TO_READY ||
+        (transition == GST_STATE_CHANGE_READY_TO_PAUSED && ret == GST_STATE_CHANGE_FAILURE))
+        asrc_remove_device(self);
+    return ret;
+}
+
 /* --- GObject -------------------------------------------------------------------------- */
 
 static void asrc_set_property(GObject* object, guint prop_id, const GValue* value,
@@ -516,6 +837,17 @@ static void asrc_set_property(GObject* object, guint prop_id, const GValue* valu
         case PROP_QUALITY:
             GST_OBJECT_LOCK(self);
             self->quality = g_value_get_int(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_BYPASS_BELOW_PPM:
+            GST_OBJECT_LOCK(self);
+            self->bypass_below_ppm = g_value_get_double(value);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_DEVICE_SINK:
+            GST_OBJECT_LOCK(self);
+            g_free(self->device_sink);
+            self->device_sink = g_value_dup_string(value);
             GST_OBJECT_UNLOCK(self);
             break;
         default:
@@ -538,11 +870,21 @@ static void asrc_get_property(GObject* object, guint prop_id, GValue* value, GPa
             g_value_set_int(value, self->quality);
             GST_OBJECT_UNLOCK(self);
             break;
+        case PROP_BYPASS_BELOW_PPM:
+            GST_OBJECT_LOCK(self);
+            g_value_set_double(value, self->bypass_below_ppm);
+            GST_OBJECT_UNLOCK(self);
+            break;
+        case PROP_DEVICE_SINK:
+            GST_OBJECT_LOCK(self);
+            g_value_set_string(value, self->device_sink ? self->device_sink : "");
+            GST_OBJECT_UNLOCK(self);
+            break;
         case PROP_STATS: {
             g_mutex_lock(&self->snap_lock);
             GstStructure* s = self->snapshot ? gst_structure_copy(self->snapshot) : NULL;
             g_mutex_unlock(&self->snap_lock);
-            g_value_take_boxed(value, s ? s : asrc_stats_structure(AsrcServo::Stats()));
+            g_value_take_boxed(value, s ? s : asrc_stats_structure(AsrcServo::Stats(), NULL, false));
             break;
         }
         default:
@@ -554,8 +896,11 @@ static void asrc_get_property(GObject* object, guint prop_id, GValue* value, GPa
 static void asrc_finalize(GObject* object) {
     GstMrAsrc* self = GST_MRASRC(object);
     asrc_free_run(self);
+    asrc_remove_device(self);
     if (self->snapshot) gst_structure_free(self->snapshot);
     g_mutex_clear(&self->snap_lock);
+    g_free(self->device_sink);
+    delete self->history;
     G_OBJECT_CLASS(gst_mrasrc_parent_class)->finalize(object);
 }
 
@@ -564,6 +909,12 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     new (&self->delay_ns) std::atomic<guint64>(0);
     self->out_rate = 0;
     self->quality = DEFAULT_QUALITY;
+    self->bypass_below_ppm = 0.0;
+    self->device_sink = NULL;
+    self->term = NULL;
+    self->sink = NULL;
+    self->term_relocks = 0;
+    self->device_only = FALSE;
     gst_audio_info_init(&self->in_info);
     gst_audio_info_init(&self->out_info);
     self->bpf = 0;
@@ -571,6 +922,7 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     self->resampler = NULL;
     self->cur_in_rate = 0;
     self->cmd = AsrcServo::Command{0, 0, false, 0};
+    self->total = self->discard = 0;
     self->started = FALSE;
     self->need_discont = TRUE;
     self->have_pts = FALSE;
@@ -580,6 +932,7 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     self->have_stats_at = FALSE;
     self->stats_at = 0;
     self->buffers = self->updates = 0;
+    self->history = new std::vector<guint8>();
     g_mutex_init(&self->snap_lock);
     self->snapshot = NULL;
 }
@@ -612,21 +965,40 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
         gobject_class, PROP_STATS,
         g_param_spec_boxed("stats", "Stats",
                            "The last mrasrc-stats post (state, ratio-ppb, phase-err-ns, relocks, "
-                           "in-frames, out-frames, discont-in, dropped-frames) with the run's "
-                           "format, channels, in-rate, out-rate, delay-frames, buffers and "
-                           "resampler-updates.",
+                           "in-frames, out-frames, discont-in, dropped-frames, mode, source-ppb, "
+                           "device-ppb) with the run's format, channels, in-rate, out-rate, "
+                           "delay-frames, buffers, resampler-updates and device-pairs.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        gobject_class, PROP_BYPASS_BELOW_PPM,
+        g_param_spec_double("bypass-below-ppm", "Bypass below (ppm)",
+                            "Decode mode when above 0: buffers pass unchanged while the source's "
+                            "clock measures within this many ppm of house time and its phase "
+                            "within 1 ms, resampled to house rate from the buffer that crosses "
+                            "either until a DISCONT or GAP. 0: capture mode, or with device-sink "
+                            "the device term alone. Applies at the next start or caps change.",
+                            0.0, BYPASS_MAX_PPM, 0.0, at_start));
+    g_object_class_install_property(
+        gobject_class, PROP_DEVICE_SINK,
+        g_param_spec_string("device-sink", "Device sink",
+                            "The name of the GstAudioBaseSink downstream whose clock the output "
+                            "follows, through its custom slaving callback (it must have "
+                            "slave-method=custom); the ratio carries that device term. \"\": "
+                            "none. Found at READY to PAUSED.",
+                            "", at_start));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 
     gst_element_class_add_static_pad_template(element_class, &asrc_sink_tmpl);
     gst_element_class_add_static_pad_template(element_class, &asrc_src_tmpl);
     gst_element_class_set_static_metadata(
-        element_class, "Media Router capture ASRC", "Filter/Converter/Audio",
-        "Resamples a capture to the house rate as a sample counter labelled with capture time "
-        "(mrts::AsrcServo driving GstAudioResampler)",
+        element_class, "Media Router ASRC", "Filter/Converter/Audio",
+        "Resamples audio to the house rate as a sample counter: a capture to its capture time, "
+        "a decode to its content time once its source's clock is measured off house time, an "
+        "output to its device's clock (mrts::AsrcServo driving GstAudioResampler)",
         "media-router");
+    element_class->change_state = GST_DEBUG_FUNCPTR(asrc_change_state);
 
     trans_class->transform_caps = GST_DEBUG_FUNCPTR(asrc_transform_caps);
     trans_class->fixate_caps = GST_DEBUG_FUNCPTR(asrc_fixate_caps);
@@ -640,6 +1012,7 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
     trans_class->query = GST_DEBUG_FUNCPTR(asrc_query);
     trans_class->start = GST_DEBUG_FUNCPTR(asrc_start);
     trans_class->stop = GST_DEBUG_FUNCPTR(asrc_stop);
-    /* Never a pass-through, even at equal rates: the device clock is corrected there too. */
+    /* Never the base class's pass-through, even at equal rates: decode mode passes buffers
+     * itself, the other modes correct a clock there too. */
     trans_class->passthrough_on_same_caps = FALSE;
 }

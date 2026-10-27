@@ -126,7 +126,8 @@ export {
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
 export { busInputLabel } from './plugins/moduleTiming.js';
-// Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O, trims, cooldown, card.
+// Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O, trims, cooldown, card;
+// the ASRC's decode and device modes (WI-P3-5).
 export {
     INGEST_OFFSET_KEY,
     PID_TRIMS_KEY,
@@ -139,7 +140,12 @@ export {
     asrcBusReports,
     applyIngestTimingLiveUpdate,
 } from './plugins/ingestTiming.js';
-export type { RestampMode, RestampOptions, RestampControl } from './plugins/ingestTiming.js';
+export type {
+    RestampMode,
+    RestampOptions,
+    RestampControl,
+    AsrcOptions,
+} from './plugins/ingestTiming.js';
 export {
     IngestTimingReporter,
     isIngestTimingSection,

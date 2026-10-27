@@ -73,14 +73,21 @@ BENCH = tests/asrc_bench
 $(BENCH): tests/asrc_bench.c mrasrc_resampler.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(GST_CFLAGS) $< $(GST_LIBS) -lm -o $@
 
+# mrtestaudiosink and MrTestClock (WI-P3-5, S18): a device off the pipeline clock by a set ppm,
+# and a clock faster than real time, for gst_mrasrc_element_test.py's device mode. Under tests/,
+# never installed.
+TESTPLUGIN = tests/libgstmrtest.so
+$(TESTPLUGIN): tests/mrtestaudiosink.c
+	$(CC) $(CFLAGS) -fPIC $(GST_CFLAGS) -shared -Wl,-z,defs $< $(GST_LIBS) -o $@
+
 # Builds the plugin, so native-test fails on a plugin that does not link. Its contract and
 # dataflow run from packages/engine/src/child-process/gst_mrtshouse_element_test.py,
 # gst_mrtsrestamp_element_test.py, gst_ingest_restamp_test.py, gst_mrasrc_element_test.py,
 # gst_mralignwatch_element_test.py and gst_mrtsdemux_element_test.py (test:py).
-test: $(SO) $(STUB) $(REF) $(BENCH)
+test: $(SO) $(STUB) $(REF) $(BENCH) $(TESTPLUGIN)
 
 clean:
-	rm -f $(SO) $(REF) $(BENCH)
+	rm -f $(SO) $(REF) $(BENCH) $(TESTPLUGIN)
 	rm -rf $(dir $(STUB))
 
 install: $(SO)

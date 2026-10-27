@@ -50,8 +50,8 @@ def check(name, cond):
 class RunnerProc:
     """One runner process: commands in, parsed events + log lines out."""
 
-    def __init__(self, argv=None):
-        env = dict(os.environ, MR_PLUGINS_DIR=_PLUGINS, MALLOC_ARENA_MAX="2")
+    def __init__(self, argv=None, env=None):
+        env = dict(os.environ, MR_PLUGINS_DIR=_PLUGINS, MALLOC_ARENA_MAX="2", **(env or {}))
         # `argv` runs another binary on the same protocol (case N: the python twin).
         self.proc = subprocess.Popen(argv or [_BIN], stdin=subprocess.PIPE, stderr=subprocess.PIPE,
                                      stdout=subprocess.DEVNULL, env=env, text=True, bufsize=1)
@@ -2637,6 +2637,86 @@ def test_mrtsdemux_messages():
               seen["native"] == seen["python"])
 
 
+# --------------------------------------------------------------------------- mrasrc-device (WI-P3-5)
+_SKEW_LINE = re.compile(r"custom slaving requested skew ([+-]?)(\d+):(\d\d):(\d\d)\.(\d{9})")
+
+
+def _pulse_null_sink():
+    """A null sink of the user's PulseAudio (or pipewire-pulse), or None."""
+    try:
+        out = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    names = [line.split()[1] for line in out.stdout.splitlines() if len(line.split()) > 1]
+    return next((n for n in names if "null" in n), None) if out.returncode == 0 else None
+
+
+def test_mrasrc_device():
+    """mrasrc-device (WI-P3-5), both runners: `audiotestsrc ! mrasrc device-sink=sink ! pulsesink
+    name=sink slave-method=custom` on a null sink (tests/libgstmrtest.so's mrtestaudiosink without
+    one): the sink's custom-slaving callback is set and never asks a skew (audiobasesink's own lines),
+    and mrasrc-stats shows mode device with the device lock fed."""
+    null = _pulse_null_sink() if Gst.ElementFactory.find("pulsesink") else None
+    env = {"GST_DEBUG": "audiobasesink:5", "GST_DEBUG_NO_COLOR": "1"}
+    tmp = None
+    if null:
+        sink = f"pulsesink name=sink device={null} slave-method=custom provide-clock=false sync=true"
+    else:
+        test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
+        if not os.path.exists(os.path.join(test_dir, "libgstmrtest.so")):
+            print("SKIP mrasrc-device — no PulseAudio null sink and tests/libgstmrtest.so not built")
+            return
+        tmp = tempfile.mkdtemp(prefix="mrtest-")   # its own registry: the user's stays as it is
+        env.update(GST_PLUGIN_PATH=os.environ.get("GST_PLUGIN_PATH", "") + ":" + test_dir,
+                   GST_REGISTRY=os.path.join(tmp, "registry.bin"))
+        sink = "mrtestaudiosink name=sink slave-method=custom sync=true"
+    print(f"  mrasrc-device into {sink.split()[0]}{' ' + null if null else ''}")
+    pipeline = ("audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
+                f"mrasrc name=asrc device-sink=sink ! {sink}")
+    seen = {}
+    for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+        r = RunnerProc(argv, env=env)
+        try:
+            r.wait_event(ev_is("ready"))
+            r.send({"cmd": "start", "pipeline": pipeline, "useStdioForData": False, "linkOnPadAdded": [],
+                    "busReports": [{"element": "asrc", "structure": "mrasrc-stats"},
+                                   {"element": "asrc", "structure": "mrasrc-event"}],
+                    "decoderThreadType": "auto"})
+            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+            time.sleep(6)
+            r.send({"cmd": "get_stats", "id": "as1", "element": "asrc"})
+            st = r.wait_event(ev_is("stats", id="as1"))
+            snap = (st or {}).get("data") or {}
+            error = r.has_event(ev_is("error"))
+            code = r.stop_and_wait()
+        finally:
+            r.kill()
+        skews = [m for line in r.logs for m in [_SKEW_LINE.search(line)] if m]
+        nonzero = [m.group(0) for m in skews if any(int(g) for g in m.groups()[1:])]
+        unset = sum("no custom slaving callback set" in line for line in r.logs)
+        stats = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
+                 and ev.get("channel") == "mrasrc-stats:asrc"]
+        events = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
+                  and ev.get("channel") == "mrasrc-event:asrc"]
+        check(f"mrasrc-device {tag}: reaches PLAYING, no error, exits 0", playing and not error and code == 0)
+        check(f"mrasrc-device {tag}: the sink's callback set and never asked a skew ({len(skews)} callbacks, "
+              f"{len(nonzero)} with a skew, {unset} without a callback)", len(skews) > 50 and not nonzero and not unset)
+        check(f"mrasrc-device {tag}: mrasrc-stats mode device in every post ({len(stats)}; "
+              f"{sorted({s.get('mode') for s in stats})}), the device lock fed ({snap.get('device-pairs')} pairs)",
+              len(stats) >= 2 and all(s.get("mode") == "device" for s in stats)
+              and (snap.get("device-pairs") or 0) > 50 and snap.get("mode") == "device")
+        reasons = sorted({e.get("reason") for e in events if e.get("kind") == "device-relock"})
+        check(f"mrasrc-device {tag}: device relocks only from the sink's start ({reasons})",
+              "sync-latency" in reasons and set(reasons) <= {"new-caps", "sync-latency"}
+              and all(e.get("kind") == "device-relock" for e in events))
+        seen[tag] = (sorted({s.get("mode") for s in stats}), reasons)
+    if tmp:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if len(seen) == 2:
+        check(f"mrasrc-device: both runners forward the same modes and device relocks ({seen['native']})",
+              seen["native"] == seen["python"])
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2667,6 +2747,7 @@ test_bus_return()
 test_edge_stall_fds()
 test_mrtsdemux_pmt_change()
 test_mrtsdemux_messages()
+test_mrasrc_device()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

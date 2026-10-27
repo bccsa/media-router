@@ -2422,6 +2422,29 @@ default): a dropped input buffer would read as an xrun. Messages:
 `mrasrc-event` (`relock` with `reason` discont / envelope-step, `house-ns`,
 `jump-ns`, `dropped-ns`; `ratio-out-of-bounds` with `fit-ppb`).
 
+**`mrasrc`'s decode and device modes** (house-clock Phase 3, WI-P3-5). With
+`bypass-below-ppm` above 0 it sits after a decoder, through `audioconvert`
+(a decoder's planar output does not meet its interleaved caps). It locks the
+frame count to the buffer PTS, content time from the formula demux, on a
+lock whose first fit takes 10 buckets, and passes each buffer as it came
+(the same memory) while the source measures within that bound of house time
+and the phase within 1 ms. Past the bound for 10 s, or past the phase, it
+engages from that buffer: a house-rate counter from its PTS, the resampler
+primed with what passed, so nothing is dropped or repeated (`mrasrc-event`
+`engaged`). A DISCONT or GAP ends it: the resampler's tail leaves first, and
+what follows is measured afresh. With `device-sink=<name>` the named
+`GstAudioBaseSink` downstream, which must run `slave-method=custom` (else an
+error naming it at READY to PAUSED), reports its clock through its custom
+slaving callback and is never asked to skew; the ratio carries that device
+term, times the decode term when both are set (one resampler), and the
+output counter runs on from the first PTS, re-anchored at a DISCONT or GAP.
+`bypass-below-ppm=0` with `device-sink` is the device term alone.
+`mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
+`decode+device`), `source-ppb` and `device-ppb` (each clock against house
+time, positive when fast); `mrasrc-event` gains `engaged` (`reason` ratio or
+phase, `source-ppb`, `phase-ns`) and `device-relock` (`reason`, the sink's
+discontinuity).
+
 **Debugging.** Record a trace on a running ingest with `trace-location`
 (≤ 2 MB is about 15 min) and replay it off the box with
 `plugins/mpegts-core/native/mrts/mrts_cli restamp-replay <trace.stct>`,
