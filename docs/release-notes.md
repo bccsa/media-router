@@ -384,6 +384,18 @@ elements" below do not start.
   stream on for longer than that drops data there, and each such stretch is
   logged as a warning in the engine log saying how much. RIST Input, which
   already had that room, now warns the same way.
+- **An HLS Player plays a stream that has no master playlist.** Given a
+  plain media playlist (one list of segments that carry both the video and
+  the audio, as ffmpeg and many encoders write it), an HLS Player never
+  played: its card showed "hls-pipe crashed — restarting (attempt …)" over
+  and over, and the engine log "inlineAudioLanguages requires a master
+  playlist with audio renditions". A master playlist whose video carries its own audio, with no
+  separate audio tracks, did the same. Fixed: such a stream plays, its video
+  and its audio passed on as they arrive. A master playlist with separate
+  audio tracks plays as before, with the Audio Languages picked. On a stream
+  without separate audio tracks, Audio Languages has no effect and Subtitle
+  Languages are not added: adding subtitles there would drop the stream's
+  audio.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

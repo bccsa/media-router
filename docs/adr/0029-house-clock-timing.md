@@ -1972,8 +1972,10 @@ work items.
   re-anchored, so an offset kept across a discontinuity ends at a runner
   respawn; and a PID never re-anchors the program at the PES where it joins.
   Why: hls-pipe's inline audio continues across EXT-X-DISCONTINUITY while its
-  video jumps, and hls-player always muxes inline AV, so one shift for all
-  would put that audio minutes off at every origin encoder restart.
+  video jumps, and hls-player muxes a master's audio renditions inline (a
+  playlist without them passes its segments through whole, B-183), so one
+  shift for all would put that audio minutes off at every origin encoder
+  restart.
 - **Known edges, the owner's call.** The PES of a non-reference PID's new
   timeline that come before the reference's first leave on the old mapping
   (a frame or two at a runner respawn under 2 s); a stall without a source

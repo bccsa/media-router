@@ -2,10 +2,11 @@
  * Pure mapping from the module's RunnerConfig (the HLS_CONFIG env blob) to
  * hls-pipe ExtractorOptions overrides. Kept free of I/O and hls-pipe runtime
  * imports so it can be unit-tested without spawning anything — the runner
- * supplies the ABR presets it dynamically imported and spreads the result
- * into its ExtractorOptions.
+ * supplies the ABR presets it dynamically imported and the master playlist it
+ * fetched (none for a media playlist), and spreads the result into its
+ * ExtractorOptions.
  */
-import type { AbrConfig, LatencyConfig, QualityHint } from 'hls-pipe';
+import type { AbrConfig, LatencyConfig, MasterPlaylist, QualityHint } from 'hls-pipe';
 
 /** Bus egress descriptor — the paced sink the runner instantiates. */
 export type RunnerSink = { kind: 'unixfd'; ingestPath: string };
@@ -21,7 +22,7 @@ export interface RunnerConfig {
     quality: 'auto' | 'highest' | 'lowest' | 'fixed';
     capBitrateBps: number;
     abrPreset: 'default' | 'unstable';
-    inlineAudio: string[]; // [] = all
+    inlineAudio: string[]; // [] = all of a master's audio renditions
     inlineSubtitles: string[]; // [] = off
     allowMonoAudio: boolean;
     liveStartSegments: number;
@@ -37,7 +38,7 @@ export interface AbrPresets {
 
 export interface ExtractorOverrides {
     abr: Partial<AbrConfig>;
-    inlineAudioLanguages: string[] | 'all';
+    inlineAudioLanguages?: string[] | 'all';
     liveStartOffsetSegments: number;
     fixedQuality?: QualityHint;
     latency?: Partial<LatencyConfig>;
@@ -100,7 +101,24 @@ export function resolveQuality(ui: string): {
     }
 }
 
-export function buildExtractorOverrides(cfg: RunnerConfig, presets: AbrPresets): ExtractorOverrides {
+/**
+ * The languages for hls-pipe to mux in from a master's audio renditions; none on a media
+ * playlist or a master whose variants carry the audio (hls-pipe throws on a selection
+ * there), whose segments then pass through whole.
+ */
+export function inlineAudioLanguages(
+    selection: string[],
+    master: Pick<MasterPlaylist, 'audio'> | undefined,
+): string[] | 'all' | undefined {
+    if (!master?.audio.some((r) => r.uri)) return undefined;
+    return selection.length ? selection : 'all';
+}
+
+export function buildExtractorOverrides(
+    cfg: RunnerConfig,
+    presets: AbrPresets,
+    master: Pick<MasterPlaylist, 'audio'> | undefined,
+): ExtractorOverrides {
     const abr: Partial<AbrConfig> = {
         ...(cfg.abrPreset === 'unstable' ? presets.unstable : presets.default),
         // The bitrate cap only applies to actual ABR ('auto'); the fixed modes
@@ -131,13 +149,17 @@ export function buildExtractorOverrides(cfg: RunnerConfig, presets: AbrPresets):
                     : { kind: 'highest' }
                 : undefined;
 
+    // Subtitles ride the same inline mux, which keeps only the segments' video:
+    // without audio renditions they stay out, and the segments keep their audio.
+    const audio = inlineAudioLanguages(cfg.inlineAudio, master);
+    const subtitles = audio && cfg.inlineSubtitles.length ? cfg.inlineSubtitles : undefined;
     return {
         abr,
-        inlineAudioLanguages: cfg.inlineAudio.length ? cfg.inlineAudio : 'all',
+        ...(audio ? { inlineAudioLanguages: audio } : {}),
         liveStartOffsetSegments: cfg.liveStartSegments,
         ...(fixedQuality ? { fixedQuality } : {}),
         ...(Object.keys(latency).length ? { latency } : {}),
-        ...(cfg.inlineSubtitles.length ? { inlineSubtitleLanguages: cfg.inlineSubtitles } : {}),
+        ...(subtitles ? { inlineSubtitleLanguages: subtitles } : {}),
         ...(cfg.allowMonoAudio ? { allowMonoAudio: true } : {}),
     };
 }
