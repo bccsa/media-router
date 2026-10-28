@@ -50,6 +50,9 @@ class RestampCore {
     static constexpr int64_t DEGRADED_PCR_LEAD_NS = 250000000;
     static constexpr int64_t DEGRADED_RECENT_NS = 500000000;
     static constexpr int64_t DEGRADED_FLOOR_NS = 1000000000;
+    // B-185: the longest a program's packets wait for its next PCR: three of the 100 ms PCR intervals
+    // ISO 13818-1 allows, and under the gate's 0.4-0.7 s audio lead, so what waited leaves in time.
+    static constexpr int64_t HOLD_NS = 300000000;
 
     struct Range {
         const uint8_t* data;
@@ -110,7 +113,7 @@ class RestampCore {
         // Chapter 3's counters (part 10), then the restamp's own removals.
         uint64_t desync_bytes = 0, cc_lost = 0, header_spans = 0, psi_unsupported_sections = 0,
                  pes_no_pts = 0, dts_discarded = 0;
-        uint64_t unmapped_pes = 0;        // PES before their program had a mapping
+        uint64_t unmapped_pes = 0;        // PES before their program had a mapping, or past HOLD_NS (B-185)
         uint64_t broken_spans = 0;        // split headers that could not be joined
         uint64_t unknown_pid_packets = 0; // on no PMT's PID: their time cannot be placed
         uint64_t removed_packets = 0, pcr_kept_packets = 0;   // dropped; dropped but kept for the PCR
@@ -198,6 +201,19 @@ class RestampCore {
         int64_t pending_leap = 0;
         uint64_t gaps = 0, dropped_pes = 0;
         int64_t gap_ns = 0, dropped_ns = 0;
+        // B-185: armed by an outage or a leap, discontinuity or external relock (until OUTAGE_NS of PCR
+        // on), a PES in no epoch's range makes the program's packets wait, raw, for its next PCR; past
+        // HOLD_NS (expired) such a PES the newest line puts past the lead headroom is unmapped.
+        enum class Wait : uint8_t { off, armed, waiting, expired };
+        Wait wait = Wait::off;
+        int64_t armed_h = 0;              // the arrival of the last outage or such relock
+        bool relocked = false;            // such a relock pulled since the last PCR fed
+        bool prefed = false;              // its next PCR fed already, before the packets held
+        struct Held {
+            uint8_t b[PKT];
+            int64_t arrival;
+        };
+        std::deque<Held> held;
     };
     struct Op {
         bool internal;
@@ -205,6 +221,11 @@ class RestampCore {
     };
 
     void on_packet(PacketView& v);
+    void take(PacketView& v);
+    bool hold(Pid& p, PacketView& v);
+    bool starts_wait(const Pid& p, const PacketView& v) const;
+    void release(Program& g, bool decided);
+    void feed_stc(Program& g, int64_t pcr27, bool di);
     void on_psi(const PacketView& v);
     void update_programs(const std::vector<std::pair<int, int>>& pat);
     void rebuild(Program& g);
@@ -213,7 +234,7 @@ class RestampCore {
     int64_t degraded_pcr(const Program& g) const;
     void on_es(Pid& p, PacketView& v, CcTracker::Result cc, bool di);
     bool in_epoch(const Program& g, int64_t pts90k) const;
-    int64_t unwrap_pes(Pid& p, int64_t pts33);
+    int64_t unwrap_pes(const Program& g, Unwrapper& u, int64_t pts33) const;
     bool start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di, int64_t& pts33,
                    int64_t& dts33);
     void push_gap(Pid& p, int64_t start, int64_t end, const char* why, uint32_t epoch, int64_t at_h);

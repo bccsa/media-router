@@ -86,6 +86,7 @@ struct Gen {
     int64_t sigma0 = 3600 * S;            // source STC at mux time 0
     int64_t rewind_at = -1;               // the source STC steps by jump_ns here
     int64_t jump_ns = -1000000000;
+    int64_t rewind2_at = -1, jump2_ns = 0;   // and by jump2_ns here, unflagged (B-185)
     bool jump_flag = true;                // discontinuity_indicator on the first PCR after it
     int64_t late_from = -1, late_to = -1; // audio-1 PES of these slots muxed 300 ms late
     int64_t outage_from = -1, outage_to = -1;   // nothing sent; the PCR runs on
@@ -116,6 +117,9 @@ struct Gen {
     // for burst_len, then what waited arrives at once, then burst_dip lower for burst_dip_len (B-95).
     int64_t lead = 0;
     int64_t burst_every = 0, burst_len = 0, burst_rise = 0, burst_dip = 0, burst_dip_len = 0;
+    // A stalled link's return (B-185, the field's 2026-10-14 shape): what was sent in
+    // [stale_from, stale_to) arrives from stale_arrive on, 20 times faster.
+    int64_t stale_from = -1, stale_to = -1, stale_arrive = -1;
 };
 
 struct Pkt {
@@ -216,7 +220,10 @@ Pkt pcr_only(int pid, int64_t pcr27, int64_t mux, int n) {
 Stream generate(const Gen& g) {
     Stream st;
     auto in_outage = [&](int64_t m) { return g.outage_from >= 0 && m >= g.outage_from && m < g.outage_to; };
-    auto stc = [&](int64_t t) { return g.sigma0 + t + (g.rewind_at >= 0 && t >= g.rewind_at ? g.jump_ns : 0); };
+    auto stc = [&](int64_t t) {
+        return g.sigma0 + t + (g.rewind_at >= 0 && t >= g.rewind_at ? g.jump_ns : 0) +
+               (g.rewind2_at >= 0 && t >= g.rewind2_at ? g.jump2_ns : 0);
+    };
     auto stc2 = [&](int64_t t) { return g.sigma0 + P2_SIGMA_OFF + t + at_ppb(t, P2_PPB); };
     auto pcr_at = [&](int64_t m) {
         const bool frozen = g.freeze_from >= 0 && m >= g.freeze_from && m < g.freeze_to;
@@ -409,6 +416,8 @@ std::vector<Dg> datagrams(const Stream& st, const Gen& g, int64_t h0, int64_t pp
         const int64_t span = g.backlog_len + g.backlog_drain;
         if (g.backlog_at >= 0 && send >= g.backlog_at && send - g.backlog_at < span)
             due = g.backlog_at + g.backlog_len + (int64_t)((__int128)(send - g.backlog_at) * g.backlog_drain / span);
+        if (g.stale_from >= 0 && send >= g.stale_from && send < g.stale_to)
+            due = g.stale_arrive + (send - g.stale_from) / 20;
         last = std::max(last, h0 + 20 * MS + rise + due + at_ppb(due, ppb) + j);
         out.push_back(Dg{i, n, send, last});
     }
@@ -442,6 +451,7 @@ struct Out {
     int bad_gap_at = 0;                   // markers off a packet boundary, past the output, out of order
     std::vector<char> in_place_of;        // per process() call
     std::vector<int64_t> arrival_of_out;  // per output packet
+    std::vector<size_t> call_end;         // output packets after each process() call
 };
 
 Out run(const Case& c, const RestampConfig& cfg, Edit edit = nullptr, size_t cut = 0, TraceWriter* tw = nullptr) {
@@ -468,6 +478,7 @@ Out run(const Case& c, const RestampConfig& cfg, Edit edit = nullptr, size_t cut
             }
             for (const RestampCore::Range& k : r.keep) o.bytes.insert(o.bytes.end(), k.data, k.data + k.len);
             o.arrival_of_out.resize(o.bytes.size() / PKT, d.arrival);
+            o.call_end.push_back(o.bytes.size() / PKT);
         };
         if (cut && cut < buf.size()) {
             feed(buf.data(), cut);
@@ -3300,6 +3311,318 @@ void test_dup_split_cont() {
               monotonic(aa));
 }
 
+// --- B-185: a new-timeline PES ahead of its program's first new PCR (the FF9 lane's F1, F2) ---
+
+// The generator's PCR rides every video PES: a PCR period is 40 ms. HOLD is RestampCore::HOLD_NS.
+constexpr int64_t PCR_PERIOD = 40 * MS, HOLD = 300 * MS;
+
+std::vector<int64_t> arrival_of_in(const Case& c) {
+    std::vector<int64_t> v(c.st.pk.size(), 0);
+    for (const Dg& d : c.dg)
+        for (size_t i = d.first; i < d.first + d.n; i++) v[i] = d.arrival;
+    return v;
+}
+
+// The bus egress (mrts::IdentityStamp) on each output buffer the element pushes: a process()
+// call's bytes, split at its markers. Per buffer: (its arrival, stamp - arrival).
+std::vector<std::pair<int64_t, int64_t>> bus_leads(const Out& o) {
+    std::vector<size_t> cuts(o.gap_at.begin(), o.gap_at.end());
+    cuts.insert(cuts.end(), o.call_end.begin(), o.call_end.end());
+    std::sort(cuts.begin(), cuts.end());
+    IdentityStamp ids;
+    std::vector<std::pair<int64_t, int64_t>> v;
+    size_t from = 0;
+    for (size_t end : cuts) {
+        if (end <= from) continue;
+        const int64_t arr = o.arrival_of_out[from];
+        v.push_back({arr, ids.stamp(o.bytes.data() + from * PKT, (end - from) * PKT, arr, 0) - arr});
+        from = end;
+    }
+    return v;
+}
+
+// An episode from send time `from`, against 10 s to it: leads (house - output arrival) of PES and
+// bus buffers; per PID the longest arrival gap between output PES (hole) and its PES sent from 1 s
+// on missing, times its period (lost); the longest an output PES left after it arrived (delay).
+struct Back {
+    int64_t silence = 0;
+    int64_t lead_pre = INT64_MIN, lead_post = INT64_MIN, bus_pre = INT64_MIN, bus_post = INT64_MIN;
+    std::map<int, int64_t> hole, lost;
+    int64_t delay = 0;
+};
+
+Back measure(const Case& c, const Out& o, const Ana& a, int64_t from) {
+    Back b;
+    const int64_t t0 = c.h0 + 20 * MS;
+    for (size_t k = 1; k < c.dg.size(); k++)
+        if (c.dg[k].arrival - t0 >= from) b.silence = std::max(b.silence, c.dg[k].arrival - c.dg[k - 1].arrival);
+    for (const auto& x : bus_leads(o)) {
+        const int64_t at = x.first - t0;
+        if (at >= 10 * S && at < from) b.bus_pre = std::max(b.bus_pre, x.second);
+        if (at >= from) b.bus_post = std::max(b.bus_post, x.second);
+    }
+    const std::vector<int64_t> ain = arrival_of_in(c);
+    std::map<int, int64_t> last;
+    for (const OutPes& p : a.pes) {
+        const int64_t arr = o.arrival_of_out[p.at], at = arr - t0;
+        const int64_t lead = house_from_mux_pts(key33(p), arr) - arr;
+        if (at >= 10 * S && at < from) b.lead_pre = std::max(b.lead_pre, lead);
+        if (at >= from) {
+            b.lead_post = std::max(b.lead_post, lead);
+            if (p.in >= 0) b.delay = std::max(b.delay, arr - ain[(size_t)p.in]);
+            if (last.count(p.pid)) b.hole[p.pid] = std::max(b.hole[p.pid], arr - last[p.pid]);
+        }
+        last[p.pid] = arr;
+    }
+    const size_t pmt = first_index(c, PID_PMT, false);
+    for (int pid : kPids) b.lost[pid] = 0;
+    for (size_t i = pmt; i < c.st.pk.size(); i++) {
+        const Pkt& k = c.st.pk[i];
+        if (k.pes < 0 || k.copy || !ts_pusi(k.b.data()) || c.st.pes[(size_t)k.pes].t < 1 * S) continue;
+        if (a.out_of_pes[(size_t)k.pes] < 0) b.lost[k.pid] += period_of(k.pid);
+    }
+    return b;
+}
+
+// Per PID at most `lost_max` lost and a hole of the silence plus a PCR period and a PES; nothing
+// `ahead_max` further ahead of arrival than before. A stale burst (S2) adds its length to both: its
+// content maps at its arrival, 20 times compressed, so live content overlaps it (B-39's, as before).
+struct Verdict {
+    bool lost, ahead, holes;
+};
+Verdict judge(const Back& b, int64_t lost_max, int64_t ahead_max = PCR_PERIOD) {
+    Verdict v{true, true, true};
+    for (int pid : kPids) {
+        v.lost &= b.lost.at(pid) <= lost_max;
+        v.holes &= b.hole.count(pid) && b.hole.at(pid) <= b.silence + PCR_PERIOD + period_of(pid) + 10 * MS;
+    }
+    v.ahead = b.lead_post <= b.lead_pre + ahead_max && b.bus_post <= b.bus_pre + ahead_max;
+    return v;
+}
+int64_t stale_len(const Gen& g) { return g.stale_from >= 0 ? g.stale_to - g.stale_from : 0; }
+
+void print_back(const char* label, const Back& b) {
+    std::printf("  %s: silence %.3f s; lead %+.3f -> %+.3f s, bus %+.3f -> %+.3f s; delay %.1f ms; lost/hole ms", label,
+                b.silence / 1e9, b.lead_pre / 1e9, b.lead_post / 1e9, b.bus_pre / 1e9, b.bus_post / 1e9, b.delay / 1e6);
+    for (int pid : kPids)
+        std::printf(" 0x%x %.0f/%.0f", pid, b.lost.at(pid) / 1e6, b.hole.count(pid) ? b.hole.at(pid) / 1e6 : -1.0);
+    std::printf("\n");
+}
+
+// The FF9 lane's shapes (its probe, wf13/rc/ff9): S1 a 3 s outage, then the source +11 s, two
+// audio-1 and one audio-2 PES of the new timeline ahead of its first PCR; S1f the same flagged;
+// S1c the new timeline's first packet its PCR; S3 +100 s; S4 -100 s; S0 the PCR continuous.
+Gen step_gen(int64_t back, int64_t jump, bool flag, int64_t secs = 60) {
+    Gen g;
+    g.secs = secs;
+    g.outage_from = 40 * S;
+    g.outage_to = back;
+    if (jump != 0) {
+        g.rewind_at = back;
+        g.jump_ns = jump;
+        g.jump_flag = flag;
+    }
+    return g;
+}
+
+// S2, the field's (2026-10-14 07:20Z): the link stalls 10.8 s from 40.2 s; its first 200 ms
+// arrive at the return, 100 ms before live content, whose PCR runs on in real time.
+Gen stale_gen(int64_t back) {
+    Gen g;
+    g.stale_from = 40 * S;
+    g.stale_to = 40200 * MS;
+    g.stale_arrive = back - 100 * MS;
+    g.outage_from = 40200 * MS;
+    g.outage_to = back;
+    return g;
+}
+
+void test_new_timeline_before_pcr(const char* name, const Gen& g, int relocks) {
+    const Case c = make_case(g);
+    const Out o = run(c, stc_cfg());
+    const Ana a = analyze(c, o, false);
+    const Back b = measure(c, o, a, g.stale_from >= 0 ? g.stale_from : g.outage_from >= 0 ? g.outage_from : g.rewind_at);
+    print_events(name, o, c);
+    print_back(name, b);
+    const Verdict v = judge(b, stale_len(g), PCR_PERIOD + stale_len(g));
+    const std::string n = std::string("new timeline before its PCR, ") + name;
+    CHECK((n + ": no PID loses a PES beyond the outage (and the stale burst's overlap)").c_str(), v.lost);
+    CHECK((n + ": no PES and no bus buffer further ahead of arrival than before, plus one PCR period").c_str(),
+          v.ahead);
+    CHECK((n + ": each PID's hole at most the silence plus one PCR period and a PES").c_str(), v.holes);
+    CHECK((n + ": nothing waits longer than one PCR period").c_str(), b.delay <= PCR_PERIOD + 10 * MS);
+    CHECK((n + ": the relocks, nothing degraded").c_str(),
+          count_events(o, Ev::Kind::relock) == relocks && count_events(o, Ev::Kind::degraded) == 0);
+    CHECK((n + ": monotonic, CC intact, every PID's bytes the input's in order, PES whole, gaps placed").c_str(),
+          monotonic(a) && a.cc_lost == 0 && a.matched && a.atomic && gaps_placed(o, a) && o.bad_gap_at == 0);
+}
+
+// The probe's sweep: 40 cut points across one PCR period, for S1 and S2.
+void test_new_timeline_sweep() {
+    for (const bool field : {false, true}) {
+        int ok = 0, future = 0;
+        int64_t worst_lost = 0, worst_ahead = INT64_MIN;
+        for (int k = 0; k < 40; k++) {
+            const Gen g = field ? stale_gen(51 * S + k * MS) : step_gen(43 * S + k * MS, 11 * S, false);
+            const Case c = make_case(g);
+            const Out o = run(c, stc_cfg());
+            const Ana a = analyze(c, o, false);
+            const Back b = measure(c, o, a, field ? g.stale_from : g.outage_from);
+            const Verdict v = judge(b, stale_len(g), PCR_PERIOD + stale_len(g));
+            const bool pass = v.lost && v.ahead && v.holes && b.delay <= PCR_PERIOD + 10 * MS && monotonic(a) &&
+                              a.cc_lost == 0 && a.matched && a.atomic;
+            ok += pass;
+            future += b.lead_post > b.lead_pre + 2 * S;
+            for (int pid : kPids) worst_lost = std::max(worst_lost, b.lost.at(pid));
+            worst_ahead = std::max(worst_ahead, std::max(b.lead_post - b.lead_pre, b.bus_post - b.bus_pre));
+            if (!pass) print_back(field ? "S2 sweep" : "S1 sweep", b);
+        }
+        std::printf("  %s sweep: %d/40 offsets pass, %d with a PES 2 s past the steady lead; worst lost %.0f ms, "
+                    "worst lead or bus rise %+.3f s\n",
+                    field ? "S2" : "S1", ok, future, worst_lost / 1e6, worst_ahead / 1e9);
+        CHECK(field ? "new timeline before its PCR, sweep S2 (the field's shape, 40 offsets): every offset clean"
+                    : "new timeline before its PCR, sweep S1 (+11 s after 3 s, 40 offsets): every offset clean",
+              ok == 40);
+    }
+}
+
+// A sparse PCR (every 2 s): the PCR comes after the bound. A new timeline's PES the old line puts
+// past the 4 s lead headroom are unmapped until it (S1's step); a continuous timeline's, within
+// it, go on after the bound on the line as before (a 5 s outage, out of the epoch's range).
+void test_new_timeline_sparse_pcr() {
+    {
+        Gen g = step_gen(43001 * MS, 11 * S, false);
+        g.pcr_every = 50;
+        const Case c = make_case(g);
+        const Out o = run(c, stc_cfg());
+        const Ana a = analyze(c, o, false);
+        const Back b = measure(c, o, a, g.outage_from);
+        print_events("sparse PCR, +11 s", o, c);
+        print_back("sparse PCR, +11 s", b);
+        const Verdict v = judge(b, 2 * S);
+        int64_t lost = INT64_MAX;
+        for (int pid : kPids) lost = std::min(lost, b.lost.at(pid));
+        CHECK("new timeline, sparse PCR: past the bound the new timeline's PES are unmapped until its PCR, "
+              "under one PCR interval per PID",
+              v.lost && lost >= 500 * MS && o.stats.unmapped_pes >= 50);
+        CHECK("new timeline, sparse PCR: no PES and no bus buffer ahead of arrival by more than before, plus one "
+              "40 ms period; no overlap drop",
+              v.ahead && o.stats.programs[0].dropped_pes == 0);
+        CHECK("new timeline, sparse PCR: nothing waits past the bound; monotonic, CC intact, bytes the input's",
+              b.delay <= HOLD + 10 * MS && monotonic(a) && a.cc_lost == 0 && a.matched && a.atomic);
+    }
+    {
+        Gen g = step_gen(45 * S, 0, false);
+        g.pcr_every = 50;
+        const Case c = make_case(g);
+        const Out o = run(c, stc_cfg());
+        const Ana a = analyze(c, o, false);
+        const Back b = measure(c, o, a, g.outage_from);
+        print_events("sparse PCR, 5 s outage, continuous", o, c);
+        print_back("sparse PCR, 5 s outage, continuous", b);
+        const Verdict v = judge(b, 0);
+        CHECK("continuous timeline, sparse PCR: nothing lost; out of the epoch's range, the PES wait the bound, "
+              "then map on the line",
+              v.lost && v.ahead && b.delay >= HOLD - 50 * MS && b.delay <= HOLD + 10 * MS);
+        CHECK("continuous timeline, sparse PCR: no relock, nothing dropped, monotonic, CC intact, bytes the input's",
+              count_events(o, Ev::Kind::relock) == 0 && o.stats.programs[0].dropped_pes == 0 && monotonic(a) &&
+                  a.cc_lost == 0 && a.matched && a.atomic);
+    }
+}
+
+// An envelope step moves the estimate, not the timeline (B-1, B-95): it arms no wait. At a 2 s PCR
+// audio-2 3.3 s ahead is out of every range 0.25-2 s after each PCR, inside the 4 s headroom.
+void test_new_timeline_step_unarmed() {
+    Gen g;
+    g.secs = 150;
+    g.pcr_every = 50;
+    g.a2_ahead = 3300 * MS;
+    g.delay_from = 100 * S;
+    g.delay_rise = 150 * MS;
+    const Case c = make_case(g);
+    const Out o = run(c, stc_cfg());
+    const Ana a = analyze(c, o, false);
+    const std::vector<int64_t> ain = arrival_of_in(c);
+    int64_t delay = 0;
+    int out_of_range = 0;   // audio-2 PES kept more than 4 s past their last PCR (0.04 s + 2 s steps)
+    for (const OutPes& p : a.pes) {
+        if (p.in >= 0) delay = std::max(delay, o.arrival_of_out[p.at] - ain[(size_t)p.in]);
+        if (p.pid == PID_A2 && p.pes >= 0) out_of_range += fmod64(c.st.pes[(size_t)p.pes].t - 40 * MS, 2 * S) > 300 * MS;
+    }
+    print_events("envelope step, audio-2 3.3 s ahead, 2 s PCR", o, c);
+    std::printf("  envelope step: %d audio-2 PES kept out of every range; longest wait %.1f ms\n", out_of_range,
+                delay / 1e6);
+    CHECK("envelope step: one step relock, nothing degraded, and nothing waits after it (no wait armed)",
+          count_events(o, Ev::Kind::relock, "envelope-step") == 1 && count_events(o, Ev::Kind::relock) == 1 &&
+              count_events(o, Ev::Kind::degraded) == 0 && out_of_range > 500 && delay == 0 && monotonic(a) &&
+              a.matched && a.cc_lost == 0);
+}
+
+// The wait's side effects: a flush while waiting (what waited goes, CC kept continuous), a second
+// program on its own clock unaffected, and a trace of the run replaying as recorded.
+void test_new_timeline_wait() {
+    const Gen g = step_gen(43001 * MS, 11 * S, false);
+    const Case c = make_case(g);
+    {
+        // The flush comes before the datagram after the one with the first new-timeline PES.
+        size_t i = 0, k = 0;
+        while (i < c.st.pk.size() && !(c.st.pk[i].mux >= g.outage_to && c.st.pk[i].pes >= 0 && ts_pusi(c.st.pk[i].b.data())))
+            i++;
+        while (k < c.dg.size() && c.dg[k].first + c.dg[k].n <= i) k++;
+        size_t calls = 0;
+        int64_t removed0 = -1;
+        const Out o = run(c, stc_cfg(), [&](RestampCore& rc, int64_t) {
+            if (calls++ != k + 1) return;
+            removed0 = (int64_t)rc.stats().removed_packets;
+            rc.flush();
+        });
+        const Ana a = analyze(c, o, false);
+        const Back b = measure(c, o, a, g.outage_from);
+        CHECK("wait: a flush drops what waited (removed steps), the output's CC stays continuous",
+              removed0 >= 0 && (int64_t)o.stats.removed_packets > removed0 && a.cc_lost == 0 && a.matched &&
+                  a.atomic && monotonic(a));
+        CHECK("wait: after the flush the next PCR still decides: nothing ahead", judge(b, 2 * S).ahead);
+    }
+    {
+        Gen g2 = g, g0 = step_gen(43001 * MS, 0, false);
+        g2.program2 = true;
+        g0.program2 = true;
+        const Case c2 = make_case(g2), c0 = make_case(g0);
+        const Out o2 = run(c2, stc_cfg()), o0 = run(c0, stc_cfg());
+        const Ana a2 = analyze(c2, o2, false), a0 = analyze(c0, o0, false);
+        std::vector<int64_t> p2, p0;
+        for (const OutPes& p : a2.pes)
+            if (p.pid == PID_B1) p2.push_back(p.pts);
+        for (const OutPes& p : a0.pes)
+            if (p.pid == PID_B1) p0.push_back(p.pts);
+        const Back b = measure(c2, o2, a2, g2.outage_from);
+        CHECK("wait: program 1 waits for its PCR, program 2 on its own clock leaves as when program 1 kept its "
+              "timeline",
+              judge(b, 0).lost && judge(b, 0).ahead && p2.size() > 2000 && p2 == p0 && a2.matched && a2.cc_lost == 0);
+    }
+    {
+        TraceWriter tw;
+        tw.open_memory();
+        run(c, stc_cfg(), nullptr, 0, &tw);
+        TracePlayer pl(tw.records(), RestampCore::OUTAGE_NS);
+        RestampCore rc;
+        TraceWriter again;
+        again.open_memory();
+        rc.set_trace(&again);
+        TracePlayer::Buffer buf;
+        while (pl.next(&buf)) rc.process(buf.bytes.data(), buf.bytes.size(), buf.arrival_ns);
+        // Every PES record on its own packet's arrival, in input order: what waited too.
+        const std::vector<int64_t> ain = arrival_of_in(c);
+        std::vector<int64_t> want, got;
+        for (size_t i = first_index(c, PID_PMT, false); i < c.st.pk.size(); i++)
+            if (c.st.pk[i].pes >= 0 && ts_pusi(c.st.pk[i].b.data())) want.push_back(ain[i]);
+        for (const TraceRecord& r : tw.records())
+            if (r.kind == TraceKind::pes) got.push_back(r.arrival_ns);
+        CHECK("wait: the run's trace replays as recorded, nothing misplaced; every PES on its own arrival",
+              tw.records().size() > 5000 && again.records() == tw.records() && pl.misplaced() == 0 && got == want);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -3361,5 +3684,34 @@ int main() {
     test_dup_split_cont();
     test_dup_split_held();
     test_first_overlap();
+    test_new_timeline_before_pcr("S0, 3 s outage, the PCR continuous", step_gen(43 * S, 0, false), 0);
+    test_new_timeline_before_pcr("S1, 3 s outage, +11 s, audio first", step_gen(43001 * MS, 11 * S, false), 1);
+    test_new_timeline_before_pcr("S1f, the same flagged", step_gen(43001 * MS, 11 * S, true), 1);
+    test_new_timeline_before_pcr("S1c, the same, its PCR first", step_gen(43 * S, 11 * S, false), 1);
+    test_new_timeline_before_pcr("S2a, the field's, live's PCR first", stale_gen(51 * S), 2);
+    test_new_timeline_before_pcr("S2b, the field's, audio first", stale_gen(51001 * MS), 2);
+    test_new_timeline_before_pcr("S3, +100 s", step_gen(43001 * MS, 100 * S, false, 150), 1);
+    test_new_timeline_before_pcr("S4, -100 s", step_gen(43001 * MS, -100 * S, false, 150), 1);
+    {
+        // No outage: a relock arms the wait too. A flagged +11 s jump at 30 s, its PCR first, then
+        // 0.5 s on (within the second the relock arms) another +11 s, audio-1's PES ahead of its PCR.
+        Gen g;
+        g.rewind_at = 30 * S;
+        g.jump_ns = 11 * S;
+        g.rewind2_at = 30501 * MS;
+        g.jump2_ns = 11 * S;
+        test_new_timeline_before_pcr("S5, two jumps 0.5 s apart, no outage", g, 2);
+    }
+    {
+        // The first new-timeline PES (audio-2's, 43.020 s) has its header split: read at its continuation.
+        Gen g = step_gen(43009 * MS, 11 * S, false);
+        g.split_every = 2;
+        g.dup_every = 4;
+        test_new_timeline_before_pcr("S1s, +11 s, the first PES's header split, duplicates", g, 1);
+    }
+    test_new_timeline_sweep();
+    test_new_timeline_sparse_pcr();
+    test_new_timeline_step_unarmed();
+    test_new_timeline_wait();
     return test_summary("ts_restamp");
 }

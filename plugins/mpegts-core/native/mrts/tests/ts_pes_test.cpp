@@ -559,6 +559,13 @@ int main() {
         PacketView vo = view(other);
         CHECK("span: other PIDs pass through complete() untouched",
               !s.complete(vo, first, ts) && calls == 0 && s.held(0x100));
+        PesHeader jh;
+        Bytes skip = vid[2];
+        PacketView vg = view(skip);
+        CHECK("span: joined() reads the header its continuation completes and leaves it held; not across a CC "
+              "gap, from a duplicate or for another PID (B-185)",
+              s.joined(vb, &jh) && jh.complete && jh.pts == P && jh.dts == D && s.held(0x100) && s.spans() == 0 &&
+                  !s.joined(vg, &jh) && !s.joined(vc, &jh) && !s.joined(vo, &jh) && s.held(0x100));
         s.reset();
         CHECK("span: reset() drops it",
               !s.held(0x100) && !s.complete(vb, first, ts) && calls == 0);

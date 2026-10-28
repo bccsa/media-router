@@ -155,6 +155,9 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
     ops_.clear();
     scratch_.clear();
     out_bytes_ = 0;
+    // B-185: a wait past its bound ends before this buffer, on the arrivals its packets had.
+    for (auto& g : progs_)
+        if (!g->held.empty() && arrival_ns - g->held.front().arrival >= HOLD_NS) release(*g, false);
     const int64_t silence = have_arrival_ ? arrival_ns - arrival_ : 0;
     have_arrival_ = true;
     arrival_ = arrival_ns;
@@ -164,7 +167,12 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
         // it left, from this buffer on (which may still carry content from before it).
         for (auto& p : pids_)
             if (p) p->outage = true;
-        for (auto& g : progs_) g->flag_pcr = true;   // a gap of 1 s or more in everything
+        for (auto& g : progs_) {
+            g->flag_pcr = true;   // a gap of 1 s or more in everything
+            if (cfg_.mode != RestampConfig::Mode::stc) continue;
+            g->wait = Program::Wait::armed;
+            g->armed_h = arrival_h_;
+        }
         outage_h_ = arrival_h_;
         record(TraceKind::outage, PID_NULL, (uint64_t)silence, 0, 0, arrival_ns);
     }
@@ -195,6 +203,83 @@ void RestampCore::put(const uint8_t* pkt) {
 }
 
 void RestampCore::on_packet(PacketView& v) {
+    Pid* p = v.pid == PID_PAT || pmt_ref_[v.pid] ? nullptr : pids_[v.pid].get();
+    if (p && hold(*p, v)) return;
+    take(v);
+}
+
+// B-185: true when `v` waits, raw, with its program's packets for the program's next PCR. That PCR
+// is fed first, then what waited goes on in order (release), then the PCR's own packet.
+bool RestampCore::hold(Pid& p, PacketView& v) {
+    Program& g = *p.prog;
+    const bool pcr = v.pid == g.pcr_pid && v.af_pcr;   // fed before its own PES (take) in any case
+    if (g.wait == Program::Wait::waiting && pcr) {
+        feed_stc(g, read_pcr(v.p), v.af_discontinuity);
+        g.prefed = true;
+        release(g, true);
+        return false;
+    }
+    if (g.wait != Program::Wait::waiting && (pcr || g.wait != Program::Wait::armed || !starts_wait(p, v)))
+        return false;
+    g.wait = Program::Wait::waiting;
+    g.held.emplace_back();
+    std::memcpy(g.held.back().b, v.p, PKT);
+    g.held.back().arrival = arrival_;
+    return true;
+}
+
+// A PES its program's next PCR must place: its σ in no epoch's range, where the straddle rule falls
+// back on the newest line, which a new timeline left (F1). Read on the whole header, so a split one
+// at its continuation: a trace replays the same waits however the source packetised it.
+bool RestampCore::starts_wait(const Pid& p, const PacketView& v) const {
+    const Program& g = *p.prog;
+    if (g.degraded || !g.have_pcr || p.stream_type < 0 || v.payload_off >= PKT) return false;
+    PesHeader h;
+    if (!v.pusi && !span_.joined(v, &h)) return false;
+    if (v.pusi && (!parse_pes_header(v.p + v.payload_off, PKT - v.payload_off, &h) || !h.complete)) return false;
+    if (h.pts < 0) return false;
+    Unwrapper u = p.unwrap;
+    const int64_t pu = unwrap_pes(g, u, h.pts);
+    const int64_t du = u.feed_dts(h.dts, pu);
+    return !in_epoch(g, p.cls == StreamClass::video && du != Unwrapper::NO_DTS ? du : pu);
+}
+
+// The held packets through the usual path, in order, each on its own arrival. Not decided (the bound
+// passed): the program keeps the expiry rule (start_pes) until its next PCR.
+void RestampCore::release(Program& g, bool decided) {
+    std::deque<Program::Held> q;
+    q.swap(g.held);
+    if (!decided) g.wait = Program::Wait::expired;
+    const int64_t a = arrival_, ah = arrival_h_;
+    for (Program::Held& e : q) {
+        arrival_ = e.arrival;
+        arrival_h_ = e.arrival + base_;
+        PacketView v;
+        parse_packet(e.b, &v);
+        take(v);
+    }
+    arrival_ = a;
+    arrival_h_ = ah;
+}
+
+// The PCR into the program's clock (stc mode). It ends a wait or an expiry; a leap, discontinuity
+// or external relock arms the program again, until OUTAGE_NS after it (a stale burst's, B-185).
+void RestampCore::feed_stc(Program& g, int64_t pcr27, bool di) {
+    const bool first = !g.have_pcr;
+    g.relocked = false;
+    g.stc.feed_pcr(pcr27, di, arrival_);
+    g.have_pcr = true;
+    // PES before the first PCR were unwrapped against no clock: re-seed on it.
+    if (first)
+        for (int pid : g.es)
+            if (pids_[pid]) pids_[pid]->unwrap.reset();
+    pull_events(g);
+    if (g.relocked) g.armed_h = arrival_h_;
+    const bool armed = g.wait != Program::Wait::off && arrival_h_ - g.armed_h < OUTAGE_NS;
+    g.wait = g.relocked || armed ? Program::Wait::armed : Program::Wait::off;
+}
+
+void RestampCore::take(PacketView& v) {
     const CcTracker::Result cc = cc_in_.feed(v);
     if (v.pid == PID_PAT || pmt_ref_[v.pid]) {
         on_psi(v);
@@ -250,6 +335,7 @@ void RestampCore::update_programs(const std::vector<std::pair<int, int>>& pat) {
         if (it == pat.end()) {
             for (auto& p : pids_)
                 if (p && p->prog == &g) p.reset();
+            removed_ += g.held.size();    // its packets that waited for a PCR (B-185)
             progs_.erase(progs_.begin() + (std::ptrdiff_t)i);
             continue;
         }
@@ -348,6 +434,7 @@ void RestampCore::pull_events(Program& g) {
             case StcEvent::Kind::relock:
                 if (!std::strcmp(e.reason, "leap")) out.value_ns = g.pending_leap;
                 g.flag_pcr = true;        // a new epoch: the PCR's timeline breaks
+                g.relocked |= std::strcmp(e.reason, "envelope-step") != 0;   // the timeline may have moved
                 break;
             case StcEvent::Kind::degraded:
                 out.kind = Event::Kind::degraded;
@@ -401,14 +488,8 @@ void RestampCore::on_pcr(Pid& p, PacketView& v) {
         // Moved by the constant the PES move by: PTS - PCR stays the mux's, exactly.
         out27 = floor_mod(pcr + ns_to_pts90k(base_ + g.pcr_shift) * 300, PCR_MODULO);
     } else {
-        const bool first = !g.have_pcr;
-        g.stc.feed_pcr(pcr, v.af_discontinuity, arrival_);
-        g.have_pcr = true;
-        // PES before the first PCR were unwrapped against no clock: re-seed on it.
-        if (first)
-            for (int pid : g.es)
-                if (pids_[pid]) pids_[pid]->unwrap.reset();
-        pull_events(g);
+        if (g.prefed) g.prefed = false;   // fed before the packets that waited for it (B-185)
+        else feed_stc(g, pcr, v.af_discontinuity);
         // The one mapping its PES take, epoch choice included, outside the lead row.
         VirtualStc::Mapping m;
         if (!g.degraded) {
@@ -609,13 +690,12 @@ bool RestampCore::in_epoch(const Program& g, int64_t pts90k) const {
     return false;
 }
 
-int64_t RestampCore::unwrap_pes(Pid& p, int64_t pts33) {
+int64_t RestampCore::unwrap_pes(const Program& g, Unwrapper& u, int64_t pts33) const {
     // The PES must sit in the PCR's 2^33 period. Both unwraps are continuous, so a
     // source jump near half the wrap folds them apart: the period an epoch's range
     // holds wins (a straddler stays on its old one), else the one nearest the STC.
-    Program& g = *p.prog;
     const int64_t stc = g.stc.source_stc_90k();
-    const int64_t pu = p.unwrap.feed(pts33, stc);
+    const int64_t pu = u.feed(pts33, stc);
     if (g.degraded || in_epoch(g, pu)) return pu;   // degraded: epochs on the PES's own timeline
     const int64_t near = unwrap_near(pts33, stc);
     int64_t pick = near;
@@ -625,8 +705,8 @@ int64_t RestampCore::unwrap_pes(Pid& p, int64_t pts33) {
             break;
         }
     if (pick == pu) return pu;
-    p.unwrap.reset();
-    return p.unwrap.feed(pts33, pick);
+    u.reset();
+    return u.feed(pts33, pick);
 }
 
 bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di, int64_t& pts33,
@@ -670,7 +750,7 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
         key_house = house + (p.cls == StreamClass::video ? pts90k_to_ns(d) : 0);
         spacing(key_house);
     } else {
-        const int64_t pu = unwrap_pes(p, h.pts);
+        const int64_t pu = unwrap_pes(g, p.unwrap, h.pts);
         const int64_t du = p.unwrap.feed_dts(h.dts, pu);
         d = du != Unwrapper::NO_DTS ? du - pu : 0;
         // Video is mapped by its DTS: decode order, the order its guard compares, so an
@@ -682,6 +762,9 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
             g.stc.feed_ref_pes(p.pid, s90, arrival);
             pull_events(g);
         }
+        // B-185, expired: a PES in no range that the newest line puts past the lead headroom waited
+        // for a PCR that did not come; within the headroom it maps there, a continuous timeline's.
+        const bool expired = g.wait == Program::Wait::expired && !g.degraded && !in_epoch(g, s90);
         const VirtualStc::Mapping m = g.stc.map(p.pid, s90, arrival);
         pull_events(g);
         if (m.stale) {
@@ -698,7 +781,8 @@ bool RestampCore::start_pes(Pid& p, const PesHeader& h, int64_t arrival, bool di
             g.dropped_ns += len;
             return false;
         }
-        if (!m.valid) {                   // no clock yet: nowhere on house time to put it
+        if (!m.valid || (expired && m.house_ns - arrival_h > cfg_.pcr.lead_max_ns)) {
+            // No clock yet, or past the hold (B-185): nowhere on house time to put it.
             unmapped_++;
             p.unit = Pid::Unit::drop;
             p.clean = false;
@@ -833,6 +917,22 @@ void RestampCore::flush() {
         p->held_af.clear();
     }
     span_.reset();
+    // B-185: what waited for a PCR goes too, as removed steps, so each PID's CC stays continuous.
+    for (auto& g : progs_) {
+        for (Program::Held& e : g->held) {
+            PacketView v;
+            parse_packet(e.b, &v);
+            const bool dup = cc_in_.feed(v) == CcTracker::Result::Duplicate;
+            Pid* p = pids_[v.pid].get();
+            if (p && v.has_payload) {
+                p->unit = Pid::Unit::drop;
+                if (p->emitted && !dup) p->cc_delta = (uint8_t)((p->cc_delta + 1) & 0x0F);
+            }
+            removed_++;
+        }
+        g->held.clear();
+        if (g->wait == Program::Wait::waiting) g->wait = Program::Wait::armed;
+    }
 }
 
 RestampCore::Stats RestampCore::stats() {

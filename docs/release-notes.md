@@ -410,6 +410,21 @@ elements" below do not start.
   after any outage of its source of 5 seconds or more, which costs that short
   break even where the sound would have come back without it. Sound lost
   while the source was away cannot come back.
+- **After a remote sender restarts with a new clock, its audio and video come
+  back at once instead of after the jump.** When an SRT, RIST or MPEG-TS IP
+  input's source came back from an outage with its timing moved (a sender
+  restarted on a new clock, or a stalled link came back with a burst of old
+  data first, as a production gate's RIST feed did), the input placed what
+  arrived before the source's new clock reference on the old timing, as far
+  ahead as the jump. The track it belonged to, usually the audio, then stayed
+  silent for as long as the jump, about 11 seconds in the field and 100
+  seconds for a 100-second jump, and every module fed by the input saw the
+  stream's timing that far in the future. Fixed: after an outage the input
+  waits for the new clock reference, at most 0.3 seconds, before it places
+  what came first, so every track is back within a moment of the outage's
+  end. A source that sends its clock reference less often than that (vMix,
+  every 2 seconds) can lose up to that interval of each track after such a
+  jump, instead of the jump's length.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

@@ -1495,7 +1495,13 @@ TECH01); the gate window fixtures drop 9.6 and 9.4 s instead of 11.4 and
 12.4 s, and of 87 replay traces only the 7 with a degraded entry change.
 The shifted-line variants (the reference line meeting the frozen mapping)
 were rejected: they move the mapping the lead row judges. The design's
-§5.2 keeps the general rule.
+§5.2 keeps the general rule. The newest is decided by a PCR (B-185, the
+release line, 2026-10-28): for 1 s after an outage or a leap, discontinuity
+or external relock, a PES in no range waits with its program's packets for
+the program's next PCR, at most 300 ms, and past that bound such a PES the
+newest line puts more than 4 s ahead of its arrival is unmapped until that
+PCR. The old line had put a new timeline's first PES the jump ahead: its PID
+lost the jump's length and the input's bus stamps ran as far ahead as long.
 
 ### Gaps on the bus (OQ-12) and the queues they cross
 

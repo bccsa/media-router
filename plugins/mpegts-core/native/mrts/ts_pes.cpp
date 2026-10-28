@@ -116,22 +116,35 @@ bool PesHeaderSpan::hold(const PacketView& v) {
     return true;
 }
 
-bool PesHeaderSpan::join(const Held& s, const PacketView& v, PesHeader* h) {
+bool PesHeaderSpan::read(const Held& s, const PacketView& v, PesHeader* h, bool* dup) const {
     // A duplicate (2.4.3.3, PCR aside): the decoder keeps the first copy, so a
     // rewrite of the second would pair new bytes with old. Every copy passes as is.
-    if (v.pusi && v.cc == s.cc && v.payload_off == s.payload_off &&
-        std::memcmp(v.p + v.payload_off, s.b + s.payload_off, PKT - v.payload_off) == 0) {
-        dup_pid_ = v.pid;
-        dup_cc_ = v.cc;
-        return false;
-    }
+    *dup = v.pusi && v.cc == s.cc && v.payload_off == s.payload_off &&
+           std::memcmp(v.p + v.payload_off, s.b + s.payload_off, PKT - v.payload_off) == 0;
     // After a CC gap or at a new PES start the next bytes are not this header's.
-    if (v.pusi || v.cc != ((s.cc + 1) & 0x0F)) return false;
+    if (*dup || v.pusi || v.cc != ((s.cc + 1) & 0x0F)) return false;
     uint8_t buf[2 * PKT];
     const size_t k = PKT - s.payload_off, m = PKT - v.payload_off;
     std::memcpy(buf, s.b + s.payload_off, k);
     std::memcpy(buf + k, v.p + v.payload_off, m);
     return parse_pes_header(buf, k + m, h) && h->complete;
+}
+
+bool PesHeaderSpan::join(const Held& s, const PacketView& v, PesHeader* h) {
+    bool dup = false;
+    const bool ok = read(s, v, h, &dup);
+    if (dup) {
+        dup_pid_ = v.pid;
+        dup_cc_ = v.cc;
+    }
+    return ok;
+}
+
+bool PesHeaderSpan::joined(const PacketView& v, PesHeader* h) const {
+    if (held_.empty() || v.payload_off >= PKT) return false;
+    const size_t i = find(v.pid);
+    bool dup = false;
+    return i < held_.size() && read(held_[i], v, h, &dup);
 }
 
 void PesHeaderSpan::write(Held& s, PacketView& v, const PesHeader& h, int64_t pts33,
