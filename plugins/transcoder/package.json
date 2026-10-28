@@ -386,6 +386,6 @@
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "cd py && python3 deinterlace_guard_test.py"
+        "test:py": "cd py && python3 deinterlace_guard_test.py && python3 videorate_conform_test.py"
     }
 }

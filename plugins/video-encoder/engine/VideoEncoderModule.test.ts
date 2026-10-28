@@ -237,7 +237,7 @@ describe('VideoEncoderModule', () => {
             // caps negotiation when the user picks an unsupported fps.
             const s = buildV4l2Source('/dev/video-nonexistent', 1920, 1080, 30);
             expect(s).toContain('videoscale n-threads=2');
-            expect(s).toContain('videorate drop-only=true');
+            expect(s).toContain('videorate drop-only=true skip-to-first=true');
         });
     });
 

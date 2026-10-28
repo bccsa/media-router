@@ -2490,6 +2490,143 @@ def test_ingest_queue_sheds():
         r.kill()
 
 
+# --------------------------------------------------------------------------- TR: transcoder frame-rate conform (B-186)
+def make_interlaced_ts(path, frames=100):
+    """A 25i H.264 SPTS from x264enc, 1080i's shape made small: 320x192, top field first, 1 s GOPs."""
+    pipe = Gst.parse_launch(
+        f"videotestsrc num-buffers={2 * frames} pattern=ball ! video/x-raw,format=I420,width=320,height=192,"
+        "framerate=50/1 ! interlace field-pattern=1:1 top-field-first=true ! x264enc interlaced=true "
+        f"speed-preset=ultrafast key-int-max=25 bframes=0 ! h264parse ! mpegtsmux ! filesink location={path}")
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_bus().timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    pipe.set_state(Gst.State.NULL)
+    return os.path.getsize(path)
+
+
+def _house_bufs(path, house0_ns, ts_psi, per_buf=7):
+    """The file as a contract producer's bus buffers [(bytes, stamp)]: one opening a PES stamped
+    `house0_ns` plus its PTS from the first one's, the rest on the monotone floor."""
+    with open(path, "rb") as fh:
+        pkts = list(ts_psi.iter_packets(fh.read()))
+    bufs, floor, pts0 = [], house0_ns, None
+    for i in range(0, len(pkts), per_buf):
+        group = pkts[i:i + per_buf]
+        pts = next((p for p in map(ts_psi.read_pes_pts, group) if p is not None), None)
+        if pts is not None:
+            pts0 = pts if pts0 is None else pts0
+            floor = max(floor, house0_ns + ((pts - pts0) % (1 << 33)) * 100000 // 9)
+        bufs.append((b"".join(group), floor))
+    return bufs
+
+
+def _transcode_run(argv, desc, bufs, tmp, ts_psi, rate=1.0):
+    """One runner on `desc` (`@SOCK@` = `tmp`), fed `bufs` over unixfd paced by their stamps, its one
+    rendition's egress read from before any media: the PES PTS out, in order, and the runner."""
+    inp, edge = os.path.join(tmp, "video.sock"), os.path.join(tmp, "edge.sock")
+    for s in (inp, edge):
+        if os.path.exists(s):
+            os.unlink(s)
+    feeder = Gst.parse_launch('appsrc name=src format=time block=true max-bytes=4000000 '
+                              'caps="video/mpegts,systemstream=(boolean)true,packetsize=(int)188" '
+                              f"! unixfdsink socket-path={inp} sync=false async=false")
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    feeder.use_clock(clock)
+    feeder.set_start_time(Gst.CLOCK_TIME_NONE)
+    feeder.set_base_time(0)
+    feeder.set_state(Gst.State.PLAYING)
+    src = feeder.get_by_name("src")
+    tee = re.search(r"tee name=(busout_\d+)", desc["pipeline"]).group(1)
+    q = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=0"
+    r, consumer, out = RunnerProc(argv), None, []
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": desc["pipeline"].replace("@SOCK@", tmp),
+                "runnerHooks": desc["runnerHooks"], "alignBranchesToStamps": desc["alignBranchesToStamps"]})
+        if r.wait_event(ev_is("state_change", state="playing"), timeout=10) is None:
+            return None, r
+        r.send({"cmd": "bus_attach", "tee": tee, "socket": edge})
+        if r.wait_event(ev_is("bus_attached", socket=edge)) is None:
+            return None, r
+        consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! {q} ! fakesink name=csink sync=false")
+
+        def on_buf(_pad, info):
+            buf = info.get_buffer()
+            for pkt in ts_psi.iter_packets(buf.extract_dup(0, buf.get_size())):
+                pts = ts_psi.read_pes_pts(pkt)
+                if pts is not None:
+                    out.append(pts)
+            return Gst.PadProbeReturn.OK
+
+        consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+        consumer.set_state(Gst.State.PLAYING)
+        time.sleep(0.5)
+        t0 = time.monotonic()
+        for data, st in bufs:
+            ahead = (st - bufs[0][1]) / 1e9 / rate - (time.monotonic() - t0)
+            if ahead > 0:
+                time.sleep(ahead)
+            b = Gst.Buffer.new_wrapped(data)
+            b.pts = b.dts = st
+            src.emit("push-buffer", b)
+        seen, quiet = -1, 0
+        while quiet < 10:                       # 1 s without a new PES
+            time.sleep(0.1)
+            quiet = quiet + 1 if len(out) == seen else 0
+            seen = len(out)
+        r.stop_and_wait()
+    finally:
+        if consumer is not None:
+            consumer.set_state(Gst.State.NULL)
+        feeder.set_state(Gst.State.NULL)
+        r.kill()
+    return out, r
+
+
+def test_transcode_rate():
+    """TR (B-186), both runners: the Video Transcoder's description at 25 and 50 fps (tests/videorate-plan.json,
+    from TranscoderModule.test.ts) fed 4 s of 25i H.264 on house-time stamps, its egress read: of the 200 fields
+    (50p), one in two leaves at 25 fps, 40 ms apart, all at 50 fps. Without skip-to-first, all at 25 fps too."""
+    for el in ("x264enc", "interlace", "deinterlace", "avdec_h264", "tsdemux", "mpegtsmux", "unixfdsink"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP TR — {el} unavailable")
+            return
+    so = os.path.join(_PLUGINS, "transcoder", "native", "deinterlace-guard", "libmrhook_deinterlace_guard.so")
+    if not os.path.exists(so):
+        print(f"SKIP TR — {so} not built")
+        return
+    plan_path = os.path.join(_PLUGINS, "transcoder", "tests", "videorate-plan.json")
+    check("TR the plan is there (TranscoderModule.test.ts writes it)", os.path.exists(plan_path))
+    if not os.path.exists(plan_path):
+        return
+    with open(plan_path, encoding="utf-8") as fh:
+        plan = json.load(fh)
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    py = ["env", "PYTHONPATH=" + os.pathsep.join([os.path.join(_PLUGINS, "mpegts-core", "py"),
+                                                  os.path.join(_PLUGINS, "transcoder", "py")]),
+          sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    try:
+        fixture = os.path.join(tmp, "i25.ts")
+        check("TR fixture: 4 s of 25i H.264 generated", make_interlaced_ts(fixture) > 188 * 200)
+        bufs = _house_bufs(fixture, 200_000 * Gst.SECOND, ts_psi)
+        for fps, want, lo in ((25, 100, 90), (50, 200, 186)):
+            step = 90000 // fps
+            for kind, argv in (("native", None), ("python", py)):
+                out, r = _transcode_run(argv, plan[f"rendition{fps}"], bufs, tmp, ts_psi)
+                steps = [(b - a) % (1 << 33) for a, b in zip(out or [], (out or [])[1:])]
+                check(f"TR {kind} {fps} fps: PLAYING, attached, no error",
+                      out is not None and not r.has_event(ev_is("error")))
+                check(f"TR {kind} {fps} fps: {len(out or [])} frames out of 200 fields (want {want}, "
+                      f"down to {lo} for the frames held at the stop or shed)", lo <= len(out or []) <= want + 2)
+                check(f"TR {kind} {fps} fps: every frame {1000 // fps} ms or more after the last "
+                      f"(steps {sorted(set(steps))[:6]} ticks)",
+                      len(steps) > 0 and all(step - 1 <= s < 90000 for s in steps))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2521,6 +2658,7 @@ test_ingest_restamp()
 test_bus_return()
 test_edge_stall_fds()
 test_ingest_queue_sheds()
+test_transcode_rate()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

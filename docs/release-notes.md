@@ -429,6 +429,20 @@ elements" below do not start.
   loses about the jump's length of each track, and every module fed by the
   input sees the stream's timing that far in the future for about as long,
   as before.
+- **A Video Transcoder rendition set below its source's frame rate now sends
+  that rate.** A rendition set to 25 fps of a 1080i or 50p source encoded
+  every frame of it, 50 a second, while it told the receiver 25: about twice
+  the CPU, about twice its bitrate on the network (2.4 Mbit/s for 1.2 Mbit/s
+  set, in a test) and a keyframe twice as often as GOP Length sets. Fixed: it
+  sends 25 frames a second at its bitrate, with a keyframe every GOP Length
+  frames (50 frames is 2 seconds at 25 fps; set 25 for one a second). After
+  an outage of its source, such a rendition sends every frame for about as
+  long as the outage lasted, then its own rate again. A rendition at its
+  source's rate (the default 50 with a 1080i or 50p source) now leaves out a
+  single frame from time to time when the source's clock runs a little fast:
+  about one every 8 minutes for a clock 40 millionths fast. A rendition set
+  faster than its source (the default 50 with a 25p source) still does not
+  start, as before: set Frame Rate to the source's rate or lower.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

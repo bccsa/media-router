@@ -226,10 +226,12 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // pipeline runs with base_time 0, decoded frames sit at house time
     // (~10^5..10^6 s) while tsdemux's segment starts at 0, and a duplicating
     // videorate fills that whole span with copies of the first frame (22 M
-    // frames on the 2026-09-16 .103 rig: 200-300 fps of dups, output timeline
-    // racing 8-14x, two cores burned, the rendition unmuxable downstream).
-    // drop-only also rules out the dup storm after any forward PTS jump; a
-    // slower-than-target source simply delivers its real rate.
+    // frames on the 2026-09-16 Pi 5 test box rig: 200-300 fps of dups, output
+    // timeline racing 8-14x, two cores burned, the rendition unmuxable downstream).
+    // drop-only also rules out the dup storm after any forward PTS jump; a source
+    // slower than the target is refused at negotiation (drop-only offers no higher
+    // rate). `skip-to-first` starts the drop grid at the first frame: from the
+    // segment's 0 it never reached house time, so nothing was dropped (B-186).
     // Subtitle burn-in (optional): one overlay on the conformed frame ahead of the
     // tee, a hold on the compressed video, the cue input (transcoderSubtitles.ts).
     const subs = transcoderSubtitles(input.subtitles, input.subtitleDelayMs);
@@ -237,7 +239,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const hold = subs?.hold ?? '';
     const pipeline =
         `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! ${videoCaps} ! ${hold}${decoder} ! ${rawBuffer} ! ` +
-        `${deinterlacer}videorate drop-only=true ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
+        `${deinterlacer}videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 
     // `deinterlace` re-sends already-output fields after every DISCONT (the raw

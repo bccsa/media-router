@@ -86,11 +86,13 @@ export function buildV4l2SourceForModes(
     // gap, videorate fills it with ~a dozen dups, the dups eat the very thread
     // budget whose exhaustion caused the shed, and real throughput pins at
     // ~2 fps (measured 2026-09-01). Dropping conforms a too-fast device; a
-    // too-slow device just delivers its real rate, which every consumer of
-    // this live stream handles. The scale stage LAST, directly before the
-    // encoder: `buildScaleStage` — v4l2convert (Pi 4 ISP) or vapostproc when
-    // the encoder impl's hardware scaler is installed (its VA-memory caps must
-    // touch the encoder), else threaded videoscale ! videoconvert.
+    // too-slow one is refused at negotiation (drop-only offers no higher rate).
+    // `skip-to-first` starts the drop grid at the first frame, not the segment's
+    // 0, which only this pipeline's natural base time puts near it (B-186).
+    // The scale stage LAST, directly before the encoder: `buildScaleStage` —
+    // v4l2convert (Pi 4 ISP) or vapostproc when the encoder impl's hardware
+    // scaler is installed (its VA-memory caps must touch the encoder), else
+    // threaded videoscale ! videoconvert.
     const mode = modes ? pickCaptureMode(modes, width, height) : undefined;
     // No scaling to do (rung 1, exact size) → the software stage, which is a
     // passthrough here; the caller's hardware stage is only worth its ISP
@@ -101,7 +103,7 @@ export function buildV4l2SourceForModes(
             : scaleStage;
     const tail =
         `queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! ` +
-        `videorate drop-only=true ! video/x-raw,framerate=${framerate}/1 ! ${stage}`;
+        `videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=${framerate}/1 ! ${stage}`;
     if (!mode) {
         // Probe failed or the device names nothing we can pin — let v4l2src
         // negotiate freely and rely on the conversion tail to bridge.
@@ -128,7 +130,7 @@ export function buildV4l2SourceForModes(
         mode.pixelFormat === 'MJPG' && fastest.length > 0 ? Math.min(...fastest) : closest;
     const preDrop =
         captureFps > framerate
-            ? ` ! videorate drop-only=true ! image/jpeg,framerate=${framerate}/1`
+            ? ` ! videorate drop-only=true skip-to-first=true ! image/jpeg,framerate=${framerate}/1`
             : '';
     // Caps are the CHOSEN mode's, not the request's — on rung 2 they differ
     // and the tail's scale stage does the conforming.
