@@ -37,7 +37,7 @@ const OUT_ASRC = 'outasrc';
  * `provide-clock=false`, `slave-method=custom` (below), `max-lateness=-1`
  * (a late timeline — mid-stream join, restart backlog — drains instead of
  * being dropped into silence, the same disarm the audio-decoder uses), and
- * the backlog shedder armed at `outasrc`'s input (below). Field, 10.9.16.103,
+ * the backlog shedder armed at `outasrc`'s input (below). Field, the Pi 5 test box,
  * 2026-09-03: with the video-player paced at stamp + D and this sink on
  * `sync=false`, audio played on arrival + whatever PipeWire and the queues
  * happened to hold — 50–200 ms EARLY, re-rolled on every restart. Two legs of
