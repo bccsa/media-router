@@ -219,6 +219,24 @@ elements" below do not start.
   modules). None of these drops anything; each goes at the input's next
   program change or a restart, and the last also once the stream is there.
 
+**Audio follows its clocks (Phase 3)**
+
+- **Audio outputs follow their device's clock: no samples are dropped or
+  repeated for clock drift.** Audio Output (302M) measures how fast its
+  sound card runs against the box's clock and resamples to it, once; before,
+  the output absorbed the card's drift by moving its play position, which
+  skipped or repeated samples. Its timing popup shows **Device clock**: how
+  far the card runs from the box's clock, in ppm, positive when it runs fast.
+- **A 302M input from a source with its own clock is resampled once, where
+  it is decoded.** Audio Mixer, N-1 Audio Mixer (302M), Audio Processing,
+  Audio Output (302M) and AES67 Output measure each 302M input against the
+  box's clock. One on the box's clock (from a capture, mixer or encoder on
+  this box) passes untouched; one that runs fast or slow (another box, a
+  third-party encoder) is resampled to the box's clock from the moment it is
+  measured, within about half a minute, without a drop or a repeat. The
+  timing popup shows each input's **Clock correction**: "none (house rate)",
+  or the source's rate while it is resampled.
+
 **Removed settings (Phase 2), nothing migrated**
 
 - **Mix Latency** on Audio Mixer, N-1 Audio Mixer (302M), Audio Processing
@@ -238,6 +256,9 @@ elements" below do not start.
   through the image's new demux, refuse to start with "Native TS module not
   loaded", and the MPEG-TS Muxer does not start. Audio Processing's ducker and keyed-gate modes also need
   their own native plugin and otherwise show "Native plugin not loaded".
+- From Phase 3, AES67 Output too: its 302M input goes through the same demux,
+  so without the image's timing elements it refuses to start with "Native TS
+  module not loaded".
 
 **Fixed**
 

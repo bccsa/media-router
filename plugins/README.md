@@ -1138,12 +1138,18 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
 }
 ```
 
-- `buildAudioMixInput({ sources, channels?, mixerName?, branchQueueMs?, liveInputs? })` —
+- `buildAudioMixInput({ sources, channels?, mixerName?, branchQueueMs?, liveInputs?, branchAsrc? })` —
   N × 302M inputs into one aligned `audiomixer`, or a direct branch with no aggregator
   when there is exactly one source (not in live-input mode; ADR-0008's bypass). Every
   branch decodes on content time: `mrtsdemux select=audio/x-smpte-302m` is the formula
   demux (running time = PES PTS − 1 h), so no branch is aligned to the bus stamps and
-  there is nothing to pass to `alignBranchesToStamps`. In the mixer arm each branch ends
+  there is nothing to pass to `alignBranchesToStamps`. Each branch's decode `mrasrc`
+  (`<mixerName>_asrc<i>`, `liveAsrcName` in live-input mode; house-clock Phase 3) passes a
+  source on house time untouched and resamples one on a clock of its own to house rate
+  once it measures it, the path's one resample. `branchAsrc: false` leaves the direct
+  branch's to the caller's own `mrasrc` after the continuation, which then carries both
+  terms (audio-output-302m, OQ-23); a mixer-arm branch always keeps its own, so each
+  source is matched before the mix. In the mixer arm each branch ends
   in its `mralignwatch` (`aligner=<mixerName>`, `input` = the connection id,
   `hold-on-eos=true`, `seed-lateness` from the source's `seedLatenessMs` when the router
   gives one), so the mixer waits for data or a gap on every pad, goes on without an input
@@ -1170,12 +1176,12 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   chaining only from `continuationName`, and the single-source bypass — are locked in
   [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md), whose force-live pacing ADR-0029
   (Phase 2) superseded.
-- `build302mMixBranch(source, { channels?, mixerName, demuxName })`,
+- `build302mMixBranch(source, { channels?, mixerName, demuxName, asrcName })`,
   `liveMixInputBranch(mixerName, source, opts?)`, `liveInputBranchFor(mixerName,
   connectionId, source?, opts?)` — one source's branch into a mixer you build yourself,
   ending in its `mralignwatch` (the unlinked src pad a live add ghosts), and the
-  `getLiveInputBranch` answer for an edge; `mixInputBranchName` and `liveDemuxName` give
-  the bin and demux names a later live remove finds.
+  `getLiveInputBranch` answer for an edge; `mixInputBranchName`, `liveDemuxName` and
+  `liveAsrcName` give the bin, demux and ASRC names a later live remove finds.
 - `build302mEncodeBranch({ format?, channels?, asrc?, restamp? })` — PCM → 302M-in-TS encode tail
   (`S32LE`/48 kHz, `avenc_s302m strict=experimental` — ffmpeg gates the encoder; the
   bitstream is standard). A PCM capture passes `asrc: true` (`mrasrc` in place of
@@ -2192,7 +2198,7 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   otherwise answers `demuxInputOf(element)` with `{ tap }`, `{ connection }`,
   `{ port }` (the one connection on that sink port), a `{ label }` of its
   own or `null`: mpegts-muxer maps `demux_<i>` to its pin, audio-processing
-  and audio-output-302m their fan-ins' `<mixer>_demux<i>` by connection
+  and audio-output-302m their fan-ins' `<mixer>_demux<i>` and `_asrc<i>` by connection
   (`mixInputDemuxes`), and the subtitle renderers `subdemux` to Subtitles In
   (`renderDemuxInput`). Their warnings join the aligners' in one health text
   the module owns, taken only over ok or its own (ADR-0010 rule 2):
@@ -2472,7 +2478,8 @@ default): a dropped input buffer would read as an xrun. Messages:
 
 **`mrasrc`'s decode and device modes** (house-clock Phase 3, WI-P3-5). With
 `bypass-below-ppm` above 0 it sits after a decoder, through `audioconvert`
-(a decoder's planar output does not meet its interleaved caps). It locks the
+where the decoder's output is planar (`avdec_aac`; `avdec_s302m`'s
+interleaved S16LE/S32LE meets its caps as it is). It locks the
 frame count to the buffer PTS, content time from the formula demux, on a
 lock whose first fit takes 10 buckets, and passes each buffer as it came
 (the same memory) while the source measures within that bound of house time

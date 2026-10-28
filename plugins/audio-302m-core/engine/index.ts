@@ -11,6 +11,7 @@ export {
     buildAudioMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
+    liveAsrcName,
     liveDemuxName,
     liveInputBranchFor,
     liveMixInputBranch,

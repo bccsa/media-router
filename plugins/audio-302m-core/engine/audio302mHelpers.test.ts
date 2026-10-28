@@ -5,6 +5,7 @@ import {
     buildAudioMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
+    liveAsrcName,
     liveDemuxName,
     liveInputBranchFor,
     liveMixInputBranch,
@@ -21,10 +22,12 @@ const SRC = { port: 40001, connectionId: 'c1' };
 const SRC2 = { port: 40002, connectionId: 'c2' };
 const CAPS2 = 'audio/x-raw,rate=48000,channels=2';
 
+/** The decode ASRC every branch carries (house-clock part 4.4): passed at house rate. */
+const asrcOf = (name: string): string => `mrasrc name=${name} bypass-below-ppm=0.5 out-rate=48000`;
 /** A branch up to its decode; the bus source itself is the engine's (`buildBusSrc`). */
-const decoded = (port: number, demux: string): string =>
+const decoded = (port: number, demux: string, asrc: string | null): string =>
     `${buildBusSrc({ port })} ! mrtsdemux name=${demux} select=audio/x-smpte-302m` +
-    ' ! avdec_s302m ! audioconvert ! audioresample';
+    ` ! avdec_s302m${asrc ? ` ! ${asrcOf(asrc)}` : ''} ! audioconvert`;
 /** The watchdog every mixer-arm branch ends in. */
 const watch = (mixer: string, connectionId: string): string =>
     `mralignwatch name=${mixer}_aw_${shortHash(connectionId)} aligner=${mixer}` +
@@ -40,10 +43,10 @@ describe('alignedMixer', () => {
 });
 
 describe('buildAudioMixInput — the three arms, snapshot', () => {
-    it('one source: the direct branch, mrtsdemux and the branch queue, no aggregator or watchdog', () => {
+    it('one source: the direct branch, mrtsdemux, its ASRC and the branch queue, no aggregator or watchdog', () => {
         const { fragment, continuationName } = buildAudioMixInput({ sources: [SRC] });
         expect(fragment).toBe(
-            `${decoded(40001, 'mixin_demux0')}` +
+            `${decoded(40001, 'mixin_demux0', 'mixin_asrc0')}` +
                 ' ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0' +
                 ` ! capsfilter name=mixin_out caps="${CAPS2}"`,
         );
@@ -55,8 +58,10 @@ describe('buildAudioMixInput — the three arms, snapshot', () => {
         expect(fragment).toBe(
             'audiomixer name=mixin latency=0 start-time-selection=first' +
                 ` ! capsfilter name=mixin_out caps="${CAPS2}"` +
-                ` ${decoded(40001, 'mixin_demux0')} ! ${CAPS2} ! ${watch('mixin', 'c1')} ! mixin.` +
-                ` ${decoded(40002, 'mixin_demux1')} ! ${CAPS2} ! ${watch('mixin', 'c2')} ! mixin.`,
+                ` ${decoded(40001, 'mixin_demux0', 'mixin_asrc0')} ! ${CAPS2} ! ${watch('mixin', 'c1')}` +
+                ' ! mixin.' +
+                ` ${decoded(40002, 'mixin_demux1', 'mixin_asrc1')} ! ${CAPS2} ! ${watch('mixin', 'c2')}` +
+                ' ! mixin.',
         );
         expect(continuationName).toBe('mixin_out');
     });
@@ -68,8 +73,8 @@ describe('buildAudioMixInput — the three arms, snapshot', () => {
         });
         const bin = (s: typeof SRC, i: number): string =>
             ` ( name=${mixInputBranchName('mixin', s.connectionId)}` +
-            ` ${decoded(s.port, liveDemuxName('mixin', s.connectionId))} ! ${CAPS2}` +
-            ` ! ${watch('mixin', s.connectionId)} ) ! mixin.sink_${i}`;
+            ` ${decoded(s.port, liveDemuxName('mixin', s.connectionId), liveAsrcName('mixin', s.connectionId))}` +
+            ` ! ${CAPS2} ! ${watch('mixin', s.connectionId)} ) ! mixin.sink_${i}`;
         expect(fragment).toBe(
             'audiomixer name=mixin latency=0 start-time-selection=first' +
                 ` ! capsfilter name=mixin_out caps="${CAPS2}"` +
@@ -91,6 +96,28 @@ describe('buildAudioMixInput — the three arms, snapshot', () => {
                 'continuationName',
                 'fragment',
             ]);
+        }
+    });
+
+    it('branchAsrc false: the direct branch leaves its decode term to the caller (OQ-23)', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC], branchAsrc: false });
+        expect(fragment).toBe(
+            `${decoded(40001, 'mixin_demux0', null)}` +
+                ' ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0' +
+                ` ! capsfilter name=mixin_out caps="${CAPS2}"`,
+        );
+        expect(fragment).not.toContain('mrasrc');
+    });
+
+    it("branchAsrc false: a mixer's branches keep theirs, each source matched before the mix", () => {
+        for (const liveInputs of [false, true]) {
+            for (const sources of [[SRC], [SRC, SRC2]]) {
+                if (sources.length === 1 && !liveInputs) continue; // the direct branch
+                const opts = { sources, liveInputs, branchAsrc: false };
+                const { fragment } = buildAudioMixInput(opts);
+                expect(fragment).toBe(buildAudioMixInput({ ...opts, branchAsrc: true }).fragment);
+                expect(fragment.match(/ ! mrasrc /g)).toHaveLength(sources.length);
+            }
         }
     });
 });
@@ -117,7 +144,7 @@ describe('helper strings carry none of the replaced mechanisms', () => {
             }
         }
         for (const s of SOURCES) {
-            out.push(build302mMixBranch(s, { mixerName: 'm', demuxName: 'd' }));
+            out.push(build302mMixBranch(s, { mixerName: 'm', demuxName: 'd', asrcName: 'a' }));
             out.push(liveMixInputBranch('m', s, { channels: 8 }).description!);
             out.push(liveInputBranchFor('m', s.connectionId, s).description!);
         }
@@ -144,6 +171,19 @@ describe('helper strings carry none of the replaced mechanisms', () => {
         }
     });
 
+    it('every decode resamples once, in its decode mrasrc: no audioresample (house-clock WI-P3-15)', () => {
+        for (const s of everyString()) {
+            expect(s).not.toContain('audioresample');
+            const decodes = s.match(/avdec_s302m ! [^!]+!/g) ?? [];
+            for (const d of decodes) {
+                expect(d).toMatch(
+                    /^avdec_s302m ! mrasrc name=\S+ bypass-below-ppm=0\.5 out-rate=48000 !$/,
+                );
+            }
+            expect(decodes.length).toBe(s.match(/avdec_s302m/g)?.length ?? 0);
+        }
+    });
+
     it('no string the package builds is force-live or syncs to the clock (WI-P2-9)', () => {
         const all = everyString();
         const restamp = buildRestamp({ mode: 'fixed', offsetMs: -40 });
@@ -167,19 +207,31 @@ describe('helper strings carry none of the replaced mechanisms', () => {
         }
     });
 
-    it("names each branch's demux and the connection it decodes, as the fragment has it", () => {
+    it("names each branch's demux and ASRC and the connection they serve, as the fragment has them", () => {
         for (let n = 1; n <= SOURCES.length; n++) {
             for (const liveInputs of [false, true]) {
-                const opts = { sources: SOURCES.slice(0, n), liveInputs, mixerName: 'progmix' };
-                const named = [
-                    ...buildAudioMixInput(opts).fragment.matchAll(/mrtsdemux name=(\S+)/g),
-                ];
-                const demuxes = mixInputDemuxes(opts);
-                expect([...demuxes.keys()]).toEqual(named.map((m) => m[1]));
-                expect([...demuxes.values()]).toEqual(opts.sources.map((x) => x.connectionId));
-                // A live branch's ends in its connection's hash: the engine's rule needs no hook.
-                for (const [name, c] of demuxes) {
-                    if (liveInputs) expect(name.endsWith(`_${shortHash(c)}`)).toBe(true);
+                for (const branchAsrc of [true, false]) {
+                    const opts = {
+                        sources: SOURCES.slice(0, n),
+                        liveInputs,
+                        branchAsrc,
+                        mixerName: 'progmix',
+                    };
+                    const named = [
+                        ...buildAudioMixInput(opts).fragment.matchAll(
+                            /(?:mrtsdemux|mrasrc) name=(\S+)/g,
+                        ),
+                    ];
+                    const elements = mixInputDemuxes(opts);
+                    expect([...elements.keys()]).toEqual(named.map((m) => m[1]));
+                    const each = n === 1 && !liveInputs && !branchAsrc ? 1 : 2;
+                    expect([...elements.values()]).toEqual(
+                        opts.sources.flatMap((x) => Array(each).fill(x.connectionId)),
+                    );
+                    // Live names end in the connection's hash: the engine's rule needs no hook.
+                    for (const [name, c] of elements) {
+                        if (liveInputs) expect(name.endsWith(`_${shortHash(c)}`)).toBe(true);
+                    }
                 }
             }
         }
@@ -195,6 +247,7 @@ describe('helper strings carry none of the replaced mechanisms', () => {
             'build302mMixBranch',
             'buildAudioMixInput',
             'channelRange',
+            'liveAsrcName',
             'liveDemuxName',
             'liveInputBranchFor',
             'liveMixInputBranch',
@@ -211,8 +264,12 @@ describe('helper strings carry none of the replaced mechanisms', () => {
 
 describe('build302mMixBranch — the watchdog in front of the aggregator', () => {
     it('ends in the mralignwatch (the unlinked src pad a live add ghosts) and links nothing', () => {
-        const branch = build302mMixBranch(SRC, { mixerName: 'mixin', demuxName: 'd1' });
-        expect(branch).toBe(`${decoded(40001, 'd1')} ! ${CAPS2} ! ${watch('mixin', 'c1')}`);
+        const branch = build302mMixBranch(SRC, {
+            mixerName: 'mixin',
+            demuxName: 'd1',
+            asrcName: 'a1',
+        });
+        expect(branch).toBe(`${decoded(40001, 'd1', 'a1')} ! ${CAPS2} ! ${watch('mixin', 'c1')}`);
         expect(branch).not.toContain('mixin.');
     });
 
@@ -241,7 +298,7 @@ describe('build302mMixBranch — the watchdog in front of the aggregator', () =>
         const id = 'odd id "x" \\ y';
         const branch = build302mMixBranch(
             { port: 40001, connectionId: id },
-            { mixerName: 'mixin', demuxName: 'd' },
+            { mixerName: 'mixin', demuxName: 'd', asrcName: 'a' },
         );
         expect(branch).toContain(
             `mralignwatch name=mixin_aw_${shortHash(id)} aligner=mixin input=${quoteGstString(id)} `,
@@ -251,7 +308,10 @@ describe('build302mMixBranch — the watchdog in front of the aggregator', () =>
 
     it('renders a seed lateness as seed-lateness in ns, and none without one', () => {
         const seeded = (seedLatenessMs: number | undefined): string =>
-            build302mMixBranch({ ...SRC, seedLatenessMs }, { mixerName: 'mixin', demuxName: 'd' });
+            build302mMixBranch(
+                { ...SRC, seedLatenessMs },
+                { mixerName: 'mixin', demuxName: 'd', asrcName: 'a' },
+            );
         expect(seeded(12.5)).toMatch(/ hold-on-eos=true seed-lateness=12500000$/);
         // A mean (WI-P2-13 fills it) renders whole ns: gst-parse refuses a fractional int64.
         expect(seeded(12.3456789)).toMatch(/ seed-lateness=12345679$/);
@@ -298,9 +358,9 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
             'mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m',
         );
         // `sourceChannels: 1` still means a stereo 302M wire (no mono layout
-        // exists) — the matrix must be 2 columns wide.
+        // exists) — the matrix must be 2 columns wide, after the decode ASRC.
         expect(fragment).toContain(
-            'audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)1.0000, (float)0.0000>>" ! audioresample',
+            `avdec_s302m ! ${asrcOf('mixin_asrc0')} ! audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)1.0000, (float)0.0000>>" ! queue`,
         );
         expect(fragment).toContain(
             'queue leaky=0 max-size-time=250000000 max-size-buffers=0 max-size-bytes=0',
@@ -469,10 +529,10 @@ describe('buildAudioMixInput — shared branch contract', () => {
             ],
         });
         expect(fragment).toContain(
-            'audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)1.0000, (float)0.0000>>" ! audioresample',
+            `${asrcOf('mixin_asrc0')} ! audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)1.0000, (float)0.0000>>" ! ${CAPS2}`,
         );
         // The unmapped branch keeps a bare audioconvert.
-        expect(fragment.match(/avdec_s302m ! audioconvert ! audioresample/g)).toHaveLength(1);
+        expect(fragment.match(/out-rate=48000 ! audioconvert ! /g)).toHaveLength(1);
     });
 });
 

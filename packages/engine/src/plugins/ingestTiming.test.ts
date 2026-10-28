@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    DECODE_BYPASS_PPM,
     INGEST_OFFSET_KEY,
     PID_TRIMS_KEY,
     SMOOTHING_COOLDOWN_KEY,
@@ -102,7 +103,8 @@ describe('buildAsrc and the bus reports', () => {
     });
 
     it('builds the decode and device modes (WI-P3-5) in the consumer strings', () => {
-        expect(buildAsrc({ bypassBelowPpm: 0.5, outRate: 48000 })).toBe(
+        // The consumers' decode bound: C-7's 0.5 ppm.
+        expect(buildAsrc({ bypassBelowPpm: DECODE_BYPASS_PPM, outRate: 48000 })).toBe(
             'mrasrc name=asrc bypass-below-ppm=0.5 out-rate=48000',
         );
         expect(buildAsrc({ bypassBelowPpm: 0.5, deviceSink: 'sink' })).toBe(

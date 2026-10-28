@@ -1,4 +1,5 @@
 import {
+    DECODE_BYPASS_PPM,
     buildAsrc,
     buildBusSrc,
     gstElementSupportsCaps,
@@ -28,8 +29,8 @@ import { mixMatrixClause } from './channelMapMatrix.js';
  * Runtime requirement: gst-libav `avenc_s302m`/`avdec_s302m` (present on
  * 1.22+) AND `mpegtsmux` support for `audio/x-smpte-302m` (gst ≥ 1.26 —
  * fleet runs 1.28; older dev runtimes can only exercise these strings in
- * unit tests); the fan-in's `mrtsdemux` and `mralignwatch` come from the
- * timing plugin (`libgstmrtshouse.so`). 302M itself is 48 kHz-only.
+ * unit tests); the fan-in's `mrtsdemux`, `mrasrc` and `mralignwatch` come from
+ * the timing plugin (`libgstmrtshouse.so`). 302M itself is 48 kHz-only.
  */
 
 /**
@@ -124,6 +125,10 @@ export interface AudioMixInputOpts {
      *  `sink_<i>` pad, mixer arm even for ONE source (ADR-0008 addendum).
      *  Default off — classic callers keep byte-identical strings. */
     liveInputs?: boolean;
+    /** The direct branch's decode ASRC (default true). False leaves its decode term to the
+     *  caller's own `mrasrc` after the continuation, one resampler (audio-output-302m, OQ-23).
+     *  A mixer-arm branch always keeps its own: each source's clock is matched before the mix. */
+    branchAsrc?: boolean;
 }
 
 /**
@@ -142,12 +147,19 @@ export interface MixInputBranchOpts {
     mixerName: string;
     /** `name=` of the branch's mrtsdemux. */
     demuxName: string;
+    /** `name=` of the branch's decode `mrasrc`. */
+    asrcName: string;
 }
 
 /** `name=` of a live-input branch's mrtsdemux — keyed by the connection like
  *  the bin, so a branch added later never collides with one built at start. */
 export function liveDemuxName(mixerName: string, connectionId: string): string {
     return `${mixerName}_demux_${shortHash(connectionId)}`;
+}
+
+/** `name=` of a live-input branch's decode `mrasrc`, keyed by the connection as its demux is. */
+export function liveAsrcName(mixerName: string, connectionId: string): string {
+    return `${mixerName}_asrc_${shortHash(connectionId)}`;
 }
 
 /** `name=` of the mrtsdemux decoding `sources[i]`: by its connection in live-input mode, else by
@@ -161,13 +173,23 @@ function branchDemuxName(
     return live ? liveDemuxName(mixerName, source.connectionId) : `${mixerName}_demux${i}`;
 }
 
+/** `name=` of the decode `mrasrc` of `sources[i]`, named as its demux. */
+function branchAsrcName(
+    mixerName: string,
+    i: number,
+    source: AudioMixSource,
+    live: boolean,
+): string {
+    return live ? liveAsrcName(mixerName, source.connectionId) : `${mixerName}_asrc${i}`;
+}
+
 /** The live-input branch of ONE wired connection (`getLiveInputBranch` shape).
  *  `buildAudioMixInput` in live-input mode renders every start-time branch
  *  through this too, so a module's hook and its `buildPipeline` agree. */
 export function liveMixInputBranch(
     mixerName: string,
     source: AudioMixSource,
-    opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName'> = {},
+    opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName' | 'asrcName'> = {},
 ): LiveInputBranch {
     return {
         element: mixerName,
@@ -176,6 +198,7 @@ export function liveMixInputBranch(
             ...opts,
             mixerName,
             demuxName: liveDemuxName(mixerName, source.connectionId),
+            asrcName: liveAsrcName(mixerName, source.connectionId),
         }),
     };
 }
@@ -187,7 +210,7 @@ export function liveInputBranchFor(
     mixerName: string,
     connectionId: string,
     source: AudioMixSource | undefined,
-    opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName'> = {},
+    opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName' | 'asrcName'> = {},
 ): LiveInputBranch {
     if (!source) return { element: mixerName, name: mixInputBranchName(mixerName, connectionId) };
     return liveMixInputBranch(mixerName, source, opts);
@@ -200,9 +223,15 @@ function seedClause(seedMs: number | undefined): string {
     return ` seed-lateness=${Math.round(ms * 1_000_000)}`;
 }
 
-/** 302M edge → raw audio, on content time: `mrtsdemux` in select mode is the
- *  formula demux (running time = PES PTS − 1 h, house-clock WI-P2-7). */
-function decode302m(source: AudioMixSource, demuxName: string, channels: number): string {
+/** 302M edge → raw audio on content time (`mrtsdemux` select mode, the formula demux: running
+ *  time = PES PTS − 1 h, WI-P2-7); its decode `mrasrc` (`asrcName`; none: the caller's) passes a
+ *  house-rate source untouched and resamples one on a clock of its own (house-clock part 4.4). */
+function decode302m(
+    source: AudioMixSource,
+    demuxName: string,
+    channels: number,
+    asrcName: string | null,
+): string {
     const src = buildBusSrc({ port: source.port, socketPath: source.socketPath });
     // Per-connection channel mapping on THIS branch's audioconvert.
     const matrix = source.channelMap?.length
@@ -212,9 +241,13 @@ function decode302m(source: AudioMixSource, demuxName: string, channels: number)
               channels,
           )
         : '';
+    // avdec_s302m's interleaved S16LE/S32LE meets mrasrc's caps: no audioconvert before it.
+    const asrc = asrcName
+        ? ` ! ${buildAsrc({ name: asrcName, bypassBelowPpm: DECODE_BYPASS_PPM, outRate: 48000 })}`
+        : '';
     return (
-        `${src} ! mrtsdemux name=${demuxName} select=audio/x-smpte-302m ! avdec_s302m` +
-        ` ! audioconvert${matrix} ! audioresample`
+        `${src} ! mrtsdemux name=${demuxName} select=audio/x-smpte-302m ! avdec_s302m${asrc}` +
+        ` ! audioconvert${matrix}`
     );
 }
 
@@ -229,12 +262,12 @@ function alignWatch(mixerName: string, source: AudioMixSource): string {
 }
 
 /** One source's decode branch into an aggregator: 302M edge → content-time raw
- *  audio at the mix caps → its `mralignwatch`, the element whose src pad links
+ *  audio on house rate at the mix caps → its `mralignwatch`, the element whose src pad links
  *  into the aggregator (and the unlinked src pad a live add ghosts). */
 export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchOpts): string {
     const channels = opts.channels ?? 2;
     return (
-        `${decode302m(source, opts.demuxName, channels)}` +
+        `${decode302m(source, opts.demuxName, channels, opts.asrcName)}` +
         ` ! audio/x-raw,rate=48000,channels=${channels}` +
         ` ! ${alignWatch(opts.mixerName, source)}`
     );
@@ -250,7 +283,9 @@ export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchO
  *
  * Every branch decodes on content time: `mrtsdemux select=audio/x-smpte-302m` is
  * the formula demux (running time = PES PTS − 1 h, house-clock WI-P2-7), so no
- * branch is aligned to the bus stamps. Wrong content (a TS with no 302M stream)
+ * branch is aligned to the bus stamps. Its `mrasrc` in decode mode (`<mixerName>_asrc<i>`,
+ * `liveAsrcName` live) passes a house-rate source untouched and resamples one on a clock of
+ * its own once it measures it (house-clock part 4.4). Wrong content (a TS with no 302M stream)
  * fails soft: the demux posts its `no-stream` message and its pad stays silent.
  *
  * MANY sources (≥ 2), live-input mode and the empty case — `alignedMixer`.
@@ -299,8 +334,10 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         // mixer arm publishes, with one element fewer.
         const queueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
         const demuxName = branchDemuxName(mixerName, 0, opts.sources[0], false);
+        const asrcName =
+            opts.branchAsrc === false ? null : branchAsrcName(mixerName, 0, opts.sources[0], false);
         const fragment =
-            `${decode302m(opts.sources[0], demuxName, channels)}` +
+            `${decode302m(opts.sources[0], demuxName, channels, asrcName)}` +
             ` ! queue leaky=0 max-size-time=${queueNs} max-size-buffers=0 max-size-bytes=0` +
             ` ! capsfilter name=${outName} caps="${caps}"`;
         return { fragment, continuationName: outName };
@@ -316,7 +353,9 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     const branches = opts.sources.map((s, i) => {
         if (!live) {
             const demuxName = branchDemuxName(mixerName, i, s, false);
-            return `${build302mMixBranch(s, { channels, mixerName, demuxName })} ! ${mixerName}.`;
+            const asrcName = branchAsrcName(mixerName, i, s, false);
+            const branch = build302mMixBranch(s, { channels, mixerName, demuxName, asrcName });
+            return `${branch} ! ${mixerName}.`;
         }
         const b = liveMixInputBranch(mixerName, s, { channels });
         return `( name=${b.name} ${b.description} ) ! ${mixerName}.sink_${i}`;
@@ -325,13 +364,19 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     return { fragment: [mixer, ...branches].join(' '), continuationName: outName };
 }
 
-/** Which connection each `mrtsdemux` of `buildAudioMixInput(opts)` decodes, by its `name=`: a
- *  module's `demuxInputOf` answer (house-clock WI-P3-6). */
+/** Which connection each branch's `mrtsdemux` and decode `mrasrc` of `buildAudioMixInput(opts)`
+ *  serve, by `name=`: a module's `demuxInputOf` answer, which places both (house-clock WI-P3-6). */
 export function mixInputDemuxes(opts: AudioMixInputOpts): Map<string, string> {
     const mixerName = opts.mixerName ?? 'mixin';
     const live = opts.liveInputs === true;
+    // The direct branch leaves its ASRC to the caller with `branchAsrc: false`.
+    const noAsrc = opts.branchAsrc === false && opts.sources.length === 1 && !live;
     return new Map(
-        opts.sources.map((s, i) => [branchDemuxName(mixerName, i, s, live), s.connectionId]),
+        opts.sources.flatMap((s, i) => {
+            const names = [branchDemuxName(mixerName, i, s, live)];
+            if (!noAsrc) names.push(branchAsrcName(mixerName, i, s, live));
+            return names.map((name): [string, string] => [name, s.connectionId]);
+        }),
     );
 }
 

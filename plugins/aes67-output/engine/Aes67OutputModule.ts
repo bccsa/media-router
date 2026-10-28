@@ -4,6 +4,7 @@ import {
     aes67PayloadBytes,
     aes67PtimeClauses,
     aes67RawCaps,
+    buildAsrc,
     buildBusSrc,
     buildBackpressureQueue,
     withLatenessTap,
@@ -18,6 +19,7 @@ import {
     bitrateBadge,
     AES67_DEFAULT_DSCP,
     AES67_SAMPLE_RATE,
+    DECODE_BYPASS_PPM,
     type Aes67Encoding,
     type EngineServices,
     type PipelineDescription,
@@ -34,7 +36,9 @@ import {
  *
  * Takes SMPTE-302M off the local bus and sends it to the network as an AES67
  * RTP stream: L24/L16, 48 kHz, 1 ms packets, DSCP EF, optionally announced
- * over SAP so other devices can discover it.
+ * over SAP so other devices can discover it. The 302M decodes on content time
+ * (`mrtsdemux`, the formula demux) through a decode ASRC: a house-rate source
+ * passes untouched, one on a clock of its own is resampled to house rate.
  *
  * ## RTP timestamps and the PTP epoch
  *
@@ -277,11 +281,10 @@ export class Aes67OutputModule extends GstPluginBase {
         const pipeline = [
             buildBusSrc({ name: 'busin', port: source.port, socketPath: source.socketPath }),
             buildBackpressureQueue(200),
-            'tsdemux latency=0',
-            'audio/x-smpte-302m',
+            'mrtsdemux name=demux select=audio/x-smpte-302m',
             'avdec_s302m',
+            buildAsrc({ bypassBelowPpm: DECODE_BYPASS_PPM, outRate: AES67_SAMPLE_RATE }),
             'audioconvert',
-            'audioresample',
             aes67RawCaps(p.encoding, p.channels),
             `${aes67PayloaderElement(p.encoding)} name=pay pt=${p.payloadType} mtu=${mtu}` +
                 ` ${aes67PtimeClauses(p.ptimeMs)}${tsOffsetClause}`,

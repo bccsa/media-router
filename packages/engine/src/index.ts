@@ -136,6 +136,7 @@ export {
     SMOOTHING_COOLDOWN_KEY,
     RESTAMP_ELEMENT,
     ASRC_ELEMENT,
+    DECODE_BYPASS_PPM,
     buildRestamp,
     buildAsrc,
     restampBusReports,

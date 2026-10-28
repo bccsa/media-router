@@ -887,9 +887,10 @@ for kind in KINDS:
     r.stop()
 
 print("\n--- audiomixer: (2c) a 302M-shaped branch that never delivers ---")
-# audioconvert ! audioresample ! caps, as build302mMixBranch ends; no caps ever come from the
-# silent one, so its gaps go out under fixated upstream caps.
-BRANCH = "audioconvert ! audioresample ! capsfilter caps=audio/x-raw,rate=48000,channels=2"
+# The decode mrasrc ! audioconvert ! caps, as build302mMixBranch ends (WI-P3-15); no caps ever
+# come from the silent one, so its gaps go out under fixated upstream caps.
+DECODE = "mrasrc bypass-below-ppm=0.5 out-rate=48000 ! audioconvert"
+BRANCH = f"{DECODE} ! capsfilter caps=audio/x-raw,rate=48000,channels=2"
 r = Rig("audiomixer", [{"chain": BRANCH}, {"chain": BRANCH, "caps": None}])
 r.run({0: [("rt", 0, 300, 0)]})
 r.wait(lambda: (r.reach() or 0) >= 3000)
@@ -912,7 +913,7 @@ print("\n--- audiomixer: (2d) 8 channels: a 302M-shaped branch that never delive
 # mixer takes a pad with any mask beside it, but not one without a mask above 2 channels.
 WIDE = ("audio/x-raw,format=S16LE,rate=48000,channels=8,layout=interleaved,"
         "channel-mask=(bitmask)0x0")
-BRANCH8 = "audioconvert ! audioresample ! capsfilter caps=audio/x-raw,rate=48000,channels=8"
+BRANCH8 = f"{DECODE} ! capsfilter caps=audio/x-raw,rate=48000,channels=8"
 for label, dark, want in (("unpositioned", BRANCH8, 0),
                           ("the mask upstream fixes", BRANCH8 + ",channel-mask=(bitmask)0x63f",
                            0x63F)):

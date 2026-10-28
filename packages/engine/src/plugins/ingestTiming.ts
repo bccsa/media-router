@@ -103,6 +103,8 @@ export function buildRestamp({
 
 /** The element's bound on `bypass-below-ppm`. */
 const BYPASS_MAX_PPM = 1000;
+/** A decode ASRC's bound (C-7): a source within 0.5 ppm of house time passes untouched. */
+export const DECODE_BYPASS_PPM = 0.5;
 
 export interface AsrcOptions {
     name?: string;

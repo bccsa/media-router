@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { GstPluginBase, type HouseEpoch, type TimeSyncState } from '@media-router/engine';
+import {
+    GstPluginBase,
+    buildBackpressureQueue,
+    buildBusSrc,
+    type HouseEpoch,
+    type TimeSyncState,
+} from '@media-router/engine';
 import { Aes67OutputModule } from './Aes67OutputModule.js';
 
 // `as any` reaches private fields/methods without re-declaring them in a typed
@@ -50,7 +56,9 @@ describe('Aes67OutputModule.buildPipeline', () => {
         const desc = module.buildPipeline(DEST);
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('unixfdsrc name=busin');
-        expect(desc!.pipeline).toContain('tsdemux latency=0 ! audio/x-smpte-302m ! avdec_s302m');
+        expect(desc!.pipeline).toContain(
+            'mrtsdemux name=demux select=audio/x-smpte-302m ! avdec_s302m ! mrasrc name=asrc',
+        );
         expect(desc!.pipeline).toContain(
             'audio/x-raw,format=S24BE,rate=48000,channels=2,layout=interleaved',
         );
@@ -61,6 +69,33 @@ describe('Aes67OutputModule.buildPipeline', () => {
             'mrlateness name=lat_egress reference=running-time ! udpsink name=netsink',
         );
         expect(desc!.restartOnError).toBe(true);
+    });
+
+    it('decodes on the formula demux and resamples once, in the decode ASRC (WI-P3-9), snapshot', () => {
+        const module = makeModule();
+        const p: string = module.buildPipeline(DEST)!.pipeline;
+        expect(p).toBe(
+            [
+                buildBusSrc({ name: 'busin', port: 41000, socketPath: '/run/mr/edge.sock' }),
+                buildBackpressureQueue(200),
+                'mrtsdemux name=demux select=audio/x-smpte-302m',
+                'avdec_s302m',
+                // A house-rate source passes untouched; one on its own clock is resampled.
+                'mrasrc name=asrc bypass-below-ppm=0.5 out-rate=48000',
+                'audioconvert',
+                'audio/x-raw,format=S24BE,rate=48000,channels=2,layout=interleaved',
+                'rtpL24pay name=pay pt=96 mtu=1452 min-ptime=1000000 max-ptime=1000000',
+                'mrlateness name=lat_egress reference=running-time',
+                'udpsink name=netsink host=239.69.0.1 port=5004 auto-multicast=true ttl-mc=16' +
+                    ' qos-dscp=46 sync=true max-lateness=-1 ts-offset=20000000',
+            ].join(' ! '),
+        );
+        for (const config of [DEST, { ...DEST, encoding: 'L16', channels: 8, ptimeMs: 0.125 }]) {
+            const q: string = module.buildPipeline(config)!.pipeline;
+            expect(q).not.toMatch(/\btsdemux\b/);
+            expect(q).not.toContain('audioresample');
+            expect(q.match(/ ! mrasrc /g)).toHaveLength(1);
+        }
     });
 
     it('pins the packet time at both ends so the payloader cannot coalesce', () => {

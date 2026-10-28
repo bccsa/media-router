@@ -213,9 +213,9 @@ def _missing(rig, pcm, content, lo_ns, hi_ns, lag=0):
 def live_aligned_case(argv, tag, check):
     """Plan ch. 6 part 7.3 case L through `argv`'s runner: audio-mixer's own start (two start-time
     bins into the aligned mixer, fixtures/aligner/pipelines.json) takes a third 302M source live with
-    the module's branch (mrtsdemux, then mralignwatch) and lets it go. The joiner is mixed at its
-    PES - 1 h from the first table its demux receives, with no runner retime; the kept sources never
-    break."""
+    the module's branch (mrtsdemux, its decode mrasrc, then mralignwatch) and lets it go. The joiner
+    is mixed at its PES - 1 h from the first table its demux receives, with no runner retime; the
+    kept sources never break, and each branch's mrasrc passes its house-rate source."""
     rig = _rig()
     if rig is None:
         return
@@ -317,6 +317,13 @@ def live_aligned_case(argv, tag, check):
           stale is not None and stale <= 1)
     check(f"L {tag}: no runner retime: the branch's demux is the formula demux (no branchAlign line)",
           not any("branchAlign" in line or "retime:" in line for line in r.logs))
+    # Each branch's decode mrasrc (WI-P3-15), the joiner's too, reports unsubscribed (S19); every
+    # producer here is on house time, so each passes its source untouched.
+    asrcs = re.findall(r"mrasrc name=(\S+)", f"{cmd['start']['pipeline']} {cmd['add']['description']}")
+    modes = {n: {p.get("mode") for _t, p in r.plugin(f"mrasrc-stats:{n}")} for n in asrcs}
+    engaged = [n for n in asrcs for _t, p in r.plugin(f"mrasrc-event:{n}") if p.get("kind") == "engaged"]
+    check(f"L {tag}: each branch's decode mrasrc passes its house-rate source (modes {modes}; engaged "
+          f"{engaged})", len(asrcs) == 3 and all(m == {"bypass"} for m in modes.values()) and not engaged)
     check(f"L {tag}: exits 0 promptly after stop (eosDrain false from the module; {took:.1f} s)",
           rc == 0 and took < 3.0)
 
@@ -458,9 +465,10 @@ def aligner_absent_case(argv, tag, check):
 
 
 class _ChainConsumer:
-    """Another module's 302M fan-in on an output (B-74's downstream): mrtsdemux, its mralignwatch
-    and an aligned mixer from the same plugin, on the house clock; the mix as (PTS, samples). Its
-    appsink keeps what it gets until the run ends: no python in its streaming path."""
+    """Another module's 302M fan-in on an output (B-74's downstream): mrtsdemux, its decode mrasrc,
+    its mralignwatch and an aligned mixer from the same plugin, on the house clock; the mix as
+    (PTS, samples). Its appsink keeps what it gets until the run ends: no python in its streaming
+    path."""
 
     def __init__(self, rig, socket):
         Gst.Plugin.load_file(os.path.join(rig.RUNNER_PLUGINS, "mpegts-core", "native", "mrtshouse",
@@ -468,7 +476,8 @@ class _ChainConsumer:
         self.rig, self.bufs = rig, []
         self.pipe = rig._monotonic_pipeline(
             f"unixfdsrc socket-path={socket} ! mrtsdemux select=audio/x-smpte-302m ! avdec_s302m"
-            " ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2"
+            " ! mrasrc name=dasrc bypass-below-ppm=0.5 out-rate=48000 ! audioconvert"
+            " ! audio/x-raw,rate=48000,channels=2"
             " ! mralignwatch name=daw aligner=dmix input=up hold-on-eos=true"
             " ! audiomixer name=dmix latency=0 start-time-selection=first ! audioconvert"
             f" ! {rig.PCM_CAPS} ! appsink name=sink sync=false max-buffers=0 drop=false")

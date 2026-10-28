@@ -226,7 +226,7 @@ describe('AudioProcessingModule — buildPipeline', () => {
         await module.onStop();
     });
 
-    it("each fan-in's demux serves its connection's timing row (WI-P3-6)", async () => {
+    it("each fan-in's demux and decode ASRC serve its connection's timing row (WI-P3-6, WI-P3-9)", async () => {
         const program = [mkSource('program-in'), mkSource('program-in', 1)];
         const key = mkSource('sidechain-in', 2);
         const { module } = await createModule({ mode: 'gate', gateKey: 'sidechain' }, [
@@ -239,9 +239,14 @@ describe('AudioProcessingModule — buildPipeline', () => {
         for (const [i, el] of ['progmix_demux0', 'progmix_demux1'].entries()) {
             expect(p).toContain(`mrtsdemux name=${el} `);
             expect(of(el)).toEqual({ connection: program[i].connectionId });
+            expect(p).toContain(`mrasrc name=progmix_asrc${i} `);
+            expect(of(`progmix_asrc${i}`)).toEqual({ connection: program[i].connectionId });
         }
         expect(p).toContain('mrtsdemux name=scmix_demux0 ');
         expect(of('scmix_demux0')).toEqual({ connection: key.connectionId });
+        // The lone key's direct branch keeps its decode ASRC: no output ASRC follows it.
+        expect(p).toContain('mrasrc name=scmix_asrc0 bypass-below-ppm=0.5 out-rate=48000 ');
+        expect(of('scmix_asrc0')).toEqual({ connection: key.connectionId });
         expect(of('il')).toBeUndefined();
         await module.onStop();
     });
