@@ -1,10 +1,12 @@
 import {
+    DECODE_BYPASS_PPM,
     GstPluginBase,
     backlogShedConfig,
+    buildAsrc,
     buildBusSrc,
+    buildLatenessTap,
     effectivePlayoutOffsetNs,
     pulsePinnedStreamProps,
-    withLatenessTap,
     type PipelineDescription,
     type ModuleServices,
     type PlayoutOffsetServices,
@@ -76,30 +78,30 @@ export function audioTsOffsetNs(
 }
 
 /**
- * `pulsesink slave-method` (GstAudioBaseSink): 1 = skew — the sink corrects the
- * DAC's drift against the pipeline clock by nudging its own timestamps, leaving
- * the samples alone. ADR-0005 decision 5 makes this the slaving mode (see
- * `buildPipeline`); 0 = resample is what it replaces.
+ * `pulsesink slave-method` (GstAudioBaseSink): 3 = custom. The ASRC follows the sink's clock
+ * through its custom-slaving callback and never asks it to skew, so no samples are dropped or
+ * repeated for drift (house-clock part 4.4). Never set it without that ASRC.
  */
-const SLAVE_METHOD_SKEW = 1;
+const SLAVE_METHOD_CUSTOM = 3;
 
-/** `name=` of this leg's `tsdemux` — what `alignBranchesToStamps` addresses. */
+/** `name=` of this leg's demux: its counters on the module's input. */
 const DEMUX_NAME = 'addemux';
+/** `name=` of this leg's ASRC: the source's clock term and the sink's, one resampler (OQ-23). */
+const ASRC_NAME = 'asrc';
 
 /**
  * Audio Decoder plugin.
  *
  * Receives MPEG-TS via UDP multicast (from an encoder or SRT source),
  * probes the stream to detect the codec, then builds the appropriate
- * decode pipeline. Outputs PCM to a named null-sink.
+ * decode pipeline for its first audio stream. Outputs PCM to a named null-sink.
  *
  * Under the time-sync contract (ADR-0005) this module's sink presents against
- * the house clock: `sync=true`, `ts-offset` = the route's playout offset D, and
- * `slave-method=skew` — the sink slaves to that clock rather than resampling
- * against the DAC's own. OPEN ITEM (decision 5's own validation item, still
- * open at 2026-08-13): the audibility of skew-slaving has not been A/B'd on
- * 302M outputs, so if skew turns out to be audible the answer is a measured
- * change here and in the ADR, not a per-config escape.
+ * the house clock: `sync=true` and `ts-offset` = the route's playout offset D.
+ *
+ * CLOCKS (house-clock part 4.4). `asrc` resamples a source on a clock of its own to house rate
+ * where it is decoded, and follows the null sink's clock through the sink's custom slaving: one
+ * resampler for both terms (OQ-23), and the sink never drops or repeats samples for drift.
  */
 export class AudioDecoderModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'syncOffsetMs'];
@@ -220,16 +222,16 @@ export class AudioDecoderModule extends GstPluginBase {
 
         // Plugin decides decoder based on probe result.
         //
-        // Each decoder is fed straight off a `tsdemux` src pad, which emits
-        // *unframed* elementary streams. These software decoders need whole,
-        // framed access units, so a codec parser MUST sit between tsdemux and
-        // the decoder — without it `avdec_aac` errors "Input buffer exhausted
-        // before END element found" on every buffer and the pipeline
-        // crash-loops (seen on a clean single-AAC RIST feed: null-sink idle,
-        // gst-runner flapping). The `default` (decodebin) branch is safe
-        // because decodebin auto-plugs the parser; the explicit branches must
-        // add it themselves. opus is the exception — tsdemux already emits
-        // muxer/decoder-ready opus caps, so opusdec needs no parser.
+        // Each decoder is fed straight off a demux src pad, which emits
+        // *unframed* elementary streams (one PES per buffer). These software
+        // decoders need whole, framed access units, so a codec parser MUST sit
+        // between the demux and the decoder — without it `avdec_aac` errors
+        // "Input buffer exhausted before END element found" on every buffer and
+        // the pipeline crash-loops (seen on a clean single-AAC RIST feed:
+        // null-sink idle, gst-runner flapping). The `default` (decodebin) branch
+        // is safe because decodebin auto-plugs the parser; the explicit branches
+        // must add it themselves. opus is the exception — the demux already
+        // emits muxer/decoder-ready opus caps, so opusdec needs no parser.
         let decoder: string;
         switch (this.probeResult?.codec) {
             case 'opus':
@@ -250,13 +252,12 @@ export class AudioDecoderModule extends GstPluginBase {
         }
 
         // Presents at `stamped-time + D` (ADR-0005); `max-lateness=-1` drains a late timeline
-        // rather than going silent. Skew, not resample (decision 5): resample rewrites SAMPLES and
-        // D drifts. A stored `slaveMethod` is ignored: fleet configs carry `0`s nobody chose.
+        // rather than going silent. Custom slaving: `asrc` follows the sink, which never skews.
         const sinkTiming = ` ts-offset=${audioTsOffsetNs(this.services, config)} max-lateness=-1`;
 
         const parts = [
-            // Post-tsdemux dejitter buffer — NON-LEAKY (leaky=0), sized to at
-            // least one PES burst. `tsdemux` emits audio in ~150 ms PES bursts
+            // Post-demux dejitter buffer — NON-LEAKY (leaky=0), sized to at
+            // least one PES burst. The demux emits audio in ~150 ms PES bursts
             // and the pipewire `pulsesink` below is a REAL-TIME endpoint that
             // drains at a steady 48 kHz. The old leaky queue dropped the tail
             // of every burst, so between bursts the sink starved and underflowed
@@ -278,49 +279,43 @@ export class AudioDecoderModule extends GstPluginBase {
             // (the encoder re-stamps at capture). Operators tuning latency
             // must be able to shrink it; the old hard 300 ms floor was
             // demuxer-burst-era protection.
-            `${udpSrc} ! tsdemux name=${DEMUX_NAME} latency=0 ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            //
+            // `media=audio`: the first audio stream only (OQ-28), so an A/V input never links its
+            // video here.
+            `${udpSrc} ! mrtsdemux name=${DEMUX_NAME} media=audio ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            // Interleaved for `asrc` (avdec_aac's output is planar). Render lateness is read
+            // before it, where PTS is still content time (part 4.4).
+            'audioconvert',
+            buildLatenessTap('lat_render'),
+            buildAsrc({ name: ASRC_NAME, bypassBelowPpm: DECODE_BYPASS_PPM, deviceSink: 'sink' }),
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
             // The DAC ring is CONTRACT_SINK_BUFFER_US (see there). `name=sink`
-            // is what the live playout-offset push targets.
-            withLatenessTap(
-                'lat_render',
-                `pulsesink name=sink device=${this.pwNodeName} sync=true provide-clock=false slave-method=${SLAVE_METHOD_SKEW} processing-deadline=100000000 buffer-time=${CONTRACT_SINK_BUFFER_US}${sinkTiming} ${pulsePinnedStreamProps()}`,
-            ),
+            // is what the live playout-offset push and `asrc`'s device term target.
+            `pulsesink name=sink device=${this.pwNodeName} sync=true provide-clock=false slave-method=${SLAVE_METHOD_CUSTOM} processing-deadline=100000000 buffer-time=${CONTRACT_SINK_BUFFER_US}${sinkTiming} ${pulsePinnedStreamProps()}`,
         ];
-        const pipeline = parts.join(' ! ');
+        const pipeline = parts.filter((p) => p).join(' ! ');
 
         return {
             pipeline,
             restartOnError: true,
             timingSink: { element: 'sink', kind: 'audio' },
             // Backlog shedder — the latency ratchet guard on this `sync=true`
-            // leg (see backlogShed.ts). Shed
-            // point is the pulsesink's OWN pad: raw PCM references nothing, so
-            // whole decoded buffers can be dropped anywhere, and its pad is the
-            // last place that still sees every one of them. `max-lateness=-1`
-            // makes this leg's ratchet quieter than the video leg's, never
-            // absent — the sink refuses to drop late buffers, so retained
-            // latency shows up as lipsync drift against the video leg of the
-            // same route rather than as dropped frames.
+            // leg (see backlogShed.ts). `max-lateness=-1` makes this leg's
+            // ratchet quieter than the video leg's, never absent — the sink
+            // refuses to drop late buffers, so retained latency shows up as
+            // lipsync drift against the video leg of the same route rather than
+            // as dropped frames.
             //
-            // NOT keyframe-aligned, and the shed is whole-buffer: no sample is
-            // ever cut and nothing is resampled. What the sink sees is a
-            // timestamp gap, which GstAudioBaseSink answers by resyncing its
-            // ring once the gap passes `alignment-threshold` (40 ms) — the ring
-            // plays out, then the sink re-anchors on the new timeline. One
-            // click, rate-limited to at most one a minute, in exchange for the
-            // route's configured D.
+            // Read and shed at `asrc`'s input, the last pad on content time: after its device
+            // term the PTS are device-time labels (part 4.4, B-127). Whole PCM buffers, not
+            // keyframe-aligned, nothing cut; at most one click a minute, for the route's D.
             backlogShed: backlogShedConfig(this.services, {
-                element: 'sink',
+                element: ASRC_NAME,
                 sink: 'sink',
                 keyframeAligned: false,
             }),
-            // Anchor to the producer's house stamps (ADR-0005 Stage 3c, as the muxer and 302M
-            // output do): a tsdemux keeps the zero-point error of the bus buffer it locked on for
-            // life (−73…−125 ms on .103, re-rolled per restart); at sync=true that IS lipsync.
-            alignBranchesToStamps: { demuxes: [DEMUX_NAME] },
         };
     }
 }

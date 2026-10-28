@@ -236,6 +236,19 @@ elements" below do not start.
   measured, within about half a minute, without a drop or a repeat. The
   timing popup shows each input's **Clock correction**: "none (house rate)",
   or the source's rate while it is resampled.
+- **Audio Decoder follows its source's clock and its output's.** A stream on
+  the box's clock plays untouched; one from a source with its own clock is
+  resampled to the box's clock once it is measured, as above. Its output
+  follows the clock of the PipeWire sink it plays into, in the same
+  resampler, so no samples are dropped or repeated for drift. Its timing
+  popup shows **Clock correction** and **Device clock**.
+
+**Behaviour changes (Phase 3)**
+
+- **An audio decoder fed an audio-video stream plays its first audio
+  stream.** Audio Decoder takes the first audio stream its input's programme
+  lists and never the video; before, an input that listed its video first
+  made it fail on the video.
 
 **Removed settings (Phase 2), nothing migrated**
 
@@ -249,6 +262,12 @@ elements" below do not start.
   inputs arrive on content time. Do not run the hot patch's revert script
   after installing this release: it would put back the old file.
 
+**Removed settings (Phase 3), nothing migrated**
+
+- **Sync Method** on Audio Decoder: its output now follows its sink's clock
+  by resampling, so there is no method to choose. Stored values are ignored;
+  a rollback restores them.
+
 **Needs the image's native elements (Phase 2)**
 
 - Without the timing elements of this image, Audio Mixer, N-1 Audio Mixer
@@ -256,9 +275,9 @@ elements" below do not start.
   through the image's new demux, refuse to start with "Native TS module not
   loaded", and the MPEG-TS Muxer does not start. Audio Processing's ducker and keyed-gate modes also need
   their own native plugin and otherwise show "Native plugin not loaded".
-- From Phase 3, AES67 Output too: its 302M input goes through the same demux,
-  so without the image's timing elements it refuses to start with "Native TS
-  module not loaded".
+- From Phase 3, AES67 Output and Audio Decoder too: their input goes through
+  the same demux, so without the image's timing elements they refuse to start
+  with "Native TS module not loaded".
 
 **Fixed**
 

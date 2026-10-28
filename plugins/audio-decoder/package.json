@@ -75,16 +75,6 @@
                     "x-live": true,
                     "x-contextMenu": true
                 },
-                "slaveMethod": {
-                    "type": "number",
-                    "enum": [
-                        0,
-                        1
-                    ],
-                    "default": 0,
-                    "title": "Sync Method",
-                    "description": "0 = resample (no latency drift), 1 = skew"
-                },
                 "bufferMs": {
                     "type": "number",
                     "default": 100,
