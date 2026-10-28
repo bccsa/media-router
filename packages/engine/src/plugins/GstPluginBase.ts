@@ -13,6 +13,7 @@ import type { ManagedProcess, ManagedProcessOptions } from '../child-process/Man
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
+import { QUEUE_SHED_EVENT } from './tsHelpers.js';
 import {
     DEFAULT_PLAYOUT_OFFSET_MS,
     PLAYOUT_OFFSET_KEY,
@@ -754,6 +755,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // WI-P2-13): no subclass hook.
         if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
+        if (channel === QUEUE_SHED_EVENT) this.logQueueShed(payload);
         if (channel === PLAYOUT_REANCHOR_EVENT) {
             this.playout
                 .onEvent(payload)
@@ -800,6 +802,23 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.log.warn(
             { backlogShed: payload },
             'Backlog shed — retained latency returned to the playout budget',
+        );
+    }
+
+    /** One WARN line per episode of an ingest queue shedding (B-182): its output stopped
+     *  draining past the queue's bound, so each buffer that met it full pushed an older one out. */
+    private logQueueShed(payload: unknown): void {
+        const p = (payload ?? {}) as {
+            element?: string;
+            overruns?: number;
+            durationMs?: number;
+            ongoing?: boolean;
+        };
+        const still = p.ongoing ? ', still dropping' : '';
+        this.log.warn(
+            { queueShed: payload },
+            `Queue ${p.element ?? '?'} full: ${p.overruns ?? 0} buffers dropped in ` +
+                `${p.durationMs ?? 0} ms (its output stopped draining${still})`,
         );
     }
 

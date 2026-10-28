@@ -373,6 +373,17 @@ elements" below do not start.
   Fixed: the lost time is now a gap of its length where the sound was lost,
   and the timing does not move. Audio Encoder captures the same way. The lost
   sound itself cannot come back.
+- **An SRT Input no longer drops pieces of a high-bitrate feed.** At about
+  28 Mbit/s an SRT Input lost a small piece of the stream about twice a
+  second, on every stream in it, while SRT itself reported no loss: about one
+  video frame in ten arrived damaged, more on a busy box. The input's buffer
+  held only about 75 ms at that rate, so it overflowed whenever the box was a
+  moment late passing the stream on, and a pause by the sender could make it
+  overflow at once. Fixed: the buffer holds 4 MB (800 ms at 40 Mbit/s), so the
+  stream passes whole through such a delay; only a box that stops passing the
+  stream on for longer than that drops data there, and each such stretch is
+  logged as a warning in the engine log saying how much. RIST Input, which
+  already had that room, now warns the same way.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

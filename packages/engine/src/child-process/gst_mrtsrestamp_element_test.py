@@ -8,8 +8,8 @@ not a twin; chapter 3 part 4.5 rule 1):
     and a CC loss; buffer lists likewise, a list of 7 leaving as one list;
   - a live offset-ns change gives one marker per PID: GAP|DISCONT, PTS the gap's end, the
     length in the adaptation field's private data, no duration, DTS on the input's timeline;
-  - each marker comes through srt-input's queue (leaky=2 max-size-time=100 ms) after a live
-    edit and after a simulated 3 s outage, every time;
+  - each marker comes through a time-bounded leaky queue (leaky=2 max-size-time=100 ms,
+    srt-input's to B-182) after a live edit and after a simulated 3 s outage, every time;
   - with arrival=clock the element's task marks a real outage at detection and every 250 ms;
   - fixed mode: video with dropped frames gives no marker, a 1.2 s video hole one (B-89);
   - trace-location records the core's .stct, from the start and from a live change;
@@ -456,7 +456,7 @@ check(f"a PID with no PES yet: lead-count 0 and no lead fields ({len(_silent)} m
       and hj.messages("mrtsrestamp-pid") == [q for _, qs in ref_stats(_refj) for q in qs])
 hj.stop()
 
-print("\n--- srt-input's queue (leaky=2 max-size-time=100 ms): every marker gets through ---")
+print("\n--- a time-bounded leaky queue (100 ms, srt-input's to B-182): every marker gets through ---")
 
 
 def leaky_run(records, ref):

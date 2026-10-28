@@ -2421,6 +2421,75 @@ def test_edge_stall_fds():
             check(f"{label}: the feeder's unixfdsink lets its copies go when it stops ({left:+d} fds)", left <= 64)
 
 
+
+# --------------------------------------------------------------------------- IQ: ingest queue sheds
+def test_ingest_queue_sheds():
+    """IQ (B-182): the shed watch on queues named ingestq (tsHelpers.ts buildIngestQueue). A paced
+    feed into one and into a queue of another name, both stalled behind an identity: one
+    `queue_shed` per episode for ingestq alone, its overruns counted, a report once while one stays
+    open 10 s, and an episode open at the stop reported before the runner exits."""
+    leaky = "leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=19200"
+    pipe = ("audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
+            " ! tee name=t"
+            f" t. ! queue name=ingestq {leaky} ! identity name=stall ! fakesink sync=false async=false"
+            f" t. ! queue name=other {leaky} ! identity name=stall2 ! fakesink sync=false async=false")
+    r = RunnerProc()
+    sheds = lambda: [e["payload"] for e in r.events  # noqa: E731
+                     if e.get("event") == "plugin_event" and e.get("channel") == "queue_shed"]
+
+    def stall(us):
+        for el in ("stall", "stall2"):
+            r.send({"cmd": "set_property", "id": f"s{el}{us}", "element": el,
+                    "property": "sleep-time", "value": us})
+
+    try:
+        r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+        check("IQ reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+        time.sleep(1.5)
+        r.pump()
+        check("IQ a queue that keeps up reports nothing", sheds() == [])
+        # Episode 1: 500 ms a buffer for 1.5 s (each queue holds 10 buffers of 10 ms).
+        stall(500000)
+        time.sleep(1.5)
+        stall(0)
+        first = r.wait_event(lambda e: e.get("channel") == "queue_shed", timeout=4.0)
+        p = first["payload"] if first else {}
+        check(f"IQ one episode, one event, for ingestq alone ({p})",
+              p.get("element") == "ingestq" and p.get("ongoing") is False
+              and p.get("overruns", 0) > 50 and p.get("totalOverruns") == p.get("overruns")
+              and p.get("maxSizeBytes") == 19200 and 1000 <= p.get("durationMs", 0) <= 2600)
+        time.sleep(1.5)
+        r.pump()
+        check(f"IQ nothing more once it drained ({len(sheds())} events)", len(sheds()) == 1)
+        # Episode 2, open past 10 s: reported once as it stands, then at its end.
+        stall(500000)
+        long_ev = r.wait_event(lambda e: e.get("channel") == "queue_shed" and e["payload"].get("ongoing"),
+                               timeout=13.0)
+        lp = long_ev["payload"] if long_ev else {}
+        check(f"IQ an episode open 10 s is reported as it stands ({lp})",
+              lp.get("element") == "ingestq" and lp.get("durationMs", 0) >= 9000
+              and lp.get("overruns", 0) > 500)
+        stall(0)
+        end = r.wait_event(lambda e: e.get("channel") == "queue_shed" and e["payload"].get("ongoing") is False
+                           and e["payload"].get("totalOverruns", 0) > p.get("totalOverruns", 0), timeout=4.0)
+        ep = end["payload"] if end else {}
+        check(f"IQ ...and once more when it ends, the episode whole ({ep})",
+              ep.get("overruns", 0) >= lp.get("overruns", 1)
+              and ep.get("totalOverruns") == p.get("totalOverruns", 0) + ep.get("overruns", 0))
+        # An episode still open at the stop: its count goes out before the runner exits.
+        stall(500000)
+        time.sleep(1.0)
+        n_before = len(sheds())
+        code = r.stop_and_wait()
+        last = sheds()[n_before:] if len(sheds()) > n_before else []
+        check(f"IQ the stop reports the open episode ({last})",
+              code == 0 and len(last) == 1 and last[0].get("overruns", 0) > 0
+              and last[0].get("ongoing") is False)
+        check("IQ no error event", not r.has_event(ev_is("error")))
+    finally:
+        r.kill()
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2451,6 +2520,7 @@ test_native_plugins()
 test_ingest_restamp()
 test_bus_return()
 test_edge_stall_fds()
+test_ingest_queue_sheds()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

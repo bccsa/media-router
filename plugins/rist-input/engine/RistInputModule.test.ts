@@ -7,6 +7,7 @@ import {
     ModuleInstance,
     PluginLoader,
     REDACTED,
+    buildIngestQueue,
     redactSecrets,
 } from '@media-router/engine';
 import { RistInputModule } from './RistInputModule.js';
@@ -44,8 +45,12 @@ describe('RistInputModule.buildPipeline', () => {
         const desc = module.buildPipeline({})!;
         expect(desc.pipeline).toMatch(/^mrristsrc name=ristsrc /);
         expect(desc.pipeline).not.toContain('appsrc');
-        // Downstream stall sheds here (bounded, leaky) — the old appsrc contract.
-        expect(desc.pipeline).toContain('queue leaky=downstream max-size-bytes=4194304');
+        // A downstream stall past the ingest queue's bound sheds there, counted (B-182).
+        expect(desc.pipeline).toContain(` ! ${buildIngestQueue()} ! capssetter `);
+        expect(buildIngestQueue()).toBe(
+            'queue name=ingestq leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=4000000 ' +
+                'flush-on-eos=true',
+        );
         expect(desc.pipeline).toContain(
             'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true',
@@ -638,7 +643,7 @@ describe('RistInputModule on the restamp (WI-P1-10)', () => {
         ]);
         expect(desc.pipeline).toContain(
             ' ! mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 ' +
-                'offset-ns=0 ! queue leaky=downstream ',
+                'offset-ns=0 ! queue name=ingestq leaky=2 ',
         );
     });
 

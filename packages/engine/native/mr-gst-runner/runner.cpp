@@ -21,6 +21,7 @@
 #include "json_util.h"
 #include "lateness_tap.h"
 #include "native_plugins.h"
+#include "shed_watch.h"
 #include "source_gate.h"
 #include "stamper.h"
 
@@ -191,6 +192,8 @@ void Runner::teardown_pipeline(GstElement* pipe, bool drain, bool errored) {
     // only the stop command — the watchdog and gate failures reach here too.
     if (drain && drain_on_stop) eos_drain(pipe, errored);
     gst_element_set_state(pipe, GST_STATE_NULL);
+    // No streaming thread is left to meet a queue full: the last episode's count is final.
+    shed_watch::clear();
 }
 
 void Runner::fail_pipeline(JsonObject* event, bool drain, bool errored) {
@@ -355,6 +358,8 @@ void Runner::handle_start(JsonObject* data) {
     }
 
     install_decoder_thread_hook(pipeline);
+    // An ingest queue's sheds, one event per episode (B-182).
+    shed_watch::install(pipeline);
 
     bus_reports.clear();
     if (JsonArray* reports = json_get_array(data, "busReports")) {

@@ -34,7 +34,8 @@
  * `max-size-bytes=0`.
  *
  * Applied: the runner's per-consumer bus edge branch, `buildBusSrc` ingress,
- * the mpegts-muxer per-pad queues, srt-output's back-pressure queue. Still
+ * the mpegts-muxer per-pad queues, srt-output's back-pressure queue, the
+ * network ingests' queue (`buildIngestQueue`, by bytes alone: B-182). Still
  * time-only and worth converting: `buildTsUdpInput`'s jitter queue,
  * mpegts-ip-output / mpegts-ip-input back-pressure queues, the video-player's
  * compressed pre-decode queue, and the literal queues in audio-transcoder,
