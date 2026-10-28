@@ -396,6 +396,20 @@ elements" below do not start.
   without separate audio tracks, Audio Languages has no effect and Subtitle
   Languages are not added: adding subtitles there would drop the stream's
   audio.
+- **An Audio Decoder or Audio Output (302M) recovers by itself after its
+  source's timing jumps.** When a source came back from an outage with its
+  timing moved (seen on a RIST feed from a production gate: a 3-second
+  timeout, then a jump of about 11 seconds), an Audio Decoder went on
+  dropping short pieces of its sound, 8 to 14 % of it, until the engine was
+  restarted; an Audio Output (302M) with a single source could do the same.
+  Fixed, as in v2.0.0.98 and v2.0.0.99: once its source has run for 10
+  seconds without another sign of the jump, the output restarts its own
+  pipeline, a break in its sound of up to half a second, and plays on time
+  again; the engine log says "Source timeline settled after a … — relaunching
+  this pipeline once". It does this at most once a minute, and also once
+  after any outage of its source of 5 seconds or more, which costs that short
+  break even where the sound would have come back without it. Sound lost
+  while the source was away cannot come back.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
