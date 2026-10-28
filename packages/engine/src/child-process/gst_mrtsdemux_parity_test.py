@@ -15,13 +15,15 @@ count (STREAM_START's stream id after upstream's, flags, group and stream; CAPS;
 STREAM_COLLECTION; GAP(0, 0); EOS); each buffer's size, crc32, flags, list place and metas; the
 other GAPs. Per element: the section messages and the collection message (its streams' ids,
 types, flags, caps and tags) in order around pad-added, no-more-pads and pad-removed; other
-messages, warnings and errors. Every difference must be one of demux_parity_allow.json's
-entries, each with its reason and each used by the run (a repeat, a warning or a DISCONT at
-most once per cause the recording shows); the brief's other entries are measured equal there
-(`measuredEqual`), so equality is pinned. Synthetic fixtures are out (`excluded`). Also pinned
-on tsdemux: the facts the comparison rests on (measured), each reached by some recording; and
-the comparison fails on self-mutants (a renamed pad, a dropped section message, a dropped
-buffer, a DISCONT with no cause).
+messages, warnings and errors. Each item notes the input buffer it came with, so a rule can tie
+a difference to a bus recording's DISCONT or gap-marker input (B-132). Every difference must be
+one of demux_parity_allow.json's entries, each with its reason and each used by the run (a
+repeat, a warning or a DISCONT at most once per cause the recording shows); the brief's other
+entries are measured equal there (`measuredEqual`), so equality is pinned. Synthetic fixtures
+are out (`excluded`). Also pinned on tsdemux: the facts the comparison rests on (measured), each
+reached by some recording; and the comparison fails on self-mutants (a renamed pad, a dropped
+section message, a dropped buffer, a DISCONT with no cause; on bus-ingest-relock-gap as recorded
+a marker's next unit without DISCONT, a marker's GAP on another PID's pad, a unit twice).
 
 Skips (exit 0) without GStreamer, tsdemux, or the built plugin."""
 import bisect
@@ -71,6 +73,7 @@ MUX_90K = 3600 * 90000          # mpegtsmux's 1 h (MUX_CLOCK_BASE_90K)
 CHUNKS = (188, 1000, 1316, 24576)
 TS_CAPS = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
 DISCONT = int(Gst.BufferFlags.DISCONT)
+GAP = int(Gst.BufferFlags.GAP)
 TAG_MEMORY = int(Gst.BufferFlags.TAG_MEMORY)
 SPARSE = int(Gst.StreamFlags.SPARSE)
 CLIP = GstAudio.audio_clipping_meta_api_get_type()
@@ -80,7 +83,8 @@ ELEM = ("section", "collection", "pad-added", "no-more-pads", "pad-removed", "ms
 # The comparison's rules, one per allowlist entry (demux_parity_allow.json says why each holds).
 RULES = ("timestamps", "sections-place", "pmt-same-version", "psi-repeat-cc", "cc-warning",
          "cc-loss-discont", "cc-loss-next-pes", "jump-gap", "sparse-gaps", "truncated-last-pes",
-         "tag-memory", "own-messages")
+         "tag-memory", "own-messages", "pmt-continuation", "cc-repeat", "marker-gaps",
+         "discont-drain", "discont-pending", "discont-flag", "psi-repeat-discont")
 
 _failures = []
 
@@ -144,15 +148,16 @@ def arrival(points, off):
 
 
 class Facts:
-    """What the recording shows, for the rules: CC losses per PID, each PMT PID's sections in
-    order (version, CRC), and per PID the last PES when the recording's end cuts it short (the
-    size and crc32 of the payload tsdemux pushes at EOS)."""
+    """What the recording shows, for the rules: CC losses per PID, the PES starts that repeat
+    their PID's last CC with other bytes, each PMT PID's sections in order (version, CRC) and how
+    many of them span two packets or more, and per PID the last PES when the recording's end cuts
+    it short (the size and crc32 of the payload tsdemux pushes at EOS)."""
 
     def __init__(self, data):
         pkts = list(ts_psi.iter_packets(data))
         self.pmt_pids = set(ts_psi.parse_pat(iter(pkts)).values())
-        self.losses, self.pmts, self.truncated = {}, {}, {}
-        cc, pes, sec = {}, {}, {}
+        self.losses, self.repeats, self.pmts, self.pmt_split, self.truncated = {}, {}, {}, {}, {}
+        cc, last, pes, sec, parts = {}, {}, {}, {}, {}
         for pkt in pkts:
             pid = ts_psi.ts_pid(pkt)
             if pid == 0x1FFF:
@@ -164,22 +169,27 @@ class Facts:
                 if prev is not None and not flagged and c not in ((prev + 1) & 15, prev):
                     self.losses[pid] = self.losses.get(pid, 0) + 1
                     pes[pid] = sec[pid] = None
-                cc[pid] = c
+                elif c == prev and not flagged and ts_psi.ts_pusi(pkt) and pkt != last.get(pid):
+                    self.repeats[pid] = self.repeats.get(pid, 0) + 1
+                cc[pid], last[pid] = c, pkt
             off = ts_psi.payload_offset(pkt)
             if not ts_psi.ts_has_payload(pkt) or off >= PKT:
                 continue
             body = pkt[off:]
             if pid in self.pmt_pids:
                 if ts_psi.ts_pusi(pkt):
-                    sec[pid] = bytearray(body[1 + body[0]:])
+                    sec[pid], parts[pid] = bytearray(body[1 + body[0]:]), 1
                 elif sec.get(pid) is not None:
                     sec[pid] += body
+                    parts[pid] += 1
                 s = sec.get(pid)
                 n = 3 + (((s[1] & 15) << 8) | s[2]) if s is not None and len(s) >= 3 else None
                 if n is not None and len(s) >= n:               # whole: (version, CRC)
                     one = ((s[5] >> 1) & 31, bytes(s[n - 4:n]))
                     if self.pmts.setdefault(pid, [])[-1:] != [one]:
                         self.pmts[pid].append(one)
+                    if parts[pid] > 1:
+                        self.pmt_split[pid] = self.pmt_split.get(pid, 0) + 1
                     sec[pid] = None
             elif pid:
                 if ts_psi.ts_pusi(pkt):
@@ -201,10 +211,24 @@ class Facts:
 
 # --- a replay ---------------------------------------------------------------------------------
 
+class Log(list):
+    """A record's items; `at[i]` is the input buffer the demuxer was handling when item i came
+    (its index among the pushed buffers, -1 before the first)."""
+
+    def __init__(self, items=(), at=()):
+        super().__init__(items)
+        self.at, self.now = list(at), -1
+
+    def append(self, item):
+        super().append(item)
+        self.at.append(self.now)
+
+
 class Record:
     """appsrc ! <factory>, an appsink per pad; `log` holds every item in the order it happened:
     the element's (section, collection, pad-added, no-more-pads, pad-removed, msg, warning,
-    error) and each pad's (ev; buf: size, crc32, flags, PTS, DTS, duration, list place, metas)."""
+    error) and each pad's (ev; buf: size, crc32, flags, PTS, DTS, duration, list place, metas);
+    `inputs` each pushed buffer's flags, in order, `marks` the PIDs of each gap-marker input."""
 
     def __init__(self, factory, running):
         self.pipe = Gst.Pipeline.new(None)
@@ -222,8 +246,10 @@ class Record:
         self.pipe.add(self.src)
         self.pipe.add(self.el)
         self.src.link(self.el)
-        self.log, self.up, self.done, self.eos = [], (None, None), threading.Event(), False
+        self.log, self.up, self.done, self.eos = Log(), (None, None), threading.Event(), False
+        self.inputs, self.marks = [], {}
         self.src.get_static_pad("src").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self._up)
+        self.src.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._in)
         self.el.connect("pad-added", self._added)
         self.el.connect("pad-removed", lambda _e, p: self.log.append(("pad-removed",
                                                                       p.get_name())))
@@ -235,6 +261,12 @@ class Record:
         if ev.type == Gst.EventType.STREAM_START:
             ok, gid = ev.parse_group_id()
             self.up = (ev.parse_stream_start(), gid if ok else None)
+        return Gst.PadProbeReturn.OK
+
+    def _in(self, _pad, info):
+        """On the streaming thread, right before the demuxer's chain: what follows is its work."""
+        self.log.now = len(self.inputs)
+        self.inputs.append(int(info.get_buffer().get_flags()))
         return Gst.PadProbeReturn.OK
 
     def _added(self, _el, pad):
@@ -329,15 +361,14 @@ class Record:
     def pads(self):
         return [e[1] for e in self.log if e[0] == "pad-added"]
 
-    def items(self, pad):
-        return [e for e in self.log if e[0] in ("ev", "buf") and e[1] == pad]
-
 
 def replay(factory, data, feeds):
     """`feeds`: (offset, size, pts, flags) per buffer pushed."""
     r = Record(factory, house_of(data))
     r.pipe.set_state(Gst.State.PLAYING)
-    for off, size, pts, flags in feeds:
+    for k, (off, size, pts, flags) in enumerate(feeds):
+        if flags & GAP:
+            r.marks[k] = {ts_psi.ts_pid(p) for p in ts_psi.iter_packets(data[off:off + size])}
         b = Gst.Buffer.new_wrapped(data[off:off + size])
         b.pts = NONE if pts is None else pts
         if flags:
@@ -367,11 +398,15 @@ def caps_equal(a, b):
 
 class Compare:
     """Every difference between `ref` (tsdemux) and `ours` (mrtsdemux), each either a rule's
-    (`allowed`, counted) or a failure (`fails`)."""
+    (`allowed`, counted) or a failure (`fails`). Both were fed the same buffers: `dis` lists the
+    ones flagged DISCONT after the first (a bus recording's; a source flags its first, when
+    nothing is open), `marks` the PIDs of those flagged GAP (OQ-12 markers)."""
 
     def __init__(self, ref, ours, facts):
         self.ref, self.ours, self.facts = ref, ours, facts
         self.allowed, self.fails = {}, []
+        self.dis = [k for k, f in enumerate(ref.inputs) if f & DISCONT and k > 0]
+        self.marks = ref.marks
         self.elements()
         for pad in [p for p in ours.pads() if p in ref.pads()]:
             self.pad(pad)
@@ -381,6 +416,11 @@ class Compare:
 
     def fail(self, what):
         self.fails.append(what)
+
+    def discont_in(self, lo, hi):
+        """Whether an input flagged DISCONT lies in (lo, hi]."""
+        k = bisect.bisect_right(self.dis, lo)
+        return k < len(self.dis) and self.dis[k] <= hi
 
     # The element: messages, sections, the plan's events.
     def elements(self):
@@ -422,7 +462,7 @@ class Compare:
             self.fail(f"plan events differ at {bad}: tsdemux {pr[bad:bad + 2]}, "
                       f"mrtsdemux {po[bad:bad + 2]}")
             return
-        sr, so = self.sections(r, "ref"), self.sections(o, "ours")
+        sr, so = self.sections(self.ref.log, "ref"), self.sections(self.ours.log, "ours")
         if [s[:3] for s in sr] != [s[:3] for s in so]:
             self.fail(f"section messages: tsdemux {[s[:3] for s in sr]}, "
                       f"mrtsdemux {[s[:3] for s in so]}")
@@ -438,20 +478,29 @@ class Compare:
             else:
                 self.fail(f"{a[0]} section at plan event {b[3]} here, {a[3]} in tsdemux")
 
-    def sections(self, items, side):
+    def sections(self, log, side):
         """The PAT and PMT messages, each with the count of plan events before it; another
-        table, and the repeats a rule explains, taken out."""
-        out, seen, again, at = [], {}, {}, 0
-        for e in items:
+        table, and the repeats and misreads a rule explains, taken out."""
+        out, seen, again, at, last, misread = [], {}, {}, 0, {}, {}
+        for e, k in zip(log, log.at):
             if e[0] in ("collection", "pad-added", "no-more-pads", "pad-removed"):
                 at += 1
             if e[0] != "section":
                 continue
             kind, pid, ver = e[1:]
+            if (side == "ref" and kind == "unknown" and pid in self.facts.pmt_pids
+                    and misread.get(pid, 0) < self.facts.pmt_split.get(pid, 0) - 1):
+                misread[pid] = misread.get(pid, 0) + 1    # a skipped PMT's next packet
+                self.allow("pmt-continuation")
+                continue
             if kind not in ("pat", "pmt"):
                 self.fail(f"{side}: a {kind} section message")
                 continue
+            prev, last[pid] = last.get(pid, -1), k
             if seen.get(pid) == ver:
+                if side == "ref" and self.discont_in(prev, k):
+                    self.allow("psi-repeat-discont")    # its packetizer cleared at the input
+                    continue
                 n = again[pid] = again.get(pid, 0) + 1      # one per change or loss on the PID
                 if side == "ours" and kind == "pmt" and n <= self.facts.same_version_changes(pid):
                     self.allow("pmt-same-version")
@@ -466,12 +515,21 @@ class Compare:
 
     # One pad: its events, buffers and gaps.
     def pad(self, pad):
-        ri, oi = self.ref.items(pad), self.ours.items(pad)
-        rb, ob = [e for e in ri if e[0] == "buf"], [e for e in oi if e[0] == "buf"]
+        def items(rec):
+            """The pad's items, their inputs, its buffers and theirs."""
+            ks = [k for k, e in enumerate(rec.log) if e[0] in ("ev", "buf") and e[1] == pad]
+            bufs = [k for k in ks if rec.log[k][0] == "buf"]
+            return ([rec.log[k] for k in ks], [rec.log.at[k] for k in ks],
+                    [rec.log[k] for k in bufs], [rec.log.at[k] for k in bufs])
+
+        ri, ra, rb, rba = items(self.ref)
+        oi, oa, ob, oba = items(self.ours)
         starts = [e for e in oi if e[0] == "ev" and e[2] == "stream-start"]
         sparse = bool(starts and starts[0][3][1] & SPARSE)
         pid = int(pad.rsplit("_", 1)[1], 16)
         budget = self.facts.losses.get(pid, 0)   # a CC loss explains one DISCONT
+        repeats = self.facts.repeats.get(pid, 0)
+        drained, moved, end = set(), set(), len(self.ref.inputs)
         common_r, common_o = set(), set()
         sm = difflib.SequenceMatcher(None, [b[2:4] for b in rb], [b[2:4] for b in ob],
                                      autojunk=False)
@@ -479,20 +537,33 @@ class Compare:
             if op == "equal":
                 common_r.update(range(i1, i2))
                 common_o.update(range(j1, j2))
-            elif op == "insert" and all(ob[j][4] & DISCONT for j in range(j1, j2)) \
-                    and j2 - j1 <= budget:
-                budget -= j2 - j1
-                self.allow("cc-loss-next-pes", j2 - j1)
-            elif (op == "delete" and i2 == len(rb) and j1 == len(ob) and i2 - i1 == 1
-                  and tuple(rb[i1][2:4]) == self.facts.truncated.get(pid)):
-                self.allow("truncated-last-pes")
-            else:
-                self.fail(f"{pad}: buffers {op} tsdemux [{i1}:{i2}] mrtsdemux [{j1}:{j2}] "
-                          f"({[b[2:5] for b in rb[i1:i1 + 2]]} / "
-                          f"{[b[2:5] for b in ob[j1:j1 + 2]]})")
+                continue
+            for i in range(i1, i2):                         # tsdemux's only
+                if (i == len(rb) - 1 and j1 == len(ob)
+                        and tuple(rb[i][2:4]) == self.facts.truncated.get(pid)):
+                    self.allow("truncated-last-pes")
+                elif rba[i] in self.dis and rba[i] not in drained:
+                    drained.add(rba[i])                     # its drain at a DISCONT input
+                    self.allow("discont-drain")
+                elif repeats > 0:
+                    repeats -= 1
+                    moved.add(j1)                           # the pad's DISCONT moves to the next
+                    self.allow("cc-repeat")
+                else:
+                    self.fail(f"{pad}: buffer {i} in tsdemux only ({rb[i][2:5]}, input "
+                              f"{rba[i]})")
+            for j in range(j1, j2):                         # mrtsdemux's only
+                if self.discont_in(oba[j], rba[i2] if i2 < len(rb) else end):
+                    self.allow("discont-pending")           # held by tsdemux, then flushed
+                elif ob[j][4] & DISCONT and budget > 0:
+                    budget -= 1
+                    self.allow("cc-loss-next-pes")
+                else:
+                    self.fail(f"{pad}: buffer {j} in mrtsdemux only ({ob[j][2:5]}, input "
+                              f"{oba[j]})")
         # Events, each at the count of common buffers before it; the GAPs apart.
-        er, gr = self.events(ri, common_r)
-        eo, go = self.events(oi, common_o)
+        er, gr = self.events(ri, common_r, ra)
+        eo, go = self.events(oi, common_o, oa)
         if er != eo:
             bad = next((i for i, (a, b) in enumerate(zip(er, eo)) if not self.same_event(a, b)),
                        None)
@@ -506,8 +577,17 @@ class Compare:
         elif not sparse:
             if gr:
                 self.fail(f"{pad}: tsdemux GAPs on a pad that is not sparse {gr[:2]}")
-            for _at, nxt in go:
-                if nxt is not None and ob[nxt][4] & DISCONT:
+            for _at, nxt, last, came in go:
+                disc = nxt is not None and bool(ob[nxt][4] & DISCONT)
+                if came in self.marks:                      # made at a gap marker input
+                    if pid not in self.marks[came]:
+                        self.fail(f"{pad}: a GAP at a gap marker of other PIDs (input {came})")
+                    elif nxt is None or disc:
+                        jumps.update([nxt] if nxt is not None else [])
+                        self.allow("marker-gaps")
+                    else:
+                        self.fail(f"{pad}: a marker's GAP with no DISCONT after it (buffer {nxt})")
+                elif last and disc:
                     jumps.add(nxt)
                     self.allow("jump-gap")
                 else:
@@ -529,9 +609,12 @@ class Compare:
             if a[4] & DISCONT == b[4] & DISCONT:
                 continue
             if a[4] & DISCONT:
-                self.fail(f"{pad}: buffer {j} DISCONT in tsdemux only")
-            elif j in jumps:
-                pass                                      # counted with its GAP
+                if self.discont_in(rba[i - 1] if i else -1, rba[i]):
+                    self.allow("discont-flag")              # its flush flags every pad
+                else:
+                    self.fail(f"{pad}: buffer {j} DISCONT in tsdemux only")
+            elif j in jumps or j in moved:
+                pass                                      # counted with its GAP or repeat
             elif budget > 0:
                 budget -= 1
                 self.allow("cc-loss-discont")
@@ -539,17 +622,21 @@ class Compare:
                 self.fail(f"{pad}: buffer {j} DISCONT with no CC loss, jump or marker")
 
     @staticmethod
-    def events(items, common):
-        """(events at their common-buffer count, [(GAP at, index of the next buffer)])."""
-        out, gaps, n, k = [], [], 0, -1
-        for e in items:
+    def events(items, common, at):
+        """(events at their common-buffer count, [GAP at, index of the next buffer, whether it
+        is the last GAP before that buffer, the input it came with])."""
+        out, gaps, n, k, open_ = [], [], 0, -1, 0
+        for x, e in enumerate(items):
             if e[0] == "buf":
                 k += 1
                 n += k in common
-                if gaps and gaps[-1][1] is None:
-                    gaps[-1] = (gaps[-1][0], k)
+                if open_ < len(gaps):
+                    gaps[-1][2] = True
+                    for g in gaps[open_:]:
+                        g[1] = k
+                    open_ = len(gaps)
             elif e[2] == "gap" and e[3] != (0, 0):
-                gaps.append((n, None))
+                gaps.append([n, None, False, at[x]])
             else:
                 out.append((n, e[2], e[3]))
         return out, gaps
@@ -619,7 +706,8 @@ def tsdemux_facts(ref, reached):
 def mutant(ref, ours, facts, edit):
     """The comparison's failures for `ours` with each log item edited (None drops it)."""
     m = copy.copy(ours)
-    m.log = [x for x in (edit(e) for e in ours.log) if x is not None]
+    kept = [(x, a) for x, a in zip((edit(e) for e in ours.log), ours.log.at) if x is not None]
+    m.log = Log([x for x, _ in kept], [a for _, a in kept])
     return Compare(ref, m, facts).fails
 
 
@@ -641,8 +729,8 @@ names = sorted(f[:-3] for f in os.listdir(FIX) if f.endswith(".ts")
                and f.split("-", 1)[0] in ("cap", "tp", "bus"))
 print(f"\n--- {len(names)} recorded fixtures, each at {', '.join(map(str, CHUNKS))} bytes "
       f"(a bus recording also as recorded) ---")
-check(f"{len(names)} recorded fixtures (cap-*, tp-*, bus-*)", len(names) >= 20)
-used, mutant_pair = {}, None
+check(f"{len(names)} recorded fixtures (cap-*, tp-*, bus-*)", len(names) >= 25)
+used, mutant_pair, bus_pair = {}, None, None
 reached = dict.fromkeys(("plans", "ADTS pads", "Opus pads", "sparse pads"), 0)
 for name in names:
     with open(os.path.join(FIX, name + ".ts"), "rb") as f:
@@ -666,6 +754,8 @@ for name in names:
               f"{cmp.fails[:3]}", not cmp.fails and ours.pads())
         if name == "cap-mux-align7-aac-opus" and label == "1316":
             mutant_pair = (ref, ours, facts)
+        if name == "bus-ingest-relock-gap" and label == "bus":
+            bus_pair = (ref, ours, facts)
     check(f"{name}: tsdemux's facts the comparison rests on, at every feed {sorted(facts_bad)}",
           not facts_bad)
 
@@ -693,6 +783,35 @@ if mutant_pair:
     flagged = mutant(ref, ours, facts, lambda e: e[:4] + (e[4] | DISCONT,) + e[5:]
                      if e is ours.log[k] else e)
     check(f"a DISCONT with no CC loss, jump or marker fails ({flagged[:1]})", bool(flagged))
+
+check("the bus mutants' recording ran (bus-ingest-relock-gap as recorded)", bus_pair is not None)
+if bus_pair:
+    ref, ours, facts = bus_pair
+    check("its record as it is passes", not Compare(ref, ours, facts).fails)
+    # The first audio unit after a marker's GAP, and 0xc9's GAP from its own (relock) marker.
+    after, own, prev = None, None, {}
+    for i, e in enumerate(ours.log):
+        if e[0] not in ("ev", "buf") or not e[1].startswith("audio"):
+            continue
+        p, came = prev.get(e[1]), ours.log.at[i]
+        if after is None and e[0] == "buf" and p and p[0][2] == "gap" and p[1] in ref.marks:
+            after = i
+        if own is None and e[:3] == ("ev", "audio_0_00c9", "gap") and ref.marks.get(came) == {0xc9}:
+            own = i
+        prev[e[1]] = (e, came)
+    unflagged = mutant(ref, ours, facts, lambda e: e[:4] + (e[4] & ~DISCONT,) + e[5:]
+                       if e is ours.log[after] else e) if after is not None else []
+    check(f"the unit after a marker's GAP without DISCONT fails ({unflagged[:1]})",
+          bool(unflagged))
+    moved = mutant(ref, ours, facts, lambda e: e[:1] + ("audio_0_00ca",) + e[2:]
+                   if e is ours.log[own] else e) if own is not None else []
+    check(f"a marker's GAP on a pad whose PID it does not carry fails ({moved[:1]})", bool(moved))
+    k = [i for i, e in enumerate(ours.log) if e[:2] == ("buf", "audio_0_00c9")][3]
+    twice = copy.copy(ours)
+    twice.log = Log(ours.log[:k + 1] + ours.log[k:], ours.log.at[:k + 1] + ours.log.at[k:])
+    extra = Compare(ref, twice, facts).fails
+    check(f"a unit twice, no DISCONT input before tsdemux's next, fails ({extra[:1]})",
+          bool(extra))
 
 if _failures:
     print(f"\n{len(_failures)} FAILURE(S) in gst_mrtsdemux_parity_test.py")
