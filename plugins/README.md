@@ -2471,8 +2471,9 @@ and counted, and it rejoins at the current position. An input added to a
 running aggregator catches up the same way: gapped until its data reaches the
 gaps, it loses its first 2Δ + 0.5 s when Δ later than the pace, and one within
 50 ms of it is waited for. Toward an audio aggregator an input's PCM edges
-fade over 5 ms (B-83). The queue holds 5 s (`max-size-time`), blocks upstream
-when full and never drops. Rules:
+fade over 5 ms (B-83). The queue holds 5 s (`max-size-time`, counted from the
+gaps' horizon, so a GAP over a longer hole is no queued time: B-187), blocks
+upstream when full and never drops. Rules:
 
 - **Every pad, live-added ones included.** One input that answers LATENCY
   live turns the whole aggregator live, and it then times out and drops late

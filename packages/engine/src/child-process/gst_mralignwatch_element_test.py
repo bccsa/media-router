@@ -17,7 +17,9 @@ late cue is forwarded at its own PTS with a message and the pace's target raised
 defaults and the LATENCY answer, and
 the caps a dark input's gaps go out under: (2c) a 302M-shaped branch, (2d) 8 channels, (2e) every
 input dark, (2f) a branch dark at start that comes up, (2g) a hole the input reports, on in
-block-long pieces (past a second whole, fenced), (8b) a sparse stream whose caps come with its
+block-long pieces (past a second whole, fenced), (2h) one longer than the time bound, the input
+absent over it: no full queue (B-187), (2i) the same on a 302M fan-in branch from its demux on, its
+link dark past the 5 s bound, (8b) a sparse stream whose caps come with its
 first cue; (11)-(11e) an input added while playing (late, dark, on time, seeded, into gaps alone)
 is gapped until it catches up, the pace slewing to a late one, so the mixer never stops on it,
 (11f) the same into mpegtsmux, (11g) a rejoin's 2 s backlog moves no pace, (11h) a joiner within
@@ -1041,6 +1043,104 @@ check(f"jump: input 0 alone over it, nothing dropped (got {r.levels(3000)})",
       r.levels(3000) == [(0, 1000, VAL[0] + VAL[1]), (1000, 2500, VAL[0]),
                          (2500, 3000, VAL[0] + VAL[1])] and eos and not r.errors)
 r.stop()
+
+print("\n--- mpegtsmux: (2h) a hole longer than the time bound, absent over it: no full queue ---")
+# A producer silent past max-size-time: the demux's GAP over the hole, sent with the data after it,
+# reaches back past the horizon, where it goes out clipped: no queued time (B-187); counted from its
+# start it read as a full queue. The 500 ms pace keeps the GAP's tail queued as that data comes in.
+r = Rig("mpegtsmux", [{"props": {"seed-lateness": 500 * MS}}, {"props": {"max-size-time": 1500 * MS}}])
+r.run({0: [("rt", 0, 500, 500), ("eos",)],
+       1: [("rt", 0, 100, 0), ("at", 4000),
+           ("call", lambda: r.srcs[1].send_event(Gst.Event.new_gap(r.at(1000), 3000 * MS))),
+           ("rt", 400, 500, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+with r.lock:
+    full = [f for _t, src, f in r.msgs if src == "aw1" and f["reason"] == "full"]
+    back = [f["level-time"] for t, src, f in r.msgs if src == "aw1" and f["reason"] == "state"
+            and f["state"] == "present" and t >= r.at(3500)]
+check(f"long hole: input 1 absent once over its 3 s silence; back, its queue counted from the "
+      f"horizon, under its 1.5 s bound (level-time {back[0] // MS if back else None} ms, about the "
+      f"pace), never full (full-count {r.prop(1, 'full-count')}, {len(full)} `full` messages)",
+      r.prop(1, "absences") == 1 and back and back[0] < 1500 * MS
+      and r.prop(1, "full-count") == 0 and not full)
+after = [(t, d) for t, d in r.pes().get(PID0 + 1, []) if t is not None and t >= pts90(r.at(4000))]
+check(f"long hole: its data after the hole all written at its PTS, EOS, no error ({len(after)} of 100)",
+      after == [(pts90(r.at(k * 10)), payload(1, k)) for k in range(400, 500)] and eos and not r.errors)
+r.stop()
+
+
+def s302m_pes(r, ks, val):
+    """{k: the TS of block k's PES}: 10 ms stereo blocks of `val` at content k x 10 ms through
+    avenc_s302m ! mpegtsmux, as every 302M module encodes; PSI rides with the PES before it."""
+    gen = Gst.parse_launch(
+        f'appsrc name=pcm format=time caps="{CAPS["audiomixer"]}" ! avenc_s302m strict=experimental'
+        " ! mpegtsmux latency=0 alignment=7 ! appsink name=ts sync=false max-buffers=0 drop=false")
+    src, sink = gen.get_by_name("pcm"), gen.get_by_name("ts")
+    gen.set_state(Gst.State.PLAYING)
+    for k in ks:
+        b = Gst.Buffer.new_wrapped(array.array("h", [val] * 2 * BLOCK).tobytes())
+        b.pts, b.duration = r.at(k * 10), BLOCK * S // RATE
+        src.emit("push-buffer", b)
+    src.emit("end-of-stream")
+    data = bytearray()
+    while (smp := sink.emit("try-pull-sample", 5 * S)) is not None:
+        buf = smp.get_buffer()
+        data += buf.extract_dup(0, buf.get_size())
+    gen.set_state(Gst.State.NULL)
+    chunks, cur, pes = [], bytearray(), False
+    for off in range(0, len(data) - 187, 188):
+        p = data[off:off + 188]
+        afc = (p[3] >> 4) & 3
+        body = p[5 + p[4]:] if afc == 3 else p[4:]
+        if p[1] & 0x40 and afc & 1 and body[:3] == b"\0\0\1":   # a PES starts here
+            if pes:
+                chunks.append(bytes(cur))
+                cur = bytearray()
+            pes = True
+        cur += p
+    chunks.append(bytes(cur))
+    return dict(zip(ks, chunks)) if len(chunks) == len(ks) else {}
+
+
+print("\n--- audiomixer: (2i) a 302M fan-in branch dark past the 5 s bound: no full queue ---")
+# The release line's fan-in from its demux on (decode302m, build302mMixBranch's caps, alignWatch's
+# hold-on-eos), fed a remote's 302M TS whose link drops 6 s: first back is the demux's GAP over the
+# hole (B-187). Input 0's 300 ms pace keeps the data after it ahead of the horizon.
+if Gst.ElementFactory.find("avenc_s302m") and Gst.ElementFactory.find("avdec_s302m"):
+    FANIN = ("mrtsdemux name=dmx1 select=audio/x-smpte-302m ! avdec_s302m ! audioconvert"
+             " ! audioresample ! capsfilter caps=audio/x-raw,rate=48000,channels=2")
+    r = Rig("audiomixer", [{"props": {"seed-lateness": 300 * MS}},
+                           {"chain": FANIN, "props": {"hold-on-eos": True},
+                            "caps": "video/mpegts,systemstream=(boolean)true,packetsize=(int)188"}])
+    ks = list(range(0, 100)) + list(range(700, 900))
+    ts = s302m_pes(r, ks, VAL[1])
+
+    def _remote():
+        for k in ks if ts else ():   # each PES once its 10 ms block is whole
+            r.sleep_until(r.at(k * 10 + 10))
+            r.srcs[1].emit("push-buffer", Gst.Buffer.new_wrapped(ts[k]))
+
+    r.run({0: [("rt", 0, 900, 300), ("eos",)], 1: [("call", _remote), ("eos",)]})
+    r.wait(lambda: (r.reach() or 0) >= 9000, 6.0)
+    with r.lock:
+        full = [f for _t, src, f in r.msgs if src == "aw1" and f["reason"] == "full"]
+        back = [f["level-time"] for t, src, f in r.msgs if src == "aw1" and f["reason"] == "state"
+                and f["state"] == "present" and t >= r.at(6500)]
+    gone = [t for t, s in r.states(1) if s == "absent" and r.at(1000) <= t < r.at(7000)]
+    gaps = r.pipe.get_by_name("dmx1").get_property("gaps")
+    check(f"302M fan-in: one PES a block ({len(ts)} of {len(ks)}), one demux GAP over the 6 s hole "
+          f"({gaps}), input 1 absent once over it; back, its queue counted from the horizon, under "
+          f"its 5 s bound (level-time {back[0] // MS if back else None} ms, about the pace), never "
+          f"full (full-count {r.prop(1, 'full-count')}, {len(full)} `full` messages)",
+          len(ts) == len(ks) and gaps == 1 and len(gone) == 1 and back and back[0] < 5000 * MS
+          and r.prop(1, "full-count") == 0 and not full)
+    check(f"302M fan-in: input 0 alone over the hole, input 1 mixed from its return, no error "
+          f"(got {r.levels(9000)})",
+          r.levels(9000) == [(0, 1000, VAL[0] + VAL[1]), (1000, 7000, VAL[0]),
+                             (7000, 9000, VAL[0] + VAL[1])] and not r.errors)
+    r.stop()
+else:
+    print("SKIP (2i) — gst-libav's avenc_s302m/avdec_s302m unavailable")
 
 # A live add joins a running mixer: the joiner is gapped until its content catches up, so the
 # others never stall on it; what it sends behind the gaps is stale (the rejoin rule) and gives its

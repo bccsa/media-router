@@ -443,6 +443,15 @@ elements" below do not start.
   about one every 8 minutes for a clock 40 millionths fast. A rendition set
   faster than its source (the default 50 with a 25p source) still does not
   start, as before: set Frame Rate to the source's rate or lower.
+- **An input that comes back after more than 5 seconds away no longer warns
+  that its queue is full.** When an input of an Audio Mixer, an N-1 Audio
+  Mixer (302M), Audio Processing or an Audio Output (302M) with two or more
+  sources came back after more than 5 seconds without its stream (an SRT or
+  RIST link that dropped, say), the module could show "Input <name> queue
+  full — upstream held" for about a second, though nothing was waiting: it
+  counted the time the input was away as queued. Fixed: the input comes back
+  without the warning. Its sound came back at once before too; nothing was
+  lost.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
