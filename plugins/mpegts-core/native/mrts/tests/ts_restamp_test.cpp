@@ -3558,30 +3558,80 @@ void test_new_timeline_step_unarmed() {
               a.matched && a.cc_lost == 0);
 }
 
-// The wait's side effects: a flush while waiting (what waited goes, CC kept continuous), a second
-// program on its own clock unaffected, and a trace of the run replaying as recorded.
+// The input index of the first PES (its PUSI packet) sent from `from` on.
+size_t first_pes_from(const Case& c, int64_t from) {
+    size_t i = 0;
+    while (i < c.st.pk.size() && !(c.st.pk[i].mux >= from && c.st.pk[i].pes >= 0 && ts_pusi(c.st.pk[i].b.data()))) i++;
+    return i;
+}
+
+// A flush before the datagram after the one with the first new-timeline PES drops what waited. With
+// duplicates a copy waits there with its original, none straddling the flush: the copy is no removed
+// step, and the core's CC tracker reads what waited, so it counts no loss after the flush.
+void wait_flush(const char* label, const Gen& g) {
+    const Case c = make_case(g);
+    const size_t i = first_pes_from(c, g.outage_to);
+    size_t k = 0;
+    while (k < c.dg.size() && c.dg[k].first + c.dg[k].n <= i) k++;
+    int waited = 0, copies = 0;   // the program's packets from that PES to the flush; copies among them
+    for (size_t j = i; k + 1 < c.dg.size() && j < c.dg[k + 1].first; j++) {
+        if (c.st.pk[j].pid == PID_PAT || c.st.pk[j].pid == PID_PMT) continue;
+        waited++;
+        copies += c.st.pk[j].copy && j > i;
+    }
+    const bool shape = k + 1 < c.dg.size() && (g.dup_every > 0) == (copies > 0) && !c.st.pk[c.dg[k + 1].first].copy;
+    size_t calls = 0;
+    int64_t removed0 = -1, removed1 = -1;
+    const Out o = run(c, stc_cfg(), [&](RestampCore& rc, int64_t) {
+        if (calls++ != k + 1) return;
+        removed0 = (int64_t)rc.stats().removed_packets;
+        rc.flush();
+        removed1 = (int64_t)rc.stats().removed_packets;
+    });
+    const Ana a = analyze(c, o, false);
+    const Back b = measure(c, o, a, g.outage_from);
+    std::printf("  wait, a flush%s: %d packets waited (%d copies), %lld removed by it; CC lost: core %llu, "
+                "output %llu\n",
+                label, waited, copies, (long long)(removed1 - removed0), (unsigned long long)o.stats.cc_lost,
+                (unsigned long long)a.cc_lost);
+    const std::string n = std::string("wait: a flush") + label;
+    CHECK((n + " drops what waited (removed steps): the output's CC continuous, no false duplicate; the core's "
+               "CC tracker in step (no loss)")
+              .c_str(),
+          shape && removed0 >= 0 && removed1 - removed0 == waited && o.stats.cc_lost == 0 && a.cc_lost == 0 &&
+              a.dup_differ == 0 && a.matched && a.atomic && monotonic(a));
+    CHECK((n + ": after it the next PCR still decides, nothing ahead").c_str(), judge(b, 2 * S).ahead);
+}
+
+// The wait's side effects: a flush while waiting (what waited goes, CC kept continuous), with and
+// without duplicates, the PCR fed to the clock once, a second program on its own clock unaffected,
+// and a trace of the run replaying as recorded.
 void test_new_timeline_wait() {
     const Gen g = step_gen(43001 * MS, 11 * S, false);
     const Case c = make_case(g);
+    wait_flush("", g);
     {
-        // The flush comes before the datagram after the one with the first new-timeline PES.
-        size_t i = 0, k = 0;
-        while (i < c.st.pk.size() && !(c.st.pk[i].mux >= g.outage_to && c.st.pk[i].pes >= 0 && ts_pusi(c.st.pk[i].b.data())))
-            i++;
-        while (k < c.dg.size() && c.dg[k].first + c.dg[k].n <= i) k++;
-        size_t calls = 0;
-        int64_t removed0 = -1;
-        const Out o = run(c, stc_cfg(), [&](RestampCore& rc, int64_t) {
-            if (calls++ != k + 1) return;
-            removed0 = (int64_t)rc.stats().removed_packets;
-            rc.flush();
+        Gen gd = g;
+        gd.dup_every = 4;   // every 4th audio-1 packet sent twice
+        wait_flush(" with duplicates among what waited", gd);
+    }
+    {
+        // The PCR that ends the wait is fed to its clock first, and not again in on_pcr: right after its
+        // relock the lock holds that one sample. Unflagged, a second feed leaves the relock count alone.
+        std::vector<std::pair<uint64_t, uint32_t>> seen;   // before each datagram: relocks, lock samples
+        run(c, stc_cfg(), [&](RestampCore& rc, int64_t) {
+            const RestampCore::Stats s = rc.stats();
+            if (s.programs.empty()) seen.emplace_back(0, 0);
+            else seen.emplace_back(s.programs[0].clock.relocks, s.programs[0].clock.residual.count);
         });
-        const Ana a = analyze(c, o, false);
-        const Back b = measure(c, o, a, g.outage_from);
-        CHECK("wait: a flush drops what waited (removed steps), the output's CC stays continuous",
-              removed0 >= 0 && (int64_t)o.stats.removed_packets > removed0 && a.cc_lost == 0 && a.matched &&
-                  a.atomic && monotonic(a));
-        CHECK("wait: after the flush the next PCR still decides: nothing ahead", judge(b, 2 * S).ahead);
+        size_t j = 1;
+        while (j < seen.size() && seen[j].first == 0) j++;
+        int pcrs = 0;   // in the datagram that relocked
+        if (j < seen.size())
+            for (size_t x = c.dg[j - 1].first; x < c.dg[j - 1].first + c.dg[j - 1].n; x++)
+                pcrs += c.st.pk[x].pid == PID_V && read_pcr(c.st.pk[x].b.data()) >= 0;
+        CHECK("wait: the PCR that ends the wait is fed to its clock once: one sample right after its relock",
+              j < seen.size() && seen[j].first == 1 && pcrs == 1 && seen[j].second == 1);
     }
     {
         Gen g2 = g, g0 = step_gen(43001 * MS, 0, false);
@@ -3708,6 +3758,18 @@ int main() {
         g.split_every = 2;
         g.dup_every = 4;
         test_new_timeline_before_pcr("S1s, +11 s, the first PES's header split, duplicates", g, 1);
+    }
+    {
+        // A dense PCR on every other video PES (80 ms): the new timeline's first PES a P frame, keyed by
+        // its DTS, 40 ms ahead of its PCR.
+        Gen g = step_gen(43115 * MS, 11 * S, false);
+        g.pcr_every = 2;
+        const Case c = make_case(g);
+        const size_t i = first_pes_from(c, g.outage_to);
+        CHECK("new timeline before its PCR, S1v: the shape, its first PES a P frame with a DTS and no PCR",
+              i < c.st.pk.size() && c.st.pk[i].pid == PID_V && c.st.pes[(size_t)c.st.pk[i].pes].dts >= 0 &&
+                  read_pcr(c.st.pk[i].b.data()) < 0);
+        test_new_timeline_before_pcr("S1v, +11 s, a P frame ahead of its PCR, the PCR every 80 ms", g, 1);
     }
     test_new_timeline_sweep();
     test_new_timeline_sparse_pcr();

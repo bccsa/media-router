@@ -424,7 +424,11 @@ elements" below do not start.
   what came first, so every track is back within a moment of the outage's
   end. A source that sends its clock reference less often than that (vMix,
   every 2 seconds) can lose up to that interval of each track after such a
-  jump, instead of the jump's length.
+  jump of more than about 3.5 seconds, instead of the jump's length. After a
+  smaller jump, from half a second to about 3.5 seconds, such a source still
+  loses about the jump's length of each track, and every module fed by the
+  input sees the stream's timing that far in the future for about as long,
+  as before.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
