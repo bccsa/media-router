@@ -39,7 +39,7 @@ describe('buildPipeline (audio transcoder)', () => {
             tsAlignment: 7,
         })!;
         expect(r.pipeline).toContain(
-            'unixfdsrc socket-path=/tmp/mr-bus-40001-abc123.sock ! mrlateness name=lat_busin_40001_2e8841 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux name=demux latency=0',
+            'unixfdsrc socket-path=/tmp/mr-bus-40001-abc123.sock ! mrlateness name=lat_busin_40001_2e8841 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux media=audio',
         );
         // bufferMs honoured directly — no 300ms floor (no real-time sink here).
         expect(r.pipeline).toContain('queue leaky=0 max-size-time=75000000');
@@ -162,6 +162,62 @@ describe('buildPipeline (audio transcoder)', () => {
             'mix-matrix="<<(float)0.5000, (float)0.5000>, <(float)0.0000, (float)0.0000>>"',
         );
         expect(r.pipeline).toContain('audio/x-raw,channels=2');
+    });
+});
+
+describe('buildPipeline — the formula demux and the decode ASRC (house-clock WI-P3-12)', () => {
+    const FRONT =
+        'unixfdsrc socket-path=/tmp/mr-bus-40001-abc123.sock ! mrlateness name=lat_busin_40001_2e8841 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
+        ' ! mrtsdemux name=demux media=audio ! queue leaky=0 max-size-time=75000000 max-size-buffers=0 max-size-bytes=0';
+    const TRUNK =
+        'audioconvert ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! tee name=t';
+    const build = (probedCodec: string, ...codecs: Array<'opus' | 'aac' | 'pcm'>) =>
+        buildPipeline({
+            source: { ...SOURCE, probedCodec },
+            outputs: outputs(...codecs),
+            channels: 2,
+            volume: 1,
+            tsAlignment: 7,
+        })!.pipeline;
+
+    it.each([
+        ['opus', 'opusdec'],
+        ['aac', 'aacparse ! avdec_aac'],
+        ['mp2', 'mpegaudioparse ! mpg123audiodec'],
+        ['ac3', 'ac3parse ! a52dec'],
+        ['s302m', 'avdec_s302m'],
+        ['unknown', 'decodebin'],
+    ])(
+        '%s: the first audio stream, its decoder, audioconvert, then the ASRC before the trunk',
+        (codec, chain) => {
+            // `mrasrc` takes interleaved PCM only (avdec_aac's is planar), compressed audio not at all.
+            const head = `${FRONT} ! ${chain} ! audioconvert ! mrasrc name=asrc bypass-below-ppm=0.5 ! ${TRUNK} t. ! `;
+            expect(build(codec, 'opus').slice(0, head.length)).toBe(head);
+        },
+    );
+
+    it('one ASRC, in decode mode at the rate the renditions negotiate; no tsdemux, no resampler before the tee', () => {
+        const p = build('aac', 'opus', 'aac', 'pcm');
+        expect(p.match(/\bmrasrc\b/g)).toHaveLength(1);
+        expect(p).not.toMatch(/\btsdemux\b/);
+        expect(p).not.toContain('out-rate');
+        expect(p).not.toContain('device-sink');
+        const [front] = p.split(' t. ! ');
+        expect(front).not.toContain('audioresample');
+    });
+
+    it("the 302M rendition's leaf is build302mEncodeBranch's, behind the trunk", () => {
+        // Its `audioresample` passes 48 kHz through: the leaf's caps lead the trunk's negotiation,
+        // so `asrc` converts a source of another rate (one resampler on the path).
+        const leaf = build('s302m', 'pcm').split(' t. ! ')[1];
+        expect(leaf).toBe(
+            'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0 flush-on-eos=true' +
+                ' ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2' +
+                ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7' +
+                ' ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true' +
+                ' ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188"' +
+                ' ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true',
+        );
     });
 });
 

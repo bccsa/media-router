@@ -8,7 +8,7 @@ import {
     type ThroughputSample,
 } from '@media-router/engine';
 import { probe302mSupport, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
-import { buildPipeline, DEMUX_NAME } from './audioTranscoderPipeline.js';
+import { buildPipeline } from './audioTranscoderPipeline.js';
 import { CoalescedRestart } from './coalescedRestart.js';
 import { FALLBACK_DECODER_WARNING, ReprobeLoop } from './reprobeLoop.js';
 import {
@@ -35,7 +35,8 @@ import {
  * AAC, PCM 302M), each on its own output port.
  *
  * TIMELINE-TRUE BY DESIGN: the whole path lives in one GStreamer pipeline,
- * so the source PTS flow through decode → encode unchanged. This replaces
+ * so the source PTS flow through decode → encode unchanged (a source on a
+ * clock of its own is resampled to house rate once, at decode). This replaces
  * the audio-decoder → PipeWire → audio-encoder chain, whose capture-side
  * re-stamping turned its 290–330 ms loop dwell into audio-late A/V skew at
  * downstream muxers (plus a per-restart anchor lottery). No PipeWire, no
@@ -229,15 +230,7 @@ export class AudioTranscoderModule extends GstPluginBase {
             this.setHealth('ok');
         }
 
-        return {
-            pipeline: result.pipeline,
-            restartOnError: true,
-            // Input demux retimed to the bus stamps per access unit (it otherwise
-            // runs the input's PTS−PCR lead late, ~1.1 s at the OCC gate, and
-            // walks), so the output PES carry content time + 1 h and the identity
-            // egress is content-correct.
-            alignBranchesToStamps: { demuxes: [DEMUX_NAME], transformProducer: true },
-        };
+        return { pipeline: result.pipeline, restartOnError: true };
     }
 
     // --- internals ---

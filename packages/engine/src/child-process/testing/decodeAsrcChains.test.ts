@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { Aes67OutputModule } from '../../../../../plugins/aes67-output/engine/Aes67OutputModule.js';
 import { AudioDecoderModule } from '../../../../../plugins/audio-decoder/engine/AudioDecoderModule.js';
 import { AudioOutput302mModule } from '../../../../../plugins/audio-output-302m/engine/AudioOutput302mModule.js';
+import { AudioTranscoderModule } from '../../../../../plugins/audio-transcoder/engine/AudioTranscoderModule.js';
 import { AsrcWatches } from '../../plugins/asrcWatches.js';
 
 /**
  * The consumer strings gst_decode_asrc_chain_test.py runs (house-clock WI-P3-9 + WI-P3-15,
- * WI-P3-10), made by the real modules: `fixtures/decode-asrc/pipelines.json`, rewritten by
- * `vitest -u`. `@SOCK@` stands for the harness's socket directory. Modules are handled as plain
+ * WI-P3-10, WI-P3-12), made by the real modules: `fixtures/decode-asrc/pipelines.json`, rewritten
+ * by `vitest -u`. `@SOCK@` stands for the harness's socket directory. Modules are handled as plain
  * objects, as in alignerConformance.test.ts.
  */
 
@@ -81,6 +82,31 @@ function audioDecoder(codec: string): string {
 /** The decoder branches by the codec the probe reports ('unknown': decodebin). */
 const DECODER_CODECS = ['opus', 'aac', 'mp2', 'ac3', 'unknown'] as const;
 
+/** audio-transcoder on one edge with an Opus, an AAC and a 302M rendition, its decoder branch
+ *  picked by the probed `codec`. */
+function audioTranscoder(codec: string): string {
+    AudioTranscoderModule.setS302mSupported(true);
+    const m = new AudioTranscoderModule() as unknown as Record<string, unknown>;
+    let port = 40430;
+    m.services = {
+        instanceId: 'atx',
+        mediaRouter: {
+            getModuleBusSources: () => [{ ...source('in0', 40425), sinkPortId: 'mpegts-in' }],
+            assignBusChannel: () => ({ port: port++ }),
+        },
+    };
+    m.probeResult = { codec, rawCaps: '' };
+    m.setHealth = vi.fn();
+    m.setStatusData = vi.fn();
+    const built = (m.buildPipeline as (c: unknown) => Built)({
+        renditions: [{ codec: 'opus' }, { codec: 'aac' }, { codec: 'pcm' }],
+    });
+    expect(built).not.toBeNull();
+    return built!.pipeline;
+}
+
+const TRANSCODER_CODECS = ['opus', 'aac', 'mp2', 'ac3', 's302m', 'unknown'] as const;
+
 describe('the decode ASRC chains', () => {
     it('fixtures/decode-asrc/pipelines.json is what the modules make (`vitest -u` rewrites it)', async () => {
         const out: Record<string, string> = {
@@ -89,6 +115,7 @@ describe('the decode ASRC chains', () => {
             aout2: audioOutput302m(2),
         };
         for (const codec of DECODER_CODECS) out[`adec_${codec}`] = audioDecoder(codec);
+        for (const codec of TRANSCODER_CODECS) out[`atx_${codec}`] = audioTranscoder(codec);
         await expect(`${JSON.stringify(out, null, 2)}\n`).toMatchFileSnapshot(FIXTURE);
     });
 
@@ -110,5 +137,22 @@ describe('the decode ASRC chains', () => {
         expect(w.list()).toEqual([
             { name: 'asrc', correction: { sourcePpm: 40 }, devicePpm: -12.1 },
         ]);
+    });
+
+    it("the audio transcoder's ASRC shows a clock correction and no device clock", () => {
+        const w = new AsrcWatches();
+        w.configure(audioTranscoder('aac'));
+        const stats = (mode: string, sourcePpb: number) => ({
+            state: 'locked',
+            relocks: 0,
+            'in-frames': 96_000,
+            mode,
+            'source-ppb': sourcePpb,
+            'device-ppb': 0,
+        });
+        w.take('mrasrc-stats', 'asrc', stats('bypass', 0), 0);
+        expect(w.list()).toEqual([{ name: 'asrc', correction: {} }]);
+        w.take('mrasrc-stats', 'asrc', stats('decode', -40_000), 2000);
+        expect(w.list()).toEqual([{ name: 'asrc', correction: { sourcePpm: -40 } }]);
     });
 });

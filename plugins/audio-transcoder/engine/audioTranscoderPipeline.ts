@@ -6,10 +6,18 @@
  * (302M/source PES PTS) straight into the encoders — no `pulsesrc`, no
  * `do-timestamp`, no `tsparse set-timestamps` anywhere. This is what removes
  * the PipeWire loop's 290–330 ms re-stamped dwell (and its per-restart
- * anchor lottery) from downstream A/V sync.
+ * anchor lottery) from downstream A/V sync. The formula demux gives each
+ * buffer its PES PTS on house time (house-clock part 4.1).
  */
 
-import { buildBusSink, buildBusSrc, busTeeName, type ChannelMapEntry } from '@media-router/engine';
+import {
+    DECODE_BYPASS_PPM,
+    buildAsrc,
+    buildBusSink,
+    buildBusSrc,
+    busTeeName,
+    type ChannelMapEntry,
+} from '@media-router/engine';
 import {
     build302mEncodeBranch,
     mixMatrixClause,
@@ -18,11 +26,10 @@ import {
 } from '@media-router/plugin-audio-302m-core';
 import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
-/** `name=` of the input tsdemux — the target of `alignBranchesToStamps`. The
- *  runner retimes its src pads onto the bus stamps, which also moves the
- *  `perfect-timestamp=true` encoders' anchor to content time (the sample-count
- *  ladder then reproduces the content PTS exactly). */
-export const DEMUX_NAME = 'demux';
+/** `name=` of the input demux: its counters on the module's input. */
+const DEMUX_NAME = 'demux';
+/** `name=` of the decode ASRC: its Clock correction on the module's timing section. */
+const ASRC_NAME = 'asrc';
 
 /** The single wired source — any TS-family stream; the probe picks the
  *  decoder. Summing multiple sources is the audio-mixer plugin's job. */
@@ -65,11 +72,12 @@ export interface AudioTranscoderPipelineResult {
 
 /**
  * Parser+decoder chain for a probed source codec — same mapping as the
- * audio-decoder. Each libav decoder is fed straight off a `tsdemux` src pad,
- * which emits UNFRAMED elementary streams: a codec parser MUST sit between
- * tsdemux and the decoder or `avdec_aac`/`a52dec` crash-loop on every buffer
- * ("Input buffer exhausted before END element found"). Opus is the exception
- * (tsdemux emits decoder-ready caps); `decodebin` auto-plugs its own parser.
+ * audio-decoder. Each libav decoder is fed straight off a demux src pad,
+ * which emits UNFRAMED elementary streams (one PES per buffer): a codec parser
+ * MUST sit between the demux and the decoder or `avdec_aac`/`a52dec` crash-loop
+ * on every buffer ("Input buffer exhausted before END element found"). Opus is
+ * the exception (the demux emits decoder-ready caps); `decodebin` auto-plugs
+ * its own parser.
  */
 export function decoderChainFor(codec: string | undefined): string {
     switch (codec) {
@@ -91,16 +99,9 @@ export function decoderChainFor(codec: string | undefined): string {
 /** Opus/AAC encode tail for one rendition (same element settings as the
  *  audio-encoder — see issue #676 for the aac-is/aac-ms integer form).
  *
- *  `perfect-timestamp=true` (GstAudioEncoder) on the lossy encoders: output
- *  timestamps come from the SAMPLE COUNT, not from upstream buffer stamps.
- *  A live `tsdemux` upstream skew-corrects every timestamp against packet
- *  ARRIVAL, so arrival ripple becomes PES-PTS jitter in the re-encoded TS
- *  (measured ±0.45 ms on ~45 % of opus frames on .211) — inaudible to
- *  sample-counting decoders (ffmpeg) but re-exposed as RTP timestamp jitter
- *  by TS→WebRTC gateways, where jitter-buffer time-warping makes speech
- *  sound scratchy/scrambled. The PCM stream is gapless, so sample-count
- *  stamping is exact; genuine gaps beyond the 40 ms base-class tolerance
- *  still resync. */
+ *  `perfect-timestamp=true`: the first input PTS plus the sample count, floored to ns, so on the
+ *  house-rate PCM from `asrc` sample count and PES PTS agree (P7); a DISCONT restarts the count.
+ *  The mux floors to ticks: Opus AUs keep theirs, up to two in three AAC AUs land a tick low (S40). */
 function encodeTail(
     r: AudioTranscoderOutput['rendition'],
     tsAlignment: number,
@@ -126,7 +127,7 @@ function encodeTail(
 }
 
 /**
- * Assemble the full pipeline: demux+decode front-end → shared trunk (convert,
+ * Assemble the full pipeline: demux+decode+ASRC front-end → shared trunk (convert,
  * volume, VU level, tee) → one encode leaf per rendition.
  */
 export function buildPipeline(
@@ -140,10 +141,14 @@ export function buildPipeline(
         socketPath: fe.socketPath,
     });
     const bufferNs = Math.max(50, Math.min(5000, fe.bufferMs)) * 1_000_000;
+    // `media=audio`: the first audio stream only (OQ-28). `audioconvert` interleaves the decoder's
+    // PCM for `asrc` (avdec_aac's is planar), which passes a house-rate source untouched, resamples
+    // a foreign one once, and gives the rate the renditions negotiate (no out-rate; part 4.4).
     const frontEnd =
-        `${src} ! tsdemux name=${DEMUX_NAME} latency=0` +
+        `${src} ! mrtsdemux name=${DEMUX_NAME} media=audio` +
         ` ! queue leaky=0 max-size-time=${bufferNs} max-size-buffers=0 max-size-bytes=0` +
-        ` ! ${decoderChainFor(fe.probedCodec)}`;
+        ` ! ${decoderChainFor(fe.probedCodec)} ! audioconvert` +
+        ` ! ${buildAsrc({ name: ASRC_NAME, bypassBelowPpm: DECODE_BYPASS_PPM })}`;
     // A connection channel map renders as a `mix-matrix` on the trunk's
     // audioconvert, with pinned output caps — the matrix row count must
     // match the negotiated channel count.

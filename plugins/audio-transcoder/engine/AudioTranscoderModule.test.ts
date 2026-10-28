@@ -103,28 +103,76 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('tsdemux name=demux latency=0');
+        expect(desc!.pipeline).toContain('mrtsdemux name=demux media=audio');
         expect(desc!.pipeline).toContain('aacparse ! avdec_aac');
         expect(desc!.pipeline).not.toContain('audiomixer');
         expect(desc!.restartOnError).toBe(true);
     });
 
-    it('retimes its input demux to the bus stamps and declares no stamper policy', () => {
+    it('declares nothing but its pipeline: the formula demux times it, no branch alignment', () => {
         const { module } = makeModule({});
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
-        // Its input demux is retimed to the bus stamps as a transform producer
-        // (per access unit), so the identity egress is content-correct.
-        expect(desc!.alignBranchesToStamps).toEqual({
-            demuxes: ['demux'],
-            transformProducer: true,
-        });
-        // Every egress is stamped by identity (WI-P2-3): nothing else to declare.
-        expect(Object.keys(desc!).sort()).toEqual([
-            'alignBranchesToStamps',
-            'pipeline',
-            'restartOnError',
-        ]);
+        // Every buffer leaves the demux at its PES PTS less 1 h, and every egress is stamped
+        // by identity (WI-P2-3): nothing to retime, nothing else to declare.
+        expect(desc).not.toHaveProperty('alignBranchesToStamps');
+        expect(Object.keys(desc!).sort()).toEqual(['pipeline', 'restartOnError']);
+        expect(desc!.pipeline).not.toMatch(/\btsdemux\b/);
+    });
+
+    it.each([
+        ['opus', 'opusdec'],
+        ['aac', 'aacparse ! avdec_aac'],
+        ['mp2', 'mpegaudioparse ! mpg123audiodec'],
+        ['ac3', 'ac3parse ! a52dec'],
+        ['s302m', 'avdec_s302m'],
+        ['unknown', 'decodebin'],
+    ])(
+        'probe %s: the first audio stream, decoded and interleaved into one ASRC, then the trunk and every leaf',
+        (codec, chain) => {
+            const { module } = makeModule({});
+            module.probeResult = { codec };
+            const p: string = module.buildPipeline({
+                renditions: [{ codec: 'opus' }, { codec: 'aac' }, { codec: 'pcm' }],
+            })!.pipeline;
+            expect(p.slice(p.indexOf(' ! mrtsdemux '), p.indexOf(' t. ! '))).toBe(
+                ' ! mrtsdemux name=demux media=audio' +
+                    ' ! queue leaky=0 max-size-time=75000000 max-size-buffers=0 max-size-bytes=0' +
+                    ` ! ${chain} ! audioconvert ! mrasrc name=asrc bypass-below-ppm=0.5` +
+                    ' ! audioconvert ! volume name=vol volume=1.00' +
+                    ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! tee name=t',
+            );
+            // One leaf per rendition behind the tee, in order, each its own encoder and bus egress.
+            const leaves = p.split(' t. ! ').slice(1);
+            expect(leaves.map((l) => l.match(/opusenc|avenc_aac|avenc_s302m/g))).toEqual([
+                ['opusenc'],
+                ['avenc_aac'],
+                ['avenc_s302m'],
+            ]);
+            expect(leaves.map((l) => l.match(/tee name=busout_\d+/)?.[0])).toEqual([
+                'tee name=busout_41000',
+                'tee name=busout_41001',
+                'tee name=busout_41002',
+            ]);
+        },
+    );
+
+    it('a 302M source to a 24-bit 302M rendition: one ASRC at decode, the leaf at 48 kHz', () => {
+        const { module } = makeModule({ streamType: 'audio/302m' });
+        module.probeResult = { codec: 's302m' };
+        const p: string = module.buildPipeline({
+            renditions: [{ codec: 'pcm' }],
+            pcmBitDepth: 24,
+        })!.pipeline;
+        expect(p).toContain(
+            ' ! avdec_s302m ! audioconvert ! mrasrc name=asrc bypass-below-ppm=0.5 ! audioconvert ! volume',
+        );
+        expect(p).toContain(
+            ' tee name=t t. ! queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0 flush-on-eos=true' +
+                ' ! audioconvert ! audioresample ! audio/x-raw,format=S32LE,rate=48000,channels=2' +
+                ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7 ! capssetter',
+        );
+        expect(p.match(/\bmrasrc\b/g)).toHaveLength(1);
     });
 
     it('a 302M-declared source decodes the same way (probe → avdec_s302m)', () => {

@@ -242,6 +242,14 @@ elements" below do not start.
   follows the clock of the PipeWire sink it plays into, in the same
   resampler, so no samples are dropped or repeated for drift. Its timing
   popup shows **Clock correction** and **Device clock**.
+- **A source with its own audio clock is resampled once at decode, so the
+  transcoded audio keeps time.** Audio Transcoder passes a stream on the
+  box's clock untouched and resamples one from a source with its own clock
+  to the box's clock once it is measured, as above; every rendition is
+  encoded from that one decode. The same resampler converts a source whose
+  rate a rendition does not take, so an Opus rendition of a 44.1 kHz source
+  now starts (it failed with a negotiation error before). Its timing popup
+  shows **Clock correction**.
 
 **Behaviour changes (Phase 3)**
 
@@ -249,6 +257,10 @@ elements" below do not start.
   stream.** Audio Decoder takes the first audio stream its input's programme
   lists and never the video; before, an input that listed its video first
   made it fail on the video.
+- **An audio transcoder fed an audio-video stream transcodes its first audio
+  stream.** Audio Transcoder, likewise, decodes the first audio stream its
+  input's programme lists; an input that listed its video first made it fail
+  on the video before.
 
 **Removed settings (Phase 2), nothing migrated**
 
@@ -275,9 +287,9 @@ elements" below do not start.
   through the image's new demux, refuse to start with "Native TS module not
   loaded", and the MPEG-TS Muxer does not start. Audio Processing's ducker and keyed-gate modes also need
   their own native plugin and otherwise show "Native plugin not loaded".
-- From Phase 3, AES67 Output and Audio Decoder too: their input goes through
-  the same demux, so without the image's timing elements they refuse to start
-  with "Native TS module not loaded".
+- From Phase 3, AES67 Output, Audio Decoder and Audio Transcoder too: their
+  input goes through the same demux, so without the image's timing elements
+  they refuse to start with "Native TS module not loaded".
 
 **Fixed**
 
