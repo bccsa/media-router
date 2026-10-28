@@ -969,7 +969,7 @@ return {
 };
 ```
 
-**Routing every stream of a source (the mpegts-muxer).** The two contracts above filter pads by kind and leave everything else unlinked — fine while one demuxer feeds one branch, fatal when a source carries only streams the rule does not match: `tsdemux` combines its pads' flow returns, so a TS whose ONLY pad is unlinked returns NOT_LINKED and the source errors out in a restart loop (a KLV-only subtitle TS on an audio rule, 2026-09-15). A plugin that needs more than the positional contract does NOT extend the runner: it ships the pad-added logic as a **runner hook** (next section). The mpegts-muxer is the reference — `plugins/mpegts-muxer/py/mux_routing.py` classifies every pad its `tsdemux` exposes (video / audio / klv / subtitle / data), routes the first pad of each class to its `sink_<pid>` request pad on the mux with the right codec parser injected, sinks the rest into a `fakesink`, pins `prog-map`'s `PCR_1` on the first video pad it links, and keeps a sparse cue pad restamped and GAP-fed so the aggregator never waits on it. Its TypeScript side (`engine/muxPids.ts`) only describes the routes; `py/mux_routing_test.py` runs a real TS through tsdemux → hook → mpegtsmux. Nothing of this lives in the engine (ADR-0017).
+**Routing every stream of a source (the mpegts-muxer).** The two contracts above filter pads by kind and leave everything else unlinked — fine while one demuxer feeds one branch, fatal when a source carries only streams the rule does not match: a demuxer (`tsdemux`, `mrtsdemux` alike) combines its pads' flow returns, so a TS whose ONLY pad is unlinked returns NOT_LINKED and the source errors out in a restart loop (a KLV-only subtitle TS on an audio rule, 2026-09-15). A plugin that needs more than the positional contract does NOT extend the runner: it ships the pad-added logic as a **runner hook** (next section). The mpegts-muxer is the reference — `plugins/mpegts-muxer/py/mux_routing.py` classifies every pad its demux exposes (`mrtsdemux` since house-clock Phase 3, with tsdemux's pad names and caps: video / audio / klv / subtitle / data), routes the first pad of each class to its `sink_<pid>` request pad on the mux with the right codec parser injected, sinks the rest into a `fakesink` and pins `prog-map`'s `PCR_1` on the first video pad it links; each route's `mralignwatch` (`sparse=true` on a cue route) gaps it at the mux's pace, so the aggregator never waits on it. Its TypeScript side (`engine/muxPids.ts`) only describes the routes; `py/mux_routing_test.py` runs a real TS through tsdemux → hook → mpegtsmux. Nothing of this lives in the engine (ADR-0017).
 
 #### In-band metadata carousel (`appsrc` + `setKlvPayload` / `readKlvNames`) — no current consumer
 
@@ -2254,9 +2254,10 @@ retimed to its producer's stamp mapping (PTS/DTS = K + its PES), across
 source rewinds, with the bus input held until the first exact reading. Under
 identity egress K is −1 h. `privatePads: true` also retimes tsdemux's
 `private_` and `subpicture_` pads (KLV, teletext, DVB subtitles) to their own
-PES; only the mpegts-muxer sets it, so a transcoder's subtitle pads keep
-tsdemux's times. Presentation legs leave both unset; Phase 3 replaces the
-retime with the formula demux.
+PES; no module sets it since the mpegts-muxer's inputs moved to `mrtsdemux`
+(WI-P3-14), so a transcoder's subtitle pads keep tsdemux's times.
+Presentation legs leave both unset; Phase 3 replaces the retime with the
+formula demux.
 
 **Never drop on lateness (`BacklogShedConfig.onLateness`).**
 `backlogShedConfig()` sets `onLateness: "reanchor"` when
@@ -2529,8 +2530,9 @@ and counted, and it rejoins at the current position. An input added to a
 running aggregator catches up the same way: gapped until its data reaches the
 gaps, it loses its first 2Δ + 0.5 s when Δ later than the pace, and one within
 50 ms of it is waited for. Toward an audio aggregator an input's PCM edges
-fade over 5 ms (B-83). The queue holds 5 s (`max-size-time`), blocks upstream
-when full and never drops. Rules:
+fade over 5 ms (B-83). The queue holds 5 s (`max-size-time`, counted from the
+gaps' horizon, so a GAP over a longer hole is no queued time: B-134), blocks
+upstream when full and never drops. Rules:
 
 - **Every pad, live-added ones included.** One input that answers LATENCY
   live turns the whole aggregator live, and it then times out and drops late
@@ -2538,10 +2540,9 @@ when full and never drops. Rules:
   `alignedMixer`, `build302mMixBranch`; "Shared 302M audio helpers" above).
 - **Feed it content time.** The aggregator aligns by running time, so each
   input's running time must be its content time: `mrtsdemux
-  select=audio/x-smpte-302m` for 302M (running time = PES PTS − 1 h, and a bus
-  gap marker becomes a GAP event), the retime
-  (`alignBranchesToStamps.transformProducer`) for the muxer's `tsdemux` pads
-  until Phase 3.
+  select=audio/x-smpte-302m` for 302M, `mrtsdemux` in demux mode for the
+  muxer's inputs (house-clock WI-P3-14): running time = PES PTS − 1 h, and a
+  bus gap marker becomes a GAP event.
 - **The aggregator:** `latency=0` and nothing force-live; an audio one with
   `start-time-selection=first`. `mpegtsmux` has no `force-live`; it is
   non-live because its inputs answer so.

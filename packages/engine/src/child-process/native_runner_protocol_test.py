@@ -1603,15 +1603,21 @@ def test_cue_pads_retime():
 # --------------------------------------------------------------------------- M3: the muxer's aligners over a cue pause (WI-P2-12)
 _M3_CUES = [1.0, 2.0, 9.0, 10.0]        # a 7 s pause between cues
 _M3_SECONDS = 13
+# The muxer's own start commands (testing/alignerConformance.test.ts, `vitest -u` rewrites them).
+_MUX_STARTS = os.path.join(_PLUGINS, "mpegts-core", "tests", "fixtures", "aligner", "pipelines.json")
 
 
 def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues=_M3_CUES, dark=None):
-    """The muxer's description for two generic inputs (hook, `mralignwatch aligner=mux` per route,
-    retime with privatePads) at real time: input 0 video and `cues`, silent over `dark` (content s,
-    `fx.go_dark`), input 1 video as 0x105. Returns PES in, targets, output, pace, aligner stats, log."""
+    """The muxer's start command for two generic inputs (pipelines.json muxKlv: each input's
+    `mrtsdemux`, the hook, `mralignwatch aligner=mux` per route, no branch alignment) at real time:
+    input 0 video and `cues`, silent over `dark` (content s, `fx.go_dark`), input 1 video as 0x105.
+    Returns PES in, targets, output, pace, aligner and demux stats, the runner's retime lines."""
+    with open(_MUX_STARTS, encoding="utf-8") as fh:
+        start = dict(json.load(fh)["muxKlv"]["start"])
     tmp = tempfile.mkdtemp(prefix="mrtest-")
-    socks, edge = [os.path.join(tmp, f"in{i}.sock") for i in range(2)], os.path.join(tmp, "edge.sock")
-    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    socks, edge = [os.path.join(tmp, f"klv{i}.sock") for i in range(2)], os.path.join(tmp, "edge.sock")
+    start["pipeline"] = start["pipeline"].replace("@SOCK@", tmp)
+    tee = re.search(r"tee name=(busout_\d+)", start["pipeline"]).group(1)
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     feeders = []
@@ -1623,23 +1629,9 @@ def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues
         f.set_base_time(0)                      # a contract producer: the wire carries the stamps
         f.set_state(Gst.State.PLAYING)
         feeders.append(f)
-    ingress = "queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000"
-    pipeline = ('mpegtsmux name=mux latency=0 alignment=7 prog-map="program_map,sink_256=(int)1,sink_264=(int)1,'
-                f'PCR_1=sink_256" ! capssetter caps="{caps}" replace=true ! tee name=busout_41400 allow-not-linked=true'
-                + "".join(f" unixfdsrc name=busin_{i} socket-path={s} ! {ingress} ! tsdemux latency=0 name=demux_{i}"
-                          for i, s in enumerate(socks)))
-
-    def route(i, media, sparse=False):
-        return {"branch": f"mralignwatch name=aw_demux_{i}_{media} aligner=mux input=demux_{i}_{media} "
-                          "max-size-bytes=40000000" + (" sparse=true" if sparse else "")}
-    hook = {"module": "mux_routing", "config": {"inputs": [
-        {"demux": f"demux_{i}", "linkTo": "mux", "pid": pid, "ignorePids": [496], "pcr": {"program": 1},
-         "routes": {"video": {**route(i, "video"), "parser": "none"}, "audio": route(i, "audio"),
-                    "klv": route(i, "klv", True), "subtitle": route(i, "subtitle", True)}}
-        for i, pid in enumerate((256, 264))]}}
     r = RunnerProc(argv)
     consumer = None
-    rows, paces, full, absences, back = [], [], {}, {}, None
+    rows, paces, full, absences, gaps, back = [], [], {}, {}, {}, None
     q = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=0"
 
     def prop(element, name):
@@ -1650,12 +1642,10 @@ def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues
 
     try:
         r.wait_event(ev_is("ready"))
-        r.send({"cmd": "start", "pipeline": pipeline, "runnerHooks": [hook],
-                "alignBranchesToStamps": {"demuxes": ["demux_0", "demux_1"], "transformProducer": True,
-                                          "privatePads": True}})
+        r.send({"cmd": "start", **start})
         check(f"{case} {tag} runner reaches PLAYING",
               r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
-        r.send({"cmd": "bus_attach", "tee": "busout_41400", "socket": edge})
+        r.send({"cmd": "bus_attach", "tee": tee, "socket": edge})
         check(f"{case} {tag} edge attached", r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
         consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! {q} ! fakesink name=csink sync=false")
 
@@ -1713,6 +1703,7 @@ def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues
         time.sleep(1.5)
         full = {n: prop(f"aw_demux_{n}", "full-count") for n in ("0_video", "1_video")}
         absences = {n: prop(f"aw_demux_{n}", "absences") for n in ("0_video", "1_video")}
+        gaps = {d: prop(d, "gaps") for d in ("demux_0", "demux_1")}
         check(f"{case} {tag} no lifecycle error", not r.has_event(ev_is("error")))
         check(f"{case} {tag} exits 0 after stop", r.stop_and_wait() == 0)
     finally:
@@ -1724,15 +1715,16 @@ def _aligned_mux_run(argv, tag, fx, ts_psi, case="M3", seconds=_M3_SECONDS, cues
         for f in os.listdir(tmp):
             os.unlink(os.path.join(tmp, f))
         os.rmdir(tmp)
-    return (pes_in, targets, rows, paces, {"full": full, "absences": absences, "back": back},
+    return (pes_in, targets, rows, paces, {"full": full, "absences": absences, "gaps": gaps, "back": back},
             [line.split("branchAlign: ", 1)[1] for line in r.logs if "branchAlign: " in line])
 
 
 def test_mux_aligners_sparse():
-    """M3, both runners: a 7 s pause between cues. Every KLV and teletext cue at its own PES PTS,
-    the pace flat, the video not slowed; a cue mistimed after the pause would raise the group's
-    pace by its lateness for good (measured before the fix: 240 → 7490 ms)."""
-    for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
+    """M3, both runners, on the muxer's own start command: a 7 s pause between cues. Every KLV and
+    teletext cue at its own PES PTS, to the tick, the pace flat, the video not slowed; a cue
+    mistimed after the pause would raise the group's pace by its lateness for good (measured before
+    the fix: 240 → 7490 ms). Each input's mrtsdemux times every pad itself (WI-P3-14)."""
+    for el in ("unixfdsink", "unixfdsrc", "mpegtsmux", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP M3 — {el} unavailable")
             return
@@ -1756,9 +1748,9 @@ def test_mux_aligners_sparse():
         cues = {k: ((written[k][0] - v + wrap // 2) % wrap) - wrap // 2
                 for k, v in pes_in.items() if k[0] in (fx.KLV_PID, fx.TTX_PID) and k in written}
         want = [k for k in pes_in if k[0] in (fx.KLV_PID, fx.TTX_PID)]
-        check(f"M3 {tag}: every KLV and teletext cue written at its own PES PTS across the pause "
-              f"({len(cues)} of {len(want)}, worst {max(map(abs, cues.values()), default=None)} ticks)",
-              len(want) == 8 and len(cues) == len(want) and all(abs(t) <= 1 for t in cues.values()))
+        check(f"M3 {tag}: every KLV and teletext cue written at its own PES PTS across the pause, to the "
+              f"tick ({len(cues)} of {len(want)}, worst {max(map(abs, cues.values()), default=None)} ticks)",
+              len(want) == 8 and len(cues) == len(want) and all(t == 0 for t in cues.values()))
         before = [p for t, p in paces if p is not None and t < pause]
         after = [p for t, p in paces if p is not None and t >= pause]
         rise = max(after) - max(before) if before and after else None
@@ -1777,8 +1769,10 @@ def test_mux_aligners_sparse():
         check(f"M3 {tag}: the video does not slow after the pause (output delay, median ms: "
               f"{ {f'0x{p:x} {h}': round(v) for (p, h), v in sorted(med.items())} })",
               len(med) == 4 and all(med[(p, "after")] - med[(p, "before")] <= 500 for p in (fx.VIDEO_PID, 0x105)))
-        check(f"M3 {tag}: no video aligner filled ({full}) and no cue pause logged as a discontinuity",
-              full == {"0_video": 0, "1_video": 0} and not any("discontinuity" in l for l in lines))
+        check(f"M3 {tag}: no video aligner filled ({full}), the cue pause no demux gap ({stats['gaps']}), "
+              f"no branch alignment run ({len(lines)} lines)",
+              full == {"0_video": 0, "1_video": 0} and stats["gaps"] == {"demux_0": 0, "demux_1": 0}
+              and not lines)
 
 
 # --------------------------------------------------------------------------- M4: the muxer's aligners over a dark input (WI-P2-12)
@@ -1786,11 +1780,13 @@ _M4_SECONDS, _M4_DARK = 16, (4.0, 10.0)     # back at 10.49 s; five clamped stam
 
 
 def test_mux_aligners_dark():
-    """M4, both runners: input 0 silent over 6 s, back with a KLV cue alone in its bus buffer and
-    the rest of its buffer at once. That cue and input 0's video at their own PES PTS, the pace
-    flat, input 1 not slowed; the cue's own cadence put it 6 s early and raised the pace for good
-    (before the fix: 240 → 5490 ms). A stock queue can leak that cue (B-68)."""
-    for el in ("unixfdsink", "unixfdsrc", "tsdemux", "mpegtsmux", "capssetter"):
+    """M4, both runners, on the muxer's own start command: input 0 silent over 6 s, back with a KLV
+    cue alone in its bus buffer and the rest of its buffer at once. That cue and input 0's video at
+    their own PES PTS, to the tick, the pace flat, input 1 not slowed; the cue's own cadence put it
+    6 s early and raised the pace for good (before the fix: 240 → 5490 ms). A stock queue can leak
+    that cue (B-68). Each input's mrtsdemux times every pad itself: the retime never runs on its
+    pads, and the silence is one demux gap, on input 0's video (WI-P3-14)."""
+    for el in ("unixfdsink", "unixfdsrc", "mpegtsmux", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP M4 — {el} unavailable")
             return
@@ -1806,7 +1802,6 @@ def test_mux_aligners_dark():
     py = ["env", "PYTHONPATH=" + ":".join(os.path.join(_PLUGINS, p, "py") for p in ("mpegts-core", "mpegts-muxer")),
           sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
     wrap, (dark_from, _) = 1 << 33, _M4_DARK
-    retimed = {}
     for tag, argv in (("native", None), ("python", py)):
         pes_in, targets, rows, paces, stats, lines = _aligned_mux_run(
             argv, tag, fx, ts_psi, "M4", _M4_SECONDS, [float(c) for c in range(1, _M4_SECONDS - 1)], _M4_DARK)
@@ -1824,16 +1819,16 @@ def test_mux_aligners_dark():
         first = min((k for k in cues if k[0] == fx.KLV_PID and content(k) > back), key=content)
         check(f"M4 {tag}: input 0 silent {back - dark_from:.2f} s, back with KLV cue #{first[1]} alone in its "
               f"bus buffer", back - dark_from >= 6.0)
-        check(f"M4 {tag}: that cue and every KLV and teletext cue written at its own PES PTS (cue #{first[1]} "
-              f"{off(first) if first in written else None} ticks; {sum(k in written for k in cues)} of {len(cues)}, "
-              f"worst {max((abs(off(k)) for k in cues if k in written), default=None)} ticks)",
-              all(k in written and abs(off(k)) <= 1 for k in cues))
+        check(f"M4 {tag}: that cue and every KLV and teletext cue written at its own PES PTS, to the tick "
+              f"(cue #{first[1]} {off(first) if first in written else None} ticks; {sum(k in written for k in cues)} "
+              f"of {len(cues)}, worst {max((abs(off(k)) for k in cues if k in written), default=None)} ticks)",
+              all(k in written and off(k) == 0 for k in cues))
         video = [k for k in pes_in if k[0] == fx.VIDEO_PID and content(k) > dark_from + 1]
         out0 = [k for k in video if k in written]
-        # All but the last, which tsdemux holds for a next PES (no EOS here).
-        check(f"M4 {tag}: input 0's video after the return written at its own PES PTS ({len(out0)} of "
-              f"{len(video)}, worst {max((abs(off(k)) for k in out0), default=None)} ticks)",
-              len(out0) >= len(video) - 1 > 100 and all(abs(off(k)) <= 1 for k in out0))
+        # All but the last, which the demux holds for a next PES (no EOS here).
+        check(f"M4 {tag}: input 0's video after the return written at its own PES PTS, to the tick ({len(out0)} "
+              f"of {len(video)}, worst {max((abs(off(k)) for k in out0), default=None)} ticks)",
+              len(out0) >= len(video) - 1 > 100 and all(off(k) == 0 for k in out0))
         before = [p for t, p in paces if p is not None and t < dark_from]
         after = [p for t, p in paces if p is not None and t >= back]
         check(f"M4 {tag}: the mux pace does not rise after the return (before ≤ {max(before, default=0):.0f} "
@@ -1852,16 +1847,9 @@ def test_mux_aligners_dark():
         check(f"M4 {tag}: input 0 absent once more than input 1, no video aligner filled ({stats})",
               stats["full"] == {"0_video": 0, "1_video": 0}
               and stats["absences"]["0_video"] == stats["absences"]["1_video"] + 1)
-        retimed[tag] = [re.sub(r"K=-?\d+", "K=<K>", line) for line in lines if line.startswith("demux_0 retime:")]
-        check(f"M4 {tag}: the cue logs its quiet spell on the last K, the video's reading confirms it, no "
-              f"discontinuity", any("pid=0x102 back after" in line and line.endswith("on the last K")
-                                    for line in retimed[tag])
-              and any(line.endswith("on its stamps, +0.000 ms off the prediction") for line in retimed[tag])
-              and not any("discontinuity" in line for line in lines))
-    check("M4 both twins log the same retime lines for the dark input, word for word",
-          retimed["native"] == retimed["python"])
-    if retimed["native"] != retimed["python"]:
-        print("    native:", retimed["native"], "\n    python:", retimed["python"])
+        check(f"M4 {tag}: input 0's silence one demux gap, on its video, input 1's none ({stats['gaps']}); no "
+              f"branch alignment run ({len(lines)} lines)",
+              stats["gaps"] == {"demux_0": 1, "demux_1": 0} and not lines)
 
 
 # --------------------------------------------------------------------------- P: mpegts-muxer inputs retimed (2026-10-08)
@@ -2505,17 +2493,16 @@ def _off_shape(payloads, shapes, key):
 
 
 def _pmt_change_run(argv, tag):
-    """The muxer's string (pipelines.json muxKlv, its tsdemux strings as mrtsdemux, the retime
-    off) with the mux_routing hook. Input 0: syn-pmt-version-bump (a version-only PMT, then a
-    stream-type change, then a PCR PID change); input 1: cap-vmix-h264-aac, audio before video
-    in its PMT, five times over. Both at house time, paced as they would arrive."""
-    with open(os.path.join(_FIX, "aligner", "pipelines.json"), encoding="utf-8") as fh:
+    """The muxer's own start command (pipelines.json muxKlv: each input's mrtsdemux, no branch
+    alignment, WI-P3-14) with the mux_routing hook. Input 0: syn-pmt-version-bump (a version-only
+    PMT, then a stream-type change, then a PCR PID change); input 1: cap-vmix-h264-aac, audio
+    before video in its PMT, five times over. Both at house time, paced as they would arrive."""
+    with open(_MUX_STARTS, encoding="utf-8") as fh:
         start = dict(json.load(fh)["muxKlv"]["start"])
     tmp = tempfile.mkdtemp(prefix="mrtest-")
     socks = [os.path.join(tmp, f"klv{i}.sock") for i in range(2)]
     edge = os.path.join(tmp, "edge.sock")
-    start["pipeline"] = start["pipeline"].replace("@SOCK@", tmp).replace("tsdemux latency=0", "mrtsdemux")
-    start.pop("alignBranchesToStamps", None)
+    start["pipeline"] = start["pipeline"].replace("@SOCK@", tmp)
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     feeders = _bus_feeders(socks, clock)
@@ -2580,7 +2567,7 @@ def test_mrtsdemux_pmt_change():
     program each; no error, no stall: the demux takes every PES, the mux keeps writing the other
     input after the changes. The hook knows each input's classes before its first pad (audio
     first on input 1, yet video takes its PID). It sinks a re-planned pad as a second stream of
-    its class (it frees no class at pad-removed; B-123, for p3-14)."""
+    its class (it frees no class at pad-removed; B-123, open in B-134)."""
     for el in ("unixfdsink", "unixfdsrc", "mpegtsmux", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP mrtsdemux-pmt-change — {el} unavailable")

@@ -211,6 +211,10 @@ elements" below do not start.
   player knew the codec, could take the audio stream and show nothing until
   the player rebuilt for the video codec. An input without video says so:
   "Input <name> carries no video stream".
+- **The MPEG-TS Muxer unpacks its inputs with the same demux.** Each of its
+  inputs shows the demux counters and warnings below in its timing section,
+  and without the image's timing elements the muxer refuses to start with
+  "Native TS module not loaded".
 - **Each input shows its demux counters.** In a module's timing popup, each
   input that the module unpacks adds **Demux rate** (PES per second),
   **Demux gaps** (holes in its timeline), **Demux CC lost** (packets lost on

@@ -256,7 +256,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 'unixfdsrc name=busin_0 socket-path=/tmp/mr-bus-40000-abc123.sock' +
                     ' ! mrlateness name=lat_busin_0 reference=house' +
                     ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
-                    ' ! tsdemux latency=0 name=demux_0',
+                    ' ! mrtsdemux name=demux_0',
             );
             expect(s).not.toContain('watchdog');
             expect(s).not.toContain('! mux.');
@@ -264,12 +264,18 @@ describe('mpegtsMuxerPipeline helpers', () => {
         it('falls back to the channel-level socket when no edge socketPath is handed out', () => {
             const s = buildInputBranch('1', { sinkPortId: 'input-1', port: 40001 });
             expect(s).toContain('unixfdsrc name=busin_1 socket-path=/tmp/mr-bus-40001.sock');
-            expect(s).toContain('tsdemux latency=0 name=demux_1');
+            expect(s).toContain(' ! mrtsdemux name=demux_1');
         });
-        it('goes straight from the bus src to tsdemux with no tsparse', () => {
+        it('goes straight from the bus src to mrtsdemux with no tsparse', () => {
             expect(buildInputBranch('0', { sinkPortId: 'input-0', port: 40000 })).not.toContain(
                 'tsparse',
             );
+        });
+        it('demuxes every media of the input on the formula: no select, no media filter, no tsdemux (WI-P3-14)', () => {
+            const s = buildInputBranch('2', { sinkPortId: 'input-2', port: 40002 });
+            expect(s.endsWith(' ! mrtsdemux name=demux_2')).toBe(true);
+            expect(s).not.toMatch(/(^|[ !])tsdemux /);
+            expect(s).not.toMatch(/select=|media=/);
         });
     });
 
@@ -309,7 +315,8 @@ describe('mpegtsMuxerPipeline helpers', () => {
                     'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                     'mrlateness name=lat_busout_40010 reference=running-time ! tee name=busout_40010 allow-not-linked=true',
             );
-            expect(result.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
+            expect(result.pipeline.match(/ ! mrtsdemux name=demux_/g)).toHaveLength(2);
+            expect(result.pipeline).not.toMatch(/(^|[ !])tsdemux /);
             expect(result.pipeline.match(/unixfdsrc name=busin_/g)).toHaveLength(2);
             expect(result.routing.inputs).toHaveLength(2);
             for (const rule of result.routing.inputs) {
@@ -511,7 +518,6 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 alignment: 7,
             })!;
             expect(Object.keys(result).sort()).toEqual([
-                'demuxes',
                 'pipeline',
                 'routing',
                 'runnerHooks',
@@ -654,7 +660,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
         });
 
-        it('reports every input branch demux for the stamp-anchored alignment', () => {
+        it('names each input branch demux like its hook input, with no demux list for an alignment (WI-P3-14)', () => {
             const result = buildPipeline({
                 sources: [
                     { sinkPortId: 'input-0', port: 40001 },
@@ -664,8 +670,15 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 output,
                 alignment: 7,
             })!;
-            expect(result.demuxes).toEqual(['demux_0', 'demux_1', 'demux_2']);
-            for (const name of result.demuxes) expect(result.pipeline).toContain(`name=${name}`);
+            expect(result.routing.inputs.map((i) => i.demux)).toEqual([
+                'demux_0',
+                'demux_1',
+                'demux_2',
+            ]);
+            for (const { demux } of result.routing.inputs) {
+                expect(result.pipeline).toContain(` ! mrtsdemux name=${demux}`);
+            }
+            expect('demuxes' in result).toBe(false);
         });
     });
 
@@ -773,7 +786,7 @@ describe('MpegTsMuxerModule', () => {
             expect(desc.pipeline).toContain('tee name=busout_41000 allow-not-linked=true');
             expect(desc.pipeline).toContain('socket-path=/tmp/mr-bus-40001-edge.sock');
             expect(desc.pipeline).toContain('socket-path=/tmp/mr-bus-40002-edge.sock');
-            expect(desc.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
+            expect(desc.pipeline.match(/ ! mrtsdemux name=demux_/g)).toHaveLength(2);
             expect(hookInputs(desc)).toHaveLength(2);
             expect(desc.runnerHooks![0].module).toBe('mux_routing');
             expect(assignBusChannel).toHaveBeenCalledWith('mux-1');
@@ -808,7 +821,7 @@ describe('MpegTsMuxerModule', () => {
             });
         });
 
-        it('asks the runner to retime every branch, cue pads included, and declares no stall watch', () => {
+        it('declares no branch alignment and no stall watch: each input demuxes on the formula (WI-P3-14)', () => {
             const { module } = makeModule({
                 sources: [
                     { sinkPortId: 'input-0', port: 40001 },
@@ -817,20 +830,15 @@ describe('MpegTsMuxerModule', () => {
             });
             (module as any).config = { alignment: 7, inputs: [{}, {}] };
             const desc = module.buildPipeline((module as any).config)!;
-            // Every input retimed per access unit, as a transform producer's input;
-            // KLV and teletext too, so a cue reaches its aligner at PES − 1 h.
-            expect(desc.alignBranchesToStamps).toEqual({
-                demuxes: ['demux_0', 'demux_1'],
-                transformProducer: true,
-                privatePads: true,
-            });
+            // mrtsdemux puts every access unit, KLV and teletext too, at its PES PTS − 1 h:
+            // nothing for the runner to retime.
             expect(Object.keys(desc).sort()).toEqual([
-                'alignBranchesToStamps',
                 'pipeline',
                 'restartOnError',
                 'runnerHooks',
                 'timingInputs',
             ]);
+            expect(desc.pipeline.match(/ ! mrtsdemux name=demux_[01]( |$)/g)).toHaveLength(2);
             expect(desc.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
             expect(desc.pipeline).not.toContain('min-upstream-latency');
             expect(desc.pipeline).not.toContain('watchdog');
@@ -1005,7 +1013,7 @@ describe('MpegTsMuxerModule', () => {
             });
             (module as any).config = { inputs: [{}] };
             const desc = module.buildPipeline((module as any).config)!;
-            expect(desc.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(1);
+            expect(desc.pipeline.match(/ ! mrtsdemux name=demux_/g)).toHaveLength(1);
         });
     });
 

@@ -7,7 +7,7 @@ imports this module (every plugin `py/` dir is on its PYTHONPATH), calls
 `install(pipeline, config, ctx)` before PLAYING and `clear()` on stop.
 
     config = {"inputs": [{
-        "demux":  "demux_0",                 # tsdemux whose pad-added we route
+        "demux":  "demux_0",                 # the mrtsdemux whose pad-added we route
         "linkTo": "mux",                     # the mpegtsmux (request pads)
         "pid":    264,                       # generic input: the output PID of its stream
         "routes": {                          # first pad of each class goes here
@@ -42,9 +42,9 @@ What one input does at pad-added time:
     extra PID before the pad is requested;
   * everything else — a class without a route, a second pad of a routed
     class, an ignored PID — is sunk into a `fakesink` so the demuxer keeps
-    flowing: tsdemux combines its pads' flow returns, a TS whose ONLY pad is
-    left unlinked returns NOT_LINKED and the source restart-loops (the
-    2026-09-15 .103 muxer);
+    flowing: it combines its pads' flow returns (mrtsdemux as tsdemux), a TS
+    whose ONLY pad is left unlinked returns NOT_LINKED and the source
+    restart-loops (the 2026-09-15 .103 muxer);
   * with `pcr`, `prog-map`'s `PCR_<program>` is pointed at the first VIDEO
     pad's request pad before it is linked (first audio until a video shows
     up) — mpegtsmux reads prog-map per pad at stream creation, so the builder
@@ -89,11 +89,11 @@ MAX_ES_PID = 0x1FFE
 _VIDEO_STREAM_TYPES = {0x01, 0x02, 0x10, 0x1B, 0x24, 0x42, 0xEA}
 _AUDIO_STREAM_TYPES = {0x03, 0x04, 0x0F, 0x11, 0x1C, 0x81, 0x87, 0x8A}
 
-# Caps-name → parser between tsdemux and mpegtsmux. mpegtsmux rejects unparsed
+# Caps-name → parser between the demuxer and mpegtsmux. mpegtsmux rejects unparsed
 # AAC / AC-3 / MPEG-audio (no codec_data, framed=false) and the failure
 # surfaces upstream as "Internal data stream error". config-interval=-1 on the
 # video parsers re-emits parameter sets before EVERY IDR so a frame lost on a
-# lossy link recovers at the next keyframe. None = parser-free (tsdemux hands
+# lossy link recovers at the next keyframe. None = parser-free (the demuxer hands
 # the stream over muxer-ready: Opus, and every PES-framed private stream).
 _PARSER_FOR_CAPS_NAME = {
     "video/x-h264": "h264parse config-interval=-1",
@@ -108,7 +108,7 @@ _PARSER_FOR_CAPS_NAME = {
     "subpicture/x-dvb": "",
 }
 # `parser: "none"` on a video route: declare access-unit alignment instead of
-# parsing (one frame less latency; tsdemux already hands over whole AUs).
+# parsing (one frame less latency; the demuxer already hands over one PES per buffer).
 _AU_ALIGNED_CAPS = {
     "video/x-h264": "video/x-h264,stream-format=byte-stream,alignment=au",
     "video/x-h265": "video/x-h265,stream-format=byte-stream,alignment=au",
@@ -135,7 +135,7 @@ def _log(msg):
 # --- pure helpers (unit-tested without GStreamer) -----------------------------
 
 def route_media_for_caps(caps_name):
-    """Route class of a tsdemux pad from its caps structure name. TS twin:
+    """Route class of a demuxer pad from its caps structure name. TS twin:
     `muxRouteMedia` (plugins/mpegts-muxer/engine/muxPids.ts) — both pinned to
     the same table by mux_routing_test.py and muxPids.test.ts."""
     caps_name = caps_name or ""
@@ -151,8 +151,8 @@ def route_media_for_caps(caps_name):
 
 
 def pid_from_pad_name(pad_name):
-    """tsdemux names pads `<media>_<programhex>_<pidhex>`; the PID is the last
-    field. None when the name does not fit."""
+    """The demuxer names pads `<media>_<generation>_<pidhex>` (mrtsdemux as
+    tsdemux); the PID is the last field. None when the name does not fit."""
     if not pad_name:
         return None
     try:
