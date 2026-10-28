@@ -1,22 +1,23 @@
 /**
  * GStreamer pipeline for the teletext subtitle decoder.
  *
- *   bus TS ─ tee in_t ┬ tsdemux ─ application/x-teletext ─ tee ┬ teletextdec page=888 ─ appsink ttxsink_0
- *                     │                                        └ teletextdec page=692 ─ appsink ttxsink_1
+ *   bus TS ─ tee in_t ┬ mrtsdemux ─ application/x-teletext ─ tee ┬ teletextdec page=888 ─ appsink ttxsink_0
+ *                     │                                          └ teletextdec page=692 ─ appsink ttxsink_1
  *                     └ leaky queue ─ appsink tsprobe   (engine tsProbe → `tsprobe:pmt`)
  *   appsrc subsrc_0 (cue TS, packed by the bridge) ─ bus out 0
  *   appsrc subsrc_1 (cue TS, packed by the bridge) ─ bus out 1
  *
  * subtitle-core's runner hook (`pay` entries) joins each appsink to its
  * appsrc: page text in, KLV-wrapped WebVTT cue out, stamped with the page's
- * content time (the hook retimes the teletext pad of `DEMUX_NAME` off the bus stamps).
+ * content time: teletextdec's text carries the PTS the formula demux gives the
+ * teletext PES, its PES time on the house timeline (house-clock WI-P3-8).
  *
  * `teletextdec` decodes ONE page per instance, so the teletext ES is tee'd to
- * one decoder per configured page — decode cost is text, negligible. The
- * capsfilter directly on the tsdemux src selects the teletext elementary
- * stream (tsdemux exposes it as `application/x-teletext` when the PMT carries
- * the DVB teletext descriptor) and leaves video/audio pads unlinked, exactly
- * as the video transcoder selects `video/x-h264`. `subtitles-mode` strips the
+ * one decoder per configured page — decode cost is text, negligible. The demux
+ * reassembles the private streams alone (`media=private`: no video/audio pad),
+ * and the capsfilter directly on its src selects the teletext one (exposed as
+ * `application/x-teletext` when the PMT carries the DVB teletext descriptor),
+ * leaving any other private pad unlinked. `subtitles-mode` strips the
  * page header and blank rows; the template with a REAL newline replaces the
  * element's default, which prints a literal backslash-n.
  *
@@ -34,7 +35,7 @@ import {
 } from '@media-router/plugin-subtitle-core';
 import { pageLabel, type TeletextPage } from './teletextPorts.js';
 
-export const DEMUX_NAME = 'demux';
+const DEMUX_NAME = 'demux';
 export const PROBE_SINK_NAME = 'tsprobe';
 
 export interface TeletextOutput {
@@ -93,7 +94,7 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
         .join(' ');
 
     const pipeline =
-        `${tsInput} ! tee name=in_t ! queue ! tsdemux name=${DEMUX_NAME} latency=0 ` +
+        `${tsInput} ! tee name=in_t ! queue ! mrtsdemux name=${DEMUX_NAME} media=private ` +
         `! capsfilter caps="application/x-teletext" ! tee name=t ` +
         `${decoders} ${tails} in_t. ! ${probeTap}`;
 

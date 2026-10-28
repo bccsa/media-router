@@ -534,6 +534,12 @@ elements" below do not start.
   longer sends CORS headers, as no web page calls it. The Device Manager works
   as before. A script that called the API from another computer must now run
   on the box, for example over SSH.
+- **Teletext subtitles are on time from the first page.** After Teletext
+  Subtitles started, its first pages were timed off its demuxer until the
+  module had matched the stream's own timing (about a second late on the OCC
+  feed), with the warning "content time unavailable yet — tsdemux time used".
+  Now every subtitle starts at its page's time in the stream from the first
+  page on, and that warning is gone.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

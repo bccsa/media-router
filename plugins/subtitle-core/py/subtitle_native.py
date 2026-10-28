@@ -1,9 +1,9 @@
-"""The source retime's per-packet walk, natively: `mrpeshouse`
-(plugins/mpegts-core/native/mrpeshouse) spliced in front of the source tsdemux,
-its `pes-house` signal filling the bridge's StampIndex. It runs the python
-`PesStamper` + `StampModel` (the spec) rule for rule; when the plugin is
-absent, fails to load or to splice, the bridge keeps its python chunk probe.
-`MR_SUBTITLE_NATIVE_RETIME=0` forces the probe. ADR-0016 amendment 2026-10-09.
+"""The producer retime's per-packet walk, natively: `mrpeshouse`
+(plugins/mpegts-core/native/mrpeshouse) spliced in front of a demux, its
+`pes-house` signal filling a StampIndex. It runs the python `PesStamper` +
+`StampModel` (the spec) rule for rule; `attach` gives None when the plugin is
+absent, fails to load or to splice, or with `MR_SUBTITLE_NATIVE_RETIME=0`. Its
+caller went with the retime (WI-P3-8); WI-P3-17 deletes it. ADR-0016 amendment 2026-10-09.
 """
 import os
 
@@ -39,7 +39,7 @@ def load():
                 continue
             try:
                 _loaded = Gst.Plugin.load_file(path) is not None
-            except Exception as exc:  # noqa: BLE001 — any failure is the python fallback
+            except Exception as exc:  # noqa: BLE001 — any failure gives None
                 rt.trace(f"mrpeshouse at {path} failed to load ({exc})")
                 continue
             if _loaded:
@@ -73,10 +73,10 @@ def splice(pipe, demux):
 
 
 def attach(pipe, demux, index):
-    """Load, splice and connect; the element, or None (python probe instead)."""
+    """Load, splice and connect; the element, or None."""
     try:
         el = splice(pipe, demux) if load() else None
-    except Exception as exc:  # noqa: BLE001 — never fatal: the python probe covers it
+    except Exception as exc:  # noqa: BLE001 — never fatal
         rt.trace(f"mrpeshouse unavailable ({exc})")
         return None
     if el is not None:

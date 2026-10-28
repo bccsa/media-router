@@ -101,8 +101,6 @@ wrap = b"".join(packets(VID_PID, pes(0xE0, (1 << 33) - 900, b"\x00"), pcr=(1 << 
 check("33-bit wrap folds", [house_of(g) for g in st.feed(wrap, 0.0)] == [100.0])
 check("fold", sm.fold_ticks(5) == 5 and sm.fold_ticks(-5) == -5 and sm.fold_ticks((1 << 33) - 5) == -5)
 
-check("the key helpers are subtitle_klv's (moved there, WI-P3-7)",
-      ts.klv_span is klv.klv_span and ts.payload_key is klv.payload_key)
 idx = ts.StampIndex(size=2, max_age_ms=5000)
 idx.record(b"a", 1.0, 0)
 idx.record(b"b", 2.0, 0)

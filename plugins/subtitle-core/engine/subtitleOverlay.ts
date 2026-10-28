@@ -230,14 +230,11 @@ export const SUBTITLE_RUNNER_MODULE = 'subtitle_bridge';
 
 /**
  * The `PipelineDescription.runnerHooks` entry that installs the subtitle
- * bridge on a pipeline: producers pass `pay` (and `sourceDemux`, the tsdemux
- * their cue text comes from, so cues start at content time), renderers pass
- * `overlay`.
+ * bridge on a pipeline: producers pass `pay` (cues start at their text's PTS,
+ * its content time off the formula demux), renderers pass `overlay`.
  */
 export function subtitleRunnerHook(config: {
     pay?: SubtitlePayRunnerConfig[];
-    /** tsdemux whose private pads the bridge retimes onto the bus stamps. */
-    sourceDemux?: string;
     overlay?: SubtitleOverlayRunnerConfig;
 }): RunnerHook {
     return { module: SUBTITLE_RUNNER_MODULE, config };

@@ -1,14 +1,12 @@
 """Bus chunks → per-PES house time for the subtitle bridge: a 188-byte TS walk,
 a PES assembler that gives each private PES the house time of the chunk it
-began in (`subtitle_stamp_model`), and the small LRU the producer's retime joins
-demuxed buffers through. Pure stdlib. ADR-0016 amendment 2026-10-09. `PesStamper`
-is the spec of the native walk (mpegts-core/native/mrpeshouse/pes_walk.cpp).
+began in (`subtitle_stamp_model`), and the small LRU the producer's retime joined
+demuxed buffers through until WI-P3-8. Pure stdlib. ADR-0016 amendment 2026-10-09.
+`PesStamper` is the spec of the native walk (mpegts-core/native/mrpeshouse/pes_walk.cpp).
 """
 import collections
 import threading
 
-# Moved to subtitle_klv (WI-P3-7); here for the producer's retime until WI-P3-8, this file until WI-P3-17.
-from subtitle_klv import klv_span, payload_key  # noqa: F401
 from subtitle_stamp_model import StampModel, chunk_reference
 
 PKT = 188

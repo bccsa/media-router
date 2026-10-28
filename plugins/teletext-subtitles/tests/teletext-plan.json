@@ -1,0 +1,72 @@
+{
+  "pipeline": "unixfdsrc socket-path=@SOCK@/ttx-in.sock ! mrlateness name=lat_busin_40400_104f30 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! tsparse set-timestamps=false ! tee name=in_t ! queue ! mrtsdemux name=demux media=private ! capsfilter caps=\"application/x-teletext\" ! tee name=t t. ! queue ! teletextdec name=ttx_0 page=692 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_0 t. ! queue ! teletextdec name=ttx_1 page=150 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_1 t. ! queue ! teletextdec name=ttx_2 page=695 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_2 t. ! queue ! teletextdec name=ttx_3 page=888 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_3 t. ! queue ! teletextdec name=ttx_4 page=600 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_4 t. ! queue ! teletextdec name=ttx_5 page=610 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_5 t. ! queue ! teletextdec name=ttx_6 page=620 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_6 t. ! queue ! teletextdec name=ttx_7 page=630 subtitles-mode=true subtitles-template=\"%s\n\" ! text/x-raw,format=utf-8 ! appsink name=ttxsink_7 appsrc name=subsrc_0 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true appsrc name=subsrc_1 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41001 reference=running-time ! tee name=busout_41001 allow-not-linked=true appsrc name=subsrc_2 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41002 reference=running-time ! tee name=busout_41002 allow-not-linked=true appsrc name=subsrc_3 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41003 reference=running-time ! tee name=busout_41003 allow-not-linked=true appsrc name=subsrc_4 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41004 reference=running-time ! tee name=busout_41004 allow-not-linked=true appsrc name=subsrc_5 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41005 reference=running-time ! tee name=busout_41005 allow-not-linked=true appsrc name=subsrc_6 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41006 reference=running-time ! tee name=busout_41006 allow-not-linked=true appsrc name=subsrc_7 is-live=false format=time block=false caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41007 reference=running-time ! tee name=busout_41007 allow-not-linked=true in_t. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+  "tsProbe": {
+    "appsink": "tsprobe"
+  },
+  "runnerHooks": [
+    {
+      "module": "subtitle_bridge",
+      "config": {
+        "pay": [
+          {
+            "appsink": "ttxsink_0",
+            "appsrc": "subsrc_0",
+            "pid": 384,
+            "holdMs": 8000,
+            "label": "nor 692"
+          },
+          {
+            "appsink": "ttxsink_1",
+            "appsrc": "subsrc_1",
+            "pid": 385,
+            "holdMs": 8000,
+            "label": "deu 150"
+          },
+          {
+            "appsink": "ttxsink_2",
+            "appsrc": "subsrc_2",
+            "pid": 386,
+            "holdMs": 8000,
+            "label": "nld 695"
+          },
+          {
+            "appsink": "ttxsink_3",
+            "appsrc": "subsrc_3",
+            "pid": 387,
+            "holdMs": 8000,
+            "label": "eng 888"
+          },
+          {
+            "appsink": "ttxsink_4",
+            "appsrc": "subsrc_4",
+            "pid": 388,
+            "holdMs": 8000,
+            "label": "fra 600"
+          },
+          {
+            "appsink": "ttxsink_5",
+            "appsrc": "subsrc_5",
+            "pid": 389,
+            "holdMs": 8000,
+            "label": "spa 610"
+          },
+          {
+            "appsink": "ttxsink_6",
+            "appsrc": "subsrc_6",
+            "pid": 390,
+            "holdMs": 8000,
+            "label": "ron 620"
+          },
+          {
+            "appsink": "ttxsink_7",
+            "appsrc": "subsrc_7",
+            "pid": 391,
+            "holdMs": 8000,
+            "label": "pol 630"
+          }
+        ]
+      }
+    }
+  ],
+  "runner": "python"
+}

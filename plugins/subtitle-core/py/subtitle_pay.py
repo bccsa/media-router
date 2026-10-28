@@ -1,16 +1,14 @@
 """Producer half of the subtitle bridge (`pay`): cue text from an appsink →
 one packed TS chunk per cue into a `video/mpegts` appsrc, PES PTS = the cue's
-content time, re-sent every RESEND_MS while live; `sourceDemux` retimes the
-teletext pad onto the bus stamps first. ADR-0016 amendment 2026-10-09;
+content time (the text's PTS: its source PES time, which the formula demux put
+on it), re-sent every RESEND_MS while live. ADR-0016 amendment 2026-10-09;
 docs/research/subtitle-content-time-20261009.md.
 """
 import os
 
 import subtitle_klv
-import subtitle_native
 import subtitle_pack
 import subtitle_runtime as rt
-import subtitle_ts
 from subtitle_cues import PayState, StartGate, wire_cue
 
 try:  # diagnostics only: a missing trace module must never take the cue path down
@@ -33,88 +31,10 @@ def clean_text(data):
     return "\n".join(lines)
 
 
-def pid_from_pad_name(name):
-    """tsdemux pad `private_0_0123` → 0x123, or None."""
-    try:
-        return int(name.rsplit("_", 1)[1], 16)
-    except (IndexError, ValueError):
-        return None
-
-
 def pack_cue(packer, cue):
     """The TS chunk for every send of `cue` (PES on its start, `0 --> hold`)."""
     pes_ms, rel = wire_cue(cue)
     return packer.cue_chunk(subtitle_pack.pes_ticks(pes_ms), subtitle_klv.encode_cue(*rel))
-
-
-# --- source retime: the teletext pad onto the bus stamps ----------------------
-
-def install_retime(pipe, demux_name):
-    """Retime `demux_name`'s private src pads onto the bus stamps (content
-    time); a PES the join misses carries the pad's last correction."""
-    _, Gst = rt.gst()
-    demux = pipe.get_by_name(demux_name)
-    sink = demux.get_static_pad("sink") if demux is not None else None
-    if sink is None:
-        rt.warn(f"source demux missing ({demux_name}) — cues start at tsdemux time")
-        return None
-    # Every private PID until tsdemux adds its pads (it adds them while chaining
-    # the first PES, after the sink probe read that chunk).
-    retime = {"pipe": pipe, "stamper": subtitle_ts.PesStamper(),
-              "index": subtitle_ts.StampIndex(), "hits": 0, "misses": 0}
-    # The per-packet walk runs natively when it can (subtitle_native); the
-    # python probe is its spec and the fallback.
-    retime["native"] = subtitle_native.attach(pipe, demux, retime["index"])
-    if retime["native"] is None:
-        sink.add_probe(Gst.PadProbeType.BUFFER,
-                       rt.chunk_probe(pipe, retime["stamper"], retime["index"], subtitle_ts.payload_key))
-    rt.trace(f"retime source: {'native mrpeshouse' if retime['native'] is not None else 'python probe'}")
-    demux.connect("pad-added", _on_source_pad, retime)
-    return retime
-
-
-def _on_source_pad(_demux, pad, retime):
-    _, Gst = rt.gst()
-    name = pad.get_name() or ""
-    pid = pid_from_pad_name(name)
-    if not name.startswith("private_") or pid is None:
-        return
-    stamper = retime["stamper"]
-    stamper.pids = (stamper.pids or set()) | {pid}
-    if retime.get("native") is not None:
-        subtitle_native.set_pids(retime["native"], stamper.pids)
-    pad.add_probe(Gst.PadProbeType.BUFFER, _on_source_buffer,
-                  {"retime": retime, "delta": None, "warned": False})
-
-
-def _on_source_buffer(pad, info, ps):
-    _, Gst = rt.gst()
-    buf = info.get_buffer()
-    if buf is None or buf.pts == Gst.CLOCK_TIME_NONE:
-        return Gst.PadProbeReturn.OK
-    retime = ps["retime"]
-    house = retime["index"].lookup(subtitle_ts.payload_key(rt.map_bytes(buf)),
-                                   rt.house_now_ms(retime["pipe"]))
-    if house is not None:
-        out = int(house * 1e6)
-        ps["delta"] = out - buf.pts
-        retime["hits"] += 1
-        if retime["hits"] == 1:
-            rt.trace(f"retime {pad.get_name()}: content time from the bus stamps "
-                     f"(tsdemux was {-ps['delta'] / 1e6:+.0f} ms off)")
-    elif ps["delta"] is not None:
-        out = buf.pts + ps["delta"]
-        retime["misses"] += 1
-    else:
-        if not ps["warned"]:                # start-up: no chunk stamp joined yet
-            ps["warned"] = True
-            rt.warn(f"{pad.get_name()}: content time unavailable yet — tsdemux time used")
-        return Gst.PadProbeReturn.OK
-    if out >= 0:
-        buf.pts = out
-        if buf.dts != Gst.CLOCK_TIME_NONE:
-            buf.dts = out
-    return Gst.PadProbeReturn.OK
 
 
 # --- pay entries ------------------------------------------------------------------
@@ -182,7 +102,7 @@ def _on_text_sample(sink, entry):
             rt.warn(f"{entry['label']}: cue time {off} house-now — cues start on arrival")
         push_chunk(entry, cue, chunk)
         late = int(round(now - cue.start))
-        rt.trace(f"cue {entry['label']} start={cue.start} late={late} "
+        rt.trace(f"cue {entry['label']} start={cue.start:.3f} late={late} "
                  f"text={text.replace(chr(10), ' / ')[:60]!r}")
         rt.emit_cue_event({"label": entry["label"], "text": text, "startMs": cue.start,
                            "lateMs": late, "count": count})

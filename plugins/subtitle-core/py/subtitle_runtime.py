@@ -1,6 +1,6 @@
 """Shared plumbing of the subtitle bridge's producer (`subtitle_pay`) and consumer
-(`subtitle_overlay`): GStreamer access, house time, the stderr trace, the engine
-emitters and the producer retime's bus-chunk stamp probe (until WI-P3-8). Tests replace `gst`.
+(`subtitle_overlay`): GStreamer access, house time, the stderr trace and the engine
+emitters. Tests replace `gst`.
 """
 import sys
 
@@ -53,24 +53,3 @@ def pts_ms(buf, Gst):
 
 def map_bytes(buf):
     return buf.extract_dup(0, buf.get_size())
-
-
-def chunk_probe(pipe, stamper, index, key_of):
-    """Demux sink BUFFER probe: record each completed PES's house time."""
-    _, Gst = gst()
-
-    def on_chunk(_pad, info):
-        buf = info.get_buffer()
-        if buf is None:
-            return Gst.PadProbeReturn.OK
-        try:
-            done = stamper.feed(map_bytes(buf), pts_ms(buf, Gst))
-            if done:
-                now = house_now_ms(pipe)
-                for _pid, payload, house in done:
-                    index.record(key_of(payload), house, now)
-        except Exception as exc:  # noqa: BLE001 — never take the input down
-            warn(f"chunk stamp read failed ({exc})")
-            return Gst.PadProbeReturn.REMOVE
-        return Gst.PadProbeReturn.OK
-    return on_chunk

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The runner-facing plumbing on a fake GStreamer: `subtitle_bridge.install`
-with pay and overlay, the pay path without the egress-trace module, the
-consumer's install (no demux probe), cue PTS, re-sends and pad add/remove, the
-egress trace's env gate and bookkeeping, the `show` trace, text/pad-name helpers.
-Run: python3 subtitle_bridge_test.py
+with pay and overlay, the pay path without the egress-trace module, the producer's
+cue PES PTS (its teletext PES PTS, no retime), the consumer's install (no demux
+probe), cue PTS, re-sends and pad add/remove, the egress trace's env gate and
+bookkeeping, the `show` trace, the text helper. Run: python3 subtitle_bridge_test.py
 """
 import importlib
 import os
@@ -26,8 +26,6 @@ check("clean strips NUL/CR/trailing", subtitle_pay.clean_text(b"Hello\r\nWorld  
 check("clean blank page is clear", subtitle_pay.clean_text(b"\n\x00") == "")
 check("clean keeps inner blank line", subtitle_pay.clean_text(b"a\n\nb\n") == "a\n\nb")
 check("clean tolerates bad utf8", subtitle_pay.clean_text(b"ok\xff\n") == "ok�")
-check("pad name -> pid", subtitle_pay.pid_from_pad_name("private_0_0181") == 0x181
-      and subtitle_pay.pid_from_pad_name("x") is None)
 
 
 # --- a fake GStreamer ---------------------------------------------------------
@@ -118,7 +116,6 @@ FakeGst = NS(CLOCK_TIME_NONE=(1 << 64) - 1, Buffer=FakeBuffer, FlowReturn=NS(OK=
              State=NS(NULL="NULL"), ElementFactory=NS(make=lambda kind, name: FakeElement(kind, name)))
 FakeGLib = NS(timeout_add=lambda ms, cb: 7, source_remove=lambda i: None, idle_add=lambda cb: cb())
 traced = []
-os.environ["MR_SUBTITLE_NATIVE_RETIME"] = "0"           # the python probe here; subtitle_native_test.py the splice
 subtitle_runtime.gst = lambda: (FakeGLib, FakeGst)
 subtitle_runtime.trace = traced.append
 
@@ -148,20 +145,31 @@ finally:
     importlib.reload(subtitle_pay)
     subtitle_bridge.clear()
 
-# --- source retime: a page before the first chunk-stamp join warns once per pad --
-warnings = []
-subtitle_runtime.configure(warnings.append, None)
-srcdemux, appsink, appsrc = FakeElement("tsdemux", "demux"), FakeElement("appsink", "s"), FakeElement("appsrc", "a")
+# --- producer: each cue's PES PTS is its teletext PES PTS, no retime (WI-P3-8) --
+warnings, events = [], []
+subtitle_runtime.configure(warnings.append, lambda _ch, p: events.append(p))
+srcdemux, appsink, appsrc = FakeElement("mrtsdemux", "demux"), FakeElement("appsink", "s"), FakeElement("appsrc", "a")
 subtitle_bridge.install(FakePipe(demux=srcdemux, s=appsink, a=appsrc), {
-    "pay": [{"appsink": "s", "appsrc": "a", "pid": 0x180, "holdMs": 3000}], "sourceDemux": "demux"}, None)
-ttx_pad = FakePad("private_0_0020", "application/x-teletext")
-srcdemux.signals["pad-added"][0](srcdemux, ttx_pad, *srcdemux.signals["pad-added"][1])
-_kind, on_buffer, ps = ttx_pad.probes[0]
-for _ in range(3):
-    on_buffer(ttx_pad, NS(get_buffer=lambda: FakeBuffer(b"\x10" * 46, 7_000_000_000)), ps)
-check("retime: no chunk-stamp hit yet → one warning per pad, tsdemux time kept",
-      [w["message"] for w in warnings] == [
-          "subtitle bridge: private_0_0020: content time unavailable yet — tsdemux time used"])
+    "pay": [{"appsink": "s", "appsrc": "a", "pid": 0x180, "holdMs": 3000, "label": "eng 888"}],
+    "sourceDemux": "demux"}, None)                      # an older description's key: never read
+entry = subtitle_bridge.state()["pay"][0]
+check("producer: the bridge leaves the source demux alone (no pad, signal or probe)",
+      srcdemux.pads == {} and srcdemux.signals == {})
+BASE = 3600 * 90_000                                    # PES − 1 h is the house time
+ttx = [BASE + 90 * ms + r for ms, r in ((49_400, 5), (49_480, 89), (49_560, 45), (49_640, 0))]
+ns = [-(-(t - BASE) * 100_000 // 9) for t in ttx]       # the formula's PTS, ceil to the ns
+for t_ns, text in zip(ns, [b"Hello", b"", b"Two\nlines", b"Bye"]):
+    appsink.sample = NS(get_buffer=lambda t_ns=t_ns, text=text: FakeBuffer(text + b"\n\x00", t_ns))
+    subtitle_pay._on_text_sample(appsink, entry)        # teletextdec's text: its PES's PTS
+check("producer: each cue's PES PTS is its teletext PES PTS, 0 ticks whatever its ms remainder",
+      [subtitle_egress_trace.klv_pes_ticks(b.data) for b in appsrc.pushed] == [[t] for t in ttx])
+subtitle_pay.resend([entry])
+check("producer: a live cue's re-send repeats its PES PTS",
+      len(appsrc.pushed) == 5 and subtitle_egress_trace.klv_pes_ticks(appsrc.pushed[4].data) == [ttx[3]]
+      and appsrc.pushed[4].pts == appsrc.pushed[3].pts)
+check("producer: each cue starts at its content time, late by its arrival (house now 50 s), no warning",
+      [(e["startMs"], e["lateMs"]) for e in events] == [(n / 1e6, round(50_000 - n / 1e6)) for n in ns]
+      and warnings == [])
 subtitle_runtime.configure(None, None)
 subtitle_bridge.clear()
 

@@ -11,7 +11,8 @@ import subtitle_cues as sc
 import subtitle_klv as klv
 from subtitle_testlib import check
 
-check("live cue", sc.make_cue(1000.4, "x", 8000) == sc.Cue(1000, 9000, "x"))
+check("live cue, its start as given (WI-P3-8: the PES PTS is the source's)",
+      sc.make_cue(1000.4, "x", 8000) == sc.Cue(1000.4, 9000.4, "x"))
 check("clear cue", sc.make_cue(1000, "", 8000) == sc.Cue(1000, 1000, ""))
 check("negative hold clamps", sc.make_cue(1000, "x", -5) == sc.Cue(1000, 1000, "x"))
 
@@ -52,7 +53,11 @@ check("wire: PES on the start, block 0 --> hold", sc.wire_cue(live) == (4000, (0
 first = klv.encode_cue(*sc.wire_cue(live)[1])
 check("re-send is a byte-identical repeat on the same PTS",
       sc.wire_cue(live) == sc.wire_cue(sc.Cue(*live)) and klv.encode_cue(*sc.wire_cue(live)[1]) == first)
-check("clear stamped at its own content time", sc.wire_cue(sc.make_cue(6100.4, "", 3000)) == (6100, (0, 0, "")))
+check("clear stamped at its own content time", sc.wire_cue(sc.make_cue(6100.4, "", 3000)) == (6100.4, (0, 0, "")))
+sub_ms = sc.make_cue(15_960_771.755556, "Hi", 8000)     # an OCC teletext PES time, 68 ticks past a ms
+check("wire: a sub-ms start keeps its block 0 --> hold, byte for byte",
+      sc.wire_cue(sub_ms) == (15_960_771.755556, (0, 8000, "Hi"))
+      and klv.encode_cue(*sc.wire_cue(sub_ms)[1]) == klv.encode_cue(0, 8000, "Hi"))
 last, ptses = None, []
 for pts, now in [(1000, 1900), (2500, 3400), (None, 3500), (2600, 4400), (5000, 5900)]:
     start, _ = sc.cue_start(pts, now, last)

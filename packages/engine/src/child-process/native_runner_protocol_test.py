@@ -2910,6 +2910,186 @@ def test_subtitle_overlay_formula():
           bool(owed) and text == (owed[-1][2] if owed[-1][1] == "show" else ""))
 
 
+# --------------------------------------------------------------------------- ttx-formula (WI-P3-8)
+_TTX_PLAN = os.path.join(_PLUGINS, "teletext-subtitles", "tests", "teletext-plan.json")
+# The two OCC trims: under a second of teletext each, in which one page completes.
+_TTX_FIXTURES = ("cap-occ-1080i-h264-aac-ttx", "cap-occ-1080i-h264-21aac-ttx")
+_TTX_LEAD_NS = 400_000_000          # each chunk sent this far ahead of its newest PES, as a producer's bus does
+# The bridge's cue trace (subtitle_pay._on_text_sample): label, start (house ms), late (ms).
+_TTX_CUE_LINE = re.compile(r"\[subtitle_bridge\] cue (.+?) start=(-?[\d.]+) late=(-?\d+) ")
+
+
+def _ttx_only(data, pid=0x20):
+    """`data`'s PAT, PMT and teletext PID alone: the streams `media=private` reads, and no A/V
+    burst on which a stock unixfdsink feeder and its consumer's buffer releases block each other."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    pkts = list(ts_psi.iter_packets(data))
+    keep = {0, pid} | set(ts_psi.parse_pat(pkts).values())
+    return b"".join(p for p in pkts if ts_psi.ts_pid(p) in keep)
+
+
+def _ttx_pes(data, ref_ns, pid=0x20):
+    """[(PES PTS, house ns, payload)] per complete PES of `pid` once the PMT is known (where the
+    demux plans its pads), the ns as mrtsdemux stamps it: PES − 1 h nearest `ref_ns`, rounded up."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    wrap, base = 1 << 33, 3600 * 90000
+    ref90 = ref_ns * 9 // 100_000
+    disc, out = ts_psi.PsiDiscovery(), []
+    for pkt in ts_psi.iter_packets(data):
+        if disc.pmt is None:
+            disc.feed([pkt])
+            continue
+        if ts_psi.ts_pid(pkt) != pid or not (out or pkt[1] & 0x40):
+            continue
+        payload = pkt[ts_psi.payload_offset(pkt):]
+        if pkt[1] & 0x40:
+            pts = ts_psi.read_pes_pts(pkt)
+            d = (pts - base - ref90 + wrap // 2) % wrap - wrap // 2
+            out.append([pts, -(-(ref90 + d) * 100_000 // 9), 6 + (payload[4] << 8 | payload[5]),
+                        bytearray(payload)])
+        else:
+            out[-1][3] += payload
+    return [(pts, ns, bytes(p[9 + p[8]:size])) for pts, ns, size, p in out if len(p) >= size]
+
+
+def _ttx_reference(pes, pages):
+    """{page: [PES PTS]}: for each page teletextdec decodes from `pes` pushed on their own PTS
+    (no demux, no bus), the PES its text is stamped with, the one that completed the page."""
+    # No preroll and no EOS wait: a page's first text can come later than its queue holds.
+    pipe = Gst.parse_launch('appsrc name=src format=time caps="application/x-teletext" ! tee name=t ' + " ".join(
+        f"t. ! queue ! teletextdec page={p} subtitles-mode=true ! text/x-raw,format=utf-8 "
+        f"! appsink name=p{p} sync=false async=false wait-on-eos=false" for p in pages))
+    src = pipe.get_by_name("src")
+    pipe.set_state(Gst.State.PLAYING)
+    for _pts, ns, payload in pes:
+        b = Gst.Buffer.new_wrapped(payload)
+        b.pts = ns
+        src.emit("push-buffer", b)
+    src.emit("end-of-stream")
+    pipe.get_bus().timed_pop_filtered(10 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    by_ns, out = {ns: pts for pts, ns, _p in pes}, {}
+    for p in pages:
+        sink, out[p] = pipe.get_by_name(f"p{p}"), []
+        while (s := sink.emit("try-pull-sample", 0)) is not None:
+            out[p].append(by_ns.get(s.get_buffer().pts))
+    pipe.set_state(Gst.State.NULL)
+    return out
+
+
+def _ttx_consumer(edge, pid, clock, got):
+    """A bus consumer on `edge` pinned to the house clock: (PES PTS, buffer PTS) of each `pid` PES."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    c = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
+    c.use_clock(clock)
+    c.set_start_time(Gst.CLOCK_TIME_NONE)
+    c.set_base_time(0)
+
+    def on_buf(_pad, info):
+        buf = info.get_buffer()
+        for pkt in ts_psi.iter_packets(buf.extract_dup(0, buf.get_size())):
+            if pkt[1] & 0x40 and ts_psi.ts_pid(pkt) == pid:
+                got.append((ts_psi.read_pes_pts(pkt), buf.pts))
+        return Gst.PadProbeReturn.OK
+
+    c.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
+    c.set_state(Gst.State.PLAYING)
+    return c
+
+
+def test_ttx_formula():
+    """ttx-formula (WI-P3-8), python runner (the bridge is python-only): teletext-subtitles' own
+    description (tests/teletext-plan.json, a vitest file snapshot: the bus input into `mrtsdemux
+    media=private`, a teletextdec and a bridge-packed bus egress for each of the eight pages the
+    OCC PMT announces), fed each OCC trim's teletext PID rebased to now, each chunk 400 ms ahead.
+    Every cue on the bus carries the PES PTS of the teletext PES that completed its page, 0 ticks:
+    the pages the same teletext decodes to on those PTS without demux or bus. No retime."""
+    for el in ("unixfdsink", "unixfdsrc", "teletextdec"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP ttx-formula — {el} unavailable")
+            return
+    if not os.path.exists(_MRTS_CLI) or not os.path.exists(_TTX_PLAN):
+        print("SKIP ttx-formula — mrts_cli or teletext-subtitles' tests/teletext-plan.json missing")
+        return
+    with open(_TTX_PLAN, encoding="utf-8") as fh:
+        plan = json.load(fh)
+    pay = plan["runnerHooks"][0]["config"]["pay"]
+    tees = dict(re.findall(r"appsrc name=(subsrc_\d+) .*?! tee name=(busout_\d+) ", plan["pipeline"]))
+    pages = [int(p) for p in re.findall(r"teletextdec name=ttx_\d+ page=(\d+) ", plan["pipeline"])]
+    check("ttx-formula: the plan pins the python runner and the formula demux, no tsdemux, no source demux",
+          plan["runner"] == "python" and not re.search(r"(^|[\s!])tsdemux ", plan["pipeline"])
+          and '! mrtsdemux name=demux media=private ! capsfilter caps="application/x-teletext" ' in plan["pipeline"]
+          and set(plan["runnerHooks"][0]["config"]) == {"pay"} and len(pay) == len(pages) == len(tees) == 8)
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    for fx in _TTX_FIXTURES:
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        feeder = _bus_feeders([os.path.join(tmp, "ttx-in.sock")], clock)[0]
+        r = RunnerProc(_SUBTITLE_PY)
+        consumers, egress, seen, chunks, now0 = [], {e["label"]: [] for e in pay}, [], [], 0
+        try:
+            r.wait_event(ev_is("ready"))
+            r.send({"cmd": "start", "pipeline": plan["pipeline"].replace("@SOCK@", tmp),
+                    "tsProbe": plan["tsProbe"], "runnerHooks": plan["runnerHooks"]})
+            started = r.wait_event(ev_is("started"), timeout=10) is not None
+            for e in pay:
+                edge = os.path.join(tmp, e["appsrc"] + ".sock")
+                r.send({"cmd": "bus_attach", "tee": tees[e["appsrc"]], "socket": edge})
+                if r.wait_event(ev_is("bus_attached", socket=edge)) is not None:
+                    consumers.append(_ttx_consumer(edge, e["pid"], clock, egress[e["label"]]))
+            now0 = clock.get_time() + 1_500_000_000
+            data = _ttx_only(_rebased(fx, now0, os.path.join(tmp, "ttx.ts")))
+            chunks = _house_chunks(data, now0, lead_ns=_TTX_LEAD_NS)
+            feed = threading.Thread(target=_feed_paced, args=(feeder, chunks, clock))
+            feed.start()
+            done = None
+            while done is None or clock.get_time() < done:
+                if done is None and not feed.is_alive():
+                    done = clock.get_time() + 1_500_000_000
+                r.pump()
+                time.sleep(0.01)
+            feed.join()
+            # A non-live head: PLAYING once its first data is in (gst_source_gate).
+            playing = started and r.has_event(ev_is("state_change", state="playing"))
+            warned = [e.get("message") for e in r.events if e.get("event") == "warning"
+                      and "subtitle bridge" in (e.get("message") or "")]
+            check(f"ttx-formula {fx}: reaches PLAYING, every page's egress attached, no lifecycle error, "
+                  f"no bridge warning ({warned})",
+                  playing and len(consumers) == 8 and not r.has_event(ev_is("error")) and not warned)
+            check(f"ttx-formula {fx}: exits 0 after stop", r.stop_and_wait() == 0)
+            seen = list(r.logs)
+            by = {}
+            for m in _demux_events(r, "demux"):
+                by.setdefault(m.get("reason"), []).append(m)
+            prog = [(m.get("generation"), m.get("pads")) for m in by.get("program", [])]
+            check(f"ttx-formula {fx}: the demux plans the teletext pad alone (media=private), no warning "
+                  f"({prog}; {sorted(by)})", prog == [(0, "private_0_0020")] and set(by) <= {"program", "interval"})
+        finally:
+            for c in consumers:
+                c.set_state(Gst.State.NULL)
+            feeder.set_state(Gst.State.NULL)
+            r.kill()
+            shutil.rmtree(tmp, ignore_errors=True)
+        pes = _ttx_pes(b"".join(c for c, _at in chunks), now0)
+        ref = _ttx_reference(pes, pages)
+        want = {e["label"]: ref[p] for e, p in zip(pay, pages)}
+        got = {label: [pts for pts, _b in v] for label, v in egress.items()}
+        shown = ({k: v for k, v in got.items() if v}, {k: v for k, v in want.items() if v})
+        check(f"ttx-formula {fx}: each cue on the bus carries its teletext PES PTS, 0 ticks, the PES that "
+              f"completed its page ({shown[0]} of {shown[1]})",
+              got == want and sum(map(len, want.values())) >= 1 and None not in sum(want.values(), []))
+        house = {pts: ns for pts, ns, _p in pes}
+        stamps = [(b - house[pts]) for v in egress.values() for pts, b in v if pts in house]
+        lines = sorted((float(m.group(2)), m.group(1)) for m in map(_TTX_CUE_LINE.search, seen) if m)
+        cue_ms = sorted((house[pts] / 1e6, label) for label, v in want.items() for pts in v)
+        check(f"ttx-formula {fx}: the egress stamps each cue PES − 1 h, and the bridge's cue line starts it at "
+              f"its teletext PES time, to the µs ({lines})",
+              len(stamps) == len(cue_ms) and all(abs(s) <= 11_112 for s in stamps) and len(lines) == len(cue_ms)
+              and all(label == w and abs(start - ms) < 0.001 for (start, label), (ms, w) in zip(lines, cue_ms)))
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2944,6 +3124,7 @@ test_mrtsdemux_pmt_change()
 test_mrtsdemux_messages()
 test_mrasrc_device()
 test_subtitle_overlay_formula()
+test_ttx_formula()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

@@ -21,11 +21,11 @@ Cue = namedtuple("Cue", "start end text key src", defaults=(None, None))
 
 
 def make_cue(start_ms, text, hold_ms):
-    """A live cue runs from start for hold_ms; a clear is a zero-length cue at start."""
-    start = int(round(start_ms))
+    """A live cue runs from start for hold_ms; a clear is a zero-length cue at start.
+    The start stays as given, so the cue's PES PTS is its source PES's to the tick."""
     if not text:
-        return Cue(start, start, "")
-    return Cue(start, start + max(0, int(hold_ms)), text)
+        return Cue(start_ms, start_ms, "")
+    return Cue(start_ms, start_ms + max(0, int(hold_ms)), text)
 
 
 def cue_start(pts_ms, now_ms, floor_ms=None):
