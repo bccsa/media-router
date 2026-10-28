@@ -123,16 +123,24 @@ void AsrcServo::check_bounds(int64_t h) {
     }
 }
 
-// Lost cycles: the input position moves on by them, so the lock sees no step, and the output
-// jumps their length on the lock's line, so the phase stays where it was (B-180).
-void AsrcServo::lose(int64_t frames) {
+// Lost time in input frames, to the nearest at the nominal rate: every capture of a driver loses
+// the same frames for the same stamps (B-181).
+int64_t AsrcServo::frames_in(int64_t ns) const {
+    return (2 * clamp64(ns, 0, LOST_MAX_NS) * in_hz_ + E9) / (2 * E9);
+}
+
+// Lost cycles or time: the input position moves on by them, so the lock sees no step. Lost cycles
+// jump the output their length on the lock's line, keeping the phase (B-180); lost time its frames
+// at the nominal rate, the same in every capture of a driver, the phase servo taking the rest (B-181).
+void AsrcServo::lose(int64_t frames, bool whole) {
     const int64_t before = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_));
     lost_ += frames;
     const int64_t span = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_)) - before;
     const int64_t from = next_pts();
-    m_ += (uint64_t)((clamp64(span, 0, DROP_MAX_NS) * out_hz_ + E9 / 2) / E9);
+    m_ += whole ? (uint64_t)((clamp64(span, 0, 2 * LOST_MAX_NS) * out_hz_ + E9 / 2) / E9)
+                : (uint64_t)((2 * frames * out_hz_ + in_hz_) / (2 * in_hz_));
     gaps_++;
-    AsrcEvent e{AsrcEvent::Kind::gap, "lost-cycle", next_pts(), next_pts() - from};
+    AsrcEvent e{AsrcEvent::Kind::gap, whole ? "lost-cycle" : "lost-time", next_pts(), next_pts() - from};
     e.lost_frames = frames;
     events_.push_back(e);
 }
@@ -142,9 +150,9 @@ bool AsrcServo::fits(int64_t dur_ns, uint32_t frames) const {
     return dur_ns < 0 || iabs64(dur_ns - half_frames_ns(2 * (int64_t)frames, in_hz_)) <= E9 / in_hz_ + 1;
 }
 
-// cycle_input (B-180): this buffer's stamp against the end of the last one. Whole cycles missing at
-// a steady size are lost; any step where the size changes is the stamps' (an async follower's
-// quantum change); a fall that undoes the last gap at once was a late stamp. Else the lock's.
+// cycle_input (B-180): this buffer's stamp against the end of the last one. Lost: whole cycles missing at
+// a steady size, or a rise the lock would relock on (a driver restarted after a loss, B-181). A step where
+// the size changes is the stamps'; a fall undoing the last gap at once a late stamp; else the lock's.
 bool AsrcServo::check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns) {
     const int64_t pending = cycle_, pending_gap = cycle_gap_;
     cycle_ = 0;
@@ -162,9 +170,11 @@ bool AsrcServo::check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns) {
     }
     if (gap > 0) {
         const int64_t n = (gap + len / 2) / len;
-        if (n >= 1 && iabs64(gap - n * len) <= tol && n * len <= DROP_MAX_NS) {
-            lose(n * last_frames_);
-            cycle_ = n * last_frames_;
+        const bool whole = n >= 1 && iabs64(gap - n * len) <= tol;
+        if (gap <= LOST_MAX_NS && (whole || gap >= lock_.config().step_ns)) {
+            const int64_t lost = whole ? n * last_frames_ : frames_in(gap);
+            lose(lost, whole);
+            cycle_ = lost;
             cycle_gap_ = gap;
             return true;
         }

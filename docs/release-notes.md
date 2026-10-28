@@ -364,6 +364,15 @@ elements" below do not start.
   pieces are lost, as the capture keeps more room for a moment's delay; and
   every capture of an input takes the input's own time, so two of them line
   up to the sample. Audio Encoder captures the same way.
+- **An audio capture's timing no longer jumps by 2 s about a minute after it
+  starts.** When the audio device behind Audio Input (302M) lost about 2
+  seconds of sound and started over (seen on a Pi 4 under test while an engine
+  restart brought up video on HDMI), the sound that followed was timed 2
+  seconds early for about a minute, until a 2-second jump counted under
+  Re-locks set it right (on a capture that was already running, 10 seconds).
+  Fixed: the lost time is now a gap of its length where the sound was lost,
+  and the timing does not move. Audio Encoder captures the same way. The lost
+  sound itself cannot come back.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

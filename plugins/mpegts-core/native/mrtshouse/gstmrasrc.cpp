@@ -2,7 +2,8 @@
  * input frame count to the buffer PTS and commands GstAudioResampler's ratio, so the output is a
  * house-rate sample counter labelled with capture time, PTS_out(m) = T0 + m / out_rate. Steering
  * only moves the ratio; a relock's overlap (Command::skip) is the one drop. With cycle-input
- * (a pipewiresrc capture, B-180) lost cycles jump the output by their length, without a relock. */
+ * (a pipewiresrc capture, B-180) lost cycles, and the time a restarted driver lost (B-181), jump
+ * the output by their length, without a relock. */
 #include <gst/base/gstbasetransform.h>
 
 #include <atomic>
@@ -641,9 +642,10 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
         gobject_class, PROP_CYCLE_INPUT,
         g_param_spec_boolean("cycle-input", "Cycle input",
                              "The input is one buffer per graph cycle stamped with the cycle's "
-                             "time (pipewiresrc): whole cycles missing at a steady size are a gap "
-                             "of their length, a cycle-size change moves the stamps only; neither "
-                             "relocks. Applies at the next start or caps change.",
+                             "time (pipewiresrc): whole cycles missing at a steady size, or a rise "
+                             "of the stamps past the lock's step (a driver restarted after a loss), "
+                             "are a gap of their length, a cycle-size change moves the stamps only; "
+                             "neither relocks. Applies at the next start or caps change.",
                              FALSE, at_start));
     g_object_class_install_property(
         gobject_class, PROP_STATS,

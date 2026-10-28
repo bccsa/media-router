@@ -13,7 +13,8 @@ known PTS jitter, so the capture time of every input frame is known:
     and a -60 ms capture-latency fall without one drop the overlap, the PTS never going back;
     a device past the +-1000 ppm clamp raises ratio-out-of-bounds;
   - cycle-input (B-180): a lost cycle is one gap of its length and no relock, a cycle-size change
-    moves the stamps only; without the property the same input is the lock's, as before;
+    moves the stamps only; without the property the same input is the lock's, as before; the time
+    a restarted driver lost (no whole cycle, B-181) is one gap too, where the lock relocked a minute in;
   - mrasrc-stats and mrasrc-event as part 10 names them; offsets; the `stats` snapshot;
   - caps: out-rate=0 keeps the input's rate or takes downstream's (44.1 kHz into the capture
     branches' rate=48000 capsfilter), out-rate converts, format and channels pass through,
@@ -501,16 +502,21 @@ check(f"labels within 1 frame of capture time from the relock on, on the new flo
 h.stop()
 
 # --- cycle input (B-180) ----------------------------------------------------------------------
-def cycle_buffers(cap, secs, cycle=2048, lost_s=(), durations=True):
+def cycle_buffers(cap, secs, cycle=2048, lost_s=(), durations=True, restart=None):
     """pipewiresrc's shape: a buffer per cycle of `cycle` frames, stamped with the capture time of
     its first frame (+ jitter), its duration the cycle's; a cycle at a capture second in `lost_s`
-    never arrives (its frames are gone, the next stamp shows it)."""
+    never arrives (its frames are gone, the next stamp shows it). `restart` (second, frames): the
+    driver restarts after losing that many frames, its cycles starting afresh (no whole cycle)."""
     out, i, lost = [], 0, sorted(lost_s)
     end = H0 + int(secs * S)
     while cap.capture_ns(i) < end:
         if lost and cap.capture_ns(i) >= H0 + lost[0] * S:
             lost.pop(0)
             i += cycle
+            continue
+        if restart and cap.capture_ns(i) >= H0 + int(restart[0] * S):
+            i += restart[1]
+            restart = None
             continue
         pts = cap.capture_ns(i) + (int(cap.rng.integers(0, cap.jitter)) if cap.jitter else 0)
         out.append((pts, cap.render(i, cycle), not out, cycle * S // cap.rate if durations else None))
@@ -561,6 +567,52 @@ check(f"no gap and no shift: the first output alone DISCONT, one counter "
       f"({[(e['kind'], e['reason']) for e in ev]})",
       not [e for e in ev if e["kind"] in ("gap", "shift")] and len(discont_at(h.out)) == 1
       and contiguous(h.out) and on_formula(h.out) and final["gaps"] == 0 and final["lost-frames"] == 0)
+h.stop()
+
+print("\n--- cycle input: the driver restarts 6.4 s in after losing 2.0547 s, no whole cycle (DEV4b's "
+      "start on the Pi 4 test box, B-181), 70 s ---")
+LOST = 98627                                      # 48.16 cycles
+JIT = FS * (MS // 2) // S                         # the stamps' 0.5 ms jitter in frames: 24
+cap = Capture(jitter=MS // 2, seed=13, tone=100.0)
+h = Harness(cap.caps(), cycle_input=True)
+h.drive(cycle_buffers(cap, 70, restart=(6.4, LOST)))
+ev = h.messages("mrasrc-event")
+d = discont_at(h.out)
+lost_ns = LOST * S // FS
+jumps = [h.out[i]["pts"] - (h.out[i - 1]["pts"] + h.out[i - 1]["dur"]) for i in d[1:]]
+check(f"one gap event (lost-time, {LOST} frames to the stamps' jitter), no relock "
+      f"({[(e['kind'], e['reason'], e.get('lost-frames')) for e in ev]})",
+      len(ev) == 1 and ev[0]["kind"] == "gap" and ev[0]["reason"] == "lost-time"
+      and abs(ev[0]["lost-frames"] - LOST) <= JIT and ev[0]["dropped-ns"] == 0)
+check(f"the output jumps the lost time on one DISCONT buffer ({[j / MS for j in jumps]} ms, {lost_ns / MS} ms "
+      "within the driver's 0.5 ms jitter), the event's jump-ns that buffer's",
+      len(d) == 2 and len(jumps) == 1 and abs(jumps[0] - lost_ns) <= MS // 2 and len(ev) == 1
+      and ev[0]["jump-ns"] == jumps[0] and contiguous(h.out))
+y, t = samples(h, cap)
+errs = label_errors(y, t, cap.house_hz(), skip_near=[h.out[i]["pts"] for i in d[1:]])
+_all = [e for at, e in errs] or [1e9]
+_late = [e for at, e in errs if at >= 60 * S] or [1e9]
+check(f"labels on capture time from the first buffer, within 1 ms (the first stamp's and the restart's jitter, "
+      f"0.5 ms each: {max(map(abs, _all)):.2f} us), within 1 frame from 60 s ({max(map(abs, _late)):.2f} us)",
+      max(map(abs, _all)) * US <= MS and max(map(abs, _late)) * US < FRAME_NS)
+final = h.messages("mrasrc-stats")[-1]
+check(f"stats: gaps 1, lost-frames {LOST} to the jitter, relocks 0, every pushed frame in ({final})",
+      final["gaps"] == 1 and abs(final["lost-frames"] - LOST) <= JIT and final["relocks"] == 0
+      and final["in-frames"] == cap.pushed and final["discont-in"] == 0)
+h.stop()
+
+print("\n--- the same capture without cycle-input: the lock's, a relock about a minute in (as at f1cfad60 "
+      "with it) ---")
+cap = Capture(jitter=MS // 2, seed=13, tone=100.0)
+h = Harness(cap.caps())
+h.drive(cycle_buffers(cap, 70, restart=(6.4, LOST)))
+ev = h.messages("mrasrc-event")
+rl = [e for e in ev if e["kind"] == "relock"]
+_at = (rl[0]["house-ns"] - H0) / S if rl else -1
+check(f"one relock (envelope-step) {_at:.2f} s in, jumping {rl[0]['jump-ns'] / MS if rl else 0:.3f} ms; no gap "
+      "(DEV4b: 62.0 s, 2,014.36 ms)",
+      len(rl) == 1 and rl[0]["reason"] == "envelope-step" and 61 <= _at <= 63
+      and abs(rl[0]["jump-ns"] - (lost_ns - 40 * MS)) <= 5 * MS and not [e for e in ev if e["kind"] == "gap"])
 h.stop()
 
 print("\n--- cycle input: at 40 s the cycle 1024 -> 2048 frames, stamps +21.333 ms twice, no frame "
