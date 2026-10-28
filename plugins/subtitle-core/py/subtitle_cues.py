@@ -70,12 +70,9 @@ def frame_time(pts_ms, now_ms):
     return pts_ms if abs(pts_ms - now_ms) <= FRAME_TIME_TOLERANCE_MS else now_ms
 
 
-def cue_t0(chunk_ms, pts_ms, now_ms):
-    """(t0_ms, source) a received cue anchors on: the stamp of the bus chunk
-    its PES started in ('chunk'), else its demuxed PTS ('pts'), else arrival
-    ('now') — each only when near house-now."""
-    if chunk_ms is not None and now_ms is not None and abs(chunk_ms - now_ms) <= FRAME_TIME_TOLERANCE_MS:
-        return chunk_ms, "chunk"
+def cue_t0(pts_ms, now_ms):
+    """(t0_ms, source) a received cue anchors on: its demuxed PTS, its PES time
+    on the house timeline ('pts'), when near house-now, else arrival ('now')."""
     t = frame_time(pts_ms, now_ms)
     if t is None:
         return None, "now"

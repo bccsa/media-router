@@ -272,7 +272,7 @@ describe('planLivePipeline', () => {
         );
         // the subtitle TS comes in on its own bus edge into a named demux
         expect(withSubs.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
-        expect(withSubs.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
+        expect(withSubs.pipeline).toMatch(/ mrtsdemux name=subdemux media=private$/);
         expect(withSubs.runnerHooks).toEqual([
             {
                 module: 'subtitle_bridge',

@@ -1,0 +1,16 @@
+{
+  "overlayElement": "textoverlay name=subov wait-text=false text=\"\" valignment=bottom halignment=center font-desc=\"Sans Bold 36\" ypad=40 shaded-background=true shading-value=153",
+  "inputFragment": "unixfdsrc socket-path=@SOCK@/subs.sock ! mrlateness name=lat_busin_40500_379bf1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! tsparse set-timestamps=false ! mrtsdemux name=subdemux media=private",
+  "runnerHooks": [
+    {
+      "module": "subtitle_bridge",
+      "config": {
+        "overlay": {
+          "demux": "subdemux",
+          "overlay": "subov"
+        }
+      }
+    }
+  ],
+  "runner": "python"
+}

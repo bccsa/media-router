@@ -510,7 +510,7 @@ describe('subtitle burn-in', () => {
             'videorate drop-only=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
                 'valignment=bottom halignment=left font-desc="Sans Bold 36" ypad=40 shaded-background=true shading-value=153 ! tee name=t ',
         );
-        expect(r.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
+        expect(r.pipeline).toMatch(/ mrtsdemux name=subdemux media=private$/);
         expect(r.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
         expect(r.runnerHooks).toEqual([
             { module: 'deinterlace_guard', config: { element: 'deint' } },

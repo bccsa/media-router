@@ -14,6 +14,7 @@ Times are RELATIVE TO THE CARRYING PES, in ms (ADR-0016 as amended
 for 3.8 s". They are never house-clock absolutes — those cannot cross to a
 box with another clock. Empty text = CLEAR cue.
 """
+import hashlib
 
 KEY = bytes.fromhex("060e2b34020501010e0e4d5253554231")
 MAX_VALUE_BYTES = 4096
@@ -114,3 +115,27 @@ def decode_cue(data):
         return parse_cue_block(block)
     except (UnicodeDecodeError, ValueError, IndexError):
         return None
+
+
+# The bridge's cue key, `payload_key(klv_span(data))`: Python only, no TypeScript twin.
+def klv_span(data):
+    """The KLV triplet at the start of `data` (16-byte key + BER length +
+    value), or `data` itself when it does not parse — the cue key ignores
+    anything a demuxer might append."""
+    data = bytes(data)
+    i = 16
+    if len(data) <= i:
+        return data
+    n = data[i]
+    i += 1
+    if n & 0x80:
+        k = n & 0x7F
+        if k == 0 or k > 4 or i + k > len(data):
+            return data
+        n = int.from_bytes(data[i:i + k], "big")
+        i += k
+    return data[:i + n] if i + n <= len(data) else data
+
+
+def payload_key(data):
+    return hashlib.sha1(bytes(data)).digest()

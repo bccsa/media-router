@@ -1,6 +1,6 @@
-"""Shared plumbing of the subtitle bridge's producer (`subtitle_pay`) and
-consumer (`subtitle_overlay`): GStreamer access, house time, the stderr trace,
-the engine emitters and the bus-chunk stamp probe. Tests replace `gst`.
+"""Shared plumbing of the subtitle bridge's producer (`subtitle_pay`) and consumer
+(`subtitle_overlay`): GStreamer access, house time, the stderr trace, the engine
+emitters and the producer retime's bus-chunk stamp probe (until WI-P3-8). Tests replace `gst`.
 """
 import sys
 

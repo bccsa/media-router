@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The runner-facing plumbing on a fake GStreamer: `subtitle_bridge.install`
 with pay and overlay, the pay path without the egress-trace module, the
-consumer's reader lifecycle across pad add/remove, the egress trace's env gate
-and bookkeeping, the consumer `show` trace, and the text/pad-name helpers.
+consumer's install (no demux probe), cue PTS, re-sends and pad add/remove, the
+egress trace's env gate and bookkeeping, the `show` trace, text/pad-name helpers.
 Run: python3 subtitle_bridge_test.py
 """
 import importlib
@@ -200,11 +200,45 @@ check("egress trace: pending bounded, oldest dropped",
       len(trace.pending) == subtitle_egress_trace.PENDING_MAX
       and sp.pes_ticks(10_000) not in trace.pending and sp.pes_ticks(10_039) in trace.pending)
 
-# --- consumer readers across pad add/remove; the show trace -------------------
-demux, ov = FakeElement("tsdemux", "subdemux"), FakeElement("textoverlay", "ov")
+# --- consumer: installed without a demux probe; cues on their demuxed PTS -----
+demux, ov = FakeElement("mrtsdemux", "subdemux"), FakeElement("textoverlay", "ov")
 pipe = FakePipe(subdemux=demux, ov=ov)
 subtitle_bridge.install(pipe, {"overlay": {"demux": "subdemux", "overlay": "ov"}}, None)
 st_ov = subtitle_bridge.state()["overlay"]
+check("overlay: installs without a probe on the demux, one on the overlay's video pad (WI-P3-7)",
+      not any(p.probes for p in demux.pads.values()) and set(demux.signals) == {"pad-added", "pad-removed"}
+      and [p for p in ov.pads] == ["video_sink"] and len(ov.pads["video_sink"].probes) == 1)
+reader = FakeElement("appsink")
+
+
+def cue_in(data, pts_ms):
+    """One demuxed KLV buffer into the cue reader (house now is the fake clock's 50 000 ms)."""
+    reader.sample = NS(get_buffer=lambda: FakeBuffer(data, int(pts_ms * 1_000_000)))
+    return subtitle_overlay._on_cue_sample(reader, st_ov)
+
+
+cues = st_ov["cues"]
+hi = klv.encode_cue(250, 3250, "Hi")
+cue_in(hi, 50_400.0)                                    # 400 ms ahead of now, as the bus sends it
+check("overlay: a KLV buffer with PTS T is a cue from T + rel.start, anchored on its pts",
+      cues.pending == [sc.Cue(50_650.0, 53_650.0, "Hi", subtitle_overlay.klv_key(hi), "pts")])
+far = klv.encode_cue(0, 1000, "Far")
+cue_in(far, 90_000_000.0)
+check("overlay: a PTS far from house now anchors on arrival",
+      cues.pending[0] == sc.Cue(50_000.0, 51_000.0, "Far", subtitle_overlay.klv_key(far), "now"))
+# The re-send case: one cue's copies, each a demuxed buffer of its own.
+re = klv.encode_cue(0, 3000, "Re")
+cue_in(re, 52_000.0)
+cue_in(re, 52_000.0)                                    # this release's re-send: the same PES again
+cue_in(re, 53_040.0)                                    # an older producer's: the cue on a later PES PTS
+cue_in(re + b"\x00\x00", 54_080.0)                      # bytes a demuxer appended after the triplet
+cue_in(klv.encode_cue(0, 3000, "Next"), 54_100.0)
+check("overlay: re-sends of a cue queue it once, whatever their PTS or trailing bytes; the next cue queues",
+      [(c.start, c.text) for c in cues.pending] == [(50_000.0, "Far"), (50_650.0, "Hi"), (52_000.0, "Re"),
+                                                    (54_100.0, "Next")]
+      and subtitle_overlay.klv_key(re + b"\x00\x00") == subtitle_overlay.klv_key(re))
+
+# --- consumer readers across pad add/remove; the show trace -------------------
 added, removed = demux.signals["pad-added"][0], demux.signals["pad-removed"][0]
 for _ in range(3):
     pad = FakePad("private_0_0180")
@@ -217,11 +251,11 @@ old = list(pipe.children)
 added(demux, FakePad("private_0_0180"), st_ov)          # re-added without a removal
 check("overlay: a re-added pad name replaces its old reader",
       len(pipe.children) == 2 and all(e.state == "NULL" for e in old) and not set(old) & set(pipe.children))
-added(demux, FakePad("audio_0_0101", "audio/mpeg"), st_ov)
-removed(demux, FakePad("audio_0_0101", "audio/mpeg"), st_ov)
+added(demux, FakePad("private_0_0120", "application/x-teletext"), st_ov)   # media=private: no A/V pad
+removed(demux, FakePad("private_0_0120", "application/x-teletext"), st_ov)
 check("overlay: a non-subtitle pad's fakesink is retired too", len(pipe.children) == 2)
 subtitle_bridge.clear()
 check("overlay: show trace carries cueLate, cueLag (now − start), frameLag and t0src",
-      subtitle_overlay.show_line("Hi", sc.Cue(1000.0, 4000.0, "Hi", b"k", "chunk"), 1020.0, 2400.0)
-      == "show 'Hi' cueLate=20 cueLag=1400 frameLag=1380 t0src=chunk")
+      subtitle_overlay.show_line("Hi", sc.Cue(1000.0, 4000.0, "Hi", b"k", "pts"), 1020.0, 2400.0)
+      == "show 'Hi' cueLate=20 cueLag=1400 frameLag=1380 t0src=pts")
 print("all subtitle_bridge tests passed")

@@ -2765,6 +2765,151 @@ def test_mrasrc_device():
               seen["native"] == seen["python"])
 
 
+# --------------------------------------------------------------------------- subtitle-overlay-formula (WI-P3-7)
+_RENDER_PLAN = os.path.join(_PLUGINS, "subtitle-core", "tests", "render-plan.json")
+_SUBTITLE_PY = ["env", "PYTHONPATH=" + ":".join(os.path.join(_PLUGINS, p, "py") for p in ("mpegts-core", "subtitle-core")),
+                sys.executable, os.path.join(_HERE, "gst-pipeline-runner.py")]
+_OVERLAY_SECONDS = 33               # cap-klv-sparse's first 33 s: seven cues and two clears drawn
+_OVERLAY_LEAD_NS = 400_000_000      # each chunk sent this far ahead of its PES, as a producer's bus does
+_OVERLAY_FRAME_MS = 40              # the stand-in video's frame (25 fps)
+# The bridge's show and clear trace (subtitle_overlay.show_line): kind, the text's repr, cueLate, t0src.
+_OVERLAY_LINE = re.compile(r"\[subtitle_bridge\] (show|clear) (?:('.*'|\".*\") )?cueLate=(-?\d+)\b.* t0src=(\S+)$")
+
+
+def _klv_pes(data, ref_ns, pid=0x180):
+    """[(house ns, KLV payload)] per PES of `pid`, in order: its PTS less 1 h, unwrapped nearest
+    `ref_ns` and rounded up to the ns, as mrtsdemux reads it."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    wrap, base = 1 << 33, 3600 * 90000
+    ref90 = ref_ns * 9 // 100_000
+    out, cur = [], None
+    for pkt in ts_psi.iter_packets(data):
+        if ts_psi.ts_pid(pkt) != pid:
+            continue
+        payload = pkt[ts_psi.payload_offset(pkt):]
+        if pkt[1] & 0x40:
+            if cur:
+                out.append(cur)
+            d = (ts_psi.read_pes_pts(pkt) - base - ref90 + wrap // 2) % wrap - wrap // 2
+            cur = [-(-(ref90 + d) * 100_000 // 9), bytearray(payload[9 + payload[8]:])]
+        elif cur:
+            cur[1] += payload
+    return [(t, bytes(p)) for t, p in out + ([cur] if cur else [])]
+
+
+def _overlay_owed(pes):
+    """The show and clear lines the overlay owes `pes`, by its rules alone: a copy within 2.5 s of
+    its payload's last copy is a re-send; a cue shows from its PES time plus its start until its
+    end or the next cue, a clear clears. [(house ns, 'show'|'clear', text)]."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "subtitle-core", "py"))
+    import subtitle_klv  # noqa: E402
+    last, out, shown = {}, [], None          # shown: (text, end ns)
+    for t, payload in pes:
+        rel, prev = subtitle_klv.decode_cue(payload), last.get(payload)
+        last[payload] = t
+        if rel is None or (prev is not None and t - prev <= 2_500_000_000):
+            continue
+        start, end, text = t + rel[0] * 1_000_000, t + rel[1] * 1_000_000, rel[2]
+        if shown and shown[1] <= start:
+            out.append((shown[1], "clear", ""))
+            shown = None
+        if text:
+            if not shown or shown[0] != text:
+                out.append((start, "show", text))
+            shown = (text, end)
+        elif shown:
+            out.append((start, "clear", ""))
+            shown = None
+    return out
+
+
+def test_subtitle_overlay_formula():
+    """subtitle-overlay-formula (WI-P3-7), python runner (the bridge is python-only): the renderers'
+    subtitle half as subtitle-core plans it (tests/render-plan.json, a vitest file snapshot: the bus
+    input into `mrtsdemux media=private`, the textoverlay, the bridge hook) on a live 25 fps video
+    into fakesink, fed cap-klv-sparse rebased to now, each chunk 400 ms ahead of its PES. Every cue
+    and clear is drawn on the first frame at its PES time T (cueLate within one frame) and seen then,
+    not at its arrival, re-sends once, and every trace line reads `t0src=pts`: no bus stamp read."""
+    for el in ("unixfdsink", "unixfdsrc", "textoverlay", "videotestsrc"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP subtitle-overlay-formula — {el} unavailable")
+            return
+    if not os.path.exists(_MRTS_CLI) or not os.path.exists(_RENDER_PLAN):
+        print("SKIP subtitle-overlay-formula — mrts_cli or subtitle-core's tests/render-plan.json missing")
+        return
+    with open(_RENDER_PLAN, encoding="utf-8") as fh:
+        plan = json.load(fh)
+    check("subtitle-overlay-formula: the plan pins the python runner, its input on mrtsdemux media=private",
+          plan["runner"] == "python" and plan["inputFragment"].endswith("! mrtsdemux name=subdemux media=private"))
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    feeder = _bus_feeders([os.path.join(tmp, "subs.sock")], clock)[0]
+    pipeline = ("videotestsrc is-live=true pattern=black ! video/x-raw,width=320,height=180,framerate=25/1 ! "
+                f"{plan['overlayElement']} ! fakesink name=vsink sync=true "
+                + plan["inputFragment"].replace("@SOCK@", tmp))
+    r = RunnerProc(_SUBTITLE_PY)
+    seen, text, chunks, now0 = [], None, [], 0
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": pipeline, "runnerHooks": plan["runnerHooks"]})
+        check("subtitle-overlay-formula: reaches PLAYING",
+              r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+        now0 = clock.get_time() + 1_500_000_000
+        data = _rebased("cap-klv-sparse", now0, os.path.join(tmp, "klv.ts"))
+        chunks = [(c, at) for c, at in _house_chunks(data, now0, lead_ns=_OVERLAY_LEAD_NS)
+                  if at < now0 + _OVERLAY_SECONDS * 1_000_000_000]
+        feed = threading.Thread(target=_feed_paced, args=(feeder, chunks, clock))
+        feed.start()
+        done = None
+        while done is None or clock.get_time() < done:
+            if done is None and not feed.is_alive():
+                done = clock.get_time() + 1_500_000_000
+            n = len(r.logs)
+            r.pump()
+            seen += [(clock.get_time(), line) for line in r.logs[n:]]   # when each line is read
+            time.sleep(0.005)
+        feed.join()
+        r.send({"cmd": "get_property", "id": "ovtext", "element": "subov", "property": "text"})
+        ev = r.wait_event(lambda e: e.get("id") == "ovtext" and e.get("event") in ("property", "command_error"))
+        text = ev.get("value") if ev and ev.get("event") == "property" else None
+        warned = [e.get("message") for e in r.events if e.get("event") == "warning"
+                  and "subtitle bridge" in (e.get("message") or "")]
+        check("subtitle-overlay-formula: no lifecycle error, no bridge warning",
+              not r.has_event(ev_is("error")) and not warned)
+        check("subtitle-overlay-formula: exits 0 after stop", r.stop_and_wait() == 0)
+        by = {}
+        for m in _demux_events(r, "subdemux"):
+            by.setdefault(m.get("reason"), []).append(m)
+        prog = [(m.get("generation"), m.get("pads"), m.get("pcr-pid")) for m in by.get("program", [])]
+        iv = by.get("interval", [])
+        # What Subtitles In's demux rows read (WI-P3-6): the KLV pad alone, and no warning.
+        check(f"subtitle-overlay-formula: the cue demux plans the KLV pad alone and reports each second, no "
+              f"gap, loss or warning ({prog}; {len(iv)} reports; {sorted(by)})",
+              prog == [(0, "private_0_0180", 0x180)] and len(iv) >= 20 and set(by) == {"program", "interval"}
+              and all(m.get("gaps") == 0 and m.get("cc-lost") == 0 for m in iv))
+    finally:
+        feeder.set_state(Gst.State.NULL)
+        r.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+    owed = _overlay_owed(_klv_pes(b"".join(c for c, _at in chunks), now0))
+    lines = [(at, m) for at, line in seen for m in [_OVERLAY_LINE.search(line)] if m]
+    check(f"subtitle-overlay-formula: every trace line reads t0src=pts ({len(lines)} lines; "
+          f"{sorted({m.group(4) for _at, m in lines})})", lines and all(m.group(4) == "pts" for _at, m in lines))
+    got = [(m.group(1), m.group(2) or "") for _at, m in lines]
+    want = [(k, repr(x.replace("\n", " / ")[:60]) if x else "") for _t, k, x in owed]
+    check(f"subtitle-overlay-formula: the cues and clears drawn are the recording's, in order, re-sends once "
+          f"({len(got)} drawn of {len(owed)} owed)", got == want and len(owed) >= 8)
+    off = [(k, int(m.group(3)), round((at - t) / 1e6)) for (at, m), (t, k, _x) in zip(lines, owed)]
+    check(f"subtitle-overlay-formula: each on the first frame at its PES time T (cueLate 0..{_OVERLAY_FRAME_MS} ms) "
+          f"and seen 0..300 ms after T, not at its arrival {_OVERLAY_LEAD_NS // 1_000_000} ms before "
+          f"([kind, cueLate, seen − T ms] {off})",
+          len(off) == len(owed) and all(0 <= late <= _OVERLAY_FRAME_MS and 0 <= at <= 300 for _k, late, at in off))
+    check(f"subtitle-overlay-formula: the overlay's text is the last line's ({text!r})",
+          bool(owed) and text == (owed[-1][2] if owed[-1][1] == "show" else ""))
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2798,6 +2943,7 @@ test_edge_stall_fds()
 test_mrtsdemux_pmt_change()
 test_mrtsdemux_messages()
 test_mrasrc_device()
+test_subtitle_overlay_formula()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

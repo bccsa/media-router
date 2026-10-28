@@ -2824,11 +2824,11 @@ changes: `subtitleOverlayLiveUpdates(changes, config)`
 → `setElementProperty(overlayName, property, value)`. Do NOT link the
 textoverlay text pad — the bridge sets the element's `text` property from a
 probe on its video sink pad, frame-accurate against the stamped timeline (the
-text pad's window semantics flash or block; see the ADR). A cue anchors on the
-house time the bus chunk stamps give its PES (`subtitle_stamp_model.StampModel`,
-read on the demux sink pad), not on tsdemux's PTS, which wanders on a sparse
-KLV-only TS; journal lines `[subtitle_bridge] show '…' cueLate=… cueLag=…
-frameLag=… t0src=chunk|pts|now`. `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
+text pad's window semantics flash or block; see the ADR). A cue anchors on its
+PES time, the PTS `mrtsdemux media=private` gives it on the formula (PES − 1 h),
+or on its arrival when that PTS is over 10 s from house now (house-clock
+WI-P3-7); journal lines `[subtitle_bridge] show '…' cueLate=… cueLag=…
+frameLag=… t0src=pts|now`. `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
 environment adds an `egress <label> start= src=+ms tee=+ms` line per produced
 cue (wall-clock probes on the pay appsrc and the bus tee; off by default).
 

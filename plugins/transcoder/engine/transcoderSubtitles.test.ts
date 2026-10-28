@@ -28,7 +28,7 @@ describe('transcoder subtitle wiring', () => {
         )!;
         expect(subs.overlay).toMatch(/^textoverlay name=subov .* ! $/);
         expect(subs.hold).toBe(buildSubtitleHold(1400));
-        expect(subs.inputFragment).toMatch(/tsdemux name=subdemux latency=0$/);
+        expect(subs.inputFragment).toMatch(/ mrtsdemux name=subdemux media=private$/);
         expect(subs.runnerHooks.map((h) => h.module)).toEqual(['subtitle_bridge']);
         expect(subs.runner).toBe('python');
         expect(transcoderSubtitles({ port: 5600, config: {} }, undefined)!.hold).toBe('');
