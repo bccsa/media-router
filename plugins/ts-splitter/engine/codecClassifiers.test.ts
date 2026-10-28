@@ -24,4 +24,14 @@ describe('TsSplitterModule codec classifiers', () => {
         expect(classifyCaps('audio/mpeg, mpegversion=(int)1, layer=(int)2').codec).toBe('mp2');
         expect(classifyCaps('audio/x-ac3, rate=(int)48000').codec).toBe('ac3');
     });
+
+    it('classifies MPEG-2 AAC as aac — the caps a live ADTS feed with the ID bit set probes to', () => {
+        const r = classifyCaps(
+            'audio/mpeg, framed=(boolean)true, mpegversion=(int)2, level=(string)2, profile=(string)lc, rate=(int)48000, channels=(int)2, stream-format=(string)adts',
+        );
+        expect(r.codec).toBe('aac');
+        expect(r.sampleRate).toBe(48000);
+        expect(r.channels).toBe(2);
+        expect(classifyCaps('audio/mpeg, mpegversion=(int)3').codec).toBe('unknown');
+    });
 });
