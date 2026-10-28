@@ -27,8 +27,8 @@ export type {
     TranscoderPipelineResult,
 } from './transcoderPipelineTypes.js';
 
-/** `name=` of the input tsdemux — the target of `alignBranchesToStamps` (the
- *  runner retimes its media src pads onto the bus stamps). */
+/** `name=` of the input demux (`mrtsdemux media=video`, the formula: PTS = PES − 1 h); its
+ *  counters show on the TS input (WI-P3-6). */
 export const DEMUX_NAME = 'demux';
 
 /** `name=` of the shared deinterlacer — the `deinterlace_guard` runner hook's target (#817). */
@@ -51,7 +51,7 @@ export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
  * decode+encode chains.
  *
  * The whole graph is ONE static pipeline string (no `linkOnPadAdded`). The
- * runner parses it with `gst_parse_launch`, which resolves `tsdemux`'s
+ * runner parses it with `gst_parse_launch`, which resolves `mrtsdemux`'s
  * sometimes-pads by delayed linking exactly like `gst-launch`. It is deliberately
  * NOT split into a pad-added branch: an earlier version wrapped the
  * decode→tee→leaves fragment in a `parse_bin_from_description` bin, which handed
@@ -67,14 +67,13 @@ export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
  * vs ~58% for a raw `avdec_h264` on a 1080p50 feed, buying only seamless
  * mid-stream resolution changes a broadcast transcode never sees.)
  *
- * A video-only capsfilter (`video/x-h264`) sits directly on `tsdemux`'s output so
- * ONLY the H.264 video elementary stream links downstream; an audio pad (e.g. AAC
- * in a broadcast SRT feed) is left unplugged — without it the audio pad reaches
- * `videoconvert` (raw-video-only) and the pipeline dies with "Internal data stream
- * error". This capsfilter is also what enforces the H.264-only input: an H.265 (or
- * other) source exposes no `video/x-h264` pad, nothing links, and the pipeline
- * silently produces no video. Returns null when there are no outputs — the caller
- * sets a health warning rather than starting an empty pipeline.
+ * The demux exposes video pads only (`media=video`): an audio stream (e.g. AAC in a
+ * broadcast SRT feed) gets no pad, so it can never reach `videoconvert` (raw-video-only)
+ * and kill the pipeline with "Internal data stream error". The `video/x-h264`
+ * capsfilter directly on its output enforces the H.264-only input: an H.265 (or
+ * other) video pad does not link, and the stream stops not-linked (an error), as
+ * with tsdemux. Returns null when there are no outputs — the caller sets a health
+ * warning rather than starting an empty pipeline.
  *
  * Buffering / multicore decode: unlike a passthrough remux, this pipeline
  * DECODES, and frame-threaded software H.264 decode only parallelises across
@@ -83,10 +82,10 @@ export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
  * leaky RAW-frame queue placed AFTER the decoder, in front of videorate/tee.
  *
  * The raw buffer must NOT sit on the compressed stream (an earlier version put
- * a `bufferMs` leaky queue between tsdemux and h264parse): tsdemux output
- * buffers carry sparse timestamps (PTS only at PES boundaries), so a
- * time-bounded leaky queue cannot measure its fill level there — it treats
- * itself as full and silently drops H.264 mid-GOP. On a long-GOP source every
+ * a `bufferMs` leaky queue between the demux and h264parse): the stock demux's
+ * output buffers carried sparse timestamps (PTS only at PES boundaries), so a
+ * time-bounded leaky queue could not measure its fill level there — it treated
+ * itself as full and silently dropped H.264 mid-GOP. On a long-GOP source every
  * drop poisons the decode until the next keyframe. Measured on-box (2026-07-02,
  * same live feed, simultaneous 30 s runs): compressed-side leaky queue ≈ 1.4 MB
  * out; the identical pipeline with the buffer post-decode ≈ 19 MB (full CBR
@@ -117,7 +116,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // relay, PCR every 2 s) turn that into 2-second batch-release — the whole
     // transcode then freezes/bursts at the PCR cadence and the bursts overflow
     // downstream receive buffers (visible as packet loss). The decode chain
-    // takes per-frame PTS from the PES headers via tsdemux, so PCR re-stamping
+    // takes per-frame PTS from the PES headers via the demux, so PCR re-stamping
     // buys nothing here.
     // No udpsrc `timeout`: a single-input loopback transcoder feeding a tee (fan-
     // out, not an aggregator) has nothing to freeze when its source goes silent —
@@ -176,10 +175,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         });
     };
 
-    // Video-only capsfilter on the tsdemux output — steers pad selection to the
-    // H.264 video elementary stream so an audio pad (AAC, etc.) is never linked
-    // into the decode chain (otherwise it reaches videoconvert and the pipeline
-    // dies with "Internal data stream error").
+    // H.264 only, on the demux's video pads: another video codec does not link.
     const videoCaps = 'capsfilter caps="video/x-h264"';
     // Raw-frame work-ahead buffer (thread boundary decoder ↔ videorate/tee).
     // Sits AFTER the decoder on purpose — see the buffering note above.
@@ -224,19 +220,19 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // videorate runs on its own thread via the raw buffer queue. It is
     // `drop-only`: it must never DUPLICATE. Under the time-sync contract the
     // pipeline runs with base_time 0, decoded frames sit at house time
-    // (~10^5..10^6 s) while tsdemux's segment starts at 0, and a duplicating
+    // (~10^5..10^6 s) while the demux's segment starts at 0, and a duplicating
     // videorate fills that whole span with copies of the first frame (22 M
     // frames on the 2026-09-16 .103 rig: 200-300 fps of dups, output timeline
     // racing 8-14x, two cores burned, the rendition unmuxable downstream).
     // drop-only also rules out the dup storm after any forward PTS jump; a
     // slower-than-target source simply delivers its real rate.
-    // Subtitle burn-in (optional): one overlay on the conformed frame ahead of the
-    // tee, a hold on the compressed video, the cue input (transcoderSubtitles.ts).
-    const subs = transcoderSubtitles(input.subtitles, input.subtitleDelayMs);
+    // Subtitle burn-in (optional): one overlay on the conformed frame ahead of the tee,
+    // the video's pace-group watch before h264parse, the cue input (transcoderSubtitles.ts).
+    const subs = transcoderSubtitles(input.subtitles);
     const overlay = subs?.overlay ?? '';
-    const hold = subs?.hold ?? '';
+    const videoWatch = subs?.videoWatch ?? '';
     const pipeline =
-        `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! ${videoCaps} ! ${hold}${decoder} ! ${rawBuffer} ! ` +
+        `${tsInput} ! mrtsdemux name=${DEMUX_NAME} media=video ! ${videoCaps} ! ${videoWatch}${decoder} ! ${rawBuffer} ! ` +
         `${deinterlacer}videorate drop-only=true ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 

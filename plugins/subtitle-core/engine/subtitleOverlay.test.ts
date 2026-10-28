@@ -114,6 +114,28 @@ describe('pipeline fragments', () => {
         expect(subtitleRenderPlan({ port: 5600 }, {}).runner).toBe('python');
     });
 
+    it("names the renderer's pace group to the bridge only when given one (burn-in, WI-P3-13)", () => {
+        const overlay = (plan: ReturnType<typeof subtitleRenderPlan>) =>
+            (plan.runnerHooks[0].config as { overlay: Record<string, unknown> }).overlay;
+        expect(overlay(subtitleRenderPlan({ port: 5600 }, {}))).toEqual({
+            demux: 'subdemux',
+            overlay: 'subov',
+        });
+        expect(overlay(subtitleRenderPlan({ port: 5600 }, {}, { aligner: 'burnin' }))).toEqual({
+            demux: 'subdemux',
+            overlay: 'subov',
+            aligner: 'burnin',
+        });
+        // Only the hook changes: the overlay and the cue input are the same either way.
+        const plain = subtitleRenderPlan({ port: 5600 }, {});
+        const paced = subtitleRenderPlan({ port: 5600 }, {}, { aligner: 'burnin' });
+        expect([paced.overlayElement, paced.inputFragment, paced.runner]).toEqual([
+            plain.overlayElement,
+            plain.inputFragment,
+            plain.runner,
+        ]);
+    });
+
     it('tests/render-plan.json is the plan protocol subtitle-overlay-formula replays (`vitest -u` rewrites it)', async () => {
         // `@SOCK@` stands for the protocol case's socket directory.
         const plan = subtitleRenderPlan({ port: 40500, socketPath: '@SOCK@/subs.sock' }, {});

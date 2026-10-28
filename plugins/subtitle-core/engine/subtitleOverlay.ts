@@ -209,6 +209,9 @@ export interface SubtitleOverlayRunnerConfig {
     demux: string;
     /** textoverlay whose `text` property the bridge drives. */
     overlay: string;
+    /** The renderer's video pace group: each cue reader is then a sparse `mralignwatch` of it, so
+     *  the video waits by the cues' measured lateness (burn-in, house-clock WI-P3-13). */
+    aligner?: string;
 }
 
 /** Config for one producer branch (`subtitle_bridge` hook, `pay[]`). */

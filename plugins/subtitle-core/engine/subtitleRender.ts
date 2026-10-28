@@ -41,10 +41,17 @@ export interface SubtitleRenderPlan {
     runner: 'python';
 }
 
+export interface SubtitleRenderOpts {
+    /** The pace group of the renderer's video `mralignwatch`, which the bridge's cue readers
+     *  join (the transcoder's burn-in); unset, they are queues (the video-player). */
+    aligner?: string;
+}
+
 /** Everything a renderer adds to its description for a wired subtitle source. */
 export function subtitleRenderPlan(
     source: SubtitleSource,
     config: Record<string, unknown>,
+    opts: SubtitleRenderOpts = {},
 ): SubtitleRenderPlan {
     return {
         overlayElement: buildSubtitleOverlayElement(SUBTITLE_OVERLAY_NAME, config),
@@ -55,7 +62,11 @@ export function subtitleRenderPlan(
         }),
         runnerHooks: [
             subtitleRunnerHook({
-                overlay: { demux: SUBTITLE_DEMUX_NAME, overlay: SUBTITLE_OVERLAY_NAME },
+                overlay: {
+                    demux: SUBTITLE_DEMUX_NAME,
+                    overlay: SUBTITLE_OVERLAY_NAME,
+                    ...(opts.aligner ? { aligner: opts.aligner } : {}),
+                },
             }),
         ],
         runner: 'python',

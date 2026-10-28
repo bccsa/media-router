@@ -16,8 +16,8 @@ FRAME_TIME_TOLERANCE_MS = 10_000
 QUEUE_MAX = 16
 SAME_START_MS = 1.0
 
-# A cue: house times (ms) and text; the consumer adds its payload key and t0 source.
-Cue = namedtuple("Cue", "start end text key src", defaults=(None, None))
+# A cue: house times (ms) and text; the consumer adds its payload key, t0 source and arrival.
+Cue = namedtuple("Cue", "start end text key src at", defaults=(None, None, None))
 
 
 def make_cue(start_ms, text, hold_ms):

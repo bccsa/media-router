@@ -127,42 +127,93 @@ describe('buildPipeline', () => {
         const desc = module.buildPipeline({
             renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
         })!;
-        expect(Object.keys(desc).sort()).toEqual([
-            'alignBranchesToStamps',
-            'pipeline',
-            'restartOnError',
-            'runnerHooks',
-        ]);
+        expect(Object.keys(desc).sort()).toEqual(['pipeline', 'restartOnError', 'runnerHooks']);
     });
 
-    it('aligns its input demux to the bus stamps as a transform producer', () => {
+    it('demuxes its input on the formula: no branch alignment, no stock tsdemux (WI-P3-13)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({
             renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
         })!;
-        // Only the media demux: the subtitle leg's `subdemux` is not a timeline.
-        expect(desc.alignBranchesToStamps).toEqual({ demuxes: ['demux'], transformProducer: true });
+        expect(desc.alignBranchesToStamps).toBeUndefined();
+        expect(desc.pipeline).toContain(
+            'mrtsdemux name=demux media=video ! capsfilter caps="video/x-h264"',
+        );
+        expect(desc.pipeline).not.toMatch(/\btsdemux\b/);
     });
 
-    it('clamps subtitleDelayMs to 0–1800 ms (NaN → 0) and passes it to the hold', () => {
+    it('ignores a stored subtitleDelayMs: no hold, the same string (OQ-24, OQ-33)', () => {
+        const build = (extra: Record<string, unknown> = {}) => {
+            const { module, getModuleBusSource } = makeModule();
+            getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
+                portId === 'subtitles-in'
+                    ? { port: 5600, socketPath: '/tmp/mr-bus-5600-sub.sock' }
+                    : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+            );
+            const renditions = [{ width: 1280, height: 720, bitrate: 2500 }];
+            return module.buildPipeline({ renditions, ...extra })!.pipeline;
+        };
+        const plain = build();
+        for (const subtitleDelayMs of [1400, 5000, -10, 'abc']) {
+            const p = build({ subtitleDelayMs });
+            expect(p).toBe(plain);
+            expect(p).not.toContain('subhold');
+            expect(p).not.toContain('min-threshold-time');
+        }
+    });
+
+    it('with Subtitles In wired the video waits in the burn-in pace group, else no watch (WI-P3-13)', () => {
+        const { module, getModuleBusSource } = makeModule();
+        const config = { renditions: [{ width: 1280, height: 720, bitrate: 2500 }] };
+        expect(module.buildPipeline(config)!.pipeline).not.toContain('mralignwatch');
+        getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
+            portId === 'subtitles-in'
+                ? { port: 5600, socketPath: '/tmp/mr-bus-5600-sub.sock' }
+                : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+        );
+        const desc = module.buildPipeline(config)!;
+        // One watch in the string, on the compressed video; the bridge makes the cue member.
+        expect(desc.pipeline.match(/\bmralignwatch\b/g)).toHaveLength(1);
+        expect(desc.pipeline).toContain(
+            'capsfilter caps="video/x-h264" ! mralignwatch name=aw_burnv aligner=burnin input=video ' +
+                'max-size-bytes=40000000 ! h264parse ! ',
+        );
+        const bridge = desc.runnerHooks!.find((h) => h.module === 'subtitle_bridge')!;
+        expect(bridge.config).toEqual({
+            overlay: { demux: 'subdemux', overlay: 'subov', aligner: 'burnin' },
+        });
+    });
+
+    it("the burn-in's watches join their inputs' rows: the video the TS input, the cues Subtitles In", () => {
         const { module, getModuleBusSource } = makeModule();
         getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
             portId === 'subtitles-in'
                 ? { port: 5600, socketPath: '/tmp/mr-bus-5600-sub.sock' }
                 : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
         );
-        const hold = (subtitleDelayMs: unknown) =>
-            module
-                .buildPipeline({
-                    renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
-                    subtitleDelayMs,
-                })!
-                .pipeline.match(/min-threshold-time=(\d+)/)?.[1];
-        expect(hold(1400)).toBe('1400000000');
-        expect(hold(5000)).toBe('1800000000');
-        expect(hold(-10)).toBeUndefined();
-        expect(hold('abc')).toBeUndefined();
-        expect(hold(undefined)).toBeUndefined();
+        const desc = module.buildPipeline({
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        // The tap the string gives each input's bus source: the nearest ahead of its demux.
+        const tap = (demux: string) => {
+            const els = desc.pipeline.split(' ! ');
+            const at = els.findIndex((e) => e.startsWith(`mrtsdemux name=${demux} `));
+            const src = els
+                .slice(0, at)
+                .reverse()
+                .find((e) => e.startsWith('mrlateness name=lat_busin_'));
+            return src?.split(' ')[1].slice('name='.length);
+        };
+        const of = (input: string, aligner = 'burnin') =>
+            (module as any).alignerInputOf({ name: 'aw', aligner, input });
+        expect(tap('demux')).toMatch(/^lat_busin_5004_/);
+        expect(of('video')).toEqual({ tap: tap('demux') });
+        expect(of('cues')).toEqual({ tap: tap('subdemux') });
+        expect(of('video', 'other')).toBeUndefined();
+        expect(of('route')).toBeUndefined();
+        // The edge gone (its producer stopped): the watch names nothing until it rejoins.
+        getModuleBusSource.mockImplementation(() => undefined);
+        expect(of('cues')).toBeNull();
     });
 
     it('pins the python runner only while a subtitle source is wired (python-only hook, ADR-0016 2026-10-09)', () => {
@@ -339,6 +390,32 @@ describe('deinterlacer (#817)', () => {
         const desc = build({ deinterlace: 'off' });
         expect(desc.pipeline).not.toContain('deinterlace');
         expect(desc.runnerHooks).toBeUndefined();
+    });
+});
+
+describe('burn-in plan (WI-P3-13)', () => {
+    const arch = Object.getOwnPropertyDescriptor(process, 'arch')!;
+    afterEach(() => Object.defineProperty(process, 'arch', arch));
+
+    it('tests/burnin-plan.json is the description protocol burnin-formula replays (`vitest -u` rewrites it)', async () => {
+        // `@SOCK@` stands for the protocol case's socket directory; one small rendition at the
+        // fixture's 25 fps, on the box's deinterlacer (arm64: greedyl) and no hardware scaler.
+        Object.defineProperty(process, 'arch', { ...arch, value: 'arm64' });
+        TranscoderModule.setHwScalers({ va: false, v4l2: false });
+        const { module, getModuleBusSource } = makeModule();
+        getModuleBusSource.mockImplementation((_id: string, portId?: string) =>
+            portId === 'subtitles-in'
+                ? { port: 40601, socketPath: '@SOCK@/subs.sock' }
+                : { port: 40600, socketPath: '@SOCK@/video.sock' },
+        );
+        const { pipeline, runnerHooks, runner } = module.buildPipeline({
+            framerate: 25,
+            gopFrames: 25,
+            renditions: [{ name: '180p', width: 320, height: 180, bitrate: 300 }],
+        })!;
+        await expect(
+            `${JSON.stringify({ pipeline, runnerHooks, runner }, null, 2)}\n`,
+        ).toMatchFileSnapshot('../tests/burnin-plan.json');
     });
 });
 

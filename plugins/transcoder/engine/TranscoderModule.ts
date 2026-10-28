@@ -6,6 +6,10 @@ import {
     SPEED_PRESETS,
     ThroughputPoller,
     bitrateBadge,
+    latInName,
+    shortHash,
+    type AlignerInputRef,
+    type AlignerWatchRef,
     type CodecId,
     type H264Profile,
     type ImplId,
@@ -22,6 +26,7 @@ import {
 } from '@media-router/plugin-subtitle-core';
 import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
 import { renditionSummary, throughputSection } from './transcoderStatus.js';
+import { BURNIN_ALIGNER } from './transcoderSubtitles.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -33,6 +38,12 @@ import {
     type ResolvedEncode,
     type TranscoderOutput,
 } from './transcoderPorts.js';
+
+/** The input each burn-in watch serves, by its `input` label (WI-P3-13). */
+const BURNIN_INPUT_PORTS: Record<string, string> = {
+    video: 'mpegts-in',
+    cues: SUBTITLE_INPUT_PORT_ID,
+};
 
 /**
  * Video Transcoder plugin (ABR ladder).
@@ -56,6 +67,15 @@ export class TranscoderModule extends GstPluginBase {
     /** The input demux serves the TS input, the cue demux Subtitles In (WI-P3-6). */
     protected demuxInputOf(element: string): { port: string } | undefined {
         return renderDemuxInput(element, { demux: DEMUX_NAME, port: 'mpegts-in' });
+    }
+
+    /** The burn-in's watches join their inputs' rows (the tap `buildTsUdpInput` gives an edge's
+     *  source), or name nothing while that edge is gone; other labels: the engine's rule. */
+    protected alignerInputOf(watch: AlignerWatchRef): AlignerInputRef | undefined {
+        const port = BURNIN_INPUT_PORTS[watch.input];
+        if (watch.aligner !== BURNIN_ALIGNER || !port) return undefined;
+        const s = this.services?.mediaRouter?.getModuleBusSource(this.services.instanceId, port);
+        return s ? { tap: latInName(`${s.port}_${shortHash(s.socketPath)}`) } : null;
     }
 
     /** Bus-egress tee names captured at build time (`busout_<port>`), one per rendition. */
@@ -232,11 +252,6 @@ export class TranscoderModule extends GstPluginBase {
         const framerate = (config.framerate as number) ?? 50;
         const gopFrames = (config.gopFrames as number) ?? 50;
         const bufferMs = (config.bufferMs as number) ?? 200;
-        // Rebuild key, not live: the hold is a queue in the pipeline string.
-        const rawDelay = Math.round(Number(config.subtitleDelayMs));
-        const subtitleDelayMs = Number.isFinite(rawDelay)
-            ? Math.min(1800, Math.max(0, rawDelay))
-            : 0;
         const decodeThreads = config.cpuDecodeThreading === 'single' ? 'single' : 'multi';
         // Validated against the known set like the encoder enums above, so a
         // malformed config can't splice into the gst-launch string.
@@ -258,7 +273,6 @@ export class TranscoderModule extends GstPluginBase {
             subtitles: subtitleSource
                 ? { port: subtitleSource.port, socketPath: subtitleSource.socketPath, config }
                 : undefined,
-            subtitleDelayMs,
         });
         if (!result) return null;
 
@@ -289,11 +303,6 @@ export class TranscoderModule extends GstPluginBase {
             restartOnError: true,
             ...(result.runnerHooks ? { runnerHooks: result.runnerHooks } : {}),
             ...(result.runner ? { runner: result.runner } : {}),
-            // Input demux retimed to the bus stamps per access unit (it otherwise
-            // runs the input's PTS−PCR lead late, ~1.1 s at the OCC gate, and
-            // walks), so the output PES carry content time + 1 h and the identity
-            // egress is content-correct; the hop's transit is the route's D to cover.
-            alignBranchesToStamps: { demuxes: [DEMUX_NAME], transformProducer: true },
         };
     }
 

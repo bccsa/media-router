@@ -2809,7 +2809,15 @@ see `video-player/engine/subtitleManifest.test.ts`). In `buildPipeline`, when
 take `subtitleRenderPlan(source, config)`: splice its `overlayElement` into
 your video path AFTER `videoconvert`, append its `inputFragment` as a separate
 fragment, and put its `runnerHooks` and `runner` (`'python'` — the bridge is
-python-only by decision, ADR-0016) on the description. Live look
+python-only by decision, ADR-0016) on the description. To hold the video for
+late cues (the transcoder's burn-in, house-clock WI-P3-13), pass `{ aligner }`
+as its third argument and put `mralignwatch name=… aligner=<that name>
+input=video max-size-bytes=…` on your compressed video before the decoder: the
+bridge then reads each cue pad through `mralignwatch aligner=<that name>
+input=cues sparse=true` in place of a queue, so the video leaves at its time
+plus the cue path's measured lateness and each cue reaches the bridge ahead of
+its frame by the decode latency; answer `alignerInputOf` for the two labels
+(the transcoder's). Live look
 changes: `subtitleOverlayLiveUpdates(changes, config)`
 → `setElementProperty(overlayName, property, value)`. Do NOT link the
 textoverlay text pad — the bridge sets the element's `text` property from a
@@ -2818,7 +2826,8 @@ text pad's window semantics flash or block; see the ADR). A cue anchors on its
 PES time, the PTS `mrtsdemux media=private` gives it on the formula (PES − 1 h),
 or on its arrival when that PTS is over 10 s from house now (house-clock
 WI-P3-7); journal lines `[subtitle_bridge] show '…' cueLate=… cueLag=…
-frameLag=… t0src=pts|now`. `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
+frameLag=… margin=… t0src=pts|now` (margin: how long the cue waited in the
+bridge for its frame). `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
 environment adds an `egress <label> start= src=+ms tee=+ms` line per produced
 cue (wall-clock probes on the pay appsrc and the bus tee; off by default).
 

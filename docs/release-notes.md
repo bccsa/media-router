@@ -231,6 +231,16 @@ elements" below do not start.
   inputs arrive on content time. Do not run the hot patch's revert script
   after installing this release: it would put back the old file.
 
+**Removed settings (Phase 3), nothing migrated**
+
+- **Subtitle Sync Delay** on Video Transcoder: burn-in now waits for each
+  subtitle by the measured delay of the subtitle path, so the output's added
+  latency follows the subtitles instead of a fixed setting. A subtitle that
+  comes later than that wait (the first after a start, while the delay is
+  measured) is drawn late, never dropped, and the wait rises to it. Stored
+  values are ignored (the OCC gate's burn-in transcoders ran 1,400 ms); a
+  rollback restores them.
+
 **Needs the image's native elements (Phase 2)**
 
 - Without the timing elements of this image, Audio Mixer, N-1 Audio Mixer
@@ -238,6 +248,9 @@ elements" below do not start.
   through the image's new demux, refuse to start with "Native TS module not
   loaded", and the MPEG-TS Muxer does not start. Audio Processing's ducker and keyed-gate modes also need
   their own native plugin and otherwise show "Native plugin not loaded".
+- From Phase 3, Video Transcoder too: its input goes through the same demux,
+  so without the image's timing elements it refuses to start with "Native TS
+  module not loaded".
 
 **Fixed**
 

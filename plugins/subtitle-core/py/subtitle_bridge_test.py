@@ -2,8 +2,8 @@
 """The runner-facing plumbing on a fake GStreamer: `subtitle_bridge.install`
 with pay and overlay, the pay path without the egress-trace module, the producer's
 cue PES PTS (its teletext PES PTS, no retime), the consumer's install (no demux
-probe), cue PTS, re-sends and pad add/remove, the egress trace's env gate and
-bookkeeping, the `show` trace, the text helper. Run: python3 subtitle_bridge_test.py
+probe), cue PTS, re-sends, pad add/remove and the burn-in's cue watch, the egress
+trace's env gate and bookkeeping, the `show` trace, the text helper.
 """
 import importlib
 import os
@@ -44,9 +44,12 @@ class FakeBuffer:
         return len(self.data)
 
 
+ORDER = []                  # the readers' links and state syncs, in order
+
+
 class FakePad:
-    def __init__(self, name, caps="meta/x-klv"):
-        self.name, self.caps, self.probes = name, caps, []
+    def __init__(self, name, caps="meta/x-klv", parent=None):
+        self.name, self.caps, self.probes, self.parent, self.peer = name, caps, [], parent, None
 
     def get_name(self):
         return self.name
@@ -54,7 +57,9 @@ class FakePad:
     def get_current_caps(self):
         return NS(get_size=lambda: 1, get_structure=lambda i: NS(get_name=lambda: self.caps))
 
-    def link(self, _other):
+    def link(self, other):
+        self.peer = other
+        ORDER.append(("pad", other.parent.kind if other.parent else None))
         return 0
 
     def add_probe(self, *args):
@@ -74,15 +79,18 @@ class FakeElement:
         self.signals[sig] = (cb, a)
 
     def get_static_pad(self, n):
-        return self.pads.setdefault(n, FakePad(n))
+        return self.pads.setdefault(n, FakePad(n, parent=self))
 
     def sync_state_with_parent(self):
         self.state = "PLAYING"
+        ORDER.append(("sync", self.kind))
 
     def set_state(self, st):
         self.state = st
 
-    def link(self, _other):
+    def link(self, other):
+        self.linked = other
+        ORDER.append(("link", self.kind, other.kind))
         return True
 
     def emit(self, sig, *a):
@@ -228,12 +236,12 @@ def cue_in(data, pts_ms):
 cues = st_ov["cues"]
 hi = klv.encode_cue(250, 3250, "Hi")
 cue_in(hi, 50_400.0)                                    # 400 ms ahead of now, as the bus sends it
-check("overlay: a KLV buffer with PTS T is a cue from T + rel.start, anchored on its pts",
-      cues.pending == [sc.Cue(50_650.0, 53_650.0, "Hi", subtitle_overlay.klv_key(hi), "pts")])
+check("overlay: a KLV buffer with PTS T is a cue from T + rel.start, anchored on its pts, its arrival kept",
+      cues.pending == [sc.Cue(50_650.0, 53_650.0, "Hi", subtitle_overlay.klv_key(hi), "pts", 50_000.0)])
 far = klv.encode_cue(0, 1000, "Far")
 cue_in(far, 90_000_000.0)
 check("overlay: a PTS far from house now anchors on arrival",
-      cues.pending[0] == sc.Cue(50_000.0, 51_000.0, "Far", subtitle_overlay.klv_key(far), "now"))
+      cues.pending[0] == sc.Cue(50_000.0, 51_000.0, "Far", subtitle_overlay.klv_key(far), "now", 50_000.0))
 # The re-send case: one cue's copies, each a demuxed buffer of its own.
 re = klv.encode_cue(0, 3000, "Re")
 cue_in(re, 52_000.0)
@@ -262,8 +270,35 @@ check("overlay: a re-added pad name replaces its old reader",
 added(demux, FakePad("private_0_0120", "application/x-teletext"), st_ov)   # media=private: no A/V pad
 removed(demux, FakePad("private_0_0120", "application/x-teletext"), st_ov)
 check("overlay: a non-subtitle pad's fakesink is retired too", len(pipe.children) == 2)
+reader, sink = st_ov["readers"]["private_0_0180"]
+check("overlay: without an aligner the cue reader is a queue (the video-player)",
+      (reader.kind, sink.kind, reader.props) == ("queue", "appsink", {}) and reader.linked is sink)
 subtitle_bridge.clear()
-check("overlay: show trace carries cueLate, cueLag (now − start), frameLag and t0src",
+
+# --- the burn-in: each cue pad read through a sparse watch of the pace group (WI-P3-13) --
+bdemux, bov = FakeElement("mrtsdemux", "subdemux"), FakeElement("textoverlay", "subov")
+bpipe = FakePipe(subdemux=bdemux, subov=bov)
+subtitle_bridge.install(bpipe, {"overlay": {"demux": "subdemux", "overlay": "subov", "aligner": "burnin"}}, None)
+st_b = subtitle_bridge.state()["overlay"]
+del ORDER[:]
+klv_pad = FakePad("private_0_0180")
+bdemux.signals["pad-added"][0](bdemux, klv_pad, st_b)
+watch, sink = st_b["readers"]["private_0_0180"]
+check("overlay: with an aligner each KLV pad's reader is a sparse mralignwatch of that pace group, input cues",
+      (watch.kind, sink.kind) == ("mralignwatch", "appsink")
+      and watch.props == {"aligner": "burnin", "input": "cues", "sparse": True}
+      and bpipe.children == [watch, sink])
+check("overlay: the watch is linked to the appsink before it runs, the pad to the watch last",
+      ORDER == [("link", "mralignwatch", "appsink"), ("sync", "appsink"), ("sync", "mralignwatch"),
+                ("pad", "mralignwatch")]
+      and watch.linked is sink and klv_pad.peer is watch.pads["sink"] and watch.state == "PLAYING")
+bdemux.signals["pad-removed"][0](bdemux, klv_pad, st_b)
+check("overlay: pad-removed retires the watch and its appsink", bpipe.children == [] and st_b["readers"] == {})
+subtitle_bridge.clear()
+check("overlay: show trace carries cueLate, cueLag (now − start), frameLag, the margin and t0src",
+      subtitle_overlay.show_line("Hi", sc.Cue(1000.0, 4000.0, "Hi", b"k", "pts", 900.0), 1020.0, 2400.0)
+      == "show 'Hi' cueLate=20 cueLag=1400 frameLag=1380 margin=1500 t0src=pts")
+check("overlay: no margin without the cue's arrival",
       subtitle_overlay.show_line("Hi", sc.Cue(1000.0, 4000.0, "Hi", b"k", "pts"), 1020.0, 2400.0)
       == "show 'Hi' cueLate=20 cueLag=1400 frameLag=1380 t0src=pts")
 print("all subtitle_bridge tests passed")

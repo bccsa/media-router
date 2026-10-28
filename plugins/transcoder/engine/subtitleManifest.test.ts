@@ -42,4 +42,10 @@ describe('transcoder ↔ subtitle-core', () => {
             );
         }
     });
+
+    it("has no Subtitle Sync Delay: burn-in waits by the cues' measured lateness (OQ-24)", () => {
+        const props = manifest.configSchema.properties as Record<string, { title?: string }>;
+        expect(props.subtitleDelayMs).toBeUndefined();
+        expect(Object.values(props).map((p) => p.title)).not.toContain('Subtitle Sync Delay');
+    });
 });
