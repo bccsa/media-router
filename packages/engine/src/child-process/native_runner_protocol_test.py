@@ -2676,6 +2676,132 @@ def test_mrtsdemux_messages():
               seen["native"] == seen["python"])
 
 
+# --------------------------------------------------------------------------- video-leg-formula (WI-P3-11)
+_SINK_SYNC = re.compile(r":<sink> possibly waiting for clock to reach (\d+):(\d\d):(\d\d)\.(\d{9})")
+
+
+def _pes_formula_ns(data, pid, ref_ns):
+    """Each PES of `pid` in `data` where mrtsdemux puts it: ceil(unwrap(PES PTS) - 1 h), in ns,
+    unwrapped nearest house time `ref_ns`."""
+    sys.path.insert(0, os.path.join(_PLUGINS, "mpegts-core", "py"))
+    import ts_psi  # noqa: E402
+    wrap, base = 1 << 33, 3600 * 90000
+    ref90 = ref_ns * 9 // 100_000 + base
+    out = []
+    for pkt in ts_psi.iter_packets(data):
+        pts = ts_psi.read_pes_pts(pkt) if ts_psi.ts_pid(pkt) == pid and pkt[1] & 0x40 else None
+        if pts is not None:
+            u = ref90 + (pts - ref90 + wrap // 2) % wrap - wrap // 2
+            out.append(-(-(u - base) * 100_000 // 9))
+    return out
+
+
+def _video_leg_run(argv, start, fixture, pid):
+    """One player start command, its display a fakesink with the sink's properties, on `fixture`
+    rebased to now in the srt-input's 128-packet bus buffers: the running time of each frame the
+    display takes before the stop (basesink's line), as ns after the first video PES's."""
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    sock = os.path.join(tmp, "vp.sock")
+    pipe = start["pipeline"].replace("@SOCK@", tmp)
+    display = pipe.replace("kmssink name=sink connector-id=32 ", "fakesink name=sink ")
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    feeder = _bus_feeders([sock], clock)[0]
+    r = RunnerProc(argv, env={"GST_DEBUG": "basesink:5", "GST_DEBUG_NO_COLOR": "1"})
+    res, data, now0, upto = {"display": display != pipe}, b"", 0, 0
+    try:
+        r.wait_event(ev_is("ready"), timeout=10)
+        # A sync=true display prerolls on its first frame: the feed starts with the pipeline.
+        r.send({"cmd": "start", **start, "pipeline": display})
+        now0 = clock.get_time() + 1_500_000_000
+        data = _rebased(fixture, now0, os.path.join(tmp, "in.ts"))
+        # At least 2 ms apart: unixfdsink and unixfdsrc each send under their object lock, so a
+        # burst both ways can deadlock the harness's feeder and the runner (B-133).
+        chunks, last = [], 0
+        for chunk, at in _house_chunks(data, now0, size=128 * 188):
+            last = max(at, last + 2_000_000)
+            chunks.append((chunk, last))
+        feed = threading.Thread(target=_feed_paced, args=(feeder, chunks, clock))
+        feed.start()
+        settle = None
+        while settle is None or time.monotonic() < settle:
+            r.pump()
+            if settle is None and not feed.is_alive():
+                settle = time.monotonic() + 2.0
+            time.sleep(0.05)
+        feed.join()
+        r.send({"cmd": "get_property", "id": "vlpes", "element": "vpdemux", "property": "pes"})
+        ev = r.wait_event(lambda e: e.get("id") == "vlpes" and e.get("event") in ("property", "command_error"))
+        res["pes"] = ev.get("value") if ev and ev.get("event") == "property" else None
+        r.pump()
+        upto = len(r.logs)  # the stop drains the decoder's tail late: the frames before it
+        res["playing"] = r.has_event(ev_is("state_change", state="playing"))
+        res["error"] = r.has_event(ev_is("error"))
+        res["rc"] = r.stop_and_wait()
+    finally:
+        feeder.set_state(Gst.State.NULL)
+        r.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+    pes = _pes_formula_ns(data, pid, now0) or [0]
+    res["want"] = {t - pes[0] for t in pes}
+    res["at"] = [((int(h) * 60 + int(m)) * 60 + int(s)) * 1_000_000_000 + int(ns) - pes[0]
+                 for h, m, s, ns in (x.groups() for x in map(_SINK_SYNC.search, r.logs[:upto]) if x)]
+    res["pads"] = [p.get("pads") for p in _demux_events(r, "vpdemux") if p.get("reason") == "program"]
+    res["align"] = any("branchAlign" in line for line in r.logs)
+    return res
+
+
+def test_video_leg_formula():
+    """video-leg-formula (WI-P3-11), both runners: the player's live start commands
+    (fixtures/video-leg/pipelines.json, from its own plan), the display a fakesink with the sink's
+    properties. `mrtsdemux media=video` gives the program its video pad alone and assembles video
+    PES alone; with no branch alignment each frame reaches the display at its PES PTS - 1 h, ceil
+    to the ns: the explicit H.264 rung on cap-occ-1080i-h264-aac-ttx (1080i, B frames, 23 PIDs)
+    and on bus-occ-ingest (the restamped OCC ingest off a test box's bus), the decodebin3 rung on
+    cap-vmix-h264-aac, whose PMT lists its audio first."""
+    for el in ("unixfdsink", "tsparse", "h264parse", "avdec_h264", "decodebin3"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP video-leg-formula — {el} unavailable")
+            return
+    if not os.path.exists(_MRTS_CLI):
+        print("SKIP video-leg-formula — mrts_cli not built")
+        return
+    with open(os.path.join(_FIX, "video-leg", "pipelines.json"), encoding="utf-8") as fh:
+        starts = json.load(fh)
+    # The fewest frames the display takes before the stop: the decoder holds its reorder depth and
+    # three frame threads, and the OCC trims' open-GOP leading B frames do not decode from a live
+    # start (bus-occ-ingest's 11 PES give its I frame alone).
+    cases = (("explicit", "cap-occ-1080i-h264-aac-ttx", 0x65, "video_0_0065", 5),
+             ("explicit", "bus-occ-ingest", 0x65, "video_0_0065", 1),
+             ("bootstrap", "cap-vmix-h264-aac", 0x101, "video_0_0101", 90))
+    seen = {}
+    for tag, argv in (("native", None), ("python", _DEMUX_PY)):
+        for rung, fixture, pid, pad, least in cases:
+            with open(os.path.join(_FIX, fixture + ".demux.jsonl"), encoding="utf-8") as fh:
+                units = sum(1 for line in fh if '"unit"' in line and f'"pad":"{pad}"' in line)
+            res = _video_leg_run(argv, starts[rung]["start"], fixture, pid)
+            label = f"video-leg-formula {tag} {rung} {fixture}"
+            at, want = res["at"], res["want"]
+            check(f"{label}: a fakesink with the sink's properties stands in for the display", res["display"])
+            check(f"{label}: reaches PLAYING, no error, exits 0",
+                  res["playing"] and not res["error"] and res["rc"] == 0)
+            check(f"{label}: the demux gives the program its video pad alone ({res['pads']})",
+                  res["pads"] == [pad])
+            check(f"{label}: and assembles video PES alone, the reference's {units} but the open last "
+                  f"({res['pes']})", res["pes"] == units - 1)
+            off = [t - min(want, key=lambda w: abs(w - t)) for t in at if t not in want]
+            check(f"{label}: {len(at)} frames at the display, each at its PES PTS - 1 h, ceil to the ns "
+                  f"(off by: {off[:3]})", len(at) >= least and not off)
+            check(f"{label}: in order, each once", at == sorted(set(at)))
+            check(f"{label}: no branch alignment, asked or run",
+                  "alignBranchesToStamps" not in starts[rung]["start"] and not res["align"])
+            seen.setdefault((rung, fixture), []).append(at)
+    for (rung, fixture), (a, b) in ((k, v) for k, v in seen.items() if len(v) == 2):
+        n = min(len(a), len(b))
+        check(f"video-leg-formula {rung} {fixture}: both runners show the same first {n} frames at the "
+              f"same times", n > 0 and a[:n] == b[:n])
+
+
 # --------------------------------------------------------------------------- mrasrc-device (WI-P3-5)
 _SKEW_LINE = re.compile(r"custom slaving requested skew ([+-]?)(\d+):(\d\d):(\d\d)\.(\d{9})")
 
@@ -2797,6 +2923,7 @@ test_bus_return()
 test_edge_stall_fds()
 test_mrtsdemux_pmt_change()
 test_mrtsdemux_messages()
+test_video_leg_formula()
 test_mrasrc_device()
 
 if _failures:

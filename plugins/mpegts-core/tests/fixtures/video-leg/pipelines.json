@@ -1,0 +1,48 @@
+{
+  "explicit": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! tsparse set-timestamps=false ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! capsfilter caps=\"video/x-h264\" ! queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert ! videoscale ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 ts-offset=60000000 qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "frame",
+      "busReports": [],
+      "tsProbe": {
+        "appsink": "tsprobe"
+      },
+      "renderWatch": {
+        "sink": "sink"
+      },
+      "keyframeGate": {
+        "decoder": "vpdec"
+      },
+      "backlogShed": {
+        "element": "vpdec",
+        "sink": "sink",
+        "keyframeAligned": true,
+        "toleranceMs": 250,
+        "holdMs": 5000,
+        "cooldownMs": 60000,
+        "sanityMs": 10000
+      }
+    }
+  },
+  "bootstrap": {
+    "start": {
+      "pipeline": "unixfdsrc socket-path=@SOCK@/vp.sock ! watchdog name=buswd_40500 timeout=5000 ! mrlateness name=lat_busin_40500_431d2a reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! tsparse set-timestamps=false ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! decodebin3 ! videoconvert ! videoscale ! mrlateness name=lat_render reference=running-time ! kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 ts-offset=60000000 qos=false vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe",
+      "useStdioForData": false,
+      "linkOnPadAdded": [],
+      "readKlvNames": false,
+      "liveCaptureClock": false,
+      "decoderThreadType": "frame",
+      "busReports": [],
+      "tsProbe": {
+        "appsink": "tsprobe"
+      },
+      "renderWatch": {
+        "sink": "sink"
+      }
+    }
+  }
+}

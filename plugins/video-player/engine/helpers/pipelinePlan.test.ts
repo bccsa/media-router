@@ -20,6 +20,8 @@ import {
 import { DEFAULT_SURFACE, RESUME_SINK_NAME } from './pipelines.js';
 import {
     DECODEBIN_SELECTION,
+    DECODER_ELEMENTS,
+    selectDecoder,
     VIDEO_DECODER_NAME,
     type DecoderSelection,
 } from './decoderSelection.js';
@@ -335,7 +337,7 @@ describe('planLivePipeline', () => {
         );
     });
 
-    it('places the explicit decoder chain and its pad-steering caps', () => {
+    it('places the explicit decoder chain behind its codec filter', () => {
         const decoder: DecoderSelection = {
             id: 'v4l2h264dec',
             chain: `h264parse ! v4l2h264dec name=${VIDEO_DECODER_NAME}`,
@@ -347,6 +349,29 @@ describe('planLivePipeline', () => {
         expect(desc.pipeline).toContain('capsfilter caps="video/x-h264"');
         expect(desc.pipeline).toContain(`h264parse ! v4l2h264dec name=${VIDEO_DECODER_NAME}`);
         expect(desc.pipeline).not.toContain('decodebin3');
+    });
+
+    it('demuxes video only on every rung, an explicit one behind its codec filter (Q18)', () => {
+        const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
+        const software = { h264parse: true, avdec_h264: true, h265parse: true, avdec_h265: true };
+        const rungs = [
+            DECODEBIN_SELECTION,
+            ...['h264', 'h265'].flatMap((codec) => [
+                selectDecoder({ codec, available: all }),
+                selectDecoder({ codec, available: software }),
+            ]),
+        ];
+        expect(new Set(rungs.map((d) => d.id)).size).toBe(5);
+        for (const decoder of rungs) {
+            const desc = planLivePipeline({ ...base, decoder });
+            const filter = decoder.caps ? `${decoder.caps} ! ` : '';
+            expect(desc.pipeline, decoder.id).toContain(
+                `! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! ${filter}queue leaky=2 `,
+            );
+            expect(desc.pipeline, decoder.id).not.toMatch(/\btsdemux\b/);
+            // No branch alignment: the demux puts each PES at its PTS − 1 h itself.
+            expect(desc.alignBranchesToStamps, decoder.id).toBeUndefined();
+        }
     });
 
     describe('keyframe gate', () => {

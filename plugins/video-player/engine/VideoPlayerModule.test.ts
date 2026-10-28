@@ -370,10 +370,11 @@ describe('VideoPlayerModule helpers', () => {
     describe('buildLivePipeline', () => {
         const busSource = { port: 5000, socketPath: '/tmp/mr-bus-5000-abc.sock' };
 
-        it('wires unixfdsrc → tsdemux → decodebin → sink off the bus edge socket', () => {
+        it('wires unixfdsrc → mrtsdemux (video only) → decodebin → sink off the bus edge socket', () => {
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5000-abc.sock');
-            expect(s).toContain('tsdemux');
+            expect(s).toContain('mrtsdemux name=vpdemux media=video');
+            expect(s).not.toMatch(/\btsdemux\b/);
             expect(s).toContain('decodebin');
             expect(s).toContain('kmssink name=sink');
             // No UDP ingress remains — unixfd is the only bus transport.
@@ -387,7 +388,7 @@ describe('VideoPlayerModule helpers', () => {
             // tsparse's job (re-anchoring PCR so multi-stage remux chains don't
             // drift) doesn't apply to a terminal display pipeline, and it was
             // the chain's single most expensive element (0.11 core at 1080p50,
-            // measured 2026-08-01). tsdemux consumes the bus buffers directly.
+            // measured 2026-08-01). The demux consumes the bus buffers directly.
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).not.toContain('tsparse');
         });
@@ -492,23 +493,23 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
         });
 
-        it('orders unixfdsrc → watchdog → tsdemux (watchdog sees raw socket delivery)', () => {
+        it('orders unixfdsrc → watchdog → mrtsdemux (watchdog sees raw socket delivery)', () => {
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             const idxSrc = s.indexOf('unixfdsrc');
             const idxWd = s.indexOf('watchdog');
-            const idxTsdemux = s.indexOf('tsdemux');
+            const idxDemux = s.indexOf('mrtsdemux');
             expect(idxSrc).toBeLessThan(idxWd);
-            expect(idxWd).toBeLessThan(idxTsdemux);
+            expect(idxWd).toBeLessThan(idxDemux);
         });
 
         describe('TS video-info tap', () => {
-            it('tees the ingress just before tsdemux into a leaky-queue appsink', () => {
+            it('tees the ingress just before mrtsdemux into a leaky-queue appsink', () => {
                 // Tap point is the ingress (tsInput), for two reasons: the
                 // probe wants the MUXED TS (it does its own PSI discovery), and
                 // it puts the branch downstream of the stall watchdog so it
                 // cannot interfere with bus_stall detection.
                 const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
-                expect(s).toContain('! tee name=vp_ts ! tsdemux');
+                expect(s).toContain('! tee name=vp_ts ! mrtsdemux');
                 expect(s).toContain(
                     'vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
                 );
@@ -517,7 +518,7 @@ describe('VideoPlayerModule helpers', () => {
 
             it('taps the same spot on the clock-paced variant (after tsparse)', () => {
                 // The paced chain inserts tsparse ahead of the tee; the tap is
-                // still the last thing before tsdemux. It does NOT depend on
+                // still the last thing before mrtsdemux. It does NOT depend on
                 // tsparse for 188-byte alignment — the bus delivers whole-packet
                 // buffers on both variants (unixfd preserves producer buffer
                 // boundaries), which is what `ts_psi.iter_packets` needs since
@@ -529,7 +530,7 @@ describe('VideoPlayerModule helpers', () => {
                     200,
                     true,
                 );
-                expect(s).toContain('tsparse set-timestamps=false ! tee name=vp_ts ! tsdemux');
+                expect(s).toContain('tsparse set-timestamps=false ! tee name=vp_ts ! mrtsdemux');
                 expect(s).toContain('appsink name=tsprobe');
             });
 
@@ -552,7 +553,7 @@ describe('VideoPlayerModule helpers', () => {
                 // the probe tap that discovers the codec in the first place).
                 const s = buildLivePipeline(wayland, busSource, true);
                 expect(s).toContain(
-                    'tsdemux name=vpdemux latency=0 ! queue leaky=2 max-size-time=1000000000 ' +
+                    'mrtsdemux name=vpdemux media=video ! queue leaky=2 max-size-time=1000000000 ' +
                         'max-size-buffers=0 max-size-bytes=0 ! decodebin3 ! videoconvert ! ' +
                         wayland,
                 );
@@ -571,7 +572,7 @@ describe('VideoPlayerModule helpers', () => {
                     selectDecoder({ codec: 'h264', available: all }),
                 );
                 expect(s).toContain(
-                    'tsdemux name=vpdemux latency=0 ! capsfilter caps="video/x-h264" ! ' +
+                    'mrtsdemux name=vpdemux media=video ! capsfilter caps="video/x-h264" ! ' +
                         'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! ' +
                         'h264parse ! v4l2h264dec name=vpdec ! videoconvert ! ' +
                         wayland,
@@ -652,12 +653,9 @@ describe('VideoPlayerModule helpers', () => {
                 expect(s).not.toContain('thread-type');
             });
 
-            it('puts the capsfilter DIRECTLY on tsdemux, before the leaky queue', () => {
-                // The queue's sink pad is ANY, so it would accept an AUDIO pad
-                // from tsdemux just as happily as the video one — and the audio
-                // then reaches h26xparse/videoconvert and kills the pipeline
-                // with "Internal data stream error". Steering has to happen at
-                // the first pad the demuxer can link to.
+            it('keeps the codec filter on the demux pad, before the leaky queue', () => {
+                // The delayed link is made at the demux pad, so the filter there is the
+                // rung's codec guard: a pad of another codec stays unlinked.
                 const s = buildLivePipeline(
                     kms,
                     busSource,
@@ -666,9 +664,9 @@ describe('VideoPlayerModule helpers', () => {
                     false,
                     selectDecoder({ codec: 'h264', available: all }),
                 );
-                // Slice from tsdemux so the pre-tsparse jitter queue (same
+                // Slice from the demux so the pre-tsparse jitter queue (same
                 // 200 ms bound) can't be mistaken for the post-demux one.
-                const afterDemux = s.slice(s.indexOf('tsdemux'));
+                const afterDemux = s.slice(s.indexOf('mrtsdemux'));
                 expect(afterDemux.indexOf('capsfilter')).toBeLessThan(
                     afterDemux.indexOf('queue leaky=2'),
                 );
@@ -880,7 +878,7 @@ describe('VideoPlayerModule helpers', () => {
             })!;
             expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500-abc.sock');
             expect(desc.pipeline).toContain('watchdog name=buswd_5500 timeout=5000');
-            expect(desc.pipeline).toContain('tsdemux');
+            expect(desc.pipeline).toContain('mrtsdemux name=vpdemux media=video');
             expect(desc.pipeline).toContain('decodebin');
             // On a test machine without /sys/class/drm, resolveConnectorId returns
             // undefined → kmssink falls back to auto-pick (no connector-id prop).

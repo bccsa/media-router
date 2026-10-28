@@ -204,6 +204,13 @@ elements" below do not start.
 
 **What each input's demux shows (Phase 3)**
 
+- **Video Player never links its input's audio streams.** Its demux gives the
+  input's audio and data streams no pad and never unpacks them. A source that
+  lists its audio before its video, as the vMix SRT source tested does, now
+  plays from the player's first start; before, that start, made before the
+  player knew the codec, could take the audio stream and show nothing until
+  the player rebuilt for the video codec. An input without video says so:
+  "Input <name> carries no video stream".
 - **Each input shows its demux counters.** In a module's timing popup, each
   input that the module unpacks adds **Demux rate** (PES per second),
   **Demux gaps** (holes in its timeline), **Demux CC lost** (packets lost on

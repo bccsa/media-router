@@ -14,7 +14,6 @@ import {
     buildSink,
     resolveDecoderThreadType,
     TS_PROBE_SINK_NAME,
-    VP_DEMUX_NAME,
     type SurfaceSize,
 } from './pipelines.js';
 import { decoderRankEnv, VIDEO_DECODER_NAME, type DecoderSelection } from './decoderSelection.js';
@@ -290,13 +289,6 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // the TS probe names the codec and the rebuild moves to a gated
         // explicit rung.
         ...(input.decoder.explicit ? { keyframeGate: { decoder: VIDEO_DECODER_NAME } } : {}),
-        // Anchor the demuxer's running time to the producer's house stamps
-        // (ADR-0005 Stage 3c — the correction the mpegts-muxer applies to its
-        // inputs). A tsdemux keeps the zero-point error of the one bus buffer
-        // it locked on for the pipeline's whole life; with a sync=true sink
-        // that error is where the picture sits against the route's audio leg,
-        // re-rolled on every restart (−85 ms measured on .103's video edge).
-        alignBranchesToStamps: { demuxes: [VP_DEMUX_NAME] },
         ...(subs ? { runnerHooks: subs.runnerHooks, runner: subs.runner } : {}),
     };
 }

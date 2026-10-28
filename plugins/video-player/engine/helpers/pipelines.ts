@@ -280,12 +280,12 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! tsdemux` by
+ * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! mrtsdemux` by
  * default — WITHOUT `tsparse` — and gains `tsparse` back when the sink is
  * clock-paced (see the comment at the construction site below). The decoder is
  * `decodebin3` until the TS probe reports a codec and an explicit
  * `<parser> ! <decoder>` chain takes its place (see `decoder` below); the
- * post-tsdemux `queue leaky=2` drops oldest if the decoder falls behind so
+ * post-demux `queue leaky=2` drops oldest if the decoder falls behind so
  * latency doesn't accumulate on slow renderers.
  */
 const STREAM_STALL_TIMEOUT_MS = 5_000;
@@ -302,10 +302,8 @@ export const TS_PROBE_SINK_NAME = 'tsprobe';
 const PROBE_TEE_NAME = 'vp_ts';
 
 /**
- * `name=` of the live pipeline's `tsdemux` — what `planLivePipeline` hands the
- * runner's `alignBranchesToStamps` so the branch's running time is anchored to
- * the producer's house stamps rather than to the one bus buffer the demuxer
- * happened to lock on (ADR-0005 Stage 3c; −85 ms on .103's video edge).
+ * `name=` of the live pipeline's `mrtsdemux`: its `mrtsdemux:vpdemux` reports
+ * (counters, unknown streams, off house time, no video) land on the video input.
  */
 export const VP_DEMUX_NAME = 'vpdemux';
 
@@ -372,8 +370,8 @@ export function buildLivePipeline(
     //
     // CLOCK-PACED (`sinkPaced` — the `sync` config): tsparse RETURNS, but only
     // for TS packet alignment and the vp_ts probe tee — NEVER to re-anchor
-    // (`set-timestamps=false`). The sink rides the SOURCE PTS (PES PTS via
-    // tsdemux).
+    // (`set-timestamps=false`). The sink rides the SOURCE PTS (PES PTS − 1 h,
+    // from mrtsdemux).
     //
     // WHY NOT set-timestamps=true (field-measured on the Pi 4 fleet,
     // 10.9.16.107/.108, 2026-08-09): tsparse's set-timestamps mode interpolates
@@ -481,22 +479,13 @@ export function buildLivePipeline(
     // wedged an h265→h264 feed on hardware, so the module rebuilds the whole
     // pipeline for that — it never relies on the replug.)
     //
-    // CAPSFILTER, and why it sits DIRECTLY on tsdemux rather than after the
-    // queue. `tsdemux` has sometimes-pads, so gst_parse_launch resolves this
-    // link when the pad appears. The leaky queue's sink pad is ANY: it will
-    // accept an AUDIO pad just as happily as the video one, and the audio then
-    // reaches h26xparse/videoconvert and kills the pipeline with "Internal data
-    // stream error" (the transcoder documents the same trap). Steering has to
-    // happen at the first pad the demuxer can link to, so the filter goes
-    // before the queue — the queue keeps its exact position and settings
-    // otherwise. Verified locally against a real A/V TS: with the filter only
-    // the video ES links; without it the outcome depends on pad-add order.
-    // The decodebin3 rung carries no filter (we don't know the codec there, and
-    // decodebin3 is what has always absorbed whatever pad it got).
+    // `media=video` (Q18): no audio or data PID gets a pad, so the ANY-caps queue can
+    // never take one. An explicit rung keeps its codec filter on the demux pad, where the
+    // delayed link is made: a pad of another codec stays unlinked until the rebuild.
     const caps = decoder.caps ? `${decoder.caps} ! ` : '';
     // Video-info tap. The runner's report-only TS probe needs an appsink fed
     // with the muxed TS (it does its own PSI discovery + SPS parse), so the
-    // ingress is tee'd off just before `tsdemux` — after `tsparse` on the
+    // ingress is tee'd off just before `mrtsdemux` — after `tsparse` on the
     // clock-paced variant, straight off the leaky jitter queue on the default
     // tsparse-free one.
     //
@@ -519,7 +508,7 @@ export function buildLivePipeline(
         ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     return (
-        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! tsdemux name=${VP_DEMUX_NAME} latency=0 ! ${caps}${q} ! ` +
+        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! mrtsdemux name=${VP_DEMUX_NAME} media=video ! ${caps}${q} ! ` +
         `${decoder.chain} ! ${convert} ! ${overlay ? `${overlay} ! ` : ''}${sinkElement}${probeTap}`
     );
 }
