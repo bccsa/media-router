@@ -19,7 +19,8 @@ the caps a dark input's gaps go out under: (2c) a 302M-shaped branch, (2d) 8 cha
 input dark, (2f) a branch dark at start that comes up, (2g) a hole the input reports, on in
 block-long pieces (past a second whole, fenced), (2h) one longer than the time bound, the input
 absent over it: no full queue (B-187), (2i) the same on a 302M fan-in branch from its demux on, its
-link dark past the 5 s bound, (8b) a sparse stream whose caps come with its
+link dark past the 5 s bound, (2j) content 6 s ahead after a forward jump with no GAP over it, its
+queue counted from that content, (8b) a sparse stream whose caps come with its
 first cue; (11)-(11e) an input added while playing (late, dark, on time, seeded, into gaps alone)
 is gapped until it catches up, the pace slewing to a late one, so the mixer never stops on it,
 (11f) the same into mpegtsmux, (11g) a rejoin's 2 s backlog moves no pace, (11h) a joiner within
@@ -1141,6 +1142,25 @@ if Gst.ElementFactory.find("avenc_s302m") and Gst.ElementFactory.find("avdec_s30
     r.stop()
 else:
     print("SKIP (2i) — gst-libav's avenc_s302m/avdec_s302m unavailable")
+
+print("\n--- mpegtsmux: (2j) content 6 s ahead after a forward jump, no GAP over it: no full queue ---")
+# Back from a short silence with its content 6 s on, past the 5 s bound, and no GAP over the jump (a
+# tsdemux route makes none): the queue counts from that content's start, the later of it and the
+# horizon (B-187); from the horizon alone it would read the jump, full, upstream held.
+r = Rig("mpegtsmux", [{}, {}])
+r.run({0: [("rt", 0, 900, 0), ("eos",)], 1: [("rt", 0, 100, 0), ("rt", 720, 770, -6000), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+with r.lock:
+    full = [f for _t, src, f in r.msgs if src == "aw1" and f["reason"] == "full"]
+    held = [f["level-time"] for t, src, f in r.msgs if src == "aw1" and r.at(1200) <= t < r.at(7200)]
+check(f"forward jump: input 1's queue counted from its content after the jump, about that 0.5 s (at "
+      f"most {max(held, default=0) // MS} ms in {len(held)} reports while it waited), never full "
+      f"(full-count {r.prop(1, 'full-count')}, {len(full)} `full` messages)",
+      len(held) >= 4 and max(held) <= 600 * MS and r.prop(1, "full-count") == 0 and not full)
+check("forward jump: both inputs' data all written at its PTS, the content after the jump too, EOS, no error",
+      r.pes_ok(0, range(900)) and r.pes_ok(1, list(range(100)) + list(range(720, 770))) and eos
+      and not r.errors)
+r.stop()
 
 # A live add joins a running mixer: the joiner is gapped until its content catches up, so the
 # others never stall on it; what it sends behind the gaps is stale (the rejoin rule) and gives its

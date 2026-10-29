@@ -425,10 +425,10 @@ elements" below do not start.
   end. A source that sends its clock reference less often than that (vMix,
   every 2 seconds) can lose up to that interval of each track after such a
   jump of more than about 3.5 seconds, instead of the jump's length. After a
-  smaller jump, from half a second to about 3.5 seconds, such a source still
-  loses about the jump's length of each track, and every module fed by the
-  input sees the stream's timing that far in the future for about as long,
-  as before.
+  smaller forward jump, from half a second to about 3.5 seconds, such a source
+  still loses about the jump's length of each track, and every module fed by
+  the input sees the stream's timing that far in the future for about as
+  long, as before.
 - **A Video Transcoder rendition set below its source's frame rate now sends
   that rate.** A rendition set to 25 fps of a 1080i or 50p source encoded
   every frame of it, 50 a second, while it told the receiver 25: about twice
@@ -440,7 +440,7 @@ elements" below do not start.
   long as the outage lasted, then its own rate again. A rendition at its
   source's rate (the default 50 with a 1080i or 50p source) now leaves out a
   single frame from time to time when the source's clock runs a little fast:
-  about one every 8 minutes for a clock 40 millionths fast.
+  about one every 8 minutes for a clock 40 millionths fast, in a test.
 - **A Video Transcoder rendition or a Video Encoder whose source is slower
   than its Frame Rate now runs at the source's rate instead of failing and
   restarting.** A Video Transcoder at the default 50 with a 1080p25 or 720p25
@@ -453,7 +453,8 @@ elements" below do not start.
   still shows the rate you set. Running at its source's rate, it behaves as
   with Frame Rate set to that rate: it can leave out one frame as it starts
   and, when the source's clock runs a little fast, a single frame from time
-  to time (about one every 8 minutes at 50 fps for a clock 40 millionths fast).
+  to time (about one every 8 minutes at 50 fps for a clock 40 millionths fast,
+  in a test).
 - **A Video Encoder on a raw YUYV or YU12 capture mode now starts.** Before,
   it stopped with a pipeline error ("can't handle caps") each time it started
   on such a mode, and sent nothing; MJPEG modes and the NV12, NV16, YV12 and

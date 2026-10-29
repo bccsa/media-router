@@ -908,16 +908,20 @@ void RestampCore::flush() {
     for (auto& p : pids_) {
         if (!p) continue;
         // A held header goes with the flush, and the rest of its PES after it; both are
-        // removed steps, so the PID's CC stays continuous.
+        // removed steps, so the PID's CC stays continuous. Recorded as drop_es records a
+        // drop, so a copy of it in the next buffer goes too.
         if (span_.held(p->pid)) {
             p->unit = Pid::Unit::drop;
+            p->seen_payload = true;
+            p->prev_kept = false;
             if (p->emitted) p->cc_delta = (uint8_t)((p->cc_delta + 1) & 0x0F);
             removed_++;
         }
         p->held_af.clear();
     }
     span_.reset();
-    // B-185: what waited for a PCR goes too, as removed steps, so each PID's CC stays continuous.
+    // B-185: what waited for a PCR goes too, as removed steps, so each PID's CC stays continuous;
+    // recorded alike, so a copy after the flush of a packet that waited goes with it.
     for (auto& g : progs_) {
         for (Program::Held& e : g->held) {
             PacketView v;
@@ -926,6 +930,8 @@ void RestampCore::flush() {
             Pid* p = pids_[v.pid].get();
             if (p && v.has_payload) {
                 p->unit = Pid::Unit::drop;
+                p->seen_payload = true;
+                p->prev_kept = false;
                 if (p->emitted && !dup) p->cc_delta = (uint8_t)((p->cc_delta + 1) & 0x0F);
             }
             removed_++;

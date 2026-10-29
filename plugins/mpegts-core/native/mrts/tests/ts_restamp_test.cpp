@@ -2952,6 +2952,23 @@ void test_flush() {
               got0.size() == 3 * PKT && got.size() == p2.size() && ts_pusi(got.data()) &&
                   (got[3] & 0x0F) == 1 && rc.stats().removed_packets == 2);
     }
+    {
+        // The PID's first payload packet a held header, its copy the next buffer's first: the flush
+        // records the drop, so the copy goes too, not held afresh and joined to the continuation.
+        cc = 0;
+        RestampCore rc(fixed_cfg(false, 0));
+        Bytes a = psi;
+        const Bytes p1 = pes(b90, 10), p2 = pes(b90 + 2160, 0);
+        a.insert(a.end(), p1.begin(), p1.begin() + PKT);
+        const Bytes got0 = out_of(rc.process(a.data(), a.size(), 1 * S));
+        rc.flush();
+        Bytes b(p1.begin(), p1.end());                   // the copy, the continuation, the next PES
+        b.insert(b.end(), p2.begin(), p2.end());
+        const Bytes got = out_of(rc.process(b.data(), b.size(), 1024 * MS));
+        CHECK("flush: a held header's copy right after it goes too, the PID's first payload packet as any; the "
+              "rest of its PES goes, the next PES stays as it came",
+              got0.size() == 2 * PKT && got == p2 && rc.stats().removed_packets == 3 && rc.stats().cc_lost == 0);
+    }
 }
 
 void test_duplicates() {
@@ -3673,6 +3690,63 @@ void test_new_timeline_wait() {
     }
 }
 
+// A flush exactly between a packet and its copy, the last packet of a datagram and the next one's
+// first: a split header's first packet, held for its continuation, or (S1's) one that waits for its
+// PCR. The flush records its drops as drop_es does, so the copy goes with its packet.
+void flush_straddle(const char* label, const Gen& g, bool span) {
+    const Case c = make_case(g);
+    const size_t from = span ? 0 : first_pes_from(c, g.outage_to);
+    size_t d = 1;
+    for (; d < c.dg.size(); d++) {
+        const size_t j = c.dg[d].first;
+        const Pkt& a = c.st.pk[j - 1];
+        if (c.st.pk[j].copy && c.st.pk[j].pid == g.dup_pid && c.st.pk[j].b == a.b &&
+            (span ? a.held && a.mux >= 20 * S : j > from))
+            break;
+    }
+    const size_t j = d < c.dg.size() ? c.dg[d].first : 0;   // the copy
+    int want = span ? 1 : 0;   // what the flush removes: the held header, or what waited
+    for (size_t x = from; !span && x < j; x++) want += c.st.pk[x].pid != PID_PAT && c.st.pk[x].pid != PID_PMT;
+    size_t calls = 0;
+    int64_t removed0 = -1, removed1 = -1;
+    const Out o = run(c, stc_cfg(), [&](RestampCore& rc, int64_t) {
+        if (calls++ != d) return;
+        removed0 = (int64_t)rc.stats().removed_packets;
+        rc.flush();
+        removed1 = (int64_t)rc.stats().removed_packets;
+    });
+    const Ana a = analyze(c, o, false);
+    const bool gone = j > 0 && a.removed[j - 1] && a.removed[j];
+    std::printf("  flush between a packet and its copy, %s: before datagram %zu, the packet pid 0x%x, %lld removed by "
+                "it (want %d); the packet and its copy gone %d; CC lost: core %llu, output %llu; atomic %d, ordered %d\n",
+                label, d, j > 0 ? c.st.pk[j - 1].pid : 0, (long long)(removed1 - removed0), want, gone,
+                (unsigned long long)o.stats.cc_lost, (unsigned long long)a.cc_lost, a.atomic, a.ordered);
+    const std::string n = std::string("flush between a packet and its copy, ") + label;
+    CHECK((n + ": the shape, the packet removed by the flush, its copy the next datagram's first").c_str(),
+          j > 0 && removed0 >= 0 && removed1 - removed0 == want);
+    CHECK((n + ": the copy goes with its packet, no fragment of their PES; the output's CC continuous, no false "
+               "duplicate, the core's CC tracker in step; bytes the input's in order")
+              .c_str(),
+          gone && a.atomic && a.cc_lost == 0 && a.dup_differ == 0 && o.stats.cc_lost == 0 && a.matched && a.ordered);
+}
+
+void test_flush_straddle() {
+    {
+        // Steady state: every 3rd audio-2 header split (a run of them would differ in the masked PTS
+        // byte alone, which analyze cannot place), every audio-2 packet sent twice.
+        Gen g;
+        g.split_every = 3;
+        g.dup_pid = PID_A2;
+        g.dup_every = 1;
+        flush_straddle("a held split header", g, true);
+    }
+    {
+        Gen g = step_gen(43001 * MS, 11 * S, false);   // S1: every audio-1 packet sent twice
+        g.dup_every = 1;
+        flush_straddle("a packet that waits for its PCR", g, false);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -3775,5 +3849,6 @@ int main() {
     test_new_timeline_sparse_pcr();
     test_new_timeline_step_unarmed();
     test_new_timeline_wait();
+    test_flush_straddle();
     return test_summary("ts_restamp");
 }
