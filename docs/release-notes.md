@@ -459,8 +459,8 @@ elements" below do not start.
   it stopped with a pipeline error ("can't handle caps") each time it started
   on such a mode, and sent nothing; MJPEG modes and the NV12, NV16, YV12 and
   UYVY raw modes worked. The mode it picks is unchanged: MJPEG first, then
-  NV12, so a YUYV or YU12 mode is used only where the device has neither at
-  the set resolution.
+  the raw formats in the encoder's order, so a YUYV or YU12 mode is used only
+  when the device offers nothing it prefers at any size.
 - **An input that comes back after more than 5 seconds away no longer warns
   that its queue is full.** When an input of an Audio Mixer, an N-1 Audio
   Mixer (302M), Audio Processing or an Audio Output (302M) with two or more
