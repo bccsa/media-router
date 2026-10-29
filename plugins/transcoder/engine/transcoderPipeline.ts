@@ -228,10 +228,13 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // videorate fills that whole span with copies of the first frame (22 M
     // frames on the 2026-09-16 Pi 5 test box rig: 200-300 fps of dups, output
     // timeline racing 8-14x, two cores burned, the rendition unmuxable downstream).
-    // drop-only also rules out the dup storm after any forward PTS jump; a source
-    // slower than the target is refused at negotiation (drop-only offers no higher
-    // rate). `skip-to-first` starts the drop grid at the first frame: from the
+    // drop-only also rules out the dup storm after any forward PTS jump.
+    // `skip-to-first` starts the drop grid at the first frame: from the
     // segment's 0 it never reached house time, so nothing was dropped (B-186).
+    // The caps: the set rate, then a range up to it. A slower source keeps its own rate
+    // (drop-only offers none above it); listed first, the set rate holds a source without
+    // one (0/1), which the range alone would fixate to 1 fps (B-188).
+    const rateCaps = `video/x-raw,framerate=${fps}/1;video/x-raw,framerate=[1/1,${fps}/1]`;
     // Subtitle burn-in (optional): one overlay on the conformed frame ahead of the
     // tee, a hold on the compressed video, the cue input (transcoderSubtitles.ts).
     const subs = transcoderSubtitles(input.subtitles, input.subtitleDelayMs);
@@ -239,7 +242,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const hold = subs?.hold ?? '';
     const pipeline =
         `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! ${videoCaps} ! ${hold}${decoder} ! ${rawBuffer} ! ` +
-        `${deinterlacer}videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=${fps}/1 ! ${overlay}tee name=t ${teeBranches}` +
+        `${deinterlacer}videorate drop-only=true skip-to-first=true ! ${rateCaps} ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 
     // `deinterlace` re-sends already-output fields after every DISCONT (the raw

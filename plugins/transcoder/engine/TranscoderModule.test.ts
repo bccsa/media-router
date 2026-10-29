@@ -342,7 +342,7 @@ describe('deinterlacer (#817)', () => {
     });
 });
 
-describe('frame-rate conform plan (B-186)', () => {
+describe('frame-rate conform plan (B-186, B-188)', () => {
     const arch = Object.getOwnPropertyDescriptor(process, 'arch')!;
     afterEach(() => {
         Object.defineProperty(process, 'arch', arch);
@@ -350,8 +350,8 @@ describe('frame-rate conform plan (B-186)', () => {
     });
 
     it('tests/videorate-plan.json is the description videorate_conform_test.py and protocol case TR run (`vitest -u` rewrites it)', async () => {
-        // `@SOCK@` stands for the protocol case's socket directory; one small rendition at 25
-        // and at 50 fps, on the box's deinterlacer (arm64: greedyl) and no hardware scaler.
+        // `@SOCK@` stands for the protocol case's socket directory; one small rendition at 25,
+        // 30 and 50 fps, on the box's deinterlacer (arm64: greedyl) and no hardware scaler.
         Object.defineProperty(process, 'arch', { ...arch, value: 'arm64' });
         TranscoderModule.setHwScalers({ va: false, v4l2: false });
         const plan = (framerate: number) => {
@@ -366,7 +366,7 @@ describe('frame-rate conform plan (B-186)', () => {
             return { pipeline, runnerHooks, alignBranchesToStamps };
         };
         await expect(
-            `${JSON.stringify({ rendition25: plan(25), rendition50: plan(50) }, null, 2)}\n`,
+            `${JSON.stringify({ rendition25: plan(25), rendition30: plan(30), rendition50: plan(50) }, null, 2)}\n`,
         ).toMatchFileSnapshot('../tests/videorate-plan.json');
     });
 });

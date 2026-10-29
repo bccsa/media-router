@@ -2503,6 +2503,18 @@ def make_interlaced_ts(path, frames=100):
     return os.path.getsize(path)
 
 
+def make_progressive_ts(path, rate, frames):
+    """A progressive H.264 SPTS from x264enc at `rate` (caps text), 320x192, 1 s GOPs at 25 fps."""
+    pipe = Gst.parse_launch(
+        f"videotestsrc num-buffers={frames} pattern=ball ! video/x-raw,format=I420,width=320,height=192,"
+        f"framerate={rate} ! x264enc speed-preset=ultrafast key-int-max=25 bframes=0 ! h264parse ! mpegtsmux "
+        f"! filesink location={path}")
+    pipe.set_state(Gst.State.PLAYING)
+    pipe.get_bus().timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    pipe.set_state(Gst.State.NULL)
+    return os.path.getsize(path)
+
+
 def _house_bufs(path, house0_ns, ts_psi, per_buf=7):
     """The file as a contract producer's bus buffers [(bytes, stamp)]: one opening a PES stamped
     `house0_ns` plus its PTS from the first one's, the rest on the monotone floor."""
@@ -2521,7 +2533,9 @@ def _house_bufs(path, house0_ns, ts_psi, per_buf=7):
 
 def _transcode_run(argv, desc, bufs, tmp, ts_psi, rate=1.0):
     """One runner on `desc` (`@SOCK@` = `tmp`), fed `bufs` over unixfd paced by their stamps, its one
-    rendition's egress read from before any media: the PES PTS out, in order, and the runner."""
+    rendition's egress read from before any media: the PES PTS out, in order, the runner, and the
+    frame rates the egress's SPS declare."""
+    import ts_video_info  # noqa: E402 (mpegts-core/py, on the path with ts_psi)
     inp, edge = os.path.join(tmp, "video.sock"), os.path.join(tmp, "edge.sock")
     for s in (inp, edge):
         if os.path.exists(s):
@@ -2538,16 +2552,16 @@ def _transcode_run(argv, desc, bufs, tmp, ts_psi, rate=1.0):
     src = feeder.get_by_name("src")
     tee = re.search(r"tee name=(busout_\d+)", desc["pipeline"]).group(1)
     q = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=0"
-    r, consumer, out = RunnerProc(argv), None, []
+    r, consumer, out, sps, probe = RunnerProc(argv), None, [], [], []
     try:
         r.wait_event(ev_is("ready"))
         r.send({"cmd": "start", "pipeline": desc["pipeline"].replace("@SOCK@", tmp),
                 "runnerHooks": desc["runnerHooks"], "alignBranchesToStamps": desc["alignBranchesToStamps"]})
         if r.wait_event(ev_is("state_change", state="playing"), timeout=10) is None:
-            return None, r
+            return None, r, sps
         r.send({"cmd": "bus_attach", "tee": tee, "socket": edge})
         if r.wait_event(ev_is("bus_attached", socket=edge)) is None:
-            return None, r
+            return None, r, sps
         consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! {q} ! fakesink name=csink sync=false")
 
         def on_buf(_pad, info):
@@ -2556,6 +2570,12 @@ def _transcode_run(argv, desc, bufs, tmp, ts_psi, rate=1.0):
                 pts = ts_psi.read_pes_pts(pkt)
                 if pts is not None:
                     out.append(pts)
+                    if not probe:                       # the one PES stream: the rendition's video
+                        probe.append(ts_video_info.VideoInfoProbe(ts_psi.ts_pid(pkt), "h264"))
+                if probe and ts_psi.ts_pid(pkt) == probe[0].pid:
+                    info_ = probe[0].feed(pkt)
+                    if info_ is not None:
+                        sps.append(info_.get("fps"))
             return Gst.PadProbeReturn.OK
 
         consumer.get_by_name("csink").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
@@ -2580,13 +2600,15 @@ def _transcode_run(argv, desc, bufs, tmp, ts_psi, rate=1.0):
             consumer.set_state(Gst.State.NULL)
         feeder.set_state(Gst.State.NULL)
         r.kill()
-    return out, r
+    return out, r, sps
 
 
 def test_transcode_rate():
-    """TR (B-186), both runners: the Video Transcoder's description at 25 and 50 fps (tests/videorate-plan.json,
-    from TranscoderModule.test.ts) fed 4 s of 25i H.264 on house-time stamps, its egress read: of the 200 fields
-    (50p), one in two leaves at 25 fps, 40 ms apart, all at 50 fps. Without skip-to-first, all at 25 fps too."""
+    """TR (B-186, B-188), both runners: the Video Transcoder's description (tests/videorate-plan.json, from
+    TranscoderModule.test.ts) fed 4 s of H.264 on house-time stamps, its egress read. 25i: of the 200 fields
+    (50p), one in two leaves at 25 fps, 40 ms apart, all at 50 fps; without skip-to-first, all at 25 fps too.
+    A slower source runs at its own rate: 25p into 50 fps, 29.97p into 30, every frame but at most the first
+    early one; the fixed rate refused both (not-negotiated). The egress's SPS declares the rate it runs at."""
     for el in ("x264enc", "interlace", "deinterlace", "avdec_h264", "tsdemux", "mpegtsmux", "unixfdsink"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP TR — {el} unavailable")
@@ -2614,7 +2636,7 @@ def test_transcode_rate():
         for fps, want, lo in ((25, 100, 90), (50, 200, 186)):
             step = 90000 // fps
             for kind, argv in (("native", None), ("python", py)):
-                out, r = _transcode_run(argv, plan[f"rendition{fps}"], bufs, tmp, ts_psi)
+                out, r, sps = _transcode_run(argv, plan[f"rendition{fps}"], bufs, tmp, ts_psi)
                 steps = [(b - a) % (1 << 33) for a, b in zip(out or [], (out or [])[1:])]
                 check(f"TR {kind} {fps} fps: PLAYING, attached, no error",
                       out is not None and not r.has_event(ev_is("error")))
@@ -2623,6 +2645,31 @@ def test_transcode_rate():
                 check(f"TR {kind} {fps} fps: every frame {1000 // fps} ms or more after the last "
                       f"(steps {sorted(set(steps))[:6]} ticks)",
                       len(steps) > 0 and all(step - 1 <= s < 90000 for s in steps))
+                check(f"TR {kind} {fps} fps: the egress's SPS says {sps} fps",
+                      len(sps) > 0 and all(f is not None and abs(f - fps) < 0.01 for f in sps))
+        # B-188: a source slower than the rendition's rate keeps its own (the fixed rate refused it).
+        for name, caps, frames, fps, src_fps in (("25p", "25/1", 100, 50, 25.0),
+                                                 ("29.97p", "30000/1001", 120, 30, 30000 / 1001)):
+            fixture = os.path.join(tmp, f"p{frames}.ts")
+            check(f"TR fixture: {frames} frames of {name} H.264 generated",
+                  make_progressive_ts(fixture, caps, frames) > 188 * frames)
+            bufs = _house_bufs(fixture, 200_000 * Gst.SECOND, ts_psi)
+            step, lo = round(90000 / src_fps), frames - frames // 10
+            for kind, argv in (("native", None), ("python", py)):
+                out, r, sps = _transcode_run(argv, plan[f"rendition{fps}"], bufs, tmp, ts_psi)
+                steps = [(b - a) % (1 << 33) for a, b in zip(out or [], (out or [])[1:])]
+                check(f"TR {kind} {name} into {fps} fps: PLAYING, attached, no error",
+                      out is not None and not r.has_event(ev_is("error")))
+                check(f"TR {kind} {name} into {fps} fps: {len(out or [])} of {frames} frames out "
+                      f"(down to {lo} for the frames held at the stop or shed)", lo <= len(out or []) <= frames)
+                # ±2 ticks: 29.97 PTS round on the way through; one step of two: the first early frame (B-186)
+                one = [s for s in steps if abs(s - step) <= 2]
+                two = [s for s in steps if abs(s - 2 * step) <= 2]
+                check(f"TR {kind} {name} into {fps} fps: every frame one source frame after the last, ±2 ticks, "
+                      f"once at most two (steps {sorted(set(steps))[:6]} ticks, want {step})",
+                      len(steps) > 0 and len(one) + len(two) == len(steps) and len(two) <= 1)
+                check(f"TR {kind} {name} into {fps} fps: the egress's SPS says {sps} fps (want {src_fps:.3f})",
+                      len(sps) > 0 and all(f is not None and abs(f - src_fps) < 0.01 for f in sps))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

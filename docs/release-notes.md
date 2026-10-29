@@ -440,9 +440,20 @@ elements" below do not start.
   long as the outage lasted, then its own rate again. A rendition at its
   source's rate (the default 50 with a 1080i or 50p source) now leaves out a
   single frame from time to time when the source's clock runs a little fast:
-  about one every 8 minutes for a clock 40 millionths fast. A rendition set
-  faster than its source (the default 50 with a 25p source) still does not
-  start, as before: set Frame Rate to the source's rate or lower.
+  about one every 8 minutes for a clock 40 millionths fast.
+- **A Video Transcoder rendition or a Video Encoder whose source is slower
+  than its Frame Rate now runs at the source's rate instead of failing and
+  restarting.** A Video Transcoder at the default 50 with a 1080p25 or 720p25
+  source, at 30 with a 29.97 source or at 60 with a 59.94 one stopped with an
+  error and restarted over and over; so did a Video Encoder set faster than
+  its camera or capture device delivers. Fixed: it sends every frame of the
+  source, at the source's own rate (25, 29.97 or 59.94 frames a second).
+  GOP Length still counts frames, so with a 25 fps source 50 frames is a
+  keyframe every 2 seconds; set 25 for one a second. The card's Framerate
+  still shows the rate you set. Running at its source's rate, it behaves as
+  with Frame Rate set to that rate: it can leave out one frame as it starts
+  and, when the source's clock runs a little fast, a single frame from time
+  to time (about one every 8 minutes at 50 fps for a clock 40 millionths fast).
 - **An input that comes back after more than 5 seconds away no longer warns
   that its queue is full.** When an input of an Audio Mixer, an N-1 Audio
   Mixer (302M), Audio Processing or an Audio Output (302M) with two or more

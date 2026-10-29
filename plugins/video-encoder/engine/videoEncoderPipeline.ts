@@ -46,6 +46,13 @@ export function supportsLiveBitrate(codec: CodecId, impl: ImplId): boolean {
  */
 const SOURCE_QUEUE_MS = 100;
 
+/** The caps after a drop-only videorate: the request, then a range up to it. A slower device
+ *  keeps its own rate (drop-only offers none above it); listed first, the request holds a
+ *  stream without one (0/1), which the range alone would fixate to 1 fps (B-188). */
+function rateCaps(media: 'video/x-raw' | 'image/jpeg', framerate: number): string {
+    return `${media},framerate=${framerate}/1;${media},framerate=[1/1,${framerate}/1]`;
+}
+
 /**
  * Assemble the source branch for an already-probed device. Split out of
  * `buildV4l2Source` (which shells out to `v4l2-ctl`) so the whole
@@ -86,7 +93,7 @@ export function buildV4l2SourceForModes(
     // gap, videorate fills it with ~a dozen dups, the dups eat the very thread
     // budget whose exhaustion caused the shed, and real throughput pins at
     // ~2 fps (measured 2026-09-01). Dropping conforms a too-fast device; a
-    // too-slow one is refused at negotiation (drop-only offers no higher rate).
+    // too-slow one keeps its own rate (`rateCaps`; drop-only offers none above it).
     // `skip-to-first` starts the drop grid at the first frame, not the segment's
     // 0, which only this pipeline's natural base time puts near it (B-186).
     // The scale stage LAST, directly before the encoder: `buildScaleStage` —
@@ -103,14 +110,15 @@ export function buildV4l2SourceForModes(
             : scaleStage;
     const tail =
         `queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! ` +
-        `videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=${framerate}/1 ! ${stage}`;
+        `videorate drop-only=true skip-to-first=true ! ${rateCaps('video/x-raw', framerate)} ! ${stage}`;
     if (!mode) {
         // Probe failed or the device names nothing we can pin — let v4l2src
         // negotiate freely and rely on the conversion tail to bridge.
         return `${src} ! ${queue} ! ${tail}`;
     }
     // Pick the closest framerate the device actually offers for the chosen
-    // mode. `videorate` then conforms it to `framerate` for the encoder.
+    // mode. `videorate` then conforms it to `framerate` for the encoder, or
+    // keeps it when it is lower (B-188).
     const closest =
         mode.framerates.length === 0
             ? framerate
@@ -130,7 +138,7 @@ export function buildV4l2SourceForModes(
         mode.pixelFormat === 'MJPG' && fastest.length > 0 ? Math.min(...fastest) : closest;
     const preDrop =
         captureFps > framerate
-            ? ` ! videorate drop-only=true skip-to-first=true ! image/jpeg,framerate=${framerate}/1`
+            ? ` ! videorate drop-only=true skip-to-first=true ! ${rateCaps('image/jpeg', framerate)}`
             : '';
     // Caps are the CHOSEN mode's, not the request's — on rung 2 they differ
     // and the tail's scale stage does the conforming.

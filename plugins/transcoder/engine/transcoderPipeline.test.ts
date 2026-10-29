@@ -245,8 +245,22 @@ describe('buildPipeline', () => {
                 'videorate drop-only=true skip-to-first=true ',
             ]);
             expect(p).toContain(
-                'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=50/1 ! ',
+                'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=50/1;video/x-raw,framerate=[1/1,50/1] ! ',
             );
+        }
+    });
+
+    it('caps the rate with the set rate, then a range up to it, and pins it nowhere else (B-188)', () => {
+        // A slower source keeps its own rate; listed first, the set rate holds a source without one (0/1).
+        for (const framerate of [24, 25, 30, 50, 60]) {
+            const p = buildPipeline({
+                ...base,
+                framerate,
+                outputs: [out(0, r()), out(1, r({ width: 640, height: 360 }))],
+            })!.pipeline;
+            expect(p.match(/framerate=[^ ]*/g)).toEqual([
+                `framerate=${framerate}/1;video/x-raw,framerate=[1/1,${framerate}/1]`,
+            ]);
         }
     });
 
@@ -357,7 +371,7 @@ describe('deinterlacing', () => {
         // deinterlaced, progressive passes through — the "auto by default" contract.
         // Never the default `linear` method: a bob, burnt-in text jumps a line (#817).
         expect(p).toMatch(
-            /! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true skip-to-first=true ! video\/x-raw,framerate=50\/1/,
+            /! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true skip-to-first=true ! video\/x-raw,framerate=50\/1;video\/x-raw,framerate=\[1\/1,50\/1\] ! /,
         );
     });
 
@@ -530,7 +544,7 @@ describe('subtitle burn-in', () => {
             },
         })!;
         expect(r.pipeline).toContain(
-            'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
+            'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! textoverlay name=subov wait-text=false text="" ' +
                 'valignment=bottom halignment=left font-desc="Sans Bold 36" ypad=40 shaded-background=true shading-value=153 ! tee name=t ',
         );
         expect(r.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
