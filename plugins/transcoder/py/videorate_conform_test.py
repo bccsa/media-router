@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The frame-rate conform of the Video Transcoder's and the Video Encoder's strings at house time (B-186, B-188).
+"""The frame-rate conform of the Video Transcoder's and the Video Encoder's strings at house time (B-186, B-188),
+and the Video Encoder's raw source caps (B-189).
 
 Each builder's `videorate … ! <caps>` is taken from the strings its vitest writes
 (`plugins/transcoder/tests/videorate-plan.json`, `plugins/video-encoder/tests/videorate-strings.json`;
@@ -17,6 +18,8 @@ time (from 1 h, and from 10^6 s, a box's uptime), as tsdemux gives the transcode
   7. the encoders behind the transcoder's caps (x264enc, x265enc) get a fixed rate, the lower one.
   8. a source without a rate (framerate 0/1) ends as it did with the fixed rate; on videorate 1.28 (the
      image's) at the set rate, where a range alone would fixate 1 fps.
+  9. the encoder's string for each raw fourcc it pins, from its source caps on, runs a device's frames in the
+     format v4l2src names that fourcc by (YUYV is YUY2, YU12 I420); with the fourcc itself in the caps it stops.
 
 Run: python3 videorate_conform_test.py   (from plugins/transcoder/py)
 """
@@ -231,5 +234,43 @@ for label, fragment, want in (("transcoder 25 fps", tc[25][0], "25/1"), ("encode
     else:
         check(f"{label}: {got}, {n} of 100 out, as the fixed rate ({got_before}, {m}) on videorate {VR_VERSION}, "
               "which refuses a 0/1 source either way", same)
+
+print("9. a raw mode's source caps take the device's frames as v4l2src names them (B-189)")
+# v4l2src's name for each fourcc: gst-v4l2 1.28.2's gst_v4l2_formats[] (gstv4l2object.c).
+GST_V4L2 = {"NV12": "NV12", "NV16": "NV16", "YU12": "I420", "YV12": "YV12", "YUYV": "YUY2", "UYVY": "UYVY"}
+
+
+def device_run(pipeline, fmt, n=20):
+    """`pipeline` with its v4l2src head replaced by a live 640x360 50 fps device in `fmt`. Returns (frames out,
+    the format out), or (None, the error)."""
+    rest = pipeline.split(" ! ", 1)[1]
+    out = []
+    try:
+        pipe = Gst.parse_launch(f'videotestsrc is-live=true num-buffers={n} ! capsfilter caps="video/x-raw,'
+                                f'format={fmt},width=640,height=360,framerate=50/1" ! {rest} ! identity name=tap '
+                                "! fakesink sync=false")
+    except Exception as exc:  # GLib.Error: the caps link to nothing at parse time
+        return None, str(exc)
+    pipe.get_by_name("tap").get_static_pad("src").add_probe(
+        Gst.PadProbeType.BUFFER, lambda _pad, info: (out.append(info.get_buffer().pts), Gst.PadProbeReturn.OK)[1])
+    pipe.set_state(Gst.State.PLAYING)
+    msg = pipe.get_bus().timed_pop_filtered(10 * S, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    caps = pipe.get_by_name("tap").get_static_pad("sink").get_current_caps()
+    pipe.set_state(Gst.State.NULL)
+    if msg is None or msg.type != Gst.MessageType.EOS:
+        return None, msg.parse_error()[0].message if msg else "no EOS in 10 s"
+    return len(out), caps.get_structure(0).get_string("format") if caps else None
+
+
+for fourcc, pipeline in enc["formats"].items():
+    fmt = GST_V4L2.get(fourcc)
+    if fmt is None:
+        check(f"{fourcc}: no gst-v4l2 name in this suite (add it from gstv4l2object.c)", False)
+        continue
+    n, got = device_run(pipeline, fmt)
+    check(f"{fourcc} mode, the device's frames in {fmt}: {n} of 20 out, {got}", n == 20 and got == fmt)
+    if fourcc != fmt:
+        n, err = device_run(pipeline.replace(f"format={fmt},", f"format={fourcc},", 1), fmt)
+        check(f"{fourcc} mode with format={fourcc} in its caps (before B-189) stops: {err}", n is None)
 
 finish()

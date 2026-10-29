@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { buildV4l2SourceForModes } from './videoEncoderPipeline.js';
-import { pickCaptureMode, type CaptureMode } from './captureModes.js';
+import {
+    gstVideoFormat,
+    pickCaptureMode,
+    RAW_FORMAT_PREFERENCE,
+    type CaptureMode,
+} from './captureModes.js';
 
 const mode = (
     pixelFormat: string,
@@ -134,7 +139,7 @@ describe('buildV4l2SourceForModes', () => {
             mode('YUYV', 640, 480, [30]),
             mode('YUYV', 320, 240, [30]),
         ]);
-        expect(s).toContain('video/x-raw,format=YUYV,width=640,height=480,framerate=30/1');
+        expect(s).toContain('video/x-raw,format=YUY2,width=640,height=480,framerate=30/1');
         expect(s).toContain('video/x-raw,width=1920,height=1080');
         expect(s).toContain('video/x-raw,framerate=30/1');
     });
@@ -206,10 +211,64 @@ describe('frame-rate conform (B-186, B-188)', () => {
             ]),
             raw50: buildV4l2SourceForModes('/dev/video0', 640, 360, 50, raw),
             mjpeg25: buildV4l2SourceForModes('/dev/video0', 640, 360, 25, mjpg),
+            // One 640x360 50 fps mode per raw fourcc the encoder pins, at its own rate (B-189).
+            formats: Object.fromEntries(
+                [...RAW_FORMAT_PREFERENCE.keys()].map((f) => [
+                    f,
+                    buildV4l2SourceForModes('/dev/video0', 640, 360, 50, [mode(f, 640, 360, [50])]),
+                ]),
+            ),
         };
         await expect(`${JSON.stringify(cases, null, 2)}\n`).toMatchFileSnapshot(
             '../tests/videorate-strings.json',
         );
+    });
+});
+
+describe('raw caps name the GStreamer format, not the V4L2 fourcc (B-189)', () => {
+    // v4l2src's name for each fourcc: gst-v4l2 1.28.2's `gst_v4l2_formats[]` (gstv4l2object.c).
+    const GST_V4L2: Record<string, string> = {
+        NV12: 'NV12',
+        NV16: 'NV16',
+        YU12: 'I420',
+        YV12: 'YV12',
+        YUYV: 'YUY2',
+        UYVY: 'UYVY',
+    };
+
+    it('maps every raw fourcc the encoder pins, and only those, to its gst-v4l2 name', () => {
+        expect(Object.fromEntries(RAW_FORMAT_PREFERENCE)).toEqual(GST_V4L2);
+    });
+
+    it.each(Object.entries(GST_V4L2))('a %s mode is pinned as format=%s', (fourcc, gst) => {
+        const s = buildV4l2SourceForModes('/dev/video0', 1280, 720, 25, [
+            mode(fourcc, 1280, 720, [25]),
+        ]);
+        expect(s).toContain(` ! video/x-raw,format=${gst},width=1280,height=720,framerate=25/1 ! `);
+        expect(s.match(/format=[^,]*/g)).toEqual([`format=${gst}`]);
+    });
+
+    it('pins a YUYV mode as YUY2 and a YU12 mode as I420, the rest of the string unchanged', () => {
+        const tail =
+            'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=50/1;video/x-raw,framerate=[1/1,50/1] ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2';
+        const queue = 'queue leaky=2 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0';
+        for (const [fourcc, gst] of [
+            ['YUYV', 'YUY2'],
+            ['YU12', 'I420'],
+        ]) {
+            const s = buildV4l2SourceForModes('/dev/video4', 1920, 1080, 50, [
+                mode(fourcc, 1920, 1080, [25, 50]),
+            ]);
+            expect(s).toBe(
+                `v4l2src device=/dev/video4 do-timestamp=true ! video/x-raw,format=${gst},width=1920,height=1080,framerate=50/1 ! ${queue} ! ${tail}`,
+            );
+        }
+    });
+
+    it('has no name for a fourcc it does not pin, rather than writing the fourcc', () => {
+        expect(gstVideoFormat('YUYV')).toBe('YUY2');
+        expect(() => gstVideoFormat('MJPG')).toThrow(/MJPG/);
+        expect(() => gstVideoFormat('RGB3')).toThrow(/RGB3/);
     });
 });
 

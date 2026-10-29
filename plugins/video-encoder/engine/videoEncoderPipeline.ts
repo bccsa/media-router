@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
 import { buildScaleStage, parseFormats, type CodecId, type ImplId } from '@media-router/engine';
-import { pickCaptureMode, type CaptureMode } from './captureModes.js';
+import { gstVideoFormat, pickCaptureMode, type CaptureMode } from './captureModes.js';
 
 /**
  * The capture tail's software scale/convert. The default (tests, non-Pi
@@ -141,7 +141,8 @@ export function buildV4l2SourceForModes(
             ? ` ! videorate drop-only=true skip-to-first=true ! ${rateCaps('image/jpeg', framerate)}`
             : '';
     // Caps are the CHOSEN mode's, not the request's — on rung 2 they differ
-    // and the tail's scale stage does the conforming.
+    // and the tail's scale stage does the conforming. A raw mode's format is
+    // GStreamer's name for its fourcc, as v4l2src gives it (B-189).
     if (mode.pixelFormat === 'MJPG') {
         // `jpegparse` re-frames the stream on the actual JPEG markers instead
         // of trusting the driver's buffer boundaries. Load-bearing for the ATEM
@@ -162,7 +163,7 @@ export function buildV4l2SourceForModes(
         // removed; re-add one only together with the kernel-level fix.
         return `${src} ! image/jpeg,width=${mode.width},height=${mode.height},framerate=${captureFps}/1${preDrop} ! ${queue} ! jpegparse ! jpegdec ! ${tail}`;
     }
-    return `${src} ! video/x-raw,format=${mode.pixelFormat},width=${mode.width},height=${mode.height},framerate=${captureFps}/1 ! ${queue} ! ${tail}`;
+    return `${src} ! video/x-raw,format=${gstVideoFormat(mode.pixelFormat)},width=${mode.width},height=${mode.height},framerate=${captureFps}/1 ! ${queue} ! ${tail}`;
 }
 
 /**

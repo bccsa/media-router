@@ -454,6 +454,12 @@ elements" below do not start.
   with Frame Rate set to that rate: it can leave out one frame as it starts
   and, when the source's clock runs a little fast, a single frame from time
   to time (about one every 8 minutes at 50 fps for a clock 40 millionths fast).
+- **A Video Encoder on a raw YUYV or YU12 capture mode now starts.** Before,
+  it stopped with a pipeline error ("can't handle caps") each time it started
+  on such a mode, and sent nothing; MJPEG modes and the NV12, NV16, YV12 and
+  UYVY raw modes worked. The mode it picks is unchanged: MJPEG first, then
+  NV12, so a YUYV or YU12 mode is used only where the device has neither at
+  the set resolution.
 - **An input that comes back after more than 5 seconds away no longer warns
   that its queue is full.** When an input of an Audio Mixer, an N-1 Audio
   Mixer (302M), Audio Processing or an Audio Output (302M) with two or more

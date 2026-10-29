@@ -11,11 +11,27 @@
  * heuristic: semi-planar (NV12/NV16) is preferred over planar (YU12/YV12)
  * which is preferred over packed (YUYV/UYVY). Within each layout class the
  * 4:2:0 variant comes first because it's lower bandwidth than 4:2:2.
+ * Each V4L2 fourcc maps to the GStreamer format v4l2src names it by (gst-v4l2's
+ * format table): caps naming the fourcc itself link to nothing (B-189).
  */
-const RAW_FORMAT_PREFERENCE = ['NV12', 'NV16', 'YU12', 'YV12', 'YUYV', 'UYVY'];
+export const RAW_FORMAT_PREFERENCE: ReadonlyMap<string, string> = new Map([
+    ['NV12', 'NV12'],
+    ['NV16', 'NV16'],
+    ['YU12', 'I420'],
+    ['YV12', 'YV12'],
+    ['YUYV', 'YUY2'],
+    ['UYVY', 'UYVY'],
+]);
 
 /** Pixel formats we know how to pin at the source, in the order we want them. */
-const FORMAT_PREFERENCE = ['MJPG', ...RAW_FORMAT_PREFERENCE];
+const FORMAT_PREFERENCE = ['MJPG', ...RAW_FORMAT_PREFERENCE.keys()];
+
+/** The caps' `format` for a raw pixel format `pickCaptureMode` pins: YUYV is YUY2, YU12 I420. */
+export function gstVideoFormat(pixelFormat: string): string {
+    const format = RAW_FORMAT_PREFERENCE.get(pixelFormat);
+    if (format === undefined) throw new Error(`no GStreamer format for V4L2 '${pixelFormat}'`);
+    return format;
+}
 
 /** One `{pixel format, resolution}` entry as reported by `v4l2-ctl --list-formats-ext`. */
 export interface CaptureMode {
