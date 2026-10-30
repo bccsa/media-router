@@ -136,7 +136,7 @@ export const HARDWARE_DECODER_IDS: readonly string[] = [
 ];
 
 /**
- * `tsdemux` caps per codec, used for the pad-steering capsfilter — see
+ * `mrtsdemux` pad caps per codec, the explicit rungs' codec filter — see
  * `DecoderSelection.caps`. Spelled out rather than derived from the codec name
  * so a future ladder entry can't silently produce a bogus media type.
  *
@@ -194,9 +194,8 @@ export interface DecoderSelection {
     /** Pipeline fragment replacing the `decodebin3` element position. */
     chain: string;
     /**
-     * Capsfilter fragment for the `tsdemux` output, or `''` on the decodebin3
-     * rung. This sits DIRECTLY on tsdemux — see `buildLivePipeline` for why it
-     * cannot sit after the leaky queue.
+     * Capsfilter fragment on the demux's video pad, or `''` on the decodebin3
+     * rung: the rung's codec guard — see `buildLivePipeline`.
      */
     caps: string;
     /** True for a V4L2 hardware rung. */
@@ -253,12 +252,9 @@ export function selectDecoder(input: DecoderSelectionInput): DecoderSelection {
     const ladder = input.codec ? DECODER_LADDERS[input.codec] : undefined;
     if (!ladder) return DECODEBIN_SELECTION;
 
-    // A ladder with no caps entry can't be built: every explicit rung needs the
-    // pad-steering capsfilter (without it the leaky queue happily takes the
-    // AUDIO pad — see buildLivePipeline), and an unguarded lookup would splice
-    // the literal `caps="undefined"` into the pipeline string, which fails the
-    // parse at runtime instead of at review. decodebin3 is the correct answer
-    // for a codec we can't steer: it has always absorbed whatever pad it got.
+    // A ladder with no caps entry can't be built: every explicit rung needs its codec
+    // filter (see buildLivePipeline), and an unguarded lookup would splice the literal
+    // `caps="undefined"` into the string, a parse failure at runtime. decodebin3 takes any.
     const caps = CODEC_CAPS[input.codec!];
     if (!caps) return DECODEBIN_SELECTION;
 

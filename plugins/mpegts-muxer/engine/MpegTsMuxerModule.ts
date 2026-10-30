@@ -255,14 +255,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
             pipeline: result.pipeline,
             runnerHooks: result.runnerHooks,
             restartOnError: true,
-            // Retime every input's access units onto their producer's stamps (K +
-            // PES), cue pads too: a KLV or teletext buffer leaves its demux at
-            // PES − 1 h, so the mux writes it at its own PTS (part 4.6).
-            alignBranchesToStamps: {
-                demuxes: result.demuxes,
-                transformProducer: true,
-                privatePads: true,
-            },
             timingInputs: timingInputs(sources, entries),
         };
     }

@@ -25,7 +25,8 @@ Demux mode (the default, WI-P3-2; register B-123), each case numbered as p3-2's 
   4. a PMT change: version-only keeps the pads; a type change adds `*_1_*`, then EOS and
      pad-removed on `*_0_*`; a PCR PID change re-adds;
   5. Opus caps equal tsdemux's, decoded sample counts equal through opusdec (clipping meta);
-  6. `media=video`: one pad, `pes` counts video only;  7. bus gap markers from the sidecar;
+  6. `media=video`: one pad, `pes` counts video only;  7. bus gap markers from the sidecar
+     (syn-gap-marker, and the restamp's in bus-ingest-relock-gap and bus-pmt-change);
   8. a 2 h-off fixture: not-house-time once per PID;  9. the stream collection and the event
      order per pad equal tsdemux's (the section messages' place excepted, S14);
   10. MPEG-2 ADTS: caps mpegversion=2 before the first buffer;  11. KLV caps and SPARSE;
@@ -995,7 +996,7 @@ def head_sequence(h, pad):
 # --- 1. every fixture = its .demux.jsonl ---------------------------------------------------
 print("\n--- 1. every fixture: pads, templates, caps, units and gaps = its .demux.jsonl ---")
 _names = sorted(f[:-len(".demux.jsonl")] for f in os.listdir(FIX) if f.endswith(".demux.jsonl"))
-check(f"{len(_names)} expectations", len(_names) >= 33)
+check(f"{len(_names)} expectations", len(_names) >= 38)
 for name in _names:
     lines = demux_lines(name)
     h = replay_fixture(name, program_number=2 if name.endswith(".p2") else -1)
@@ -1232,19 +1233,30 @@ check("media is kept while the element runs (it applies at a start)",
 h.stop()
 
 # --- 7. markers from the sidecar --------------------------------------------------------------
-print("\n--- 7. syn-gap-marker from its sidecar: a GAP per marked pad, DISCONT next ---")
-h = replay_fixture("syn-gap-marker")
-_mk = [ln["gap"] for ln in demux_lines("syn-gap-marker")
-       if "gap" in ln and ln["gap"]["reason"] == "marker"]
-_ok = len(_mk) == 2
-for g in _mk:
-    log = [e for e in h.log if e[1:2] == (g["pad"],) and (e[0] == "push" or e[2:3] == ("gap",))]
-    i = next((k for k, e in enumerate(log)
-              if e[0] == "event" and e[3] == (g["pts"], g["dur"])), None)
-    _ok = _ok and i is not None and log[i + 1][0] == "push" and bool(log[i + 1][3][0][2] & DISCONT)
-check(f"{len(_mk)} marker GAPs on video and audio, each followed by a DISCONT buffer; markers "
-      f"counted ({h.el.get_property('markers')})", _ok and h.el.get_property("markers") >= 2)
-h.stop()
+print("\n--- 7. markers from the sidecar: a GAP per marker on each marked pad, DISCONT next ---")
+# syn-gap-marker's two, then the restamp's as recorded (p3-3b): an outage's on all 23 PIDs every
+# 250 ms, then one per PID at the relock; bus-pmt-change's around its re-plan.
+for _name, _want in (("syn-gap-marker", 2), ("bus-ingest-relock-gap", 413),
+                     ("bus-pmt-change", 276)):
+    h = replay_fixture(_name)
+    _lines = demux_lines(_name)
+    _mk = [ln["gap"] for ln in _lines if "gap" in ln and ln["gap"]["reason"] == "marker"]
+    _counters = next(ln["counters"] for ln in _lines if "counters" in ln)
+    _bad = []
+    for g in _mk:
+        log = [e for e in h.log
+               if e[1:2] == (g["pad"],) and (e[0] == "push" or e[2:3] == ("gap",))]
+        i = next((k for k, e in enumerate(log)
+                  if e[0] == "event" and e[3] == (g["pts"], g["dur"])), None)
+        nxt = next((e for e in log[i + 1:] if e[0] == "push"), None) if i is not None else None
+        if i is None or (nxt is not None and not nxt[3][0][2] & DISCONT):
+            _bad.append((g["pad"], g["pts"]))
+    check(f"{_name}: {len(_mk)} marker GAPs, each on its pad with the pad's next buffer DISCONT; "
+          f"markers counted ({h.el.get_property('markers')}) {_bad[:2]}",
+          len(_mk) == _want and not _bad and not h.errors
+          and h.el.get_property("markers") == _counters["markers"]
+          and h.el.get_property("markers-dropped") == _counters["markersDropped"])
+    h.stop()
 
 # --- 8. not house time -------------------------------------------------------------------------
 print("\n--- 8. a recording 2 h behind the clock: not-house-time once per PID ---")

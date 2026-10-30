@@ -80,21 +80,13 @@
   },
   "muxKlv": {
     "start": {
-      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_256=(int)1,sink_264=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41030 reference=running-time ! tee name=busout_41030 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/klv0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux latency=0 name=demux_0 unixfdsrc name=busin_1 socket-path=@SOCK@/klv1.sock ! mrlateness name=lat_busin_1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux latency=0 name=demux_1",
+      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_256=(int)1,sink_264=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41030 reference=running-time ! tee name=busout_41030 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/klv0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_0 unixfdsrc name=busin_1 socket-path=@SOCK@/klv1.sock ! mrlateness name=lat_busin_1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_1",
       "useStdioForData": false,
       "linkOnPadAdded": [],
       "readKlvNames": false,
       "liveCaptureClock": false,
       "decoderThreadType": "auto",
       "busReports": [],
-      "alignBranchesToStamps": {
-        "demuxes": [
-          "demux_0",
-          "demux_1"
-        ],
-        "transformProducer": true,
-        "privatePads": true
-      },
       "runnerHooks": [
         {
           "module": "mux_routing",
@@ -161,21 +153,13 @@
   },
   "muxBursty": {
     "start": {
-      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_256=(int)1,sink_264=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41031 reference=running-time ! tee name=busout_41031 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/burst0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux latency=0 name=demux_0 unixfdsrc name=busin_1 socket-path=@SOCK@/burst1.sock ! mrlateness name=lat_busin_1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux latency=0 name=demux_1",
+      "pipeline": "mpegtsmux name=mux latency=0 alignment=7 prog-map=\"program_map,sink_256=(int)1,sink_264=(int)1,PCR_1=sink_256\" ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41031 reference=running-time ! tee name=busout_41031 allow-not-linked=true unixfdsrc name=busin_0 socket-path=@SOCK@/burst0.sock ! mrlateness name=lat_busin_0 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_0 unixfdsrc name=busin_1 socket-path=@SOCK@/burst1.sock ! mrlateness name=lat_busin_1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! mrtsdemux name=demux_1",
       "useStdioForData": false,
       "linkOnPadAdded": [],
       "readKlvNames": false,
       "liveCaptureClock": false,
       "decoderThreadType": "auto",
       "busReports": [],
-      "alignBranchesToStamps": {
-        "demuxes": [
-          "demux_0",
-          "demux_1"
-        ],
-        "transformProducer": true,
-        "privatePads": true
-      },
       "runnerHooks": [
         {
           "module": "mux_routing",

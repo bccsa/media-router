@@ -15,7 +15,7 @@
  *
  * Route classes a muxer input sorts a demuxed pad into: `klv` is
  * `meta/x-klv` (the WebVTT subtitle carrier of ADR-0016), `subtitle` is DVB
- * subtitles / teletext, `data` is anything else tsdemux exposes (nothing
+ * subtitles / teletext, `data` is anything else the demux exposes (nothing
  * routes it by default). The runner-side twin of `muxRouteMedia` is
  * `route_media_for_caps` in `py/mux_routing.py`; both are pinned to the same
  * caps table by muxPids.test.ts and mux_routing_test.py.
@@ -87,7 +87,7 @@ export function nextFreeInputPid(taken: Iterable<number>): number {
     throw new RangeError('nextFreeInputPid: no free PID left');
 }
 
-/** Route class for a tsdemux pad from its caps (a full caps string or just the
+/** Route class for a demux pad from its caps (a full caps string or just the
  *  structure name). Twin of `route_media_for_caps` in py/mux_routing.py. */
 export function muxRouteMedia(caps: string): MuxRouteMedia {
     const name = caps.split(/[,;]/, 1)[0]?.trim() ?? '';

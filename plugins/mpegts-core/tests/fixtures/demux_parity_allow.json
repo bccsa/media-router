@@ -39,7 +39,7 @@
     {
       "id": "jump-gap",
       "what": "A GAP event on a pad that is not sparse, followed by a DISCONT unit, from mrtsdemux only.",
-      "reason": "DemuxCore's jump rule (B-121, S5): an audio PES more than two frames after the previous one's end, or a video hole of 1 s or more, is a GAP of the hole and DISCONT on the next unit, so a consumer keeps the house timeline over the hole instead of closing it; tsdemux has no such rule. A bus gap marker (OQ-12) gives its pad the same GAP and DISCONT (B-60). Measured at the gate source's 100 ms steps in cap-mux-align7-aac-opus and cap-cc-loss (two GAPs of about 80 ms on the AAC pad)."
+      "reason": "DemuxCore's jump rule (B-121, S5): an audio PES more than two frames after the previous one's end, or a video hole of 1 s or more, is a GAP of the hole and DISCONT on the next unit, so a consumer keeps the house timeline over the hole instead of closing it; tsdemux has no such rule. A bus gap marker's GAPs are marker-gaps. Measured at the gate source's 100 ms steps in cap-mux-align7-aac-opus and cap-cc-loss (two GAPs of about 80 ms on the AAC pad)."
     },
     {
       "id": "sparse-gaps",
@@ -60,6 +60,41 @@
       "id": "own-messages",
       "what": "mrtsdemux's own element messages, structure mrtsdemux, reason interval, program or unknown-stream.",
       "reason": "The demux's counters and its plan for the engine (S3, B-123), forwarded by both runners; tsdemux posts no element message but its section messages. Its warnings not-house-time and no-stream fail the run: the replay runs at the recording's own house time and tsdemux's pads are compared one for one, so either means the harness or the element is wrong."
+    },
+    {
+      "id": "pmt-continuation",
+      "what": "A section message from tsdemux of a table it does not know, on a PMT PID: the second packet of a repeated PMT read as a section of its own; at most one per repeat of a PMT that spans two packets or more.",
+      "reason": "At a section start (PUSI, pointer 0) tsdemux's packetizer empties the PID's section state (mpegts_packetizer_clear_section, mpegtspacketizer.c:213-221) and skips a section it has seen (seen_section_before, :1231-1241), so the PMT's next packet finds nothing open: the accumulate path counts the empty section complete (:1084-1110) and section_start reads the packet's first payload byte as a table id (:1116-1170). Where that byte is not 0xff and the next has its top bit clear, the bytes pass as a short section and are posted (GST_MPEGTS_SECTION_UNKNOWN). Measured on the OCC ingest recordings (bus-occ-ingest, bus-ingest-relock-gap, bus-pmt-change), whose 299-byte PMT from the sender's ffmpeg spans two packets: the second starts 72 00 0f (the last letter of the language code 'tur', its audio type, the next stream's type), read as table 0x72 of 18 bytes, once per repeated PMT. mrtsdemux posts only the PAT and the PMT."
+    },
+    {
+      "id": "cc-repeat",
+      "what": "A unit tsdemux delivers that mrtsdemux drops: its PES's first packet repeats the PID's last continuity counter with other bytes; at most one per such packet the recording shows, the DISCONT tsdemux puts on it then on mrtsdemux's next unit.",
+      "reason": "mrts::CcTracker reads a payload packet that carries its PID's last counter as the one duplicate ISO 13818-1 allows (2.4.3.3) and drops it without comparing bytes, so the PES it starts is lost (demux_core.py CcTracker, B-121). tsdemux has no duplicate test: it checks only last + 1, and only while a PES is open (gst_ts_demux_handle_packet, tsdemux.c:3916-3947), and a new program's streams start with the counter unset (gst_ts_demux_stream_added, tsdemux.c:2221-2238). Measured on bus-pmt-change fed in chunks: the restarted sender's first packet on 12 of its 21 AAC PIDs carries counter 8, the last the old sender sent there, and starts a PES, which tsdemux delivers on the new program's pad. Fed as recorded, a bus DISCONT comes first and mrtsdemux still drops it (CcTracker keeps its counters across a bus DISCONT), while tsdemux loses it at a flush (discont-pending): a finding for DemuxCore (B-132)."
+    },
+    {
+      "id": "marker-gaps",
+      "what": "GAP events on a pad that is not sparse, from mrtsdemux only, each made at a bus gap marker (OQ-12) that carries the pad's PID, the pad's next unit DISCONT.",
+      "reason": "A gap marker buffer (GAP|DISCONT, B-19) gives each PID it carries a GAP [max(horizon, end - length), end) on its pad and DISCONT on the pad's next unit (B-60, S4). The restamp sends one for every PID each 250 ms while its source is away, then one per PID at the relock (its gap/epoch events), so a pad gets a run of GAPs before its next unit. tsdemux reads a marker's adaptation-only packets as nothing and has no GAP for them. Measured on bus-ingest-relock-gap (17 outage markers on all 23 PIDs, then 22 relock markers of one PID each) and bus-pmt-change (11 and 23), fed as recorded; a sparse pad's are sparse-gaps."
+    },
+    {
+      "id": "discont-drain",
+      "what": "A unit tsdemux pushes while it takes in a buffer flagged DISCONT, which mrtsdemux drops: the PES open on that pad at that point, whole or cut; at most one per pad per such buffer.",
+      "reason": "At a DISCONT input tsdemux drains before it flushes: each pad's open PES is pushed as it stands (mpegts_base_chain, mpegtsbase.c:1539-1557; gst_ts_demux_drain, tsdemux.c:4010-4029), cut where its rest was lost. DemuxCore drops every open PES at a bus DISCONT, as bytes may be missing before it (B-121), so no cut frame reaches a decoder. Measured on bus-occ-ingest and bus-ingest-relock-gap, where the srt-input's leaky queue dropped bus buffers and flagged the next DISCONT (DEV4a): a video PES open at each, fed as recorded."
+    },
+    {
+      "id": "discont-pending",
+      "what": "A unit mrtsdemux delivers that tsdemux drops: tsdemux held it, waiting for a PCR after a flush, and a buffer flagged DISCONT came before its next unit on that pad.",
+      "reason": "tsdemux's flush at a DISCONT input (gst_ts_demux_stream_flush, tsdemux.c:2314-2357) sets pending_ts on every stream and, in push mode on a TIME segment, drops the packetizer's PCR observations (mpegtsbase.c:1551), so it holds each new unit until a PCR maps it (gst_ts_demux_push_pending_data, tsdemux.c:3727-3753; check_pending_buffers, :2615); the next flush drops what it holds. The restamp's relock markers come one PID at a time, about three buffers apart, each a flush in tsdemux, so it loses the units that complete between them; mrtsdemux times units by the formula and delivers them. Measured on bus-ingest-relock-gap and bus-pmt-change fed as recorded."
+    },
+    {
+      "id": "discont-flag",
+      "what": "DISCONT on tsdemux's unit where mrtsdemux sets none, with a buffer flagged DISCONT taken in since tsdemux's previous unit on that pad.",
+      "reason": "tsdemux's flush at a DISCONT input flags every stream's next buffer DISCONT (stream->discont, gst_ts_demux_stream_flush, tsdemux.c:2328), whatever PID the buffer concerned. mrtsdemux flags every pad after a bus DISCONT, but a gap marker flags only the pads of the PIDs it carries (their GAP, then DISCONT), and where tsdemux dropped a unit mrtsdemux delivered (discont-pending) mrtsdemux's DISCONT is on that unit. Measured on bus-ingest-relock-gap and bus-pmt-change fed as recorded."
+    },
+    {
+      "id": "psi-repeat-discont",
+      "what": "A repeated PAT or PMT message from tsdemux (same PID and version) with a buffer flagged DISCONT taken in since its last message on that PID.",
+      "reason": "At a DISCONT input in push mode tsdemux clears its packetizer's record of the sections it has seen (mpegts_packetizer_clear, mpegtsbase.c:1555), so it posts the next PAT and PMT again; DemuxCore posts a PAT when it is new and a PMT when the table changed, which a bus DISCONT does not do. Measured on bus-occ-ingest, bus-ingest-relock-gap and bus-pmt-change fed as recorded. Nothing re-plans in either."
     }
   ],
   "measuredEqual": [
@@ -69,7 +104,7 @@
     },
     {
       "item": "tsdemux's SDT, EIT and TDT section messages",
-      "why": "None: tsdemux 1.28.2 reads sections only on the PAT, the PMTs, the private-section streams a PMT lists and PIDs 2, 3, 0x14, 0x15 and 0x1ffb (mpegts_base_reset, mpegtsbase.c:230-251; mpegts_base_activate_program, :1024-1029), so the SDT on 0x11 that 12 of the recordings carry (and the CAT of cap-occ-1080i-h264-21aac-ttx) is never posted, and no recording has a TDT or TOT on 0x14. A recording that brings one fails until an entry says why."
+      "why": "None: tsdemux 1.28.2 reads sections only on the PAT, the PMTs, the private-section streams a PMT lists and PIDs 2, 3, 0x14, 0x15 and 0x1ffb (mpegts_base_reset, mpegtsbase.c:230-251; mpegts_base_activate_program, :1024-1029), so the SDT on 0x11 that 15 of the recordings carry (and the CAT of cap-occ-1080i-h264-21aac-ttx) is never posted, and no recording has a TDT or TOT on 0x14. A recording that brings one fails until an entry says why."
     },
     {
       "item": "Buffers tsdemux drops before its first PCR",
@@ -77,7 +112,7 @@
     },
     {
       "item": "tsdemux's timestamp-driven DISCONTs",
-      "why": "None: tsdemux 1.28.2 sets DISCONT only on a pad's first buffer after a start, a flush or a DISCONT input buffer (stream->discont, tsdemux.c:2226, :2328; mpegts_base_chain's drain and flush), never from its timestamps. Each DISCONT mrtsdemux sets beyond those is an entry's: cc-loss-discont, cc-loss-next-pes, jump-gap."
+      "why": "None: tsdemux 1.28.2 sets DISCONT only on a pad's first buffer after a start, a flush or a DISCONT input buffer (stream->discont, tsdemux.c:2226, :2328; mpegts_base_chain's drain and flush), never from its timestamps. Each DISCONT mrtsdemux sets beyond those is an entry's: cc-loss-discont, cc-loss-next-pes, jump-gap, marker-gaps, cc-repeat (the DISCONT it moves)."
     },
     {
       "item": "A buffer list's pieces pushed one by one before tsdemux's first PCR mapping",
@@ -89,7 +124,7 @@
     },
     {
       "item": "The re-plan order (part 9: drain the old pads, add the new, remove the old)",
-      "why": "No recording here re-plans (one program generation each); p3-2 matched tsdemux's order and holds it in gst_mrtsdemux_element_test.py cases 4 and 9 (B-123). The one difference B-123 names there, tsdemux posting the new collection message before it drains the old pads and mrtsdemux after, is a message's place against buffers, which this comparison does not order (it orders messages against pad events). p3-3b's bus-pmt-change brings the first recorded re-plan."
+      "why": "bus-pmt-change re-plans (p3-3b, B-132: its sender switched from H.264 to HEVC, a stream-type change on the same PID through the restamp, generation 0 to 1): the plan's events are equal in order at every feed, the old pads' units drained, the new pads added, then the old removed, as p3-2 matched and gst_mrtsdemux_element_test.py cases 4 and 9 hold (B-123). The one difference B-123 names there, tsdemux posting the new collection message before it drains the old pads and mrtsdemux after, is a message's place against buffers, which this comparison does not order (it orders messages against pad events)."
     }
   ],
   "excluded": [

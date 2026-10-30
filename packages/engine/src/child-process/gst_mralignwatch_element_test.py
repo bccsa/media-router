@@ -17,7 +17,8 @@ late cue is forwarded at its own PTS with a message and the pace's target raised
 defaults and the LATENCY answer, and
 the caps a dark input's gaps go out under: (2c) a 302M-shaped branch, (2d) 8 channels, (2e) every
 input dark, (2f) a branch dark at start that comes up, (2g) a hole the input reports, on in
-block-long pieces (past a second whole, fenced), (8b) a sparse stream whose caps come with its
+block-long pieces (past a second whole, fenced), (2h) one longer than the time bound, the input
+absent over it: no full queue (B-134), (8b) a sparse stream whose caps come with its
 first cue; (11)-(11e) an input added while playing (late, dark, on time, seeded, into gaps alone)
 is gapped until it catches up, the pace slewing to a late one, so the mixer never stops on it,
 (11f) the same into mpegtsmux, (11g) a rejoin's 2 s backlog moves no pace, (11h) a joiner within
@@ -1041,6 +1042,30 @@ check(f"jump: the 5 ms fade-out, the rest of the 1.5 s GAP whole, then its fence
 check(f"jump: input 0 alone over it, nothing dropped (got {r.levels(3000)})",
       r.levels(3000) == [(0, 1000, VAL[0] + VAL[1]), (1000, 2500, VAL[0]),
                          (2500, 3000, VAL[0] + VAL[1])] and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (2h) a hole longer than the time bound, absent over it: no full queue ---")
+# A producer silent past max-size-time: the demux's GAP over the hole, sent with the data after it,
+# reaches back past the horizon, where it goes out clipped: no queued time (B-134); counted from its
+# start it read as a full queue. The 500 ms pace keeps the GAP's tail queued as that data comes in.
+r = Rig("mpegtsmux", [{"props": {"seed-lateness": 500 * MS}}, {"props": {"max-size-time": 1500 * MS}}])
+r.run({0: [("rt", 0, 500, 500), ("eos",)],
+       1: [("rt", 0, 100, 0), ("at", 4000),
+           ("call", lambda: r.srcs[1].send_event(Gst.Event.new_gap(r.at(1000), 3000 * MS))),
+           ("rt", 400, 500, 0), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+with r.lock:
+    full = [f for _t, src, f in r.msgs if src == "aw1" and f["reason"] == "full"]
+    back = [f["level-time"] for t, src, f in r.msgs if src == "aw1" and f["reason"] == "state"
+            and f["state"] == "present" and t >= r.at(3500)]
+check(f"long hole: input 1 absent once over its 3 s silence; back, its queue counted from the "
+      f"horizon, under its 1.5 s bound (level-time {back[0] // MS if back else None} ms, about the "
+      f"pace), never full (full-count {r.prop(1, 'full-count')}, {len(full)} `full` messages)",
+      r.prop(1, "absences") == 1 and back and back[0] < 1500 * MS
+      and r.prop(1, "full-count") == 0 and not full)
+after = [(t, d) for t, d in r.pes().get(PID0 + 1, []) if t is not None and t >= pts90(r.at(4000))]
+check(f"long hole: its data after the hole all written at its PTS, EOS, no error ({len(after)} of 100)",
+      after == [(pts90(r.at(k * 10)), payload(1, k)) for k in range(400, 500)] and eos and not r.errors)
 r.stop()
 
 # A live add joins a running mixer: the joiner is gapped until its content catches up, so the

@@ -82,7 +82,7 @@ export interface InputEntry {
      * `taginject` in each non-video branch (mpegtsmux converts any accepted
      * form to ISO 639-2B on the wire; today it writes the descriptor for AUDIO
      * only — KLV/teletext get it once mpegtsmux does). Empty → no taginject, so
-     * whatever language the SOURCE TS carries passes through tsdemux→mpegtsmux
+     * whatever language the SOURCE TS carries passes through demux→mpegtsmux
      * untouched. Applied at build time — changing it restarts the muxer (a
      * live `tags` property change is not reliably re-emitted by taginject).
      */

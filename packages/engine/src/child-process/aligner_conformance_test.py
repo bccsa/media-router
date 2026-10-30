@@ -984,8 +984,8 @@ def identity_check(records, t_lo):
 _302M = ("avenc_s302m", "avdec_s302m", "mpegtsmux", "audiomixer", "unixfdsrc", "unixfdsink")
 NEEDS = {
     "scn-align-bursty": ("x264enc", "avenc_aac", "opusenc", "h264parse", "aacparse", "opusparse",
-                         "videotestsrc", "tsdemux", "mpegtsmux", "unixfdsrc", "unixfdsink"),
-    "scn-mux-klv": ("tsdemux", "mpegtsmux", "unixfdsrc", "unixfdsink"),
+                         "videotestsrc", "mpegtsmux", "unixfdsrc", "unixfdsink"),
+    "scn-mux-klv": ("mpegtsmux", "unixfdsrc", "unixfdsink"),
     "scn-split-passthrough": ("unixfdsrc", "unixfdsink"),
     "scn-837-ducker-mixer": _302M + ("audiointerleave", "deinterleave"),
 }

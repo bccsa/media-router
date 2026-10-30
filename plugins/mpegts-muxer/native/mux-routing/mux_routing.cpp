@@ -28,7 +28,7 @@ const char* const PRIORITY[] = {"video", "audio", "klv", "subtitle"};
 const int RESERVED_PIDS[] = {0x1000, 0x1F0};
 constexpr int MAX_ES_PID = 0x1FFE;
 
-// Caps-name → parser between tsdemux and mpegtsmux (see the python table).
+// Caps-name → parser between the demuxer and mpegtsmux (see the python table).
 struct ParserEntry {
     const char* caps;
     const char* parser;   // "" = parser-free, nullptr = by mpegversion
@@ -460,7 +460,7 @@ std::string plan_route(Input& in, GstPad* pad, GstCaps* caps, const std::string&
         if (*out_pid < 0) {
             emit_msg("error", fmt("mux_routing: no free output PID above %d for %s on %s", in.pid, media.c_str(),
                                   in.rule_id.c_str()));
-            // Sink it (python does the same): an unlinked pad is the tsdemux
+            // Sink it (python does the same): an unlinked pad is the demuxer's
             // NOT_LINKED restart loop this hook exists to prevent.
             return "no free output PID";
         }

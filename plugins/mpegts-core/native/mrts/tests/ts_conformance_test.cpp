@@ -4,8 +4,8 @@
 // <name>.expect.jsonl, and <name>.p<N>.expect.jsonl following program N. A synthetic fixture
 // must be fixture_gen's bytes (Phase 3's kinds also pinned by CRC-32, WI-P3-3), a derived one
 // its source with the named packets removed or re-spaced, so neither needs Python to
-// regenerate. A bus sidecar (<name>.bus.jsonl) must tile its .ts. MRTS_FIXTURES overrides the
-// fixture directory.
+// regenerate. A bus sidecar (<name>.bus.jsonl) must tile its .ts and start on its first PES's
+// house time (p3-3b). MRTS_FIXTURES overrides the fixture directory.
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "../demux_core.h"
 #include "../ts_dump.h"
 #include "../ts_rebase.h"
 #include "check.h"
@@ -203,6 +204,18 @@ bool tiles(const std::string& path, size_t ts_size, size_t* lines) {
     return at == ts_size;
 }
 
+// A sidecar's first stamp in ns, -1 without one.
+int64_t first_stamp(const std::string& path) {
+    std::vector<std::string> l;
+    if (!read_lines(path, &l)) return -1;
+    for (const std::string& s : l) {
+        const char* p = std::strstr(s.c_str(), "\"pts\":");
+        long long v = 0;
+        if (p && std::sscanf(p, "\"pts\":%lld", &v) == 1) return v;
+    }
+    return -1;
+}
+
 void test_pins() {
     for (const Pin& p : pins()) {
         const Bytes b = p.gen();
@@ -270,6 +283,13 @@ int main(int, char** argv) {
         size_t n = 0;
         CHECK((f + ": its .ts beside it, tiled by its buffers").c_str(),
               it != ts.end() && tiles(dir + "/" + f, it->second.size(), &n) && n > 0);
+        // Replays read the stamps and the PES on one clock, the first PES - 1 h: a recording
+        // made past the 33-bit wrap (house 25.5 h) is committed rebased, or they part by 26.5 h.
+        const int64_t stamp = first_stamp(dir + "/" + f);
+        const int64_t house =
+            it == ts.end() ? -1 : mrts::first_pes_house_ns(it->second.data(), it->second.size());
+        CHECK((f + ": its first stamp within 60 s of its first PES - 1 h").c_str(),
+              stamp >= 0 && house >= 0 && std::llabs(stamp - house) <= 60000000000LL);
     }
 
     std::map<std::string, int> expectations;

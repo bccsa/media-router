@@ -80,7 +80,7 @@ describe('muxer PID scheme', () => {
 
     // Same table as py/mux_routing_test.py — the hook's classifier and this
     // one must agree, or the module joins discovery to the wrong slot.
-    it('classifies tsdemux pad caps the way the runner hook does', () => {
+    it('classifies demux pad caps the way the runner hook does', () => {
         const table: Array<[string, ReturnType<typeof muxRouteMedia>]> = [
             ['video/x-h264, stream-format=(string)byte-stream', 'video'],
             ['video/x-h265', 'video'],

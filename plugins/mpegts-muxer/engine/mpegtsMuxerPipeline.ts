@@ -1,6 +1,6 @@
 /**
  * Pure pipeline-assembly helpers for the MPEG-TS muxer: the `mpegtsmux`
- * element, one `tsdemux` branch per wired input, and the `mux_routing` hook
+ * element, one `mrtsdemux` branch per wired input, and the `mux_routing` hook
  * config the plugin's own runner hook (`py/mux_routing.py`, installed through
  * the engine's generic `runnerHooks` seam) links pads with at pad-added time —
  * every elementary stream sorted by ROUTE CLASS (video, audio, klv = the
@@ -62,24 +62,21 @@ const ROUTE_QUEUE_BYTES = tsQueueByteCap(5_000);
 
 /**
  * Build a single demux branch for one connected input. The branch ends at
- * `tsdemux name=demux_${branchId}` — its dynamic pads are bridged to
- * `mpegtsmux name=mux` at runtime by the plugin's `mux_routing` hook
+ * `mrtsdemux name=demux_${branchId}`, the formula demux in demux mode (tsdemux's
+ * pad names and caps, a pad per stream of every media) — its dynamic pads are
+ * bridged to `mpegtsmux name=mux` at runtime by the plugin's `mux_routing` hook
  * returned alongside the pipeline (see `buildPipeline`).
  *
- * Goes straight `udpsrc ! tsdemux` with no `tsparse` in between: re-deriving
+ * Goes straight from the bus src to the demux with no `tsparse` in between: re-deriving
  * PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
  * timeline, and `mpegtsmux latency=0` re-emitting PCR from those values
  * surfaces at the receiver as visible packet loss on live video. The runner-
  * injected parser + the route's aligner downstream provide the only
  * buffering this branch needs.
  *
- * EACH BRANCH ZEROES ITS OWN TIMELINE, which is why the description also asks
- * for `alignBranchesToStamps` (see `buildPipeline` → `demuxes`): a `tsdemux`
- * takes its basis from the bus buffer it locked on, and on a reordered stream
- * that one stamp can be up to the reorder depth late (the producer's monotone
- * floor), so the branches leave the mux 100–121 ms apart from inputs 0.001 ms
- * apart — re-drawn on every restart. The runner anchors each branch to the
- * producer's stamped house timeline instead.
+ * Every access unit leaves the demux at its PES PTS − 1 h, the house time its
+ * producer wrote, cue pads included (house-clock WI-P3-14): the mux writes each
+ * back at its own PES PTS, every branch on one timeline, with no branch alignment.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
     const src = buildBusSrc({
@@ -87,9 +84,8 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
         socketPath: source.socketPath,
         name: inputBusSrcName(branchId),
     });
-    // `tsdemux latency=0` removes its default 700 ms input buffer — each
-    // route's aligner FIFO downstream provides flow control.
-    return `${src} ! tsdemux latency=0 name=demux_${branchId}`;
+    // No input buffer in the demux: each route's aligner FIFO downstream provides flow control.
+    return `${src} ! mrtsdemux name=demux_${branchId}`;
 }
 
 /** Element name of input branch `i`'s bus source. */
@@ -135,8 +131,8 @@ export interface MuxerPipelineInputs {
     output: { port: number };
     alignment: number;
     /** Skip the runner-injected h26xparse on the VIDEO routes
-     *  (`MuxRoute.parser = 'none'`). tsdemux already hands the mux one whole
-     *  access unit per buffer; the parser only adds a frame of latency (41 ms
+     *  (`MuxRoute.parser = 'none'`). The demux already hands the mux one whole
+     *  access unit (one PES) per buffer; the parser only adds a frame of latency (41 ms
      *  at 25 fps, measured 2026-09-04) while waiting for the next AU to close
      *  the current one. Requires sources that repeat SPS/PPS in-band (ours do).
      *  Default false. */
@@ -151,16 +147,13 @@ export interface MuxerPipelineResult {
     runnerHooks: RunnerHook[];
     /** Every PID slot the rules can fill (see MuxedStreamSlot). */
     slots: MuxedStreamSlot[];
-    /** Every input branch's `tsdemux`, for `alignBranchesToStamps` — the
-     *  contract-only fix for per-branch zero points (see buildInputBranch). */
-    demuxes: string[];
 }
 
 /**
  * Assemble the full pipeline + the `mux_routing` hook config, one input per
  * source.
  *
- * For each input, we expose a named `tsdemux` and describe, per route class,
+ * For each input, we expose a named `mrtsdemux` and describe, per route class,
  * where its first pad goes: its slot's `mux.sink_<pid>`. The branch itself is
  * the route's aligner (`routeBranch`) — the hook (`py/mux_routing.py`, run
  * inside the engine's pipeline runner) inspects each pad's caps at pad-added
@@ -227,7 +220,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         const generic = mine.length === 1 && mine[0].media === undefined;
         const routes: Partial<Record<MuxRouteMedia, MuxRoute>> = {};
         // The routed classes are the priority list; `data` (anything else
-        // tsdemux exposes) is deliberately NOT routed: mpegtsmux has no sink
+        // the demux exposes) is deliberately NOT routed: mpegtsmux has no sink
         // caps for it, and a failed request-pad link is a pipeline error.
         const classes: Array<{ media: MuxRouteMedia; padName?: string; tag: string }> = generic
             ? MUX_ROUTE_PRIORITY.map((media) => ({ media, tag: `${demux}_${media}` }))
@@ -262,6 +255,5 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         routing,
         runnerHooks: [{ module: MUX_ROUTING_MODULE, config: routing }],
         slots,
-        demuxes: input.sources.map((_s, i) => `demux_${i}`),
     };
 }
