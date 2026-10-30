@@ -213,8 +213,10 @@ export class MediaRouter {
         this.streamExecutors.register(busExecutor, ['audio/302m']);
         this.busExecutor = busExecutor;
         // A producer back at PLAYING re-links one branch on a live-input
-        // aggregator instead of relaunching the consumer.
+        // aggregator instead of relaunching the consumer, and a branch the
+        // aggregator runs without joins once its producer plays (B-192).
         this.busFanout.setLiveRelink((conn) => busExecutor.relinkLiveInput(conn));
+        this.busFanout.setLiveRejoin((conn) => busExecutor.rejoinLiveInput(conn));
         this.executor = new ConnectionExecutor(this.streamExecutors);
     }
 
@@ -709,12 +711,15 @@ export class MediaRouter {
     }
 
     /**
-     * A producer reached PLAYING — (re)attach its per-consumer bus fan-out
+     * A module reached PLAYING — (re)attach its per-consumer bus fan-out
      * branches. Called by `GstPluginBase` on every PLAYING edge so a runner
      * respawn (which rebuilds the tee with no branches) is healed. No-op on UDP.
+     * As a consumer, it takes the live inputs it runs without whose producers
+     * already play (B-192).
      */
     onProducerPlaying(moduleId: string): void {
         this.busFanout?.reattachProducer(moduleId);
+        this.busFanout?.rejoinLostInputs(moduleId);
     }
 
     /** Resolve every connected bus-carried source (muxed/mpegts or audio/302m)

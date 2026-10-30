@@ -9,6 +9,7 @@
 export {
     alignedMixer,
     buildAudioMixInput,
+    buildLiveMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
     liveDemuxName,

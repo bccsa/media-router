@@ -14,6 +14,28 @@ function branchOf(
     return plugin.getLiveInputBranch?.(sinkPortId, connectionId) ?? null;
 }
 
+/** A live input branch as launch text: its bin on request pad `sink_<pad>` of its aggregator.
+ *  The 302M live arm renders its start-time branches with it, and the runner host the
+ *  `liveInputs` it launches with (B-192). */
+export function liveInputLaunchText(branch: LiveInputBranch, pad: number): string {
+    return `( name=${branch.name} ${branch.description ?? ''} ) ! ${branch.element}.sink_${pad}`;
+}
+
+/** Bin names of the live input branches of every wired bus source (none without the hook). */
+export function wiredLiveInputBranches(
+    plugin: PluginModule,
+    services: ModuleServices | null,
+): string[] {
+    const instanceId = services?.instanceId;
+    if (!plugin.getLiveInputBranch || !instanceId || !services?.mediaRouter) return [];
+    const names: string[] = [];
+    for (const s of services.mediaRouter.getModuleBusSources(instanceId)) {
+        const b = branchOf(plugin, s.sinkPortId, s.connectionId);
+        if (b?.name) names.push(b.name);
+    }
+    return names;
+}
+
 /** Fill `desc.liveInputBranches` (bin names, one per wired bus source) so the
  *  runner can contain an error inside any of them. No hook, no field. */
 export function annotateLiveInputBranches(
@@ -21,13 +43,7 @@ export function annotateLiveInputBranches(
     services: ModuleServices | null,
     desc: PipelineDescription,
 ): void {
-    const instanceId = services?.instanceId;
-    if (!plugin.getLiveInputBranch || !instanceId || !services?.mediaRouter) return;
-    const names: string[] = [];
-    for (const s of services.mediaRouter.getModuleBusSources(instanceId)) {
-        const b = branchOf(plugin, s.sinkPortId, s.connectionId);
-        if (b?.name) names.push(b.name);
-    }
+    const names = wiredLiveInputBranches(plugin, services);
     if (names.length) desc.liveInputBranches = names;
 }
 
@@ -48,8 +64,8 @@ export function describeLiveInputBranch(
     return name;
 }
 
-/** The live input branches a module has lost (dropped by the runner) and
- *  not yet got back — one warning text naming all of them. */
+/** The live input branches a module runs without — dropped by the runner, or left out at
+ *  launch while their producers were away (B-192) — one warning text naming all of them. */
 export class LostInputs {
     private readonly lost = new Map<string, string>();
 
@@ -63,6 +79,19 @@ export class LostInputs {
     restore(name: string): string | null {
         this.lost.delete(name);
         return this.lost.size ? this.warning() : null;
+    }
+
+    has(name: string): boolean {
+        return this.lost.has(name);
+    }
+
+    /** Forget every branch not in `names` (their connections are gone). */
+    retain(names: ReadonlySet<string>): void {
+        for (const name of [...this.lost.keys()]) if (!names.has(name)) this.lost.delete(name);
+    }
+
+    clear(): void {
+        this.lost.clear();
     }
 
     get size(): number {

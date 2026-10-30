@@ -394,6 +394,11 @@ export class ModuleInstance extends EventEmitter {
         this.plugin.noteLiveInputRestored?.(branchName);
     }
 
+    /** The pipeline runs without this live input branch (see PluginModule). */
+    isLiveInputLost(branchName: string): boolean {
+        return this.plugin.isLiveInputLost?.(branchName) ?? false;
+    }
+
     /** Refresh the stored pipeline description after a live input swap. */
     async refreshPipelineDescription(): Promise<boolean> {
         return (await this.plugin.refreshPipelineDescription?.()) ?? false;

@@ -195,3 +195,22 @@ Result (replica, mix latency 50 ms): +46 ms; at 20 ms: +17 ms; the deployed
 most the configured budget, so the budget is the latency knob:
 its floor is 20 ms (was 50). The aggregator alone adds ~9 ms; the pacer is
 still required for the post-EOS free-run (rule 1 stands).
+
+## Amendment (2026-10-30): the Audio Output (302M) joins its sources live (B-192)
+
+The 2026-10-02 addendum kept audio-output-302m on the classic restart "for
+now": a leaf, its branches stamp-aligned at launch. Phase 2 took the stamp
+alignment away, and the runner's socket gate made the multi-source pin wait
+for its darkest source, against this ADR's consequence that one dark
+contributor must not take the others down: on 2026-10-30 (the owner's MR-003,
+ZA-SCC-SWA01) an output fed by four transcoders, only Master running, played
+nothing.
+
+From two sources the output is a live-input aggregator. `buildLiveMixInput`
+gives the aligned mixer (chained from `continuationName`, rule 2) and one live
+branch per source, which the output hands the runner apart from its pipeline
+(`PipelineDescription.liveInputs`): the runner starts with the sources that
+run (ADR-0010 rule 5), a source that starts later joins the running mix, one
+that goes away costs its own input, and a wiring change is one branch added or
+taken off. Rule 3 stands for one source: it plays direct and restarts with its
+wiring, its string unchanged.

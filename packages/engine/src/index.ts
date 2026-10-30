@@ -126,6 +126,7 @@ export {
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
 export { busInputLabel } from './plugins/moduleTiming.js';
+export { liveInputLaunchText } from './plugins/liveInputBranches.js';
 export type { AlignerInputRef, AlignerWatchRef } from './plugins/alignerWatches.js';
 // Ingest timing (house-clock plan WI-P1-9): restamp/ASRC fragments, live O, trims, cooldown, card.
 export {

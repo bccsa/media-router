@@ -131,7 +131,9 @@ export class ModuleTiming {
         this.sink = desc?.timingSink;
         this.declared = desc?.timingInputs;
         // Only modules on the bus carry taps; say so when theirs are missing.
-        const onBus = !!desc && /unixfdsrc|tee name=busout_/.test(desc.pipeline);
+        const onBus =
+            !!desc &&
+            (/unixfdsrc|tee name=busout_/.test(desc.pipeline) || !!desc.liveInputs?.length);
         this.reporter.setInstrument(!onBus || latenessTapAvailable());
         this.timer = setInterval(() => this.tick(), TICK_MS);
         this.timer.unref?.();

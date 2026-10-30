@@ -8,6 +8,7 @@ import type {
     RenderWatchRunnerConfig,
     KeyframeGateConfig,
     BacklogShedConfig,
+    LiveInputBranch,
 } from '../plugins/PluginModule.js';
 import { pluginPythonPaths, pluginsRoot } from './nativeBinaries.js';
 import { selectRunner } from './nativeRunner.js';
@@ -62,6 +63,9 @@ export interface RunnerStartOptions {
     eosDrain?: boolean;
     /** Live input branch bins whose errors are contained — `PipelineDescription.liveInputBranches`. */
     liveInputBranches?: string[];
+    /** `PipelineDescription.liveInputs`: the runner host launches with the ones that are there
+     *  (`waitForLiveInputs`) and never sends the field itself. */
+    liveInputs?: LiveInputBranch[];
 }
 
 export interface PythonProcessOptions {

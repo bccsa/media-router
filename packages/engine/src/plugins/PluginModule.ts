@@ -185,6 +185,9 @@ export interface PluginModule {
     getLiveInputBranch?(sinkPortId: string, connectionId: string): LiveInputBranch | null;
     /** A live input branch that was dropped (dead producer) is back. */
     noteLiveInputRestored?(branchName: string): void;
+    /** The pipeline runs without this live input branch: dropped (dead producer), or left out
+     *  at launch (`liveInputs`). The engine adds it when its producer plays (B-192). */
+    isLiveInputLost?(branchName: string): boolean;
     /**
      * Channel count of the audio stream this module emits on a bus OUTPUT
      * port, for producers whose width is a runtime choice. `MediaRouter`
@@ -274,6 +277,10 @@ export interface PipelineDescription {
      *  GstPluginBase from `getLiveInputBranch`). An error inside one drops
      *  that branch (`input_branch_lost`) instead of failing the pipeline. */
     liveInputBranches?: string[];
+    /** An aggregator's input branches apart from `pipeline` (B-192, ADR-0010 rule 5): the runner
+     *  launches with the ones whose sockets accept, the engine adds the others as their producers
+     *  play. Name each in `getLiveInputBranch` too (the live verbs and the containment use it). */
+    liveInputs?: LiveInputBranch[];
     /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a

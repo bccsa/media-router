@@ -1,7 +1,12 @@
 import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
 import { PythonProcess, FORCE_KILL_TIMEOUT_MS, type RunnerStartOptions } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
-import { unixFdSrcSocketPaths, waitForBusSockets } from './busSocketGate.js';
+import {
+    unixFdSrcSocketPaths,
+    waitForBusSockets,
+    waitForLiveInputs,
+    type LiveInputsGate,
+} from './busSocketGate.js';
 import { RunnerHandback } from './runnerHandback.js';
 
 // Restart policy:
@@ -753,7 +758,7 @@ export class GstRunner {
         this.ipc.sendEvent('pipelineStarting', {});
         this.clearQueuedBusAttaches('superseded by a newer start');
 
-        const launch = () => {
+        const launch = (launchOpts: RunnerStartOptions) => {
             // Capture this instance locally — `this.python` may already point to a
             // newer spawn by the time the exit handler fires (a SIGKILL'd
             // predecessor can take hundreds of ms to reap). Without this guard the
@@ -767,7 +772,7 @@ export class GstRunner {
                 onSpawnError: (err) => this.handlePythonSpawnError(py, err),
             });
             this.python = py;
-            py.start(opts);
+            py.start(launchOpts);
             // A consumer's unixfdsrc connects during this start, so this is
             // the instant its bus attachment dates from (GstChildProcess
             // records it; BusFanoutCoordinator compares producer vs consumer).
@@ -789,25 +794,39 @@ export class GstRunner {
         // cycle and kept a 24-stream graph from ever settling). The abort
         // predicate stops a superseded wait's probe loop outright; the
         // periodic progress callback keeps the wait visible to the operator
-        // (console + `busGate` event → module health warning).
+        // (console + `busGate` event → module health warning). An aggregator's
+        // `liveInputs` are not all waited for: it launches with those that are
+        // there, and the others join when their producers play (B-192).
+        const wait = {
+            shouldAbort: () => epoch !== this.startEpoch,
+            onProgress: (pending: string[]) => {
+                console.error(
+                    `[gst-runner] Waiting for producer bus socket(s): ${pending.join(', ')}`,
+                );
+                this.ipc.sendEvent('busGate', { pending });
+            },
+        };
         const busSockets = unixFdSrcSocketPaths(opts.pipeline);
-        if (busSockets.length === 0) {
-            launch();
+        if (!opts.liveInputs?.length && busSockets.length === 0) {
+            launch(opts);
         } else {
-            void waitForBusSockets(busSockets, {
-                shouldAbort: () => epoch !== this.startEpoch,
-                onProgress: (pending) => {
-                    console.error(
-                        `[gst-runner] Waiting for producer bus socket(s): ${pending.join(', ')}`,
-                    );
-                    this.ipc.sendEvent('busGate', { pending });
-                },
-            })
-                .then((ready) => {
-                    if (!ready || epoch !== this.startEpoch) return; // superseded by stop/newer start
-                    // All producer sockets accept — clear the gate signal, launch.
-                    this.ipc.sendEvent('busGate', { pending: [] });
-                    launch();
+            const gate: Promise<LiveInputsGate | null> = opts.liveInputs?.length
+                ? waitForLiveInputs(opts, wait)
+                : waitForBusSockets(busSockets, wait).then((ready) =>
+                      ready ? { launch: opts, absent: [] } : null,
+                  );
+            void gate
+                .then((open) => {
+                    if (!open || epoch !== this.startEpoch) return; // superseded by stop/newer start
+                    // The sockets this launch needs accept — clear the gate signal, say
+                    // which live inputs it goes without (the module's lost set), launch.
+                    if (open.absent.length) {
+                        console.error(
+                            `[gst-runner] Launching without live input(s) not there yet: ${open.absent.join(', ')}`,
+                        );
+                    }
+                    this.ipc.sendEvent('busGate', { pending: [], absent: open.absent });
+                    launch(open.launch);
                 })
                 .catch((err) => {
                     // Fault boundary: an unhandled rejection here would be

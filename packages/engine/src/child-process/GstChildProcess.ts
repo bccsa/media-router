@@ -260,6 +260,8 @@ export class GstChildProcess extends EventEmitter {
             eosDrain: desc.eosDrain,
             // Live input branch bins (error containment).
             liveInputBranches: desc.liveInputBranches,
+            // An aggregator's inputs, launched with the ones that are there (B-192).
+            liveInputs: desc.liveInputs,
         };
     }
 

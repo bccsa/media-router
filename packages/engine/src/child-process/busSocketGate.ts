@@ -1,4 +1,7 @@
 import { connect } from 'node:net';
+import { liveInputLaunchText } from '../plugins/liveInputBranches.js';
+import type { LiveInputBranch } from '../plugins/PluginModule.js';
+import type { RunnerStartOptions } from './PythonProcess.js';
 
 /**
  * Connect-probe gate for unixfd bus consumers.
@@ -67,6 +70,28 @@ export interface WaitForBusSocketsOpts {
     onProgress?: (pending: string[]) => void;
 }
 
+/** The probe loop: probe every path each round until `settle` answers; null when aborted. */
+async function pollSockets<T>(
+    paths: string[],
+    settle: (up: (path: string) => boolean) => { done: T } | { pending: string[] },
+    opts: WaitForBusSocketsOpts,
+): Promise<T | null> {
+    const { shouldAbort, onProgress } = opts;
+    let interval = INITIAL_INTERVAL_MS;
+    let iterations = 0;
+    for (;;) {
+        if (shouldAbort?.()) return null;
+        const probed = await Promise.all(paths.map((p) => probeUnixSocket(p)));
+        const accepting = new Set(paths.filter((_, i) => probed[i]));
+        const state = settle((p) => accepting.has(p));
+        if ('done' in state) return state.done;
+        if (iterations % PROGRESS_EVERY === 0) onProgress?.(state.pending);
+        iterations++;
+        await new Promise((r) => setTimeout(r, interval));
+        interval = Math.min(interval * 2, MAX_INTERVAL_MS);
+    }
+}
+
 /**
  * Resolve `true` once every path accepts connections; resolve `false` only
  * when `shouldAbort` cancels the wait. Never times out on its own.
@@ -75,18 +100,58 @@ export async function waitForBusSockets(
     paths: string[],
     opts: WaitForBusSocketsOpts = {},
 ): Promise<boolean> {
-    const { shouldAbort, onProgress } = opts;
-    let interval = INITIAL_INTERVAL_MS;
-    let iterations = 0;
-    for (;;) {
-        if (shouldAbort?.()) return false;
-        const up = await Promise.all(paths.map((p) => probeUnixSocket(p)));
-        if (up.every(Boolean)) return true;
-        if (iterations % PROGRESS_EVERY === 0) {
-            onProgress?.(paths.filter((_, i) => !up[i]));
-        }
-        iterations++;
-        await new Promise((r) => setTimeout(r, interval));
-        interval = Math.min(interval * 2, MAX_INTERVAL_MS);
-    }
+    const ready = await pollSockets<boolean>(
+        paths,
+        (up) => (paths.every(up) ? { done: true } : { pending: paths.filter((p) => !up(p)) }),
+        opts,
+    );
+    return ready ?? false;
+}
+
+/** A gate opened over `liveInputs`: the start to launch, and the inputs it leaves out. */
+export interface LiveInputsGate {
+    launch: RunnerStartOptions;
+    absent: string[];
+}
+
+/** The gate over `liveInputs` (B-192): every socket in `pipeline` and one input whose sockets all
+ *  accept, then launch with the inputs there (one that is not would fail the whole start); while
+ *  none is, the pending report names them all. Null when aborted; no deadline of its own. */
+export async function waitForLiveInputs(
+    opts: RunnerStartOptions,
+    wait: WaitForBusSocketsOpts = {},
+): Promise<LiveInputsGate | null> {
+    const required = unixFdSrcSocketPaths(opts.pipeline);
+    const inputs = (opts.liveInputs ?? []).map((branch) => ({
+        branch,
+        sockets: unixFdSrcSocketPaths(branch.description ?? ''),
+    }));
+    const paths = [...new Set([...required, ...inputs.flatMap((i) => i.sockets)])];
+    return pollSockets<LiveInputsGate>(
+        paths,
+        (up) => {
+            const there = inputs.filter((i) => i.sockets.every(up));
+            if (required.every(up) && there.length > 0) {
+                return {
+                    done: {
+                        launch: launchWith(
+                            opts,
+                            there.map((i) => i.branch),
+                        ),
+                        absent: inputs.filter((i) => !there.includes(i)).map((i) => i.branch.name),
+                    },
+                };
+            }
+            const waiting = there.length > 0 ? [] : inputs.flatMap((i) => i.sockets);
+            return { pending: [...required, ...waiting].filter((p) => !up(p)) };
+        },
+        wait,
+    );
+}
+
+/** The start the runner gets: `pipeline` with `inputs` linked in, the field itself dropped. */
+function launchWith(opts: RunnerStartOptions, inputs: LiveInputBranch[]): RunnerStartOptions {
+    const { liveInputs: _all, ...rest } = opts;
+    const links = inputs.map((b, i) => liveInputLaunchText(b, i));
+    return { ...rest, pipeline: [opts.pipeline, ...links].join(' ') };
 }

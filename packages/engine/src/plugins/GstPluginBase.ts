@@ -51,6 +51,7 @@ import {
     annotateLiveInputBranches,
     describeLiveInputBranch,
     LostInputs,
+    wiredLiveInputBranches,
 } from './liveInputBranches.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -170,6 +171,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.applyTimeSync(desc);
         this.annotateLiveInputBranches(desc);
         await this.childProcess.updatePipelineDesc(desc);
+        // An input unwired while lost takes its warning with it.
+        this.lostInputs.retain(
+            new Set(wiredLiveInputBranches(this as PluginModule, this.services)),
+        );
         this.reassertLostInputs();
         this.timing.reassertWarnings();
         return true;
@@ -179,7 +184,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         annotateLiveInputBranches(this as PluginModule, this.services, desc);
     }
 
-    /** Live input branches dropped by the runner and not yet back. */
+    /** Live input branches the pipeline runs without (dropped, or left out at launch). */
     private readonly lostInputs = new LostInputs();
 
     /** The engine re-added a dropped branch (producer back): narrow or clear the warning. */
@@ -189,10 +194,36 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         else this.clearOwnWarning('input-lost');
     }
 
+    isLiveInputLost(branchName: string): boolean {
+        return this.lostInputs.has(branchName);
+    }
+
     /** `buildPipeline` ends in setHealth('ok') on most modules — put the
      *  lost-input warning back after any refresh while inputs are missing. */
     private reassertLostInputs(): void {
         if (this.lostInputs.size) this.ownWarning('input-lost', this.lostInputs.warning());
+        else this.clearOwnWarning('input-lost');
+    }
+
+    /** The lost-input warning over ok or its own text, so an alarm or an error stands. */
+    private showLostInputs(): void {
+        if (!this.lostInputs.size) this.clearOwnWarning('input-lost');
+        else if (this.health === 'ok' || this.ownedWarning === 'input-lost') {
+            this.ownWarning('input-lost', this.lostInputs.warning());
+        }
+    }
+
+    /** The runner launched without these live inputs (`liveInputs`, B-192): they and nothing
+     *  else are what this run goes without until each joins. Empty at a plain launch. */
+    private launchedWithout(names: string[]): void {
+        this.lostInputs.clear();
+        for (const name of names) {
+            this.lostInputs.lose(
+                name,
+                describeLiveInputBranch(this as PluginModule, this.services, name),
+            );
+        }
+        this.showLostInputs();
     }
 
     /** Prepare a description for the house clock. Both runners put EVERY pipeline on a monotonic
@@ -230,6 +261,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             }
         }
 
+        // A fresh pipeline has dropped nothing yet.
+        this.lostInputs.clear();
         const desc = this.buildPipeline(this.config);
         this.timing.start(desc);
 
@@ -250,6 +283,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 this.running = true;
                 this.ready = true;
                 this.markHealthy();
+                // A launch without some live inputs plays on without them: say so again.
+                this.showLostInputs();
                 // Re-attach this producer's per-consumer bus fan-out branches:
                 // a runner-internal respawn rebuilds the pipeline from the base
                 // string with the egress tee but NO branches, so without this a
@@ -339,9 +374,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // health warning naming the modules we are waiting on — otherwise a
         // gated module reports 'ok' forever while nothing runs (e.g. a
         // consumer whose producer is disabled). Cleared when the gate opens
-        // (pending: []) and superseded by the 'playing' health flip.
-        this.childProcess.on('busGate', (data: { pending: string[] }) => {
-            this.handleBusGate(data.pending);
+        // (pending: [], with the live inputs the launch goes without) and
+        // superseded by the 'playing' health flip.
+        this.childProcess.on('busGate', (data: { pending: string[]; absent?: string[] }) => {
+            this.handleBusGate(data.pending, data.absent);
         });
 
         await this.childProcess.start(desc);
@@ -462,7 +498,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * /tmp/mr-bus-41000-<connid>.sock` told an operator nothing about which
      * upstream module was late, which is the one thing they need to fix it.
      */
-    private handleBusGate(pending: string[]): void {
+    private handleBusGate(pending: string[], absent?: string[]): void {
         if (pending.length > 0) {
             const waitingOn = this.describePendingProducers(pending);
             this.setStatusData('bus', { 'Waiting for producer': waitingOn.join(', ') });
@@ -474,6 +510,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // now, and flipping it to 'ok' here hid a real failure behind an
             // unrelated gate opening.
             this.clearOwnWarning('gate');
+            // Only the gate's opening names them (a data wait's clearing does not).
+            if (absent) this.launchedWithout(absent);
         }
     }
 

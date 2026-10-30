@@ -17,6 +17,14 @@ export function hasLaunchedPipeline(sink: ModuleInstance): boolean {
     return sink.getChildProcess?.()?.pipelineLaunchedAt !== undefined;
 }
 
+/** A producer whose gst pipeline is down or still gated: its edge socket comes with its next
+ *  launch, so a live add has nothing to wait for. A producer without a gst child (a sidecar's
+ *  fan-out) is not judged. */
+export function producerAway(producer: ModuleInstance | undefined): boolean {
+    const child = producer?.getChildProcess?.();
+    return !!child && child.pipelineLaunchedAt === undefined;
+}
+
 /** The live-input branch of one edge on a running aggregator sink plus its
  *  RPC target; null when the sink is not one, is not launched, or has none. */
 export function liveBranchFor(
@@ -43,15 +51,17 @@ export interface LiveInputOpts {
     label: string;
 }
 
-/** Add the edge's branch to the running pipeline. A late producer socket
- *  still gets the branch: the runner drops it (`input_branch_lost`) and the
- *  producer's PLAYING re-links it. False = no branch, or the runner refused. */
-export async function addLiveInput(opts: LiveInputOpts & { udpPort: number }): Promise<boolean> {
+/** Add the edge's branch to the running pipeline. A late producer socket still gets the branch
+ *  (at once when `producerAway`): the runner drops it (`input_branch_lost`) and the producer's
+ *  PLAYING re-links it. False = no branch, or the runner refused. */
+export async function addLiveInput(
+    opts: LiveInputOpts & { udpPort: number; producerAway?: boolean },
+): Promise<boolean> {
     const { sink, conn, udpPort, label } = opts;
     const live = liveBranchFor(sink, conn);
     if (!live?.branch.description) return false;
     try {
-        if (!(await edgeUp(udpPort, conn))) {
+        if (!opts.producerAway && !(await edgeUp(udpPort, conn))) {
             log.warn(
                 { sink: conn.sinkModuleId, port: conn.sinkPortId },
                 `Edge socket late for ${label} — adding the branch anyway`,
@@ -96,18 +106,26 @@ export async function removeLiveInput(opts: LiveInputOpts): Promise<boolean> {
     }
 }
 
+/** Wait for the edge socket, add the branch, store the description, clear its warning. */
+async function joinBranch(
+    opts: LiveInputOpts & { udpPort: number },
+    live: { branch: LiveInputBranch; target: LiveInputBranchTarget },
+): Promise<void> {
+    if (!(await edgeUp(opts.udpPort, opts.conn))) throw new Error('new edge socket never appeared');
+    await live.target.busInputAdd(live.branch);
+    await opts.sink.refreshPipelineDescription?.();
+    opts.sink.noteLiveInputRestored?.(live.branch.name);
+}
+
 /** Re-link the edge's branch after its producer relaunched: drop (if still
  *  there), wait for the new edge socket, add. False = relaunch the consumer. */
 export async function relinkLiveInput(opts: LiveInputOpts & { udpPort: number }): Promise<boolean> {
-    const { sink, conn, udpPort, label } = opts;
+    const { sink, conn, label } = opts;
     const live = liveBranchFor(sink, conn);
     if (!live?.branch.description) return false;
     try {
         await live.target.busInputRemove(live.branch);
-        if (!(await edgeUp(udpPort, conn))) throw new Error('new edge socket never appeared');
-        await live.target.busInputAdd(live.branch);
-        await sink.refreshPipelineDescription?.();
-        sink.noteLiveInputRestored?.(live.branch.name);
+        await joinBranch(opts, live);
         log.info(
             { sink: conn.sinkModuleId, branch: live.branch.name },
             `Live input re-linked ${label}`,
@@ -117,6 +135,29 @@ export async function relinkLiveInput(opts: LiveInputOpts & { udpPort: number })
         log.warn(
             { err, sink: conn.sinkModuleId, port: conn.sinkPortId },
             'Live input re-link failed — consumer relaunch instead',
+        );
+        return false;
+    }
+}
+
+/** Add a branch the sink runs without (left out at launch, or dropped) once its producer
+ *  plays (B-192): wait for the edge socket, add. False = not added; the next PLAYING of
+ *  either end tries again. */
+export async function rejoinLiveInput(opts: LiveInputOpts & { udpPort: number }): Promise<boolean> {
+    const { sink, conn, label } = opts;
+    const live = liveBranchFor(sink, conn);
+    if (!live?.branch.description) return false;
+    try {
+        await joinBranch(opts, live);
+        log.info(
+            { sink: conn.sinkModuleId, branch: live.branch.name },
+            `Live input joined ${label}`,
+        );
+        return true;
+    } catch (err) {
+        log.warn(
+            { err, sink: conn.sinkModuleId, port: conn.sinkPortId },
+            `Live input join failed for ${label}`,
         );
         return false;
     }

@@ -485,6 +485,14 @@ elements" below do not start.
   or Audio Output stayed on the old device. Only stopping and starting the
   engine applied it. Fixed: Restart, and Disable then Enable, apply every
   setting changed since the module last started, on every module.
+- **An Audio Output (302M) with several sources plays the ones that run.** Up
+  to v2.0.0.100 it played only once every source wired to it ran: with one of
+  four live it showed "Waiting for upstream module(s): …" and played nothing.
+  Fixed: it plays the sources that run and names the others ("Input from …
+  lost — continuing without it"); a source that starts later joins without
+  interrupting the others, one that stops leaves them playing, and wiring a
+  source in or out, with two or more staying, no longer restarts the output.
+  An output with one source behaves as before.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

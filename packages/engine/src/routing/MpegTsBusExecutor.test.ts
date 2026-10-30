@@ -565,6 +565,44 @@ describe('MpegTsBusExecutor live input branches', () => {
         expect((sink as any).stop).not.toHaveBeenCalled();
     }, 15_000);
 
+    it('a producer whose pipeline is down or gated: the branch is added at once, no edge wait (B-192)', async () => {
+        const { sink, busInputAdd } = aggregatorSink();
+        const producer = { getChildProcess: () => ({ pipelineLaunchedAt: undefined }) };
+        const fanout = { attach: vi.fn(), detach: vi.fn() };
+        const executor = new MpegTsBusExecutor(
+            (id) => (id === 'mixer-1' ? sink : (producer as unknown as ModuleInstance)),
+            () => PORT,
+            (c) => c.id,
+            undefined,
+            fanout as never,
+            () => 1,
+        );
+        const t0 = Date.now();
+        const handle = await executor.execute(mixConn('c15')); // no edge socket listening
+
+        expect(Date.now() - t0).toBeLessThan(2000);
+        expect(handle).toMatchObject({ connectionId: 'c15' });
+        expect(busInputAdd).toHaveBeenCalledTimes(1);
+        expect((sink as any).stop).not.toHaveBeenCalled();
+    });
+
+    it('rejoinLiveInput: waits for the edge and adds, without a remove; false with no launched sink', async () => {
+        const { sink, busInputAdd, busInputRemove } = aggregatorSink();
+        const { executor } = makeLiveExecutor(sink);
+        const c = mixConn('c16');
+        await listenEdge(c);
+
+        expect(await executor.rejoinLiveInput(c)).toBe(true);
+        expect(busInputAdd).toHaveBeenCalledWith(expect.objectContaining({ name: 'mixin_in_c16' }));
+        expect(busInputRemove).not.toHaveBeenCalled();
+        expect((sink as any).refreshPipelineDescription).toHaveBeenCalled();
+        expect((sink as any).noteLiveInputRestored).toHaveBeenCalledWith('mixin_in_c16');
+
+        const gating = aggregatorSink({ launched: false });
+        expect(await makeLiveExecutor(gating.sink).executor.rejoinLiveInput(c)).toBe(false);
+        expect(gating.busInputAdd).not.toHaveBeenCalled();
+    });
+
     it('replaceLiveInput: remove + add in place, no detach, no restart', async () => {
         const { sink, busInputAdd, busInputRemove } = aggregatorSink();
         const { executor, fanout } = makeLiveExecutor(sink);

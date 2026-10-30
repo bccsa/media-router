@@ -151,3 +151,30 @@ host; under the forked backend a wall-clock step between two launches can
 misjudge one comparison (`BusFanoutCoordinator.test.ts`, `GstChildProcess.test.ts`,
 `GstRunner.test.ts`).
 
+
+## Amendment 2026-10-30 — an aggregator's live inputs are not all waited for (B-192)
+
+Rule 5. **A description that keeps its input branches apart
+(`PipelineDescription.liveInputs`) launches once every socket in its
+`pipeline` and one of those inputs accept, with every input whose sockets
+accept; the others are left out, not waited for.** An input is there when
+every `unixfdsrc` of its branch accepts; one that is not would fail the whole
+start, since `unixfdsrc` connects once. Field case (the owner's MR-003,
+ZA-SCC-SWA01, 2026-10-30): an Audio Output (302M) wired to four transcoders,
+of which only Master ran, waited at this gate for all four and played
+nothing; each restart of a dark transcoder sent it back to the gate.
+
+The gate opening reports what the launch goes without (`busGate {pending: [],
+absent}`; every opening sends `absent`, empty for a plain description, a data
+wait's clearing never does). The module warns by producer, "Input from X lost
+— continuing without it", which it owns under rule 2, and the engine adds each
+input when its producer plays: at that producer's PLAYING even when the
+consumer launched after it (rule 4 sees nothing stale there, but the socket
+was not up when the gate chose), and at the consumer's own PLAYING for
+producers already playing. A relaunch replays the stored description, so it
+chooses again. While no input is there the gate waits as before and names
+them all. A plain description is unchanged: audio-mixer and n1-mixer-302m
+still build every branch into `pipeline` and wait for all of them at start.
+(`busSocketGate.ts` `waitForLiveInputs`, `GstRunner.startPipeline`,
+`GstPluginBase.handleBusGate`, `BusFanoutCoordinator.rejoinLostInputs`;
+`GstRunner.liveInputs.test.ts`, `AudioOutput302mModule.liveInputs.test.ts`.)

@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { GstPluginBase, ModuleInstance } from '@media-router/engine';
+import { GstPluginBase, ModuleInstance, liveInputLaunchText } from '@media-router/engine';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
+
+/** The pipeline the runner launches when every source runs: the mixer, its inputs linked in. */
+const launched = (desc: { pipeline: string; liveInputs?: any[] }): string =>
+    [desc.pipeline, ...(desc.liveInputs ?? []).map((b, i) => liveInputLaunchText(b, i))].join(' ');
 
 function makeModule(
     opts: {
@@ -74,11 +78,11 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain(
             'audiomixer name=mixin latency=0 start-time-selection=first ! capsfilter name=mixin_out',
         );
-        expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
+        expect(launched(desc!).match(/ \) ! mixin\.sink_\d/g)).toHaveLength(2);
         expect(
-            desc!.pipeline.match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
+            launched(desc!).match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
         ).toHaveLength(2);
-        expect(desc!.pipeline).not.toContain('force-live');
+        expect(launched(desc!)).not.toContain('force-live');
         expect(desc!.pipeline).toContain('volume name=vol volume=0.80');
         expect(desc!.pipeline).toContain('level post-messages=true');
         expect(desc!.pipeline).toContain(
@@ -115,7 +119,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         for (const sources of [1, 2]) {
             const { module } = makeModule({ sources });
             const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
-            expect(desc!.pipeline.includes('hold-on-eos=true')).toBe(sources > 1);
+            expect(launched(desc!).includes('hold-on-eos=true')).toBe(sources > 1);
             expect(desc!.eosDrain).toBe(false);
         }
     });
@@ -232,6 +236,51 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.backlogShed).not.toHaveProperty('onLateness');
+    });
+});
+
+describe('AudioOutput302mModule: several sources are live inputs (B-192)', () => {
+    it('two or more: the mixer and its tail in the pipeline, each source a live input apart', () => {
+        const { module } = makeModule({ sources: 4 });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
+        // Nothing in the pipeline itself waits for a source: the runner links in the ones there.
+        expect(desc.pipeline).not.toContain('unixfdsrc');
+        expect(desc.pipeline).toMatch(
+            /^audiomixer name=mixin latency=0 start-time-selection=first/,
+        );
+        expect(desc.liveInputs).toHaveLength(4);
+        desc.liveInputs!.forEach((b: any, i: number) => {
+            expect(b).toEqual(module.getLiveInputBranch('audio-in', `c-${i}`));
+            expect(b.element).toBe('mixin');
+            expect(b.description).toMatch(
+                new RegExp(
+                    `^unixfdsrc socket-path=/tmp/mr-bus-${40100 + i}-x\\.sock .* hold-on-eos=true$`,
+                ),
+            );
+        });
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'output',
+            expect.objectContaining({ sources: 4 }),
+        );
+    });
+
+    it('one source keeps its direct string, with no live inputs', () => {
+        const { module } = makeModule({ sources: 1 });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
+        expect(desc.liveInputs).toBeUndefined();
+        expect(desc.pipeline).toMatch(/^unixfdsrc socket-path=\/tmp\/mr-bus-40100-x\.sock /);
+        expect(module.getLiveInputBranch('audio-in', 'c-0')).toBeNull();
+    });
+
+    it('the live verbs reach Audio In from two sources on; a remove names the branch alone', () => {
+        const { module } = makeModule({ sources: 2 });
+        expect(module.getLiveInputBranch('other', 'c-0')).toBeNull();
+        const add = module.getLiveInputBranch('audio-in', 'c-1');
+        expect(add.element).toBe('mixin');
+        expect(add.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40101-x.sock');
+        // An edge already gone from the router: what a live remove needs, the bin's name.
+        const gone = module.getLiveInputBranch('audio-in', 'c-9');
+        expect(gone).toEqual({ element: 'mixin', name: expect.stringMatching(/^mixin_in_/) });
     });
 });
 

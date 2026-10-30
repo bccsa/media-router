@@ -1418,8 +1418,9 @@ range so the legacy pipeline string stays byte-identical. Reuse it for any other
 ### Live Input Branches (`getLiveInputBranch`)
 
 The multi-input counterpart of the swap below, for an AGGREGATOR sink
-(audio-mixer, n1-mixer-302m): an edge added to, removed from or re-mapped on
-one of its input ports becomes ONE branch bin added to or taken off the
+(audio-mixer, n1-mixer-302m, audio-output-302m from two sources): an edge
+added to, removed from or re-mapped on one of its input ports becomes ONE
+branch bin added to or taken off the
 RUNNING pipeline — tracked runner verbs `bus_input_add` / `bus_input_remove`
 (native and python) — instead of a module stop/start. The module's producer
 sockets stay up, so nothing downstream restarts (#787: every wiring edit on
@@ -1479,6 +1480,16 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   still there, wait for the new edge socket, add, clear the warning) instead
   of ADR-0010 rule 4's whole-pipeline relaunch — so an upstream flap never
   restarts a live-input aggregator or anything below it.
+- **Inputs apart: start with the sources that run (B-192).** A module may
+  hand its branches over apart from `pipeline`, as
+  `PipelineDescription.liveInputs` (`buildLiveMixInput` in audio-302m-core).
+  The runner host then launches as soon as one of them is there, with every
+  one that is (ADR-0010 rule 5), names the others lost, and the engine adds
+  each when its producer plays — also when it plays before the module does,
+  or launched before it. Name them in `getLiveInputBranch` too: the live
+  verbs and the error containment go by it. audio-output-302m does this from
+  two sources on; audio-mixer and n1-mixer-302m still build every branch into
+  `pipeline`, so their start waits for every source.
 
 ### Live Input Swap (`getLiveInputSwap`)
 

@@ -7,6 +7,8 @@ import { PendingInputSwaps, performLiveSwap } from './LiveInputSwap.js';
 import {
     addLiveInput,
     liveBranchFor,
+    producerAway,
+    rejoinLiveInput,
     relinkLiveInput,
     removeLiveInput,
     replaceLiveInput,
@@ -114,7 +116,15 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
 
         // Aggregator sink: add this edge as ONE branch on the running pipeline
         // (nothing downstream restarts); any failure falls through to the restart.
-        if (await addLiveInput({ sink: sinkModule, conn, udpPort, label: this.connLabel(conn) })) {
+        if (
+            await addLiveInput({
+                sink: sinkModule,
+                conn,
+                udpPort,
+                label: this.connLabel(conn),
+                producerAway: producerAway(this.moduleGetter(conn.sourceModuleId)),
+            })
+        ) {
             return { connectionId: conn.id, type: 'bus', busChannel: udpPort };
         }
 
@@ -300,6 +310,14 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
         const udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
         if (!sink || udpPort === undefined) return false;
         return relinkLiveInput({ sink, conn, udpPort, label: this.connLabel(conn) });
+    }
+
+    /** Add a live input branch the sink runs without, its producer now playing (B-192). */
+    async rejoinLiveInput(conn: Connection): Promise<boolean> {
+        const sink = this.moduleGetter(conn.sinkModuleId);
+        const udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
+        if (!sink || udpPort === undefined) return false;
+        return rejoinLiveInput({ sink, conn, udpPort, label: this.connLabel(conn) });
     }
 
     /** Replace one live input branch in place (a channel-map edit). */

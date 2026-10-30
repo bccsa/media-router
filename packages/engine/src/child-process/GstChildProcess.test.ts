@@ -234,6 +234,7 @@ describe('start payload (the wire to the runner)', () => {
             'linkOnPadAdded',
             'liveCaptureClock',
             'liveInputBranches',
+            'liveInputs',
             'pipeline',
             'readKlvNames',
             'renderWatch',
