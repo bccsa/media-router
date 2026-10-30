@@ -87,7 +87,7 @@ describe('pipeline fragments', () => {
         );
     });
 
-    it('subtitle input is a bus TS input into a named tsdemux', () => {
+    it('subtitle input is a bus TS input into a named mrtsdemux, private streams only (WI-P3-7)', () => {
         const s = buildSubtitleInput({
             port: 40123,
             socketPath: '/run/x.sock',
@@ -96,7 +96,8 @@ describe('pipeline fragments', () => {
         expect(s).toMatch(/^unixfdsrc /);
         expect(s).toContain('/run/x.sock');
         expect(s).toContain('tsparse set-timestamps=false');
-        expect(s).toMatch(/! tsdemux name=subdemux latency=0$/);
+        expect(s).toMatch(/ ! mrtsdemux name=subdemux media=private$/);
+        expect(s).not.toMatch(/\btsdemux\b/);
     });
 
     it('pay tail: the bridge-packed TS appsrc straight onto the bus, no mux', () => {
@@ -111,6 +112,36 @@ describe('pipeline fragments', () => {
 
     it('render plan pins the python runner (python-only hook by decision, ADR-0016 2026-10-09)', () => {
         expect(subtitleRenderPlan({ port: 5600 }, {}).runner).toBe('python');
+    });
+
+    it("names the renderer's pace group to the bridge only when given one (burn-in, WI-P3-13)", () => {
+        const overlay = (plan: ReturnType<typeof subtitleRenderPlan>) =>
+            (plan.runnerHooks[0].config as { overlay: Record<string, unknown> }).overlay;
+        expect(overlay(subtitleRenderPlan({ port: 5600 }, {}))).toEqual({
+            demux: 'subdemux',
+            overlay: 'subov',
+        });
+        expect(overlay(subtitleRenderPlan({ port: 5600 }, {}, { aligner: 'burnin' }))).toEqual({
+            demux: 'subdemux',
+            overlay: 'subov',
+            aligner: 'burnin',
+        });
+        // Only the hook changes: the overlay and the cue input are the same either way.
+        const plain = subtitleRenderPlan({ port: 5600 }, {});
+        const paced = subtitleRenderPlan({ port: 5600 }, {}, { aligner: 'burnin' });
+        expect([paced.overlayElement, paced.inputFragment, paced.runner]).toEqual([
+            plain.overlayElement,
+            plain.inputFragment,
+            plain.runner,
+        ]);
+    });
+
+    it('tests/render-plan.json is the plan protocol subtitle-overlay-formula replays (`vitest -u` rewrites it)', async () => {
+        // `@SOCK@` stands for the protocol case's socket directory.
+        const plan = subtitleRenderPlan({ port: 40500, socketPath: '@SOCK@/subs.sock' }, {});
+        await expect(`${JSON.stringify(plan, null, 2)}\n`).toMatchFileSnapshot(
+            '../tests/render-plan.json',
+        );
     });
 
     it("a renderer's demuxes: the cue demux serves Subtitles In, its own its video input (WI-P3-6)", () => {

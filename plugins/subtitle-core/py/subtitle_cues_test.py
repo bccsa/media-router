@@ -4,13 +4,15 @@ show/clear decision), the consumer queue (order, dedupe, bound), the producer
 state and both locks under forced interleaving, the stale re-send gate.
 Run: python3 subtitle_cues_test.py
 """
+import inspect
 import threading
 
 import subtitle_cues as sc
 import subtitle_klv as klv
 from subtitle_testlib import check
 
-check("live cue", sc.make_cue(1000.4, "x", 8000) == sc.Cue(1000, 9000, "x"))
+check("live cue, its start as given (WI-P3-8: the PES PTS is the source's)",
+      sc.make_cue(1000.4, "x", 8000) == sc.Cue(1000.4, 9000.4, "x"))
 check("clear cue", sc.make_cue(1000, "", 8000) == sc.Cue(1000, 1000, ""))
 check("negative hold clamps", sc.make_cue(1000, "x", -5) == sc.Cue(1000, 1000, "x"))
 
@@ -51,7 +53,11 @@ check("wire: PES on the start, block 0 --> hold", sc.wire_cue(live) == (4000, (0
 first = klv.encode_cue(*sc.wire_cue(live)[1])
 check("re-send is a byte-identical repeat on the same PTS",
       sc.wire_cue(live) == sc.wire_cue(sc.Cue(*live)) and klv.encode_cue(*sc.wire_cue(live)[1]) == first)
-check("clear stamped at its own content time", sc.wire_cue(sc.make_cue(6100.4, "", 3000)) == (6100, (0, 0, "")))
+check("clear stamped at its own content time", sc.wire_cue(sc.make_cue(6100.4, "", 3000)) == (6100.4, (0, 0, "")))
+sub_ms = sc.make_cue(15_960_771.755556, "Hi", 8000)     # an OCC teletext PES time, 68 ticks past a ms
+check("wire: a sub-ms start keeps its block 0 --> hold, byte for byte",
+      sc.wire_cue(sub_ms) == (15_960_771.755556, (0, 8000, "Hi"))
+      and klv.encode_cue(*sc.wire_cue(sub_ms)[1]) == klv.encode_cue(0, 8000, "Hi"))
 last, ptses = None, []
 for pts, now in [(1000, 1900), (2500, 3400), (None, 3500), (2600, 4400), (5000, 5900)]:
     start, _ = sc.cue_start(pts, now, last)
@@ -60,12 +66,16 @@ for pts, now in [(1000, 1900), (2500, 3400), (None, 3500), (2600, 4400), (5000, 
     ptses += [sc.wire_cue(cue)[0]] * 2          # first send + one re-send
 check("PES PTS monotone across cues (fallback then content time)",
       ptses == sorted(ptses) and ptses[-1] == 5000)
-check("t0: chunk stamp wins", sc.cue_t0(4000, 7000, 5000) == (4000, "chunk"))
-check("t0: far chunk stamp -> pts", sc.cue_t0(90_000, 4900, 5000) == (4900, "pts"))
-check("t0: no chunk, far pts -> now", sc.cue_t0(None, 90_000, 5000) == (5000, "now"))
-check("t0: nothing at all", sc.cue_t0(None, None, None) == (None, "now"))
+# A received cue anchors on its demuxed PTS, its PES time on the house timeline (WI-P3-7).
+check("t0: the pts near now", sc.cue_t0(4900, 5000) == (4900, "pts") and sc.cue_t0(5400, 5000) == (5400, "pts"))
+check("t0: the pts at the tolerance's edge", sc.cue_t0(15_000, 5000) == (15_000, "pts"))
+check("t0: a far pts -> now", sc.cue_t0(90_000, 5000) == (5000, "now") and sc.cue_t0(15_001, 5000) == (5000, "now"))
+check("t0: no pts -> now", sc.cue_t0(None, 5000) == (5000, "now"))
+check("t0: nothing at all", sc.cue_t0(None, None) == (None, "now"))
+check("t0: the pts and now only, no chunk stamp",
+      list(inspect.signature(sc.cue_t0).parameters) == ["pts_ms", "now_ms"])
 check("t0 + span: re-sends land on one window",
-      sc.absolute_cue((0, 3000, "Hi"), sc.cue_t0(4000, 4800, 6000)[0]) == sc.Cue(4000, 7000, "Hi"))
+      sc.absolute_cue((0, 3000, "Hi"), sc.cue_t0(4000, 6000)[0]) == sc.Cue(4000, 7000, "Hi"))
 check("is_resend: a copy of the last payload within the gap", sc.is_resend(b"k", b"k", 2000))
 
 
@@ -79,26 +89,26 @@ def run_frames(q, t_from, t_to, step=40):
 
 
 q = sc.OverlayCues()
-q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "chunk"))
-q.add(sc.Cue(1100.0, 4100.0, "B", b"b", "chunk"))          # both queued ~1.4 s before their frames
+q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "pts"))
+q.add(sc.Cue(1100.0, 4100.0, "B", b"b", "pts"))          # both queued ~1.4 s before their frames
 check("queue: two cues 100 ms apart both draw, in order",
       run_frames(q, 960, 1200) == [(1000, "show", "A"), (1120, "show", "B")])
 q = sc.OverlayCues()
-for c in (sc.Cue(1000.0, 9000.0, "A", b"a", "chunk"), sc.Cue(2000.0, 2000.0, "", b"c", "chunk"),
-          sc.Cue(2120.0, 9120.0, "B", b"b", "chunk")):
+for c in (sc.Cue(1000.0, 9000.0, "A", b"a", "pts"), sc.Cue(2000.0, 2000.0, "", b"c", "pts"),
+          sc.Cue(2120.0, 9120.0, "B", b"b", "pts")):
     q.add(c)
 check("queue: cue, clear, next cue all applied on their frames",
       run_frames(q, 960, 2200) == [(1000, "show", "A"), (2000, "clear", None), (2120, "show", "B")])
 q = sc.OverlayCues()
 check("queue: a re-send (same key + start) is not queued twice",
-      q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "chunk")) and not q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "chunk"))
+      q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "pts")) and not q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "pts"))
       and len(q.pending) == 1)
 check("queue: an arrival-anchored re-send within the gap is not re-queued",
       q.add(sc.Cue(1000.0, 4000.0, "Z", b"z", "now"), 1000.0)
       and not q.add(sc.Cue(1500.0, 4500.0, "Z", b"z", "now"), 1500.0) and len(q.pending) == 2)
 q.pending.pop()
 run_frames(q, 1000, 1000)
-check("queue: nor once it is on screen", not q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "chunk")) and not q.pending)
+check("queue: nor once it is on screen", not q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "pts")) and not q.pending)
 q = sc.OverlayCues()
 check("queue: arrival-anchored re-send 2 s after the last copy is deduped",
       q.add(sc.Cue(1000.0, 9000.0, "A", b"a", "now"), 1000.0)
@@ -111,26 +121,26 @@ check("is_resend: past the re-send gap is a new cue", not sc.is_resend(b"a", b"a
       and sc.is_resend(b"a", b"a", 2400) and not sc.is_resend(b"a", b"a", None))
 # A hop that re-stamps private PES at arrival: each re-send lands ~2 s later.
 q = sc.OverlayCues()
-q.add(sc.Cue(1000.0, 9000.0, "A", b"a", "chunk"), 1000.0)
+q.add(sc.Cue(1000.0, 9000.0, "A", b"a", "pts"), 1000.0)
 check("queue: restamped re-sends at +2 s / +4 s (drifting starts) are re-sends, any t0 source",
-      not q.add(sc.Cue(3000.0, 11000.0, "A", b"a", "chunk"), 3000.0)
-      and not q.add(sc.Cue(5020.0, 13020.0, "A", b"a", "pts"), 5020.0) and len(q.pending) == 1)
+      not q.add(sc.Cue(3000.0, 11000.0, "A", b"a", "pts"), 3000.0)
+      and not q.add(sc.Cue(5020.0, 13020.0, "A", b"a", "now"), 5020.0) and len(q.pending) == 1)
 check("queue: ... so the cue keeps its original [start, end)",
       run_frames(q, 960, 13100, 20) == [(1000, "show", "A"), (9000, "clear", None)])
 check("queue: the same payload after the gap is a new cue",
-      q.add(sc.Cue(20000.0, 28000.0, "A", b"a", "chunk"), 20000.0) and len(q.pending) == 1)
+      q.add(sc.Cue(20000.0, 28000.0, "A", b"a", "pts"), 20000.0) and len(q.pending) == 1)
 q = sc.OverlayCues()
 check("queue: clears are never re-sent — identical clears 2.4 s apart both apply",
-      q.add(sc.Cue(1000.0, 1000.0, "", b"c", "chunk"), 1000.0)
-      and q.add(sc.Cue(3400.0, 3400.0, "", b"c", "chunk"), 3400.0) and len(q.pending) == 2)
+      q.add(sc.Cue(1000.0, 1000.0, "", b"c", "pts"), 1000.0)
+      and q.add(sc.Cue(3400.0, 3400.0, "", b"c", "pts"), 3400.0) and len(q.pending) == 2)
 q = sc.OverlayCues()
 for n in range(20):
-    q.add(sc.Cue(1000.0 + n, 2000.0 + n, f"c{n}", bytes([n]), "chunk"))
+    q.add(sc.Cue(1000.0 + n, 2000.0 + n, f"c{n}", bytes([n]), "pts"))
 check("queue: bounded at 16, oldest dropped", len(q.pending) == 16 and q.pending[0].text == "c4")
 q = sc.OverlayCues()
-q.add(sc.Cue(2000.0, 9000.0, "B", b"b", "chunk"))
+q.add(sc.Cue(2000.0, 9000.0, "B", b"b", "pts"))
 run_frames(q, 2000, 2000)
-q.add(sc.Cue(1000.0, 9000.0, "A", b"a", "chunk"))          # a late re-send of an older cue
+q.add(sc.Cue(1000.0, 9000.0, "A", b"a", "pts"))          # a late re-send of an older cue
 check("queue: an older cue arriving late never replaces the one shown",
       run_frames(q, 2040, 2200) == [] and q.current.text == "B")
 
@@ -153,7 +163,7 @@ def interleave(hold_inside, other):
 
 
 q = sc.OverlayCues()
-q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "chunk"))
+q.add(sc.Cue(1000.0, 4000.0, "A", b"a", "pts"))
 real_decide = sc.decide
 
 
@@ -173,7 +183,7 @@ def frame_parked(inside, release):
         sc.decide = real_decide
 
 
-early, added = interleave(frame_parked, lambda: q.add(sc.Cue(1100.0, 4100.0, "B", b"b", "chunk")))
+early, added = interleave(frame_parked, lambda: q.add(sc.Cue(1100.0, 4100.0, "B", b"b", "pts")))
 check("lock: a cue arriving while a frame decides waits for it, then is queued",
       not early and added and q.current.text == "A" and [c.text for c in q.pending] == ["B"])
 

@@ -16,16 +16,16 @@ FRAME_TIME_TOLERANCE_MS = 10_000
 QUEUE_MAX = 16
 SAME_START_MS = 1.0
 
-# A cue: house times (ms) and text; the consumer adds its payload key and t0 source.
-Cue = namedtuple("Cue", "start end text key src", defaults=(None, None))
+# A cue: house times (ms) and text; the consumer adds its payload key, t0 source and arrival.
+Cue = namedtuple("Cue", "start end text key src at", defaults=(None, None, None))
 
 
 def make_cue(start_ms, text, hold_ms):
-    """A live cue runs from start for hold_ms; a clear is a zero-length cue at start."""
-    start = int(round(start_ms))
+    """A live cue runs from start for hold_ms; a clear is a zero-length cue at start.
+    The start stays as given, so the cue's PES PTS is its source PES's to the tick."""
     if not text:
-        return Cue(start, start, "")
-    return Cue(start, start + max(0, int(hold_ms)), text)
+        return Cue(start_ms, start_ms, "")
+    return Cue(start_ms, start_ms + max(0, int(hold_ms)), text)
 
 
 def cue_start(pts_ms, now_ms, floor_ms=None):
@@ -70,12 +70,9 @@ def frame_time(pts_ms, now_ms):
     return pts_ms if abs(pts_ms - now_ms) <= FRAME_TIME_TOLERANCE_MS else now_ms
 
 
-def cue_t0(chunk_ms, pts_ms, now_ms):
-    """(t0_ms, source) a received cue anchors on: the stamp of the bus chunk
-    its PES started in ('chunk'), else its demuxed PTS ('pts'), else arrival
-    ('now') — each only when near house-now."""
-    if chunk_ms is not None and now_ms is not None and abs(chunk_ms - now_ms) <= FRAME_TIME_TOLERANCE_MS:
-        return chunk_ms, "chunk"
+def cue_t0(pts_ms, now_ms):
+    """(t0_ms, source) a received cue anchors on: its demuxed PTS, its PES time
+    on the house timeline ('pts'), when near house-now, else arrival ('now')."""
     t = frame_time(pts_ms, now_ms)
     if t is None:
         return None, "now"

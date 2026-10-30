@@ -19,7 +19,7 @@ import {
 
 /** `name=` of the textoverlay the bridge drives (one per pipeline). */
 export const SUBTITLE_OVERLAY_NAME = 'subov';
-/** `name=` of the tsdemux the cue TS arrives on (one per pipeline). */
+/** `name=` of the mrtsdemux the cue TS arrives on (one per pipeline). */
 export const SUBTITLE_DEMUX_NAME = 'subdemux';
 
 /** The subtitle source as `getModuleBusSource(instanceId, SUBTITLE_INPUT_PORT_ID)` returns it. */
@@ -31,7 +31,8 @@ export interface SubtitleSource {
 export interface SubtitleRenderPlan {
     /** `textoverlay …` — splice into the video path with `!` on both sides. */
     overlayElement: string;
-    /** `unixfdsrc … ! tsdemux name=subdemux` — append as a separate fragment (space, not `!`). */
+    /** `unixfdsrc … ! mrtsdemux name=subdemux media=private` — append as a separate fragment
+     *  (space, not `!`). */
     inputFragment: string;
     /** Put on the PipelineDescription verbatim. */
     runnerHooks: RunnerHook[];
@@ -40,10 +41,17 @@ export interface SubtitleRenderPlan {
     runner: 'python';
 }
 
+export interface SubtitleRenderOpts {
+    /** The pace group of the renderer's video `mralignwatch`, which the bridge's cue readers
+     *  join (the transcoder's burn-in); unset, they are queues (the video-player). */
+    aligner?: string;
+}
+
 /** Everything a renderer adds to its description for a wired subtitle source. */
 export function subtitleRenderPlan(
     source: SubtitleSource,
     config: Record<string, unknown>,
+    opts: SubtitleRenderOpts = {},
 ): SubtitleRenderPlan {
     return {
         overlayElement: buildSubtitleOverlayElement(SUBTITLE_OVERLAY_NAME, config),
@@ -54,7 +62,11 @@ export function subtitleRenderPlan(
         }),
         runnerHooks: [
             subtitleRunnerHook({
-                overlay: { demux: SUBTITLE_DEMUX_NAME, overlay: SUBTITLE_OVERLAY_NAME },
+                overlay: {
+                    demux: SUBTITLE_DEMUX_NAME,
+                    overlay: SUBTITLE_OVERLAY_NAME,
+                    ...(opts.aligner ? { aligner: opts.aligner } : {}),
+                },
             }),
         ],
         runner: 'python',

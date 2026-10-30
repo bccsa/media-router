@@ -35,6 +35,7 @@ export {
     applySubtitleLiveUpdates,
     renderDemuxInput,
     subtitleRenderPlan,
+    type SubtitleRenderOpts,
     type SubtitleRenderPlan,
     type SubtitleSource,
 } from './subtitleRender.js';

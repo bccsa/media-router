@@ -129,16 +129,42 @@ describe('buildPipeline', () => {
                 label: 'nor 692',
             },
         ]);
-        // Cues start at content time: the bridge retimes the teletext pad off the
-        // bus stamps, and the KLV egress stamps by identity (PES - 1 h).
-        expect((desc.runnerHooks![0].config as any).sourceDemux).toBe('demux');
-        expect(desc.pipeline).toContain('tsdemux name=demux ');
+        // Cues start at their teletext PES time, the formula demux's PTS: no retime, so
+        // the bridge is given no source demux (house-clock WI-P3-8).
+        expect(desc.runnerHooks![0].config).not.toHaveProperty('sourceDemux');
+        expect(desc.pipeline).toContain('! mrtsdemux name=demux media=private ! capsfilter ');
         // python-only hook by decision (ADR-0016 2026-10-09), not a temporary measure
         expect(desc.runner).toBe('python');
         // branchAlign retimes only audio_/video_ pads — nothing here to align.
         expect(desc.alignBranchesToStamps).toBeUndefined();
         expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
         expect((module as any).setStatusData).toHaveBeenCalledWith('input', { channel: 5004 });
+    });
+
+    it('tests/teletext-plan.json is the description protocol ttx-formula replays (`vitest -u` rewrites it)', async () => {
+        // `@SOCK@` stands for the protocol case's socket directory; the pages are the eight
+        // the OCC captures' PMT announces, in its order.
+        const occ = [
+            [692, 'nor'],
+            [150, 'deu'],
+            [695, 'nld'],
+            [888, 'eng'],
+            [600, 'fra'],
+            [610, 'spa'],
+            [620, 'ron'],
+            [630, 'pol'],
+        ] as const;
+        const { module } = makeModule({
+            upstream: { port: 40400, socketPath: '@SOCK@/ttx-in.sock' },
+        });
+        const desc = module.buildPipeline({
+            detectedPages: occ.map(([page]) => String(page)),
+            discoveredPages: occ.map(([page, language]) => ({ page, language, type: 2 })),
+        })!;
+        const { pipeline, tsProbe, runnerHooks, runner } = desc;
+        await expect(
+            `${JSON.stringify({ pipeline, tsProbe, runnerHooks, runner }, null, 2)}\n`,
+        ).toMatchFileSnapshot('../tests/teletext-plan.json');
     });
 
     it('clamps the cue hold to 1–30 s and defaults to 8 s', () => {

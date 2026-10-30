@@ -4,12 +4,10 @@ the house time a PES gets from the floored chunk stamps (hand-built cases and
 the engine's identity stamp, `subtitle_ts_engine_test`), the join index.
 Run: python3 subtitle_ts_test.py
 """
-import subtitle_cues as sc
 import subtitle_klv as klv
 import subtitle_stamp_model as sm
 import subtitle_ts as ts
 import subtitle_ts_engine_test
-from subtitle_overlay import klv_key
 from subtitle_testlib import check, packets, pes
 
 KLV_PID, VID_PID, AUD_PID, TTX_PID = 0x180, 0x100, 0x101, 0x120
@@ -103,8 +101,6 @@ wrap = b"".join(packets(VID_PID, pes(0xE0, (1 << 33) - 900, b"\x00"), pcr=(1 << 
 check("33-bit wrap folds", [house_of(g) for g in st.feed(wrap, 0.0)] == [100.0])
 check("fold", sm.fold_ticks(5) == 5 and sm.fold_ticks(-5) == -5 and sm.fold_ticks((1 << 33) - 5) == -5)
 
-check("klv span ignores trailing bytes", ts.klv_span(cue_bytes + b"\x00\x00") == cue_bytes)
-check("klv span of junk is the junk", ts.klv_span(b"abc") == b"abc")
 idx = ts.StampIndex(size=2, max_age_ms=5000)
 idx.record(b"a", 1.0, 0)
 idx.record(b"b", 2.0, 0)
@@ -115,17 +111,6 @@ check("index: LRU evicts the oldest key", idx.lookup(b"b", 10) is None and len(i
 check("index: stale entry misses", idx.lookup(b"a", 6000) is None)
 idx.record(b"d", None, 10)
 check("index: unmapped record misses", idx.lookup(b"d", 10) is None)
-
-# End to end: the consumer's join key over the demuxed KLV finds the mapped
-# time of the PES, for the first send and its (floor-stamped) re-send alike.
-idx, st = ts.StampIndex(), ts.PesStamper()
-for chunk_ms, packet in [(4000.0, one), (4000.0, one)]:
-    for _pid, payload, house in st.feed(packet, chunk_ms):
-        idx.record(klv_key(payload), house, chunk_ms)
-t0, src = sc.cue_t0(idx.lookup(klv_key(cue_bytes), 4100.0), 7000.0, 4100.0)
-check("consumer: cue anchors on the chunk stamp, not tsdemux pts", (t0, src) == (4000.0, "chunk"))
-check("consumer: shown on the cue's own frames",
-      sc.decide(sc.absolute_cue(klv.decode_cue(cue_bytes), t0), None, 4000.0) == ("show", "Hello"))
 
 check("reference: the PCR PID's first PES, sure when it is also the first video/audio",
       sm.chunk_reference([(0x101, 0xC0, 5), (0x100, 0xE0, 9)], 0x100) == sm.Reference(9, False)

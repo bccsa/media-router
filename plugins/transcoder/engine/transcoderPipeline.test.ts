@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildPipeline, deinterlaceMethodForArch, DEMUX_NAME } from './transcoderPipeline.js';
-import { SUBTITLE_HOLD_MAX_BYTES, SUBTITLE_HOLD_NAME } from './transcoderSubtitles.js';
+import { buildBurninWatch } from './transcoderSubtitles.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -201,10 +201,11 @@ describe('buildPipeline', () => {
 
         const p = res.pipeline;
         // Single static pipeline (no linkOnPadAdded): unixfdsrc → tsparse →
-        // tsdemux → decode once → conform framerate → tee → one leaf per
-        // rendition.
-        // Named demux — the runner's alignBranchesToStamps targets this name.
-        expect(p).toContain(`tsdemux name=${DEMUX_NAME} latency=0`);
+        // the formula demux → decode once → conform framerate → tee → one leaf
+        // per rendition.
+        // Named demux — its counters show on the TS input (WI-P3-6).
+        expect(p).toContain(`mrtsdemux name=${DEMUX_NAME} media=video`);
+        expect(p).not.toMatch(/\btsdemux\b/);
         expect(p).toContain(`unixfdsrc socket-path=${base.input.socketPath}`);
         expect(p.match(/avdec_h264/g)).toHaveLength(1); // decoded exactly once
         expect(p).toContain('framerate=50/1');
@@ -234,13 +235,13 @@ describe('buildPipeline', () => {
         expect(res.pipeline).toContain('max-size-time=100000000');
     });
 
-    it('filters tsdemux to video only so an audio pad cannot reach the decoder', () => {
+    it('demuxes video only and links H.264 alone into the decoder (WI-P3-13)', () => {
         const res = buildPipeline({ ...base, outputs: [out(0, r())] })!;
-        // Capsfilter must sit directly on the tsdemux output (before any queue),
-        // restricting to video codecs — otherwise an A/V source links its audio
-        // pad into videoconvert and dies with "Internal data stream error".
+        // `media=video`: an audio stream gets no pad, so it can never reach videoconvert and
+        // die with "Internal data stream error"; the capsfilter on the demux's output, before
+        // any queue, keeps the input H.264-only.
         expect(res.pipeline).toMatch(
-            /tsdemux name=demux latency=0 ! capsfilter caps="video\/x-h264"/,
+            / ! mrtsdemux name=demux media=video ! capsfilter caps="video\/x-h264" ! h264parse ! avdec_h264 /,
         );
     });
 
@@ -510,49 +511,53 @@ describe('subtitle burn-in', () => {
             'videorate drop-only=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
                 'valignment=bottom halignment=left font-desc="Sans Bold 36" ypad=40 shaded-background=true shading-value=153 ! tee name=t ',
         );
-        expect(r.pipeline).toMatch(/ tsdemux name=subdemux latency=0$/);
+        expect(r.pipeline).toMatch(/ mrtsdemux name=subdemux media=private$/);
         expect(r.pipeline).toContain('/tmp/mr-bus-5600-edge.sock');
         expect(r.runnerHooks).toEqual([
             { module: 'deinterlace_guard', config: { element: 'deint' } },
             {
                 module: 'subtitle_bridge',
-                config: { overlay: { demux: 'subdemux', overlay: 'subov' } },
+                config: { overlay: { demux: 'subdemux', overlay: 'subov', aligner: 'burnin' } },
             },
         ]);
-        // the plain string is a strict prefix-with-insertion: nothing else moved
-        const plain = buildPipeline(base)!.pipeline;
-        expect(r.pipeline.replace(/textoverlay[^!]*! /, '').replace(/ unixfdsrc .*$/, '')).toBe(
-            plain,
-        );
     });
 
-    describe('subtitle sync hold', () => {
+    describe('burn-in pace group (WI-P3-13, OQ-24)', () => {
         const subtitles = { port: 5600, socketPath: '/tmp/mr-bus-5600-edge.sock', config: {} };
-        const HOLD_1400 =
-            `capsfilter caps="video/x-h264" ! queue name=${SUBTITLE_HOLD_NAME} max-size-buffers=0 ` +
-            `max-size-bytes=${SUBTITLE_HOLD_MAX_BYTES} ` +
-            'max-size-time=2400000000 min-threshold-time=1400000000 ! h264parse ! avdec_h264';
 
-        it('delay 0 leaves the subtitle pipeline unchanged', () => {
-            const plain = buildPipeline({ ...base, subtitles })!.pipeline;
-            expect(buildPipeline({ ...base, subtitles, subtitleDelayMs: 0 })!.pipeline).toBe(plain);
-            expect(plain).not.toContain(SUBTITLE_HOLD_NAME);
+        it('holds the compressed video in the pace group before h264parse, one watch in the string', () => {
+            const r = buildPipeline({ ...base, subtitles })!;
+            expect(r.pipeline).toContain(
+                `mrtsdemux name=demux media=video ! capsfilter caps="video/x-h264" ! ${buildBurninWatch()}h264parse ! avdec_h264`,
+            );
+            // The cue member is made by the bridge at pad-added (S36): one watch here.
+            expect(r.pipeline.match(/\bmralignwatch\b/g)).toHaveLength(1);
+            expect(r.pipeline.match(/aligner=burnin input=video/g)).toHaveLength(1);
+            expect(r.runnerHooks?.[1]).toEqual({
+                module: 'subtitle_bridge',
+                config: { overlay: { demux: 'subdemux', overlay: 'subov', aligner: 'burnin' } },
+            });
+            // No hold queue survives (OQ-24).
+            expect(r.pipeline).not.toContain('subhold');
+            expect(r.pipeline).not.toContain('min-threshold-time');
         });
 
-        it('holds the compressed video ahead of h264parse: 1 s time headroom, 16 MB runaway cap', () => {
-            const r = buildPipeline({ ...base, subtitles, subtitleDelayMs: 1400 })!;
-            expect(r.pipeline).toContain(HOLD_1400);
-            expect(r.pipeline.split(`name=${SUBTITLE_HOLD_NAME} `)).toHaveLength(2);
-            // nothing else moved: removing the hold gives the undelayed string
-            const plain = buildPipeline({ ...base, subtitles })!.pipeline;
+        it('nothing else moved: removing the watch, the overlay and the cue input gives the plain string', () => {
+            const r = buildPipeline({ ...base, subtitles })!;
+            const plain = buildPipeline(base)!.pipeline;
             expect(
-                r.pipeline.replace(new RegExp(`queue name=${SUBTITLE_HOLD_NAME} [^!]*! `), ''),
+                r.pipeline
+                    .replace(buildBurninWatch(), '')
+                    .replace(/textoverlay[^!]*! /, '')
+                    .replace(/ unixfdsrc .*$/, ''),
             ).toBe(plain);
         });
 
-        it('no hold without a subtitle source', () => {
-            const r = buildPipeline({ ...base, subtitleDelayMs: 1400 })!;
-            expect(r.pipeline).toBe(buildPipeline(base)!.pipeline);
+        it('no watch without a subtitle source', () => {
+            const r = buildPipeline(base)!;
+            expect(r.pipeline).not.toContain('mralignwatch');
+            expect(r.pipeline).not.toContain('subhold');
+            expect(r.pipeline).not.toContain('min-threshold-time');
         });
     });
 });

@@ -27,9 +27,11 @@ describe('teletext pipeline', () => {
         const p = r.pipeline;
         expect(p).toMatch(/^unixfdsrc /);
         expect(p).toContain('/run/edge.sock');
+        // the formula demux, private streams alone; the teletext pad carries its PES time
         expect(p).toContain(
-            '! tee name=in_t ! queue ! tsdemux name=demux latency=0 ! capsfilter caps="application/x-teletext" ! tee name=t ',
+            '! tee name=in_t ! queue ! mrtsdemux name=demux media=private ! capsfilter caps="application/x-teletext" ! tee name=t ',
         );
+        expect(p).not.toMatch(/(^|[\s!])tsdemux /);
         // report-only PMT tap off the input tee, leaky so it can never stall the demux
         expect(p).toContain(
             'in_t. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',

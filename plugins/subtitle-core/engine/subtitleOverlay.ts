@@ -14,12 +14,12 @@
  * is shown only while its [pts, pts+duration) overlaps the video, no-duration
  * buffers flash for one frame, and the pad blocks while a buffer is pending)
  * fought every attempt in the 2026-09-09 spike. Instead this plugin's runner
- * hook (`py/subtitle_bridge.py`) reads the KLV cues off a `tsdemux` and
- * sets the element's `text` property from a probe on its VIDEO sink pad, so
- * a cue appears exactly on the first frame whose stamped PTS reaches the cue's
- * house-clock start and clears on the first frame past its end — frame
- * accurate against the stamped timeline (ADR-0005), no timeline math in the
- * consumer, and independent of the playout offset D.
+ * hook (`py/subtitle_bridge.py`) reads the KLV cues off an `mrtsdemux`, each on
+ * its PES time (PTS = PES − 1 h), and sets the element's `text` property from a
+ * probe on its VIDEO sink pad, so a cue appears exactly on the first frame whose
+ * PTS reaches the cue's house-clock start and clears on the first frame past its
+ * end — frame accurate on the house timeline (ADR-0029), no timeline math in
+ * the consumer, and independent of the playout offset D.
  */
 
 import { buildTsUdpInput, type DynamicPort, type RunnerHook } from '@media-router/engine';
@@ -185,30 +185,33 @@ export interface SubtitleInputOpts {
     /** Bus channel of the subtitle source (its `port` + per-consumer edge socket). */
     port: number;
     socketPath?: string;
-    /** `name=` for the tsdemux the bridge attaches to (unique per pipeline). */
+    /** `name=` for the mrtsdemux the bridge attaches to (unique per pipeline). */
     demuxName: string;
 }
 
 /**
- * Bus input for a subtitle TS: `unixfdsrc ! queue ! tsparse ! tsdemux`. Its
- * pads are linked at runtime by the runner's subtitle bridge (KLV pad → cue
- * reader; anything else → fakesink so a mis-wired A/V stream cannot stall the
- * demux). Standalone fragment — join it to the rest of the pipeline string
- * with a space, not `!`.
+ * Bus input for a subtitle TS: `unixfdsrc ! queue ! tsparse ! mrtsdemux
+ * media=private` (WI-P3-7): a pad per private stream, each PES on its PES time.
+ * The runner's subtitle bridge links the pads at runtime (KLV → cue reader, any
+ * other → fakesink so it cannot stall the demux); an A/V stream gets no pad.
+ * Standalone fragment — join it to the rest of the pipeline with a space, not `!`.
  */
 export function buildSubtitleInput(opts: SubtitleInputOpts): string {
     return (
         `${buildTsUdpInput({ port: opts.port, socketPath: opts.socketPath, jitterMs: 200 })} ` +
-        `! tsdemux name=${opts.demuxName} latency=0`
+        `! mrtsdemux name=${opts.demuxName} media=private`
     );
 }
 
 /** Config for the consumer half of the bridge (`subtitle_bridge` hook, `overlay`). */
 export interface SubtitleOverlayRunnerConfig {
-    /** tsdemux the cues arrive on (from buildSubtitleInput). */
+    /** mrtsdemux the cues arrive on (from buildSubtitleInput). */
     demux: string;
     /** textoverlay whose `text` property the bridge drives. */
     overlay: string;
+    /** The renderer's video pace group: each cue reader is then a sparse `mralignwatch` of it, so
+     *  the video waits by the cues' measured lateness (burn-in, house-clock WI-P3-13). */
+    aligner?: string;
 }
 
 /** Config for one producer branch (`subtitle_bridge` hook, `pay[]`). */
@@ -230,14 +233,11 @@ export const SUBTITLE_RUNNER_MODULE = 'subtitle_bridge';
 
 /**
  * The `PipelineDescription.runnerHooks` entry that installs the subtitle
- * bridge on a pipeline: producers pass `pay` (and `sourceDemux`, the tsdemux
- * their cue text comes from, so cues start at content time), renderers pass
- * `overlay`.
+ * bridge on a pipeline: producers pass `pay` (cues start at their text's PTS,
+ * its content time off the formula demux), renderers pass `overlay`.
  */
 export function subtitleRunnerHook(config: {
     pay?: SubtitlePayRunnerConfig[];
-    /** tsdemux whose private pads the bridge retimes onto the bus stamps. */
-    sourceDemux?: string;
     overlay?: SubtitleOverlayRunnerConfig;
 }): RunnerHook {
     return { module: SUBTITLE_RUNNER_MODULE, config };

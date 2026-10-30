@@ -7,7 +7,7 @@ import {
     sameAnnounced,
     type AnnouncedPage,
 } from './teletextDescriptor.js';
-import { DEMUX_NAME, PROBE_SINK_NAME, buildPipeline } from './teletextPipeline.js';
+import { PROBE_SINK_NAME, buildPipeline } from './teletextPipeline.js';
 import {
     INPUT_PORT_ID,
     MAX_PAGES,
@@ -120,12 +120,7 @@ export class TeletextSubtitlesModule extends GstPluginBase {
             tsProbe: { appsink: PROBE_SINK_NAME },
             ...(result.subtitlePay.length
                 ? {
-                      runnerHooks: [
-                          subtitleRunnerHook({ pay: result.subtitlePay, sourceDemux: DEMUX_NAME }),
-                      ],
-                      // Cue PES carry content time + 1 h; the identity egress keeps it. No
-                      // alignBranchesToStamps (A/V pads only): the bridge retimes the
-                      // teletext pad itself (ADR-0016 2026-10-09).
+                      runnerHooks: [subtitleRunnerHook({ pay: result.subtitlePay })],
                       // subtitle_bridge is a python-only hook by decision (ADR-0016
                       // 2026-10-09), not a temporary measure.
                       runner: 'python' as const,

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""`subtitle_native` on a fake GStreamer: the bridge splices `mrpeshouse` in
-front of the source tsdemux when the factory is there (no python chunk probe,
-`pes-house` fills the StampIndex, announced pads narrow `pids`), and keeps the
-python probe — graph untouched — when it is absent, disabled or will not link.
-The real element: subtitle_peshouse_gst_test.py. Run: python3 subtitle_native_test.py
+"""`subtitle_native.attach` on a fake GStreamer: it splices `mrpeshouse` in front
+of a demux when the factory is there (`pes-house` fills the StampIndex, `set_pids`
+narrows `pids`) and gives None, the graph untouched, when it is absent, disabled
+or will not link. The real element: subtitle_peshouse_gst_test.py.
+Run: python3 subtitle_native_test.py
 """
 import os
 import tempfile
 import types
 
-import subtitle_bridge
 import subtitle_native
 import subtitle_runtime
+import subtitle_ts
 from subtitle_testlib import check
 
 NS = types.SimpleNamespace
@@ -99,52 +99,42 @@ def fake_gst(available, refuse=False, made=None):
 
 
 def run(gst, env=None):
-    """install_retime on `queue ! demux`; → (pipe, queue, demux, retime, traces)."""
-    traces = []
+    """attach on `queue ! demux`; → (pipe, queue, demux, element or None, index)."""
     subtitle_runtime.gst = lambda: (None, gst)
-    subtitle_runtime.trace = traces.append
     subtitle_native._loaded = None
     os.environ.pop(subtitle_native.DISABLE_ENV, None)
     if env is not None:
         os.environ[subtitle_native.DISABLE_ENV] = env
     queue, demux = El("queue", "q"), El("tsdemux", "demux")
     queue.pads["src"].link(demux.pads["sink"])
-    pipe = Pipe(q=queue, demux=demux)
-    retime = subtitle_bridge.subtitle_pay.install_retime(pipe, "demux")
+    pipe, index = Pipe(q=queue, demux=demux), subtitle_ts.StampIndex()
+    el = subtitle_native.attach(pipe, demux, index)
     os.environ.pop(subtitle_native.DISABLE_ENV, None)
-    return pipe, queue, demux, retime, traces
+    return pipe, queue, demux, el, index
 
 
 empty = tempfile.mkdtemp()
 os.environ["MR_PLUGINS_DIR"], os.environ["MR_LIBEXEC_DIR"] = empty, empty   # no .so anywhere
 
 made = []
-pipe, queue, demux, retime, traces = run(fake_gst(True, made=made))
-el = retime["native"]
-check("available: journal says native", "retime source: native mrpeshouse" in traces)
+pipe, queue, demux, el, index = run(fake_gst(True, made=made))
 check("available: spliced queue ! mrpeshouse ! demux, synced, named after the demux",
       el is made[0] and el.kind == "mrpeshouse" and el.name == "demux_peshouse" and el in pipe.children
       and queue.pads["src"].peer is el.pads["sink"] and el.pads["src"].peer is demux.pads["sink"]
       and el.state == "PLAYING")
-check("available: no python chunk probe on the demux sink", demux.pads["sink"].probes == [])
 cb, args = el.signals["pes-house"]
 cb(el, 0x120, 900_000, "ab" * 20, 1_234_500_000, *args)
 cb(el, 0x120, 900_900, "cd" * 20, -1, *args)
 check("pes-house: hash → house ms recorded, -1 = unknown",
-      retime["index"].lookup(bytes.fromhex("ab" * 20), 50_000.0) == 1234.5
-      and len(retime["index"]) == 2 and retime["index"].lookup(bytes.fromhex("cd" * 20), 50_000.0) is None)
-demux.signals["pad-added"][0](demux, Pad("private_0_0120"), *demux.signals["pad-added"][1])
-demux.signals["pad-added"][0](demux, Pad("private_0_0121"), *demux.signals["pad-added"][1])
-check("pad-added narrows the element's pids", el.props.get("pids") == "0x120,0x121")
+      index.lookup(bytes.fromhex("ab" * 20), 50_000.0) == 1234.5
+      and len(index) == 2 and index.lookup(bytes.fromhex("cd" * 20), 50_000.0) is None)
+subtitle_native.set_pids(el, {0x121, 0x120})
+check("set_pids narrows the element's pids", el.props.get("pids") == "0x120,0x121")
 
 for label, gst, env in (("factory missing, no .so", fake_gst(False), None),
                         ("disabled by MR_SUBTITLE_NATIVE_RETIME=0", fake_gst(True), "0"),
                         ("splice refused", fake_gst(True, refuse=True), None)):
-    pipe, queue, demux, retime, traces = run(gst, env)
-    check(f"{label}: journal says python probe, the probe is on the demux sink",
-          "retime source: python probe" in traces and retime["native"] is None
-          and len(demux.pads["sink"].probes) == 1)
-    check(f"{label}: graph untouched (queue ! demux, nothing added)",
-          queue.pads["src"].peer is demux.pads["sink"] and pipe.children == [queue, demux])
-subtitle_bridge.clear()
+    pipe, queue, demux, el, index = run(gst, env)
+    check(f"{label}: no element, graph untouched (queue ! demux, nothing added)",
+          el is None and queue.pads["src"].peer is demux.pads["sink"] and pipe.children == [queue, demux])
 print("all subtitle_native tests passed")

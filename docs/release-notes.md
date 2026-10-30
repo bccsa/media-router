@@ -290,6 +290,13 @@ elements" below do not start.
 - **Sync Method** on Audio Decoder: its output now follows its sink's clock
   by resampling, so there is no method to choose. Stored values are ignored;
   a rollback restores them.
+- **Subtitle Sync Delay** on Video Transcoder: burn-in now waits for each
+  subtitle by the measured delay of the subtitle path, so the output's added
+  latency follows the subtitles instead of a fixed setting. A subtitle that
+  comes later than that wait (the first after a start, while the delay is
+  measured) is drawn late, never dropped, and the wait rises to it. Stored
+  values are ignored (the OCC gate's burn-in transcoders ran 1,400 ms); a
+  rollback restores them.
 
 **Needs the image's native elements (Phase 2)**
 
@@ -301,6 +308,9 @@ elements" below do not start.
 - From Phase 3, AES67 Output, Audio Decoder and Audio Transcoder too: their
   input goes through the same demux, so without the image's timing elements
   they refuse to start with "Native TS module not loaded".
+- From Phase 3, Video Transcoder too: its input goes through the same demux,
+  so without the image's timing elements it refuses to start with "Native TS
+  module not loaded".
 
 **Fixed**
 
@@ -597,6 +607,12 @@ elements" below do not start.
   longer sends CORS headers, as no web page calls it. The Device Manager works
   as before. A script that called the API from another computer must now run
   on the box, for example over SSH.
+- **Teletext subtitles are on time from the first page.** After Teletext
+  Subtitles started, its first pages were timed off its demuxer until the
+  module had matched the stream's own timing (about a second late on the OCC
+  feed), with the warning "content time unavailable yet — tsdemux time used".
+  Now every subtitle starts at its page's time in the stream from the first
+  page on, and that warning is gone.
 
 ## Unreleased — house-clock timing, Phase 0 (2026-10-13)
 

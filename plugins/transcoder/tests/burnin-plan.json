@@ -1,0 +1,22 @@
+{
+  "pipeline": "unixfdsrc socket-path=@SOCK@/video.sock ! mrlateness name=lat_busin_40600_47e6e1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! tsparse set-timestamps=false ! mrtsdemux name=demux media=video ! capsfilter caps=\"video/x-h264\" ! mralignwatch name=aw_burnv aligner=burnin input=video max-size-bytes=40000000 ! h264parse ! avdec_h264 thread-type=frame max-threads=3 ! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text=\"\" valignment=bottom halignment=center font-desc=\"Sans Bold 36\" ypad=40 shaded-background=true shading-value=153 ! tee name=t t. ! queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale ! video/x-raw,width=320,height=180 ! videoconvert ! x264enc name=venc_0 tune=zerolatency bitrate=300 speed-preset=ultrafast key-int-max=25 bframes=0 option-string=\"nal-hrd=cbr:vbv-maxrate=300:vbv-bufsize=300:scenecut=40\" ! h264parse config-interval=1 ! mpegtsmux name=mux_0 latency=0 alignment=0 ! capssetter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" replace=true ! capsfilter caps=\"video/mpegts, systemstream=(boolean)true, packetsize=(int)188\" ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true unixfdsrc socket-path=@SOCK@/subs.sock ! mrlateness name=lat_busin_40601_379bf1 reference=house ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! tsparse set-timestamps=false ! mrtsdemux name=subdemux media=private",
+  "runnerHooks": [
+    {
+      "module": "deinterlace_guard",
+      "config": {
+        "element": "deint"
+      }
+    },
+    {
+      "module": "subtitle_bridge",
+      "config": {
+        "overlay": {
+          "demux": "subdemux",
+          "overlay": "subov",
+          "aligner": "burnin"
+        }
+      }
+    }
+  ],
+  "runner": "python"
+}

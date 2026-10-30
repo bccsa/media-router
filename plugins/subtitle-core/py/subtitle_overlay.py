@@ -1,18 +1,19 @@
 """Consumer half of the subtitle bridge (`overlay`): KLV cues off the named
-tsdemux, each anchored on the house stamp of the bus chunk it arrived in,
-queued by start (`subtitle_cues.OverlayCues`) and drawn by setting the named
-textoverlay's `text` from a probe on its video pad — never its text pad.
-ADR-0016 amendment 2026-10-09; docs/research/subtitle-content-time-20261009.md.
+mrtsdemux, each anchored on its demuxed PTS (the formula: its PES time on the
+house timeline), queued by start (`subtitle_cues.OverlayCues`) and drawn by
+setting the named textoverlay's `text` from a probe on its video pad — never
+its text pad. With `aligner`, each cue pad is read through a sparse
+`mralignwatch` of the renderer's video pace group (burn-in, WI-P3-13).
+ADR-0016 amendment 2026-10-09; house-clock plan WI-P3-7.
 """
 import subtitle_klv
 import subtitle_runtime as rt
-import subtitle_ts
 from subtitle_cues import OverlayCues, absolute_cue, cue_t0, frame_time
 
 
 def klv_key(payload):
-    """Join key between a chunk's KLV PES and the demuxed KLV buffer."""
-    return subtitle_ts.payload_key(subtitle_ts.klv_span(payload))
+    """A cue's dedupe key: its KLV triplet's hash (a re-send repeats the triplet)."""
+    return subtitle_klv.payload_key(subtitle_klv.klv_span(payload))
 
 
 def install_overlay(pipe, cfg):
@@ -23,18 +24,25 @@ def install_overlay(pipe, cfg):
     if demux is None or ov is None:
         rt.warn(f"overlay elements missing ({cfg.get('demux')}/{cfg.get('overlay')})")
         return None
-    st = {"pipe": pipe, "ov": ov, "cues": OverlayCues(), "index": subtitle_ts.StampIndex(),
-          "readers": {}}
-    sink = demux.get_static_pad("sink")
-    if sink is not None:
-        sink.add_probe(Gst.PadProbeType.BUFFER,
-                       rt.chunk_probe(pipe, subtitle_ts.PesStamper(), st["index"], klv_key))
+    st = {"pipe": pipe, "ov": ov, "cues": OverlayCues(), "readers": {}, "aligner": cfg.get("aligner")}
     demux.connect("pad-added", _on_demux_pad, st)
     demux.connect("pad-removed", _on_demux_pad_removed, st)
     vpad = ov.get_static_pad("video_sink")
     if vpad is not None:
         vpad.add_probe(Gst.PadProbeType.BUFFER, _on_video_frame, st)
     return st
+
+
+def _cue_reader(Gst, aligner):
+    """A KLV pad's thread boundary: a queue, or with `aligner` a sparse mralignwatch of that
+    pace group, so the renderer's video is held by the cues' measured lateness."""
+    if not aligner:
+        return Gst.ElementFactory.make("queue", None)
+    watch = Gst.ElementFactory.make("mralignwatch", None)
+    watch.set_property("aligner", aligner)
+    watch.set_property("input", "cues")
+    watch.set_property("sparse", True)
+    return watch
 
 
 def _on_demux_pad(demux, pad, st):
@@ -45,23 +53,24 @@ def _on_demux_pad(demux, pad, st):
     _on_demux_pad_removed(demux, pad, st)      # a re-added pad name: retire the old reader
     try:
         if name == "meta/x-klv":
-            q = Gst.ElementFactory.make("queue", None)
+            reader = _cue_reader(Gst, st["aligner"])
             sink = Gst.ElementFactory.make("appsink", None)
             sink.set_property("emit-signals", True)
             sink.set_property("sync", False)
             sink.set_property("max-buffers", 8)
             sink.set_property("drop", True)
             sink.connect("new-sample", _on_cue_sample, st)
-            pipe.add(q)
+            pipe.add(reader)
             pipe.add(sink)
-            q.sync_state_with_parent()
+            # Linked before it runs: a watch's first gap goes to the appsink.
+            reader.link(sink)
             sink.sync_state_with_parent()
-            q.link(sink)
-            pad.link(q.get_static_pad("sink"))
-            st["readers"][pad.get_name()] = [q, sink]
+            reader.sync_state_with_parent()
+            pad.link(reader.get_static_pad("sink"))
+            st["readers"][pad.get_name()] = [reader, sink]
         else:
-            # Not ours (an A/V TS wired into the subtitle input): keep the demux
-            # flowing rather than letting an unlinked pad kill it.
+            # Not ours (another private stream: teletext, ID3; A/V gets no pad):
+            # keep the demux flowing rather than letting an unlinked pad kill it.
             fs = Gst.ElementFactory.make("fakesink", None)
             fs.set_property("sync", False)
             fs.set_property("async", False)
@@ -75,8 +84,8 @@ def _on_demux_pad(demux, pad, st):
 
 
 def _on_demux_pad_removed(_demux, pad, st):
-    """Retire that pad's reader (tsdemux re-adds pads on a PMT change), off
-    the streaming thread: set to NULL and removed from the pipeline."""
+    """Retire that pad's reader (the demux re-adds its pads on a program change),
+    off the streaming thread: set to NULL and removed from the pipeline."""
     elements = st["readers"].pop(pad.get_name(), None)
     if not elements:
         return
@@ -101,18 +110,18 @@ def _on_cue_sample(sink, st):
     if rel is None:
         return Gst.FlowReturn.OK
     now = rt.house_now_ms(st["pipe"])
-    key = klv_key(data)
-    pts = rt.pts_ms(buf, Gst)
-    t0, source = cue_t0(st["index"].lookup(key, now), pts, now)
+    t0, source = cue_t0(rt.pts_ms(buf, Gst), now)
     if t0 is not None:
-        st["cues"].add(absolute_cue(rel, t0)._replace(key=key, src=source), now)
+        st["cues"].add(absolute_cue(rel, t0)._replace(key=klv_key(data), src=source, at=now), now)
     return Gst.FlowReturn.OK
 
 
 def show_line(text, cue, t_ms, now_ms):
     """The `show` trace: cueLate = frame − cue start, cueLag = now − cue start,
-    frameLag = now − frame."""
+    frameLag = now − frame, margin = now − the cue's arrival (its wait for the frame)."""
     lags = "" if now_ms is None else f" cueLag={now_ms - cue.start:.0f} frameLag={now_ms - t_ms:.0f}"
+    if now_ms is not None and cue.at is not None:
+        lags += f" margin={now_ms - cue.at:.0f}"
     return (f"show {text.replace(chr(10), ' / ')[:60]!r} cueLate={t_ms - cue.start:.0f}"
             f"{lags} t0src={cue.src}")
 

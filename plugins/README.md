@@ -2794,29 +2794,19 @@ subtitle branch in an `appsink` that receives one `text/x-raw` buffer per cue
 egress (a `video/mpegts` appsrc — the bridge packs each cue's TS itself, no
 mpegtsmux), and put the pairs on the description as `runnerHooks:
 [subtitleRunnerHook({ pay: [{appsink, appsrc, pid: subtitleStreamPid(i),
-holdMs, label}], sourceDemux })]` plus `runner: 'python'` (the bridge is a
+holdMs, label}] })]` plus `runner: 'python'` (the bridge is a
 python-only hook by decision). The
-bridge starts each cue at its CONTENT time — the text buffer's PTS, which
-`sourceDemux` (the tsdemux the text comes from) has had retimed onto the bus
-chunk stamps; house-now when that PTS is missing or > 10 s off — and puts
-every send (first + a re-send every 2 s for late joiners) on PES PTS = cue
-start with a `0 --> hold` block, so the identity egress stamp IS the content
+bridge starts each cue at its CONTENT time — the text buffer's PTS, which is
+its source PES's time when the text comes off `mrtsdemux` (the formula, PES −
+1 h; `teletextdec` stamps a page with the PTS of the PES that completed it,
+house-clock WI-P3-8); house-now when that PTS is missing or > 10 s off — and
+puts every send (first + a re-send every 2 s for late joiners) on PES PTS =
+cue start, the source PES's to the tick, with a `0 --> hold` block, so the
+identity egress stamp IS the content
 time (ADR-0016 amendment 2026-10-09). It reports each cue on the
 `subtitle:cue` plugin-event channel (`{label, text, startMs, lateMs, count}`)
 for status. Give the output port `streamInfo: { media: 'subtitle', codec: 'webvtt',
 language }`.
-
-The `sourceDemux` retime walks every bus chunk of the source program, so that
-walk is native: `py/subtitle_native.py` loads `libgstmrpeshouse.so`
-(`mpegts-core/native/mrpeshouse`: the plugins tree first, then
-`$MR_LIBEXEC_DIR` or `/usr/libexec/media-router` + `/mpegts-core/`, once per
-process), splices `mrpeshouse` between the tsdemux and its upstream peer and
-fills the join index from its `pes-house(pid, pts90k, sha1, house_ns)`
-signal. Without the `.so` (or on a failed load/splice, or with
-`MR_SUBTITLE_NATIVE_RETIME=0`) the python chunk probe — the element's spec —
-runs instead. Journal: `[subtitle_bridge] retime source: native mrpeshouse`
-or `… python probe`; the element's `hits` / `misses` / `resyncs` properties
-count placed PES, unplaced PES and dropped mappings.
 
 **Rendering subtitles** (reference: `video-player`, `transcoder`): copy
 `SUBTITLE_INPUT_PORT` into your ports (a `subtitles-in` bus input), copy
@@ -2827,16 +2817,25 @@ see `video-player/engine/subtitleManifest.test.ts`). In `buildPipeline`, when
 take `subtitleRenderPlan(source, config)`: splice its `overlayElement` into
 your video path AFTER `videoconvert`, append its `inputFragment` as a separate
 fragment, and put its `runnerHooks` and `runner` (`'python'` — the bridge is
-python-only by decision, ADR-0016) on the description. Live look
+python-only by decision, ADR-0016) on the description. To hold the video for
+late cues (the transcoder's burn-in, house-clock WI-P3-13), pass `{ aligner }`
+as its third argument and put `mralignwatch name=… aligner=<that name>
+input=video max-size-bytes=…` on your compressed video before the decoder: the
+bridge then reads each cue pad through `mralignwatch aligner=<that name>
+input=cues sparse=true` in place of a queue, so the video leaves at its time
+plus the cue path's measured lateness and each cue reaches the bridge ahead of
+its frame by the decode latency; answer `alignerInputOf` for the two labels
+(the transcoder's). Live look
 changes: `subtitleOverlayLiveUpdates(changes, config)`
 → `setElementProperty(overlayName, property, value)`. Do NOT link the
 textoverlay text pad — the bridge sets the element's `text` property from a
 probe on its video sink pad, frame-accurate against the stamped timeline (the
-text pad's window semantics flash or block; see the ADR). A cue anchors on the
-house time the bus chunk stamps give its PES (`subtitle_stamp_model.StampModel`,
-read on the demux sink pad), not on tsdemux's PTS, which wanders on a sparse
-KLV-only TS; journal lines `[subtitle_bridge] show '…' cueLate=… cueLag=…
-frameLag=… t0src=chunk|pts|now`. `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
+text pad's window semantics flash or block; see the ADR). A cue anchors on its
+PES time, the PTS `mrtsdemux media=private` gives it on the formula (PES − 1 h),
+or on its arrival when that PTS is over 10 s from house now (house-clock
+WI-P3-7); journal lines `[subtitle_bridge] show '…' cueLate=… cueLag=…
+frameLag=… margin=… t0src=pts|now` (margin: how long the cue waited in the
+bridge for its frame). `MR_SUBTITLE_EGRESS_TRACE=1` in the engine's
 environment adds an `egress <label> start= src=+ms tee=+ms` line per produced
 cue (wall-clock probes on the pay appsrc and the bus tee; off by default).
 

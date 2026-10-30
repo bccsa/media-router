@@ -1,11 +1,10 @@
 """Bus chunks → per-PES house time for the subtitle bridge: a 188-byte TS walk,
 a PES assembler that gives each private PES the house time of the chunk it
-began in (`subtitle_stamp_model`), and the small LRU the bridge joins demuxed
-buffers through. Pure stdlib. ADR-0016 amendment 2026-10-09. `PesStamper` is
-the spec of the native walk (mpegts-core/native/mrpeshouse/pes_walk.cpp).
+began in (`subtitle_stamp_model`), and the small LRU the producer's retime joined
+demuxed buffers through until WI-P3-8. Pure stdlib. ADR-0016 amendment 2026-10-09.
+`PesStamper` is the spec of the native walk (mpegts-core/native/mrpeshouse/pes_walk.cpp).
 """
 import collections
-import hashlib
 import threading
 
 from subtitle_stamp_model import StampModel, chunk_reference
@@ -116,29 +115,6 @@ class PesStamper:
             done.append((pid, rec))
         elif len(rec[2]) > MAX_PES_BYTES:
             self._open.pop(pid, None)            # lost its end: drop, never grow
-
-
-def klv_span(data):
-    """The KLV triplet at the start of `data` (16-byte key + BER length +
-    value), or `data` itself when it does not parse — the join key ignores
-    anything a demuxer might append."""
-    data = bytes(data)
-    i = 16
-    if len(data) <= i:
-        return data
-    n = data[i]
-    i += 1
-    if n & 0x80:
-        k = n & 0x7F
-        if k == 0 or k > 4 or i + k > len(data):
-            return data
-        n = int.from_bytes(data[i:i + k], "big")
-        i += k
-    return data[:i + n] if i + n <= len(data) else data
-
-
-def payload_key(data):
-    return hashlib.sha1(bytes(data)).digest()
 
 
 class StampIndex:

@@ -4,6 +4,8 @@
 The VECTOR_HEX / CLEAR_HEX bytes are the same ones pinned in
 engine/subtitleCue.test.ts — the two encoders must agree byte for byte.
 """
+import hashlib
+
 import subtitle_klv as k
 
 
@@ -51,4 +53,14 @@ try:
 except ValueError:
     check("oversize raises", True)
 check("pid scheme", k.stream_pid(0) == 0x180 and k.stream_pid(7) == 0x187)
+
+# The cue key (moved from subtitle_ts, WI-P3-7): the triplet's bytes, hashed.
+cue, bad_ber = k.encode_cue(0, 3000, "Hello"), k.KEY + bytes([0x85]) + b"x" * 9
+check("klv span ignores trailing bytes", k.klv_span(cue + b"\x00\x00") == cue and k.klv_span(cue) == cue)
+check("klv span reads a long-form BER length", k.klv_span(enc + b"\xff" * 3) == enc)
+check("klv span of junk, a cut triplet or a bad length is the bytes",
+      k.klv_span(b"abc") == b"abc" and k.klv_span(cue[:-1]) == cue[:-1] and k.klv_span(bad_ber) == bad_ber)
+check("payload key: the bytes' SHA-1, whatever their type",
+      k.payload_key(cue) == hashlib.sha1(cue).digest() == k.payload_key(bytearray(cue))
+      and k.payload_key(cue) != k.payload_key(cue[:-1]))
 print("all subtitle_klv tests passed")

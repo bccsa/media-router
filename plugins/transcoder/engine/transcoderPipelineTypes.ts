@@ -49,12 +49,10 @@ export interface TranscoderPipelineInputs {
      * overlay controls read. When set, ONE `textoverlay` sits on the shared
      * decoded frame ahead of the tee — every rendition gets the burn-in for
      * the price of one render — and the subtitle TS comes in on its own bus
-     * edge. Absent → pipeline string unchanged.
+     * edge. The video then waits for its cues in the burn-in pace group
+     * (`transcoderSubtitles.ts`). Absent → pipeline string unchanged.
      */
     subtitles?: { port: number; socketPath?: string; config: Record<string, unknown> };
-    /** Video hold in ms (0 = none) so late subtitle cues land on their frame; only
-     *  applied with a subtitle source. Delays this transcoder's output by as much. */
-    subtitleDelayMs?: number;
 }
 
 export interface TranscoderPipelineResult {
