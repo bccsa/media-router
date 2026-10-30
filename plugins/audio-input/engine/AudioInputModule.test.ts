@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { ModuleInstance } from '@media-router/engine';
 import { AudioInputModule } from './AudioInputModule.js';
 
 /**
@@ -138,5 +139,64 @@ describe('AudioInputModule hot-plug recovery', () => {
 
         expect(pw.loadRemapSource).toHaveBeenCalledTimes(2);
         await module.onStop();
+    });
+});
+
+describe('AudioInputModule: a restart applies a re-picked device (B-191)', () => {
+    const OLD = 'alsa_input.usb-Shure_MVX2U';
+    const NEW = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic1__source';
+
+    /** The module under the engine's ModuleInstance on a graph of `present` devices. `repick`
+     *  is a settings patch, then what Restart does to the instance. */
+    function underEngine(present: Set<string>) {
+        const { module, pw, services, config } = createModule(true);
+        pw.hasDevice.mockImplementation((name: string) => present.has(name));
+        pw.getDeviceInfo.mockImplementation((name: string) =>
+            present.has(name) ? { channels: 1, sampleRate: 48000 } : null,
+        );
+        // The PipeWire latency poll reads the real graph: not wanted here.
+        vi.spyOn((module as any).timing, 'watchPipeWire').mockImplementation(() => {});
+        const instance = new ModuleInstance('mic-test-001', 'audio-input', module, config, {
+            ...services,
+            mediaRouter: { releaseAllBusChannelsFor: vi.fn() } as any,
+            processManager: { releaseAll: vi.fn(async () => {}) } as any,
+        });
+        const repick = async (device: string) => {
+            await instance.applyConfigUpdate({ device });
+            await instance.stop();
+            await instance.start();
+        };
+        /** The device of each remap-source loaded so far. */
+        const remapped = () => pw.loadRemapSource.mock.calls.map((c: unknown[]) => c[1]);
+        return { module: module as any, instance, repick, remapped };
+    }
+
+    it('a running input remaps and watches the re-picked device after Restart', async () => {
+        const { module, instance, repick, remapped } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        await repick(NEW);
+        expect(remapped()).toEqual([OLD, NEW]);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('an input waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, repick, remapped } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await tickWatchdog(module);
+        expect(remapped()).toEqual([]);
+        present.add(NEW);
+        await tickWatchdog(module);
+        expect(remapped()).toEqual([NEW]);
+        await instance.stop();
     });
 });

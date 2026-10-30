@@ -730,3 +730,79 @@ describe('AudioInput302mModule on house time (WI-P1-11)', () => {
         );
     });
 });
+
+// --- A restart applies a re-picked device (B-191) ----------------------------------------------
+
+/** Mic 1's device before and after it was re-picked in the field (MR-002). */
+const OLD = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__ssl2_mono_in_S2_0_0__source';
+const NEW = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic2__source';
+
+/** The module under the engine's ModuleInstance on a graph of `present` devices; `built` holds
+ *  each pipeline it starts. `repick` is a settings patch, then what Restart does to the instance. */
+function underEngine(present: Set<string>) {
+    const built: string[] = [];
+    vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+        built.push(this.buildPipeline(this.config)?.pipeline ?? '');
+    });
+    const module = new AudioInput302mModule() as any;
+    module.linkDeps = fakeDeps(2, 2);
+    const services = {
+        instanceId: 'ain-1',
+        pipeWire: {
+            hasDevice: (name: string) => present.has(name),
+            getDeviceInfo: () => ({ channels: 1, sampleRate: 48000 }),
+            releaseAll: vi.fn(async () => {}),
+        },
+        mediaRouter: {
+            assignBusChannel: () => ({ port: 41000 }),
+            releaseAllBusChannelsFor: vi.fn(),
+        },
+        processManager: { releaseAll: vi.fn(async () => {}) },
+        deviceProviders: {},
+    } as any;
+    const config = { device: OLD, channels: 1 };
+    const instance = new ModuleInstance('ain-1', 'audio-input-302m', module, config, services);
+    const repick = async (device: string) => {
+        await instance.applyConfigUpdate({ device });
+        await instance.stop();
+        await instance.start();
+    };
+    return { module, instance, built, repick };
+}
+
+describe('AudioInput302mModule: a restart applies a re-picked device (B-191)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('a running capture captures and watches the re-picked device after Restart', async () => {
+        const { module, instance, built, repick } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        expect(built[0]).toContain(`pipewiresrc target-object=${OLD} `);
+        await repick(NEW);
+        expect(built).toHaveLength(2);
+        expect(built[1]).toContain(`pipewiresrc target-object=${NEW} `);
+        expect(module.linkPlan.deviceNode).toBe(NEW);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('a capture waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, built, repick } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built).toEqual([]);
+        present.add(NEW);
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(built[0]).toContain(`pipewiresrc target-object=${NEW} `);
+        await instance.stop();
+    });
+});

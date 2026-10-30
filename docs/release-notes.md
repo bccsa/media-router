@@ -476,6 +476,15 @@ elements" below do not start.
   Output it fed then showed "Waiting for upstream module(s)" and sent nothing
   until it was restarted by hand. Fixed: a restarted module takes over each of
   its connections as soon as its previous run lets go of it.
+- **Restart applies a module's changed settings.** Up to v2.0.0.100, a device
+  picked again for an Audio Input (302M), Audio Output (302M), Audio Input or
+  Audio Output was stored and shown, but Restart, or Disable then Enable, did
+  not fully apply it: the module still watched its old device for unplugging
+  and plugging in, one waiting for its device went on showing "Audio device …
+  not connected — waiting for hot-plug" with the old name, and an Audio Input
+  or Audio Output stayed on the old device. Only stopping and starting the
+  engine applied it. Fixed: Restart, and Disable then Enable, apply every
+  setting changed since the module last started, on every module.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

@@ -122,7 +122,9 @@ export class ModuleInstance extends EventEmitter {
         if (this._running) return;
         try {
             await this.beforeStart();
-            if (!this._initialized) {
+            // Plugins copy settings in onInit (an audio module's device): a start with a change
+            // pending a restart initialises the plugin again from the current config (B-191).
+            if (!this._initialized || this._pendingRestart) {
                 await this.plugin.onInit(this.config, this.services ?? undefined);
                 this._initialized = true;
             }

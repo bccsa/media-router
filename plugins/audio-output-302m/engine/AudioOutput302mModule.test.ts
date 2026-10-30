@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { GstPluginBase, ModuleInstance } from '@media-router/engine';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 
 function makeModule(
@@ -345,5 +346,90 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 200000000);
         await module.onLiveConfigUpdate({ lipSyncMs: 50 });
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 250000000);
+    });
+});
+
+// --- A restart applies a re-picked device (B-191) ----------------------------------------------
+
+/** Audio Output's device before and after it was re-picked in the field (MR-002). */
+const OLD = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__hw_S2__sink';
+const NEW = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__Line__sink';
+
+/** The module under the engine's ModuleInstance on a graph of `present` devices, one source
+ *  wired; `built` holds each pipeline it starts. `repick` is a settings patch, then Restart. */
+function underEngine(present: Set<string>) {
+    const built: string[] = [];
+    vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+        built.push(this.buildPipeline(this.config)?.pipeline ?? '');
+    });
+    const module = new AudioOutput302mModule() as any;
+    const source = {
+        port: 40100,
+        connectionId: 'c-0',
+        sourceModuleId: 'src-0',
+        sourcePortId: 'out-0',
+        sinkPortId: 'audio-in',
+        streamType: 'audio/302m',
+        socketPath: '/tmp/mr-bus-40100-x.sock',
+    };
+    const services = {
+        instanceId: 'aout-1',
+        pipeWire: {
+            hasDevice: (name: string) => present.has(name),
+            getDeviceInfo: () => ({ channels: 2, sampleRate: 48000 }),
+            releaseAll: vi.fn(async () => {}),
+        },
+        mediaRouter: { getModuleBusSources: () => [source], releaseAllBusChannelsFor: vi.fn() },
+        processManager: { releaseAll: vi.fn(async () => {}) },
+        deviceProviders: {},
+    } as any;
+    const instance = new ModuleInstance(
+        'aout-1',
+        'audio-output-302m',
+        module,
+        { device: OLD },
+        services,
+    );
+    const repick = async (device: string) => {
+        await instance.applyConfigUpdate({ device });
+        await instance.stop();
+        await instance.start();
+    };
+    return { module, instance, built, repick };
+}
+
+describe('AudioOutput302mModule: a restart applies a re-picked device (B-191)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('a running output plays to and watches the re-picked device after Restart', async () => {
+        const { module, instance, built, repick } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        expect(built[0]).toContain(`pulsesink name=sink device=${OLD} `);
+        await repick(NEW);
+        expect(built).toHaveLength(2);
+        expect(built[1]).toContain(`pulsesink name=sink device=${NEW} `);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('an output waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, built, repick } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built).toEqual([]);
+        present.add(NEW);
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(built[0]).toContain(`pulsesink name=sink device=${NEW} `);
+        await instance.stop();
     });
 });

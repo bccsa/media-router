@@ -805,6 +805,11 @@ Your module class extends `GstPluginBase` which handles GStreamer child process 
 onInit(config, services) → onStart() → [running] → onStop() → onDestroy()
 ```
 
+When a setting that needs a restart has changed, the next start (Restart, or Disable then Enable)
+runs `onInit` again with the current config before `onStart` (B-191), so a value copied in `onInit`
+(a device name) follows the edit. Allocate nothing in `onInit` that a second call would leak:
+processes, timers and listeners belong in `onStart`/`onStop`.
+
 ### Plugin Architecture Variants
 
 Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three architectural patterns. Pick the one that fits, then copy the matching starter (see "Picking a Starting Point" above).

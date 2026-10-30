@@ -126,7 +126,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         this.config = config;
         this.services = services ?? null;
-        if (services?.instanceId) {
+        // Once per instance: a logger pipes a stream into stderr for good, and a restart that
+        // applies changed settings runs onInit again (B-191).
+        if (services?.instanceId && this.log === defaultLog) {
             this.log = createLogger(`Plugin:${services.instanceId}`);
         }
     }

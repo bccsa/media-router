@@ -99,6 +99,43 @@ describe('ModuleInstance', () => {
         expect(plugin.onStart).toHaveBeenCalledTimes(2);
     });
 
+    it('a restart re-runs onInit with the current config once a change is pending it (B-191)', async () => {
+        plugin.getLiveUpdatableParams.mockReturnValue(['volume']);
+        await instance.start();
+        // A live change was applied live: no re-init.
+        await instance.applyConfigUpdate({ volume: 60 });
+        await instance.stop();
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(1);
+
+        await instance.applyConfigUpdate({ device: 'hw:2' });
+        await instance.stop();
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(2);
+        expect(plugin.onInit).toHaveBeenLastCalledWith({ volume: 60, device: 'hw:2' }, undefined);
+        expect(plugin.onInit.mock.invocationCallOrder[1]).toBeLessThan(
+            plugin.onStart.mock.invocationCallOrder[2],
+        );
+        expect(instance.getState().pendingRestart).toBe(false);
+
+        // Applied: the next restart has nothing pending.
+        await instance.stop();
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(2);
+    });
+
+    it('a change stored while stopped (a disabled module) re-runs onInit at its next start (B-191)', async () => {
+        await instance.start();
+        await instance.stop();
+        await instance.applyConfigUpdate({ device: 'hw:3' });
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(2);
+        expect(plugin.onInit).toHaveBeenLastCalledWith(
+            expect.objectContaining({ device: 'hw:3' }),
+            undefined,
+        );
+    });
+
     it('start() emits stateChange', async () => {
         const spy = vi.fn();
         instance.on('stateChange', spy);

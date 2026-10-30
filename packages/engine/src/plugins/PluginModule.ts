@@ -98,7 +98,10 @@ export interface ModuleServices extends EngineServices {
  * Interface that every plugin's engine module must implement.
  */
 export interface PluginModule {
-    /** Initialise with config and engine services. Called once before start. */
+    /**
+     * Initialise with config and engine services. Called before the first start, and again before a
+     * start with a setting change pending a restart (B-191): allocate nothing a second call leaks.
+     */
     onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void>;
     /** Start the module (begin processing). */
     onStart(): Promise<void>;
