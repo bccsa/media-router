@@ -2,7 +2,8 @@
  * count to the buffer PTS and commands GstAudioResampler's ratio: a house-rate counter, PTS_out(m) = T0 +
  * m / out_rate. Modes (S17): capture; decode (`bypass-below-ppm`: passed unchanged until the source is
  * measured off house time); device (`device-sink`: the sink's clock in the ratio; with decode, the product).
- * Capture with cycle-input (a pipewiresrc, B-180): lost cycles jump the output by their length, no relock. */
+ * Capture with cycle-input (a pipewiresrc, B-180): lost cycles, and the time a restarted driver lost
+ * (B-181), jump the output by their length, no relock. */
 #include <gst/audio/gstaudiobasesink.h>
 #include <gst/base/gstbasetransform.h>
 
@@ -994,9 +995,11 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
         gobject_class, PROP_CYCLE_INPUT,
         g_param_spec_boolean("cycle-input", "Cycle input",
                              "The input is one buffer per graph cycle stamped with the cycle's "
-                             "time (pipewiresrc): whole cycles missing at a steady size are a gap "
-                             "of their length, a cycle-size change moves the stamps only; neither "
-                             "relocks. Capture mode only. Applies at the next start or caps change.",
+                             "time (pipewiresrc): whole cycles missing at a steady size, or a rise "
+                             "of the stamps past the lock's step (a driver restarted after a loss), "
+                             "are a gap of their length, a cycle-size change moves the stamps only; "
+                             "neither relocks. Capture mode only. Applies at the next start or caps "
+                             "change.",
                              FALSE, at_start));
     g_object_class_install_property(
         gobject_class, PROP_STATS,

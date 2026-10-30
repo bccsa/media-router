@@ -28,8 +28,15 @@ async function main(): Promise<void> {
     }
     const cfg = JSON.parse(raw) as RunnerConfig;
 
-    const { Extractor, makeOutputMode, DEFAULT_ABR_CONFIG, UNSTABLE_NETWORK_ABR_CONFIG } =
-        await import('hls-pipe');
+    const {
+        Extractor,
+        NodeLoader,
+        isMasterPlaylist,
+        parseMaster,
+        makeOutputMode,
+        DEFAULT_ABR_CONFIG,
+        UNSTABLE_NETWORK_ABR_CONFIG,
+    } = await import('hls-pipe');
 
     // Paced sink — releases each segment's datagrams at the media rate so
     // the sidecar's per-consumer queues don't overflow.
@@ -70,18 +77,6 @@ async function main(): Promise<void> {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
 
-    const options: ExtractorOptions = {
-        url: cfg.url,
-        sink,
-        signal: abort.signal,
-        outputMode: makeOutputMode('ts-canonical'),
-        ...buildExtractorOverrides(cfg, {
-            default: DEFAULT_ABR_CONFIG,
-            unstable: UNSTABLE_NETWORK_ABR_CONFIG,
-        }),
-        log: (msg: string) => process.stderr.write(`${msg}\n`),
-    };
-
     let lastBytes = 0;
     let lastAt = Date.now();
     statsTimer = setInterval(() => {
@@ -95,7 +90,33 @@ async function main(): Promise<void> {
     }, 2000);
     statsTimer.unref();
 
+    const log = (msg: string): void => {
+        process.stderr.write(`${msg}\n`);
+    };
     try {
+        // Read at each start: a master's audio renditions are muxed in, a media
+        // playlist's segments keep their own audio (B-183).
+        const loader = new NodeLoader();
+        const root = await loader.fetch({ url: cfg.url, kind: 'manifest', signal: abort.signal });
+        const text = Buffer.from(root.body).toString('utf8');
+        const master = isMasterPlaylist(text) ? parseMaster(text, root.url) : undefined;
+        const overrides = buildExtractorOverrides(
+            cfg,
+            { default: DEFAULT_ABR_CONFIG, unstable: UNSTABLE_NETWORK_ABR_CONFIG },
+            master,
+        );
+        if (!overrides.inlineAudioLanguages) {
+            log('no audio renditions: the segments pass through whole, with their own audio');
+        }
+        const options: ExtractorOptions = {
+            url: cfg.url,
+            sink,
+            loader,
+            signal: abort.signal,
+            outputMode: makeOutputMode('ts-canonical'),
+            ...overrides,
+            log,
+        };
         await new Extractor(options).run();
         // Shutting down: the sink is already abandoned, so end() would be a
         // no-op — but skip it explicitly, it is the tail-drain that used to

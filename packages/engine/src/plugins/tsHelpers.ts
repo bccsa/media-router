@@ -10,6 +10,7 @@
  */
 
 import { buildBusSrc } from './busHelpers.js';
+import { tsQueueByteCap } from './queueBounds.js';
 
 /** Default `mpegtsmux alignment`. 7 = pack 7 TS packets per buffer (1316 B). */
 export const DEFAULT_MPEGTS_ALIGNMENT = 7;
@@ -119,6 +120,25 @@ export function buildBackpressureQueue(bufferMs: number, maxBytes = 0): string {
     const clamped = Math.max(20, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
     return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=${maxBytes}`;
+}
+
+/** `name=` of a network ingest's queue; the native runner reports the sheds of a queue so named. */
+export const INGEST_QUEUE_NAME = 'ingestq';
+/** The plugin event of one episode of that queue shedding (`shed_watch.cpp`). */
+export const QUEUE_SHED_EVENT = 'queue_shed';
+/** Its bound: this long at 64 Mbit/s, 800 ms at 40 Mbit/s (B-182). */
+export const INGEST_QUEUE_MS = 500;
+
+/**
+ * The queue between a network ingest's restamp and its bus sink (B-182). Leaky, so a stall never
+ * holds the transport's thread the restamp reads arrival on; bounded by bytes alone, as its time
+ * level is the transport's own stamps (srtsrc: send time) and 200 buffers are 75 ms at 28 Mbit/s.
+ */
+export function buildIngestQueue(): string {
+    return (
+        `queue name=${INGEST_QUEUE_NAME} leaky=2 max-size-time=0 max-size-buffers=0 ` +
+        `max-size-bytes=${tsQueueByteCap(INGEST_QUEUE_MS)} flush-on-eos=true`
+    );
 }
 
 /**

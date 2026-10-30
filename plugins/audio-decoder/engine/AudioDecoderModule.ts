@@ -13,6 +13,7 @@ import {
     probeMpegTsStream,
     type ProbeResult,
 } from '@media-router/engine';
+import { TimelineSettleRestart } from './timelineSettleRestart.js';
 
 /**
  * `pulsesink buffer-time` (µs) this leg runs, and the
@@ -107,6 +108,11 @@ export class AudioDecoderModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'syncOffsetMs'];
     /** Probed stream info — plugin decides what to do with it. */
     private probeResult: ProbeResult | null = null;
+    /** FF9: relaunch this pipeline once its source settles after a rebase or stall-resume. */
+    private readonly settleRestart = new TimelineSettleRestart({
+        pipeline: () => this.childProcess,
+        log: () => this.log,
+    });
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -163,9 +169,30 @@ export class AudioDecoderModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        this.settleRestart.cancel();
         await super.onStop();
         this.probeResult = null;
         // PipeWire cleanup is automatic via ownership tracking
+    }
+
+    async onDestroy(): Promise<void> {
+        this.settleRestart.cancel();
+        await super.onDestroy();
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        this.settleRestart.onPluginEvent(channel, payload);
+    }
+
+    /** Every reading feeds the stall-resume check: the time-sync contract is always on. */
+    protected setVuData(data: number[]): void {
+        super.setVuData(data);
+        this.settleRestart.onVu(data);
+    }
+
+    /** Every PLAYING is a fresh pipeline (no rebase pad offset): nothing left to relaunch. */
+    protected onPipelinePlaying(): void {
+        this.settleRestart.cancel();
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {

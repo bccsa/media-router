@@ -6,6 +6,7 @@ import {
     SMOOTHING_COOLDOWN_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
+    buildIngestQueue,
     buildRestamp,
     isIngestTimingSection,
     restampBusReports,
@@ -166,10 +167,11 @@ export class SrtInputModule extends GstPluginBase {
             pidTrimsMs: config[PID_TRIMS_KEY],
             smoothingCooldownMin: config[SMOOTHING_COOLDOWN_KEY],
         });
+        // A queue by bytes: srtsrc's stamps are send times, which step past any time bound (B-182).
         const pipeline = [
             `srtsrc name=src uri="${uri}" auto-reconnect=false${keepListening}`,
             restamp,
-            'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
+            buildIngestQueue(),
             buildBusSink(udpPort),
         ].join(' ! ');
 

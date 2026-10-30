@@ -28,9 +28,9 @@ struct AsrcServoConfig {
     int64_t bypass_phase_ns = 1000000;
     int64_t bypass_hold_ns = 10000000000LL;
     bool device = false;   // the ratio carries a device term (push's device_ppb), labels device time
-    // Capture mode, one buffer per graph cycle stamped with the cycle's time (pipewiresrc, B-180):
-    // whole cycles missing at a steady cycle size are lost samples, a cycle-size change moves the
-    // stamps only. The decode and device modes ignore it.
+    // Capture mode, one buffer per graph cycle stamped with the cycle's time (pipewiresrc, B-180): whole cycles
+    // missing at a steady cycle size are lost samples, and so is a rise the lock would relock on (its driver
+    // restarted, B-181); a cycle-size change moves the stamps only. The decode and device modes ignore it.
     bool cycle_input = false;
 };
 
@@ -38,11 +38,11 @@ struct AsrcServoConfig {
 AsrcServoConfig asrc_decode_config(int64_t bypass_ppb, bool device);
 
 struct AsrcEvent {
-    // gap: lost cycles, the output jumps their length; shift: the stamps moved, the samples did not.
+    // gap: lost cycles or time, the output jumps their length; shift: the stamps moved, the samples did not.
     enum class Kind { relock, ratio_out_of_bounds, engaged, gap, shift };
     Kind kind;
     // relock: "discont" or "envelope-step" (decode and device modes also "gap"); engaged: "ratio"
-    // or "phase"; gap: "lost-cycle" or "reverted"; shift: "cycle-size"; static, "" otherwise.
+    // or "phase"; gap: "lost-cycle", "lost-time" or "reverted"; shift: "cycle-size"; static, "" otherwise.
     const char* reason;
     int64_t house_ns;     // relock: the new T0; gap: the next output's PTS; else the buffer's PTS
     // relock, gap: the output PTS jump (ns); out of bounds: the device rate fit (ppb); engaged: the
@@ -62,7 +62,7 @@ int64_t asrc_rate_of(int64_t eps_ppb);
 // Per buffer: push() before resampling (rates, frames to drop), produced() after. Capture mode:
 // the resampler is never reset; what it holds back is a new T0's first output. Steering only
 // moves the ratio; a relock onto a floor below the last output drops that overlap. With
-// cycle_input a lost cycle jumps the output and a stamp shift moves nothing; the lock keeps its line.
+// cycle_input lost cycles or time jump the output and a stamp shift moves nothing; the lock keeps its line.
 class AsrcServo {
   public:
     // The lock's phase. Its lost needs a tick without samples, and the servo only
@@ -76,7 +76,7 @@ class AsrcServo {
         int32_t out_rate;
         bool relock;        // this buffer opened an epoch: its first output is at T0, DISCONT
         uint32_t skip;      // frames to drop from the buffer's head, unresampled: a relock's overlap
-        bool gap = false;   // lost cycles before this buffer: its first output jumps, DISCONT, same epoch
+        bool gap = false;   // lost cycles or time before this buffer: its output jumps, DISCONT, same epoch
         // Decode and device modes: pass leaves the buffer unchanged (zero copy); engage primes
         // the resampler with what passed (reset, then the history fed, as many outputs dropped as
         // frames fed); drain: end_epoch() ran here, so drain the tail first (tail_pts_at), reset.
@@ -90,7 +90,7 @@ class AsrcServo {
         uint64_t in_frames = 0, out_frames = 0;
         uint64_t discont_in = 0;    // DISCONT flags after the first buffer
         uint64_t dropped_frames = 0;   // input frames skipped as relock overlap
-        uint64_t gaps = 0;          // cycle_input: lost-cycle gaps the output jumped
+        uint64_t gaps = 0;          // cycle_input: gaps the output jumped (lost cycles or time)
         int64_t lost_frames = 0;    // ... the input frames they lost (reverted ones taken back)
         Mode mode = Mode::capture;
         int64_t source_ppb = 0;     // the source clock against house (asrc_rate_of); 0 without a lock
@@ -103,6 +103,9 @@ class AsrcServo {
     // cycle_input: a gap is whole cycles to within this, or an eighth of a cycle when that is
     // less: the jitter of a driver's wakeup, never a share of a cycle (B-180).
     static constexpr int64_t CYCLE_TOL_NS = 2000000;
+    // cycle_input: the longest loss the output jumps at once (every product stays in 64 bits); a
+    // longer one is the lock's.
+    static constexpr int64_t LOST_MAX_NS = 1000 * DROP_MAX_NS;
 
     // Rates in Hz, clamped to [1000, 768000] so every product fits 64 bits.
     AsrcServo(int32_t in_hz, int32_t out_hz, const AsrcServoConfig& cfg = AsrcServoConfig());
@@ -147,7 +150,8 @@ class AsrcServo {
     void engage(int64_t pts, const char* why, Command* cmd);
     void check_bounds(int64_t h);
     bool check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns);
-    void lose(int64_t frames);
+    int64_t frames_in(int64_t ns) const;
+    void lose(int64_t frames, bool whole);
     bool fits(int64_t dur_ns, uint32_t frames) const;
 
     AsrcServoConfig cfg_;

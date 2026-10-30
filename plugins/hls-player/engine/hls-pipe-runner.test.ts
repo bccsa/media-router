@@ -42,9 +42,9 @@ const SEGMENT_FIXTURE = join(
 );
 
 /**
- * A master with one variant and one audio rendition — the shape the module
- * always produces (`inlineAudio: []` → 'all', which hls-pipe only accepts on a
- * master). Both media playlists are 60 × 2 s, i.e. 120 s of media: double the
+ * A master with one variant and one audio rendition — the inline-audio path
+ * (`inlineAudio: []` → 'all'; hls-pipe-runner.playback.test.ts plays the other
+ * shapes). Both media playlists are 60 × 2 s, i.e. 120 s of media: double the
  * sink's 60 s read-ahead budget, so the extractor is guaranteed to park in
  * `write` roughly half way through and stay there (the paced drain only
  * releases 2 s of media per 2 s of wall clock).

@@ -10,6 +10,7 @@ import {
     ModuleInstance,
     PluginLoader,
     REDACTED,
+    buildIngestQueue,
     quoteGstString,
     redactSecrets,
 } from '@media-router/engine';
@@ -203,10 +204,15 @@ describe('SrtInputModule.buildPipeline', () => {
         expect(desc!.pipeline).not.toContain('keep-listening');
     });
 
-    it('sets the leaky queue + correct restart backoff window', () => {
+    it('sets the ingest queue + correct restart backoff window', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('queue leaky=2');
+        // Leaky by bytes alone (B-182): no time bound on srtsrc's send-time stamps, no 200 buffers.
+        expect(desc!.pipeline).toContain(
+            ' ! queue name=ingestq leaky=2 max-size-time=0 max-size-buffers=0 ' +
+                'max-size-bytes=4000000 flush-on-eos=true ! capssetter ',
+        );
+        expect(desc!.pipeline).toContain(` ! ${buildIngestQueue()} ! `);
         expect(desc!.restartOnError).toBe(true);
         expect(desc!.restartBackoffMs).toEqual({ baseMs: 5000, maxMs: 10000 });
     });
@@ -332,7 +338,7 @@ describe('SrtInputModule on the restamp (WI-P1-10)', () => {
         ]);
         expect(desc!.pipeline).toContain(
             ' ! mrtsrestamp name=restamp clock-mode=stc smoothing-cooldown-ns=300000000000 ' +
-                'offset-ns=0 ! queue leaky=2 ',
+                'offset-ns=0 ! queue name=ingestq leaky=2 ',
         );
         expect(desc!.busReports).toEqual([
             { element: 'restamp', structure: 'mrtsrestamp-stats' },

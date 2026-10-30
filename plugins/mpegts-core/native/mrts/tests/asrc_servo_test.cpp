@@ -788,6 +788,55 @@ void test_cycle_basics() {
         CHECK("stamps jittering 1.5 ms (under 2 ms): no gap", g.sv.take_events().empty() && g.sv.stats().gaps == 0);
     }
     {
+        // B-181: a driver restarted after a loss (an xrun's recovery) starts its cycles afresh, so the
+        // stamps rise by the time lost, no whole cycle. Past the lock's step that is lost time.
+        Feed f(true);
+        for (int i = 0; i < 10; i++) f.push(H0 + i * Q2048, 2048);
+        const int64_t end = f.sv.next_pts();
+        const AsrcServo::Command c = f.push(H0 + 10 * Q2048 + 60 * MS, 2048);
+        const std::vector<AsrcEvent> ev = f.sv.take_events();
+        CHECK("a rise of no whole cycle past the lock's step (+60 ms): one gap (lost-time, 2880 frames), no relock,"
+              " the output jumps 60 ms to a frame, same T0",
+              ev.size() == 1 && ev[0].kind == AsrcEvent::Kind::gap && !std::strcmp(ev[0].reason, "lost-time") &&
+                  ev[0].lost_frames == 2880 && c.gap && !c.relock && c.skip == 0 && f.sv.stats().relocks == 0 &&
+                  iabs(f.label - end - 60 * MS) <= FRAME_NS && ev[0].value == f.label - end && f.sv.t0() == H0);
+        const int64_t next = f.sv.next_pts();
+        f.push(H0 + 11 * Q2048 + 60 * MS, 2048);
+        CHECK("... then on: contiguous labels, no event, the phase within a frame",
+              f.label == next && f.sv.take_events().empty() && iabs(f.sv.stats().phase_err_ns) <= FRAME_NS);
+        Feed g(true);
+        for (int i = 0; i < 10; i++) g.push(H0 + i * Q2048, 2048);
+        const AsrcServo::Command d = g.push(H0 + 10 * Q2048 + 49 * MS, 2048);
+        CHECK("under the lock's step (+49 ms, no whole cycle): the lock's, as B-180 left it",
+              !d.gap && !d.relock && g.sv.take_events().empty() && g.sv.stats().gaps == 0);
+        Feed h(true);
+        for (int i = 0; i < 10; i++) h.push(H0 + i * Q2048, 2048);
+        const int64_t hend = h.sv.next_pts();
+        const AsrcServo::Command e = h.push(H0 + 57 * Q2048, 2048);   // 47 cycles, 2.005 s
+        const std::vector<AsrcEvent> hev = h.sv.take_events();
+        CHECK("47 whole cycles at once (2.005 s, past B-180's 1 s): one gap (lost-cycle, 47 x 2048 frames)",
+              e.gap && hev.size() == 1 && !std::strcmp(hev[0].reason, "lost-cycle") &&
+                  hev[0].lost_frames == 47 * 2048 && iabs(h.label - hend - 47 * Q2048) <= FRAME_NS);
+        Feed k(true);
+        for (int i = 0; i < 10; i++) k.push(H0 + i * Q2048, 2048);
+        k.push(H0 + 10 * Q2048 + 60 * MS, 2048);
+        const AsrcServo::Command r = k.push(H0 + 11 * Q2048, 2048);   // the next back on the grid
+        const std::vector<AsrcEvent> kev = k.sv.take_events();
+        CHECK("lost time undone by the next stamp was a late stamp: reverted (-2880 frames, 60 ms dropped)",
+              kev.size() == 2 && !std::strcmp(kev[1].reason, "reverted") && kev[1].lost_frames == -2880 &&
+                  iabs(kev[1].dropped_ns - 60 * MS) <= FRAME_NS && r.skip == 2048 && !r.relock &&
+                  k.sv.stats().lost_frames == 0 && k.sv.stats().relocks == 0);
+        Feed m(true);
+        for (int i = 0; i < 10; i++) m.push(H0 + i * Q2048, 2048);
+        const AsrcServo::Command fall = m.push(H0 + 10 * Q2048 - 60 * MS, 2048);
+        CHECK("a fall past the lock's step (-60 ms): no gap, the lock's (it relocks on it, as before)",
+              !fall.gap && m.sv.take_events().empty() && m.sv.stats().gaps == 0);
+        Feed a(false);
+        for (int i = 0; i < 10; i++) a.push(H0 + i * Q2048, 2048);
+        const AsrcServo::Command b = a.push(H0 + 10 * Q2048 + 60 * MS, 2048);
+        CHECK("without cycle input the same +60 ms is the lock's: no gap", !b.gap && a.sv.take_events().empty());
+    }
+    {
         // A late stamp: one cycle stamped a cycle late, the next back on time. The gap is taken back
         // and its frames dropped, so the content comes back to the labels it was given.
         Feed f(true);
@@ -848,6 +897,9 @@ struct CycleScenario {
     int64_t jitter_ns = 500 * US;
     int64_t stamp_ns = 0;
     std::vector<int64_t> lost_s;        // device seconds (from its frame 0) of the cycles this one lost
+    // (device ms from its frame 0, frames lost): the driver restarted after them, its cycles afresh
+    std::vector<std::pair<int64_t, int64_t>> restart;
+    int64_t first_step_ns = 0;          // stamps after the first buffer this much later (the start's own)
     bool cycle_input = true;
     int64_t warm_s = 60;                // judged from here on
     uint64_t seed = 1;
@@ -887,7 +939,7 @@ CycleRun run_cycles(const CycleScenario& sc) {
     CycleRun r;
     Fnv f;
     int64_t n = 0, cur = 0, l = 0;
-    size_t next_loss = 0;
+    size_t next_loss = 0, next_restart = 0;
     int64_t next_mark = 0;
     const int64_t total = sc.secs * 48000;
     while (n < total) {
@@ -898,10 +950,18 @@ CycleRun run_cycles(const CycleScenario& sc) {
             lost.push_back({n, l});
             next_loss++;
         }
+        while (next_restart < sc.restart.size() && dev.house(d * SUB) - H0 >= sc.restart[next_restart].first * MS) {
+            l += sc.restart[next_restart].second;   // never captured: the next cycle starts after them
+            d += sc.restart[next_restart].second;
+            lost.push_back({n, l});
+            next_restart++;
+        }
         Lcg g(sc.seed * 1000003 + (uint64_t)(d / CYC));   // the driver's jitter, per cycle
         const int64_t j = sc.jitter_ns > 0 ? (int64_t)(g.next() % (uint64_t)sc.jitter_ns) : 0;
         const int64_t t = dev.house(d * SUB) - H0;
-        const AsrcServo::Command c = sv.push(H0 + t + sc.stamp_ns + j, (uint32_t)CYC, n == 0, 0, CYC * S / 48000);
+        const int64_t step = n > 0 ? sc.first_step_ns : 0;
+        const AsrcServo::Command c =
+            sv.push(H0 + t + sc.stamp_ns + step + j, (uint32_t)CYC, n == 0, 0, CYC * S / 48000);
         if (n == 0) {
             rs.reset(new ModelResampler(c.in_rate, c.out_rate));
             sv.set_delay(ModelResampler::DELAY);
@@ -1067,6 +1127,145 @@ void test_cycle_dev3() {
         CHECK(name, on.gap_at.size() == cp.lost->size() && on.relock_at.empty() && on.oob == 0 &&
                         in_frame(on.err_max, 48000) && on.ratio_dev <= 3000);
     }
+}
+
+// The Pi 4 test box's owner capture on f1cfad60 (DEV4b, 2026-10-27) relocked 62.0 s after its start,
+// jumping 2,014.36 ms: 2.0547 s lost 6-7 s in, the driver's cycles restarting after it. A loss at the
+// start relocks at 54-56 s, at 3 s at 59 s, past 7 s at 63 s.
+constexpr int64_t DEV4B_LOST = 98627;   // 2.0547 s of the device's frames
+constexpr int64_t JITTER_NS = 500 * US; // the scenarios' driver wakeup jitter
+
+void test_cycle_restart() {
+    std::printf("\n  a driver restarted after a loss (B-181): DEV4b's start, 2.0547 s lost 6.4 s in, 90 s\n");
+    CycleScenario sc;
+    sc.secs = 90;
+    sc.warm_s = 0;
+    sc.restart = {{6400, DEV4B_LOST}};
+    const int64_t lost_ns = DEV4B_LOST * S / 48000;
+    sc.cycle_input = false;
+    const CycleRun off = run_cycles(sc);
+    sc.cycle_input = true;
+    const CycleRun on = run_cycles(sc);
+    std::printf("  the lock alone (f1cfad60's path for a rise of no whole cycle): relocks at");
+    for (size_t i = 0; i < off.relock_at.size(); i++)
+        std::printf(" %.3f s (jump %.3f ms)", off.relock_at[i] / 1e9, off.relock_jump[i] / 1e6);
+    std::printf(" (DEV4b: 62.0 s, 2014.36 ms); cycle input: gaps at");
+    for (size_t i = 0; i < on.gap_at.size(); i++)
+        std::printf(" %.3f s (jump %.3f ms)", on.gap_at[i] / 1e9, on.gap_jump[i] / 1e6);
+    std::printf(", relocks %zu, max|e| from the first buffer %.2f us\n", on.relock_at.size(), on.err_max / 1e3);
+    g_all.add((int64_t)off.sum);
+    g_all.add((int64_t)on.sum);
+    CHECK("DEV4b's start, the lock alone: one relock 61.5-62.5 s in, jumping 2,014.37 ms +-1 ms (on the box: 62.0 s,"
+          " 2,014.36 ms)",
+          off.relock_at.size() == 1 && off.relock_at[0] >= 61500 * MS && off.relock_at[0] <= 62500 * MS &&
+              iabs(off.relock_jump[0] - 2014370 * US) <= MS);
+    CHECK("DEV4b's start with cycle input: one gap where the time was lost, its jump the 2.0547 s within the"
+          " driver's jitter; no relock in 90 s",
+          on.gap_at.size() == 1 && on.gap_at[0] >= 6400 * MS && on.gap_at[0] <= 6400 * MS + lost_ns + Q2048 &&
+              iabs(on.gap_jump[0] - lost_ns) <= JITTER_NS && on.relock_at.empty() && on.oob == 0 && on.shifts == 0);
+    CHECK("... labels on capture time from the first buffer: within the driver's jitter, splices left out",
+          on.err_max <= JITTER_NS);
+
+    std::printf("\n  the same on a locked capture (DEV4a's 2.038 s, the build before, from about 18:16:04Z on"
+                " 2026-10-27)\n");
+    CycleScenario lk;
+    lk.secs = 600;
+    lk.restart = {{300000, 97824}};   // 2.038 s
+    const int64_t lk_ns = 97824 * S / 48000;
+    lk.cycle_input = false;
+    const CycleRun loff = run_cycles(lk);
+    lk.cycle_input = true;
+    const CycleRun lon = run_cycles(lk);
+    const int64_t back = lon.err_at.size() > 72 ? lon.err_at[72] : INT64_MAX;   // 360 s: a minute after
+    std::printf("  the lock alone: relocks %zu (first %.2f s, jump %.3f ms); cycle input: gaps %zu (jump %.3f ms),"
+                " relocks %zu, max|e| from 60 s %.2f us, at 360 s %.2f us, |ratio - device| <= %.2f ppm\n",
+                loff.relock_at.size(), loff.relock_at.empty() ? 0.0 : loff.relock_at[0] / 1e9,
+                loff.relock_jump.empty() ? 0.0 : loff.relock_jump[0] / 1e6, lon.gap_at.size(),
+                lon.gap_jump.empty() ? 0.0 : lon.gap_jump[0] / 1e6, lon.relock_at.size(), lon.err_max / 1e3,
+                back / 1e3, lon.ratio_dev / 1e3);
+    g_all.add((int64_t)loff.sum);
+    g_all.add((int64_t)lon.sum);
+    CHECK("a locked capture's 2.038 s loss, the lock alone: a relock 12-14 s after it began (DEV4a: 18:16:16.85Z,"
+          " 2,037.93 ms)",
+          loff.relock_at.size() == 1 && loff.relock_at[0] >= 312 * S && loff.relock_at[0] <= 314 * S &&
+              iabs(loff.relock_jump[0] - lk_ns) <= MS);
+    CHECK("... with cycle input: one gap at once (lost-time, within the jitter), no relock, labels within the jitter"
+          " and within a frame a minute on, the ratio within 25 ppm of the device's (the floor's 20 ppm slew)",
+          lon.gap_at.size() == 1 && lon.gap_at[0] >= 300 * S && lon.gap_at[0] <= 300 * S + lk_ns + Q2048 &&
+              iabs(lon.gap_jump[0] - lk_ns) <= JITTER_NS &&
+              lon.relock_at.empty() && lon.err_max <= JITTER_NS && in_frame(back, 48000) && lon.ratio_dev <= 25000);
+
+    std::printf("\n  two captures of one device through the same restart, the second started 7 s later\n");
+    CycleScenario a, b;
+    a.secs = b.secs = 400;
+    b.start_s = 7;
+    a.restart = b.restart = {{200000, 50000}};   // 1.042 s, no whole cycle
+    const CycleRun ra = run_cycles(a), rb = run_cycles(b);
+    int64_t dmax = 0;
+    for (size_t i = 12; i < std::min(ra.err_at.size(), rb.err_at.size()); i++)
+        dmax = std::max(dmax, iabs(ra.err_at[i] - rb.err_at[i]));
+    std::printf("  a vs b, label - capture time at each 5 s from 60 s: max |difference| %.2f us; gaps %zu / %zu"
+                " (jumps %.6f / %.6f ms), relocks %zu / %zu\n", dmax / 1e3, ra.gap_at.size(), rb.gap_at.size(),
+                ra.gap_jump.empty() ? 0.0 : ra.gap_jump[0] / 1e6, rb.gap_jump.empty() ? 0.0 : rb.gap_jump[0] / 1e6,
+                ra.relock_at.size(), rb.relock_at.size());
+    g_all.add((int64_t)ra.sum);
+    g_all.add((int64_t)rb.sum);
+    CHECK("two captures of one device through one restart: one gap each, the same frames lost, no relock, on one"
+          " house time within a frame",
+          ra.gap_at.size() == 1 && rb.gap_at.size() == 1 && ra.relock_at.empty() && rb.relock_at.empty() &&
+              ra.gap_jump[0] == rb.gap_jump[0] && dmax <= FRAME_NS);
+
+    std::printf("\n  lost time at the nominal rate: a +500 ppm device loses 2 s of its frames (1.999 s of stamps)\n");
+    CycleScenario fast;
+    fast.ppb = 500000;
+    fast.secs = 600;
+    fast.restart = {{300000, 96000}};
+    const CycleRun rf = run_cycles(fast);
+    const int64_t stamps_ns = 96000 * S / 48000 * S / (S + 500000);   // 1.999 s
+    std::printf("  gaps %zu (jump %.3f ms, the stamps' %.3f ms), relocks %zu, out-of-bounds %d\n", rf.gap_at.size(),
+                rf.gap_jump.empty() ? 0.0 : rf.gap_jump[0] / 1e6, stamps_ns / 1e6, rf.relock_at.size(), rf.oob);
+    g_all.add((int64_t)rf.sum);
+    CHECK("lost time is the stamps' own length at the nominal rate, as every capture of the driver counts it: a"
+          " +500 ppm device's 2 s loss jumps 1.999 s; no relock, no out-of-bounds (its 1 ms of rate is the lock's)",
+          rf.gap_at.size() == 1 && iabs(rf.gap_jump[0] - stamps_ns) <= JITTER_NS && rf.relock_at.empty() &&
+              rf.oob == 0);
+
+    std::printf("\n  the capture's own start (dev Pi, a driver the capture starts): the 2nd stamp 13.746 ms after"
+                " the 1st, a 28.9 ms fall\n");
+    CycleScenario st;
+    st.secs = 90;
+    st.first_step_ns = 13746 * US - Q2048;
+    const CycleRun rst = run_cycles(st);
+    g_all.add((int64_t)rst.sum);
+    CHECK("a start's own small fall (-28.9 ms) is the lock's, as before: no gap, no shift, no relock in 90 s",
+          rst.gap_at.empty() && rst.shifts == 0 && rst.relock_at.empty() && rst.oob == 0);
+
+    std::printf("\n  a start whose stream stayed paused after its first buffer (pipewiresrc resumes it at PLAYING) and"
+                " whose idle driver restarted: 0.32 s never captured\n");
+    CycleScenario ps;
+    ps.secs = 90;
+    ps.warm_s = 0;
+    ps.restart = {{1, 15360}};   // 7.5 cycles lost right after the first buffer
+    const int64_t ps_ns = 15360 * S / 48000;
+    ps.cycle_input = false;
+    const CycleRun poff = run_cycles(ps);
+    ps.cycle_input = true;
+    const CycleRun pon = run_cycles(ps);
+    std::printf("  the lock alone: relocks %zu (first %.3f s, jump %.3f ms); cycle input: gaps %zu (at %.3f s, jump"
+                " %.3f ms), relocks %zu, max|e| from the first buffer %.2f us\n", poff.relock_at.size(),
+                poff.relock_at.empty() ? 0.0 : poff.relock_at[0] / 1e9,
+                poff.relock_jump.empty() ? 0.0 : poff.relock_jump[0] / 1e6, pon.gap_at.size(),
+                pon.gap_at.empty() ? 0.0 : pon.gap_at[0] / 1e9, pon.gap_jump.empty() ? 0.0 : pon.gap_jump[0] / 1e6,
+                pon.relock_at.size(), pon.err_max / 1e3);
+    g_all.add((int64_t)poff.sum);
+    g_all.add((int64_t)pon.sum);
+    CHECK("a start that lost 0.32 s after its first buffer, the lock alone (f1cfad60's path): one relock 50-60 s in",
+          poff.relock_at.size() == 1 && poff.relock_at[0] >= 50 * S && poff.relock_at[0] <= 60 * S);
+    CHECK("... with cycle input: one gap at the second buffer (lost-time, 0.32 s within the jitter), no relock or"
+          " shift in 90 s, labels on capture time from the first buffer",
+          pon.gap_at.size() == 1 && pon.gap_at[0] >= ps_ns && pon.gap_at[0] <= ps_ns + 2 * Q2048 &&
+              iabs(pon.gap_jump[0] - ps_ns) <= JITTER_NS &&
+              pon.relock_at.empty() && pon.shifts == 0 && pon.oob == 0 && pon.err_max <= JITTER_NS);
 }
 
 void test_determinism() {
@@ -1638,6 +1837,7 @@ int main(int argc, char** argv) {
     test_cycle_hour();
     test_cycle_two_captures();
     test_cycle_dev3();
+    test_cycle_restart();
     test_determinism();
     std::printf("\n  CHECKSUM asrc_servo %016llx (compare across machines)\n", (unsigned long long)g_all.h);
     test_decode_constants();

@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
     audioStreamPid,
+    buildIngestQueue,
     buildLeakyQueue,
     buildBackpressureQueue,
     buildTsUdpInput,
+    INGEST_QUEUE_MS,
+    INGEST_QUEUE_NAME,
     muxSinkPadName,
     TS_AUDIO_PID_BASE,
     TS_VIDEO_PID_BASE,
@@ -73,6 +76,19 @@ describe('buildBackpressureQueue', () => {
         expect(buildBackpressureQueue(-10)).toContain('max-size-time=20000000');
         expect(buildBackpressureQueue(0)).toContain('max-size-time=20000000');
         expect(buildBackpressureQueue(99_999)).toContain('max-size-time=5000000000');
+    });
+});
+
+describe('buildIngestQueue (B-182)', () => {
+    it('is leaky, named for the runner, and bounded by bytes alone: 500 ms at 64 Mbit/s', () => {
+        expect(INGEST_QUEUE_NAME).toBe('ingestq');
+        expect(buildIngestQueue()).toBe(
+            'queue name=ingestq leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=4000000 ' +
+                'flush-on-eos=true',
+        );
+        expect(tsQueueByteCap(INGEST_QUEUE_MS)).toBe(4_000_000);
+        // 800 ms at 40 Mbit/s: a 500 ms stall of the bus egress is held whole.
+        expect((4_000_000 * 8) / 40e6).toBeGreaterThanOrEqual(0.8);
     });
 });
 

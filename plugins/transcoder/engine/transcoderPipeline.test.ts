@@ -228,6 +228,43 @@ describe('buildPipeline', () => {
         expect(res.sinkNames).toEqual(['busout_41000', 'busout_41001']);
     });
 
+    it('conforms the rate with one drop-only videorate whose grid starts at the first frame (B-186)', () => {
+        // House-time PTS on tsdemux's segment from 0: a grid from the segment's 0 never drops.
+        const subtitles = { port: 5600, socketPath: '/tmp/mr-bus-5600-edge.sock', config: {} };
+        for (const extra of [
+            {},
+            { deinterlace: 'force' as const },
+            { deinterlace: 'off' as const },
+            { subtitles },
+        ]) {
+            const p = buildPipeline({
+                ...base,
+                ...extra,
+                outputs: [out(0, r()), out(1, r())],
+            })!.pipeline;
+            expect(p.match(/videorate[^!]*/g)).toEqual([
+                'videorate drop-only=true skip-to-first=true ',
+            ]);
+            expect(p).toContain(
+                'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=50/1;video/x-raw,framerate=[1/1,50/1] ! ',
+            );
+        }
+    });
+
+    it('caps the rate with the set rate, then a range up to it, and pins it nowhere else (B-188)', () => {
+        // A slower source keeps its own rate; listed first, the set rate holds a source without one (0/1).
+        for (const framerate of [24, 25, 30, 50, 60]) {
+            const p = buildPipeline({
+                ...base,
+                framerate,
+                outputs: [out(0, r()), out(1, r({ width: 640, height: 360 }))],
+            })!.pipeline;
+            expect(p.match(/framerate=[^ ]*/g)).toEqual([
+                `framerate=${framerate}/1;video/x-raw,framerate=[1/1,${framerate}/1]`,
+            ]);
+        }
+    });
+
     it('floors bufferMs at 100 ms — sub-100 leaky bounds shed compressed H.264 mid-GOP', () => {
         const res = buildPipeline({ ...base, bufferMs: 0, outputs: [out(0, r())] })!;
         // Both the jitter queue and the raw-frame queue must carry the floor.
@@ -335,7 +372,7 @@ describe('deinterlacing', () => {
         // deinterlaced, progressive passes through — the "auto by default" contract.
         // Never the default `linear` method: a bob, burnt-in text jumps a line (#817).
         expect(p).toMatch(
-            /! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true ! video\/x-raw,framerate=50\/1/,
+            /! deinterlace name=deint mode=auto method=greedyl ! videorate drop-only=true skip-to-first=true ! video\/x-raw,framerate=50\/1;video\/x-raw,framerate=\[1\/1,50\/1\] ! /,
         );
     });
 
@@ -346,7 +383,7 @@ describe('deinterlacing', () => {
             outputs: [out(0, r())],
         })!.pipeline;
         expect(p).toContain(
-            'deinterlace name=deint mode=interlaced method=greedyl ! videorate drop-only=true',
+            'deinterlace name=deint mode=interlaced method=greedyl ! videorate drop-only=true skip-to-first=true',
         );
         expect(p).not.toContain('mode=auto');
     });
@@ -508,7 +545,7 @@ describe('subtitle burn-in', () => {
             },
         })!;
         expect(r.pipeline).toContain(
-            'videorate drop-only=true ! video/x-raw,framerate=25/1 ! textoverlay name=subov wait-text=false text="" ' +
+            'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! textoverlay name=subov wait-text=false text="" ' +
                 'valignment=bottom halignment=left font-desc="Sans Bold 36" ypad=40 shaded-background=true shading-value=153 ! tee name=t ',
         );
         expect(r.pipeline).toMatch(/ mrtsdemux name=subdemux media=private$/);

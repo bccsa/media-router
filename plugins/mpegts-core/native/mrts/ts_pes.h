@@ -58,6 +58,9 @@ class PesHeaderSpan {
         dup_pid_ = -1;
     }
     bool held(int pid) const { return find(pid) < held_.size(); }
+    // The header `v` would complete for its PID's held packet, read without completing it;
+    // false where complete() would release that packet unrewritten (B-185).
+    bool joined(const PacketView& v, PesHeader* h) const;
     uint64_t spans() const { return spans_; }    // headers rewritten across two packets
     uint64_t broken() const { return broken_; }  // held packets released unrewritten
 
@@ -68,6 +71,7 @@ class PesHeaderSpan {
         uint8_t b[PKT];
     };
     size_t find(int pid) const;
+    bool read(const Held& s, const PacketView& v, PesHeader* h, bool* dup) const;
     bool join(const Held& s, const PacketView& v, PesHeader* h);
     void write(Held& s, PacketView& v, const PesHeader& h, int64_t pts33, int64_t dts33);
     void release(size_t i, uint8_t* first);

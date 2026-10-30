@@ -11,6 +11,7 @@ import {
     latOutName,
 } from './busHelpers.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
+import { INGEST_QUEUE_NAME, QUEUE_SHED_EVENT, buildIngestQueue } from './tsHelpers.js';
 
 /**
  * Cross-language contract pins between the TS bus helpers and the python
@@ -466,5 +467,17 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
                 .replace(/\{TS_CAPS\}/g, BUS_TS_CAPS);
             expect(sinkLiteral).toBe(buildBusSink(41000));
         });
+    });
+});
+
+describe('the ingest queue ↔ mr-gst-runner shed watch (B-182)', () => {
+    const header = readFileSync(
+        join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'shed_watch.h'),
+        'utf8',
+    );
+    it('the runner watches the queue the helper names, and reports on the channel the base logs', () => {
+        expect(header).toContain(`PREFIX = "${INGEST_QUEUE_NAME}"`);
+        expect(header).toContain(`EVENT = "${QUEUE_SHED_EVENT}"`);
+        expect(buildIngestQueue()).toMatch(new RegExp(`^queue name=${INGEST_QUEUE_NAME} leaky=2 `));
     });
 });

@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
 import { buildScaleStage, parseFormats, type CodecId, type ImplId } from '@media-router/engine';
-import { pickCaptureMode, type CaptureMode } from './captureModes.js';
+import { gstVideoFormat, pickCaptureMode, type CaptureMode } from './captureModes.js';
 
 /**
  * The capture tail's software scale/convert. The default (tests, non-Pi
@@ -46,6 +46,13 @@ export function supportsLiveBitrate(codec: CodecId, impl: ImplId): boolean {
  */
 const SOURCE_QUEUE_MS = 100;
 
+/** The caps after a drop-only videorate: the request, then a range up to it. A slower device
+ *  keeps its own rate (drop-only offers none above it); listed first, the request holds a
+ *  stream without one (0/1), which the range alone would fixate to 1 fps (B-188). */
+function rateCaps(media: 'video/x-raw' | 'image/jpeg', framerate: number): string {
+    return `${media},framerate=${framerate}/1;${media},framerate=[1/1,${framerate}/1]`;
+}
+
 /**
  * Assemble the source branch for an already-probed device. Split out of
  * `buildV4l2Source` (which shells out to `v4l2-ctl`) so the whole
@@ -86,11 +93,13 @@ export function buildV4l2SourceForModes(
     // gap, videorate fills it with ~a dozen dups, the dups eat the very thread
     // budget whose exhaustion caused the shed, and real throughput pins at
     // ~2 fps (measured 2026-09-01). Dropping conforms a too-fast device; a
-    // too-slow device just delivers its real rate, which every consumer of
-    // this live stream handles. The scale stage LAST, directly before the
-    // encoder: `buildScaleStage` — v4l2convert (Pi 4 ISP) or vapostproc when
-    // the encoder impl's hardware scaler is installed (its VA-memory caps must
-    // touch the encoder), else threaded videoscale ! videoconvert.
+    // too-slow one keeps its own rate (`rateCaps`; drop-only offers none above it).
+    // `skip-to-first` starts the drop grid at the first frame, not the segment's
+    // 0, which only this pipeline's natural base time puts near it (B-186).
+    // The scale stage LAST, directly before the encoder: `buildScaleStage` —
+    // v4l2convert (Pi 4 ISP) or vapostproc when the encoder impl's hardware
+    // scaler is installed (its VA-memory caps must touch the encoder), else
+    // threaded videoscale ! videoconvert.
     const mode = modes ? pickCaptureMode(modes, width, height) : undefined;
     // No scaling to do (rung 1, exact size) → the software stage, which is a
     // passthrough here; the caller's hardware stage is only worth its ISP
@@ -101,14 +110,15 @@ export function buildV4l2SourceForModes(
             : scaleStage;
     const tail =
         `queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! ` +
-        `videorate drop-only=true ! video/x-raw,framerate=${framerate}/1 ! ${stage}`;
+        `videorate drop-only=true skip-to-first=true ! ${rateCaps('video/x-raw', framerate)} ! ${stage}`;
     if (!mode) {
         // Probe failed or the device names nothing we can pin — let v4l2src
         // negotiate freely and rely on the conversion tail to bridge.
         return `${src} ! ${queue} ! ${tail}`;
     }
     // Pick the closest framerate the device actually offers for the chosen
-    // mode. `videorate` then conforms it to `framerate` for the encoder.
+    // mode. `videorate` then conforms it to `framerate` for the encoder, or
+    // keeps it when it is lower (B-188).
     const closest =
         mode.framerates.length === 0
             ? framerate
@@ -128,10 +138,11 @@ export function buildV4l2SourceForModes(
         mode.pixelFormat === 'MJPG' && fastest.length > 0 ? Math.min(...fastest) : closest;
     const preDrop =
         captureFps > framerate
-            ? ` ! videorate drop-only=true ! image/jpeg,framerate=${framerate}/1`
+            ? ` ! videorate drop-only=true skip-to-first=true ! ${rateCaps('image/jpeg', framerate)}`
             : '';
     // Caps are the CHOSEN mode's, not the request's — on rung 2 they differ
-    // and the tail's scale stage does the conforming.
+    // and the tail's scale stage does the conforming. A raw mode's format is
+    // GStreamer's name for its fourcc, as v4l2src gives it (B-189).
     if (mode.pixelFormat === 'MJPG') {
         // `jpegparse` re-frames the stream on the actual JPEG markers instead
         // of trusting the driver's buffer boundaries. Load-bearing for the ATEM
@@ -152,7 +163,7 @@ export function buildV4l2SourceForModes(
         // removed; re-add one only together with the kernel-level fix.
         return `${src} ! image/jpeg,width=${mode.width},height=${mode.height},framerate=${captureFps}/1${preDrop} ! ${queue} ! jpegparse ! jpegdec ! ${tail}`;
     }
-    return `${src} ! video/x-raw,format=${mode.pixelFormat},width=${mode.width},height=${mode.height},framerate=${captureFps}/1 ! ${queue} ! ${tail}`;
+    return `${src} ! video/x-raw,format=${gstVideoFormat(mode.pixelFormat)},width=${mode.width},height=${mode.height},framerate=${captureFps}/1 ! ${queue} ! ${tail}`;
 }
 
 /**

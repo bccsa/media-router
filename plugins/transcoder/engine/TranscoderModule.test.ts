@@ -419,6 +419,35 @@ describe('burn-in plan (WI-P3-13)', () => {
     });
 });
 
+describe('frame-rate conform plan (B-186, B-188)', () => {
+    const arch = Object.getOwnPropertyDescriptor(process, 'arch')!;
+    afterEach(() => {
+        Object.defineProperty(process, 'arch', arch);
+        TranscoderModule.setHwScalers({ va: false, v4l2: false });
+    });
+
+    it('tests/videorate-plan.json is the description videorate_conform_test.py and protocol case TR run (`vitest -u` rewrites it)', async () => {
+        // `@SOCK@` stands for the protocol case's socket directory; one small rendition at 25,
+        // 30 and 50 fps, on the box's deinterlacer (arm64: greedyl) and no hardware scaler.
+        Object.defineProperty(process, 'arch', { ...arch, value: 'arm64' });
+        TranscoderModule.setHwScalers({ va: false, v4l2: false });
+        const plan = (framerate: number) => {
+            const { module } = makeModule({
+                upstream: { port: 40600, socketPath: '@SOCK@/video.sock' },
+            });
+            const { pipeline, runnerHooks } = module.buildPipeline({
+                framerate,
+                gopFrames: framerate,
+                renditions: [{ name: '180p', width: 320, height: 180, bitrate: 300 }],
+            })!;
+            return { pipeline, runnerHooks };
+        };
+        await expect(
+            `${JSON.stringify({ rendition25: plan(25), rendition30: plan(30), rendition50: plan(50) }, null, 2)}\n`,
+        ).toMatchFileSnapshot('../tests/videorate-plan.json');
+    });
+});
+
 describe('TranscoderModule throughput (multi-counter ThroughputPoller)', () => {
     afterEach(() => vi.useRealTimers());
 

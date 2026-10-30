@@ -6,6 +6,7 @@ import {
     SMOOTHING_COOLDOWN_KEY,
     applyIngestTimingLiveUpdate,
     buildBusSink,
+    buildIngestQueue,
     buildRestamp,
     formatBitrate,
     isIngestTimingSection,
@@ -141,10 +142,8 @@ export class RistInputModule extends GstPluginBase {
             return null;
         }
 
-        // mrristsrc: live, arrival-timestamped (what the appsrc it replaced was
-        // configured to). The leaky queue keeps the old contract that a
-        // downstream stall sheds HERE instead of growing memory — librist's own
-        // recovery buffer is the real jitter absorber.
+        // mrristsrc: live, arrival-timestamped (what the appsrc it replaced was configured to).
+        // A downstream stall past the ingest queue's bound sheds there, counted (B-182).
         const secret = (this.config.secret as string) || '';
         const encType = (this.config.encryptionType as number) || 0;
         const sessionTimeout = (this.config.sessionTimeout as number) || 0;
@@ -170,8 +169,7 @@ export class RistInputModule extends GstPluginBase {
         });
         const pipeline =
             `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ${restamp} ! ` +
-            'queue leaky=downstream max-size-bytes=4194304 max-size-buffers=0 max-size-time=0 ! ' +
-            buildBusSink(endpoint.port);
+            `${buildIngestQueue()} ! ${buildBusSink(endpoint.port)}`;
 
         return {
             pipeline,

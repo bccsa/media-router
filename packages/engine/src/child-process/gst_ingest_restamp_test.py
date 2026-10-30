@@ -53,8 +53,8 @@ NONE = Gst.CLOCK_TIME_NONE
 GAP = int(Gst.BufferFlags.GAP)
 GAP_FLAGS = int(Gst.BufferFlags.GAP | Gst.BufferFlags.DISCONT)
 PORT = 40110
-# srt-input's queue between the transport and the bus (SrtInputModule.ts buildPipeline).
-SRT_QUEUE = "queue leaky=2 max-size-time=100000000 flush-on-eos=true"
+# srt-input's queue between the transport and the bus (tsHelpers.ts buildIngestQueue, B-182).
+SRT_QUEUE = "queue name=ingestq leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=4000000 flush-on-eos=true"
 STATS_MS = 1000
 EDIT_NS = 500 * MS
 TRIM_NS = 200 * MS   # on the audio PID, as the engine writes it (ingestTiming.ts)

@@ -454,6 +454,112 @@ elements" below do not start.
   pieces are lost, as the capture keeps more room for a moment's delay; and
   every capture of an input takes the input's own time, so two of them line
   up to the sample. Audio Encoder captures the same way.
+- **An audio capture's timing no longer jumps by 2 s about a minute after it
+  starts.** When the audio device behind Audio Input (302M) lost about 2
+  seconds of sound and started over (seen on a Pi 4 under test while an engine
+  restart brought up video on HDMI), the sound that followed was timed 2
+  seconds early for about a minute, until a 2-second jump counted under
+  Re-locks set it right (on a capture that was already running, 10 seconds).
+  Fixed: the lost time is now a gap of its length where the sound was lost,
+  and the timing does not move. Audio Encoder captures the same way. The lost
+  sound itself cannot come back.
+- **An SRT Input no longer drops pieces of a high-bitrate feed.** At about
+  28 Mbit/s an SRT Input lost a small piece of the stream about twice a
+  second, on every stream in it, while SRT itself reported no loss: about one
+  video frame in ten arrived damaged, more on a busy box. The input's buffer
+  held only about 75 ms at that rate, so it overflowed whenever the box was a
+  moment late passing the stream on, and a pause by the sender could make it
+  overflow at once. Fixed: the buffer holds 4 MB (800 ms at 40 Mbit/s), so the
+  stream passes whole through such a delay; only a box that stops passing the
+  stream on for longer than that drops data there, and each such stretch is
+  logged as a warning in the engine log saying how much. RIST Input, which
+  already had that room, now warns the same way.
+- **An HLS Player plays a stream that has no master playlist.** Given a
+  plain media playlist (one list of segments that carry both the video and
+  the audio, as ffmpeg and many encoders write it), an HLS Player never
+  played: its card showed "hls-pipe crashed — restarting (attempt …)" over
+  and over, and the engine log "inlineAudioLanguages requires a master
+  playlist with audio renditions". A master playlist whose video carries its own audio, with no
+  separate audio tracks, did the same. Fixed: such a stream plays, its video
+  and its audio passed on as they arrive. A master playlist with separate
+  audio tracks plays as before, with the Audio Languages picked. On a stream
+  without separate audio tracks, Audio Languages has no effect and Subtitle
+  Languages are not added: adding subtitles there would drop the stream's
+  audio.
+- **An Audio Decoder or Audio Output (302M) recovers by itself after its
+  source's timing jumps.** When a source came back from an outage with its
+  timing moved (seen on a RIST feed from a production gate: a 3-second
+  timeout, then a jump of about 11 seconds), an Audio Decoder went on
+  dropping short pieces of its sound, 8 to 14 % of it, until the engine was
+  restarted; an Audio Output (302M) with a single source could do the same.
+  Fixed, as in v2.0.0.98 and v2.0.0.99: once its source has run for 10
+  seconds without another sign of the jump, the output restarts its own
+  pipeline, a break in its sound of up to half a second, and plays on time
+  again; the engine log says "Source timeline settled after a … — relaunching
+  this pipeline once". It does this at most once a minute, and also once
+  after any outage of its source of 5 seconds or more, which costs that short
+  break even where the sound would have come back without it. Sound lost
+  while the source was away cannot come back.
+- **After a remote sender restarts with a new clock, its audio and video come
+  back at once instead of after the jump.** When an SRT, RIST or MPEG-TS IP
+  input's source came back from an outage with its timing moved (a sender
+  restarted on a new clock, or a stalled link came back with a burst of old
+  data first, as a production gate's RIST feed did), the input placed what
+  arrived before the source's new clock reference on the old timing, as far
+  ahead as the jump. The track it belonged to, usually the audio, then stayed
+  silent for as long as the jump, about 11 seconds in the field and 100
+  seconds for a 100-second jump, and every module fed by the input saw the
+  stream's timing that far in the future. Fixed: after an outage the input
+  waits for the new clock reference, at most 0.3 seconds, before it places
+  what came first, so every track is back within a moment of the outage's
+  end. A source that sends its clock reference less often than that (vMix,
+  every 2 seconds) can lose up to that interval of each track after such a
+  jump of more than about 3.5 seconds, instead of the jump's length. After a
+  smaller forward jump, from half a second to about 3.5 seconds, such a source
+  still loses about the jump's length of each track, and every module fed by
+  the input sees the stream's timing that far in the future for about as
+  long, as before.
+- **A Video Transcoder rendition set below its source's frame rate now sends
+  that rate.** A rendition set to 25 fps of a 1080i or 50p source encoded
+  every frame of it, 50 a second, while it told the receiver 25: about twice
+  the CPU, about twice its bitrate on the network (2.4 Mbit/s for 1.2 Mbit/s
+  set, in a test) and a keyframe twice as often as GOP Length sets. Fixed: it
+  sends 25 frames a second at its bitrate, with a keyframe every GOP Length
+  frames (50 frames is 2 seconds at 25 fps; set 25 for one a second). After
+  an outage of its source, such a rendition sends every frame for about as
+  long as the outage lasted, then its own rate again. A rendition at its
+  source's rate (the default 50 with a 1080i or 50p source) now leaves out a
+  single frame from time to time when the source's clock runs a little fast:
+  about one every 8 minutes for a clock 40 millionths fast, in a test.
+- **A Video Transcoder rendition or a Video Encoder whose source is slower
+  than its Frame Rate now runs at the source's rate instead of failing and
+  restarting.** A Video Transcoder at the default 50 with a 1080p25 or 720p25
+  source, at 30 with a 29.97 source or at 60 with a 59.94 one stopped with an
+  error and restarted over and over; so did a Video Encoder set faster than
+  its camera or capture device delivers. Fixed: it sends every frame of the
+  source, at the source's own rate (25, 29.97 or 59.94 frames a second).
+  GOP Length still counts frames, so with a 25 fps source 50 frames is a
+  keyframe every 2 seconds; set 25 for one a second. The card's Framerate
+  still shows the rate you set. Running at its source's rate, it behaves as
+  with Frame Rate set to that rate: it can leave out one frame as it starts
+  and, when the source's clock runs a little fast, a single frame from time
+  to time (about one every 8 minutes at 50 fps for a clock 40 millionths fast,
+  in a test).
+- **A Video Encoder on a raw YUYV or YU12 capture mode now starts.** Before,
+  it stopped with a pipeline error ("can't handle caps") each time it started
+  on such a mode, and sent nothing; MJPEG modes and the NV12, NV16, YV12 and
+  UYVY raw modes worked. The mode it picks is unchanged: MJPEG first, then
+  the raw formats in the encoder's order, so a YUYV or YU12 mode is used only
+  when the device offers nothing it prefers at any size.
+- **An input that comes back after more than 5 seconds away no longer warns
+  that its queue is full.** When an input of an Audio Mixer, an N-1 Audio
+  Mixer (302M), Audio Processing or an Audio Output (302M) with two or more
+  sources came back after more than 5 seconds without its stream (an SRT or
+  RIST link that dropped, say), the module could show "Input <name> queue
+  full — upstream held" for about a second, though nothing was waiting: it
+  counted the time the input was away as queued. Fixed: the input comes back
+  without the warning. Its sound came back at once before too; nothing was
+  lost.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

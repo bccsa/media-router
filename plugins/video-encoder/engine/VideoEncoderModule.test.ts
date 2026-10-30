@@ -237,7 +237,10 @@ describe('VideoEncoderModule', () => {
             // caps negotiation when the user picks an unsupported fps.
             const s = buildV4l2Source('/dev/video-nonexistent', 1920, 1080, 30);
             expect(s).toContain('videoscale n-threads=2');
-            expect(s).toContain('videorate drop-only=true');
+            // a slower device keeps its own rate: the request, then a range up to it (B-188)
+            expect(s).toContain(
+                'videorate drop-only=true skip-to-first=true ! video/x-raw,framerate=30/1;video/x-raw,framerate=[1/1,30/1] ! ',
+            );
         });
     });
 
@@ -620,7 +623,7 @@ describe('capture scale stage', () => {
             bitrate: 6928,
         });
         expect(desc?.pipeline).toContain(
-            'video/x-raw,framerate=25/1 ! v4l2convert ! video/x-raw,width=1280,height=720 ! v4l2h264enc',
+            'video/x-raw,framerate=25/1;video/x-raw,framerate=[1/1,25/1] ! v4l2convert ! video/x-raw,width=1280,height=720 ! v4l2h264enc',
         );
         expect(desc?.pipeline).not.toContain('videoscale');
     });

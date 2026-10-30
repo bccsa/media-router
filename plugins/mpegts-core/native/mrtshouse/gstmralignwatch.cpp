@@ -284,7 +284,7 @@ static bool aw_list_times(const GstSegment* seg, GstBufferList* l, gint64* start
 /* --- levels ----------------------------------------------------------------------------- */
 
 /* From the horizon at the earliest: a GAP reaching back past it (a hole over a silence longer than
- * max-size-time) goes out clipped there, so that span is not queued time (B-134). */
+ * max-size-time) goes out clipped there, so that span is not queued time (B-134, B-187). */
 static guint64 aw_level_time(const Run& r) {
     for (const Item& it : r.fifo) {
         if (!it.timed) continue;
