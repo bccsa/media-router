@@ -13,7 +13,8 @@
 namespace mr::bus {
 
 /** gst-launch description of one per-consumer fan-out branch
- *  (`queue leaky=2 … ! unixfdsink socket-path=…`). */
+ *  (`queue leaky=2 … ! unixfdsink socket-path=…`); `socket` is the sink's
+ *  private bind path, published at the edge path once bound (B-190). */
 std::string edge_branch_description(const std::string& socket);
 
 void handle_bus_attach(JsonObject* data);
@@ -22,6 +23,10 @@ void handle_bus_reinput(JsonObject* data);
 
 /** Drop queued attaches and mid-teardown marks (pipeline stop). */
 void clear_pending();
+
+/** Unlink every edge path this runner still owns, before its pipeline stops:
+ *  a relaunched producer can take the paths over during the EOS drain. */
+void release_paths();
 
 /** Tear down one branch by edge socket (probe-gated, asynchronous). True when
  *  it existed. */

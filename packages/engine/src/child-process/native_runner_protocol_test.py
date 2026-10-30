@@ -2421,6 +2421,172 @@ def test_edge_stall_fds():
             check(f"{label}: the feeder's unixfdsink lets its copies go when it stops ({left:+d} fds)", left <= 64)
 
 
+# --------------------------------------------------------------------------- edge-handover (B-190)
+def _accepts(path):
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.3)
+    try:
+        probe.connect(path)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _ino(path):
+    try:
+        return os.lstat(path).st_ino
+    except OSError:
+        return None
+
+
+def _stale_socket(path):
+    """A socket file nothing listens on: what a runner killed hard leaves behind."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(path)
+    s.close()
+
+
+def test_edge_handover():
+    """edge-handover (B-190, MR-001): a producer relaunched while its old runner still serves the
+    edge, old and new on each runner and python to native. The new runner's attach waits, with
+    one warning, instead of binding beside the live listener; the old runner, stopped with a ~2 s
+    EOS drain, hands the path over before the drain, so the new one publishes it while the old one
+    still runs, and the old sink's stop-time unlink cannot reach it. The new runner ends listening
+    on the edge with a consumer receiving, and a bind that fails costs a warning, never the producer.
+    Then the old runner killed hard instead: its stale file is cleared and the path published."""
+    if Gst.ElementFactory.find("unixfdsink") is None or Gst.ElementFactory.find("avenc_s302m") is None:
+        print("SKIP edge-handover — unixfdsink / avenc_s302m unavailable")
+        return
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    # 20 buffers behind a 100 ms sleep hold each stop's EOS drain ~2 s.
+    producer = (_S302M_PRODUCER.format(caps=caps) + " busout_40000. ! queue leaky=2 max-size-buffers=20"
+                " max-size-time=0 max-size-bytes=0 ! identity sleep-time=100000 ! fakesink sync=false async=false")
+    held = "live producer already on "
+    for tag, old_argv, new_argv in (("native", None, None), ("py", _PY_ENV_RUNNER, _PY_ENV_RUNNER),
+                                    ("py->native", _PY_ENV_RUNNER, None)):
+        label = f"edge-handover {tag}"
+        tmp, ro = tempfile.mkdtemp(prefix="mrtest-"), tempfile.mkdtemp(prefix="mrtest-ro-")
+        edge = os.path.join(tmp, "edge.sock")
+        old, new, consumer = RunnerProc(old_argv), RunnerProc(new_argv), None
+        try:
+            for name, r in (("old", old), ("new", new)):
+                r.wait_event(ev_is("ready"), timeout=10)
+                r.send({"cmd": "start", "pipeline": producer})
+                check(f"{label}: the {name} runner reaches PLAYING",
+                      r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
+            _stale_socket(edge)
+            old.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            check(f"{label}: the old runner clears a stale file and serves the edge",
+                  old.wait_event(ev_is("bus_attached", socket=edge)) is not None and _accepts(edge)
+                  and old.has_event(ev_is("warning", message=f"bus_attach: unlinked stale bus socket {edge}")))
+            old_ino = _ino(edge)
+
+            # The relaunch: the coordinator attaches the new runner while the old one still serves.
+            new.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            time.sleep(0.6)
+            new.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            time.sleep(0.8)
+            new.pump()
+            check(f"{label}: the new runner's attach waits while the old one serves the edge",
+                  not new.has_event(ev_is("bus_attached")))
+            check(f"{label}: one warning for the held path, over retries and a duplicate attach",
+                  sum(1 for e in new.events if e.get("event") == "warning"
+                      and held + edge in e.get("message", "")) == 1)
+            check(f"{label}: the old runner's socket is untouched (no doomed bind, no unlink beside it)",
+                  _ino(edge) == old_ino and _accepts(edge))
+
+            old.send({"cmd": "stop"})
+            got = new.wait_event(ev_is("bus_attached", socket=edge), timeout=3)
+            check(f"{label}: the old runner hands the path over before its drain; the new one publishes it "
+                  "while the old one still runs", got is not None and old.proc.poll() is None)
+            new_ino = _ino(edge)
+            check(f"{label}: the wait's end is logged", new.wait_log("free again — attached", timeout=2))
+            try:
+                old.proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+            old.pump()
+            check(f"{label}: the old runner exits 0 after its drain", old.proc.returncode == 0)
+            check(f"{label}: after the old runner's teardown the edge still names the new runner's socket "
+                  "and accepts", new_ino is not None and new_ino != old_ino and _ino(edge) == new_ino
+                  and _accepts(edge))
+            check(f"{label}: no private bind path left behind", os.listdir(tmp) == ["edge.sock"])
+
+            consumer = Gst.parse_launch(f"unixfdsrc socket-path={edge} ! fakesink name=csink sync=false")
+            got_bufs = []
+            consumer.get_by_name("csink").get_static_pad("sink").add_probe(
+                Gst.PadProbeType.BUFFER, lambda _p, _i: got_bufs.append(1) or Gst.PadProbeReturn.OK)
+            consumer.set_state(Gst.State.PLAYING)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and len(got_bufs) < 10:
+                time.sleep(0.05)
+            check(f"{label}: a consumer connecting now receives from the new runner", len(got_bufs) >= 10)
+
+            if os.geteuid() != 0:
+                os.chmod(ro, 0o555)
+                bad = os.path.join(ro, "edge.sock")
+                new.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": bad})
+                check(f"{label}: a bind that fails is a warning",
+                      new.wait_event(lambda e: e.get("event") == "warning"
+                                     and f"cannot serve {bad}" in e.get("message", ""), timeout=3) is not None)
+                time.sleep(0.5)
+                check(f"{label}: and never the producer's error", not new.has_event(ev_is("error"))
+                      and not new.has_event(ev_is("state_change", state="null")) and _accepts(edge))
+            check(f"{label}: one bus_attached in all, no error on either runner",
+                  sum(1 for e in new.events if e.get("event") == "bus_attached") == 1
+                  and not old.has_event(ev_is("error")) and not new.has_event(ev_is("error")))
+            consumer.set_state(Gst.State.NULL)
+            consumer = None
+            check(f"{label}: the new runner exits 0 after stop", new.stop_and_wait(timeout=15) == 0)
+            check(f"{label}: and releases the edge path", not os.path.exists(edge))
+        finally:
+            if consumer is not None:
+                consumer.set_state(Gst.State.NULL)
+            old.kill()
+            new.kill()
+            os.chmod(ro, 0o755)
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(ro, ignore_errors=True)
+
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        label = f"edge-handover {tag} killed"
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        edge = os.path.join(tmp, "edge.sock")
+        old, new, ghost = RunnerProc(argv), RunnerProc(argv), None
+        try:
+            for r in (old, new):
+                r.wait_event(ev_is("ready"), timeout=10)
+                r.send({"cmd": "start", "pipeline": producer})
+                r.wait_event(ev_is("state_change", state="playing"), timeout=10)
+            old.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            old.wait_event(ev_is("bus_attached", socket=edge))
+            new.send({"cmd": "bus_attach", "tee": "busout_40000", "socket": edge})
+            time.sleep(0.6)
+            check(f"{label}: the new runner waits while the old one serves", not new.has_event(ev_is("bus_attached")))
+            old.kill()
+            check(f"{label}: the old runner's stale file is cleared and the path published",
+                  new.wait_event(ev_is("bus_attached", socket=edge), timeout=3) is not None and _accepts(edge)
+                  and new.has_event(ev_is("warning", message=f"bus_attach: unlinked stale bus socket {edge}")))
+            check(f"{label}: no error", not new.has_event(ev_is("error")))
+            # Another socket at the path now (a second producer on it): the stop must leave it.
+            os.unlink(edge)
+            ghost = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            ghost.bind(edge)
+            ghost.listen(1)
+            ghost_ino = _ino(edge)
+            check(f"{label}: the new runner exits 0 after stop and leaves a path it no longer owns alone",
+                  new.stop_and_wait(timeout=15) == 0 and _ino(edge) == ghost_ino
+                  and os.listdir(tmp) == ["edge.sock"])
+        finally:
+            if ghost is not None:
+                ghost.close()
+            old.kill()
+            new.kill()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 
 # --------------------------------------------------------------------------- IQ: ingest queue sheds
 def test_ingest_queue_sheds():
@@ -2704,6 +2870,7 @@ test_native_plugins()
 test_ingest_restamp()
 test_bus_return()
 test_edge_stall_fds()
+test_edge_handover()
 test_ingest_queue_sheds()
 test_transcode_rate()
 

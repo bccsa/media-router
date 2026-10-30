@@ -26,9 +26,9 @@ MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 SRCS = main.cpp ipc.cpp json_util.cpp runner.cpp commands.cpp stamper.cpp \
-       bus_edges.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp branch_retime.cpp backlog_shed.cpp hooks.cpp \
+       bus_edges.cpp edge_path.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp branch_retime.cpp backlog_shed.cpp hooks.cpp \
        pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp native_plugins.cpp capture_rt.cpp shed_watch.cpp
-HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h bus_inputs.h source_gate.h \
+HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h edge_path.h bus_inputs.h source_gate.h \
        branch_align.h branch_retime.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h \
        native_plugins.h paths.h capture_rt.h shed_watch.h \
        $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \

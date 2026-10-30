@@ -187,6 +187,8 @@ bool Runner::eos_drain(GstElement* pipe, bool errored) {
 
 void Runner::teardown_pipeline(GstElement* pipe, bool drain, bool errored) {
     if (!pipe) return;
+    // Before the drain: a relaunched producer publishes its edges at once (B-190).
+    bus::release_paths();
     gate::stop();
     // `drain_on_stop` (eosDrain:false) applies to EVERY teardown path, not
     // only the stop command — the watchdog and gate failures reach here too.

@@ -80,7 +80,7 @@ else:
             sink.get_property("wait-for-connection") is False,
         )
         check(
-            "sink binds the consumer's edge socket",
+            "sink binds the path it is given (the private bind path, published at the edge: B-190)",
             sink.get_property("socket-path") == "/tmp/mr-bus-40000-abc123.sock",
         )
 

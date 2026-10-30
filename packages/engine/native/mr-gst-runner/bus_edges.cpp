@@ -1,17 +1,17 @@
 #include "bus_edges.h"
 
-#include <poll.h>
-#include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <set>
 #include <vector>
 
+#include "edge_path.h"
 #include "ipc.h"
 #include "json_util.h"
 #include "runner.h"
@@ -39,6 +39,7 @@ struct Edge {
     int stall = 0;
     gulong probe_id = 0;
     bool soft_healed = false;
+    EdgePath path;                  // what this runner published at the edge path (B-190)
 };
 
 struct TeeProgress {
@@ -47,9 +48,18 @@ struct TeeProgress {
     gulong probe_id = 0;
 };
 
+struct Pending {
+    std::string tee;
+    int attempts = 0;
+    bool held_logged = false;       // one warning per attach while another socket holds the path
+};
+
+/** Done: attached, or a structural failure not worth retrying. */
+enum class Attach { Done, NotReady, Held };
+
 std::map<std::string, std::shared_ptr<Edge>> g_branches;          // socket -> edge
 std::map<std::string, std::shared_ptr<TeeProgress>> g_tee_progress; // tee name -> progress
-std::map<std::string, std::pair<std::string, int>> g_pending;      // socket -> (tee, attempts)
+std::map<std::string, Pending> g_pending;                          // socket -> pending attach
 std::set<std::string> g_teardowns;
 guint g_retry_timer_id = 0;
 guint g_stall_timer_id = 0;
@@ -91,82 +101,78 @@ void release_stamper_if_unused(const std::string& tee_name) {
     stamper::release(tee_name);
 }
 
-// --- stale socket handling ----------------------------------------------------
-
-/** Connect-probe a unix socket path (200 ms). */
-bool socket_accepts(const std::string& path) {
-    int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (fd < 0) return false;
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
-    bool ok = false;
-    int r = ::connect(fd, (sockaddr*)&addr, sizeof addr);
-    if (r == 0) {
-        ok = true;
-    } else if (errno == EINPROGRESS || errno == EAGAIN) {
-        pollfd p{fd, POLLOUT, 0};
-        if (::poll(&p, 1, 200) > 0) {
-            int soerr = 0;
-            socklen_t len = sizeof soerr;
-            ok = ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &len) == 0 && soerr == 0;
-        }
-    }
-    ::close(fd);
-    return ok;
-}
-
-/** unixfdsink cannot bind over an existing socket file, and a runner that
- *  dies hard never unlinks its path. Unlink only if nothing is listening. */
-void remove_stale_bus_socket(const std::string& path) {
-    if (!g_file_test(path.c_str(), G_FILE_TEST_EXISTS)) return;
-    if (socket_accepts(path)) {
-        ipc::warning("bus_attach: live producer already on " + path + " — not unlinking");
-        return;
-    }
-    if (::unlink(path.c_str()) == 0) ipc::warning("bus_attach: unlinked stale bus socket " + path);
-}
-
 // --- attach ---------------------------------------------------------------------
 
 bool ensure_stall_timer();
 
-/** Attach one branch. True on success (or a structural failure that must not
- *  be retried), false if the tee isn't up yet. */
-bool try_bus_attach(const std::string& tee_name, const std::string& socket) {
+/** Attach one branch; NotReady and Held stay pending. `held` says what holds
+ *  the edge path on Held. */
+Attach try_bus_attach(const std::string& tee_name, const std::string& socket, std::string* held) {
     Runner& r = runner();
     // No pipeline YET — stay pending (the engine can queue an attach before
     // `start`); `handle_stop` clears the queue.
-    if (!r.pipeline) return false;
-    if (g_teardowns.count(socket)) return false;   // old branch still detaching
+    if (!r.pipeline) return Attach::NotReady;
+    if (g_teardowns.count(socket)) return Attach::NotReady;   // old branch still detaching
     auto existing = g_branches.find(socket);
     if (existing != g_branches.end()) {
         // Idempotent re-attach: re-sync so a branch stuck at READY by a
         // mid-transition add bumps to the settled parent state.
         gst_element_sync_state_with_parent(existing->second->branch);
-        return true;
+        return Attach::Done;
     }
+    GstState cur = GST_STATE_NULL, pend = GST_STATE_VOID_PENDING;
+    gst_element_get_state(r.pipeline, &cur, &pend, 0);
+    if ((pend != GST_STATE_VOID_PENDING ? pend : cur) < GST_STATE_READY) return Attach::NotReady;   // stopped
     GstElement* tee = GST_IS_BIN(r.pipeline) ? gst_bin_get_by_name(GST_BIN(r.pipeline), tee_name.c_str()) : nullptr;
-    if (!tee) return false;   // tee not created yet — caller queues a retry
+    if (!tee) return Attach::NotReady;   // tee not created yet — caller queues a retry
+    // Never bind beside a live listener (B-190): wait until the path is free.
+    if (!path_free(socket, held)) {
+        gst_object_unref(tee);
+        return Attach::Held;
+    }
+    const std::string bind = bind_path(socket);
+    if (bind.size() >= sizeof(sockaddr_un::sun_path)) {
+        ipc::warning("bus_attach: socket path too long: " + bind);
+        gst_object_unref(tee);
+        return Attach::Done;
+    }
 
     // Arm the egress stamper BEFORE the branch is linked: once linked, buffers
     // reach the new edge immediately.
     stamper::arm(tee, tee_name);
-    remove_stale_bus_socket(socket);
 
     GError* err = nullptr;
-    GstElement* branch = gst_parse_bin_from_description(edge_branch_description(socket).c_str(), TRUE, &err);
+    GstElement* branch = gst_parse_bin_from_description(edge_branch_description(bind).c_str(), TRUE, &err);
     if (!branch) {
         ipc::warning(std::string("bus_attach parse failed: ") + (err && err->message ? err->message : "?"));
         g_clear_error(&err);
         release_stamper_if_unused(tee_name);
         gst_object_unref(tee);
-        return true;
+        return Attach::Done;
     }
     g_clear_error(&err);
     gst_object_ref_sink(branch);
     g_branch_seq++;
     gst_element_set_name(branch, ("busedge_" + std::to_string(g_branch_seq)).c_str());
+
+    // Bind and publish before the branch joins the pipeline: a failed start
+    // then posts to no bus, so it can never fail the producer.
+    auto e = std::make_shared<Edge>();
+    ::unlink(bind.c_str());
+    bool bound = gst_element_set_state(branch, GST_STATE_READY) != GST_STATE_CHANGE_FAILURE;
+    int perr = bound ? publish_path(bind, socket, e->path) : -1;
+    if (perr != 0) {
+        gst_element_set_state(branch, GST_STATE_NULL);
+        gst_object_unref(branch);
+        release_stamper_if_unused(tee_name);
+        gst_object_unref(tee);
+        if (perr == EEXIST) {
+            *held = socket + " was taken by another socket";
+            return Attach::Held;
+        }
+        ipc::warning("bus_attach: cannot serve " + socket + ": " + (perr > 0 ? std::strerror(perr) : "bind failed"));
+        return Attach::Done;
+    }
 
     // Add the leaf to the tee's OWN parent bin (a tee inside a branch bin
     // cannot link to an element in a different bin).
@@ -177,20 +183,20 @@ bool try_bus_attach(const std::string& tee_name, const std::string& socket) {
     // Activate BEFORE linking, targeting the pipeline's PENDING state: a
     // branch added mid-transition otherwise stays inactive and the tee's first
     // sticky-event push returns FLUSHING, pausing the producer's task forever.
-    GstState cur = GST_STATE_NULL, pend = GST_STATE_VOID_PENDING;
     gst_element_get_state(r.pipeline, &cur, &pend, 0);
     gst_element_set_state(branch, pend != GST_STATE_VOID_PENDING ? pend : cur);
 
     GstPad* tee_src = gst_element_request_pad_simple(tee, "src_%u");
     if (!tee_src) {
         ipc::warning("bus_attach: no tee src pad (" + tee_name + ")");
+        release_path(socket, e->path);
         gst_element_set_state(branch, GST_STATE_NULL);
         gst_bin_remove(parent, branch);
         gst_object_unref(branch);
         release_stamper_if_unused(tee_name);
         if (parent_obj) gst_object_unref(parent_obj);
         gst_object_unref(tee);
-        return true;   // don't retry a structural failure
+        return Attach::Done;   // don't retry a structural failure
     }
     GstPad* branch_sink = gst_element_get_static_pad(branch, "sink");
     GstPadLinkReturn link_ret = gst_pad_link(tee_src, branch_sink);
@@ -199,17 +205,17 @@ bool try_bus_attach(const std::string& tee_name, const std::string& socket) {
         ipc::warning("bus_attach: link failed (" + std::to_string((int)link_ret) + ") " + socket);
         gst_element_release_request_pad(tee, tee_src);
         gst_object_unref(tee_src);
+        release_path(socket, e->path);
         gst_element_set_state(branch, GST_STATE_NULL);
         gst_bin_remove(parent, branch);
         gst_object_unref(branch);
         release_stamper_if_unused(tee_name);
         if (parent_obj) gst_object_unref(parent_obj);
         gst_object_unref(tee);
-        return true;
+        return Attach::Done;
     }
     if (parent_obj) gst_object_unref(parent_obj);
 
-    auto e = std::make_shared<Edge>();
     e->branch = branch;
     e->tee = tee;
     e->tee_src = tee_src;
@@ -249,24 +255,38 @@ bool try_bus_attach(const std::string& tee_name, const std::string& socket) {
     json_object_set_string_member(ev, "tee", tee_name.c_str());
     json_object_set_string_member(ev, "socket", socket.c_str());
     ipc::emit(ev);
-    return true;
+    return Attach::Done;
+}
+
+/** One warning per pending attach while its path is held, so a second live
+ *  producer on one path (a configuration error) never spins silently. */
+void note_held(Pending& p, const std::string& held) {
+    if (p.held_logged) return;
+    p.held_logged = true;
+    ipc::warning("bus_attach: " + held + " — attach waits until the path is free");
+}
+
+void note_done(const Pending& p, const std::string& socket) {
+    if (p.held_logged && g_branches.count(socket)) ipc::log("bus_attach: " + socket + " free again — attached");
 }
 
 gboolean retry_pending_cb(gpointer) {
     for (auto it = g_pending.begin(); it != g_pending.end();) {
         const std::string socket = it->first;
-        std::string tee_name = it->second.first;
-        int attempts = it->second.second;
-        if (try_bus_attach(tee_name, socket)) {
+        Pending& p = it->second;
+        std::string held;
+        Attach a = try_bus_attach(p.tee, socket, &held);
+        if (a == Attach::Done) {
+            note_done(p, socket);
             it = g_pending.erase(it);
             continue;
         }
-        attempts++;
-        if (attempts == BUS_ATTACH_WARN_AFTER) {
-            std::string what = runner().pipeline ? "tee " + tee_name : "pipeline";
+        if (a == Attach::Held) {
+            note_held(p, held);
+        } else if (++p.attempts == BUS_ATTACH_WARN_AFTER) {
+            std::string what = runner().pipeline ? "tee " + p.tee : "pipeline";
             ipc::warning("bus_attach: " + what + " not up yet for " + socket + " — still retrying");
         }
-        it->second.second = attempts;
         ++it;
     }
     if (g_pending.empty()) {
@@ -278,11 +298,21 @@ gboolean retry_pending_cb(gpointer) {
 
 /** Attach now, or queue the persistent 250 ms retry. */
 void attach_or_queue(const std::string& tee_name, const std::string& socket) {
-    if (try_bus_attach(tee_name, socket)) {
-        g_pending.erase(socket);
+    std::string held;
+    Attach a = try_bus_attach(tee_name, socket, &held);
+    auto it = g_pending.find(socket);
+    if (a == Attach::Done) {
+        if (it != g_pending.end()) {
+            note_done(it->second, socket);
+            g_pending.erase(it);
+        }
         return;
     }
-    g_pending[socket] = {tee_name, 0};
+    // A duplicate attach keeps the pending entry's one held warning.
+    Pending& p = it != g_pending.end() ? it->second : g_pending[socket];
+    p.tee = tee_name;
+    p.attempts = 0;
+    if (a == Attach::Held) note_held(p, held);
     if (!g_retry_timer_id) g_retry_timer_id = g_timeout_add(250, retry_pending_cb, nullptr);
 }
 
@@ -380,6 +410,8 @@ gboolean release_tee_pad_idle(gpointer data) {
 }
 
 void finish_teardown(const std::shared_ptr<Edge>& e, const std::string& socket, GstPad* pad) {
+    // While the sink still listens; its own stop unlinks only the private bind path.
+    release_path(socket, e->path);
     GstPad* peer = gst_pad_get_peer(pad);
     if (peer) {
         gst_pad_unlink(pad, peer);
@@ -391,8 +423,6 @@ void finish_teardown(const std::shared_ptr<Edge>& e, const std::string& socket, 
     if (parent) gst_object_unref(parent);
     gst_object_unref(e->branch);
     e->branch = nullptr;
-    // unixfdsink does not unlink its socket file on NULL.
-    ::unlink(socket.c_str());
     if (e->sink_pad) {
         gst_object_unref(e->sink_pad);
         e->sink_pad = nullptr;
@@ -440,6 +470,10 @@ void handle_bus_detach(JsonObject* data) {
 void clear_pending() {
     g_pending.clear();
     g_teardowns.clear();
+}
+
+void release_paths() {
+    for (auto& [socket, e] : g_branches) release_path(socket, e->path);
 }
 
 bool teardown_branch(const std::string& socket) {

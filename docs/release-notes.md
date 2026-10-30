@@ -470,6 +470,12 @@ elements" below do not start.
   counted the time the input was away as queued. Fixed: the input comes back
   without the warning. Its sound came back at once before too; nothing was
   lost.
+- **A module whose source restarts several times in a few seconds no longer
+  waits for it forever.** On v2.0.0.100, after a profile switch, an MPEG-TS
+  Muxer could restart 3 or 4 times while its inputs came up, and an SRT
+  Output it fed then showed "Waiting for upstream module(s)" and sent nothing
+  until it was restarted by hand. Fixed: a restarted module takes over each of
+  its connections as soon as its previous run lets go of it.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
