@@ -28,9 +28,9 @@ bool path_free(const std::string& path, std::string* held);
  *  (EEXIST: another socket took the path since `path_free`). */
 int publish_path(const std::string& bind, const std::string& socket, EdgePath& p);
 
-/** Unlink the edge path if it still names this runner's socket. Call while the
- *  sink still listens, so a successor finds the path live or gone, never stale,
- *  and cannot replace it between the check and the unlink. */
+/** Unlink the edge path if it still names this runner's socket, while the sink still listens: a
+ *  successor finds the path live or gone, never stale, and cannot replace it between the check
+ *  and the unlink. Serialised: a teardown probe's thread and the main loop may race on one path. */
 void release_path(const std::string& socket, EdgePath& p);
 
 }  // namespace mr::bus

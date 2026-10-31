@@ -8,12 +8,16 @@
 
 #include <cerrno>
 #include <cstring>
+#include <mutex>
 
 #include "ipc.h"
 
 namespace mr::bus {
 
 namespace {
+
+// A teardown probe and a pipeline stop may release one path at once (B-193).
+std::mutex g_release_lock;
 
 /** Connect-probe a unix socket path (200 ms). */
 bool socket_accepts(const std::string& path) {
@@ -69,6 +73,7 @@ int publish_path(const std::string& bind, const std::string& socket, EdgePath& p
 }
 
 void release_path(const std::string& socket, EdgePath& p) {
+    std::lock_guard<std::mutex> lock(g_release_lock);
     if (!p.published) return;
     p.published = false;
     struct stat st{};

@@ -4,3 +4,4 @@
 mr-gst-runner/mr-gst-runner
 mr-clockstate/mr-clockstate
 mr-clockstate/tests/clock_sample_test
+mr-gst-runner/tests/bus_edges_thread_test

@@ -2510,10 +2510,10 @@ _bus_tee_progress = {}
 _pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_so_far]
 _bus_retry_timer_id = None
 _BUS_ATTACH_WARN_AFTER = 40   # ~10 s at 250 ms — log once, keep retrying
-# Edges whose probe-gated teardown hasn't completed yet (see
-# _teardown_bus_branch). An attach for one of these is deferred through the
-# same 250 ms pending-retry path as a not-yet-created tee.
-_bus_teardowns = set()
+# Edges whose probe-gated teardown hasn't completed yet, socket -> entry (see
+# _teardown_bus_branch): an attach for one waits on the 250 ms pending retry. Main
+# loop only (B-193): a probe on a streaming thread hands its record over.
+_bus_teardowns = {}
 
 # Edge path ownership (B-190), as in bus_edges.cpp: unixfdsink never binds over a file and
 # unlinks its socket-path at stop, whoever owns it then, so the sink binds a private path published
@@ -2563,25 +2563,32 @@ def _bus_publish(bind, socket, entry):
         pass
 
 
+_bus_release_lock = threading.Lock()   # a teardown probe and a stop may release one path at once
+
+
 def _release_bus_path(socket, entry):
     """Unlink the edge path if it still names this runner's socket. Called while
     the sink still listens, so a successor finds the path live or gone, never
     stale, and cannot replace it between the check and the unlink."""
-    path_id = entry.pop("path_id", None)
-    if path_id is None:
-        return
-    try:
-        st = os.lstat(socket)
-        if (st.st_dev, st.st_ino) == path_id:
-            os.unlink(socket)
-    except OSError:
-        pass
+    with _bus_release_lock:
+        path_id = entry.pop("path_id", None)
+        if path_id is None:
+            return
+        try:
+            st = os.lstat(socket)
+            if (st.st_dev, st.st_ino) == path_id:
+                os.unlink(socket)
+        except OSError:
+            pass
 
 
 def _release_bus_paths():
-    """Every edge path this runner still owns, before its pipeline stops: a
-    relaunched producer can take the paths over during the EOS drain."""
+    """Every edge path this runner still owns, edges still detaching included,
+    before its pipeline stops: a relaunched producer can take the paths over
+    during the EOS drain, and a stopped pipeline may never fire a pending probe."""
     for socket, entry in _bus_branches.items():
+        _release_bus_path(socket, entry)
+    for socket, entry in _bus_teardowns.items():
         _release_bus_path(socket, entry)
 
 
@@ -2958,8 +2965,9 @@ def handle_bus_attach(data):
 
 
 def _clear_pending_bus_attaches():
+    """Drop queued attaches (pipeline stop). Edges still detaching stay recorded, for
+    _release_bus_paths."""
     _pending_bus_attaches.clear()
-    _bus_teardowns.clear()
     _bus_attach_held_logged.clear()
 
 
@@ -2983,7 +2991,8 @@ def _teardown_bus_branch(socket):
     immediately when the pad is quiet, so a dark producer detaches at once.
 
     The actual teardown is therefore ASYNCHRONOUS. `_bus_teardowns` marks
-    the edge until the probe fires; `_try_bus_attach` treats a mid-teardown
+    the edge until the probe has finished and the main loop has dropped the
+    record (B-193); `_try_bus_attach` treats a mid-teardown
     socket as "not ready yet" (returns False → caller's 250 ms retry), so
     a fast detach→attach on the same edge path can't bind over the dying
     branch's socket or double-request the tee pad.
@@ -3032,15 +3041,20 @@ def _teardown_bus_branch(socket):
         except Exception:  # noqa: BLE001 — teardown must never crash the runner
             pass
         finally:
-            _bus_teardowns.discard(socket)
+            # An idle pad fires this inside add_probe, on the main loop; a streaming
+            # thread hands the record to the main loop instead (B-193).
+            if GLib.MainContext.default().is_owner():
+                _drop_bus_teardown(socket, entry)
+            else:
+                GLib.idle_add(_drop_bus_teardown, socket, entry)
         return Gst.PadProbeReturn.REMOVE
 
-    _bus_teardowns.add(socket)
+    _bus_teardowns[socket] = entry
     try:
         tee_src.add_probe(
             Gst.PadProbeType.BLOCK_DOWNSTREAM | Gst.PadProbeType.IDLE, _finish)
     except Exception:  # noqa: BLE001 — pad already dead: fall back to direct teardown
-        _bus_teardowns.discard(socket)
+        _bus_teardowns.pop(socket, None)
         try:
             _release_bus_path(socket, entry)
             branch.set_state(Gst.State.NULL)
@@ -3051,6 +3065,13 @@ def _teardown_bus_branch(socket):
         except Exception:  # noqa: BLE001
             pass
     return True
+
+
+def _drop_bus_teardown(socket, entry):
+    """Forget a finished teardown (main loop): its own record only, never a later teardown's."""
+    if _bus_teardowns.get(socket) is entry:
+        del _bus_teardowns[socket]
+    return False  # one-shot idle source
 
 
 def _release_tee_pad(tee, pad):

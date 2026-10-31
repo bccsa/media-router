@@ -493,6 +493,10 @@ elements" below do not start.
   interrupting the others, one that stops leaves them playing, and wiring a
   source in or out, with two or more staying, no longer restarts the output.
   An output with one source behaves as before.
+- **A module no longer risks a crash while one of its connections is
+  removed.** A module's runner could update its list of connections being
+  removed from two threads at once, so a busy module losing a consumer could,
+  rarely, crash or lose track of a connection. Not seen on a box; fixed.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

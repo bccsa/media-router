@@ -8,7 +8,6 @@
 #include <cstring>
 #include <map>
 #include <memory>
-#include <set>
 #include <vector>
 
 #include "edge_path.h"
@@ -57,10 +56,11 @@ struct Pending {
 /** Done: attached, or a structural failure not worth retrying. */
 enum class Attach { Done, NotReady, Held };
 
+// The bookkeeping below is the main loop's alone (B-193); probes on other threads hand it over.
 std::map<std::string, std::shared_ptr<Edge>> g_branches;          // socket -> edge
 std::map<std::string, std::shared_ptr<TeeProgress>> g_tee_progress; // tee name -> progress
 std::map<std::string, Pending> g_pending;                          // socket -> pending attach
-std::set<std::string> g_teardowns;
+std::map<std::string, std::shared_ptr<Edge>> g_teardowns;         // socket -> edge still detaching
 guint g_retry_timer_id = 0;
 guint g_stall_timer_id = 0;
 int g_branch_seq = 0;
@@ -436,12 +436,28 @@ void finish_teardown(const std::shared_ptr<Edge>& e, const std::string& socket, 
     ipc::emit(ev);
 }
 
+/** Forget a finished teardown (main loop): its own record only, never a later teardown's. */
+void drop_teardown(const std::string& socket, const std::shared_ptr<Edge>& e) {
+    auto it = g_teardowns.find(socket);
+    if (it != g_teardowns.end() && it->second == e) g_teardowns.erase(it);
+}
+
+gboolean drop_teardown_idle(gpointer data) {
+    auto* td = static_cast<Teardown*>(data);
+    drop_teardown(td->socket, td->e);
+    delete td;
+    return G_SOURCE_REMOVE;
+}
+
 GstPadProbeReturn teardown_probe_cb(GstPad* pad, GstPadProbeInfo*, gpointer user) {
     auto* td = static_cast<Teardown*>(user);
     // Runs with the tee src pad blocked (or idle): the producer's streaming
     // thread cannot be inside this branch anymore.
     finish_teardown(td->e, td->socket, pad);
-    g_teardowns.erase(td->socket);
+    // An idle pad fires this inside gst_pad_add_probe, on the main loop; a streaming
+    // thread hands the record to the main loop instead (B-193).
+    if (g_main_context_is_owner(nullptr)) drop_teardown(td->socket, td->e);
+    else g_idle_add(drop_teardown_idle, new Teardown{td->e, td->socket});
     return GST_PAD_PROBE_REMOVE;
 }
 
@@ -469,11 +485,12 @@ void handle_bus_detach(JsonObject* data) {
 
 void clear_pending() {
     g_pending.clear();
-    g_teardowns.clear();
 }
 
 void release_paths() {
     for (auto& [socket, e] : g_branches) release_path(socket, e->path);
+    // An edge still detaching too: once the pipeline stops, its probe may never fire.
+    for (auto& [socket, e] : g_teardowns) release_path(socket, e->path);
 }
 
 bool teardown_branch(const std::string& socket) {
@@ -492,7 +509,7 @@ bool teardown_branch(const std::string& socket) {
     // Teardown BEHIND A BLOCKING PAD PROBE on the tee src pad (the canonical
     // dynamic-unlink recipe): deactivating mid-push pauses the producer's
     // task forever. IDLE fires at once on a quiet pad.
-    g_teardowns.insert(socket);
+    g_teardowns[socket] = e;
     gst_pad_add_probe(e->tee_src, (GstPadProbeType)(GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM | GST_PAD_PROBE_TYPE_IDLE),
                       teardown_probe_cb, new Teardown{e, socket}, delete_teardown);
     return true;

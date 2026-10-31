@@ -51,12 +51,19 @@ $(MRTS)/libmrts.a: FORCE
 	$(MAKE) -C $(MRTS) libmrts.a
 FORCE:
 
-test:
-	@# Protocol conformance runs from the python gst suite
-	@# (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
+# The edge bookkeeping across threads (B-193): the runner's sources but main.cpp, on a real
+# pipeline. Protocol conformance runs from the python gst suite
+# (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
+TESTS = tests/bus_edges_thread_test
+
+tests/bus_edges_thread_test: tests/bus_edges_thread_test.cpp $(SRCS) $(HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PKG_CFLAGS) $< $(filter-out main.cpp,$(SRCS)) $(MRTS)/libmrts.a $(PKG_LIBS) -o $@
+
+test: $(TESTS)
+	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f $(BIN)
+	rm -f $(BIN) $(TESTS)
 
 install: $(BIN)
 	install -D -m 755 $(BIN) $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/$(BIN)
