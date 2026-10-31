@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { setLogTap } from '@media-router/shared-types';
 import { PipeWireManager } from './PipeWireManager.js';
 
 /**
@@ -9,7 +10,11 @@ import { PipeWireManager } from './PipeWireManager.js';
 function fakePulse() {
     const modules = new Map<number, string>();
     let next = 536870912;
+    /** PipeWire answers; `hiccups` listings fail while it does (a pactl timeout). */
+    const pulse = { up: true, hiccups: 0 };
+    const refused = () => new Error('pactl command failed\nConnection failure: Connection refused');
     const exec = vi.fn(async (args: string[]) => {
+        if (!pulse.up) throw refused();
         if (args[0] === 'load-module') {
             const id = next++;
             modules.set(id, `${args[1]}\t${args.slice(2).join(' ')}`);
@@ -21,16 +26,26 @@ function fakePulse() {
         }
         return '';
     });
-    const execImmediate = vi.fn((args: string[]) => {
+    const listing = (args: string[]) => {
         if (args.join(' ') !== 'list short modules') return '';
         return [...modules].map(([id, line]) => `${id}\t${line}\t`).join('\n');
+    };
+    const execImmediate = vi.fn(listing);
+    const execImmediateAsync = vi.fn(async (args: string[]) => {
+        if (!pulse.up || pulse.hiccups-- > 0) throw refused();
+        return listing(args);
     });
     const restart = () => {
         modules.clear();
         next = 536870912;
     };
-    const pw = new PipeWireManager({ exec, execImmediate, onMutation: null } as never);
-    return { pw, modules, exec, restart };
+    const pw = new PipeWireManager({
+        exec,
+        execImmediate,
+        execImmediateAsync,
+        onMutation: null,
+    } as never);
+    return { pw, modules, pulse, exec, execImmediate, execImmediateAsync, restart };
 }
 
 const unloaded = (exec: ReturnType<typeof fakePulse>['exec']) =>
@@ -75,5 +90,72 @@ describe('PipeWireManager: a PA module is unloaded only while its ID still names
         expect(unloaded(exec)).toEqual([]);
         await pw.unloadModule(id, 'MR_PW_mix_in_1');
         expect(unloaded(exec)).toEqual([id]);
+    });
+    it('a listing that gets no answer still unloads: a pactl hiccup leaves nothing loaded', async () => {
+        const { pw, modules, pulse, exec } = fakePulse();
+        const id = await pw.loadRemapSource('ain-1', 'alsa_input.mic', 2, 48000, 'ain-1');
+        pulse.hiccups = 1;
+        await pw.unloadModule(id, 'MR_PW_ain-1');
+        expect(unloaded(exec)).toEqual([id]);
+        expect(modules.size).toBe(0);
+    });
+
+    describe('log lines', () => {
+        const lines: Array<{ level: number; name: string; msg: string }> = [];
+        const flush = () => new Promise((r) => setImmediate(r));
+        afterEach(() => {
+            setLogTap(null);
+            lines.length = 0;
+        });
+
+        it('PipeWire gone: the unload is tried, and its failure is a line, not a warning', async () => {
+            setLogTap((l) => lines.push(JSON.parse(l)));
+            const { pw, pulse, exec } = fakePulse();
+            const id = await pw.loadRemapSink('aout-1', 'alsa_output.dac', 2, 48000, 'aout-1');
+            pulse.up = false;
+            await pw.releaseAll('aout-1');
+            await flush();
+            expect(unloaded(exec)).toEqual([id]);
+            const mine = lines.filter((l) => l.name === 'PipeWireManager');
+            expect(mine.filter((l) => l.level >= 40)).toEqual([]);
+            expect(mine.map((l) => l.msg)).toContain(
+                'PA module not unloaded: PipeWire does not answer',
+            );
+        });
+
+        it('an ID left alone after a restart is a line of PipeWireManager naming the node', async () => {
+            setLogTap((l) => lines.push(JSON.parse(l)));
+            const { pw, restart } = fakePulse();
+            const old = await pw.loadRemapSource('ain-1', 'alsa_input.mic', 2, 48000, 'ain-1');
+            restart();
+            await pw.unloadModule(old, 'MR_PW_ain-1');
+            await flush();
+            const line = lines.find((l) => l.msg.startsWith('PA module is gone or no longer ours'));
+            expect(line).toMatchObject({ name: 'PipeWireManager', node: 'MR_PW_ain-1', level: 30 });
+        });
+
+        it('PipeWire answers: a failed unload of its own module is still a warning', async () => {
+            setLogTap((l) => lines.push(JSON.parse(l)));
+            const { pw, exec } = fakePulse();
+            const id = await pw.loadRemapSink('aout-1', 'alsa_output.dac', 2, 48000, 'aout-1');
+            exec.mockImplementationOnce(async () => {
+                throw new Error('pactl command failed\nFailure: Timeout');
+            });
+            await pw.unloadModule(id, 'MR_PW_aout-1');
+            await flush();
+            const warned = lines.filter((l) => l.name === 'PipeWireManager' && l.level === 40);
+            expect(warned.map((l) => l.msg)).toEqual(['Failed to unload module']);
+        });
+    });
+
+    it('asks for the listing without blocking: no synchronous pactl on the stop path', async () => {
+        const { pw, exec, execImmediate, execImmediateAsync } = fakePulse();
+        const a = await pw.loadNullSink('mix_in_1', 2, 48000, 'mix');
+        const b = await pw.loadNullSink('mix_in_2', 2, 48000, 'mix');
+        await pw.releaseAll('mix');
+        expect(unloaded(exec)).toEqual([a, b]);
+        expect(execImmediate).not.toHaveBeenCalled();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(2);
+        expect(execImmediateAsync).toHaveBeenCalledWith(['list', 'short', 'modules']);
     });
 });

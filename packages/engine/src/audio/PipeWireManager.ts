@@ -173,14 +173,22 @@ export class PipeWireManager {
      * the next loads, so a stale ID can be another module's fresh one (B-195).
      */
     async unloadModule(moduleId: number, name?: string): Promise<void> {
-        if (name !== undefined && !this.stillLoadedAs(moduleId, name)) return;
+        const loaded = name === undefined ? true : await this.stillLoadedAs(moduleId, name);
+        if (loaded === false) return;
         try {
             await this.paQueue.exec(['unload-module', String(moduleId)]);
             log.info({ moduleId }, 'Unloaded module');
         } catch (err) {
             // Ignore "No such entity" — module already unloaded (e.g. by orphan cleanup)
             const msg = err instanceof Error ? err.message : '';
-            if (!msg.includes('No such entity')) {
+            if (msg.includes('No such entity')) return;
+            // Neither the listing nor the unload got an answer: PipeWire is gone, its modules too.
+            if (loaded === null) {
+                log.info(
+                    { moduleId, node: name, err: msg },
+                    'PA module not unloaded: PipeWire does not answer',
+                );
+            } else {
                 log.warn({ moduleId, err: msg }, 'Failed to unload module');
             }
         }
@@ -261,19 +269,21 @@ export class PipeWireManager {
         return moduleId;
     }
 
-    /** Is PA module `moduleId` loaded with `name` among its arguments (`sink_name=<name>`, ...)? */
-    private stillLoadedAs(moduleId: number, name: string): boolean {
+    /** Is PA module `moduleId` loaded with `name` among its arguments (`sink_name=<name>`, ...)?
+     *  Null when the listing gets no answer: unloaded anyway, a hiccup must not keep it (B-195). */
+    private async stillLoadedAs(moduleId: number, name: string): Promise<boolean | null> {
         let modules: string;
         try {
-            modules = this.paQueue.execImmediate(['list', 'short', 'modules']);
+            modules = await this.paQueue.execImmediateAsync(['list', 'short', 'modules']);
         } catch {
-            return false; // PipeWire gone: so is the module
+            return null;
         }
         const line = modules.split('\n').find((l) => l.split('\t')[0] === String(moduleId));
         const named = !!line && new RegExp(`=${escapeRegExp(name)}(\\s|$)`).test(line);
         if (!named) {
+            // `node`, not `name`: that key is the logger's own (the component).
             log.info(
-                { moduleId, name },
+                { moduleId, node: name },
                 'PA module is gone or no longer ours (PipeWire restarted) — not unloaded',
             );
         }
