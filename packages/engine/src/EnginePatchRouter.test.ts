@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setLogTap } from '@media-router/shared-types';
 import { EnginePatchRouter } from './EnginePatchRouter.js';
 
 function createMocks(opts: { modulesRunning?: boolean } = {}) {
@@ -17,6 +18,7 @@ function createMocks(opts: { modulesRunning?: boolean } = {}) {
         createConnection: vi.fn(async () => 'conn-1'),
         removeConnection: vi.fn(async () => true),
         updateChannelMap: vi.fn(async () => {}),
+        isConnectionWaiting: vi.fn(() => false),
     } as any;
 
     const localServer = { configChanged: vi.fn() } as any;
@@ -188,6 +190,44 @@ describe('EnginePatchRouter', () => {
                 'in',
                 undefined,
             );
+        });
+
+        it('a connection add says it waits when its producer is not up yet (B-194)', async () => {
+            const lines: Array<{ name: string; msg: string }> = [];
+            setLogTap((l) => lines.push(JSON.parse(l)));
+            try {
+                const { router, mediaRouter } = createMocks();
+                const add = (sourceModuleId: string) =>
+                    router.onPatch('manager', 'manager', [
+                        {
+                            op: 'add',
+                            path: '/connections/-',
+                            value: {
+                                sourceModuleId,
+                                sourcePortId: 'out',
+                                sinkModuleId: 'b',
+                                sinkPortId: 'in',
+                            },
+                        },
+                    ]);
+                add('a');
+                await vi.waitFor(() =>
+                    expect(mediaRouter.isConnectionWaiting).toHaveBeenCalledTimes(1),
+                );
+                mediaRouter.isConnectionWaiting.mockReturnValue(true);
+                add('c');
+                const said = () =>
+                    lines.filter(
+                        (l) => l.name === 'EnginePatchRouter' && /^Live connect/.test(l.msg),
+                    );
+                await vi.waitFor(() => expect(said()).toHaveLength(2));
+                expect(said().map((l) => l.msg)).toEqual([
+                    'Live connect',
+                    'Live connect waits for its producer',
+                ]);
+            } finally {
+                setLogTap(null);
+            }
         });
     });
 

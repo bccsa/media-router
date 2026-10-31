@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:net';
+import { setLogTap } from '@media-router/shared-types';
 import { MpegTsBusExecutor } from './MpegTsBusExecutor.js';
 import { busEdgeSocketPath } from '../plugins/busHelpers.js';
 import type { Connection } from './MediaRouter.js';
@@ -611,6 +612,87 @@ describe('MpegTsBusExecutor live input branches', () => {
         await listenEdge(c);
         await vi.waitFor(() => expect(busInputAdd).toHaveBeenCalledTimes(1), { timeout: 3000 });
         await vi.waitFor(() => expect(missing.has('mixin_in_c15')).toBe(false));
+    });
+
+    /** Tap the log: its lines, and the "Live input added" ones among them. */
+    function tapLog() {
+        const lines: Array<{ name: string; msg: string }> = [];
+        setLogTap((l) => lines.push(JSON.parse(l)));
+        const added = () =>
+            lines
+                .filter((l) => l.name === 'LiveInputBranch' && l.msg.startsWith('Live input added'))
+                .map((l) => l.msg);
+        return { lines, added };
+    }
+
+    /** An add the runner answers only when the test says so. */
+    function holdAdd(busInputAdd: ReturnType<typeof aggregatorSink>['busInputAdd']) {
+        let reply = () => {};
+        busInputAdd.mockImplementationOnce(
+            () =>
+                new Promise<void>((r) => {
+                    reply = () => r();
+                }),
+        );
+        return () => reply();
+    }
+
+    it('"Live input added" comes after the runner\'s reply, never for a refused add (B-194)', async () => {
+        const log = tapLog();
+        try {
+            const c = mixConn('c21');
+            await listenEdge(c);
+            const held = aggregatorSink();
+            const reply = holdAdd(held.busInputAdd);
+            const applied = makeLiveExecutor(held.sink).executor.execute(c);
+            await vi.waitFor(() => expect(held.busInputAdd).toHaveBeenCalledTimes(1));
+            await new Promise((r) => setTimeout(r, 50));
+            expect(log.added()).toEqual([]);
+            reply();
+            await applied;
+            await vi.waitFor(() => expect(log.added()).toEqual(['Live input added c21']));
+
+            const refused = aggregatorSink();
+            refused.busInputAdd.mockRejectedValueOnce(new Error('link failed'));
+            await makeLiveExecutor(refused.sink).executor.execute(c);
+            expect(refused.busInputAdd).toHaveBeenCalledTimes(1);
+            expect((refused.sink as any).start).toHaveBeenCalled();
+            await new Promise((r) => setTimeout(r, 20));
+            expect(log.added()).toEqual(['Live input added c21']);
+        } finally {
+            setLogTap(null);
+        }
+    });
+
+    it('a branch added once its producer is up says "Live input added" after the reply, not when refused (B-194)', async () => {
+        const log = tapLog();
+        const other = createServer();
+        try {
+            const held = aggregatorSink();
+            const reply = holdAdd(held.busInputAdd);
+            const c = mixConn('c22');
+            await awayExecutor(held.sink).execute(c);
+            const refused = aggregatorSink();
+            refused.busInputAdd.mockRejectedValueOnce(new Error('link failed'));
+            const d = mixConn('c23');
+            await awayExecutor(refused.sink).execute(d);
+
+            await listenEdge(c);
+            await new Promise<void>((res) => other.listen(busEdgeSocketPath(PORT, d.id), res));
+            const opts = { timeout: 3000 };
+            await vi.waitFor(() => expect(held.busInputAdd).toHaveBeenCalledTimes(1), opts);
+            await vi.waitFor(() => expect(refused.busInputAdd).toHaveBeenCalledTimes(1), opts);
+            await new Promise((r) => setTimeout(r, 50));
+            expect(log.added()).toEqual([]);
+            reply();
+            await vi.waitFor(() => expect(log.added()).toEqual(['Live input added c22']));
+            expect(log.lines.map((l) => l.msg)).toContain(
+                'Live input add failed for c23 — it joins when its producer plays',
+            );
+        } finally {
+            setLogTap(null);
+            if (other.listening) await new Promise((r) => other.close(r));
+        }
     });
 
     it('a waiting branch gives up once another path added it, or the sink relaunched', async () => {

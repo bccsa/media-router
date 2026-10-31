@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { setLogTap } from '@media-router/shared-types';
 import { CommandDispatcher, type CommandContext } from './CommandDispatcher.js';
 
 function createMockContext(): CommandContext {
@@ -13,6 +14,7 @@ function createMockContext(): CommandContext {
             createConnection: vi.fn().mockResolvedValue('conn-1'),
             updateChannelMap: vi.fn().mockResolvedValue(undefined),
             removeConnection: vi.fn().mockResolvedValue(undefined),
+            isConnectionWaiting: vi.fn().mockReturnValue(false),
         } as any,
         localServer: {
             configChanged: vi.fn(),
@@ -406,6 +408,41 @@ describe('CommandDispatcher', () => {
                 undefined,
             );
             expect(ctx.localServer.configChanged).toHaveBeenCalled();
+        });
+
+        it('routingConnect says the connection waits when its producer is not up yet (B-194)', async () => {
+            const lines: Array<{ name: string; msg: string }> = [];
+            setLogTap((l) => lines.push(JSON.parse(l)));
+            try {
+                const connect = () =>
+                    dispatcher.dispatch({
+                        command: 'routingConnect',
+                        sourceModuleId: 'mod-a',
+                        sourcePortId: 'out-0',
+                        sinkModuleId: 'mod-b',
+                        sinkPortId: 'in-0',
+                    });
+                connect();
+                await flush();
+                (ctx.mediaRouter.isConnectionWaiting as ReturnType<typeof vi.fn>).mockReturnValue(
+                    true,
+                );
+                connect();
+                await flush();
+                const said = () =>
+                    lines.filter(
+                        (l) => l.name === 'CommandDispatcher' && /^Live connect/.test(l.msg),
+                    );
+                await vi.waitFor(() => expect(said()).toHaveLength(2));
+                expect(said().map((l) => l.msg)).toEqual([
+                    'Live connect',
+                    'Live connect waits for its producer',
+                ]);
+                // A waiting connection is accepted: it is stored and broadcast all the same.
+                expect(ctx.localServer.configChanged).toHaveBeenCalledTimes(2);
+            } finally {
+                setLogTap(null);
+            }
         });
 
         it('routingDisconnect removes connection and broadcasts', async () => {

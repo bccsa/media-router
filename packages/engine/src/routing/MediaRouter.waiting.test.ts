@@ -109,6 +109,17 @@ describe('MediaRouter: a connection waits for its producer (B-194)', () => {
         expect(lines.filter((l) => l.level >= 50)).toEqual([]);
     });
 
+    it('a producer that takes its channel by port (a mixer, a transcoder) wakes the wait on that port', async () => {
+        // SWA01's waits were on audio-mixer:audio-out and audio-transcoder:out-0.
+        await connect();
+        router.assignBusChannel('mic', 'audio-out');
+        expect(router.getBusChannel('mic')).toBeUndefined();
+        expect(await waitUntil(() => router.getConnections().length === 1)).toBe(true);
+        expect(router.isConnectionWaiting(ID)).toBe(false);
+        expect(modules.mixer.start).toHaveBeenCalledTimes(1);
+        expect(lines.filter((l) => l.level >= 50)).toEqual([]);
+    });
+
     it('a channel of another module, or of another port of the producer, wakes nothing', async () => {
         await connect();
         router.assignBusChannel('mixer');
