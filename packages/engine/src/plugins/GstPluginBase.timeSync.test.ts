@@ -53,20 +53,6 @@ describe('GstPluginBase time-sync resolution', () => {
         }
     });
 
-    it('keeps alignBranchesToStamps — it is anchored to the producer stamps', async () => {
-        // A multi-input mux's branches each zero their own timeline off the ONE
-        // bus buffer their tsdemux locked on; this is where that mapping is put
-        // back.
-        const sent = await resolve(
-            {
-                pipeline: 'unixfdsrc ! tsdemux name=demux_0 ! mpegtsmux name=mux',
-                alignBranchesToStamps: { demuxes: ['demux_0', 'demux_1'] },
-            },
-            {},
-        );
-        expect(sent!.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
-    });
-
     it('keeps liveCaptureClock for the runner to read', async () => {
         const sent = await resolve(
             { pipeline: 'v4l2src ! mpegtsmux ! tee name=busout_1', liveCaptureClock: true },

@@ -274,7 +274,6 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
             'mrtsdemux name=mixin_demux0 select=audio/x-smpte-302m ! avdec_s302m',
         );
         expect(desc!.pipeline).not.toMatch(/\btsdemux\b/);
-        expect(desc!.alignBranchesToStamps).toBeUndefined();
     });
 
     it('the route head override replaces the engine default — resolved for THIS consumer', () => {

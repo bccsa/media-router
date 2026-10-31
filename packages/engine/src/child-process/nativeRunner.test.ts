@@ -71,10 +71,9 @@ describe('nativeRunnerEligible', () => {
         ).toBeNull();
     });
 
-    it('accepts the presentation-leg shape (Stage 2: branch alignment + backlog shed)', () => {
+    it('accepts the presentation-leg shape (Stage 2: backlog shed)', () => {
         const leg = {
             ...audioMatrix,
-            alignBranchesToStamps: { demuxes: ['mixin_demux0'] },
             backlogShed: {
                 element: 'sink',
                 sink: 'sink',

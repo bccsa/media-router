@@ -1142,8 +1142,8 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   N × 302M inputs into one aligned `audiomixer`, or a direct branch with no aggregator
   when there is exactly one source (not in live-input mode; ADR-0008's bypass). Every
   branch decodes on content time: `mrtsdemux select=audio/x-smpte-302m` is the formula
-  demux (running time = PES PTS − 1 h), so no branch is aligned to the bus stamps and
-  there is nothing to pass to `alignBranchesToStamps`. Each branch's decode `mrasrc`
+  demux (running time = PES PTS − 1 h), so each branch is on its producer's house time
+  with nothing to align. Each branch's decode `mrasrc`
   (`<mixerName>_asrc<i>`, `liveAsrcName` in live-input mode; house-clock Phase 3) passes a
   source on house time untouched and resamples one on a clock of its own to house rate
   once it measures it, the path's one resample. `branchAsrc: false` leaves the direct
@@ -2252,18 +2252,6 @@ warning cleared). Declare `udpSilenceRestartMs` on the description only when a
 rebuild genuinely helps — mpegts-ip-input and aes67-input do for MULTICAST
 (60 s) to re-join a dropped group; leave it 0 for unicast. The runner side of
 all this is `gst_source_gate.py`.
-
-**Transform-producer inputs (`alignBranchesToStamps.transformProducer`).**
-Set it with `alignBranchesToStamps` on a transform producer's input demuxes:
-instead of one pad offset per branch, every access unit leaving the demux is
-retimed to its producer's stamp mapping (PTS/DTS = K + its PES), across
-source rewinds, with the bus input held until the first exact reading. Under
-identity egress K is −1 h. `privatePads: true` also retimes tsdemux's
-`private_` and `subpicture_` pads (KLV, teletext, DVB subtitles) to their own
-PES; no module sets it since the mpegts-muxer's inputs moved to `mrtsdemux`
-(WI-P3-14), so a transcoder's subtitle pads keep tsdemux's times.
-Presentation legs leave both unset; Phase 3 replaces the retime with the
-formula demux.
 
 **Never drop on lateness (`BacklogShedConfig.onLateness`).**
 `backlogShedConfig()` sets `onLateness: "reanchor"` when

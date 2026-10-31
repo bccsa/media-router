@@ -130,12 +130,11 @@ describe('buildPipeline', () => {
         expect(Object.keys(desc).sort()).toEqual(['pipeline', 'restartOnError', 'runnerHooks']);
     });
 
-    it('demuxes its input on the formula: no branch alignment, no stock tsdemux (WI-P3-13)', () => {
+    it('demuxes its input on the formula, no stock tsdemux (WI-P3-13)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({
             renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
         })!;
-        expect(desc.alignBranchesToStamps).toBeUndefined();
         expect(desc.pipeline).toContain(
             'mrtsdemux name=demux media=video ! capsfilter caps="video/x-h264"',
         );

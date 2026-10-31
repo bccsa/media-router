@@ -238,7 +238,7 @@ describe('AudioDecoderModule playout offset', () => {
         expect(tight.module.buildPipeline({})!.pipeline).toContain('ts-offset=0');
     });
 
-    it('decodes its first audio stream on the formula demux, with no branch alignment', () => {
+    it('decodes its first audio stream on the formula demux', () => {
         // House-clock WI-P3-10 (OQ-28): `media=audio`, so an A/V input never links its video
         // first; content time comes from the demux's formula, nothing to align.
         const { module } = makeModule({ playoutOffsetMs: 300 });
@@ -246,7 +246,6 @@ describe('AudioDecoderModule playout offset', () => {
         expect(desc.pipeline).toContain(' ! mrtsdemux name=addemux media=audio ! queue leaky=0 ');
         expect(desc.pipeline).not.toMatch(/\btsdemux\b/);
         expect(desc.pipeline).not.toContain('audioresample');
-        expect(desc).not.toHaveProperty('alignBranchesToStamps');
     });
 
     it('presents sync=true with the never-silent guard, whatever the stored mode flags say', () => {

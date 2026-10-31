@@ -192,27 +192,8 @@ describe('start payload', () => {
             payloadFor({ pipeline: 'fakesrc ! fakesink', liveCaptureClock: true }).liveCaptureClock,
         ).toBe(true);
         // Omitted → false, not undefined: every bus-fed producer keeps the
-        // pinned timeline its branch alignment is built on.
+        // pinned timeline its demux's PES − 1 h is house time on.
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).liveCaptureClock).toBe(false);
-    });
-
-    it('forwards alignBranchesToStamps — dropping it puts the mux back on luck', () => {
-        // Caught HERE the hard way (.202, 2026-08-14): the mux built the config,
-        // the runner knew what to do with it, and the field skew was untouched
-        // because the payload never carried it — the decoderThreadType trap
-        // again, and invisible from either end. Without it each mux input branch
-        // keeps the private zero point it took off the one bus buffer its
-        // tsdemux locked on, i.e. the 100–121 ms A/V skew, re-drawn per restart.
-        const alignBranchesToStamps = { demuxes: ['demux_0', 'demux_1'] };
-        expect(
-            payloadFor({ pipeline: 'fakesrc ! fakesink', alignBranchesToStamps })
-                .alignBranchesToStamps,
-        ).toEqual(alignBranchesToStamps);
-        // Absent on the legacy path (applyTimeSync drops it there) — must stay
-        // absent rather than arming probes on elements that may not exist.
-        expect(
-            payloadFor({ pipeline: 'fakesrc ! fakesink' }).alignBranchesToStamps,
-        ).toBeUndefined();
     });
 });
 
@@ -224,7 +205,6 @@ describe('start payload (the wire to the runner)', () => {
         // The egress stamp needs no field: every egress is stamped by identity (WI-P2-3).
         const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
         expect(Object.keys(child.startPayload({ pipeline: 'x' })).sort()).toEqual([
-            'alignBranchesToStamps',
             'backlogShed',
             'busReports',
             'decoderThreadType',

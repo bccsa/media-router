@@ -10,7 +10,6 @@
 #include <thread>
 
 #include "backlog_shed.h"
-#include "branch_align.h"
 #include "bus_edges.h"
 #include "bus_inputs.h"
 #include "capture_rt.h"
@@ -342,10 +341,6 @@ void Runner::handle_start(JsonObject* data) {
     // Live input branch bins (error containment).
     inputs::declare(json_get_array(data, "liveInputBranches"));
 
-    // Multi-branch stamp alignment: armed before PLAYING so
-    // the first TS bytes carry the mapping every branch is anchored to.
-    align::install(pipeline, json_get_object(data, "alignBranchesToStamps"));
-
     // The bus egress stamp, spliced before PLAYING so an attach landing the
     // moment the pipeline starts owns its first buffer.
     stamper::enable(pipeline);
@@ -425,7 +420,6 @@ void Runner::handle_stop() {
     cancel_playing_watchdog();
     gate::stop();
     bus::clear_pending();
-    align::clear();
     stamper::clear();
     hooks::clear();
     padlink::clear();

@@ -8,8 +8,8 @@
 //   and plugin-event forwarding, live properties, element stats, throughput
 //   (commands.cpp); per-consumer bus fan-out edges with the stall watchdog
 //   (bus_edges.cpp); the time-sync contract's house clock and the native
-//   `mrtsstamp` egress stamper (stamper.cpp); multi-branch stamp alignment
-//   (branch_align.cpp); the backlog shedder (backlog_shed.cpp); pad-link
+//   `mrtsstamp` egress stamper (stamper.cpp); the backlog shedder
+//   (backlog_shed.cpp); pad-link
 //   rules and stream discovery (pad_link.cpp); the keyframe gate, render
 //   keep-up watch and TS video-info probe, and the mrrist plugin loader
 //   (gates.cpp); runner hooks in their native form (hooks.cpp, ADR-0020); a

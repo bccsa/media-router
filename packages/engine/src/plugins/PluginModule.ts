@@ -336,8 +336,8 @@ export interface PipelineDescription {
      *
      * SCOPE. It is a property of the PIPELINE, not of the plugin: bus-fed producers (transcoder,
      * mpegts-muxer) take their buffers from already-stamped bus input, not from a
-     * live capture device, and MUST NOT set it — their branch alignment is built
-     * on running-time ≡ house time.
+     * live capture device, and MUST NOT set it — their demux's PES − 1 h is house
+     * time only while running time is.
      *
      * Do not set this speculatively on other live-source modules. It is a
      * targeted fix for a measured aggregator mis-schedule; without the burst
@@ -477,29 +477,6 @@ export interface PipelineDescription {
      */
     backlogShed?: BacklogShedConfig;
     /**
-     * Anchor a multi-branch pipeline's input branches to the PRODUCER'S STAMPS.
-     *
-     * WHY. Each named `tsdemux` works out its own zero point: it slaves the PES
-     * timeline it emits to the timestamp of the bus buffer it locked on. That
-     * timestamp is the producer's house stamp, which is exact — EXCEPT on a
-     * reordered stream, where the stamper's monotone floor clamps the buffers
-     * whose first PES walks backwards (measured on the .202 video leg: 120.009 ms
-     * of K spread, against 0.316 ms on its audio sibling). A branch that locks on
-     * a clamped buffer runs that far late for its whole incarnation, its sibling
-     * does not, and the pair leaves the mux 100–121 ms apart — from inputs
-     * measured 0.001 ms apart, re-drawn on every restart.
-     *
-     * WHAT THE RUNNER DOES. Per branch it measures the producer's mapping
-     * `K = stamp − ns(firstPES)` (minimum over the buffers seen — the floor only
-     * pushes stamps up) and the first PES its demuxer can use, then shifts the
-     * demuxer's src pad by `K + ns(anchorPES) − firstBufferPts` so the branch's
-     * running time IS that media's house time. Every branch lands on the same
-     * absolute reference, so alignment holds across branches, across producers,
-     * and across restarts. Rejected (and logged) past 500 ms, where the reading
-     * is no longer the zero-point error this removes.
-     */
-    alignBranchesToStamps?: AlignBranchesToStampsConfig;
-    /**
      * Plugin-owned runner-side python (`plugins/<x>/py/<module>.py`, on the
      * runner's PYTHONPATH). For each entry the runner imports `module` and
      * calls `install(pipeline, config, ctx)` before PLAYING and `clear()` on
@@ -525,27 +502,6 @@ export interface RunnerHook {
     module: string;
     /** Passed to the module's `install` verbatim (JSON). */
     config?: unknown;
-}
-
-/** Config for `PipelineDescription.alignBranchesToStamps`. */
-export interface AlignBranchesToStampsConfig {
-    /** `name=`s of the input-branch tsdemux elements to anchor. */
-    demuxes: string[];
-    /**
-     * The demux is a TRANSFORM PRODUCER's input (transcoder, audio-transcoder,
-     * each mpegts-muxer input — K, hold and epochs per demux): every access unit
-     * is retimed to its producer's stamp mapping (PTS/DTS = K + its PES),
-     * continuously and across source rewinds, from the first one. Presentation
-     * legs stay on the one-offset path (unset).
-     */
-    transformProducer?: boolean;
-    /**
-     * With `transformProducer`: retime the cue pads too (tsdemux's `private_` and
-     * `subpicture_`: KLV, teletext, DVB subtitles), so a cue leaves the demux at
-     * K + its PES. Set by the mpegts-muxer only; a transcoder's subtitle pads keep
-     * tsdemux's times (unset).
-     */
-    privatePads?: boolean;
 }
 
 /** TS video-info probe config — see PipelineDescription.tsProbe. */

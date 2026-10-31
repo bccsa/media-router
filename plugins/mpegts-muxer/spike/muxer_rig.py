@@ -41,8 +41,7 @@ def run(name, desc_file, drop=(), bus_debug=False, window=10):
         d['pipeline'] = d['pipeline'].replace(old, new)
         print(f'    pipeline edit: {old!r} -> {new!r}')
     start = {'cmd': 'start', 'pipeline': d['pipeline'], 'useStdioForData': False, 'restartOnError': False,
-             'linkOnPadAdded': d['linkOnPadAdded'],
-             'alignBranchesToStamps': {'demuxes': d['demuxes']}, 'inputStallWatch': d['inputStallWatch']}
+             'linkOnPadAdded': d['linkOnPadAdded'], 'inputStallWatch': d['inputStallWatch']}
     for k in drop: start.pop(k, None)
     env = dict(os.environ, PYTHONPATH=f'{MR}/plugins/mpegts-core/py:{MR}/plugins/unixfdbus-core/py', MR_PLUGINS_DIR=f'{MR}/plugins')
     if bus_debug: env['GST_DEBUG'] = 'GST_BUS:5'
@@ -54,7 +53,7 @@ def run(name, desc_file, drop=(), bus_debug=False, window=10):
         cmd({'cmd': 'set_klv_payload', 'element': 'klvsrc', 'payload': json.dumps({'v': 1, 'streams': [{'pid': 256, 'media': 'video', 'name': 'Cam'}, {'pid': 320, 'media': 'audio', 'name': 'Mix'}]})})
     cmd({'cmd': 'bus_attach', 'tee': 'busout_40002', 'socket': '/tmp/rig-out.sock'}); time.sleep(1.0)
     cons = subprocess.Popen([sys.executable, f'{S}/rig_tap.py', '/tmp/rig-out.sock', str(20 + window + 2)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    time.sleep(20)                       # let branch alignment settle (3-15 s)
+    time.sleep(20)                       # let the mux settle
     err_before = os.path.getsize(f'{S}/rig-{name}.err')
     s1 = snap(r.pid); time.sleep(window); s2 = snap(r.pid)
     err_after = os.path.getsize(f'{S}/rig-{name}.err')
@@ -86,10 +85,9 @@ def run(name, desc_file, drop=(), bus_debug=False, window=10):
     errf.close()
 
 if __name__ == '__main__':
-    which = sys.argv[1:] or ['klv-bus', 'klv', 'noklv', 'noalign']
+    which = sys.argv[1:] or ['klv-bus', 'klv', 'noklv']
     for w in which:
         if w == 'klv-bus': run('klv-bus', f'{S}/rig-klv.json', bus_debug=True)
         elif w == 'klv': run('klv', f'{S}/rig-klv.json')
         elif w == 'noklv': run('noklv', f'{S}/rig-noklv.json')
-        elif w == 'noalign': run('noalign-klv', f'{S}/rig-klv.json', drop=('alignBranchesToStamps',))
         elif w == 'nostall': run('nostall-klv', f'{S}/rig-klv.json', drop=('inputStallWatch',))

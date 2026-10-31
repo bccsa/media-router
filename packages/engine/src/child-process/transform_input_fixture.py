@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Test fixture: the bus input of a TRANSFORM PRODUCER (transcoder,
 audio-transcoder) as the OCC gate's transcoder saw it on 2026-10-08 — an SPTS
-whose video PES PTS lead the PCR by ~1.1 s, stamped by the contract.
+whose video PES PTS lead the PCR by ~1.1 s, stamped by the contract — and the
+identity egress such a producer writes, with cues.
 
-Shared by gst_tsdemux_slave_test.py, gst_branch_align_test.py and
-native_runner_protocol_test.py; not shipped (the engine build copies only the
-runner's own modules).
+Shared by native_runner_protocol_test.py and aligner_conformance_test.py; not
+shipped (the engine build copies only the runner's own modules).
 
 Stream: H.264-typed video PID, IBBP in decode order (PTS+DTS on I/P, PTS only
 on B), DTS `dts_lead_ms` ahead of the PCR — swinging up by `lead_swing_ms` over
@@ -21,11 +21,11 @@ Stamps: the producer model — `content(pts) = A + ns(pts − ref)` (anchor A at
 the first PES's arrival, ref that PES), a bus buffer stamped by its first
 timing-PID PES (else its first PES), never below the last stamp. It is what
 the anchored stamper of `py/ts_timeline.py`, kept as the reference, writes once
-its conditioner has learned the PCR PID (pinned in gst_tsdemux_slave_test.py;
-no runtime path stamps that way since Phase 2). `skew_ppm` runs the source clock
-fast against house with the producer's drift slew assumed ideal; a jump steps
-PES and PCR back `jump_s` with the producer re-anchored, so stamps and content
-time stay continuous. An access unit's TARGET is its content time.
+its conditioner has learned the PCR PID (no runtime path stamps that way
+since Phase 2). `skew_ppm` runs the source clock fast against house with the
+producer's drift slew assumed ideal; a jump steps PES and PCR back `jump_s`
+with the producer re-anchored, so stamps and content time stay continuous. An
+access unit's TARGET is its content time.
 """
 import math
 import os
@@ -185,11 +185,11 @@ MUX_BASE = 3600 * 90000     # mpegtsmux writes running time + 1 h (ts_timeline.M
 def house_egress(seconds, target, start_s=0.0, transit_ms=170.0, per_buf=7):
     """The video PID as a transform producer's identity egress carries it: its
     mux wrote every PES at content time + 1 h (`target(pts90k)` = the content ns
-    of a source PTS, continuous — the producer's own input retime took any
-    rewind out) and the PCR at the DTS; stamp = the buffer's first PES − 1 h
-    under the monotone floor, so K = −3600 s. Returns bus buffers from `start_s`
-    on as [(bytes, stamp_ns, arrival_ns)], arrival = wire + `transit_ms`, and
-    every AU's target {(pid, serial): content ns}."""
+    of a source PTS, continuous, as a producer on house time writes it) and
+    the PCR at the DTS; stamp = the buffer's first PES − 1 h under the monotone
+    floor, so K = −3600 s. Returns bus buffers from `start_s` on as [(bytes,
+    stamp_ns, arrival_ns)], arrival = wire + `transit_ms`, and every AU's target
+    {(pid, serial): content ns}."""
     wrap = 1 << 33
 
     def mux90(t_ns):
@@ -371,104 +371,3 @@ def mux_inputs(seconds=70, jump_at_s=40.0, house0_ns=50_000 * 10**9, skew_ppm=-4
                   + [(t, 1, d, s) for d, s, t in bufs_b], key=lambda e: (e[0], e[1]))
     return feed, targets, a_house - ns(a_pts)
 
-
-def run_demuxes(Gst, feed, targets, install=None):
-    """`run_demux` for a muxer's inputs: `feed` = [(arrival, input, bytes, stamp)]
-    pushed in order into `appsrc ! tsdemux name=demux_<input>`, all in ONE
-    pipeline. Returns [(pid, serial, running − target ns)] in sink order."""
-    n = 1 + max(e[1] for e in feed)
-    pipe = Gst.parse_launch(" ".join(
-        f'appsrc name=src{i} is-live=true format=time block=true max-bytes=4000000 caps="{TS_CAPS}"'
-        f" ! tsdemux name=demux_{i} latency=0" for i in range(n)))
-    clock = Gst.SystemClock.obtain()
-    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
-    pipe.use_clock(clock)
-    pipe.set_start_time(Gst.CLOCK_TIME_NONE)
-    pipe.set_base_time(0)
-    rows = []
-
-    def on_buf(pad, info):
-        buf = info.get_buffer()
-        key = au_key(buf.extract_dup(0, min(10, buf.get_size())))
-        if key in targets and buf.pts != Gst.CLOCK_TIME_NONE:
-            seg = pad.get_sticky_event(Gst.EventType.SEGMENT, 0).parse_segment()
-            rows.append((key[0], key[1], seg.to_running_time(Gst.Format.TIME, buf.pts) - targets[key]))
-        return Gst.PadProbeReturn.OK
-
-    def on_pad(_demux, pad):
-        sink = Gst.ElementFactory.make("fakesink")
-        sink.set_property("sync", False)
-        sink.set_property("async", False)
-        pipe.add(sink)
-        sink.sync_state_with_parent()
-        sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
-        pad.link(sink.get_static_pad("sink"))
-
-    for i in range(n):
-        pipe.get_by_name(f"demux_{i}").connect("pad-added", on_pad)
-    if install:
-        install(pipe)
-    pipe.set_state(Gst.State.PLAYING)
-    srcs = [pipe.get_by_name(f"src{i}") for i in range(n)]
-    for _t, i, data, st in feed:
-        b = Gst.Buffer.new_wrapped(data)
-        b.pts = b.dts = st
-        srcs[i].emit("push-buffer", b)
-    for src in srcs:
-        src.emit("end-of-stream")
-    pipe.get_bus().timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
-    pipe.set_state(Gst.State.NULL)
-    return rows
-
-
-def run_demux(Gst, bufs, targets, ignore_pcr=False, install=None, detail=False):
-    """Push `bufs` (fast, not paced) through `appsrc ! tsdemux name=demux`,
-    every pad into its own fakesink, on the contract's clock. `install(pipe)`
-    runs before PLAYING. Returns [(pid, serial, running − target ns)] in the
-    order each pad's SINK saw them — after anything a src-pad probe dropped
-    or shifted. `detail` appends the running PTS and DTS (or None)."""
-    pipe = Gst.parse_launch(
-        f'appsrc name=src is-live=true format=time block=true max-bytes=4000000 caps="{TS_CAPS}" ! '
-        f"tsdemux name=demux latency=0" + (" ignore-pcr=true" if ignore_pcr else ""))
-    clock = Gst.SystemClock.obtain()
-    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
-    pipe.use_clock(clock)
-    pipe.set_start_time(Gst.CLOCK_TIME_NONE)
-    pipe.set_base_time(0)
-    rows = []
-
-    def on_buf(pad, info):
-        buf = info.get_buffer()
-        key = au_key(buf.extract_dup(0, min(10, buf.get_size())))
-        if key in targets and buf.pts != Gst.CLOCK_TIME_NONE:
-            seg = pad.get_sticky_event(Gst.EventType.SEGMENT, 0).parse_segment()
-            rt = seg.to_running_time(Gst.Format.TIME, buf.pts)
-            row = (key[0], key[1], rt - targets[key])
-            if detail:
-                row += (rt, None if buf.dts == Gst.CLOCK_TIME_NONE
-                        else seg.to_running_time(Gst.Format.TIME, buf.dts))
-            rows.append(row)
-        return Gst.PadProbeReturn.OK
-
-    def on_pad(_demux, pad):
-        sink = Gst.ElementFactory.make("fakesink")
-        sink.set_property("sync", False)
-        sink.set_property("async", False)
-        pipe.add(sink)
-        sink.sync_state_with_parent()
-        sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_buf)
-        pad.link(sink.get_static_pad("sink"))
-
-    pipe.get_by_name("demux").connect("pad-added", on_pad)
-    if install:
-        install(pipe)
-    pipe.set_state(Gst.State.PLAYING)
-    src = pipe.get_by_name("src")
-    for data, st in bufs:
-        b = Gst.Buffer.new_wrapped(data)
-        b.pts = b.dts = st
-        src.emit("push-buffer", b)
-    src.emit("end-of-stream")
-    pipe.get_bus().timed_pop_filtered(30 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
-    pipe.set_state(Gst.State.NULL)
-    return rows

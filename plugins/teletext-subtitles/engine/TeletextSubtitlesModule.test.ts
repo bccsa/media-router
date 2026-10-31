@@ -77,7 +77,6 @@ describe('buildPipeline', () => {
         expect(desc.pipeline).not.toContain('tsdemux');
         expect(desc.runnerHooks).toBeUndefined();
         expect(desc.runner).toBeUndefined();
-        expect(desc.alignBranchesToStamps).toBeUndefined();
         expect((module as any).setHealth).toHaveBeenLastCalledWith(
             'warning',
             expect.stringContaining('No pages selected'),
@@ -135,8 +134,6 @@ describe('buildPipeline', () => {
         expect(desc.pipeline).toContain('! mrtsdemux name=demux media=private ! capsfilter ');
         // python-only hook by decision (ADR-0016 2026-10-09), not a temporary measure
         expect(desc.runner).toBe('python');
-        // branchAlign retimes only audio_/video_ pads — nothing here to align.
-        expect(desc.alignBranchesToStamps).toBeUndefined();
         expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
         expect((module as any).setStatusData).toHaveBeenCalledWith('input', { channel: 5004 });
     });

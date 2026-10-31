@@ -33,7 +33,6 @@ try:
 except (ValueError, ImportError):
     _GSTAPP_AVAILABLE = False
 
-import collections
 import json
 import math
 import os
@@ -574,14 +573,13 @@ def _stream_media_from_caps_name(caps_name):
     return 'data'
 
 
-def _pid_from_tsdemux_pad_name(pad_name):
-    """Parse the PID from a tsdemux pad name.
+def _pid_from_demux_pad_name(pad_name):
+    """Parse the PID from a demuxer pad name.
 
-    tsdemux names pads `<media>_<programhex>_<pidhex>` (e.g. `audio_0_0141`,
-    `private_0_012c`) — confirmed on 1.22, see the plan's Phase 0 findings.
-    The PID is the last `_`-delimited field, hex. Returns the int PID, or None
-    if the name doesn't match (so callers degrade to "unknown PID" rather than
-    crash on an unexpected pad-name scheme).
+    tsdemux and mrtsdemux name pads `<media>_<programhex>_<pidhex>` (e.g.
+    `audio_0_0141`, `private_0_012c`). The PID is the last `_`-delimited field,
+    hex. Returns the int PID, or None if the name doesn't match (so callers
+    degrade to "unknown PID" rather than crash on an unexpected pad-name scheme).
     """
     if not pad_name:
         return None
@@ -687,7 +685,7 @@ def _install_stream_discovery(element, source_name, read_klv_names=False):
         caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ''
         emit_plugin_event("stream:discovered", {
             "from": source_name,
-            "pid": _pid_from_tsdemux_pad_name(pad.get_name()),
+            "pid": _pid_from_demux_pad_name(pad.get_name()),
             "media": _stream_media_from_caps_name(caps_name or ''),
             "caps": caps.to_string() if caps else '',
             "padName": pad.get_name(),
@@ -1032,7 +1030,7 @@ def _install_pad_link_rule(pipe, rule):
             # Match this pad to its branch(es) by PID rather than arrival order.
             # A pad whose PID isn't wired to an output (extra source stream)
             # is simply ignored — never misrouted onto another branch.
-            pad_pid = _pid_from_tsdemux_pad_name(pad.get_name())
+            pad_pid = _pid_from_demux_pad_name(pad.get_name())
             indices = [i for i, p in enumerate(match_pids) if p == pad_pid]
             if pad_pid is None or not indices:
                 return
@@ -1125,512 +1123,6 @@ def _install_pad_link_rule(pipe, rule):
 
 
 # ---------------------------------------------------------------------------
-# alignBranchesToStamps — anchor a mux's input branches to the PRODUCER'S STAMPS
-# ---------------------------------------------------------------------------
-# THE DEFECT (measured on the .202 X-Chain rig, 2026-08-14). A multi-input mux
-# gives each input its own `tsdemux`, and every branch works out its own zero
-# point: tsdemux slaves the PES timeline it emits to the timestamp of the bus
-# buffer it locked on. Under the time-sync contract that timestamp is the
-# producer's house-clock STAMP, so the branch is right whenever that one stamp
-# was exact — and wrong by however much it was NOT, for the whole incarnation.
-#
-# It is not exact on a REORDERED stream. The stamp is the buffer's first timing
-# PES on the house timeline under a monotone floor (mrtsstamp), and a B-frame
-# stream's per-buffer FIRST PES walks backwards, so those buffers' stamps are
-# clamped UP to the previous one — measured on the live video leg: K spread
-# 120.009 ms (= the reorder depth), against 0.316 ms on the audio leg of the
-# same producer. A branch that locks on a clamped buffer therefore runs its
-# whole timeline that far LATE, and the sibling audio branch does not: the pair
-# leaves the mux 100–121 ms apart (t0/t1/t2 rounds) from inputs measured
-# 0.001 ms apart, re-drawn on every mux restart because the clamp of whichever
-# buffer the branch locked on is a fresh draw.
-#
-# THE FIX. The stamps are the shared truth, so anchor every branch to them
-# EXPLICITLY instead of to the one stamp it happened to lock on:
-#
-#     offset = K + ns(anchorPES) − firstBufferPts
-#
-#   * `K` = `stamp − ns(firstPES)` = `anchor − ns(ref)`, one constant per
-#     producer egress, taken as the MINIMUM over the buffers seen — the floor
-#     can only push a stamp UP, so the lower end of that distribution is the
-#     unclamped truth (the same reading the rig's analysis tool takes).
-#   * `anchorPES` is the PES of the access unit the demuxer's FIRST OUTPUT
-#     BUFFER actually carries, identified BY CONTENT: that buffer IS a PES
-#     payload this branch's sink pad has already reassembled (tsdemux strips the
-#     PES header and passes the payload through, and this probe sits ahead of
-#     any parser), so its LAST 64 bytes are an exact join back to that PES's PTS.
-#
-#     THE TAIL, not the head, and not a prediction. Three cuts were refuted on
-#     the rig (.202, 2026-08-14), each measurably: "the first usable PES of the
-#     stream" sat 5 frames early (applied −200 ms, residual skew −80 ms); "the
-#     first PES of the bus buffer whose STAMP came back on the first output
-#     buffer" — which the stamp arithmetic matches to the nanosecond — computed
-#     0 ms on a branch measured 107.5 ms late the same round, because the stamp
-#     says which BUFFER the branch slaved to and not which access unit was in
-#     flight; and a join on the payload HEAD landed on the wrong frame outright
-#     (corrections came out as exact multiples of the 40 ms frame — H.264 access
-#     units open with the same AUD/SEI bytes, so the head is not an identity).
-#     The tail of the last slice is unique per frame and survives this hop
-#     byte-for-byte, which is why the rig's own analysis tool joins on it too.
-#   * so the pad's running time becomes `K + ns(PES)` = that media's HOUSE
-#     time, for every branch, whatever each demuxer made of it.
-#
-# Branches are then aligned BY CONSTRUCTION rather than by luck, and against an
-# absolute (house) reference rather than each other — so a restart re-derives
-# the same timeline instead of re-rolling the skew, and two branches fed by
-# DIFFERENT producers align too (each carries its own K).
-#
-# NOTHING IS APPLIED ON A GUESS. No join, or a payload head that two PES of this
-# branch share (so the join would be a coin toss), leaves the branch exactly as
-# it is today — logged, no offset.
-import branch_retime                                              # noqa: E402
-
-_branch_align = {}      # demux element name -> per-branch state
-
-
-def _clear_branch_align():
-    _branch_align.clear()
-
-
-# How far a branch may be moved, each way. These are what the MUX can absorb,
-# not a guess at how wrong a zero point can be: the 2026-09-05 GATE01 epoch
-# rejected +533 ms, +683 ms and +1024 ms corrections that were all REAL (the
-# producers' stamps really were that far from the branches) under a 500 ms
-# "plausibility" cap, and every rejected track shipped out of step with its
-# siblings. A POSITIVE correction moves the branch later: its buffers then sit
-# in the aggregator until their turn, so the bound is the branch's own input
-# queue (5 s, `queue leaky=2 max-size-time=5000000000`) less headroom. A
-# NEGATIVE one moves it earlier, which the aggregator reads as those buffers
-# arriving late, so the bound is the mux's latency fill (1.2 s,
-# mpegtsMuxerPipeline) less headroom — past it the mux would drop the track
-# rather than align it. A branch outside either is left as it is, and said
-# LOUDLY (a `warning` engine event, not just a runner log line): that track
-# WILL be out of step, and until now nothing outside the journal knew.
-_BRANCH_ALIGN_MAX_LATE_NS = 4_000_000_000
-_BRANCH_ALIGN_MAX_EARLY_NS = 1_000_000_000
-
-
-def _branch_align_verdict(off_ns):
-    """What a measured branch error gets: "apply" the pad offset, "skip" one
-    too small to be worth a timeline step, or "reject" one past what the mux
-    can absorb. Pure, so the sign convention (positive = branch behind its
-    producer's stamps = moved LATER, bounded by the input queue; negative =
-    moved EARLIER, bounded by the mux latency fill) is pinned by a test
-    rather than by a live rig."""
-    if off_ns > _BRANCH_ALIGN_MAX_LATE_NS or -off_ns > _BRANCH_ALIGN_MAX_EARLY_NS:
-        return "reject"
-    if abs(off_ns) < _BRANCH_ALIGN_MIN_NS:
-        return "skip"
-    return "apply"
-
-
-def _branch_align_rejected(demux_name, pid, off_ns):
-    """The engine-visible half of a rejection: a `warning` event, so a track
-    left out of step with its siblings is a status the module can show and
-    not only a line in a journal nobody was reading (the 2026-09-05 GATE01
-    epoch rejected three real corrections that way)."""
-    emit_event({
-        "event": "warning",
-        "message": (f"branchAlign: {demux_name} pid=0x{pid:x} sits "
-                    f"{off_ns / 1e6:+.0f} ms from its producer's stamps, "
-                    f"past what the mux can absorb — branch left as-is, "
-                    f"so this track WILL be out of step with its siblings "
-                    f"(time-sync contract, ADR-0005)")})
-# How long a branch is left alone before its error is even sampled. A tsdemux
-# RE-SLAVES to the upstream stamps for the first seconds of a stream (the
-# settling `gst_tsdemux_slave_test.py` measures), so anything read before this
-# is a transient, not the mapping the branch will hold — 3 s is past the
-# settling on the live rig and inside the mux's own 1.2 s latency fill.
-_BRANCH_ALIGN_SETTLE_MS = 3000.0
-# Access units joined before the correction is taken, and the ceiling on waiting
-# for them. The median of the window is the branch's error; a handful is plenty
-# once settled (the spread is logged so a noisy branch is visible).
-_BRANCH_ALIGN_SAMPLES = 9
-_BRANCH_ALIGN_GIVEUP_MS = 15000.0
-# Below this the branch is already where the stamps say it should be, and a
-# timeline step costs more than it buys.
-_BRANCH_ALIGN_MIN_NS = 2_000_000
-# How many completed access units per PID a branch keeps queued for its
-# demuxer to hand back. The join is normally the first few; the live video
-# branch had discarded five buffers' worth before it emitted. This is the
-# memory bound, not an expectation.
-_BRANCH_ALIGN_HISTORY = branch_retime.HISTORY
-
-
-def _branch_align_join(st, pid, tail):
-    """The PTS of the access unit the demuxer just emitted on `pid`, joined by
-    its payload tail IN EMISSION ORDER — or None.
-
-    A demuxer hands back a PID's access units strictly in sequence, so the
-    completed AUs sit in a per-PID queue and — once the queue is in step with
-    the demuxer — the one just emitted is the EARLIEST pending entry whose
-    tail matches. Order is what makes a repeated tail decidable: digital
-    silence and a test tone repeat their payload every few frames (a periodic
-    302M leg had 75 distinct tails and then none), and a content-only index
-    had to call every later lookup ambiguous — every audio-output-302m branch
-    on 10.9.16.50 ran un-anchored for that reason (2026-09-17).
-
-    IN STEP means the caller joins EVERY emitted buffer, from the first, so
-    the queue never holds more than the AUs the demuxer has not handed back
-    yet. Joining only once measuring starts left ~150 AUs pending, and on a
-    test tone the earliest matching tail was then 80 frames early: −1.87 s,
-    rejected. The queue also never holds what the demuxer will not emit: an
-    access unit that started before the branch had seen its PAT and PMT is
-    discarded by tsdemux (it programs the pad at the PMT and starts on the
-    next PUSI), so the index does not queue it (`close_au`) — which is what
-    makes the queue's HEAD the demuxer's first emitted AU on a silent leg,
-    where every tail is the same and only position can decide. So: a match
-    at the head is always the AU; before the queue is in step, a match
-    further down must be UNIQUE among the pending entries or it decides
-    nothing (whatever sits ahead of it then is a discard this index did not
-    predict, and a repeated tail cannot say how many). From the first join
-    on, the earliest match is the AU. Entries before a match go with it.
-    Pure, so the rule is pinned by gst_branch_align_test.py.
-    """
-    q = st["aus"].get(pid)
-    if not q:
-        return None
-    hit = None
-    for i, (t, pts) in enumerate(q):
-        if t != tail:
-            continue
-        if hit is None:
-            hit = (i, pts)
-            if i == 0 or st["synced"].get(pid):
-                break
-        else:
-            return None                 # first join, off the head, and the tail repeats
-    if hit is None:
-        return None
-    for _ in range(hit[0] + 1):
-        q.popleft()
-    st["synced"][pid] = True
-    return hit[1]
-# Bytes of PES payload TAIL used as the join key — the end of the last slice,
-# which no two frames share (an access unit's HEAD is codec boilerplate every
-# frame repeats: measured on the live H.264 leg, a head join landed whole frames
-# out). Same key the rig's analysis tool joins access units on.
-_BRANCH_ALIGN_KEY_BYTES = branch_retime.KEY_BYTES
-
-
-def _install_branch_stamp_align(pipe, cfg):
-    """cfg = {"demuxes": ["demux_0", ...], "transformProducer"?: bool, "privatePads"?:
-    bool} from the pipeline description. `transformProducer` retimes every access unit
-    instead (`branch_retime.install`), cue pads too under `privatePads`; without it,
-    this mux-branch path."""
-    _clear_branch_align()
-    if not cfg:
-        return
-    names = [n for n in (cfg.get("demuxes") or []) if n]
-    if not names:
-        return
-    producer = bool(cfg.get("transformProducer"))
-    private_pads = bool(cfg.get("privatePads"))
-    import ts_psi          # lazy, pure stdlib (embedded-core pattern)
-    import ts_timeline
-
-    for name in names:
-        demux = pipe.get_by_name(name)
-        if not demux:
-            sys.stderr.write(
-                f"[gst-runner.py] branchAlign: element '{name}' not found — "
-                f"branch left un-anchored\n")
-            continue
-        sink_pad = demux.get_static_pad("sink")
-        if sink_pad is None:
-            continue
-        if producer:
-            branch_retime.install(name, demux, sink_pad, _branch_align, _pid_from_tsdemux_pad_name,
-                                  private_pads)
-            continue
-        state = {
-            "name": name,
-            "k": None,          # min(stamp − ns(firstPES)) — the house mapping
-            "ksamples": 0,
-            # pid -> deque of (payload TAIL, PES PTS) of completed access units
-            # not yet handed back by the demuxer, in arrival order — the
-            # join is by tail IN THAT ORDER (`_branch_align_join`).
-            "aus": {},
-            "synced": {},       # pid -> True once its queue is in step with the demuxer
-            "psi": [False, False],  # PAT seen, PMT seen — before both, an AU is one tsdemux discards
-            "indexed": 0,       # access units indexed so far (for the log)
-            "open": {},         # pid -> [pts, bytearray, need, afterPsi] of the AU being received
-            "sink_pad": sink_pad,
-            "sink_probe_id": None,
-            "pending": 0,       # armed src pads still awaiting their offset
-            "samples": {},      # pid -> joined error samples, settled window
-            "t0": None,         # running time of this branch's first output
-            "settled": False,
-            "done": False,
-            "out_probes": [],   # (pad, probe_id) of every armed src-pad probe
-            "lock": threading.Lock(),   # `finish()` winner election across pads
-        }
-        _branch_align[name] = state
-
-        def close_au(st, pid):
-            """An access unit ends where the next one starts (a video PES has no
-            length field), so a PUSI closes the one before it — the same trigger
-            the demuxer emits on, which is why the join is always ready in time.
-
-            A PES WITH a length (audio, 302M, private data) ends when that many
-            bytes have arrived, and tsdemux emits it THEN — inside the same bus
-            buffer, before any next PUSI. Closing such an AU only at the next
-            PUSI left it open while the demuxer's src probe looked it up, so a
-            one-AU-per-buffer leg (every 302M egress: mpegtsmux alignment=7 +
-            the stamper's coalescing) joined NOTHING and every audio-output-302m
-            branch ran un-anchored (10.9.16.50, 2026-09-17). `_complete_au`
-            below is the length-driven close; this one stays the PUSI close.
-            """
-            rec = st["open"].pop(pid, None)
-            if rec is None or rec[0] is None or len(rec[1]) < _BRANCH_ALIGN_KEY_BYTES:
-                return
-            if not rec[3]:
-                return              # started before PAT+PMT: the demuxer discards it
-            tail = bytes(rec[1][-_BRANCH_ALIGN_KEY_BYTES:])
-            q = st["aus"].get(pid)
-            if q is None:
-                q = st["aus"][pid] = collections.deque()
-            q.append((tail, rec[0]))
-            if len(q) > _BRANCH_ALIGN_HISTORY:
-                q.popleft()
-            st["indexed"] += 1
-
-        def _complete_au(st, pid):
-            """Close the open AU on `pid` once its PES length is satisfied: trim
-            to the declared length (the demuxer emits exactly that) and index
-            it now, so the join is ready before the demuxer's push."""
-            rec = st["open"].get(pid)
-            if rec is None or rec[2] is None or len(rec[1]) < rec[2]:
-                return
-            del rec[1][rec[2]:]
-            close_au(st, pid)
-
-        def index_sink_buffer(_pad, info, st=state):
-            """One pass over the branch's TS: the producer's mapping (K), and a
-            payload-tail → PTS index of the access units in flight."""
-            buf = info.get_buffer()
-            if buf is None or st["done"]:
-                return Gst.PadProbeReturn.OK
-            stamp = buf.pts
-            # `extract_dup`, not map/unmap: one copy either way (`bytes(mi.data)`
-            # copied too), but the map path raised
-            # `TypeError: Expected Gst.MapInfo, but got gi.repository.Gst.MapInfo`
-            # on 10.9.16.108 (2026-09-02, GStreamer 1.28 / PyGObject 3.56) and
-            # a probe that raises, raises on EVERY buffer — 45,854 tracebacks in
-            # 30 min, a full core burned on formatting them.
-            data = buf.extract_dup(0, buf.get_size())
-            first_pts = None
-            for pkt in ts_psi.iter_packets(data):
-                if not ts_psi.ts_has_payload(pkt):
-                    continue
-                off = ts_psi.payload_offset(pkt)
-                if off >= ts_psi.PKT:
-                    continue
-                pid = ts_psi.ts_pid(pkt)
-                if pkt[1] & 0x40:                   # PUSI: a PES may start here
-                    p = pkt[off:]
-                    if len(p) < 14 or p[0] != 0x00 or p[1] != 0x00 or p[2] != 0x01:
-                        # A PSI section: PAT on pid 0, PMT = table_id 0x02. The
-                        # demuxer emits nothing until it has both.
-                        if off + 1 < len(pkt):
-                            tid_at = off + 1 + pkt[off]
-                            if pid == 0:
-                                st["psi"][0] = True
-                            elif (st["psi"][0] and tid_at < len(pkt)
-                                    and pkt[tid_at] == 0x02):
-                                st["psi"][1] = True
-                        continue                    # not a PES
-                    pts = ts_psi.read_pes_pts(pkt)
-                    close_au(st, pid)
-                    # K is measured from the buffer's FIRST PES: that is the PES
-                    # the producer's stamp maps, whatever the demuxer later
-                    # makes of the buffer.
-                    if pts is not None and first_pts is None:
-                        first_pts = pts
-                    # PES_packet_length (0 = unbounded, video): payload bytes to
-                    # expect after the header, or None — see close_au.
-                    hdr = 9 + p[8]
-                    plen = (p[4] << 8) | p[5]
-                    need = (6 + plen - hdr) if plen and 6 + plen > hdr else None
-                    st["open"][pid] = [pts, bytearray(pkt[off + hdr:]), need,
-                                       st["psi"][0] and st["psi"][1]]
-                    _complete_au(st, pid)
-                elif pid in st["open"]:
-                    st["open"][pid][1] += pkt[off:]
-                    _complete_au(st, pid)
-            if first_pts is None or stamp == Gst.CLOCK_TIME_NONE:
-                return Gst.PadProbeReturn.OK
-            k = stamp - ts_timeline.pts90k_to_ns(first_pts)
-            st["ksamples"] += 1
-            # MINIMUM, not latest: the monotone floor only ever pushes a stamp
-            # up, so the smallest reading is the unclamped mapping.
-            if st["k"] is None or k < st["k"]:
-                st["k"] = k
-            return Gst.PadProbeReturn.OK
-
-        def on_sink_buffer(pad, info, st=state):
-            """The sink index, fenced: an exception here must cost ONE line and
-            the feature, never a traceback per buffer for the pipeline's life."""
-            try:
-                return index_sink_buffer(pad, info, st)
-            except Exception as exc:  # noqa: BLE001 — see the note in index_sink_buffer
-                sys.stderr.write(
-                    f"[gst-runner.py] branchAlign: {st['name']} sink probe failed "
-                    f"({exc!r}) — branch left un-anchored\n")
-                sys.stderr.flush()
-                st["done"] = True
-                st["settled"] = True          # src-pad probes drop on their next buffer
-                st["sink_probe_id"] = None    # REMOVE below retires this probe
-                return Gst.PadProbeReturn.REMOVE
-
-        def release_sink_probe(st=state):
-            if st["pending"] or st["done"]:
-                return
-            st["done"] = True
-            if st["sink_probe_id"] is not None:
-                st["sink_pad"].remove_probe(st["sink_probe_id"])
-                st["sink_probe_id"] = None
-            # Nothing left to measure: the offsets are latched for this
-            # incarnation, so the branch pays no per-buffer cost from here.
-
-        def on_out_buffer(pad, info, arg):
-            """Sample this branch's error, and once it has SETTLED, correct it.
-
-            The error is `K + ns(thisAU) − thisBuffer.pts`: where the producer's
-            stamps put this access unit in house time, minus where the branch
-            put it. Sampled rather than latched on the first buffer, because the
-            first buffer is exactly when the branch is NOT yet on its final
-            mapping — tsdemux re-slaves for a few seconds after it starts (the
-            settling `gst_tsdemux_slave_test.py` pins), and the rig showed
-            first-buffer corrections landing tens of ms off the value the branch
-            then held for the rest of its life (.202, 2026-08-14: residuals
-            −25.9 / −186.6 / +46.7 ms across three incarnations, each computed
-            from a first buffer). The MEDIAN of the settled window is what the
-            branch actually runs at.
-            """
-            pid, st = arg
-            if st.get("settled"):
-                # The branch is done (another pad settled, or gave up) and the
-                # winner of `finish()` is removing this probe; returning OK
-                # (not REMOVE) leaves that removal the only one, so no
-                # "pad has no probe with id" race. Before 2026-09-02 these
-                # probes were never removed at all.
-                return Gst.PadProbeReturn.OK
-            buf = info.get_buffer()
-            if buf is None:
-                return Gst.PadProbeReturn.OK
-            # Which access unit is this? Join it back to the TS by its payload
-            # TAIL, in emission order — the demuxer strips the PES header and
-            # passes the payload through untouched, and this probe is ahead of
-            # any parser. EVERY buffer joins, from the first, so the queue
-            # stays in step with the demuxer (see _branch_align_join); only
-            # the settled window's joins become samples.
-            anchor = None
-            size = buf.get_size()
-            if size >= _BRANCH_ALIGN_KEY_BYTES:
-                tail = buf.extract_dup(size - _BRANCH_ALIGN_KEY_BYTES,
-                                       _BRANCH_ALIGN_KEY_BYTES)
-                anchor = _branch_align_join(st, pid, tail)
-            pts = buf.pts
-            if pts == Gst.CLOCK_TIME_NONE or st["k"] is None:
-                return Gst.PadProbeReturn.OK
-            samples = st["samples"].setdefault(pid, [])
-            # Elapsed on the BRANCH's own timeline (its buffer PTS), not a clock
-            # reading: it needs no pipeline-global to be in scope, it is exactly
-            # "this much media has passed since the branch started", and it is
-            # what a test can drive deterministically.
-            if st["t0"] is None:
-                st["t0"] = pts
-            elapsed = (pts - st["t0"]) / 1e6
-            if elapsed < _BRANCH_ALIGN_SETTLE_MS:
-                return Gst.PadProbeReturn.OK          # still settling
-            if len(samples) < _BRANCH_ALIGN_SAMPLES:
-                if anchor is not None:
-                    samples.append(
-                        st["k"] + ts_timeline.pts90k_to_ns(anchor) - pts)
-                if len(samples) < _BRANCH_ALIGN_SAMPLES:
-                    if elapsed > _BRANCH_ALIGN_GIVEUP_MS:
-                        if not finish(st, pad):
-                            return Gst.PadProbeReturn.OK  # a sibling settled first
-                        sys.stderr.write(
-                            f"[gst-runner.py] branchAlign: {st['name']} pid=0x{pid:x} "
-                            f"joined only {len(samples)} access units in "
-                            f"{elapsed:.0f} ms — branch left un-anchored\n")
-                        sys.stderr.flush()
-                        return Gst.PadProbeReturn.REMOVE
-                    return Gst.PadProbeReturn.OK
-            off = sorted(samples)[len(samples) // 2]      # median of the window
-            spread = max(samples) - min(samples)
-            if not finish(st, pad):
-                return Gst.PadProbeReturn.OK          # a sibling settled first; it retires us
-            note = ""
-            verdict = _branch_align_verdict(off)
-            if verdict == "reject":
-                note = " — REJECTED (past what the mux can absorb), branch left as-is"
-                _branch_align_rejected(st["name"], pid, off)
-            elif verdict == "skip":
-                note = " — already aligned, left untouched"
-            else:
-                pad.set_offset(pad.get_offset() + off)
-            sys.stderr.write(
-                f"[gst-runner.py] branchAlign: {st['name']} {pad.get_name()} "
-                f"pid=0x{pid:x} offsetNs={off} ({off / 1e6:+.3f} ms){note} "
-                f"(median of {len(samples)} joined AUs, spread {spread / 1e6:.3f} ms, "
-                f"K={st['k']} from {st['ksamples']} buffers, ausIndexed={st['indexed']})\n")
-            sys.stderr.flush()
-            return Gst.PadProbeReturn.REMOVE
-
-        def finish(st, pad=None):
-            """One branch is done measuring: drop EVERY probe it armed so the
-            steady state costs nothing. The sink index is the expensive half;
-            the per-AU src-pad probes are the long tail — before 2026-09-02
-            they were never removed, and on a branch carrying more than one
-            elementary stream `pending` never reached zero either, so the sink
-            index (a python TS parse of every bus buffer) ran for the
-            pipeline's life.
-
-            Returns True for the ONE caller that settles the branch; every
-            other pad runs its probe on its own streaming thread, so two pads
-            can reach this together. The winner is decided under `lock`, takes
-            the sibling list with it and removes those probes; a loser gets
-            False and must return OK (not REMOVE) so the winner's remove_probe
-            is the only thing that retires it — a self-REMOVE racing that
-            remove is the "pad has no probe with id" warning."""
-            with st["lock"]:
-                if st["settled"]:
-                    return False
-                st["settled"] = True
-                siblings = [(p, i) for p, i in st["out_probes"] if i is not None and p != pad]
-                st["out_probes"] = []
-                st["pending"] = 0
-            for p, probe_id in siblings:
-                p.remove_probe(probe_id)
-            release_sink_probe(st)
-            return True
-
-        def on_pad_added(_element, pad, st=state):
-            pad_name = pad.get_name() or ""
-            if not (pad_name.startswith("audio_") or pad_name.startswith("video_")):
-                return
-            pid = _pid_from_tsdemux_pad_name(pad_name)
-            if pid is None:
-                return
-            if st["settled"] or st["done"]:
-                return                      # nothing left to measure on this branch
-            st["pending"] += 1
-            # A plain BUFFER probe, NOT a blocking one: the correction lands a
-            # few seconds in (see on_out_buffer), and nothing may be held up
-            # waiting for it. The offset then arrives as one timeline step on
-            # this pad while the mux is still filling its latency budget.
-            probe_id = pad.add_probe(Gst.PadProbeType.BUFFER, on_out_buffer, (pid, st))
-            st["out_probes"].append((pad, probe_id))
-
-        state["sink_probe_id"] = sink_pad.add_probe(
-            Gst.PadProbeType.BUFFER, on_sink_buffer)
-        demux.connect("pad-added", on_pad_added)
-
-
-# ---------------------------------------------------------------------------
 # Bus egress stamper — every egress stamped by identity, PES − 1 h
 # ---------------------------------------------------------------------------
 # The subsystem lives in `gst_bus_stamper.py` next to this file (the `mrtsstamp`
@@ -1699,8 +1191,8 @@ def _apply_contract_clock(pipe, live_capture_clock=False):
     transmits `segment_to_running_time(pts) + base_time`, so the base-time
     cancels and the wire carries the same absolute house time either way. Only
     the pinning is skipped; the clock half is identical. Bus-fed producers
-    (transcoder, mpegts-muxer) must NOT use it — their branch alignment is built
-    on running-time being house time. See `PipelineDescription.liveCaptureClock`.
+    (transcoder, mpegts-muxer) must NOT use it — their demux's PES − 1 h is house
+    time only while running time is. See `PipelineDescription.liveCaptureClock`.
 
     Nothing external is contacted or waited for, so this can neither delay nor
     wedge a start.
@@ -1969,11 +1461,6 @@ def handle_start(data):
     for rule in pad_link_rules:
         _install_pad_link_rule(pipeline, rule)
 
-    # Multi-branch stamp alignment (contract-only; same window and the same
-    # reason — the first TS bytes carry the mapping every branch is anchored to,
-    # and a branch that has already emitted cannot be re-zeroed without a jolt).
-    _install_branch_stamp_align(pipeline, data.get("alignBranchesToStamps"))
-
     # The bus egress stamp, spliced here, before PLAYING, for the same reason as
     # above: an attach can land the moment the pipeline starts and the element must
     # own that edge's first buffer. It arms per tee as consumers attach.
@@ -2101,7 +1588,6 @@ def handle_stop(data=None):
     source_gate.stop()
     _clear_pending_bus_attaches()
     _live_input_branches.clear()
-    _clear_branch_align()
     gst_bus_stamper.clear()
     _clear_runner_hooks()
     _stop_rist()

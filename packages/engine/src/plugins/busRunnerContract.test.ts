@@ -76,16 +76,6 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         );
     });
 
-    it('both runners read the retime cue-pad flag under the same key', () => {
-        // alignBranchesToStamps travels whole; a rename on one side leaves cues on tsdemux time.
-        const native = readFileSync(
-            join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'branch_align.cpp'),
-            'utf8',
-        );
-        expect(runnerSource).toContain('private_pads = bool(cfg.get("privatePads"))');
-        expect(native).toContain('bool private_pads = json_get_bool(cfg, "privatePads");');
-    });
-
     it('the runner group-bind workaround for the removed UDP bus is gone', () => {
         expect(runnerSource).not.toContain('_isolate_loopback_bus_udpsrc');
     });

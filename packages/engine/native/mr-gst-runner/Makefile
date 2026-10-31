@@ -17,21 +17,20 @@ LIBEXECDIR ?= $(PREFIX)/libexec
 MR_PLUGIN  ?= engine
 
 BIN  = mr-gst-runner
-# The branch aligner and the TS video-info probe read TS the way the python
-# runner does, through mpegts-core's `ts_psi`/`ts_timeline`/`ts_video_info`,
-# linked from its archive libmrts.a — no TS arithmetic of the runner's own
-# (ADR-0002 exception 3).
+# The TS video-info probe reads TS the way the python runner does, through
+# mpegts-core's `ts_psi`/`ts_video_info`, linked from its archive libmrts.a —
+# no TS arithmetic of the runner's own (ADR-0002 exception 3).
 MR_PLUGINS_DIR ?= ../../../../plugins
 MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 SRCS = main.cpp ipc.cpp json_util.cpp runner.cpp commands.cpp stamper.cpp \
-       bus_edges.cpp bus_inputs.cpp source_gate.cpp branch_align.cpp branch_retime.cpp backlog_shed.cpp hooks.cpp \
+       bus_edges.cpp bus_inputs.cpp source_gate.cpp backlog_shed.cpp hooks.cpp \
        pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp native_plugins.cpp capture_rt.cpp shed_watch.cpp
 HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h bus_inputs.h source_gate.h \
-       branch_align.h branch_retime.h backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h \
+       backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h \
        native_plugins.h paths.h capture_rt.h shed_watch.h \
-       $(MRTS)/ts_psi.h $(MRTS)/ts_timeline.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
+       $(MRTS)/ts_psi.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
        $(MRTS)/ts_pcr.h $(MRTS)/ts_pes.h $(MRTS)/ts_video_info.h $(MRTS)/sps_parse.h
 PKGS = gstreamer-1.0 gstreamer-base-1.0 glib-2.0 gio-2.0 json-glib-1.0
 

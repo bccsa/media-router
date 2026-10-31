@@ -30,13 +30,13 @@ export const SINK_BUFFER_US = 100_000;
  *
  * A live GStreamer sink renders at `running-time + ts-offset + latency`, where
  * `latency` is the pipeline's min latency from the LATENCY query — for an
- * audio sink essentially its ring. Measured on the 10.9.16.103 USB DAC
+ * audio sink essentially its ring. Measured on the Pi 5 test box's USB DAC
  * (PipeWire 1.6, GStreamer 1.28): 151.3 ms at the 200 ms default ring,
  * 101.3 ms at 100 ms, 71.3 ms at 50 ms. The video leg's `waylandsink`
  * declares ~20 ms, so left alone the same route played audio well behind the
  * picture even with identical stamps and the same D. With the 100 ms ring and
- * this cancellation, plus content-time inputs (`alignBranchesToStamps` then, the
- * `mrtsdemux` formula demux since house-clock Phase 2), the route on .103 was
+ * this cancellation, plus content-time inputs (the runner's branch alignment then,
+ * the `mrtsdemux` formula demux since house-clock Phase 2), the route on that box was
  * confirmed in sync BY EAR (2026-09-03); the three are a tuple — change one and
  * re-check. Slack is unaffected: buffers reach the sink well before their stamp.
  * The sink adds this ring only behind a live upstream, which the module's

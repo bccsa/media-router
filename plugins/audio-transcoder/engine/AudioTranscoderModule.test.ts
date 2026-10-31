@@ -109,13 +109,12 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         expect(desc!.restartOnError).toBe(true);
     });
 
-    it('declares nothing but its pipeline: the formula demux times it, no branch alignment', () => {
+    it('declares nothing but its pipeline: the formula demux times it', () => {
         const { module } = makeModule({});
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         // Every buffer leaves the demux at its PES PTS less 1 h, and every egress is stamped
         // by identity (WI-P2-3): nothing to retime, nothing else to declare.
-        expect(desc).not.toHaveProperty('alignBranchesToStamps');
         expect(Object.keys(desc!).sort()).toEqual(['pipeline', 'restartOnError']);
         expect(desc!.pipeline).not.toMatch(/\btsdemux\b/);
     });

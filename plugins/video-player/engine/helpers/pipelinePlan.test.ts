@@ -286,7 +286,6 @@ describe('planLivePipeline', () => {
         expect(plain.runner).toBeUndefined();
         // everything else about the description is untouched
         expect(withSubs.tsProbe).toEqual(plain.tsProbe);
-        expect(withSubs.alignBranchesToStamps).toEqual(plain.alignBranchesToStamps);
     });
 
     it('watches render keep-up only when the sink is named', () => {
@@ -369,8 +368,6 @@ describe('planLivePipeline', () => {
                 `! tee name=vp_ts ! mrtsdemux name=vpdemux media=video ! ${filter}queue leaky=2 `,
             );
             expect(desc.pipeline, decoder.id).not.toMatch(/\btsdemux\b/);
-            // No branch alignment: the demux puts each PES at its PTS − 1 h itself.
-            expect(desc.alignBranchesToStamps, decoder.id).toBeUndefined();
         }
     });
 
