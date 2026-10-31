@@ -497,6 +497,11 @@ elements" below do not start.
   removed.** A module's runner could update its list of connections being
   removed from two threads at once, so a busy module losing a consumer could,
   rarely, crash or lose track of a connection. Not seen on a box; fixed.
+- **A UDP input whose stream comes back as its silence check runs reports
+  the silence once.** When the stream of an MPEG-TS IP Input or AES67 Input
+  came back within about a millisecond of its 5-second silence check, the
+  module could report the silence a second time and its return twice: a
+  second "silent" warning and a second "receiving again" in its log. Fixed.
 - **A connection waits for its source module instead of failing.** Up to
   v2.0.0.100, a connection from a module that was not sending yet (starting,
   waiting for its audio device, or a mixer with no input yet) failed three

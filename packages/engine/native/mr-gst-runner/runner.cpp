@@ -559,7 +559,9 @@ void Runner::on_bus_message(GstMessage* msg) {
             } else if (std::strcmp(name, "level") == 0) {
                 handle_level_message(s);
             } else if (std::strcmp(name, "GstUDPSrcTimeout") == 0) {
-                gate::on_udp_timeout(src_name ? src_name : "udpsrc");
+                guint64 timeout_ns = 0;
+                gst_structure_get_uint64(s, "timeout", &timeout_ns);
+                gate::on_udp_timeout(src_name ? src_name : "udpsrc", timeout_ns);
             }
             break;
         }

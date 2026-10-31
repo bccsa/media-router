@@ -8,9 +8,9 @@
 // polled so a producer that restarts under it fails out as
 // `bus_producer_restarted` instead of waiting on a dead socket forever.
 //
-// UDP SILENCE — `GstUDPSrcTimeout` is a state (`input_silent` /
-// `input_resumed`), never a rebuild, unless the producer declared
-// `udpSilenceRestartMs` (multicast re-join).
+// UDP SILENCE — `GstUDPSrcTimeout` is a state (`input_silent` / `input_resumed`), never a
+// rebuild, unless the producer declared `udpSilenceRestartMs` (multicast re-join); a timeout
+// the main loop meets only after data that came since it was posted is skipped.
 #pragma once
 
 #include <gst/gst.h>
@@ -31,8 +31,8 @@ bool stop();
 /** PLAYING state-change: the wait is over by definition. */
 void on_playing();
 
-/** One `GstUDPSrcTimeout` from `src_name`. */
-void on_udp_timeout(const std::string& src_name);
+/** One `GstUDPSrcTimeout` from `src_name` (`timeout_ns`: its `timeout` field). */
+void on_udp_timeout(const std::string& src_name, guint64 timeout_ns);
 
 /** A live input branch is leaving the pipeline: its heads no longer
  *  count for the data wait — not as pending first-data, not as polled

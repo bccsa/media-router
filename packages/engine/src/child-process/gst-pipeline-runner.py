@@ -531,7 +531,8 @@ def on_bus_message(bus, message):
             # udpsrc has not received data within its configured timeout. A
             # state, not a fault — see gst_source_gate.py: warn once, keep the
             # pipeline, restart only past a producer-declared multicast bound.
-            source_gate.on_udp_timeout(src.get_name() if src is not None else "udpsrc")
+            _ok, timeout_ns = structure.get_uint64("timeout")
+            source_gate.on_udp_timeout(src.get_name() if src is not None else "udpsrc", timeout_ns)
 
     return True
 

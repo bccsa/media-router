@@ -33,10 +33,11 @@ producer restarts, never a timer.
 UDP SILENCE — `udpsrc` posts `GstUDPSrcTimeout` every `timeout` of silence. The
 first one after start or after data emits `input_silent` once (health warning
 + Waiting badge), the first buffer back emits `input_resumed`; the pipeline is
-never rebuilt for a quiet sender. The one legitimate rebuild is a MULTICAST
-membership lost across a network blip, so a producer may declare
-`udpSilenceRestartMs` (mpegts-ip-input, aes67-input: 60 s, multicast only) past
-which the old `udp_timeout` error and restart still apply.
+never rebuilt for a quiet sender. A timeout the main loop meets only after data
+that came since it was posted is no silence and is skipped. The one legitimate
+rebuild is a MULTICAST membership lost across a network blip, so a producer may
+declare `udpSilenceRestartMs` (mpegts-ip-input, aes67-input: 60 s, multicast
+only) past which the old `udp_timeout` error and restart still apply.
 
 Wired by the runner: `configure()` once, `start()` after set_state(PLAYING),
 `on_playing()` on the PLAYING state-change, `on_udp_timeout()` on the element
@@ -272,10 +273,11 @@ def _arm_udp_silence(pipe, restart_ms):
     srcs = sources_by_factory(pipe, "udpsrc")
     if not srcs:
         return
-    st = {"since": None, "probes": [], "restart_ms": int(restart_ms or 0)}
+    st = {"since": None, "last_data": None, "probes": [], "restart_ms": int(restart_ms or 0)}
     udp_silence = st
 
     def on_buffer(_pad, _info, _el):
+        st["last_data"] = time.monotonic()
         if st["since"] is not None:
             st["since"] = None
             GLib.idle_add(_on_udp_resumed, st)
@@ -297,9 +299,10 @@ def _on_udp_resumed(st):
     return False
 
 
-def on_udp_timeout(src_name):
-    """One `GstUDPSrcTimeout`: the first after start or after data reports the
-    silence; later ones only decide whether the multicast re-join is due."""
+def on_udp_timeout(src_name, timeout_ns):
+    """One `GstUDPSrcTimeout` (`timeout_ns`: its `timeout` field): the first
+    after start or after data reports the silence; later ones only decide
+    whether the multicast re-join is due."""
     st = udp_silence
     now = time.monotonic()
     if st is None:
@@ -307,6 +310,11 @@ def on_udp_timeout(src_name):
         # rather than sitting blind.
         _fail({"event": "error", "kind": "udp_timeout",
                "message": "UDP source timeout (no data received)"})
+        return
+    # udpsrc posts only after a whole timeout without data, so data within half
+    # of one came after this message was posted: met late, it is no silence.
+    last = st["last_data"]
+    if last is not None and (now - last) * 1e9 < timeout_ns / 2:
         return
     if st["since"] is None:
         st["since"] = now

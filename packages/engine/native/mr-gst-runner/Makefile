@@ -51,12 +51,12 @@ $(MRTS)/libmrts.a: FORCE
 	$(MAKE) -C $(MRTS) libmrts.a
 FORCE:
 
-# The edge bookkeeping across threads (B-193): the runner's sources but main.cpp, on a real
-# pipeline. Protocol conformance runs from the python gst suite
-# (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
-TESTS = tests/bus_edges_thread_test
+# Across threads on real pipelines (B-193): the edge bookkeeping, and the udp silence watch's
+# timeouts against its buffer probe; the runner's sources but main.cpp. Protocol conformance runs
+# from the python gst suite (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
+TESTS = tests/bus_edges_thread_test tests/source_gate_udp_test
 
-tests/bus_edges_thread_test: tests/bus_edges_thread_test.cpp $(SRCS) $(HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
+$(TESTS): tests/%: tests/%.cpp $(SRCS) $(HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PKG_CFLAGS) $< $(filter-out main.cpp,$(SRCS)) $(MRTS)/libmrts.a $(PKG_LIBS) -o $@
 
 test: $(TESTS)
