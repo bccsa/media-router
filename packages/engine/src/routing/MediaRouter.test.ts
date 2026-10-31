@@ -743,7 +743,7 @@ describe('MediaRouter', () => {
         expect(router.getConnections()).toHaveLength(1);
     });
 
-    it('reexecuteIncomingPwLinks re-links edges into a rebuilt sink node in place', async () => {
+    it('reexecuteIncomingPwLinks / reexecuteOutgoingPwLinks re-link edges of a rebuilt node in place', async () => {
         // Field case 2026-08-02: an HDMI power-cycle recreated audio-output's
         // remap-sink as a NEW PipeWire node; the decoder→output pw-link died
         // with the old node and nothing re-created it — silent output, all
@@ -791,6 +791,15 @@ describe('MediaRouter', () => {
         // No pw-link edges into 'dec' → no-op.
         pipeWire.pwLink.mockClear();
         await router.reexecuteIncomingPwLinks('dec');
+        expect(pipeWire.pwLink).not.toHaveBeenCalled();
+
+        // B-195: the same out of a rebuilt source (an Audio Input's remap-source after a
+        // PipeWire restart); none out of the sink.
+        await router.reexecuteOutgoingPwLinks('dec');
+        expect(pipeWire.pwLink).toHaveBeenCalledTimes(1);
+        expect(router.getConnections()).toHaveLength(1);
+        pipeWire.pwLink.mockClear();
+        await router.reexecuteOutgoingPwLinks('out');
         expect(pipeWire.pwLink).not.toHaveBeenCalled();
     });
 

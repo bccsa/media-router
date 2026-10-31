@@ -103,10 +103,11 @@ export class AudioOutputModule extends GstPluginBase {
         }
         // The disconnect path bypasses `ModuleInstance.stop`'s `releaseAll`,
         // so unload here. Otherwise the next `loadRemapSink` (on reconnect)
-        // would collide on `sink_name=MR_PW_<id>`.
+        // would collide on `sink_name=MR_PW_<id>`. By name: after a PipeWire
+        // restart the old ID can be another module's (B-195).
         if (this.paModuleId !== null && this.services?.pipeWire) {
             try {
-                await this.services.pipeWire.unloadModule(this.paModuleId);
+                await this.services.pipeWire.unloadModule(this.paModuleId, this.pwNodeName);
             } catch {
                 /* ignore — best-effort cleanup */
             }
@@ -199,13 +200,14 @@ export class AudioOutputModule extends GstPluginBase {
         // these two sources is guaranteed to be set by the time we get here.
         const channels = (config.channels as number | undefined) ?? this.detectedChannels!;
         const pipeline = [
-            `pulsesrc device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
+            `pulsesrc name=capture device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
             'audioconvert',
             `audio/x-raw,channels=${channels}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
             'fakesink sync=false',
         ].join(' ! ');
 
-        return { pipeline };
+        // A failed meter stream is a lost PipeWire stream: the watchdog rebuilds it all (B-195).
+        return { pipeline, pipeWireElements: ['capture'] };
     }
 }

@@ -413,5 +413,36 @@ describe(
                 binOf('tc-eng'),
             ]);
         });
+
+        it('PipeWire going away under it (B-195): the failed sink is not restarted in a loop, it plays again once the device is listed', async () => {
+            const py = await startWithMasterOnly();
+            const spawned = h.FakeRunner.spawned.length;
+            const pipeWire = (plugin as any).services.pipeWire;
+            let up = false; // pactl gets no answer: the device list is unknown
+            pipeWire.hasDevice = () => up;
+            pipeWire.isAvailable = () => up;
+            // SWA01 05:41:30Z, the runner's own words, then its exit.
+            runnerSide(py)({
+                event: 'error',
+                element: 'sink',
+                message: 'Disconnected: Connection terminated',
+            });
+            py.options.onExit(0, null);
+            await sleep(1600); // past the host's restart (1 s, jitter up to 1.25 s)
+            expect(h.FakeRunner.spawned.length).toBe(spawned);
+            // The cause it names is PipeWire's, not the sink's symptom: pactl gets no answer.
+            expect(plugin.getState()).toMatchObject({
+                health: 'warning',
+                error: 'PipeWire is not answering — rebuilding the stream once PipeWire and the device are back',
+            });
+            up = true;
+            await (plugin as any).deviceWatchdog.tick(); // its next poll
+            expect(await waitUntil(() => h.FakeRunner.spawned.length > spawned, 1000)).toBe(true);
+            const rebuilt = h.FakeRunner.spawned.at(-1)!;
+            expect(rebuilt.startOpts!.pipeline).toContain(`pulsesink name=sink device=${DEVICE} `);
+            runnerSide(rebuilt)({ event: 'state_change', state: 'playing' });
+            await waitUntil(() => plugin.getState().running);
+            expect(plugin.getState().running).toBe(true);
+        });
     },
 );

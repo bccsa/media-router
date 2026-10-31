@@ -266,6 +266,13 @@ export { linkStreamPorts, portsFromDump, StreamPortLinker } from './audio/stream
 export type { StreamLinkSpec, StreamLinkResult, StreamLinkDeps } from './audio/streamPortLinks.js';
 export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';
 export type { DeviceWatchdogOptions, DeviceWatchdogPipeWire } from './plugins/DeviceWatchdog.js';
+export {
+    PIPEWIRE_CAPTURE_STALL_MS,
+    PIPEWIRE_NOT_ANSWERING,
+    PIPEWIRE_RESTARTED,
+    lossWarning,
+    rebuildDelayMs,
+} from './plugins/pipeWireLoss.js';
 export { PaCommandQueue } from './audio/PaCommandQueue.js';
 export { ModuleManager } from './modules/ModuleManager.js';
 export { ModuleInstance } from './modules/ModuleInstance.js';

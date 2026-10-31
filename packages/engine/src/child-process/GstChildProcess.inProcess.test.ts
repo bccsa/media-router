@@ -96,6 +96,49 @@ describe('GstChildProcess — in-process runner', () => {
         expect(python()).not.toBe(first);
     });
 
+    it('a lost PipeWire stream (B-195) is pipewire_lost and never restarted, not even after Python exits', async () => {
+        await child.start({
+            pipeline: 'audiomixer name=mixin ! pulsesink name=sink',
+            restartOnError: true,
+            pipeWireElements: ['sink'],
+        });
+        const first = python();
+        expect(first.startOpts).not.toHaveProperty('pipeWireElements'); // the host's, not the runner's
+        const error = vi.fn();
+        const state = vi.fn();
+        child.on('error', error);
+        child.on('stateChange', state);
+        first.options.onEvent({
+            event: 'error',
+            element: 'sink',
+            message: 'Disconnected: Connection terminated',
+        });
+        first.options.onExit(0, null);
+        expect(error).toHaveBeenCalledWith(expect.objectContaining({ kind: 'pipewire_lost' }));
+        expect(state).toHaveBeenCalledWith({ state: 'error', kind: 'pipewire_lost' });
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(FakePythonProcess.spawned).toHaveLength(1);
+    });
+
+    it('any other element failing still restarts as before', async () => {
+        await child.start({
+            pipeline: 'audiomixer name=mixin ! pulsesink name=sink',
+            restartOnError: true,
+            pipeWireElements: ['sink'],
+        });
+        const error = vi.fn();
+        child.on('error', error);
+        python().options.onEvent({
+            event: 'error',
+            element: 'mixin',
+            message: 'internal data stream error',
+        });
+        python().options.onExit(0, null);
+        expect(error).toHaveBeenCalledWith(expect.objectContaining({ kind: undefined }));
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(FakePythonProcess.spawned).toHaveLength(2);
+    });
+
     it('refuses the data-pipe mode in-process instead of wiring the engine’s stdio into a pipeline', async () => {
         const error = vi.fn();
         child.on('error', error);

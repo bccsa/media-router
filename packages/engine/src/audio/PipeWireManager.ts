@@ -13,6 +13,8 @@ import { SinkVolumeNormalizer } from './SinkVolumeNormalizer.js';
 
 const log = createLogger('PipeWireManager');
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /** Prefix for all Media Router PipeWire/PulseAudio modules. */
 export const MR_PW_PREFIX = 'MR_PW_';
 
@@ -41,8 +43,8 @@ export class PipeWireManager {
     private paQueue: PaCommandQueue;
     private deviceOps: AudioDeviceOps;
     private sinkVolumes: SinkVolumeNormalizer;
-    /** Ownership tracking: ownerId → Set of PA module IDs */
-    private ownership = new Map<string, Set<number>>();
+    /** Ownership tracking: ownerId → the PA modules it loaded, by ID, with the node each names. */
+    private ownership = new Map<string, Map<number, string>>();
 
     constructor(paQueue?: PaCommandQueue) {
         this.paQueue = paQueue ?? new PaCommandQueue();
@@ -50,23 +52,14 @@ export class PipeWireManager {
         this.sinkVolumes = new SinkVolumeNormalizer(this.paQueue);
     }
 
-    /** Track a PA module ID as owned by a specific owner. */
-    private trackOwnership(ownerId: string, moduleId: number): void {
-        let set = this.ownership.get(ownerId);
-        if (!set) {
-            set = new Set();
-            this.ownership.set(ownerId, set);
+    /** Track a PA module ID (and the node it names) as owned by a specific owner. */
+    private trackOwnership(ownerId: string, moduleId: number, name: string): void {
+        let owned = this.ownership.get(ownerId);
+        if (!owned) {
+            owned = new Map();
+            this.ownership.set(ownerId, owned);
         }
-        set.add(moduleId);
-    }
-
-    /** Remove a PA module ID from ownership tracking. */
-    private untrackOwnership(ownerId: string, moduleId: number): void {
-        const set = this.ownership.get(ownerId);
-        if (set) {
-            set.delete(moduleId);
-            if (set.size === 0) this.ownership.delete(ownerId);
-        }
+        owned.set(moduleId, name);
     }
 
     /**
@@ -74,14 +67,14 @@ export class PipeWireManager {
      * Called automatically when a module stops — plugins don't need manual cleanup.
      */
     async releaseAll(ownerId: string): Promise<void> {
-        const set = this.ownership.get(ownerId);
-        if (!set || set.size === 0) return;
-        const ids = [...set];
-        for (const moduleId of ids) {
-            await this.unloadModule(moduleId);
+        const owned = this.ownership.get(ownerId);
+        if (!owned || owned.size === 0) return;
+        const entries = [...owned];
+        for (const [moduleId, name] of entries) {
+            await this.unloadModule(moduleId, name);
         }
         this.ownership.delete(ownerId);
-        log.info({ ownerId, count: ids.length }, 'Released all PipeWire resources');
+        log.info({ ownerId, count: entries.length }, 'Released all PipeWire resources');
     }
 
     // --- Null-sink lifecycle ---
@@ -109,7 +102,7 @@ export class PipeWireManager {
         if (isNaN(moduleId)) {
             throw new Error(`Failed to parse module ID from: ${output}`);
         }
-        if (ownerId) this.trackOwnership(ownerId, moduleId);
+        if (ownerId) this.trackOwnership(ownerId, moduleId, sinkName);
         log.info({ sinkName, moduleId }, 'Created null-sink');
         return moduleId;
     }
@@ -139,7 +132,7 @@ export class PipeWireManager {
         if (isNaN(moduleId)) {
             throw new Error(`Failed to parse remap-source module ID from: ${output}`);
         }
-        if (ownerId) this.trackOwnership(ownerId, moduleId);
+        if (ownerId) this.trackOwnership(ownerId, moduleId, sourceName);
         log.info({ sourceName, master, moduleId }, 'Created remap-source');
         return moduleId;
     }
@@ -169,15 +162,18 @@ export class PipeWireManager {
         if (isNaN(moduleId)) {
             throw new Error(`Failed to parse remap-sink module ID from: ${output}`);
         }
-        if (ownerId) this.trackOwnership(ownerId, moduleId);
+        if (ownerId) this.trackOwnership(ownerId, moduleId, sinkName);
         log.info({ sinkName, master, moduleId }, 'Created remap-sink');
         return moduleId;
     }
 
     /**
-     * Unload a PulseAudio module by ID.
+     * Unload a PulseAudio module by ID. With `name` (the node it was loaded as), only while that
+     * ID still names it: a pipewire-pulse restart drops every module and hands the same IDs to
+     * the next loads, so a stale ID can be another module's fresh one (B-195).
      */
-    async unloadModule(moduleId: number): Promise<void> {
+    async unloadModule(moduleId: number, name?: string): Promise<void> {
+        if (name !== undefined && !this.stillLoadedAs(moduleId, name)) return;
         try {
             await this.paQueue.exec(['unload-module', String(moduleId)]);
             log.info({ moduleId }, 'Unloaded module');
@@ -260,9 +256,28 @@ export class PipeWireManager {
         if (isNaN(moduleId)) {
             throw new Error(`Failed to parse loopback module ID from: ${output}`);
         }
-        if (ownerId) this.trackOwnership(ownerId, moduleId);
+        if (ownerId) this.trackOwnership(ownerId, moduleId, loopbackName);
         log.info({ source, sink, moduleId }, 'Created loopback');
         return moduleId;
+    }
+
+    /** Is PA module `moduleId` loaded with `name` among its arguments (`sink_name=<name>`, ...)? */
+    private stillLoadedAs(moduleId: number, name: string): boolean {
+        let modules: string;
+        try {
+            modules = this.paQueue.execImmediate(['list', 'short', 'modules']);
+        } catch {
+            return false; // PipeWire gone: so is the module
+        }
+        const line = modules.split('\n').find((l) => l.split('\t')[0] === String(moduleId));
+        const named = !!line && new RegExp(`=${escapeRegExp(name)}(\\s|$)`).test(line);
+        if (!named) {
+            log.info(
+                { moduleId, name },
+                'PA module is gone or no longer ours (PipeWire restarted) — not unloaded',
+            );
+        }
+        return named;
     }
 
     // --- Port discovery (delegated to PwLinkOps) ---
@@ -338,6 +353,16 @@ export class PipeWireManager {
 
     hasDevice(deviceName: string): boolean {
         return this.deviceOps.hasDevice(deviceName);
+    }
+
+    /** The PipeWire daemon's identity: changes when PipeWire restarts; null while unknown. */
+    daemonInstance(): Promise<string | null> {
+        return this.deviceOps.daemonInstance();
+    }
+
+    /** False while PipeWire does not answer: the device list is then unknown, not empty. */
+    isAvailable(): boolean {
+        return this.deviceOps.isAvailable();
     }
 
     getDeviceInfo(deviceName: string): { channels?: number; sampleRate?: number } | null {

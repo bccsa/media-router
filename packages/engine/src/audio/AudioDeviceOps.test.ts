@@ -1,5 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { setLogTap } from '@media-router/shared-types';
 import {
+    parseServerCookie,
     parseDeviceBlock,
     parseDeviceChannels,
     parseDeviceSampleRate,
@@ -200,5 +202,77 @@ describe('AudioDeviceOps listing cache', () => {
         ops.listDevices();
         ops.listDevices();
         expect(execImmediate).toHaveBeenCalledTimes(4);
+    });
+});
+
+describe('AudioDeviceOps: which PipeWire answers, and whether it does (B-195)', () => {
+    // `pactl info` against a private PipeWire 1.2.7 daemon on the dev Pi (its pw-cli cookie 4053164746).
+    const INFO = [
+        'Server String: unix:/run/user/1000/pulse/native',
+        'Server Name: PulseAudio (on PipeWire 1.2.7)',
+        'Default Sample Specification: float32le 2ch 48000Hz',
+        'Cookie: f196:62ca',
+    ].join('\n');
+
+    function makeOps() {
+        let t = 1_000_000;
+        const pw = { up: true, info: INFO };
+        const execImmediate = vi.fn((args: string[]) => {
+            if (!pw.up)
+                throw new Error('pactl command failed: Connection failure: Connection refused');
+            return args[0] === 'info' ? pw.info : 'Source #1\n\tName: alsa_input.usb-mic';
+        });
+        const execImmediateAsync = vi.fn(async (args: string[]) => execImmediate(args));
+        const queue = {
+            execImmediate,
+            execImmediateAsync,
+            onMutation: null as (() => void) | null,
+        };
+        const ops = new AudioDeviceOps(queue as never, { now: () => t });
+        return { ops, pw, execImmediateAsync, advance: (ms: number) => (t += ms) };
+    }
+
+    const lines: Array<{ level: number; msg: string }> = [];
+    const flush = () => new Promise((r) => setImmediate(r));
+    afterEach(() => {
+        setLogTap(null);
+        lines.length = 0;
+    });
+
+    it('reads the daemon cookie from pactl info, null when it has none', () => {
+        expect(parseServerCookie(INFO)).toBe('f196:62ca');
+        expect(parseServerCookie('Server Name: PulseAudio')).toBeNull();
+    });
+
+    it('reads it once per TTL without blocking, a new one after a restart', async () => {
+        const { ops, pw, execImmediateAsync, advance } = makeOps();
+        expect(await ops.daemonInstance()).toBe('f196:62ca');
+        expect(await ops.daemonInstance()).toBe('f196:62ca');
+        expect(execImmediateAsync).toHaveBeenCalledTimes(1);
+        pw.info = INFO.replace('f196:62ca', '7e8b:4a20');
+        advance(DEFAULT_DEVICE_CACHE_TTL_MS);
+        expect(await ops.daemonInstance()).toBe('7e8b:4a20');
+    });
+
+    it('PipeWire down: unknown daemon, devices absent, not available; one line down and one back', async () => {
+        setLogTap((l) => lines.push(JSON.parse(l)));
+        const { ops, pw, advance } = makeOps();
+        expect(ops.isAvailable()).toBe(true);
+        pw.up = false;
+        for (let i = 0; i < 20; i++) {
+            advance(DEFAULT_DEVICE_CACHE_TTL_MS);
+            expect(await ops.daemonInstance()).toBeNull();
+            expect(ops.hasDevice('alsa_input.usb-mic')).toBe(false);
+        }
+        expect(ops.isAvailable()).toBe(false);
+        pw.up = true;
+        advance(DEFAULT_DEVICE_CACHE_TTL_MS);
+        expect(ops.hasDevice('alsa_input.usb-mic')).toBe(true);
+        expect(ops.isAvailable()).toBe(true);
+        await flush();
+        expect(lines.map((l) => [l.level, l.msg])).toEqual([
+            [40, 'PipeWire does not answer pactl: audio devices read as absent until it does'],
+            [30, 'PipeWire answers pactl again'],
+        ]);
     });
 });

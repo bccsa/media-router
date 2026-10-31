@@ -61,12 +61,17 @@ const REPLY_EVENTS = new Set([
 // A retired process's events worth a log line when dropped.
 const RETIRED_LOGGED = new Set(['error', 'warning', 'state_change']);
 
-// The `startPipeline` wire message: the runner start options plus the two
+// The `startPipeline` wire message: the runner start options plus the
 // restart-policy knobs GstRunner consumes itself (not forwarded to Python).
 interface StartPipelineMessage extends RunnerStartOptions {
     restartOnError?: boolean;
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
+    /** `PipelineDescription.pipeWireElements`: their errors are `pipewire_lost`, not restarted. */
+    pipeWireElements?: string[];
 }
+
+/** The `error` kind of a lost PipeWire stream (B-195): its module rebuilds it, not this runner. */
+export const PIPEWIRE_LOST_KIND = 'pipewire_lost';
 
 /**
  * Whoever hosts a `GstRunner` — the one seam through which the runner reaches
@@ -101,6 +106,8 @@ export class GstRunner {
     private readonly ipc: ParentIpc;
     private currentState: 'stopped' | 'playing' | 'error' = 'stopped';
     private restartOnError = false;
+    /** Elements holding the module's PipeWire stream (see `PIPEWIRE_LOST_KIND`). */
+    private pipeWireElements = new Set<string>();
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     // The last start options, replayed verbatim by the restart loop. One field
     // instead of a mirror per knob — new knobs can't drift out of the replay.
@@ -154,9 +161,10 @@ export class GstRunner {
     handleControlMessage(msg: ControlIpcMessage): void {
         switch (msg.action) {
             case 'startPipeline': {
-                const { restartOnError, restartBackoffMs, ...opts } =
+                const { restartOnError, restartBackoffMs, pipeWireElements, ...opts } =
                     msg.data as StartPipelineMessage;
                 this.restartOnError = restartOnError ?? false;
+                this.pipeWireElements = new Set(pipeWireElements ?? []);
                 this.restartBackoff.setBounds(
                     restartBackoffMs?.baseMs ?? DEFAULT_RESTART_BASE_MS,
                     restartBackoffMs?.maxMs ?? DEFAULT_RESTART_MAX_MS,
@@ -519,7 +527,7 @@ export class GstRunner {
                 });
                 break;
 
-            case 'error':
+            case 'error': {
                 // Fatal pipeline-lifecycle failure (bus ERROR, parse-fail,
                 // PLAYING-fail, udpsrc timeout). Tear down + restart per
                 // policy. RPC-handler failures use `command_error` (below).
@@ -527,13 +535,23 @@ export class GstRunner {
                 console.error(
                     `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.element ? ` [element: ${eventJson.element}]` : ''}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
                 );
+                // A lost PipeWire stream waits for PipeWire and its device in the module (B-195):
+                // restarting it here loops while PipeWire is down. Neither this error nor the
+                // runner's exit after it restarts anything.
+                const pipeWireLost =
+                    !eventJson.kind && this.pipeWireElements.has(String(eventJson.element));
+                if (pipeWireLost) {
+                    this.restartOnError = false;
+                    console.error('[gst-runner] PipeWire stream lost: the module rebuilds it');
+                }
+                const kind = pipeWireLost ? PIPEWIRE_LOST_KIND : eventJson.kind;
                 this.ipc.sendEvent('error', {
                     message: eventJson.message,
                     // Pass through `kind` so consumers can distinguish recoverable
                     // failures (e.g. udpsrc timeout when the source goes silent)
                     // from hard bus errors. Plugins use this to switch to a
                     // fallback pipeline instead of looping on the failing one.
-                    kind: eventJson.kind,
+                    kind,
                     // Source element name (from the gst bus message) — error
                     // attribution for diagnostics and per-element policies.
                     element: eventJson.element,
@@ -542,9 +560,10 @@ export class GstRunner {
                 });
                 // `kind` rides along so GstPluginBase can tell a reconnect
                 // (`bus_producer_restarted`) from a fault when it flips health.
-                this.ipc.sendEvent('stateChange', { state: 'error', kind: eventJson.kind });
+                this.ipc.sendEvent('stateChange', { state: 'error', kind });
                 if (this.restartOnError) this.scheduleRestart();
                 break;
+            }
 
             case 'command_error': {
                 // Non-fatal RPC-handler failure (element not found, get/set

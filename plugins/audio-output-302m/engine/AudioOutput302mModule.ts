@@ -64,6 +64,8 @@ const MIXER = 'mixin';
  * - VU: in-pipeline `level` element (post-volume = what is being played;
  *   measures the N-channel mix, not the device-wide spread).
  * - Device hot-plug: base-class device watchdog stops/starts the pipeline.
+ * - A lost PipeWire stream (`sink` failed: PipeWire restarted or stopped) is rebuilt by that
+ *   watchdog once PipeWire and the device are back, not restarted in a loop meanwhile (B-195).
  * - NEVER a default device (broadcast rule): unconfigured device = health
  *   error, no pipeline.
  */
@@ -270,6 +272,7 @@ export class AudioOutput302mModule extends GstPluginBase {
             // Audio only, nothing to drain; and the mixer arm's aligners hold every EOS
             // (hold-on-eos), so a drain would wait out its 6 s timeout on each stop or rebuild.
             eosDrain: false,
+            pipeWireElements: ['sink'],
             timingSink: { element: 'sink', kind: 'audio' },
             // Backlog shedder — the latency ratchet guard on this `sync=true`
             // leg (see backlogShed.ts). Shed point is

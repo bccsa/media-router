@@ -8,6 +8,7 @@ import type {
 } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
+import { PIPEWIRE_LOST_KIND } from '../child-process/GstRunner.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
@@ -29,9 +30,9 @@ import { ModuleTiming } from './moduleTiming.js';
 import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
 import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
 
-/** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
- *  this module: health stays a warning through the restart that follows. */
-const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
+/** Runner `error` kinds that are not a fault of this module: a reconnect to upstream keeps its
+ *  warning through the restart that follows; a lost PipeWire stream, the watchdog's (B-195). */
+const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted', PIPEWIRE_LOST_KIND]);
 /** The runner's `error` event; `detail` comes with kind `timing_plugin` (plan ch. 3 rule 6). */
 type RunnerError = { message: string; kind?: string; detail?: string };
 /** The transient warnings a module writes and later withdraws itself. */
@@ -80,6 +81,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.log.warn({ gapMs }, 'VU meter stalled: no level messages from the pipeline'),
         onResume: (gapMs) => this.log.info({ gapMs }, 'VU meter resumed'),
     });
+    /** A PLAYING capture with no audio buffers for this long is a dead PipeWire stream (B-195);
+     *  set by modules whose `level` reads their capture. A silent input still delivers buffers. */
+    protected readonly captureStallMs: number | null = null;
+    private captureStall: VuStallWatch | null = null;
     /** PulseAudio module ID for the null-sink created on start. */
     protected paModuleId: number | null = null;
     /** Per-instance logger — initialized in onInit with the instance ID. */
@@ -273,6 +278,18 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         // A fresh pipeline has dropped nothing yet.
         this.lostInputs.clear();
+        if (this.captureStallMs !== null && !this.captureStall) {
+            this.captureStall = new VuStallWatch(
+                {
+                    onStall: (gapMs) =>
+                        this.losePipeWireStream(
+                            `No audio from the capture for ${Math.round(gapMs / 1000)} s`,
+                        ),
+                    onResume: () => {},
+                },
+                this.captureStallMs,
+            );
+        }
         const desc = this.buildPipeline(this.config);
         this.timing.start(desc);
 
@@ -289,10 +306,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.childProcess = new GstChildProcess();
 
         this.childProcess.on('stateChange', (data: { state: string; kind?: string }) => {
+            if (data.state !== 'playing') this.captureStall?.reset();
             if (data.state === 'playing') {
                 this.running = true;
                 this.ready = true;
                 this.markHealthy();
+                // The streams of this run are on the PipeWire daemon that runs now, and a
+                // capture owes its first reading from here (B-195).
+                void this.deviceWatchdog?.adopt();
+                this.captureStall?.tick();
                 // A launch without some live inputs plays on without them: say so again.
                 this.showLostInputs();
                 // Re-attach this producer's per-consumer bus fan-out branches:
@@ -326,6 +348,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.childProcess.on('vuData', (data: { peak: number[] }) => {
             this.setVuData(data.peak);
             this.vuStall.tick();
+            this.captureStall?.tick();
         });
 
         // Generic pipeline→plugin data channel. Delivered to the subclass hook
@@ -336,6 +359,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         });
 
         this.childProcess.on('error', (data: RunnerError) => {
+            if (data.kind === PIPEWIRE_LOST_KIND) {
+                this.losePipeWireStream(`PipeWire stream failed (${data.message})`);
+                return;
+            }
             if (RECONNECT_ERROR_KINDS.has(data.kind ?? '')) {
                 // A wait on upstream (the producer restarted under us), not a
                 // fault of this module; cleared by the PLAYING that follows.
@@ -544,6 +571,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     async onStop(): Promise<void> {
         this.vuStall.reset();
+        this.captureStall?.reset();
         if (this.vuProcess) {
             await this.vuProcess.destroy();
             this.vuProcess = null;
@@ -564,6 +592,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     async onDestroy(): Promise<void> {
         this.vuStall.reset();
+        this.captureStall?.reset();
         // Ensure subclass cleanup (PipeWire null-sinks, VU loopbacks, etc.) runs
         // Each step is guarded so a failure doesn't prevent subsequent cleanup
         if (this.running) {
@@ -1141,6 +1170,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             onClear: () => this.setVuData([]),
         });
         this.deviceWatchdog.start(initiallyConnected);
+    }
+
+    /**
+     * The module's PipeWire stream died under it (B-195): the watchdog tears the pipeline down
+     * with a warning naming `cause` and rebuilds it once PipeWire and the device are back.
+     */
+    protected losePipeWireStream(cause: string): void {
+        if (this.deviceWatchdog) void this.deviceWatchdog.lose(cause);
+        else this.setHealth('error', cause);
     }
 
     /** Stop the watchdog and wait for an in-flight tick to settle. */

@@ -61,10 +61,29 @@ export class PaCommandQueue {
                 timeout: 5000,
                 encoding: 'utf-8',
                 env: { ...process.env, DISPLAY: '' },
+                // Its stderr is in the error we throw; inherited, it reached the journal
+                // twice a second while PipeWire was down (B-195).
+                stdio: ['ignore', 'pipe', 'pipe'],
             }).trim();
         } catch (err) {
             throw new Error(`pactl command failed: pactl ${args.join(' ')}\n${formatError(err)}`);
         }
+    }
+
+    /** `execImmediate` without blocking the event loop while pactl waits for its answer. */
+    execImmediateAsync(args: string[]): Promise<string> {
+        return new Promise((resolve, reject) => {
+            execFile(
+                'pactl',
+                args,
+                { timeout: 5000, encoding: 'utf-8', env: { ...process.env, DISPLAY: '' } },
+                (err, stdout, stderr) => {
+                    if (!err) return resolve(stdout.trim());
+                    const why = stderr?.trim() || err.message;
+                    reject(new Error(`pactl command failed: pactl ${args.join(' ')}\n${why}`));
+                },
+            );
+        });
     }
 
     private processNext(): void {

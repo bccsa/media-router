@@ -258,6 +258,8 @@ export class GstChildProcess extends EventEmitter {
             runner: desc.runner,
             // Drain opt-out for audio-only bus producers; undefined = drain.
             eosDrain: desc.eosDrain,
+            // A failure of one is a lost PipeWire stream: no runner restart (B-195).
+            pipeWireElements: desc.pipeWireElements,
             // Live input branch bins (error containment).
             liveInputBranches: desc.liveInputBranches,
             // An aggregator's inputs, launched with the ones that are there (B-192).

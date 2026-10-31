@@ -104,6 +104,14 @@ export function parseDeviceBlock(
     };
 }
 
+/**
+ * `pactl info`'s `Cookie:`: the PipeWire daemon's core cookie, random at every daemon start
+ * (impl-core.c `pw_rand32`, served by pipewire-pulse), so it changes when PipeWire restarts.
+ */
+export function parseServerCookie(info: string): string | null {
+    return info.match(/^\s*Cookie:\s*(\S+)/m)?.[1] ?? null;
+}
+
 /** How long one `pactl list` snapshot is reused before it is re-fetched. */
 export const DEFAULT_DEVICE_CACHE_TTL_MS = 1000;
 
@@ -133,6 +141,11 @@ export class AudioDeviceOps {
     private readonly cacheTtlMs: number;
     private readonly now: () => number;
     private cache: { at: number; devices: AudioDevice[] } | null = null;
+    private infoCache: { at: number; cookie: Promise<string | null> } | null = null;
+    /** Since when pactl gets no answer (null: it answers): one line per outage, not per call. */
+    private outageSince: number | null = null;
+    /** The last device listing got an answer. */
+    private listed = true;
 
     constructor(
         private paQueue: PaCommandQueue,
@@ -184,10 +197,9 @@ export class AudioDeviceOps {
      * List available audio devices (sources and sinks) with full descriptions.
      */
     listDevices(): AudioDevice[] {
-        if (this.cache && this.cacheTtlMs > 0 && this.now() - this.cache.at < this.cacheTtlMs) {
-            return [...this.cache.devices];
-        }
+        if (this.fresh(this.cache)) return [...this.cache!.devices];
         const devices: AudioDevice[] = [];
+        let failure: unknown = null;
         const probe = (kind: 'sources' | 'sinks', direction: 'source' | 'sink') => {
             try {
                 const output = this.paQueue.execImmediate(['list', kind]);
@@ -196,13 +208,56 @@ export class AudioDeviceOps {
                     if (dev) devices.push(dev);
                 }
             } catch (err) {
-                log.warn({ err, kind }, 'Failed to list devices');
+                failure = err;
             }
         };
         probe('sources', 'source');
         probe('sinks', 'sink');
+        this.listed = failure === null;
+        this.noteAnswer(failure);
         this.cache = { at: this.now(), devices };
         return [...devices];
+    }
+
+    /** The PipeWire daemon's identity (`parseServerCookie`), cached like the listing; null when
+     *  unknown. Asked without blocking: one caller per TTL runs `pactl info`, the rest share it. */
+    daemonInstance(): Promise<string | null> {
+        if (this.fresh(this.infoCache)) return this.infoCache!.cookie;
+        const cookie = this.paQueue.execImmediateAsync(['info']).then(
+            (info) => {
+                this.noteAnswer(null);
+                return parseServerCookie(info);
+            },
+            (err: unknown) => {
+                this.noteAnswer(err);
+                return null;
+            },
+        );
+        this.infoCache = { at: this.now(), cookie };
+        return cookie;
+    }
+
+    /** False while the device listing gets no answer: the list is then unknown, not empty. */
+    isAvailable(): boolean {
+        return this.listed;
+    }
+
+    private fresh(entry: { at: number } | null): boolean {
+        return !!entry && this.cacheTtlMs > 0 && this.now() - entry.at < this.cacheTtlMs;
+    }
+
+    /** One warning when PipeWire stops answering pactl, one line when it answers again (B-195). */
+    private noteAnswer(failure: unknown): void {
+        if (failure && this.outageSince === null) {
+            this.outageSince = this.now();
+            log.warn(
+                { err: failure },
+                'PipeWire does not answer pactl: audio devices read as absent until it does',
+            );
+        } else if (!failure && this.outageSince !== null) {
+            log.info({ downMs: this.now() - this.outageSince }, 'PipeWire answers pactl again');
+            this.outageSince = null;
+        }
     }
 
     /**

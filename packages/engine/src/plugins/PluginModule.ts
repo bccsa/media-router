@@ -276,6 +276,10 @@ export interface PipelineDescription {
      *  stateless video decoders; a force-live audio aggregator never completes
      *  it, so audio-only bus producers set false. Never on a video decoder. */
     eosDrain?: boolean;
+    /** Elements that hold this module's PipeWire stream (B-195): an error from one is a lost
+     *  stream (`pipewire_lost`), which the runner does not restart; the module's device watchdog
+     *  rebuilds it once PipeWire and the device are back. */
+    pipeWireElements?: string[];
     /** Bin names of the live input branches in `pipeline` (filled by
      *  GstPluginBase from `getLiveInputBranch`). An error inside one drops
      *  that branch (`input_branch_lost`) instead of failing the pipeline. */

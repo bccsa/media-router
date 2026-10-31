@@ -35,6 +35,11 @@ function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; s
             unloadedModuleIds.push(id);
         }),
         releaseAll: vi.fn(async () => {}),
+        /** The PipeWire daemon (pactl's cookie); a test sets a new one for a restart. */
+        cookie: 'a1',
+        daemonInstance(): string | null {
+            return this.cookie;
+        },
     };
 }
 
@@ -122,7 +127,7 @@ describe('AudioInputModule hot-plug recovery', () => {
         pw.setPresent(false);
         await tickWatchdog(module);
 
-        expect(pw.unloadModule).toHaveBeenCalledWith(remapId);
+        expect(pw.unloadModule).toHaveBeenCalledWith(remapId, 'MR_PW_mic-test-001');
         expect(pw.unloadedModuleIds).toContain(remapId);
         await module.onStop();
     });
@@ -198,5 +203,37 @@ describe('AudioInputModule: a restart applies a re-picked device (B-191)', () =>
         await tickWatchdog(module);
         expect(remapped()).toEqual([NEW]);
         await instance.stop();
+    });
+});
+
+describe('AudioInputModule after a PipeWire restart (B-195)', () => {
+    it('its meter stream is the PipeWire stream it declares', () => {
+        const module = new AudioInputModule() as any;
+        module.services = { instanceId: 'mic-test-001' };
+        const desc = module.buildPipeline({ channels: 1 });
+        expect(desc.pipeline).toMatch(/^pulsesrc name=capture device=MR_PW_mic-test-001 /);
+        expect(desc.pipeWireElements).toEqual(['capture']);
+    });
+
+    it('rebuilds the remap-source and re-links its consumers; the old ID is unloaded by name only', async () => {
+        const { module, pw, services, config } = createModule(true);
+        const reexec = vi.fn(async () => {});
+        services.mediaRouter = { reexecuteOutgoingPwLinks: reexec } as any;
+        await module.onInit(config, services);
+        await module.onStart();
+        const first = await pw.loadRemapSource.mock.results[0].value;
+
+        pw.cookie = 'b2'; // the source and every pw-link out of it went with the old daemon
+        await tickWatchdog(module);
+        expect(pw.unloadModule).toHaveBeenCalledWith(first, 'MR_PW_mic-test-001');
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error: 'PipeWire restarted — rebuilding the stream once PipeWire and the device are back',
+        });
+        await tickWatchdog(module);
+        expect(pw.loadRemapSource).toHaveBeenCalledTimes(2);
+        expect(reexec).toHaveBeenCalledWith('mic-test-001');
+        expect(module.getState().health).toBe('ok');
+        await module.onStop();
     });
 });

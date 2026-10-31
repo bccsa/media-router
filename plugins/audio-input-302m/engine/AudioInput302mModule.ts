@@ -2,6 +2,7 @@ import {
     GstPluginBase,
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
+    PIPEWIRE_CAPTURE_STALL_MS,
     PIPEWIRE_SRC_MIN_BUFFERS,
     applyIngestTimingLiveUpdate,
     asrcBusReports,
@@ -71,12 +72,20 @@ import {
  *
  * - Volume/mute: gst `volume` element. VU: in-pipeline `level`.
  * - Device hot-plug: base-class watchdog stops/starts the pipeline.
+ * - A lost PipeWire stream (B-195): `pipewiresrc` posts nothing when PipeWire restarts under it,
+ *   so the watchdog rebuilds when the daemon changed, `capture` failed or no audio came for
+ *   `PIPEWIRE_CAPTURE_STALL_MS`: the unplug path, with a warning naming the cause.
  * - NEVER a default device: unconfigured = health error, no pipeline.
  */
+
+/** The `pipewiresrc`: the module's PipeWire stream. */
+const CAPTURE = 'capture';
 
 export class AudioInput302mModule extends GstPluginBase {
     /** O is the restamp's live property (§5.5); a capture has no per-PID trim (OQ-15). */
     protected liveUpdatableParams = ['volume', 'audioEnabled', INGEST_OFFSET_KEY];
+    /** `level` reads the capture: no buffers this long while PLAYING is a dead stream (B-195). */
+    protected readonly captureStallMs = PIPEWIRE_CAPTURE_STALL_MS;
 
     /** The ASRC's and the restamp's card: the Clock section and part 10's warnings. */
     private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
@@ -251,6 +260,10 @@ export class AudioInput302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            // An audio-only bus producer: its drain timed out (6 s) at every stop on SWA01,
+            // and a rebuild after a lost stream would wait it out too (B-195).
+            eosDrain: false,
+            pipeWireElements: [CAPTURE],
             busReports: [...restampBusReports(), ...asrcBusReports()],
         };
     }
@@ -305,7 +318,7 @@ export class AudioInput302mModule extends GstPluginBase {
         // `node.autoconnect=false`: WirePlumber must not link this stream (it
         // would take the first N device ports by position); the engine does.
         const src =
-            `pipewiresrc target-object=${device} min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}` +
+            `pipewiresrc name=${CAPTURE} target-object=${device} min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}` +
             ` ${pipewireStreamProps({
                 'node.latency': `${quantum}/48000`,
                 'node.name': this.pwNodeName,

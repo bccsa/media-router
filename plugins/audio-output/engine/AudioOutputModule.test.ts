@@ -28,6 +28,11 @@ function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; s
             unloadedModuleIds.push(id);
         }),
         releaseAll: vi.fn(async () => {}),
+        /** The PipeWire daemon (pactl's cookie); a test sets a new one for a restart. */
+        cookie: 'a1',
+        daemonInstance(): string | null {
+            return this.cookie;
+        },
     };
 }
 
@@ -112,7 +117,7 @@ describe('AudioOutputModule hot-plug recovery', () => {
         pw.setPresent(false);
         await tickWatchdog(module);
 
-        expect(pw.unloadModule).toHaveBeenCalledWith(sinkId);
+        expect(pw.unloadModule).toHaveBeenCalledWith(sinkId, 'MR_PW_spk-test-001');
         expect(pw.unloadedModuleIds).toContain(sinkId);
         await module.onStop();
     });
@@ -209,5 +214,33 @@ describe('AudioOutputModule: a restart applies a re-picked device (B-191)', () =
         await tickWatchdog(module);
         expect(remapped()).toEqual([NEW]);
         await instance.stop();
+    });
+});
+
+describe('AudioOutputModule after a PipeWire restart (B-195)', () => {
+    it('its meter stream is the PipeWire stream it declares', () => {
+        const module = new AudioOutputModule() as any;
+        module.deviceName = 'alsa_output.usb-Generic_USB_Audio';
+        const desc = module.buildPipeline({ channels: 2 });
+        expect(desc.pipeline).toMatch(
+            /^pulsesrc name=capture device=alsa_output.usb-Generic_USB_Audio.monitor /,
+        );
+        expect(desc.pipeWireElements).toEqual(['capture']);
+    });
+
+    it('a failed meter stream rebuilds the remap-sink and re-links into it once the device is listed', async () => {
+        const { module, pw, services, config } = createModule(true);
+        const reexec = vi.fn(async () => {});
+        services.mediaRouter = { reexecuteIncomingPwLinks: reexec } as any;
+        await module.onInit(config, services);
+        await module.onStart();
+        (module as any).losePipeWireStream(
+            'PipeWire stream failed (Disconnected: Connection terminated)',
+        );
+        await tickWatchdog(module); // the loss runs, then this tick: the device is listed
+        expect(pw.unloadModule).toHaveBeenCalledWith(101, 'MR_PW_spk-test-001');
+        expect(pw.loadRemapSink).toHaveBeenCalledTimes(2);
+        expect(reexec).toHaveBeenCalledWith('spk-test-001');
+        await module.onStop();
     });
 });

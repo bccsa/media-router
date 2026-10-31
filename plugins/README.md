@@ -1558,7 +1558,7 @@ export class AudioInputModule extends GstPluginBase {
     // Called when the device disappears — teardown PipeWire nodes etc.
     protected async onDeviceDisconnected(): Promise<void> {
         if (this.remapModuleId !== null) {
-            await this.services!.pipeWire.unloadModule(this.remapModuleId);
+            await this.services!.pipeWire.unloadModule(this.remapModuleId, this.pwNodeName);
             this.remapModuleId = null;
         }
     }
@@ -1581,6 +1581,13 @@ export class AudioInputModule extends GstPluginBase {
 ```
 
 The base class flips `health` to `'error'` on disconnect and back to `'ok'` once `onDeviceReconnected` resolves. If reconnection throws (e.g. the device returned but format probing failed), the watchdog stays in "disconnected" mode so the next tick retries.
+
+**A lost PipeWire stream takes the same path (B-195).** A PipeWire restart (the Device Manager's Apply or Restart PipeWire) is not safe on its own: a `pipewiresrc` posts no error when its daemon goes away (its task just stops), and a restart is over before a 2 s presence poll could see the device missing. So the watchdog also tears the module down, with a warning naming the cause, and rebuilds it through `onDeviceDisconnected`/`onDeviceReconnected` once the device is listed again, when:
+- PipeWire's daemon changed under the module (`pactl info`'s cookie, compared at each poll with the one its streams started on);
+- an element named in the description's `pipeWireElements` fails: the runner host marks the error `pipewire_lost` and does not restart that runner (a restart loop while PipeWire is down), e.g. `{ pipeline, pipeWireElements: ['capture'] }` with `pipewiresrc name=capture …`;
+- a capture's meter stops while PLAYING: set `protected readonly captureStallMs = PIPEWIRE_CAPTURE_STALL_MS` when the pipeline's `level` reads the capture (a silent input still sends readings, so silence is never a loss); or the module calls `losePipeWireStream(cause)` itself.
+
+Losses in a run back off (0, 2, 4 … 60 s before the rebuild), a device list nobody answers is "unknown", not an unplug, and nothing is rebuilt or logged while PipeWire stays down. Unload a PA module you loaded by passing its node name, `unloadModule(id, this.pwNodeName)`: after a pipewire-pulse restart the old ID can be another module's.
 
 Real examples: [`audio-input`](audio-input/engine/AudioInputModule.ts), [`audio-output`](audio-output/engine/AudioOutputModule.ts), [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts).
 

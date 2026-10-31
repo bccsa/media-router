@@ -235,6 +235,7 @@ describe('start payload (the wire to the runner)', () => {
             'liveCaptureClock',
             'liveInputBranches',
             'liveInputs',
+            'pipeWireElements',
             'pipeline',
             'readKlvNames',
             'renderWatch',
@@ -247,6 +248,13 @@ describe('start payload (the wire to the runner)', () => {
             'udpSilenceRestartMs',
             'useStdioForData',
         ]);
+    });
+
+    it('carries the PipeWire stream elements the runner host must not restart (B-195)', () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        expect(
+            child.startPayload({ pipeline: 'x', pipeWireElements: ['capture'] }).pipeWireElements,
+        ).toEqual(['capture']);
     });
 
     it('carries udpSilenceRestartMs (multicast re-join bound), and omits it when unset', () => {

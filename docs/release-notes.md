@@ -508,6 +508,17 @@ elements" below do not start.
   dropped at once and joined again a moment later, and status texts name the
   module waited for ("Waiting for upstream module(s): Chat IN", "Input from
   Chat IN not running — continuing without it"), never a socket path.
+- **Audio inputs capture again by themselves after PipeWire restarts.** Up to
+  v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
+  buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and
+  captured nothing until it was restarted by hand; an Audio Input or Audio
+  Output (both deprecated) went to an error and stayed there. Fixed: the
+  module shows "PipeWire restarted — rebuilding the stream once PipeWire and
+  the device are back" and captures or plays again a few seconds after
+  PipeWire is back. While PipeWire stays down it waits quietly ("PipeWire is
+  not answering — …"), and an Audio Output (302M) no longer restarts every
+  few seconds meanwhile. The Audio Input (302M) also stops and restarts about
+  6 s faster.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

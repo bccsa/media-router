@@ -115,6 +115,15 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         );
     });
 
+    it('declares its pulsesink the PipeWire stream: a failure waits for the device, not a restart loop (B-195)', () => {
+        for (const sources of [1, 2]) {
+            const { module } = makeModule({ sources });
+            const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
+            expect(desc!.pipeline).toContain('pulsesink name=sink device=alsa_output.usb-foo ');
+            expect(desc!.pipeWireElements).toEqual(['sink']);
+        }
+    });
+
     it('stops without the EOS drain in both arms (the mixer arm holds every EOS)', () => {
         for (const sources of [1, 2]) {
             const { module } = makeModule({ sources });

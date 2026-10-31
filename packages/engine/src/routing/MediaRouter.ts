@@ -505,8 +505,17 @@ export class MediaRouter {
      * every module reporting running.
      */
     async reexecuteIncomingPwLinks(moduleId: string): Promise<void> {
+        await this.reexecutePwLinks((c) => c.sinkModuleId === moduleId);
+    }
+
+    /** The same for the pw-link edges OUT of `moduleId`: a capture's rebuilt remap-source (B-195). */
+    async reexecuteOutgoingPwLinks(moduleId: string): Promise<void> {
+        await this.reexecutePwLinks((c) => c.sourceModuleId === moduleId);
+    }
+
+    private async reexecutePwLinks(touches: (c: Connection) => boolean): Promise<void> {
         const conns = this.getConnections().filter(
-            (c) => c.sinkModuleId === moduleId && this.handles.get(c.id)?.type === 'pw-link',
+            (c) => touches(c) && this.handles.get(c.id)?.type === 'pw-link',
         );
         for (const conn of conns) {
             const handle = this.handles.get(conn.id);

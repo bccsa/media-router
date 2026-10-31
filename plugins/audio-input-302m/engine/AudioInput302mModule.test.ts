@@ -84,7 +84,7 @@ describe('AudioInput302mModule.buildPipeline', () => {
         // pipewiresrc, never pulsesrc: pipewire-pulse cannot create wide record streams. 16
         // buffers behind the stream, not the 2 PipeWire 1.6 would give it (B-180).
         expect(desc!.pipeline).toContain(
-            'pipewiresrc target-object=alsa_input.usb-mic min-buffers=16 stream-properties=',
+            'pipewiresrc name=capture target-object=alsa_input.usb-mic min-buffers=16 stream-properties=',
         );
         expect(desc!.pipeline).not.toContain('pulsesrc');
         // #736 pins, the node on the runner's RT data loop (B-88), not live (the driver's cycle
@@ -105,6 +105,9 @@ describe('AudioInput302mModule.buildPipeline', () => {
             'mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc!.restartOnError).toBe(true);
+        // Its stream is `capture` (B-195), and an audio-only producer stops without a drain.
+        expect(desc!.pipeWireElements).toEqual(['capture']);
+        expect(desc!.eosDrain).toBe(false);
         expect(module.linkPlan).toEqual({
             streamNode: 'MR_PW_ain-1',
             direction: 'capture',
@@ -126,7 +129,7 @@ describe('AudioInput302mModule.buildPipeline', () => {
         const desc = module.buildPipeline({ device: DEV, channels: 8, firstChannel: 9 });
         expect(desc).not.toBeNull();
         const p: string = desc!.pipeline;
-        expect(p).toContain(`pipewiresrc target-object=${DEV}`);
+        expect(p).toContain(`pipewiresrc name=capture target-object=${DEV}`);
         // Never the whole device any more — 8 ports, not 48; an 8×8 identity, not a 48×8 pick.
         expect(p).toMatch(
             /! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x0 ! audioconvert mix-matrix="<[^"]*>" ! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x63f ! volume name=vol/,
@@ -776,10 +779,10 @@ describe('AudioInput302mModule: a restart applies a re-picked device (B-191)', (
     it('a running capture captures and watches the re-picked device after Restart', async () => {
         const { module, instance, built, repick } = underEngine(new Set([OLD, NEW]));
         await instance.start();
-        expect(built[0]).toContain(`pipewiresrc target-object=${OLD} `);
+        expect(built[0]).toContain(`pipewiresrc name=capture target-object=${OLD} `);
         await repick(NEW);
         expect(built).toHaveLength(2);
-        expect(built[1]).toContain(`pipewiresrc target-object=${NEW} `);
+        expect(built[1]).toContain(`pipewiresrc name=capture target-object=${NEW} `);
         expect(module.linkPlan.deviceNode).toBe(NEW);
         expect(module.getWatchedDeviceName()).toBe(NEW);
         await instance.stop();
@@ -802,7 +805,7 @@ describe('AudioInput302mModule: a restart applies a re-picked device (B-191)', (
         present.add(NEW);
         await module.deviceWatchdog.tick();
         expect(built).toHaveLength(1);
-        expect(built[0]).toContain(`pipewiresrc target-object=${NEW} `);
+        expect(built[0]).toContain(`pipewiresrc name=capture target-object=${NEW} `);
         await instance.stop();
     });
 });
