@@ -71,6 +71,8 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
 
     private deviceName = '';
+    /** The pipeline launched is the mixer arm (two sources or more), not the direct one. */
+    private mixerLaunched = false;
     /** FF9: relaunch this pipeline once its source settles after a rebase or stall-resume. */
     private readonly settleRestart = new TimelineSettleRestart({
         pipeline: () => this.childProcess,
@@ -139,9 +141,10 @@ export class AudioOutput302mModule extends GstPluginBase {
         return router.getModuleBusSources(instanceId).filter((s) => s.sinkPortId === INPUT_PORT_ID);
     }
 
-    /** Live input add, remove and join on Audio In, from two sources on: one plays direct. */
+    /** Live input add, remove and join on Audio In, from two sources on: one plays direct, and
+     *  a second wired to the direct pipeline restarts it into the mixer (B-194). */
     getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
-        if (sinkPortId !== INPUT_PORT_ID) return null;
+        if (sinkPortId !== INPUT_PORT_ID || !this.mixerLaunched) return null;
         const sources = this.sources();
         if (sources.length < 2) return null;
         const source = sources.find((s) => s.connectionId === connectionId);
@@ -193,6 +196,9 @@ export class AudioOutput302mModule extends GstPluginBase {
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        // With no runner yet this is a start's build, the pipeline that runs; a refresh has one.
+        const launch = !this.childProcess;
+        if (launch) this.mixerLaunched = false;
         if (!this.services?.mediaRouter) return null;
 
         const device = (config.device as string) ?? '';
@@ -226,6 +232,7 @@ export class AudioOutput302mModule extends GstPluginBase {
             sources.length > 1
                 ? buildLiveMixInput({ sources, channels, mixerName: MIXER })
                 : { ...buildAudioMixInput({ sources, channels }), inputs: undefined };
+        if (launch) this.mixerLaunched = sources.length > 1;
         const tsOffsetNs = audio302mTsOffsetNs(this.services, config);
 
         // Present at stamped time + D on the house clock (see the class comment). `name=sink` is

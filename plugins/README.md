@@ -1456,7 +1456,9 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   is already gone — only `element` + `name` are needed).
 - The engine waits for the producer's edge socket, sends the add, then
   refreshes the stored description so a crash-replay rebuilds with the
-  branch. The LAST edge of a port keeps the classic teardown (the module
+  branch. A producer not up yet (gated, starting) gets no add: the module
+  runs without the branch, "Input from X not running", until the socket
+  accepts, and then it joins (B-194). The LAST edge of a port keeps the classic teardown (the module
   must idle); a channel-map edit is a remove + add of that one branch.
   Return null for edges whose arrival changes more than one branch — and
   any runner refusal (no pipeline yet, element not found) falls back to
@@ -1484,12 +1486,14 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   hand its branches over apart from `pipeline`, as
   `PipelineDescription.liveInputs` (`buildLiveMixInput` in audio-302m-core).
   The runner host then launches as soon as one of them is there, with every
-  one that is (ADR-0010 rule 5), names the others lost, and the engine adds
+  one that is (ADR-0010 rule 5), names the others not running, and the engine adds
   each when its producer plays — also when it plays before the module does,
   or launched before it. Name them in `getLiveInputBranch` too: the live
   verbs and the error containment go by it. audio-output-302m does this from
-  two sources on; audio-mixer and n1-mixer-302m still build every branch into
-  `pipeline`, so their start waits for every source.
+  two sources on, and answers the hook only while its built pipeline is the
+  mixer (a second source on the direct one restarts it); audio-mixer and
+  n1-mixer-302m still build every branch into `pipeline`, so their start
+  waits for every source.
 
 ### Live Input Swap (`getLiveInputSwap`)
 

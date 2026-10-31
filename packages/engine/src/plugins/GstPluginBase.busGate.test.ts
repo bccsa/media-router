@@ -60,6 +60,11 @@ import type { PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const EDGE_A = busEdgeSocketPath(41000, 'conn-a');
 const EDGE_B = busEdgeSocketPath(41001, 'conn-b');
+const EDGE_C = busEdgeSocketPath(41002, 'conn-c');
+const NAMES: Record<string, string> = {
+    'mpegts-in-1': 'SCC Feed',
+    'audio-transcoder-chat': 'Chat IN',
+};
 
 class TestModule extends GstPluginBase {
     buildPipeline(): PipelineDescription | null {
@@ -91,7 +96,17 @@ async function makeStarted(sources: BusSource[] | null): Promise<{
     const module = new TestModule();
     await module.onInit({}, {
         instanceId: 'consumer-1',
-        ...(sources ? { mediaRouter: { getModuleBusSources: vi.fn(() => sources) } } : {}),
+        ...(sources
+            ? {
+                  mediaRouter: {
+                      getModuleBusSources: vi.fn(() => sources),
+                      moduleName: (id: string) => NAMES[id] ?? id,
+                      // The module whose channel port a path is on (holder or last holder).
+                      busSocketProducer: (path: string) =>
+                          path === EDGE_B ? 'audio-transcoder-chat' : undefined,
+                  },
+              }
+            : {}),
     } as unknown as ModuleServices);
     await module.onStart();
     const child = h.FakeChildProcess.instances[0]!;
@@ -154,32 +169,41 @@ describe('GstPluginBase inputSilent / producer-restart → health', () => {
 });
 
 describe('GstPluginBase busGate → health', () => {
-    it('names the upstream module and sink port, not the socket path', async () => {
+    it('names the upstream module by its display name, never the socket path', async () => {
         const { module, child } = await makeStarted([busSource(EDGE_A, 'mpegts-in-1', 'input')]);
         gate(child, [EDGE_A]);
 
         const state = module.getState();
         expect(state.health).toBe('warning');
-        expect(state.error).toBe('Waiting for upstream module(s): mpegts-in-1 (input)');
+        expect(state.error).toBe('Waiting for upstream module(s): SCC Feed');
         expect(state.error).not.toContain('/tmp/');
-        expect(state.statusData.bus).toEqual({
-            'Waiting for producer': 'mpegts-in-1 (input)',
-        });
+        expect(state.statusData.bus).toEqual({ 'Waiting for producer': 'SCC Feed' });
     });
 
-    it('reports every pending edge, falling back to the raw path when unmatched', async () => {
+    it('an edge no longer wired (a stale replay) is named by the module behind its channel port (B-194)', async () => {
+        // SWA01, 31 Oct: 'Waiting for upstream module(s): /tmp/mr-bus-40010-bd647b.sock' after
+        // Chat IN was disabled; its channel port says whose socket it is.
         const { module, child } = await makeStarted([busSource(EDGE_A, 'mpegts-in-1', 'video')]);
-        gate(child, [EDGE_A, EDGE_B]);
+        gate(child, [EDGE_A, EDGE_B, EDGE_C]);
 
         expect(module.getState().error).toBe(
-            `Waiting for upstream module(s): mpegts-in-1 (video), ${EDGE_B}`,
+            'Waiting for upstream module(s): SCC Feed, Chat IN, unknown module',
         );
     });
 
-    it('falls back to raw paths when there is no routing service to ask', async () => {
+    it('two edges from one module name it once', async () => {
+        const { module, child } = await makeStarted([
+            busSource(EDGE_A, 'mpegts-in-1', 'video'),
+            busSource(EDGE_C, 'mpegts-in-1', 'audio'),
+        ]);
+        gate(child, [EDGE_A, EDGE_C]);
+        expect(module.getState().error).toBe('Waiting for upstream module(s): SCC Feed');
+    });
+
+    it('names no path even with no routing service to ask', async () => {
         const { module, child } = await makeStarted(null);
         gate(child, [EDGE_A]);
-        expect(module.getState().error).toBe(`Waiting for upstream module(s): ${EDGE_A}`);
+        expect(module.getState().error).toBe('Waiting for upstream module(s): unknown module');
     });
 
     it('the gate opening clears its own warning and the bus section', async () => {

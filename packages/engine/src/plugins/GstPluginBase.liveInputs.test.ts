@@ -68,12 +68,21 @@ const source = (c: string) => ({
     socketPath: `/tmp/${c}`,
 });
 
+/** SWA01's four sources, as the operator named them. */
+const NAMES: Record<string, string> = {
+    'src-c0': 'Master',
+    'src-c1': 'ENG IN',
+    'src-c2': 'SWA IN',
+    'src-c3': 'Chat IN',
+};
+
 async function started() {
     h.FakeChildProcess.instances = [];
     const module = new Aggregator();
     await module.onInit({}, {
         instanceId: 'aout-1',
         mediaRouter: {
+            moduleName: (id: string) => NAMES[id] ?? id,
             getModuleBusSources: () => wired.map(source),
             getModuleConnections: () =>
                 wired.map((c) => ({ ...source(c), id: c, sinkModuleId: 'aout-1' })),
@@ -84,7 +93,7 @@ async function started() {
     return { module, child: h.FakeChildProcess.instances.at(-1)! };
 }
 
-const LOST_23 = 'Input from src-c2 (audio-in), src-c3 (audio-in) lost — continuing without it';
+const LOST_23 = 'Input from SWA IN, Chat IN not running — continuing without it';
 
 beforeEach(() => {
     wired = ['c0', 'c1', 'c2', 'c3'];
@@ -108,7 +117,7 @@ describe('GstPluginBase — a launch without some live inputs (B-192)', () => {
         child.emit('busGate', { pending: [], absent: ['mixin_in_c2', 'mixin_in_c3'] });
         module.noteLiveInputRestored('mixin_in_c2');
         expect(module.getState().error).toBe(
-            'Input from src-c3 (audio-in) lost — continuing without it',
+            'Input from Chat IN not running — continuing without it',
         );
         module.noteLiveInputRestored('mixin_in_c3');
         expect(module.getState().health).toBe('ok');
@@ -125,6 +134,44 @@ describe('GstPluginBase — a launch without some live inputs (B-192)', () => {
         expect(module.isLiveInputLost('mixin_in_c2')).toBe(false);
     });
 
+    it('a data wait after the gate opening hides it only while it waits (B-194)', async () => {
+        const { module, child } = await started();
+        child.emit('busGate', { pending: [], absent: ['mixin_in_c2', 'mixin_in_c3'] });
+        // The launch's inputs wait for their first data, named by module.
+        child.emit('busGate', { pending: ['/tmp/c0', '/tmp/c1'] });
+        expect(module.getState().error).toBe('Waiting for upstream module(s): Master, ENG IN');
+        // Data arrived: the gate's text goes, and what the run goes without is said again.
+        child.emit('busGate', { pending: [] });
+        expect(module.getState().error).toBe(LOST_23);
+        expect(module.getState().health).toBe('warning');
+    });
+
+    it('a branch the runner drops is "lost"; one the launch went without is "not running" (B-194)', async () => {
+        const { module, child } = await started();
+        child.emit('busGate', { pending: [], absent: ['mixin_in_c3'] });
+        child.emit('stateChange', { state: 'playing' });
+        child.emit('inputBranchLost', { name: 'mixin_in_c2', message: 'live input lost' });
+        await vi.waitFor(() =>
+            expect(module.getState().error).toBe(
+                'Input from SWA IN lost, from Chat IN not running — continuing without it',
+            ),
+        );
+    });
+
+    it('a live add waiting for its producer is "not running" until it joins (B-194)', async () => {
+        const { module, child } = await started();
+        child.emit('busGate', { pending: [], absent: [] });
+        child.emit('stateChange', { state: 'playing' });
+        expect(module.getState().health).toBe('ok');
+        module.noteLiveInputAbsent('mixin_in_c3');
+        expect(module.isLiveInputLost('mixin_in_c3')).toBe(true);
+        expect(module.getState().error).toBe(
+            'Input from Chat IN not running — continuing without it',
+        );
+        module.noteLiveInputRestored('mixin_in_c3');
+        expect(module.getState().health).toBe('ok');
+    });
+
     it('an error stands over it', async () => {
         const { module, child } = await started();
         child.emit('error', { message: 'Bus ERROR: pulsesink: device busy' });
@@ -139,7 +186,7 @@ describe('GstPluginBase — a launch without some live inputs (B-192)', () => {
         wired = ['c0', 'c1', 'c2'];
         await module.refreshPipelineDescription();
         expect(module.getState().error).toBe(
-            'Input from src-c2 (audio-in) lost — continuing without it',
+            'Input from SWA IN not running — continuing without it',
         );
         expect(module.isLiveInputLost('mixin_in_c3')).toBe(false);
     });

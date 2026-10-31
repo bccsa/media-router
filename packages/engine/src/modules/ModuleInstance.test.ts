@@ -136,6 +136,40 @@ describe('ModuleInstance', () => {
         );
     });
 
+    it('a change stored while a start runs, after its onInit read the config, stays pending (B-194)', async () => {
+        await instance.start();
+        await instance.applyConfigUpdate({ device: 'hw:2' });
+        await instance.stop();
+        // The re-init has read the config; the start is still under way when the next change lands.
+        let release!: () => void;
+        plugin.onStart.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+        const starting = instance.start();
+        await vi.waitFor(() => expect(plugin.onStart).toHaveBeenCalledTimes(2));
+        expect(plugin.onInit).toHaveBeenCalledTimes(2);
+        await instance.applyConfigUpdate({ device: 'hw:3' });
+        release();
+        await starting;
+        expect(instance.getState().pendingRestart).toBe(true);
+
+        await instance.stop();
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(3);
+        expect(plugin.onInit).toHaveBeenLastCalledWith(
+            expect.objectContaining({ device: 'hw:3' }),
+            undefined,
+        );
+        expect(instance.getState().pendingRestart).toBe(false);
+    });
+
+    it('a start that fails with a change pending keeps it pending (B-194)', async () => {
+        await instance.start();
+        await instance.applyConfigUpdate({ device: 'hw:2' });
+        await instance.stop();
+        plugin.onStart.mockRejectedValueOnce(new Error('device busy'));
+        await expect(instance.start()).rejects.toThrow('device busy');
+        expect(instance.getState().pendingRestart).toBe(true);
+    });
+
     it('start() emits stateChange', async () => {
         const spy = vi.fn();
         instance.on('stateChange', spy);

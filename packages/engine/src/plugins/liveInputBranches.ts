@@ -47,31 +47,36 @@ export function annotateLiveInputBranches(
     if (names.length) desc.liveInputBranches = names;
 }
 
-/** `<producer> (<port>)` behind a branch bin name, resolved through the
- *  connection records (they outlive the producer's bus port). */
+/** The producer behind a branch bin name, by display name, resolved through the connection
+ *  records (they outlive the producer's bus port). */
 export function describeLiveInputBranch(
     plugin: PluginModule,
     services: ModuleServices | null,
     name: string,
 ): string {
     const instanceId = services?.instanceId;
-    if (!plugin.getLiveInputBranch || !instanceId || !services?.mediaRouter) return name;
-    for (const c of services.mediaRouter.getModuleConnections(instanceId)) {
+    const router = services?.mediaRouter;
+    if (!plugin.getLiveInputBranch || !instanceId || !router) return name;
+    for (const c of router.getModuleConnections(instanceId)) {
         if (c.sinkModuleId === instanceId && branchOf(plugin, c.sinkPortId, c.id)?.name === name) {
-            return `${c.sourceModuleId} (${c.sinkPortId})`;
+            return router.moduleName?.(c.sourceModuleId) ?? c.sourceModuleId;
         }
     }
     return name;
 }
 
+/** Why a module runs without a branch: the runner dropped it (its producer died), or it never
+ *  ran in this pipeline (left out at launch, or a live add waiting for its producer). */
+export type LostKind = 'lost' | 'not-running';
+
 /** The live input branches a module runs without — dropped by the runner, or left out at
  *  launch while their producers were away (B-192) — one warning text naming all of them. */
 export class LostInputs {
-    private readonly lost = new Map<string, string>();
+    private readonly lost = new Map<string, { who: string; kind: LostKind }>();
 
-    /** Record a lost branch; returns the warning text for the whole set. */
-    lose(name: string, who: string): string {
-        this.lost.set(name, who);
+    /** Record a branch the module runs without; returns the warning text for the whole set. */
+    lose(name: string, who: string, kind: LostKind = 'lost'): string {
+        this.lost.set(name, { who, kind });
         return this.warning();
     }
 
@@ -98,7 +103,17 @@ export class LostInputs {
         return this.lost.size;
     }
 
+    /** `Input from A lost — …`, `Input from B not running — …`, or `A lost, from B not running`. */
     warning(): string {
-        return `Input from ${[...this.lost.values()].join(', ')} lost — continuing without it`;
+        const parts: string[] = [];
+        for (const [kind, said] of [
+            ['lost', 'lost'],
+            ['not-running', 'not running'],
+        ] as const) {
+            const entries = [...this.lost.values()].filter((e) => e.kind === kind);
+            const who = new Set(entries.map((e) => e.who));
+            if (who.size) parts.push(`${[...who].join(', ')} ${said}`);
+        }
+        return `Input from ${parts.join(', from ')} — continuing without it`;
     }
 }

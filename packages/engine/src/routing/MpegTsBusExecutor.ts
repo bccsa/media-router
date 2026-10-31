@@ -16,6 +16,20 @@ import {
 
 const log = createLogger('MpegTsBusExecutor');
 
+/** The producer is there but has no bus channel yet (starting, waiting for its device or its own
+ *  inputs, restarting): the connection waits for it (`MediaRouter`, B-194), not an error. */
+export class BusChannelPending extends Error {
+    constructor(
+        readonly producerId: string,
+        readonly producerPortId: string,
+    ) {
+        super(
+            `MPEG-TS producer ${producerId}:${producerPortId} has not assigned a bus channel yet`,
+        );
+        this.name = 'BusChannelPending';
+    }
+}
+
 /**
  * Built-in executor for `muxed/mpegts` connections over the bus.
  *
@@ -77,11 +91,11 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
             udpPort = await this.materializeProducerPort(conn);
         }
         if (udpPort === undefined) {
-            // Throw rather than silently returning null so the caller's
-            // retry path (ConnectionApplier.connectWithRetry) can re-attempt
-            // once the source module finishes starting and registers its
-            // port. The previous silent-return path left consumers stuck on a
-            // "no source" health warning until manual restart.
+            // A producer that is there waits for its channel; one the engine does not know is a
+            // real failure. Never a silent null: the consumer would sit on "no source".
+            if (this.moduleGetter(conn.sourceModuleId)) {
+                throw new BusChannelPending(conn.sourceModuleId, conn.sourcePortId);
+            }
             throw new Error(
                 `MPEG-TS producer ${conn.sourceModuleId}:${conn.sourcePortId} has not assigned a bus channel yet`,
             );
@@ -191,8 +205,8 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
      * demuxer whose upstream is disconnected, so `buildPipeline` returned
      * null — would rebuild to null again); and the port must actually be
      * declared by the producer. A producer that simply hasn't finished
-     * starting keeps the caller's retry contract (throw → ConnectionApplier
-     * backoff) untouched. Existing consumers of the producer's other ports
+     * starting is waited for (`BusChannelPending`, the router's wait, B-194).
+     * Existing consumers of the producer's other ports
      * survive the bounce: `BusChannelManager.acquire` is sticky per owner key,
      * so the rebuild re-lands on the same ports and their multicast
      * subscriptions stay valid.

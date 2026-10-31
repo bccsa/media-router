@@ -324,6 +324,8 @@ function aggregatorSink(
 ) {
     const busInputAdd = vi.fn(async () => {});
     const busInputRemove = vi.fn(async () => {});
+    /** The branches the sink runs without (GstPluginBase's lost set). */
+    const missing = new Set<string>();
     const sink = {
         running: true,
         stop: vi.fn(async () => {}),
@@ -332,7 +334,9 @@ function aggregatorSink(
         refreshPipelineDescription: vi.fn(async () => true),
         getLiveInputSwap: vi.fn(() => null),
         getLiveSwapTarget: vi.fn(() => null),
-        noteLiveInputRestored: vi.fn(),
+        noteLiveInputRestored: vi.fn((name: string) => missing.delete(name)),
+        noteLiveInputAbsent: vi.fn((name: string) => missing.add(name)),
+        isLiveInputLost: vi.fn((name: string) => missing.has(name)),
         getLiveInputBranch: vi.fn((_port: string, connId: string) =>
             (opts.branch ?? true)
                 ? {
@@ -345,12 +349,11 @@ function aggregatorSink(
                 : null,
         ),
         getLiveInputBranchTarget: vi.fn(() => ({ busInputAdd, busInputRemove })),
-        getChildProcess: vi.fn(() => ({
-            pipelineLaunchedAt: (opts.launched ?? true) ? 1000 : undefined,
-        })),
+        getChildProcess: vi.fn(() => child),
         getDynamicPorts: vi.fn(() => []),
     } as unknown as ModuleInstance;
-    return { sink, busInputAdd, busInputRemove };
+    const child = { pipelineLaunchedAt: (opts.launched ?? true) ? 1000 : undefined };
+    return { sink, busInputAdd, busInputRemove, child, missing };
 }
 
 function makeLiveExecutor(sink: ModuleInstance, remaining = 1) {
@@ -553,23 +556,30 @@ describe('MpegTsBusExecutor live input branches', () => {
         expect(await makeLiveExecutor(failing.sink).executor.relinkLiveInput(c)).toBe(false);
     });
 
-    it('a late producer socket does not restart the sink: the branch is added anyway and the runner contains it', async () => {
-        const { sink, busInputAdd } = aggregatorSink();
+    it('a late producer socket does not restart the sink: past the wait the sink runs without the branch, which is added once its socket accepts (B-194)', async () => {
+        const { sink, busInputAdd, missing } = aggregatorSink();
         const { executor } = makeLiveExecutor(sink);
-        const c = mixConn('c13'); // no edge socket listening
+        const c = mixConn('c13'); // no edge socket listening yet
 
         const handle = await executor.execute(c);
 
         expect(handle).toMatchObject({ connectionId: 'c13' });
-        expect(busInputAdd).toHaveBeenCalledTimes(1);
+        // No branch on a socket nobody serves: the runner would fail it at once.
+        expect(busInputAdd).not.toHaveBeenCalled();
+        expect(missing.has('mixin_in_c13')).toBe(true);
         expect((sink as any).stop).not.toHaveBeenCalled();
+
+        await listenEdge(c);
+        await vi.waitFor(() => expect(busInputAdd).toHaveBeenCalledTimes(1), { timeout: 3000 });
+        await vi.waitFor(() => expect(missing.has('mixin_in_c13')).toBe(false));
+        expect((sink as any).refreshPipelineDescription).toHaveBeenCalled();
     }, 15_000);
 
-    it('a producer whose pipeline is down or gated: the branch is added at once, no edge wait (B-192)', async () => {
-        const { sink, busInputAdd } = aggregatorSink();
+    /** A producer whose gst pipeline is not launched (gated, or starting), as the router sees it. */
+    function awayExecutor(sink: ModuleInstance) {
         const producer = { getChildProcess: () => ({ pipelineLaunchedAt: undefined }) };
         const fanout = { attach: vi.fn(), detach: vi.fn() };
-        const executor = new MpegTsBusExecutor(
+        return new MpegTsBusExecutor(
             (id) => (id === 'mixer-1' ? sink : (producer as unknown as ModuleInstance)),
             () => PORT,
             (c) => c.id,
@@ -577,13 +587,83 @@ describe('MpegTsBusExecutor live input branches', () => {
             fanout as never,
             () => 1,
         );
+    }
+
+    it('a producer whose pipeline is down or gated: no add, no edge wait, until its socket accepts (B-194, field DEV-FIX1)', async () => {
+        // SWA01 06:47:30Z: Chat IN enabled, its transcoder gated; bus_input_add went to the runner
+        // before the transcoder listened, and the runner dropped the branch ("state change failed").
+        const { sink, busInputAdd, missing } = aggregatorSink();
+        const executor = awayExecutor(sink);
+        const c = mixConn('c15');
         const t0 = Date.now();
-        const handle = await executor.execute(mixConn('c15')); // no edge socket listening
+
+        const handle = await executor.execute(c);
 
         expect(Date.now() - t0).toBeLessThan(2000);
         expect(handle).toMatchObject({ connectionId: 'c15' });
-        expect(busInputAdd).toHaveBeenCalledTimes(1);
+        expect(busInputAdd).not.toHaveBeenCalled();
+        expect(missing.has('mixin_in_c15')).toBe(true);
         expect((sink as any).stop).not.toHaveBeenCalled();
+        await new Promise((r) => setTimeout(r, 400));
+        expect(busInputAdd).not.toHaveBeenCalled();
+
+        // The transcoder's gate opens: its edge socket accepts, and only then is the branch added.
+        await listenEdge(c);
+        await vi.waitFor(() => expect(busInputAdd).toHaveBeenCalledTimes(1), { timeout: 3000 });
+        await vi.waitFor(() => expect(missing.has('mixin_in_c15')).toBe(false));
+    });
+
+    it('a waiting branch gives up once another path added it, or the sink relaunched', async () => {
+        const joined = aggregatorSink();
+        const c = mixConn('c17');
+        await awayExecutor(joined.sink).execute(c);
+        // The producer's PLAYING re-link added it first.
+        joined.missing.delete('mixin_in_c17');
+
+        const relaunched = aggregatorSink();
+        const d = mixConn('c18');
+        await awayExecutor(relaunched.sink).execute(d);
+        relaunched.child.pipelineLaunchedAt = 2000;
+
+        await listenEdge(c);
+        const e = busEdgeSocketPath(PORT, d.id);
+        const other = createServer();
+        await new Promise<void>((res) => other.listen(e, res));
+        try {
+            await new Promise((r) => setTimeout(r, 600));
+            expect(joined.busInputAdd).not.toHaveBeenCalled();
+            expect(relaunched.busInputAdd).not.toHaveBeenCalled();
+        } finally {
+            await new Promise((r) => other.close(r));
+        }
+    });
+
+    it('the add clears the mark first: a loss the runner reports during the add stands', async () => {
+        const { sink, busInputAdd, missing } = aggregatorSink();
+        const { executor } = makeLiveExecutor(sink);
+        const c = mixConn('c19');
+        await listenEdge(c);
+        missing.add('mixin_in_c19');
+        // The runner's done comes with its input_branch_lost (the producer died at that moment).
+        busInputAdd.mockImplementationOnce(async () => {
+            missing.add('mixin_in_c19');
+        });
+
+        await executor.rejoinLiveInput(c);
+
+        expect(missing.has('mixin_in_c19')).toBe(true);
+    });
+
+    it('a refused join puts the mark back, for the next PLAYING to try again', async () => {
+        const { sink, busInputAdd, missing } = aggregatorSink();
+        busInputAdd.mockRejectedValueOnce(new Error('link failed'));
+        const { executor } = makeLiveExecutor(sink);
+        const c = mixConn('c20');
+        await listenEdge(c);
+        missing.add('mixin_in_c20');
+
+        expect(await executor.rejoinLiveInput(c)).toBe(false);
+        expect(missing.has('mixin_in_c20')).toBe(true);
     });
 
     it('rejoinLiveInput: waits for the edge and adds, without a remove; false with no launched sink', async () => {

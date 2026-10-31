@@ -33,11 +33,25 @@ export class BusChannelManager {
      * are surrendered under pool pressure rather than failing the allocation.
      */
     private reserved = new Map<number, string>();
+    /** Told of every fresh allocation: a connection waiting for its producer's channel (B-194). */
+    private readonly acquiredListeners = new Set<(ownerId: string, port: number) => void>();
 
     constructor(
         private readonly portMin: number = UDP_PORT_MIN,
         private readonly portMax: number = UDP_PORT_MAX,
     ) {}
+
+    /** Call `listener` on each allocation an owner did not hold (not on an idempotent
+     *  re-acquire). Returns the unsubscribe. */
+    onAcquired(listener: (ownerId: string, port: number) => void): () => void {
+        this.acquiredListeners.add(listener);
+        return () => this.acquiredListeners.delete(listener);
+    }
+
+    /** The owner holding `port`, else the owner with the sticky claim on it (its last holder). */
+    ownerOf(port: number): string | undefined {
+        return this.used.get(port) ?? this.reserved.get(port);
+    }
 
     /** Request a port for an owner. Returns the same port if already allocated,
      *  else the owner's previous port when still free, else the lowest free
@@ -45,7 +59,12 @@ export class BusChannelManager {
     acquire(ownerId: string): number | null {
         const existing = this.allocated.get(ownerId);
         if (existing !== undefined) return existing;
+        const port = this.allocate(ownerId);
+        if (port !== null) for (const listener of this.acquiredListeners) listener(ownerId, port);
+        return port;
+    }
 
+    private allocate(ownerId: string): number | null {
         const previous = this.lastHeld.get(ownerId);
         if (previous !== undefined && !this.used.has(previous)) {
             this.allocated.set(ownerId, previous);

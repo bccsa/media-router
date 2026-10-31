@@ -8,8 +8,8 @@ import type { ModuleInstance } from '../modules/ModuleInstance.js';
 
 const log = createLogger('LiveInputBranch');
 
-/** How long a live add waits for the producer's edge socket before adding
- *  the branch anyway (the runner then contains the dead socket). */
+/** How long a live add waits on the spot for the producer's edge socket; past it the branch
+ *  joins once the socket accepts, the sink running without it meanwhile. */
 export const BRANCH_EDGE_WAIT_MS = 5_000;
 
 /** True once the sink's runner has a launched pipeline to mutate. */
@@ -18,8 +18,8 @@ export function hasLaunchedPipeline(sink: ModuleInstance): boolean {
 }
 
 /** A producer whose gst pipeline is down or still gated: its edge socket comes with its next
- *  launch, so a live add has nothing to wait for. A producer without a gst child (a sidecar's
- *  fan-out) is not judged. */
+ *  launch, so a live add does not wait for it on the spot. A producer without a gst child (a
+ *  sidecar's fan-out) is not judged. */
 export function producerAway(producer: ModuleInstance | undefined): boolean {
     const child = producer?.getChildProcess?.();
     return !!child && child.pipelineLaunchedAt === undefined;
@@ -51,25 +51,38 @@ export interface LiveInputOpts {
     label: string;
 }
 
-/** Add the edge's branch to the running pipeline. A late producer socket still gets the branch
- *  (at once when `producerAway`): the runner drops it (`input_branch_lost`) and the producer's
- *  PLAYING re-links it. False = no branch, or the runner refused. */
+/** Send the add. The sink's mark goes first, so a loss the runner reports after the add stands;
+ *  it comes back if the runner refuses. */
+async function addBranch(
+    sink: ModuleInstance,
+    live: { branch: LiveInputBranch; target: LiveInputBranchTarget },
+): Promise<void> {
+    const marked = sink.isLiveInputLost?.(live.branch.name) ?? false;
+    sink.noteLiveInputRestored?.(live.branch.name);
+    try {
+        await live.target.busInputAdd(live.branch);
+    } catch (err) {
+        if (marked) sink.noteLiveInputAbsent?.(live.branch.name);
+        throw err;
+    }
+    await sink.refreshPipelineDescription?.();
+}
+
+/** Add the edge's branch once its producer's edge socket accepts (B-194; one on a socket nobody
+ *  serves fails in the runner): at once within `BRANCH_EDGE_WAIT_MS`, else (or `producerAway`)
+ *  when it does, the sink running without it meanwhile. False = no branch, or refused. */
 export async function addLiveInput(
     opts: LiveInputOpts & { udpPort: number; producerAway?: boolean },
 ): Promise<boolean> {
     const { sink, conn, udpPort, label } = opts;
     const live = liveBranchFor(sink, conn);
     if (!live?.branch.description) return false;
+    if (opts.producerAway || !(await edgeUp(udpPort, conn))) {
+        joinWhenUp({ sink, conn, udpPort, label }, live.branch.name);
+        return true;
+    }
     try {
-        if (!opts.producerAway && !(await edgeUp(udpPort, conn))) {
-            log.warn(
-                { sink: conn.sinkModuleId, port: conn.sinkPortId },
-                `Edge socket late for ${label} — adding the branch anyway`,
-            );
-        }
-        await live.target.busInputAdd(live.branch);
-        await sink.refreshPipelineDescription?.();
-        sink.noteLiveInputRestored?.(live.branch.name);
+        await addBranch(sink, live);
         log.info(
             { sink: conn.sinkModuleId, branch: live.branch.name },
             `Live input added ${label}`,
@@ -82,6 +95,36 @@ export async function addLiveInput(
         );
         return false;
     }
+}
+
+/** The branch waits, unbounded, for its edge socket and is added once it accepts; the
+ *  producer's PLAYING (rejoin, re-link) may add it first. Gives up once the branch is no longer
+ *  missing, unwired, or the sink relaunched (as the gate's wait gives up when superseded). */
+function joinWhenUp(opts: LiveInputOpts & { udpPort: number }, name: string): void {
+    const { sink, conn, udpPort, label } = opts;
+    const launch = sink.getChildProcess?.()?.pipelineLaunchedAt;
+    sink.noteLiveInputAbsent?.(name);
+    log.info(
+        { sink: conn.sinkModuleId, branch: name },
+        `Live input ${label} waits for its producer`,
+    );
+    const superseded = () =>
+        !sink.isLiveInputLost?.(name) ||
+        sink.getChildProcess?.()?.pipelineLaunchedAt !== launch ||
+        !liveBranchFor(sink, conn)?.branch.description;
+    void waitForBusSockets([busEdgeSocketPath(udpPort, conn.id)], { shouldAbort: superseded })
+        .then(async (up) => {
+            const live = up && !superseded() ? liveBranchFor(sink, conn) : null;
+            if (!live) return;
+            await addBranch(sink, live);
+            log.info({ sink: conn.sinkModuleId, branch: name }, `Live input added ${label}`);
+        })
+        .catch((err) =>
+            log.warn(
+                { err, sink: conn.sinkModuleId, port: conn.sinkPortId },
+                `Live input add failed for ${label} — it joins when its producer plays`,
+            ),
+        );
 }
 
 /** Take the edge's branch off the running pipeline. False = run the classic teardown. */
@@ -106,15 +149,13 @@ export async function removeLiveInput(opts: LiveInputOpts): Promise<boolean> {
     }
 }
 
-/** Wait for the edge socket, add the branch, store the description, clear its warning. */
+/** Wait for the edge socket, add the branch (clearing its warning), store the description. */
 async function joinBranch(
     opts: LiveInputOpts & { udpPort: number },
     live: { branch: LiveInputBranch; target: LiveInputBranchTarget },
 ): Promise<void> {
     if (!(await edgeUp(opts.udpPort, opts.conn))) throw new Error('new edge socket never appeared');
-    await live.target.busInputAdd(live.branch);
-    await opts.sink.refreshPipelineDescription?.();
-    opts.sink.noteLiveInputRestored?.(live.branch.name);
+    await addBranch(opts.sink, live);
 }
 
 /** Re-link the edge's branch after its producer relaunched: drop (if still

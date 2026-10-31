@@ -185,6 +185,9 @@ export interface PluginModule {
     getLiveInputBranch?(sinkPortId: string, connectionId: string): LiveInputBranch | null;
     /** A live input branch that was dropped (dead producer) is back. */
     noteLiveInputRestored?(branchName: string): void;
+    /** A live add waits for its producer's edge socket: the pipeline runs without the branch
+     *  until it joins (B-194). */
+    noteLiveInputAbsent?(branchName: string): void;
     /** The pipeline runs without this live input branch: dropped (dead producer), or left out
      *  at launch (`liveInputs`). The engine adds it when its producer plays (B-192). */
     isLiveInputLost?(branchName: string): boolean;

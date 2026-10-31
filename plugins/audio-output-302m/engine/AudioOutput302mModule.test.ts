@@ -274,6 +274,7 @@ describe('AudioOutput302mModule: several sources are live inputs (B-192)', () =>
 
     it('the live verbs reach Audio In from two sources on; a remove names the branch alone', () => {
         const { module } = makeModule({ sources: 2 });
+        module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(module.getLiveInputBranch('other', 'c-0')).toBeNull();
         const add = module.getLiveInputBranch('audio-in', 'c-1');
         expect(add.element).toBe('mixin');
@@ -281,6 +282,38 @@ describe('AudioOutput302mModule: several sources are live inputs (B-192)', () =>
         // An edge already gone from the router: what a live remove needs, the bin's name.
         const gone = module.getLiveInputBranch('audio-in', 'c-9');
         expect(gone).toEqual({ element: 'mixin', name: expect.stringMatching(/^mixin_in_/) });
+    });
+});
+
+describe('AudioOutput302mModule: a second source on a direct pipeline (B-194)', () => {
+    it('gets no live branch until a build makes the mix: the classic restart does, no add tried', () => {
+        const { module } = makeModule({ sources: 2 });
+        const bus = module.services.mediaRouter.getModuleBusSources;
+        const both = bus();
+        // Launched with Master alone: the direct branch, no mixer to add to.
+        bus.mockReturnValue(both.slice(0, 1));
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' }).liveInputs).toBeUndefined();
+        // ENG IN wired: the router lists two, the running pipeline is still the direct one.
+        bus.mockReturnValue(both);
+        expect(module.getLiveInputBranch('audio-in', 'c-1')).toBeNull();
+        expect(module.getLiveInputBranch('audio-in', 'c-0')).toBeNull();
+        // The restart's build is the mix: from then on each source is a live input.
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' }).liveInputs).toHaveLength(2);
+        expect(module.getLiveInputBranch('audio-in', 'c-1')).toMatchObject({ element: 'mixin' });
+    });
+
+    it('a description refresh while the mixer runs leaves it the mixer: a source back joins live', () => {
+        const { module } = makeModule({ sources: 2 });
+        const bus = module.services.mediaRouter.getModuleBusSources;
+        const both = bus();
+        module.buildPipeline({ device: 'alsa_output.usb-foo' }); // launched: the mixer
+        module.childProcess = {}; // its runner
+        // One source disabled (its branch dropped), the replay copy refreshed with one.
+        bus.mockReturnValue(both.slice(0, 1));
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' }).liveInputs).toBeUndefined();
+        // Enabled again: added to the running mixer, as before.
+        bus.mockReturnValue(both);
+        expect(module.getLiveInputBranch('audio-in', 'c-1')).toMatchObject({ element: 'mixin' });
     });
 });
 

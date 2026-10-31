@@ -198,6 +198,16 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         return this.lostInputs.has(branchName);
     }
 
+    /** A live add waits for its producer (B-194): the pipeline runs without this branch. */
+    noteLiveInputAbsent(branchName: string): void {
+        this.lostInputs.lose(
+            branchName,
+            describeLiveInputBranch(this as PluginModule, this.services, branchName),
+            'not-running',
+        );
+        this.showLostInputs();
+    }
+
     /** `buildPipeline` ends in setHealth('ok') on most modules — put the
      *  lost-input warning back after any refresh while inputs are missing. */
     private reassertLostInputs(): void {
@@ -221,9 +231,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.lostInputs.lose(
                 name,
                 describeLiveInputBranch(this as PluginModule, this.services, name),
+                'not-running',
             );
         }
-        this.showLostInputs();
     }
 
     /** Prepare a description for the house clock. Both runners put EVERY pipeline on a monotonic
@@ -510,30 +520,26 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // now, and flipping it to 'ok' here hid a real failure behind an
             // unrelated gate opening.
             this.clearOwnWarning('gate');
-            // Only the gate's opening names them (a data wait's clearing does not).
+            // Only the gate's opening names them; a data wait's clearing shows them again.
             if (absent) this.launchedWithout(absent);
+            this.showLostInputs();
         }
     }
 
-    /**
-     * Translate pending edge socket paths into `<sourceModuleId> (<sinkPortId>)`.
-     *
-     * Both ends derive the same path from (channel port, connection id) via
-     * `busEdgeSocketPath`, so the routing layer's view of this module's bus
-     * inputs matches what the runner is gating on. A path with no matching
-     * connection (a stale gate report mid-reconnect) falls back to the raw
-     * path rather than being dropped — an unexplained wait is worse than an
-     * ugly one.
-     */
+    /** Pending edge socket paths as the upstream modules' display names: through the applied
+     *  connections (both ends derive a path from channel port and connection id), else, for a
+     *  stale replay's input since unwired, the module that holds or held its port (B-194). */
     private describePendingProducers(pending: string[]): string[] {
+        const router = this.services?.mediaRouter;
         const sources = this.services?.instanceId
-            ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
+            ? (router?.getModuleBusSources(this.services.instanceId) ?? [])
             : [];
-        const byPath = new Map(sources.map((s) => [s.socketPath, s]));
-        return pending.map((p) => {
-            const src = byPath.get(p);
-            return src ? `${src.sourceModuleId} (${src.sinkPortId})` : p;
+        const byPath = new Map(sources.map((s) => [s.socketPath, s.sourceModuleId]));
+        const names = pending.map((p) => {
+            const id = byPath.get(p) ?? router?.busSocketProducer?.(p);
+            return id === undefined ? 'unknown module' : (router?.moduleName?.(id) ?? id);
         });
+        return [...new Set(names)];
     }
 
     async onStop(): Promise<void> {

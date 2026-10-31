@@ -120,18 +120,22 @@ export class ModuleInstance extends EventEmitter {
     /** Initialise and start the module. */
     async start(): Promise<void> {
         if (this._running) return;
+        let pending = false;
         try {
             await this.beforeStart();
             // Plugins copy settings in onInit (an audio module's device): a start with a change
             // pending a restart initialises the plugin again from the current config (B-191).
-            if (!this._initialized || this._pendingRestart) {
+            // Taken here, so a change stored while this start runs stays pending (B-194).
+            pending = this._pendingRestart;
+            this._pendingRestart = false;
+            if (!this._initialized || pending) {
                 await this.plugin.onInit(this.config, this.services ?? undefined);
                 this._initialized = true;
             }
             await this.plugin.onStart();
             this._running = true;
-            this._pendingRestart = false;
         } catch (err) {
+            if (pending) this._pendingRestart = true;
             log.error(
                 { err: formatError(err), instanceId: this.instanceId },
                 'Module start failed',
@@ -392,6 +396,11 @@ export class ModuleInstance extends EventEmitter {
     /** A dropped live input branch is back — clears the lost-input warning. */
     noteLiveInputRestored(branchName: string): void {
         this.plugin.noteLiveInputRestored?.(branchName);
+    }
+
+    /** A live input branch waits for its producer (see PluginModule). */
+    noteLiveInputAbsent(branchName: string): void {
+        this.plugin.noteLiveInputAbsent?.(branchName);
     }
 
     /** The pipeline runs without this live input branch (see PluginModule). */

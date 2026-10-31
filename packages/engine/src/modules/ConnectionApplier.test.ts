@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { setLogTap } from '@media-router/shared-types';
 import {
     ConnectionApplier,
     topoSortOrderedConns,
@@ -180,6 +181,21 @@ describe('ConnectionApplier', () => {
             await applier.applyConnections([conn], modules);
 
             expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+        });
+
+        it('a connection that waits for its producer is neither retried nor logged as connected (B-194)', async () => {
+            const lines: Array<{ name: string; msg: string; level: number }> = [];
+            setLogTap((l) => lines.push(JSON.parse(l)));
+            try {
+                (mockMediaRouter as any).isConnectionWaiting = vi.fn(() => true);
+                await applier.applyConnections([makeConn()], makeModules(['src-mod', 'sink-mod']));
+            } finally {
+                setLogTap(null);
+            }
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
+            expect((mockMediaRouter as any).isConnectionWaiting).toHaveBeenCalledWith('conn-id');
+            const own = lines.filter((l) => l.name === 'ConnectionApplier');
+            expect(own.map((l) => l.msg)).toEqual(['Applying connections']);
         });
 
         it('continues on error for individual connections', async () => {

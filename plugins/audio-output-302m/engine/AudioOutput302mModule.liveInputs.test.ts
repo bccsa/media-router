@@ -46,6 +46,19 @@ const h = vi.hoisted(() => {
             this.commands.push(cmd);
             const done = DONE[String(cmd.cmd)];
             if (!done || !cmd.id) return;
+            // As the runners answer an add to an aggregator their pipeline does not have.
+            const pipeline = this.startOpts?.pipeline ?? '';
+            if (
+                cmd.cmd === 'bus_input_add' &&
+                !new RegExp(`name=${String(cmd.element)}(\\s|$)`).test(pipeline)
+            ) {
+                const message = `bus_input_add: element '${String(cmd.element)}' not found`;
+                setTimeout(
+                    () => this.options.onEvent({ event: 'command_error', id: cmd.id, message }),
+                    0,
+                );
+                return;
+            }
             setTimeout(() => this.options.onEvent({ event: done, id: cmd.id, name: cmd.name }), 0);
         }
     }
@@ -246,7 +259,7 @@ describe(
             expect(state.running).toBe(true);
             expect(state.health).toBe('warning');
             expect(state.error).toBe(
-                'Input from tc-eng (audio-in), tc-swa (audio-in), tc-chat (audio-in) lost — continuing without it',
+                'Input from tc-eng, tc-swa, tc-chat not running — continuing without it',
             );
             expect(state.error).not.toContain('Waiting for upstream');
         });
@@ -269,7 +282,7 @@ describe(
             );
             await waitUntil(() => !String(plugin.getState().error).includes('tc-eng'));
             expect(plugin.getState().error).toBe(
-                'Input from tc-swa (audio-in), tc-chat (audio-in) lost — continuing without it',
+                'Input from tc-swa, tc-chat not running — continuing without it',
             );
             // Master was never interrupted: the same runner, the same launch.
             expect(h.FakeRunner.spawned.length).toBe(spawned);
@@ -342,13 +355,63 @@ describe(
 
             expect(plugin.getState().running).toBe(true);
             expect(plugin.getState().error).toBe(
-                'Input from tc-swa (audio-in), tc-chat (audio-in), tc-eng (audio-in) lost — continuing without it',
+                'Input from tc-eng lost, from tc-swa, tc-chat not running — continuing without it',
             );
             expect(h.FakeRunner.spawned.length).toBe(spawned);
             expect(py.stop).not.toHaveBeenCalled();
             expect(commands('bus_input_remove').map((c) => c.name)).not.toContain(
                 binOf('tc-master'),
             );
+        });
+
+        it('a source enabled while the output plays waits for its socket: added only once it accepts, never lost (B-194)', async () => {
+            // SWA01 06:47:30Z: Chat IN enabled, its transcoder gated; bus_input_add reached the
+            // runner first, which dropped the branch ("state change failed"), then logged it added.
+            const py = await startWithMasterOnly();
+            const chat = producers.get('tc-chat')!;
+            await router.removeConnection(connId('tc-chat'), true); // Chat IN disabled
+            const spawned = h.FakeRunner.spawned.length;
+
+            await router.createConnection('tc-chat', 'out-0', SINK, 'audio-in'); // enabled: gated
+            await sleep(400);
+            expect(commands('bus_input_add').some((c) => c.name === binOf('tc-chat'))).toBe(false);
+            expect(plugin.getState().error).toContain('tc-chat not running');
+
+            await chat.launch(); // its gate opens: the edge socket accepts
+            expect(
+                await waitUntil(() =>
+                    commands('bus_input_add').some((c) => c.name === binOf('tc-chat')),
+                ),
+            ).toBe(true);
+            await waitUntil(() => !String(plugin.getState().error).includes('tc-chat'));
+            expect(plugin.getState().error).toBe(
+                'Input from tc-eng, tc-swa not running — continuing without it',
+            );
+            expect(h.FakeRunner.spawned.length).toBe(spawned);
+            expect(py.stop).not.toHaveBeenCalled();
+        });
+
+        it('a second source wired to a one-source output restarts it into the mix, with no add tried first (B-194)', async () => {
+            await producers.get('tc-master')!.play(router);
+            await sink.start();
+            await router.createConnection('tc-master', 'out-0', SINK, 'audio-in');
+            await waitUntil(() => !!h.FakeRunner.spawned.at(-1)?.startOpts);
+            const direct = h.FakeRunner.spawned.at(-1)!;
+            expect(direct.startOpts!.pipeline).not.toMatch(/name=mixin\s/);
+            runnerSide(direct)({ event: 'state_change', state: 'playing' });
+            await waitUntil(() => plugin.getState().running);
+
+            await producers.get('tc-eng')!.play(router);
+            await router.createConnection('tc-eng', 'out-0', SINK, 'audio-in');
+            expect(
+                await waitUntil(() => launchedBins(h.FakeRunner.spawned.at(-1)!).length === 2),
+            ).toBe(true);
+            // No add to the direct pipeline, so none refused: no "Live input add failed" first.
+            expect(commands('bus_input_add')).toEqual([]);
+            expect(launchedBins(h.FakeRunner.spawned.at(-1)!)).toEqual([
+                binOf('tc-master'),
+                binOf('tc-eng'),
+            ]);
         });
     },
 );

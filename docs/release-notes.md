@@ -497,6 +497,17 @@ elements" below do not start.
   removed.** A module's runner could update its list of connections being
   removed from two threads at once, so a busy module losing a consumer could,
   rarely, crash or lose track of a connection. Not seen on a box; fixed.
+- **A connection waits for its source module instead of failing.** Up to
+  v2.0.0.100, a connection from a module that was not sending yet (starting,
+  waiting for its audio device, or a mixer with no input yet) failed three
+  times with errors in the log, at every engine start, and was dropped; one
+  from a mic that waited for its device stayed dropped when the mic was
+  plugged in, until a module was restarted. Fixed: such a connection waits,
+  quietly, and comes up when its source starts, however late. A source added
+  to a running Audio Output (302M) joins once it sends, instead of being
+  dropped at once and joined again a moment later, and status texts name the
+  module waited for ("Waiting for upstream module(s): Chat IN", "Input from
+  Chat IN not running — continuing without it"), never a socket path.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
