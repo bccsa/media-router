@@ -513,6 +513,11 @@ elements" below do not start.
   dropped at once and joined again a moment later, and status texts name the
   module waited for ("Waiting for upstream module(s): Chat IN", "Input from
   Chat IN not running — continuing without it"), never a socket path.
+- **A connection still waiting for its source after 10 s is named in the
+  log**, with both modules, and connected then if its source is already up.
+  A source wired to an N-1 Audio Mixer (302M) input that had none restarts the
+  mixer at once, without first trying to add it live, which failed with a
+  warning.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and

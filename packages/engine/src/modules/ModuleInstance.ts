@@ -162,6 +162,9 @@ export class ModuleInstance extends EventEmitter {
             throw err;
         }
         this.emitStateChange();
+        // Any start, the lifecycle's or a consumer restart's: connections waiting for this
+        // module as their sink, their producer up, run now (B-196).
+        this.services?.mediaRouter?.noteModuleStarted?.(this.instanceId);
     }
 
     /**

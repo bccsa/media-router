@@ -52,17 +52,15 @@ describe('MediaRouter: a connection waits for its producer (B-194)', () => {
     let router: MediaRouter;
     let modules: Record<string, ReturnType<typeof fakeModule>>;
 
-    beforeEach(() => {
-        lines = [];
-        setLogTap((l) => lines.push(JSON.parse(l) as Line));
-        router = new MediaRouter();
-        modules = { mic: fakeModule(), mic2: fakeModule(), mixer: fakeModule() };
+    /** Two mics and a mixer; `checkMs` is how long a wait goes before its check (B-196). */
+    function makeRouter(checkMs?: number): MediaRouter {
+        const r = new MediaRouter(checkMs);
         for (const id of ['mic', 'mic2']) {
-            router.registerPorts(id, [
+            r.registerPorts(id, [
                 { id: 'audio-out', direction: 'output', streamType: 'audio/302m', label: 'Out' },
             ]);
         }
-        router.registerPorts('mixer', [
+        r.registerPorts('mixer', [
             {
                 id: 'audio-in',
                 direction: 'input',
@@ -71,11 +69,19 @@ describe('MediaRouter: a connection waits for its producer (B-194)', () => {
                 maxConnections: -1,
             },
         ]);
-        router.setDependencies(
+        r.setDependencies(
             {} as never,
             (id) => modules[id] as never,
             (id) => NAMES[id] ?? id,
         );
+        return r;
+    }
+
+    beforeEach(() => {
+        lines = [];
+        setLogTap((l) => lines.push(JSON.parse(l) as Line));
+        modules = { mic: fakeModule(), mic2: fakeModule(), mixer: fakeModule() };
+        router = makeRouter();
     });
 
     afterEach(() => setLogTap(null));
@@ -196,6 +202,138 @@ describe('MediaRouter: a connection waits for its producer (B-194)', () => {
         router.assignBusChannel('mic');
         await waitUntil(() => router.getConnections().length === 1);
         expect(router.getModuleBusSources('mixer')[0].channelMap).toEqual(map);
+    });
+
+    it('a sink stopped outside the lifecycle when the channel comes takes the connection at its next start (B-196)', async () => {
+        await connect();
+        // A live connect of another source restarts the mixer: stopped, not started again yet.
+        modules.mixer.running = false;
+        router.assignBusChannel('mic');
+        await sleep(30);
+        expect(router.isConnectionWaiting(ID)).toBe(true);
+        expect(modules.mixer.start).not.toHaveBeenCalled();
+
+        // That start re-applies nothing of the mixer's: the router hears of it (ModuleInstance).
+        modules.mixer.running = true;
+        router.noteModuleStarted('mixer');
+        expect(await waitUntil(() => router.getConnections().length === 1)).toBe(true);
+        expect(router.isConnectionWaiting(ID)).toBe(false);
+        expect(modules.mixer.start).toHaveBeenCalledTimes(1);
+    });
+
+    it("another module's start, or the sink's while its producer has no channel, runs nothing (B-196)", async () => {
+        await connect();
+        router.noteModuleStarted('mixer');
+        router.noteModuleStarted('mic');
+        router.noteModuleStarted('mic2');
+        await sleep(30);
+        expect(router.isConnectionWaiting(ID)).toBe(true);
+        expect(modules.mixer.start).not.toHaveBeenCalled();
+    });
+
+    describe('the check of a long wait (B-196)', () => {
+        const CHECK_MS = 150;
+        const warnings = () =>
+            lines.filter((l) => l.name === 'MediaRouter' && l.level === 40).map((l) => l.msg);
+
+        beforeEach(() => {
+            router = makeRouter(CHECK_MS);
+        });
+
+        it('a wake missed (the sink restarted unheard): run at the check, with one warning naming both modules', async () => {
+            await connect();
+            modules.mixer.running = false;
+            router.assignBusChannel('mic');
+            await sleep(30);
+            modules.mixer.running = true; // started again, the router not told
+            expect(router.isConnectionWaiting(ID)).toBe(true);
+
+            expect(await waitUntil(() => router.getConnections().length === 1, 2000)).toBe(true);
+            expect(warnings()).toEqual([
+                'Connection [Mic 1 → Audio Mixer] still waits with Mic 1 up — applying it now',
+            ]);
+            expect(lines.filter((l) => l.level >= 50)).toEqual([]);
+        });
+
+        it('a producer that runs a pipeline without a channel for this output is named once; it still connects when the channel comes', async () => {
+            Object.assign(modules.mic, { getChildProcess: () => ({ pipelineLaunchedAt: 1000 }) });
+            await connect();
+            await connect(); // a re-apply while it waits: still one check
+            await sleep(CHECK_MS * 3);
+            expect(router.isConnectionWaiting(ID)).toBe(true);
+            expect(warnings()).toEqual([
+                'Connection [Mic 1 → Audio Mixer] still waits for Mic 1: it runs, but its output audio-out is not up',
+            ]);
+
+            router.assignBusChannel('mic');
+            expect(await waitUntil(() => router.getConnections().length === 1)).toBe(true);
+            expect(warnings()).toHaveLength(1);
+        });
+
+        it('a check due during a lifecycle operation runs after it: quiet when the operation applied the connection', async () => {
+            const tasks: Array<() => Promise<void>> = [];
+            router.setWaitingScheduler((task) => tasks.push(task));
+            Object.assign(modules.mic, { getChildProcess: () => ({ pipelineLaunchedAt: 1000 }) });
+            await connect();
+            await sleep(CHECK_MS + 50); // due: queued behind the operation (an engine start, say)
+            expect(tasks).toHaveLength(1);
+            // The operation gives the mic its channel and applies the connection itself.
+            router.assignBusChannel('mic');
+            await connect();
+            expect(router.getConnections().map((c) => c.id)).toEqual([ID]);
+            expect(await waitUntil(() => tasks.length === 2)).toBe(true);
+            for (const task of tasks.splice(0)) await task();
+            expect(warnings()).toEqual([]);
+        });
+
+        it('quiet for a wait whose run is already queued when its check runs', async () => {
+            const tasks: Array<() => Promise<void>> = [];
+            router.setWaitingScheduler((task) => tasks.push(task));
+            await connect();
+            await sleep(CHECK_MS + 50);
+            router.assignBusChannel('mic'); // its run queued behind the check
+            expect(await waitUntil(() => tasks.length === 2)).toBe(true);
+            for (const task of tasks.splice(0)) await task();
+            expect(router.getConnections().map((c) => c.id)).toEqual([ID]);
+            expect(warnings()).toEqual([]);
+        });
+
+        it('quiet for a wait into a stopped sink (disabled, say): its start runs it', async () => {
+            modules.mixer.running = false;
+            Object.assign(modules.mic, { getChildProcess: () => ({ pipelineLaunchedAt: 1000 }) });
+            await connect();
+            await sleep(CHECK_MS * 2);
+            router.assignBusChannel('mic');
+            await sleep(30);
+            expect(router.isConnectionWaiting(ID)).toBe(true);
+            expect(warnings()).toEqual([]);
+
+            modules.mixer.running = true;
+            router.noteModuleStarted('mixer');
+            expect(await waitUntil(() => router.getConnections().length === 1)).toBe(true);
+        });
+
+        it('quiet for a producer with no pipeline (no input, no device), a wait woken in time, and a removed one', async () => {
+            const ID2 = 'mic2:audio-out-mixer:audio-in';
+            await connect('mic'); // no pipeline: waits for its device, however long
+            await connect('mic2');
+            router.assignBusChannel('mic2'); // woken in time
+            expect(await waitUntil(() => router.getConnections().length === 1)).toBe(true);
+            await sleep(CHECK_MS * 2);
+            expect(warnings()).toEqual([]);
+
+            // mic2 runs again without its channel; its connection is removed while it waits.
+            await router.removeConnection(ID2);
+            router.releaseAllBusChannelsFor('mic2');
+            Object.assign(modules.mic2, { getChildProcess: () => ({ pipelineLaunchedAt: 1000 }) });
+            await connect('mic2');
+            expect(router.isConnectionWaiting(ID2)).toBe(true);
+            await router.removeConnection(ID2);
+            await sleep(CHECK_MS * 2);
+
+            expect(router.isConnectionWaiting(ID)).toBe(true);
+            expect(warnings()).toEqual([]);
+        });
     });
 
     it('names the module behind a bus socket path, also once its channel is released', () => {

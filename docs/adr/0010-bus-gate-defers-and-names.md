@@ -200,7 +200,9 @@ on a socket nobody serves fails at once): on the spot up to 5 s, then, or for
 a producer not launched, in the background until the socket accepts, aborted
 when superseded; the module runs without it meanwhile ("not running"). And a
 connection whose producer is there but has no channel yet waits for the
-channel's assignment instead of failing (`MediaRouter`, B-194).
+channel's assignment instead of failing (`MediaRouter`, B-194), or for its
+sink's next start if the sink was stopped then, and is checked once after
+10 s (B-196).
 (`GstPluginBase.handleBusGate`, `describePendingProducers`,
 `LiveInputBranch.addLiveInput`; `GstPluginBase.busGate.test.ts`,
 `GstPluginBase.liveInputs.test.ts`, `MpegTsBusExecutor.test.ts`.)

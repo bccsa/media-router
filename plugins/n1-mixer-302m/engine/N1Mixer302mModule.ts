@@ -48,12 +48,17 @@ export class N1Mixer302mModule extends GstPluginBase {
         return isMatrixAligner(watch.aligner) ? null : undefined;
     }
 
+    /** Inputs with a fan-in (`inmix<i>`) in the pipeline its runner runs; a start sets them. */
+    private launchedInputs = new Set<number>();
+
     /** Live input add/remove on `in-<i>` — see `n1InputBranch`. */
     getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
         const m = /^in-(\d+)$/.exec(sinkPortId);
         if (!m) return null;
         const index = Number(m[1]);
-        if (index >= readPairCount(this.config)) return null;
+        // The first source on an input has no fan-in to join: no branch, so the engine
+        // restarts the mixer into one, which also takes the outputs that input feeds (B-196).
+        if (index >= readPairCount(this.config) || !this.launchedInputs.has(index)) return null;
         const router = this.services?.mediaRouter;
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
@@ -65,9 +70,7 @@ export class N1Mixer302mModule extends GstPluginBase {
             );
         // Remove: the record is already gone — name the branch to take off
         // (the engine keeps the classic restart for the LAST one on a port).
-        // Add: the branch for a running `inmix<i>`; the FIRST source on an
-        // input has no aggregator to join yet — the runner answers "element
-        // not found" and the engine falls back to the restart that builds it.
+        // Add: the branch for a running `inmix<i>`.
         return n1InputBranch(index, connectionId, mine, readChannels(this.config));
     }
 
@@ -100,6 +103,9 @@ export class N1Mixer302mModule extends GstPluginBase {
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         const router = this.services?.mediaRouter;
         const instanceId = this.services?.instanceId ?? '';
+        // With no runner yet this is a start's build, the pipeline that runs; a refresh has one.
+        const launch = !this.childProcess;
+        if (launch) this.launchedInputs = new Set();
         if (!router) return null;
 
         if (!N1Mixer302mModule.s302mSupported) {
@@ -148,6 +154,7 @@ export class N1Mixer302mModule extends GstPluginBase {
             channels,
         });
         if (!pipeline) return null;
+        if (launch) this.launchedInputs = new Set(inputs.keys());
 
         this.setStatusData('routing', {
             pairCount,

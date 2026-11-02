@@ -29,6 +29,16 @@ const log = createLogger('MediaRouter');
 const declaredPlayoutOffsetMs = (m: ModuleInstance | undefined): number | undefined =>
     parsePlayoutOffsetMs(m?.config?.[PLAYOUT_OFFSET_KEY]);
 
+/** How long a connection waits for its producer before the router checks on it, once (B-196). */
+const WAIT_CHECK_MS = 10_000;
+
+/** A module that runs a pipeline: a launched gst child, or a native producer's own fan-out. */
+function runsPipeline(m: ModuleInstance | undefined): boolean {
+    if (!m?.running) return false;
+    const child = m.getChildProcess?.();
+    return child ? child.pipelineLaunchedAt !== undefined : !!m.getBusAttachTarget?.();
+}
+
 /**
  * Stream types carried on the inter-module bus (unixfd fan-out).
  * `audio/302m` is SMPTE-302M PCM in a standard MPEG-TS — same wire format,
@@ -97,8 +107,13 @@ export class MediaRouter {
     private connections = new Map<string, Connection>();
     private handles = new Map<string, ActiveHandle>();
     /** Bus connections whose producer has no channel yet, by id: each runs when its producer's
-     *  channel is assigned, however late (B-194). Never in `connections` meanwhile. */
+     *  channel is assigned, however late (B-194), or at its sink's next start if the sink was
+     *  stopped then (B-196). Never in `connections` meanwhile. */
     private readonly waiting = new Map<string, Connection>();
+    /** The one check of each wait, `waitCheckMs` after it began (B-196). */
+    private readonly waitChecks = new Map<string, NodeJS.Timeout>();
+    /** Waits whose run is queued (one each; it reads the state when it runs). */
+    private readonly wokenPending = new Set<string>();
     /** Runs a woken wait. ModuleLifecycle hands its lock in; alone, one at a time. */
     private runWoken: (task: () => Promise<void>) => void = (task) => {
         this.wokenChain = this.wokenChain.then(task, task);
@@ -134,7 +149,7 @@ export class MediaRouter {
      */
     readonly streamExecutors = new StreamTypeExecutorRegistry();
 
-    constructor() {
+    constructor(private readonly waitCheckMs = WAIT_CHECK_MS) {
         // The event a waiting connection runs on: its producer's channel assigned (B-194).
         this.busChannels.onAcquired((owner) => this.wakeWaiting(owner));
     }
@@ -253,6 +268,7 @@ export class MediaRouter {
         for (const [id, conn] of this.waiting) {
             if (conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId) {
                 this.waiting.delete(id);
+                this.clearWaitCheck(id);
             }
         }
         // Snapshot keys — removeConnection mutates this.connections during iteration
@@ -392,7 +408,8 @@ export class MediaRouter {
         );
     }
 
-    /** Hold `conn` until its producer's channel is assigned: one info line as it starts waiting. */
+    /** Hold `conn` until its producer's channel is assigned: one info line as it starts waiting,
+     *  and one check `waitCheckMs` later. */
     private waitForProducer(conn: Connection, announce: boolean): void {
         this.waiting.set(conn.id, conn);
         if (announce) {
@@ -400,9 +417,46 @@ export class MediaRouter {
                 { connectionId: conn.id },
                 `Connection ${this.connLabel(conn)} waits for ${this.displayName(conn.sourceModuleId)}: its output is not up yet`,
             );
+            this.clearWaitCheck(conn.id);
+            // It runs where a woken wait runs: behind any lifecycle operation, and any run, queued.
+            const check = setTimeout(
+                () => this.runWoken(async () => this.checkWait(conn.id, check)),
+                this.waitCheckMs,
+            );
+            check.unref?.();
+            this.waitChecks.set(conn.id, check);
         }
         // The channel may have come while this attempt ran.
         if (this.producerPort(conn) !== undefined) this.scheduleWaiting(conn.id);
+    }
+
+    private clearWaitCheck(connId: string): void {
+        clearTimeout(this.waitChecks.get(connId));
+        this.waitChecks.delete(connId);
+    }
+
+    /** A wait still on after `waitCheckMs`, into a running sink: a producer up with its channel
+     *  (its wake missed) gets it run now; one that runs but has no channel for this output is
+     *  named. One warning. */
+    private checkWait(connId: string, check: NodeJS.Timeout): void {
+        if (this.waitChecks.get(connId) !== check) return;
+        this.waitChecks.delete(connId);
+        const conn = this.waiting.get(connId);
+        // Ended, its run queued, or its sink stopped (that sink's start runs it).
+        if (!conn || this.wokenPending.has(connId)) return;
+        if (!this.moduleGetter?.(conn.sinkModuleId)?.running) return;
+        if (this.producerPort(conn) !== undefined) {
+            log.warn(
+                { connectionId: connId },
+                `Connection ${this.connLabel(conn)} still waits with ${this.displayName(conn.sourceModuleId)} up — applying it now`,
+            );
+            this.scheduleWaiting(connId);
+        } else if (runsPipeline(this.moduleGetter?.(conn.sourceModuleId))) {
+            log.warn(
+                { connectionId: connId, port: conn.sourcePortId },
+                `Connection ${this.connLabel(conn)} still waits for ${this.displayName(conn.sourceModuleId)}: it runs, but its output ${conn.sourcePortId} is not up`,
+            );
+        }
     }
 
     /** A channel was assigned: the waits on it run once the producer's build that took it is done. */
@@ -417,15 +471,33 @@ export class MediaRouter {
         }
     }
 
+    /** A module started, by any path (lifecycle, a consumer restart, a re-enable): the waits
+     *  into it whose producer is up run, also one skipped while it was stopped (B-196). */
+    noteModuleStarted(moduleId: string): void {
+        for (const conn of this.waiting.values()) {
+            if (conn.sinkModuleId === moduleId && this.producerPort(conn) !== undefined) {
+                this.scheduleWaiting(conn.id);
+            }
+        }
+    }
+
     private scheduleWaiting(connId: string): void {
-        setImmediate(() => this.runWoken(() => this.applyWaiting(connId)));
+        if (this.wokenPending.has(connId)) return;
+        this.wokenPending.add(connId);
+        setImmediate(() =>
+            this.runWoken(() => {
+                this.wokenPending.delete(connId);
+                return this.applyWaiting(connId);
+            }),
+        );
     }
 
     private async applyWaiting(connId: string): Promise<void> {
         const conn = this.waiting.get(connId);
         // Applied or dropped meanwhile, or the channel gone again (its next assignment wakes it).
         if (!conn || this.producerPort(conn) === undefined) return;
-        // A sink that is not running gets it from its own start, which re-applies its connections.
+        // A sink stopped meanwhile (disabled, or restarting outside the lifecycle) gets it at its
+        // next start (`noteModuleStarted`); never started from here.
         if (!this.moduleGetter?.(conn.sinkModuleId)?.running) return;
         try {
             await this.createConnection(
@@ -451,6 +523,7 @@ export class MediaRouter {
 
     async removeConnection(connId: string, skipModuleRestart = false): Promise<boolean> {
         const waited = this.waiting.delete(connId);
+        this.clearWaitCheck(connId);
         const conn = this.connections.get(connId);
         const existed = this.connections.delete(connId) || waited;
         const handle = this.handles.get(connId);
@@ -583,6 +656,7 @@ export class MediaRouter {
 
     async removeAllConnections(skipModuleRestart = false): Promise<void> {
         this.waiting.clear();
+        for (const id of [...this.waitChecks.keys()]) this.clearWaitCheck(id);
         for (const connId of Array.from(this.connections.keys())) {
             await this.removeConnection(connId, skipModuleRestart);
         }

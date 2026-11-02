@@ -254,6 +254,33 @@ describe('connections wait for their producer (B-194, MR-005)', { timeout: 20_00
         await e.lifecycle.stopAll();
     });
 
+    it('the mixer restarted outside the lifecycle as the mic comes up: the mic connects at its start (B-196)', async () => {
+        const e = engine('SSL2:Mic1');
+        await e.lifecycle.startAll();
+        // A live connect into the mixer restarts it (MpegTsBusExecutor), not the lifecycle.
+        const mixer = e.modules.get('mixer')!;
+        let release!: () => void;
+        hold = new Promise<void>((r) => (release = r));
+        await mixer.stop();
+        const starting = mixer.start();
+
+        present.add('SSL2:Mic1');
+        e.mic().plugged();
+        await sleep(100);
+        // Woken while the mixer was stopped: it keeps waiting, never starts the mixer itself.
+        expect(e.live()).toEqual([]);
+        expect(e.router.isConnectionWaiting('mic:audio-out-mixer:in')).toBe(true);
+        expect(overlap.max).toBe(1);
+
+        hold = null;
+        release();
+        await starting;
+        await vi.waitFor(() => expect(e.live()).toEqual(ALL));
+        expect(e.srt().sources).toEqual(['tc']);
+        expect(errors()).toEqual([]);
+        await e.lifecycle.stopAll();
+    });
+
     it('a Restart of the mixer while the mic waits: no error, still waiting, up at the plug', async () => {
         const e = engine('SSL2:Mic1');
         await e.lifecycle.startAll();

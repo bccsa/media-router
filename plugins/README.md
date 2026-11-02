@@ -1460,10 +1460,14 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   runs without the branch, "Input from X not running", until the socket
   accepts, and then it joins (B-194). The LAST edge of a port keeps the classic teardown (the module
   must idle); a channel-map edit is a remove + add of that one branch.
-  Return null for edges whose arrival changes more than one branch — and
-  any runner refusal (no pipeline yet, element not found) falls back to
-  the classic restart, which is how the n1-mixer's FIRST source on an input
-  (no `inmix<i>` yet) is handled without the hook having to know.
+  Return null for an edge the running pipeline cannot take as one branch:
+  one whose arrival changes more than one branch, or one into an aggregator
+  the pipeline does not have (n1-mixer-302m's FIRST source on an input: it
+  answers only for inputs with an `inmix<i>` in the pipeline its runner
+  runs). Null means the classic restart at once. A refusal on the spot falls
+  back to it too, but an add sent later (its producer not up yet) only
+  warns, so a branch the hook promises must be one the runner can take
+  (B-196).
 - Pair it with `eosDrain: false` on the description: an audio-only bus
   producer has no decoder to drain, and its aligners hold every input's
   EOS, so the drain would stall its full 6 s (EOS to every consumer first).
