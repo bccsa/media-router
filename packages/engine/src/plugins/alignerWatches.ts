@@ -1,7 +1,8 @@
 // The aligner inputs' `mralignwatch` reports (house-clock WI-P2-13): state, pace, W, absences
 // and stale discards, on a change and every second, kept per element. LatenessReporter maps them
-// to the module's inputs; the rejoin, late-cue and pace-fell events go to the module's log.
+// to the module's inputs; the rejoin, late-cue, pace-fell and beyond events go to the module's log.
 import type { AlignerInputState } from '@media-router/shared-types';
+import { offsetText } from './offClock.js';
 
 /** Plugin-event channel prefix: `mralignwatch:<element name>`. */
 export const ALIGNER_EVENT = 'mralignwatch';
@@ -41,13 +42,32 @@ export interface AlignerReport {
     /** `reason=pace-fell`: by how much, and the window every input was steady under it. */
     fellMs?: number;
     fallAfterMs?: number;
+    /** Past the pace ceiling or off the clock: absent for its aligner (B-204). */
+    beyond?: boolean;
+    /** The most a pace can be (B-204). */
+    paceCeilingMs?: number;
 }
 
 /** What goes in the module's log (chapter 6 part 10's events). */
 export type AlignerEvent =
     | { kind: 'rejoin'; watch: AlignerWatchRef; absentMs: number; discardedMs: number }
     | { kind: 'late-cue'; watch: AlignerWatchRef; cueLatenessMs: number; raisedMs: number }
-    | { kind: 'pace-fell'; watch: AlignerWatchRef; fellMs: number; fallAfterMs: number };
+    | { kind: 'pace-fell'; watch: AlignerWatchRef; fellMs: number; fallAfterMs: number }
+    | { kind: 'beyond'; watch: AlignerWatchRef; latenessMs: number; ceilingMs: number };
+
+/** The ceiling when a report names none (the element's PACE_CEILING_NS). */
+export const PACE_CEILING_MS = 4000;
+
+/** An input past its aligner's pace ceiling or off the clock (B-204), as health and log say it.
+ *  Its lateness is shown clamped to 1 h. */
+export function beyondText(label: string, latenessMs: number, ceilingMs: number): string {
+    const far = Math.abs(latenessMs) >= 3_600_000 ? '1 h or more' : offsetText(latenessMs);
+    const where =
+        latenessMs < 0
+            ? `${far} ahead of the house clock`
+            : `${far} late, past the ${ceilingMs / 1000} s pace ceiling`;
+    return `Input ${label} ${where} — continuing without it`;
+}
 
 export interface AlignerWatch {
     ref: AlignerWatchRef;
@@ -93,6 +113,8 @@ export function parseAlignerPayload(payload: unknown): AlignerReport | null {
         levelBytes: num('level-bytes'),
     };
     if ('pace-target' in p) report.paceTargetMs = num('pace-target') / NS_PER_MS;
+    if ('beyond' in p) report.beyond = p.beyond === true;
+    if ('pace-ceiling' in p) report.paceCeilingMs = num('pace-ceiling') / NS_PER_MS;
     if (report.reason === 'late-cue') report.cueLatenessMs = num('cue-lateness') / NS_PER_MS;
     if (report.reason === 'pace-fell') {
         report.fellMs = num('fell') / NS_PER_MS;
@@ -169,6 +191,14 @@ export class AlignerWatches {
                 watch: ref,
                 fellMs: r.fellMs ?? 0,
                 fallAfterMs: r.fallAfterMs ?? 0,
+            });
+        }
+        if (r.reason === 'beyond') {
+            events.push({
+                kind: 'beyond',
+                watch: ref,
+                latenessMs: r.latenessMs,
+                ceilingMs: r.paceCeilingMs ?? PACE_CEILING_MS,
             });
         }
         this.entries.set(name, e);

@@ -26,6 +26,9 @@ class ArrivalRhythm {
     static constexpr int MIN_ARRIVALS = 10;
 
     void arrive(int64_t now_ns);
+    // An arrival after its aligner held upstream: the wait was ours, not the input's rhythm, so
+    // no gap is taken (B-204).
+    void resume(int64_t now_ns);
     int64_t limit_ns(const Config& cfg) const;
     // Nearest rank: the ceil(0.95 n)-th smallest of the n gaps kept; 0 before two arrivals.
     int64_t p95_ns() const;
@@ -41,12 +44,15 @@ class ArrivalRhythm {
 };
 
 // The pace of one aggregator's inputs (part 4.3 job 3), under PaceRegistry's lock but `snapshot`:
-// its target is the most any member showed over the last `fall_after`, at least 0; the pace steps
-// to it before the group runs, then slews to a gapped member's rise (B-80), falls in skips (B-82).
+// its target is the most any member showed over the last `fall_after`, at least 0 and never over
+// PACE_CEILING_NS; the pace steps to it before the group runs, then slews to a gapped member's
+// rise (B-80), falls in skips (B-82).
 //
 // A member's lateness: the median over wall time of its last second, each stretch between two
 // arrivals at its midpoint, leaving out those over which it fell (a backlog draining, at any
 // speed). It goes into the pace only while a third of the window counts and it is not falling.
+// Past the ceiling, or 1 h or more ahead, the member is `beyond`: its lateness goes into no pace,
+// its peaks leave the window and its aligner treats it as absent (B-204).
 class PaceGroup {
   public:
     using Member = uint64_t;
@@ -60,9 +66,11 @@ class PaceGroup {
         bool started = false;
         int64_t pace_at(int64_t now_ns) const;
     };
-    // A skip down that a call applied: its member reports it (B-82).
+    // A skip down that a call applied: its member reports it (B-82). `beyond`: after observe or
+    // raise, the member's state (B-204).
     struct Event {
         int64_t fell_ns = 0;
+        bool beyond = false;
     };
     static constexpr int64_t WINDOW_NS = 1000000000;   // a member's lateness: over its last 1 s
     // It counts toward the pace once its stretches span half the second: the first arrivals of
@@ -70,8 +78,13 @@ class PaceGroup {
     static constexpr int64_t SPAN_NS = WINDOW_NS / 2;
     // Falling: the newer half's median this far under the whole window's.
     static constexpr int64_t FALL_NS = 2000000;
-    // Samples are clamped to +-1 h: past that a PTS is garbage.
+    // Past +-1 h a PTS is garbage: a sample is clamped there for the shown lateness only.
     static constexpr int64_t LATENESS_LIMIT_NS = 3600LL * 1000000000LL;
+    // The most a pace can be (B-204): 1 s under the aligner's 5 s queue, so an input on time is
+    // never held past its queue. A member later than this is `beyond`; it comes back at or under
+    // the ceiling less BEYOND_BACK_NS, so one that hovers there does not flap.
+    static constexpr int64_t PACE_CEILING_NS = 4LL * 1000000000LL;
+    static constexpr int64_t BEYOND_BACK_NS = 1000000000;
     // RISE_RATE 0.5: once the group runs, a ns of wall time lifts the pace half a ns (B-80).
     static constexpr int64_t RISE_DIV = 2;
     // The window: three buckets of fall_after / 2 on the group's clock, the open one the last.
@@ -87,17 +100,19 @@ class PaceGroup {
     PaceGroup(const PaceGroup&) = delete;
     PaceGroup& operator=(const PaceGroup&) = delete;
 
-    // seed_ns < 0: none. A seed enters the member's window; `now_ns` < 0 anywhere: no time of
-    // the caller's, the group's clock stands in.
+    // seed_ns < 0: none. A seed enters the member's window (one over the ceiling does not);
+    // `now_ns` < 0 anywhere: no time of the caller's, the group's clock stands in.
     void join(Member m, int64_t seed_ns, int64_t now_ns = -1);
     // The target from the members that remain; the fall follows at once, and reports nothing.
     void leave(Member m, int64_t now_ns = -1);
     // An arrival. `fresh` starts a run (after waiting, an absence or a flush): no stretch
     // reaches back to the member's previous arrival. The lateness enters the window when it
     // counts; from a member not `gapped` it lifts the pace at once (its data is waited for).
+    // `held`: the member's aligner held its upstream since its last arrival, so this lateness
+    // carries the group's own hold: it is shown, but no stretch reaches it or leaves it (B-204).
     void observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh = false,
-                 bool gapped = false, Event* ev = nullptr);
-    // A late sparse cue's lateness enters the member's window (C-3).
+                 bool gapped = false, Event* ev = nullptr, bool held = false);
+    // A late sparse cue's lateness enters the member's window (C-3); over the ceiling it does not.
     void raise(Member m, int64_t pace_ns, int64_t now_ns = -1, Event* ev = nullptr);
     // Time alone: the buckets rotate when due, and a due skip falls.
     void tick(int64_t now_ns, Event* ev = nullptr);
@@ -120,6 +135,8 @@ class PaceGroup {
     bool need(Member m, int64_t* out) const;
     // The member's peak over its window; false while it holds none.
     bool peak(Member m, int64_t* out) const;
+    // The member is past the ceiling or off the clock (B-204); false for a stranger.
+    bool beyond(Member m) const;
     size_t size() const { return members_.size(); }
 
   private:
@@ -150,11 +167,13 @@ class PaceGroup {
         bool has_need = false;
         int64_t need = 0;    // the last level that counted
         int64_t peaks[BUCKETS] = {NONE, NONE, NONE};   // the window's, oldest first
+        bool beyond = false;
     };
     static bool falling(const State& s, int64_t now_ns);
     // The group's clock moved to `now_ns`; the time a call works at, -1 before any.
     int64_t advance(int64_t now_ns);
     void rotate();
+    // A value into the member's open bucket; none over the ceiling.
     void enter(State& s, int64_t v);
     int64_t window_target() const;
     // After a call moved the target from `was` while the pace was `cur`: a rise steps to `floor`
@@ -199,6 +218,7 @@ class PaceRegistry {
         int64_t target_ns = 0;
         bool has_lateness = false;
         int64_t lateness_ns = 0;   // this member's
+        bool beyond = false;       // ...and whether it is past the ceiling
         size_t members = 0;
     };
 
@@ -209,7 +229,7 @@ class PaceRegistry {
                     int64_t fall_after_ns = PaceGroup::FALL_AFTER_NS, int64_t now_ns = -1);
     void leave(Membership* m, int64_t now_ns = -1);   // and clears it; a second call is a no-op
     void observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh = false,
-                 bool gapped = false, PaceGroup::Event* ev = nullptr);
+                 bool gapped = false, PaceGroup::Event* ev = nullptr, bool held = false);
     void raise(const Membership& m, int64_t pace_ns, int64_t now_ns = -1,
                PaceGroup::Event* ev = nullptr);
     void tick(const Membership& m, int64_t now_ns, PaceGroup::Event* ev = nullptr);

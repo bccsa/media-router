@@ -571,6 +571,13 @@ elements" below do not start.
   than 10 s ahead of the box's clock or 1 h behind it is no longer used, with
   one warning in the module's log; and a module whose output is 10 s or more
   off shows "Output timing off the house clock by …" while it lasts.
+- **One late input no longer holds a mixer or a muxer minutes behind.** Up to
+  v2.0.0.100 FRA-Master01's N-1 mixers took the delay of SCC returns that came
+  back 7 minutes late, kept it for hours, and its 'VV' muxer sent nothing for
+  three hours (2 Nov). Fixed: a mixer or muxer delays its inputs by at most 4 s;
+  an input later than that is left out, with "Input … late, past the 4 s pace
+  ceiling — continuing without it", until it is back under 3 s, and the others
+  go on.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

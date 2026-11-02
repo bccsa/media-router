@@ -18,6 +18,11 @@ void ArrivalRhythm::arrive(int64_t now_ns) {
     arrivals_++;
 }
 
+void ArrivalRhythm::resume(int64_t now_ns) {
+    last_ns_ = now_ns;
+    arrivals_++;
+}
+
 int64_t ArrivalRhythm::p95_ns() const {
     const size_t n = gaps_.size();
     if (n == 0) return 0;
@@ -139,6 +144,7 @@ void PaceGroup::rotate() {
 }
 
 void PaceGroup::enter(State& s, int64_t v) {
+    if (v > PACE_CEILING_NS || v < -LATENESS_LIMIT_NS) return;
     int64_t& open = s.peaks[BUCKETS - 1];
     open = std::max(open, v);
     target_ = std::max(target_, v);
@@ -215,17 +221,19 @@ bool PaceGroup::falling(const State& s, int64_t now_ns) {
 }
 
 void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh, bool gapped,
-                        Event* ev) {
+                        Event* ev, bool held) {
     auto it = members_.find(m);
     if (it == members_.end()) return;
     const int64_t t = advance(now_ns);
     const int64_t cur = pace_at(t), was = target_;
     rotate();
     State& s = it->second;
+    // Clamped for the shown lateness only: past the ceiling it sets no pace (B-204).
     const int64_t l = std::clamp(lateness_ns, -LATENESS_LIMIT_NS, LATENESS_LIMIT_NS);
     const int64_t len = now_ns - s.last_at;
-    // The stretch since the run's last arrival; it counts unless the lateness fell over it.
-    if (s.has_last && !fresh && len > 0) {
+    // The stretch since the run's last arrival; it counts unless the lateness fell over it. A held
+    // arrival is none's end nor start: its lateness is our hold (B-204).
+    if (s.has_last && !fresh && !held && len > 0) {
         const bool counts = l >= s.last_lateness;
         const Stretch st{now_ns, len, (s.last_lateness + l) / 2, counts};
         s.window.push_back(st);
@@ -236,7 +244,7 @@ void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fres
             s.counted.insert(std::upper_bound(s.counted.begin(), s.counted.end(), c), c);
         }
     }
-    s.has_last = true;
+    s.has_last = !held;
     s.last_at = now_ns;
     s.last_lateness = l;
     while (!s.window.empty() && s.window.front().end <= now_ns - WINDOW_NS) {
@@ -264,14 +272,31 @@ void PaceGroup::observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fres
     // Taken once the stretches span half a second and a third of that counts (jitter counts
     // half of a steady input's, a catch-up much less); taking again the need the open bucket
     // holds changes nothing.
-    const bool held = s.has_need && s.level == s.need && s.peaks[BUCKETS - 1] >= s.need;
+    const bool same =
+        !s.beyond && s.has_need && s.level == s.need && s.peaks[BUCKETS - 1] >= s.need;
     int64_t floor = NONE;
-    if (s.span >= SPAN_NS && 3 * s.len >= s.span && !held && !falling(s, now_ns)) {
-        s.need = s.level;
-        s.has_need = true;
-        enter(s, s.need);
-        if (!gapped) floor = s.need;   // the aggregator waits on its data: a step stops nothing
+    if (!held && !same && s.span >= SPAN_NS && 3 * s.len >= s.span && !falling(s, now_ns)) {
+        // Past the ceiling, or off the clock ahead: no pace can align it. Its peaks leave the
+        // window as on a leave, and it is back once 1 s under the ceiling (B-204).
+        if (s.level > PACE_CEILING_NS || s.level <= -LATENESS_LIMIT_NS) {
+            if (!s.beyond) {
+                s.beyond = true;
+                for (int64_t& p : s.peaks) p = NONE;
+                const int64_t kept = target_;
+                target_ = window_target();
+                if (target_ < kept) quiet_ = true;
+            }
+        } else if (s.beyond && s.level <= PACE_CEILING_NS - BEYOND_BACK_NS) {
+            s.beyond = false;
+        }
+        if (!s.beyond) {
+            s.need = s.level;
+            s.has_need = true;
+            enter(s, s.need);
+            if (!gapped) floor = s.need;   // the aggregator waits on its data: a step stops nothing
+        }
     }
+    if (ev) ev->beyond = s.beyond;
     settle(t, cur, was, ev, true, floor);
 }
 
@@ -281,7 +306,8 @@ void PaceGroup::raise(Member m, int64_t pace_ns, int64_t now_ns, Event* ev) {
     const int64_t t = advance(now_ns);
     const int64_t cur = pace_at(t), was = target_;
     rotate();
-    enter(it->second, std::clamp(pace_ns, -LATENESS_LIMIT_NS, LATENESS_LIMIT_NS));
+    enter(it->second, pace_ns);
+    if (ev) ev->beyond = it->second.beyond;
     settle(t, cur, was, ev);
 }
 
@@ -324,6 +350,11 @@ bool PaceGroup::peak(Member m, int64_t* out) const {
     return true;
 }
 
+bool PaceGroup::beyond(Member m) const {
+    auto it = members_.find(m);
+    return it != members_.end() && it->second.beyond;
+}
+
 // --- PaceRegistry ------------------------------------------------------------------------
 
 PaceRegistry& PaceRegistry::global() {
@@ -358,9 +389,10 @@ void PaceRegistry::leave(Membership* m, int64_t now_ns) {
 }
 
 void PaceRegistry::observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh,
-                           bool gapped, PaceGroup::Event* ev) {
+                           bool gapped, PaceGroup::Event* ev, bool held) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (m.member && m.group) m.group->observe(m.member, now_ns, lateness_ns, fresh, gapped, ev);
+    if (m.member && m.group)
+        m.group->observe(m.member, now_ns, lateness_ns, fresh, gapped, ev, held);
 }
 
 void PaceRegistry::raise(const Membership& m, int64_t pace_ns, int64_t now_ns,
@@ -395,6 +427,7 @@ PaceRegistry::View PaceRegistry::view(const Membership& m, int64_t now_ns) const
     v.pace_ns = now_ns >= 0 ? g.pace_at(now_ns) : g.pace();
     v.target_ns = g.target();
     v.has_lateness = g.lateness(m.member, &v.lateness_ns);
+    v.beyond = g.beyond(m.member);
     v.members = g.size();
     return v;
 }

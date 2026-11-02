@@ -10,6 +10,8 @@ import type {
 import {
     ALIGNER_EVENT,
     AlignerWatches,
+    beyondText,
+    PACE_CEILING_MS,
     type AlignerEvent,
     type AlignerInputRef,
     type AlignerWatch,
@@ -340,13 +342,19 @@ export class LatenessReporter {
         };
     }
 
-    /** The warning texts: every absent input with its W; every input whose queue is full. */
+    /** The warning texts: every absent input with its W, or how far past its aligner's pace
+     *  ceiling it is (B-204); every input whose queue is full. */
     alignerWarnings(now = Date.now()): AlignerWarnings {
         this.expire(now);
         const { rows, internal } = this.inputRows();
         const absent = rows
             .filter((r) => r.state === 'absent')
             .map((r) => {
+                const out = r.watches.find((x) => x.report.beyond);
+                if (out) {
+                    const { latenessMs, paceCeilingMs } = out.report;
+                    return beyondText(r.label, latenessMs, paceCeilingMs ?? PACE_CEILING_MS);
+                }
                 const w = r.watches.filter((x) => x.report.state === 'absent');
                 // Its watches report on (a quiet tap): silent for as long as a tap takes to go stale.
                 const limitMs = w.length

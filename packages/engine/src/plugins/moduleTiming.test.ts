@@ -655,6 +655,41 @@ describe('aligner inputs (WI-P2-13)', () => {
         t.stop(false);
     });
 
+    it('an input past the pace ceiling is one warn line naming it and how late (B-204)', () => {
+        const { t, host } = make();
+        t.onEvent('mralignwatch:mixin_aw_b', {
+            ...awMsg(B.connectionId, 'absent', { reason: 'beyond', absences: 1 }),
+            lateness: 402_500 * MS,
+            beyond: true,
+            'pace-ceiling': 4000 * MS,
+        });
+        expect(host.log).toHaveBeenCalledWith(
+            'warn',
+            {
+                alignerBeyond: {
+                    name: 'mixin_aw_b',
+                    aligner: 'mixin',
+                    input: B.connectionId,
+                    latenessMs: 402_500,
+                    ceilingMs: 4000,
+                },
+            },
+            'Input enc-b (audio-in) 6 min 42 s late, past the 4 s pace ceiling — continuing without it',
+        );
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(
+            'Input enc-b (audio-in) 6 min 42 s late, past the 4 s pace ceiling — continuing without it',
+            null,
+        );
+        t.onEvent('mralignwatch:mixin_aw_b', {
+            ...awMsg(B.connectionId, 'absent', { reason: 'interval', absences: 1 }),
+            lateness: 402_500 * MS,
+            beyond: true,
+            'pace-ceiling': 4000 * MS,
+        });
+        expect(host.log).toHaveBeenCalledTimes(1);
+        t.stop(false);
+    });
+
     it('a producer stopped while wired keeps its row: absent, warned, waited for (B-93)', () => {
         let sources = [A, B];
         const host = {

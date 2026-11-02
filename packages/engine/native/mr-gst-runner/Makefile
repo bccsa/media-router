@@ -52,11 +52,13 @@ $(MRTS)/libmrts.a: FORCE
 FORCE:
 
 # The edge bookkeeping and the udp silence watch across threads (B-193), the stamper's messages as
-# events (B-203): the runner's sources but main.cpp. Protocol conformance runs from the python gst
-# suite (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
-TESTS = tests/bus_edges_thread_test tests/source_gate_udp_test tests/stamper_message_test
+# events (B-203), the transform producer retime on a real tsdemux (B-204): the runner's sources but
+# main.cpp. Protocol conformance runs from the python gst suite
+# (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
+TESTS = tests/bus_edges_thread_test tests/source_gate_udp_test tests/stamper_message_test \
+        tests/branch_retime_test
 
-$(TESTS): tests/%: tests/%.cpp $(SRCS) $(HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
+$(TESTS): tests/%: tests/%.cpp $(SRCS) $(HDRS) $(MRTS)/tests/check.h $(MRTS)/tests/ts_gen.h $(MRTS)/libmrts.a
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PKG_CFLAGS) $< $(filter-out main.cpp,$(SRCS)) $(MRTS)/libmrts.a $(PKG_LIBS) -o $@
 
 test: $(TESTS)

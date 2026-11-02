@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <map>
@@ -40,6 +41,10 @@ constexpr size_t HOLD_BUFFERS = 4096;         // … and in buffers
 constexpr size_t TAIL = KEY_BYTES + 184;      // payload window kept per open AU
 constexpr int64_t JOIN_TOL_NS = 5'000'000;    // a repeated tail is told apart by tsdemux's PTS
 constexpr int64_t WRAP = 1LL << 33;
+// B-204: a forward PES jump its buffer's stamp shares to this is a span dropped upstream; a
+// reading this near a whole number of 33-bit wraps off the epoch's K is a stamp off the clock.
+constexpr int64_t HOLE_TOL_NS = 1'000'000'000;
+constexpr int64_t WRAP_TOL_NS = 5'000'000'000;
 
 /** One stamp epoch: the span over which K = stamp − ns(PES) holds. */
 struct Epoch {
@@ -105,6 +110,7 @@ struct State {
     int64_t hold_t0 = 0;
     bool released = false;
     std::atomic<bool> releasing{false};
+    bool hole_logged = false, wrap_logged = false;   // B-204's lines, once per demux
     std::vector<std::string> logs;   // written once st.m is dropped
 };
 
@@ -153,8 +159,9 @@ void note(Epoch& e, int pid, int64_t u, const Au& au) {
 
 /** The Au of one PES: its PID's epoch while continuous. A non-`timing` PES over 5 s after
  *  its PID's last was quiet: the newest epoch, its own on, with a timing PID near it. Else
- *  the newest later coherent epoch, else a fresh one (quiet: on the last K). Caller holds st.m. */
-AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts, bool timing) {
+ *  the newest later coherent epoch, else (B-204) its own still when its buffer's `stamp` (-1:
+ *  none) jumped with it, else a fresh one (quiet: on the last K). Caller holds st.m. */
+AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts, bool timing, int64_t stamp) {
     auto make = [&](const EpochP& e, int64_t u) {
         auto au = std::make_shared<Au>();
         au->e = e;
@@ -199,6 +206,21 @@ AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts, bool timi
     size_t from = it == st.epochs.end() ? 0 : (size_t)(it - st.epochs.begin()) + 1;
     for (size_t i = st.epochs.size(); i-- > from;)
         if (AuP au = coherent(st.epochs[i], false)) return au;
+    // A forward jump the stamps share: what the consumer's leaky ingress dropped, its producer's
+    // mapping unchanged. No epoch predicted to continue the last across it (B-204, MR-034).
+    if (e && !quiet && stamp >= 0) {
+        int64_t k, last = e->last[pid], d = fold33(pts - last);
+        if (d > FWD_TICKS && epoch_k(*e, &k) && std::llabs(stamp - (k + ns(last + d))) <= HOLE_TOL_NS) {
+            if (!st.hole_logged) {
+                st.hole_logged = true;
+                rlog(st, fmt("pid=0x%x a hole of %+.3f s in its PES that its stamps share (dropped upstream) — "
+                             "stamp epoch #%d holds (logged once)",
+                             pid, d / 90000.0, e->seq));
+            }
+            st.pid_epoch[pid] = e;
+            return make(e, last + d);
+        }
+    }
     auto fresh = std::make_shared<Epoch>();
     fresh->seq = st.seq++;
     if (e) {
@@ -228,10 +250,30 @@ AuP on_pes(State& st, int pid, int64_t pts, bool has_dts, int64_t dts, bool timi
     return make(fresh, pts);
 }
 
+/** `d` lies within WRAP_TOL_NS of a whole, nonzero number of 33-bit wraps (B-204). */
+bool wrap_off(int64_t d) {
+    const double w = (double)ns(WRAP);
+    const double n = std::nearbyint((double)d / w);
+    return n != 0.0 && std::fabs((double)d - n * w) <= (double)WRAP_TOL_NS;
+}
+
 /** One exact reading. K = the lower of the last two: a lone high reading (a
  *  clamped stamp read as moved after a bus drop) never lands, a real step does
- *  one reading later, a drop (latch repair) at once. Caller holds st.m. */
+ *  one reading later, a drop (latch repair) at once. One a whole number of wraps
+ *  off the epoch's K, else its prediction, is a stamp off the clock: rejected,
+ *  logged once (B-204). Caller holds st.m. */
 void read(State& st, Epoch& e, int64_t s) {
+    const bool has_ref = e.has_k || e.has_pred;
+    const int64_t ref = e.has_k ? e.k : e.pred;
+    if (has_ref && wrap_off(s - ref)) {
+        if (!st.wrap_logged) {
+            st.wrap_logged = true;
+            rlog(st, fmt("epoch #%d a stamp reading %+.3f ms off its %s, a whole number of 33-bit wraps — "
+                         "rejected (logged once)",
+                         e.seq, (s - ref) / 1e6, e.has_k ? "K" : "prediction"));
+        }
+        return;
+    }
     e.reads++;
     int64_t k = e.has_read ? std::min(e.last_read, s) : s;
     e.has_read = true;
@@ -419,7 +461,8 @@ void index(State& st, GstBuffer* buf) {
         int64_t dts = has_dts ? ((((int64_t)p[14] >> 1) & 0x07) << 30) | ((int64_t)p[15] << 22) |
                                     (((int64_t)p[16] >> 1) << 15) | ((int64_t)p[17] << 7) | ((int64_t)p[18] >> 1)
                               : 0;
-        AuP au = on_pes(st, pid, pts, has_dts, dts, mrts::timing_pes(pkt, pid, st.pcr_pid));
+        AuP au = on_pes(st, pid, pts, has_dts, dts, mrts::timing_pes(pkt, pid, st.pcr_pid),
+                        GST_BUFFER_PTS_IS_VALID(buf) ? (int64_t)GST_BUFFER_PTS(buf) : -1);
         size_t hdr = 9 + (size_t)p[8];
         size_t pes_len = ((size_t)p[4] << 8) | p[5];
         Open rec;

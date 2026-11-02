@@ -1890,6 +1890,217 @@ check("caps with the first cue: the other input's buffers all written, EOS, no e
       r.pes_ok(0, range(300)) and eos and not r.errors)
 r.stop()
 
+# B-204 (MR-034, FRA-Master01 2 Nov): no pace past its 4 s ceiling; an input past it is absent for
+# its group, its data discarded; what came after the aligner held upstream sets no pace; a held
+# input behind its pace is silent, so it is gapped and the aggregator never waits on it.
+CEILING = 4 * S
+print("\n--- mpegtsmux: (B1) one input 157 s behind, one current: the current one keeps going out ---")
+# The 'VV' muxer: its N-1 legs read about +157 s, 'SCC -> MUL' -51 ms. The pace took the legs'
+# 157 s and held the current input past its queue: 0 kbps for three hours.
+r = Rig("mpegtsmux", [{}, {}])
+poll = Poller(r, 0)
+
+
+def _behind(i, n, late):
+    def go():
+        for k in range(n):
+            r.sleep_until(r.at(k * 10))
+            r.push(i, k, pts=r.at(k * 10) - late)
+    return go
+
+
+r.run({0: [("rt", 0, 400, 0), ("eos",)], 1: [("call", _behind(1, 400, 157 * S)), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+paces = [p for _t, p in poll.stop()]
+with r.lock:
+    beyond = [f for _t, src, f in r.msgs if src == "aw1" and f["reason"] == "beyond"]
+check("157 s behind: the current input's buffers all written at their PTS",
+      r.pes_ok(0, range(400)))
+check(f"157 s behind: the pace never past the ceiling (at most {max(paces, default=0) / MS:.0f} ms); "
+      f"that input beyond, one `beyond` message ({[(f['lateness'] // MS) for f in beyond]} ms), "
+      f"absent once", max(paces, default=0) <= CEILING and r.prop(1, "beyond") and len(beyond) == 1
+      and beyond[0]["beyond"] and beyond[0]["pace-ceiling"] == CEILING and r.prop(1, "absences") == 1)
+check(f"157 s behind: what it sent discarded ({r.prop(1, 'stale-buffers')} buffers), no queue full, "
+      f"EOS, no error", r.prop(1, "stale-buffers") >= 340 and r.prop(0, "full-count") == 0
+      and r.prop(1, "full-count") == 0 and eos and not r.errors)
+r.stop()
+
+
+def _out_lateness(rows, a_ms, b_ms, t0):
+    """(median, max) of when each output of content a..b ms left, after its PTS (ns)."""
+    late = sorted(t - pts for t, pts in rows if t0 + a_ms * MS <= pts < t0 + b_ms * MS)
+    return (late[len(late) // 2], late[-1]) if late else (None, None)
+
+
+print("\n--- mpegtsmux: (B1b) one input 2 h ahead (a stamp off the clock): absent, its data dropped ---")
+# The gate's muxers held their video 4.37 h ahead (MR-033): a stamp one wrap on. Ahead by 1 h or
+# more an input is off the clock: absent for its group, what it queued and sends discarded.
+r = Rig("mpegtsmux", [{}, {}])
+
+
+def _ahead(i, n, by):
+    def go():
+        for k in range(n):
+            r.sleep_until(r.at(k * 10))
+            r.push(i, k, pts=r.at(k * 10) + by)
+    return go
+
+
+r.run({0: [("rt", 0, 300, 0), ("eos",)], 1: [("call", _ahead(1, 300, 2 * 3600 * S)), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+check(f"2 h ahead: the other input's buffers all written, none of its own "
+      f"({len(r.pes().get(PID0 + 1, []))} PES out), beyond",
+      r.pes_ok(0, range(300)) and not r.pes().get(PID0 + 1) and r.prop(1, "beyond"))
+check(f"2 h ahead: what it queued and sent discarded ({r.prop(1, 'stale-buffers')} buffers), its "
+      f"queue never full; EOS, no error", r.prop(1, "stale-buffers") == 300
+      and r.prop(1, "full-count") == 0 and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (B2) an N-1 matrix, one input back 400 s stale: every output on time ---")
+# n1-mixer-302m's shape (n1Mixer302mPipeline.ts): each input summed once (inmix<i>), tee'd, a matrix
+# link (mralignwatch, aligner omix<o>, W floor 500 ms) into every output mix but its own. FRA's
+# English: in3 'Master -> ENG' live; in0 'SCC -> ENG' dark, then back with its audio 402.5 s stale.
+# Its stale return took inmix0's pace, the links after it every omix pace, and the held in3 links
+# kept them there, falling 1 s a minute.
+caps = CAPS["audiomixer"]
+mix = "audiomixer latency=0 start-time-selection=first"
+link = "mralignwatch aligner={o} input={i} silence-floor=500000000 name={o}_aw_{i}"
+n1 = Gst.parse_launch(
+    f"{mix} name=inmix0 ! capsfilter caps={caps} ! tee name=in0t"
+    f" {mix} name=inmix3 ! capsfilter caps={caps} ! tee name=in3t"
+    f" {mix} name=omix0 ! fakesink name=out0 sync=false async=false"
+    f" {mix} name=omix1 ! fakesink name=out1 sync=false async=false"
+    f" in3t. ! {link.format(o='omix0', i='in3')} ! omix0."
+    f" in0t. ! {link.format(o='omix1', i='in0')} ! omix1."
+    f" in3t. ! {link.format(o='omix1', i='in3')} ! omix1."
+    f" appsrc name=src0 is-live=true format=time max-bytes=0 caps={caps}"
+    f" ! mralignwatch name=inmix0_aw aligner=inmix0 input=c0 hold-on-eos=true ! inmix0."
+    f" appsrc name=src3 is-live=true format=time max-bytes=0 caps={caps}"
+    f" ! mralignwatch name=inmix3_aw aligner=inmix3 input=c3 hold-on-eos=true ! inmix3.")
+clock = Gst.SystemClock.obtain()
+clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+n1.use_clock(clock)
+n1.set_start_time(NONE)
+n1.set_base_time(0)
+n1_rows, n1_msgs, n1_lock = {0: [], 1: []}, [], threading.Lock()
+
+
+def _n1_out(o):
+    def probe(pad, info):
+        b, t = info.get_buffer(), clock.get_time()
+        v = array.array("h", b.extract_dup(0, b.get_size()))
+        with n1_lock:
+            n1_rows[o].append((t, b.pts, tuple(sorted(set(v)))))
+        return Gst.PadProbeReturn.OK
+    return probe
+
+
+def _n1_msg(_bus, m):
+    s = m.get_structure()
+    if m.type == Gst.MessageType.ELEMENT and s is not None and s.get_name() == "mralignwatch":
+        with n1_lock:
+            n1_msgs.append((m.src.get_name(), s.get_string("reason"), s.get_value("beyond")))
+    return Gst.BusSyncReply.DROP
+
+
+for o in (0, 1):
+    n1.get_by_name(f"out{o}").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _n1_out(o))
+n1.get_bus().set_sync_handler(_n1_msg)
+n1.set_state(Gst.State.PLAYING)
+t0 = clock.get_time() // (10 * MS) * (10 * MS) + 200 * MS
+STALE = 402500 * MS
+
+
+def _n1_feed(name, k0, k1, val, late=0):
+    def go():
+        src = n1.get_by_name(name)
+        for k in range(k0, k1):
+            t = t0 + k * 10 * MS
+            while clock.get_time() < t:
+                time.sleep(0.002)
+            b = Gst.Buffer.new_wrapped(array.array("h", [val] * 2 * BLOCK).tobytes())
+            b.pts, b.dts, b.duration = t - late, NONE, 10 * MS
+            src.emit("push-buffer", b)
+        src.emit("end-of-stream")
+    return go
+
+
+feeds = [threading.Thread(target=_n1_feed("src3", 0, 1300, VAL[1])),
+         threading.Thread(target=_n1_feed("src0", 200, 1300, VAL[0], STALE))]
+for th in feeds:
+    th.start()
+for th in feeds:
+    th.join()
+time.sleep(0.5)
+with n1_lock:
+    rows = {o: [(t, p) for t, p, _v in n1_rows[o]] for o in (0, 1)}
+    vals = {o: {v for _t, p, vs in n1_rows[o] if t0 + 500 * MS <= p < t0 + 12500 * MS for v in vs}
+            for o in (0, 1)}
+    beyond = [n for n, reason, _b in n1_msgs if reason == "beyond"]
+late = {o: _out_lateness(rows[o], 500, 12500, t0) for o in (0, 1)}
+back = {o: _out_lateness(rows[o], 3000, 12500, t0) for o in (0, 1)}
+check(f"N-1: both output mixes within the ceiling of house time throughout (median, max ms: "
+      f"{ {o: (in_ms(a), in_ms(b)) for o, (a, b) in late.items()} }; the start waits out the dark "
+      f"input's 2 s W), and on time from its stale return on ({ {o: in_ms(b) for o, (_a, b) in back.items()} })",
+      all(b is not None and b <= CEILING and a <= 500 * MS for a, b in late.values())
+      and all(b is not None and b <= 500 * MS for _a, b in back.values()))
+check(f"N-1: the live input in both mixes all along, the stale one in neither (sample values "
+      f"{vals})", vals == {0: {VAL[1]}, 1: {VAL[1]}})
+check(f"N-1: the stale input beyond at its input sum, once ({beyond}); no link full",
+      beyond == ["inmix0_aw"] and n1.get_by_name("inmix0_aw").get_property("beyond")
+      and all(n1.get_by_name(f"{o}_aw_{i}").get_property("full-count") == 0
+              for o, i in (("omix0", "in3"), ("omix1", "in0"), ("omix1", "in3"))))
+n1.set_state(Gst.State.NULL)
+
+print("\n--- mpegtsmux: (B3) FRA's hole doubling: a held input's holes, the late one stalled ---")
+# The 'VV' muxer's first 8 min: its holes doubled, 5.5 -> 171.7 s. An input on time held past its
+# queue and its leaky ingress (5 s each there, 1 s here) loses what the ingress sheds; the mux
+# waited through each hole (held time was no silence); the late input, held by that wait, came out
+# later by it and stepped the pace by it. Now the held input is silent across a hole and gapped,
+# and what came after a hold sets no pace.
+LEAKY = "queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0"
+r = Rig("mpegtsmux", [{"chain": LEAKY, "props": {"max-size-time": 1000 * MS}},
+                      {"chain": LEAKY, "props": {"max-size-time": 1000 * MS}}])
+poll = Poller(r, 0)
+r.run({0: [("rt", 0, 2500, 0), ("eos",)], 1: [("call", _behind(1, 2500, 3500 * MS)), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None, 10.0)
+reads = poll.stop()
+late_paces = [p for t, p in reads if t >= r.at(5000)]
+gap = out_gap(r, 8000, 24000)
+check(f"hole doubling: the pace stays at the late input's 3.5 s, never doubling (at most "
+      f"{max(late_paces, default=0) / MS:.0f} ms from 5 s on)",
+      late_paces and max(late_paces) <= 3500 * MS + 300 * MS)
+check(f"hole doubling: the mux keeps sending (longest wait between outputs {in_ms(gap)} ms, "
+      f"content 8-24 s), the held input gapped across each of its holes (absent "
+      f"{r.prop(0, 'absences')} times), EOS, no error",
+      gap is not None and gap <= 500 * MS and r.prop(0, "absences") >= 5 and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (B4) a held input with a hole at its head is silent, so gapped ---")
+# Held time is no silence while the queue keeps the pace (case 7 stands); behind it, the
+# aggregator waits on this input, so it is. Input 0's content jumps 2 s on, arriving as it did:
+# its queue holds 300 ms of a 3 s wait, the hole before its head was waited through for 2 s.
+r = Rig("mpegtsmux", [{"props": {"max-size-time": 300 * MS}}, {"props": {"seed-lateness": 1000 * MS}}])
+
+
+def _jump():
+    for k in range(400):
+        kk = k if k < 100 else k + 200
+        r.sleep_until(r.at(k * 10))
+        r.push(0, kk)
+
+
+r.run({0: [("call", _jump), ("eos",)], 1: [("rt", 0, 600, 1000), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None, 8.0)
+gap = out_gap(r, 1500, 4000)
+check(f"held hole: the mux never waits through it (longest wait between outputs {in_ms(gap)} ms, "
+      f"content 1.5-4 s), input 0 absent over it ({r.prop(0, 'absences')})",
+      gap is not None and gap <= 600 * MS and r.prop(0, "absences") >= 1)
+check("held hole: both inputs' buffers all written at their PTS, EOS, no error",
+      r.pes_ok(0, list(range(100)) + list(range(300, 600))) and r.pes_ok(1, range(600))
+      and eos and not r.errors)
+r.stop()
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILURE(S) in gst_mralignwatch_element_test.py")

@@ -1,8 +1,8 @@
 /* mralignwatch (plan ch. 6 part 4.3, WI-P2-6): a non-live aggregator's input. A FIFO released
  * at running time + the shared pace; silent past W, gapped, and so is an input that joins or
- * rejoins a running aggregator until it catches up (B-80); toward an audio aggregator its PCM edges
- * fade (B-83); LATENCY non-live. A plain GstElement: lists stay lists, every push leaves from the
- * src task, in order. */
+ * rejoins a running aggregator until it catches up (B-80), or one past the pace ceiling (B-204);
+ * toward an audio aggregator its PCM edges fade (B-83); LATENCY non-live. A plain GstElement:
+ * lists stay lists, every push leaves from the src task, in order. */
 #include <gst/audio/audio.h>
 
 #include <algorithm>
@@ -50,6 +50,7 @@ enum {
     PROP_FULL_COUNT,
     PROP_PASSES,
     PROP_FADES,
+    PROP_BEYOND,
 };
 
 #define DEFAULT_SILENCE_FACTOR 3.0
@@ -115,7 +116,7 @@ struct LateCue {
 };
 
 /* Messages a critical section leaves for after the unlock (posting can re-enter us). */
-enum : guint { MSG_STATE = 1, MSG_INTERVAL = 2, MSG_FULL = 4, MSG_FELL = 8 };
+enum : guint { MSG_STATE = 1, MSG_INTERVAL = 2, MSG_FULL = 4, MSG_FELL = 8, MSG_BEYOND = 16 };
 
 /* Everything a message or a property read reports, copied under the lock. */
 struct Snap {
@@ -124,6 +125,7 @@ struct Snap {
     gint64 lateness = 0, pace = 0, pace_target = 0, silence_limit = 0, fell = 0;
     guint64 absences = 0, stale_buffers = 0, stale_time = 0, gaps = 0, level_time = 0,
             level_bytes = 0, full_count = 0, passes = 0, fall_after = 0, fades = 0;
+    bool beyond = false;
 };
 
 /* The run's state, under `lock`; reset at each start (READY -> PAUSED). */
@@ -144,6 +146,14 @@ struct Run {
     /* Gapped from a late join, an absence or a held EOS until its first timed data that is
      * kept goes out: the others never wait for content behind the gaps (B-80). */
     bool catching_up = false;
+    /* Past the pace ceiling or off the clock (B-204): absent for its group, gapped, its data
+     * discarded, until it is back under the ceiling; then it rejoins as from an absence. */
+    bool beyond = false;
+    /* The sink thread waited for room with the last data in: what comes next is late by our own
+     * hold, which no pace may take, and its gap is no rhythm of its own (B-204). A serialized
+     * query's wait is not counted: it waits for what is queued ahead of it, mostly nothing. */
+    bool held_upstream = false;
+    gint64 push_done_at = 0;        // when the task's last push returned (B-204's silence rule)
     bool full_episode = false;
     bool ran = false;               // this member told its group the aggregator runs
     bool pace_run = false;          // an arrival of this run went into the pace
@@ -348,6 +358,7 @@ static Snap aw_snap(GstMrAlignWatch* self) {
     s.aligner = r.aligner;
     s.input = r.input;
     s.state = r.state;
+    s.beyond = r.beyond;
     s.lateness = r.lateness;
     s.pace = r.pace;
     s.pace_target = r.pace_target;
@@ -376,7 +387,9 @@ static GstStructure* aw_message_structure(const Snap& s, const gchar* reason) {
         "stale-buffers", G_TYPE_UINT64, s.stale_buffers, "stale-time", G_TYPE_UINT64,
         s.stale_time, "gaps", G_TYPE_UINT64, s.gaps, "level-time", G_TYPE_UINT64, s.level_time,
         "level-bytes", G_TYPE_UINT64, s.level_bytes, "full-count", G_TYPE_UINT64, s.full_count,
-        "passes", G_TYPE_UINT64, s.passes, "fades", G_TYPE_UINT64, s.fades, NULL);
+        "passes", G_TYPE_UINT64, s.passes, "fades", G_TYPE_UINT64, s.fades, "beyond",
+        G_TYPE_BOOLEAN, (gboolean)s.beyond, "pace-ceiling", G_TYPE_INT64,
+        (gint64)mrts::PaceGroup::PACE_CEILING_NS, NULL);
 }
 
 static void aw_post(GstMrAlignWatch* self, GstStructure* st) {
@@ -387,6 +400,7 @@ static void aw_post(GstMrAlignWatch* self, GstStructure* st) {
 /* Not under the lock. One message per reason, from one snapshot. */
 static void aw_post_pending(GstMrAlignWatch* self, guint pending, const Snap& s) {
     if (pending & MSG_STATE) aw_post(self, aw_message_structure(s, "state"));
+    if (pending & MSG_BEYOND) aw_post(self, aw_message_structure(s, "beyond"));
     if (pending & MSG_FULL) aw_post(self, aw_message_structure(s, "full"));
     if (pending & MSG_FELL) {
         GstStructure* st = aw_message_structure(s, "pace-fell");
@@ -473,28 +487,90 @@ static void aw_dequeued(GstMrAlignWatch* self, const Item& it) {
 /* Under the lock: an arrival (data or a GAP) at `now`. */
 static void aw_arrival(GstMrAlignWatch* self, gint64 now, guint* pending) {
     Run& r = *self->run;
-    r.rhythm.arrive(now);
+    if (r.held_upstream)
+        r.rhythm.resume(now);   // our hold is not its rhythm: W stays its own (B-204)
+    else
+        r.rhythm.arrive(now);
     r.limit_stale = true;
     r.quiet_started = true;
     r.quiet_from = now;
     r.held_ns = 0;
     if (r.upstream_blocked) r.blocked_since = now;
     r.eos_held = false;   // data after a held EOS: the stream started again, a rejoin
-    if (r.state == AwState::present) return;
+    if (r.state == AwState::present || r.beyond) return;   // past the ceiling: absent still
     if (r.state == AwState::absent) r.discont = true;   // a rejoin is placed by PTS
     r.state = AwState::present;
     *pending |= MSG_STATE;
     GST_INFO_OBJECT(self, "input %s present", r.input.c_str());
 }
 
+/* Under the lock: a discarded data item's count, as a stale one's. */
+static void aw_count_stale(Run& r, Kind kind, GstMiniObject* obj, gint64 start, gint64 end) {
+    r.stale_buffers += kind == Kind::list ? gst_buffer_list_length(GST_BUFFER_LIST_CAST(obj)) : 1;
+    r.stale_time += (guint64)std::max<gint64>(end - start, 0);
+    r.discont = true;
+}
+
+/* Under the lock: every queued data item goes, events and queries stay in order; a blocked
+ * chain is woken. */
+static void aw_drop_queued(GstMrAlignWatch* self) {
+    Run& r = *self->run;
+    bool dropped = false;
+    for (auto it = r.fifo.begin(); it != r.fifo.end();) {
+        if (it->kind != Kind::buffer && it->kind != Kind::list) {
+            ++it;
+            continue;
+        }
+        if (it->timed) aw_count_stale(r, it->kind, it->obj, it->start, it->end);
+        r.level_bytes -= std::min(r.level_bytes, it->bytes);
+        gst_mini_object_unref(it->obj);
+        it = r.fifo.erase(it);
+        dropped = true;
+    }
+    if (!dropped) return;
+    if (r.full_episode && !aw_full(self, 2)) r.full_episode = false;
+    g_cond_broadcast(&self->item_removed);
+}
+
+/* Under the lock: the input went past the pace ceiling or off the clock, or came back under it
+ * (B-204). Past it, it is absent for its group: gapped, what it has queued and sends discarded,
+ * one warning; back, it rejoins as from an absence (its next arrival), catching up. */
+static void aw_beyond(GstMrAlignWatch* self, bool on, guint* pending) {
+    Run& r = *self->run;
+    r.beyond = on;
+    if (!on) {
+        GST_INFO_OBJECT(self, "input %s back under the pace ceiling", r.input.c_str());
+        return;
+    }
+    r.catching_up = true;
+    aw_drop_queued(self);
+    if (r.state != AwState::absent) {
+        r.state = AwState::absent;
+        r.absences++;
+        *pending |= MSG_STATE;
+    }
+    *pending |= MSG_BEYOND;
+    gint64 l = 0;
+    const PaceRegistry::View v = PaceRegistry::global().view(r.member);
+    if (v.has_lateness) l = v.lateness_ns;
+    GST_WARNING_OBJECT(self,
+                       "input %s: lateness %" G_GINT64_FORMAT " ms, past the %" G_GINT64_FORMAT
+                       " ms pace ceiling: continuing without it",
+                       r.input.c_str(), l / GST_MSECOND,
+                       (gint64)(mrts::PaceGroup::PACE_CEILING_NS / GST_MSECOND));
+}
+
 /* Under the lock: a timed arrival into the pace, kept or stale (B-81): what a joiner or a rejoin
- * sends behind the gaps says how late it now is; a backlog's drain the estimator leaves out. */
+ * sends behind the gaps says how late it now is; a backlog's drain the estimator leaves out, and
+ * what came after we held upstream is late by our own hold (B-204). */
 static void aw_observe(GstMrAlignWatch* self, gint64 now, gint64 lateness, guint* pending) {
     Run& r = *self->run;
     mrts::PaceGroup::Event ev;
-    PaceRegistry::global().observe(r.member, now, lateness, !r.pace_run, aw_gapped(r), &ev);
+    PaceRegistry::global().observe(r.member, now, lateness, !r.pace_run, aw_gapped(r), &ev,
+                                   r.held_upstream);
     r.pace_run = true;
     aw_fell(self, ev, pending);
+    if (r.member.member && ev.beyond != r.beyond) aw_beyond(self, ev.beyond, pending);
 }
 
 /* Under the lock: a stale arrival of an input catching up that ends near the gaps' end ends the
@@ -536,6 +612,16 @@ static void aw_block_end(GstMrAlignWatch* self) {
     if (r.fifo.empty()) aw_wake(self);
 }
 
+/* Under the lock, which it releases: `obj` discarded, what is pending posted. */
+static GstFlowReturn aw_discard(GstMrAlignWatch* self, GstMiniObject* obj, guint pending) {
+    Snap snap;
+    if (pending) snap = aw_snap(self);
+    g_mutex_unlock(&self->lock);
+    gst_mini_object_unref(obj);
+    aw_post_pending(self, pending, snap);
+    return GST_FLOW_OK;
+}
+
 /* Data in. Takes `obj` (a buffer, or a list with `is_list`). */
 static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, bool is_list) {
     guint pending = 0;
@@ -573,6 +659,10 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             aw_fell(self, ev, &pending);
         }
         if (clocked && it.timed) aw_observe(self, now, it.lateness, &pending);
+        if (r.beyond && it.timed) {   // absent for its group: no cue goes out (B-204)
+            aw_count_stale(r, it.kind, it.obj, it.start, it.end);
+            return aw_discard(self, it.obj, pending);
+        }
     } else if (is_list) {
         /* The only discard (R21): what ends before the horizon, member by member. */
         GstBufferList* l = GST_BUFFER_LIST_CAST(obj);
@@ -612,28 +702,32 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
             return GST_FLOW_OK;
         }
         if (clocked && it.timed) aw_observe(self, now, it.lateness, &pending);
-    } else if (it.timed && r.planner.stale(it.start, it.end)) {
-        r.stale_buffers++;
-        r.stale_time += (guint64)(it.end - it.start);
-        r.discont = true;
+        if (r.beyond && it.timed) {   // absent for its group (B-204)
+            aw_count_stale(r, it.kind, it.obj, it.start, it.end);
+            return aw_discard(self, it.obj, pending);
+        }
+    } else if (it.timed && (r.beyond || r.planner.stale(it.start, it.end))) {
+        aw_count_stale(r, it.kind, obj, it.start, it.end);
         GST_LOG_OBJECT(self, "stale buffer [%" G_GINT64_FORMAT ", %" G_GINT64_FORMAT
                        ") before horizon %" G_GINT64_FORMAT ": discarded", it.start, it.end,
                        r.planner.horizon_ns());
         if (clocked) aw_observe(self, now, it.lateness, &pending);   // B-81
         aw_caught_up(self, clocked, now, it.start, it.end);
-        if (pending) snap = aw_snap(self);
-        g_mutex_unlock(&self->lock);
-        gst_mini_object_unref(obj);
-        aw_post_pending(self, pending, snap);
-        return GST_FLOW_OK;
+        return aw_discard(self, obj, pending);
     } else if (clocked && it.timed) {
         aw_observe(self, now, it.lateness, &pending);
+        if (r.beyond) {   // past the ceiling with this arrival: it goes too (B-204)
+            aw_count_stale(r, it.kind, obj, it.start, it.end);
+            return aw_discard(self, obj, pending);
+        }
     }
     if (!is_list && it.timed && it.end > it.start) r.unit_ns = it.end - it.start;
     it.bytes = is_list ? gst_buffer_list_calculate_size(GST_BUFFER_LIST_CAST(it.obj))
                        : gst_buffer_get_size(GST_BUFFER_CAST(it.obj));
 
-    /* Full: the upstream thread waits, nothing is dropped; one count per episode (R9). */
+    /* Full: the upstream thread waits, nothing is dropped; one count per episode (R9). Whether it
+     * waits is what the next arrival is observed with (B-204). */
+    r.held_upstream = false;
     while (aw_full(self) && self->srcresult == GST_FLOW_OK) {
         if (!r.full_episode) {
             r.full_episode = true;
@@ -648,6 +742,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         }
         gint64 t = 0;
         const bool c = aw_now(self, &t);
+        r.held_upstream = true;
         aw_block_begin(self, c, t);
         g_cond_wait(&self->item_removed, &self->lock);
         aw_block_end(self);
@@ -1218,11 +1313,9 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
         return;
     }
 
-    if (it.timed && r.planner.stale(it.start, it.end) && !r.sparse) {
-        r.stale_buffers +=
-            it.kind == Kind::list ? gst_buffer_list_length(GST_BUFFER_LIST_CAST(it.obj)) : 1;
-        r.stale_time += (guint64)(it.end - it.start);
-        r.discont = true;
+    /* Past the ceiling, nothing goes out (B-204). */
+    if (it.timed && (r.beyond || (!r.sparse && r.planner.stale(it.start, it.end)))) {
+        aw_count_stale(r, it.kind, it.obj, it.start, it.end);
         gst_mini_object_unref(it.obj);
         return;
     }
@@ -1302,11 +1395,11 @@ static void aw_report(GstMrAlignWatch* self, gint64 now, guint* pending) {
     }
 }
 
-/* Under the lock: the input is gapped, being sparse, absent, held at EOS or catching up after a
- * late join or a rejoin (B-80), so the others never stall on it. */
+/* Under the lock: the input is gapped, being sparse, absent, past the pace ceiling (B-204), held at
+ * EOS or catching up after a late join or a rejoin (B-80), so the others never stall on it. */
 static bool aw_gapped(const Run& r) {
     if (r.eos_out) return false;
-    return r.sparse || r.eos_held || r.catching_up || r.state == AwState::absent;
+    return r.sparse || r.eos_held || r.catching_up || r.beyond || r.state == AwState::absent;
 }
 
 /* Gaps toward an audio aggregator go as the data would (WI-P2-14 F1). */
@@ -1332,6 +1425,24 @@ static bool aw_silence_counts(const Run& r) {
     return !r.eos_out && !r.sparse && !r.eos_held && !r.sink_eos && r.state != AwState::absent;
 }
 
+/* Under the lock: when the sink thread's hold turns to silence, the pace past what went out with
+ * the head not due (the aggregator then waits on this input), or past `now`; `from`: its start. */
+static gint64 aw_behind(const Run& r, gint64* from) {
+    *from = std::max(r.blocked_since, r.quiet_from);
+    if (!r.planner.has_horizon()) return G_MAXINT64;
+    return std::max({r.planner.horizon_ns() + r.pace, r.push_done_at, *from});
+}
+
+/* Under the lock, clocked: the time held in us since the last arrival that is no silence. A hold
+ * in a push never is, nor one in the sink thread while the queue keeps the pace (B-56); once the
+ * pace has passed what went out, the rest of that hold is (B-204): a held input can be gapped. */
+static gint64 aw_held(const Run& r, gint64 now) {
+    if (!r.upstream_blocked) return r.held_ns;
+    gint64 from;
+    const gint64 behind = aw_behind(r, &from);
+    return r.held_ns + std::max<gint64>(std::min(now, behind) - from, 0);
+}
+
 /* Under the lock, clocked: silence -> absent; the gap due now, to push out of the lock: toward
  * an audio aggregator a piece of the input's buffer length (the aggregator's block at least) at
  * its start + pace, else to now - pace. */
@@ -1345,10 +1456,7 @@ static bool aw_watch(GstMrAlignWatch* self, gint64 now, guint* pending,
     }
     if (r.eos_out) return false;
     if (aw_silence_counts(r)) {
-        gint64 held = r.held_ns;
-        if (r.upstream_blocked)
-            held += std::max<gint64>(now - std::max(r.blocked_since, r.quiet_from), 0);
-        const gint64 silent = now - r.quiet_from - held;
+        const gint64 silent = now - r.quiet_from - aw_held(r, now);
         const gint64 w = silent >= aw_limit_floor(self) ? aw_limit(self) : G_MAXINT64;
         if (silent >= w) {
             r.state = AwState::absent;
@@ -1386,11 +1494,20 @@ static gint64 aw_deadline(GstMrAlignWatch* self, gint64 now) {
         if (!h.timed) return now;   // it came in while we posted: due at once
         at = std::min(at, h.start + r.pace - RELEASE_SLACK_NS);
     }
-    /* Silence stops while the sink thread is held in us; its unblock wakes us (aw_block_end).
-     * W not taken since the last arrival: its least, where aw_watch takes it. */
-    if (aw_silence_counts(r) && r.quiet_started && !r.upstream_blocked)
-        at = std::min(at, r.quiet_from + r.held_ns +
-                              (r.limit_stale ? aw_limit_floor(self) : r.silence_limit));
+    /* Silence stops while the sink thread is held in us and the queue keeps the pace; its unblock
+     * wakes us (aw_block_end). Behind the pace it runs on (B-204). W not taken since the last
+     * arrival: its least, where aw_watch takes it. */
+    if (aw_silence_counts(r) && r.quiet_started) {
+        const gint64 w = r.limit_stale ? aw_limit_floor(self) : r.silence_limit;
+        if (!r.upstream_blocked) {
+            at = std::min(at, r.quiet_from + r.held_ns + w);
+        } else {
+            gint64 from;
+            const gint64 behind = aw_behind(r, &from);
+            if (behind != G_MAXINT64)
+                at = std::min(at, r.quiet_from + r.held_ns + (behind - from) + w);
+        }
+    }
     /* Held behind the pace, the next buffer's release is armed: its arrival need not wake us,
      * so a held input's task runs once a buffer, as a queue's does. */
     if (r.fifo.empty() && r.ahead && aw_silence_counts(r) && !aw_gapped(r) &&
@@ -1471,6 +1588,7 @@ static void aw_loop(gpointer data) {
         aw_release(self, now, clocked, &pending, &late_snap, &late);
         aw_mark_running(self);
         clocked = aw_now(self, &now);   // time passed in the push, and PLAYING may have come
+        if (clocked) r.push_done_at = now;
         r.pace = aw_pace(self, clocked, now, &pending);
         if (late.set) {
             g_mutex_unlock(&self->lock);
@@ -1495,6 +1613,8 @@ static void aw_loop(gpointer data) {
             const gint64 fade = aw_push_fade(self, gap.start_ns, gap.end_ns - gap.start_ns);
             aw_push_gap(self, gap.start_ns + fade, gap.end_ns);
             g_mutex_lock(&self->lock);
+            gint64 t1;
+            if (aw_now(self, &t1)) r.push_done_at = t1;
             if (fade) r.fades++;
             aw_mark_running(self);
             if (!aw_paced_gaps(r)) break;
@@ -1776,6 +1896,7 @@ static void aw_get_property(GObject* object, guint prop_id, GValue* value, GPara
             case PROP_FULL_COUNT: g_value_set_uint64(value, s.full_count); break;
             case PROP_PASSES: g_value_set_uint64(value, s.passes); break;
             case PROP_FADES: g_value_set_uint64(value, s.fades); break;
+            case PROP_BEYOND: g_value_set_boolean(value, s.beyond); break;
             default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
         }
         return;
@@ -2000,7 +2121,8 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
     g_object_class_install_property(
         gobject_class, PROP_STALE_BUFFERS,
         g_param_spec_uint64("stale-buffers", "Stale buffers",
-                            "Buffers discarded for ending before what went out (a rejoin).", 0,
+                            "Buffers discarded for ending before what went out (a rejoin), or "
+                            "while past the pace ceiling.", 0,
                             G_MAXUINT64, 0, ro));
     g_object_class_install_property(
         gobject_class, PROP_STALE_TIME,
@@ -2033,6 +2155,12 @@ static void gst_mralignwatch_class_init(GstMrAlignWatchClass* klass) {
                             "Fade-outs and fade-ins at the edges of PCM data toward an audio "
                             "aggregator: a dropout, a hole, an EOS, a return or a join.",
                             0, G_MAXUINT64, 0, ro));
+    g_object_class_install_property(
+        gobject_class, PROP_BEYOND,
+        g_param_spec_boolean("beyond", "Beyond",
+                             "Later than the 4 s pace ceiling, or 1 h or more ahead: absent for "
+                             "its group, its data discarded, until 1 s under the ceiling.",
+                             FALSE, ro));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);
 

@@ -5,7 +5,7 @@ import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
 import { latInName, shortHash } from './busHelpers.js';
-import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
+import { beyondText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
 import {
     LatenessReporter,
     type LabelledAlignerEvent,
@@ -325,6 +325,15 @@ export class ModuleTiming {
                 'info',
                 { alignerPaceFell: { name, aligner, fellMs, fallAfterMs: e.fallAfterMs } },
                 `Pace fell by ${fellMs} ms: every input steady for ${steady}`,
+            );
+            return;
+        }
+        if (e.kind === 'beyond') {
+            const latenessMs = Math.round(e.latenessMs);
+            this.host.log?.(
+                'warn',
+                { alignerBeyond: { name, aligner, input, latenessMs, ceilingMs: e.ceilingMs } },
+                beyondText(e.label, e.latenessMs, e.ceilingMs),
             );
             return;
         }

@@ -1,6 +1,8 @@
 // Per-access-unit retime of a transform producer's input demux
 // (`alignBranchesToStamps.transformProducer`, ADR-0005 2026-10-08) — the native
-// port of the python runner's `branch_retime.py`, rule for rule.
+// port of the python runner's `branch_retime.py`, rule for rule but two that only
+// the native has (B-204: a hole its stamps share keeps the epoch; a reading whole
+// 33-bit wraps off its K is rejected). The python twin goes with Phase 3.
 //
 // tsdemux's own timestamps (PCR lead, skew walk) are replaced: PTS = K + ns(PES
 // PTS), DTS = K + ns(PES DTS), K the producer's stamp mapping of that PES's epoch.
