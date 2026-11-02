@@ -224,13 +224,34 @@ def _drain_decoder_branch(deadline):
     return True
 
 
+def _send_drain_eos(pipe, playing):
+    """The drain's EOS. Before PLAYING each source gets it under its own state lock, as
+    gst_bin_send_event sends it, but not under the pipeline's: its async change to PLAYING
+    needs that lock to free a source thread parked in a sink's preroll (B-202)."""
+    eos = Gst.Event.new_eos()
+    if playing or not isinstance(pipe, Gst.Bin):
+        return pipe.send_event(eos)
+    sent = True
+    it = pipe.iterate_sources()
+    while True:
+        res, el = it.next()
+        if res == Gst.IteratorResult.OK:
+            sent &= el.send_event(eos)
+        elif res == Gst.IteratorResult.RESYNC:
+            it.resync()
+            sent = True
+        else:
+            return sent
+
+
 def _eos_drain(pipe, errored=False):
     """EOS-drain `pipe` so its decoder is idle before we stop it.
 
     Only pipelines that are actually running are drained: a NULL/READY (or
     stalled-in-PAUSED) pipeline has nothing in flight, and a preroll-only
     pipeline still counts (a stateless decoder decodes its preroll frame), so
-    the pending state is checked too.
+    the pending state is checked too. Such a pipeline gets its EOS source by
+    source (`_send_drain_eos`).
 
     `errored=True` (the bus ERROR handler) skips the pipeline-level EOS: it
     cannot travel a pipeline whose source has already failed, so we go straight
@@ -249,7 +270,7 @@ def _eos_drain(pipe, errored=False):
     # invariant that keeps it under the parent's force-kill window).
     deadline = time.monotonic() + EOS_DRAIN_TIMEOUT_MS / 1000.0
 
-    if errored or not pipe.send_event(Gst.Event.new_eos()):
+    if errored or not _send_drain_eos(pipe, state == Gst.State.PLAYING):
         return _drain_decoder_branch(deadline)
 
     # `timed_pop_filtered` pops straight off the bus queue. Every caller runs on

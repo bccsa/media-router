@@ -2840,6 +2840,56 @@ def test_transcode_rate():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# --------------------------------------------------------------------------- S: stop while starting
+def _wav_final(path):
+    """True when the WAV header carries the file's final size: wavenc writes it at EOS."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+        return head[:4] == b"RIFF" and int.from_bytes(head[4:8], "little") == os.path.getsize(path) - 8
+    except OSError:
+        return False
+
+
+def test_stop_while_starting():
+    """stop-while-starting (B-202, MR-022), both runners: a live pipeline stopped while still going to
+    PLAYING, its first buffer held before the sink. The pipeline-level EOS deadlocked there; the stop now
+    returns before the engine's kill, and still drains (wavenc writes its final header only at EOS)."""
+    for el in ("level", "identity", "wavenc", "filesink"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP stop-while-starting — {el} unavailable")
+            return
+    for kind, argv in (("native", None), ("py", _PY_RUNNER)):
+        label = f"stop-while-starting {kind}"
+        tmp = tempfile.mkdtemp(prefix="mrtest-")
+        wav = os.path.join(tmp, "held.wav")
+        r = RunnerProc(argv)
+        try:
+            r.wait_event(ev_is("ready"), timeout=10)
+            # level reports the first buffer; it then sleeps 1.5 s in identity before the sink.
+            r.send({"cmd": "start", "pipeline": "audiotestsrc is-live=true ! level post-messages=true"
+                    f" interval=10000000 ! identity sleep-time=1500000 ! wavenc ! filesink location={wav}"})
+            held = r.wait_event(ev_is("vu_data"), timeout=5) is not None
+            check(f"{label}: the first buffer is held before the sink, the pipeline not yet PLAYING",
+                  held and not r.has_event(ev_is("state_change", state="playing")))
+            t0 = time.monotonic()
+            r.send({"cmd": "stop"})
+            try:
+                r.proc.wait(timeout=6.5)
+            except subprocess.TimeoutExpired:
+                pass
+            took = time.monotonic() - t0
+            r.pump()
+            check(f"{label}: the stop returns before the engine's kill, exit 0 ({took:.1f} s)",
+                  r.proc.returncode == 0 and took < 4.0)
+            check(f"{label}: and reports the pipeline stopped", r.has_event(ev_is("state_change", state="null")))
+            check(f"{label}: the drain still ran: EOS reached the sink before NULL (the WAV header is final)",
+                  _wav_final(wav))
+        finally:
+            r.kill()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2873,6 +2923,7 @@ test_edge_stall_fds()
 test_edge_handover()
 test_ingest_queue_sheds()
 test_transcode_rate()
+test_stop_while_starting()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

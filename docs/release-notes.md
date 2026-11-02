@@ -559,6 +559,10 @@ elements" below do not start.
   pushing real errors out of the box's log within minutes. Fixed: it logs the
   wait once, naming the modules, then only a change (audio found or lost
   again), and its status shows "No source — waiting for audio from …".
+- **A module stopped while it is still starting stops at once.** A module
+  stopped or restarted before its stream had started playing could, rarely,
+  wait until the engine ended it 8 seconds later. Not seen on a box; fixed.
+  A decoder still finishes the frames it holds before the module stops.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

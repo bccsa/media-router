@@ -14,6 +14,7 @@ Run:  python3 gst_drain_test.py
 import importlib.util
 import os
 import sys
+import threading
 import time
 
 try:
@@ -138,6 +139,51 @@ check(
     any(e.get("event") == "warning" and "EOS drain timed out" in e.get("message", "")
         for e in events),
 )
+
+# --- a pipeline stopped while still going to PLAYING is drained too (B-202) -
+# The first buffer is held before the sink, on the source's thread: the pipeline-level EOS deadlocked
+# there (it holds the state lock the change to PLAYING needs). A watchdog ends a hang.
+def build_held(src):
+    pipe = Gst.parse_launch(f"{src} ! identity name=hold sleep-time=1000000 ! fakesink sync=false name=sink")
+    seen, first = [], threading.Event()
+    pipe.get_by_name("hold").get_static_pad("sink").add_probe(
+        Gst.PadProbeType.BUFFER, lambda _p, _i: (first.set(), Gst.PadProbeReturn.OK)[1])
+
+    def on_event(_pad, info):
+        event = info.get_event()
+        if event and event.type == Gst.EventType.EOS:
+            seen.append(state_of(pipe))
+        return Gst.PadProbeReturn.OK
+
+    pipe.get_by_name("sink").get_static_pad("sink").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, on_event)
+    return pipe, seen, first
+
+
+def drain_hung():
+    print("FAIL the drain of a pipeline still going to PLAYING returns (not within 15 s: deadlocked)")
+    sys.stdout.flush()
+    os._exit(1)
+
+
+for label, src in (("live", "audiotestsrc is-live=true"), ("non-live", "videotestsrc")):
+    events = collect_events()
+    pipe, seen, first = build_held(src)
+    pipe.set_state(Gst.State.PLAYING)
+    held = first.wait(5)
+    time.sleep(0.1)                      # the buffer is in identity's sleep now
+    _ret, state, pending = pipe.get_state(0)
+    check(f"{label}: the stop comes while the pipeline is still going to PLAYING",
+          held and state != Gst.State.PLAYING and pending == Gst.State.PLAYING)
+    watchdog = threading.Timer(15, drain_hung)
+    watchdog.start()
+    started = time.monotonic()
+    runner._teardown_pipeline(pipe)
+    elapsed = time.monotonic() - started
+    watchdog.cancel()
+    check(f"{label}: the drain returns once the held buffer moves on ({elapsed:.2f} s)", elapsed < 3.0)
+    check(f"{label}: EOS reached the sink once, before NULL", len(seen) == 1 and seen[0] != Gst.State.NULL)
+    check(f"{label}: no drain timeout, and the pipeline ends in NULL",
+          not any(e.get("event") == "warning" for e in events) and state_of(pipe) == Gst.State.NULL)
 
 # --- an ERRORED pipeline is drained at the DECODER, not at the source -------
 # The field failure this covers: every bus disconnect kills the consumer by

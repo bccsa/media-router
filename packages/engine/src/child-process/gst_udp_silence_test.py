@@ -217,9 +217,7 @@ print("\n--- a pipeline without udpsrc arms nothing ---")
 events = collect_events()
 runner.handle_start({"pipeline": "audiotestsrc is-live=true ! fakesink sync=false"})
 check("no udp silence watch for a non-udp head", runner.source_gate.udp_silence is None)
-# Stopped once PLAYING: a stop during the change to PLAYING can deadlock the EOS drain in
-# GStreamer (B-193's Limits), which is not this test's subject.
-runner.pipeline.get_state(2 * Gst.SECOND)
+# Stopped at once, while still going to PLAYING: the EOS drain no longer deadlocks there (B-202).
 runner.handle_stop()
 
 if _failures:
