@@ -16,6 +16,7 @@ import { PipeWireManager } from './audio/PipeWireManager.js';
 import { requirePwLink } from './audio/PwLinkOps.js';
 import { ProcessManager } from './child-process/ProcessManager.js';
 import { PaCommandQueue } from './audio/PaCommandQueue.js';
+import { pinPulseServer } from './audio/pulseServer.js';
 import { createApiServer } from './api/server.js';
 import { LogForwarder } from './logging/LogForwarder.js';
 import { CommandDispatcher } from './commands/CommandDispatcher.js';
@@ -117,6 +118,8 @@ export class Engine {
     }
 
     constructor(config: EngineConfig = {}) {
+        // First: every pactl and runner inherits it, so none can start a PulseAudio daemon (B-199).
+        pinPulseServer();
         this.config = config;
         const engine = this;
 

@@ -1277,7 +1277,11 @@ box). The runner also runs the capture's own GStreamer tasks, each one from the
 PipeWire's (B-111): nothing to set, and whatever a module puts on that stretch
 runs at that priority too. A `pulsesrc` or `pulsesink` takes
 `pulsePinnedStreamProps({...})`: its node runs inside pipewire-pulse, on that
-daemon's real-time loop.
+daemon's real-time loop. The engine names pipewire-pulse's socket in
+`PULSE_SERVER` for every PulseAudio client it starts (pactl, the runners), so
+none of them starts a PulseAudio daemon of its own while PipeWire is down
+(B-199): spawn a tool with a copy of `process.env`, as `runnerEnv()` does, and
+leave a pulse element's `server` unset.
 
 In the module:
 

@@ -541,6 +541,13 @@ elements" below do not start.
   PTP's offset from its master ("error ±812 ns (PTP offset from master, path
   delay 41.2 µs)") or "error n/a (PTP)", as do the engine's epoch log lines.
   Chrony boxes are unchanged; the Device Manager's Time page still shows 16 s.
+- **No stray PulseAudio takes the sound cards while PipeWire is down.** Up to
+  v2.0.0.100 the engine could start a PulseAudio of its own while PipeWire was
+  stopped; it took the sound cards (outputs played through it, a mic failed,
+  the default sink and a source's name changed) and stayed after PipeWire came
+  back, until killed by hand. Fixed: the engine talks only to PipeWire's
+  PulseAudio service, and its modules wait for PipeWire. A PulseAudio command
+  typed on the box can still start one until the system image turns that off.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
