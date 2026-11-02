@@ -554,6 +554,11 @@ elements" below do not start.
   engine asks for the audio devices without waiting on the answer, no module
   takes a missing answer for an unplugged device, and all recovers when
   PipeWire answers again.
+- **An Audio Transcoder with no source says so once.** Up to v2.0.0.100 it
+  logged "No audio caps detected" every 10 s while its source sent nothing,
+  pushing real errors out of the box's log within minutes. Fixed: it logs the
+  wait once, naming the modules, then only a change (audio found or lost
+  again), and its status shows "No source — waiting for audio from …".
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

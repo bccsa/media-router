@@ -6,7 +6,12 @@ vi.mock('node:child_process', () => ({
     execFile: execFileMock,
 }));
 
-import { probeMpegTsStream } from './MpegTsProbe.js';
+import { setLogTap } from '@media-router/shared-types';
+import {
+    probeMpegTsStream,
+    registerCodecClassifier,
+    _resetCodecClassifiersForTests,
+} from './MpegTsProbe.js';
 import { busSocketPath, busEdgeSocketPath } from '../plugins/busHelpers.js';
 
 /** Resolve the mocked execFile with the given -v output. Async on purpose —
@@ -62,5 +67,31 @@ describe('probeMpegTsStream pipeline args', () => {
         const result = await probeMpegTsStream(41000, 100);
         expect(result.codec).toBe('unknown');
         expect(result.rawCaps).toBe('');
+    });
+
+    it('logs nothing per run: 60 runs on an idle source, then one with audio (B-201)', async () => {
+        // A warning per miss, every 10 s per idle transcoder, filled the engine's 1000-line log.
+        const lines: Array<{ name: string; msg: string }> = [];
+        registerCodecClassifier({
+            test: (c) => c.startsWith('audio/x-opus'),
+            classify: () => 'opus',
+        });
+        setLogTap((l) => lines.push(JSON.parse(l)));
+        try {
+            answerWith('Setting pipeline to PAUSED ...\nPipeline is PREROLLING ...\n');
+            for (let i = 0; i < 60; i++) {
+                expect(await probeMpegTsStream(41000, 100)).toEqual({
+                    codec: 'unknown',
+                    rawCaps: '',
+                });
+            }
+            answerWith('caps = audio/x-opus, rate=(int)48000, channels=(int)2');
+            expect((await probeMpegTsStream(41000, 100)).codec).toBe('opus');
+        } finally {
+            setLogTap(null);
+            _resetCodecClassifiersForTests();
+        }
+        expect(execFileMock).toHaveBeenCalledTimes(61);
+        expect(lines).toEqual([]);
     });
 });

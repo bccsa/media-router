@@ -34,6 +34,8 @@ describe('ReprobeLoop', () => {
 
         expect(probe).toHaveBeenCalledTimes(3);
         expect(degraded).toHaveBeenCalledTimes(3);
+        // Each tick's result goes with it: the host reports a change and names the wait (B-201).
+        expect(degraded).toHaveBeenLastCalledWith({ codec: 'unknown', rawCaps: '' });
         expect(restart).not.toHaveBeenCalled();
         expect(loop.armed).toBe(true);
         loop.disarm();
@@ -46,6 +48,7 @@ describe('ReprobeLoop', () => {
         await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
 
         expect(degraded).toHaveBeenCalledTimes(1);
+        expect(degraded).toHaveBeenCalledWith(null);
         expect(restart).not.toHaveBeenCalled();
         loop.disarm();
     });

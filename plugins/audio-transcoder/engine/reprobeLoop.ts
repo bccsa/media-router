@@ -20,17 +20,17 @@ import type { ProbeResult } from '@media-router/engine';
  *  probe against the input edge socket, and the wait is unbounded. */
 export const REPROBE_INTERVAL_MS = 10_000;
 
-/** Health text for the degraded fallback build, re-asserted on every tick —
- *  `GstPluginBase` stomps health to 'ok' on each PLAYING transition, so a
- *  one-shot warning at build time does not survive the spawn. */
+/** Health text for the fallback build on audio no classifier knows (no audio at all reads
+ *  "No source", `probeReport.ts`), re-asserted on every tick: `GstPluginBase` stomps health
+ *  to 'ok' on each PLAYING transition, so a one-shot warning at build time does not survive. */
 export const FALLBACK_DECODER_WARNING =
     'Source codec unknown — using generic decoder; re-probing every 10s until the source identifies';
 
 export interface ReprobeLoopHooks {
     /** Probe the wired input, or `null` when nothing is wired. */
     probe: () => Promise<ProbeResult | null>;
-    /** Still no codec — re-assert the degraded health warning. */
-    degraded: () => void;
+    /** Still no codec (this tick's result) — re-assert the degraded health warning. */
+    degraded: (result: ProbeResult | null) => void;
     /**
      * A real codec came back: restart so the codec-specific chain is built.
      * The loop disarms BEFORE calling this, so a restart that fails owes the
@@ -80,7 +80,7 @@ export class ReprobeLoop {
             // elsewhere) — this tick's answer is stale.
             if (generation !== this.generation) return;
             if (!result || result.codec === 'unknown') {
-                this.hooks.degraded();
+                this.hooks.degraded(result);
                 return;
             }
             this.disarm();
