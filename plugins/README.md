@@ -1448,8 +1448,9 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
 - A branch ends in its `mralignwatch`: an edge added to a RUNNING mixer is
   gapped at the mixer's pace from its first tick while it starts, so the
   mix never waits for it, and joins at the current position (its content
-  from before that is discarded as stale; a seed avoids the loss when the
-  joiner is later than the pace). Without the watchdog a live pad would
+  from before that is discarded as stale). It carries no seed: its pace comes
+  with its data, so one that delivers nothing holds no other input back
+  (B-197; `liveInputBranchFor`). Without the watchdog a live pad would
   turn the non-live mixer live.
 - `description` is the branch text ending in the element whose src pad
   links to the aggregator; it is absent on a remove (the connection record
@@ -1496,8 +1497,9 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   verbs and the error containment go by it. audio-output-302m does this from
   two sources on, and answers the hook only while its built pipeline is the
   mixer (a second source on the direct one restarts it); audio-mixer and
-  n1-mixer-302m still build every branch into `pipeline`, so their start
-  waits for every source.
+  n1-mixer-302m do it for every source (B-197: a relaunch with a producer down
+  waited for it). The runner appends the branches to `pipeline`: end it on an
+  element, never on a `name.` link.
 
 ### Live Input Swap (`getLiveInputSwap`)
 

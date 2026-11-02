@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildBusSink } from '@media-router/engine';
+import { buildBusSink, liveInputLaunchText, type LiveInputBranch } from '@media-router/engine';
 import { alignedMixer, build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
 import { buildMixerPipeline, mixerInputBranch } from './audioMixerPipeline.js';
+
+/** As the runner launches it with every source there: they are live inputs (B-197). */
+const launched = (r: { pipeline: string; liveInputs: LiveInputBranch[] }) =>
+    [r.pipeline, ...r.liveInputs.map((b, i) => liveInputLaunchText(b, i))].join(' ');
 
 const SOURCES = [
     { port: 40010, socketPath: '/tmp/mr-bus-40010-c1.sock', connectionId: 'c1' },
@@ -27,20 +31,20 @@ describe('buildMixerPipeline', () => {
             channels: 2,
             volume: 1,
         })!;
-        expect(r.pipeline).toContain(
+        expect(launched(r)).toContain(
             'audiomixer name=mixin latency=0 start-time-selection=first' +
                 ' ! capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2"',
         );
-        expect(r.pipeline.match(/! mixin\./g)).toHaveLength(2);
+        expect(launched(r).match(/! mixin\./g)).toHaveLength(2);
         // Every input through its aligner watchdog; no force-live, no pacer.
         expect(
-            r.pipeline.match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
+            launched(r).match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
         ).toHaveLength(2);
-        expect(r.pipeline).toContain('mixin_out. ! audioconvert');
-        expect(r.pipeline).not.toContain('force-live');
-        expect(r.pipeline).not.toContain('identity');
-        expect(r.pipeline).toContain('avenc_s302m');
-        expect(r.pipeline).toContain('tee name=busout_41000');
+        expect(launched(r)).toContain('mixin_out. ! audioconvert');
+        expect(launched(r)).not.toContain('force-live');
+        expect(launched(r)).not.toContain('identity');
+        expect(launched(r)).toContain('avenc_s302m');
+        expect(launched(r)).toContain('tee name=busout_41000');
         expect(r.sinkName).toBe('busout_41000');
     });
 
@@ -55,23 +59,38 @@ describe('buildMixerPipeline', () => {
             const b = mixerInputBranch(SOURCES[i].connectionId, SOURCES[i], 2);
             return ` ( name=${b.name} ${b.description} ) ! mixin.sink_${i}`;
         };
-        expect(r.pipeline).toBe(
+        expect(launched(r)).toBe(
             alignedMixer({
                 name: 'mixin',
                 caps: 'audio/x-raw,rate=48000,channels=2',
                 outName: 'mixin_out',
             }) +
-                bin(0) +
-                bin(1) +
                 ' mixin_out. ! audioconvert ! volume name=vol volume=0.80' +
                 ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-                ` ! ${build302mEncodeBranch({ format: 'S16LE' })} ! ${buildBusSink(41000)}`,
+                ` ! ${build302mEncodeBranch({ format: 'S16LE' })} ! ${buildBusSink(41000)}` +
+                bin(0) +
+                bin(1),
         );
         for (const i of [0, 1]) {
             expect(mixerInputBranch(SOURCES[i].connectionId, SOURCES[i], 2).description).toMatch(
                 /mrtsdemux name=mixin_demux_[0-9a-f]{6} select=audio\/x-smpte-302m .* ! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin input="c\d" hold-on-eos=true$/,
             );
         }
+    });
+
+    it('waits for no source: every one is a live input the runner starts with those that run (B-197)', () => {
+        const r = buildMixerPipeline({
+            sources: SOURCES,
+            outputPort: 41000,
+            channels: 2,
+            volume: 1,
+        })!;
+        // A producer that is down would hold a source in the launch string at the bus gate.
+        expect(r.pipeline).not.toContain('unixfdsrc');
+        expect(r.liveInputs.map((b) => b.name)).toEqual(
+            SOURCES.map((s) => mixerInputBranch(s.connectionId, undefined, 2).name),
+        );
+        expect(r.liveInputs.every((b) => b.element === 'mixin')).toBe(true);
     });
 
     it('a lone source still builds the mixer arm — live inputs need the aggregator in place', () => {
@@ -81,11 +100,11 @@ describe('buildMixerPipeline', () => {
             channels: 2,
             volume: 1,
         })!;
-        expect(r.pipeline).toContain('audiomixer name=mixin latency=0 start-time-selection=first');
-        expect(r.pipeline).toContain('mralignwatch name=mixin_aw_');
-        expect(r.pipeline).toContain('mixin_out. ! audioconvert');
-        expect(r.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40010-c1.sock');
-        expect(r.pipeline).toContain('avenc_s302m');
+        expect(launched(r)).toContain('audiomixer name=mixin latency=0 start-time-selection=first');
+        expect(launched(r)).toContain('mralignwatch name=mixin_aw_');
+        expect(launched(r)).toContain('mixin_out. ! audioconvert');
+        expect(launched(r)).toContain('unixfdsrc socket-path=/tmp/mr-bus-40010-c1.sock');
+        expect(launched(r)).toContain('avenc_s302m');
     });
 
     it('wraps every source in a named bin on an explicit mixer pad (#787)', () => {
@@ -96,7 +115,7 @@ describe('buildMixerPipeline', () => {
             volume: 1,
         })!;
         const bins = [
-            ...r.pipeline.matchAll(
+            ...launched(r).matchAll(
                 /\( name=(mixin_in_[0-9a-f]{6}) unixfdsrc [^)]+\) ! mixin\.sink_(\d)/g,
             ),
         ];
@@ -106,9 +125,9 @@ describe('buildMixerPipeline', () => {
             SOURCES.map((s) => mixerInputBranch(s.connectionId, undefined, 2).name),
         );
         // Demuxers are keyed by connection too — no positional names to collide with a later add.
-        expect(r.pipeline).toContain('mrtsdemux name=mixin_demux_');
-        expect(r.pipeline).not.toContain('mixin_demux0');
-        expect(r.pipeline).not.toMatch(/\btsdemux\b/);
+        expect(launched(r)).toContain('mrtsdemux name=mixin_demux_');
+        expect(launched(r)).not.toContain('mixin_demux0');
+        expect(launched(r)).not.toMatch(/\btsdemux\b/);
     });
 
     it('seeds reach the pipeline string', () => {
@@ -117,16 +136,18 @@ describe('buildMixerPipeline', () => {
         const sources = [{ ...SOURCES[0], seedLatenessMs: 212.5 }, SOURCES[1]];
         const r = buildMixerPipeline({ sources, outputPort: 41000, channels: 2, volume: 1 })!;
         const watchdogs = [
-            ...r.pipeline.matchAll(/mralignwatch name=(mixin_aw_[0-9a-f]{6})[^!)]*/g),
+            ...launched(r).matchAll(/mralignwatch name=(mixin_aw_[0-9a-f]{6})[^!)]*/g),
         ];
         expect(watchdogs.map((m) => /seed-lateness=(\d+)/.exec(m[0])?.[1] ?? 'none')).toEqual([
             '212500000',
             'none',
         ]);
-        // The live-input branch a later add sends carries the same seed.
+        // The start's branch carries it; a later add carries none: its pace comes with its data,
+        // so one that delivers nothing holds no other input back (B-197).
+        expect(r.liveInputs[0].description).toMatch(/ hold-on-eos=true seed-lateness=212500000$/);
         const b = mixerInputBranch('c1', sources[0], 2);
-        expect(b.description).toMatch(/ hold-on-eos=true seed-lateness=212500000$/);
-        expect(r.pipeline).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
+        expect(b.description).toMatch(/ hold-on-eos=true$/);
+        expect(b.name).toBe(r.liveInputs[0].name);
     });
 
     it('master volume + VU level sit between the mix and the encode', () => {
@@ -136,8 +157,8 @@ describe('buildMixerPipeline', () => {
             channels: 2,
             volume: 0.5,
         })!;
-        expect(r.pipeline).toContain('volume name=vol volume=0.50');
-        expect(r.pipeline).toContain('level post-messages=true');
+        expect(launched(r)).toContain('volume name=vol volume=0.50');
+        expect(launched(r)).toContain('level post-messages=true');
     });
 
     it('renders a per-connection channel map as that branch mix-matrix', () => {
@@ -156,7 +177,7 @@ describe('buildMixerPipeline', () => {
             channels: 2,
             volume: 1,
         })!;
-        expect(r.pipeline).toContain(
+        expect(launched(r)).toContain(
             'mix-matrix="<<(float)0.5000, (float)0.5000>, <(float)0.0000, (float)0.0000>>"',
         );
     });
@@ -168,9 +189,9 @@ describe('buildMixerPipeline', () => {
             channels: 2,
             volume: 1,
         })!;
-        expect(r.pipeline).not.toContain('pulsesrc');
-        expect(r.pipeline).not.toContain('do-timestamp');
-        expect(r.pipeline).not.toContain('set-timestamps');
+        expect(launched(r)).not.toContain('pulsesrc');
+        expect(launched(r)).not.toContain('do-timestamp');
+        expect(launched(r)).not.toContain('set-timestamps');
     });
 });
 
@@ -184,15 +205,15 @@ describe('buildMixerPipeline — 302M word length', () => {
 
     it('emits 16-bit 302M by default (pcmBitDepth unset)', () => {
         const r = buildMixerPipeline(base);
-        expect(r!.pipeline).toContain(
+        expect(launched(r!)).toContain(
             'audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m',
         );
-        expect(r!.pipeline).not.toContain('format=S32LE');
+        expect(launched(r!)).not.toContain('format=S32LE');
     });
 
     it('emits 24-bit 302M when the module asks for S32LE', () => {
         const r = buildMixerPipeline({ ...base, pcmFormat: 'S32LE' });
-        expect(r!.pipeline).toContain(
+        expect(launched(r!)).toContain(
             'audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m',
         );
     });
@@ -229,6 +250,6 @@ describe('mixerInputBranch — the live-input branch handed to the engine (#787)
             volume: 1,
         })!;
         const b = mixerInputBranch('c1', SOURCES[0], 2);
-        expect(r.pipeline).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
+        expect(launched(r)).toContain(`( name=${b.name} ${b.description} ) ! mixin.sink_0`);
     });
 });

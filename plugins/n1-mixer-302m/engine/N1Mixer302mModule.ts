@@ -13,7 +13,7 @@ import {
 } from '@media-router/plugin-audio-302m-core';
 import {
     activeOutputIndices,
-    buildN1Pipeline,
+    buildN1Parts,
     buildN1Ports,
     n1InputBranch,
     n1PortId,
@@ -147,13 +147,13 @@ export class N1Mixer302mModule extends GstPluginBase {
             outputs.push({ index: o, port: ep.port });
         }
 
-        const pipeline = buildN1Pipeline({
+        const built = buildN1Parts({
             inputs,
             outputs,
             pcmFormat: s302mFormatFor(config.pcmBitDepth),
             channels,
         });
-        if (!pipeline) return null;
+        if (!built) return null;
         if (launch) this.launchedInputs = new Set(inputs.keys());
 
         this.setStatusData('routing', {
@@ -165,7 +165,8 @@ export class N1Mixer302mModule extends GstPluginBase {
         this.setHealth('ok');
 
         return {
-            pipeline,
+            pipeline: built.pipeline,
+            liveInputs: built.liveInputs,
             restartOnError: true,
             // Audio-only bus producer: no decoder to drain, and the input
             // fan-ins' aligners hold every EOS (hold-on-eos), so the mix never

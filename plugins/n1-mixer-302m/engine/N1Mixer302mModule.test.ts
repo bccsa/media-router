@@ -61,8 +61,10 @@ describe('N1Mixer302mModule.getLiveInputBranch (#787)', () => {
         // The helper's live branch: mrtsdemux, then the watchdog into inmix1's pace group.
         expect(b).toEqual(liveMixInputBranch('inmix1', mkSource('in-1', 1), { channels: 2 }));
         expect(b.description).toMatch(/ ! mralignwatch name=inmix1_aw_[0-9a-f]{6} aligner=inmix1 /);
-        // The same bin name the start-time pipeline gives that source.
-        expect(module.buildPipeline(module.config)!.pipeline).toContain(`( name=${b.name} `);
+        // The same bin name the start's live inputs give that source (B-197).
+        expect(module.buildPipeline(module.config)!.liveInputs.map((l: any) => l.name)).toContain(
+            b.name,
+        );
     });
 
     it('the branch converts to the configured mix width', () => {
@@ -72,9 +74,7 @@ describe('N1Mixer302mModule.getLiveInputBranch (#787)', () => {
         const b = module.getLiveInputBranch('in-1', 'c-in-1-1');
         expect(b).toEqual(liveMixInputBranch('inmix1', mkSource('in-1', 1), { channels: 8 }));
         expect(b.description).toContain(' ! audio/x-raw,rate=48000,channels=8 ! mralignwatch ');
-        expect(module.buildPipeline(module.config)!.pipeline).toContain(
-            `( name=${b.name} ${b.description} ) ! inmix1.sink_1`,
-        );
+        expect(module.buildPipeline(module.config)!.liveInputs).toContainEqual(b);
     });
 
     it('a source already gone (remove) still names its branch, without a description', () => {
@@ -194,7 +194,10 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         // One source per input still builds the input fan-in (live inputs, #787).
         expect(desc!.pipeline).toContain('audiomixer name=inmix0 latency=0');
         expect(desc!.pipeline).toContain('capsfilter name=inmix0_out ');
-        expect(desc!.pipeline).toContain('mralignwatch name=inmix1_aw_');
+        // Its sources are live inputs, started with those that run (B-197).
+        expect(desc!.pipeline).not.toContain('unixfdsrc');
+        expect(desc!.liveInputs.map((b: any) => b.element)).toEqual(['inmix0', 'inmix1']);
+        expect(desc!.liveInputs[1].description).toContain('mralignwatch name=inmix1_aw_');
         expect(desc!.pipeline).toContain(
             'audiomixer name=omix0 latency=0 start-time-selection=first',
         );

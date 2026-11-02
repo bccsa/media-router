@@ -790,26 +790,37 @@ export class MediaRouter {
      * The route head feeding `moduleId`: the nearest bus producer upstream that
      * declares a playout offset, else the top-most producer (no bus input of
      * its own). Read straight off the stored configs, so an edit is visible
-     * without a restart. `undefined` for a module with no bus source.
+     * without a restart. `undefined` for a module with no bus source. A module
+     * with several bus inputs (a mix) takes the head of the largest offset, raise
+     * included, among its inputs' routes, whatever order its edges were made in:
+     * a restart cannot drop the offset one of them needs (B-197).
      */
     getRoutePlayoutHead(moduleId: string, sinkPortId?: string): PlayoutHead | undefined {
-        const seen = new Set<string>([moduleId]);
-        let source = this.getModuleBusSource(moduleId, sinkPortId);
+        let best: { head: PlayoutHead; ms: number } | undefined;
+        for (const conn of this.connections.values()) {
+            if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
+            if (sinkPortId !== undefined && conn.sinkPortId !== sinkPortId) continue;
+            const head = this.routeHeadFrom(conn.sourceModuleId, moduleId);
+            const ms = head ? this.playoutRaises.offsetMs(head) : -Infinity;
+            if (head && (!best || ms > best.ms)) best = { head, ms };
+        }
+        return best?.head;
+    }
+
+    /** The head of the route through `producerId` (one input of `consumerId`). */
+    private routeHeadFrom(producerId: string, consumerId: string): PlayoutHead | undefined {
+        const seen = new Set<string>([consumerId]);
+        let id: string | undefined = producerId;
         let top: string | undefined;
-        while (source && !seen.has(source.sourceModuleId)) {
-            const producerId = source.sourceModuleId;
-            seen.add(producerId);
-            top = producerId;
-            const declared = declaredPlayoutOffsetMs(this.moduleGetter?.(producerId));
-            if (declared !== undefined) {
-                return {
-                    headId: producerId,
-                    label: this.displayName(producerId),
-                    declaredMs: declared,
-                };
+        while (id !== undefined && !seen.has(id)) {
+            seen.add(id);
+            top = id;
+            const declaredMs = declaredPlayoutOffsetMs(this.moduleGetter?.(id));
+            if (declaredMs !== undefined) {
+                return { headId: id, label: this.displayName(id), declaredMs };
             }
             // Transparent (nothing or nonsense declared): follow its first bus input.
-            source = this.getModuleBusSource(producerId);
+            id = this.getModuleBusSource(id)?.sourceModuleId;
         }
         return top === undefined ? undefined : { headId: top, label: this.displayName(top) };
     }

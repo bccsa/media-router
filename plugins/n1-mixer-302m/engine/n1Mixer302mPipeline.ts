@@ -9,10 +9,15 @@
  * no `pulsesrc`, no `do-timestamp`, no re-stamping anywhere).
  */
 
-import { buildBusSink, type DynamicPort, type LiveInputBranch } from '@media-router/engine';
+import {
+    buildBusSink,
+    liveInputLaunchText,
+    type DynamicPort,
+    type LiveInputBranch,
+} from '@media-router/engine';
 import {
     alignedMixer,
-    buildAudioMixInput,
+    buildLiveMixInput,
     build302mEncodeBranch,
     liveInputBranchFor,
     positionedChannelsClause,
@@ -155,8 +160,13 @@ function n1MatrixLink(i: number, o: number): string {
  *   per connected input — 302M sum (`inmix<i>`) → `tee name=in<i>t`
  *   per active output   — aligned mixer `omix<o>` → 302M encode → bus sink
  *   exclusion matrix    — `in<i>t. ! <n1MatrixLink(i, o)> ! omix<o>.` for every i ≠ o
+ * In parts: the pipeline without the sources' branches, and the branches, for the runner to
+ * start with the sources that run while the others join as they do (B-197). An input with
+ * none running keeps its fan-in; its matrix links go absent after their W.
  */
-export function buildN1Pipeline(input: N1PipelineInputs): string | null {
+export function buildN1Parts(
+    input: N1PipelineInputs,
+): { pipeline: string; liveInputs: LiveInputBranch[] } | null {
     // An output whose only contributor would be its own pair has no branches —
     // never build a pad-less mixer.
     const outputs = input.outputs.filter((out) =>
@@ -165,6 +175,7 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     if (input.inputs.size === 0 || outputs.length === 0) return null;
 
     const parts: string[] = [];
+    const liveInputs: LiveInputBranch[] = [];
     const channels = input.channels ?? DEFAULT_CHANNELS;
 
     for (const [i, sources] of input.inputs) {
@@ -174,18 +185,26 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
         // removed on the running pipeline. The FIRST source on an input (or
         // its last leaving) still restarts: that input's tee and its matrix
         // links, and possibly the set of active outputs, come and go with it.
-        const { fragment, continuationName } = buildAudioMixInput({
+        const { fragment, continuationName, inputs } = buildLiveMixInput({
             sources,
             channels,
             mixerName: n1InputMixerName(i),
-            liveInputs: true,
         });
         parts.push(`${fragment} ${continuationName}. ! tee name=in${i}t`);
+        liveInputs.push(...inputs);
+    }
+
+    for (const out of outputs) {
+        for (const i of input.inputs.keys()) {
+            if (i === out.index) continue; // the N-1 exclusion
+            parts.push(`in${i}t. ! ${n1MatrixLink(i, out.index)} ! omix${out.index}.`);
+        }
     }
 
     // The N-1 feature mixers are aligned like the fan-ins: non-live, no budget,
     // no pacer. Their matrix links release at running time + pace, so an output
     // whose contributors all went dark runs on their gaps and never free-runs.
+    // Last: the runner appends the branches, which must not follow a `name.` link.
     const pcmFormat = input.pcmFormat ?? s302mFormatFor(undefined);
     const caps = `audio/x-raw,rate=48000,channels=${channels}`;
     for (const out of outputs) {
@@ -198,12 +217,18 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
         );
     }
 
-    for (const out of outputs) {
-        for (const i of input.inputs.keys()) {
-            if (i === out.index) continue; // the N-1 exclusion
-            parts.push(`in${i}t. ! ${n1MatrixLink(i, out.index)} ! omix${out.index}.`);
-        }
-    }
+    return { pipeline: parts.join(' '), liveInputs };
+}
 
-    return parts.join(' ');
+/** `buildN1Parts` as one launch string with every source's branch, each fan-in's pads from 0. */
+export function buildN1Pipeline(input: N1PipelineInputs): string | null {
+    const built = buildN1Parts(input);
+    if (!built) return null;
+    const pads = new Map<string, number>();
+    const branches = built.liveInputs.map((b) => {
+        const pad = pads.get(b.element) ?? 0;
+        pads.set(b.element, pad + 1);
+        return liveInputLaunchText(b, pad);
+    });
+    return [built.pipeline, ...branches].join(' ');
 }

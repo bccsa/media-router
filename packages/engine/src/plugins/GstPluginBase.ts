@@ -45,7 +45,8 @@ type OwnedWarning =
     | 'rebase'
     | 'timing-plugin'
     | 'input-absent'
-    | 'aligner-full';
+    | 'aligner-full'
+    | 'plays-nothing';
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -211,6 +212,19 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             'not-running',
         );
         this.showLostInputs();
+    }
+
+    /** A sink that plays nothing (B-197): over ok or this module's own transient text, never
+     *  over an error or another writer's warning (ADR-0010 rule 2); null withdraws it. */
+    protected setPlaysNothing(text: string | null): void {
+        if (text === null) {
+            this.clearOwnWarning('plays-nothing');
+            this.showLostInputs();
+            return;
+        }
+        if (this.health === 'error') return;
+        if (this.health === 'warning' && this.ownedWarning === null) return;
+        this.ownWarning('plays-nothing', text);
     }
 
     /** `buildPipeline` ends in setHealth('ok') on most modules — put the

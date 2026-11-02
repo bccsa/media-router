@@ -288,6 +288,17 @@ describe('build302mMixBranch — the watchdog in front of the aggregator', () =>
         // One source, no watchdog: nothing to seed.
         expect(buildAudioMixInput({ sources: [s] }).fragment).not.toContain('seed-lateness');
     });
+
+    it("a start's live input carries the seed; a branch added to a running mix carries none (B-197)", () => {
+        const s = { ...SRC, seedLatenessMs: 400 };
+        // .108: a dark source re-linked with its producer's last transient held every input back.
+        expect(buildLiveMixInput({ sources: [s] }).inputs[0].description).toMatch(
+            / seed-lateness=400000000$/,
+        );
+        const live = liveInputBranchFor('mixin', s.connectionId, s);
+        expect(live.description).not.toContain('seed-lateness');
+        expect(live).toEqual(liveMixInputBranch('mixin', { ...s, seedLatenessMs: undefined }));
+    });
 });
 
 describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {

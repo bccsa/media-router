@@ -129,6 +129,7 @@ export class AudioMixerModule extends GstPluginBase {
 
         return {
             pipeline: result.pipeline,
+            liveInputs: result.liveInputs,
             restartOnError: true,
             // Audio-only bus producer: no decoder to drain, and the aligners
             // hold every input's EOS (hold-on-eos), so the mix never completes

@@ -9,7 +9,7 @@
 
 import { buildBusSink, busTeeName, type LiveInputBranch } from '@media-router/engine';
 import {
-    buildAudioMixInput,
+    buildLiveMixInput,
     build302mEncodeBranch,
     liveInputBranchFor,
     s302mFormatFor,
@@ -43,12 +43,14 @@ export interface AudioMixerPipelineResult {
     pipeline: string;
     /** Throughput counter element on the output (bus fan-out tee). */
     sinkName: string;
+    /** Every source's branch, for the runner to start with those that run (B-197). */
+    liveInputs: LiveInputBranch[];
 }
 
 /**
  * N × 302M sources → audiomixer → master volume + VU level → 302M encode →
  * bus sink. Per-connection channel maps render per-branch inside
- * `buildAudioMixInput` (routing + gain).
+ * `buildLiveMixInput` (routing + gain).
  */
 export function buildMixerPipeline(
     input: AudioMixerPipelineInputs,
@@ -56,12 +58,12 @@ export function buildMixerPipeline(
     if (input.sources.length === 0) return null;
 
     // Live inputs: each source a named bin, mixer arm even for one source
-    // (ADR-0008 addendum) — a mixer's job is to take inputs on and off.
-    const { fragment, continuationName } = buildAudioMixInput({
+    // (ADR-0008 addendum) — a mixer's job is to take inputs on and off. The
+    // runner starts with the sources that run; the others join as they do (B-197).
+    const { fragment, continuationName, inputs } = buildLiveMixInput({
         sources: input.sources,
         channels: input.channels,
         mixerName: MIXER_NAME,
-        liveInputs: true,
     });
 
     const pipeline =
@@ -71,5 +73,5 @@ export function buildMixerPipeline(
         ` ! ${build302mEncodeBranch({ format: input.pcmFormat ?? s302mFormatFor(undefined) })}` +
         ` ! ${buildBusSink(input.outputPort)}`;
 
-    return { pipeline, sinkName: busTeeName(input.outputPort) };
+    return { pipeline, sinkName: busTeeName(input.outputPort), liveInputs: inputs };
 }

@@ -1,9 +1,18 @@
 // The real-PipeWire tests' PipeWire (B-195): a daemon and pipewire-pulse in their own runtime dir
 // (no D-Bus, ALSA or WirePlumber), never the desktop session's; virtual devices stand in for real.
 import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    statSync,
+    writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GstChildProcess } from '../../child-process/GstChildProcess.js';
 
 /** The native runner the modules run on here. */
 export const NATIVE_RUNNER = join(__dirname, '../../../native/mr-gst-runner/mr-gst-runner');
@@ -100,9 +109,12 @@ export async function until(cond: () => boolean, budgetMs: number): Promise<bool
     return cond();
 }
 
+/** Its sockets, and the bus edges tests put under it, must fit sun_path (108 bytes): short. */
+const SHORT_TMP = existsSync('/dev/shm') ? '/dev/shm' : tmpdir();
+
 /** A private PipeWire: the daemon with its virtual devices, and pipewire-pulse. */
 export class PrivatePipeWire {
-    readonly root = mkdtempSync(join(tmpdir(), 'mr-b195-pw-'));
+    readonly root = mkdtempSync(join(SHORT_TMP, 'mr-pw-'));
     private readonly conf = join(this.root, 'conf');
     private readonly run = join(this.root, 'run');
     private daemon: ChildProcess | null = null;
@@ -264,4 +276,95 @@ export function linkPlaybackStreams(
         running = false;
         await loop;
     };
+}
+
+/**
+ * What reaches `sink`: its monitor recorded to `file` (S16LE, stereo, 48 kHz), linked by hand as
+ * WirePlumber would (B-197). Times are seconds of recording; `at()` is now.
+ */
+export class MonitorRecorder {
+    private running = true;
+    private constructor(
+        private readonly rec: GstChildProcess,
+        private readonly file: string,
+        private readonly loop: Promise<void>,
+        private readonly stopLoop: () => void,
+    ) {}
+
+    static async start(pw: PrivatePipeWire, sink: string, file: string): Promise<MonitorRecorder> {
+        let running = true;
+        const loop = (async () => {
+            while (running) {
+                const inputs = (await pw.tool('pw-link', ['-i'])).split('\n').filter(Boolean);
+                const links = await pw.tool('pw-link', ['-l']);
+                for (const port of inputs) {
+                    if (pw.devices.includes(port.slice(0, port.lastIndexOf(':')))) continue;
+                    const ch = /_(FL|FR)$/.exec(port)?.[1];
+                    const from = `${sink}:monitor_${ch}`;
+                    if (ch && !links.includes(`${from}\n  |-> ${port}`)) {
+                        await pw.tool('pw-link', [from, port]);
+                    }
+                }
+                await sleep(250);
+            }
+        })();
+        const rec = new GstChildProcess();
+        await rec.start({
+            pipeline:
+                `pulsesrc device=${sink}.monitor buffer-time=20000 latency-time=10000` +
+                ' ! audio/x-raw,format=S16LE,rate=48000,channels=2' +
+                ` ! filesink location=${file} buffer-mode=unbuffered`,
+        });
+        const r = new MonitorRecorder(rec, file, loop, () => {
+            running = false;
+        });
+        if (!(await until(() => r.at() > 0.5, 10_000))) throw new Error('monitor not recording');
+        return r;
+    }
+
+    /** Seconds recorded so far. */
+    at(): number {
+        return existsSync(this.file) ? statSync(this.file).size / 192_000 : 0;
+    }
+
+    /** Per 10 ms window of [fromS, toS): does channel `ch` carry more than -40 dBFS? */
+    windows(ch: 0 | 1, fromS: number, toS: number): boolean[] {
+        const buf = readFileSync(this.file);
+        const out: boolean[] = [];
+        const last = Math.min(Math.floor(toS * 100), Math.floor(buf.length / 1920));
+        for (let w = Math.max(0, Math.floor(fromS * 100)); w < last; w++) {
+            let sum = 0;
+            for (let i = w * 480; i < (w + 1) * 480; i++) {
+                const x = buf.readInt16LE(i * 4 + ch * 2) / 32768;
+                sum += x * x;
+            }
+            out.push(Math.sqrt(sum / 480) > 0.01);
+        }
+        return out;
+    }
+
+    /** The share of [fromS, toS) in which channel `ch` sounds. */
+    presence(ch: 0 | 1, fromS: number, toS: number): number {
+        const w = this.windows(ch, fromS, toS);
+        return w.length ? w.filter(Boolean).length / w.length : 0;
+    }
+
+    /** The longest silence on channel `ch` within [fromS, toS), in ms. */
+    longestGapMs(ch: 0 | 1, fromS: number, toS: number): number {
+        let longest = 0;
+        let run = 0;
+        for (const on of this.windows(ch, fromS, toS)) {
+            run = on ? 0 : run + 1;
+            longest = Math.max(longest, run);
+        }
+        return longest * 10;
+    }
+
+    async stop(): Promise<void> {
+        if (!this.running) return;
+        this.running = false;
+        this.stopLoop();
+        await this.loop;
+        await this.rec.destroy();
+    }
 }

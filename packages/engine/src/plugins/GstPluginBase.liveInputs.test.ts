@@ -56,6 +56,9 @@ class Aggregator extends GstPluginBase {
         this.setHealth('ok');
         return { pipeline: 'audiomixer name=mixin ! fakesink', liveInputs };
     }
+    playsNothing(text: string | null): void {
+        this.setPlaysNothing(text);
+    }
 }
 
 const source = (c: string) => ({
@@ -199,5 +202,36 @@ describe('GstPluginBase — a launch without some live inputs (B-192)', () => {
         expect(module.isLiveInputLost('mixin_in_c2')).toBe(false);
         h.FakeChildProcess.instances.at(-1)!.emit('stateChange', { state: 'playing' });
         expect(module.getState().health).toBe('ok');
+    });
+});
+
+describe('GstPluginBase — an output that plays nothing says so (B-197)', () => {
+    const NOTHING = 'Plays nothing: its mixer delivers no audio — relaunched';
+
+    it('over ok and over its own lost-input text; withdrawn, the lost inputs show again', async () => {
+        const { module, child } = await started();
+        child.emit('stateChange', { state: 'playing' });
+        module.playsNothing(NOTHING);
+        expect(module.getState()).toMatchObject({ health: 'warning', error: NOTHING });
+        module.playsNothing(null);
+        expect(module.getState().health).toBe('ok');
+        child.emit('busGate', { pending: [], absent: ['mixin_in_c2', 'mixin_in_c3'] });
+        module.playsNothing(NOTHING);
+        expect(module.getState().error).toBe(NOTHING);
+        module.playsNothing(null);
+        expect(module.getState().error).toBe(LOST_23);
+    });
+
+    it("never over an error or another writer's warning (ADR-0010 rule 2)", async () => {
+        const { module, child } = await started();
+        child.emit('stateChange', { state: 'playing' });
+        module.setHealth('error', 'Device gone');
+        module.playsNothing(NOTHING);
+        expect(module.getState().error).toBe('Device gone');
+        module.setHealth('warning', 'Someone else');
+        module.playsNothing(NOTHING);
+        expect(module.getState().error).toBe('Someone else');
+        module.playsNothing(null);
+        expect(module.getState().error).toBe('Someone else');
     });
 });

@@ -172,7 +172,9 @@ export function liveMixInputBranch(
 
 /** A module's `getLiveInputBranch` answer for one edge of `mixerName`: the
  *  full branch while the source is wired, just aggregator + bin name once it
- *  is gone (a remove). */
+ *  is gone (a remove). A branch added to a running mix carries no seed: its
+ *  pace comes with its data, so one that delivers nothing holds no other input
+ *  back (B-197; a seed is a start's, WI-P2-13). */
 export function liveInputBranchFor(
     mixerName: string,
     connectionId: string,
@@ -180,7 +182,7 @@ export function liveInputBranchFor(
     opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName'> = {},
 ): LiveInputBranch {
     if (!source) return { element: mixerName, name: mixInputBranchName(mixerName, connectionId) };
-    return liveMixInputBranch(mixerName, source, opts);
+    return liveMixInputBranch(mixerName, { ...source, seedLatenessMs: undefined }, opts);
 }
 
 /** `seed-lateness` in ns, within the 0..1 h the element takes; none without a seed. */

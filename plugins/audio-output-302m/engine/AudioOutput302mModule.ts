@@ -13,8 +13,14 @@ import {
     liveInputBranchFor,
     type AudioMixSource,
 } from '@media-router/plugin-audio-302m-core';
-import { SINK_BUFFER_US, SLAVE_METHOD_SKEW, audio302mTsOffsetNs } from './audio302mTiming.js';
+import {
+    SINK_BUFFER_US,
+    SINK_DECLARED_LATENCY_MS,
+    SLAVE_METHOD_SKEW,
+    audio302mTsOffsetNs,
+} from './audio302mTiming.js';
 import { buildOutputPlacement } from './outputPlacement.js';
+import { SilentOutputWatch } from './silentOutputWatch.js';
 import { TimelineSettleRestart } from './timelineSettleRestart.js';
 
 /** Answers LATENCY live (gstidentity.c: `live || sync`), so the sink adds its ring behind the
@@ -68,6 +74,8 @@ const MIXER = 'mixin';
  *   watchdog once PipeWire and the device are back, not restarted in a loop meanwhile (B-195).
  * - NEVER a default device (broadcast rule): unconfigured device = health
  *   error, no pipeline.
+ * - Plays nothing for 5 s (its mixer delivers no audio, or all of it past its playout time):
+ *   a warning, not ok; a stalled mixer is relaunched once (B-197).
  */
 export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
@@ -78,6 +86,18 @@ export class AudioOutput302mModule extends GstPluginBase {
     /** FF9: relaunch this pipeline once its source settles after a rebase or stall-resume. */
     private readonly settleRestart = new TimelineSettleRestart({
         pipeline: () => this.childProcess,
+        log: () => this.log,
+    });
+    private readonly silent = new SilentOutputWatch({
+        pipeline: () => this.childProcess,
+        playing: () => this.childProcess?.isRunning === true,
+        mixes: () => this.mixerLaunched,
+        sinkLateness: () => this.getTimingSummary()?.output,
+        playoutBudgetMs: () =>
+            audio302mTsOffsetNs(this.services, this.config) / 1_000_000 + SINK_DECLARED_LATENCY_MS,
+        warn: (text) => {
+            if (text === null || this.error !== text) this.setPlaysNothing(text);
+        },
         log: () => this.log,
     });
 
@@ -107,12 +127,14 @@ export class AudioOutput302mModule extends GstPluginBase {
 
     async onStop(): Promise<void> {
         this.settleRestart.cancel();
+        this.silent.stop();
         await this.stopDeviceWatchdog();
         await super.onStop();
     }
 
     async onDestroy(): Promise<void> {
         this.settleRestart.cancel();
+        this.silent.stop();
         await super.onDestroy();
     }
 
@@ -124,11 +146,13 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected setVuData(data: number[]): void {
         super.setVuData(data);
         this.settleRestart.onVu(data);
+        if (data.length) this.silent.onVu();
     }
 
     /** Every PLAYING is a fresh pipeline (no rebase pad offset): nothing left to relaunch. */
     protected onPipelinePlaying(): void {
         this.settleRestart.cancel();
+        this.silent.onPlaying();
     }
 
     protected getWatchedDeviceName(): string | null {
@@ -158,6 +182,7 @@ export class AudioOutput302mModule extends GstPluginBase {
     /** Device unplugged — tear down the pipeline (pulsesink is gone). */
     protected async onDeviceDisconnected(): Promise<void> {
         this.settleRestart.cancel();
+        this.silent.stop();
         try {
             await super.onStop();
         } catch {

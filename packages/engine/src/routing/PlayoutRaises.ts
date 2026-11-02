@@ -50,6 +50,14 @@ export class PlayoutRaises {
         this.defaultOffsetMs = defaultOffsetMs;
     }
 
+    /** A head's playout offset in ms: its declared D, else the engine default, plus its raise. */
+    offsetMs(head: PlayoutHead): number {
+        return (
+            (head.declaredMs ?? this.defaultOffsetMs) +
+            (this.heads.get(head.headId)?.raise?.raiseMs ?? 0)
+        );
+    }
+
     /** The runtime raise on the route head feeding `moduleId`, in ms (0 when none). */
     raiseMs(moduleId: string, sinkPortId?: string): number {
         if (this.heads.size === 0) return 0;

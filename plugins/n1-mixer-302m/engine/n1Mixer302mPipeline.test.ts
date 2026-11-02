@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shortHash } from '@media-router/engine';
+import { liveInputLaunchText, shortHash } from '@media-router/engine';
 import {
     alignedMixer,
     liveDemuxName,
@@ -8,6 +8,7 @@ import {
 } from '@media-router/plugin-audio-302m-core';
 import {
     activeOutputIndices,
+    buildN1Parts,
     buildN1Pipeline,
     buildN1Ports,
     n1InputBranch,
@@ -222,6 +223,31 @@ describe('buildN1Pipeline', () => {
         expect(pipeline.match(/silence-floor=/g)).toHaveLength(6);
         expect(pipeline).toMatch(/mralignwatch name=inmix0_aw_[0-9a-f]{6} aligner=inmix0 [^!]*! /);
         expect(pipeline).not.toMatch(/name=inmix\d_aw_[^!]*silence-floor/);
+    });
+
+    it('in parts: waits for no source, each one a live input into its fan-in (B-197)', () => {
+        const built = buildN1Parts({ inputs: mkInputs([0, 1], 2), outputs: mkOutputs([0, 1]) })!;
+        // A producer that is down would hold the whole N-1 at the bus gate.
+        expect(built.pipeline).not.toContain('unixfdsrc');
+        expect(built.liveInputs.map((b) => b.element)).toEqual([
+            'inmix0',
+            'inmix0',
+            'inmix1',
+            'inmix1',
+        ]);
+        expect(built.liveInputs[3]).toEqual(
+            liveMixInputBranch('inmix1', mkSource(1, 1), { channels: 2 }),
+        );
+        // The runner appends the branches: the text ends on an element, not a `name.` link.
+        expect(built.pipeline).toMatch(/ ! tee name=busout_40201 allow-not-linked=true$/);
+        // With every source there, the launch text is buildN1Pipeline's, each fan-in's pads from 0.
+        const pads = [0, 1, 0, 1];
+        expect(buildN1Pipeline({ inputs: mkInputs([0, 1], 2), outputs: mkOutputs([0, 1]) })).toBe(
+            [
+                built.pipeline,
+                ...built.liveInputs.map((b, i) => liveInputLaunchText(b, pads[i])),
+            ].join(' '),
+        );
     });
 
     it('sums multiple sources wired to one input port', () => {

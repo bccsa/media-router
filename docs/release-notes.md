@@ -518,6 +518,13 @@ elements" below do not start.
   A source wired to an N-1 Audio Mixer (302M) input that had none restarts the
   mixer at once, without first trying to add it live, which failed with a
   warning.
+- **An Audio Output (302M) restarted while one of its sources is silent plays
+  the others.** On the 1 November test it started and played nothing, the
+  sources that ran included, until it was restarted with every source up.
+  Fixed: the others play within its normal start, and the silent source joins
+  when it sends again. An output that plays nothing for 5 seconds now shows
+  "Plays nothing: …" instead of ok, and the Audio Mixer and N-1 Audio Mixer
+  (302M) also start with the sources that run.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and
