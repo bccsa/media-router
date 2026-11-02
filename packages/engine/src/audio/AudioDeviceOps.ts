@@ -1,6 +1,7 @@
 import { createLogger } from '@media-router/shared-types';
 import type { PaCommandQueue } from './PaCommandQueue.js';
 import { MR_PW_PREFIX, type AudioDevice } from './PipeWireManager.js';
+import { SharedRead } from './SharedRead.js';
 
 const log = createLogger('AudioDeviceOps');
 
@@ -34,7 +35,10 @@ export function parseDeviceChannels(block: string): number | undefined {
         const map = mapMatch[1].trim();
         if (map === 'mono') return 1;
         // Comma-separated channel positions (e.g. "front-left,front-right").
-        const tokens = map.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+        const tokens = map
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
         if (tokens.length > 0) return tokens.length;
     }
     const specMatch = block.match(/Sample Specification:\s*\S+\s+(\d+)ch\s+(\d+)Hz/);
@@ -83,10 +87,7 @@ export function parseDeviceVolumes(block: string): number[] {
  * just-selected device is typically SUSPENDED until something opens it,
  * but the user has already chosen a channel layout for routing.
  */
-export function parseDeviceBlock(
-    block: string,
-    direction: 'source' | 'sink',
-): AudioDevice | null {
+export function parseDeviceBlock(block: string, direction: 'source' | 'sink'): AudioDevice | null {
     const nameMatch = block.match(/Name:\s*(.+)/);
     if (!nameMatch) return null;
     const name = nameMatch[1].trim();
@@ -125,7 +126,7 @@ export interface AudioDeviceOpsOptions {
 /**
  * Audio device operations: volume control and device enumeration. Volume
  * commands go through PaCommandQueue's queue for rate limiting; device
- * listing uses `execImmediate` (bypasses the queue, read-only).
+ * listing uses `execImmediateAsync` (bypasses the queue, read-only).
  *
  * Listing is CACHED for `cacheTtlMs`. Every caller of `hasDevice` /
  * `getDeviceInfo` / `listDevices` used to spawn two `pactl list` processes
@@ -136,12 +137,14 @@ export interface AudioDeviceOpsOptions {
  * second, usually fewer, and hot-plug is still seen within TTL + poll period.
  * The cache is dropped as soon as any queued (mutating) pactl command
  * settles — see `PaCommandQueue.onMutation`.
+ *
+ * Nothing here blocks the event loop (B-200): a listing is asked without waiting, one at a time
+ * (`SharedRead`), and a hung PipeWire costs its readers one pactl timeout, not the engine.
  */
 export class AudioDeviceOps {
-    private readonly cacheTtlMs: number;
     private readonly now: () => number;
-    private cache: { at: number; devices: AudioDevice[] } | null = null;
-    private infoCache: { at: number; cookie: Promise<string | null> } | null = null;
+    private readonly listing: SharedRead<AudioDevice[]>;
+    private readonly info: SharedRead<string | null>;
     /** Since when pactl gets no answer (null: it answers): one line per outage, not per call. */
     private outageSince: number | null = null;
     /** The last device listing got an answer. */
@@ -151,14 +154,16 @@ export class AudioDeviceOps {
         private paQueue: PaCommandQueue,
         opts: AudioDeviceOpsOptions = {},
     ) {
-        this.cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_DEVICE_CACHE_TTL_MS;
+        const ttlMs = opts.cacheTtlMs ?? DEFAULT_DEVICE_CACHE_TTL_MS;
         this.now = opts.now ?? Date.now;
+        this.listing = new SharedRead(() => this.fetchDevices(), ttlMs, this.now);
+        this.info = new SharedRead(() => this.fetchServerCookie(), ttlMs, this.now);
         this.paQueue.onMutation = () => this.invalidateDeviceCache();
     }
 
     /** Forget the cached listing — the next read re-runs `pactl list`. */
     invalidateDeviceCache(): void {
-        this.cache = null;
+        this.listing.invalidate();
     }
 
     /**
@@ -196,45 +201,14 @@ export class AudioDeviceOps {
     /**
      * List available audio devices (sources and sinks) with full descriptions.
      */
-    listDevices(): AudioDevice[] {
-        if (this.fresh(this.cache)) return [...this.cache!.devices];
-        const devices: AudioDevice[] = [];
-        let failure: unknown = null;
-        const probe = (kind: 'sources' | 'sinks', direction: 'source' | 'sink') => {
-            try {
-                const output = this.paQueue.execImmediate(['list', kind]);
-                for (const block of output.split('\n\n')) {
-                    const dev = parseDeviceBlock(block, direction);
-                    if (dev) devices.push(dev);
-                }
-            } catch (err) {
-                failure = err;
-            }
-        };
-        probe('sources', 'source');
-        probe('sinks', 'sink');
-        this.listed = failure === null;
-        this.noteAnswer(failure);
-        this.cache = { at: this.now(), devices };
-        return [...devices];
+    async listDevices(): Promise<AudioDevice[]> {
+        return [...(await this.listing.get())];
     }
 
     /** The PipeWire daemon's identity (`parseServerCookie`), cached like the listing; null when
-     *  unknown. Asked without blocking: one caller per TTL runs `pactl info`, the rest share it. */
+     *  unknown. Asked without blocking, one `pactl info` at a time, shared by its readers. */
     daemonInstance(): Promise<string | null> {
-        if (this.fresh(this.infoCache)) return this.infoCache!.cookie;
-        const cookie = this.paQueue.execImmediateAsync(['info']).then(
-            (info) => {
-                this.noteAnswer(null);
-                return parseServerCookie(info);
-            },
-            (err: unknown) => {
-                this.noteAnswer(err);
-                return null;
-            },
-        );
-        this.infoCache = { at: this.now(), cookie };
-        return cookie;
+        return this.info.get();
     }
 
     /** False while the device listing gets no answer: the list is then unknown, not empty. */
@@ -242,8 +216,41 @@ export class AudioDeviceOps {
         return this.listed;
     }
 
-    private fresh(entry: { at: number } | null): boolean {
-        return !!entry && this.cacheTtlMs > 0 && this.now() - entry.at < this.cacheTtlMs;
+    /** Both lists asked together, sources first in the result; either one failing is no answer. */
+    private async fetchDevices(): Promise<AudioDevice[]> {
+        const kinds = [
+            ['sources', 'source'],
+            ['sinks', 'sink'],
+        ] as const;
+        const outputs = await Promise.allSettled(
+            kinds.map(([kind]) => this.paQueue.execImmediateAsync(['list', kind])),
+        );
+        const devices: AudioDevice[] = [];
+        let failure: unknown = null;
+        outputs.forEach((output, i) => {
+            if (output.status === 'rejected') {
+                failure = output.reason;
+                return;
+            }
+            for (const block of output.value.split('\n\n')) {
+                const dev = parseDeviceBlock(block, kinds[i][1]);
+                if (dev) devices.push(dev);
+            }
+        });
+        this.listed = failure === null;
+        this.noteAnswer(failure);
+        return devices;
+    }
+
+    private async fetchServerCookie(): Promise<string | null> {
+        try {
+            const info = await this.paQueue.execImmediateAsync(['info']);
+            this.noteAnswer(null);
+            return parseServerCookie(info);
+        } catch (err) {
+            this.noteAnswer(err);
+            return null;
+        }
     }
 
     /** One warning when PipeWire stops answering pactl, one line when it answers again (B-195). */
@@ -267,8 +274,8 @@ export class AudioDeviceOps {
      * count and sample rate aren't needed and `getDeviceInfo(...) !== null`
      * would be a less expressive idiom.
      */
-    hasDevice(deviceName: string): boolean {
-        return this.listDevices().some((d) => d.name === deviceName);
+    async hasDevice(deviceName: string): Promise<boolean> {
+        return (await this.listDevices()).some((d) => d.name === deviceName);
     }
 
     /**
@@ -279,9 +286,10 @@ export class AudioDeviceOps {
      * `Sample Specification:` line yet. Returns `null` only when the device
      * isn't enumerated at all.
      */
-    getDeviceInfo(deviceName: string): { channels?: number; sampleRate?: number } | null {
-        const devices = this.listDevices();
-        const dev = devices.find((d) => d.name === deviceName);
+    async getDeviceInfo(
+        deviceName: string,
+    ): Promise<{ channels?: number; sampleRate?: number } | null> {
+        const dev = (await this.listDevices()).find((d) => d.name === deviceName);
         if (!dev) return null;
         return { channels: dev.channels, sampleRate: dev.sampleRate };
     }

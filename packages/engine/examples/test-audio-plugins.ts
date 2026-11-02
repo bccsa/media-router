@@ -18,7 +18,7 @@ async function main() {
 
     // 1. List audio devices
     const pw = new PipeWireManager();
-    const devices = pw.listDevices();
+    const devices = await pw.listDevices();
     console.log('Audio devices:', devices.length ? devices : '(none — using test source instead)');
 
     // 2. Test AudioEncoder pipeline

@@ -13,7 +13,8 @@ import {
  * a `{ hasDevice: () => boolean }` stub without the full PipeWireManager.
  */
 export interface DeviceWatchdogPipeWire {
-    hasDevice(name: string): boolean;
+    /** Is the device listed? Asked without blocking (B-200); stubs may answer at once. */
+    hasDevice(name: string): Promise<boolean> | boolean;
     /** The PipeWire daemon's identity: changes when PipeWire restarts; null while unknown. */
     daemonInstance?(): Promise<string | null> | string | null;
     /** False while PipeWire does not answer: the device list is then unknown, not empty. */
@@ -189,9 +190,13 @@ export class DeviceWatchdog {
         const deviceName = this.opts.getDeviceName();
         if (!deviceName) return;
         const pw = this.opts.pipeWire;
-        const present = pw.hasDevice(deviceName);
-        const answered = pw.isAvailable?.() !== false; // this listing's, before any await
-        const current = await this.daemon();
+        // Asked together. A listing that waits is no answer yet: this tick changes nothing until
+        // it settles, and a timed-out one is unknown, not an unplug (B-200).
+        const listing = Promise.resolve(pw.hasDevice(deviceName)).then((present) => ({
+            present,
+            answered: pw.isAvailable?.() !== false, // this listing's, as it settles
+        }));
+        const [{ present, answered }, current] = await Promise.all([listing, this.daemon()]);
 
         if (this.connected) {
             // First: right after a restart the device is often not listed yet, and is no unplug.

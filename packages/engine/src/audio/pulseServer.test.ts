@@ -88,20 +88,11 @@ async function runnerFailure(pipeline: string, runner: 'native' | 'python'): Pro
     }
 }
 
-/** A synchronous call's result, or its error's text. */
-function settled(call: () => string): string {
-    try {
-        return call();
-    } catch (err) {
-        return String(err);
-    }
-}
-
 /** Every PulseAudio client the engine starts, once each, with no server reachable: their errors. */
 async function everyClient(): Promise<string[]> {
     const pa = new PaCommandQueue(0);
     const failures = [
-        settled(() => pa.execImmediate(['list', 'short', 'sinks'])),
+        await pa.execImmediateAsync(['list', 'short', 'sinks']).catch(String),
         await pa.execImmediateAsync(['info']).catch(String),
         await pa.exec(['set-sink-volume', 'b199', '100%']).catch(String),
     ];

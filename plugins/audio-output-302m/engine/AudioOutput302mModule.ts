@@ -81,6 +81,8 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
 
     private deviceName = '';
+    /** The device's channel count, read before each start: `buildPipeline` cannot wait (B-200). */
+    private deviceChannels: number | null = null;
     /** The pipeline launched is the mixer arm (two sources or more), not the direct one. */
     private mixerLaunched = false;
     /** FF9: relaunch this pipeline once its source settles after a rebase or stall-resume. */
@@ -113,7 +115,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         // Device not enumerated yet → defer to the watchdog (throwing here
         // would prevent the watchdog from starting; hot-plug would then only
         // recover on an engine restart — same rationale as audio-output).
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -121,6 +123,7 @@ export class AudioOutput302mModule extends GstPluginBase {
             this.startDeviceWatchdog(false);
             return;
         }
+        await this.readDeviceChannels();
         await super.onStart();
         this.startDeviceWatchdog();
     }
@@ -192,7 +195,13 @@ export class AudioOutput302mModule extends GstPluginBase {
 
     /** Device returned — rebuild the pipeline. */
     protected async onDeviceReconnected(): Promise<void> {
+        await this.readDeviceChannels();
         await super.onStart();
+    }
+
+    private async readDeviceChannels(): Promise<void> {
+        const info = await this.services?.pipeWire?.getDeviceInfo(this.deviceName);
+        this.deviceChannels = info?.channels ?? null;
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -245,7 +254,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const channels = (config.channels as number) ?? 2;
         const firstChannel = Math.max(1, Math.trunc(Number(config.firstChannel ?? 1)) || 1);
-        const deviceChannels = this.services?.pipeWire?.getDeviceInfo(device)?.channels ?? null;
+        const deviceChannels = this.deviceChannels;
 
         const placement = buildOutputPlacement({ device, channels, firstChannel, deviceChannels });
         if (placement.error !== undefined) {

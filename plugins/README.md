@@ -1599,6 +1599,8 @@ The base class flips `health` to `'error'` on disconnect and back to `'ok'` once
 
 Losses in a run back off (0, 2, 4 … 60 s before the rebuild), a device list nobody answers is "unknown", not an unplug, and nothing is rebuilt or logged while PipeWire stays down. Unload a PA module you loaded by passing its node name, `unloadModule(id, this.pwNodeName)`: after a pipewire-pulse restart the old ID can be another module's.
 
+The device list is asked without blocking (B-200): `hasDevice`, `getDeviceInfo` and `listDevices` return promises, answered within the pactl timeout (5 s) even when PipeWire hangs. Await them in `onInit`, `onStart` and the device hooks; what `buildPipeline` needs from them (a device's width) is read before `super.onStart()`, since the build cannot wait, as the 302M modules do.
+
 Real examples: [`audio-input`](audio-input/engine/AudioInputModule.ts), [`audio-output`](audio-output/engine/AudioOutputModule.ts), [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts).
 
 ### Live-Updatable Settings: `liveUpdatableParams` vs `x-liveUpdatable`
@@ -2854,7 +2856,7 @@ python-only by design (ADR-0016 2026-10-09): its descriptions pin
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices |
+| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices (promises: no pactl call ever blocks the engine, B-200) |
 | `mediaRouter` | `MediaRouter` | Assign/release bus channels (`assignBusChannel` / `releaseBusChannel`), look up upstream bus sources (`getModuleBusSource`) |
 | `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
 | `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |

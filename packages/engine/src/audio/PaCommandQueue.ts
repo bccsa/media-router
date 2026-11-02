@@ -1,5 +1,7 @@
-import { execFileSync, execFile } from 'child_process';
-import { formatError } from '@media-router/shared-types';
+import { execFile } from 'child_process';
+
+/** How long one pactl call may wait for PipeWire's answer. */
+export const PACTL_TIMEOUT_MS = 5000;
 
 /**
  * Rate-limited command queue for PulseAudio/PipeWire `pactl` commands.
@@ -9,7 +11,8 @@ import { formatError } from '@media-router/shared-types';
  * null-sink and immediately trying to use it as a loopback target).
  *
  * All mutating pactl commands (load-module, unload-module, set-*) go
- * through `exec()`. Read-only commands (list, get-*) use `execImmediate()`.
+ * through `exec()`. Read-only commands (list, get-*) use `execImmediateAsync()`.
+ * Neither blocks the event loop: a hung PipeWire must not stall the engine (B-200).
  *
  * Commands are passed as argument arrays to execFile (no shell) to
  * prevent command injection from untrusted device/module names.
@@ -22,18 +25,20 @@ export class PaCommandQueue {
     }> = [];
     private processing = false;
     private delayMs: number;
+    private readonly timeoutMs: number;
 
     /**
      * Invoked after every QUEUED (mutating) command settles, success or
      * failure, so read-side caches can drop state that the command may have
      * changed — `AudioDeviceOps` hangs its device-listing cache here (a
      * `load-module`/`unload-module`/`set-*-volume` changes what `pactl list`
-     * reports). Not called for `execImmediate` (read-only by contract).
+     * reports). Not called for `execImmediateAsync` (read-only by contract).
      */
     onMutation: (() => void) | null = null;
 
-    constructor(delayMs = 100) {
+    constructor(delayMs = 100, timeoutMs = PACTL_TIMEOUT_MS) {
         this.delayMs = delayMs;
+        this.timeoutMs = timeoutMs;
     }
 
     /**
@@ -51,35 +56,31 @@ export class PaCommandQueue {
     }
 
     /**
-     * Execute a pactl command immediately (bypasses queue).
-     * Use for read-only commands like `pactl list`.
+     * Run a read-only pactl command now (bypasses the queue), e.g. `pactl list`.
      * @param args  Arguments to pass to `pactl`
      */
-    execImmediate(args: string[]): string {
-        try {
-            return execFileSync('pactl', args, {
-                timeout: 5000,
-                encoding: 'utf-8',
-                env: { ...process.env, DISPLAY: '' },
-                // Its stderr is in the error we throw; inherited, it reached the journal
-                // twice a second while PipeWire was down (B-195).
-                stdio: ['ignore', 'pipe', 'pipe'],
-            }).trim();
-        } catch (err) {
-            throw new Error(`pactl command failed: pactl ${args.join(' ')}\n${formatError(err)}`);
-        }
+    execImmediateAsync(args: string[]): Promise<string> {
+        return this.run(args);
     }
 
-    /** `execImmediate` without blocking the event loop while pactl waits for its answer. */
-    execImmediateAsync(args: string[]): Promise<string> {
+    /** One pactl call: its stdout, or a rejection when it fails or PipeWire gives no answer in time. */
+    private run(args: string[]): Promise<string> {
         return new Promise((resolve, reject) => {
             execFile(
                 'pactl',
                 args,
-                { timeout: 5000, encoding: 'utf-8', env: { ...process.env, DISPLAY: '' } },
+                {
+                    timeout: this.timeoutMs,
+                    // On SIGTERM pactl quits with 0 and no output, which reads as an empty answer.
+                    killSignal: 'SIGKILL',
+                    encoding: 'utf-8',
+                    env: { ...process.env, DISPLAY: '' },
+                },
                 (err, stdout, stderr) => {
                     if (!err) return resolve(stdout.trim());
-                    const why = stderr?.trim() || err.message;
+                    const why = err.killed
+                        ? `no answer within ${this.timeoutMs} ms`
+                        : stderr?.trim() || err.message;
                     reject(new Error(`pactl command failed: pactl ${args.join(' ')}\n${why}`));
                 },
             );
@@ -95,33 +96,22 @@ export class PaCommandQueue {
         this.processing = true;
         const item = this.queue[0];
 
-        execFile(
-            'pactl',
-            item.args,
-            {
-                timeout: 5000,
-                env: { ...process.env, DISPLAY: '' },
-            },
-            (err, stdout, stderr) => {
-                this.queue.shift();
+        // The caches drop in the same tick as the answer, before its caller reads again.
+        const settle = (answer: () => void) => {
+            this.queue.shift();
+            answer();
+            try {
+                this.onMutation?.();
+            } catch {
+                /* a listener bug must never stall the command queue */
+            }
 
-                if (err) {
-                    const msg = stderr?.trim() || err.message;
-                    item.reject(
-                        new Error(`pactl command failed: pactl ${item.args.join(' ')}\n${msg}`),
-                    );
-                } else {
-                    item.resolve(stdout.trim());
-                }
-                try {
-                    this.onMutation?.();
-                } catch {
-                    /* a listener bug must never stall the command queue */
-                }
-
-                // Delay before next command
-                setTimeout(() => this.processNext(), this.delayMs);
-            },
+            // Delay before next command
+            setTimeout(() => this.processNext(), this.delayMs);
+        };
+        void this.run(item.args).then(
+            (stdout) => settle(() => item.resolve(stdout)),
+            (err: Error) => settle(() => item.reject(err)),
         );
     }
 

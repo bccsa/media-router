@@ -8,7 +8,14 @@ function makeWatchdog(overrides: Partial<DeviceWatchdogOptions> = {}) {
     const onReconnect = vi.fn(async () => {});
     const onHealthChange = vi.fn();
     const onClear = vi.fn();
-    const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn(), child: vi.fn() } as unknown as Required<DeviceWatchdogOptions>['log'];
+    const log = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        trace: vi.fn(),
+        child: vi.fn(),
+    } as unknown as Required<DeviceWatchdogOptions>['log'];
 
     const wd = new DeviceWatchdog({
         getDeviceName: () => 'mic-1',
@@ -407,6 +414,64 @@ describe('DeviceWatchdog: a lost PipeWire stream (B-195)', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(onDisconnect).not.toHaveBeenCalled();
         release!();
+        await losing;
+        expect(onDisconnect).toHaveBeenCalledOnce();
+        expect(wd.isConnected()).toBe(false);
+        await wd.stop();
+    });
+});
+
+/** A watchdog whose every listing waits until the test settles it, as pactl does on a hung
+ *  PipeWire: `settle(present, answered)` ends the oldest one. */
+function waitingWatchdog(overrides: Partial<DeviceWatchdogOptions> = {}) {
+    const listings: Array<(present: boolean) => void> = [];
+    const pw = { answered: true };
+    const hasDevice = vi.fn(() => new Promise<boolean>((resolve) => listings.push(resolve)));
+    const made = makeWatchdog({
+        pipeWire: { hasDevice, daemonInstance: () => 'a1', isAvailable: () => pw.answered },
+        ...overrides,
+    });
+    const settle = async (present: boolean, answered = true) => {
+        pw.answered = answered;
+        listings.shift()!(present);
+        await vi.advanceTimersByTimeAsync(0);
+    };
+    return { ...made, hasDevice, listings, settle };
+}
+
+describe('DeviceWatchdog: a listing that waits for PipeWire (B-200)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('waiting is no answer yet: no transition, no listing piled on; a timed-out one is no unplug', async () => {
+        const { wd, hasDevice, settle, onDisconnect, onReconnect, onHealthChange } =
+            waitingWatchdog();
+        wd.start();
+        await vi.advanceTimersByTimeAsync(1000); // ten polls while the first listing waits
+        expect(hasDevice).toHaveBeenCalledTimes(1);
+        await settle(false, false); // pactl's timeout: no answer
+        expect(wd.isConnected()).toBe(true);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(hasDevice).toHaveBeenCalledTimes(2);
+        await settle(true); // a late answer: the device is there
+        await vi.advanceTimersByTimeAsync(100);
+        expect(onDisconnect).not.toHaveBeenCalled();
+        expect(onReconnect).not.toHaveBeenCalled();
+        expect(onHealthChange).not.toHaveBeenCalled();
+        await settle(false); // answered without it: an unplug
+        expect(onDisconnect).toHaveBeenCalledOnce();
+        expect(onHealthChange).toHaveBeenCalledWith('error', 'Device disconnected');
+        await wd.stop();
+    });
+
+    it('a stream lost while a listing waits is torn down as soon as that listing settles', async () => {
+        const { wd, settle, onDisconnect } = waitingWatchdog();
+        wd.start();
+        await vi.advanceTimersByTimeAsync(100); // a tick waits on its listing
+        const losing = wd.lose('PipeWire stream failed (Disconnected)');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onDisconnect).not.toHaveBeenCalled();
+        await settle(true);
         await losing;
         expect(onDisconnect).toHaveBeenCalledOnce();
         expect(wd.isConnected()).toBe(false);

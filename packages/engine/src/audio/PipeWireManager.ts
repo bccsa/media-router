@@ -202,7 +202,7 @@ export class PipeWireManager {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
             try {
-                const output = this.paQueue.execImmediate(['list', 'short', 'sinks']);
+                const output = await this.paQueue.execImmediateAsync(['list', 'short', 'sinks']);
                 if (output.includes(sinkName)) return true;
             } catch {
                 // pactl failed — retry
@@ -221,7 +221,7 @@ export class PipeWireManager {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
             try {
-                const output = this.paQueue.execImmediate(['list', 'short', 'sources']);
+                const output = await this.paQueue.execImmediateAsync(['list', 'short', 'sources']);
                 if (output.includes(sourceName)) return true;
             } catch {
                 /* retry */
@@ -321,7 +321,7 @@ export class PipeWireManager {
      */
     async cleanupOrphans(): Promise<void> {
         try {
-            const output = this.paQueue.execImmediate(['list', 'short', 'modules']);
+            const output = await this.paQueue.execImmediateAsync(['list', 'short', 'modules']);
             const lines = output.split('\n');
             for (const line of lines) {
                 if (!line.includes(MR_PW_PREFIX)) continue;
@@ -357,11 +357,12 @@ export class PipeWireManager {
 
     // --- Device enumeration (delegated to AudioDeviceOps) ---
 
-    listDevices(): AudioDevice[] {
+    // Asked without blocking: a hung PipeWire must not stall the engine (B-200).
+    listDevices(): Promise<AudioDevice[]> {
         return this.deviceOps.listDevices();
     }
 
-    hasDevice(deviceName: string): boolean {
+    hasDevice(deviceName: string): Promise<boolean> {
         return this.deviceOps.hasDevice(deviceName);
     }
 
@@ -375,7 +376,7 @@ export class PipeWireManager {
         return this.deviceOps.isAvailable();
     }
 
-    getDeviceInfo(deviceName: string): { channels?: number; sampleRate?: number } | null {
+    getDeviceInfo(deviceName: string): Promise<{ channels?: number; sampleRate?: number } | null> {
         return this.deviceOps.getDeviceInfo(deviceName);
     }
 

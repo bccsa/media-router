@@ -156,52 +156,180 @@ describe('AudioDeviceOps listing cache', () => {
 
     function makeOps(cacheTtlMs?: number) {
         let t = 1_000_000;
-        const execImmediate = vi.fn((args: string[]) => (args[1] === 'sources' ? SOURCES : SINKS));
-        const queue = { execImmediate, onMutation: null as (() => void) | null };
+        const execImmediateAsync = vi.fn(async (args: string[]) =>
+            args[1] === 'sources' ? SOURCES : SINKS,
+        );
+        const queue = { execImmediateAsync, onMutation: null as (() => void) | null };
         const ops = new AudioDeviceOps(queue as never, { cacheTtlMs, now: () => t });
-        return { ops, execImmediate, queue, advance: (ms: number) => (t += ms) };
+        return { ops, execImmediateAsync, queue, advance: (ms: number) => (t += ms) };
     }
 
-    it('reuses one pactl snapshot for every reader inside the TTL', () => {
-        const { ops, execImmediate } = makeOps();
-        expect(ops.hasDevice('alsa_input.usb-mic')).toBe(true);
-        expect(ops.getDeviceInfo('alsa_output.usb-dac')?.channels).toBe(2);
-        expect(ops.listDevices()).toHaveLength(2);
+    it('reuses one pactl snapshot for every reader inside the TTL', async () => {
+        const { ops, execImmediateAsync } = makeOps();
+        expect(await ops.hasDevice('alsa_input.usb-mic')).toBe(true);
+        expect((await ops.getDeviceInfo('alsa_output.usb-dac'))?.channels).toBe(2);
+        expect(await ops.listDevices()).toHaveLength(2);
         // sources + sinks, once — not once per reader.
-        expect(execImmediate).toHaveBeenCalledTimes(2);
+        expect(execImmediateAsync).toHaveBeenCalledTimes(2);
     });
 
-    it('re-fetches once the TTL has elapsed (hot-plug is still seen)', () => {
-        const { ops, execImmediate, advance } = makeOps();
-        ops.listDevices();
+    it('lists sources first, then sinks', async () => {
+        const { ops } = makeOps();
+        expect((await ops.listDevices()).map((d) => d.name)).toEqual([
+            'alsa_input.usb-mic',
+            'alsa_output.usb-dac',
+        ]);
+    });
+
+    it('re-fetches once the TTL has elapsed (hot-plug is still seen)', async () => {
+        const { ops, execImmediateAsync, advance } = makeOps();
+        await ops.listDevices();
         advance(DEFAULT_DEVICE_CACHE_TTL_MS - 1);
-        ops.listDevices();
-        expect(execImmediate).toHaveBeenCalledTimes(2);
+        await ops.listDevices();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(2);
         advance(1);
-        ops.listDevices();
-        expect(execImmediate).toHaveBeenCalledTimes(4);
+        await ops.listDevices();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(4);
     });
 
-    it('drops the snapshot when a queued (mutating) pactl command settles', () => {
-        const { ops, execImmediate, queue } = makeOps();
-        ops.listDevices();
+    it('drops the snapshot when a queued (mutating) pactl command settles', async () => {
+        const { ops, execImmediateAsync, queue } = makeOps();
+        await ops.listDevices();
         expect(queue.onMutation).toBeTypeOf('function');
         queue.onMutation!();
-        ops.listDevices();
-        expect(execImmediate).toHaveBeenCalledTimes(4);
+        await ops.listDevices();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(4);
     });
 
-    it('hands out a copy, so a caller mutating the list cannot poison later readers', () => {
+    it('hands out a copy, so a caller mutating the list cannot poison later readers', async () => {
         const { ops } = makeOps();
-        ops.listDevices().length = 0;
-        expect(ops.listDevices()).toHaveLength(2);
+        (await ops.listDevices()).length = 0;
+        expect(await ops.listDevices()).toHaveLength(2);
     });
 
-    it('caches nothing when cacheTtlMs is 0', () => {
-        const { ops, execImmediate } = makeOps(0);
-        ops.listDevices();
-        ops.listDevices();
-        expect(execImmediate).toHaveBeenCalledTimes(4);
+    it('caches nothing when cacheTtlMs is 0', async () => {
+        const { ops, execImmediateAsync } = makeOps(0);
+        await ops.listDevices();
+        await ops.listDevices();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(4);
+    });
+});
+
+describe('AudioDeviceOps: a listing that waits for PipeWire (B-200)', () => {
+    const MIC = 'Source #1\n\tName: alsa_input.usb-mic\n\tChannel Map: mono';
+
+    /** A queue whose pactl answers when the test says: `answer()` / `fail()` the oldest call. */
+    function makeOps() {
+        let t = 1_000_000;
+        const pending: Array<{ args: string[]; ok: (s: string) => void; no: (e: Error) => void }> =
+            [];
+        let running = 0;
+        let most = 0;
+        const execImmediateAsync = vi.fn(
+            (args: string[]) =>
+                new Promise<string>((ok, no) => {
+                    most = Math.max(most, ++running);
+                    const done =
+                        <T>(f: (v: T) => void) =>
+                        (v: T) => {
+                            running -= 1;
+                            f(v);
+                        };
+                    pending.push({ args, ok: done(ok), no: done(no) });
+                }),
+        );
+        const queue = { execImmediateAsync, onMutation: null as (() => void) | null };
+        const ops = new AudioDeviceOps(queue as never, { now: () => t });
+        const flush = () => new Promise((r) => setImmediate(r));
+        // Each first lets the calls asked so far reach pactl, then answers them.
+        const answer = async (out = (args: string[]) => (args[1] === 'sources' ? MIC : '')) => {
+            await flush();
+            for (const c of pending.splice(0)) c.ok(out(c.args));
+            await flush();
+        };
+        const fail = async () => {
+            await flush();
+            for (const c of pending.splice(0)) c.no(new Error('pactl command failed\nno answer'));
+            await flush();
+        };
+        return {
+            ops,
+            queue,
+            execImmediateAsync,
+            pending,
+            answer,
+            fail,
+            flush,
+            most: () => most,
+            advance: (ms: number) => (t += ms),
+        };
+    }
+
+    const lines: Array<{ level: number; msg: string }> = [];
+    afterEach(() => {
+        setLogTap(null);
+        lines.length = 0;
+    });
+
+    it('readers while it waits share it; no answer yet changes nothing; the answer reaches all', async () => {
+        const { ops, execImmediateAsync, answer, flush } = makeOps();
+        const first = ops.hasDevice('alsa_input.usb-mic');
+        const second = ops.getDeviceInfo('alsa_input.usb-mic');
+        await flush();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(2); // sources and sinks, once
+        expect(ops.isAvailable()).toBe(true); // still the last answer's
+        await answer();
+        expect(await first).toBe(true);
+        expect(await second).toEqual({ channels: 1, sampleRate: undefined });
+    });
+
+    it('no answer in time: unknown, not empty, one warning; the next answer is seen', async () => {
+        setLogTap((l) => lines.push(JSON.parse(l)));
+        const { ops, answer, fail, flush, advance } = makeOps();
+        for (let i = 0; i < 3; i++) {
+            const present = ops.hasDevice('alsa_input.usb-mic');
+            await fail();
+            expect(await present).toBe(false);
+            expect(ops.isAvailable()).toBe(false);
+            advance(DEFAULT_DEVICE_CACHE_TTL_MS);
+        }
+        const back = ops.hasDevice('alsa_input.usb-mic');
+        await answer();
+        expect(await back).toBe(true);
+        expect(ops.isAvailable()).toBe(true);
+        await flush();
+        expect(lines.map((l) => [l.level, l.msg])).toEqual([
+            [40, 'PipeWire does not answer pactl: audio devices read as absent until it does'],
+            [30, 'PipeWire answers pactl again'],
+        ]);
+    });
+
+    it('a mutation while one waits: the next reader gets a listing that starts after it, never alongside', async () => {
+        const { ops, queue, execImmediateAsync, answer, flush, most } = makeOps();
+        const before = ops.hasDevice('alsa_input.usb-mic');
+        await flush();
+        queue.onMutation!(); // e.g. a remap-source loaded while the listing waits
+        const after = ops.hasDevice('alsa_input.usb-mic');
+        await flush();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(2); // the second waits for the first
+        await answer();
+        expect(await before).toBe(true);
+        expect(execImmediateAsync).toHaveBeenCalledTimes(4);
+        await answer(() => ''); // the device left meanwhile
+        expect(await after).toBe(false);
+        expect(most()).toBe(2); // one listing (its two lists) at a time
+    });
+
+    it('pactl info: one call at a time while it waits, however long', async () => {
+        const { ops, execImmediateAsync, answer, flush, advance } = makeOps();
+        const first = ops.daemonInstance();
+        advance(3 * DEFAULT_DEVICE_CACHE_TTL_MS);
+        const second = ops.daemonInstance();
+        await flush();
+        expect(execImmediateAsync).toHaveBeenCalledTimes(1);
+        await answer(() => 'Cookie: f196:62ca');
+        expect(await first).toBe('f196:62ca');
+        expect(await second).toBe('f196:62ca');
     });
 });
 
@@ -217,17 +345,12 @@ describe('AudioDeviceOps: which PipeWire answers, and whether it does (B-195)', 
     function makeOps() {
         let t = 1_000_000;
         const pw = { up: true, info: INFO };
-        const execImmediate = vi.fn((args: string[]) => {
+        const execImmediateAsync = vi.fn(async (args: string[]) => {
             if (!pw.up)
                 throw new Error('pactl command failed: Connection failure: Connection refused');
             return args[0] === 'info' ? pw.info : 'Source #1\n\tName: alsa_input.usb-mic';
         });
-        const execImmediateAsync = vi.fn(async (args: string[]) => execImmediate(args));
-        const queue = {
-            execImmediate,
-            execImmediateAsync,
-            onMutation: null as (() => void) | null,
-        };
+        const queue = { execImmediateAsync, onMutation: null as (() => void) | null };
         const ops = new AudioDeviceOps(queue as never, { now: () => t });
         return { ops, pw, execImmediateAsync, advance: (ms: number) => (t += ms) };
     }
@@ -262,12 +385,12 @@ describe('AudioDeviceOps: which PipeWire answers, and whether it does (B-195)', 
         for (let i = 0; i < 20; i++) {
             advance(DEFAULT_DEVICE_CACHE_TTL_MS);
             expect(await ops.daemonInstance()).toBeNull();
-            expect(ops.hasDevice('alsa_input.usb-mic')).toBe(false);
+            expect(await ops.hasDevice('alsa_input.usb-mic')).toBe(false);
         }
         expect(ops.isAvailable()).toBe(false);
         pw.up = true;
         advance(DEFAULT_DEVICE_CACHE_TTL_MS);
-        expect(ops.hasDevice('alsa_input.usb-mic')).toBe(true);
+        expect(await ops.hasDevice('alsa_input.usb-mic')).toBe(true);
         expect(ops.isAvailable()).toBe(true);
         await flush();
         expect(lines.map((l) => [l.level, l.msg])).toEqual([

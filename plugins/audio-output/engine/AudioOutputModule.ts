@@ -43,7 +43,7 @@ export class AudioOutputModule extends GstPluginBase {
         await super.onInit(config, services);
         this.deviceName = (config.device as string) ?? '';
 
-        const det = detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
+        const det = await detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
             channels: config.channels as number | undefined,
             sampleRate: config.sampleRate as number | undefined,
         });
@@ -62,7 +62,7 @@ export class AudioOutputModule extends GstPluginBase {
         // Throwing here would prevent the watchdog from starting at all,
         // leaving hot-plug undetected — the module would only recover on
         // an engine restart.
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -71,7 +71,7 @@ export class AudioOutputModule extends GstPluginBase {
             return;
         }
 
-        const { channels, rate, detected } = resolveDeviceFormat(
+        const { channels, rate, detected } = await resolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
             { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
@@ -117,7 +117,7 @@ export class AudioOutputModule extends GstPluginBase {
 
     /** Base-class hook: device returned — rebuild the remap-sink then restart the pipeline. */
     protected async onDeviceReconnected(): Promise<void> {
-        const resolved = tryResolveDeviceFormat(
+        const resolved = await tryResolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
             { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },

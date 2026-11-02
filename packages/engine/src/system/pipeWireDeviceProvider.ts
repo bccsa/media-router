@@ -32,8 +32,8 @@ export function registerPipeWireDeviceProvider(
     services.deviceProviders.register({
         type,
         pollMs,
-        list: () => {
-            const devices = services.pipeWire.listDevices();
+        list: async () => {
+            const devices = await services.pipeWire.listDevices();
             if (direction === 'sink') services.pipeWire.normalizeSinkVolumes(devices);
             return devices
                 .filter((d) => d.direction === direction)

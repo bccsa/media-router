@@ -30,7 +30,6 @@ function fakePulse() {
         if (args.join(' ') !== 'list short modules') return '';
         return [...modules].map(([id, line]) => `${id}\t${line}\t`).join('\n');
     };
-    const execImmediate = vi.fn(listing);
     const execImmediateAsync = vi.fn(async (args: string[]) => {
         if (!pulse.up || pulse.hiccups-- > 0) throw refused();
         return listing(args);
@@ -41,11 +40,10 @@ function fakePulse() {
     };
     const pw = new PipeWireManager({
         exec,
-        execImmediate,
         execImmediateAsync,
         onMutation: null,
     } as never);
-    return { pw, modules, pulse, exec, execImmediate, execImmediateAsync, restart };
+    return { pw, modules, pulse, exec, execImmediateAsync, restart };
 }
 
 const unloaded = (exec: ReturnType<typeof fakePulse>['exec']) =>
@@ -148,14 +146,45 @@ describe('PipeWireManager: a PA module is unloaded only while its ID still names
         });
     });
 
-    it('asks for the listing without blocking: no synchronous pactl on the stop path', async () => {
-        const { pw, exec, execImmediate, execImmediateAsync } = fakePulse();
+    it('asks for the listing without blocking on the stop path', async () => {
+        const { pw, exec, execImmediateAsync } = fakePulse();
         const a = await pw.loadNullSink('mix_in_1', 2, 48000, 'mix');
         const b = await pw.loadNullSink('mix_in_2', 2, 48000, 'mix');
         await pw.releaseAll('mix');
         expect(unloaded(exec)).toEqual([a, b]);
-        expect(execImmediate).not.toHaveBeenCalled();
         expect(execImmediateAsync).toHaveBeenCalledTimes(2);
         expect(execImmediateAsync).toHaveBeenCalledWith(['list', 'short', 'modules']);
+    });
+});
+
+describe('PipeWireManager: every pactl read is asked without blocking (B-200)', () => {
+    it('the orphan cleanup unloads every MR_PW_ module from an asked listing', async () => {
+        const { pw, exec, execImmediateAsync } = fakePulse();
+        const a = await pw.loadNullSink('mix_in_1', 2, 48000);
+        const b = await pw.loadRemapSink('aout-1', 'alsa_output.dac', 2, 48000);
+        await pw.cleanupOrphans();
+        expect(unloaded(exec)).toEqual([a, b]);
+        expect(execImmediateAsync).toHaveBeenCalledWith(['list', 'short', 'modules']);
+    });
+
+    it('waiting for a sink or a source polls an asked listing until the node is there', async () => {
+        const answers = ['', '1\tMR_PW_ain-1\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED'];
+        const execImmediateAsync = vi.fn(async () => answers.shift() ?? answers[0] ?? '');
+        const pw = new PipeWireManager({
+            exec: vi.fn(),
+            execImmediateAsync,
+            onMutation: null,
+        } as never);
+        expect(await pw.waitForSource('MR_PW_ain-1', 2000, 1)).toBe(true);
+        expect(execImmediateAsync).toHaveBeenCalledTimes(2);
+        expect(execImmediateAsync).toHaveBeenCalledWith(['list', 'short', 'sources']);
+        const none = vi.fn(async () => '');
+        const pw2 = new PipeWireManager({
+            exec: vi.fn(),
+            execImmediateAsync: none,
+            onMutation: null,
+        } as never);
+        expect(await pw2.waitForSink('MR_PW_aout-1', 30, 5)).toBe(false);
+        expect(none).toHaveBeenCalledWith(['list', 'short', 'sinks']);
     });
 });

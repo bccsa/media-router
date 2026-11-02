@@ -548,6 +548,12 @@ elements" below do not start.
   back, until killed by hand. Fixed: the engine talks only to PipeWire's
   PulseAudio service, and its modules wait for PipeWire. A PulseAudio command
   typed on the box can still start one until the system image turns that off.
+- **A hung PipeWire no longer freezes the engine.** Up to v2.0.0.100, while
+  PipeWire's PulseAudio service took requests and never answered, the engine
+  stopped for up to 10 s every 2 s, its UI, API and modules with it. Fixed: the
+  engine asks for the audio devices without waiting on the answer, no module
+  takes a missing answer for an unplugged device, and all recovers when
+  PipeWire answers again.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

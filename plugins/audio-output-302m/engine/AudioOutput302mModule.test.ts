@@ -47,6 +47,8 @@ function makeModule(
             : {}),
     };
     module.config = {};
+    // What a start reads before it builds (B-200): the build itself asks PipeWire nothing.
+    module.deviceChannels = opts.deviceChannels ?? null;
     const setHealth = vi.fn();
     module.setHealth = setHealth;
     module.setStatusData = vi.fn();
@@ -447,8 +449,9 @@ const OLD = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__hw_S2__sink';
 const NEW = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__Line__sink';
 
 /** The module under the engine's ModuleInstance on a graph of `present` devices, one source
- *  wired; `built` holds each pipeline it starts. `repick` is a settings patch, then Restart. */
-function underEngine(present: Set<string>) {
+ *  wired; `built` holds each pipeline it starts. `repick` is a settings patch, then Restart.
+ *  PipeWire answers as the engine's does, a turn later; its devices are `width` wide. */
+function underEngine(present: Set<string>, width = 2, settings: Record<string, unknown> = {}) {
     const built: string[] = [];
     vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
         built.push(this.buildPipeline(this.config)?.pipeline ?? '');
@@ -466,8 +469,8 @@ function underEngine(present: Set<string>) {
     const services = {
         instanceId: 'aout-1',
         pipeWire: {
-            hasDevice: (name: string) => present.has(name),
-            getDeviceInfo: () => ({ channels: 2, sampleRate: 48000 }),
+            hasDevice: async (name: string) => present.has(name),
+            getDeviceInfo: async () => ({ channels: width, sampleRate: 48000 }),
             releaseAll: vi.fn(async () => {}),
         },
         mediaRouter: { getModuleBusSources: () => [source], releaseAllBusChannelsFor: vi.fn() },
@@ -478,7 +481,7 @@ function underEngine(present: Set<string>) {
         'aout-1',
         'audio-output-302m',
         module,
-        { device: OLD },
+        { device: OLD, ...settings },
         services,
     );
     const repick = async (device: string) => {
@@ -491,6 +494,31 @@ function underEngine(present: Set<string>) {
 
 describe('AudioOutput302mModule: a restart applies a re-picked device (B-191)', () => {
     afterEach(() => vi.restoreAllMocks());
+
+    it('a start reads the device width before the build, which cannot wait for PipeWire (B-200)', async () => {
+        const { instance, built } = underEngine(new Set([OLD]), 32, {
+            channels: 8,
+            firstChannel: 9,
+        });
+        await instance.start();
+        // Outputs 9-16 of the 32-wide card: the 16-wide spread, not "width unknown".
+        expect(built[0]).toContain('audio/x-raw,channels=16,channel-mask=(bitmask)0x0');
+        await instance.stop();
+    });
+
+    it('a device that comes after the start: its width is read before that first build (B-200)', async () => {
+        const present = new Set<string>();
+        const { module, instance, built } = underEngine(present, 32, {
+            channels: 8,
+            firstChannel: 9,
+        });
+        await instance.start();
+        expect(built).toEqual([]);
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built[0]).toContain('audio/x-raw,channels=16,channel-mask=(bitmask)0x0');
+        await instance.stop();
+    });
 
     it('a running output plays to and watches the re-picked device after Restart', async () => {
         const { module, instance, built, repick } = underEngine(new Set([OLD, NEW]));

@@ -26,8 +26,8 @@ export class SinkVolumeNormalizer {
 
     /**
      * Reset any sink in `devices` that isn't at unity. Fire-and-forget: the
-     * caller is the device-provider poll, which must stay synchronous, and a
-     * failed reset is retried on the next poll anyway.
+     * device-provider poll does not wait for the resets, and a failed reset
+     * is retried on the next poll anyway.
      */
     normalize(devices: AudioDevice[]): void {
         for (const dev of devices) {
@@ -43,7 +43,9 @@ export class SinkVolumeNormalizer {
             this.paQueue
                 .exec(['set-sink-volume', dev.name, String(PA_VOLUME_NORM)])
                 .then(() => log.info({ device: dev.name, was }, 'Reset sink to unity gain'))
-                .catch((err) => log.warn({ device: dev.name, err }, 'Failed to reset sink to unity gain'))
+                .catch((err) =>
+                    log.warn({ device: dev.name, err }, 'Failed to reset sink to unity gain'),
+                )
                 .finally(() => this.inFlight.delete(dev.name));
         }
     }

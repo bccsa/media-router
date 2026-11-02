@@ -94,6 +94,8 @@ export class AudioInput302mModule extends GstPluginBase {
     /** The reporter's warning text, so its clear never takes another warning down. */
     private clockWarning: string | null = null;
     private deviceName = '';
+    /** The device's channel count, read before each start: `buildPipeline` cannot wait (B-200). */
+    private deviceChannels: number | null = null;
     /** Device links for the pipeline `buildPipeline` last described; null = none to make. */
     private linkPlan: StreamLinkSpec | null = null;
     private linkWarning = false;
@@ -115,7 +117,7 @@ export class AudioInput302mModule extends GstPluginBase {
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -123,6 +125,7 @@ export class AudioInput302mModule extends GstPluginBase {
             this.startDeviceWatchdog(false);
             return;
         }
+        await this.readDeviceChannels();
         // Link WHILE the pipeline starts, not after: pipewiresrc finishes
         // negotiating only once its stream is linked and running, so a link
         // made after start would wait on the start that waits on the link.
@@ -157,10 +160,16 @@ export class AudioInput302mModule extends GstPluginBase {
     }
 
     protected async onDeviceReconnected(): Promise<void> {
+        await this.readDeviceChannels();
         const started = super.onStart();
         void this.linker.ensure();
         await started;
         this.ingestTiming.start();
+    }
+
+    private async readDeviceChannels(): Promise<void> {
+        const info = await this.services?.pipeWire?.getDeviceInfo(this.deviceName);
+        this.deviceChannels = info?.channels ?? null;
     }
 
     /** Every PLAYING — including a runner-internal restart, which re-creates
@@ -213,7 +222,7 @@ export class AudioInput302mModule extends GstPluginBase {
         const mono = requested === 1;
         const channels = normalize302mChannels(requested);
         const firstChannel = Math.max(1, Math.trunc(Number(config.firstChannel ?? 1)) || 1);
-        const deviceChannels = this.services?.pipeWire?.getDeviceInfo(device)?.channels ?? null;
+        const deviceChannels = this.deviceChannels;
 
         const capture = this.buildCapture({
             device,
