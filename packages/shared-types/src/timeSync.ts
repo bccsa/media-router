@@ -32,6 +32,40 @@ export interface ChronyTracking {
     leap: string;
 }
 
+/** The kernel's esterror until an NTP daemon writes one (NTP_PHASE_LIMIT, 16 s). chrony does,
+ *  linuxptp never does: shown as no figure, never as 16 s (B-198). */
+export const KERNEL_ESTERROR_UNSET_US = 16_000_000;
+
+/** ptp4l's own view while linuxptp steers the clock: `pmc` GET PORT_DATA_SET and
+ *  CURRENT_DATA_SET over its read-only socket, at each source poll (B-198). */
+export interface PtpClockState {
+    /** PORT_DATA_SET portState as pmc prints it: SLAVE, UNCALIBRATED, LISTENING, … */
+    portState: string;
+    /** CURRENT_DATA_SET offsetFromMaster in ns, only while the port is SLAVE or UNCALIBRATED:
+     *  ptp4l keeps the last one when its master goes. */
+    offsetNs?: number;
+    /** CURRENT_DATA_SET meanPathDelay in ns, with offsetNs. */
+    pathDelayNs?: number;
+}
+
+/** ns as the clock texts show them: 812 ns, 41.2 µs, 2.6 ms, 3.1 s. */
+function nsText(ns: number): string {
+    const a = Math.abs(ns);
+    if (a < 1e3) return `${a} ns`;
+    if (a < 1e6) return `${(a / 1e3).toFixed(1)} µs`;
+    return a < 1e9 ? `${(a / 1e6).toFixed(1)} ms` : `${(a / 1e9).toFixed(1)} s`;
+}
+
+/** PTP's own error for the clock tooltip and the epoch log: its offset from the master, else
+ *  n/a with the port state when ptp4l answered. Never the kernel's figure (B-198). */
+export function ptpErrorText(ptp: PtpClockState | undefined): string {
+    if (!ptp) return 'n/a (PTP)';
+    const { offsetNs, pathDelayNs } = ptp;
+    if (offsetNs === undefined || pathDelayNs === undefined)
+        return `n/a (PTP port ${ptp.portState})`;
+    return `±${nsText(offsetNs)} (PTP offset from master, path delay ${nsText(pathDelayNs)})`;
+}
+
 /** `SystemStats.timeSync`: JSON-safe, carried to `/system/timeSync` and the manager. */
 export interface TimeSyncState {
     source: TimeSyncSource;
@@ -39,6 +73,8 @@ export interface TimeSyncState {
     synced: boolean;
     traceable: boolean;
     taiOffsetS: number;
+    /** The kernel's esterror (adjtimex), µs: KERNEL_ESTERROR_UNSET_US until chrony writes it.
+     *  linuxptp never does, so under PTP it is not PTP's error: see `ptp`. */
     estErrorUs: number;
     maxErrorUs: number;
     freqPpm: number;
@@ -55,4 +91,7 @@ export interface TimeSyncState {
     /** False when mr-clockstate is not installed: no epoch, modules not held. */
     sidecar: boolean;
     chrony?: ChronyTracking;
+    /** While source is `ptp` and ptp4l answered the last poll; a step drops it until the next
+     *  periodic poll, since ptp4l's figure then measured the clock before the step. */
+    ptp?: PtpClockState;
 }

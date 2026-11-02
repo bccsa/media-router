@@ -12,7 +12,13 @@ const S = 1_000_000_000n;
 const E0 = 1_789_775_770n * S;
 
 function line(
-    over: { eNs?: bigint; synced?: boolean; tai?: number; maxErrorUs?: number } = {},
+    over: {
+        eNs?: bigint;
+        synced?: boolean;
+        tai?: number;
+        maxErrorUs?: number;
+        estErrorUs?: number;
+    } = {},
 ): string {
     return JSON.stringify({
         type: 'sample',
@@ -21,7 +27,7 @@ function line(
         bracketNs: 80,
         synced: over.synced ?? true,
         taiOffsetS: over.tai ?? 37,
-        estErrorUs: 1500,
+        estErrorUs: over.estErrorUs ?? 1500,
         maxErrorUs: over.maxErrorUs ?? 9000,
         freqPpm: 3.5,
         status: 0x2001,
@@ -49,6 +55,7 @@ function fakeSidecar(opts: Partial<HouseClockOptions> = {}) {
         processManager,
         resolveBinary: () => '/usr/libexec/media-router/engine/mr-clockstate',
         exec,
+        readText: async () => 'PTP_DOMAIN=0\n',
         ...opts,
     });
     const epochs: HouseEpoch[] = [];
@@ -337,6 +344,150 @@ describe('HouseClock', () => {
             estErrorUs: 2600,
             leap: 'Normal',
         });
+    });
+});
+
+/** pmc's replies on a slaved box (ptpStatus.test.ts has their provenance). */
+const pmcSlave = (offset: string) =>
+    '\te45f01.fffe.1a1878-1 seq 0 RESPONSE MANAGEMENT PORT_DATA_SET\n' +
+    '\t\tportState               SLAVE\n' +
+    '\te45f01.fffe.1a1878-0 seq 1 RESPONSE MANAGEMENT CURRENT_DATA_SET \n' +
+    `\t\tstepsRemoved     1\n\t\toffsetFromMaster ${offset}\n\t\tmeanPathDelay    41231.0\n`;
+/** A locked PTP box as the field has it (MR-031): linuxptp never sets the kernel's esterror. */
+const ptpSample = (eNs = E0) => line({ eNs, estErrorUs: 16_000_000, maxErrorUs: 0 });
+const PTP_FIGURE = '±812 ns (PTP offset from master, path delay 41.2 µs)';
+
+/** The clock logger's lines, as `level msg`. */
+function clockLog(): string[] {
+    const lines: string[] = [];
+    setLogTap((l) => {
+        const { name, msg, level } = JSON.parse(l) as { name: string; msg: string; level: number };
+        if (name === 'clock') lines.push(`${level} ${msg}`);
+    });
+    return lines;
+}
+
+describe("HouseClock's error figure (B-198)", () => {
+    let clock: HouseClock | null = null;
+    afterEach(async () => {
+        setLogTap(null);
+        await clock?.stop();
+        clock = null;
+        vi.useRealTimers();
+    });
+
+    it("a PTP box carries ptp4l's view; its latch line names PTP's offset, not the kernel's 16 s", async () => {
+        const logged = clockLog();
+        const exec = vi.fn(async (cmd: string) =>
+            cmd === 'systemctl' ? 'inactive\nactive\n' : pmcSlave('-812.0'),
+        );
+        const h = fakeSidecar({ exec });
+        clock = h.clock;
+        h.clock.start();
+        h.emit(ptpSample());
+        await polled();
+        expect(h.clock.state()).toMatchObject({
+            source: 'ptp',
+            estErrorUs: 16_000_000,
+            ptp: { portState: 'SLAVE', offsetNs: -812, pathDelayNs: 41_231 },
+        });
+        expect(h.clock.state().chrony).toBeUndefined();
+        expect(logged).toEqual([
+            `30 clock: epoch latched seq=1 reason=start source=ptp tai=37 est=${PTP_FIGURE}`,
+        ]);
+        expect(exec).toHaveBeenCalledWith(
+            '/usr/sbin/pmc',
+            expect.arrayContaining(['-s', '/var/run/ptp4lro', '-d', '0']),
+        );
+    });
+
+    it('no answer from ptp4l: n/a, one warning, one line when it answers again', async () => {
+        vi.useFakeTimers();
+        const logged = clockLog();
+        let reply = '';
+        const h = fakeSidecar({
+            exec: async (cmd) => (cmd === 'systemctl' ? 'inactive\nactive\n' : reply),
+        });
+        clock = h.clock;
+        h.clock.start();
+        await vi.advanceTimersByTimeAsync(0);
+        h.emit(ptpSample());
+        expect(h.clock.state().ptp).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(10_000); // still none: no second warning
+        reply = pmcSlave('-812.0');
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.clock.state().ptp).toEqual({
+            portState: 'SLAVE',
+            offsetNs: -812,
+            pathDelayNs: 41_231,
+        });
+        expect(logged).toEqual([
+            '40 clock: no answer from ptp4l over /var/run/ptp4lro (pmc) — the clock shows no PTP error',
+            '30 clock: epoch latched seq=1 reason=start source=ptp tai=37 est=n/a (PTP)',
+            '30 clock: ptp4l answers over /var/run/ptp4lro (pmc) again',
+        ]);
+    });
+
+    it("chrony keeps the kernel's estimate in the latch line; the unset 16 s reads n/a", async () => {
+        const logged = clockLog();
+        const chrony = fakeSidecar();
+        clock = chrony.clock;
+        chrony.clock.start();
+        chrony.emit(line());
+        await polled();
+        await chrony.clock.stop();
+        // No daemon, a kernel nobody wrote an estimate into.
+        const none = fakeSidecar({ exec: async () => 'inactive\ninactive\n' });
+        clock = none.clock;
+        none.clock.start();
+        none.emit(line({ estErrorUs: 16_000_000 }));
+        await polled();
+        expect(logged).toEqual([
+            '30 clock: epoch latched seq=1 reason=start source=chrony tai=37 est=±1.5 ms',
+            '30 clock: epoch latched seq=1 reason=start source=none tai=37 est=n/a',
+        ]);
+    });
+
+    it("a step drops PTP's figure until a poll asked after it; the step's re-epoch names none", async () => {
+        vi.useFakeTimers();
+        const logged = clockLog();
+        const units: Array<(stdout: string) => void> = [];
+        const pmc: Array<(stdout: string) => void> = [];
+        const h = fakeSidecar({
+            exec: (cmd) => new Promise((r) => (cmd === 'systemctl' ? units : pmc).push(r)),
+        });
+        clock = h.clock;
+        const answer = async (q: Array<(stdout: string) => void>, i: number, out: string) => {
+            q[i](out);
+            await vi.advanceTimersByTimeAsync(0);
+        };
+        h.clock.start();
+        await answer(units, 0, 'inactive\nactive\n');
+        await answer(pmc, 0, pmcSlave('-812.0'));
+        h.emit(ptpSample());
+        await vi.advanceTimersByTimeAsync(10_000); // the periodic poll asks ptp4l …
+        await answer(units, 1, 'inactive\nactive\n');
+        h.emit(STEP); // … the clock steps before it answers
+        expect(h.clock.state().ptp).toBeUndefined();
+        await answer(pmc, 1, pmcSlave('-2000000000.0')); // measured before the step
+        expect(h.clock.state().ptp).toBeUndefined();
+        h.emit(ptpSample(E0 + 2n * S));
+        await answer(units, 2, 'inactive\nactive\n'); // the step's own poll asks no ptp4l
+        expect(pmc).toHaveLength(2);
+        expect(h.clock.state().source).toBe('ptp');
+        expect(h.clock.state().ptp).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(10_000);
+        await answer(units, 3, 'inactive\nactive\n');
+        await answer(pmc, 2, pmcSlave('-15.0'));
+        expect(h.clock.state().ptp).toEqual({
+            portState: 'SLAVE',
+            offsetNs: -15,
+            pathDelayNs: 41_231,
+        });
+        expect(logged).toEqual([
+            `30 clock: epoch latched seq=1 reason=start source=ptp tai=37 est=${PTP_FIGURE}`,
+            '40 clock: re-epoch seq=2 reason=step ΔE=2000.000 ms source=ptp est=n/a (PTP)',
+        ]);
     });
 });
 

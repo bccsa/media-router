@@ -536,6 +536,11 @@ elements" below do not start.
   not answering — …"), and an Audio Output (302M) no longer restarts every
   few seconds meanwhile. The Audio Input (302M) also stops and restarts about
   6 s faster.
+- **A PTP box's clock help text shows PTP's own error.** It read "error
+  ±16000.0 ms", the kernel's estimate, which PTP never sets; it now shows
+  PTP's offset from its master ("error ±812 ns (PTP offset from master, path
+  delay 41.2 µs)") or "error n/a (PTP)", as do the engine's epoch log lines.
+  Chrony boxes are unchanged; the Device Manager's Time page still shows 16 s.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

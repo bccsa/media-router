@@ -15,6 +15,7 @@ export * from './scriptRun.js';
 export * from './scriptRuns.js';
 export * from './tree/index.js';
 export type * from './timeSync.js';
+export { KERNEL_ESTERROR_UNSET_US, ptpErrorText } from './timeSync.js';
 export type * from './moduleTiming.js';
 export * from './ingestTimingSettings.js';
 export {

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import type { ChronyTracking, TimeSyncSource } from '@media-router/shared-types';
+import type { ChronyTracking, PtpClockState, TimeSyncSource } from '@media-router/shared-types';
+import { readPtpClock, type ReadText } from './ptpStatus.js';
 
 /** Runs a command and returns its stdout, also on a non-zero exit (`is-active` exits 3). */
 export type ExecStdout = (cmd: string, args: string[]) => Promise<string>;
@@ -34,11 +35,17 @@ export function parseChronyTracking(csv: string): ChronyTracking | null {
     return { reference: f[1] || f[0], stratum: num(2), estErrorUs, leap: f[13] };
 }
 
-/** One poll: who owns the clock, and chrony's view when it does. Read-only, unprivileged. */
+/** One poll: who owns the clock, and that daemon's own view (chrony's tracking, ptp4l's offset).
+ *  Read-only, unprivileged. `readPtp: false` leaves ptp4l out. */
 export async function pollClockSource(
     exec: ExecStdout = execStdout,
-): Promise<{ source: TimeSyncSource; chrony?: ChronyTracking }> {
+    opts: { readPtp?: boolean; readText?: ReadText } = {},
+): Promise<{ source: TimeSyncSource; chrony?: ChronyTracking; ptp?: PtpClockState }> {
     const source = sourceFromUnits(await exec('systemctl', ['is-active', ...UNITS]));
+    if (source === 'ptp') {
+        const ptp = opts.readPtp === false ? null : await readPtpClock(exec, opts.readText);
+        return ptp ? { source, ptp } : { source };
+    }
     if (source !== 'chrony') return { source };
     const chrony = parseChronyTracking(await exec('chronyc', ['-c', 'tracking']));
     return chrony ? { source, chrony } : { source };
