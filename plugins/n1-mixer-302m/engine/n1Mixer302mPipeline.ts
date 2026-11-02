@@ -9,12 +9,7 @@
  * no `pulsesrc`, no `do-timestamp`, no re-stamping anywhere).
  */
 
-import {
-    buildBusSink,
-    liveInputLaunchText,
-    type DynamicPort,
-    type LiveInputBranch,
-} from '@media-router/engine';
+import { buildBusSink, type DynamicPort, type LiveInputBranch } from '@media-router/engine';
 import {
     alignedMixer,
     buildLiveMixInput,
@@ -218,17 +213,4 @@ export function buildN1Parts(
     }
 
     return { pipeline: parts.join(' '), liveInputs };
-}
-
-/** `buildN1Parts` as one launch string with every source's branch, each fan-in's pads from 0. */
-export function buildN1Pipeline(input: N1PipelineInputs): string | null {
-    const built = buildN1Parts(input);
-    if (!built) return null;
-    const pads = new Map<string, number>();
-    const branches = built.liveInputs.map((b) => {
-        const pad = pads.get(b.element) ?? 0;
-        pads.set(b.element, pad + 1);
-        return liveInputLaunchText(b, pad);
-    });
-    return [built.pipeline, ...branches].join(' ');
 }

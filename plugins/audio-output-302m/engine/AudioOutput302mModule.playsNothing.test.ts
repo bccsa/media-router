@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /** B-197: the Audio Output (302M) wires its SilentOutputWatch: a mixer that delivers no audio
- *  says so and is relaunched once; one source played direct is not judged on it. */
+ *  says so, through the relaunch's PLAYING, and is relaunched once; one source played direct is
+ *  not judged on it. */
 
 const h = vi.hoisted(() => {
     class FakeChildProcess {
@@ -94,6 +95,24 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
             await vi.advanceTimersByTimeAsync(100);
         }
         expect(module.getState().health).toBe('ok');
+        await module.onStop();
+    });
+
+    it("the relaunch's PLAYING keeps the warning while it still plays nothing, and no second relaunch", async () => {
+        const { module, child } = await started(2);
+        await vi.advanceTimersByTimeAsync(8000);
+        expect(child.restartPipeline).toHaveBeenCalledTimes(1);
+        // The relaunch plays (PLAYING resets health to ok); its mixer is still silent.
+        child.emit('stateChange', { state: 'playing' });
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error: 'Plays nothing: its mixer delivers no audio — relaunched',
+        });
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(module.getState().error).toBe(
+            'Plays nothing: its mixer delivers no audio — relaunched',
+        );
+        expect(child.restartPipeline).toHaveBeenCalledTimes(1);
         await module.onStop();
     });
 

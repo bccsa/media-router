@@ -278,10 +278,8 @@ export function linkPlaybackStreams(
     };
 }
 
-/**
- * What reaches `sink`: its monitor recorded to `file` (S16LE, stereo, 48 kHz), linked by hand as
- * WirePlumber would (B-197). Times are seconds of recording; `at()` is now.
- */
+/** What reaches `sink`: its monitor recorded to `file` (S16LE, stereo, 48 kHz), linked by hand
+ *  as WirePlumber would (B-197). Times are seconds of recording; `at()` is now. */
 export class MonitorRecorder {
     private running = true;
     private constructor(

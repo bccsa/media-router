@@ -150,7 +150,10 @@ export async function waitForLiveInputs(
 }
 
 /** The start the runner gets: `pipeline` with `inputs` linked in, the field itself dropped. */
-function launchWith(opts: RunnerStartOptions, inputs: LiveInputBranch[]): RunnerStartOptions {
+export function launchWith(
+    opts: RunnerStartOptions,
+    inputs: LiveInputBranch[],
+): RunnerStartOptions {
     const { liveInputs: _all, ...rest } = opts;
     const links = inputs.map((b, i) => liveInputLaunchText(b, i));
     return { ...rest, pipeline: [opts.pipeline, ...links].join(' ') };

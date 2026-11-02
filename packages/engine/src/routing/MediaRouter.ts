@@ -786,15 +786,9 @@ export class MediaRouter {
     // by a conflict rule between two independently trimmed sinks, which is the
     // failure mode decision 4 rejects.
 
-    /**
-     * The route head feeding `moduleId`: the nearest bus producer upstream that
-     * declares a playout offset, else the top-most producer (no bus input of
-     * its own). Read straight off the stored configs, so an edit is visible
-     * without a restart. `undefined` for a module with no bus source. A module
-     * with several bus inputs (a mix) takes the head of the largest offset, raise
-     * included, among its inputs' routes, whatever order its edges were made in:
-     * a restart cannot drop the offset one of them needs (B-197).
-     */
+    /** The route head feeding `moduleId` (nearest declaring producer upstream, else the top-most;
+     *  off the stored configs). Several bus inputs: the head of the largest offset, raise included,
+     *  among their routes, whatever the edge order, so a restart keeps it (B-197). */
     getRoutePlayoutHead(moduleId: string, sinkPortId?: string): PlayoutHead | undefined {
         let best: { head: PlayoutHead; ms: number } | undefined;
         for (const conn of this.connections.values()) {

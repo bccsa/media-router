@@ -215,11 +215,14 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /** A sink that plays nothing (B-197): over ok or this module's own transient text, never
-     *  over an error or another writer's warning (ADR-0010 rule 2); null withdraws it. */
+     *  over an error or another writer's warning (ADR-0010 rule 2); null withdraws it and puts
+     *  back what it stood over, in PLAYING's order: lost inputs, re-anchor, aligners. */
     protected setPlaysNothing(text: string | null): void {
         if (text === null) {
             this.clearOwnWarning('plays-nothing');
             this.showLostInputs();
+            this.playout.show();
+            this.timing.reassertWarnings();
             return;
         }
         if (this.health === 'error') return;

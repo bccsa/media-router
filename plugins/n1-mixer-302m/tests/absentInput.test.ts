@@ -86,6 +86,7 @@ describe.skipIf(skip !== null)(
         async function producer(port: number, conn: string): Promise<GstChildProcess> {
             const p = new GstChildProcess();
             runners.push(p);
+            p.on('error', () => {}); // a teardown's error is not this test's concern
             const playing = new Promise<void>((r) =>
                 p.on('stateChange', (d: { state: string }) => d.state === 'playing' && r()),
             );
@@ -108,6 +109,7 @@ describe.skipIf(skip !== null)(
             expect(await until(() => existsSync(edge), 10_000)).toBe(true);
             const m = new GstChildProcess();
             runners.push(m);
+            m.on('error', () => {}); // the N-1's edge closes first at the teardown
             let readings = 0;
             let peak = 0;
             m.on('vuData', (d: { peak: number[] }) => {

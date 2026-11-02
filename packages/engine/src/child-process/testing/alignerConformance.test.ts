@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GstPluginBase } from '@media-router/engine';
 import { GstChildProcess } from '../GstChildProcess.js';
+import { launchWith } from '../busSocketGate.js';
+import type { RunnerStartOptions } from '../PythonProcess.js';
 import { annotateLiveInputBranches } from '../../plugins/liveInputBranches.js';
 import type { PipelineDescription, PluginModule } from '../../plugins/PluginModule.js';
 import { AudioMixerModule } from '../../../../../plugins/audio-mixer/engine/AudioMixerModule.js';
@@ -58,8 +60,9 @@ function wire(module: object, instanceId: string, outPort: number) {
     return state;
 }
 
-/** What the engine sends: the module's description as GstPluginBase starts it, through
- *  GstChildProcess's own payload; `env` applies at spawn and the restart knobs stay in Node. */
+/** What the runner gets: the module's description as GstPluginBase starts it, through
+ *  GstChildProcess's own payload, its `liveInputs` linked in as the runner host launches it with
+ *  every one there; `env` applies at spawn and the restart knobs stay in Node. */
 function startCommand(module: object, built: unknown) {
     expect(built).not.toBeNull();
     const desc = built as PipelineDescription;
@@ -71,8 +74,10 @@ function startCommand(module: object, built: unknown) {
         }
     ).startPayload(desc);
     const { env, restartOnError: _r, restartBackoffMs: _b, runner: _n, ...cmd } = payload;
+    const opts = cmd as unknown as RunnerStartOptions;
+    const launched = opts.liveInputs?.length ? launchWith(opts, opts.liveInputs) : opts;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(cmd)) if (v !== undefined) out[k] = v;
+    for (const [k, v] of Object.entries(launched)) if (v !== undefined) out[k] = v;
     return { start: out, env };
 }
 

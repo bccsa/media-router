@@ -72,6 +72,9 @@ class Mixer extends GstPluginBase {
     protected alignerInputOf(w: AlignerWatchRef): AlignerInputRef | undefined {
         return this.own ? this.own(w) : super.alignerInputOf(w);
     }
+    playsNothing(text: string | null): void {
+        this.setPlaysNothing(text);
+    }
 }
 
 const report = (
@@ -178,6 +181,17 @@ describe('GstPluginBase aligner warnings', () => {
         expect(m.getState()).toMatchObject({ health: 'warning', error: ABSENT_B });
         await m.onStop();
         expect(m.getState().health).toBe('stopped');
+    });
+
+    it('"Plays nothing" stands over it (B-197); withdrawn, the warning comes straight back', async () => {
+        const { m, child } = await started();
+        send(child, 'mixin_aw_b', report(CONN_B, 'absent'));
+        const nothing = 'Plays nothing: its mixer delivers no audio — relaunched';
+        m.playsNothing(nothing);
+        expect(m.getState().error).toBe(nothing);
+        m.playsNothing(null);
+        expect(m.getState()).toMatchObject({ health: 'warning', error: ABSENT_B });
+        await m.onStop();
     });
 
     it('a producer stopped while wired is still named; once unwired, no more (B-93)', async () => {

@@ -41,6 +41,7 @@ vi.mock('../child-process/GstChildProcess.js', async (importOriginal) => ({
 
 import { GstPluginBase } from './GstPluginBase.js';
 import type { LiveInputBranch, ModuleServices, PipelineDescription } from './PluginModule.js';
+import type { PlayoutRaise } from './playoutReanchor.js';
 
 let wired: string[] = [];
 
@@ -207,6 +208,24 @@ describe('GstPluginBase — a launch without some live inputs (B-192)', () => {
 
 describe('GstPluginBase — an output that plays nothing says so (B-197)', () => {
     const NOTHING = 'Plays nothing: its mixer delivers no audio — relaunched';
+    const RAISE: PlayoutRaise = {
+        headId: 'aout-1',
+        baseMs: 60,
+        raiseMs: 400,
+        since: Date.UTC(2026, 10, 2, 12, 0, 0),
+        lastRaiseAt: Date.UTC(2026, 10, 2, 12, 0, 0),
+        requests: 1,
+        lastBy: {
+            moduleId: 'aout-1',
+            label: 'Audio Output',
+            element: 'sink',
+            cause: 'timeline',
+            excessMs: 360,
+            queuedMs: 0,
+            holdMs: 15000,
+        },
+        atCeiling: false,
+    };
 
     it('over ok and over its own lost-input text; withdrawn, the lost inputs show again', async () => {
         const { module, child } = await started();
@@ -220,6 +239,18 @@ describe('GstPluginBase — an output that plays nothing says so (B-197)', () =>
         expect(module.getState().error).toBe(NOTHING);
         module.playsNothing(null);
         expect(module.getState().error).toBe(LOST_23);
+    });
+
+    it("over the route's re-anchor notice; withdrawn, the notice shows again", async () => {
+        const { module, child } = await started();
+        child.emit('stateChange', { state: 'playing' });
+        module.onRoutePlayoutRaised(RAISE);
+        const raised = module.getState().error;
+        expect(module.getState().health).toBe('warning');
+        module.playsNothing(NOTHING);
+        expect(module.getState().error).toBe(NOTHING);
+        module.playsNothing(null);
+        expect(module.getState()).toMatchObject({ health: 'warning', error: raised });
     });
 
     it("never over an error or another writer's warning (ADR-0010 rule 2)", async () => {

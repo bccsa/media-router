@@ -187,6 +187,17 @@ describe('B-197: a module with several bus inputs presents at the largest D amon
         expect(g.router.getRoutePlayoutRaiseMs('mixer')).toBe(0);
     });
 
+    it("asked for one port, the head of that port's route only", async () => {
+        const g = busGraph({ a: { playoutOffsetMs: 300 }, b: { playoutOffsetMs: 800 }, mux: {} });
+        await g.wire('a', 'mux', 'in');
+        await g.wire('b', 'mux', 'in-b');
+        expect(g.router.getRoutePlayoutHead('mux', 'in')?.headId).toBe('a');
+        expect(g.router.getRoutePlayoutOffsetMs('mux', 'in')).toBe(300);
+        expect(g.router.getRoutePlayoutHead('mux', 'in-b')?.headId).toBe('b');
+        expect(g.router.getRoutePlayoutOffsetMs('mux', 'in-b')).toBe(800);
+        expect(g.router.getRoutePlayoutHead('mux')?.headId).toBe('b');
+    });
+
     it('one input: the head of its route, as before (through a transparent producer, first input)', async () => {
         const g = await mixRoute(['mic']);
         expect(g.router.getRoutePlayoutHead('audio-output-302m')?.headId).toBe('mic');

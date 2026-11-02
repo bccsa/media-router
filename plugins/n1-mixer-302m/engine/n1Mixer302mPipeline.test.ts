@@ -9,13 +9,27 @@ import {
 import {
     activeOutputIndices,
     buildN1Parts,
-    buildN1Pipeline,
     buildN1Ports,
     n1InputBranch,
     readChannels,
     readPairCount,
     type N1Output,
+    type N1PipelineInputs,
 } from './n1Mixer302mPipeline.js';
+
+/** The tests' view of `buildN1Parts`: one string with every source's branch, each fan-in's pads
+ *  from 0 (the runner host numbers them across fan-ins; a request pad takes either). */
+function buildN1Pipeline(input: N1PipelineInputs): string | null {
+    const built = buildN1Parts(input);
+    if (!built) return null;
+    const pads = new Map<string, number>();
+    const branches = built.liveInputs.map((b) => {
+        const pad = pads.get(b.element) ?? 0;
+        pads.set(b.element, pad + 1);
+        return liveInputLaunchText(b, pad);
+    });
+    return [built.pipeline, ...branches].join(' ');
+}
 
 function mkSource(i: number, n = 0): AudioMixSource {
     return {
@@ -240,7 +254,7 @@ describe('buildN1Pipeline', () => {
         );
         // The runner appends the branches: the text ends on an element, not a `name.` link.
         expect(built.pipeline).toMatch(/ ! tee name=busout_40201 allow-not-linked=true$/);
-        // With every source there, the launch text is buildN1Pipeline's, each fan-in's pads from 0.
+        // With every source there: the tests' launch text (each fan-in's pads from 0).
         const pads = [0, 1, 0, 1];
         expect(buildN1Pipeline({ inputs: mkInputs([0, 1], 2), outputs: mkOutputs([0, 1]) })).toBe(
             [
