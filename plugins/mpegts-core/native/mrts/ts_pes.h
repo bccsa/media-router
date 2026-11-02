@@ -13,7 +13,7 @@ namespace mrts {
 
 // Lenient as the readers it replaces: a PES_header_data_length too short for
 // the flagged fields, or a PES_packet_length shorter than the header (read as
-// unbounded, as mrpeshouse does), does not reject it.
+// unbounded), does not reject it.
 struct PesHeader {
     uint8_t sid = 0;
     int64_t pts = -1, dts = -1;           // raw 33-bit, -1 = absent

@@ -19,6 +19,6 @@
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "cd py && python3 subtitle_klv_test.py && python3 subtitle_pack_test.py && python3 subtitle_cues_test.py && python3 subtitle_ts_test.py && python3 subtitle_bridge_test.py && python3 subtitle_native_test.py && python3 subtitle_peshouse_gst_test.py"
+        "test:py": "cd py && python3 subtitle_klv_test.py && python3 subtitle_pack_test.py && python3 subtitle_cues_test.py && python3 subtitle_bridge_test.py"
     }
 }

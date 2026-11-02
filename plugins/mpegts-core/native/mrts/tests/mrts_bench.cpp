@@ -239,7 +239,10 @@ int main(int argc, char** argv) {
         PacketWalker w;
         w.feed(data.data(), data.size(), [&](PacketView& v) {
             packets++;
-            if (first_pts < 0) first_pts = read_pes_pts(v.p);
+            PesHeader h;
+            if (first_pts < 0 && v.pusi && v.payload_off < PKT &&
+                parse_pes_header(v.p + v.payload_off, PKT - v.payload_off, &h))
+                first_pts = h.pts;
         });
     }
     if (!packets) {

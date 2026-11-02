@@ -141,7 +141,7 @@ int main() {
         v.pid = -7;
         CHECK("not 0x47: false, view untouched", !parse_packet(nosync.data(), &v) && v.pid == -7);
 
-        // The helpers ts_psi/ts_timeline call agree with the view on every
+        // The helpers ts_psi/ts_house call agree with the view on every
         // header: flags, AF length and PCR flag swept.
         bool agree = true;
         uint8_t b[PKT];

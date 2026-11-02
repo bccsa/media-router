@@ -3,7 +3,7 @@
 with pay and overlay, the pay path without the egress-trace module, the producer's
 cue PES PTS (its teletext PES PTS, no retime), the consumer's install (no demux
 probe), cue PTS, re-sends, pad add/remove and the burn-in's cue watch, the egress
-trace's env gate and bookkeeping, the `show` trace, the text helper.
+trace's env gate, packet walk and bookkeeping, the `show` trace, the text helper.
 """
 import importlib
 import os
@@ -194,6 +194,20 @@ check("egress trace: PES PTS a chunk carries (private only)",
       subtitle_egress_trace.klv_pes_ticks(mixed) == [90_000 * 3600 + 450_000])
 big = packets(0x180, pes(0xBD, 1_800_000, klv.encode_cue(0, 3000, "x" * 400)))
 check("egress trace: continuation-only chunk carries none", subtitle_egress_trace.klv_pes_ticks(big[1]) == [])
+af_only = bytearray(mixed[:188])
+af_only[3] &= 0xEF                                      # its adaptation field, no payload
+no_pusi = bytearray(big[1])
+no_pusi[4:18] = pes(0xBD, 1_800_000, b"")[:14]          # a continuation that reads as a PES start
+check("egress trace: no PES without the payload flag or PUSI",
+      subtitle_egress_trace.klv_pes_ticks(bytes(af_only)) == []
+      and subtitle_egress_trace.klv_pes_ticks(bytes(no_pusi)) == [])
+broken = [bytearray(mixed[:188]) for _ in range(3)]
+at = 5 + broken[0][4]                                   # the PES start, past the adaptation field
+broken[0][0] = 0x46                                     # sync lost
+broken[1][at + 6] &= 0x3F                               # no '10' marker
+broken[2][at + 7] &= 0x7F                               # no PTS flagged
+check("egress trace: no PTS off a lost sync, a header without its '10' marker or without a PTS",
+      all(subtitle_egress_trace.klv_pes_ticks(bytes(b)) == [] for b in broken))
 check("egress trace: a pushed cue maps to its written PTS, wrapped at 2^33",
       sp.pes_ticks(5000) == 90_000 * 3600 + 450_000
       and sp.pes_ticks(1_767_069_165) == (1_767_069_165 + 3_600_000) * 90 % (1 << 33))

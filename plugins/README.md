@@ -2599,7 +2599,7 @@ first, then ported to C++ once it is right; the python stays beside it as
 the reference and keeps its tests, but no runner loads it and no native
 element gets a python fallback. A python harness that drives a native
 element over appsrc/appsink is a test, not a twin. (The frozen pre-house-clock
-paths that still import `py/ts_timeline.py` stop in Phases 2 and 3.)
+paths that imported `py/ts_timeline.py` stopped in Phases 2 and 3.)
 
 ### Add C++ to your plugin
 
@@ -2712,7 +2712,7 @@ Put python in `plugins/<plugin>/py/`. Two ways it gets used:
   `hls-player`'s fan-out fallback.
 - **Import from pipeline code**: every `plugins/*/py` dir is automatically on
   the gst pipeline runner's `PYTHONPATH`, so runner-loaded code can plainly
-  `import my_module`. Examples: `librist` (rist-core), `ts_timeline`
+  `import my_module`. Examples: `librist` (rist-core), `ts_psi`
   (mpegts-core). Module FILENAMES must be unique across all plugins (python
   has one flat import namespace) — the engine logs an error at startup if two
   plugins ship the same module name.

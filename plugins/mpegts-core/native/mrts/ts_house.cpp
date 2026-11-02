@@ -3,7 +3,6 @@
 #include "ts_packet.h"
 #include "ts_pcr.h"
 #include "ts_pes.h"
-#include "ts_timeline.h"                  // timing_pes, kept until Phase 3
 
 namespace mrts {
 namespace {
@@ -27,7 +26,7 @@ int64_t scale_floor(int64_t v, int64_t num, int64_t den) {
     return q * num + (v - q * den) * num / den;
 }
 
-// PTS of the PES header that starts in `pkt`, or -1: read_pes_pts on a synced packet.
+// PTS of the PES header that starts in the synced PUSI packet `pkt`, or -1.
 int64_t pes_pts(const uint8_t* pkt) {
     if (pkt[0] != SYNC_BYTE || !ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
     const int off = payload_offset(pkt);
@@ -96,6 +95,15 @@ int64_t net_to_bus(int64_t pts33, const NetEpoch& e) {
 
 int64_t net_pcr27(int64_t h_emission_ns, int64_t d_e_ns) {
     return ns_to_pcr27(h_emission_ns - d_e_ns);
+}
+
+// py/ts_timeline.py's `timing_pes`, rule for rule. Private data (KLV, teletext, DVB
+// subtitles, also AC-3 and Opus) counts only on its carrier: a sparse cue's PTS sit
+// seconds off the video's (the Pi 4 test box's route, 2026-09-16).
+bool timing_pes(const uint8_t* pkt, int pid, int timing_pid) {
+    const int sid = pkt[payload_offset(pkt) + 3];
+    if ((sid & 0xF0) == 0xE0 || (sid & 0xE0) == 0xC0) return true;
+    return pid == timing_pid;
 }
 
 int64_t IdentityStamp::stamp(const uint8_t* data, size_t len, int64_t house_now, int stream) {

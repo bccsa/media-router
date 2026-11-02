@@ -9,7 +9,6 @@ mrts/tests/ts_packet_test
 mrts/tests/ts_psi_test
 mrts/tests/ts_split_test
 mrts/tests/ts_video_info_test
-mrts/tests/ts_timeline_test
 mrts/tests/lateness_test
 mrts/tests/ts_pcr_test
 mrts/tests/ts_pes_test
@@ -25,6 +24,5 @@ mrts/tests/ts_rebase_test
 mrts/tests/pcm_fade_test
 mrts/tests/mrts_bench
 mrts/tests/fixture_gen
-mrpeshouse/tests/stamp_model_test
 mrtshouse/tests/restamp_ref
 mrtshouse/tests/asrc_bench

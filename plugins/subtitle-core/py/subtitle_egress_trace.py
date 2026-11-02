@@ -7,20 +7,23 @@ doc subtitle-content-time-20261009); matched on the 33-bit PES PTS as written.
 import time
 
 import subtitle_pack
-import subtitle_ts
 
+PKT = 188
 PENDING_MAX = 32
 
 
 def klv_pes_ticks(data):
-    """PES PTS (90 kHz, as written) of the private PES that start in `data`."""
+    """PES PTS (90 kHz, as written) of the private (0xBD) PES that start in `data`,
+    a packet-aligned chunk."""
     out = []
-    for pkt in subtitle_ts.iter_packets(data):
-        if not pkt[1] & 0x40:
-            continue
-        hdr = subtitle_ts.parse_pes_header(pkt[subtitle_ts.payload_offset(pkt):])
-        if hdr and hdr[0] == subtitle_ts.STREAM_ID_PRIVATE_1 and hdr[1] is not None:
-            out.append(hdr[1])
+    for i in range(0, len(data) - PKT + 1, PKT):
+        pkt = data[i:i + PKT]
+        if pkt[0] != 0x47 or not pkt[1] & 0x40 or not pkt[3] & 0x10:
+            continue                                     # no PES starts here
+        p = pkt[4 + (1 + pkt[4] if pkt[3] & 0x20 else 0):]
+        if len(p) >= 14 and p[:4] == b"\x00\x00\x01\xbd" and (p[6] & 0xC0) == 0x80 and p[7] & 0x80:
+            out.append((((p[9] >> 1) & 0x07) << 30) | (p[10] << 22) | ((p[11] >> 1) << 15)
+                       | (p[12] << 7) | (p[13] >> 1))
     return out
 
 

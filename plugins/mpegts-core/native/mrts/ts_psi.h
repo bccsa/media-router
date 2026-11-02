@@ -41,17 +41,6 @@ struct TsPacket {
 // CRC-32/MPEG-2: poly 0x04C11DB7, init 0xFFFFFFFF, no reflection/xorout.
 uint32_t crc32_mpeg(const uint8_t* data, size_t n);
 
-// 33-bit 90 kHz PTS of the PES header starting in this packet, or -1. Forwards to
-// parse_pes_header until its last caller moves (Phase 3); ts_psi_test pins it to
-// the body it replaced.
-inline int64_t read_pes_pts(const uint8_t* pkt) {
-    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
-    const int off = payload_offset(pkt);
-    if (off >= PKT) return -1;
-    PesHeader h;
-    return parse_pes_header(pkt + off, PKT - off, &h) ? h.pts : -1;
-}
-
 void null_packet(int cc, uint8_t out[PKT]);
 
 struct PmtStream {

@@ -5,7 +5,7 @@ runs the same case against mr-gst-runner. An SRT ingest's input, arrival in PTS,
 over unixfdsink -> unixfdsrc, and must arrive as mrts::RestampCore makes it:
 
   (a) every PES-bearing bus buffer's stamp is house_from_mux_pts of its first timing PES's PTS,
-      exactly (the identity egress, ts_timeline.cpp `stamp_house`), with the core's bytes;
+      exactly (the identity egress, `mrts::IdentityStamp`), with the core's bytes;
   (b) the gap markers of a live offset-ns edit, a live pid-trims edit and an outage reach the
       consumer with GAP|DISCONT, their PTS and their encoded length, also through srt-input's
       own queue (SrtInputModule.ts) between the restamp and the bus; a live

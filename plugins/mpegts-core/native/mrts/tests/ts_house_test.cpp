@@ -1,10 +1,11 @@
 // ts_house: the units, the 1 h formula and its inverse, the 33-bit wrap, the
-// per-stream unwrap and the bus <-> network boundary (WI-S0-1), and the
-// identity stamp (WI-P2-2a). Hard-coded integers were computed with python's
-// big ints (py/ts_timeline.py semantics); the identity vectors were recorded
-// from the anchored stamper's house-timeline mode (`stamp_house`) at 263bdcd7.
+// per-stream unwrap and the bus <-> network boundary (WI-S0-1), and the identity
+// stamp (WI-P2-2a) with its rule `timing_pes`. Hard-coded integers were computed
+// with python's big ints (py/ts_timeline.py semantics); the identity vectors were
+// recorded from the anchored stamper's house-timeline mode (`stamp_house`) at 263bdcd7.
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <initializer_list>
 #include <map>
 #include <utility>
@@ -102,6 +103,40 @@ int64_t P(int64_t h) { return mux_pts_from_house(h); }
 
 int64_t stamp_of(IdentityStamp& id, const Bytes& b, int64_t now, int stream = 0) {
     return id.stamp(b.data(), b.size(), now, stream);
+}
+
+// --- timing_pes fixtures (moved from ts_timeline_test, B-143) -----------------
+
+constexpr int64_t TIMING_PTS = 900000;            // 10 s
+constexpr int64_t TIMING_PCR = 123456789;
+
+// A PUSI packet opening a PES with stream_id `sid` and a PTS on `pid`, behind an
+// adaptation field of `af` bytes (-1 = none) that carries `pcr27` when >= 0.
+TsPacket timing_packet(int pid, uint8_t sid, int af = -1, int64_t pcr27 = -1) {
+    TsPacket t;
+    std::memset(t.b, 0xFF, PKT);
+    t.b[0] = SYNC_BYTE;
+    t.b[1] = (uint8_t)(0x40 | ((pid >> 8) & 0x1F));
+    t.b[2] = (uint8_t)(pid & 0xFF);
+    t.b[3] = af >= 0 ? 0x30 : 0x10;
+    int off = 4;
+    if (af >= 0) {
+        t.b[4] = (uint8_t)af;
+        if (af > 0) t.b[5] = pcr27 >= 0 ? 0x10 : 0x00;
+        if (pcr27 >= 0) write_pcr(t.b, pcr27);
+        off = 5 + af;
+    }
+    uint8_t h[14] = {0x00, 0x00, 0x01, sid, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21};
+    write_pes_ts_field(h + 9, TIMING_PTS);
+    std::memcpy(t.b + off, h, sizeof h);
+    return t;
+}
+
+// The PTS of the PES header the packet opens, by parse_pes_header (-1: none).
+int64_t pts_of(const TsPacket& t) {
+    const int off = payload_offset(t.b);
+    PesHeader h;
+    return off < PKT && parse_pes_header(t.b + off, PKT - off, &h) ? h.pts : -1;
 }
 
 // ts_stc_test's LCG and FNV-1a: integer-only, so the corpus and its checksum
@@ -587,6 +622,64 @@ int main() {
     CHECK("the PCR base is the PTS of the same instant",
           net_pcr27(E_TAI, 500'000'000) / 300 == mod33(ns_to_pts90k(E_TAI - 500'000'000)));
     CHECK("net_pcr27 stays in [0, PCR_MODULO)", net_pcr27(0, 1) == PCR_MODULO - 1);
+
+    // --- timing_pes, IdentityStamp's rule (moved from ts_timeline_test, B-143) --
+    // ts_timeline_test.py's "timing eligibility" cases (2026-09-16), then every
+    // stream_id and adaptation field length.
+    const TsPacket klv = timing_packet(0x10a, 0xBD), video = timing_packet(0x65, 0xE0);
+    CHECK("the fixtures hold a PES header with a PTS (the caller's precondition)",
+          pts_of(klv) == TIMING_PTS && pts_of(video) == TIMING_PTS);
+    auto alone = [](uint8_t sid) { return timing_pes(timing_packet(0x100, sid).b, 0x100, -1); };
+    CHECK("timing_pes: video/audio yes, private no",
+          alone(0xE0) && alone(0xEF) && alone(0xC0) && alone(0xDF) && !alone(0xBD) &&
+              !alone(0xBF));
+    CHECK("timing_pes: a private PES qualifies only on the PCR-carrying PID",
+          !timing_pes(klv.b, 0x10a, -1) && timing_pes(klv.b, 0x10a, 0x10a) &&
+              timing_pes(video.b, 0x65, -1));
+    CHECK("timing_pes: ... not on another PID's PCR", !timing_pes(klv.b, 0x10a, 0x100));
+    {
+        int with_pts = 0, own = 0, carrier = 0, other = 0;
+        bool band = true;
+        for (int sid = 0; sid < 256; sid++) {
+            const TsPacket p = timing_packet(0x100, (uint8_t)sid);
+            if (pts_of(p) != TIMING_PTS) continue;   // 0xBC, 0xBE, 0xBF, 0xF0-0xF2, 0xF8, 0xFF
+            with_pts++;
+            const bool a = timing_pes(p.b, 0x100, -1);
+            own += a;
+            carrier += timing_pes(p.b, 0x100, 0x100);
+            other += timing_pes(p.b, 0x100, 0x101) == a;
+            band &= a == (sid >= 0xC0 && sid <= 0xEF);
+        }
+        CHECK("timing_pes: on its own exactly 0xC0-0xEF qualify, 48 of the 248 stream_ids with a PTS",
+              with_pts == 248 && band && own == 48);
+        CHECK("timing_pes: on the PCR carrier every one qualifies", carrier == 248);
+        CHECK("timing_pes: another PID's PCR changes nothing", other == 248);
+    }
+    {
+        // The stream_id is read where the payload starts.
+        TsPacket decoy = timing_packet(0x100, 0xBD, 3);
+        decoy.b[6] = decoy.b[7] = 0xE0;              // where a reader ignoring the AF looks
+        CHECK("timing_pes: behind an adaptation field, never at byte 7",
+              pts_of(decoy) == TIMING_PTS && !timing_pes(decoy.b, 0x100, -1));
+        const TsPacket pv = timing_packet(0x100, 0xE0, 7, TIMING_PCR),
+                       ps = timing_packet(0x101, 0xBD, 7, TIMING_PCR);
+        CHECK("timing_pes: a video PES behind its own PCR qualifies",
+              read_pcr(pv.b) == TIMING_PCR && pts_of(pv) == TIMING_PTS && timing_pes(pv.b, 0x100, -1));
+        CHECK("timing_pes: an s302m PES behind its PCR, on that carrier only",
+              read_pcr(ps.b) == TIMING_PCR && pts_of(ps) == TIMING_PTS &&
+                  timing_pes(ps.b, 0x101, 0x101) && !timing_pes(ps.b, 0x101, -1));
+        int lengths = 0;
+        bool every = true;
+        for (int af = -1; 5 + af + 14 <= PKT; af++) {
+            const TsPacket v = timing_packet(0x100, 0xE0, af), k = timing_packet(0x100, 0xBD, af);
+            every &= pts_of(v) == TIMING_PTS && pts_of(k) == TIMING_PTS &&
+                     timing_pes(v.b, 0x100, -1) && !timing_pes(k.b, 0x100, -1) &&
+                     timing_pes(k.b, 0x100, 0x100);
+            lengths++;
+        }
+        CHECK("timing_pes: no adaptation field, then one of 0 to 169 bytes: the same answers",
+              every && lengths == 171);
+    }
 
     // --- IdentityStamp (WI-P2-2a) --------------------------------------------
     // The two house-timeline cases ts_timeline_test held until WI-P2-2b, as buffers:

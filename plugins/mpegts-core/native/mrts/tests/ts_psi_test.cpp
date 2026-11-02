@@ -165,8 +165,8 @@ bool stuffed(const uint8_t* from, const uint8_t* to) {
     return std::all_of(from, to, [](uint8_t b) { return b == 0xFF; });
 }
 
-// read_pes_pts as it was before it forwarded to parse_pes_header (WI-S0-6): the
-// oracle the forwarder must match, since the frozen model still calls it.
+// read_pes_pts as it was before it forwarded to parse_pes_header (WI-S0-6; the
+// forwarder went in B-143): the oracle pes_pts must match.
 int64_t old_read_pes_pts(const uint8_t* pkt) {
     if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return -1;
     int off = payload_offset(pkt);
@@ -184,6 +184,19 @@ int64_t old_read_pes_pts(const uint8_t* pkt) {
     if (!(p[7] & 0x80)) return -1;
     return ((int64_t)((p[9] >> 1) & 0x07) << 30) | ((int64_t)p[10] << 22) |
            ((int64_t)(p[11] >> 1) << 15) | ((int64_t)p[12] << 7) | (p[13] >> 1);
+}
+
+// The PTS of the PES header starting in `pkt`, or -1, read as the mrts callers read
+// it: the packet view, then parse_pes_header.
+int64_t pes_pts(const uint8_t* pkt) {
+    uint8_t b[PKT];
+    std::memcpy(b, pkt, PKT);             // parse_packet's view is mutable
+    PacketView v;
+    PesHeader h;
+    return parse_packet(b, &v) && v.pusi && v.payload_off < PKT &&
+                   parse_pes_header(b + v.payload_off, PKT - v.payload_off, &h)
+               ? h.pts
+               : -1;
 }
 
 uint32_t lcg_next(uint32_t& s) {
@@ -394,27 +407,27 @@ int main() {
 
     // The PCR read/build cases moved to ts_pcr_test (WI-S0-4).
 
-    // PES PTS extraction.
+    // PES PTS extraction: ts_psi.py's read_pes_pts cases, on the C++ read (pes_pts).
     const int64_t big_pts = 0x123456789LL & 0x1FFFFFFFFLL;   // exercises PTS[32]
     CHECK("PES PTS round-trip",
-          read_pes_pts(pes_ts_packet(0x65, big_pts, -1, 0xE0, true, -1).b) == big_pts);
+          pes_pts(pes_ts_packet(0x65, big_pts, -1, 0xE0, true, -1).b) == big_pts);
     CHECK("PES PTS+DTS round-trip",
-          read_pes_pts(pes_ts_packet(0x65, 90000, 87000, 0xE0, true, -1).b) == 90000);
+          pes_pts(pes_ts_packet(0x65, 90000, 87000, 0xE0, true, -1).b) == 90000);
     CHECK("PES without PTS -> -1",
-          read_pes_pts(pes_ts_packet(0x65, -1, -1, 0xE0, true, -1).b) == -1);
+          pes_pts(pes_ts_packet(0x65, -1, -1, 0xE0, true, -1).b) == -1);
     CHECK("non-PUSI packet -> -1",
-          read_pes_pts(pes_ts_packet(0x65, 90000, -1, 0xE0, false, -1).b) == -1);
-    CHECK("PSI packet -> -1", read_pes_pts(pat) == -1);
+          pes_pts(pes_ts_packet(0x65, 90000, -1, 0xE0, false, -1).b) == -1);
+    CHECK("PSI packet -> -1", pes_pts(pat) == -1);
     uint8_t pcronly[PKT];
     build_pcr_packet(0x65, 300, 0, pcronly);
-    CHECK("adaptation-only packet -> -1", read_pes_pts(pcronly) == -1);
+    CHECK("adaptation-only packet -> -1", pes_pts(pcronly) == -1);
     CHECK("padding stream -> -1",
-          read_pes_pts(pes_ts_packet(0x65, 90000, -1, 0xBE, true, -1).b) == -1);
+          pes_pts(pes_ts_packet(0x65, 90000, -1, 0xBE, true, -1).b) == -1);
     CHECK("PES behind adaptation field",
-          read_pes_pts(pes_ts_packet(0x65, 4500, -1, 0xE0, true, 10).b) == 4500);
+          pes_pts(pes_ts_packet(0x65, 4500, -1, 0xE0, true, 10).b) == 4500);
 
-    // --- read_pes_pts forwards to parse_pes_header (WI-S0-6): the old body's answer on
-    // every AF length (header cut anywhere), flag, start code, marker and stream id.
+    // --- the PES PTS read gives the old read_pes_pts body's answer (WI-S0-6) on every
+    // AF length (header cut anywhere), flag, start code, marker and stream id.
     {
         const uint8_t sids[] = {0xE0, 0xC0, 0xBD, 0xFA, 0x00, 0xB9, 0xBC, 0xBE,
                                 0xBF, 0xF0, 0xF1, 0xF2, 0xF8, 0xFF};
@@ -439,7 +452,7 @@ int main() {
                                                                mk, fl, hdl_set[n % 4], pts, dts,
                                                                broken);
                                 const int64_t want = old_read_pes_pts(t.b);
-                                if (read_pes_pts(t.b) != want) bad++;
+                                if (pes_pts(t.b) != want) bad++;
                                 found += want >= 0;
                                 found_at[af + 1] += want >= 0;
                                 at14 += want >= 0 && af == 169;   // payload exactly 14 bytes
@@ -458,13 +471,13 @@ int main() {
                 if (off + 6 < PKT && (lcg_next(s) & 1)) t.b[off + 6] = (t.b[off + 6] & 0x3F) | 0x80;
             }
             const int64_t want = old_read_pes_pts(t.b);
-            if (read_pes_pts(t.b) != want) bad++;
+            if (pes_pts(t.b) != want) bad++;
             found += want >= 0;
             n++;
         }
-        std::printf("  read_pes_pts differential: %ld packets, %ld with a PTS, %ld mismatches\n", n,
+        std::printf("  PES PTS differential: %ld packets, %ld with a PTS, %ld mismatches\n", n,
                     found, bad);
-        CHECK("read_pes_pts forwarder == the old body on every generated packet", bad == 0);
+        CHECK("the PES PTS read == the old read_pes_pts body on every generated packet", bad == 0);
         CHECK("... the set reaches PTS at a 14-byte payload and cuts at 13", at14 > 0 && cut13 > 0);
         CHECK("... and finds a PTS behind every AF length that leaves room for one",
               std::all_of(found_at.begin(), found_at.begin() + 171, [](long c) { return c > 0; }));

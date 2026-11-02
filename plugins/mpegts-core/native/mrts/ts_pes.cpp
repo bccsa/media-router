@@ -46,7 +46,7 @@ bool parse_pes_header(const uint8_t* pes, size_t n, PesHeader* out) {
             if (n >= 9) {
                 h.header_len = 9 + pes[8];
                 // Read at 9 and 14 whatever PES_header_data_length says, as
-                // read_pes_pts does; '01' (forbidden) reads as no PTS, as there.
+                // read_pes_pts did; '01' (forbidden) reads as no PTS, as there.
                 const int flags = pes[7] >> 6;
                 if (flags & 2) {
                     need = flags == 3 ? 19 : 14;

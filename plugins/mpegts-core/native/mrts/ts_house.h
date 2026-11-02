@@ -68,6 +68,11 @@ int64_t net_to_bus(int64_t pts33, const NetEpoch& e); // - E + 1 h mod 2^33
 // H(emission) - D_e mod PCR_MODULO; H on the network timescale (MONO + E).
 int64_t net_pcr27(int64_t h_emission_ns, int64_t d_e_ns);
 
+// A PES that may define an egress's timeline (IdentityStamp's rule, B-51): video
+// (0xE0-0xEF) or audio (0xC0-0xDF), or any PES on `timing_pid`, the PCR carrier
+// (-1 = unknown). `pkt` holds a PES header with a PTS.
+bool timing_pes(const uint8_t* pkt, int pid, int timing_pid);
+
 // The identity stamp of a bus buffer (P3, plan ch. 6 part 4.1): the house time
 // its first timing PES carries, `PES - 1 h`. All state is per `stream`, as
 // mr-tssplit's outputs (stream = PID) each carry their own PCR carrier.

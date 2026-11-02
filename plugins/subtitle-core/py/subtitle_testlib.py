@@ -1,7 +1,7 @@
 """Shared by the subtitle-core python suites: `check`, the ONE independent TS
-reference encoder (`pes`, `packets`, `pat` — deliberately not `subtitle_pack`,
-whose own oracle is the mpegtsmux byte fixtures in subtitle_pack_test.py), the
-bus egress stamp (`IdentityStamp`), and the mpegts-core python dir (a declared
+reference encoder (`pes`, `packets` — deliberately not `subtitle_pack`, whose
+own oracle is the mpegtsmux byte fixtures in subtitle_pack_test.py), the bus
+egress stamp (`IdentityStamp`), and the mpegts-core python dir (a declared
 dependency, resolved the way unixfdbus-core's test client resolves it).
 """
 import os
@@ -54,11 +54,6 @@ def packets(pid, data, pcr=None):
         first, cc = False, cc + 1
         if not data:
             return out
-
-
-def pat():
-    body = bytes([0x00, 0x00, 0xB0, 0x0D, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xF0, 0x00])
-    return bytes([0x47, 0x40, 0x00, 0x10]) + body + b"\xff" * (184 - len(body))
 
 
 class IdentityStamp:

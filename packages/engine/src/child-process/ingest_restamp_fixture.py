@@ -14,7 +14,7 @@ Reference: `reference()` runs mrtshouse/tests/restamp_ref (the core, no GStreame
 ("B", arrival, bytes), ("O", ns), ("T", {pid: ns}), ("C", ns), ("R", path), ("F",), ("E",).
 `expected_items` is what the element pushes for them: each buffer's bytes split around its
 markers, a marker's PTS the gap's end on the bus convention. `identity_stamps` is what an
-identity egress then stamps on each data buffer (ts_timeline.cpp `stamp_house`)."""
+identity egress then stamps on each data buffer (`mrts::IdentityStamp`, ts_house.cpp)."""
 import json
 import os
 import struct
@@ -299,7 +299,7 @@ def ref_counters(ref):
 
 def first_timing_pts(data):
     """The PTS of the buffer's first PES header with a video or audio stream id: the PES an
-    identity egress stamps by (ts_timeline.cpp `timing_pes`; the fixture has no private PES)."""
+    identity egress stamps by (ts_house.cpp `timing_pes`; the fixture has no private PES)."""
     for k in range(0, len(data) - PKT + 1, PKT):
         pkt = data[k:k + PKT]
         if pkt[0] != 0x47 or not pkt[1] & 0x40 or not pkt[3] & 0x10:
@@ -317,7 +317,7 @@ def first_timing_pts(data):
 
 
 def identity_stamps(items, house_now):
-    """Per item, the PTS an identity egress (ts_timeline.cpp `stamp_house`) leaves on it: a data
+    """Per item, the PTS an identity egress (`mrts::IdentityStamp`) leaves on it: a data
     buffer with a timing PES gets `house_from_mux_pts` of its PTS, one without the last stamp,
     never below it; a marker keeps its own PTS (WI-P1-7). None where the stamp is the egress's
     clock (a PES-less buffer before the first stamp), which the caller cannot know."""
