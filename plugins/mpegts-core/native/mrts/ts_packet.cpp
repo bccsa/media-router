@@ -71,22 +71,52 @@ CcTracker::Result CcTracker::feed(const PacketView& v) {
     if (v.af_discontinuity) {
         // An adaptation-only packet's CC says nothing about the next payload's.
         s = v.has_payload ? (uint8_t)(CC_KNOWN | v.cc) : 0;
+        if (v.has_payload) keep(v);
         return Result::Reset;
     }
     if (!v.has_payload) return Result::Ok;
     const uint8_t last = s & 0x0F;
     if (!(s & CC_KNOWN) || v.cc == ((last + 1) & 0x0F)) {
         s = CC_KNOWN | v.cc;
+        keep(v);
         return Result::Ok;
     }
-    if (v.cc == last && !(s & CC_DUP)) {
+    // A duplicate repeats its original's payload (2.4.3.3; only a PCR may differ). The same CC on
+    // other bytes is new content after a loss, such as a source restarted on that CC (B-203).
+    const bool copy = v.cc == last && repeats(v);
+    if (copy && !(s & CC_DUP)) {
         s |= CC_DUP;
         return Result::Duplicate;
     }
     // A third copy keeps the duplicate mark, so a run of repeats stays an error.
-    s = (uint8_t)(CC_KNOWN | (v.cc == last ? CC_DUP : 0) | v.cc);
+    s = (uint8_t)(CC_KNOWN | (copy ? CC_DUP : 0) | v.cc);
+    if (!copy) keep(v);
     lost_++;
     return Result::Lost;
+}
+
+void CcTracker::reset() {
+    for (uint8_t& s : state_) s = 0;
+}
+
+void CcTracker::keep(const PacketView& v) {
+    uint16_t& at = slot_[v.pid];
+    if (!at) {
+        last_.emplace_back();
+        at = (uint16_t)last_.size();
+    }
+    Last& l = last_[at - 1];
+    l.pusi = v.pusi;
+    l.len = (uint8_t)(PKT - v.payload_off);
+    std::memcpy(l.b, v.p + v.payload_off, l.len);
+}
+
+bool CcTracker::repeats(const PacketView& v) const {
+    const uint16_t at = slot_[v.pid];
+    if (!at) return false;
+    const Last& l = last_[at - 1];
+    return l.pusi == v.pusi && l.len == PKT - v.payload_off &&
+           std::memcmp(l.b, v.p + v.payload_off, l.len) == 0;
 }
 
 }  // namespace mrts

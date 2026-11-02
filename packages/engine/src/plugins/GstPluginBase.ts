@@ -15,6 +15,7 @@ import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { QUEUE_SHED_EVENT } from './tsHelpers.js';
+import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
 import {
     DEFAULT_PLAYOUT_OFFSET_MS,
     PLAYOUT_OFFSET_KEY,
@@ -46,7 +47,10 @@ type OwnedWarning =
     | 'timing-plugin'
     | 'input-absent'
     | 'aligner-full'
-    | 'plays-nothing';
+    | 'plays-nothing'
+    | 'off-clock';
+/** The timing warnings, one health text among them (WI-P2-13, B-203). */
+const TIMING_WARNINGS: OwnedWarning[] = ['input-absent', 'aligner-full', 'off-clock'];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -99,6 +103,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
                 : [],
         alignerWarnings: (absent, full) => this.onAlignerWarnings(absent, full),
+        offClock: (text) => this.onOffClock(text),
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
         alignerInput: (watch) => this.alignerInputOf(watch),
@@ -515,22 +520,46 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.health !== 'error') this.ownWarning('timing-plugin', this.timingPluginAlarm);
     }
 
-    /**
-     * The aligners' `input-absent` and `aligner-full` warnings (WI-P2-13) as one health text.
-     * Taken only over ok or our own text (ADR-0010 rule 2), so another writer's warning or an
-     * error stands; the next tick takes over once it clears. Withdrawn when neither stands.
-     */
+    /** The timing warnings' texts as the module timing last gave them. */
+    private readonly timingTexts: {
+        absent: string | null;
+        full: string | null;
+        offClock: string | null;
+    } = {
+        absent: null,
+        full: null,
+        offClock: null,
+    };
+
     private onAlignerWarnings(absent: string | null, full: string | null): void {
-        const text = [absent, full].filter((t): t is string => t !== null).join('; ');
-        const ours = this.ownedWarning === 'input-absent' || this.ownedWarning === 'aligner-full';
+        this.timingTexts.absent = absent;
+        this.timingTexts.full = full;
+        this.showTimingWarnings();
+    }
+
+    /** An output off the house clock (B-203): a warning while it lasts. */
+    private onOffClock(text: string | null): void {
+        this.timingTexts.offClock = text;
+        this.showTimingWarnings();
+    }
+
+    /** The aligners' warnings (WI-P2-13) and an output off the house clock (B-203) as one health
+     *  text, taken only over ok or our own (ADR-0010 rule 2): another writer's or an error stands
+     *  until it clears. Withdrawn when none stands. */
+    private showTimingWarnings(): void {
+        const { absent, full, offClock } = this.timingTexts;
+        const text = [absent, full, offClock].filter((t): t is string => t !== null).join('; ');
+        const ours = this.ownedWarning !== null && TIMING_WARNINGS.includes(this.ownedWarning);
         if (!text) {
-            this.clearOwnWarning('input-absent');
-            this.clearOwnWarning('aligner-full');
+            for (const kind of TIMING_WARNINGS) this.clearOwnWarning(kind);
             return;
         }
         if (!ours && this.health !== 'ok') return;
         if (ours && this.health === 'warning' && this.error === text) return;
-        this.ownWarning(absent !== null ? 'input-absent' : 'aligner-full', text);
+        this.ownWarning(
+            absent !== null ? 'input-absent' : full !== null ? 'aligner-full' : 'off-clock',
+            text,
+        );
     }
 
     /** `ok`, or the rule-6 alarm while it stands (no state change emitted). */
@@ -840,7 +869,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * audio-decoder, any future presentation leg — see backlogShed.ts), so its
      * one line per episode has to exist for all of them without each one
      * remembering to write it. The subclass hook still gets the event and may
-     * do more with it.
+     * do more with it. So are `queue_shed` (B-182) and `stamp_off_clock` (B-203).
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         // Lateness windows and aligner reports are the base class's alone (WI-P0-9,
@@ -848,6 +877,12 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
         if (channel === QUEUE_SHED_EVENT) this.logQueueShed(payload);
+        if (channel === STAMP_OFF_CLOCK_EVENT) {
+            this.log.warn(
+                { stampOffClock: payload },
+                stampOffClockText((payload ?? {}) as StampOffClock),
+            );
+        }
         if (channel === PLAYOUT_REANCHOR_EVENT) {
             this.playout
                 .onEvent(payload)

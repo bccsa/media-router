@@ -10,7 +10,7 @@ The lifecycle through the runner is gst_bus_stamper_test.py's; this file is the 
 What is pinned here:
 
   --  The runner's own resolver finds and loads the plugin (no GST_PLUGIN_PATH), version
-      3.0.0 with the identity interface only, and the element lands at the HEAD of the
+      3.1.0 with the identity interface only, and the element lands at the HEAD of the
       egress — before the caps pair and the tee, so one stamp serves every consumer edge.
   --  Coalescing (ADR-0011): one bus buffer per buffer list, armed or not.
   R2  Every armed buffer carries a valid PTS and DTS, non-decreasing; a PES-less buffer
@@ -246,8 +246,8 @@ check("the resolver looks in the plugin's own folder first, install root second"
       [os.path.basename(os.path.dirname(p)) for p in stamper.so_paths()]
       == ["mrtsstamp", "mpegts-core"])
 plugin = Gst.Registry.get().find_plugin("mrtsstamp")
-check("the plugin is 3.0.0, the identity-only interface",
-      plugin is not None and plugin.get_version() == "3.0.0")
+check("the plugin is 3.1.0, the identity-only interface and the stamp guard's message (B-203)",
+      plugin is not None and plugin.get_version() == "3.1.0")
 probe_el = Gst.ElementFactory.make("mrtsstamp")
 own = sorted(p.name for p in probe_el.list_properties()
              if p.owner_type == probe_el.__gtype__)
@@ -441,6 +441,39 @@ check("a PES behind the last stamp is held at the floor",
 
 
 # ---------------------------------------------------------------------------
+print("\n--- B-203: a timing PES off the house clock times nothing, one message per episode ---")
+# MR-033's: the PES before a 79,700.835 s outage on its old PTS, read nearest the clock one 2^33
+# wrap on, 15,742.9 s ahead. Before the guard it became the floor and every stamp after it froze.
+OUTAGE = 79700835 * 90                  # 79,700.835 s in 90 kHz ticks
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe)
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+seen = tap_timestamps(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+c0 = content0(pipe)
+stale = c0 - 90000 - OUTAGE
+ladder = [c0, c0 + STEP, stale, c0 + 3 * STEP, stale + STEP, c0 + 5 * STEP]
+for i, c in enumerate(ladder):
+    push(src, pes_packet(0x100, MUX + c, i), i * 7 * Gst.MSECOND, 0)
+bus.wait(seen, len(ladder))
+bus.drain(pipe, src)
+teardown()
+stamps = [p for p, _ in seen]
+check("off clock: the stale PES leave their buffers at the floor, the ladder stamps on exactly",
+      stamps == [house(c0), house(c0 + STEP), house(c0 + STEP), house(c0 + 3 * STEP),
+                 house(c0 + 3 * STEP), house(c0 + 5 * STEP)])
+off = bus.of("mrtsstamp-off-clock")
+now0 = house(c0) - Gst.SECOND
+want_s = (_tl.house_from_mux_pts((MUX + stale) % (1 << 33), now0) - now0) / 1e9
+check(f"off clock: one mrtsstamp-off-clock for both (an episode), naming the PID, how far ahead "
+      f"(want about {want_s:.1f} s) and the count",
+      len(off) == 1 and off[0][0] == STAMP_EL and off[0][2]["pid"] == 0x100
+      and abs(off[0][2]["offset"] / 1e9 - want_s) < 1.0 and off[0][2]["count"] == 1)
+
+
+# ---------------------------------------------------------------------------
 print("\n--- 2^33 wraps are continuous: the PES field at 25.5 h, the content at 26.5 h ---")
 # Content 1 s ahead of a house clock that sits three buffers before the wrap; identity
 # unwraps near the clock, so neither the field's nor the content's wrap shows.
@@ -520,6 +553,9 @@ pipe = Gst.parse_launch(
 bus = Bus(pipe)
 start(pipe)
 el = pipe.get_by_name(STAMP_EL)
+# Armed before PLAYING (a runner arms at an edge, after it), and filesrc pushes in PAUSED, before
+# the pipeline hands out its clock: the element gets it first, or those buffers stamp against 0.
+el.set_clock(pipe.get_pipeline_clock())
 stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
 seen = tap_timestamps(pipe)
 pipe.set_state(Gst.State.PLAYING)

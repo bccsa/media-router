@@ -62,6 +62,9 @@ COOLDOWN_NS = 3600 * S   # Smoothing Cooldown's 60 min, past 32 bits through the
 GARBAGE = 37         # bytes the walker skips to regain sync: the core's copy path
 LEAD_IN = 15   # PAT CCs 0..14 name the lead-in datagram a consumer's first buffer is
 CHANNELS = ("mrtsrestamp-stats", "mrtsrestamp-pid", "mrtsrestamp-event")
+# The most a buffer's arrival is sent ahead of the egress's clock: with the lead, the O edit and the
+# trim its PES stays under the identity egress's 10 s, past which a PES times nothing (B-203).
+AHEAD_NS = 8 * S
 
 
 def bus_sink(port):
@@ -75,9 +78,9 @@ def bus_sink(port):
 def plan(now):
     """The records: lead-in, 10 s of stream, O +500 ms at 3 s, a +200 ms audio trim at 4.5 s,
     the smoothing cooldown 60 min at 5 s, 1.5 s of silence at 6 s, 37 bytes of garbage at
-    8.5 s, a lost packet at 9 s, EOS. Arrival runs a minute ahead of the egress's clock, so no
-    stamp meets its first floor."""
-    st = fx.Stream(10, h0=now + 60 * S, outage=(6 * S, 7500 * MS), lead_in=LEAD_IN)
+    8.5 s, a lost packet at 9 s, EOS. Arrival starts 6 s ahead of the egress's clock, so no
+    stamp meets its first floor; the sends keep it within AHEAD_NS."""
+    st = fx.Stream(10, h0=now + 6 * S, outage=(6 * S, 7500 * MS), lead_in=LEAD_IN)
     edits = [(3 * S, ("O", EDIT_NS)), (4500 * MS, ("T", {PID_A: TRIM_NS})),
              (5 * S, ("C", COOLDOWN_NS))]
     records, garbage, lost = [], False, False
@@ -148,9 +151,9 @@ def plugin_events(r, channel):
 
 def ingest_restamp_case(argv, tag, check, srt_queue=False, now=None):
     """Part 7.3's case through `argv`'s runner (srt_queue: srt-input's module string). `now`
-    places the input (CLOCK_MONOTONIC ns; default the clock): one value gives runs the same
-    input, so their events compare. Returns the plugin events per channel as the runner
-    forwarded them, or None when it could not run."""
+    places the input (CLOCK_MONOTONIC ns; default the clock): inputs placed whole seconds apart
+    differ only in that shift, so their events compare. Returns the plugin events per channel as
+    the runner forwarded them, or None when it could not run."""
     label = f"ingest-restamp {tag}" + (" srt-input queue" if srt_queue else "")
     for el in ("gdppay", "gdpdepay", "tcpclientsrc", "unixfdsink", "unixfdsrc", "capssetter"):
         if Gst.ElementFactory.find(el) is None:
@@ -250,6 +253,7 @@ def ingest_restamp_case(argv, tag, check, srt_queue=False, now=None):
         for i in range(at, len(records)):
             rec = records[i]
             if rec[0] == "B":
+                wait_for(lambda a=rec[1]: clock.get_time() >= a - AHEAD_NS, 30.0)
                 conn.sendall(chunk_of[id(rec)])
                 if not wait_for(lambda n=counts[i] - lost: len(got) >= n, 5.0):
                     break

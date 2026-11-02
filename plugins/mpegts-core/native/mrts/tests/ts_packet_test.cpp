@@ -277,7 +277,7 @@ int main() {
         CHECK("cc: the first packet of a PID is Ok, whatever its CC",
               cc_of(t, packet(0x100, 9, true, true)) == CC::Ok);
         CHECK("cc: one duplicate is legal",
-              cc_of(t, packet(0x100, 9, false, true)) == CC::Duplicate &&
+              cc_of(t, packet(0x100, 9, true, true)) == CC::Duplicate &&
                   cc_of(t, packet(0x100, 10, false, true)) == CC::Ok && t.lost() == 0);
         cc_of(t, packet(0x100, 11, false, true));
         cc_of(t, packet(0x100, 11, false, true));
@@ -288,6 +288,39 @@ int main() {
         CHECK("cc: a gap is Lost, counted, and the stream resumes from it",
               cc_of(t, packet(0x100, 14, false, true)) == CC::Lost && t.lost() == 3 &&
                   cc_of(t, packet(0x100, 15, false, true)) == CC::Ok);
+    }
+    {
+        // B-203: a duplicate repeats its original's payload; a source restarted on its last CC
+        // sends new content under it, which is a loss, never a copy.
+        CcTracker t;
+        cc_of(t, packet(0x100, 4, true, true, -1, 0, 0xB1));
+        CHECK("cc: the same CC on another payload is Lost, not a duplicate (B-203)",
+              cc_of(t, packet(0x100, 4, true, true, -1, 0, 0xB2)) == CC::Lost && t.lost() == 1);
+        CHECK("cc: ... and it is the original a copy is compared with from then on",
+              cc_of(t, packet(0x100, 4, true, true, -1, 0, 0xB2)) == CC::Duplicate && t.lost() == 1);
+        cc_of(t, packet(0x100, 5, true, true, -1, 0, 0xB3));
+        CHECK("cc: the same payload without the PUSI is no copy either",
+              cc_of(t, packet(0x100, 5, false, true, -1, 0, 0xB3)) == CC::Lost && t.lost() == 2);
+        cc_of(t, packet(0x100, 6, false, true, 7, 0x10, 0xB4));
+        Bytes moved = packet(0x100, 6, false, true, 7, 0x10, 0xB4);
+        moved[6] = 0x12;   // its PCR field (2.4.3.3: a duplicate's PCR may differ)
+        CHECK("cc: a copy whose PCR alone differs is still a duplicate",
+              cc_of(t, moved) == CC::Duplicate && t.lost() == 2);
+        cc_of(t, packet(0x100, 7, false, true, 20, 0x00, 0xB5));
+        CHECK("cc: a copy whose payload is shorter (a longer adaptation field) is no copy",
+              cc_of(t, packet(0x100, 7, false, true, 21, 0x00, 0xB5)) == CC::Lost && t.lost() == 3);
+        cc_of(t, packet(0x100, 8, true, true, -1, 0, 0xB6));
+        cc_of(t, packet(0x101, 2, true, true, -1, 0, 0xC1));
+        t.reset();
+        CHECK("cc: reset(): every PID starts again, a copy of its last packet too; the lost count stays",
+              cc_of(t, packet(0x100, 8, true, true, -1, 0, 0xB6)) == CC::Ok &&
+                  cc_of(t, packet(0x101, 12, false, true)) == CC::Ok &&
+                  cc_of(t, packet(0x101, 13, false, true)) == CC::Ok && t.lost() == 3);
+        CcTracker d;
+        cc_of(d, packet(0x100, 3, false, true, -1, 0, 0xD1));
+        CHECK("cc: after a discontinuity flag the flagged packet is what a copy repeats",
+              cc_of(d, packet(0x100, 9, true, true, 7, 0x90, 0xD2)) == CC::Reset &&
+                  cc_of(d, packet(0x100, 9, true, true, 7, 0x10, 0xD2)) == CC::Duplicate && d.lost() == 0);
     }
     {
         CcTracker t;

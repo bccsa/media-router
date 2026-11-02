@@ -101,6 +101,10 @@ int64_t IdentityStamp::stamp(const uint8_t* data, size_t len, int64_t house_now,
     // The whole buffer first: a PCR after the PES still makes its PID timing.
     for (size_t off = 0; st.timing_pid < 0 && off + PKT <= len; off += PKT)
         if (data[off] == SYNC_BYTE && read_pcr(data + off) >= 0) st.timing_pid = ts_pid(data + off);
+    if (st.stamped && st.floor - house_now > AHEAD_MAX_NS) {
+        note_off_clock(st, -1, st.floor - house_now, house_now);
+        st.floor = house_now;
+    }
     bool any_pes = false, timing = false;
     int64_t s = 0;
     for (size_t off = 0; off + PKT <= len; off += PKT) {
@@ -110,8 +114,13 @@ int64_t IdentityStamp::stamp(const uint8_t* data, size_t len, int64_t house_now,
         any_pes = true;
         const int pid = ts_pid(pkt);
         if (!timing_pes(pkt, pid, st.timing_pid)) continue;
+        const int64_t h = house_from_mux_pts(pts, house_now);
+        if (h - house_now > AHEAD_MAX_NS || house_now - h > BEHIND_MAX_NS) {
+            note_off_clock(st, pid, h - house_now, house_now);
+            continue;
+        }
         timing = true;
-        s = house_from_mux_pts(pts, house_now);
+        s = h;
         if (!st.has_first) {
             st.has_first = true;
             st.first_pid = pid;
@@ -134,6 +143,30 @@ bool IdentityStamp::first(int stream, int* pid, int64_t* stamp_ns, int64_t* pts)
     if (stamp_ns) *stamp_ns = it->second.first_stamp;
     if (pts) *pts = it->second.first_pts;
     return true;
+}
+
+void IdentityStamp::note_off_clock(Stream& st, int pid, int64_t offset_ns, int64_t house_now) {
+    st.episode.count++;
+    if (!st.in_episode || house_now - st.last_off > EPISODE_QUIET_NS) {
+        st.in_episode = true;
+        st.told = false;
+        st.episode.pid = pid;
+        st.episode.offset_ns = offset_ns;
+    }
+    st.last_off = house_now;
+}
+
+bool IdentityStamp::take_episode(int stream, OffClock* out) {
+    const auto it = streams_.find(stream);
+    if (it == streams_.end() || !it->second.in_episode || it->second.told) return false;
+    it->second.told = true;
+    if (out) *out = it->second.episode;
+    return true;
+}
+
+uint64_t IdentityStamp::off_clock(int stream) const {
+    const auto it = streams_.find(stream);
+    return it == streams_.end() ? 0 : it->second.episode.count;
 }
 
 void IdentityStamp::reset() { streams_.clear(); }

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <vector>
 
 namespace mrts {
 
@@ -86,16 +87,30 @@ void PacketWalker::feed(uint8_t* data, size_t len, F&& on_packet) {
 }
 
 // Per-PID continuity counter (ISO 13818-1 2.4.3.3). Adaptation-only packets
-// never advance CC; one duplicate (same CC, with payload) is legal and
-// reported; af_discontinuity resets expectation. Null packets are not tracked.
+// never advance CC; one duplicate (same CC and payload as the PID's last
+// payload packet) is legal and reported; af_discontinuity resets expectation.
+// Null packets are not tracked.
 class CcTracker {
   public:
     enum class Result { Ok, Duplicate, Lost, Reset };
     Result feed(const PacketView& v);
+    // Every PID's next payload packet is Ok whatever its CC (a break: B-203); the lost count stays.
+    void reset();
     uint64_t lost() const { return lost_; }   // Lost results: events, not packets
 
   private:
+    // A PID's last payload packet as received: what a duplicate repeats.
+    struct Last {
+        bool pusi = false;
+        uint8_t len = 0;
+        uint8_t b[PKT - 4];
+    };
+    void keep(const PacketView& v);
+    bool repeats(const PacketView& v) const;
+
     uint8_t state_[8192] = {};            // per PID: known, duplicate seen, last CC
+    uint16_t slot_[8192] = {};            // per PID: 1 + its index in last_, 0 none
+    std::vector<Last> last_;
     uint64_t lost_ = 0;
 };
 

@@ -78,6 +78,8 @@ export interface ModuleTimingHost {
     busSources(): BusSourceRef[];
     /** The aligners' warning texts, null where none stands: on a change and every tick. */
     alignerWarnings?(absent: string | null, full: string | null): void;
+    /** An output 10 s or more off the house clock (B-203), null when none: every tick. */
+    offClock?(text: string | null): void;
     /** An aligner event, as a line in the module's log. */
     log?(level: 'info' | 'warn', obj: Record<string, unknown>, msg: string): void;
     /** The module's own answer for which input a watch serves; undefined: the engine's rule. */
@@ -247,6 +249,7 @@ export class ModuleTiming {
         this.pub = EMPTY;
         this.last = null;
         this.host.alignerWarnings?.(null, null);
+        this.host.offClock?.(null);
         if (emit && had) this.host.emit();
     }
 
@@ -269,9 +272,11 @@ export class ModuleTiming {
     }
 
     private syncWarnings(now = Date.now()): void {
-        if (!this.host.alignerWarnings) return;
-        const w = this.reporter.alignerWarnings(now);
-        this.host.alignerWarnings(w.absent, w.full);
+        if (this.host.alignerWarnings) {
+            const w = this.reporter.alignerWarnings(now);
+            this.host.alignerWarnings(w.absent, w.full);
+        }
+        this.host.offClock?.(this.reporter.offClockWarning(now));
     }
 
     /** The module's answer, else the engine's rule. A watch whose edge left the router's list

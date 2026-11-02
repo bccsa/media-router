@@ -167,6 +167,9 @@ RestampCore::Result RestampCore::process(uint8_t* data, size_t len, int64_t arri
         // it left, from this buffer on (which may still carry content from before it).
         for (auto& p : pids_)
             if (p) p->outage = true;
+        // No packet after it is a duplicate of one before it (B-203): a source restarted on its
+        // last CC took the PES before the outage's time.
+        cc_in_.reset();
         for (auto& g : progs_) {
             g->flag_pcr = true;   // a gap of 1 s or more in everything
             if (cfg_.mode != RestampConfig::Mode::stc) continue;
@@ -431,11 +434,16 @@ void RestampCore::pull_events(Program& g) {
             case StcEvent::Kind::leap:
                 g.pending_leap = e.value_ns;   // told with the relock it causes
                 continue;
-            case StcEvent::Kind::relock:
+            case StcEvent::Kind::relock: {
                 if (!std::strcmp(e.reason, "leap")) out.value_ns = g.pending_leap;
                 g.flag_pcr = true;        // a new epoch: the PCR's timeline breaks
-                g.relocked |= std::strcmp(e.reason, "envelope-step") != 0;   // the timeline may have moved
+                // The timeline may have moved: B-185's wait arms, and no copy of an earlier packet is
+                // rewritten as its original (B-203).
+                const bool moved = std::strcmp(e.reason, "envelope-step") != 0;
+                g.relocked |= moved;
+                g.relocks += moved;
                 break;
+            }
             case StcEvent::Kind::degraded:
                 out.kind = Event::Kind::degraded;
                 out.pid = g.ref_pid;      // the warning names the PID whose PTS times the program
@@ -563,6 +571,8 @@ void RestampCore::keep_es(Pid& p, uint8_t* pkt, bool span_cont) {
         p.emitted = p.seen_payload = p.prev_kept = true;
         p.prev_cont = span_cont;
         p.out_cc = pkt[3] & 0x0F;
+        p.copy_h = arrival_;
+        p.copy_relocks = p.prog->relocks;
     }
     put(pkt);
 }
@@ -571,6 +581,8 @@ void RestampCore::drop_es(Pid& p, uint8_t* pkt, bool duplicate) {
     if (pkt[3] & 0x10) {
         p.seen_payload = true;
         p.prev_kept = false;
+        p.copy_h = arrival_;
+        p.copy_relocks = p.prog->relocks;
         // A removed step shifts what follows; before the PID's first payload left there
         // is no continuity to keep, and a duplicate is no step.
         if (p.emitted && !duplicate) p.cc_delta = (uint8_t)((p.cc_delta + 1) & 0x0F);
@@ -629,10 +641,12 @@ void RestampCore::on_es(Pid& p, PacketView& v, CcTracker::Result cc, bool di) {
             return;
         }
     } else if (dup && p.seen_payload) {
-        // The decoder keeps the first copy: the second goes the same way, rewritten alike.
-        // A copy is optional (it never advances CC), so one that cannot be rewritten alike,
-        // the continuation of a split header, is removed.
-        if (!p.prev_kept || p.prev_cont) {
+        // The decoder keeps the first copy: the second goes the same way, rewritten alike. A copy
+        // is optional, so one that cannot be (a split header's continuation) is removed, and one
+        // past DUP_RECENT_NS or a relock after its original, rewritten before a break (B-203).
+        const bool fresh =
+            arrival_ - p.copy_h <= DUP_RECENT_NS && p.copy_relocks == p.prog->relocks;
+        if (!p.prev_kept || p.prev_cont || !fresh) {
             drop_es(p, v.p, true);
             return;
         }

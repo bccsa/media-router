@@ -254,6 +254,78 @@ describe('LatenessReporter', () => {
     });
 });
 
+describe('LatenessReporter: an output off the house clock (B-203, MR-033)', () => {
+    it('10 s or more off is a warning while it lasts; 1 h and more stays hidden from the numbers', () => {
+        const onHidden = vi.fn();
+        const r = new LatenessReporter({ intervalMs: 2000, onHidden });
+        r.onEvent('mrlateness:lat_busout_40000', win(40), 0);
+        expect(r.offClockWarning(0)).toBeNull();
+        // The gate's input egress at 08:51Z: a frozen floor 15,742.9 s ahead of the clock.
+        r.onEvent('mrlateness:lat_busout_40000', win(-15_742_882.866), 2000);
+        expect(r.offClockWarning(2000)).toBe(
+            'Output timing off the house clock by 4 h 22 min (ahead)',
+        );
+        expect(r.summary(2000).output).toBeUndefined();
+        expect(onHidden).toHaveBeenCalledTimes(1);
+        // ... and at 12:20Z, under the 1 h guard: shown as it reads, and still the warning.
+        r.onEvent('mrlateness:lat_busout_40000', win(-3_235_933), 4000);
+        expect(r.summary(4000).output?.meanMs).toBe(-3_235_933);
+        expect(r.offClockWarning(4000)).toBe(
+            'Output timing off the house clock by 53 min 55 s (ahead)',
+        );
+        // Back on the clock: gone at once.
+        r.onEvent('mrlateness:lat_busout_40000', win(48), 6000);
+        expect(r.offClockWarning(6000)).toBeNull();
+    });
+
+    it('the bound: 9.99 s is none, 10 s is; behind as ahead; the worst output named', () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_busout_40001', win(-9_990));
+        r.onEvent('mrlateness:lat_render', win(9_999));
+        expect(r.offClockWarning()).toBeNull();
+        r.onEvent('mrlateness:lat_render', win(10_000));
+        expect(r.offClockWarning()).toBe('Output timing off the house clock by 10.0 s (behind)');
+        // FRA-Master01's N-1 outputs at 12:30Z (MR-034): 159 s behind beats the render's 10 s.
+        r.onEvent('mrlateness:lat_busout_40002', win(159_093));
+        expect(r.offClockWarning()).toBe(
+            'Output timing off the house clock by 2 min 39 s (behind)',
+        );
+        r.onEvent('mrlateness:lat_egress', win(-20_000));
+        expect(r.offClockWarning()).toBe(
+            'Output timing off the house clock by 2 min 39 s (behind)',
+        );
+    });
+
+    it("inputs never warn: what a module reads is its source's output", () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_busin_41000_aaaaaa', win(-13_156_104));
+        r.onEvent('mrlateness:lat_busin', win(30_000));
+        expect(r.offClockWarning()).toBeNull();
+    });
+
+    it("a sidecar window counts as a tap's: hidden at 1 h, a warning at 10 s", () => {
+        const r = new LatenessReporter();
+        r.addWindow('lat_busout_40017', {
+            count: 50,
+            meanMs: -15_742_882,
+            minMs: -15_742_900,
+            maxMs: -15_742_800,
+        });
+        expect(r.summary().output).toBeUndefined();
+        expect(r.offClockWarning()).toBe('Output timing off the house clock by 4 h 22 min (ahead)');
+    });
+
+    it('goes when the output goes quiet, and with a reset', () => {
+        const r = new LatenessReporter({ intervalMs: 2000 });
+        r.onEvent('mrlateness:lat_busout_40000', win(-12_000), 0);
+        expect(r.offClockWarning(6000)).toBe('Output timing off the house clock by 12.0 s (ahead)');
+        expect(r.offClockWarning(6001)).toBeNull();
+        r.onEvent('mrlateness:lat_busout_40000', win(-12_000), 7000);
+        r.reset();
+        expect(r.offClockWarning(7000)).toBeNull();
+    });
+});
+
 type AwState = 'waiting' | 'present' | 'absent';
 interface AwOpts {
     reason?: string;

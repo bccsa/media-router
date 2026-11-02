@@ -168,6 +168,67 @@ describe('ModuleTiming', () => {
     });
 });
 
+describe('an output off the house clock (B-203)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('the warning text goes to the host every tick while it lasts, null after, null at stop', () => {
+        vi.useFakeTimers();
+        const host = {
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: () => [],
+            offClock: vi.fn(),
+        };
+        const t = new ModuleTiming(host);
+        t.start({ pipeline: 'videotestsrc ! tee name=busout_40000' });
+        expect(host.offClock).toHaveBeenLastCalledWith(null);
+        t.onEvent('mrlateness:lat_busout_40000', win(-15_742_882));
+        vi.advanceTimersByTime(2000);
+        expect(host.offClock).toHaveBeenLastCalledWith(
+            'Output timing off the house clock by 4 h 22 min (ahead)',
+        );
+        t.onEvent('mrlateness:lat_busout_40000', win(-15_740_882));
+        vi.advanceTimersByTime(2000);
+        expect(host.offClock).toHaveBeenLastCalledWith(
+            'Output timing off the house clock by 4 h 22 min (ahead)',
+        );
+        t.onEvent('mrlateness:lat_busout_40000', win(55));
+        vi.advanceTimersByTime(2000);
+        expect(host.offClock).toHaveBeenLastCalledWith(null);
+        t.onEvent('mrlateness:lat_busout_40000', win(-12_500));
+        vi.advanceTimersByTime(2000);
+        expect(host.offClock).toHaveBeenLastCalledWith(
+            'Output timing off the house clock by 12.5 s (ahead)',
+        );
+        t.stop(false);
+        expect(host.offClock).toHaveBeenLastCalledWith(null);
+    });
+
+    it('a sidecar output (mr-tssplit, mr-bus-fanout) warns alike', () => {
+        vi.useFakeTimers();
+        const host = {
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: () => [],
+            offClock: vi.fn(),
+        };
+        const t = new ModuleTiming(host);
+        t.start(null);
+        t.addSidecarWindow('lat_busout_40017', {
+            count: 40,
+            min: -15_699_400,
+            mean: -15_699_361.87,
+            max: -15_699_300,
+        });
+        vi.advanceTimersByTime(2000);
+        expect(host.offClock).toHaveBeenLastCalledWith(
+            'Output timing off the house clock by 4 h 21 min (ahead)',
+        );
+        expect(t.summary()?.output).toBeUndefined();
+        t.stop(false);
+    });
+});
+
 describe('input numbering (F8)', () => {
     afterEach(() => vi.useRealTimers());
     const edge = (port: number, sourceModuleId: string, sinkPortId: string): BusSourceRef => {

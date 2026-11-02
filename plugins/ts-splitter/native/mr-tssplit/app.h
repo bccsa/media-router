@@ -85,7 +85,8 @@ class App {
     // flags, never merged into data (B-10) or stamped (its PTS is house time).
     void forward_markers(const uint8_t* data, size_t len, int64_t pts_ns, uint32_t flags);
     // Wire pts for one output buffer: its identity stamp, `PES − 1 h` of its
-    // first timing PES (and its lateness is recorded).
+    // first timing PES (and its lateness is recorded); a `stamp_off_clock`
+    // plugin event once per episode of the guard (B-203).
     int64_t stamp_for(Output& o, const uint8_t* data, size_t len);
     void flush_output(Output& o);
     void flush_due(int64_t now_ns);

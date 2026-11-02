@@ -2111,20 +2111,25 @@ def test_ingest_restamp():
     """Plan ch. 5 part 7.3: an SRT ingest's input through `mrtsrestamp arrival=buffer-pts` and
     buildBusSink, one consumer edge: identity stamps, gap markers and the mrtsrestamp-* plugin
     events as RestampCore makes them, plain and behind srt-input's queue. The scenario is
-    gst_ingest_restamp_test.py's; one input for both runners, which must forward the same events
-    (they host the one element)."""
+    gst_ingest_restamp_test.py's; both runners must forward the same events (they host the one
+    element). Each run's input starts just ahead of the clock (B-203), so each is placed a whole
+    number of seconds after the first, the same input but for that shift."""
     sys.path.insert(0, _HERE)
     from gst_ingest_restamp_test import ingest_restamp_case
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     now = clock.get_time()
+    on = lambda: now + -(-(clock.get_time() - now) // Gst.SECOND) * Gst.SECOND  # noqa: E731
     native = ingest_restamp_case([_BIN], "native", check, now=now)
-    ingest_restamp_case([_BIN], "native", check, srt_queue=True, now=now)
-    py = ingest_restamp_case(_PY_RUNNER, "py", check, now=now)
+    ingest_restamp_case([_BIN], "native", check, srt_queue=True, now=on())
+    py_now = on()
+    py = ingest_restamp_case(_PY_RUNNER, "py", check, now=py_now)
     if native is not None and py is not None:
+        back = {k: [dict(e, **{"house-ns": e["house-ns"] - (py_now - now)}) if "house-ns" in e else e
+                    for e in v] for k, v in py.items()}
         check("ingest-restamp: both runners forward the same mrtsrestamp-stats, -pid and -event "
-              f"plugin events ({', '.join(f'{len(v)} {k}' for k, v in native.items())})",
-              native == py)
+              f"plugin events ({', '.join(f'{len(v)} {k}' for k, v in native.items())}; the python "
+              f"run's input {(py_now - now) // Gst.SECOND} s later)", native == back)
 
 
 # --------------------------------------------------------------------------- the queue patch (B-68)
@@ -2243,7 +2248,9 @@ def test_bus_return():
         feed, consumer = pipes
         feed.set_state(Gst.State.PLAYING)
         src, got, sent, cc = feed.get_by_name("src"), [], {}, {fx.VIDEO_PID: 0}
-        ticks = (time.monotonic_ns() + 10**9) * 9 // 100000
+        # Ten minutes behind the clock: each 6.5 s silence takes 0.5 s of real time, so thirty
+        # returns move the stamps about 160 s on, inside the identity egress's bounds (B-203).
+        ticks = (time.monotonic_ns() - 600 * 10**9) * 9 // 100000
 
         def on_buf(_pad, info):
             b = info.get_buffer()

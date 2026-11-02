@@ -563,6 +563,14 @@ elements" below do not start.
   stopped or restarted before its stream had started playing could, rarely,
   wait until the engine ended it 8 seconds later. Not seen on a box; fixed.
   A decoder still finishes the frames it holds before the module stops.
+- **A network input that comes back after hours away no longer freezes its
+  timing.** Up to v2.0.0.100 its first video frame could keep the old time and
+  freeze the input's timing hours ahead (the RIST gate's 'vMix 720 -> 2001'
+  and FRA-Master01's 'SCC -> ENG (10)' on 2 Nov; the muxers after it held their
+  queues until restarted). Fixed: that frame takes the new time; a stamp more
+  than 10 s ahead of the box's clock or 1 h behind it is no longer used, with
+  one warning in the module's log; and a module whose output is 10 s or more
+  off shows "Output timing off the house clock by …" while it lasts.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

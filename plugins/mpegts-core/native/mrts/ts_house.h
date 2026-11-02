@@ -70,6 +70,20 @@ int64_t net_pcr27(int64_t h_emission_ns, int64_t d_e_ns);
 // mr-tssplit's outputs (stream = PID) each carry their own PCR carrier.
 class IdentityStamp {
   public:
+    // B-203: a timing PES more than AHEAD_MAX_NS ahead of house_now or BEHIND_MAX_NS behind (one
+    // from before a break, read nearest now) times nothing, counted; a floor that far ahead drops
+    // to house_now. An episode of either ends after EPISODE_QUIET_NS without one.
+    static constexpr int64_t AHEAD_MAX_NS = 10000000000LL;
+    static constexpr int64_t BEHIND_MAX_NS = 3600000000000LL;
+    static constexpr int64_t EPISODE_QUIET_NS = 10000000000LL;
+    // An episode's first event: the PES's PID and house time - house_now, or (pid -1) the
+    // floor's; `count` is every such event of the stream so far.
+    struct OffClock {
+        int pid = -1;
+        int64_t offset_ns = 0;
+        uint64_t count = 0;
+    };
+
     // Timing PES: a video/audio stream_id, or on the stream's first PCR carrier.
     // PES, none timing: `house_now`; no PES: the last stamp (`house_now` first).
     // Monotone per stream, never below 0 (to libmrbus a negative stamp is "now").
@@ -77,6 +91,9 @@ class IdentityStamp {
     // `stream`'s first timing PES: pid, identity stamp (before the floor), PTS.
     // For the one-time log line; any out-pointer may be null.
     bool first(int stream, int* pid, int64_t* stamp_ns, int64_t* pts) const;
+    // True once per episode off the house clock on `stream`, with its first event: one warning.
+    bool take_episode(int stream, OffClock* out);
+    uint64_t off_clock(int stream) const;   // its events so far
     void reset();                         // forgets every stream
 
   private:
@@ -87,7 +104,11 @@ class IdentityStamp {
         bool has_first = false;
         int first_pid = 0;
         int64_t first_stamp = 0, first_pts = 0;
+        bool in_episode = false, told = false;
+        int64_t last_off = 0;             // house_now of the episode's last event
+        OffClock episode;
     };
+    void note_off_clock(Stream& st, int pid, int64_t offset_ns, int64_t house_now);
     std::map<int, Stream> streams_;
 };
 

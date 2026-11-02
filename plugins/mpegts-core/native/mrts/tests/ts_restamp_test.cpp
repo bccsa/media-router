@@ -3747,6 +3747,402 @@ void test_flush_straddle() {
     }
 }
 
+// --- B-203 (MR-033): an outage, then a source restart on the same CC --------------------------
+// wf13/gatediag's repro_mr033, ported: a vMix-like source (video 257 at 50 fps, its PCR every 2 s,
+// AAC on 256), 120 s, then 79,700.8 s of nothing, then a new base with a leap of -88,064.85 s (the
+// gate's relock, 2 Nov), its CCs restarted. Every 7 packets one datagram, none across the outage.
+namespace vmix {
+
+constexpr int PMT = 0x1000, A = 256, V = 257, PROG = 1;
+
+struct P {
+    uint8_t b[PKT];
+    int64_t arr;
+};
+
+struct Src {
+    std::vector<P> out;
+    int cc[8192] = {};
+    void packet(int pid, bool pusi, const uint8_t* data, size_t n, int64_t pcr27, int64_t arr) {
+        const size_t af = 184 - n;   // adaptation bytes, its length byte included
+        P p;
+        uint8_t* q = p.b;
+        q[0] = SYNC_BYTE;
+        q[1] = (uint8_t)((pusi ? 0x40 : 0) | ((pid >> 8) & 0x1F));
+        q[2] = (uint8_t)(pid & 0xFF);
+        const int c = cc[pid];
+        cc[pid] = (c + 1) & 0x0F;
+        q[3] = (uint8_t)((af ? 0x20 : 0) | 0x10 | c);
+        size_t at = 4;
+        if (af) {
+            q[4] = (uint8_t)(af - 1);
+            at = 5;
+            if (af >= 2) {
+                q[5] = (uint8_t)(pcr27 >= 0 ? 0x10 : 0);
+                at = 6;
+                if (pcr27 >= 0) {
+                    write_pcr(q, pcr27);
+                    at = 12;
+                }
+                std::memset(q + at, 0xFF, 4 + af - at);
+                at = 4 + af;
+            }
+        }
+        std::memcpy(q + at, data, n);
+        p.arr = arr;
+        out.push_back(p);
+    }
+    void psi(int64_t arr) {
+        P p;
+        build_pat(1, {{PROG, PMT}}, cc[0], 0, p.b);
+        cc[0] = (cc[0] + 1) & 15;
+        p.arr = arr;
+        out.push_back(p);
+        build_pmt(PMT, PROG, V, {{A, 0x0F, {}}, {V, 0x1B, {}}}, cc[PMT], 0, p.b);
+        cc[PMT] = (cc[PMT] + 1) & 15;
+        out.push_back(p);
+    }
+    // One PES of `n_pkts` packets, each numbered by `tag` (its first payload bytes past the header);
+    // a PCR in the first when pcr27 >= 0.
+    void pes(int pid, uint8_t sid, int64_t pts33, int64_t dts33, int n_pkts, int64_t pcr27, int64_t arr,
+             uint32_t tag) {
+        Bytes h = {0, 0, 1, sid, 0, 0, 0x80, (uint8_t)(dts33 >= 0 ? 0xC0 : 0x80), (uint8_t)(dts33 >= 0 ? 10 : 5)};
+        h.resize(9 + (dts33 >= 0 ? 10 : 5), 0xFF);
+        put_ts(h.data() + 9, dts33 >= 0 ? 3 : 2, pts33);
+        if (dts33 >= 0) put_ts(h.data() + 14, 1, dts33);
+        Bytes d = h;
+        d.resize(pcr27 >= 0 ? 176 : 184, 0x80);
+        put_tag(d.data() + h.size(), tag);
+        packet(pid, true, d.data(), d.size(), pcr27, arr);
+        Bytes rest(184, 0x81);
+        put_tag(rest.data(), tag);
+        for (int i = 1; i < n_pkts; i++) packet(pid, false, rest.data(), rest.size(), -1, arr);
+    }
+    static void put_tag(uint8_t* at, uint32_t tag) {
+        for (int i = 0; i < 4; i++) at[i] = (uint8_t)(tag >> (8 * i));
+    }
+};
+
+// The tag a V or A packet of Src::pes carries, or -1.
+int64_t tag_of(const uint8_t* q) {
+    const int at = payload_offset(q);
+    if (at >= PKT) return -1;
+    size_t skip = 0;
+    if (ts_pusi(q)) {
+        PesHeader h;
+        if (!parse_pes_header(q + at, PKT - at, &h)) return -1;
+        skip = 9 + q[at + 8];
+    }
+    if (at + skip + 4 > (size_t)PKT) return -1;
+    uint32_t t = 0;
+    for (int i = 0; i < 4; i++) t |= (uint32_t)q[at + skip + i] << (8 * i);
+    return t;
+}
+
+int64_t ns_to_33(int64_t ns) { return fmod64(ns_to_pts90k(ns), PTS_WRAP); }
+
+// The source's clock sigma (ns) runs from sig0 at house h0 (+ the path's delay).
+struct Run {
+    int64_t sig0, h0, delay;
+    int64_t v_next, a_next, pcr_next, psi_next;
+    int64_t dts_minus_pts = 0;
+    int64_t pcr_from = INT64_MIN;         // no PCR before this sigma (the first new one)
+    bool sparse = false;                  // before it, one video and one audio PES only
+    int sv = 0, sa = 0;
+    uint32_t tag = 0;
+};
+
+void emit_span(Src& s, Run& r, int64_t sig_to) {
+    for (;;) {
+        const int64_t t = std::min({r.v_next, r.a_next, r.psi_next});
+        if (t >= sig_to) break;
+        const int64_t arr = t - r.sig0 + r.h0 + r.delay;
+        if (t == r.psi_next) {
+            s.psi(arr);
+            r.psi_next += 500 * MS;
+            continue;
+        }
+        const bool pre = r.sparse && t < r.pcr_from;
+        if (t == r.v_next && pre && r.sv++ > 0) {
+            r.v_next += 20 * MS;
+            continue;
+        }
+        if (t != r.v_next && t == r.a_next && pre && r.sa++ > 0) {
+            r.a_next += 21333333;
+            continue;
+        }
+        if (t == r.v_next) {
+            int64_t pcr = -1;
+            if (t >= r.pcr_next && t >= r.pcr_from) {
+                pcr = ns_to_pcr27(t);
+                r.pcr_next = t + 2 * S;
+            }
+            const int64_t pts = t + 60 * MS;   // the mux's video lead
+            const int64_t dts = r.dts_minus_pts ? pts + r.dts_minus_pts : -1;
+            s.pes(V, 0xE0, ns_to_33(pts), dts >= 0 ? ns_to_33(dts) : -1, 3, pcr, arr, r.tag++);
+            r.v_next += 20 * MS;
+            continue;
+        }
+        s.pes(A, 0xC0, ns_to_33(t + 120 * MS), -1, 2, -1, arr, r.tag++);
+        r.a_next += 21333333;
+    }
+}
+
+struct Shape {
+    int cc_delta = 0;                     // first new video CC - the old last: 0 = "a duplicate"
+    int64_t pes_first = 400 * MS;         // new PES before the first new PCR
+    int64_t dts = 0;                      // video DTS - PTS (0: none)
+    bool sparse = true;                   // ... one video and one audio PES of them
+    bool replay = false;                  // the source first sends its last video PES again, as it was
+    int64_t silence = 79700800 * MS;      // nothing arrives this long
+    bool leap = true;                     // then a new base 88,064.85 s back, CCs restarted; else it runs on
+    // A byte copy of the last audio packet before the silence, after it: 0 the first packet back,
+    // 1 right after the first new video packet (its PCR); -1 none.
+    int copy_at = -1;
+};
+
+struct Outcome {
+    int64_t lead_min = INT64_MAX, lead_max = INT64_MIN;   // house(PTS) - arrival, every output PES
+    int64_t first_v_lead = INT64_MIN;     // the first video PES out after the silence
+    int64_t eg_ahead = INT64_MIN, eg_end = 0;   // the egress stamp - its time: worst after, at the end
+    int64_t split_ahead = INT64_MIN, split_end[2] = {0, 0};   // per PID (mr-tssplit's), 256 and 257
+    uint64_t eg_off = 0, split_off = 0;   // the guard's counts
+    uint64_t cc_lost = 0;                 // the restamp's own CC loss count
+    int pes_after[2] = {0, 0};
+    int relocks = 0, epoch_gaps = 0;
+    int64_t leap = 0;
+    int replayed_out = 0, copy_out = 0;   // packets of the replayed PES, of the copied one, out after it
+    int first_new_v = 0;                  // packets of the first new video PES out, its PUSI first
+    int64_t first_new_v_lead = INT64_MIN;
+};
+
+Outcome run(const Shape& sh) {
+    Src s;
+    Run r1{50000 * S, 157000 * S, 60 * MS, 50000 * S, 50000 * S + 7 * MS, 50000 * S, 50000 * S};
+    r1.dts_minus_pts = sh.dts;
+    emit_span(s, r1, r1.sig0 + 120 * S);
+    const size_t n1 = s.out.size();
+    const int64_t last_arr = s.out.back().arr;
+    const int old_last_cc = (s.cc[V] + 15) & 15;
+    const int64_t last_pcr_sig = r1.pcr_next - 2 * S;
+    const int64_t last_pcr_arr = last_pcr_sig - r1.sig0 + r1.h0 + r1.delay;
+    // The source's last video PES as it went out (CC included), its last audio packet.
+    std::vector<P> last_v;
+    for (size_t i = n1; i-- > 0 && last_v.size() < 3;)
+        if (ts_pid(s.out[i].b) == V) last_v.insert(last_v.begin(), s.out[i]);
+    const int64_t last_tag = tag_of(last_v.back().b);
+    size_t last_a = n1;
+    while (ts_pid(s.out[--last_a].b) != A) {}
+    const P copy = s.out[last_a];
+    const int64_t copy_tag = tag_of(copy.b);
+
+    const int64_t h_resume = last_arr + sh.silence;
+    if (sh.replay)
+        for (P p : last_v) {
+            p.arr = h_resume;
+            s.out.push_back(p);
+        }
+    const size_t n_replay = s.out.size();
+    const int64_t first_pcr_arr = h_resume + sh.pes_first;
+    const int64_t first_pcr_sig =
+        last_pcr_sig + (first_pcr_arr - last_pcr_arr) - (sh.leap ? 88064850 * MS : 0);   // the leap
+    const int64_t sig_start = first_pcr_sig - sh.pes_first;
+    Run r3{sig_start, h_resume - 60 * MS, 60 * MS, sig_start, sig_start + 7 * MS, first_pcr_sig, sig_start};
+    r3.dts_minus_pts = sh.dts;
+    r3.pcr_from = first_pcr_sig;
+    r3.sparse = sh.sparse;
+    r3.tag = 1u << 24;
+    // CCs restarted: 257 at the old last + cc_delta, 256 seven on (a loss), the PSI as they were.
+    if (sh.leap) {
+        s.cc[V] = (old_last_cc + sh.cc_delta) & 15;
+        s.cc[A] = (s.cc[A] + 6) & 15;
+    }
+    if (sh.copy_at == 0) {
+        P c = copy;
+        c.arr = h_resume;
+        s.out.push_back(c);
+    }
+    const size_t n3 = s.out.size();
+    emit_span(s, r3, sig_start + 60 * S);
+    if (sh.copy_at == 1) {
+        size_t v = n3;
+        while (ts_pid(s.out[v].b) != V) v++;
+        P c = copy;
+        c.arr = s.out[v].arr;
+        s.out.insert(s.out.begin() + (std::ptrdiff_t)v + 1, c);
+    }
+
+    Outcome o;
+    RestampCore core{RestampConfig()};
+    IdentityStamp egress, split;
+    std::vector<std::pair<size_t, size_t>> chunks;
+    for (size_t i = 0; i < n1; i += 7) chunks.push_back({i, std::min<size_t>(7, n1 - i)});
+    if (n_replay > n1) chunks.push_back({n1, n_replay - n1});
+    for (size_t i = n_replay; i < s.out.size(); i += 7) chunks.push_back({i, std::min<size_t>(7, s.out.size() - i)});
+    for (const auto& ch : chunks) {
+        Bytes buf;
+        for (size_t k = 0; k < ch.second; k++) buf.insert(buf.end(), s.out[ch.first + k].b, s.out[ch.first + k].b + PKT);
+        const int64_t arr = s.out[ch.first + ch.second - 1].arr;
+        const bool after = ch.first >= n1;
+        const RestampCore::Result res = core.process(buf.data(), buf.size(), arr);
+        Bytes data;
+        for (const auto& k : res.keep) data.insert(data.end(), k.data, k.data + k.len);
+        // The element's pieces: the data around each marker; a marker bypasses both stamps.
+        std::vector<Bytes> pieces;
+        size_t from = 0;
+        for (const auto& g : res.gaps) {
+            const size_t at = std::min(g.at, data.size());
+            if (at > from) pieces.push_back(Bytes(data.begin() + from, data.begin() + at));
+            from = at;
+        }
+        if (data.size() > from) pieces.push_back(Bytes(data.begin() + from, data.end()));
+        const int64_t now = arr + 1 * MS;   // the egress a ms after arrival
+        for (const Bytes& pc : pieces) {
+            for (size_t off = 0; off + PKT <= pc.size(); off += PKT) {
+                const uint8_t* q = pc.data() + off;
+                const int pid = ts_pid(q);
+                if (after && pid == V) o.replayed_out += tag_of(q) == last_tag;
+                if (after && pid == A) o.copy_out += tag_of(q) == copy_tag;
+                if (after && pid == V && tag_of(q) == (1 << 24)) o.first_new_v += o.first_new_v || ts_pusi(q);
+                if ((pid != V && pid != A) || !ts_pusi(q)) continue;
+                const int at = payload_offset(q);
+                PesHeader h;
+                if (at >= PKT || !parse_pes_header(q + at, PKT - at, &h) || h.pts < 0) continue;
+                const int64_t lead = house_from_mux_pts(h.pts, arr) - arr;
+                o.lead_min = std::min(o.lead_min, lead);
+                o.lead_max = std::max(o.lead_max, lead);
+                if (!after) continue;
+                o.pes_after[pid == V]++;
+                if (pid == V && o.first_v_lead == INT64_MIN) o.first_v_lead = lead;
+                if (pid == V && tag_of(q) == (1 << 24)) o.first_new_v_lead = lead;
+            }
+            const int64_t st = egress.stamp(pc.data(), pc.size(), now, 0);
+            if (after) o.eg_ahead = std::max(o.eg_ahead, st - now);
+            o.eg_end = st - now;
+            for (int k = 0; k < 2; k++) {
+                const int pid = k ? V : A;
+                Bytes sub;
+                for (size_t off = 0; off + PKT <= pc.size(); off += PKT)
+                    if (ts_pid(pc.data() + off) == pid) sub.insert(sub.end(), pc.begin() + off, pc.begin() + off + PKT);
+                if (sub.empty()) continue;
+                const int64_t ss = split.stamp(sub.data(), sub.size(), now, pid);
+                if (after) o.split_ahead = std::max(o.split_ahead, ss - now);
+                o.split_end[k] = ss - now;
+            }
+        }
+        for (const auto& e : core.take_events()) {
+            if (!after) continue;
+            if (e.kind == RestampCore::Event::Kind::relock) {
+                o.relocks++;
+                if (!std::strcmp(e.reason, "leap")) o.leap = e.value_ns;
+            }
+            o.epoch_gaps += e.kind == RestampCore::Event::Kind::gap && !std::strcmp(e.reason, "epoch");
+        }
+    }
+    o.eg_off = egress.off_clock(0);
+    o.split_off = split.off_clock(A) + split.off_clock(V);
+    o.cc_lost = core.stats().cc_lost;
+    return o;
+}
+
+}  // namespace vmix
+
+void print_restart(const char* name, const vmix::Outcome& o) {
+    std::printf("  %s: PES leads %+.3f..%+.3f s, the first video PES after %+.3f s; egress at most %+.3f s ahead,"
+                " at the end %+.3f s; split at most %+.3f s, at the end 256 %+.3f 257 %+.3f s; off-clock %llu/%llu;"
+                " cc lost %llu; PES after 256 %d 257 %d; relocks %d (leap %.3f s), epoch gaps %d; replayed out %d,"
+                " copy out %d, first new video PES %d packets (lead %+.3f s)\n",
+                name, o.lead_min / 1e9, o.lead_max / 1e9, o.first_v_lead / 1e9, o.eg_ahead / 1e9, o.eg_end / 1e9,
+                o.split_ahead / 1e9, o.split_end[0] / 1e9, o.split_end[1] / 1e9, (unsigned long long)o.eg_off,
+                (unsigned long long)o.split_off, (unsigned long long)o.cc_lost, o.pes_after[0], o.pes_after[1],
+                o.relocks, o.leap / 1e9, o.epoch_gaps, o.replayed_out, o.copy_out, o.first_new_v,
+                o.first_new_v_lead / 1e9);
+}
+
+void test_restart_same_cc(const char* name, const vmix::Shape& sh, bool field) {
+    const vmix::Outcome o = vmix::run(sh);
+    print_restart(name, o);
+    const int64_t lead_max = RestampConfig().pcr.lead_max_ns;
+    const std::string n = std::string("restart on the same CC, ") + name;
+    CHECK((n + ": every output PES within lead_max of its arrival, never behind it").c_str(),
+          o.lead_min >= 0 && o.lead_max <= lead_max && o.first_v_lead >= 0 && o.first_v_lead <= lead_max);
+    CHECK((n + ": the input's egress stamp never more than 10 s ahead, live at the end").c_str(),
+          o.eg_ahead <= IdentityStamp::AHEAD_MAX_NS && o.eg_ahead <= lead_max && iabs(o.eg_end) < 1 * S);
+    CHECK((n + ": the splitter's per-PID stamps the same, video and audio").c_str(),
+          o.split_ahead <= lead_max && iabs(o.split_end[0]) < 1 * S && iabs(o.split_end[1]) < 1 * S);
+    CHECK((n + ": nothing reaches the stamp guard: the restamp left no PES off the clock").c_str(),
+          o.eg_off == 0 && o.split_off == 0);
+    CHECK((n + ": both PIDs flow after it, about 60 s of each").c_str(),
+          o.pes_after[0] > 2700 && o.pes_after[1] > 2900);
+    // A replay's CC runs on to the restart's, which then breaks it: that one is a loss.
+    if (!sh.replay && sh.silence >= RestampCore::OUTAGE_NS)
+        CHECK((n + ": the outage forgot every CC: the restart's own CC break is no loss").c_str(), o.cc_lost == 0);
+    // Its PCR first, the first new video PES has a place: it leaves whole, on the new timeline.
+    if (sh.pes_first == 0)
+        CHECK((n + ": the first new video PES leaves whole, its PUSI first, on the new timeline").c_str(),
+              o.first_new_v == 3 && o.first_new_v_lead >= 0 && o.first_new_v_lead <= lead_max);
+    if (field)
+        CHECK((n + ": the field's events: one leap relock, -88,064.85 s, an epoch gap on both PIDs").c_str(),
+              o.relocks == 1 && iabs(o.leap + 88064850 * MS) < 100 * MS && o.epoch_gaps == 2);
+    if (sh.replay) CHECK((n + ": the replayed PES does not leave again").c_str(), o.replayed_out == 0);
+}
+
+// A copy (2.4.3.3) is rewritten as its original only soon after it and on its timeline (B-203).
+void test_restart_copies() {
+    vmix::Shape late;   // 0.8 s of silence (no outage), the same timeline: a copy of the last audio packet first
+    late.silence = 800 * MS;
+    late.leap = false;
+    late.sparse = false;
+    late.pes_first = 0;
+    late.copy_at = 0;
+    vmix::Shape soon = late;   // the same 0.3 s on
+    soon.silence = 300 * MS;
+    vmix::Shape relock = soon;   // 0.3 s, then the new base (no outage): the copy after the new PCR
+    relock.leap = true;
+    relock.copy_at = 1;
+    const vmix::Outcome a = vmix::run(late), b = vmix::run(soon), c = vmix::run(relock);
+    print_restart("a copy 0.8 s after its original", a);
+    print_restart("a copy 0.3 s after it", b);
+    print_restart("a copy 0.3 s after it, after a relock", c);
+    const int64_t lead_max = RestampConfig().pcr.lead_max_ns;
+    CHECK("copies: one 0.3 s after its original leaves, as a duplicate (rewritten alike)", b.copy_out == 1);
+    CHECK("copies: one 0.8 s after it is removed: past DUP_RECENT_NS it is no longer rewritten as its original",
+          a.copy_out == 0);
+    CHECK("copies: one after a relock is removed, even 0.3 s on: its original's rewrite is the old timeline's",
+          c.copy_out == 0);
+    CHECK("copies: all three on the house clock, every PES and stamp",
+          a.lead_min >= 0 && b.lead_min >= 0 && c.lead_min >= 0 && a.lead_max <= lead_max &&
+              b.lead_max <= lead_max && c.lead_max <= lead_max && a.eg_off + b.eg_off + c.eg_off == 0 &&
+              c.relocks == 1);
+}
+
+void test_restart_same_cc_all() {
+    vmix::Shape field;   // the gate's: CC equal, a sparse start 400 ms ahead of the PCR
+    test_restart_same_cc("the gate's shape (CC equal, 1 video + 1 audio PES 400 ms before the PCR)", field, true);
+    vmix::Shape pcr_first = field;
+    pcr_first.pes_first = 0;
+    pcr_first.sparse = false;
+    test_restart_same_cc("CC equal, the PCR in the first video packet", pcr_first, false);
+    vmix::Shape dts = field;
+    dts.dts = -40 * MS;
+    test_restart_same_cc("CC equal, video with a DTS 40 ms before its PTS", dts, false);
+    vmix::Shape full = field;
+    full.sparse = false;
+    test_restart_same_cc("CC equal, 400 ms of new PES before the PCR", full, false);
+    vmix::Shape replay = field;
+    replay.replay = true;
+    test_restart_same_cc("CC equal, the source first replaying its last video PES", replay, false);
+    vmix::Shape quick = pcr_first;   // no outage: only the payload tells the new packet from a copy
+    quick.silence = 300 * MS;
+    test_restart_same_cc("a quick restart (0.3 s, no outage) on the same CC, its PCR first", quick, false);
+    for (int d : {1, 5}) {
+        vmix::Shape c = field;
+        c.cc_delta = d;
+        test_restart_same_cc(d == 1 ? "CC continuous (control)" : "CC 5 on (control)", c, true);
+    }
+    test_restart_copies();
+}
+
 }  // namespace
 
 int main() {
@@ -3850,5 +4246,6 @@ int main() {
     test_new_timeline_step_unarmed();
     test_new_timeline_wait();
     test_flush_straddle();
+    test_restart_same_cc_all();
     return test_summary("ts_restamp");
 }

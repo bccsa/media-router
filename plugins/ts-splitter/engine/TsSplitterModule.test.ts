@@ -215,6 +215,48 @@ describe('TsSplitterModule native child (onStart)', () => {
         timing.stop(false);
     });
 
+    it("a stamp guard episode from mr-tssplit is one WARN line naming its output (B-203)", async () => {
+        const { module, spawned } = makeModule();
+        await module.onStart();
+        const log = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+        (module as any).log = log;
+        const onStdout = spawned[0].opts.onStdout as (line: string) => void;
+        const payload = { tee: 'busout_41000', pid: 0x101, offsetMs: 15742882.87, count: 1 };
+        onStdout(JSON.stringify({ event: 'plugin_event', channel: 'stamp_off_clock', payload }));
+        expect(log.warn).toHaveBeenCalledTimes(1);
+        expect(log.warn).toHaveBeenCalledWith(
+            { stampOffClock: payload },
+            'Bus egress busout_41000: a timing PES on PID 0x101 read 4 h 22 min ahead of the house ' +
+                'clock, so it timed nothing (1 so far)',
+        );
+    });
+
+    it("an output 10 s or more off the house clock is the module's warning while it lasts (B-203)", async () => {
+        const { module, spawned } = makeModule();
+        (module as any).config = {
+            discoveredStreams: [{ pid: 0x101, streamType: 0x1b, media: 'video', codec: 'h264' }],
+        };
+        await module.onStart();
+        const onStdout = spawned[0].opts.onStdout as (line: string) => void;
+        onStdout('{"event":"ready"}');
+        const stats = (mean: number) =>
+            `{"stats":{"clients":1,"drops":{},"lateness":{"busout_41000":` +
+            `{"count":40,"untimed":0,"min":${mean},"mean":${mean},"max":${mean}}},"in_kbps":4000}}`;
+        const timing = (module as any).timing;
+        // The gate's splitter video at 08:51Z (MR-033): frozen 4 h 22 min ahead, so not shown.
+        onStdout(stats(-15742882.866));
+        timing.tick();
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error: 'Output timing off the house clock by 4 h 22 min (ahead)',
+        });
+        expect(timing.publication.data.timing?.outputMs).toBeUndefined();
+        onStdout(stats(38.5));
+        timing.tick();
+        expect(module.getState()).toMatchObject({ health: 'ok' });
+        timing.stop(false);
+    });
+
     it('input stall events map to warning/ok health', async () => {
         const { module, spawned } = makeModule();
         await module.onStart();
