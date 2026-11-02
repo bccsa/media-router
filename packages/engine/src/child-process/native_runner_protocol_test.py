@@ -2674,7 +2674,7 @@ def test_video_leg_formula():
     to the ns: the explicit H.264 rung on cap-occ-1080i-h264-aac-ttx (1080i, B frames, 23 PIDs)
     and on bus-occ-ingest (the restamped OCC ingest off a test box's bus), the decodebin3 rung on
     cap-vmix-h264-aac, whose PMT lists its audio first."""
-    for el in ("unixfdsink", "tsparse", "h264parse", "avdec_h264", "decodebin3"):
+    for el in ("unixfdsink", "h264parse", "avdec_h264", "decodebin3"):
         if Gst.ElementFactory.find(el) is None:
             print(f"SKIP video-leg-formula — {el} unavailable")
             return

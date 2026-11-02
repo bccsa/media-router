@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { buildBackpressureQueue, buildBusSrc, buildTsUdpInput } from '@media-router/engine';
+import { buildTsUdpInput } from '@media-router/engine';
 import {
     DECODEBIN_SELECTION,
     resolveCpuDecodeThreading,
@@ -93,7 +93,7 @@ export interface SinkOpts {
     /**
      * Honour buffer PTS on the sink. When `true` the sink waits to present each
      * frame at its PTS against the pipeline clock — required when the upstream
-     * feed has accurate timestamps (HLS via tsparse) and you want playback
+     * feed has accurate timestamps (the demux's PES times) and you want playback
      * at the media's intended rate. When `false` the sink presents frames as
      * fast as upstream delivers them: that's right for live SRT/RIST where
      * latency dominates, but on a paced HLS feed it surfaces as periods of
@@ -280,9 +280,9 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! mrtsdemux` by
- * default — WITHOUT `tsparse` — and gains `tsparse` back when the sink is
- * clock-paced (see the comment at the construction site below). The decoder is
+ * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! mrtsdemux` on either
+ * sink, with no `tsparse` (WI-P3-18): the demux re-frames (see the comment at the
+ * construction site below). The decoder is
  * `decodebin3` until the TS probe reports a codec and an explicit
  * `<parser> ! <decoder>` chain takes its place (see `decoder` below); the
  * post-demux `queue leaky=2` drops oldest if the decoder falls behind so
@@ -326,11 +326,8 @@ export function buildLivePipeline(
     bufferMs = 200,
     /**
      * True when the sink honours buffer PTS (`sync=true` — the module's `sync`
-     * config). A clock-paced sink presents each frame at its
-     * buffer PTS; pacing brings `tsparse` back into the chain for TS packet
-     * alignment and the vp_ts probe tee — but NOT to re-anchor timestamps
-     * (`set-timestamps=false`; it rides the source PTS, see the tsInput comment
-     * below). Default false = the tsparse-free present-on-arrival fast path.
+     * config). It no longer changes the chain: the paced variant's `tsparse` went
+     * in WI-P3-18, and chapter 8's WI-P4-6 deletes the parameter with `bufferMs`.
      */
     sinkPaced = false,
     /**
@@ -348,57 +345,26 @@ export function buildLivePipeline(
      */
     overlay?: string,
 ): string {
-    // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
+    // The jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
     // event-loop stalls for 50–100 ms and `drainLoop` catches up by bursting
     // datagrams. Tracking `bufferMs` (up to the helper's 5 s cap) gives HLS
     // chains a multi-second jitter buffer; SRT/RIST (`bufferMs=200`) keeps the
-    // tight latency. The queue BACK-PRESSURES rather than leaks, in both
-    // variants: it carries raw TS, and a leaked chunk corrupts decode until the
-    // next IDR — the "frames lost at every segment join" this comment used to
-    // describe, and the "packet loss on movement" of 2026-09-02 (rationale and
-    // measurements on `buildTsUdpInput`).
-    // The inbound chain has two variants, chosen by how the SINK presents:
+    // tight latency. The queue BACK-PRESSURES rather than leaks: it carries
+    // raw TS, and a leaked chunk corrupts decode until the next IDR — the
+    // "frames lost at every segment join" this comment used to describe, and
+    // the "packet loss on movement" of 2026-09-02 (rationale and measurements
+    // on `buildTsUdpInput`).
     //
-    // DEFAULT (`sync=false`, presents on arrival): NO `tsparse` (field-
-    // measured on a Pi 4, 2026-08-01). Its documented job — re-anchoring PCR
-    // so multi-stage RE-MUX paths don't drift — doesn't apply to a terminal
-    // display pipeline, timestamps go unused by a non-syncing sink, the leaky
-    // jitter queue sits upstream of where tsparse sat anyway, and it was the
-    // chain's single most expensive element (0.11 core at 1080p50; tsdemux
-    // eats the raw bus buffers directly at +0.06).
-    //
-    // CLOCK-PACED (`sinkPaced` — the `sync` config): tsparse RETURNS, but only
-    // for TS packet alignment and the vp_ts probe tee — NEVER to re-anchor
-    // (`set-timestamps=false`). The sink rides the SOURCE PTS (PES PTS − 1 h,
-    // from mrtsdemux).
-    //
-    // WHY NOT set-timestamps=true (field-measured on the Pi 4 fleet,
-    // 10.9.16.107/.108, 2026-08-09): tsparse's set-timestamps mode interpolates
-    // buffer timestamps from the TS PCR, so it must hold a full PCR-to-PCR
-    // window before it can emit. This fleet's broadcast muxes carry PCR at up
-    // to 2 s intervals (spec is ≤100 ms), so tsparse stalls ~2 s and then
-    // bursts an ENTIRE GOP at once. That defeats pacing downstream: the 1 s
-    // leaky ES queue sheds ~half of each burst and flags DISCONT, the keyframe
-    // gate re-arms on the DISCONT and drops delta units until the next IDR, and
-    // the picture crawls at ~1 fps. Riding the source PTS instead measured 49
-    // fps with a single startup DISCONT on the same live feed — the re-anchor
-    // was the whole fault. The 0.11 core for tsparse is still paid only when
-    // pacing is on; it just no longer touches timestamps.
-    const tsInput = sinkPaced
-        ? buildTsUdpInput({
-              port: udpSource.port,
-              socketPath: udpSource.socketPath,
-              stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-              jitterMs: bufferMs,
-              // The helper never re-anchors (tsparse set-timestamps=false) —
-              // see the comment above; there is no longer a knob to get wrong.
-          })
-        : `${buildBusSrc({
-              port: udpSource.port,
-              socketPath: udpSource.socketPath,
-              stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-          })} ! ${buildBackpressureQueue(bufferMs)}`;
+    // One chain on either sink since WI-P3-18: the paced variant's tsparse went, so the bus's
+    // whole-packet buffers reach the vp_ts tee and the demux as sent, and the demux re-frames.
+    // A paced sink (`sync`, the default) rides the demux's PES times (PES PTS − 1 h).
+    const tsInput = buildTsUdpInput({
+        port: udpSource.port,
+        socketPath: udpSource.socketPath,
+        stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
+        jitterMs: bufferMs,
+    });
     // Post-demux ES queue: floored at 1 s regardless of `bufferMs`. This queue
     // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
     // 8 Mbps span >200 ms on a Pi 4); at 200 ms it sheds the tail of nearly
@@ -485,12 +451,11 @@ export function buildLivePipeline(
     const caps = decoder.caps ? `${decoder.caps} ! ` : '';
     // Video-info tap. The runner's report-only TS probe needs an appsink fed
     // with the muxed TS (it does its own PSI discovery + SPS parse), so the
-    // ingress is tee'd off just before `mrtsdemux` — after `tsparse` on the
-    // clock-paced variant, straight off the leaky jitter queue on the default
-    // tsparse-free one.
+    // ingress is tee'd off just before `mrtsdemux`, straight off the jitter
+    // queue (no tsparse on either sink since WI-P3-18).
     //
     // ALIGNMENT is a BUS property, not a tsparse one — which is what makes the
-    // one tap correct for both variants. `ts_psi.iter_packets` strides a fixed
+    // tap correct without a re-framer. `ts_psi.iter_packets` strides a fixed
     // 188 from offset 0 and skips any offset not on a 0x47 sync byte; it does
     // NOT resync, so a buffer that doesn't START on a packet boundary yields
     // nothing (the runner calls that out and swallows it — report-only). It
@@ -500,8 +465,8 @@ export function buildLivePipeline(
     // producer, 1316 B from relay producers, 128×188 from libmrbus ingest,
     // whole-packet batches from mr-tssplit — never assume a size), and neither
     // `watchdog` nor `queue` re-slices a buffer. Tapping off tsInput also puts the branch
-    // downstream of the stall watchdog in both variants, so it cannot interfere
-    // with bus_stall detection. The branch is leaky and the appsink drops
+    // downstream of the stall watchdog, so it cannot interfere with bus_stall
+    // detection. The branch is leaky and the appsink drops
     // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
     // the render path through the tee.
     const probeTap =

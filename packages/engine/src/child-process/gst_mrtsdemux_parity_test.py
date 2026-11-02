@@ -25,6 +25,13 @@ reached by some recording; and the comparison fails on self-mutants (a renamed p
 section message, a dropped buffer, a DISCONT with no cause; on bus-ingest-relock-gap as recorded
 a marker's next unit without DISCONT, a marker's GAP on another PID's pad, a unit twice).
 
+The buildTsUdpInput consumers, with no tsparse before their demux since WI-P3-18 (OQ-26): each
+one's string as its builder makes it (the vitest file snapshots the protocol cases replay) has
+nothing that re-frames between its bus src and its demux, and that demux, as configured there,
+fed each recording with a stream it exposes in 1,000-byte buffers gives every item it gives on
+whole packets; a demux that drops a split packet instead of carrying it fails, as a re-framer
+in a string does.
+
 Skips (exit 0) without GStreamer, tsdemux, or the built plugin."""
 import bisect
 import copy
@@ -225,12 +232,13 @@ class Log(list):
 
 
 class Record:
-    """appsrc ! <factory>, an appsink per pad; `log` holds every item in the order it happened:
-    the element's (section, collection, pad-added, no-more-pads, pad-removed, msg, warning,
-    error) and each pad's (ev; buf: size, crc32, flags, PTS, DTS, duration, list place, metas);
-    `inputs` each pushed buffer's flags, in order, `marks` the PIDs of each gap-marker input."""
+    """appsrc ! <factory> (`props` set as gst-launch would), an appsink per pad; `log` holds every
+    item in the order it happened: the element's (section, collection, pad-added, no-more-pads,
+    pad-removed, msg, warning, error) and each pad's (ev; buf: size, crc32, flags, PTS, DTS,
+    duration, list place, metas); `inputs` each pushed buffer's flags, in order, `marks` the PIDs
+    of each gap-marker input."""
 
-    def __init__(self, factory, running):
+    def __init__(self, factory, running, props=None):
         self.pipe = Gst.Pipeline.new(None)
         clk = GObject.new(Gst.SystemClock)
         clk.set_property("clock-type", Gst.ClockType.REALTIME)
@@ -243,6 +251,8 @@ class Record:
         self.el = Gst.ElementFactory.make(factory, "demux")
         if factory == "tsdemux":
             self.el.set_property("latency", 0)
+        for k, v in (props or {}).items():
+            Gst.util_set_object_arg(self.el, k, v)
         self.pipe.add(self.src)
         self.pipe.add(self.el)
         self.src.link(self.el)
@@ -362,9 +372,9 @@ class Record:
         return [e[1] for e in self.log if e[0] == "pad-added"]
 
 
-def replay(factory, data, feeds):
+def replay(factory, data, feeds, props=None):
     """`feeds`: (offset, size, pts, flags) per buffer pushed."""
-    r = Record(factory, house_of(data))
+    r = Record(factory, house_of(data), props)
     r.pipe.set_state(Gst.State.PLAYING)
     for k, (off, size, pts, flags) in enumerate(feeds):
         if flags & GAP:
@@ -711,6 +721,54 @@ def mutant(ref, ours, facts, edit):
     return Compare(ref, m, facts).fails
 
 
+# --- the buildTsUdpInput consumers (WI-P3-18, OQ-26) ------------------------------------------
+# Each one's string as its builder makes it: the vitest file snapshots (B-72's mechanism).
+CONSUMERS = (
+    ("the transcoder", ("transcoder", "tests", "burnin-plan.json"), ("pipeline",)),
+    ("the video player", ("mpegts-core", "tests", "fixtures", "video-leg", "pipelines.json"),
+     ("explicit", "start", "pipeline")),
+    ("the video player", ("mpegts-core", "tests", "fixtures", "video-leg", "pipelines.json"),
+     ("bootstrap", "start", "pipeline")),
+    ("the subtitle input", ("subtitle-core", "tests", "render-plan.json"), ("inputFragment",)),
+    ("teletext-subtitles", ("teletext-subtitles", "tests", "teletext-plan.json"), ("pipeline",)),
+)
+BUS_INPUT = {"unixfdsrc", "watchdog", "mrlateness", "queue", "tee"}   # none of them re-frames
+
+
+def bus_demuxes(desc):
+    """Each `mrtsdemux` of a launch string: its properties, and the factories on its chain back
+    to the bus src (`unixfdsrc`) before it."""
+    out = []
+    for m in re.finditer(r"(?<![\w.])mrtsdemux((?: [a-z-]+=[^ !]+)*)", desc):
+        head = desc[:m.start()]
+        at = head.rfind("unixfdsrc")
+        chain = [el.split()[0] for el in head[at:].split("!") if el.strip()] if at >= 0 else []
+        out.append((dict(kv.split("=", 1) for kv in m.group(1).split()), chain))
+    return out
+
+
+def bus_whole(desc):
+    """No tsparse in the string, and each demux on its bus input with nothing that re-frames."""
+    d = bus_demuxes(desc)
+    return "tsparse" not in desc and bool(d) and all(
+        c[:1] == ["unixfdsrc"] and set(c) <= BUS_INPUT for _, c in d)
+
+
+def log_of(rec):
+    """A record's items but the demux's report each second, which follows the wall clock."""
+    return [e for e in rec.log if e[:3] != ("msg", "mrtsdemux", "interval")]
+
+
+def split_lost(feeds):
+    """What a demux without the carry would read: each buffer's whole packets alone."""
+    out = []
+    for off, size, pts, flags in feeds:
+        lo, hi = -(-off // PKT) * PKT, (off + size) // PKT * PKT
+        if hi > lo:
+            out.append((lo, hi - lo, pts, flags))
+    return out
+
+
 # === the run ==================================================================================
 with open(ALLOW) as f:
     allow = json.load(f)
@@ -731,6 +789,7 @@ print(f"\n--- {len(names)} recorded fixtures, each at {', '.join(map(str, CHUNKS
       f"(a bus recording also as recorded) ---")
 check(f"{len(names)} recorded fixtures (cap-*, tp-*, bus-*)", len(names) >= 25)
 used, mutant_pair, bus_pair = {}, None, None
+classes = {}                    # each recording's pad classes (video, audio, private, subpicture)
 reached = dict.fromkeys(("plans", "ADTS pads", "Opus pads", "sparse pads"), 0)
 for name in names:
     with open(os.path.join(FIX, name + ".ts"), "rb") as f:
@@ -752,6 +811,8 @@ for name in names:
         check(f"{name} @{label}: {len(ours.pads())} pads, {nbuf} buffers as tsdemux's; allowed "
               f"{', '.join(f'{k} {v}' for k, v in sorted(cmp.allowed.items()))} "
               f"{cmp.fails[:3]}", not cmp.fails and ours.pads())
+        if label == "188":
+            classes[name] = {p.split("_", 1)[0] for p in ours.pads()}
         if name == "cap-mux-align7-aac-opus" and label == "1316":
             mutant_pair = (ref, ours, facts)
         if name == "bus-ingest-relock-gap" and label == "bus":
@@ -812,6 +873,57 @@ if bus_pair:
     extra = Compare(ref, twice, facts).fails
     check(f"a unit twice, no DISCONT input before tsdemux's next, fails ({extra[:1]})",
           bool(extra))
+
+print("\n--- the buildTsUdpInput consumers: each demux as built, at 1,000 bytes as on whole "
+      "packets (WI-P3-18, OQ-26) ---")
+configs = {}            # a demux's properties but its name: the consumers' demuxes so built
+for who, path, keys in CONSUMERS:
+    with open(os.path.join(ROOT, "plugins", *path)) as f:
+        desc = json.load(f)
+    for key in keys:
+        desc = desc[key]
+    demuxes = bus_demuxes(desc)
+    check(f"{who} ({path[-1]} {'.'.join(keys)}): no tsparse, each demux on its bus input with "
+          f"nothing that re-frames "
+          f"({'; '.join(p.get('name', '?') + ': ' + ' ! '.join(c) for p, c in demuxes)})",
+          bus_whole(desc))
+    for p, _c in demuxes:
+        whose = configs.setdefault(tuple(sorted((k, v) for k, v in p.items() if k != "name")), [])
+        if f"{who}'s {p.get('name')}" not in whose:
+            whose.append(f"{who}'s {p.get('name')}")
+check(f"{len(configs)} demux configurations ({sorted(configs)})", len(configs) >= 2)
+with open(os.path.join(ROOT, "plugins", *CONSUMERS[0][1])) as f:
+    desc = json.load(f)["pipeline"]
+reframed = [desc.replace(" ! mrtsdemux ", f" ! {el} ! mrtsdemux ", 1)
+            for el in ("tsparse set-timestamps=false", "rndbuffersize")]
+check("a re-framer before a consumer's demux fails that check (tsparse; rndbuffersize)",
+      bus_whole(desc) and not any(bus_whole(d) for d in reframed))
+split_case = None
+for conf, whose in sorted(configs.items()):
+    props = dict(conf)
+    media = set(props.get("media", "video,audio,private,subpicture").split(","))
+    shown = " ".join(f"{k}={v}" for k, v in conf)
+    for name in [n for n in names if classes.get(n, set()) & media]:
+        with open(os.path.join(FIX, name + ".ts"), "rb") as f:
+            data = f.read()
+        whole = replay("mrtsdemux", data, chunked(data, PKT), props)
+        split = replay("mrtsdemux", data, chunked(data, 1000), props)
+        a, b = log_of(whole), log_of(split)
+        k = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+        check(f"mrtsdemux {shown} ({', '.join(whose)}) {name} @1000: {len(whole.pads())} pads, "
+              f"{sum(1 for e in a if e[0] == 'buf')} buffers, every item as on whole packets"
+              + ("" if a == b else f" (item {k}: {a[k:k + 1]} / {b[k:k + 1]})"),
+              a == b and whole.eos and split.eos and bool(whole.pads()))
+        if split_case is None and "video" in media and name == "cap-occ-1080i-h264-aac-ttx":
+            split_case = (data, props, a)
+check("the carry mutant's run ran (media=video on cap-occ-1080i-h264-aac-ttx)",
+      split_case is not None)
+if split_case:
+    data, props, a = split_case
+    lost = log_of(replay("mrtsdemux", data, split_lost(chunked(data, 1000)), props))
+    check(f"a demux that drops a split packet instead of carrying it fails "
+          f"({sum(1 for e in a if e[0] == 'buf')} buffers on whole packets, "
+          f"{sum(1 for e in lost if e[0] == 'buf')} without the carry)", lost != a)
 
 if _failures:
     print(f"\n{len(_failures)} FAILURE(S) in gst_mrtsdemux_parity_test.py")

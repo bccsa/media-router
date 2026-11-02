@@ -78,7 +78,7 @@ export function deinterlaceMethodForArch(arch: string): DeinterlaceMethod {
  * Buffering / multicore decode: unlike a passthrough remux, this pipeline
  * DECODES, and frame-threaded software H.264 decode only parallelises across
  * cores when it can run ahead of the consumers. `bufferMs` sizes two queues:
- * the input jitter queue (`buildTsUdpInput`, bus src → queue → tsparse) and a
+ * the input jitter queue (`buildTsUdpInput`, bus src → queue → the demux) and a
  * leaky RAW-frame queue placed AFTER the decoder, in front of videorate/tee.
  *
  * The raw buffer must NOT sit on the compressed stream (an earlier version put
@@ -109,15 +109,9 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const bufferMs = Math.max(100, input.bufferMs ?? 200);
     const deinterlaceMode = input.deinterlace ?? 'auto';
 
-    // `buildTsUdpInput` never re-anchors — tsparse `set-timestamps=false`, and
-    // no longer optional. `set-timestamps=true` re-stamps from PCR and it
-    // must BUFFER until the next PCR arrives to interpolate. A spec-compliant
-    // mux sends PCR every ≤100 ms, but real-world feeds (measured: MediaMTX SRT
-    // relay, PCR every 2 s) turn that into 2-second batch-release — the whole
-    // transcode then freezes/bursts at the PCR cadence and the bursts overflow
-    // downstream receive buffers (visible as packet loss). The decode chain
-    // takes per-frame PTS from the PES headers via the demux, so PCR re-stamping
-    // buys nothing here.
+    // `buildTsUdpInput` hands the bus buffers to the demux as sent: no tsparse, which
+    // re-framed for tsdemux (WI-P3-18); the demux re-frames and puts each frame on its
+    // PES time, so nothing here re-stamps from PCR.
     // No udpsrc `timeout`: a single-input loopback transcoder feeding a tee (fan-
     // out, not an aggregator) has nothing to freeze when its source goes silent —
     // it stalls, then resumes when the local producer returns. A timeout→restart

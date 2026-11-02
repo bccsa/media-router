@@ -190,8 +190,9 @@ export interface SubtitleInputOpts {
 }
 
 /**
- * Bus input for a subtitle TS: `unixfdsrc ! queue ! tsparse ! mrtsdemux
- * media=private` (WI-P3-7): a pad per private stream, each PES on its PES time.
+ * Bus input for a subtitle TS: `unixfdsrc ! queue ! mrtsdemux media=private`
+ * (WI-P3-7; no tsparse, the demux re-frames: WI-P3-18): a pad per private
+ * stream, each PES on its PES time.
  * The runner's subtitle bridge links the pads at runtime (KLV → cue reader, any
  * other → fakesink so it cannot stall the demux); an A/V stream gets no pad.
  * Standalone fragment — join it to the rest of the pipeline with a space, not `!`.

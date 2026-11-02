@@ -32,6 +32,10 @@ describe('teletext pipeline', () => {
             '! tee name=in_t ! queue ! mrtsdemux name=demux media=private ! capsfilter caps="application/x-teletext" ! tee name=t ',
         );
         expect(p).not.toMatch(/(^|[\s!])tsdemux /);
+        // The jitter queue straight into the input tee: no tsparse, the demux re-frames and the
+        // tap reads the bus's whole packets (WI-P3-18).
+        expect(p).toMatch(/ ! queue leaky=0 [^!]* ! tee name=in_t ! /);
+        expect(p).not.toContain('tsparse');
         // report-only PMT tap off the input tee, leaky so it can never stall the demux
         expect(p).toContain(
             'in_t. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',

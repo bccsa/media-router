@@ -384,29 +384,22 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('videotestsrc');
         });
 
-        it('has NO tsparse — the player never re-muxes, and the default sink presents on arrival', () => {
-            // tsparse's job (re-anchoring PCR so multi-stage remux chains don't
-            // drift) doesn't apply to a terminal display pipeline, and it was
-            // the chain's single most expensive element (0.11 core at 1080p50,
-            // measured 2026-08-01). The demux consumes the bus buffers directly.
+        it('has NO tsparse: the demux takes the bus buffers as sent and re-frames (WI-P3-18)', () => {
+            // tsparse cost 0.11 core at 1080p50 (measured 2026-08-01) and cleared every buffer
+            // flag, a bus gap marker's GAP too; the bus carries whole packets (ADR-0011).
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).not.toContain('tsparse');
+            expect(s).toMatch(/ ! queue leaky=0 [^!]* ! tee name=vp_ts ! mrtsdemux /);
         });
 
-        it('clock-paced sink (sync config) brings tsparse back but rides the source PTS (set-timestamps=false)', () => {
-            // tsparse returns for TS packet alignment and the vp_ts probe tee,
-            // but NEVER re-anchors: this fleet's muxes carry PCR at up to 2 s
-            // intervals, so set-timestamps=true bursts whole GOPs and paces at
-            // ~1 fps (field-measured 2026-08-09). The sink rides the source PTS.
-            const s = buildLivePipeline(
-                'kmssink name=sink sync=true max-lateness=1000000000 qos=false',
-                busSource,
-                false,
-                200,
-                true,
-            );
-            expect(s).toContain('tsparse set-timestamps=false');
-            expect(s).not.toContain('set-timestamps=true');
+        it('a clock-paced sink (sync config) builds the same chain: no tsparse comes back', () => {
+            // Pacing once brought tsparse back for packet alignment; since WI-P3-18 it changes
+            // nothing in the string: the demux re-frames, and nothing re-times the PES times.
+            const sink = 'kmssink name=sink sync=true max-lateness=1000000000 qos=false';
+            const paced = buildLivePipeline(sink, busSource, false, 200, true);
+            expect(paced).toBe(buildLivePipeline(sink, busSource, false, 200, false));
+            expect(paced).not.toContain('tsparse');
+            expect(paced).not.toContain('set-timestamps');
         });
 
         it('keeps videoscale (uncapped) on the KMS/auto path — no compositor scales for them', () => {
@@ -516,13 +509,11 @@ describe('VideoPlayerModule helpers', () => {
                 expect(s.indexOf('watchdog')).toBeLessThan(s.indexOf('tee name=vp_ts'));
             });
 
-            it('taps the same spot on the clock-paced variant (after tsparse)', () => {
-                // The paced chain inserts tsparse ahead of the tee; the tap is
-                // still the last thing before mrtsdemux. It does NOT depend on
-                // tsparse for 188-byte alignment — the bus delivers whole-packet
-                // buffers on both variants (unixfd preserves producer buffer
-                // boundaries), which is what `ts_psi.iter_packets` needs since
-                // it strides a fixed 188 and never resyncs on 0x47.
+            it('taps the same spot on the clock-paced variant, straight off the jitter queue', () => {
+                // No tsparse ahead of the tee on either sink (WI-P3-18): the tap needs no
+                // re-framer for 188-byte alignment — the bus delivers whole-packet buffers
+                // (unixfd preserves producer buffer boundaries), which is what
+                // `ts_psi.iter_packets` needs since it strides a fixed 188 and never resyncs on 0x47.
                 const s = buildLivePipeline(
                     'kmssink name=sink sync=true qos=true',
                     busSource,
@@ -530,7 +521,7 @@ describe('VideoPlayerModule helpers', () => {
                     200,
                     true,
                 );
-                expect(s).toContain('tsparse set-timestamps=false ! tee name=vp_ts ! mrtsdemux');
+                expect(s).toMatch(/ ! queue leaky=0 [^!]* ! tee name=vp_ts ! mrtsdemux /);
                 expect(s).toContain('appsink name=tsprobe');
             });
 
@@ -664,8 +655,8 @@ describe('VideoPlayerModule helpers', () => {
                     false,
                     selectDecoder({ codec: 'h264', available: all }),
                 );
-                // Slice from the demux so the pre-tsparse jitter queue (same
-                // 200 ms bound) can't be mistaken for the post-demux one.
+                // Slice from the demux so the queues before it (the bus ingress
+                // is leaky=2 too) can't be mistaken for the post-demux one.
                 const afterDemux = s.slice(s.indexOf('mrtsdemux'));
                 expect(afterDemux.indexOf('capsfilter')).toBeLessThan(
                     afterDemux.indexOf('queue leaky=2'),
@@ -675,7 +666,7 @@ describe('VideoPlayerModule helpers', () => {
                 );
             });
 
-            it('keeps the probe tap, watchdog and PTS handling on an explicit chain', () => {
+            it('keeps the probe tap and watchdog on a paced explicit chain, with no tsparse', () => {
                 const s = buildLivePipeline(
                     wayland,
                     busSource,
@@ -685,7 +676,7 @@ describe('VideoPlayerModule helpers', () => {
                     selectDecoder({ codec: 'h265', available: all }),
                 );
                 expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
-                expect(s).toContain('tsparse set-timestamps=false');
+                expect(s).not.toContain('tsparse');
                 expect(s).toContain('appsink name=tsprobe');
             });
         });

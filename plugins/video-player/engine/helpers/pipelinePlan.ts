@@ -34,8 +34,8 @@ import { subtitleRenderPlan } from '@media-router/plugin-subtitle-core';
 /** Sink element plus the two clock decisions derived from the module config. */
 export interface SinkPlan {
     sinkElement: string;
-    /** Clock-paced sink (the `sync` config, default on) → tsparse returns to
-     *  the chain for TS alignment; the sink rides the source PTS. */
+    /** Clock-paced sink (the `sync` config, default on): the sink rides the
+     *  demux's PES times. The input chain is the same either way (WI-P3-18). */
     sinkPaced: boolean;
 }
 

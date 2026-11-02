@@ -156,11 +156,10 @@ export interface TsUdpInputOpts {
     port: number;
     /** Optional element name so callers can address the ingress (e.g. for live props). */
     udpsrcName?: string;
-    /** Jitter buffer length in milliseconds (default 200). Absorbs delivery
-     *  jitter so downstream tsdemux doesn't see late bursts as discontinuities.
-     *  Sizes a BACK-PRESSURING queue (never leaky — see `buildTsUdpInput`), so
-     *  a value that is too small costs a momentary stall, never a corrupted
-     *  picture. */
+    /** Jitter buffer length in milliseconds (default 200): holds delivery jitter
+     *  and encoder I-frame bursts ahead of the demux. Sizes a BACK-PRESSURING
+     *  queue (never leaky — see `buildTsUdpInput`), so a value that is too
+     *  small costs a momentary stall, never a corrupted picture. */
     jitterMs?: number;
     /** Per-consumer edge socket (from MediaRouter). Falls back to the
      *  channel-level socket when absent. */
@@ -170,8 +169,8 @@ export interface TsUdpInputOpts {
 }
 
 /**
- * Canonical inbound MPEG-TS bus receive chain:
- *   unixfdsrc (+ leaky ingress) ! queue (jitter, back-pressuring) ! tsparse set-timestamps=false
+ * Canonical inbound MPEG-TS bus receive chain, ahead of the consumer's demux:
+ *   unixfdsrc (+ leaky ingress) ! queue (jitter, back-pressuring)
  *
  * Why each piece:
  *   - `buildBusSrc` connects this consumer's fan-out edge; caps arrive over
@@ -191,15 +190,9 @@ export interface TsUdpInputOpts {
  *     sink hands it to the backlog shedder, which drops whole GOP tails
  *     (keyframe-aligned — never mid-slice). Same finding as the
  *     mpegts-muxer's input queues (leaky shed 11 % of audio, non-leaky zero).
- *   - `tsparse` re-frames to TS packet boundaries, and `set-timestamps=false`
- *     leaves the timestamps alone: the producer already stamped this stream
- *     onto the shared house timeline, and re-deriving from PCR here would
- *     replace one agreed timeline with this consumer's own arrival anchor — the
- *     exact divergence ADR-0005 exists to remove. NOT an option: it was one,
- *     defaulted false, and no caller ever passed true — a knob whose only
- *     setting re-introduces the fault it was kept for is a trap, not a knob.
- *     A genuinely self-contained chain that wants PCR re-anchoring builds its
- *     own tsparse rather than reaching for this helper.
+ *   - No re-framer: the bus carries whole 188-byte packets (ADR-0011) and the demux
+ *     re-frames any other split itself (`PacketWalker` carries a partial packet). The
+ *     `tsparse` here until WI-P3-18 also cleared every buffer flag, a gap marker's too.
  */
 export function buildTsUdpInput(opts: TsUdpInputOpts): string {
     const src = buildBusSrc({
@@ -209,5 +202,5 @@ export function buildTsUdpInput(opts: TsUdpInputOpts): string {
         stallTimeoutMs: opts.stallTimeoutMs,
     });
     const queue = buildBackpressureQueue(opts.jitterMs ?? 200);
-    return `${src} ! ${queue} ! tsparse set-timestamps=false`;
+    return `${src} ! ${queue}`;
 }

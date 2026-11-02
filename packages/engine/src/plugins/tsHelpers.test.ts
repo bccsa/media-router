@@ -12,6 +12,7 @@ import {
     TS_VIDEO_PID_BASE,
     videoStreamPid,
 } from './tsHelpers.js';
+import { buildBusSrc } from './busHelpers.js';
 import { tsQueueByteCap } from './queueBounds.js';
 
 describe('deterministic PID scheme (D3)', () => {
@@ -93,7 +94,7 @@ describe('buildIngestQueue (B-182)', () => {
 });
 
 describe('buildTsUdpInput', () => {
-    it('chains unixfdsrc bus ingress → jitter queue → tsparse', () => {
+    it('chains unixfdsrc bus ingress → jitter queue, and nothing after it (WI-P3-18)', () => {
         const s = buildTsUdpInput({ port: 5500 });
         // Bus ingress connects the channel socket (caps arrive over the socket)
         expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500.sock');
@@ -103,16 +104,9 @@ describe('buildTsUdpInput', () => {
         // must never be shed mid-slice — see buildTsUdpInput.
         expect(s).toContain('queue leaky=0 max-size-time=200000000');
         expect(s).not.toContain('leaky=2 max-size-time=200000000');
-        // tsparse re-frames to packet boundaries but must NOT touch timestamps:
-        // the producer stamped this stream onto the shared house timeline
-        // (ADR-0005), so a local PCR re-anchor here would throw it away.
-        expect(s).toContain('tsparse set-timestamps=false');
-        // ordering: unixfdsrc, then jitter queue, then tsparse
-        const idxSrc = s.indexOf('unixfdsrc');
-        const idxJitter = s.indexOf('max-size-time=200000000');
-        const idxTsparse = s.indexOf('tsparse');
-        expect(idxSrc).toBeLessThan(idxJitter);
-        expect(idxJitter).toBeLessThan(idxTsparse);
+        // The jitter queue is last: the bus's whole-packet buffers (ADR-0011) reach the
+        // consumer's demux as sent, and the demux re-frames any other split itself.
+        expect(s).toBe(`${buildBusSrc({ port: 5500 })} ! ${buildBackpressureQueue(200)}`);
     });
     it('honours a custom jitterMs', () => {
         const s = buildTsUdpInput({ port: 1, jitterMs: 100 });
@@ -130,13 +124,19 @@ describe('buildTsUdpInput', () => {
         const s = buildTsUdpInput({ port: 1, udpsrcName: 'in0' });
         expect(s).toContain('unixfdsrc name=in0');
     });
-    it('never re-anchors from PCR — no caller can ask it to', () => {
-        // The default used to be true, then false-by-default with an opt-in
-        // nothing ever used. PCR re-anchoring resets a consumer to its own
-        // arrival, which is the divergence ADR-0005 removes, so the option is
-        // gone and the helper is fixed at false: the trap can come back neither
-        // by omission nor by a copied call site.
-        expect(buildTsUdpInput({ port: 1 })).toContain('tsparse set-timestamps=false');
-        expect(buildTsUdpInput({ port: 1 })).not.toContain('set-timestamps=true');
+    it('neither re-frames nor re-times a bus buffer: no tsparse (WI-P3-18, OQ-26)', () => {
+        // The `tsparse set-timestamps=false` it ended in re-framed for tsdemux and cleared
+        // every buffer flag on the way, a gap marker's GAP and DISCONT included (B-144).
+        const s = buildTsUdpInput({
+            port: 1,
+            udpsrcName: 'in0',
+            stallTimeoutMs: 5000,
+            jitterMs: 100,
+        });
+        expect(s).not.toContain('tsparse');
+        expect(s).not.toContain('set-timestamps');
+        expect(s).toMatch(
+            / ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0$/,
+        );
     });
 });

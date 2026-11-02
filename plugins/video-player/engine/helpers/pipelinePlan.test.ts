@@ -68,7 +68,7 @@ describe('planSink', () => {
         expect(plan({ sync: false, qos: false }).sinkElement).toContain('qos=true');
     });
 
-    it('sync=false drops the pacing (and with it the tsparse chain)', () => {
+    it('sync=false drops the pacing', () => {
         const sink = plan({ sync: false });
         expect(sink.sinkElement).toContain('sync=false');
         expect(sink.sinkPaced).toBe(false);

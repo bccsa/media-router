@@ -272,6 +272,12 @@ elements" below do not start.
   stream.** Audio Transcoder, likewise, decodes the first audio stream its
   input's programme lists; an input that listed its video first made it fail
   on the video before.
+- **Video Transcoder, Video Player, Teletext Subtitles and the Subtitles In of
+  the player and the transcoder take their input as the bus carries it.** The
+  packet stage that sat before their demux is gone, and its CPU with it. It
+  also kept an ingest's outage marks from the demux (its **Demux gaps** counted
+  only the holes the demux found itself), and could lose a teletext packet as
+  a source came back from an outage.
 
 **Removed settings (Phase 2), nothing migrated**
 

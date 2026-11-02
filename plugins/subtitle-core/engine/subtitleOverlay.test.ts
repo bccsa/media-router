@@ -95,8 +95,9 @@ describe('pipeline fragments', () => {
         });
         expect(s).toMatch(/^unixfdsrc /);
         expect(s).toContain('/run/x.sock');
-        expect(s).toContain('tsparse set-timestamps=false');
-        expect(s).toMatch(/ ! mrtsdemux name=subdemux media=private$/);
+        // The jitter queue straight into the demux, which re-frames (no tsparse, WI-P3-18).
+        expect(s).toMatch(/ ! queue leaky=0 [^!]* ! mrtsdemux name=subdemux media=private$/);
+        expect(s).not.toContain('tsparse');
         expect(s).not.toMatch(/\btsdemux\b/);
     });
 

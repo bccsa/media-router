@@ -200,12 +200,15 @@ describe('buildPipeline', () => {
         expect(res).not.toBeNull();
 
         const p = res.pipeline;
-        // Single static pipeline (no linkOnPadAdded): unixfdsrc → tsparse →
+        // Single static pipeline (no linkOnPadAdded): unixfdsrc → jitter queue →
         // the formula demux → decode once → conform framerate → tee → one leaf
         // per rendition.
         // Named demux — its counters show on the TS input (WI-P3-6).
         expect(p).toContain(`mrtsdemux name=${DEMUX_NAME} media=video`);
         expect(p).not.toMatch(/\btsdemux\b/);
+        // No tsparse before it: the demux re-frames (WI-P3-18).
+        expect(p).toMatch(/ ! queue leaky=0 [^!]* ! mrtsdemux /);
+        expect(p).not.toContain('tsparse');
         expect(p).toContain(`unixfdsrc socket-path=${base.input.socketPath}`);
         expect(p.match(/avdec_h264/g)).toHaveLength(1); // decoded exactly once
         expect(p).toContain('framerate=50/1');
