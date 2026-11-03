@@ -105,6 +105,8 @@ export { ThroughputPoller } from './plugins/ThroughputPoller.js';
 export type { ThroughputSample, ThroughputPollerOptions } from './plugins/ThroughputPoller.js';
 export {
     buildBusSrc,
+    buildBusDemux,
+    buildTsUdpInput,
     buildBusSink,
     busSocketPath,
     busTeeName,
@@ -117,7 +119,7 @@ export {
     latInName,
     latOutName,
 } from './plugins/busHelpers.js';
-export type { BusSrcOpts } from './plugins/busHelpers.js';
+export type { BusSrcOpts, BusDemuxOpts, TsUdpInputOpts } from './plugins/busHelpers.js';
 export {
     buildLatenessTap,
     withLatenessTap,
@@ -224,10 +226,8 @@ export {
     buildIngestQueue,
     INGEST_QUEUE_NAME,
     QUEUE_SHED_EVENT,
-    buildTsUdpInput,
 } from './plugins/tsHelpers.js';
 export { tsQueueByteCap } from './plugins/queueBounds.js';
-export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
 export { capsStreamInfo } from './plugins/streamCapsInfo.js';
 export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';
 export { formatBytes, formatBitrate, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';

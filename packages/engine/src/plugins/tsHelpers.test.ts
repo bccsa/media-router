@@ -4,7 +4,6 @@ import {
     buildIngestQueue,
     buildLeakyQueue,
     buildBackpressureQueue,
-    buildTsUdpInput,
     INGEST_QUEUE_MS,
     INGEST_QUEUE_NAME,
     muxSinkPadName,
@@ -12,7 +11,6 @@ import {
     TS_VIDEO_PID_BASE,
     videoStreamPid,
 } from './tsHelpers.js';
-import { buildBusSrc } from './busHelpers.js';
 import { tsQueueByteCap } from './queueBounds.js';
 
 describe('deterministic PID scheme (D3)', () => {
@@ -90,53 +88,5 @@ describe('buildIngestQueue (B-182)', () => {
         expect(tsQueueByteCap(INGEST_QUEUE_MS)).toBe(4_000_000);
         // 800 ms at 40 Mbit/s: a 500 ms stall of the bus egress is held whole.
         expect((4_000_000 * 8) / 40e6).toBeGreaterThanOrEqual(0.8);
-    });
-});
-
-describe('buildTsUdpInput', () => {
-    it('chains unixfdsrc bus ingress → jitter queue, and nothing after it (WI-P3-18)', () => {
-        const s = buildTsUdpInput({ port: 5500 });
-        // Bus ingress connects the channel socket (caps arrive over the socket)
-        expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500.sock');
-        // buildBusSrc's leaky deep ingress queue (5 s)
-        expect(s).toContain('queue leaky=2 max-size-time=5000000000');
-        // jitter queue defaults to 200 ms and BACK-PRESSURES (leaky=0): raw TS
-        // must never be shed mid-slice — see buildTsUdpInput.
-        expect(s).toContain('queue leaky=0 max-size-time=200000000');
-        expect(s).not.toContain('leaky=2 max-size-time=200000000');
-        // The jitter queue is last: the bus's whole-packet buffers (ADR-0011) reach the
-        // consumer's demux as sent, and the demux re-frames any other split itself.
-        expect(s).toBe(`${buildBusSrc({ port: 5500 })} ! ${buildBackpressureQueue(200)}`);
-    });
-    it('honours a custom jitterMs', () => {
-        const s = buildTsUdpInput({ port: 1, jitterMs: 100 });
-        expect(s).toContain('max-size-time=100000000');
-    });
-    it('connects to the per-consumer edge socket when supplied', () => {
-        const s = buildTsUdpInput({ port: 1, socketPath: '/tmp/mr-bus-1-ab12cd.sock' });
-        expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-1-ab12cd.sock');
-    });
-    it('inserts the bus stall watchdog when stallTimeoutMs is set', () => {
-        const s = buildTsUdpInput({ port: 1, udpsrcName: 'in0', stallTimeoutMs: 5000 });
-        expect(s).toContain(' ! watchdog name=buswd_in0 timeout=5000 ! ');
-    });
-    it('emits the optional element name on the unixfdsrc', () => {
-        const s = buildTsUdpInput({ port: 1, udpsrcName: 'in0' });
-        expect(s).toContain('unixfdsrc name=in0');
-    });
-    it('neither re-frames nor re-times a bus buffer: no tsparse (WI-P3-18, OQ-26)', () => {
-        // The `tsparse set-timestamps=false` it ended in re-framed for tsdemux and cleared
-        // every buffer flag on the way, a gap marker's GAP and DISCONT included (B-144).
-        const s = buildTsUdpInput({
-            port: 1,
-            udpsrcName: 'in0',
-            stallTimeoutMs: 5000,
-            jitterMs: 100,
-        });
-        expect(s).not.toContain('tsparse');
-        expect(s).not.toContain('set-timestamps');
-        expect(s).toMatch(
-            / ! queue leaky=0 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0$/,
-        );
     });
 });

@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { buildTsUdpInput } from '@media-router/engine';
+import { buildBusDemux } from '@media-router/engine';
 import {
     DECODEBIN_SELECTION,
     resolveCpuDecodeThreading,
@@ -359,11 +359,14 @@ export function buildLivePipeline(
     // One chain on either sink since WI-P3-18: the paced variant's tsparse went, so the bus's
     // whole-packet buffers reach the vp_ts tee and the demux as sent, and the demux re-frames.
     // A paced sink (`sync`, the default) rides the demux's PES times (PES PTS − 1 h).
-    const tsInput = buildTsUdpInput({
+    const busDemux = buildBusDemux({
         port: udpSource.port,
         socketPath: udpSource.socketPath,
         stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
         jitterMs: bufferMs,
+        tee: { name: PROBE_TEE_NAME },
+        name: VP_DEMUX_NAME,
+        media: 'video',
     });
     // Post-demux ES queue: floored at 1 s regardless of `bufferMs`. This queue
     // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
@@ -464,7 +467,7 @@ export function buildLivePipeline(
     // buffers of ANY size (ADR-0011: one access unit per buffer from a gst
     // producer, 1316 B from relay producers, 128×188 from libmrbus ingest,
     // whole-packet batches from mr-tssplit — never assume a size), and neither
-    // `watchdog` nor `queue` re-slices a buffer. Tapping off tsInput also puts the branch
+    // `watchdog` nor `queue` re-slices a buffer. Tapping off the jitter queue also puts the branch
     // downstream of the stall watchdog, so it cannot interfere with bus_stall
     // detection. The branch is leaky and the appsink drops
     // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
@@ -473,7 +476,7 @@ export function buildLivePipeline(
         ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     return (
-        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! mrtsdemux name=${VP_DEMUX_NAME} media=video ! ${caps}${q} ! ` +
+        `${busDemux} ! ${caps}${q} ! ` +
         `${decoder.chain} ! ${convert} ! ${overlay ? `${overlay} ! ` : ''}${sinkElement}${probeTap}`
     );
 }

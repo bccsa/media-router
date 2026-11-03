@@ -6,7 +6,7 @@
 
 import {
     buildScaleStage,
-    buildTsUdpInput,
+    buildBusDemux,
     buildBusSink,
     buildLeakyQueue,
     buildEncodeLeaf,
@@ -109,7 +109,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const bufferMs = Math.max(100, input.bufferMs ?? 200);
     const deinterlaceMode = input.deinterlace ?? 'auto';
 
-    // `buildTsUdpInput` hands the bus buffers to the demux as sent: no tsparse, which
+    // `buildBusDemux` hands the bus buffers to the demux as sent: no tsparse, which
     // re-framed for tsdemux (WI-P3-18); the demux re-frames and puts each frame on its
     // PES time, so nothing here re-stamps from PCR.
     // No udpsrc `timeout`: a single-input loopback transcoder feeding a tee (fan-
@@ -118,10 +118,12 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // can't recover a loopback source and only restart-storms (re-spawning the
     // x264 encoders) at boot before the upstream has data. See the same rationale
     // in mpegtsDemuxerPipeline. The multi-source mpegts-muxer keeps its timeout.
-    const tsInput = buildTsUdpInput({
+    const busDemux = buildBusDemux({
         port: input.input.port,
         socketPath: input.input.socketPath,
         jitterMs: bufferMs,
+        name: DEMUX_NAME,
+        media: 'video',
     });
 
     // Per-rendition leaf — the shared `queue ! scale ! encode ! mux ! sink` tail
@@ -231,7 +233,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const overlay = subs?.overlay ?? '';
     const videoWatch = subs?.videoWatch ?? '';
     const pipeline =
-        `${tsInput} ! mrtsdemux name=${DEMUX_NAME} media=video ! ${videoCaps} ! ${videoWatch}${decoder} ! ${rawBuffer} ! ` +
+        `${busDemux} ! ${videoCaps} ! ${videoWatch}${decoder} ! ${rawBuffer} ! ` +
         `${deinterlacer}videorate drop-only=true skip-to-first=true ! ${rateCaps} ! ${overlay}tee name=t ${teeBranches}` +
         (subs ? ` ${subs.inputFragment}` : '');
 

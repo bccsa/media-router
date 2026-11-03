@@ -28,8 +28,8 @@
  */
 
 import {
+    buildBusDemux,
     buildBusSink,
-    buildBusSrc,
     muxSinkPadName,
     tsQueueByteCap,
     type RunnerHook,
@@ -79,13 +79,13 @@ const ROUTE_QUEUE_BYTES = tsQueueByteCap(5_000);
  * back at its own PES PTS, every branch on one timeline, with no branch alignment.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
-    const src = buildBusSrc({
+    // No input buffer in the demux: each route's aligner FIFO downstream provides flow control.
+    return buildBusDemux({
         port: source.port,
         socketPath: source.socketPath,
-        name: inputBusSrcName(branchId),
+        srcName: inputBusSrcName(branchId),
+        name: `demux_${branchId}`,
     });
-    // No input buffer in the demux: each route's aligner FIFO downstream provides flow control.
-    return `${src} ! mrtsdemux name=demux_${branchId}`;
 }
 
 /** Element name of input branch `i`'s bus source. */

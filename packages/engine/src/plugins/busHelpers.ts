@@ -10,8 +10,9 @@
  * `unixfdsink` branches are attached ONE PER CONSUMER at runtime by the
  * engine's `BusFanoutCoordinator` (`bus_attach`/`bus_detach` runner commands),
  * each on its own edge socket. Consumers read their own branch
- * (`buildBusSrc`). Non-GStreamer producers (hls-player's Node child) publish
- * through the `mr-bus-fanout` sidecar via `busIngestSocketPath`.
+ * (`buildBusSrc`), up to their demux with `buildBusDemux`. Non-GStreamer
+ * producers (hls-player's Node child) publish through the `mr-bus-fanout`
+ * sidecar via `busIngestSocketPath`.
  *
  * Channel identity: the allocated bus port NUMBER (from the channel manager,
  * with its sticky-reacquire semantics) — it no longer binds a socket, it keys
@@ -31,6 +32,7 @@
  */
 import { tsQueueByteCap } from './queueBounds.js';
 import { busEgressLatenessTap, busLatenessTap, LAT_IN_PREFIX } from './latenessTap.js';
+import { buildBackpressureQueue } from './tsHelpers.js';
 
 export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
@@ -202,6 +204,103 @@ export function buildBusSrc(opts: BusSrcOpts): string {
         ` ! queue leaky=2 max-size-time=${BUS_INGRESS_QUEUE_MS * 1_000_000}` +
         ` max-size-buffers=0 max-size-bytes=${BUS_INGRESS_QUEUE_BYTES}`
     );
+}
+
+export interface TsUdpInputOpts {
+    port: number;
+    /** Optional element name so callers can address the ingress (e.g. for live props). */
+    udpsrcName?: string;
+    /** Jitter buffer length in milliseconds (default 200): holds delivery jitter
+     *  and encoder I-frame bursts ahead of the demux. Sizes a BACK-PRESSURING
+     *  queue (never leaky — see `buildTsUdpInput`), so a value that is too
+     *  small costs a momentary stall, never a corrupted picture. */
+    jitterMs?: number;
+    /** Per-consumer edge socket (from MediaRouter). Falls back to the
+     *  channel-level socket when absent. */
+    socketPath?: string;
+    /** Source-silent watchdog (ms) — see `BusSrcOpts.stallTimeoutMs`. */
+    stallTimeoutMs?: number;
+}
+
+/**
+ * Canonical inbound MPEG-TS bus receive chain, ahead of the consumer's demux:
+ *   unixfdsrc (+ leaky ingress) ! queue (jitter, back-pressuring)
+ *
+ * Why each piece:
+ *   - `buildBusSrc` connects this consumer's fan-out edge; caps arrive over
+ *     the socket from the producer.
+ *   - `queue leaky=0` (jitterMs) absorbs delivery jitter and encoder I-frame
+ *     bursts and BACK-PRESSURES when it fills — it must never leak. This
+ *     queue carries raw TS: a leaked chunk is a mid-slice hole that corrupts
+ *     every dependent frame until the next IDR, which the operator sees as
+ *     "packet loss on movement" while every counter (SRT loss, decoder
+ *     errors on an independent tap) reads zero. Measured 2026-09-02, Pi 5
+ *     player: a 30→25 fps source (66 ms between some frames) into a 50 ms
+ *     LEAKY jitter queue smeared every moving object; 200 ms hid it; the
+ *     leak is the fault, not the size. Raising the size was the previous
+ *     answer (50→200 default) and merely moved the cliff. A full queue now
+ *     pushes back into `buildBusSrc`'s 5 s ingress queue instead; a
+ *     `sync=false` sink drains that backlog at max speed and a clock-paced
+ *     sink hands it to the backlog shedder, which drops whole GOP tails
+ *     (keyframe-aligned — never mid-slice). Same finding as the
+ *     mpegts-muxer's input queues (leaky shed 11 % of audio, non-leaky zero).
+ *   - No re-framer: the bus carries whole 188-byte packets (ADR-0011) and the demux
+ *     re-frames any other split itself (`PacketWalker` carries a partial packet). The
+ *     `tsparse` here until WI-P3-18 also cleared every buffer flag, a gap marker's too.
+ */
+export function buildTsUdpInput(opts: TsUdpInputOpts): string {
+    const src = buildBusSrc({
+        port: opts.port,
+        name: opts.udpsrcName,
+        socketPath: opts.socketPath,
+        stallTimeoutMs: opts.stallTimeoutMs,
+    });
+    const queue = buildBackpressureQueue(opts.jitterMs ?? 200);
+    return `${src} ! ${queue}`;
+}
+
+export interface BusDemuxOpts {
+    /** Allocated bus channel port (`BusSrcOpts.port`). */
+    port: number;
+    /** Per-consumer edge socket (`BusSrcOpts.socketPath`). */
+    socketPath?: string;
+    /** `name=` of the unixfdsrc, which also keys its lateness tap (`BusSrcOpts.name`). */
+    srcName?: string;
+    /** Source-silent watchdog in ms (`BusSrcOpts.stallTimeoutMs`). */
+    stallTimeoutMs?: number;
+    /** Bound of the back-pressuring jitter queue after the bus source, in ms (`buildTsUdpInput`);
+     *  unset, the demux takes the ingress queue's output. */
+    jitterMs?: number;
+    /** A `tee name=<name>` before the demux, for a tap the caller links off `<name>.`; `queue`
+     *  puts a plain `queue` between the tee and the demux. */
+    tee?: { name: string; queue?: boolean };
+    /** `name=` of the mrtsdemux. */
+    name: string;
+    /** Select mode: the one stream of these caps on the src pad (`select=`). */
+    select?: string;
+    /** Demux mode: the pad classes, comma-separated (`media=`); unset, every class. */
+    media?: string;
+}
+
+/**
+ * Every bus consumer's input up to its demux, in one place (B-145):
+ *   buildBusSrc [! jitter queue] [! tee [! queue]] ! mrtsdemux name=… [select=…] [media=…]
+ * The module appends its own branch (` ! …`: decode, render, mux) and any tap off the tee.
+ */
+export function buildBusDemux(opts: BusDemuxOpts): string {
+    const bus = {
+        port: opts.port,
+        socketPath: opts.socketPath,
+        stallTimeoutMs: opts.stallTimeoutMs,
+    };
+    const input =
+        opts.jitterMs === undefined
+            ? buildBusSrc({ ...bus, name: opts.srcName })
+            : buildTsUdpInput({ ...bus, udpsrcName: opts.srcName, jitterMs: opts.jitterMs });
+    const tee = opts.tee ? ` ! tee name=${opts.tee.name}${opts.tee.queue ? ' ! queue' : ''}` : '';
+    const select = opts.select ? ` select=${opts.select}` : '';
+    const media = opts.media ? ` media=${opts.media}` : '';
+    return `${input}${tee} ! mrtsdemux name=${opts.name}${select}${media}`;
 }
 
 /**

@@ -1,7 +1,7 @@
 import {
     DECODE_BYPASS_PPM,
     buildAsrc,
-    buildBusSrc,
+    buildBusDemux,
     gstElementSupportsCaps,
     liveInputLaunchText,
     probeGstElement,
@@ -235,7 +235,12 @@ function decode302m(
     channels: number,
     asrcName: string | null,
 ): string {
-    const src = buildBusSrc({ port: source.port, socketPath: source.socketPath });
+    const demux = buildBusDemux({
+        port: source.port,
+        socketPath: source.socketPath,
+        name: demuxName,
+        select: 'audio/x-smpte-302m',
+    });
     // Per-connection channel mapping on THIS branch's audioconvert.
     const matrix = source.channelMap?.length
         ? mixMatrixClause(
@@ -248,10 +253,7 @@ function decode302m(
     const asrc = asrcName
         ? ` ! ${buildAsrc({ name: asrcName, bypassBelowPpm: DECODE_BYPASS_PPM, outRate: 48000 })}`
         : '';
-    return (
-        `${src} ! mrtsdemux name=${demuxName} select=audio/x-smpte-302m ! avdec_s302m${asrc}` +
-        ` ! audioconvert${matrix}`
-    );
+    return `${demux} ! avdec_s302m${asrc} ! audioconvert${matrix}`;
 }
 
 /** The input's watchdog (house-clock WI-P2-6): paced with the mixer's other inputs;

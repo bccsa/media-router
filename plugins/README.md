@@ -2062,6 +2062,8 @@ The controller keeps the desired edge set and replays it on every sidecar `ready
 
 Consumers return `null` from `buildPipeline` when no upstream is connected. The router restarts them when a connection is made.
 
+A consumer that demuxes builds its bus input with `buildBusDemux` from `@media-router/engine` (`packages/engine/src/plugins/busHelpers.ts`), the one helper every consumer uses (B-145): `buildBusSrc`, then the back-pressuring jitter queue of `buildTsUdpInput` when `jitterMs` is set, a `tee` for a report-only tap when asked (the module links the tap off `<tee>.`), and `mrtsdemux name=…`, in select mode with `select` or on the pad classes of `media` (every class when neither is set). The module appends only its own branch after the demux: decode, render, mux, ASRC placement. A pass-through output (SRT, RIST, MPEG-TS IP) has no demux and reads `buildBusSrc` alone.
+
 ```typescript
 buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
     const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
@@ -2069,8 +2071,13 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         this.setHealth('warning', 'No encoder connected');
         return null;
     }
-    const busSrc = buildBusSrc({ port: source.port, socketPath: source.socketPath });
-    return { pipeline: `${busSrc} ! tsdemux latency=0 ! opusdec ! ...` };
+    const demux = buildBusDemux({
+        port: source.port,
+        socketPath: source.socketPath,
+        name: 'demux',
+        media: 'audio',
+    });
+    return { pipeline: `${demux} ! opusdec ! ...` };
 }
 ```
 

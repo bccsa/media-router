@@ -22,7 +22,7 @@
  * the consumer, and independent of the playout offset D.
  */
 
-import { buildTsUdpInput, type DynamicPort, type RunnerHook } from '@media-router/engine';
+import { buildBusDemux, type DynamicPort, type RunnerHook } from '@media-router/engine';
 
 /** Config keys → JSON-schema properties. Copy verbatim into manifests. */
 export const SUBTITLE_OVERLAY_SCHEMA: Record<string, Record<string, unknown>> = {
@@ -198,10 +198,13 @@ export interface SubtitleInputOpts {
  * Standalone fragment — join it to the rest of the pipeline with a space, not `!`.
  */
 export function buildSubtitleInput(opts: SubtitleInputOpts): string {
-    return (
-        `${buildTsUdpInput({ port: opts.port, socketPath: opts.socketPath, jitterMs: 200 })} ` +
-        `! mrtsdemux name=${opts.demuxName} media=private`
-    );
+    return buildBusDemux({
+        port: opts.port,
+        socketPath: opts.socketPath,
+        jitterMs: 200,
+        name: opts.demuxName,
+        media: 'private',
+    });
 }
 
 /** Config for the consumer half of the bridge (`subtitle_bridge` hook, `overlay`). */

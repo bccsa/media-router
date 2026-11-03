@@ -13,8 +13,8 @@
 import {
     DECODE_BYPASS_PPM,
     buildAsrc,
+    buildBusDemux,
     buildBusSink,
-    buildBusSrc,
     busTeeName,
     type ChannelMapEntry,
 } from '@media-router/engine';
@@ -136,16 +136,17 @@ export function buildPipeline(
     if (input.outputs.length === 0) return null;
 
     const fe = input.source;
-    const src = buildBusSrc({
-        port: fe.port,
-        socketPath: fe.socketPath,
-    });
     const bufferNs = Math.max(50, Math.min(5000, fe.bufferMs)) * 1_000_000;
     // `media=audio`: the first audio stream only (OQ-28). `audioconvert` interleaves the decoder's
     // PCM for `asrc` (avdec_aac's is planar), which passes a house-rate source untouched, resamples
     // a foreign one once, and gives the rate the renditions negotiate (no out-rate; part 4.4).
     const frontEnd =
-        `${src} ! mrtsdemux name=${DEMUX_NAME} media=audio` +
+        buildBusDemux({
+            port: fe.port,
+            socketPath: fe.socketPath,
+            name: DEMUX_NAME,
+            media: 'audio',
+        }) +
         ` ! queue leaky=0 max-size-time=${bufferNs} max-size-buffers=0 max-size-bytes=0` +
         ` ! ${decoderChainFor(fe.probedCodec)} ! audioconvert` +
         ` ! ${buildAsrc({ name: ASRC_NAME, bypassBelowPpm: DECODE_BYPASS_PPM })}`;

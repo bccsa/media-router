@@ -27,7 +27,7 @@
  * wired module still learns what the stream announces.
  */
 
-import { buildTsUdpInput } from '@media-router/engine';
+import { buildBusDemux, buildTsUdpInput } from '@media-router/engine';
 import {
     buildSubtitlePayTail,
     subtitleStreamPid,
@@ -36,6 +36,8 @@ import {
 import { pageLabel, type TeletextPage } from './teletextPorts.js';
 
 const DEMUX_NAME = 'demux';
+/** The tee ahead of the demux that the TS probe tap leaves from. */
+const INPUT_TEE_NAME = 'in_t';
 export const PROBE_SINK_NAME = 'tsprobe';
 
 export interface TeletextOutput {
@@ -69,15 +71,12 @@ export function appsrcName(index: number): string {
 }
 
 export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineResult {
-    const tsInput = buildTsUdpInput({
-        port: input.input.port,
-        socketPath: input.input.socketPath,
-        jitterMs: 200,
-    });
+    const bus = { port: input.input.port, socketPath: input.input.socketPath, jitterMs: 200 };
     // Leaky: a report-only tap must shed, never back-pressure the demux branch.
     const probeTap = `queue leaky=downstream max-size-buffers=64 ! appsink name=${PROBE_SINK_NAME}`;
 
     if (input.outputs.length === 0) {
+        const tsInput = buildTsUdpInput(bus);
         return { pipeline: `${tsInput} ! ${probeTap}`, subtitlePay: [], sinkNames: [] };
     }
 
@@ -93,10 +92,15 @@ export function buildPipeline(input: TeletextPipelineInputs): TeletextPipelineRe
         .map((o, i) => buildSubtitlePayTail({ appsrcName: appsrcName(i), port: o.port }))
         .join(' ');
 
+    const demux = buildBusDemux({
+        ...bus,
+        tee: { name: INPUT_TEE_NAME, queue: true },
+        name: DEMUX_NAME,
+        media: 'private',
+    });
     const pipeline =
-        `${tsInput} ! tee name=in_t ! queue ! mrtsdemux name=${DEMUX_NAME} media=private ` +
-        `! capsfilter caps="application/x-teletext" ! tee name=t ` +
-        `${decoders} ${tails} in_t. ! ${probeTap}`;
+        `${demux} ! capsfilter caps="application/x-teletext" ! tee name=t ` +
+        `${decoders} ${tails} ${INPUT_TEE_NAME}. ! ${probeTap}`;
 
     return {
         pipeline,

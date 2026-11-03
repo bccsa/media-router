@@ -5,8 +5,7 @@ import {
     aes67PtimeClauses,
     aes67RawCaps,
     buildAsrc,
-    buildBusSrc,
-    buildBackpressureQueue,
+    buildBusDemux,
     withLatenessTap,
     clampChannels,
     clampPayloadType,
@@ -279,9 +278,14 @@ export class Aes67OutputModule extends GstPluginBase {
             : '';
 
         const pipeline = [
-            buildBusSrc({ name: 'busin', port: source.port, socketPath: source.socketPath }),
-            buildBackpressureQueue(200),
-            'mrtsdemux name=demux select=audio/x-smpte-302m',
+            buildBusDemux({
+                port: source.port,
+                socketPath: source.socketPath,
+                srcName: 'busin',
+                jitterMs: 200,
+                name: 'demux',
+                select: 'audio/x-smpte-302m',
+            }),
             'avdec_s302m',
             buildAsrc({ bypassBelowPpm: DECODE_BYPASS_PPM, outRate: AES67_SAMPLE_RATE }),
             'audioconvert',

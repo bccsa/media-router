@@ -3,7 +3,7 @@ import {
     GstPluginBase,
     backlogShedConfig,
     buildAsrc,
-    buildBusSrc,
+    buildBusDemux,
     buildLatenessTap,
     effectivePlayoutOffsetNs,
     pulsePinnedStreamProps,
@@ -247,9 +247,13 @@ export class AudioDecoderModule extends GstPluginBase {
             return null;
         }
 
-        const udpSrc = buildBusSrc({
+        // `media=audio`: the first audio stream only (OQ-28), so an A/V input never links its
+        // video here.
+        const busDemux = buildBusDemux({
             port: udpSource.port,
             socketPath: udpSource.socketPath,
+            name: DEMUX_NAME,
+            media: 'audio',
         });
 
         // Plugin decides decoder based on probe result.
@@ -311,10 +315,7 @@ export class AudioDecoderModule extends GstPluginBase {
             // (the encoder re-stamps at capture). Operators tuning latency
             // must be able to shrink it; the old hard 300 ms floor was
             // demuxer-burst-era protection.
-            //
-            // `media=audio`: the first audio stream only (OQ-28), so an A/V input never links its
-            // video here.
-            `${udpSrc} ! mrtsdemux name=${DEMUX_NAME} media=audio ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            `${busDemux} ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             // Interleaved for `asrc` (avdec_aac's output is planar). Render lateness is read
             // before it, where PTS is still content time (part 4.4).
             'audioconvert',
