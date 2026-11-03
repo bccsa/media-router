@@ -1,5 +1,5 @@
 import { createLogger } from '@media-router/shared-types';
-import type { PaCommandQueue } from './PaCommandQueue.js';
+import { PactlNoAnswer, type PaCommandQueue } from './PaCommandQueue.js';
 import { MR_PW_PREFIX, type AudioDevice } from './PipeWireManager.js';
 import { SharedRead } from './SharedRead.js';
 
@@ -116,6 +116,24 @@ export function parseServerCookie(info: string): string | null {
 /** How long one `pactl list` snapshot is reused before it is re-fetched. */
 export const DEFAULT_DEVICE_CACHE_TTL_MS = 1000;
 
+/** Why a listing is not PipeWire's answer (B-207): its pactl call timed out, or failed at once. */
+export const PIPEWIRE_NOT_ANSWERING_LIST = 'PipeWire not answering';
+export const PIPEWIRE_NOT_RUNNING_LIST = 'PipeWire not running';
+
+/** A listing PipeWire gave no answer to: why, and since when (ms since the epoch). */
+export interface StaleListing {
+    reason: typeof PIPEWIRE_NOT_ANSWERING_LIST | typeof PIPEWIRE_NOT_RUNNING_LIST;
+    since: number;
+}
+
+/**
+ * The audio devices (B-207): PipeWire's answer, or while it gives none its last answer, marked
+ * stale; `devices` is null when it has never answered (unknown, not none).
+ */
+export type AudioDeviceListing =
+    | { devices: AudioDevice[]; stale: null }
+    | { devices: AudioDevice[] | null; stale: StaleListing };
+
 export interface AudioDeviceOpsOptions {
     /** Snapshot lifetime in ms — `0` disables caching. Default 1000. */
     cacheTtlMs?: number;
@@ -129,7 +147,7 @@ export interface AudioDeviceOpsOptions {
  * listing uses `execImmediateAsync` (bypasses the queue, read-only).
  *
  * Listing is CACHED for `cacheTtlMs`. Every caller of `hasDevice` /
- * `getDeviceInfo` / `listDevices` used to spawn two `pactl list` processes
+ * `getDeviceInfo` / `deviceListing` used to spawn two `pactl list` processes
  * (sources + sinks): two device providers polling every 2 s plus one
  * DeviceWatchdog per audio module added up to ~4 pactl spawns per second on
  * a 5-module Pi 4 profile, ~10 % of a core across node, pipewire-pulse and
@@ -139,16 +157,20 @@ export interface AudioDeviceOpsOptions {
  * settles — see `PaCommandQueue.onMutation`.
  *
  * Nothing here blocks the event loop (B-200): a listing is asked without waiting, one at a time
- * (`SharedRead`), and a hung PipeWire costs its readers one pactl timeout, not the engine.
+ * (`SharedRead`), and a hung PipeWire costs its readers one pactl timeout, not the engine. A
+ * listing with no answer is PipeWire's last one, marked stale (B-207): never an empty one, and no
+ * device reads as gone (`hasDevice` says unknown).
  */
 export class AudioDeviceOps {
     private readonly now: () => number;
-    private readonly listing: SharedRead<AudioDevice[]>;
+    private readonly listing: SharedRead<AudioDeviceListing>;
     private readonly info: SharedRead<string | null>;
     /** Since when pactl gets no answer (null: it answers): one line per outage, not per call. */
     private outageSince: number | null = null;
-    /** The last device listing got an answer. */
-    private listed = true;
+    /** The devices of the last listing PipeWire answered; null before its first answer. */
+    private answered: AudioDevice[] | null = null;
+    /** Set while the device listing gets no answer. */
+    private stale: StaleListing | null = null;
 
     constructor(
         private paQueue: PaCommandQueue,
@@ -198,11 +220,12 @@ export class AudioDeviceOps {
         }
     }
 
-    /**
-     * List available audio devices (sources and sinks) with full descriptions.
-     */
-    async listDevices(): Promise<AudioDevice[]> {
-        return [...(await this.listing.get())];
+    /** The audio devices (sources, then sinks), or PipeWire's last answer marked stale; each
+     *  reader gets its own copy. */
+    async deviceListing(): Promise<AudioDeviceListing> {
+        const listing = await this.listing.get();
+        if (listing.stale === null) return { devices: [...listing.devices], stale: null };
+        return { devices: listing.devices && [...listing.devices], stale: { ...listing.stale } };
     }
 
     /** The PipeWire daemon's identity (`parseServerCookie`), cached like the listing; null when
@@ -211,35 +234,44 @@ export class AudioDeviceOps {
         return this.info.get();
     }
 
-    /** False while the device listing gets no answer: the list is then unknown, not empty. */
+    /** False while the device listing gets no answer: the lists are then its last answer, stale. */
     isAvailable(): boolean {
-        return this.listed;
+        return this.stale === null;
     }
 
-    /** Both lists asked together, sources first in the result; either one failing is no answer. */
-    private async fetchDevices(): Promise<AudioDevice[]> {
+    /** Both lists asked together, sources first; either one failing is no answer, which keeps the
+     *  last answer, marked stale since the first listing of its reason that got none. */
+    private async fetchDevices(): Promise<AudioDeviceListing> {
         const kinds = [
             ['sources', 'source'],
             ['sinks', 'sink'],
         ] as const;
+        const askedAt = this.now();
         const outputs = await Promise.allSettled(
             kinds.map(([kind]) => this.paQueue.execImmediateAsync(['list', kind])),
         );
+        const failures = outputs.flatMap((o) => (o.status === 'rejected' ? [o.reason] : []));
+        this.noteAnswer(failures[0] ?? null);
+        if (failures.length > 0) {
+            const reason = failures.some((f) => f instanceof PactlNoAnswer)
+                ? PIPEWIRE_NOT_ANSWERING_LIST
+                : PIPEWIRE_NOT_RUNNING_LIST;
+            const stale: StaleListing =
+                this.stale?.reason === reason ? this.stale : { reason, since: askedAt };
+            this.stale = stale;
+            return { devices: this.answered, stale };
+        }
         const devices: AudioDevice[] = [];
-        let failure: unknown = null;
         outputs.forEach((output, i) => {
-            if (output.status === 'rejected') {
-                failure = output.reason;
-                return;
-            }
+            if (output.status !== 'fulfilled') return;
             for (const block of output.value.split('\n\n')) {
                 const dev = parseDeviceBlock(block, kinds[i][1]);
                 if (dev) devices.push(dev);
             }
         });
-        this.listed = failure === null;
-        this.noteAnswer(failure);
-        return devices;
+        this.answered = devices;
+        this.stale = null;
+        return { devices, stale: null };
     }
 
     private async fetchServerCookie(): Promise<string | null> {
@@ -258,8 +290,8 @@ export class AudioDeviceOps {
         if (failure && this.outageSince === null) {
             this.outageSince = this.now();
             log.warn(
-                { err: failure },
-                'PipeWire does not answer pactl: audio devices read as absent until it does',
+                { err: failure, noAnswer: failure instanceof PactlNoAnswer },
+                'PipeWire does not answer pactl: device lists stay as it last answered, marked stale, until it does',
             );
         } else if (!failure && this.outageSince !== null) {
             log.info({ downMs: this.now() - this.outageSince }, 'PipeWire answers pactl again');
@@ -272,10 +304,13 @@ export class AudioDeviceOps {
      * source as `getDeviceInfo` — kept as a separate method for the
      * presence-only callers (e.g. the device watchdog) where the channel
      * count and sample rate aren't needed and `getDeviceInfo(...) !== null`
-     * would be a less expressive idiom.
+     * would be a less expressive idiom. Null while PipeWire gives no answer:
+     * unknown, never gone (B-207).
      */
-    async hasDevice(deviceName: string): Promise<boolean> {
-        return (await this.listDevices()).some((d) => d.name === deviceName);
+    async hasDevice(deviceName: string): Promise<boolean | null> {
+        const listing = await this.listing.get();
+        if (listing.stale !== null) return null;
+        return listing.devices.some((d) => d.name === deviceName);
     }
 
     /**
@@ -283,13 +318,15 @@ export class AudioDeviceOps {
      * Returns whatever fields could be parsed from the pactl block — channels
      * is reliable even on SUSPENDED devices (read from `Channel Map:`),
      * sampleRate may be undefined when the active profile hasn't reported a
-     * `Sample Specification:` line yet. Returns `null` only when the device
-     * isn't enumerated at all.
+     * `Sample Specification:` line yet. Returns `null` when the device isn't
+     * enumerated, or PipeWire gives no answer (`hasDevice` tells them apart).
      */
     async getDeviceInfo(
         deviceName: string,
     ): Promise<{ channels?: number; sampleRate?: number } | null> {
-        const dev = (await this.listDevices()).find((d) => d.name === deviceName);
+        const listing = await this.listing.get();
+        const dev =
+            listing.stale === null ? listing.devices.find((d) => d.name === deviceName) : undefined;
         if (!dev) return null;
         return { channels: dev.channels, sampleRate: dev.sampleRate };
     }

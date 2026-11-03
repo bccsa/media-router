@@ -278,6 +278,7 @@ export {
     PIPEWIRE_CAPTURE_STALL_MS,
     PIPEWIRE_NOT_ANSWERING,
     PIPEWIRE_RESTARTED,
+    START_WAITS_FOR_PIPEWIRE,
     lossWarning,
     rebuildDelayMs,
 } from './plugins/pipeWireLoss.js';

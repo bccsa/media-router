@@ -117,14 +117,7 @@ export class AudioInput302mModule extends GstPluginBase {
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
-        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
-            this.setHealth(
-                'warning',
-                `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
-            );
-            this.startDeviceWatchdog(false);
-            return;
-        }
+        if (await this.startWaitsForDevice(this.deviceName)) return;
         await this.readDeviceChannels();
         // Link WHILE the pipeline starts, not after: pipewiresrc finishes
         // negotiating only once its stream is linked and running, so a link

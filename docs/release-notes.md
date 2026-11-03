@@ -553,7 +553,13 @@ elements" below do not start.
   stopped for up to 10 s every 2 s, its UI, API and modules with it. Fixed: the
   engine asks for the audio devices without waiting on the answer, no module
   takes a missing answer for an unplugged device, and all recovers when
-  PipeWire answers again.
+  PipeWire answers again. Meanwhile, and while PipeWire is not running, the
+  device pickers keep the devices PipeWire listed last, each marked "PipeWire
+  not answering since …" (or "not running since …"), instead of going empty as
+  if the box had none; before PipeWire's first answer the picker says "No
+  answer: …". A module started meanwhile says "PipeWire is not answering —
+  starting once PipeWire and the device are back" and starts by itself once
+  PipeWire answers.
 - **An Audio Transcoder with no source says so once.** Up to v2.0.0.100 it
   logged "No audio caps detected" every 10 s while its source sent nothing,
   pushing real errors out of the box's log within minutes. Fixed: it logs the

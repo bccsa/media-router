@@ -3,7 +3,11 @@ import type { EngineServices } from '../plugins/PluginModule.js';
 import type { DeviceProvider } from './DeviceProviderRegistry.js';
 import { registerPipeWireDeviceProvider } from './pipeWireDeviceProvider.js';
 
-function makeServices(devices: Array<Record<string, unknown>>) {
+/** `stale` set: PipeWire gives no answer, and `devices` is its last (null: it never answered). */
+function makeServices(
+    devices: Array<Record<string, unknown>> | null,
+    stale: { reason: string; since: number } | null = null,
+) {
     let registered: DeviceProvider | undefined;
     const register = vi.fn((p: DeviceProvider) => {
         registered = p;
@@ -11,7 +15,7 @@ function makeServices(devices: Array<Record<string, unknown>>) {
     const normalizeSinkVolumes = vi.fn();
     const services = {
         pipeWire: {
-            listDevices: vi.fn(async () => devices),
+            deviceListing: vi.fn(async () => ({ devices, stale })),
             normalizeSinkVolumes,
         },
         deviceProviders: { register },
@@ -149,5 +153,83 @@ describe('registerPipeWireDeviceProvider', () => {
         registerPipeWireDeviceProvider(services, { type: 'audio-sink', direction: 'sink' });
         const list = (await getRegistered()!.list()) as Array<{ label: string }>;
         expect(list[0].label).toBe('Partial (?ch, ?Hz)');
+    });
+});
+
+describe('registerPipeWireDeviceProvider while PipeWire gives no answer (B-207)', () => {
+    const SINCE = Date.parse('2026-11-03T09:01:00.840Z');
+    const hung = { reason: 'PipeWire not answering', since: SINCE };
+    const mark = { reason: 'PipeWire not answering', since: '2026-11-03T09:01:00Z' };
+    const MIC = {
+        name: 'mic',
+        direction: 'source',
+        description: 'USB Mic',
+        channels: 1,
+        sampleRate: 48000,
+    };
+    const SPK = {
+        name: 'spk',
+        direction: 'sink',
+        description: 'Speakers',
+        channels: 2,
+        volumes: [26214],
+    };
+
+    async function listed(
+        devices: Array<Record<string, unknown>> | null,
+        direction: 'source' | 'sink',
+        stale = hung,
+    ) {
+        const made = makeServices(devices, stale);
+        registerPipeWireDeviceProvider(made.services, { type: `audio-${direction}`, direction });
+        return { list: await made.getRegistered()!.list(), ...made };
+    }
+
+    it('serves its last list, each device marked with why and since when, in its label too', async () => {
+        const { list } = await listed([MIC, SPK], 'source');
+        expect(list).toEqual([
+            {
+                name: 'mic',
+                label: 'USB Mic (1ch, 48000Hz) — PipeWire not answering since 2026-11-03T09:01:00Z',
+                meta: { direction: 'source', channels: 1, sampleRate: 48000, stale: mark },
+            },
+        ]);
+    });
+
+    it('PipeWire not running reads so', async () => {
+        const { list } = await listed([MIC], 'source', {
+            reason: 'PipeWire not running',
+            since: SINCE,
+        });
+        expect(list[0].label).toBe(
+            'USB Mic (1ch, 48000Hz) — PipeWire not running since 2026-11-03T09:01:00Z',
+        );
+    });
+
+    it('never answered: one nameless entry saying no answer, never an empty list', async () => {
+        const { list } = await listed(null, 'source');
+        expect(list).toEqual([
+            {
+                name: '',
+                label: 'No answer: PipeWire not answering since 2026-11-03T09:01:00Z',
+                meta: { stale: mark },
+            },
+        ]);
+    });
+
+    it('none of its kind in the last answer: one nameless entry saying so', async () => {
+        const { list } = await listed([SPK], 'source');
+        expect(list).toEqual([
+            {
+                name: '',
+                label: "No device in PipeWire's last list — PipeWire not answering since 2026-11-03T09:01:00Z",
+                meta: { stale: mark },
+            },
+        ]);
+    });
+
+    it('sets no sink volume from a stale list', async () => {
+        const { normalizeSinkVolumes } = await listed([SPK], 'sink');
+        expect(normalizeSinkVolumes).not.toHaveBeenCalled();
     });
 });

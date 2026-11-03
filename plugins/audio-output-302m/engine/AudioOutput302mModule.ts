@@ -115,17 +115,10 @@ export class AudioOutput302mModule extends GstPluginBase {
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
-        // Device not enumerated yet → defer to the watchdog (throwing here
-        // would prevent the watchdog from starting; hot-plug would then only
+        // Device not enumerated yet, or no answer from PipeWire → defer to the watchdog
+        // (throwing here would prevent the watchdog from starting; hot-plug would then only
         // recover on an engine restart — same rationale as audio-output).
-        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
-            this.setHealth(
-                'warning',
-                `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
-            );
-            this.startDeviceWatchdog(false);
-            return;
-        }
+        if (await this.startWaitsForDevice(this.deviceName)) return;
         await this.readDeviceChannels();
         await super.onStart();
         this.startDeviceWatchdog();

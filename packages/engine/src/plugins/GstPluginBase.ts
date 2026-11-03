@@ -12,6 +12,7 @@ import { PIPEWIRE_LOST_KIND } from '../child-process/GstRunner.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
+import { START_WAITS_FOR_PIPEWIRE } from './pipeWireLoss.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { QUEUE_SHED_EVENT } from './tsHelpers.js';
@@ -1252,6 +1253,26 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             onClear: () => this.setVuData([]),
         });
         this.deviceWatchdog.start(initiallyConnected);
+    }
+
+    /**
+     * A start's device check: true when the start must wait for `device`, not listed ("waiting for
+     * hot-plug") or no answer from PipeWire (B-207: unknown, never gone); the watchdog then starts
+     * the module once it is listed. False when it is listed, or there is no PipeWire to ask.
+     */
+    protected async startWaitsForDevice(device: string): Promise<boolean> {
+        const listed = this.services?.pipeWire
+            ? await this.services.pipeWire.hasDevice(device)
+            : true;
+        if (listed) return false;
+        this.setHealth(
+            'warning',
+            listed === null
+                ? START_WAITS_FOR_PIPEWIRE
+                : `Audio device "${device}" not connected — waiting for hot-plug`,
+        );
+        this.startDeviceWatchdog(false);
+        return true;
     }
 
     /**

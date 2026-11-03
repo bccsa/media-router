@@ -744,8 +744,14 @@ const NEW = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic2__source';
 
 /** The module under the engine's ModuleInstance on a graph of `present` devices; `built` holds
  *  each pipeline it starts. `repick` is a settings patch, then what Restart does to the instance.
- *  PipeWire answers as the engine's does, a turn later; its devices are `width` wide. */
-function underEngine(present: Set<string>, width = 1, settings: Record<string, unknown> = {}) {
+ *  PipeWire answers as the engine's does, a turn later, unless `pw.answers` is false (B-207);
+ *  its devices are `width` wide. */
+function underEngine(
+    present: Set<string>,
+    width = 1,
+    settings: Record<string, unknown> = {},
+    pw = { answers: true },
+) {
     const built: string[] = [];
     vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
         built.push(this.buildPipeline(this.config)?.pipeline ?? '');
@@ -755,8 +761,8 @@ function underEngine(present: Set<string>, width = 1, settings: Record<string, u
     const services = {
         instanceId: 'ain-1',
         pipeWire: {
-            hasDevice: async (name: string) => present.has(name),
-            getDeviceInfo: async () => ({ channels: width, sampleRate: 48000 }),
+            hasDevice: async (name: string) => (pw.answers ? present.has(name) : null),
+            getDeviceInfo: async () => (pw.answers ? { channels: width, sampleRate: 48000 } : null),
             releaseAll: vi.fn(async () => {}),
         },
         mediaRouter: {
@@ -838,6 +844,42 @@ describe('AudioInput302mModule: a restart applies a re-picked device (B-191)', (
         await module.deviceWatchdog.tick();
         expect(built).toHaveLength(1);
         expect(built[0]).toContain(`pipewiresrc name=capture target-object=${NEW} `);
+        await instance.stop();
+    });
+});
+
+describe('AudioInput302mModule while PipeWire gives no answer (B-207, MR-042)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('a start waits for PipeWire, never for hot-plug, and captures once PipeWire lists the device', async () => {
+        const pw = { answers: false };
+        const { module, instance, built } = underEngine(new Set([OLD]), 1, {}, pw);
+        await instance.start();
+        expect(built).toEqual([]);
+        expect(module.getState().error).toBe(
+            'PipeWire is not answering — starting once PipeWire and the device are back',
+        );
+        await module.deviceWatchdog.tick();
+        expect(built).toEqual([]);
+        pw.answers = true;
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(built[0]).toContain(`pipewiresrc name=capture target-object=${OLD} `);
+        await instance.stop();
+    });
+
+    it('a running capture is not stopped by a device check with no answer', async () => {
+        const pw = { answers: true };
+        const { module, instance, built } = underEngine(new Set([OLD]), 1, {}, pw);
+        const lost = vi.spyOn(module, 'onDeviceDisconnected');
+        await instance.start();
+        const before = module.getState();
+        pw.answers = false;
+        for (let i = 0; i < 5; i++) await module.deviceWatchdog.tick();
+        expect(lost).not.toHaveBeenCalled();
+        expect(module.deviceWatchdog.isConnected()).toBe(true);
+        expect(module.getState()).toMatchObject({ health: before.health, error: before.error });
+        expect(built).toHaveLength(1);
         await instance.stop();
     });
 });

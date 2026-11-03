@@ -73,18 +73,23 @@ useTopics(() => requiredDeviceTypes.value.map((type) => `/engines/${props.engine
 /** Build device dropdown options. If the currently selected device was unplugged,
  *  keep it in the list greyed out so config survives unplug/replug cycles. */
 function deviceOptions(fieldKey: string, type: string) {
-    const available = deviceStore.get(props.engineId, type);
+    const listed = deviceStore.get(props.engineId, type);
+    // A nameless entry is the engine's note on a list with no device to show, as when PipeWire
+    // gives no answer (B-207): the options' header, never a choice.
+    const group = listed.find((d) => !d.name)?.label;
+    const available = listed.filter((d) => d.name);
     const options = available.map((d) => ({
         value: d.name,
         label: d.label,
+        group,
     }));
 
     const selected = localSettings.value[fieldKey] as string | undefined;
     if (selected && !available.some((d) => d.name === selected)) {
-        options.push({ value: selected, label: `${selected} (Disconnected)` });
+        options.push({ value: selected, label: `${selected} (${group ?? 'Disconnected'})`, group });
     }
 
-    return [{ value: '', label: 'No device selected' }, ...options];
+    return [{ value: '', label: 'No device selected', group }, ...options];
 }
 
 const isEnabled = computed(() => module.value?.enabled !== false);

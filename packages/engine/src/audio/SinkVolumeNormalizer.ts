@@ -16,7 +16,7 @@ const log = createLogger('SinkVolumeNormalizer');
  * with no indication in the UI.
  *
  * `MR_PW_*` devices never reach this class — `parseDeviceBlock` filters them
- * out of `listDevices()` — so the per-module software volume is untouched.
+ * out of the device listing — so the per-module software volume is untouched.
  */
 export class SinkVolumeNormalizer {
     /** Devices with a reset already queued, so a re-poll doesn't stack more. */

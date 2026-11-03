@@ -1599,7 +1599,9 @@ The base class flips `health` to `'error'` on disconnect and back to `'ok'` once
 
 Losses in a run back off (0, 2, 4 … 60 s before the rebuild), a device list nobody answers is "unknown", not an unplug, and nothing is rebuilt or logged while PipeWire stays down. Unload a PA module you loaded by passing its node name, `unloadModule(id, this.pwNodeName)`: after a pipewire-pulse restart the old ID can be another module's.
 
-The device list is asked without blocking (B-200): `hasDevice`, `getDeviceInfo` and `listDevices` return promises, answered within the pactl timeout (5 s) even when PipeWire hangs. Await them in `onInit`, `onStart` and the device hooks; what `buildPipeline` needs from them (a device's width) is read before `super.onStart()`, since the build cannot wait, as the 302M modules do.
+The device list is asked without blocking (B-200): `hasDevice`, `getDeviceInfo` and `deviceListing` return promises, answered within the pactl timeout (5 s) even when PipeWire hangs. Await them in `onInit`, `onStart` and the device hooks; what `buildPipeline` needs from them (a device's width) is read before `super.onStart()`, since the build cannot wait, as the 302M modules do.
+
+While PipeWire gives no answer (a hang: pactl times out) or does not run (pactl fails at once), `deviceListing()` is its last answer marked `stale` with the reason and since when (`devices` null if it never answered), and `hasDevice` is `null`: unknown, never gone (B-207). The watchdog then neither tears a running module down nor rebuilds a waiting one. At start, call `startWaitsForDevice(name)`: it returns true, with the module waiting on its watchdog, both when the device is not listed ("not connected — waiting for hot-plug") and when PipeWire gives no answer ("PipeWire is not answering — starting once PipeWire and the device are back"). The device pickers keep the last list, each device's label and `meta.stale` saying why; a list with no device to mark is one nameless entry saying so ("No answer: PipeWire not answering since …"), which the picker shows as its header, not as a choice.
 
 Real examples: [`audio-input`](audio-input/engine/AudioInputModule.ts), [`audio-output`](audio-output/engine/AudioOutputModule.ts), [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts).
 
@@ -2876,7 +2878,7 @@ python-only by design (ADR-0016 2026-10-09): its descriptions pin
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices (promises: no pactl call ever blocks the engine, B-200) |
+| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices (promises: no pactl call ever blocks the engine, B-200; without PipeWire's answer its last list, marked stale, and a device unknown, B-207) |
 | `mediaRouter` | `MediaRouter` | Assign/release bus channels (`assignBusChannel` / `releaseBusChannel`), look up upstream bus sources (`getModuleBusSource`) |
 | `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
 | `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |

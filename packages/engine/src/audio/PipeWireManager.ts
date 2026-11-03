@@ -8,7 +8,7 @@ import {
     listPorts as _listPorts,
     getLinks as _getLinks,
 } from './PwLinkOps.js';
-import { AudioDeviceOps } from './AudioDeviceOps.js';
+import { AudioDeviceOps, type AudioDeviceListing } from './AudioDeviceOps.js';
 import { SinkVolumeNormalizer } from './SinkVolumeNormalizer.js';
 
 const log = createLogger('PipeWireManager');
@@ -348,8 +348,8 @@ export class PipeWireManager {
     }
 
     /**
-     * Hold hardware sinks at unity gain — call with a fresh `listDevices()`
-     * result (the device-provider poll does this). Fire-and-forget.
+     * Hold hardware sinks at unity gain — call with a fresh `deviceListing()`
+     * result, never a stale one (the device-provider poll does this). Fire-and-forget.
      */
     normalizeSinkVolumes(devices: AudioDevice[]): void {
         this.sinkVolumes.normalize(devices);
@@ -357,12 +357,14 @@ export class PipeWireManager {
 
     // --- Device enumeration (delegated to AudioDeviceOps) ---
 
-    // Asked without blocking: a hung PipeWire must not stall the engine (B-200).
-    listDevices(): Promise<AudioDevice[]> {
-        return this.deviceOps.listDevices();
+    // Asked without blocking: a hung PipeWire must not stall the engine (B-200). Without its answer
+    // the listing is its last one, marked stale, and a device unknown, never gone (B-207).
+    deviceListing(): Promise<AudioDeviceListing> {
+        return this.deviceOps.deviceListing();
     }
 
-    hasDevice(deviceName: string): Promise<boolean> {
+    /** Is the device listed? Null while PipeWire gives no answer (unknown). */
+    hasDevice(deviceName: string): Promise<boolean | null> {
         return this.deviceOps.hasDevice(deviceName);
     }
 
@@ -371,7 +373,7 @@ export class PipeWireManager {
         return this.deviceOps.daemonInstance();
     }
 
-    /** False while PipeWire does not answer: the device list is then unknown, not empty. */
+    /** False while the device listing gets no answer: it is then PipeWire's last one, stale. */
     isAvailable(): boolean {
         return this.deviceOps.isAvailable();
     }

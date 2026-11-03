@@ -10,6 +10,17 @@ import {
     AudioDeviceOps,
     DEFAULT_DEVICE_CACHE_TTL_MS,
 } from './AudioDeviceOps.js';
+import { PactlNoAnswer } from './PaCommandQueue.js';
+
+const STALE_LOG =
+    'PipeWire does not answer pactl: device lists stay as it last answered, marked stale, until it does';
+
+/** The listed devices of a listing PipeWire answered. */
+async function answered(ops: AudioDeviceOps) {
+    const listing = await ops.deviceListing();
+    expect(listing.stale).toBeNull();
+    return listing.devices!;
+}
 
 describe('parseDeviceChannels', () => {
     it('reads `Channel Map: mono` as 1 channel — fixes the mono-USB-mic-as-2ch bug where the active stereo profile mis-reports the spec', () => {
@@ -168,14 +179,14 @@ describe('AudioDeviceOps listing cache', () => {
         const { ops, execImmediateAsync } = makeOps();
         expect(await ops.hasDevice('alsa_input.usb-mic')).toBe(true);
         expect((await ops.getDeviceInfo('alsa_output.usb-dac'))?.channels).toBe(2);
-        expect(await ops.listDevices()).toHaveLength(2);
+        expect(await answered(ops)).toHaveLength(2);
         // sources + sinks, once — not once per reader.
         expect(execImmediateAsync).toHaveBeenCalledTimes(2);
     });
 
     it('lists sources first, then sinks', async () => {
         const { ops } = makeOps();
-        expect((await ops.listDevices()).map((d) => d.name)).toEqual([
+        expect((await answered(ops)).map((d) => d.name)).toEqual([
             'alsa_input.usb-mic',
             'alsa_output.usb-dac',
         ]);
@@ -183,88 +194,95 @@ describe('AudioDeviceOps listing cache', () => {
 
     it('re-fetches once the TTL has elapsed (hot-plug is still seen)', async () => {
         const { ops, execImmediateAsync, advance } = makeOps();
-        await ops.listDevices();
+        await answered(ops);
         advance(DEFAULT_DEVICE_CACHE_TTL_MS - 1);
-        await ops.listDevices();
+        await answered(ops);
         expect(execImmediateAsync).toHaveBeenCalledTimes(2);
         advance(1);
-        await ops.listDevices();
+        await answered(ops);
         expect(execImmediateAsync).toHaveBeenCalledTimes(4);
     });
 
     it('drops the snapshot when a queued (mutating) pactl command settles', async () => {
         const { ops, execImmediateAsync, queue } = makeOps();
-        await ops.listDevices();
+        await answered(ops);
         expect(queue.onMutation).toBeTypeOf('function');
         queue.onMutation!();
-        await ops.listDevices();
+        await answered(ops);
         expect(execImmediateAsync).toHaveBeenCalledTimes(4);
     });
 
     it('hands out a copy, so a caller mutating the list cannot poison later readers', async () => {
         const { ops } = makeOps();
-        (await ops.listDevices()).length = 0;
-        expect(await ops.listDevices()).toHaveLength(2);
+        (await answered(ops)).length = 0;
+        expect(await answered(ops)).toHaveLength(2);
     });
 
     it('caches nothing when cacheTtlMs is 0', async () => {
         const { ops, execImmediateAsync } = makeOps(0);
-        await ops.listDevices();
-        await ops.listDevices();
+        await answered(ops);
+        await answered(ops);
         expect(execImmediateAsync).toHaveBeenCalledTimes(4);
     });
 });
 
+const MIC = 'Source #1\n\tName: alsa_input.usb-mic\n\tChannel Map: mono';
+/** pactl's timeout, as PaCommandQueue reports it. */
+const noAnswer = () =>
+    new PactlNoAnswer('pactl command failed: pactl list sources\nno answer within 5000 ms');
+/** pactl with nothing on the socket: it fails at once. */
+const refused = () =>
+    new Error('pactl command failed: pactl list sources\nConnection failure: Connection refused');
+
+/** A queue whose pactl answers when the test says: `answer()` / `fail()` the calls asked so far. */
+function pendingOps() {
+    let t = 1_000_000;
+    const pending: Array<{ args: string[]; ok: (s: string) => void; no: (e: Error) => void }> = [];
+    let running = 0;
+    let most = 0;
+    const execImmediateAsync = vi.fn(
+        (args: string[]) =>
+            new Promise<string>((ok, no) => {
+                most = Math.max(most, ++running);
+                const done =
+                    <T>(f: (v: T) => void) =>
+                    (v: T) => {
+                        running -= 1;
+                        f(v);
+                    };
+                pending.push({ args, ok: done(ok), no: done(no) });
+            }),
+    );
+    const queue = { execImmediateAsync, onMutation: null as (() => void) | null };
+    const ops = new AudioDeviceOps(queue as never, { now: () => t });
+    const flush = () => new Promise((r) => setImmediate(r));
+    // Each first lets the calls asked so far reach pactl, then answers them.
+    const answer = async (out = (args: string[]) => (args[1] === 'sources' ? MIC : '')) => {
+        await flush();
+        for (const c of pending.splice(0)) c.ok(out(c.args));
+        await flush();
+    };
+    const fail = async (err: () => Error = noAnswer) => {
+        await flush();
+        for (const c of pending.splice(0)) c.no(err());
+        await flush();
+    };
+    return {
+        ops,
+        queue,
+        execImmediateAsync,
+        pending,
+        answer,
+        fail,
+        flush,
+        most: () => most,
+        now: () => t,
+        advance: (ms: number) => (t += ms),
+    };
+}
+
 describe('AudioDeviceOps: a listing that waits for PipeWire (B-200)', () => {
-    const MIC = 'Source #1\n\tName: alsa_input.usb-mic\n\tChannel Map: mono';
-
-    /** A queue whose pactl answers when the test says: `answer()` / `fail()` the oldest call. */
-    function makeOps() {
-        let t = 1_000_000;
-        const pending: Array<{ args: string[]; ok: (s: string) => void; no: (e: Error) => void }> =
-            [];
-        let running = 0;
-        let most = 0;
-        const execImmediateAsync = vi.fn(
-            (args: string[]) =>
-                new Promise<string>((ok, no) => {
-                    most = Math.max(most, ++running);
-                    const done =
-                        <T>(f: (v: T) => void) =>
-                        (v: T) => {
-                            running -= 1;
-                            f(v);
-                        };
-                    pending.push({ args, ok: done(ok), no: done(no) });
-                }),
-        );
-        const queue = { execImmediateAsync, onMutation: null as (() => void) | null };
-        const ops = new AudioDeviceOps(queue as never, { now: () => t });
-        const flush = () => new Promise((r) => setImmediate(r));
-        // Each first lets the calls asked so far reach pactl, then answers them.
-        const answer = async (out = (args: string[]) => (args[1] === 'sources' ? MIC : '')) => {
-            await flush();
-            for (const c of pending.splice(0)) c.ok(out(c.args));
-            await flush();
-        };
-        const fail = async () => {
-            await flush();
-            for (const c of pending.splice(0)) c.no(new Error('pactl command failed\nno answer'));
-            await flush();
-        };
-        return {
-            ops,
-            queue,
-            execImmediateAsync,
-            pending,
-            answer,
-            fail,
-            flush,
-            most: () => most,
-            advance: (ms: number) => (t += ms),
-        };
-    }
-
+    const makeOps = pendingOps;
     const lines: Array<{ level: number; msg: string }> = [];
     afterEach(() => {
         setLogTap(null);
@@ -289,7 +307,7 @@ describe('AudioDeviceOps: a listing that waits for PipeWire (B-200)', () => {
         for (let i = 0; i < 3; i++) {
             const present = ops.hasDevice('alsa_input.usb-mic');
             await fail();
-            expect(await present).toBe(false);
+            expect(await present).toBeNull(); // unknown (B-207), never absent
             expect(ops.isAvailable()).toBe(false);
             advance(DEFAULT_DEVICE_CACHE_TTL_MS);
         }
@@ -299,7 +317,7 @@ describe('AudioDeviceOps: a listing that waits for PipeWire (B-200)', () => {
         expect(ops.isAvailable()).toBe(true);
         await flush();
         expect(lines.map((l) => [l.level, l.msg])).toEqual([
-            [40, 'PipeWire does not answer pactl: audio devices read as absent until it does'],
+            [40, STALE_LOG],
             [30, 'PipeWire answers pactl again'],
         ]);
     });
@@ -330,6 +348,105 @@ describe('AudioDeviceOps: a listing that waits for PipeWire (B-200)', () => {
         await answer(() => 'Cookie: f196:62ca');
         expect(await first).toBe('f196:62ca');
         expect(await second).toBe('f196:62ca');
+    });
+});
+
+describe('AudioDeviceOps: while PipeWire gives no answer, its last list, marked stale (B-207)', () => {
+    const TTL = DEFAULT_DEVICE_CACHE_TTL_MS;
+    const mic = { name: 'alsa_input.usb-mic', direction: 'source', channels: 1 };
+
+    it('no answer: the last answer, "PipeWire not answering" since the first listing without one; the device unknown; the next answer clears it', async () => {
+        const { ops, answer, fail, advance, now } = pendingOps();
+        const first = ops.deviceListing();
+        await answer();
+        expect(await first).toMatchObject({ devices: [mic], stale: null });
+        advance(TTL);
+        const askedAt = now();
+        const hung = ops.deviceListing();
+        await fail(noAnswer);
+        const stale = { reason: 'PipeWire not answering', since: askedAt };
+        expect(await hung).toMatchObject({ devices: [mic], stale });
+        expect(await ops.hasDevice(mic.name)).toBeNull();
+        expect(await ops.getDeviceInfo(mic.name)).toBeNull();
+        expect(ops.isAvailable()).toBe(false);
+        // Later listings without an answer keep the outage's start.
+        advance(3 * TTL);
+        const still = ops.deviceListing();
+        await fail(noAnswer);
+        expect(await still).toMatchObject({ devices: [mic], stale });
+        // The next answer is the list, even an emptier one.
+        advance(TTL);
+        const back = ops.deviceListing();
+        await answer(() => '');
+        expect(await back).toEqual({ devices: [], stale: null });
+        expect(await ops.hasDevice(mic.name)).toBe(false);
+        expect(ops.isAvailable()).toBe(true);
+    });
+
+    it('a pactl that fails at once is "PipeWire not running"; a hang after it is its own, since its own first listing', async () => {
+        const { ops, answer, fail, advance, now } = pendingOps();
+        const first = ops.deviceListing();
+        await answer();
+        await first;
+        advance(TTL);
+        const downAt = now();
+        const down = ops.deviceListing();
+        await fail(refused);
+        expect(await down).toMatchObject({
+            devices: [mic],
+            stale: { reason: 'PipeWire not running', since: downAt },
+        });
+        expect(await ops.hasDevice(mic.name)).toBeNull();
+        advance(TTL);
+        const hungAt = now();
+        const hung = ops.deviceListing();
+        await fail(noAnswer);
+        expect(await hung).toMatchObject({
+            devices: [mic],
+            stale: { reason: 'PipeWire not answering', since: hungAt },
+        });
+    });
+
+    it('never answered: no list, unknown rather than none', async () => {
+        const { ops, fail, now } = pendingOps();
+        const listing = ops.deviceListing();
+        await fail(noAnswer);
+        expect(await listing).toEqual({
+            devices: null,
+            stale: { reason: 'PipeWire not answering', since: now() },
+        });
+        expect(await ops.hasDevice(mic.name)).toBeNull();
+    });
+
+    it('one list answered and the other not is no answer: the last whole list, never half of a new one', async () => {
+        const { ops, answer, pending, flush, advance } = pendingOps();
+        const first = ops.deviceListing();
+        await answer();
+        await first;
+        advance(TTL);
+        const next = ops.deviceListing();
+        await flush();
+        for (const c of pending.splice(0)) {
+            if (c.args[1] === 'sources')
+                c.ok('Source #9\n\tName: alsa_input.other\n\tChannel Map: mono');
+            else c.no(noAnswer());
+        }
+        expect(await next).toMatchObject({
+            devices: [mic],
+            stale: { reason: 'PipeWire not answering' },
+        });
+    });
+
+    it('hands out a copy of a stale list too', async () => {
+        const { ops, answer, fail, advance } = pendingOps();
+        const first = ops.deviceListing();
+        await answer();
+        await first;
+        advance(TTL);
+        const hung = ops.deviceListing();
+        await fail();
+        (await hung).devices!.length = 0;
+        expect((await ops.deviceListing()).devices).toHaveLength(1);
     });
 });
 
@@ -377,7 +494,7 @@ describe('AudioDeviceOps: which PipeWire answers, and whether it does (B-195)', 
         expect(await ops.daemonInstance()).toBe('7e8b:4a20');
     });
 
-    it('PipeWire down: unknown daemon, devices absent, not available; one line down and one back', async () => {
+    it('PipeWire down: unknown daemon, devices unknown, not available; one line down and one back', async () => {
         setLogTap((l) => lines.push(JSON.parse(l)));
         const { ops, pw, advance } = makeOps();
         expect(ops.isAvailable()).toBe(true);
@@ -385,7 +502,7 @@ describe('AudioDeviceOps: which PipeWire answers, and whether it does (B-195)', 
         for (let i = 0; i < 20; i++) {
             advance(DEFAULT_DEVICE_CACHE_TTL_MS);
             expect(await ops.daemonInstance()).toBeNull();
-            expect(await ops.hasDevice('alsa_input.usb-mic')).toBe(false);
+            expect(await ops.hasDevice('alsa_input.usb-mic')).toBeNull();
         }
         expect(ops.isAvailable()).toBe(false);
         pw.up = true;
@@ -394,7 +511,7 @@ describe('AudioDeviceOps: which PipeWire answers, and whether it does (B-195)', 
         expect(ops.isAvailable()).toBe(true);
         await flush();
         expect(lines.map((l) => [l.level, l.msg])).toEqual([
-            [40, 'PipeWire does not answer pactl: audio devices read as absent until it does'],
+            [40, STALE_LOG],
             [30, 'PipeWire answers pactl again'],
         ]);
     });

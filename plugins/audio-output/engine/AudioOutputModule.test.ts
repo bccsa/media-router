@@ -20,7 +20,6 @@ function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; s
         getDeviceInfo: vi.fn((_name: string) =>
             present ? { channels: opts.channels, sampleRate: opts.sampleRate } : null,
         ),
-        listDevices: vi.fn(() => []),
         loadRemapSink: vi.fn(async () => ++moduleIdCounter),
         waitForSink: vi.fn(async () => true),
         setSinkVolume: vi.fn(async () => {}),
@@ -241,6 +240,50 @@ describe('AudioOutputModule after a PipeWire restart (B-195)', () => {
         expect(pw.unloadModule).toHaveBeenCalledWith(101, 'MR_PW_spk-test-001');
         expect(pw.loadRemapSink).toHaveBeenCalledTimes(2);
         expect(reexec).toHaveBeenCalledWith('spk-test-001');
+        await module.onStop();
+    });
+});
+
+describe('AudioOutputModule while PipeWire gives no answer (B-207, MR-042)', () => {
+    /** `pw.answers` false: every device check gets no answer (null), as the engine's does then. */
+    function unanswered() {
+        const made = createModule(true);
+        const pw = { answers: false };
+        made.pw.hasDevice.mockImplementation(() => (pw.answers ? true : null) as boolean);
+        made.pw.getDeviceInfo.mockImplementation(() =>
+            pw.answers ? { channels: 2, sampleRate: 48000 } : null,
+        );
+        return { ...made, answers: pw };
+    }
+
+    it('a start waits for PipeWire, never for hot-plug, and sets up once PipeWire lists the device', async () => {
+        const { module, pw, services, config, answers } = unanswered();
+        await module.onInit(config, services);
+        expect(module.getState().error).toBeFalsy(); // no "not found" while unknown
+        await module.onStart();
+        expect(pw.loadRemapSink).not.toHaveBeenCalled();
+        expect(module.getState().error).toBe(
+            'PipeWire is not answering — starting once PipeWire and the device are back',
+        );
+        await tickWatchdog(module);
+        expect(pw.loadRemapSink).not.toHaveBeenCalled();
+        answers.answers = true;
+        await tickWatchdog(module);
+        expect(pw.loadRemapSink).toHaveBeenCalledOnce();
+        expect(module.getState().health).toBe('ok');
+        await module.onStop();
+    });
+
+    it('a running output is not torn down by a device check with no answer', async () => {
+        const { module, pw, services, config, answers } = unanswered();
+        answers.answers = true;
+        await module.onInit(config, services);
+        await module.onStart();
+        answers.answers = false;
+        for (let i = 0; i < 5; i++) await tickWatchdog(module);
+        expect(pw.unloadModule).not.toHaveBeenCalled();
+        expect((module as any).deviceWatchdog.isConnected()).toBe(true);
+        expect(module.getState().health).not.toBe('error');
         await module.onStop();
     });
 });

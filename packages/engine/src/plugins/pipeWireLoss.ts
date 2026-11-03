@@ -8,6 +8,8 @@
 export const PIPEWIRE_RESTARTED = 'PipeWire restarted';
 /** The cause named when pactl gets no answer at the moment of the loss. */
 export const PIPEWIRE_NOT_ANSWERING = 'PipeWire is not answering';
+/** A module that starts while pactl gets no answer: no word on its device yet (B-207). */
+export const START_WAITS_FOR_PIPEWIRE = `${PIPEWIRE_NOT_ANSWERING} — starting once PipeWire and the device are back`;
 
 /** A rebuilt stream that runs this long ends a run of losses: the next one rebuilds at once. */
 export const REBUILD_STABLE_MS = 60_000;
