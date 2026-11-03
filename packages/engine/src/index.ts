@@ -9,6 +9,7 @@ export type {
     RistRunnerConfig,
     TsProbeRunnerConfig,
     BacklogShedConfig,
+    CatchUpConfig,
     RunnerHook,
     EngineServices,
     ModuleServices,
@@ -107,6 +108,7 @@ export {
     buildBusSrc,
     buildBusSink,
     busSocketPath,
+    busSrcTapName,
     busTeeName,
     busEdgeSocketPath,
     busIngestSocketPath,
@@ -123,6 +125,7 @@ export {
     withLatenessTap,
     latenessTapAvailable,
     LATENESS_EVENT,
+    LAT_IN_PREFIX,
 } from './plugins/latenessTap.js';
 export type { OutputTapName } from './plugins/latenessTap.js';
 export { busInputLabel } from './plugins/moduleTiming.js';
@@ -251,8 +254,13 @@ export {
     BACKLOG_SHED_HOLD_MS,
     BACKLOG_SHED_COOLDOWN_MS,
     BACKLOG_SHED_SANITY_MS,
+    PLAYOUT_MISS_MS,
+    PLAYOUT_WATCH_EVENT,
+    readPlayoutWatch,
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
+export { CATCH_UP_EVENT, catchUpText, readCatchUp } from './plugins/catchUp.js';
+export type { CaughtUpInput } from './plugins/catchUp.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
 export {
     pipewireStreamProps,

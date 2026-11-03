@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-    LATE_SLACK_MS,
     NO_READING_MS,
     SILENT_OUTPUT_MS,
     SILENT_RELAUNCH_GAP_MS,
@@ -8,12 +7,12 @@ import {
 } from './silentOutputWatch.js';
 
 /** B-197: .108's output showed ok while it played nothing. A fake host: a pipeline that may
- *  play, mix and deliver meter readings; the sink's lateness window; the warning it shows. */
+ *  play, mix and deliver meter readings; the warning it shows. The runner's playout watch is
+ *  `onPlayout` (B-206). */
 function rig(opts: { mixes?: boolean } = {}) {
     const state = {
         playing: true,
         mixes: opts.mixes ?? true,
-        lateness: undefined as { minMs: number } | undefined,
         warning: null as string | null,
     };
     const restartPipeline = vi.fn(async () => {});
@@ -22,8 +21,6 @@ function rig(opts: { mixes?: boolean } = {}) {
         pipeline: () => ({ restartPipeline }),
         playing: () => state.playing,
         mixes: () => state.mixes,
-        sinkLateness: () => state.lateness,
-        playoutBudgetMs: () => 100,
         warn: (text) => {
             state.warning = text;
         },
@@ -75,29 +72,44 @@ describe('SilentOutputWatch (B-197)', () => {
         expect(r.restartPipeline).not.toHaveBeenCalled();
     });
 
-    it('every buffer past its playout time: said, not relaunched (the re-anchor raises the route)', () => {
+    it('every buffer past its playout time: said the moment the runner reports it, not relaunched (the re-anchor raises the route)', () => {
         const r = rig();
         r.watch.onPlaying();
-        r.state.lateness = { minMs: 100 + 300 };
-        r.deliver(SILENT_OUTPUT_MS - 1000);
+        r.deliver(400);
         expect(r.state.warning).toBeNull();
-        r.deliver(2000);
+        // B-206: no hold of its own, the runner held it a second (PLAYOUT_MISS_MS).
+        r.watch.onPlayout(false, 300.4);
         expect(r.state.warning).toBe(
             'Plays nothing: every buffer reaches the sink 300 ms past its playout time',
         );
         r.deliver(10_000);
         expect(r.restartPipeline).not.toHaveBeenCalled();
-        // The route was raised: buffers reach the sink in time again.
-        r.state.lateness = { minMs: 60 };
-        r.deliver(1500);
+        expect(r.log.warn).toHaveBeenCalledTimes(1);
+        // The route was raised: the runner says the sink plays on time again.
+        r.watch.onPlayout(true, -20);
         expect(r.state.warning).toBeNull();
+        expect(r.log.info).toHaveBeenCalledWith({}, 'Plays again');
     });
 
-    it('late by no more than the slack is not nothing: the ring plays most of it', () => {
+    it("one source played direct: late is still said (only its silence is the source's)", () => {
         const r = rig({ mixes: false });
         r.watch.onPlaying();
-        r.state.lateness = { minMs: 100 + LATE_SLACK_MS };
-        r.deliver(4 * SILENT_OUTPUT_MS);
+        r.watch.onPlayout(false, 1555);
+        expect(r.state.warning).toBe(
+            'Plays nothing: every buffer reaches the sink 1555 ms past its playout time',
+        );
+    });
+
+    it('a relaunch keeps a late verdict until the runner sees its sink in budget: the meter alone is no playout', () => {
+        const r = rig();
+        r.watch.onPlaying();
+        r.deliver(200);
+        r.watch.onPlayout(false, 500);
+        r.watch.onPlaying();
+        expect(r.state.warning).toMatch(/^Plays nothing: every buffer/);
+        r.deliver(1500);
+        expect(r.state.warning).toMatch(/^Plays nothing: every buffer/);
+        r.watch.onPlayout(true, 0);
         expect(r.state.warning).toBeNull();
     });
 

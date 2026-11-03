@@ -579,6 +579,21 @@ elements" below do not start.
   with one warning, "Input … re-anchored by +2 min 37 s (late) — past the 4 s
   pace ceiling", shown as the module's warning while it lasts, and the others go
   on. Once it is back within 3 s of the house clock it rejoins on time.
+- **An Audio Output (302M) plays on time again right after a PipeWire
+  restart.** On the 3 November test one of 12 PipeWire restarts left an
+  Audio Output (302M) silent for about 16 s after its stream came back, with
+  its health ok for most of it, and then playing about 1.6 s late until its
+  route was reset, the warning "Arrived … past the playout budget …" coming
+  back at every later restart; a 60 s PipeWire outage on 1 November did the
+  same. Its mix took what the Audio Mixer sent all at once when its mics came
+  back, the seconds it had missed, as its first sound, and stayed that far
+  behind. Fixed: an output skips what its sources send from before it starts
+  playing, says so once in its log ("Caught up at the start: skipped 7.6 s of
+  Mixer …"), and plays at its own playout offset; a source that really is
+  late still raises its route, as before. An output whose sound all reaches
+  its device too late says "Plays nothing: every buffer reaches the sink …"
+  within about a second, and once it plays on time a raise it asked for
+  shows in its status instead of as a warning.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

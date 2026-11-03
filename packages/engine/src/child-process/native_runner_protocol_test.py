@@ -2897,6 +2897,185 @@ def test_stop_while_starting():
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+# --------------------------------------------------------------------------- CU: a launch's catch-up (B-206)
+def _late_producer(port, late_ns):
+    """A 302M tone that leaves `late_ns` after its stamps (a delay queue), on bus tee busout_<port>."""
+    caps = "video/mpegts, systemstream=(boolean)true, packetsize=(int)188"
+    delay = (f" ! queue max-size-time={late_ns + 2_000_000_000} max-size-buffers=0 max-size-bytes=0"
+             f" min-threshold-time={late_ns}") if late_ns else ""
+    return ("audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,format=S32LE,rate=48000,channels=2"
+            f"{delay} ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7"
+            f" ! capssetter caps=\"{caps}\" replace=true ! capsfilter caps=\"{caps}\""
+            f" ! tee name=busout_{port} allow-not-linked=true")
+
+
+def test_catch_up():
+    """CU (B-206): `catchUp` {prefix} skips, at the sink pad of each element named so, what ends
+    before the launch's first buffer there. A producer whose content leaves 2 s after its stamps is
+    a live stream behind the house clock, not a backlog: after 1 s of it the rest passes, to be
+    re-anchored downstream, never dropped; the launch reports once with how much, by element. A
+    second input that never delivers does not hold the report past its deadline."""
+    for el in ("unixfdsink", "unixfdsrc", "avenc_s302m"):
+        if Gst.ElementFactory.find(el) is None:
+            print(f"SKIP CU — {el} unavailable")
+            return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    late_edge, dark_edge = os.path.join(tmp, "late.sock"), os.path.join(tmp, "dark.sock")
+    prod = RunnerProc()
+    dark = RunnerProc()
+    cons = None
+    try:
+        prod.send({"cmd": "start", "pipeline": _late_producer(40210, 2_000_000_000)})
+        # A producer that plays and sends nothing: its tone stops at a closed valve.
+        dark.send({"cmd": "start", "pipeline": _late_producer(40211, 0).replace(
+            "! avenc_s302m", "! valve drop=true ! avenc_s302m")})
+        for r, port, edge in ((prod, 40210, late_edge), (dark, 40211, dark_edge)):
+            check("CU producer PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+            r.send({"cmd": "bus_attach", "tee": f"busout_{port}", "socket": edge})
+            check("CU edge attached", r.wait_event(ev_is("bus_attached", socket=edge)) is not None)
+        # Past the delay queue's 2 s: the late tone is on its edge when the consumer starts.
+        time.sleep(2.5)
+        cons = RunnerProc()
+        cons.send({"cmd": "start", "eosDrain": False,
+                   "pipeline": f"unixfdsrc socket-path={late_edge} ! identity name=cu_late ! fakesink name=s1 async=false"
+                               f" unixfdsrc socket-path={dark_edge} ! identity name=cu_dark ! fakesink name=s2 async=false"
+                               " fakesrc ! identity name=other ! fakesink async=false",
+                   "catchUp": {"prefix": "cu_"}})
+        playing = cons.wait_event(ev_is("state_change", state="playing"), timeout=8)
+        check("CU consumer PLAYING", playing is not None)
+        t0 = time.monotonic()
+        ev = cons.wait_event(lambda e: e.get("event") == "plugin_event" and e.get("channel") == "catch_up",
+                             timeout=6)
+        took = time.monotonic() - t0
+        inputs = ev["payload"].get("inputs", []) if ev else []
+        late = next((i for i in inputs if i.get("element") == "cu_late"), {})
+        check(f"CU one report after the deadline, the dark input not waited for ({took:.1f} s, {inputs})",
+              ev is not None and 2.5 <= took <= 4.5 and len(inputs) == 1)
+        check(f"CU the late stream skipped its first second only, then passed ({late})",
+              800 <= late.get("skippedMs", 0) <= 1500 and late.get("buffers", 0) > 50)
+        check("CU the report's skippedMs is the longest input's",
+              ev is not None and ev["payload"].get("skippedMs") == late.get("skippedMs"))
+        time.sleep(1.0)
+        cons.pump()
+        check("CU nothing more for an input that never delivered",
+              sum(1 for e in cons.events if e.get("channel") == "catch_up") == 1)
+        check("CU no lifecycle error", not cons.has_event(ev_is("error")))
+        check("CU consumer exits 0", cons.stop_and_wait() == 0)
+
+        # Every launch input delivered: the report goes then, not at the deadline.
+        solo_edge, live_edge = os.path.join(tmp, "solo.sock"), os.path.join(tmp, "live.sock")
+        for edge in (solo_edge, live_edge):
+            prod.send({"cmd": "bus_attach", "tee": "busout_40210", "socket": edge})
+            check("CU edge attached", prod.wait_event(ev_is("bus_attached", socket=edge)) is not None)
+        solo = RunnerProc()
+        solo.send({"cmd": "start", "eosDrain": False, "catchUp": {"prefix": "cu_"},
+                   "pipeline": f"unixfdsrc socket-path={solo_edge} ! identity name=cu_solo ! fakesink async=false"})
+        check("CU solo PLAYING", solo.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
+        t0 = time.monotonic()
+        ev = solo.wait_event(lambda e: e.get("channel") == "catch_up", timeout=5)
+        took = time.monotonic() - t0
+        check(f"CU the last launch input reports at once, before the deadline ({took:.1f} s)",
+              ev is not None and took < 2.8 and ev["payload"]["inputs"][0]["element"] == "cu_solo")
+        solo.stop_and_wait()
+
+        # A branch added live catches up against the launch and reports alone.
+        live = RunnerProc()
+        live.send({"cmd": "start", "eosDrain": False, "catchUp": {"prefix": "cu_"},
+                   "pipeline": "funnel name=fun ! fakesink async=false sync=false"})
+        check("CU live PLAYING", live.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
+        live.send({"cmd": "bus_input_add", "id": "cu1", "element": "fun", "name": "fun_in_live",
+                   "description": f"unixfdsrc socket-path={live_edge} ! identity name=cu_live"})
+        check("CU the live branch is added", live.wait_event(ev_is("bus_input_add_done"), timeout=5) is not None)
+        ev = live.wait_event(lambda e: e.get("channel") == "catch_up", timeout=6)
+        inputs = ev["payload"].get("inputs", []) if ev else []
+        check(f"CU a branch added live reports alone, with what it skipped ({inputs})",
+              len(inputs) == 1 and inputs[0].get("element") == "cu_live"
+              and 800 <= inputs[0].get("skippedMs", 0) <= 1500)
+        check("CU live exits 0", live.stop_and_wait() == 0)
+    finally:
+        for r in (cons, prod, dark):
+            if r is not None:
+                r.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _past_source(name, behind_ns, gap=False):
+    """A non-live tone stamped `behind_ns` before now, paced by a sync sink: it delivers that much
+    at once (an outage's backlog), then plays on at 1x; `gap`: as GAP events (a valve's)."""
+    offset = time.monotonic_ns() - behind_ns   # the house clock: base_time 0 on CLOCK_MONOTONIC
+    valve = " ! valve drop=true drop-mode=transform-to-gap" if gap else ""
+    return (f"audiotestsrc is-live=false samplesperbuffer=480 timestamp-offset={offset}"
+            f" ! audio/x-raw,format=S16LE,rate=48000,channels=2{valve} ! identity name={name}"
+            " ! fakesink sync=true")
+
+
+def test_catch_up_backlog():
+    """CB (B-206): an outage's backlog comes at once and is skipped whole, however long: a tone
+    stamped 4 s back delivers it in a burst, then plays at 1x; and the same as GAP events (an
+    outage's hole), which would start a mix that far back. Each is reported with about 4 s."""
+    if Gst.ElementFactory.find("valve") is None:
+        print("SKIP CB — valve unavailable")
+        return
+    for name, gap in (("cu_burst", False), ("cu_gap", True)):
+        r = RunnerProc()
+        try:
+            r.send({"cmd": "start", "eosDrain": False, "catchUp": {"prefix": "cu_"},
+                    "pipeline": _past_source(name, 4_000_000_000, gap)})
+            check(f"CB {name} PLAYING", r.wait_event(ev_is("state_change", state="playing"), timeout=8) is not None)
+            ev = r.wait_event(lambda e: e.get("channel") == "catch_up", timeout=6)
+            inputs = ev["payload"].get("inputs", []) if ev else []
+            got = inputs[0] if inputs else {}
+            check(f"CB {name}: the backlog skipped whole, not cut at a stream's second ({got})",
+                  len(inputs) == 1 and got.get("element") == name
+                  and 3500 <= got.get("skippedMs", 0) <= 6500 and got.get("buffers", 0) > 100)
+            check(f"CB {name} no lifecycle error", not r.has_event(ev_is("error")))
+            check(f"CB {name} exits 0", r.stop_and_wait() == 0)
+        finally:
+            r.kill()
+
+
+# --------------------------------------------------------------------------- PW: playout watch (B-206)
+def test_playout_watch():
+    """PW (B-206): `missWatchMs` on the backlog shed reports the sink missing its playout once
+    every buffer has been past budget + tolerance that long, and playing once it is back in budget
+    200 ms; each on a change only. A sink ts-offset of -400 ms puts every buffer 400 ms (less the
+    sink's latency) late; a live ts-offset of 0 puts it back."""
+    r = RunnerProc()
+    watch = lambda: [e["payload"] for e in r.events  # noqa: E731
+                     if e.get("event") == "plugin_event" and e.get("channel") == "playout_watch"]
+    try:
+        r.send({"cmd": "start", "eosDrain": False,
+                "pipeline": "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
+                            " ! fakesink name=sink sync=true ts-offset=-400000000 max-lateness=-1",
+                "backlogShed": {"element": "sink", "sink": "sink", "keyframeAligned": False,
+                                "toleranceMs": 250, "holdMs": 5000, "cooldownMs": 60000, "sanityMs": 10000,
+                                "onLateness": "reanchor", "reanchorToleranceMs": 40, "reanchorHoldMs": 15000,
+                                "reanchorRetryMs": 30000, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000,
+                                "missWatchMs": 1000}})
+        check("PW reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+        t0 = time.monotonic()
+        miss = r.wait_event(lambda e: e.get("channel") == "playout_watch", timeout=4)
+        took = time.monotonic() - t0
+        p = miss["payload"] if miss else {}
+        check(f"PW missing after a second of late buffers ({took:.1f} s, {p})",
+              p.get("playing") is False and 0.9 <= took <= 2.5 and 330 <= p.get("lateMs", 0) <= 420
+              and p.get("element") == "sink")
+        time.sleep(1.5)
+        r.pump()
+        check(f"PW said once while it stays missing ({len(watch())})", len(watch()) == 1)
+        r.send({"cmd": "set_property", "id": "pw1", "element": "sink", "property": "ts-offset", "value": 0})
+        back = r.wait_event(lambda e: e.get("channel") == "playout_watch" and e["payload"].get("playing"),
+                            timeout=3)
+        check(f"PW playing once back in budget ({back['payload'] if back else None})", back is not None)
+        time.sleep(1.0)
+        r.pump()
+        check(f"PW two reports in all ({watch()})", len(watch()) == 2)
+        check("PW no lifecycle error", not r.has_event(ev_is("error")))
+        check("PW exits 0", r.stop_and_wait() == 0)
+    finally:
+        r.kill()
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -2931,6 +3110,9 @@ test_edge_handover()
 test_ingest_queue_sheds()
 test_transcode_rate()
 test_stop_while_starting()
+test_catch_up()
+test_catch_up_backlog()
+test_playout_watch()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

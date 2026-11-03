@@ -45,11 +45,13 @@ export interface PlayoutDisplayHost {
  * shows the raise it carries (section, badge, warning).
  */
 export class PlayoutReanchorState {
-    /** Leg: what this leg asked for, or did (its warning text and section). */
+    /** Leg: what this leg asked for, or did (its warning text and section). `settled`: the raise
+     *  it asked for landed and it plays on time again, so the raise is state, not news (B-206). */
     private leg: {
         kind: PlayoutWarningKind;
         text: string;
         status: Record<string, unknown>;
+        settled?: boolean;
     } | null = null;
     /** Head: the route's raise on this head, and a rebase reported below it. */
     private head: { raise: PlayoutRaise | null; rebase: PlayoutRebaseNote | null } = {
@@ -130,8 +132,18 @@ export class PlayoutReanchorState {
 
     /** Show the standing state again, nothing dropped (another warning of the module withdrew). */
     show(): void {
-        if (this.leg) this.setLeg(this.leg.kind, this.leg.text, this.leg.status);
+        if (this.leg?.settled) this.host.showSection(LEG_PLAYOUT_SECTION, this.leg.status);
+        else if (this.leg) this.setLeg(this.leg.kind, this.leg.text, this.leg.status);
         else this.renderHead();
+    }
+
+    /** Leg: its sink plays on time again (a module that watches it). A raise it asked for is
+     *  then its section alone: the warning goes, and no later PLAYING or `show` posts it again. */
+    onPlayoutOnTime(): void {
+        if (this.leg?.kind !== 'reanchor' || this.leg.settled) return;
+        this.leg = { ...this.leg, settled: true };
+        this.host.clearWarnings();
+        this.host.showSection(LEG_PLAYOUT_SECTION, this.leg.status);
     }
 
     /** Set (or with `null`, drop) this leg's re-anchor warning and section. */

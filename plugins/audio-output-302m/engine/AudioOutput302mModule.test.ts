@@ -59,6 +59,17 @@ function makeModule(
 
 beforeEach(() => vi.clearAllMocks());
 
+/** One bus source as `getModuleBusSources` gives it. */
+const source = (i: number) => ({
+    port: 40100 + i,
+    connectionId: `c-${i}`,
+    sourceModuleId: `src-${i}`,
+    sourcePortId: 'out-0',
+    sinkPortId: 'audio-in',
+    streamType: 'audio/302m',
+    socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
+});
+
 describe('AudioOutput302mModule.buildPipeline', () => {
     it('never plays to a default device — unconfigured device is a health error', () => {
         const { module, setHealth } = makeModule({ sources: 1 });
@@ -247,6 +258,55 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.backlogShed).not.toHaveProperty('onLateness');
+    });
+});
+
+describe('AudioOutput302mModule: a launch plays at its own D, whatever its sources went through (B-206)', () => {
+    it('the runner skips what each input delivers from before the launch plays, as TS at its ingress tap, both arms', () => {
+        const mixed = makeModule({ sources: 2 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(mixed!.catchUp).toEqual({ prefix: 'lat_busin' });
+        // Every input of the launch (and of a live add) has its tap under that prefix, before
+        // its ingress queue: the TS is dropped in the thread that reads the socket.
+        const taps = launched(mixed!).match(
+            /unixfdsrc [^!]+! mrlateness name=lat_busin_\S+ reference=house ! queue/g,
+        );
+        expect(taps).toHaveLength(2);
+        const direct = makeModule({ sources: 1 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(direct!.catchUp).toEqual({ prefix: 'lat_busin' });
+        expect(direct!.pipeline).toContain('mrlateness name=lat_busin_');
+    });
+
+    it('its shed probe watches the playout: the sink missing for a second is reported', () => {
+        const desc = makeModule({ sources: 2 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(desc!.backlogShed!.missWatchMs).toBe(1000);
+    });
+
+    it('a seed past its ts-offset (a producer read during its own outage burst) starts there: the sink keeps its ring', () => {
+        const { module } = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } });
+        module.services.mediaRouter.getModuleBusSources = vi.fn(() => [
+            { ...source(0), seedLatenessMs: 4300 },
+            { ...source(1), seedLatenessMs: 50 },
+        ]);
+        const text = launched(module.buildPipeline({ device: 'alsa_output.usb-foo' })!);
+        // D 300: ts-offset 200 (the 100 ms the sink declares cancelled).
+        expect(text).toContain('seed-lateness=200000000');
+        expect(text).toContain('seed-lateness=50000000');
+        expect(text).not.toContain('seed-lateness=4300000000');
+        // At the default D 60 the ts-offset is 0: no seed starts the pace past the sink.
+        const d60 = makeModule({ sources: 2, playout: { playoutOffsetMs: 60 } }).module;
+        d60.services.mediaRouter.getModuleBusSources = vi.fn(() => [
+            { ...source(0), seedLatenessMs: 45 },
+            source(1),
+        ]);
+        expect(launched(d60.buildPipeline({ device: 'alsa_output.usb-foo' })!)).toContain(
+            'seed-lateness=0 ',
+        );
     });
 });
 

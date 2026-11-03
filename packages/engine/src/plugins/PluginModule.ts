@@ -288,6 +288,9 @@ export interface PipelineDescription {
      *  launches with the ones whose sockets accept, the engine adds the others as their producers
      *  play. Name each in `getLiveInputBranch` too (the live verbs and the containment use it). */
     liveInputs?: LiveInputBranch[];
+    /** A launch skips what its inputs deliver stamped before it first plays (B-206, native
+     *  runner): the outage it was down for, never let into its mix. See `CatchUpConfig`. */
+    catchUp?: CatchUpConfig;
     /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a
@@ -611,6 +614,16 @@ export interface BacklogShedConfig {
     reanchorRetryMs?: number;
     rebaseHoldMs?: number;
     rebaseCooldownMs?: number;
+    /** Playout watch (B-206, native runner): every buffer past budget for this long reports the
+     *  sink missing, `playout_watch` {playing:false}; in budget again, {playing:true}. */
+    missWatchMs?: number;
+}
+
+/** See PipelineDescription.catchUp. */
+export interface CatchUpConfig {
+    /** Name prefix of the elements whose SINK pad carries one input's content time into the
+     *  mix (live branches added later included); the launch's first buffer there is its start. */
+    prefix: string;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

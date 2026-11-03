@@ -81,3 +81,21 @@ export function audio302mTsOffsetNs(
             SINK_DECLARED_LATENCY_MS * 1_000_000,
     );
 }
+
+/**
+ * A launch's aligner seeds held to this output's ts-offset (B-206). A seed starts the pace, and
+ * an aligner releases each buffer at its stamp + the pace: up to the ts-offset the sink still has
+ * its whole ring to play from, past it every buffer comes late. A producer's egress lateness read
+ * during its own outage burst is seconds old; a producer that really is that late lifts the pace
+ * itself once it delivers, as before.
+ */
+export function seedsWithin<T extends { seedLatenessMs?: number }>(
+    sources: T[],
+    maxMs: number,
+): T[] {
+    return sources.map((s) =>
+        s.seedLatenessMs !== undefined && s.seedLatenessMs > maxMs
+            ? { ...s, seedLatenessMs: maxMs }
+            : s,
+    );
+}

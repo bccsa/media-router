@@ -264,6 +264,8 @@ export class GstChildProcess extends EventEmitter {
             liveInputBranches: desc.liveInputBranches,
             // An aggregator's inputs, launched with the ones that are there (B-192).
             liveInputs: desc.liveInputs,
+            // What a launch's inputs deliver from before it plays is skipped (B-206).
+            catchUp: desc.catchUp,
         };
     }
 

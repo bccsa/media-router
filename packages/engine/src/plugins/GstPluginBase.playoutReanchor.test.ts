@@ -65,6 +65,10 @@ class TestModule extends GstPluginBase {
             this as unknown as { dispatchPluginEvent(c: string, p: unknown): void }
         ).dispatchPluginEvent(channel, payload);
     }
+    /** What a module that watches its sink says once it plays on time (B-206). */
+    onTime(): void {
+        this.notePlayoutOnTime();
+    }
 }
 
 const RAISE = {
@@ -227,6 +231,40 @@ describe('GstPluginBase — the leg asks', () => {
         child.emit('stateChange', { state: 'playing' });
         expect(module.getState().health).toBe('warning');
         expect(module.getState().error).toContain('asked route head srt-input-1');
+    });
+
+    it('B-206: once its sink plays on time the raise is state — its section, no warning, none posted again by a PLAYING', async () => {
+        const { module, child, log } = await makeStarted('vp-1');
+        module.deliver(PLAYOUT_REANCHOR_EVENT, RAISE);
+        await settle();
+        expect(module.getState().health).toBe('warning');
+        module.onTime();
+        expect(module.getState().health).toBe('ok');
+        expect(module.getState().statusData.playout).toMatchObject({
+            raisedTo: 480,
+            head: 'srt-input-1',
+        });
+        // A rebuild's PLAYING (MR-029: the same text back after every PipeWire restart).
+        child.emit('stateChange', { state: 'playing' });
+        expect(module.getState().health).toBe('ok');
+        expect(module.getState().statusData.playout).toMatchObject({ raisedTo: 480 });
+        // The news was said once, in the log.
+        expect(log.warn).toHaveBeenCalledTimes(1);
+        // A new request is news again.
+        module.deliver(PLAYOUT_REANCHOR_EVENT, RAISE);
+        await settle();
+        expect(module.getState().error).toContain('asked route head srt-input-1');
+    });
+
+    it('on time never touches a rebase notice or another writer’s warning', async () => {
+        const { module } = await makeStarted('vp-1');
+        module.deliver(PLAYOUT_REANCHOR_EVENT, REBASE);
+        await settle();
+        module.onTime();
+        expect(module.getState().error).toBe(rebaseWarningLeg(REBASE, 'srt-input-1'));
+        module.setHealth('warning', 'Device missing');
+        module.onTime();
+        expect(module.getState().error).toBe('Device missing');
     });
 
     it('an edit of the head’s D (a zero raise) clears the leg’s warning and section', async () => {

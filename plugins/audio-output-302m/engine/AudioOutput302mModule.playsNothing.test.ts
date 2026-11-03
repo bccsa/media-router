@@ -45,7 +45,7 @@ vi.mock(
     }),
 );
 
-import type { ModuleServices } from '@media-router/engine';
+import { busSrcTapName, type ModuleServices } from '@media-router/engine';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 
 const source = (i: number) => ({
@@ -67,12 +67,15 @@ async function started(sources: number) {
             getModuleBusSources: vi.fn(() => Array.from({ length: sources }, (_, i) => source(i))),
             getModuleConnections: vi.fn(() => []),
             onProducerPlaying: vi.fn(),
+            moduleName: (id: string) => `Module ${id}`,
         },
     } as unknown as ModuleServices);
+    const log = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    (module as unknown as { log: unknown }).log = log;
     await module.onStart();
     const child = h.FakeChildProcess.instances.at(-1)!;
     child.emit('stateChange', { state: 'playing' });
-    return { module, child };
+    return { module, child, log };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -113,6 +116,57 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
             'Plays nothing: its mixer delivers no audio — relaunched',
         );
         expect(child.restartPipeline).toHaveBeenCalledTimes(1);
+        await module.onStop();
+    });
+
+    it('B-206: every buffer past its playout time is said the moment the runner reports it, and withdrawn when it plays', async () => {
+        const { module, child } = await started(2);
+        child.emit('vuData', { peak: [-18, -18] });
+        child.emit('pluginEvent', {
+            channel: 'playout_watch',
+            payload: { element: 'sink', playing: false, lateMs: 1555.3, budgetMs: 90 },
+        });
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error: 'Plays nothing: every buffer reaches the sink 1555 ms past its playout time',
+        });
+        expect(child.restartPipeline).not.toHaveBeenCalled();
+        child.emit('pluginEvent', {
+            channel: 'playout_watch',
+            payload: { element: 'sink', playing: true, lateMs: -12, budgetMs: 90 },
+        });
+        expect(module.getState().health).toBe('ok');
+        await module.onStop();
+    });
+
+    it("B-206: a launch that skipped its inputs' backlog says so in one INFO line, by producer", async () => {
+        const { module, child, log } = await started(2);
+        child.emit('pluginEvent', {
+            channel: 'catch_up',
+            payload: {
+                inputs: [
+                    { element: busSrcTapName(source(1)), skippedMs: 234.7, buffers: 11 },
+                    { element: busSrcTapName(source(0)), skippedMs: 5220, buffers: 502 },
+                ],
+                skippedMs: 5220,
+            },
+        });
+        // A launch that dropped one TS buffer (no span) logs nothing.
+        child.emit('pluginEvent', {
+            channel: 'catch_up',
+            payload: {
+                inputs: [{ element: busSrcTapName(source(0)), skippedMs: 0, buffers: 1 }],
+                skippedMs: 0,
+            },
+        });
+        const lines = log.info.mock.calls.filter((c) => String(c[1]).startsWith('Caught up'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0][0]).toHaveProperty('catchUp');
+        expect(lines[0][1]).toBe(
+            'Caught up at the start: skipped 5.2 s of Module src-0, 235 ms of Module src-1 from ' +
+                'before it played, never played late',
+        );
+        expect(module.getState().health).toBe('ok');
         await module.onStop();
     });
 

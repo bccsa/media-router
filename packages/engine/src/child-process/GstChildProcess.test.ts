@@ -182,6 +182,12 @@ describe('start payload', () => {
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).backlogShed).toBeUndefined();
     });
 
+    it("forwards catchUp — dropping it lets a launch take its inputs' outage into its mix (B-206)", () => {
+        const catchUp = { prefix: 'lat_busin' };
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink', catchUp }).catchUp).toEqual(catchUp);
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).catchUp).toBeUndefined();
+    });
+
     it('forwards liveCaptureClock — dropping it puts a live capture head back on the pinned timeline', () => {
         // The flag selects the contract variant that keeps the house clock but
         // lets base-time anchor naturally. Lost here, video-encoder's
@@ -227,6 +233,7 @@ describe('start payload (the wire to the runner)', () => {
             'alignBranchesToStamps',
             'backlogShed',
             'busReports',
+            'catchUp',
             'decoderThreadType',
             'env',
             'eosDrain',

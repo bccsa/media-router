@@ -20,6 +20,7 @@
 #include "ipc.h"
 #include "json_util.h"
 #include "lateness_tap.h"
+#include "catch_up.h"
 #include "native_plugins.h"
 #include "shed_watch.h"
 #include "source_gate.h"
@@ -224,6 +225,7 @@ void Runner::teardown_pipeline(GstElement* pipe, bool drain, bool errored) {
     gst_element_set_state(pipe, GST_STATE_NULL);
     // No streaming thread is left to meet a queue full: the last episode's count is final.
     shed_watch::clear();
+    catchup::clear();
 }
 
 void Runner::fail_pipeline(JsonObject* event, bool drain, bool errored) {
@@ -413,6 +415,8 @@ void Runner::handle_start(JsonObject* data) {
         pipeline = nullptr;
         return;
     }
+    // A launch skips what its inputs deliver from before it plays (B-206).
+    catchup::install(pipeline, json_get_object(data, "catchUp"));
 
     GstBus* bus = gst_element_get_bus(pipeline);
     gst_bus_add_signal_watch(bus);

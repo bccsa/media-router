@@ -187,6 +187,15 @@ export interface BusSrcOpts {
 const BUS_INGRESS_QUEUE_MS = 5000;
 const BUS_INGRESS_QUEUE_BYTES = tsQueueByteCap(BUS_INGRESS_QUEUE_MS);
 
+/** The ingress lateness tap `buildBusSrc(opts)` puts after its unixfdsrc: what a runner probe
+ *  of that input's TS (`PipelineDescription.catchUp`) finds and names it by (B-206). */
+export function busSrcTapName(opts: Pick<BusSrcOpts, 'port' | 'name' | 'socketPath'>): string {
+    const socket = opts.socketPath ?? busSocketPath(opts.port);
+    return latInName(
+        opts.name ?? (opts.socketPath ? `${opts.port}_${shortHash(socket)}` : opts.port),
+    );
+}
+
 export function buildBusSrc(opts: BusSrcOpts): string {
     const nameClause = opts.name ? ` name=${opts.name}` : '';
     const socket = opts.socketPath ?? busSocketPath(opts.port);
@@ -195,10 +204,9 @@ export function buildBusSrc(opts: BusSrcOpts): string {
     const watchdogClause = opts.stallTimeoutMs
         ? ` ! watchdog name=${BUS_WATCHDOG_PREFIX}_${opts.name ?? opts.port} timeout=${opts.stallTimeoutMs}`
         : '';
-    const tapKey = opts.name ?? (opts.socketPath ? `${opts.port}_${shortHash(socket)}` : opts.port);
     return (
         `unixfdsrc${nameClause} socket-path=${socket}${watchdogClause}` +
-        busLatenessTap(latInName(tapKey)) +
+        busLatenessTap(busSrcTapName(opts)) +
         ` ! queue leaky=2 max-size-time=${BUS_INGRESS_QUEUE_MS * 1_000_000}` +
         ` max-size-buffers=0 max-size-bytes=${BUS_INGRESS_QUEUE_BYTES}`
     );

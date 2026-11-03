@@ -2244,6 +2244,41 @@ work items.
   it never waits. The mixer arm presents about 10 ms after the single-source
   arm (the mixer's output block, reported as latency), as it did before, so
   V7 is unaffected.
+- **A launch's catch-up, the seed cap and the playout watch** (B-206, the
+  release line, 2026-11-03). What a producer sends at once after an outage
+  (the Audio Mixer's stall when its mics came back: 4 to 5 s after a PipeWire
+  restart on .108, 118 s after a 120 s stop; the OQ-12 markers over its hole
+  as GAPs) reached a freshly launched output as its first data: it filled an
+  input's 5 s queue, the held arrivals set the pace, every buffer missed the
+  sink and the re-anchor raised the route for good (MR-029). A running mix
+  discards it as stale against its watch's horizon; a fresh one has none, and
+  a stale GAP started its mixer that far back. Now: (1) the native runner's
+  `catchUp` {prefix} probes the sink pad of each named element (live adds
+  too) and drops the buffers and GAPs that end before the launch's first
+  buffer there, until one does not; content arriving about as fast as it
+  plays (at most 1.5× over 1 s) is a stream behind the house clock, not a
+  backlog, and passes after that second, to be re-anchored, never dropped.
+  The output names its bus ingress taps (`lat_busin…`), so the stale TS goes
+  in the thread that reads the socket, never decoded. At the watches, where
+  it was built first, the decoder thread freed the burst's unixfd memory at
+  full speed beside that reader, and the unixfd deadlock of B-206's Limits
+  came in 11 of 13 rig runs of a 120 s stop, against 2 of 8 with no
+  catch-up; at the taps, 0 of 5, both channels heard 1.6 to 1.9 s after the
+  rebuild. One `catch_up` event per launch, one INFO line (none for a
+  single TS buffer, which has no span). (2) A start seed is at most the
+  output's ts-offset (`seedsWithin`): up to it the sink plays from its whole
+  ring, past it every buffer is late, and a seed read during a producer's
+  burst is seconds old; at D 60 the ts-offset is 0, so no seed. (3) The
+  shed probe's playout watch (`missWatchMs` 1000): every buffer past the
+  budget + the re-anchor tolerance for 1 s is `playout_watch` {playing:
+  false, lateMs}, 200 ms in budget {playing: true}, on a change only; "Plays
+  nothing: every buffer reaches the sink …" takes it at once (it waited on
+  the lateness reporter's window over 5 s), and a relaunch keeps it until
+  the runner sees the sink in budget. (4) A raise the output asked for is
+  its section once its sink plays on time (`notePlayoutOnTime`): no
+  warning, and no later PLAYING posts it again; the route head keeps its
+  own. Native only: the python runner ignores `catchUp` and `missWatchMs`
+  (it never hosts this output).
 
 ### Audio processing: the aligned interleave and the ducker (WI-P2-10; OQ-22)
 

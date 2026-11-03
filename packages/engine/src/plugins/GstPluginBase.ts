@@ -1008,6 +1008,14 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.playout.onRouteRebased(note);
     }
 
+    /** A leg whose sink plays on time again (B-206): a raise it asked for stands as its section,
+     *  and what its warning stood over shows again (lost inputs, the aligners'). */
+    protected notePlayoutOnTime(): void {
+        this.playout.onPlayoutOnTime();
+        this.showLostInputs();
+        this.timing.reassertWarnings();
+    }
+
     /** Taken only over `ok` or our own re-anchor/rebase text (ADR-0010 rule 2). */
     private ownReanchorWarning(kind: PlayoutWarningKind, text: string): void {
         const ours = this.ownedWarning === 'reanchor' || this.ownedWarning === 'rebase';

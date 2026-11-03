@@ -2273,6 +2273,26 @@ hold), `reanchorRetryMs` (30 000, re-ask gap unless the budget moved),
 before a rebase) and `rebaseCooldownMs` (60 000, at most one rebase per
 leg). Numbers live in `playoutReanchor.ts`; absent `onLateness` = shed.
 
+**A launch's catch-up and the playout watch (B-206, native runner).**
+`PipelineDescription.catchUp: { prefix }` makes the runner probe the sink pad
+of every element whose name starts with `prefix` (the launch's and any added
+live) and drop the buffers and GAPs that end before the launch's first buffer
+there, until one does not: what an input sends at once after an outage
+(its producer's backlog) was due before the module played. Content that
+arrives about as fast as it plays (at most 1.5× over 1 s) is a stream behind
+the house clock, not a backlog, and passes after that second, for the
+re-anchor. One `catch_up` plugin event per launch, `{ inputs: [{ element,
+skippedMs, buffers }], skippedMs }` (`readCatchUp`, `catchUpText`): the launch's
+inputs together once all delivered or 3 s after its first buffer, a later or
+live one alone. `backlogShedConfig({ watchPlayout: true })` sets
+`BacklogShedConfig.missWatchMs` (`PLAYOUT_MISS_MS`, 1000): every buffer past
+the budget + `reanchorToleranceMs` that long reports `playout_watch`
+`{ playing: false, lateMs, budgetMs }`, 200 ms in budget `{ playing: true }`,
+on a change only (`readPlayoutWatch`). Audio Output (302M) sets both, its
+catch-up on its inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names
+one), so the stale TS goes in the thread that reads the socket, undecoded; the
+python runner ignores both.
+
 **Where stamper lines come from (debugging).** Each armed egress logs two
 lines from the runner's stamping subsystem (`stamper.cpp` in the native
 runner; `gst_bus_stamper.py` with `gst_stamp_native.py` and
