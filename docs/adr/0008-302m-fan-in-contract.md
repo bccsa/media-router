@@ -17,6 +17,16 @@ free-runs after EOS. So are the 2026-09-03 addendum's `mixerLatencyNs`, the
 2 and 3 stand: callers chain only from `continuationName` (`<mixerName>_out`
 in every arm), and one source bypasses the mixer outside live-input mode.
 
+Amended by [[0029]] (Phase 3): each branch's decode ends in its own
+`mrasrc` (`… ! avdec_s302m ! mrasrc bypass-below-ppm=0.5 out-rate=48000 !
+audioconvert[ mix-matrix] …`) in place of `audioresample`: a source on house
+time passes untouched, one on a clock of its own is resampled to house rate
+once it is measured. The direct branch of the single-source arm may leave
+that term to the caller (`branchAsrc: false`, audio-output-302m, whose
+`outasrc` then carries it with the device term). The output's sink runs
+`slave-method=custom` behind `outasrc`, not `slave-method=skew` (the
+2026-09-03 addendum). Rules 2 and 3 are unchanged.
+
 1. **A `force-live` mixer MUST be clock-paced.** Build it through `pacedMixer()`
    — `audiomixer force-live=true ! <caps> ! identity sync=true`. Never assemble
    the string by hand and never drop the trailing `identity`. (Superseded in

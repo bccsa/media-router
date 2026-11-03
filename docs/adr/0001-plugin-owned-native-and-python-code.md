@@ -57,3 +57,11 @@ Phase 2 (2026-10-18, [[0029]]): the egress stamper's python probe,
 (`mralignwatch`, `mrtsdemux`, and audio-processing's `mrducker` and
 `mrptskeep`) are C++ only. Branch alignment and retime still import the
 python until Phase 3.
+
+Phase 3 (2026-11-02, [[0029]]): branch alignment and the retime are deleted,
+so no runtime path imports the python timing reference any more; the
+python runner's `tsProbe` imports `ts_psi` and `ts_video_info`, which time
+nothing. The formula demux (`mrts::DemuxCore`) and the ASRC's decode and
+device modes were prototyped in python first (`py/demux_core.py`,
+`py/asrc_bypass_ref.py`) and are held to their ports by output parity;
+nothing loads either.

@@ -39,7 +39,10 @@ anything in `audio302mHelpers.ts`.
 stand-in, so a module whose fan-in this builds is refused with the "Native TS
 module not loaded" alarm on a box without the plugin. The element rules
 (every pad through `mralignwatch`, `hold-on-eos`, seeds, floors) are in
-`plugins/README.md`, "Aligners"; the choices behind them in ADR-0029, Phase 2.
+`plugins/README.md`, "Aligners", and the decode ASRC's (`mrasrc
+bypass-below-ppm=0.5 out-rate=48000` after `avdec_s302m`, whose interleaved
+output it takes as it is) in "The restamp and ASRC elements"; the choices
+behind them are in ADR-0029, Phases 2 and 3.
 
 ## Using it
 

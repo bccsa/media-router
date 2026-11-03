@@ -63,3 +63,9 @@ Amended by [[0029]] (2026-10-18, Phase 2): `pacedMixer` is now
 has a python stamping probe (`gst_stamp_probe` is deleted); what stays in
 `packages/engine` is the stamper's lifecycle, its native splice and its
 message handling, still with no arithmetic of its own.
+
+Amended by [[0029]] (2026-11-02, Phase 3): exception 1's runner no longer
+imports `ts_timeline` (only `ts_psi` and `ts_video_info`, for `tsProbe`), and
+exception 3's branch aligner is deleted with branch alignment, so the native
+runner links `libmrts.a` for its gates alone (`ts_psi`, `ts_video_info`).
+The condition is unchanged.

@@ -3,11 +3,11 @@
 Operator-facing notes per release, newest first. What changed on the box,
 what to expect, what to do. Engineering detail is in `docs/adr/`.
 
-## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1 and 2 items, 2026-10-22)
+## Unreleased — house-clock timing, Phases 1–4 (draft: the Phase 1, 2 and 3 items, 2026-11-03)
 
 Phases 1, 2, 3 and 4 ship together as one release. This draft holds the
-Phase 1 and Phase 2 items; the Phase 3 and 4 items join it as those phases
-land, and the note is finished with Phase 4. One RAUC bundle carries the image and the
+Phase 1, Phase 2 and Phase 3 items; the Phase 4 items join it as that phase
+lands, and the note is finished with Phase 4. One RAUC bundle carries the image and the
 app: the new timing elements ship in the image, so do not hot-deploy this
 app onto an older image. On a box where they are missing, the GStreamer
 modules' cards say "Native TS module not loaded": the inputs and captures
@@ -276,8 +276,8 @@ elements" below do not start.
   the player and the transcoder take their input as the bus carries it.** The
   packet stage that sat before their demux is gone, and its CPU with it. It
   also kept an ingest's outage marks from the demux (its **Demux gaps** counted
-  only the holes the demux found itself), and could lose a teletext packet as
-  a source came back from an outage.
+  only the holes the demux found itself), and could lose a teletext subtitle
+  as a source came back from an outage.
 
 **Removed settings (Phase 2), nothing migrated**
 
@@ -299,8 +299,9 @@ elements" below do not start.
 - **Subtitle Sync Delay** on Video Transcoder: burn-in now waits for each
   subtitle by the measured delay of the subtitle path, so the output's added
   latency follows the subtitles instead of a fixed setting. A subtitle that
-  comes later than that wait (the first after a start, while the delay is
-  measured) is drawn late, never dropped, and the wait rises to it. Stored
+  comes later than that wait (the first after a start or after a few minutes
+  without subtitles, while the delay is measured) is drawn late, never
+  dropped, and the wait rises to it. Stored
   values are ignored (the OCC gate's burn-in transcoders ran 1,400 ms); a
   rollback restores them.
 
@@ -317,6 +318,11 @@ elements" below do not start.
 - From Phase 3, Video Transcoder too: its input goes through the same demux,
   so without the image's timing elements it refuses to start with "Native TS
   module not loaded".
+- From Phase 3, Video Player with an input connected, Teletext Subtitles and
+  any module whose Subtitles In is connected too: every module that unpacks
+  a stream from another module now does it with the same demux, so without
+  the image's timing elements it refuses to start with "Native TS module not
+  loaded". A Video Player with no input still shows its fallback card.
 
 **Fixed**
 

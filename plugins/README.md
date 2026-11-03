@@ -954,7 +954,7 @@ return {
 
 Each branch's first element's sink pad is auto-ghosted, so the rule only needs the downstream elements. Pads beyond the supplied list are ignored.
 
-**Skipping the injected parser (`parser: 'none'`).** The runner prepends a codec parser to every branch it links (`h264parse config-interval=-1`, `aacparse`, …) so mixed-codec sources work without per-pad config and parameter sets are re-emitted before every IDR. On a video branch that parser costs one frame of latency: it can only close an access unit when it sees the start of the next one (41 ms at 25 fps, measured into the mpegts-muxer 2026-09-04). A rule may set `parser: 'none'` to skip it; for H.264/H.265 pads the runner then declares `alignment=au` with a `capssetter` instead (truthful on this bus — tsdemux emits one whole PES = one access unit per buffer, ADR-0011), so `mpegtsmux`/`avdec_*` negotiate. Audio and unknown codecs ignore the flag. It is opt-in per module (mpegts-muxer `videoParserBypass`) and must stay off for sources whose PES framing is sloppy or that do not repeat SPS/PPS in-band.
+**Skipping the injected parser (`parser: 'none'`).** The runner prepends a codec parser to every branch it links (`h264parse config-interval=-1`, `aacparse`, …) so mixed-codec sources work without per-pad config and parameter sets are re-emitted before every IDR. On a video branch that parser costs one frame of latency: it can only close an access unit when it sees the start of the next one (41 ms at 25 fps, measured into the mpegts-muxer 2026-09-04). A rule may set `parser: 'none'` to skip it; for H.264/H.265 pads the runner then declares `alignment=au` with a `capssetter` instead (truthful on this bus — the demux, `mrtsdemux`, hands out one whole PES per buffer, and one PES is one access unit, ADR-0011), so `mpegtsmux`/`avdec_*` negotiate. Audio and unknown codecs ignore the flag. It is opt-in per module (mpegts-muxer `videoParserBypass`) and must stay off for sources whose PES framing is sloppy or that do not repeat SPS/PPS in-band.
 
 **Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This was the (retired) mpegts-demuxer's PID-based port routing (plan Phase 3); without it the positional contract is unchanged (the mpegts-muxer now routes through the media-agnostic contract below).
 
@@ -2081,6 +2081,24 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 }
 ```
 
+Demux the bus with `mrtsdemux`, never `tsdemux` (house-clock Phase 3,
+ADR-0029): it is the formula demux, so each access unit leaves it at its PES
+PTS − 1 h on a segment from 0 and its running time is its content's house
+time, with nothing to align or retime. Without `select` it gives tsdemux
+1.28.2's pads, names, caps and events for every stream of `media` (`video`,
+`audio`, `private`, `subpicture`; all four by default, and the streams of
+the others are never reassembled); `select=audio/x-smpte-302m` is the one
+302M stream on an ALWAYS `src` pad. It turns a bus gap marker into a GAP
+event, re-frames a buffer that is not whole packets, and reports through
+`mrtsdemux:<name>` (see "Demuxes and consumer ASRCs report themselves"
+below). It has no stand-in: a module whose start description names it does
+not start on a box without `libgstmrtshouse.so`. A PCM decode that may come
+from a source on another clock ends in `buildAsrc({ bypassBelowPpm:
+DECODE_BYPASS_PPM })` (through `audioconvert` from a planar decoder such as
+`avdec_aac`), and an audio output's sink takes the device term
+(`deviceSink`) with `slave-method=custom`; "The restamp and ASRC elements"
+below has the rules.
+
 ### The time-sync contract (identity-stamped bus timing)
 
 Everything on the bus rides the engine-wide time-sync contract: every process
@@ -2123,7 +2141,8 @@ authors:
 - **Don't re-stamp.** No `tsparse set-timestamps=true`, no
   `do-timestamp=true`, no arrival-based re-timing between your mux and the
   bus sink — the contract's whole point is that the producer's stamp survives
-  to the consumer (a regression test pins that it survives `tsdemux`). The
+  to the consumer (its lateness taps read it; since house-clock Phase 3 its
+  demux reads the time from the PES itself, so the PES must be right). The
   sanctioned rewrites are the engine's own `mrtsrestamp` at an ingest or a
   capture, built by `buildRestamp` (see "Ingest timing" below), and
   `mr-bus-fanout`'s rebase for a producer in Node.
@@ -2190,7 +2209,12 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   `withLatenessTap('lat_render' | 'lat_egress', sink)`
   (`packages/engine/src/plugins/latenessTap.ts`; `lat_render` for something
   seen or heard, `lat_egress` for the wire). That tap is
-  `reference=running-time`, because a sink renders on its pipeline clock. Set
+  `reference=running-time`, because a sink renders on its pipeline clock. An
+  audio output whose `mrasrc` follows its device's clock (`deviceSink`: Audio
+  Output (302M), Audio Decoder) puts `buildLatenessTap('lat_render')` before
+  that ASRC instead, where PTS is still content time: after the device term
+  they are device-time labels (house-clock Phase 3); its Render lateness
+  then leaves out the ASRC's filter delay, 0.667 ms at 48 kHz. Set
   `timingSink: { element, kind: 'audio' | 'video', refreshHz? }` on the
   description too, so the engine reads the sink's `ts-offset` (D) and, on
   audio base sinks, `buffer-time` through `get_property`. A video sink's
@@ -2410,8 +2434,10 @@ so its lateness reads negative by that lead; a capture's PES carry capture
 time, so its lateness is its capture and encode latency. The PCR is
 rewritten onto house time too, keeping the source's lead, with
 `discontinuity_indicator` on the first PCR after a gap of 1 s or more and
-on any PCR that steps back, so the consumers of the day (`tsdemux` in PCR
-mode) keep working. Rules:
+on any PCR that steps back, so a reader that times off the PCR keeps
+working (since house-clock Phase 3 no bus consumer runs `tsdemux`, the
+engine's codec probe aside; `mrtsdemux` reads the PCR only for a sparse
+pad's program time). Rules:
 
 - **No second rewrite.** Nothing re-stamps between the restamp and the bus
   sink, and a bus-fed producer (transcoder, muxer) does not restamp at all:
@@ -2533,7 +2559,14 @@ output counter runs on from the first PTS, re-anchored at a DISCONT or GAP.
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
 time, positive when fast); `mrasrc-event` gains `engaged` (`reason` ratio or
 phase, `source-ppb`, `phase-ns`) and `device-relock` (`reason`, the sink's
-discontinuity).
+discontinuity). A decode + device element whose source still passes reports
+mode `device`, so read its decode term from `bypass-below-ppm`, not from
+`mode`. The element answers LATENCY with its filter's lookahead, 32 frames
+(0.667 ms at 48 kHz) at the default quality, passing or not. Its stand-in
+(`audioresample`) drops `bypass-below-ppm` and `device-sink`, so a sink left
+on `slave-method=custom` behind it would not be slaved at all; the
+consumers that use these modes all name `mrtsdemux`, which has no stand-in,
+so they never run that way.
 
 **Debugging.** Record a trace on a running ingest with `trace-location`
 (≤ 2 MB is about 15 min) and replay it off the box with
@@ -2891,7 +2924,8 @@ hook that fails to import or install is reported as a warning and skipped;
 it must never take the media pipeline down. Module names must be unique
 across plugins (one flat python namespace). References: `subtitle-core/py/
 subtitle_bridge.py` (split into `subtitle_pay` / `subtitle_overlay` over pure
-modules, with five GStreamer-free suites and a real-stamper test beside it) and
+modules, with four GStreamer-free suites beside it, and in the runner the
+protocol cases `subtitle-overlay-formula`, `ttx-formula` and `burnin-formula`) and
 `mpegts-muxer/py/mux_routing.py` — a hook that owns dynamic-pad linking end
 to end (classify → parse → request pad → PCR pin → sparse keepalive), the
 shape to copy when a plugin's demuxer needs more than the positional rules.

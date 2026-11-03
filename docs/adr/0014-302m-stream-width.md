@@ -91,6 +91,9 @@ Two deliberate differences from the capture side:
   ADR-0005 presentation leg — `sync=true provide-clock=false slave-method=skew
   max-lateness=-1 buffer-time=100000 ts-offset=D+trim`, backlog shedder on the
   sink pad — is untouched; placement only adds a matrix and caps upstream.
+  (Amended by [[0029]], Phase 3: the sink runs `slave-method=custom` behind
+  `outasrc`, the ASRC that follows the device's clock, ahead of the
+  placement.)
   Bonus measured on the same sink: `pulsesink` keeps an unpositioned stream
   unpositioned at ANY width (an 8-channel `channel-mask=0x0` stream linked
   `playback_AUX0..7` in order), where `pipewiresink` gives ≤ 8 channels default

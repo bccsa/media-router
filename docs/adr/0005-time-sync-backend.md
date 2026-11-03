@@ -95,7 +95,8 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    Superseded by [[0029]] (Phase 2): latch repair went with the anchored
    stamper, and `effectiveLatchRepair`, `isDeliveryLeadProducer`,
    `repair-latch`, `--no-latch-repair` and `MR_LATCH_REPAIR` with it. The
-   branch-align caps stay until Phase 3 deletes branch alignment.
+   branch-align caps, kept until Phase 3, are
+   superseded by ADR-0029 (Phase 3) with branch alignment itself.
 
 3. **Running-time ≡ house-clock time.** Bus-attached synced pipelines pin
    `base_time=0`, `start_time=NONE`, so running-time equals house-clock time
@@ -183,6 +184,15 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    OS-clock PTP as a dual regime — two clock domains to reconcile forever;
    CLOCK_REALTIME/TAI as house clock — NTP/PTP steps mid-stream are
    unacceptable.
+
+   **Partly superseded by ADR-0029 (Phase 3).** The house clock stays
+   CLOCK_MONOTONIC (ADR-0029 Phase 0's epoch E rests on it), but the DACs no
+   longer slave by `slave-method=skew`. Each audio output's sink runs
+   `slave-method=custom` behind its `mrasrc`, whose custom-slaving callback
+   reads the device's clock and steers the resampler to it (the device term;
+   with the source's clock in the same resampler where decode and output
+   are adjacent, OQ-23), so no sample is dropped or inserted for drift and
+   the skew-slaving A/B item is moot.
 
 6. **PTP: build now.** linuxptp (`ptp4l` + `phc2sys`) disciplines the system
    clock *frequency*; first step is HW-timestamp validation on Pi 5 and Intel
@@ -300,6 +310,10 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    Raw-caps lanes over the same transport remain a per-path future option.
    Rejected: raw-GstBuffer primary bus — discards the TS backbone for no
    timing gain once PTS is contractual.
+   Amended by ADR-0029 (Phase 3): no consumer demuxes the bus with
+   `tsdemux` any more; each `mrtsdemux` takes time from the PES (`PES −
+   1 h`), never from the buffer PTS, which stays the content's house time
+   for the lateness taps.
 
 9. **PipeWire: committed removal, sequenced.** Finish the 302M ports → fleet
    audit of device-sharing configs (any sharing migrates to explicit 302M
@@ -348,7 +362,9 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
   timing outright, which would make D a no-op on that leg while the video leg
   paced off the house clock.
 - The bus contract gains a regression test: producer-stamped PTS must survive
-  the consumer's `tsdemux` unmodified.
+  the consumer's `tsdemux` unmodified. Superseded by ADR-0029 (Phase 3): no
+  consumer runs `tsdemux` on the bus, and the formula demux reads the PES,
+  not the stamp, so there is nothing left for the stamp to survive.
 
 ## Implementation notes (Stage 2)
 
@@ -371,6 +387,9 @@ Corrections to the above, found while building the producer side:
   `set-timestamps=true`, which survived only as a helper default and is now
   false. The remaining consumer-side re-derivation is tsdemux's skew model,
   which the stamp feeds rather than fights.
+  Superseded by ADR-0029 (Phase 3): no consumer re-derives time. Each
+  demuxes with `mrtsdemux` (`PES − 1 h`, the bus stamp not read for time),
+  and `tsparse` is out of the consumer input (`buildTsUdpInput`).
 - Decision 3 as landed in Stage 1 pinned `clockSync` **consumers only**, leaving
   every producer on a per-start base-time — the contract was a no-op end to end.
   Under the engine flag it now applies to every pipeline.
@@ -554,6 +573,9 @@ anchor is *not* here; it is Stage 3b, below.
   on 302M outputs — **remains open** (2026-08-13). The 302M output sink takes D
   since 2026-09-03 (see "Implementation notes (302M output leg)" below), with the
   same skew pin, so the A/B now has a live subject.
+  Superseded by ADR-0029 (Phase 3): both sinks run `slave-method=custom`
+  behind their `mrasrc` device term, and the stored `slaveMethod` (Sync
+  Method) is deleted with skew slaving, its stored values ignored.
 - A head's `playoutOffsetMs` is treated as live in `ModuleInstance` regardless of
   what the plugin's `liveUpdatableParams` says: nothing in the producer's own
   pipeline reads it, so it can never need a restart there. It reaches the
@@ -845,6 +867,17 @@ live test needs PTP on the devices and is a later phase.
 
 ## Implementation notes (Stage 3c — the latency ratchet and the backlog shedder)
 
+Partly superseded by ADR-0029 (Phase 3). No consumer's bus input goes
+through `tsdemux` any more, so the re-slave probe below
+(`gst_tsdemux_slave_test.py`) is deleted with branch alignment. The audio
+legs (audio-decoder, audio-output-302m) measure and shed at their `mrasrc`'s
+input, the last pad on content time, not at the sink: after the device term
+a sink's PTS are device-time labels that ramp at the device's rate, and a
+shed there is a PTS jump without DISCONT that the ASRC's output counter runs
+through (a decode + device ASRC re-anchors its labels once the jump holds,
+B-127). The shedder, the re-anchor and the raise stay until Phase 4 deletes
+them with D.
+
 A fault the contract CREATED, found in the field on a Pi 400 (10.9.1.42) ~16 h
 after Stage 3a shipped: 50 fps decoded (codec IRQ ~100/s), 2.5 fps on the glass
 (`vc4 crtc` IRQ 2.2/s). The picture had decayed over hours with every module
@@ -960,6 +993,13 @@ reporting healthy.
   cap, never shed), and native parity case N.
 
 ## Implementation notes (Stage 3d — per-branch zero points at a multi-input mux)
+
+Superseded by ADR-0029 (Phase 3): branch alignment (`alignBranchesToStamps`,
+the Python runner's `_install_branch_stamp_align`, the native
+`branch_align`) is deleted in both runners. Each consumer's `mrtsdemux`
+gives every access unit its PES time on the house timeline, `PES − 1 h`,
+without reading the bus stamp, so a branch has no zero point of its own and
+a stamp's clamp no longer reaches a consumer's timeline.
 
 The contract's stamps are the shared truth, and a multi-input mux was quietly
 throwing them away one branch at a time. Measured on the .202 X-Chain rig
@@ -1090,8 +1130,17 @@ frame).
   capture source's timestamps onto house time before the mux (a second
   timeline rewrite in the same pipeline, which the stamping contract exists
   to avoid).
+- Amended by ADR-0029 (Phase 3): branch alignment is gone; a bus-fed
+  producer still must not set `liveCaptureClock`, because its demux's
+  `PES − 1 h` is house time only while running time is.
 
 ## Implementation notes (302M output leg, 2026-09-03)
+
+Partly superseded by ADR-0029 (Phase 3): the sink's skew pin (it runs
+`slave-method=custom` behind `outasrc`, the device term) and the
+presentation legs' branch alignment (`alignBranchesToStamps` on `vpdemux`,
+`<mixer>_demux<i>` and `addemux`, deleted: every leg's demux is on the
+formula). D, the trim and the shedder stay until Phase 4.
 
 The contract paired the video-player with the audio-decoder; the 302M fan-in
 path ([[0008]]) — `audio-transcoder → audio-output-302m`, the fleet's actual
@@ -1304,6 +1353,14 @@ property and no `houseTimelineEgress` field, and its event is the
 `mrtsstamp-identity` log line. The retime amendments below stay until Phase 3
 deletes the retime; their muxer **Limit** (the 2.4 s window) is gone, since
 the muxer waits for data or a gap on every input.
+
+Superseded by ADR-0029 (Phase 3) for the retime and the hold:
+`alignBranchesToStamps.transformProducer`, with its K, hold, epochs and join,
+is deleted in both runners, and so is the transcoder's subtitle hold
+(`subtitleDelayMs`, `subhold`). Every consumer's `mrtsdemux` gives each
+access unit its PES time, so a transform producer's egress PES carries its
+input PES PTS, 0 ticks, and the burn-in waits for late cues in a pace group
+(`mralignwatch aligner=burnin`).
 
 **Amends Decision 2 for transform producers.** The producer-side anchor
 (`anchor = house time of the first egress PES`) is right for a NETWORK

@@ -103,6 +103,22 @@ declares `houseTimelineEgress`: every egress is identity.
 
 ## Amendment 2026-10-09 — content-timed cues
 
+Superseded by ADR-0029 (Phase 3) for timing; the KLV carrier stays. The PES
+PTS is still the cue's content time and every send still carries the same
+PES bytes, packed by the bridge (`subtitle_pack`), and the bridge stays a
+Python-only hook pinned to `runner: 'python'`; but no stamp model learns
+that time any more. Every consumer demuxes with `mrtsdemux`, which gives
+each PES its own PTS on the house timeline (`PES − 1 h`), so the producer
+takes a cue's start straight from the PTS `teletextdec` stamps a page with
+(the PES that completed it), to the tick, and a consumer anchors a cue on
+its demuxed PTS (`t0src=pts`, or its arrival when that PTS is over 10 s
+from house now: `t0src=now`). The chunk-stamp join, the producer's
+`sourceDemux` retime, `mrpeshouse`, `subtitle_stamp_model` and
+`subtitle_ts`'s `PesStamper` and `StampIndex` are deleted, every page from
+the first is on its PES time, and the transcoder's `subtitleDelayMs` gave
+way to a burn-in that waits for late cues in a pace group. The decision
+below is the record of 2026-10-09.
+
 Burned-in teletext on NO-OCC-Gate01 ran 1–6 s late. Measured causes: (1) video
 PES lead the PCR by 0.9–1.5 s, teletext by 52 ms, so a frame's teletext arrives
 ~1.05 s after it; (2) the cue carried its send time on an anchor-stamped egress;
@@ -139,7 +155,10 @@ Consequences: cueLate 4–5 ms on the gate with the transcoder hold; traces
 `cue … late=` and `show … cueLate= cueLag= frameLag= t0src=`, `lateMs` in the
 module status; the egress trace is opt-in (`MR_SUBTITLE_EGRESS_TRACE=1`). At
 start-up, pages before the first chunk-stamp join are timed on tsdemux (~1 s
-late here; warned once per pad).
+late here; warned once per pad). Since ADR-0029 Phase 3 the start-up timing
+and its warning are gone with the join, `t0src` reads `pts` or `now`, the
+show line also carries `margin=`, and the egress trace walks its own
+packets.
 
 Not fixed: arriving on time (a renderer still holds video for the
 broadcaster's lead — the transcoder's `subtitleDelayMs`, ADR-0005); hops that
@@ -148,3 +167,8 @@ pad) show the cue on arrival, keeping its original span (a re-send within
 2.5 s of the last copy never moves it); audio-leading sources with the engine's timing PID
 unknown miss ~1 in 4 cues until the engine learns it from PCR. Investigation
 and the stamp model: docs/research/subtitle-content-time-20261009.md.
+Superseded by ADR-0029 (Phase 3): the burn-in waits for late cues in a pace
+group, the cue path's measured lateness (`mralignwatch aligner=burnin`), in
+place of `subtitleDelayMs`; a consumer no longer reads a cue's time from a
+bus stamp, so a hop that stamps a private PES at arrival no longer moves it;
+and with no stamp model, no timing PID has to be learnt first.

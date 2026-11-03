@@ -139,7 +139,10 @@ to ride a muxed program to reach a remote site, so the muxer must carry them.
   latency 0, each route enters it through `mralignwatch` (`sparse=true` on
   klv and subtitle routes, which fills between cues with gaps), and the cue
   pads are retimed to their own PES under `privatePads`, so a cue is written
-  at its content time.
+  at its content time. Amended by [[0029]] (Phase 3): each input's demux is
+  `mrtsdemux` (tsdemux's pad names and caps, the PMT posted before the
+  pads), every access unit, a cue included, leaves it at its own PES time,
+  and the retime and `privatePads` are deleted.
 - `data` (anything tsdemux exposes that is none of the four classes) is never
   routed: `mpegtsmux` has no sink caps for it and a failed request-pad link is
   a pipeline error.

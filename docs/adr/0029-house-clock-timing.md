@@ -9,8 +9,9 @@ not reopened here. This ADR is the living record the design calls for: it
 records the choices the design left to the engineer (§13.3 and the
 implementation plan's open-question register), one section per phase, and
 it marks what each phase supersedes in the older ADRs. Phase 0, the shared
-TS module (S0), Phase 1 and Phase 2 are below; Phases 3–5 append to this file
-when they land (`docs/house-clock-timing-implementation-plan.md`).
+TS module (S0), Phase 1, Phase 2 and Phase 3 are below; Phases 4 and 5
+append to this file when they land
+(`docs/house-clock-timing-implementation-plan.md`).
 
 Every phase is a cut-over (§13.1): the mechanism a phase replaces is deleted
 in the same release, with no engine flag, no legacy arm and no in-app
@@ -818,10 +819,13 @@ reassembly on every PID, PCR read and write, the PES header rewrite, the
    fallback, and nothing new is twinned. New timing code is prototyped in
    Python and ported once it is right; the Python under
    `plugins/mpegts-core/py` stays as the reference and its `test:py` suites
-   keep running (the owner's rule, OQ-1). The frozen paths that still import
-   it at runtime (the anchored stamper's Python probe,
-   `unixfd-fanout.py --stamp-timeline`, branch alignment and retime) stop in
-   Phases 2 and 3, with the mechanisms they serve (plan chapter 3 part 6.2).
+   keep running (the owner's rule, OQ-1). The frozen paths that imported it
+   at runtime (the anchored stamper's Python probe,
+   `unixfd-fanout.py --stamp-timeline`, branch alignment and retime) stopped
+   in Phases 2 and 3, with the mechanisms they served (plan chapter 3 part
+   6.2): since Phase 3 no runtime path imports the Python timing reference;
+   the Python runner's `tsProbe` imports `ts_psi`, `ts_video_info` and
+   `sps_parse`, which time nothing.
    Test harnesses that drive a native element over appsrc/appsink are
    allowed. **This amends ADR-0001's consequence** "the python is the
    executable specification" to: the Python is the reference; only the C++
@@ -2046,7 +2050,7 @@ work items.
 | Tick | 20 ms: a sparse input's gap step, and a gapped one's toward `mpegtsmux`; toward an audio aggregator gaps go in pieces as the data would (B-59, B-79) |
 | PCM edges | Toward an audio aggregator: the last 5 ms of sound before a gap, a hole, an EOS or a forwarded GAP fade out, the first data after silence fades in over 5 ms (`FADE` 5 ms, a half-Hann window); a hole is 1 ms or more (`HOLE_MIN`); a tail under 1 ms fades nothing (`TAIL_MIN`) (B-83) |
 | Report | Every state change, and every second of running time |
-| Queue | `max-size-time` 5 s, `max-size-bytes` 0 (none; 40 MB on the muxer's routes), at most 32,768 items; full blocks upstream and counts once per episode, until drained to half of every limit |
+| Queue | `max-size-time` 5 s, `max-size-bytes` 0 (none; 40 MB on the muxer's routes), at most 32,768 items; full blocks upstream and counts once per episode, until drained to half of every limit; the time level counts from the release horizon at the earliest (`aw_level_time`), so a GAP over a hole longer than the bound is no queued time (B-134) |
 
 - **Choices, for the owner's veto:**
   1. *Decode time, not PTS.* On the PTS a B-frame after its P-frame would end
@@ -2206,7 +2210,9 @@ work items.
   start without `libgstmrtshouse.so`.
 - **The helper** (`audio-302m-core`). Every branch is `<busSrc> ! mrtsdemux
   name=<m>_demux… select=audio/x-smpte-302m ! avdec_s302m ! audioconvert[
-  mix-matrix] ! audioresample`. The mixer and live arms end it in
+  mix-matrix] ! audioresample` (since Phase 3 `avdec_s302m ! mrasrc …
+  bypass-below-ppm=0.5 out-rate=48000 ! audioconvert[ mix-matrix]`, the
+  decode ASRC, below). The mixer and live arms end it in
   `! audio/x-raw,rate=48000,channels=N ! mralignwatch name=<m>_aw_<hash>
   aligner=<m> input="<connection id>" hold-on-eos=true[ seed-lateness=<ns>]`
   into `alignedMixer`, `audiomixer name=<m> latency=0
@@ -2636,3 +2642,712 @@ twins, and the input stall watch end to end; the settings `mixLatencyMs`
   and `py/ts_split.py` docstrings (a C++ port and a parity suite that are
   gone), `hls-pipe-runner.ts` ("unixfd-fanout sidecar"), and hls-player's
   missing-binary error, which still suggests `pnpm build`.
+
+## Phase 3 (built 2026-10-26 to 2026-11-02, device rounds pending) — the formula demux on every consumer; branch alignment, retime and K recovery deleted
+
+After Phase 3 every bus consumer reads time from the bytes. Each access unit
+leaves its demux, `mrtsdemux`, at `ceil(unwrap(PES PTS) − 1 h)` on a segment
+from 0, so its running time is its content's house time, and nothing on the
+consumer side learns a mapping or corrects a demux's time (P9, §6 item 2):
+the runners' branch alignment and per-AU retime, the subtitle K recovery and
+the last runtime copy of `ts_timeline` are deleted. Audio is resampled once
+where it first becomes PCM, only when its source runs on another clock, and
+every audio output follows its device's clock by resampling instead of skew
+slaving (§8; OQ-23, C-6, C-7). The burn-in waits for late cues in a pace
+group instead of a fixed hold (OQ-24). The 19 build items (WI-P3-1 to
+WI-P3-18, with WI-P3-1 and WI-P3-3 in two halves and WI-P3-9 and WI-P3-15 as
+one) were built code only, in seven workflows on the dev Pi 5 with GStreamer
+1.28.2 (W4 to W6 in three parallel clones, merged after, with the release
+line's fixes up to v2.0.0.100 carried in); the device rounds DEV-P3a,
+DEV-P3b and DEV-P3c (V1 to V13, plan chapter 7 part 11) are still to run. On
+the boxes only the capture lane (p3cap, the five bus recordings) and the
+Phase 2 baselines (p3base) ran, in DEV4a (2026-10-27). The plan's register
+(chapter 15.4, rows B-120 to B-147) holds the same records with their work
+items; B-120 is the build plan and its 40 corrections of chapter 7 (S1 to
+S40).
+
+### The formula demux (WI-P3-1, WI-P3-2; plan part 4.1)
+
+- **`mrts::DemuxCore`**
+  (`plugins/mpegts-core/native/mrts/demux_core.{h,cpp}`, no GStreamer)
+  demuxes one program on the formula timeline; `mrtsdemux` runs it in both
+  modes. Its reference, `py/demux_core.py`, was written first (OQ-1, B-121),
+  and the C++ ports it rule for rule, held to it by output parity
+  (`demux_core_parity_test.py`: the two suites' check lists equal; `mrts_cli
+  demux` and the reference line for line on every fixture at 188, 1,000,
+  1,316 and 24,576-byte feeds and from its bus sidecar, in select mode and
+  three media sets, and on 120 random programs; B-122). Phase 2's
+  `SelectDemux` is folded in: select mode is a `DemuxCore` configuration,
+  and `ts_select.{h,cpp}` are gone, their select cases now case 12 of both
+  `DemuxCore` suites (S1).
+- **The formula, on the ceil (S12).** Each PES PTS is unwrapped by an
+  `Unwrapper` per PID, seeded once from `ns_to_pts90k(clock − base_time) +
+  MUX_CLOCK_BASE_90K` and never folded to 33 bits (B-14), a DTS nearest its
+  own PES's PTS. PTS = `pts90k_to_ns_ceil(u − MUX_CLOCK_BASE_90K)` (new in
+  `ts_house`), DTS likewise, and DTS = PTS where the PES has none. A floor
+  conversion, tsdemux's and Phase 2's, loses a tick through a demux →
+  `mpegtsmux` hop wherever t mod 9 ≠ 0, since `mpegtsmux` floors ns to ticks
+  (B-69, F1); on the ceil `ns_to_pts90k(PTS) == u − 1 h` for every unit and
+  a re-mux gives every tick back, so select mode's PTS off the 9-tick grid
+  moved up by 1 ns. A PES without PTS, or before house time 0, leaves
+  untimed. The bus stamps are never read for time; without a clock (a file
+  source prerolling in a test) the first PES seeds on itself.
+- **Two modes, one element** (`gstmrtsdemux.cpp`). **Demux mode** is the
+  default (no `select`): tsdemux 1.28.2's four SOMETIMES templates (`video`,
+  `audio`, `private`, `subpicture`) with their caps sets, a pad per stream
+  of `media`. **Select mode** (`select=audio/x-smpte-302m`, Phase 2) keeps
+  its one ALWAYS `src` pad, in the element only while `select` names a
+  stream (`gst_parse` would link a `src` at once and then never link the
+  demux pads), and tsdemux's templates are registered before it, so a
+  linker's template search never lands on it. Properties: `select`,
+  `program-number` (−1, the PAT's first), `media`
+  (`video,audio,private,subpicture` by default; the streams of other classes
+  are never reassembled; a name that is no class fails the start),
+  `sparse-gap-lag` (500 ms), `max-pes-bytes` (32 MiB, R9); `select` and
+  `media` change only in NULL or READY. Read-only: `pid` (select mode),
+  `generation` (−1 before a plan), `pes`, `gaps`, `markers`,
+  `markers-dropped`, `unknown-streams`, and the plugin's `abi` and counters.
+  Chapter 7's `gap-threshold` and `unwrap-reference` were not built (B-122,
+  S6), and the strings carry no `latency` or `ignore-pcr`. LATENCY is
+  upstream's, SEEKING is answered not seekable, and the pads' flows are
+  combined (`GstFlowCombiner`: NOT_LINKED only when every pad is).
+- **The caps table** (part 4.2, as built in `classify`). Each caps string is
+  tsdemux's, which the element parses; where two rows match one 0x06 loop,
+  tsdemux's order decides (an AC-4 extension, 0x6A, 0x7A, 0x56, 0x59, then
+  the registration).
+
+| PMT stream type | Pad | Caps | Sparse | Unit |
+|---|---|---|---|---|
+| 0x01, 0x02 | video | `video/mpeg, mpegversion=(int)1` or `2`, `systemstream=(boolean)false` | no | the PES |
+| 0x1B | video | `video/x-h264, stream-format=(string)byte-stream` | no | the PES |
+| 0x24; 0x06 + registration `HEVC` | video | `video/x-h265, stream-format=(string)byte-stream` | no | the PES |
+| 0x06 + `AV1G` | video | `video/x-av1, stream-format=(string)obu-stream, alignment=(string)frame`, the 0x80 descriptor's av1C fields and `codec_data` added through pbutils | no | the PES |
+| 0x03, 0x04 | audio | `audio/mpeg, mpegversion=(int)1` | no | the PES |
+| 0x0F | audio | `audio/mpeg, mpegversion=(int)4, stream-format=(string)adts` | no | the PES; `mpegversion` re-read from each PES's ADTS header (2 for MPEG-2 AAC), the caps updated before its segment |
+| 0x11 | audio | `audio/mpeg, mpegversion=(int)4, stream-format=(string)loas` | no | the PES |
+| 0x81; 0x06 + AC-3 descriptor 0x6A | audio | `audio/x-ac3` (0x81 with an E-AC-3 descriptor 0x7A: `audio/x-eac3`, as tsdemux) | no | the PES |
+| 0x87; 0x06 + E-AC-3 descriptor 0x7A | audio | `audio/x-eac3` | no | the PES |
+| 0x06 + registration `Opus` + extension descriptor 0x7F | audio | tsdemux's channel-configuration table through `gst_codec_utils_opus_create_caps` | no | its packets, control headers stripped, the trims as `GstAudioClippingMeta`, one buffer list per PES |
+| 0x06 + `BSSD` | audio | `audio/x-smpte-302m` | no | the PES, with its AES3 duration |
+| 0x06 + teletext 0x56 | private | `application/x-teletext` | yes | the PES |
+| 0x06 + DVB subtitling 0x59 | subpicture | `subpicture/x-dvb` | yes | the PES |
+| 0x06 + `KLVA`; 0x15 with metadata format `KLVA` | private | `meta/x-klv, parsed=(boolean)true` | yes | the PES; on 0x15 its metadata AU cells with `GstMpegtsPESMetadataMeta`, one buffer list |
+| 0x06 + `ID3 `; 0x15 with `ID3 ` | private | `meta/x-id3, parsed=(boolean)false` | yes | the PES; on 0x15 without data alignment, DELTA_UNIT |
+| 0x05, 0x0A–0x0D, 0x13, 0x16, 0x86 | — | no pad, no warning (tsdemux's section-only types) | — | — |
+| anything else (0x06 with no known descriptor, DTS, AC-4, LPCM …) | — | no pad; `unknown-stream` once when tsdemux's class for it is in `media` (OQ-27) | — | — |
+
+- **Pads and events, in tsdemux's order** (measured against stock tsdemux in
+  the same harness, B-123). At each plan: the `GstStreamCollection` message;
+  each pad added with STREAM_START (its `GstStream`, upstream's group id,
+  SPARSE on a sparse pad, tsdemux's stream id `<upstream>:<program>/<pid
+  %08x>`) and CAPS; an old program's pads, drained first by the core, sent
+  EOS and removed after the new ones are added (tsdemux's drain, add,
+  remove); then, pad by pad in plan order, STREAM_COLLECTION, after a
+  `GAP(0, 0)` on a sparse pad; then `no-more-pads` and a `program` message.
+  SEGMENT `{TIME, 0, 0, 0}` and a TAG (the language as tsdemux tags it, ISO
+  639-1 where one maps, so `nor` is `no` and `mpegtsmux` writes `nor` back;
+  the codec) go to each pad at its first buffer or GAP; a flush re-sends the
+  segment, never the TAG. Pad names are `%s_%01x_%04x`, the generation's low
+  4 bits, the first 0 (S13). The PAT and the PMT are `GstMpegtsSection`
+  messages posted on the streaming thread, the PMT before the program's
+  first pad-added: the one difference from tsdemux, which posts it after
+  `no-more-pads`, kept because the muxer's hooks read the class set from it
+  before any pad (S14).
+- **Program identity** is tsdemux's `mpegts_base_is_same_program` (S13): the
+  PCR PID, the stream count and each (PID, stream type) pair as before. A
+  version-only PMT change, a language or a descriptor keeps the pads; a
+  moved PMT PID is no change of its own; a PMT without streams is skipped,
+  so it plans nothing and raises no `no-stream`, as tsdemux rejects such a
+  table, while select mode warns. Found (B-121): tsdemux skips a PMT section
+  whose version it has seen without reading its CRC, so a codec change at an
+  unchanged version (`syn-mpts-two-programs`) re-plans `mrtsdemux` and not
+  tsdemux.
+- **Gaps.** A pad's horizon is the end of what it emitted, data or gap. An
+  audio PES that starts more than two frames past it is a `jump` GAP over
+  the hole, a frame being the upper median of the last eight clean spacings
+  of at most 1 s (Phase 2's rule); a video pad learns its frame from its DTS
+  in decode order (its PTS deltas read about three frames on IBBP content,
+  B-122) and gaps a hole of 1 s or more (B-89); a sparse pad has no jump
+  rule (S5). Each gap marker packet on a pad's PID is a GAP `[max(horizon,
+  end − length), end)`, after that PID's open PES closes, dropped when
+  empty, the pad's next unit DISCONT; markers never enter the walk (select
+  mode's rule, B-60, S4). A sparse pad (teletext, DVB subtitles, KLV, ID3)
+  gets `[horizon, program time − sparse-gap-lag)` once that span passes the
+  lag, program time being the newer of the PCR's formula time and the newest
+  non-sparse unit's end (B-86); such a gap sets no DISCONT and is not
+  counted. DISCONT also follows a CC loss (the cut PES is dropped) and a bus
+  DISCONT, which drops the open PES and the walk's carried bytes, so nothing
+  joins across a relock. At EOS a bounded PES shorter than its length is
+  dropped (tsdemux pushes it cut).
+- **Guards and messages (S3).** One element message structure, `mrtsdemux`,
+  with `reason`: `interval` every 1 s of running time (the counters,
+  `generation`, `pads`); `program` at each plan (`generation`, `pcr-pid`,
+  `pads`); `unknown-stream` once per PID per generation for a stream of
+  `media` with no row (`pid`, `stream-type`, `registration`);
+  `not-house-time` at a pad's first timed unit more than 60 s from house now
+  (`pid`, `offset-ms`; demux mode); `no-stream` when a plan has no pad, by
+  select mode's 2 s rule (E16). Both runners forward it unsubscribed as
+  `mrtsdemux:<element>`.
+- **No stand-in**, as in Phase 2: a start description naming `mrtsdemux` is
+  refused without `libgstmrtshouse.so`, with the rule-6 alarm, and since
+  Phase 3 that is every bus consumer that demuxes (below). The plugin now
+  also links gstreamer-mpegts-1.0, -pbutils-1.0 and -tag-1.0, all on the
+  image already. `MRTSHOUSE_ABI` stays 1 (S0 choice 4, S32): DEV deploys
+  check every native's sha256 against the tarball instead.
+- **`MpegTsProbe` keeps `tsdemux` (OQ-25).** The engine's codec probe of a
+  bus edge (`unixfdsrc … ! tsdemux latency=0 ! parsebin ! fakesink` under
+  `gst-launch -v`) reads codec caps, never time, so it is the one `tsdemux`
+  left on the bus. It prints no caps for a pad it leaves unlinked, so an
+  input that lists its video first probes no audio and its consumer gets
+  `decodebin` (B-128).
+
+### Parity with stock tsdemux and the recordings (WI-P3-3, WI-P3-4)
+
+- **The parity harness**
+  (`packages/engine/src/child-process/gst_mrtsdemux_parity_test.py`, in the
+  engine's `test:py`) replays every recorded fixture (`cap-*`, `tp-*`,
+  `bus-*`, by name) into `tsdemux latency=0` and into `mrtsdemux` at 188,
+  1,000, 1,316 and 24,576-byte feeds, a bus recording also as recorded from
+  its sidecar, each feed stamped by its arrival on the recording's PCR, as a
+  bus stamps a buffer at its send time. It compares the plan's events in
+  order, the section messages and their place, every other message, warning
+  and error, each pad's events at their buffer counts, the buffers by size
+  and CRC-32 (flags, list index and length, metas) and the GAPs (B-124).
+  Since p3-18 it also holds the four `buildTsUdpInput` consumers' strings to
+  having nothing that re-frames between their bus source and each demux, and
+  each of their demux configurations at 1,000 bytes to its output on whole
+  packets (B-144); 183 checks.
+- **The allowlist**
+  (`plugins/mpegts-core/tests/fixtures/demux_parity_allow.json`) has
+  nineteen entries, each one rule of the comparison with its reason in the
+  1.28.2 source, and each used by the run (an unused one fails it):
+  `timestamps` (the formula against tsdemux's PCR skew: the point of the
+  element), `sections-place` (S14), `pmt-same-version` and
+  `pmt-continuation` (tsdemux's section filter), `psi-repeat-cc` and
+  `psi-repeat-discont` (it re-posts a PAT or PMT after a CC loss or a
+  DISCONT input), `cc-warning`, `cc-loss-discont`, `cc-loss-next-pes` and
+  `cc-repeat` (continuity: tsdemux warns at each mismatch and loses a PES
+  that starts at it, where `mrtsdemux` counts, flags the next unit DISCONT
+  and keeps that PES, and `CcTracker` drops a repeated counter as the one
+  duplicate ISO 13818-1 allows), `jump-gap`, `sparse-gaps` and `marker-gaps`
+  (the gap rules above), `truncated-last-pes`, `tag-memory` (`mrtsdemux`'s
+  Opus packets are regions of the PES buffer), `own-messages`, and
+  `discont-drain`, `discont-flag` and `discont-pending` (tsdemux's flush at
+  a DISCONT input: it pushes each open PES cut, which `mrtsdemux` drops; it
+  flags every pad, where a marker flags only its PIDs'; and it drops the
+  units it holds for a PCR, which `mrtsdemux` delivers). Its `measuredEqual`
+  list holds seven behaviours that needed no entry (the SEGMENT, tsdemux's
+  SDT, EIT and TDT messages, buffers before the first PCR, timestamp-driven
+  DISCONTs, a list's pieces, pads outside part 4.2, the re-plan order), and
+  the synthetic `syn-*` fixtures stay out of it (S28).
+- **Bus recordings are raw TS plus a sidecar** `<name>.bus.jsonl` (each bus
+  buffer's offset, length, PTS, DTS, duration and flags), not GDP (S25,
+  E15): the same information, dumpable as any TS and rebased by the TS rule
+  plus one shift. `tools/fixtures/record-bus.sh` records an edge as a second
+  `unixfdsrc` client; `mrts_cli rebase --to-ns T [--bus]` moves a recording
+  onto another house clock by a whole number of 100 µs (`mrts/ts_rebase`),
+  and a test rebases a fixture onto its own clock.
+- **The fixtures** (all under `plugins/mpegts-core/tests/fixtures/`, a
+  README row each, at most 2 MB): the five bus shapes no recording held,
+  recorded by p3cap on the Pi 5 test box and committed rebased onto house
+  1000 s (`bus-occ-ingest`, `bus-ingest-relock-gap`, `bus-pmt-change`,
+  `bus-mux-av-klv`, `bus-hls-player`; B-132); nine third-party `tp-*`
+  fixtures made on the dev Pi by `tools/fixtures/gen-thirdparty.sh`, mostly
+  with ffmpeg 5.1, libavformat's muxer, the vMix's (S24); the trims
+  `cap-gate-mux-hevc-aac-opus` (HEVC with B-frames, DTS) and
+  `cap-mixer-302m-house`; the synthetic kinds `gap-500ms`, `gap-marker`
+  (with its sidecar), `video-hole-1s`, `private-novdesc`, `pmt-version-bump`
+  and `adts-mpeg2` from `fixture_gen --ts`, and `syn-foreign-clock-aac` from
+  `fixture_gen --respace 40` (S28); and a reviewed `.demux.jsonl` beside
+  every fixture. `tools/align-check/` holds `pes_diff.sh` (`--by pts` for a
+  re-encode), `pcm_align.py` and `pes_formula.sh` for the device rounds.
+
+### ASRC at decode and at outputs (WI-P3-5; plan part 4.4)
+
+- **One element, four modes** (`mrasrc`, S17), one resampler each: capture
+  (`bypass-below-ppm` 0 and no `device-sink`: Phase 1 unchanged, its run
+  checksum `432e8439f253974f` too), decode (`bypass-below-ppm` above 0, at
+  most 1,000), device (`device-sink` set with `bypass-below-ppm` 0: the
+  device term alone, no lock of the source) and decode + device (both: one
+  ratio, the product of the two terms, OQ-23). `mrasrc-stats` gains `mode`
+  (`capture`, `bypass`, `decode`, `device`, `decode+device`), `source-ppb`
+  and `device-ppb` (each clock against house time, round(−ε / (1 + ε)),
+  positive when it runs fast); `ratio-ppb` is the commanded composite. A
+  decode + device element whose source still passes reads `device`. The
+  servo's reference, `py/asrc_bypass_ref.py`, came first (OQ-1, S30);
+  `mrts::AsrcServo` and `AsrcDeviceLock` port it rule for rule, and
+  `asrc_bypass_ref_test.py` replays the same call sequences through it and
+  `mrts_cli asrc`, line for line (B-125).
+- **The decode lock** (`asrc_decode_lock_config`, S16) is the capture lock
+  with a 10-bucket first fit, since a demux's PTS carry no arrival jitter.
+  The prototype's sweep (1 h each: 48 kHz exact, 44.1 kHz quantised, MP2,
+  32 kHz, Opus, a ±1-tick wobble): no count from 3 to 30 buckets engages a
+  house-rate stream (|ε| at most 9 ppb once locked); +3 ppm engages at
+  18.0 s with 3, 25.0 s with 10, 46.0 s with 30. Ten, not three, because a
+  ±0.2 ms PTS wobble lifts |ε| to 0.86 ppm with 3 and to 0.20 ppm with 10,
+  and the device lock shares the configuration.
+- **The bypass rule (C-7).** Each buffer passes as it came, the same buffer
+  and memory, while the source measures within the bound of house time and
+  the phase within 1 ms; the element engages once |ε| has stayed past the
+  bound for 10 s of lock (+3 ppm: 25.0 s) or the phase passes 1 ms (+40 ppm:
+  24.9 s; +0.3 ppm: 55.4 min). The bound is the engine's
+  `DECODE_BYPASS_PPM`, 0.5 ppm (`ingestTiming.ts`), on every decode ASRC.
+  The engage is seamless: the resampler is reset, fed the last 64 passed
+  frames at the commanded rate and as many outputs dropped, so its next
+  output is the engaging buffer's first frame, labelled with its PTS, with
+  no DISCONT. Where a resampler already runs (a rate conversion, a device
+  term) the engage only hands the ratio to the servo: the counter continues
+  and the phase, up to 1 ms, is steered out with τ = 10 s.
+- **Breaks.** At a GAP event and before a DISCONT buffer the epoch ends: the
+  resampler's tail leaves on the old counter, the lock relocks without its
+  rate, and the next buffer opens an epoch at its PTS (`relock`). An
+  envelope step (the timeline moved, not the content) re-anchors the labels
+  on the lock's new floor and keeps the resampler.
+- **The device term** (§8, C-6). At READY→PAUSED the element `device-sink`
+  names downstream must be a `GstAudioBaseSink` with `slave-method=custom`
+  (3), else an error naming it. Its custom-slaving callback feeds
+  `AsrcDeviceLock` (on the decode lock's configuration) and always answers
+  `requested_skew` 0, so the sink never drops or inserts a sample. The
+  output counter runs on from the first PTS, re-anchored at a DISCONT or a
+  GAP: device-time labels, which a `sync=true` sink needs until Phase 4. A
+  sink discontinuity relocks the device lock, keeping its rate
+  (`device-relock` with its reason). Two rules came from building it: the
+  callback reads the house clock again and places each pair there, the
+  latest instant the sink's `itime` can have been read, so a pair is never
+  early (one 0.48 ms early held the rate 6 ppm off for a minute); and a
+  (re)lock's first 100 ms of pairs are left out (the sink's first callback
+  after its calibration reads the device up to 0.33 ms early). On the same
+  readings either rule left out leaves the rate 11–14 ppm off at 15–30 s;
+  with both, within 0.04 ppm.
+- **Interleaved caps (S15).** `mrasrc` takes S16LE, S32LE and F32LE
+  interleaved; `avdec_aac` gives planar F32LE, so the audio decoder's and
+  the audio transcoder's branches put `audioconvert` before it, while the
+  302M branches (the helper's and aes67-output's) feed `avdec_s302m`'s
+  interleaved S16LE or S32LE straight in.
+- **Latency.** `mrasrc` answers LATENCY with its filter's lookahead,
+  32 frames (0.667 ms at 48 kHz, quality 4), while passing too, where
+  `audioresample` at equal rates answered 0 (B-127).
+- **The stand-in** stays `audioresample` (B-23), the rewrite dropping the
+  new properties. A sink left on custom slaving without `mrasrc`'s callback
+  would not be slaved at all; it cannot happen on these paths, because each
+  also names `mrtsdemux`, which has no stand-in.
+- **The test sink** `mrtestaudiosink` (`mrtshouse/tests/mrtestaudiosink.c`,
+  `tests/libgstmrtest.so`, never installed; S18): a device a set ppm off the
+  pipeline clock that reports its ring's fill, resyncs and calibration
+  changes, and `MrTestClock`, a clock `speed` times real time. Phase 4
+  reuses both.
+
+| Constant | Value |
+|---|---|
+| Decode bound | 0.5 ppm (`DECODE_BYPASS_PPM`; the element takes 0 to 1,000) |
+| Phase bound | 1 ms (`bypass_phase_ns`) |
+| Hold | 10 s of lock past the bound (`bypass_hold_ns`) |
+| Decode lock's first fit | 10 buckets (`rate_buckets_min`; the capture lock's 30) |
+| Priming at an engage | the last 64 passed frames |
+| Phase steering | τ = 10 s (`phase_tau_ns`) |
+| Ratio clamp | ±1,000 ppm (`ratio_max_ppm`); past it `ratio-out-of-bounds` |
+| Device lock | pairs at the house clock read after the callback; the first 100 ms after a (re)lock left out (`SETTLE_NS`) |
+
+### The consumers on the formula (WI-P3-7 to WI-P3-15, WI-P3-18)
+
+Every bus consumer that demuxes now names `mrtsdemux`; no description
+carries a timing declaration, and the field is gone (below).
+
+- **302M fan-ins** (the helper in `audio-302m-core`, so audio-mixer,
+  n1-mixer-302m, audio-processing and audio-output-302m): each branch `… !
+  mrtsdemux … select=audio/x-smpte-302m ! avdec_s302m ! mrasrc
+  name=<m>_asrc<i> bypass-below-ppm=0.5 out-rate=48000 ! audioconvert[
+  mix-matrix] …`, a live branch's ASRC `liveAsrcName(m, connection)` =
+  `<m>_asrc_<hash>`, as its demux. `branchAsrc: false` drops only the direct
+  branch's ASRC (one source, not in live-input mode), whose caller then
+  carries the decode term; a mixer-arm branch always keeps its own, since
+  one resampler after a mix cannot match two sources' clocks.
+  `mixInputDemuxes` names each branch's demux and ASRC for the rows (B-127).
+- **aes67-output**: `<busSrc> ! <queue 200 ms> ! mrtsdemux name=demux
+  select=audio/x-smpte-302m ! avdec_s302m ! mrasrc name=asrc
+  bypass-below-ppm=0.5 out-rate=48000 ! audioconvert ! <AES67 caps> !
+  <payloader> ! … udpsink`; the sink, the RTP `timestamp-offset` and the
+  pacing are unchanged; the udpsink sends 0.667 ms later, the RTP timestamps
+  unchanged.
+- **audio-output-302m**: `… <m>_out. ! identity name=live_upstream sync=true
+  ! mrlateness name=lat_render ! audioconvert ! mrasrc name=outasrc
+  [bypass-below-ppm=0.5] device-sink=sink ! volume ! level ! [placement] !
+  pulsesink name=sink … slave-method=3 …`. B-62's identity stays (S11); the
+  render tap sits before the ASRC, where PTS is still content time. One
+  source: its branch has no ASRC and `outasrc` carries both terms; a mixer:
+  each branch's decode ASRC, then `outasrc` the device term alone.
+- **audio-decoder**: `<busSrc> ! mrtsdemux name=addemux media=audio ! queue
+  … ! <decoder> ! audioconvert ! mrlateness name=lat_render ! mrasrc
+  name=asrc bypass-below-ppm=0.5 device-sink=sink ! audioconvert ! volume !
+  level ! pulsesink name=sink … slave-method=3 …`: one resampler for the
+  source's clock and the output's (OQ-23); the Sync Method setting
+  (`slaveMethod`) is gone with skew slaving (S31; stored values ignored,
+  OQ-33). `media=audio` gives the decoder the program's first audio stream
+  (OQ-28): `decodebin`, which the probe's `unknown` selects for an input
+  that lists its video first, took the video before (B-128).
+- **audio-transcoder**: `<busSrc> ! mrtsdemux name=demux media=audio ! queue
+  … ! <decoder> ! audioconvert ! mrasrc name=asrc bypass-below-ppm=0.5 !
+  audioconvert[ mix-matrix] ! volume ! level ! tee …`, each rendition's leaf
+  unchanged: one decode ASRC for every rendition, with no `out-rate`, so it
+  also converts a rate a rendition does not take (a 44.1 kHz source with an
+  Opus rendition now negotiates). The encoders keep `perfect-timestamp`, so
+  a rendition's PES PTS sit on its sample ladder from its first AU (S40):
+  the first AU at the input's first PES PTS, Opus at 0 ticks, AAC within a
+  tick of the ladder (one or two AUs in three a tick low, by the first PTS's
+  residue mod 9), 302M within a tick of its PCM's stamps (B-129); at an
+  input hole the encoders re-sync past their 40 ms tolerance (B-142).
+- **Both audio outputs** (Audio Output (302M), Audio Decoder) are on custom
+  slaving: `SLAVE_METHOD_CUSTOM = 3` replaces `SLAVE_METHOD_SKEW`, and the
+  sink is never asked to skew. `sync=true`, `ts-offset`, `buffer-time`,
+  `max-lateness=-1` and the backlog shedder stay until Phase 4, the shedder
+  moved to the ASRC's input (`element: 'outasrc'`, `'asrc'`), the last pad
+  on content time: after the device term the PTS are device-time labels that
+  ramp at the device's rate, so a reading at the sink's pad would raise the
+  route's D for a slow DAC (B-127, B-128).
+- **video-player**: `… ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video
+  ! [capsfilter caps="video/x-h26x" !] queue …` on every rung, `decodebin3`
+  included: the video only (Q18), so a source that lists its audio first
+  plays from the first start; the explicit rung's capsfilter stays its codec
+  guard (B-133).
+- **mpegts-muxer**: each input `… ! mrtsdemux name=demux_<i>`, demux mode
+  with every media; every access unit, the cues included, leaves at its PES
+  time and `mpegtsmux` writes it back at its own PES PTS to the tick; the
+  `mux_routing` hooks are unchanged, reading the class set from the PMT
+  message before the pads (B-134).
+- **Subtitles In** (the player's overlay and the transcoder's burn-in,
+  `buildSubtitleInput`): `… ! mrtsdemux name=subdemux media=private`; only
+  private streams are reassembled (B-137).
+- **teletext-subtitles**: `… ! tee name=in_t ! queue ! mrtsdemux name=demux
+  media=private ! capsfilter caps="application/x-teletext" ! tee name=t …`
+  (B-138).
+- **transcoder**: `… ! mrtsdemux name=demux media=video ! capsfilter
+  caps="video/x-h264" ! [mralignwatch … !] h264parse ! avdec_h264 …`: every
+  egress PES carries its input PES PTS, 0 ticks (B-139).
+- **No `tsparse` before a demux (OQ-26, WI-P3-18).** `buildTsUdpInput` is
+  the bus source and its jitter queue, nothing after: the bus carries whole
+  188-byte packets (ADR-0011) and the demux's `PacketWalker` carries any
+  split packet into the next buffer. Measured before the change, the
+  `tsparse set-timestamps=false` it ended in cleared every buffer flag, so
+  the transcoder's, the player's, teletext's and the subtitle input's demux
+  never met a gap marker or a bus DISCONT, and at a relock it lost a
+  teletext subtitle (752 bytes: a one-packet marker and the three-packet PES
+  after it) before the demux (B-144). `buildTsRechunk`, the egress re-chunk,
+  is unchanged.
+
+### The subtitle path (WI-P3-7, WI-P3-8, WI-P3-13; OQ-24)
+
+- **A cue anchors on its own PES time.** The formula puts each KLV cue's PES
+  PTS on its buffer, so the consumer's chunk-stamp join (a Python TS walk
+  and stamp model per bus chunk on the demux's sink pad) is gone:
+  `subtitle_cues.cue_t0` is the demuxed PTS when it is within
+  `FRAME_TIME_TOLERANCE_MS` (10 s) of house now, else the arrival, and the
+  bridge's show line reads `t0src=pts` or `t0src=now`, never `chunk` (V11).
+  The re-send key `klv_span` and `payload_key` moved into `subtitle_klv.py`
+  (B-137).
+- **The producer takes the teletext PES's time.** `teletextdec` stamps a
+  page with the PTS of the teletext PES that completed it, which the formula
+  makes that PES's house time, so the bridge's `PayState.new_cue` takes the
+  content time straight off the text. The producer's retime is deleted (the
+  `sourceDemux` walk, its native `mrpeshouse` and its Python fallback),
+  every page from the first is on its PES time, and the start-up warning
+  "content time unavailable yet — tsdemux time used" is gone. A cue's start
+  is no longer rounded to whole ms (`subtitle_cues.make_cue`), so a cue's
+  PES PTS is its teletext PES's to the tick (B-138).
+- **The burn-in waits in a pace group** (OQ-24, B-139). With Subtitles In
+  wired the transcoder puts `mralignwatch name=aw_burnv aligner=burnin
+  input=video max-size-bytes=40000000` on its compressed video before
+  `h264parse` (full, it holds upstream and never drops), and
+  `subtitleRenderPlan(…, { aligner: 'burnin' })` makes the bridge read each
+  KLV pad through `mralignwatch aligner=burnin input=cues sparse=true` (made
+  at pad-added, S36) in place of a queue. Both watches release at their
+  running time plus the shared pace, which follows the most lateness either
+  showed over `fall-after` (180 s): the cue path's. A frame and its cue for
+  time T both leave at T + pace, and the frame then crosses the decoder, the
+  raw queue, deinterlace and videorate, so the cue reaches the bridge first
+  by the decode latency (136–149 ms in the protocol case). The bridge's show
+  line gains `margin=` (house now less the cue's arrival). Found: the first
+  cue after a start (or after `fall-after` with no cue) is drawn late,
+  ≈ 900 ms in the case, because it reaches its watch before the pace has
+  learnt the cue path; every later cue lands on its frame, and a cue later
+  than all before it is forwarded at its own PTS with a `late-cue` and
+  raises the pace (Phase 2's sparse rule). With burn-in on, the video's
+  watch answers LATENCY as non-live, so the stream below it is non-live
+  (nothing syncs on it). `subtitleDelayMs` (Subtitle Sync Delay), its
+  `subhold` queue and their plumbing are deleted, stored values ignored
+  (OQ-33). `TranscoderModule.alignerInputOf` puts the two watches on the TS
+  input's and Subtitles In's rows.
+- **The bridge stays Python-only** (ADR-0016's 2026-10-09 decision), and its
+  descriptions pin `runner: 'python'`; with the K recovery gone it reads no
+  bus chunk stamp at all.
+
+### The engine: what a demux and an ASRC show (WI-P3-6)
+
+- **Runners.** Both forward `mrtsdemux` (already in Phase 2), `mrasrc-stats`
+  and `mrasrc-event` unsubscribed, as `<structure>:<element>`, so a
+  live-added branch reports without a `busReports` entry; the two lists are
+  pinned equal (`busRunnerContract.test.ts`, `gst_native_plugins_test.py`).
+- **Readers.** `demuxWatches.ts` and `asrcWatches.ts` keep each element's
+  state, `LatenessReporter` places it on an input's row, `ModuleTiming` logs
+  and syncs, and `GstPluginBase` owns the warnings. A capture ASRC (mode
+  `capture`) stays its ingest card's and is not shown here.
+- **Rows** (shared types `DemuxCounters`, `ClockCorrection`): per input,
+  Demux rate (PES/s over the last 10 s of reports), Demux gaps (holes: a
+  jump or a marker), Demux CC lost (packets) and Demux unknown streams (the
+  current program's); Clock correction, `none (house rate)` or `+23.4 ppm
+  (source)`, on the input row of an ASRC placed on one, else on the `timing`
+  section; Device clock (`−12.1 ppm`) on the `timing` section. The ASRC's
+  terms are read off the description at start (`bypass-below-ppm` > 0 a
+  decode term, `device-sink` a device term), since `mode` reads `device` for
+  a decode + device ASRC whose source passes; so is a demux's `media`.
+- **Which input.** The module's `demuxInputOf(element)` (`{ tap }`, `{
+  connection }`, `{ port }`, `{ label }` or `null`), else the engine's rule:
+  an element named for a bus connection (`…_<shortHash(connectionId)>`)
+  serves that edge, else a demux serves the module's one input and an ASRC
+  the module. mpegts-muxer maps `demux_<i>` to its pin; audio-processing and
+  audio-output-302m their fan-ins' names through `mixInputDemuxes`; the
+  subtitle renderers `subdemux` to Subtitles In (`renderDemuxInput`).
+- **Log lines.** A program after the first (generation > 0): `Input <n>:
+  program changed (generation g)`; a consumer ASRC's engage: `Input <n>:
+  source clock +x ppm: resampling`; `ratio-out-of-bounds` at warn.
+- **Warnings**, owned by the module in one health text with the aligners'
+  (taken only over ok or its own text, ADR-0010 rule 2, never over a stopped
+  or errored module): `demux-unknown-stream` (`Input <n>: PID 0x0123: stream
+  type 0x06 with no known descriptor is not demuxed`),
+  `input-not-house-time` (`Input <n> is <x> s off house time — its producer
+  does not stamp house time`), `input-no-stream` (`Input <n> carries no
+  audio stream`, the kind from `select` or `media`) and `asrc-out-of-bounds`
+  (`… past the ASRC's 1000 ppm — check the source's sample rate`). Each
+  clears at the demux's next generation, a module start, a respawn or 6 s of
+  quiet; `no-stream` also once a report finds the stream; out-of-bounds once
+  a stats report has the source locked below 900 ppm, the element's own
+  hysteresis. None of them drops anything.
+- **Protocol.** `plugins/mpegts-core/tests/fixtures/forwarded-messages.json`
+  holds one forwarded payload per reason and kind as both runners forward
+  them; the engine's tests feed it through the readers, and the protocol
+  cases hold every forwarded payload to its entry's fields and types.
+
+### Deleted with their mechanisms (WI-P3-16 to WI-P3-18)
+
+- **Branch alignment and the retime** (WI-P3-16, B-142): the native runner's
+  `branch_align.{cpp,h}` and `branch_retime.{cpp,h}` with their glue, the
+  Python runner's align block (506 lines) and `branch_retime.py`,
+  `PipelineDescription.alignBranchesToStamps` and
+  `AlignBranchesToStampsConfig` (`transformProducer`, `privatePads`, and
+  with them B-65's and B-67's rules), `gst_branch_align_test.py` and
+  `gst_tsdemux_slave_test.py`. `_pid_from_tsdemux_pad_name` is kept as
+  `_pid_from_demux_pad_name` (`mrtsdemux` names its pads as tsdemux does).
+  Every consumer being on the formula, the correction of tsdemux's zero
+  point had nothing left to correct; kept, it would have been a second, dead
+  timing path.
+- **The subtitle K recovery** (WI-P3-17, B-143):
+  `mpegts-core/native/mrpeshouse/` (4,330 lines, so the image no longer
+  carries `libgstmrpeshouse.so`), subtitle-core's `subtitle_native.py`,
+  `subtitle_stamp_model.py` and `subtitle_ts.py` with their tests;
+  `mrts/ts_timeline.{h,cpp}`, whose `timing_pes` moved into `ts_house`
+  beside `IdentityStamp`, its only caller (B-51); and the `read_pes_pts`
+  forwarder of `ts_psi.h` (S7; `read_pcr` lives in `ts_pcr.h`). The opt-in
+  egress trace (`MR_SUBTITLE_EGRESS_TRACE=1`) walks its own packets (S21),
+  so no runtime path imports the Python timing reference any more: the
+  engine build's copied modules and the runner hooks, every import followed,
+  are 24 repository modules, none of them `ts_timeline` (B-143).
+- **`tsparse` in the consumer input** (WI-P3-18, B-144), above.
+
+### Tests
+
+- **Protocol cases in both runners** (`native_runner_protocol_test.py`,
+  661 checks; the subtitle bridge's cases on the Python runner):
+  `presentation-formula` (E: every buffer a 302M presentation leg's sink
+  syncs on at its PES PTS − 1 h, ceil to the ns), `transform-formula` (M:
+  the transcoder's shape on `bus-occ-ingest` and `syn-gap-marker`, 0 ticks
+  and the B-frame DTS intact, the markers taken as GAPs; the audio
+  transcoder's own string on `bus-occ-ingest` and `bus-ingest-relock-gap`,
+  S40 per stretch), `cue-formula` (M2: KLV, teletext and DVB cues at their
+  PES PTS), `mux-formula` (P: the muxer's own command, every PES at its
+  input PES PTS, the PIDs planned at the PMT), `video-leg-formula`,
+  `subtitle-overlay-formula`, `ttx-formula`, `burnin-formula`,
+  `transcode-formula`, `mrtsdemux-pmt-change`, `mrtsdemux-messages` and
+  `mrasrc-device`. The four rewritten cases (E, M, M2, P) fail on the
+  strings before Phase 3 and on a floor conversion (B-142).
+- **Element and chain suites**: `gst_mrtsdemux_element_test.py` (every
+  fixture's pads, caps, units and gaps against its `.demux.jsonl`, the event
+  order against stock tsdemux), `gst_mrasrc_element_test.py`,
+  `gst_decode_asrc_chain_test.py` (the real modules' decode strings from the
+  snapshot `fixtures/decode-asrc/pipelines.json` into `mrtestaudiosink`),
+  the parity harness above; the C++ suites `demux_core_test`
+  (`demux_core_test.py`'s cases one for one, the same checks in the same
+  order) and `asrc_servo_test`.
+- **String snapshots** that the cases replay, the real builders' output,
+  rewritten by `vitest -u` when a builder changes (B-72's mechanism; no
+  `tests/` directory ships): Phase 2's `fixtures/aligner/pipelines.json`,
+  regenerated, and this phase's `fixtures/decode-asrc/pipelines.json`,
+  `fixtures/video-leg/pipelines.json`,
+  `subtitle-core/tests/render-plan.json`,
+  `teletext-subtitles/tests/teletext-plan.json` and
+  `transcoder/tests/burnin-plan.json`.
+
+### As-built deviations, by work item
+
+Each item recorded these against its brief for the owner's veto; the
+sections above give the reasons, the register rows the details.
+
+- **p3-3a** (WI-P3-3, first half): bus recordings as TS plus a sidecar (S25,
+  E15); the third-party set from ffmpeg (S24, E14); the rebase in 100 µs
+  steps; `tools/align-check/` built here, with `pes_diff.sh --by pts` for
+  V1's re-encodes (B-120).
+- **p3-1a** (WI-P3-1, first half): the Python reference first; the ceil;
+  tsdemux's program identity, caps and precedence; a marker closing its
+  PID's open PES; `.demux.jsonl` beside every fixture (B-121).
+- **p3-1b**: `DemuxCore` with `SelectDemux` folded in (E1); one
+  `DemuxEvent`; the caps as tsdemux strings; the video frame from DTS; a PMT
+  without streams skipped (B-122).
+- **p3-2** (WI-P3-2): one message name (E3); no `unwrap-reference` (E4) or
+  `gap-threshold`; tsdemux's event order with the PMT section before the
+  pads (E7); the 4-bit generation from 0 (E5); `media` and the no-stream
+  warning in demux mode (E16) (B-123).
+- **p3-4** (WI-P3-4): the allowlist as rules, each used; feeds stamped on
+  the recording's PCR; synthetic fixtures out (B-124).
+- **p3-3b** (WI-P3-3, second half): the five recordings rebased onto house
+  1000 s (they were taken past the 33-bit wrap); seven more entries (B-132).
+- **p3-5** (WI-P3-5): the decode lock (E9); the seamless engage; the two
+  device-lock rules; `mrtestaudiosink` (S18) (B-125).
+- **p3-6** (WI-P3-6): the readers built here (WF-B had left B-70's open);
+  `mrasrc-*` forwarded unsubscribed (E10); the terms read off the
+  description; the clear rules (B-126).
+- **p3-9** (WI-P3-9 + WI-P3-15): no `audioconvert` before a 302M branch's
+  ASRC; `branchAsrc`; the shed point at `outasrc`'s input (B-127).
+- **p3-10** (WI-P3-10): Sync Method deleted here, not in Phase 4 (S31, E13);
+  `media=audio`; the shed at `asrc`'s input (B-128).
+- **p3-12** (WI-P3-12): one decode ASRC converting rate and clock; S40's
+  ladder criterion (B-129).
+- **p3-11** (WI-P3-11): `media=video` on every rung; the video-leg snapshot
+  (B-133).
+- **p3-14** (WI-P3-14): the hooks unchanged; the aligner's queue level
+  counted from its horizon (B-134).
+- **p3-7** (WI-P3-7): `media=private` on Subtitles In; `cue_t0`'s two
+  sources; the dedupe helpers moved (B-137).
+- **p3-8** (WI-P3-8): the cue start kept to the µs (B-138).
+- **p3-13** (WI-P3-13): one watch in the string and one the bridge makes
+  (S36); the cue path's lateness as the wait (B-139).
+- **p3-16** (WI-P3-16): `transform_input_fixture.py` pruned, not deleted
+  (S20, E11); the protocol cases rewritten as above (B-142).
+- **p3-17** (WI-P3-17): the egress trace's own walk (S21, E12);
+  `ts_timeline` and `timing_pes` held by three exact checks instead of the
+  grep (S22) (B-143).
+- **p3-18** (WI-P3-18): the player's two input arms one string; the parity
+  section for the four consumers (B-144).
+
+### What this phase supersedes
+
+- **ADR-0005**: decision 5's skew slaving of the DACs and its open A/B item
+  (the house clock stays CLOCK_MONOTONIC); Stage 3a's skew pin; Stage 3c's
+  `gst_tsdemux_slave_test.py` probe and the audio legs' shed point; Stage
+  3d, per-branch zero points, whole; Stage 3e's reason for keeping bus-fed
+  producers off `liveCaptureClock`; the 302M output leg notes' skew pin and
+  presentation-leg alignment; the transform-producer retime amendments and
+  the transcoder's subtitle hold; decision 2's note on the branch-align
+  caps. **ADR-0016**'s 2026-10-09 amendment for timing: the chunk-stamp
+  join, the producer's retime and `mrpeshouse`; the KLV carrier, the packed
+  pay tail and the Python-only bridge stay. **ADR-0019**'s Stage 2 feature
+  entry, multi-branch stamp alignment. Each now points here.
+- **Amended**, a few lines each: ADR-0001 and ADR-0002 (no runtime importer
+  of the Python timing reference; the native runner links `libmrts.a` for
+  its gates alone), ADR-0008 (each 302M branch's decode ASRC in place of
+  `audioresample`; the output on custom slaving), ADR-0011 (no consumer
+  re-chunks its input), ADR-0014 (the placed 302M output on custom slaving)
+  and ADR-0017 (each cue leaves the muxer's demux at its own PES time, no
+  retime).
+- **This ADR's earlier sections.** S0's `read_pes_pts` forwarder and
+  `ts_timeline` suite are gone, and `mrpeshouse` from choice 2's list;
+  choice 1's runtime importers have all stopped. Phase 0's render tap on an
+  audio output with a device ASRC sits before the ASRC, not at the sink.
+  Phase 1's "Phase 1–2 consumers" that ran `tsdemux` in PCR mode are gone,
+  so no bus consumer re-bases on its flagged PCRs (only the codec probe
+  runs `tsdemux`), and its DISCONT finding (B-20) is closed (below). Phase 2's `mrtsdemux` runs
+  `DemuxCore` (`SelectDemux` folded in) on the ceil, its helper branch
+  decodes into `mrasrc` in place of `audioresample`, and the muxer's
+  `privatePads`, its two retime rules and the tick lost through tsdemux →
+  mpegtsmux (B-69) are gone with the retime; its open B-20 is closed (below)
+  and B-70's demux rows are built (B-126).
+
+### Deleted in this phase
+
+`branch_align` and `branch_retime` in both runners with their glue,
+`alignBranchesToStamps`, `AlignBranchesToStampsConfig` (`transformProducer`,
+`privatePads`), `gst_branch_align_test.py`, `gst_tsdemux_slave_test.py` and
+`transform_input_fixture.py`'s tsdemux runners; `mrpeshouse` (element, PES
+walk, the C++ K model, its vectors), `subtitle_native.py`,
+`subtitle_stamp_model.py`, `subtitle_ts.py` (`PesStamper`, `StampIndex`) and
+their tests, `subtitle_runtime.chunk_probe`, the consumer's chunk join, the
+producer's retime and `sourceDemux`; `mrts/ts_timeline.{h,cpp}` and its
+suite (the cases in `ts_house_test`), the `read_pes_pts` forwarder;
+`ts_select.{h,cpp}` and their suite (folded into `DemuxCore`); `tsdemux` in
+the eight consumer strings (aes67-output, audio-decoder, audio-transcoder,
+mpegts-muxer, Subtitles In, teletext-subtitles, transcoder, video-player);
+`audioresample` after the 302M decode (the helper, aes67-output,
+audio-output-302m); skew slaving (`SLAVE_METHOD_SKEW`) on both audio
+outputs; `tsparse` in `buildTsUdpInput`; the settings `slaveMethod` (Sync
+Method, audio-decoder) and `subtitleDelayMs` (Subtitle Sync Delay,
+transcoder) with the `subhold` queue, their stored values ignored (OQ-33).
+`py/ts_timeline.py`, `ts_timeline_test.py` and `py/ts_psi.py` stay as the
+reference (OQ-1); nothing at runtime imports `ts_timeline`.
+
+### Open at the end of the build
+
+- **The device rounds** (plan chapter 7 part 11), none run on a Phase 3
+  build yet: DEV-P3a (V5 to V7 and the ASRC bench), DEV-P3b (V1 to V4, V8,
+  V9) and DEV-P3c (the 24 h soak across uptime 25.51 h, where `MONO + 1 h ≡
+  0 mod 2^33`: V10 to V13). Their criteria as the rows correct them: V1's
+  audio transcoder by S40 per stretch of continuous input (B-129, B-142), V3
+  with `mrasrc`'s 0.667 ms added (S37), V5's sample count against the offset
+  held from the engage, V8 on the Pi 4 player and the Pi 5 transcoder
+  against p3base (B-144), V7's device numbers read with the caveat below.
+- **The phase review follows this pass**: a Fable review of every Phase 3
+  item against chapter 7 and the build plan, then its fixes (p3-21), one
+  commit.
+- **p3-16b, the shared bus demux helper (B-145), is built** (2026-11-03, on
+  the carried line): `buildBusDemux` in busHelpers.ts builds the segment
+  `buildBusSrc ! queue ! mrtsdemux …` for nine consumers, every string
+  byte-identical. The live-input branches (`buildLiveMixInput`) still build
+  their own (p3-21).
+- **For the orchestrator** (recorded in their rows): neither `mux_routing`
+  form routes a re-planned program's pads, so after a codec switch or a PCR
+  PID change an input's new pads are sunk and V9's "muxer re-plans" fails
+  until it is built (B-123, B-134: options a hook keyed by the pad's
+  generation, a rebuild on a program change, or documenting it); `CcTracker`
+  takes a repeated counter for a duplicate without comparing bytes and keeps
+  its counters across a bus DISCONT, so a restarted sender's first PES can
+  be lost, and the restamp puts no video marker on the bus at a relock
+  (B-132); the player's video pad, re-added by a program change that keeps
+  the codec, stays unlinked until a rebuild (B-133); `buildTsRechunk`'s
+  `tsparse` keeps its DISCONT rule, so ADR-0011's re-slice holds only
+  between DISCONTs (B-144); a stopping transcoder clears its egress stamper
+  before the EOS drain, so its last frames carry non-house stamps (B-139).
+- **For the owner**: the first burnt-in cue after a start drawn late, and
+  the option of seeding the cue watch from the Subtitles In producer's
+  output lateness, not built (B-139); the engineering choices of rows B-120
+  to B-147, each recorded for the veto. Phase 4's p4-4a measured this
+  phase's `AsrcDeviceLock` 5–20 ppm off on real `pulsesink` clocks, a short
+  fit after a DISCONT able to replace a good rate (125–286 ppm off); Phase
+  4's p4-4b replaces it with a timer-read device term, so DEV-P3a's V7 is
+  judged with that in mind.
+- **Producer-side gap signalling for sparse producers** (§11.5 item 10),
+  which Phase 2 deferred to this phase's demux, is not built: no chapter 7
+  item planned it. `mrtsdemux` gives sparse pads gaps from program time,
+  which a sparse `mralignwatch` drops as before; the muxer's cue routes keep
+  Phase 2's consumer-side fill to now − pace.
+- **B-20 is closed** with no code change: markers carry GAP | DISCONT, and
+  no bus consumer runs `tsdemux` (MpegTsProbe's codec probe aside), so
+  nothing drains and flushes at a marker's DISCONT; every reader keys on
+  GAP.
+- **Comments that still name a deleted mechanism** wait for a code change:
+  `PluginModule.ts` (`parser: 'none'`: "tsdemux already emits one whole
+  PES"), `gst-pipeline-runner.py` (the same sentence, its parser table's
+  "tsdemux already emits muxer-ready caps", the "spliced here, before
+  PLAYING" comment whose referent went with the align block, and "the same
+  seam the stamper's ts_timeline uses"), the native runner's `pad_link.cpp`
+  (the parser table's tsdemux), `tsHelpers.ts`'s header ("every plugin that
+  builds tsdemux / mpegtsmux chains"), the player's `pipelines.ts`
+  (`sync=false` called "the live SRT/RIST default", the default being the
+  paced sink since B-133), and the frozen `py/ts_timeline.py` and
+  `ts_timeline_test.py`, whose pointers name `ts_timeline.cpp` and its test
+  (`timing_pes` is in `ts_house.cpp`, its cases in `ts_house_test.cpp`).

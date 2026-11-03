@@ -46,7 +46,11 @@ audio-decoder over. The aligner parses TS through mpegts-core's `ts_psi` /
 compile-time engine→plugin source dependency, which ADR-0002's exception 1
 (name/path lookups at runtime) does not cover; ADR-0002 records it as its
 exception 3, on the condition of its exception 2: the runner carries no TS
-arithmetic of its own.
+arithmetic of its own. Multi-branch stamp alignment is
+superseded by ADR-0029 (Phase 3) and deleted from both runners with the
+per-AU retime (`branch_align`, `branch_retime`, `alignBranchesToStamps`):
+every consumer's `mrtsdemux` gives each access unit its PES time. The
+backlog shedder stays until Phase 4.
 
 Stage 3 (same day) closed the video legs: `linkOnPadAdded` pad-link rules
 with stream discovery (transcoder), the keyframe gate, the render keep-up
@@ -77,6 +81,14 @@ stamping probe either: without `libgstmrtsstamp.so` both runners run an
 egress unstamped with the same rule-6 `warning`, and both load the plugin
 only for a pipeline with a `busout_*` tee.
 
+Amended by [[0029]] (2026-11-02, Phase 3): multi-branch stamp alignment and
+the retime are deleted from both runners, superseded by ADR-0029 (Phase 3),
+so no description carries `alignBranchesToStamps` and the runner keeps only
+the gates as its users of mpegts-core's `libmrts.a` (`gates.cpp`: `ts_psi`,
+`ts_video_info`). Both runners forward `mrasrc-stats` and `mrasrc-event`
+unsubscribed beside `mrlateness`, `mralignwatch` and `mrtsdemux`, the two
+lists pinned equal.
+
 ## Consequences
 
 - The binary lives in `packages/engine/native/mr-gst-runner/` — it is the
@@ -103,7 +115,8 @@ only for a pipeline with a `busout_*` tee.
   `native_runner_protocol_test.py` (in `test:py`); the engine-side selection
   by `nativeRunner.test.ts`.
 - Amended by [[0029]] (2026-10-16, S0): the aligner and the gates link
-  mpegts-core's `libmrts.a` rather than compiling its sources in, and the
+  mpegts-core's `libmrts.a` rather than compiling its sources in (the gates
+  alone since Phase 3, which deleted the aligner), and the
   runner loads the house-clock plugin `libgstmrtshouse.so` by path before
   the parse, with an ABI check, and gives its elements stand-ins when it
   cannot use it (ADR-0029, S0 rules 4 and 6).

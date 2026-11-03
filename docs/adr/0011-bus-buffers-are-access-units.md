@@ -66,6 +66,16 @@ to 0.24 of a core, the video encoder from 0.46 to 0.26, the SRT output from
 - mpegts-ip-output RTP mode relies on rtpmp2tpay's `mtu` to size datagrams
   (it splits on 188-byte boundaries); tsparse is only inserted there when a
   size is forced.
+- Amended by [[0029]] (2026-11-02, Phase 3): no consumer re-chunks its bus
+  input any more. `buildTsUdpInput` ends at its jitter queue and the
+  consumer's `mrtsdemux` re-frames any split itself (`PacketWalker` carries
+  a partial packet into the next buffer); the `tsparse set-timestamps=false`
+  it used to end in also cleared every buffer flag, so its demux never met a
+  gap marker or a DISCONT. `tsparse` stays only in the egress re-chunk
+  (`buildTsRechunk`), where it is a re-slice between DISCONTs: at a DISCONT
+  input it drains, flushes and re-learns the packet size, so two DISCONTs
+  within 832 bytes lose what it holds (with `alignment=7`, four packets in
+  each of the two relock recordings; ADR-0029 Phase 3, B-144, open).
 
 ## References
 
