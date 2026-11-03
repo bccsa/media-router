@@ -263,7 +263,13 @@ export class CommandDispatcher {
                         channelMap,
                     )
                     .then((connId) => {
-                        log.info({ connectionId: connId }, 'Live connect');
+                        // A connection whose producer is not up yet only waits (B-194).
+                        log.info(
+                            { connectionId: connId },
+                            this.ctx.mediaRouter.isConnectionWaiting(connId)
+                                ? 'Live connect waits for its producer'
+                                : 'Live connect',
+                        );
                         this.ctx.localServer.configChanged([
                             {
                                 op: 'add',

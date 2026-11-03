@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import type { RunnerStartOptions } from '../PythonProcess.js';
 
 /**
  * Test double for `PythonProcess` — records the command stream instead of
@@ -27,6 +28,8 @@ export class FakePythonProcess {
     }
 
     readonly commands: Record<string, unknown>[] = [];
+    /** What `start` was given: the description the runner would launch. */
+    startOpts: RunnerStartOptions | undefined;
     readonly stop = vi.fn();
     readonly kill = vi.fn();
     readonly emergencyKill = vi.fn();
@@ -45,7 +48,8 @@ export class FakePythonProcess {
         return 5000 + FakePythonProcess.spawned.indexOf(this);
     }
 
-    start(): void {
+    start(opts?: RunnerStartOptions): void {
+        this.startOpts = opts;
         this.commands.push({ cmd: 'start' });
     }
 

@@ -1,7 +1,12 @@
 import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
 import { PythonProcess, FORCE_KILL_TIMEOUT_MS, type RunnerStartOptions } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
-import { unixFdSrcSocketPaths, waitForBusSockets } from './busSocketGate.js';
+import {
+    unixFdSrcSocketPaths,
+    waitForBusSockets,
+    waitForLiveInputs,
+    type LiveInputsGate,
+} from './busSocketGate.js';
 import { RunnerHandback } from './runnerHandback.js';
 
 // Restart policy:
@@ -56,12 +61,17 @@ const REPLY_EVENTS = new Set([
 // A retired process's events worth a log line when dropped.
 const RETIRED_LOGGED = new Set(['error', 'warning', 'state_change']);
 
-// The `startPipeline` wire message: the runner start options plus the two
+// The `startPipeline` wire message: the runner start options plus the
 // restart-policy knobs GstRunner consumes itself (not forwarded to Python).
 interface StartPipelineMessage extends RunnerStartOptions {
     restartOnError?: boolean;
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
+    /** `PipelineDescription.pipeWireElements`: their errors are `pipewire_lost`, not restarted. */
+    pipeWireElements?: string[];
 }
+
+/** The `error` kind of a lost PipeWire stream (B-195): its module rebuilds it, not this runner. */
+export const PIPEWIRE_LOST_KIND = 'pipewire_lost';
 
 /**
  * Whoever hosts a `GstRunner` — the one seam through which the runner reaches
@@ -96,6 +106,8 @@ export class GstRunner {
     private readonly ipc: ParentIpc;
     private currentState: 'stopped' | 'playing' | 'error' = 'stopped';
     private restartOnError = false;
+    /** Elements holding the module's PipeWire stream (see `PIPEWIRE_LOST_KIND`). */
+    private pipeWireElements = new Set<string>();
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     // The last start options, replayed verbatim by the restart loop. One field
     // instead of a mirror per knob — new knobs can't drift out of the replay.
@@ -149,9 +161,10 @@ export class GstRunner {
     handleControlMessage(msg: ControlIpcMessage): void {
         switch (msg.action) {
             case 'startPipeline': {
-                const { restartOnError, restartBackoffMs, ...opts } =
+                const { restartOnError, restartBackoffMs, pipeWireElements, ...opts } =
                     msg.data as StartPipelineMessage;
                 this.restartOnError = restartOnError ?? false;
+                this.pipeWireElements = new Set(pipeWireElements ?? []);
                 this.restartBackoff.setBounds(
                     restartBackoffMs?.baseMs ?? DEFAULT_RESTART_BASE_MS,
                     restartBackoffMs?.maxMs ?? DEFAULT_RESTART_MAX_MS,
@@ -514,7 +527,7 @@ export class GstRunner {
                 });
                 break;
 
-            case 'error':
+            case 'error': {
                 // Fatal pipeline-lifecycle failure (bus ERROR, parse-fail,
                 // PLAYING-fail, udpsrc timeout). Tear down + restart per
                 // policy. RPC-handler failures use `command_error` (below).
@@ -522,13 +535,23 @@ export class GstRunner {
                 console.error(
                     `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.element ? ` [element: ${eventJson.element}]` : ''}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
                 );
+                // A lost PipeWire stream waits for PipeWire and its device in the module (B-195):
+                // restarting it here loops while PipeWire is down. Neither this error nor the
+                // runner's exit after it restarts anything.
+                const pipeWireLost =
+                    !eventJson.kind && this.pipeWireElements.has(String(eventJson.element));
+                if (pipeWireLost) {
+                    this.restartOnError = false;
+                    console.error('[gst-runner] PipeWire stream lost: the module rebuilds it');
+                }
+                const kind = pipeWireLost ? PIPEWIRE_LOST_KIND : eventJson.kind;
                 this.ipc.sendEvent('error', {
                     message: eventJson.message,
                     // Pass through `kind` so consumers can distinguish recoverable
                     // failures (e.g. udpsrc timeout when the source goes silent)
                     // from hard bus errors. Plugins use this to switch to a
                     // fallback pipeline instead of looping on the failing one.
-                    kind: eventJson.kind,
+                    kind,
                     // Source element name (from the gst bus message) — error
                     // attribution for diagnostics and per-element policies.
                     element: eventJson.element,
@@ -537,9 +560,10 @@ export class GstRunner {
                 });
                 // `kind` rides along so GstPluginBase can tell a reconnect
                 // (`bus_producer_restarted`) from a fault when it flips health.
-                this.ipc.sendEvent('stateChange', { state: 'error', kind: eventJson.kind });
+                this.ipc.sendEvent('stateChange', { state: 'error', kind });
                 if (this.restartOnError) this.scheduleRestart();
                 break;
+            }
 
             case 'command_error': {
                 // Non-fatal RPC-handler failure (element not found, get/set
@@ -753,7 +777,7 @@ export class GstRunner {
         this.ipc.sendEvent('pipelineStarting', {});
         this.clearQueuedBusAttaches('superseded by a newer start');
 
-        const launch = () => {
+        const launch = (launchOpts: RunnerStartOptions) => {
             // Capture this instance locally — `this.python` may already point to a
             // newer spawn by the time the exit handler fires (a SIGKILL'd
             // predecessor can take hundreds of ms to reap). Without this guard the
@@ -767,7 +791,7 @@ export class GstRunner {
                 onSpawnError: (err) => this.handlePythonSpawnError(py, err),
             });
             this.python = py;
-            py.start(opts);
+            py.start(launchOpts);
             // A consumer's unixfdsrc connects during this start, so this is
             // the instant its bus attachment dates from (GstChildProcess
             // records it; BusFanoutCoordinator compares producer vs consumer).
@@ -789,25 +813,39 @@ export class GstRunner {
         // cycle and kept a 24-stream graph from ever settling). The abort
         // predicate stops a superseded wait's probe loop outright; the
         // periodic progress callback keeps the wait visible to the operator
-        // (console + `busGate` event → module health warning).
+        // (console + `busGate` event → module health warning). An aggregator's
+        // `liveInputs` are not all waited for: it launches with those that are
+        // there, and the others join when their producers play (B-192).
+        const wait = {
+            shouldAbort: () => epoch !== this.startEpoch,
+            onProgress: (pending: string[]) => {
+                console.error(
+                    `[gst-runner] Waiting for producer bus socket(s): ${pending.join(', ')}`,
+                );
+                this.ipc.sendEvent('busGate', { pending });
+            },
+        };
         const busSockets = unixFdSrcSocketPaths(opts.pipeline);
-        if (busSockets.length === 0) {
-            launch();
+        if (!opts.liveInputs?.length && busSockets.length === 0) {
+            launch(opts);
         } else {
-            void waitForBusSockets(busSockets, {
-                shouldAbort: () => epoch !== this.startEpoch,
-                onProgress: (pending) => {
-                    console.error(
-                        `[gst-runner] Waiting for producer bus socket(s): ${pending.join(', ')}`,
-                    );
-                    this.ipc.sendEvent('busGate', { pending });
-                },
-            })
-                .then((ready) => {
-                    if (!ready || epoch !== this.startEpoch) return; // superseded by stop/newer start
-                    // All producer sockets accept — clear the gate signal, launch.
-                    this.ipc.sendEvent('busGate', { pending: [] });
-                    launch();
+            const gate: Promise<LiveInputsGate | null> = opts.liveInputs?.length
+                ? waitForLiveInputs(opts, wait)
+                : waitForBusSockets(busSockets, wait).then((ready) =>
+                      ready ? { launch: opts, absent: [] } : null,
+                  );
+            void gate
+                .then((open) => {
+                    if (!open || epoch !== this.startEpoch) return; // superseded by stop/newer start
+                    // The sockets this launch needs accept — clear the gate signal, say
+                    // which live inputs it goes without (the module's lost set), launch.
+                    if (open.absent.length) {
+                        console.error(
+                            `[gst-runner] Launching without live input(s) not there yet: ${open.absent.join(', ')}`,
+                        );
+                    }
+                    this.ipc.sendEvent('busGate', { pending: [], absent: open.absent });
+                    launch(open.launch);
                 })
                 .catch((err) => {
                     // Fault boundary: an unhandled rejection here would be

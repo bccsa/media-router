@@ -133,6 +133,34 @@ describe('Engine — default playout offset', () => {
     });
 });
 
+/** B-199: named before any child starts, so no pactl or runner autospawns a PulseAudio daemon. */
+describe('Engine — the PulseAudio server of its clients', () => {
+    const keys = ['PULSE_SERVER', 'PULSE_RUNTIME_PATH', 'XDG_RUNTIME_DIR'];
+    const saved: Record<string, string | undefined> = {};
+    let tmpDir: string;
+
+    beforeEach(() => {
+        for (const k of keys) saved[k] = process.env[k];
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-test-'));
+    });
+
+    afterEach(() => {
+        for (const k of keys) {
+            if (saved[k] === undefined) delete process.env[k];
+            else process.env[k] = saved[k];
+        }
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('is the user’s pipewire-pulse socket, in PULSE_SERVER from construction on', () => {
+        delete process.env.PULSE_SERVER;
+        delete process.env.PULSE_RUNTIME_PATH;
+        process.env.XDG_RUNTIME_DIR = '/run/user/1001';
+        new Engine({ profilesPath: path.join(tmpDir, 'profiles.json'), pluginsDir: tmpDir });
+        expect(process.env.PULSE_SERVER).toBe('unix:/run/user/1001/pulse/native');
+    });
+});
+
 /** The house-clock start wait (design §10.3): modules wait for the epoch; the engine's API, UI
  *  and manager link do not. */
 describe('Engine — house-clock start wait', () => {

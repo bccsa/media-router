@@ -263,3 +263,93 @@ describe('BusFanoutCoordinator — stale consumer relaunch on producer PLAYING',
         expect(restart).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('BusFanoutCoordinator — a live input the consumer runs without joins (B-192)', () => {
+    const PORT = 40002;
+    function rig(opts: { lost: boolean; producerLaunch?: number; consumerLaunch?: number }) {
+        const restart = vi.fn(async () => {});
+        const producerChild = { pipelineLaunchedAt: opts.producerLaunch ?? 1000, isRunning: true };
+        const producer = {
+            getBusAttachTarget: () => ({ sendBusAttach: vi.fn(), sendBusDetach: vi.fn() }),
+            getChildProcess: () => producerChild,
+        };
+        const consumer = {
+            running: true,
+            getChildProcess: () => ({
+                pipelineLaunchedAt: opts.consumerLaunch ?? 2000,
+                restartPipeline: restart,
+            }),
+            getLiveInputBranch: () => ({
+                element: 'mixin',
+                name: 'mixin_in_x',
+                description: 'unixfdsrc ! queue',
+            }),
+            getLiveInputBranchTarget: () => ({ busInputAdd: vi.fn(), busInputRemove: vi.fn() }),
+            isLiveInputLost: vi.fn(() => opts.lost),
+        };
+        const c = conn({ streamType: 'audio/302m' });
+        const coord = new BusFanoutCoordinator(
+            (id) =>
+                id === 'srt-input-a'
+                    ? (producer as never)
+                    : id === 'mpegts-muxer-b'
+                      ? (consumer as never)
+                      : undefined,
+            () => PORT,
+            () => [c],
+        );
+        const relink = vi.fn(async () => true);
+        const rejoin = vi.fn(async () => true);
+        coord.setLiveRelink(relink);
+        coord.setLiveRejoin(rejoin);
+        return { coord, relink, rejoin, restart, producerChild, consumer };
+    }
+
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    it('a producer that launched BEFORE the consumer, playing now: its missing branch is added', async () => {
+        // The consumer launched after it, so rule 4 sees nothing stale — but the producer's
+        // socket was not up yet when the consumer's gate chose its inputs.
+        const { coord, rejoin, relink, restart } = rig({ lost: true });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(rejoin).toHaveBeenCalledTimes(1);
+        expect(relink).not.toHaveBeenCalled();
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('a branch the consumer has is left alone', async () => {
+        const { coord, rejoin, relink } = rig({ lost: false });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(rejoin).not.toHaveBeenCalled();
+        expect(relink).not.toHaveBeenCalled();
+    });
+
+    it('a stale consumer keeps the re-link (and its relaunch fallback), lost or not', async () => {
+        const { coord, rejoin, relink } = rig({
+            lost: true,
+            producerLaunch: 3000,
+            consumerLaunch: 2000,
+        });
+        coord.reattachProducer('srt-input-a');
+        await tick();
+        expect(relink).toHaveBeenCalledTimes(1);
+        expect(rejoin).not.toHaveBeenCalled();
+    });
+
+    it("the consumer's own PLAYING adds the branches it runs without whose producers play", async () => {
+        const { coord, rejoin, producerChild } = rig({ lost: true });
+        producerChild.isRunning = false;
+        coord.rejoinLostInputs('mpegts-muxer-b');
+        await tick();
+        expect(rejoin).not.toHaveBeenCalled(); // its producer is not playing: its PLAYING will
+        producerChild.isRunning = true;
+        coord.rejoinLostInputs('mpegts-muxer-b');
+        await tick();
+        expect(rejoin).toHaveBeenCalledTimes(1);
+        coord.rejoinLostInputs('srt-input-a'); // as a consumer it has no inputs here
+        await tick();
+        expect(rejoin).toHaveBeenCalledTimes(1);
+    });
+});

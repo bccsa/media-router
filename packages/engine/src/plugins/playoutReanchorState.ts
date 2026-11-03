@@ -125,6 +125,11 @@ export class PlayoutReanchorState {
     reassert(): void {
         if (this.leg?.kind === 'rebase') this.leg = null;
         this.head = { ...this.head, rebase: null };
+        this.show();
+    }
+
+    /** Show the standing state again, nothing dropped (another warning of the module withdrew). */
+    show(): void {
         if (this.leg) this.setLeg(this.leg.kind, this.leg.text, this.leg.status);
         else this.renderHead();
     }

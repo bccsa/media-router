@@ -2,6 +2,7 @@ import {
     GstPluginBase,
     INGEST_OFFSET_KEY,
     IngestTimingReporter,
+    PIPEWIRE_CAPTURE_STALL_MS,
     PIPEWIRE_SRC_MIN_BUFFERS,
     applyIngestTimingLiveUpdate,
     asrcBusReports,
@@ -71,12 +72,20 @@ import {
  *
  * - Volume/mute: gst `volume` element. VU: in-pipeline `level`.
  * - Device hot-plug: base-class watchdog stops/starts the pipeline.
+ * - A lost PipeWire stream (B-195): `pipewiresrc` posts nothing when PipeWire restarts under it,
+ *   so the watchdog rebuilds when the daemon changed, `capture` failed or no audio came for
+ *   `PIPEWIRE_CAPTURE_STALL_MS`: the unplug path, with a warning naming the cause.
  * - NEVER a default device: unconfigured = health error, no pipeline.
  */
+
+/** The `pipewiresrc`: the module's PipeWire stream. */
+const CAPTURE = 'capture';
 
 export class AudioInput302mModule extends GstPluginBase {
     /** O is the restamp's live property (§5.5); a capture has no per-PID trim (OQ-15). */
     protected liveUpdatableParams = ['volume', 'audioEnabled', INGEST_OFFSET_KEY];
+    /** `level` reads the capture: no buffers this long while PLAYING is a dead stream (B-195). */
+    protected readonly captureStallMs = PIPEWIRE_CAPTURE_STALL_MS;
 
     /** The ASRC's and the restamp's card: the Clock section and part 10's warnings. */
     private readonly ingestTiming = new IngestTimingReporter(this.ingestTimingHost(), {
@@ -85,6 +94,8 @@ export class AudioInput302mModule extends GstPluginBase {
     /** The reporter's warning text, so its clear never takes another warning down. */
     private clockWarning: string | null = null;
     private deviceName = '';
+    /** The device's channel count, read before each start: `buildPipeline` cannot wait (B-200). */
+    private deviceChannels: number | null = null;
     /** Device links for the pipeline `buildPipeline` last described; null = none to make. */
     private linkPlan: StreamLinkSpec | null = null;
     private linkWarning = false;
@@ -106,7 +117,7 @@ export class AudioInput302mModule extends GstPluginBase {
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -114,6 +125,7 @@ export class AudioInput302mModule extends GstPluginBase {
             this.startDeviceWatchdog(false);
             return;
         }
+        await this.readDeviceChannels();
         // Link WHILE the pipeline starts, not after: pipewiresrc finishes
         // negotiating only once its stream is linked and running, so a link
         // made after start would wait on the start that waits on the link.
@@ -148,10 +160,16 @@ export class AudioInput302mModule extends GstPluginBase {
     }
 
     protected async onDeviceReconnected(): Promise<void> {
+        await this.readDeviceChannels();
         const started = super.onStart();
         void this.linker.ensure();
         await started;
         this.ingestTiming.start();
+    }
+
+    private async readDeviceChannels(): Promise<void> {
+        const info = await this.services?.pipeWire?.getDeviceInfo(this.deviceName);
+        this.deviceChannels = info?.channels ?? null;
     }
 
     /** Every PLAYING — including a runner-internal restart, which re-creates
@@ -204,7 +222,7 @@ export class AudioInput302mModule extends GstPluginBase {
         const mono = requested === 1;
         const channels = normalize302mChannels(requested);
         const firstChannel = Math.max(1, Math.trunc(Number(config.firstChannel ?? 1)) || 1);
-        const deviceChannels = this.services?.pipeWire?.getDeviceInfo(device)?.channels ?? null;
+        const deviceChannels = this.deviceChannels;
 
         const capture = this.buildCapture({
             device,
@@ -251,6 +269,10 @@ export class AudioInput302mModule extends GstPluginBase {
         return {
             pipeline,
             restartOnError: true,
+            // An audio-only bus producer: its drain timed out (6 s) at every stop on SWA01,
+            // and a rebuild after a lost stream would wait it out too (B-195).
+            eosDrain: false,
+            pipeWireElements: [CAPTURE],
             busReports: [...restampBusReports(), ...asrcBusReports()],
         };
     }
@@ -305,7 +327,7 @@ export class AudioInput302mModule extends GstPluginBase {
         // `node.autoconnect=false`: WirePlumber must not link this stream (it
         // would take the first N device ports by position); the engine does.
         const src =
-            `pipewiresrc target-object=${device} min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}` +
+            `pipewiresrc name=${CAPTURE} target-object=${device} min-buffers=${PIPEWIRE_SRC_MIN_BUFFERS}` +
             ` ${pipewireStreamProps({
                 'node.latency': `${quantum}/48000`,
                 'node.name': this.pwNodeName,

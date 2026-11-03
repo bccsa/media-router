@@ -2,7 +2,13 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:net';
 import { unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { unixFdSrcSocketPaths, probeUnixSocket, waitForBusSockets } from './busSocketGate.js';
+import {
+    unixFdSrcSocketPaths,
+    probeUnixSocket,
+    waitForBusSockets,
+    waitForLiveInputs,
+} from './busSocketGate.js';
+import type { LiveInputBranch } from '../plugins/PluginModule.js';
 
 const paths: string[] = [];
 const servers: Server[] = [];
@@ -138,5 +144,81 @@ describe('waitForBusSockets', () => {
             onProgress: (x) => pending.push(x),
         });
         expect(pending[0]).toEqual([down]);
+    });
+});
+
+describe('waitForLiveInputs — an aggregator starts with the inputs that are there (B-192)', () => {
+    const MIXER = 'audiomixer name=mixin ! capsfilter name=mixin_out ! fakesink';
+    const input = (n: number, sock: string): LiveInputBranch => ({
+        element: 'mixin',
+        name: `mixin_in_${n}`,
+        description: `unixfdsrc socket-path=${sock} ! queue ! mralignwatch name=aw${n}`,
+    });
+    /** Gives up the wait after `ms` (an input that never comes). */
+    const until = (ms: number) => {
+        let over = false;
+        setTimeout(() => (over = true), ms);
+        return () => over;
+    };
+
+    it('launches with the one input there, linked on the first pad, and names the others absent', async () => {
+        const [a, b, c, d] = [scratchPath(), scratchPath(), scratchPath(), scratchPath()];
+        await listen(c);
+        const inputs = [input(0, a), input(1, b), input(2, c), input(3, d)];
+        const gate = await waitForLiveInputs(
+            { pipeline: MIXER, liveInputs: inputs, eosDrain: false },
+            { shouldAbort: until(3000) },
+        );
+        expect(gate).not.toBeNull();
+        expect(gate!.launch.pipeline).toBe(
+            `${MIXER} ( name=mixin_in_2 ${inputs[2].description} ) ! mixin.sink_0`,
+        );
+        expect(gate!.absent).toEqual(['mixin_in_0', 'mixin_in_1', 'mixin_in_3']);
+        // The runner gets a plain start: the field is the host's alone, the rest goes through.
+        expect(gate!.launch).not.toHaveProperty('liveInputs');
+        expect(gate!.launch.eosDrain).toBe(false);
+    });
+
+    it('every input there: all linked, in order, on consecutive pads', async () => {
+        const [a, b] = [scratchPath(), scratchPath()];
+        await listen(a);
+        await listen(b);
+        const inputs = [input(0, a), input(1, b)];
+        const gate = await waitForLiveInputs({ pipeline: MIXER, liveInputs: inputs });
+        expect(gate!.launch.pipeline).toBe(
+            `${MIXER} ( name=mixin_in_0 ${inputs[0].description} ) ! mixin.sink_0` +
+                ` ( name=mixin_in_1 ${inputs[1].description} ) ! mixin.sink_1`,
+        );
+        expect(gate!.absent).toEqual([]);
+    });
+
+    it('waits while none is there, naming every input, and opens on the first that comes', async () => {
+        const [a, b] = [scratchPath(), scratchPath()];
+        const pending: string[][] = [];
+        setTimeout(() => void listen(b), 300);
+        const gate = await waitForLiveInputs(
+            { pipeline: MIXER, liveInputs: [input(0, a), input(1, b)] },
+            { shouldAbort: until(3000), onProgress: (p) => pending.push(p) },
+        );
+        expect(pending[0]).toEqual([a, b]);
+        expect(gate!.absent).toEqual(['mixin_in_0']);
+        expect(gate!.launch.pipeline).toContain(`( name=mixin_in_1 `);
+    });
+
+    it("still waits for every socket of the pipeline's own, and for all of an input's", async () => {
+        const [own, a1, a2] = [scratchPath(), scratchPath(), scratchPath()];
+        await listen(a1);
+        const two: LiveInputBranch = {
+            element: 'mixin',
+            name: 'mixin_in_0',
+            description: `unixfdsrc socket-path=${a1} ! q. unixfdsrc socket-path=${a2} ! q.`,
+        };
+        const pending: string[][] = [];
+        const gate = await waitForLiveInputs(
+            { pipeline: `unixfdsrc socket-path=${own} ! ${MIXER}`, liveInputs: [two] },
+            { shouldAbort: until(600), onProgress: (p) => pending.push(p) },
+        );
+        expect(gate).toBeNull();
+        expect(pending[0]).toEqual([own, a2]);
     });
 });

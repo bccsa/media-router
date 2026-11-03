@@ -10,7 +10,8 @@ import {
 import { probe302mSupport, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
 import { buildPipeline } from './audioTranscoderPipeline.js';
 import { CoalescedRestart } from './coalescedRestart.js';
-import { FALLBACK_DECODER_WARNING, ReprobeLoop } from './reprobeLoop.js';
+import { degradedText, ProbeReport } from './probeReport.js';
+import { ReprobeLoop } from './reprobeLoop.js';
 import {
     INPUT_PORT_ID,
     buildDynamicPorts,
@@ -21,6 +22,8 @@ import {
     type DynamicPort,
     type Rendition,
 } from './audioTranscoderPorts.js';
+
+const NO_INPUT_WARNING = 'No input connected — wire an audio source to Audio In';
 
 /**
  * Audio Transcoder plugin (decode-once → N renditions).
@@ -80,12 +83,22 @@ export class AudioTranscoderModule extends GstPluginBase {
         publish: (total, perSink) => this.publishThroughput(total, perSink),
     });
 
+    /** Each probe's result, logged once per change and naming modules (B-201). */
+    private readonly probeReport = new ProbeReport({
+        log: () => this.log,
+        name: (id) => this.moduleName(id),
+        self: () => this.services?.instanceId ?? '',
+    });
+
     /** Self-heal for a start-time probe that saw nothing — see `reprobeLoop.ts`. */
     private readonly reprobe = new ReprobeLoop({
         probe: () => this.probeInput(),
-        degraded: () => this.setHealth('warning', FALLBACK_DECODER_WARNING),
+        degraded: (result) => {
+            this.noteProbe(result);
+            this.setHealth('warning', this.degradedHealth(result));
+        },
         restart: (result) => {
-            this.log.info({ codec: result.codec }, 'Source identified — rebuilding decoder chain');
+            this.noteProbe(result);
             return this.restartPipeline();
         },
     });
@@ -125,7 +138,7 @@ export class AudioTranscoderModule extends GstPluginBase {
         // chain depends on it). Always probed — even a 302M-declared source —
         // to keep one uniform flow; the probe detects s302m like any codec.
         this.probeResult = await this.probeInput();
-        if (this.probeResult) this.log.info({ codec: this.probeResult.codec }, 'Stream probe');
+        this.noteProbe(this.probeResult);
         await super.onStart();
         this.throughput.start();
         // A probe that saw nothing (upstream not producing yet) built the
@@ -172,7 +185,7 @@ export class AudioTranscoderModule extends GstPluginBase {
 
         const source = this.inputSource();
         if (!source) {
-            this.setHealth('warning', 'No input connected — wire an audio source to Audio In');
+            this.setHealth('warning', NO_INPUT_WARNING);
             return null;
         }
 
@@ -224,8 +237,8 @@ export class AudioTranscoderModule extends GstPluginBase {
         if (!this.probeResult || this.probeResult.codec === 'unknown') {
             // Probe saw no audio (source still starting?) — the decodebin
             // fallback is degraded, and `reprobe` keeps re-probing until the
-            // source identifies itself. Surface it instead of a silent 'ok'.
-            this.setHealth('warning', FALLBACK_DECODER_WARNING);
+            // source identifies itself. Say what it waits for, not a silent 'ok'.
+            this.setHealth('warning', this.degradedHealth(this.probeResult));
         } else {
             this.setHealth('ok');
         }
@@ -246,9 +259,28 @@ export class AudioTranscoderModule extends GstPluginBase {
         return source ? this.probeStream(source.port, source.socketPath) : Promise.resolve(null);
     }
 
+    /** Log a probe's result if it changed (B-201); nothing wired, nothing to say. */
+    private noteProbe(result: ProbeResult | null): void {
+        const source = this.inputSource();
+        if (result && source) this.probeReport.note(result, source);
+    }
+
+    /** The fallback build's status: what it waits for, its producer named. */
+    private degradedHealth(result: ProbeResult | null): string {
+        const source = this.inputSource();
+        return source
+            ? degradedText(result, this.moduleName(source.sourceModuleId))
+            : NO_INPUT_WARNING;
+    }
+
+    /** A module's display name (its id when it has none). */
+    private moduleName(id: string): string {
+        return this.services?.mediaRouter?.moduleName?.(id) ?? id;
+    }
+
     /** True while the running build is the degraded decodebin fallback: a wired
      *  source whose codec the probe could not identify. Mirrors the
-     *  `buildPipeline` branch that raises `FALLBACK_DECODER_WARNING`. */
+     *  `buildPipeline` branch that raises the degraded warning. */
     private usingFallbackDecoder(): boolean {
         return !!this.inputSource() && (!this.probeResult || this.probeResult.codec === 'unknown');
     }

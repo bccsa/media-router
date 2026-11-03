@@ -732,20 +732,21 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         });
 
         it('copies PES and PCR untouched and stamps each output by identity', async () => {
-            // On this box's house time, 30 s ahead: no arrival stamp can then hold an
-            // identity stamp at the floor, so every timing PES is checked exactly.
-            const input = rebaseToHouse(readFileSync(OCC), 30_000_000_000n);
-            const inFile = join(dir, 'occ-in.ts');
-            writeFileSync(inFile, input);
-            const ref = refSplit(inFile, OCC_OUTS);
+            // 6 s ahead of house time as the stream starts: no arrival stamp holds an identity stamp
+            // at the floor, none is past the guard's 10 s (B-203); a constant shift changes no byte
+            // count, so the capture lengths come from the fixture as it is.
+            const lengths = refSplit(OCC, OCC_OUTS);
             const r = await rig([], OCC_OUTS);
             for (const pid of OCC_OUTS) await r.attach(pid);
             const caps = await Promise.all(
                 OCC_OUTS.map((pid) =>
-                    r.captureClient(pid, join(dir, `occ-${pid}.ts`), ref[pid].length),
+                    r.captureClient(pid, join(dir, `occ-${pid}.ts`), lengths[pid].length),
                 ),
             );
             const per = await Promise.all(OCC_OUTS.map((pid) => r.bufferClient(pid)));
+            const input = rebaseToHouse(readFileSync(OCC), 6_000_000_000n);
+            const inFile = join(dir, 'occ-in.ts');
+            writeFileSync(inFile, input);
             const t0 = process.hrtime.bigint();
             // About a third of real time, so the 20 ms coalescing gives each output its
             // own cadence of buffers (unpaced, a sparse output gets two in all).
@@ -754,7 +755,10 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
             await waitFor(done, 'all buffers released', 60000);
             const verdicts = await Promise.all(caps.map((c) => r.verdictOf(c)));
             const t1 = process.hrtime.bigint();
+            const ref = refSplit(inFile, OCC_OUTS);
+            for (const pid of OCC_OUTS) expect(ref[pid].length).toBe(lengths[pid].length);
             expect(shedCount(r.events), SHED_MSG).toBe(0);
+            expect(r.events.filter((e) => e.channel === 'stamp_off_clock')).toEqual([]);
             const outs = OCC_OUTS.map((pid) => readFileSync(join(dir, `occ-${pid}.ts`)));
             verdicts.forEach((v, i) =>
                 expect(v.sha256, `0x${OCC_OUTS[i].toString(16)} vs the python core`).toBe(
@@ -847,6 +851,59 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
                 expect(e.stats).not.toHaveProperty('timeline');
             }
             for (const pid of OCC_OUTS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
+        }, 120_000);
+
+        it('a PES 4.37 h off the house clock times nothing on its output, which says so once (B-203)', async () => {
+            // MR-033's: one video PES on the PTS from before a 79,700.8 s outage, read nearest now
+            // one 2^33 wrap on. Before the guard it became the video output's floor and every
+            // stamp after it froze 4 h 22 min ahead; audio, the other output, never saw it.
+            const pids = [OCC_PCR_PID, 0xc9];
+            const lengths = refSplit(OCC, pids);
+            const r = await rig([], pids);
+            for (const pid of pids) await r.attach(pid);
+            const per = await Promise.all(pids.map((pid) => r.bufferClient(pid)));
+            const input = rebaseToHouse(readFileSync(OCC), 2_000_000_000n);
+            const video = packetsOf(input, OCC_PCR_PID).filter((p) => pesHeader(p) !== undefined);
+            const bad = video[Math.floor(video.length / 2)];
+            const h = pesHeader(bad)!;
+            const AHEAD = 1_416_859_470n;   // 15,742.883 s in 90 kHz ticks
+            for (let i = 0; i < h.fields; i++) {
+                writeTs(bad, h.at + 5 * i, floorMod(readTs(bad, h.at + 5 * i) + AHEAD, PTS_WRAP));
+            }
+            const inFile = join(dir, 'occ-off.ts');
+            writeFileSync(inFile, input);
+            const srv = server(r.inputSock, inFile, '--hold', '--pace-us', '1000');
+            await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'all buffers released', 60000);
+            const ref = refSplit(inFile, pids);
+            const wires = await Promise.all(
+                pids.map(async (pid, i) =>
+                    withBytes(await r.buffersOf(per[i], lengths[pid].length), ref[pid]),
+                ),
+            );
+            const t1 = process.hrtime.bigint();
+            per.forEach((c) => c.kill('SIGKILL'));
+            // No stamp ahead of the house clock by the stray PES's 4.37 h, nor by 10 s.
+            for (const w of wires) {
+                const top = w.reduce((m, b) => (b.pts > m ? b.pts : m), 0n);
+                expect(top < t1 + 10_000_000_000n, `the top stamp ${top} vs ${t1}`).toBe(true);
+            }
+            // The video output's last timing buffer is stamped by its PES again (a B-frame's held at
+            // its floor, within a frame or two): no frozen floor.
+            const now = process.hrtime.bigint();
+            const lastTimed = [...wires[0]]
+                .reverse()
+                .find((b) => packetsOf(b.bytes).some((p) => pesPts(p) !== undefined));
+            const pts = packetsOf(lastTimed!.bytes).map(pesPts).find((v) => v !== undefined)!;
+            const off_by = lastTimed!.pts - houseFromMuxPts(pts, now);
+            expect(off_by >= 0n && off_by < 2_000_000_000n, `last video stamp off its PES by ${off_by}`).toBe(true);
+            // One stamp_off_clock event, for the video output alone.
+            const off = r.events.filter((e) => e.channel === 'stamp_off_clock');
+            expect(off).toHaveLength(1);
+            const payload = off[0].payload as { tee: string; pid: number; offsetMs: number; count: number };
+            expect(payload).toMatchObject({ tee: `busout_${OCC_PCR_PID}`, pid: OCC_PCR_PID, count: 1 });
+            expect(payload.offsetMs).toBeGreaterThan(15_735_000);
+            expect(payload.offsetMs).toBeLessThan(15_750_000);
+            for (const pid of pids) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
         }, 120_000);
 
         it('forwards a gap marker alone on its output, with its own PTS and flags', async () => {

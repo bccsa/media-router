@@ -251,8 +251,21 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('decodebin');
+        // No audio at all: no source, the producer named (B-201), and the self-heal's
+        // cadence, not a manual restart.
+        expect(setHealth).toHaveBeenCalledWith(
+            'warning',
+            'No source — waiting for audio from src-0 (checked every 10 s)',
+        );
+        expect(setHealth).not.toHaveBeenCalledWith('ok');
+    });
+
+    it('audio caps no classifier knows keep the generic-decoder warning', () => {
+        const { module, setHealth } = makeModule({});
+        module.probeResult = { codec: 'unknown', rawCaps: 'audio/x-odd' };
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
+        expect(desc!.pipeline).toContain('decodebin');
         expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('codec unknown'));
-        // The warning names the self-heal, not a manual restart.
         expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('re-probing'));
         expect(setHealth).not.toHaveBeenCalledWith('ok');
     });
@@ -320,7 +333,7 @@ describe('AudioTranscoderModule re-probe self-heal', () => {
         module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         expect(module.setHealth).toHaveBeenCalledWith(
             'warning',
-            expect.stringContaining('re-probing every 10s'),
+            expect.stringContaining('checked every 10 s'),
         );
     });
 
@@ -341,7 +354,7 @@ describe('AudioTranscoderModule re-probe self-heal', () => {
         expect(module.probeCalls).toBe(3); // start + 2 ticks
         expect(setHealth).toHaveBeenCalledWith(
             'warning',
-            expect.stringContaining('Source codec unknown'),
+            expect.stringContaining('No source — waiting for audio from src-0'),
         );
         expect(setHealth).toHaveBeenCalledTimes(2);
         expect(superStart).toHaveBeenCalledTimes(1);

@@ -98,7 +98,10 @@ export interface ModuleServices extends EngineServices {
  * Interface that every plugin's engine module must implement.
  */
 export interface PluginModule {
-    /** Initialise with config and engine services. Called once before start. */
+    /**
+     * Initialise with config and engine services. Called before the first start, and again before a
+     * start with a setting change pending a restart (B-191): allocate nothing a second call leaks.
+     */
     onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void>;
     /** Start the module (begin processing). */
     onStart(): Promise<void>;
@@ -182,6 +185,12 @@ export interface PluginModule {
     getLiveInputBranch?(sinkPortId: string, connectionId: string): LiveInputBranch | null;
     /** A live input branch that was dropped (dead producer) is back. */
     noteLiveInputRestored?(branchName: string): void;
+    /** A live add waits for its producer's edge socket: the pipeline runs without the branch
+     *  until it joins (B-194). */
+    noteLiveInputAbsent?(branchName: string): void;
+    /** The pipeline runs without this live input branch: dropped (dead producer), or left out
+     *  at launch (`liveInputs`). The engine adds it when its producer plays (B-192). */
+    isLiveInputLost?(branchName: string): boolean;
     /**
      * Channel count of the audio stream this module emits on a bus OUTPUT
      * port, for producers whose width is a runtime choice. `MediaRouter`
@@ -267,10 +276,18 @@ export interface PipelineDescription {
      *  stateless video decoders; a force-live audio aggregator never completes
      *  it, so audio-only bus producers set false. Never on a video decoder. */
     eosDrain?: boolean;
+    /** Elements that hold this module's PipeWire stream (B-195): an error from one is a lost
+     *  stream (`pipewire_lost`), which the runner does not restart; the module's device watchdog
+     *  rebuilds it once PipeWire and the device are back. */
+    pipeWireElements?: string[];
     /** Bin names of the live input branches in `pipeline` (filled by
      *  GstPluginBase from `getLiveInputBranch`). An error inside one drops
      *  that branch (`input_branch_lost`) instead of failing the pipeline. */
     liveInputBranches?: string[];
+    /** An aggregator's input branches apart from `pipeline` (B-192, ADR-0010 rule 5): the runner
+     *  launches with the ones whose sockets accept, the engine adds the others as their producers
+     *  play. Name each in `getLiveInputBranch` too (the live verbs and the containment use it). */
+    liveInputs?: LiveInputBranch[];
     /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a

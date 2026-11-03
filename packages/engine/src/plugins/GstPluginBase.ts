@@ -8,12 +8,14 @@ import type {
 } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
+import { PIPEWIRE_LOST_KIND } from '../child-process/GstRunner.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { QUEUE_SHED_EVENT } from './tsHelpers.js';
+import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
 import {
     DEFAULT_PLAYOUT_OFFSET_MS,
     PLAYOUT_OFFSET_KEY,
@@ -31,9 +33,9 @@ import type { DemuxInputRef } from './demuxWatches.js';
 import type { StreamWarning } from './latenessReporter.js';
 import { timingPluginAlarm, type TimingPluginEvent } from './timingPluginAlarm.js';
 
-/** Runner `error` kinds that mean "reconnecting to upstream", not a fault of
- *  this module: health stays a warning through the restart that follows. */
-const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted']);
+/** Runner `error` kinds that are not a fault of this module: a reconnect to upstream keeps its
+ *  warning through the restart that follows; a lost PipeWire stream, the watchdog's (B-195). */
+const RECONNECT_ERROR_KINDS = new Set(['bus_producer_restarted', PIPEWIRE_LOST_KIND]);
 /** The runner's `error` event; `detail` comes with kind `timing_plugin` (plan ch. 3 rule 6). */
 type RunnerError = { message: string; kind?: string; detail?: string };
 /** The transient warnings a module writes and later withdraws itself. */
@@ -47,6 +49,9 @@ type OwnedWarning =
     | 'timing-plugin'
     | 'input-absent'
     | 'aligner-full'
+    | 'plays-nothing'
+    | 'input-reanchored'
+    | 'off-clock'
     | StreamWarning['kind'];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
@@ -54,18 +59,22 @@ import {
     annotateLiveInputBranches,
     describeLiveInputBranch,
     LostInputs,
+    wiredLiveInputBranches,
 } from './liveInputBranches.js';
 
 const defaultLog = createLogger('GstPluginBase');
 
-/** The timing display's warnings (WI-P2-13, WI-P3-6): one health text, owned by the module. */
+/** The timing display's warnings (WI-P2-13, WI-P3-6, B-203, B-205): one health text, owned by
+ *  the module. */
 const TIMING_WARNINGS: ReadonlySet<OwnedWarning> = new Set<OwnedWarning>([
     'input-absent',
     'aligner-full',
+    'input-reanchored',
     'demux-unknown-stream',
     'input-not-house-time',
     'input-no-stream',
     'asrc-out-of-bounds',
+    'off-clock',
 ]);
 
 /**
@@ -92,6 +101,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.log.warn({ gapMs }, 'VU meter stalled: no level messages from the pipeline'),
         onResume: (gapMs) => this.log.info({ gapMs }, 'VU meter resumed'),
     });
+    /** A PLAYING capture with no audio buffers for this long is a dead PipeWire stream (B-195);
+     *  set by modules whose `level` reads their capture. A silent input still delivers buffers. */
+    protected readonly captureStallMs: number | null = null;
+    private captureStall: VuStallWatch | null = null;
     /** PulseAudio module ID for the null-sink created on start. */
     protected paModuleId: number | null = null;
     /** Per-instance logger — initialized in onInit with the instance ID. */
@@ -104,7 +117,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.services?.instanceId
                 ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
                 : [],
-        alignerWarnings: (absent, full) => this.onAlignerWarnings(absent, full),
+        alignerWarnings: (absent, full, reanchored) =>
+            this.onAlignerWarnings(absent, full, reanchored),
+        offClock: (text) => this.onOffClock(text),
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
         alignerInput: (watch) => this.alignerInputOf(watch),
@@ -148,7 +163,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         this.config = config;
         this.services = services ?? null;
-        if (services?.instanceId) {
+        // Once per instance: a logger pipes a stream into stderr for good, and a restart that
+        // applies changed settings runs onInit again (B-191).
+        if (services?.instanceId && this.log === defaultLog) {
             this.log = createLogger(`Plugin:${services.instanceId}`);
         }
     }
@@ -190,6 +207,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.applyTimeSync(desc);
         this.annotateLiveInputBranches(desc);
         await this.childProcess.updatePipelineDesc(desc);
+        // An input unwired while lost takes its warning with it.
+        this.lostInputs.retain(
+            new Set(wiredLiveInputBranches(this as PluginModule, this.services)),
+        );
         this.reassertLostInputs();
         this.timing.reassertWarnings();
         return true;
@@ -199,7 +220,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         annotateLiveInputBranches(this as PluginModule, this.services, desc);
     }
 
-    /** Live input branches dropped by the runner and not yet back. */
+    /** Live input branches the pipeline runs without (dropped, or left out at launch). */
     private readonly lostInputs = new LostInputs();
 
     /** The engine re-added a dropped branch (producer back): narrow or clear the warning. */
@@ -209,10 +230,62 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         else this.clearOwnWarning('input-lost');
     }
 
+    isLiveInputLost(branchName: string): boolean {
+        return this.lostInputs.has(branchName);
+    }
+
+    /** A live add waits for its producer (B-194): the pipeline runs without this branch. */
+    noteLiveInputAbsent(branchName: string): void {
+        this.lostInputs.lose(
+            branchName,
+            describeLiveInputBranch(this as PluginModule, this.services, branchName),
+            'not-running',
+        );
+        this.showLostInputs();
+    }
+
+    /** A sink that plays nothing (B-197): over ok or this module's own transient text, never
+     *  over an error or another writer's warning (ADR-0010 rule 2); null withdraws it and puts
+     *  back what it stood over, in PLAYING's order: lost inputs, re-anchor, aligners. */
+    protected setPlaysNothing(text: string | null): void {
+        if (text === null) {
+            this.clearOwnWarning('plays-nothing');
+            this.showLostInputs();
+            this.playout.show();
+            this.timing.reassertWarnings();
+            return;
+        }
+        if (this.health === 'error') return;
+        if (this.health === 'warning' && this.ownedWarning === null) return;
+        this.ownWarning('plays-nothing', text);
+    }
+
     /** `buildPipeline` ends in setHealth('ok') on most modules — put the
      *  lost-input warning back after any refresh while inputs are missing. */
     private reassertLostInputs(): void {
         if (this.lostInputs.size) this.ownWarning('input-lost', this.lostInputs.warning());
+        else this.clearOwnWarning('input-lost');
+    }
+
+    /** The lost-input warning over ok or its own text, so an alarm or an error stands. */
+    private showLostInputs(): void {
+        if (!this.lostInputs.size) this.clearOwnWarning('input-lost');
+        else if (this.health === 'ok' || this.ownedWarning === 'input-lost') {
+            this.ownWarning('input-lost', this.lostInputs.warning());
+        }
+    }
+
+    /** The runner launched without these live inputs (`liveInputs`, B-192): they and nothing
+     *  else are what this run goes without until each joins. Empty at a plain launch. */
+    private launchedWithout(names: string[]): void {
+        this.lostInputs.clear();
+        for (const name of names) {
+            this.lostInputs.lose(
+                name,
+                describeLiveInputBranch(this as PluginModule, this.services, name),
+                'not-running',
+            );
+        }
     }
 
     /** Prepare a description for the house clock. Both runners put EVERY pipeline on a monotonic
@@ -250,6 +323,20 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             }
         }
 
+        // A fresh pipeline has dropped nothing yet.
+        this.lostInputs.clear();
+        if (this.captureStallMs !== null && !this.captureStall) {
+            this.captureStall = new VuStallWatch(
+                {
+                    onStall: (gapMs) =>
+                        this.losePipeWireStream(
+                            `No audio from the capture for ${Math.round(gapMs / 1000)} s`,
+                        ),
+                    onResume: () => {},
+                },
+                this.captureStallMs,
+            );
+        }
         const desc = this.buildPipeline(this.config);
         this.timing.start(desc);
 
@@ -266,10 +353,17 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.childProcess = new GstChildProcess();
 
         this.childProcess.on('stateChange', (data: { state: string; kind?: string }) => {
+            if (data.state !== 'playing') this.captureStall?.reset();
             if (data.state === 'playing') {
                 this.running = true;
                 this.ready = true;
                 this.markHealthy();
+                // The streams of this run are on the PipeWire daemon that runs now, and a
+                // capture owes its first reading from here (B-195).
+                void this.deviceWatchdog?.adopt();
+                this.captureStall?.tick();
+                // A launch without some live inputs plays on without them: say so again.
+                this.showLostInputs();
                 // Re-attach this producer's per-consumer bus fan-out branches:
                 // a runner-internal respawn rebuilds the pipeline from the base
                 // string with the egress tee but NO branches, so without this a
@@ -301,6 +395,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.childProcess.on('vuData', (data: { peak: number[] }) => {
             this.setVuData(data.peak);
             this.vuStall.tick();
+            this.captureStall?.tick();
         });
 
         // Generic pipeline→plugin data channel. Delivered to the subclass hook
@@ -311,6 +406,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         });
 
         this.childProcess.on('error', (data: RunnerError) => {
+            if (data.kind === PIPEWIRE_LOST_KIND) {
+                this.losePipeWireStream(`PipeWire stream failed (${data.message})`);
+                return;
+            }
             if (RECONNECT_ERROR_KINDS.has(data.kind ?? '')) {
                 // A wait on upstream (the producer restarted under us), not a
                 // fault of this module; cleared by the PLAYING that follows.
@@ -359,9 +458,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // health warning naming the modules we are waiting on — otherwise a
         // gated module reports 'ok' forever while nothing runs (e.g. a
         // consumer whose producer is disabled). Cleared when the gate opens
-        // (pending: []) and superseded by the 'playing' health flip.
-        this.childProcess.on('busGate', (data: { pending: string[] }) => {
-            this.handleBusGate(data.pending);
+        // (pending: [], with the live inputs the launch goes without) and
+        // superseded by the 'playing' health flip.
+        this.childProcess.on('busGate', (data: { pending: string[]; absent?: string[] }) => {
+            this.handleBusGate(data.pending, data.absent);
         });
 
         await this.childProcess.start(desc);
@@ -445,16 +545,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.health !== 'error') this.ownWarning('timing-plugin', this.timingPluginAlarm);
     }
 
-    /** The timing display's warnings as last reported: the aligners', the demuxes' and ASRCs'. */
+    /** The timing display's warnings as last reported: the aligners', the demuxes' and ASRCs',
+     *  and an output's off the house clock. */
     private readonly timingWarnings = {
         absent: null as string | null,
         full: null as string | null,
+        reanchored: null as string | null,
         stream: [] as StreamWarning[],
+        offClock: null as string | null,
     };
 
-    private onAlignerWarnings(absent: string | null, full: string | null): void {
+    private onAlignerWarnings(
+        absent: string | null,
+        full: string | null,
+        reanchored: string | null,
+    ): void {
         this.timingWarnings.absent = absent;
         this.timingWarnings.full = full;
+        this.timingWarnings.reanchored = reanchored;
         this.showTimingWarnings();
     }
 
@@ -463,15 +571,25 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.showTimingWarnings();
     }
 
-    /** The aligners' (WI-P2-13), demuxes' and ASRCs' (WI-P3-6) warnings as one health text owned
-     *  by its first: only over ok or our own text (ADR-0010 rule 2), never over a stopped or failed
-     *  module, so another writer's stands until the next tick; withdrawn when none stands. */
+    /** An output off the house clock (B-203): a warning while it lasts. */
+    private onOffClock(text: string | null): void {
+        this.timingWarnings.offClock = text;
+        this.showTimingWarnings();
+    }
+
+    /** The aligners' (WI-P2-13, B-205), demuxes', ASRCs' (WI-P3-6) and off-clock (B-203) warnings
+     *  as one health text owned by its first: only over ok or our own (ADR-0010 rule 2), never over
+     *  a stopped or failed module, so another writer's stands until it clears; none: withdrawn. */
     private showTimingWarnings(): void {
-        const { absent, full, stream } = this.timingWarnings;
+        const { absent, full, reanchored, stream, offClock } = this.timingWarnings;
         const parts: Array<{ kind: OwnedWarning; text: string }> = [
             ...(absent !== null ? [{ kind: 'input-absent' as const, text: absent }] : []),
             ...(full !== null ? [{ kind: 'aligner-full' as const, text: full }] : []),
+            ...(reanchored !== null
+                ? [{ kind: 'input-reanchored' as const, text: reanchored }]
+                : []),
             ...stream,
+            ...(offClock !== null ? [{ kind: 'off-clock' as const, text: offClock }] : []),
         ];
         const text = parts.map((p) => p.text).join('; ');
         const owned = this.ownedWarning;
@@ -505,7 +623,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * /tmp/mr-bus-41000-<connid>.sock` told an operator nothing about which
      * upstream module was late, which is the one thing they need to fix it.
      */
-    private handleBusGate(pending: string[]): void {
+    private handleBusGate(pending: string[], absent?: string[]): void {
         if (pending.length > 0) {
             const waitingOn = this.describePendingProducers(pending);
             this.setStatusData('bus', { 'Waiting for producer': waitingOn.join(', ') });
@@ -517,32 +635,31 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // now, and flipping it to 'ok' here hid a real failure behind an
             // unrelated gate opening.
             this.clearOwnWarning('gate');
+            // Only the gate's opening names them; a data wait's clearing shows them again.
+            if (absent) this.launchedWithout(absent);
+            this.showLostInputs();
         }
     }
 
-    /**
-     * Translate pending edge socket paths into `<sourceModuleId> (<sinkPortId>)`.
-     *
-     * Both ends derive the same path from (channel port, connection id) via
-     * `busEdgeSocketPath`, so the routing layer's view of this module's bus
-     * inputs matches what the runner is gating on. A path with no matching
-     * connection (a stale gate report mid-reconnect) falls back to the raw
-     * path rather than being dropped — an unexplained wait is worse than an
-     * ugly one.
-     */
+    /** Pending edge socket paths as the upstream modules' display names: through the applied
+     *  connections (both ends derive a path from channel port and connection id), else, for a
+     *  stale replay's input since unwired, the module that holds or held its port (B-194). */
     private describePendingProducers(pending: string[]): string[] {
+        const router = this.services?.mediaRouter;
         const sources = this.services?.instanceId
-            ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
+            ? (router?.getModuleBusSources(this.services.instanceId) ?? [])
             : [];
-        const byPath = new Map(sources.map((s) => [s.socketPath, s]));
-        return pending.map((p) => {
-            const src = byPath.get(p);
-            return src ? `${src.sourceModuleId} (${src.sinkPortId})` : p;
+        const byPath = new Map(sources.map((s) => [s.socketPath, s.sourceModuleId]));
+        const names = pending.map((p) => {
+            const id = byPath.get(p) ?? router?.busSocketProducer?.(p);
+            return id === undefined ? 'unknown module' : (router?.moduleName?.(id) ?? id);
         });
+        return [...new Set(names)];
     }
 
     async onStop(): Promise<void> {
         this.vuStall.reset();
+        this.captureStall?.reset();
         if (this.vuProcess) {
             await this.vuProcess.destroy();
             this.vuProcess = null;
@@ -563,6 +680,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     async onDestroy(): Promise<void> {
         this.vuStall.reset();
+        this.captureStall?.reset();
         // Ensure subclass cleanup (PipeWire null-sinks, VU loopbacks, etc.) runs
         // Each step is guarded so a failure doesn't prevent subsequent cleanup
         if (this.running) {
@@ -793,7 +911,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * audio-decoder, any future presentation leg — see backlogShed.ts), so its
      * one line per episode has to exist for all of them without each one
      * remembering to write it. The subclass hook still gets the event and may
-     * do more with it.
+     * do more with it. So are `queue_shed` (B-182) and `stamp_off_clock` (B-203).
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         // Lateness windows, aligner reports and demux messages are the base class's alone
@@ -801,6 +919,12 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
         if (channel === QUEUE_SHED_EVENT) this.logQueueShed(payload);
+        if (channel === STAMP_OFF_CLOCK_EVENT) {
+            this.log.warn(
+                { stampOffClock: payload },
+                stampOffClockText((payload ?? {}) as StampOffClock),
+            );
+        }
         if (channel === PLAYOUT_REANCHOR_EVENT) {
             this.playout
                 .onEvent(payload)
@@ -1140,6 +1264,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             onClear: () => this.setVuData([]),
         });
         this.deviceWatchdog.start(initiallyConnected);
+    }
+
+    /**
+     * The module's PipeWire stream died under it (B-195): the watchdog tears the pipeline down
+     * with a warning naming `cause` and rebuilds it once PipeWire and the device are back.
+     */
+    protected losePipeWireStream(cause: string): void {
+        if (this.deviceWatchdog) void this.deviceWatchdog.lose(cause);
+        else this.setHealth('error', cause);
     }
 
     /** Stop the watchdog and wait for an in-flight tick to settle. */

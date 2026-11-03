@@ -805,6 +805,11 @@ Your module class extends `GstPluginBase` which handles GStreamer child process 
 onInit(config, services) → onStart() → [running] → onStop() → onDestroy()
 ```
 
+When a setting that needs a restart has changed, the next start (Restart, or Disable then Enable)
+runs `onInit` again with the current config before `onStart` (B-191), so a value copied in `onInit`
+(a device name) follows the edit. Allocate nothing in `onInit` that a second call would leak:
+processes, timers and listeners belong in `onStart`/`onStop`.
+
 ### Plugin Architecture Variants
 
 Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three architectural patterns. Pick the one that fits, then copy the matching starter (see "Picking a Starting Point" above).
@@ -1278,7 +1283,11 @@ box). The runner also runs the capture's own GStreamer tasks, each one from the
 PipeWire's (B-111): nothing to set, and whatever a module puts on that stretch
 runs at that priority too. A `pulsesrc` or `pulsesink` takes
 `pulsePinnedStreamProps({...})`: its node runs inside pipewire-pulse, on that
-daemon's real-time loop.
+daemon's real-time loop. The engine names pipewire-pulse's socket in
+`PULSE_SERVER` for every PulseAudio client it starts (pactl, the runners), so
+none of them starts a PulseAudio daemon of its own while PipeWire is down
+(B-199): spawn a tool with a copy of `process.env`, as `runnerEnv()` does, and
+leave a pulse element's `server` unset.
 
 In the module:
 
@@ -1419,8 +1428,9 @@ range so the legacy pipeline string stays byte-identical. Reuse it for any other
 ### Live Input Branches (`getLiveInputBranch`)
 
 The multi-input counterpart of the swap below, for an AGGREGATOR sink
-(audio-mixer, n1-mixer-302m): an edge added to, removed from or re-mapped on
-one of its input ports becomes ONE branch bin added to or taken off the
+(audio-mixer, n1-mixer-302m, audio-output-302m from two sources): an edge
+added to, removed from or re-mapped on one of its input ports becomes ONE
+branch bin added to or taken off the
 RUNNING pipeline — tracked runner verbs `bus_input_add` / `bus_input_remove`
 (native and python) — instead of a module stop/start. The module's producer
 sockets stay up, so nothing downstream restarts (#787: every wiring edit on
@@ -1448,20 +1458,27 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
 - A branch ends in its `mralignwatch`: an edge added to a RUNNING mixer is
   gapped at the mixer's pace from its first tick while it starts, so the
   mix never waits for it, and joins at the current position (its content
-  from before that is discarded as stale; a seed avoids the loss when the
-  joiner is later than the pace). Without the watchdog a live pad would
+  from before that is discarded as stale). It carries no seed: its pace comes
+  with its data, so one that delivers nothing holds no other input back
+  (B-197; `liveInputBranchFor`). Without the watchdog a live pad would
   turn the non-live mixer live.
 - `description` is the branch text ending in the element whose src pad
   links to the aggregator; it is absent on a remove (the connection record
   is already gone — only `element` + `name` are needed).
 - The engine waits for the producer's edge socket, sends the add, then
   refreshes the stored description so a crash-replay rebuilds with the
-  branch. The LAST edge of a port keeps the classic teardown (the module
+  branch. A producer not up yet (gated, starting) gets no add: the module
+  runs without the branch, "Input from X not running", until the socket
+  accepts, and then it joins (B-194). The LAST edge of a port keeps the classic teardown (the module
   must idle); a channel-map edit is a remove + add of that one branch.
-  Return null for edges whose arrival changes more than one branch — and
-  any runner refusal (no pipeline yet, element not found) falls back to
-  the classic restart, which is how the n1-mixer's FIRST source on an input
-  (no `inmix<i>` yet) is handled without the hook having to know.
+  Return null for an edge the running pipeline cannot take as one branch:
+  one whose arrival changes more than one branch, or one into an aggregator
+  the pipeline does not have (n1-mixer-302m's FIRST source on an input: it
+  answers only for inputs with an `inmix<i>` in the pipeline its runner
+  runs). Null means the classic restart at once. A refusal on the spot falls
+  back to it too, but an add sent later (its producer not up yet) only
+  warns, so a branch the hook promises must be one the runner can take
+  (B-196).
 - Pair it with `eosDrain: false` on the description: an audio-only bus
   producer has no decoder to drain, and its aligners hold every input's
   EOS, so the drain would stall its full 6 s (EOS to every consumer first).
@@ -1480,6 +1497,19 @@ getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | 
   still there, wait for the new edge socket, add, clear the warning) instead
   of ADR-0010 rule 4's whole-pipeline relaunch — so an upstream flap never
   restarts a live-input aggregator or anything below it.
+- **Inputs apart: start with the sources that run (B-192).** A module may
+  hand its branches over apart from `pipeline`, as
+  `PipelineDescription.liveInputs` (`buildLiveMixInput` in audio-302m-core).
+  The runner host then launches as soon as one of them is there, with every
+  one that is (ADR-0010 rule 5), names the others not running, and the engine adds
+  each when its producer plays — also when it plays before the module does,
+  or launched before it. Name them in `getLiveInputBranch` too: the live
+  verbs and the error containment go by it. audio-output-302m does this from
+  two sources on, and answers the hook only while its built pipeline is the
+  mixer (a second source on the direct one restarts it); audio-mixer and
+  n1-mixer-302m do it for every source (B-197: a relaunch with a producer down
+  waited for it). The runner appends the branches to `pipeline`: end it on an
+  element, never on a `name.` link.
 
 ### Live Input Swap (`getLiveInputSwap`)
 
@@ -1544,7 +1574,7 @@ export class AudioInputModule extends GstPluginBase {
     // Called when the device disappears — teardown PipeWire nodes etc.
     protected async onDeviceDisconnected(): Promise<void> {
         if (this.remapModuleId !== null) {
-            await this.services!.pipeWire.unloadModule(this.remapModuleId);
+            await this.services!.pipeWire.unloadModule(this.remapModuleId, this.pwNodeName);
             this.remapModuleId = null;
         }
     }
@@ -1567,6 +1597,15 @@ export class AudioInputModule extends GstPluginBase {
 ```
 
 The base class flips `health` to `'error'` on disconnect and back to `'ok'` once `onDeviceReconnected` resolves. If reconnection throws (e.g. the device returned but format probing failed), the watchdog stays in "disconnected" mode so the next tick retries.
+
+**A lost PipeWire stream takes the same path (B-195).** A PipeWire restart (the Device Manager's Apply or Restart PipeWire) is not safe on its own: a `pipewiresrc` posts no error when its daemon goes away (its task just stops), and a restart is over before a 2 s presence poll could see the device missing. So the watchdog also tears the module down, with a warning naming the cause, and rebuilds it through `onDeviceDisconnected`/`onDeviceReconnected` once the device is listed again, when:
+- PipeWire's daemon changed under the module (`pactl info`'s cookie, compared at each poll with the one its streams started on);
+- an element named in the description's `pipeWireElements` fails: the runner host marks the error `pipewire_lost` and does not restart that runner (a restart loop while PipeWire is down), e.g. `{ pipeline, pipeWireElements: ['capture'] }` with `pipewiresrc name=capture …`;
+- a capture's meter stops while PLAYING: set `protected readonly captureStallMs = PIPEWIRE_CAPTURE_STALL_MS` when the pipeline's `level` reads the capture (a silent input still sends readings, so silence is never a loss); or the module calls `losePipeWireStream(cause)` itself.
+
+Losses in a run back off (0, 2, 4 … 60 s before the rebuild), a device list nobody answers is "unknown", not an unplug, and nothing is rebuilt or logged while PipeWire stays down. Unload a PA module you loaded by passing its node name, `unloadModule(id, this.pwNodeName)`: after a pipewire-pulse restart the old ID can be another module's.
+
+The device list is asked without blocking (B-200): `hasDevice`, `getDeviceInfo` and `listDevices` return promises, answered within the pactl timeout (5 s) even when PipeWire hangs. Await them in `onInit`, `onStart` and the device hooks; what `buildPipeline` needs from them (a device's width) is read before `super.onStart()`, since the build cannot wait, as the 302M modules do.
 
 Real examples: [`audio-input`](audio-input/engine/AudioInputModule.ts), [`audio-output`](audio-output/engine/AudioOutputModule.ts), [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts).
 
@@ -2869,7 +2908,7 @@ python-only by design (ADR-0016 2026-10-09): its descriptions pin
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices |
+| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices (promises: no pactl call ever blocks the engine, B-200) |
 | `mediaRouter` | `MediaRouter` | Assign/release bus channels (`assignBusChannel` / `releaseBusChannel`), look up upstream bus sources (`getModuleBusSource`) |
 | `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
 | `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |

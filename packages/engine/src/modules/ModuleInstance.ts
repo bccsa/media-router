@@ -120,16 +120,22 @@ export class ModuleInstance extends EventEmitter {
     /** Initialise and start the module. */
     async start(): Promise<void> {
         if (this._running) return;
+        let pending = false;
         try {
             await this.beforeStart();
-            if (!this._initialized) {
+            // Plugins copy settings in onInit (an audio module's device): a start with a change
+            // pending a restart initialises the plugin again from the current config (B-191).
+            // Taken here, so a change stored while this start runs stays pending (B-194).
+            pending = this._pendingRestart;
+            this._pendingRestart = false;
+            if (!this._initialized || pending) {
                 await this.plugin.onInit(this.config, this.services ?? undefined);
                 this._initialized = true;
             }
             await this.plugin.onStart();
             this._running = true;
-            this._pendingRestart = false;
         } catch (err) {
+            if (pending) this._pendingRestart = true;
             log.error(
                 { err: formatError(err), instanceId: this.instanceId },
                 'Module start failed',
@@ -156,6 +162,9 @@ export class ModuleInstance extends EventEmitter {
             throw err;
         }
         this.emitStateChange();
+        // Any start, the lifecycle's or a consumer restart's: connections waiting for this
+        // module as their sink, their producer up, run now (B-196).
+        this.services?.mediaRouter?.noteModuleStarted?.(this.instanceId);
     }
 
     /**
@@ -390,6 +399,16 @@ export class ModuleInstance extends EventEmitter {
     /** A dropped live input branch is back — clears the lost-input warning. */
     noteLiveInputRestored(branchName: string): void {
         this.plugin.noteLiveInputRestored?.(branchName);
+    }
+
+    /** A live input branch waits for its producer (see PluginModule). */
+    noteLiveInputAbsent(branchName: string): void {
+        this.plugin.noteLiveInputAbsent?.(branchName);
+    }
+
+    /** The pipeline runs without this live input branch (see PluginModule). */
+    isLiveInputLost(branchName: string): boolean {
+        return this.plugin.isLiveInputLost?.(branchName) ?? false;
     }
 
     /** Refresh the stored pipeline description after a live input swap. */

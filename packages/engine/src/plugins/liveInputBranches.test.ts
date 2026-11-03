@@ -14,10 +14,11 @@ function plugin(withHook = true): PluginModule {
     } as unknown as PluginModule;
 }
 
-function services(): ModuleServices {
+function services(named = true): ModuleServices {
     return {
         instanceId: 'mixer-1',
         mediaRouter: {
+            ...(named ? { moduleName: (id: string) => (id === 'src-a' ? 'Chat IN' : id) } : {}),
             getModuleBusSources: () => [
                 { sinkPortId: 'audio-in', connectionId: 'c1' },
                 { sinkPortId: 'audio-in', connectionId: 'c2' },
@@ -55,10 +56,10 @@ describe('annotateLiveInputBranches', () => {
 });
 
 describe('describeLiveInputBranch', () => {
-    it('names the producer through the connection records (they outlive the bus port)', () => {
-        expect(describeLiveInputBranch(plugin(), services(), 'mixin_in_c1')).toBe(
-            'src-a (audio-in)',
-        );
+    it('names the producer by its display name, through the connection records (they outlive the bus port)', () => {
+        expect(describeLiveInputBranch(plugin(), services(), 'mixin_in_c1')).toBe('Chat IN');
+        // No resolver (a harness): the module id, never the bin name.
+        expect(describeLiveInputBranch(plugin(), services(false), 'mixin_in_c1')).toBe('src-a');
     });
 
     it('falls back to the bin name when no incoming edge matches', () => {
@@ -69,12 +70,31 @@ describe('describeLiveInputBranch', () => {
 describe('LostInputs', () => {
     it('names every missing input and clears only when the last is back', () => {
         const lost = new LostInputs();
-        expect(lost.lose('a', 'src-a (audio-in)')).toBe(
-            'Input from src-a (audio-in) lost — continuing without it',
-        );
-        expect(lost.lose('b', 'src-b (audio-in)')).toContain('src-a (audio-in), src-b (audio-in)');
-        expect(lost.restore('a')).toBe('Input from src-b (audio-in) lost — continuing without it');
+        expect(lost.lose('a', 'ENG IN')).toBe('Input from ENG IN lost — continuing without it');
+        expect(lost.lose('b', 'SWA IN')).toContain('ENG IN, SWA IN lost');
+        expect(lost.restore('a')).toBe('Input from SWA IN lost — continuing without it');
         expect(lost.restore('b')).toBeNull();
         expect(lost.size).toBe(0);
+    });
+
+    it('a source that never ran is "not running", not "lost" (B-194)', () => {
+        const lost = new LostInputs();
+        expect(lost.lose('c', 'Chat IN', 'not-running')).toBe(
+            'Input from Chat IN not running — continuing without it',
+        );
+        expect(lost.lose('a', 'ENG IN')).toBe(
+            'Input from ENG IN lost, from Chat IN not running — continuing without it',
+        );
+        expect(lost.has('c')).toBe(true);
+        // Two edges from one producer: its name once.
+        lost.lose('d', 'Chat IN', 'not-running');
+        expect(lost.warning()).toBe(
+            'Input from ENG IN lost, from Chat IN not running — continuing without it',
+        );
+        // A join after its launch, then a loss: what happened last is what it says.
+        lost.restore('d');
+        expect(lost.lose('c', 'Chat IN')).toBe(
+            'Input from Chat IN, ENG IN lost — continuing without it',
+        );
     });
 });

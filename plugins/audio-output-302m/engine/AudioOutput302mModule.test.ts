@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { GstPluginBase, ModuleInstance, liveInputLaunchText } from '@media-router/engine';
+import { liveAsrcName, liveDemuxName } from '@media-router/plugin-audio-302m-core';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
+
+/** The pipeline the runner launches when every source runs: the mixer, its inputs linked in. */
+const launched = (desc: { pipeline: string; liveInputs?: any[] }): string =>
+    [desc.pipeline, ...(desc.liveInputs ?? []).map((b, i) => liveInputLaunchText(b, i))].join(' ');
 
 function makeModule(
     opts: {
@@ -42,6 +48,8 @@ function makeModule(
             : {}),
     };
     module.config = {};
+    // What a start reads before it builds (B-200): the build itself asks PipeWire nothing.
+    module.deviceChannels = opts.deviceChannels ?? null;
     const setHealth = vi.fn();
     module.setHealth = setHealth;
     module.setStatusData = vi.fn();
@@ -73,11 +81,11 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain(
             'audiomixer name=mixin latency=0 start-time-selection=first ! capsfilter name=mixin_out',
         );
-        expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
+        expect(launched(desc!).match(/ \) ! mixin\.sink_\d/g)).toHaveLength(2);
         expect(
-            desc!.pipeline.match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
+            launched(desc!).match(/! mralignwatch name=mixin_aw_[0-9a-f]{6} aligner=mixin /g),
         ).toHaveLength(2);
-        expect(desc!.pipeline).not.toContain('force-live');
+        expect(launched(desc!)).not.toContain('force-live');
         expect(desc!.pipeline).toContain('volume name=vol volume=0.80');
         expect(desc!.pipeline).toContain('level post-messages=true');
         expect(desc!.pipeline).toContain(
@@ -112,11 +120,20 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         );
     });
 
+    it('declares its pulsesink the PipeWire stream: a failure waits for the device, not a restart loop (B-195)', () => {
+        for (const sources of [1, 2]) {
+            const { module } = makeModule({ sources });
+            const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
+            expect(desc!.pipeline).toContain('pulsesink name=sink device=alsa_output.usb-foo ');
+            expect(desc!.pipeWireElements).toEqual(['sink']);
+        }
+    });
+
     it('stops without the EOS drain in both arms (the mixer arm holds every EOS)', () => {
         for (const sources of [1, 2]) {
             const { module } = makeModule({ sources });
             const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
-            expect(desc!.pipeline.includes('hold-on-eos=true')).toBe(sources > 1);
+            expect(launched(desc!).includes('hold-on-eos=true')).toBe(sources > 1);
             expect(desc!.eosDrain).toBe(false);
         }
     });
@@ -130,14 +147,16 @@ describe('AudioOutput302mModule.buildPipeline', () => {
     it("each branch's demux and ASRC serve its connection's timing row, in both arms (WI-P3-6)", () => {
         for (const n of [1, 3]) {
             const { module } = makeModule({ sources: n });
-            const p: string = module.buildPipeline({ device: 'alsa_output.usb-foo' })!.pipeline;
+            const p = launched(module.buildPipeline({ device: 'alsa_output.usb-foo' })!);
             for (let i = 0; i < n; i++) {
-                expect(p).toContain(`mrtsdemux name=mixin_demux${i} `);
-                expect(module.demuxInputOf(`mixin_demux${i}`)).toEqual({ connection: `c-${i}` });
+                // The mixer's branches are live inputs (B-192), named by their connection.
+                const demux = n > 1 ? liveDemuxName('mixin', `c-${i}`) : `mixin_demux${i}`;
+                expect(p).toContain(`mrtsdemux name=${demux} `);
+                expect(module.demuxInputOf(demux)).toEqual({ connection: `c-${i}` });
                 // The single arm's decode term is outasrc's: the module's own row.
-                const asrc = `mrasrc name=mixin_asrc${i} `;
-                expect(p.includes(asrc)).toBe(n > 1);
-                expect(module.demuxInputOf(`mixin_asrc${i}`)).toEqual(
+                const asrc = n > 1 ? liveAsrcName('mixin', `c-${i}`) : `mixin_asrc${i}`;
+                expect(p.includes(`mrasrc name=${asrc} `)).toBe(n > 1);
+                expect(module.demuxInputOf(asrc)).toEqual(
                     n > 1 ? { connection: `c-${i}` } : undefined,
                 );
             }
@@ -254,6 +273,84 @@ describe('AudioOutput302mModule.buildPipeline', () => {
     });
 });
 
+describe('AudioOutput302mModule: several sources are live inputs (B-192)', () => {
+    it('two or more: the mixer and its tail in the pipeline, each source a live input apart', () => {
+        const { module } = makeModule({ sources: 4 });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
+        // Nothing in the pipeline itself waits for a source: the runner links in the ones there.
+        expect(desc.pipeline).not.toContain('unixfdsrc');
+        expect(desc.pipeline).toMatch(
+            /^audiomixer name=mixin latency=0 start-time-selection=first/,
+        );
+        expect(desc.liveInputs).toHaveLength(4);
+        desc.liveInputs!.forEach((b: any, i: number) => {
+            expect(b).toEqual(module.getLiveInputBranch('audio-in', `c-${i}`));
+            expect(b.element).toBe('mixin');
+            expect(b.description).toMatch(
+                new RegExp(
+                    `^unixfdsrc socket-path=/tmp/mr-bus-${40100 + i}-x\\.sock .* hold-on-eos=true$`,
+                ),
+            );
+        });
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'output',
+            expect.objectContaining({ sources: 4 }),
+        );
+    });
+
+    it('one source keeps its direct string, with no live inputs', () => {
+        const { module } = makeModule({ sources: 1 });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' })!;
+        expect(desc.liveInputs).toBeUndefined();
+        expect(desc.pipeline).toMatch(/^unixfdsrc socket-path=\/tmp\/mr-bus-40100-x\.sock /);
+        expect(module.getLiveInputBranch('audio-in', 'c-0')).toBeNull();
+    });
+
+    it('the live verbs reach Audio In from two sources on; a remove names the branch alone', () => {
+        const { module } = makeModule({ sources: 2 });
+        module.buildPipeline({ device: 'alsa_output.usb-foo' });
+        expect(module.getLiveInputBranch('other', 'c-0')).toBeNull();
+        const add = module.getLiveInputBranch('audio-in', 'c-1');
+        expect(add.element).toBe('mixin');
+        expect(add.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40101-x.sock');
+        // An edge already gone from the router: what a live remove needs, the bin's name.
+        const gone = module.getLiveInputBranch('audio-in', 'c-9');
+        expect(gone).toEqual({ element: 'mixin', name: expect.stringMatching(/^mixin_in_/) });
+    });
+});
+
+describe('AudioOutput302mModule: a second source on a direct pipeline (B-194)', () => {
+    it('gets no live branch until a build makes the mix: the classic restart does, no add tried', () => {
+        const { module } = makeModule({ sources: 2 });
+        const bus = module.services.mediaRouter.getModuleBusSources;
+        const both = bus();
+        // Launched with Master alone: the direct branch, no mixer to add to.
+        bus.mockReturnValue(both.slice(0, 1));
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' }).liveInputs).toBeUndefined();
+        // ENG IN wired: the router lists two, the running pipeline is still the direct one.
+        bus.mockReturnValue(both);
+        expect(module.getLiveInputBranch('audio-in', 'c-1')).toBeNull();
+        expect(module.getLiveInputBranch('audio-in', 'c-0')).toBeNull();
+        // The restart's build is the mix: from then on each source is a live input.
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' }).liveInputs).toHaveLength(2);
+        expect(module.getLiveInputBranch('audio-in', 'c-1')).toMatchObject({ element: 'mixin' });
+    });
+
+    it('a description refresh while the mixer runs leaves it the mixer: a source back joins live', () => {
+        const { module } = makeModule({ sources: 2 });
+        const bus = module.services.mediaRouter.getModuleBusSources;
+        const both = bus();
+        module.buildPipeline({ device: 'alsa_output.usb-foo' }); // launched: the mixer
+        module.childProcess = {}; // its runner
+        // One source disabled (its branch dropped), the replay copy refreshed with one.
+        bus.mockReturnValue(both.slice(0, 1));
+        expect(module.buildPipeline({ device: 'alsa_output.usb-foo' }).liveInputs).toBeUndefined();
+        // Enabled again: added to the running mixer, as before.
+        bus.mockReturnValue(both);
+        expect(module.getLiveInputBranch('audio-in', 'c-1')).toMatchObject({ element: 'mixin' });
+    });
+});
+
 describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-0005)', () => {
     it('presents at stamp + D on the house clock: sync=true, ts-offset=D minus the ring it declares, custom-slaved, never drops late', () => {
         const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
@@ -350,18 +447,18 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
 
     it("one resampler per path: the single arm's branch has no ASRC, a mixer's branches each their own (OQ-23)", () => {
         const asrcs = (n: number): string[] => {
-            const p: string = makeModule({ sources: n }).module.buildPipeline({
-                device: 'alsa_output.usb-foo',
-            })!.pipeline;
+            const p = launched(
+                makeModule({ sources: n }).module.buildPipeline({ device: 'alsa_output.usb-foo' })!,
+            );
             return [...p.matchAll(/mrasrc ([^!]*?) ?!/g)].map((m) => m[1]);
         };
         // One source: outasrc carries the decode term and the device term, one resampler.
         expect(asrcs(1)).toEqual(['name=outasrc bypass-below-ppm=0.5 device-sink=sink']);
-        // Two: each branch matches its source to house rate, then outasrc the device term alone.
+        // Two: outasrc the device term alone, and each live branch matches its source to house rate.
         expect(asrcs(2)).toEqual([
-            'name=mixin_asrc0 bypass-below-ppm=0.5 out-rate=48000',
-            'name=mixin_asrc1 bypass-below-ppm=0.5 out-rate=48000',
             'name=outasrc device-sink=sink',
+            `name=${liveAsrcName('mixin', 'c-0')} bypass-below-ppm=0.5 out-rate=48000`,
+            `name=${liveAsrcName('mixin', 'c-1')} bypass-below-ppm=0.5 out-rate=48000`,
         ]);
     });
 
@@ -430,5 +527,116 @@ describe('AudioOutput302mModule.buildPipeline — house-clock presentation (ADR-
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 200000000);
         await module.onLiveConfigUpdate({ lipSyncMs: 50 });
         expect(setElementProperty).toHaveBeenLastCalledWith('sink', 'ts-offset', 250000000);
+    });
+});
+
+// --- A restart applies a re-picked device (B-191) ----------------------------------------------
+
+/** Audio Output's device before and after it was re-picked in the field (MR-002). */
+const OLD = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__hw_S2__sink';
+const NEW = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__Line__sink';
+
+/** The module under the engine's ModuleInstance on a graph of `present` devices, one source
+ *  wired; `built` holds each pipeline it starts. `repick` is a settings patch, then Restart.
+ *  PipeWire answers as the engine's does, a turn later; its devices are `width` wide. */
+function underEngine(present: Set<string>, width = 2, settings: Record<string, unknown> = {}) {
+    const built: string[] = [];
+    vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+        built.push(this.buildPipeline(this.config)?.pipeline ?? '');
+    });
+    const module = new AudioOutput302mModule() as any;
+    const source = {
+        port: 40100,
+        connectionId: 'c-0',
+        sourceModuleId: 'src-0',
+        sourcePortId: 'out-0',
+        sinkPortId: 'audio-in',
+        streamType: 'audio/302m',
+        socketPath: '/tmp/mr-bus-40100-x.sock',
+    };
+    const services = {
+        instanceId: 'aout-1',
+        pipeWire: {
+            hasDevice: async (name: string) => present.has(name),
+            getDeviceInfo: async () => ({ channels: width, sampleRate: 48000 }),
+            releaseAll: vi.fn(async () => {}),
+        },
+        mediaRouter: { getModuleBusSources: () => [source], releaseAllBusChannelsFor: vi.fn() },
+        processManager: { releaseAll: vi.fn(async () => {}) },
+        deviceProviders: {},
+    } as any;
+    const instance = new ModuleInstance(
+        'aout-1',
+        'audio-output-302m',
+        module,
+        { device: OLD, ...settings },
+        services,
+    );
+    const repick = async (device: string) => {
+        await instance.applyConfigUpdate({ device });
+        await instance.stop();
+        await instance.start();
+    };
+    return { module, instance, built, repick };
+}
+
+describe('AudioOutput302mModule: a restart applies a re-picked device (B-191)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('a start reads the device width before the build, which cannot wait for PipeWire (B-200)', async () => {
+        const { instance, built } = underEngine(new Set([OLD]), 32, {
+            channels: 8,
+            firstChannel: 9,
+        });
+        await instance.start();
+        // Outputs 9-16 of the 32-wide card: the 16-wide spread, not "width unknown".
+        expect(built[0]).toContain('audio/x-raw,channels=16,channel-mask=(bitmask)0x0');
+        await instance.stop();
+    });
+
+    it('a device that comes after the start: its width is read before that first build (B-200)', async () => {
+        const present = new Set<string>();
+        const { module, instance, built } = underEngine(present, 32, {
+            channels: 8,
+            firstChannel: 9,
+        });
+        await instance.start();
+        expect(built).toEqual([]);
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built[0]).toContain('audio/x-raw,channels=16,channel-mask=(bitmask)0x0');
+        await instance.stop();
+    });
+
+    it('a running output plays to and watches the re-picked device after Restart', async () => {
+        const { module, instance, built, repick } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        expect(built[0]).toContain(`pulsesink name=sink device=${OLD} `);
+        await repick(NEW);
+        expect(built).toHaveLength(2);
+        expect(built[1]).toContain(`pulsesink name=sink device=${NEW} `);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('an output waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, built, repick } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built).toEqual([]);
+        present.add(NEW);
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(built[0]).toContain(`pulsesink name=sink device=${NEW} `);
+        await instance.stop();
     });
 });

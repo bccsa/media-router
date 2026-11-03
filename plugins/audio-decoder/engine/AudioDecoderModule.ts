@@ -125,8 +125,13 @@ export class AudioDecoderModule extends GstPluginBase {
         // 1. Probe the stream for codec (and channels if available — opus includes it, AAC doesn't)
         if (udpSource) {
             this.probeResult = await probeMpegTsStream(udpSource.port, 3000, udpSource.socketPath);
+            // Once per start; the probe itself logs nothing (B-201), so its caps go here.
             this.log.info(
-                { codec: this.probeResult.codec, channels: this.probeResult.channels },
+                {
+                    codec: this.probeResult.codec,
+                    channels: this.probeResult.channels,
+                    rawCaps: this.probeResult.rawCaps || undefined,
+                },
                 'Stream probe',
             );
         } else {

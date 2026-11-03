@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { ModuleInstance } from '@media-router/engine';
 import { AudioOutputModule } from './AudioOutputModule.js';
 
 async function tickWatchdog(module: AudioOutputModule): Promise<void> {
@@ -27,6 +28,11 @@ function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; s
             unloadedModuleIds.push(id);
         }),
         releaseAll: vi.fn(async () => {}),
+        /** The PipeWire daemon (pactl's cookie); a test sets a new one for a restart. */
+        cookie: 'a1',
+        daemonInstance(): string | null {
+            return this.cookie;
+        },
     };
 }
 
@@ -111,7 +117,7 @@ describe('AudioOutputModule hot-plug recovery', () => {
         pw.setPresent(false);
         await tickWatchdog(module);
 
-        expect(pw.unloadModule).toHaveBeenCalledWith(sinkId);
+        expect(pw.unloadModule).toHaveBeenCalledWith(sinkId, 'MR_PW_spk-test-001');
         expect(pw.unloadedModuleIds).toContain(sinkId);
         await module.onStop();
     });
@@ -148,6 +154,93 @@ describe('AudioOutputModule hot-plug recovery', () => {
         await tickWatchdog(module);
 
         expect(pw.loadRemapSink).toHaveBeenCalledTimes(2);
+        await module.onStop();
+    });
+});
+
+describe('AudioOutputModule: a restart applies a re-picked device (B-191)', () => {
+    const OLD = 'alsa_output.usb-Generic_USB_Audio';
+    const NEW = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__Line__sink';
+
+    /** The module under the engine's ModuleInstance on a graph of `present` devices. `repick`
+     *  is a settings patch, then what Restart does to the instance. */
+    function underEngine(present: Set<string>) {
+        const { module, pw, services, config } = createModule(true);
+        pw.hasDevice.mockImplementation((name: string) => present.has(name));
+        pw.getDeviceInfo.mockImplementation((name: string) =>
+            present.has(name) ? { channels: 2, sampleRate: 48000 } : null,
+        );
+        // The PipeWire latency poll reads the real graph: not wanted here.
+        vi.spyOn((module as any).timing, 'watchPipeWire').mockImplementation(() => {});
+        const instance = new ModuleInstance('spk-test-001', 'audio-output', module, config, {
+            ...services,
+            mediaRouter: { releaseAllBusChannelsFor: vi.fn() } as any,
+            processManager: { releaseAll: vi.fn(async () => {}) } as any,
+        });
+        const repick = async (device: string) => {
+            await instance.applyConfigUpdate({ device });
+            await instance.stop();
+            await instance.start();
+        };
+        /** The device of each remap-sink loaded so far. */
+        const remapped = () => pw.loadRemapSink.mock.calls.map((c: unknown[]) => c[1]);
+        return { module: module as any, instance, repick, remapped };
+    }
+
+    it('a running output remaps and watches the re-picked device after Restart', async () => {
+        const { module, instance, repick, remapped } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        await repick(NEW);
+        expect(remapped()).toEqual([OLD, NEW]);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('an output waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, repick, remapped } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await tickWatchdog(module);
+        expect(remapped()).toEqual([]);
+        present.add(NEW);
+        await tickWatchdog(module);
+        expect(remapped()).toEqual([NEW]);
+        await instance.stop();
+    });
+});
+
+describe('AudioOutputModule after a PipeWire restart (B-195)', () => {
+    it('its meter stream is the PipeWire stream it declares', () => {
+        const module = new AudioOutputModule() as any;
+        module.deviceName = 'alsa_output.usb-Generic_USB_Audio';
+        const desc = module.buildPipeline({ channels: 2 });
+        expect(desc.pipeline).toMatch(
+            /^pulsesrc name=capture device=alsa_output.usb-Generic_USB_Audio.monitor /,
+        );
+        expect(desc.pipeWireElements).toEqual(['capture']);
+    });
+
+    it('a failed meter stream rebuilds the remap-sink and re-links into it once the device is listed', async () => {
+        const { module, pw, services, config } = createModule(true);
+        const reexec = vi.fn(async () => {});
+        services.mediaRouter = { reexecuteIncomingPwLinks: reexec } as any;
+        await module.onInit(config, services);
+        await module.onStart();
+        (module as any).losePipeWireStream(
+            'PipeWire stream failed (Disconnected: Connection terminated)',
+        );
+        await tickWatchdog(module); // the loss runs, then this tick: the device is listed
+        expect(pw.unloadModule).toHaveBeenCalledWith(101, 'MR_PW_spk-test-001');
+        expect(pw.loadRemapSink).toHaveBeenCalledTimes(2);
+        expect(reexec).toHaveBeenCalledWith('spk-test-001');
         await module.onStop();
     });
 });

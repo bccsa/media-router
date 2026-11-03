@@ -1871,7 +1871,8 @@ Is module running?
 
 ```typescript
 interface PluginModule {
-    // Called when module instance is created
+    // Called before the first start, and again before a start that applies
+    // restart-required changes (B-191)
     onInit(config: ModuleConfig, context: EngineContext): Promise<void>;
 
     // Called when module is started (run command)

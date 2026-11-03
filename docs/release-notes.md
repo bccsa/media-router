@@ -566,6 +566,115 @@ elements" below do not start.
   counted the time the input was away as queued. Fixed: the input comes back
   without the warning. Its sound came back at once before too; nothing was
   lost.
+- **A module whose source restarts several times in a few seconds no longer
+  waits for it forever.** On v2.0.0.100, after a profile switch, an MPEG-TS
+  Muxer could restart 3 or 4 times while its inputs came up, and an SRT
+  Output it fed then showed "Waiting for upstream module(s)" and sent nothing
+  until it was restarted by hand. Fixed: a restarted module takes over each of
+  its connections as soon as its previous run lets go of it.
+- **Restart applies a module's changed settings.** Up to v2.0.0.100, a device
+  picked again for an Audio Input (302M), Audio Output (302M), Audio Input or
+  Audio Output was stored and shown, but Restart, or Disable then Enable, did
+  not fully apply it: the module still watched its old device for unplugging
+  and plugging in, one waiting for its device went on showing "Audio device …
+  not connected — waiting for hot-plug" with the old name, and an Audio Input
+  or Audio Output stayed on the old device. Only stopping and starting the
+  engine applied it. Fixed: Restart, and Disable then Enable, apply every
+  setting changed since the module last started, on every module.
+- **An Audio Output (302M) with several sources plays the ones that run.** Up
+  to v2.0.0.100 it played only once every source wired to it ran: with one of
+  four live it showed "Waiting for upstream module(s): …" and played nothing.
+  Fixed: it plays the sources that run and names the others ("Input from …
+  lost — continuing without it"); a source that starts later joins without
+  interrupting the others, one that stops leaves them playing, and wiring a
+  source in or out, with two or more staying, no longer restarts the output.
+  An output with one source behaves as before.
+- **A module no longer risks a crash while one of its connections is
+  removed.** A module's runner could update its list of connections being
+  removed from two threads at once, so a busy module losing a consumer could,
+  rarely, crash or lose track of a connection. Not seen on a box; fixed.
+- **A UDP input whose stream comes back as its silence check runs reports
+  the silence once.** When the stream of an MPEG-TS IP Input or AES67 Input
+  came back within about a millisecond of its 5-second silence check, the
+  module could report the silence a second time and its return twice: a
+  second "silent" warning and a second "receiving again" in its log. Fixed.
+- **A connection waits for its source module instead of failing.** Up to
+  v2.0.0.100, a connection from a module that was not sending yet (starting,
+  waiting for its audio device, or a mixer with no input yet) failed three
+  times with errors in the log, at every engine start, and was dropped; one
+  from a mic that waited for its device stayed dropped when the mic was
+  plugged in, until a module was restarted. Fixed: such a connection waits,
+  quietly, and comes up when its source starts, however late. A source added
+  to a running Audio Output (302M) joins once it sends, instead of being
+  dropped at once and joined again a moment later, and status texts name the
+  module waited for ("Waiting for upstream module(s): Chat IN", "Input from
+  Chat IN not running — continuing without it"), never a socket path.
+- **A connection still waiting for its source after 10 s is named in the
+  log**, with both modules, and connected then if its source is already up.
+  A source wired to an N-1 Audio Mixer (302M) input that had none restarts the
+  mixer at once, without first trying to add it live, which failed with a
+  warning.
+- **An Audio Output (302M) restarted while one of its sources is silent plays
+  the others.** On the 1 November test it started and played nothing, the
+  sources that ran included, until it was restarted with every source up.
+  Fixed: the others play within its normal start, and the silent source joins
+  when it sends again. An output that plays nothing now shows
+  "Plays nothing: …" within 8 seconds instead of ok, and the Audio Mixer and
+  N-1 Audio Mixer (302M) also start with the sources that run.
+- **Audio inputs capture again by themselves after PipeWire restarts.** Up to
+  v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
+  buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and
+  captured nothing until it was restarted by hand; an Audio Input or Audio
+  Output (both deprecated) went to an error and stayed there. Fixed: the
+  module shows "PipeWire restarted — rebuilding the stream once PipeWire and
+  the device are back" and captures or plays again a few seconds after
+  PipeWire is back. While PipeWire stays down it waits quietly ("PipeWire is
+  not answering — …"), and an Audio Output (302M) no longer restarts every
+  few seconds meanwhile. The Audio Input (302M) also stops and restarts about
+  6 s faster.
+- **A PTP box's clock help text shows PTP's own error.** It read "error
+  ±16000.0 ms", the kernel's estimate, which PTP never sets; it now shows
+  PTP's offset from its master ("error ±812 ns (PTP offset from master, path
+  delay 41.2 µs)") or "error n/a (PTP)", as do the engine's epoch log lines.
+  Chrony boxes are unchanged; the Device Manager's Time page still shows 16 s.
+- **No stray PulseAudio takes the sound cards while PipeWire is down.** Up to
+  v2.0.0.100 the engine could start a PulseAudio of its own while PipeWire was
+  stopped; it took the sound cards (outputs played through it, a mic failed,
+  the default sink and a source's name changed) and stayed after PipeWire came
+  back, until killed by hand. Fixed: the engine talks only to PipeWire's
+  PulseAudio service, and its modules wait for PipeWire. A PulseAudio command
+  typed on the box can still start one until the system image turns that off.
+- **A hung PipeWire no longer freezes the engine.** Up to v2.0.0.100, while
+  PipeWire's PulseAudio service took requests and never answered, the engine
+  stopped for up to 10 s every 2 s, its UI, API and modules with it. Fixed: the
+  engine asks for the audio devices without waiting on the answer, no module
+  takes a missing answer for an unplugged device, and all recovers when
+  PipeWire answers again.
+- **An Audio Transcoder with no source says so once.** Up to v2.0.0.100 it
+  logged "No audio caps detected" every 10 s while its source sent nothing,
+  pushing real errors out of the box's log within minutes. Fixed: it logs the
+  wait once, naming the modules, then only a change (audio found or lost
+  again), and its status shows "No source — waiting for audio from …".
+- **A module stopped while it is still starting stops at once.** A module
+  stopped or restarted before its stream had started playing could, rarely,
+  wait until the engine ended it 8 seconds later. Not seen on a box; fixed.
+  A decoder still finishes the frames it holds before the module stops.
+- **A network input that comes back after hours away no longer freezes its
+  timing.** Up to v2.0.0.100 its first video frame could keep the old time and
+  freeze the input's timing hours ahead (the RIST gate's 'vMix 720 -> 2001'
+  and FRA-Master01's 'SCC -> ENG (10)' on 2 Nov; the muxers after it held their
+  queues until restarted). Fixed: that frame takes the new time; a stamp more
+  than 10 s ahead of the box's clock or 1 h behind it is no longer used, with
+  one warning in the module's log; and a module whose output is 10 s or more
+  off shows "Output timing off the house clock by …" while it lasts.
+- **One late input no longer holds a mixer or a muxer minutes behind.** Up to
+  v2.0.0.100 FRA-Master01's N-1 mixers took the delay of SCC returns that came
+  back 7 minutes late, kept it for hours, and its 'VV' muxer sent nothing for
+  three hours (2 Nov). Fixed: a mixer or muxer delays its inputs by at most 4 s;
+  an input steadily later or earlier than that is re-anchored: it plays late,
+  with one warning, "Input … re-anchored by +2 min 37 s (late) — past the 4 s
+  pace ceiling", shown as the module's warning while it lasts, and the others go
+  on. Once it is back within 3 s of the house clock it rejoins on time.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

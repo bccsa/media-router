@@ -6,6 +6,7 @@ import {
     busTeeName,
     busEdgeSocketPath,
     busIngestSocketPath,
+    busSocketPort,
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
     quoteGstString,
@@ -56,6 +57,16 @@ describe('bus socket-path helpers', () => {
         expect(a.length).toBeLessThan(108); // AF_UNIX path cap
         vi.stubEnv('MR_BUS_SOCKET_DIR', '/run/mr');
         expect(busEdgeSocketPath(40001, a).startsWith('/run/mr/')).toBe(true);
+    });
+
+    it('reads the channel port back from each bus socket path, nothing from any other (B-194)', () => {
+        expect(busSocketPort(busEdgeSocketPath(40010, 'tc-chat:out-0-aout:audio-in'))).toBe(40010);
+        expect(busSocketPort(busSocketPath(40002))).toBe(40002);
+        expect(busSocketPort(busIngestSocketPath(40003))).toBe(40003);
+        vi.stubEnv('MR_BUS_SOCKET_DIR', '/run/mr');
+        expect(busSocketPort(busEdgeSocketPath(41000, 'c'))).toBe(41000);
+        expect(busSocketPort('/tmp/other.sock')).toBeUndefined();
+        expect(busSocketPort('/tmp/mr-bus-x-1.sock')).toBeUndefined();
     });
 });
 

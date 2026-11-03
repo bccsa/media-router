@@ -85,13 +85,15 @@ class Unwrapper(hr.Unwrapper):
 # --- ts_packet: the continuity check -----------------------------------------------------------
 
 class CcTracker:
-    """mrts::CcTracker: per-PID CC, one duplicate legal and reported, the discontinuity_indicator
-    resetting expectation, adaptation-only packets never advancing it, null packets untracked."""
+    """mrts::CcTracker: per-PID CC, one duplicate (the same CC and payload as the PID's last payload
+    packet) legal and reported, the discontinuity_indicator resetting expectation, adaptation-only
+    packets never advancing it, null packets untracked."""
     OK, DUPLICATE, LOST, RESET = range(4)
     _KNOWN, _DUP = 0x10, 0x20
 
     def __init__(self):
         self._state = bytearray(8192)
+        self._last = {}                           # per PID: its last payload packet's (PUSI, payload)
         self.lost = 0
 
     def feed(self, v):
@@ -100,20 +102,31 @@ class CcTracker:
         s = self._state[v.pid]
         if v.af_discontinuity:
             self._state[v.pid] = (self._KNOWN | v.cc) if v.has_payload else 0
+            if v.has_payload:
+                self._keep(v)
             return self.RESET
         if not v.has_payload:
             return self.OK
         last = s & 0x0F
         if not (s & self._KNOWN) or v.cc == ((last + 1) & 0x0F):
             self._state[v.pid] = self._KNOWN | v.cc
+            self._keep(v)
             return self.OK
-        if v.cc == last and not (s & self._DUP):
+        # A duplicate repeats its original's payload (2.4.3.3; only a PCR may differ). The same CC on
+        # other bytes is new content after a loss, such as a source restarted on that CC (B-203).
+        copy = v.cc == last and self._last.get(v.pid) == (v.pusi, bytes(v.p[v.payload_off:]))
+        if copy and not (s & self._DUP):
             self._state[v.pid] = s | self._DUP
             return self.DUPLICATE
         # A third copy keeps the duplicate mark, so a run of repeats stays an error.
-        self._state[v.pid] = self._KNOWN | (self._DUP if v.cc == last else 0) | v.cc
+        self._state[v.pid] = self._KNOWN | (self._DUP if copy else 0) | v.cc
+        if not copy:
+            self._keep(v)
         self.lost += 1
         return self.LOST
+
+    def _keep(self, v):
+        self._last[v.pid] = (v.pusi, bytes(v.p[v.payload_off:]))
 
 
 # --- ts_pes: PES reassembly ---------------------------------------------------------------------

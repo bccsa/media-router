@@ -223,7 +223,7 @@ check("a producer gets one inactive mrtsstamp for its egress, the plugin loaded 
       el is not None and el.get_property("active") is False and stamper.native_loaded is True
       and stamper.missing() is False and stamper.armed == [] and events == [])
 check("and the runner says where it loaded it from and what it spliced",
-      "busStamp: native stamper loaded (mrtsstamp 3.0.0 from " in err.getvalue()
+      "busStamp: native stamper loaded (mrtsstamp 3.1.0 from " in err.getvalue()
       and f"busStamp: native stamper inserted on {TEE}" in err.getvalue())
 
 

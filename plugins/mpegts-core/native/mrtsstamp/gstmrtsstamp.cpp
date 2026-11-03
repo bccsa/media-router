@@ -15,8 +15,9 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-/* 3.0.0: the anchored stamper, its properties and messages removed (WI-P2-3). */
-#define MRTSSTAMP_VERSION "3.0.0"
+/* 3.0.0: the anchored stamper, its properties and messages removed (WI-P2-3). 3.1.0: the stamp
+ * guard's `mrtsstamp-off-clock` (B-203). */
+#define MRTSSTAMP_VERSION "3.1.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -162,6 +163,25 @@ static void gst_mrtsstamp_post_map_warning(GstMrTsStamp *self) {
                GST_OBJECT_NAME(self), why);
 }
 
+/* B-203: an episode off the house clock, once. A timing PES that far from it (one from before an
+ * outage, its PTS read nearest now) timed nothing, or (pid -1) the floor ahead of it was reset. */
+static void gst_mrtsstamp_post_off_clock(GstMrTsStamp *self, const mrts::IdentityStamp::OffClock &off) {
+    GstStructure *s = gst_structure_new("mrtsstamp-off-clock",
+                                        "pid", G_TYPE_INT, off.pid,
+                                        "offset", G_TYPE_INT64, (gint64)off.offset_ns,
+                                        "count", G_TYPE_UINT64, (guint64)off.count, NULL);
+    gst_element_post_message(GST_ELEMENT_CAST(self),
+                             gst_message_new_element(GST_OBJECT_CAST(self), s));
+    const double secs = (double)off.offset_ns / 1e9;
+    if (off.pid < 0)
+        g_printerr("[mrtsstamp] %s: the stamp floor was %.3f s ahead of the house clock — reset "
+                   "to it\n", GST_OBJECT_NAME(self), secs);
+    else
+        g_printerr("[mrtsstamp] %s: a timing PES on PID 0x%x read %+.3f s from the house clock — "
+                   "it timed nothing (%" G_GUINT64_FORMAT " so far)\n",
+                   GST_OBJECT_NAME(self), off.pid, secs, (guint64)off.count);
+}
+
 /* The egress's first timing PES since the arm, for the runners' one log line. */
 static void gst_mrtsstamp_post_identity(GstMrTsStamp *self, gint pid, gint64 stamp, gint64 pts) {
     GstStructure *s = gst_structure_new("mrtsstamp-identity",
@@ -194,6 +214,8 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
     int first_pid = 0;
     int64_t first_stamp = 0, first_pts = 0;
     gboolean post_identity = FALSE;
+    mrts::IdentityStamp::OffClock off;
+    gboolean post_off = FALSE;
 
     g_mutex_lock(&self->lock);
     if (!self->active) {
@@ -211,6 +233,7 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
         self->identity_posted = TRUE;
         post_identity = TRUE;
     }
+    post_off = self->idst->take_episode(0, &off) ? TRUE : FALSE;
     const gchar *seg_why = NULL;
     GstClockTime pos = gst_mrtsstamp_position(self, MAX(stamp - base_time, 0), &seg_why);
     if (seg_why != NULL && self->seg_warned) seg_why = NULL;
@@ -224,6 +247,7 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
     GST_BUFFER_DTS(buf) = pos;
 
     if (post_identity) gst_mrtsstamp_post_identity(self, first_pid, first_stamp, first_pts);
+    if (post_off) gst_mrtsstamp_post_off_clock(self, off);
     if (seg_why != NULL) gst_mrtsstamp_post_segment_warning(self, seg_why);
     return GST_FLOW_OK;
 }

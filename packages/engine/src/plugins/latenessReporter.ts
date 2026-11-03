@@ -1,7 +1,7 @@
 // LatenessReporter (§9.5, WI-P0-9): taps' and sidecars' `mrlateness` windows as the timing
-// summary (`lat_busin…` in; `lat_render`/`lat_egress`/`lat_busout…` out), no threshold (OQ-8);
-// aligner modules add their `mralignwatch` reports and warnings (WI-P2-13), consumers their
-// demuxes' counters and their ASRCs' clocks (WI-P3-6).
+// summary (`lat_busin…` in; `lat_render`/`lat_egress`/`lat_busout…` out), no threshold (OQ-8) but
+// the off-clock warning (B-203); aligner modules add their `mralignwatch` reports and warnings
+// (WI-P2-13), consumers their demuxes' counters and their ASRCs' clocks (WI-P3-6).
 import type {
     AlignerInputState,
     ClockCorrection,
@@ -13,6 +13,8 @@ import type {
 import {
     ALIGNER_EVENT,
     AlignerWatches,
+    PACE_CEILING_MS,
+    reanchorText,
     type AlignerEvent,
     type AlignerInputRef,
     type AlignerWatch,
@@ -36,6 +38,7 @@ import {
     type AsrcWatch,
 } from './asrcWatches.js';
 import { launchElements } from './launchElements.js';
+import { OFF_CLOCK_MS, offClockText } from './offClock.js';
 
 export interface LatenessWindowMs extends LatenessStatsMs {
     count: number;
@@ -52,6 +55,10 @@ const NS_PER_MS = 1_000_000;
 // Past this a window is off the house timeline. The runners forward no unstamped egress window
 // (B-26), so only a fault makes one now: it is hidden, not shown, and warned once per tap.
 const OFF_TIMELINE_MS = 3_600_000;
+
+/** An output tap: what the module writes (render, wire, bus egress), not what it reads. */
+const isOutputTap = (tap: string): boolean =>
+    tap === 'lat_render' || tap === 'lat_egress' || tap.startsWith(LAT_OUT_PREFIX);
 
 /** One `mrlateness` message payload (ns fields) as a ms window; null when it carried no samples. */
 export function parseLatenessPayload(payload: unknown): LatenessWindowMs | null {
@@ -85,6 +92,8 @@ export type LabelledAlignerEvent = AlignerEvent & { label: string };
 export interface AlignerWarnings {
     absent: string | null;
     full: string | null;
+    /** Inputs re-anchored past their aligner's pace ceiling (B-205). */
+    reanchored: string | null;
 }
 
 /** What the demuxes and the consumer ASRCs warn of (WI-P3-6), each kind owned by the module. */
@@ -196,6 +205,8 @@ export interface LatenessReporterOptions {
 
 export class LatenessReporter {
     private readonly taps = new Map<string, Entry>();
+    /** Output taps whose last window was OFF_CLOCK_MS or more off the house clock (B-203). */
+    private readonly offClock = new Map<string, Entry>();
     /** Input taps that reported this run: one gone quiet under watches that report on is an
      *  input whose stream stopped (a muxer pin whose producer stopped: its routes ended). */
     private readonly tapped = new Set<string>();
@@ -225,8 +236,7 @@ export class LatenessReporter {
         if (!channel.startsWith(`${LATENESS_EVENT}:`)) return false;
         const tap = channel.slice(LATENESS_EVENT.length + 1);
         const window = parseLatenessPayload(payload);
-        if (window && Math.abs(window.meanMs) >= OFF_TIMELINE_MS) this.hide(tap, window);
-        else if (window) this.addWindow(tap, window, now);
+        if (window) this.addWindow(tap, window, now);
         return true;
     }
 
@@ -291,10 +301,30 @@ export class LatenessReporter {
         return { changed: taken.changed, events };
     }
 
-    /** A window from any source: a tap, or a sidecar's stats line. */
+    /** A window from any source: a tap, or a sidecar's stats line. An output's 10 s or more off the
+     *  house clock stands as a warning until it reads under that (B-203); 1 h or more is not shown. */
     addWindow(tap: string, window: LatenessWindowMs, now = Date.now()): void {
+        if (isOutputTap(tap)) {
+            if (Math.abs(window.meanMs) >= OFF_CLOCK_MS)
+                this.offClock.set(tap, { window, at: now });
+            else this.offClock.delete(tap);
+        }
+        if (Math.abs(window.meanMs) >= OFF_TIMELINE_MS) {
+            this.hide(tap, window);
+            return;
+        }
         this.taps.set(tap, { window, at: now });
         if (tap.startsWith(LAT_IN_PREFIX)) this.tapped.add(tap);
+    }
+
+    /** The health text while an output reads OFF_CLOCK_MS or more off the house clock, the one
+     *  furthest off named (B-203); null when none does. */
+    offClockWarning(now = Date.now()): string | null {
+        this.expire(now);
+        let worst: LatenessWindowMs | undefined;
+        for (const { window } of this.offClock.values())
+            if (!worst || Math.abs(window.meanMs) > Math.abs(worst.meanMs)) worst = window;
+        return worst ? offClockText(worst.meanMs) : null;
     }
 
     setPresentation(p: {
@@ -321,6 +351,7 @@ export class LatenessReporter {
 
     reset(): void {
         this.taps.clear();
+        this.offClock.clear();
         this.tapped.clear();
         this.hidden.clear();
         this.watches.clear();
@@ -337,6 +368,9 @@ export class LatenessReporter {
         const staleMs = STALE_WINDOWS * this.intervalMs;
         for (const [tap, e] of this.taps) {
             if (now - e.at > staleMs) this.taps.delete(tap);
+        }
+        for (const [tap, e] of this.offClock) {
+            if (now - e.at > staleMs) this.offClock.delete(tap);
         }
         this.watches.expire(now, staleMs);
         this.demuxes.expire(now, staleMs);
@@ -489,7 +523,8 @@ export class LatenessReporter {
         };
     }
 
-    /** The warning texts: every absent input with its W; every input whose queue is full. */
+    /** The warning texts: every absent input with its W; every input whose queue is full; every
+     *  input re-anchored past its aligner's pace ceiling, by how much (B-205). */
     alignerWarnings(now = Date.now()): AlignerWarnings {
         this.expire(now);
         const { rows, internal } = this.inputRows();
@@ -507,9 +542,30 @@ export class LatenessReporter {
             ...rows.filter((r) => r.watches.some((w) => w.full)).map((r) => r.label),
             ...internal.filter((w) => w.full).map((w) => w.ref.input),
         ].map((label) => `Input ${label} queue full — upstream held`);
+        // An input's routes share one anchor once moved (the group's); the furthest stands.
+        const moved = (watches: AlignerWatch[]): AlignerWatch | undefined => {
+            let out: AlignerWatch | undefined;
+            for (const w of watches) {
+                const a = Math.abs(w.report.anchorMs ?? 0);
+                if (a > 0 && (!out || a > Math.abs(out.report.anchorMs ?? 0))) out = w;
+            }
+            return out;
+        };
+        const byInput = new Map<string, AlignerWatch[]>();
+        for (const r of rows) byInput.set(r.label, r.watches);
+        // An internal stage's links (one per output mix) name one input once.
+        for (const w of internal)
+            byInput.set(w.ref.input, [...(byInput.get(w.ref.input) ?? []), w]);
+        const reanchored = [...byInput]
+            .map(([label, watches]) => ({ label, w: moved(watches) }))
+            .filter((x): x is { label: string; w: AlignerWatch } => x.w !== undefined)
+            .map(({ label, w }) =>
+                reanchorText(label, w.report.anchorMs!, w.report.paceCeilingMs ?? PACE_CEILING_MS),
+            );
         return {
             absent: absent.length ? absent.join('; ') : null,
             full: full.length ? full.join('; ') : null,
+            reanchored: reanchored.length ? reanchored.join('; ') : null,
         };
     }
 

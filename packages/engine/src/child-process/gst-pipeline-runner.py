@@ -223,13 +223,34 @@ def _drain_decoder_branch(deadline):
     return True
 
 
+def _send_drain_eos(pipe, playing):
+    """The drain's EOS. Before PLAYING each source gets it under its own state lock, as
+    gst_bin_send_event sends it, but not under the pipeline's: its async change to PLAYING
+    needs that lock to free a source thread parked in a sink's preroll (B-202)."""
+    eos = Gst.Event.new_eos()
+    if playing or not isinstance(pipe, Gst.Bin):
+        return pipe.send_event(eos)
+    sent = True
+    it = pipe.iterate_sources()
+    while True:
+        res, el = it.next()
+        if res == Gst.IteratorResult.OK:
+            sent &= el.send_event(eos)
+        elif res == Gst.IteratorResult.RESYNC:
+            it.resync()
+            sent = True
+        else:
+            return sent
+
+
 def _eos_drain(pipe, errored=False):
     """EOS-drain `pipe` so its decoder is idle before we stop it.
 
     Only pipelines that are actually running are drained: a NULL/READY (or
     stalled-in-PAUSED) pipeline has nothing in flight, and a preroll-only
     pipeline still counts (a stateless decoder decodes its preroll frame), so
-    the pending state is checked too.
+    the pending state is checked too. Such a pipeline gets its EOS source by
+    source (`_send_drain_eos`).
 
     `errored=True` (the bus ERROR handler) skips the pipeline-level EOS: it
     cannot travel a pipeline whose source has already failed, so we go straight
@@ -248,7 +269,7 @@ def _eos_drain(pipe, errored=False):
     # invariant that keeps it under the parent's force-kill window).
     deadline = time.monotonic() + EOS_DRAIN_TIMEOUT_MS / 1000.0
 
-    if errored or not pipe.send_event(Gst.Event.new_eos()):
+    if errored or not _send_drain_eos(pipe, state == Gst.State.PLAYING):
         return _drain_decoder_branch(deadline)
 
     # `timed_pop_filtered` pops straight off the bus queue. Every caller runs on
@@ -282,6 +303,8 @@ def _teardown_pipeline(pipe, drain=True, errored=False):
     """
     if pipe is None:
         return
+    # Before the drain: a relaunched producer publishes its edges at once (B-190).
+    _release_bus_paths()
     source_gate.stop()
     if drain and _drain_on_stop:
         _eos_drain(pipe, errored=errored)
@@ -528,7 +551,8 @@ def on_bus_message(bus, message):
             # udpsrc has not received data within its configured timeout. A
             # state, not a fault — see gst_source_gate.py: warn once, keep the
             # pipeline, restart only past a producer-declared multicast bound.
-            source_gate.on_udp_timeout(src.get_name() if src is not None else "udpsrc")
+            _ok, timeout_ns = structure.get_uint64("timeout")
+            source_gate.on_udp_timeout(src.get_name() if src is not None else "udpsrc", timeout_ns)
 
     return True
 
@@ -1952,9 +1976,9 @@ BUS_EDGE_QUEUE_MAX_BYTES = BUS_EDGE_QUEUE_BYTES_MS * BUS_EDGE_QUEUE_BYTES_PER_MS
 def bus_edge_branch_description(socket):
     """gst-launch description of one per-consumer fan-out branch.
 
-    `queue leaky=2` (5 s, byte-capped at 500 ms of 64 Mbit/s) ! `unixfdsink` on the consumer's own
-    edge socket. Kept as a pure function so the shape is unit-testable — see
-    `_try_bus_attach` for why every property here is load-bearing.
+    `queue leaky=2` (5 s, byte-capped at 500 ms of 64 Mbit/s) ! `unixfdsink` on `socket`, its private
+    bind path, published at the consumer's edge socket (B-190). A pure function so the shape is
+    unit-testable — see `_try_bus_attach` for why every property here is load-bearing.
     """
     return (
         f"queue leaky=2 max-size-time={BUS_EDGE_QUEUE_MS * 1_000_000} max-size-buffers=0"
@@ -1994,39 +2018,92 @@ _bus_tee_progress = {}
 _pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_so_far]
 _bus_retry_timer_id = None
 _BUS_ATTACH_WARN_AFTER = 40   # ~10 s at 250 ms — log once, keep retrying
-# Edges whose probe-gated teardown hasn't completed yet (see
-# _teardown_bus_branch). An attach for one of these is deferred through the
-# same 250 ms pending-retry path as a not-yet-created tee.
-_bus_teardowns = set()
+# Edges whose probe-gated teardown hasn't completed yet, socket -> entry (see
+# _teardown_bus_branch): an attach for one waits on the 250 ms pending retry. Main
+# loop only (B-193): a probe on a streaming thread hands its record over.
+_bus_teardowns = {}
 
-def _remove_stale_bus_socket(socket_path):
-    # unixfdsink cannot bind over an existing socket file, and a runner that
-    # dies hard (SIGKILL on engine stop, SIGSEGV) never unlinks its path. Edge
-    # paths are deterministic, so the next attach is guaranteed to collide and
-    # the producer crash-loops. Unlink only if nothing is listening — a live
-    # listener means another producer owns the edge (ghost engine), and
-    # binding over it must stay a loud failure, not a silent takeover.
-    if not os.path.exists(socket_path):
-        return
+# Edge path ownership (B-190), as in bus_edges.cpp: unixfdsink never binds over a file and
+# unlinks its socket-path at stop, whoever owns it then, so the sink binds a private path published
+# at the edge path with link(2), and a runner unlinks only its own socket's path.
+_bus_attach_held_logged = set()   # pending sockets whose held path was warned about once
+
+
+def _bus_bind_path(socket):
+    """The sink's private bind path: unique to this process, beside the edge path."""
+    return f"{socket}.{os.getpid()}"
+
+
+def _bus_path_held(socket_path):
+    """None when the edge path is free: absent, or a file nothing listens on (a
+    runner that died hard) removed. Otherwise what holds it — an old runner
+    still draining, or a second producer on one path."""
+    if not os.path.lexists(socket_path):
+        return None
     probe = pysocket.socket(pysocket.AF_UNIX, pysocket.SOCK_STREAM)
     probe.settimeout(0.2)
     try:
         probe.connect(socket_path)
-        emit_event({"event": "warning",
-                    "message": f"bus_attach: live producer already on {socket_path} — not unlinking"})
+        return f"live producer already on {socket_path}"
     except OSError:
-        try:
-            os.unlink(socket_path)
-            emit_event({"event": "warning",
-                        "message": f"bus_attach: unlinked stale bus socket {socket_path}"})
-        except OSError:
-            pass
+        pass
     finally:
         probe.close()
+    try:
+        os.unlink(socket_path)
+        emit_event({"event": "warning", "message": f"bus_attach: unlinked stale bus socket {socket_path}"})
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        return f"stale bus socket {socket_path} cannot be removed ({e.strerror})"
+    return None
+
+
+def _bus_publish(bind, socket, entry):
+    """Publish the started sink's socket at the edge path. Raises OSError
+    (FileExistsError: another socket took the path since `_bus_path_held`)."""
+    st = os.lstat(bind)
+    os.link(bind, socket)
+    entry["path_id"] = (st.st_dev, st.st_ino)
+    try:
+        os.unlink(bind)
+    except OSError:
+        pass
+
+
+_bus_release_lock = threading.Lock()   # a teardown probe and a stop may release one path at once
+
+
+def _release_bus_path(socket, entry):
+    """Unlink the edge path if it still names this runner's socket. Called while
+    the sink still listens, so a successor finds the path live or gone, never
+    stale, and cannot replace it between the check and the unlink."""
+    with _bus_release_lock:
+        path_id = entry.pop("path_id", None)
+        if path_id is None:
+            return
+        try:
+            st = os.lstat(socket)
+            if (st.st_dev, st.st_ino) == path_id:
+                os.unlink(socket)
+        except OSError:
+            pass
+
+
+def _release_bus_paths():
+    """Every edge path this runner still owns, edges still detaching included,
+    before its pipeline stops: a relaunched producer can take the paths over
+    during the EOS drain, and a stopped pipeline may never fire a pending probe."""
+    for socket, entry in _bus_branches.items():
+        _release_bus_path(socket, entry)
+    for socket, entry in _bus_teardowns.items():
+        _release_bus_path(socket, entry)
 
 
 def _try_bus_attach(tee_name, socket):
-    """Attach one branch. Returns True on success, False if the tee isn't up yet."""
+    """Attach one branch. True when done (attached, or a structural failure not
+    worth retrying), False while the pipeline or tee isn't up yet, or a str
+    saying what holds the edge path (B-190); both of those stay pending."""
     global _bus_branch_seq
     if pipeline is None:
         # No pipeline YET — not "no pipeline ever". `bus_attach` can legitimately
@@ -2059,16 +2136,26 @@ def _try_bus_attach(tee_name, socket):
         except Exception:  # noqa: BLE001
             pass
         return True
+    _, st_cur, st_pend = pipeline.get_state(0)
+    if (st_pend if st_pend != Gst.State.VOID_PENDING else st_cur) < Gst.State.READY:
+        return False  # a stopped pipeline
     tee = pipeline.get_by_name(tee_name)
     if tee is None:
         return False  # tee not created yet — caller queues a retry
+    # Never bind beside a live listener (B-190): wait until the path is free.
+    held = _bus_path_held(socket)
+    if held is not None:
+        return held
+    bind = _bus_bind_path(socket)
+    if len(bind) >= 108:   # sizeof(sockaddr_un.sun_path)
+        emit_event({"event": "warning", "message": f"bus_attach: socket path too long: {bind}"})
+        return True
     # Arm the egress stamper BEFORE the branch is linked (no-op unless the
     # time-sync contract is on, or the tee is already armed for an earlier
     # consumer): once linked, buffers reach the new edge immediately, and one
     # that slipped past an unarmed probe would carry an arrival time onto the
     # wire. The structural-failure paths below release it again.
     gst_bus_stamper.arm(tee, tee_name)
-    _remove_stale_bus_socket(socket)
     try:
         # wait-for-connection=false is LOAD-BEARING (gate01 wedge, 2026-07-16):
         # stock unixfdsink KICKS a client on any send failure (silently — the
@@ -2094,10 +2181,29 @@ def _try_bus_attach(tee_name, socket):
         # (BUS_EDGE_QUEUE_MAX_BYTES) is what still sheds when stalled stamps
         # blind the time bound.
         branch = Gst.parse_bin_from_description(
-            bus_edge_branch_description(socket), True
+            bus_edge_branch_description(bind), True
         )
         _bus_branch_seq += 1
         branch.set_name(f"busedge_{_bus_branch_seq}")
+        # Bind and publish before the branch joins the pipeline: a failed start
+        # then posts to no bus, so it can never fail the producer.
+        entry = {}
+        try:
+            os.unlink(bind)
+        except OSError:
+            pass
+        try:
+            if branch.set_state(Gst.State.READY) == Gst.StateChangeReturn.FAILURE:
+                raise OSError("bind failed")
+            _bus_publish(bind, socket, entry)
+        except OSError as e:
+            branch.set_state(Gst.State.NULL)
+            _release_bus_stamper(tee_name)
+            if isinstance(e, FileExistsError):
+                return f"{socket} was taken by another socket"
+            emit_event({"event": "warning",
+                        "message": f"bus_attach: cannot serve {socket}: {e.strerror or e}"})
+            return True
         # Add the leaf to the tee's OWN parent bin, not the top-level pipeline:
         # the mpegts-demuxer's tee lives inside a per-pad branch bin, and linking
         # a tee request pad to an element in a different bin fails WRONG_HIERARCHY
@@ -2121,6 +2227,7 @@ def _try_bus_attach(tee_name, socket):
         tee_src = tee.request_pad_simple("src_%u")
         if tee_src is None:
             emit_event({"event": "warning", "message": f"bus_attach: no tee src pad ({tee_name})"})
+            _release_bus_path(socket, entry)
             branch.set_state(Gst.State.NULL)
             parent.remove(branch)
             _release_bus_stamper(tee_name)
@@ -2130,14 +2237,15 @@ def _try_bus_attach(tee_name, socket):
             emit_event({"event": "warning",
                         "message": f"bus_attach: link failed ({link_ret}) {socket}"})
             tee.release_request_pad(tee_src)
+            _release_bus_path(socket, entry)
             branch.set_state(Gst.State.NULL)
             parent.remove(branch)
             _release_bus_stamper(tee_name)
             return True
-        entry = {"branch": branch, "tee": tee, "tee_src": tee_src,
-                 "tee_name": tee_name, "queue": None, "sink_pad": None,
-                 "progressed": False, "stall": 0, "probe_id": None,
-                 "soft_healed": False}
+        entry.update({"branch": branch, "tee": tee, "tee_src": tee_src,
+                      "tee_name": tee_name, "queue": None, "sink_pad": None,
+                      "progressed": False, "stall": 0, "probe_id": None,
+                      "soft_healed": False})
         it2 = branch.iterate_recurse()
         while True:
             r2, el2 = it2.next()
@@ -2299,12 +2407,31 @@ def _bus_stall_watchdog():
         return False
     return True
 
+def _note_bus_attach_held(socket, held):
+    """One warning per pending attach while its path is held, so a second live
+    producer on one path (a configuration error) never spins silently."""
+    if socket not in _bus_attach_held_logged:
+        _bus_attach_held_logged.add(socket)
+        emit_event({"event": "warning", "message": f"bus_attach: {held} — attach waits until the path is free"})
+
+
+def _note_bus_attach_done(socket):
+    if socket in _bus_attach_held_logged:
+        _bus_attach_held_logged.discard(socket)
+        if socket in _bus_branches:
+            sys.stderr.write(f"[gst-runner.py] bus_attach: {socket} free again — attached\n")
+
+
 def _retry_pending_bus_attaches():
     global _bus_retry_timer_id
     for socket in list(_pending_bus_attaches.keys()):
         tee_name, attempts = _pending_bus_attaches[socket]
-        if _try_bus_attach(tee_name, socket):
+        res = _try_bus_attach(tee_name, socket)
+        if res is True:
             _pending_bus_attaches.pop(socket, None)
+            _note_bus_attach_done(socket)
+        elif isinstance(res, str):
+            _note_bus_attach_held(socket, res)
         else:
             attempts += 1
             if attempts == _BUS_ATTACH_WARN_AFTER:
@@ -2322,12 +2449,16 @@ def _retry_pending_bus_attaches():
 
 def _attach_or_queue(tee_name, socket):
     """Attach now, or queue the persistent 250 ms retry (tee not created yet,
-    or the edge's previous branch is still mid-teardown)."""
+    the edge's previous branch is still mid-teardown, or its path is held)."""
     global _bus_retry_timer_id
-    if _try_bus_attach(tee_name, socket):
+    res = _try_bus_attach(tee_name, socket)
+    if res is True:
         _pending_bus_attaches.pop(socket, None)
+        _note_bus_attach_done(socket)
         return
     _pending_bus_attaches[socket] = [tee_name, 0]
+    if isinstance(res, str):
+        _note_bus_attach_held(socket, res)
     if _bus_retry_timer_id is None:
         _bus_retry_timer_id = GLib.timeout_add(250, _retry_pending_bus_attaches)
 
@@ -2342,8 +2473,10 @@ def handle_bus_attach(data):
 
 
 def _clear_pending_bus_attaches():
+    """Drop queued attaches (pipeline stop). Edges still detaching stay recorded, for
+    _release_bus_paths."""
     _pending_bus_attaches.clear()
-    _bus_teardowns.clear()
+    _bus_attach_held_logged.clear()
 
 
 def _teardown_bus_branch(socket):
@@ -2366,13 +2499,15 @@ def _teardown_bus_branch(socket):
     immediately when the pad is quiet, so a dark producer detaches at once.
 
     The actual teardown is therefore ASYNCHRONOUS. `_bus_teardowns` marks
-    the edge until the probe fires; `_try_bus_attach` treats a mid-teardown
+    the edge until the probe has finished and the main loop has dropped the
+    record (B-193); `_try_bus_attach` treats a mid-teardown
     socket as "not ready yet" (returns False → caller's 250 ms retry), so
     a fast detach→attach on the same edge path can't bind over the dying
     branch's socket or double-request the tee pad.
     """
     # Cancel a not-yet-satisfied attach for this edge, if any.
     _pending_bus_attaches.pop(socket, None)
+    _bus_attach_held_logged.discard(socket)
     entry = _bus_branches.pop(socket, None)
     if entry is None:
         return False
@@ -2396,6 +2531,9 @@ def _teardown_bus_branch(socket):
         # Runs with the tee src pad blocked (or idle): the producer's
         # streaming thread cannot be inside this branch anymore.
         try:
+            # While the sink still listens; its own stop unlinks only the
+            # private bind path.
+            _release_bus_path(socket, entry)
             peer = pad.get_peer()
             if peer is not None:
                 pad.unlink(peer)
@@ -2403,13 +2541,6 @@ def _teardown_bus_branch(socket):
             parent = branch.get_parent()
             if parent is not None:
                 parent.remove(branch)
-            # unixfdsink does not unlink its socket file on NULL; remove it so
-            # a later attach on this edge doesn't hit the stale-file bind
-            # failure.
-            try:
-                os.unlink(socket)
-            except OSError:
-                pass
             # Release the request pad from the main loop, not from its own
             # probe (validated in repro5; avoids re-entering the tee under
             # the probe's pad lock).
@@ -2418,28 +2549,37 @@ def _teardown_bus_branch(socket):
         except Exception:  # noqa: BLE001 — teardown must never crash the runner
             pass
         finally:
-            _bus_teardowns.discard(socket)
+            # An idle pad fires this inside add_probe, on the main loop; a streaming
+            # thread hands the record to the main loop instead (B-193).
+            if GLib.MainContext.default().is_owner():
+                _drop_bus_teardown(socket, entry)
+            else:
+                GLib.idle_add(_drop_bus_teardown, socket, entry)
         return Gst.PadProbeReturn.REMOVE
 
-    _bus_teardowns.add(socket)
+    _bus_teardowns[socket] = entry
     try:
         tee_src.add_probe(
             Gst.PadProbeType.BLOCK_DOWNSTREAM | Gst.PadProbeType.IDLE, _finish)
     except Exception:  # noqa: BLE001 — pad already dead: fall back to direct teardown
-        _bus_teardowns.discard(socket)
+        _bus_teardowns.pop(socket, None)
         try:
+            _release_bus_path(socket, entry)
             branch.set_state(Gst.State.NULL)
             parent = branch.get_parent()
             if parent is not None:
                 parent.remove(branch)
-            try:
-                os.unlink(socket)
-            except OSError:
-                pass
             emit_event({"event": "bus_detached", "socket": socket})
         except Exception:  # noqa: BLE001
             pass
     return True
+
+
+def _drop_bus_teardown(socket, entry):
+    """Forget a finished teardown (main loop): its own record only, never a later teardown's."""
+    if _bus_teardowns.get(socket) is entry:
+        del _bus_teardowns[socket]
+    return False  # one-shot idle source
 
 
 def _release_tee_pad(tee, pad):

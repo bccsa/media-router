@@ -65,3 +65,15 @@ cycle — not merely a property of the caller.
 - [[0005]] — the restart cost this trades against.
 - [[0010]] — the sibling decision from the same change-set: the bus gate defers
   work instead of dropping it, and its warning names the module.
+
+## Amendment 2026-11-02 — one line per change, and the wait named (B-201)
+
+Rule 1's ticks no longer log: the probe writes nothing per run, and the
+transcoder logs its first result, then only a change (audio found, lost
+again, another producer), naming the modules by display name. The degraded
+warning names the wait: with no audio at all, "No source — waiting for audio
+from <producer> (checked every 10 s)"; audio of a codec no classifier knows
+keeps the text above. Field: on ZA-SCC-FRA-Master01 (2026-10-30) every
+warning of 10:19-10:20Z in the engine's 1000-line log was the probe's
+"No audio caps detected". (`plugins/audio-transcoder/engine/probeReport.ts`;
+`AudioTranscoderModule.probeLog.test.ts`.)

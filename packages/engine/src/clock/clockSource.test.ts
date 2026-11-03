@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { parseChronyTracking, pollClockSource, sourceFromUnits } from './clockSource.js';
+import { PMC } from './ptpStatus.js';
 
 // chronyc 4.x CSV column order (from chrony's docs; a gate capture replaces it as a fixture).
 const SYNCED =
@@ -47,13 +48,17 @@ describe('parseChronyTracking', () => {
 });
 
 describe('pollClockSource', () => {
+    const readText = async () => 'PTP_DOMAIN=0\n';
+    const commands = (exec: { mock: { calls: unknown[][] } }) => exec.mock.calls.map(([c]) => c);
+
     it('asks chronyc only when chrony owns the clock', async () => {
         const exec = vi.fn(async (cmd: string) =>
             cmd === 'systemctl' ? 'inactive\nactive\n' : SYNCED,
         );
-        expect(await pollClockSource(exec)).toEqual({ source: 'ptp' });
-        expect(exec).toHaveBeenCalledOnce();
-        expect(exec).toHaveBeenCalledWith('systemctl', [
+        // Under PTP it asks ptp4l instead, which gives no answer here.
+        expect(await pollClockSource(exec, { readText })).toEqual({ source: 'ptp' });
+        expect(commands(exec)).toEqual(['systemctl', PMC]);
+        expect(exec).toHaveBeenNthCalledWith(1, 'systemctl', [
             'is-active',
             'chronyd.service',
             'media-router-ptp4l.service',
@@ -62,10 +67,31 @@ describe('pollClockSource', () => {
         exec.mockImplementation(async (cmd: string) =>
             cmd === 'systemctl' ? 'active\ninactive\n' : SYNCED,
         );
-        const r = await pollClockSource(exec);
+        const r = await pollClockSource(exec, { readText });
         expect(r.source).toBe('chrony');
         expect(r.chrony?.stratum).toBe(2);
+        expect(r.ptp).toBeUndefined();
         expect(exec).toHaveBeenLastCalledWith('chronyc', ['-c', 'tracking']);
+    });
+
+    it("carries ptp4l's view when linuxptp owns the clock; readPtp false leaves it out", async () => {
+        const pmc =
+            '\te45f01.fffe.1a1878-1 seq 0 RESPONSE MANAGEMENT PORT_DATA_SET\n' +
+            '\t\tportState               SLAVE\n' +
+            '\te45f01.fffe.1a1878-0 seq 1 RESPONSE MANAGEMENT CURRENT_DATA_SET \n' +
+            '\t\tstepsRemoved     1\n\t\toffsetFromMaster -812.0\n\t\tmeanPathDelay    41231.0\n';
+        const exec = vi.fn(async (cmd: string) =>
+            cmd === 'systemctl' ? 'inactive\nactive\n' : pmc,
+        );
+        expect(await pollClockSource(exec, { readText })).toEqual({
+            source: 'ptp',
+            ptp: { portState: 'SLAVE', offsetNs: -812, pathDelayNs: 41_231 },
+        });
+        exec.mockClear();
+        expect(await pollClockSource(exec, { readPtp: false, readText })).toEqual({
+            source: 'ptp',
+        });
+        expect(commands(exec)).toEqual(['systemctl']);
     });
 
     it('asks chronyc on a PTP grandmaster, where chronyd and ptp4l both run', async () => {

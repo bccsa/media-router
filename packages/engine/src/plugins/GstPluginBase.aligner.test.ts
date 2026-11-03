@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // The aligners' warnings (house-clock WI-P2-13) live in the base class: `mralignwatch:<name>`
-// reports from the runner become the `input-absent` and `aligner-full` health warnings, which
-// never override another writer's text, and the reports never reach a subclass.
+// reports from the runner become the `input-absent`, `aligner-full` and `input-reanchored` health
+// warnings, which never override another writer's text, and the reports never reach a subclass.
 const h = vi.hoisted(() => {
     class FakeChildProcess {
         static instances: FakeChildProcess[] = [];
@@ -72,12 +72,15 @@ class Mixer extends GstPluginBase {
     protected alignerInputOf(w: AlignerWatchRef): AlignerInputRef | undefined {
         return this.own ? this.own(w) : super.alignerInputOf(w);
     }
+    playsNothing(text: string | null): void {
+        this.setPlaysNothing(text);
+    }
 }
 
 const report = (
     input: string,
     state: 'waiting' | 'present' | 'absent',
-    o: { reason?: string; full?: number; levelMs?: number } = {},
+    o: { reason?: string; full?: number; levelMs?: number; anchorMs?: number } = {},
 ) => ({
     reason: o.reason ?? 'state',
     aligner: 'mixin',
@@ -93,6 +96,8 @@ const report = (
     'level-time': (o.levelMs ?? 0) * MS,
     'level-bytes': 0,
     'full-count': o.full ?? 0,
+    anchor: (o.anchorMs ?? 0) * MS,
+    'pace-ceiling': 4000 * MS,
 });
 
 async function started(): Promise<{ m: Mixer; child: InstanceType<typeof h.FakeChildProcess> }> {
@@ -169,6 +174,34 @@ describe('GstPluginBase aligner warnings', () => {
         await m.onStop();
     });
 
+    it('input-reanchored: the text while its anchor stands, joined after the absent one, never over another writer (B-205)', async () => {
+        const { m, child } = await started();
+        const moved =
+            'Input enc-a (audio-in) re-anchored by +2 min 37 s (late) — past the 4 s pace ceiling';
+        send(
+            child,
+            'mixin_aw_a',
+            report(CONN_A, 'present', { reason: 'reanchored', anchorMs: 157_124 }),
+        );
+        expect(m.getState()).toMatchObject({ health: 'warning', error: moved });
+        expect(m.getState().statusData!['timing-in-1']).toMatchObject({ state: 'present' });
+        send(child, 'mixin_aw_b', report(CONN_B, 'absent'));
+        expect(m.getState().error).toBe(`${ABSENT_B}; ${moved}`);
+        send(child, 'mixin_aw_b', report(CONN_B, 'present'));
+        expect(m.getState()).toMatchObject({ health: 'warning', error: moved });
+        child.emit('inputSilent', { message: 'UDP source silent' });
+        send(
+            child,
+            'mixin_aw_a',
+            report(CONN_A, 'present', { reason: 'interval', anchorMs: 157_124 }),
+        );
+        expect(m.getState().error).toBe('UDP source silent');
+        child.emit('inputResumed', {});
+        send(child, 'mixin_aw_a', report(CONN_A, 'present', { reason: 'reanchored', anchorMs: 0 }));
+        expect(m.getState()).toMatchObject({ health: 'ok', error: null });
+        await m.onStop();
+    });
+
     it('a description refresh or PLAYING resets health; the warning comes straight back', async () => {
         const { m, child } = await started();
         send(child, 'mixin_aw_b', report(CONN_B, 'absent'));
@@ -178,6 +211,17 @@ describe('GstPluginBase aligner warnings', () => {
         expect(m.getState()).toMatchObject({ health: 'warning', error: ABSENT_B });
         await m.onStop();
         expect(m.getState().health).toBe('stopped');
+    });
+
+    it('"Plays nothing" stands over it (B-197); withdrawn, the warning comes straight back', async () => {
+        const { m, child } = await started();
+        send(child, 'mixin_aw_b', report(CONN_B, 'absent'));
+        const nothing = 'Plays nothing: its mixer delivers no audio — relaunched';
+        m.playsNothing(nothing);
+        expect(m.getState().error).toBe(nothing);
+        m.playsNothing(null);
+        expect(m.getState()).toMatchObject({ health: 'warning', error: ABSENT_B });
+        await m.onStop();
     });
 
     it('a producer stopped while wired is still named; once unwired, no more (B-93)', async () => {

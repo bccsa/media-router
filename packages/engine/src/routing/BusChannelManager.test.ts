@@ -35,6 +35,29 @@ describe('BusChannelManager', () => {
         expect(mgr.acquire('demux:pid-0x100')).toBe(video);
     });
 
+    it('tells its listeners of each allocation an owner did not hold, not of a repeat (B-194)', () => {
+        const heard: Array<[string, number]> = [];
+        const off = mgr.onAcquired((owner, port) => heard.push([owner, port]));
+        const a = mgr.acquire('mixer:audio-out')!;
+        mgr.acquire('mixer:audio-out'); // idempotent: the same allocation
+        mgr.release('mixer:audio-out');
+        mgr.acquire('mixer:audio-out'); // a restart's sticky re-allocation is a new one
+        off();
+        mgr.acquire('mic');
+        expect(heard).toEqual([
+            ['mixer:audio-out', a],
+            ['mixer:audio-out', a],
+        ]);
+    });
+
+    it('names the owner of a port, and after its release its last owner (B-194)', () => {
+        const a = mgr.acquire('tc-chat:out-0')!;
+        expect(mgr.ownerOf(a)).toBe('tc-chat:out-0');
+        mgr.release('tc-chat:out-0');
+        expect(mgr.ownerOf(a)).toBe('tc-chat:out-0');
+        expect(mgr.ownerOf(a + 1)).toBeUndefined();
+    });
+
     it('fresh allocations skip released sticky slots, surrendering them only under pool pressure', () => {
         const small = new BusChannelManager(40000, 40001);
         expect(small.acquire('mod-a')).toBe(40000);

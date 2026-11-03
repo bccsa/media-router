@@ -25,9 +25,9 @@ MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
 CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
 
 SRCS = main.cpp ipc.cpp json_util.cpp runner.cpp commands.cpp stamper.cpp \
-       bus_edges.cpp bus_inputs.cpp source_gate.cpp backlog_shed.cpp hooks.cpp \
+       bus_edges.cpp edge_path.cpp bus_inputs.cpp source_gate.cpp backlog_shed.cpp hooks.cpp \
        pad_link.cpp gates.cpp paths.cpp lateness_tap.cpp native_plugins.cpp capture_rt.cpp shed_watch.cpp
-HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h bus_inputs.h source_gate.h \
+HDRS = ipc.h json_util.h runner.h stamper.h bus_edges.h edge_path.h bus_inputs.h source_gate.h \
        backlog_shed.h hooks.h mr_hook.h pad_link.h gates.h lateness_tap.h \
        native_plugins.h paths.h capture_rt.h shed_watch.h \
        $(MRTS)/ts_psi.h $(MRTS)/ts_house.h $(MRTS)/ts_packet.h \
@@ -50,12 +50,19 @@ $(MRTS)/libmrts.a: FORCE
 	$(MAKE) -C $(MRTS) libmrts.a
 FORCE:
 
-test:
-	@# Protocol conformance runs from the python gst suite
-	@# (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
+# The edge bookkeeping and the udp silence watch across threads (B-193), the stamper's messages as
+# events (B-203): the runner's sources but main.cpp. Protocol conformance runs from the python gst
+# suite (packages/engine/src/child-process/native_runner_protocol_test.py, in test:py).
+TESTS = tests/bus_edges_thread_test tests/source_gate_udp_test tests/stamper_message_test
+
+$(TESTS): tests/%: tests/%.cpp $(SRCS) $(HDRS) $(MRTS)/tests/check.h $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PKG_CFLAGS) $< $(filter-out main.cpp,$(SRCS)) $(MRTS)/libmrts.a $(PKG_LIBS) -o $@
+
+test: $(TESTS)
+	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f $(BIN)
+	rm -f $(BIN) $(TESTS)
 
 install: $(BIN)
 	install -D -m 755 $(BIN) $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/$(BIN)

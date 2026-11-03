@@ -5,7 +5,7 @@ import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
 import { latInName, shortHash } from './busHelpers.js';
-import type { AlignerInputRef, AlignerWatchRef } from './alignerWatches.js';
+import { reanchorEventText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
 import { DEMUX_EVENT, type DemuxInputRef } from './demuxWatches.js';
 import { signedPpm } from './asrcWatches.js';
 import {
@@ -92,7 +92,9 @@ export interface ModuleTimingHost {
     getProperty(element: string, property: string): Promise<unknown>;
     busSources(): BusSourceRef[];
     /** The aligners' warning texts, null where none stands: on a change and every tick. */
-    alignerWarnings?(absent: string | null, full: string | null): void;
+    alignerWarnings?(absent: string | null, full: string | null, reanchored: string | null): void;
+    /** An output 10 s or more off the house clock (B-203), null when none: every tick. */
+    offClock?(text: string | null): void;
     /** An aligner event, as a line in the module's log. */
     log?(level: 'info' | 'warn', obj: Record<string, unknown>, msg: string): void;
     /** The module's own answer for which input a watch serves; undefined: the engine's rule. */
@@ -153,7 +155,9 @@ export class ModuleTiming {
         this.declared = desc?.timingInputs;
         this.reporter.configure(desc?.pipeline);
         // Only modules on the bus carry taps; say so when theirs are missing.
-        const onBus = !!desc && /unixfdsrc|tee name=busout_/.test(desc.pipeline);
+        const onBus =
+            !!desc &&
+            (/unixfdsrc|tee name=busout_/.test(desc.pipeline) || !!desc.liveInputs?.length);
         this.reporter.setInstrument(!onBus || latenessTapAvailable());
         this.timer = setInterval(() => this.tick(), TICK_MS);
         this.timer.unref?.();
@@ -275,7 +279,8 @@ export class ModuleTiming {
         this.last = null;
         // The demuxes' first: what the module shows only loses parts, never shows an old one.
         this.host.streamWarnings?.([]);
-        this.host.alignerWarnings?.(null, null);
+        this.host.alignerWarnings?.(null, null, null);
+        this.host.offClock?.(null);
         if (emit && had) this.host.emit();
     }
 
@@ -299,9 +304,11 @@ export class ModuleTiming {
 
     private syncWarnings(now = Date.now()): void {
         this.host.streamWarnings?.(this.reporter.streamWarnings(now));
-        if (!this.host.alignerWarnings) return;
-        const w = this.reporter.alignerWarnings(now);
-        this.host.alignerWarnings(w.absent, w.full);
+        if (this.host.alignerWarnings) {
+            const w = this.reporter.alignerWarnings(now);
+            this.host.alignerWarnings(w.absent, w.full, w.reanchored);
+        }
+        this.host.offClock?.(this.reporter.offClockWarning(now));
     }
 
     /** The module's answer, else the engine's rule. A watch whose edge left the router's list
@@ -375,6 +382,26 @@ export class ModuleTiming {
                 'info',
                 { alignerPaceFell: { name, aligner, fellMs, fallAfterMs: e.fallAfterMs } },
                 `Pace fell by ${fellMs} ms: every input steady for ${steady}`,
+            );
+            return;
+        }
+        if (e.kind === 'reanchored') {
+            // One warning an episode, at its anchor; a move within it and its clear inform.
+            const anchorMs = Math.round(e.anchorMs);
+            const wasMs = Math.round(e.wasMs);
+            this.host.log?.(
+                e.wasMs === 0 && e.anchorMs !== 0 ? 'warn' : 'info',
+                {
+                    alignerReanchored: {
+                        name,
+                        aligner,
+                        input,
+                        anchorMs,
+                        wasMs,
+                        ceilingMs: e.ceilingMs,
+                    },
+                },
+                reanchorEventText(e.label, e.anchorMs, e.wasMs, e.ceilingMs),
             );
             return;
         }

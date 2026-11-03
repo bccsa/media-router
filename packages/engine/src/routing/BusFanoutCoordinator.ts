@@ -90,6 +90,40 @@ export class BusFanoutCoordinator {
         this.liveRelink = fn;
     }
 
+    /** Adds a branch a live-input aggregator runs without (B-192). */
+    private liveRejoin: ((conn: Connection) => Promise<boolean>) | null = null;
+
+    setLiveRejoin(fn: (conn: Connection) => Promise<boolean>): void {
+        this.liveRejoin = fn;
+    }
+
+    /** The consumer of `conn` runs a live input aggregator without this edge's branch. */
+    private runsWithout(conn: Connection): boolean {
+        const sink = this.moduleGetter(conn.sinkModuleId);
+        const live = liveBranchFor(sink, conn);
+        return !!live?.branch.description && !!sink?.isLiveInputLost?.(live.branch.name);
+    }
+
+    private rejoin(conn: Connection): void {
+        void this.liveRejoin?.(conn).catch((err) =>
+            log.warn({ err, consumer: conn.sinkModuleId }, 'Live input join threw'),
+        );
+    }
+
+    /**
+     * A module reached PLAYING as a consumer: add each live input branch it runs without whose
+     * producer already plays. That producer's own PLAYING came while this module was still
+     * gated or starting, or before its launch left the branch out (B-192).
+     */
+    rejoinLostInputs(moduleId: string): void {
+        if (!this.liveRejoin) return;
+        for (const conn of this.getConnections()) {
+            if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
+            if (!this.moduleGetter(conn.sourceModuleId)?.getChildProcess?.()?.isRunning) continue;
+            if (this.runsWithout(conn)) this.rejoin(conn);
+        }
+    }
+
     /** Rule 4's test: a consumer launched at or before the producer's current
      *  launch cannot hold the live edge. */
     private isStale(conn: Connection, producerLaunch: number | undefined): boolean {
@@ -107,7 +141,11 @@ export class BusFanoutCoordinator {
         producerLaunch: number | undefined,
         restarted: Set<string>,
     ): void {
-        if (!this.isStale(conn, producerLaunch)) return;
+        if (!this.isStale(conn, producerLaunch)) {
+            // It launched after this producer, without the branch (the socket was not up yet).
+            if (this.liveRejoin && this.runsWithout(conn)) this.rejoin(conn);
+            return;
+        }
         const relink = this.liveRelink;
         const live = liveBranchFor(this.moduleGetter(conn.sinkModuleId), conn);
         if (!relink || !live?.branch.description) {

@@ -45,7 +45,7 @@ function pythonFunctionBody(name: string): string {
 describe('EOS drain before teardown (runner ↔ parent contract)', () => {
     it('the runner drains with a real EOS event and a bounded bus wait', () => {
         const drain = pythonFunctionBody('_eos_drain');
-        expect(drain).toContain('Gst.Event.new_eos()');
+        expect(pythonFunctionBody('_send_drain_eos')).toContain('Gst.Event.new_eos()');
         expect(drain).toContain('timed_pop_filtered');
         // ONE budget for the whole drain, however many attempts it takes: every
         // wait is derived from a deadline set off EOS_DRAIN_TIMEOUT_MS, so the
@@ -63,7 +63,7 @@ describe('EOS drain before teardown (runner ↔ parent contract)', () => {
         // how the churn path kept leaving the block wedged. Both routes now
         // hand over to a pad-level EOS into the decoder itself.
         const drain = pythonFunctionBody('_eos_drain');
-        expect(drain).toContain('if errored or not pipe.send_event(Gst.Event.new_eos()):');
+        expect(drain).toContain('if errored or not _send_drain_eos(pipe, state == Gst.State.PLAYING):');
         expect(drain).toMatch(
             /msg\.type == Gst\.MessageType\.ERROR:\n\s*return _drain_decoder_branch\(deadline\)/,
         );
@@ -77,6 +77,15 @@ describe('EOS drain before teardown (runner ↔ parent contract)', () => {
         expect(pythonFunctionBody('_fail_pipeline')).toContain(
             '_teardown_pipeline(pipeline, drain=drain, errored=errored)',
         );
+    });
+
+    it('a pipeline still going to PLAYING gets its EOS source by source (B-202)', () => {
+        // The pipeline-level send holds the pipeline's state lock, which its change to PLAYING
+        // needs to free a source thread parked in a sink's preroll: a stop there deadlocked.
+        const send = pythonFunctionBody('_send_drain_eos');
+        expect(send).toContain('if playing or not isinstance(pipe, Gst.Bin):\n        return pipe.send_event(eos)');
+        expect(send).toContain('it = pipe.iterate_sources()');
+        expect(send).toContain('sent &= el.send_event(eos)');
     });
 
     it('the drain runs BEFORE the NULL transition, and NULL happens either way', () => {

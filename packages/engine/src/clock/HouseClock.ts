@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
-import { createLogger } from '@media-router/shared-types';
+import { KERNEL_ESTERROR_UNSET_US, createLogger, ptpErrorText } from '@media-router/shared-types';
 import type {
     ChronyTracking,
     HouseEpoch,
+    PtpClockState,
     TimeSyncSource,
     TimeSyncState,
 } from '@media-router/shared-types';
@@ -10,6 +11,7 @@ import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { ManagedProcess } from '../child-process/ManagedProcess.js';
 import { resolveNativeBinary } from '../child-process/nativeBinaries.js';
 import { pollClockSource, type ExecStdout } from './clockSource.js';
+import { PTP4L_RO_SOCKET, type ReadText } from './ptpStatus.js';
 import {
     SETTLE_MAX_MS,
     START_WAIT_MS,
@@ -34,6 +36,8 @@ export interface HouseClockOptions {
     /** Path to mr-clockstate, or null when it is not built/installed. */
     resolveBinary?: () => string | null;
     exec?: ExecStdout;
+    /** Reads ptp4l's status.env (its domain); tests stub it. */
+    readText?: ReadText;
     startWaitMs?: number;
     sourcePollMs?: number;
     /** Sidecar restart backoff; tests shorten it. */
@@ -56,9 +60,14 @@ export class HouseClock extends EventEmitter {
     private startedAt = 0;
     private source: TimeSyncSource = 'none';
     private chrony: ChronyTracking | undefined;
+    private ptp: PtpClockState | undefined;
     // A step's poll can overlap the periodic one: an older answer never overwrites a newer one.
     private pollSeq = 0;
     private sourceSeq = 0;
+    /** Polls up to this one asked ptp4l before the latest step: their figure is the old clock's. */
+    private ptpStaleUpTo = 0;
+    /** Whether ptp4l answered the last poll that asked it; a change is logged. */
+    private ptpAnswered: boolean | undefined;
     private sidecar = true;
     private unreadableWarnedAt = -Infinity;
     private latchedAt: string | undefined;
@@ -162,6 +171,7 @@ export class HouseClock extends EventEmitter {
                 : {}),
             sidecar: this.sidecar,
             ...(this.chrony ? { chrony: this.chrony } : {}),
+            ...(this.ptp ? { ptp: this.ptp } : {}),
         };
     }
 
@@ -173,8 +183,11 @@ export class HouseClock extends EventEmitter {
         }
         if (msg.type === 'step') {
             this.stepped = true;
+            // ptp4l measured the clock before the step: no PTP figure until the next periodic poll.
+            this.ptp = undefined;
+            this.ptpStaleUpTo = this.pollSeq + 1;
             // A PTP handover can step the clock: report the new owner now, not at the next poll.
-            void this.pollSource();
+            void this.pollSource(false);
             return;
         }
         const prev = this.last;
@@ -273,7 +286,7 @@ export class HouseClock extends EventEmitter {
             taiOffsetS: s.taiOffsetS,
         };
         this.latchedAt = new Date().toISOString();
-        const err = `±${(s.estErrorUs / 1000).toFixed(1)} ms`;
+        const err = this.errorText(s);
         if (d.kind === 'latch') {
             log.info(
                 `clock: epoch latched seq=${this.current.seq} reason=${d.reason} source=${this.source} tai=${s.taiOffsetS} est=${err}`,
@@ -288,6 +301,14 @@ export class HouseClock extends EventEmitter {
         this.emit('state', this.state());
     }
 
+    /** The latch lines' error: PTP's own under PTP, else the kernel's, n/a while that is still
+     *  the kernel's unset 16 s (B-198). */
+    private errorText(s: ClockSample): string {
+        if (this.source === 'ptp') return ptpErrorText(this.ptp);
+        if (s.estErrorUs === KERNEL_ESTERROR_UNSET_US) return 'n/a';
+        return `±${(s.estErrorUs / 1000).toFixed(1)} ms`;
+    }
+
     private markReady(): void {
         if (this.isReady) return;
         this.isReady = true;
@@ -297,18 +318,32 @@ export class HouseClock extends EventEmitter {
         this.emit('state', this.state());
     }
 
-    private async pollSource(): Promise<void> {
+    private async pollSource(readPtp = true): Promise<void> {
         const seq = ++this.pollSeq;
         try {
-            const { source, chrony } = await pollClockSource(this.opts.exec);
+            const { source, chrony, ptp } = await pollClockSource(this.opts.exec, {
+                readPtp,
+                readText: this.opts.readText,
+            });
             if (seq < this.sourceSeq) return;
             this.sourceSeq = seq;
             const changed = source !== this.source;
             this.source = source;
             this.chrony = chrony;
+            this.ptp = seq > this.ptpStaleUpTo ? ptp : undefined;
+            if (readPtp && source === 'ptp') this.notePtpAnswer(!!ptp);
             if (changed) this.emit('state', this.state());
         } catch (err) {
             log.debug({ err }, 'clock: source poll failed');
         }
+    }
+
+    private notePtpAnswer(answered: boolean): void {
+        if (answered === this.ptpAnswered) return;
+        const via = `over ${PTP4L_RO_SOCKET} (pmc)`;
+        if (!answered)
+            log.warn(`clock: no answer from ptp4l ${via} — the clock shows no PTP error`);
+        else if (this.ptpAnswered === false) log.info(`clock: ptp4l answers ${via} again`);
+        this.ptpAnswered = answered;
     }
 }

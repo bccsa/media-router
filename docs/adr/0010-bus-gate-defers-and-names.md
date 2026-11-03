@@ -151,3 +151,58 @@ host; under the forked backend a wall-clock step between two launches can
 misjudge one comparison (`BusFanoutCoordinator.test.ts`, `GstChildProcess.test.ts`,
 `GstRunner.test.ts`).
 
+
+## Amendment 2026-10-30 — an aggregator's live inputs are not all waited for (B-192)
+
+Rule 5. **A description that keeps its input branches apart
+(`PipelineDescription.liveInputs`) launches once every socket in its
+`pipeline` and one of those inputs accept, with every input whose sockets
+accept; the others are left out, not waited for.** An input is there when
+every `unixfdsrc` of its branch accepts; one that is not would fail the whole
+start, since `unixfdsrc` connects once. Field case (the owner's MR-003,
+ZA-SCC-SWA01, 2026-10-30): an Audio Output (302M) wired to four transcoders,
+of which only Master ran, waited at this gate for all four and played
+nothing; each restart of a dark transcoder sent it back to the gate.
+
+The gate opening reports what the launch goes without (`busGate {pending: [],
+absent}`; every opening sends `absent`, empty for a plain description, a data
+wait's clearing never does). The module warns by producer, "Input from X lost
+— continuing without it", which it owns under rule 2, and the engine adds each
+input when its producer plays: at that producer's PLAYING even when the
+consumer launched after it (rule 4 sees nothing stale there, but the socket
+was not up when the gate chose), and at the consumer's own PLAYING for
+producers already playing. A relaunch replays the stored description, so it
+chooses again. While no input is there the gate waits as before and names
+them all. A plain description is unchanged: audio-mixer and n1-mixer-302m
+still build every branch into `pipeline` and wait for all of them at start.
+(`busSocketGate.ts` `waitForLiveInputs`, `GstRunner.startPipeline`,
+`GstPluginBase.handleBusGate`, `BusFanoutCoordinator.rejoinLostInputs`;
+`GstRunner.liveInputs.test.ts`, `AudioOutput302mModule.liveInputs.test.ts`.)
+
+
+## Amendment 2026-10-31 — names, not ids; "not running"; a live add waits (B-194)
+
+Rule 2 names the module by its **display name** (the gate's and the data
+wait's text, and the lost-input text). A pending path no applied connection
+names (a stale replay gating on an input since unwired) is named by the
+module that holds, or last held, its channel port (`BusChannelManager.ownerOf`):
+the raw path fell back here, and on ZA-SCC-SWA01 (2026-10-31) the output said
+`Waiting for upstream module(s): /tmp/mr-bus-40010-bd647b.sock` once Chat IN
+was disabled. No text carries a socket path.
+
+Rule 5's absent inputs say "Input from X not running — continuing without
+it"; "lost" is for a branch the runner dropped. A data wait's clearing shows
+the text again, as the gate's opening does.
+
+The same discipline holds outside the gate. A live input added on a wiring
+change waits for its producer's edge socket before `bus_input_add` (a branch
+on a socket nobody serves fails at once): on the spot up to 5 s, then, or for
+a producer not launched, in the background until the socket accepts, aborted
+when superseded; the module runs without it meanwhile ("not running"). And a
+connection whose producer is there but has no channel yet waits for the
+channel's assignment instead of failing (`MediaRouter`, B-194), or for its
+sink's next start if the sink was stopped then, and is checked once after
+10 s (B-196).
+(`GstPluginBase.handleBusGate`, `describePendingProducers`,
+`LiveInputBranch.addLiveInput`; `GstPluginBase.busGate.test.ts`,
+`GstPluginBase.liveInputs.test.ts`, `MpegTsBusExecutor.test.ts`.)

@@ -11,7 +11,7 @@ function makeServices(devices: Array<Record<string, unknown>>) {
     const normalizeSinkVolumes = vi.fn();
     const services = {
         pipeWire: {
-            listDevices: vi.fn(() => devices),
+            listDevices: vi.fn(async () => devices),
             normalizeSinkVolumes,
         },
         deviceProviders: { register },
@@ -43,71 +43,111 @@ describe('registerPipeWireDeviceProvider', () => {
         expect(register.mock.calls[0][0].pollMs).toBeUndefined();
     });
 
-    it('list() filters PipeWire devices to the requested direction', () => {
+    it('list() filters PipeWire devices to the requested direction', async () => {
         const { services, getRegistered } = makeServices([
-            { name: 'mic', direction: 'source', description: 'Built-in Mic', channels: 2, sampleRate: 48000 },
-            { name: 'spk', direction: 'sink', description: 'Speakers', channels: 2, sampleRate: 48000 },
-            { name: 'usb', direction: 'source', description: 'USB Mic', channels: 1, sampleRate: 44100 },
+            {
+                name: 'mic',
+                direction: 'source',
+                description: 'Built-in Mic',
+                channels: 2,
+                sampleRate: 48000,
+            },
+            {
+                name: 'spk',
+                direction: 'sink',
+                description: 'Speakers',
+                channels: 2,
+                sampleRate: 48000,
+            },
+            {
+                name: 'usb',
+                direction: 'source',
+                description: 'USB Mic',
+                channels: 1,
+                sampleRate: 44100,
+            },
         ]);
         registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
-        const list = getRegistered()!.list() as Array<{ name: string }>;
+        const list = (await getRegistered()!.list()) as Array<{ name: string }>;
         expect(list.map((d) => d.name)).toEqual(['mic', 'usb']);
     });
 
-    it('formats labels with channel and sample-rate metadata', () => {
+    it('formats labels with channel and sample-rate metadata', async () => {
         const { services, getRegistered } = makeServices([
-            { name: 'mic', direction: 'source', description: 'Built-in Mic', channels: 2, sampleRate: 48000 },
+            {
+                name: 'mic',
+                direction: 'source',
+                description: 'Built-in Mic',
+                channels: 2,
+                sampleRate: 48000,
+            },
         ]);
         registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
-        const list = getRegistered()!.list() as Array<{ label: string; meta: Record<string, unknown> }>;
+        const list = (await getRegistered()!.list()) as Array<{
+            label: string;
+            meta: Record<string, unknown>;
+        }>;
         expect(list[0].label).toBe('Built-in Mic (2ch, 48000Hz)');
         expect(list[0].meta).toEqual({ direction: 'source', channels: 2, sampleRate: 48000 });
     });
 
-    it('falls back to the device name when description is missing', () => {
+    it('falls back to the device name when description is missing', async () => {
         const { services, getRegistered } = makeServices([
-            { name: 'unnamed', direction: 'source', description: '', channels: 1, sampleRate: 44100 },
+            {
+                name: 'unnamed',
+                direction: 'source',
+                description: '',
+                channels: 1,
+                sampleRate: 44100,
+            },
         ]);
         registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
-        const list = getRegistered()!.list() as Array<{ label: string }>;
+        const list = (await getRegistered()!.list()) as Array<{ label: string }>;
         expect(list[0].label).toBe('unnamed (1ch, 44100Hz)');
     });
 
-    it('normalizes sink volumes on every poll, with the unfiltered device list', () => {
+    it('normalizes sink volumes on every poll, with the unfiltered device list', async () => {
         const devices = [
             { name: 'spk', direction: 'sink', description: 'Speakers', volumes: [26214, 26214] },
             { name: 'mic', direction: 'source', description: 'Mic', volumes: [65536] },
         ];
         const { services, normalizeSinkVolumes, getRegistered } = makeServices(devices);
         registerPipeWireDeviceProvider(services, { type: 'audio-sink', direction: 'sink' });
-        getRegistered()!.list();
+        await getRegistered()!.list();
         expect(normalizeSinkVolumes).toHaveBeenCalledWith(devices);
     });
 
-    it('does not normalize from the source provider — sinks are corrected once, not twice', () => {
+    it('does not normalize from the source provider — sinks are corrected once, not twice', async () => {
         const { services, normalizeSinkVolumes, getRegistered } = makeServices([
             { name: 'mic', direction: 'source', description: 'Mic' },
         ]);
         registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
-        getRegistered()!.list();
+        await getRegistered()!.list();
         expect(normalizeSinkVolumes).not.toHaveBeenCalled();
     });
 
-    it('keeps volume out of `meta` so the registry diff does not spam deviceList', () => {
+    it('keeps volume out of `meta` so the registry diff does not spam deviceList', async () => {
         const { services, getRegistered } = makeServices([
-            { name: 'spk', direction: 'sink', description: 'Speakers', channels: 2, sampleRate: 48000, volumes: [26214, 26214] },
+            {
+                name: 'spk',
+                direction: 'sink',
+                description: 'Speakers',
+                channels: 2,
+                sampleRate: 48000,
+                volumes: [26214, 26214],
+            },
         ]);
         registerPipeWireDeviceProvider(services, { type: 'audio-sink', direction: 'sink' });
-        const list = getRegistered()!.list() as Array<{ meta: Record<string, unknown> }>;
+        const list = (await getRegistered()!.list()) as Array<{ meta: Record<string, unknown> }>;
         expect(list[0].meta).toEqual({ direction: 'sink', channels: 2, sampleRate: 48000 });
     });
 
-    it('renders `?` placeholders when channel/sampleRate are missing', () => {
+    it('renders `?` placeholders when channel/sampleRate are missing', async () => {
         const { services, getRegistered } = makeServices([
             { name: 'partial', direction: 'sink', description: 'Partial' },
         ]);
         registerPipeWireDeviceProvider(services, { type: 'audio-sink', direction: 'sink' });
-        const list = getRegistered()!.list() as Array<{ label: string }>;
+        const list = (await getRegistered()!.list()) as Array<{ label: string }>;
         expect(list[0].label).toBe('Partial (?ch, ?Hz)');
     });
 });

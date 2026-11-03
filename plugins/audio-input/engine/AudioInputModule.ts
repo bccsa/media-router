@@ -5,6 +5,7 @@ import {
     tryResolveDeviceFormat,
     registerPipeWireDeviceProvider,
     pulsePinnedStreamProps,
+    PIPEWIRE_CAPTURE_STALL_MS,
     type PipelineDescription,
     type EngineServices,
     type ModuleServices,
@@ -25,6 +26,8 @@ import {
  */
 export class AudioInputModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
+    /** The meter reads the remap source the consumers read: no buffers is a dead source (B-195). */
+    protected readonly captureStallMs = PIPEWIRE_CAPTURE_STALL_MS;
     private deviceName = '';
     private detectedChannels: number | null = null;
     private detectedSampleRate: number | null = null;
@@ -42,7 +45,7 @@ export class AudioInputModule extends GstPluginBase {
         await super.onInit(config, services);
         this.deviceName = (config.device as string) ?? '';
 
-        const det = detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
+        const det = await detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
             channels: config.channels as number | undefined,
             sampleRate: config.sampleRate as number | undefined,
         });
@@ -61,7 +64,7 @@ export class AudioInputModule extends GstPluginBase {
         // Throwing here would prevent the watchdog from starting at all,
         // leaving hot-plug undetected — the module would only recover on
         // an engine restart.
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -70,7 +73,7 @@ export class AudioInputModule extends GstPluginBase {
             return;
         }
 
-        const { channels, rate, detected } = resolveDeviceFormat(
+        const { channels, rate, detected } = await resolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
             { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
@@ -102,10 +105,11 @@ export class AudioInputModule extends GstPluginBase {
         }
         // The disconnect path bypasses `ModuleInstance.stop`'s `releaseAll`,
         // so unload here. Otherwise the next `loadRemapSource` (on reconnect)
-        // would collide on `source_name=MR_PW_<id>`.
+        // would collide on `source_name=MR_PW_<id>`. By name: after a PipeWire
+        // restart the old ID can be another module's (B-195).
         if (this.remapModuleId !== null && this.services?.pipeWire) {
             try {
-                await this.services.pipeWire.unloadModule(this.remapModuleId);
+                await this.services.pipeWire.unloadModule(this.remapModuleId, this.pwNodeName);
             } catch {
                 /* ignore — best-effort cleanup */
             }
@@ -113,9 +117,10 @@ export class AudioInputModule extends GstPluginBase {
         }
     }
 
-    /** Base-class hook: device returned — rebuild the remap-source then restart the pipeline. */
+    /** Base-class hook: device returned (or PipeWire, B-195) — rebuild the remap-source, restart
+     *  the pipeline and re-link its consumers: their pw-links died with the old source. */
     protected async onDeviceReconnected(): Promise<void> {
-        const resolved = tryResolveDeviceFormat(
+        const resolved = await tryResolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
             { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
@@ -135,6 +140,7 @@ export class AudioInputModule extends GstPluginBase {
             );
         }
         await this.bringUpRemapSourceAndPipeline(resolved.channels, resolved.rate);
+        await this.services?.mediaRouter?.reexecuteOutgoingPwLinks?.(this.services.instanceId);
     }
 
     /**
@@ -197,13 +203,14 @@ export class AudioInputModule extends GstPluginBase {
         // these two sources is guaranteed to be set by the time we get here.
         const channels = (config.channels as number | undefined) ?? this.detectedChannels!;
         const pipeline = [
-            `pulsesrc device=${this.pwNodeName} buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
+            `pulsesrc name=capture device=${this.pwNodeName} buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
             'audioconvert',
             `audio/x-raw,channels=${channels}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
             'fakesink sync=false',
         ].join(' ! ');
 
-        return { pipeline };
+        // A failed meter stream is a lost PipeWire stream: the watchdog rebuilds it all (B-195).
+        return { pipeline, pipeWireElements: ['capture'] };
     }
 }

@@ -104,6 +104,13 @@ export function busEdgeSocketPath(port: number, connectionId: string): string {
     return `${dir}/mr-bus-${port}-${shortHash(connectionId)}.sock`;
 }
 
+/** The channel port a bus socket path is keyed by (`busSocketPath`, `busEdgeSocketPath`,
+ *  `busIngestSocketPath`); undefined for any other path. */
+export function busSocketPort(path: string): number | undefined {
+    const m = /\/mr-bus-(\d+)(?:-[^/]*)?\.sock$/.exec(path);
+    return m ? Number(m[1]) : undefined;
+}
+
 /**
  * Ingest socket path for a non-GStreamer bus PRODUCER (today: hls-player).
  * The producer's data process (hls-pipe's Node child) streams raw TS into

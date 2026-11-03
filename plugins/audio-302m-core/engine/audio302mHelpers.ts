@@ -3,6 +3,7 @@ import {
     buildAsrc,
     buildBusSrc,
     gstElementSupportsCaps,
+    liveInputLaunchText,
     probeGstElement,
     quoteGstString,
     shortHash,
@@ -205,7 +206,9 @@ export function liveMixInputBranch(
 
 /** A module's `getLiveInputBranch` answer for one edge of `mixerName`: the
  *  full branch while the source is wired, just aggregator + bin name once it
- *  is gone (a remove). */
+ *  is gone (a remove). A branch added to a running mix carries no seed: its
+ *  pace comes with its data, so one that delivers nothing holds no other input
+ *  back (B-197; a seed is a start's, WI-P2-13). */
 export function liveInputBranchFor(
     mixerName: string,
     connectionId: string,
@@ -213,7 +216,7 @@ export function liveInputBranchFor(
     opts: Omit<MixInputBranchOpts, 'mixerName' | 'demuxName' | 'asrcName'> = {},
 ): LiveInputBranch {
     if (!source) return { element: mixerName, name: mixInputBranchName(mixerName, connectionId) };
-    return liveMixInputBranch(mixerName, source, opts);
+    return liveMixInputBranch(mixerName, { ...source, seedLatenessMs: undefined }, opts);
 }
 
 /** `seed-lateness` in ns, within the 0..1 h the element takes; none without a seed. */
@@ -343,22 +346,23 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         return { fragment, continuationName: outName };
     }
 
+    // Live-input mode: each branch is a named bin on an explicit request pad,
+    // the exact string a hot add sends — so a later live remove finds it.
+    if (live) {
+        const parts = buildLiveMixInput({ sources: opts.sources, channels, mixerName });
+        const branches = parts.inputs.map((b, i) => liveInputLaunchText(b, i));
+        return { fragment: [parts.fragment, ...branches].join(' '), continuationName: outName };
+    }
+
     // The mixer's OUTPUT caps are pinned right on its src pad: left to downstream
     // preference it fixates channels=1 (encoders advertise [1,N]) and DOWNMIXES
     // every input to mono (measured on gate01: stereo 302M in, mono out).
     const mixer = alignedMixer({ name: mixerName, caps, outName });
-
-    // Live-input mode: each branch is a named bin on an explicit request pad,
-    // the exact string a hot add sends — so a later live remove finds it.
     const branches = opts.sources.map((s, i) => {
-        if (!live) {
-            const demuxName = branchDemuxName(mixerName, i, s, false);
-            const asrcName = branchAsrcName(mixerName, i, s, false);
-            const branch = build302mMixBranch(s, { channels, mixerName, demuxName, asrcName });
-            return `${branch} ! ${mixerName}.`;
-        }
-        const b = liveMixInputBranch(mixerName, s, { channels });
-        return `( name=${b.name} ${b.description} ) ! ${mixerName}.sink_${i}`;
+        const demuxName = branchDemuxName(mixerName, i, s, false);
+        const asrcName = branchAsrcName(mixerName, i, s, false);
+        const branch = build302mMixBranch(s, { channels, mixerName, demuxName, asrcName });
+        return `${branch} ! ${mixerName}.`;
     });
 
     return { fragment: [mixer, ...branches].join(' '), continuationName: outName };
@@ -378,6 +382,27 @@ export function mixInputDemuxes(opts: AudioMixInputOpts): Map<string, string> {
             return names.map((name): [string, string] => [name, s.connectionId]);
         }),
     );
+}
+
+/** The live-input arm in parts: the aligned mixer (chain from `continuationName`) and one live
+ *  branch per source, for `PipelineDescription.liveInputs` (B-192). Rendered with
+ *  `liveInputLaunchText`, the parts are `buildAudioMixInput`'s live arm. */
+export function buildLiveMixInput(opts: {
+    sources: AudioMixSource[];
+    /** Output channel count of the mix. Default 2. */
+    channels?: number;
+    /** Name prefix, as `AudioMixInputOpts.mixerName`. Default 'mixin'. */
+    mixerName?: string;
+}): { fragment: string; continuationName: string; inputs: LiveInputBranch[] } {
+    const channels = opts.channels ?? 2;
+    const mixerName = opts.mixerName ?? 'mixin';
+    const outName = `${mixerName}_out`;
+    const caps = `audio/x-raw,rate=48000,channels=${channels}`;
+    return {
+        fragment: alignedMixer({ name: mixerName, caps, outName }),
+        continuationName: outName,
+        inputs: opts.sources.map((s) => liveMixInputBranch(mixerName, s, { channels })),
+    };
 }
 
 export interface Audio302mEncodeOpts {

@@ -68,8 +68,9 @@ recordings were reviewed the same way on 2026-10-28 (B-132): their pads and caps
 in order, on all five (46 on `bus-pmt-change`, both programs); every unit is its dump's PES but
 one video PES each in `bus-ingest-relock-gap` and `bus-pmt-change` that a gap marker closes and
 the dump drops at the resume's CC break (both whole in the sender's source file); ffprobe keeps
-what the dump drops, three video PES cut by the srt-input's queue losses and `bus-pmt-change`'s
-12 AAC PES whose first packet repeats its PID's last CC; every relock marker's length is the
+what the dump drops, three video PES cut by the srt-input's queue losses (and, before B-203's
+duplicate rule, `bus-pmt-change`'s 12 AAC PES whose first packet repeats its PID's last CC on
+other bytes, which the dump and the demux now keep); every relock marker's length is the
 restamp journal's gap of its PID.
 
 `plugins/mpegts-core/native/mrts/mrts_cli demux` prints the same lines from `mrts::DemuxCore` (the

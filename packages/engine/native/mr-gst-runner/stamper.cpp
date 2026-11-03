@@ -282,6 +282,20 @@ void handle_message(const char* src_name, const char* kind, const GstStructure* 
                           (long long)s_int(s, "pts")));
         return;
     }
+    if (std::strcmp(kind, "mrtsstamp-off-clock") == 0) {
+        // B-203: the module writes its warning, naming itself and this egress.
+        guint64 count = 0;
+        gst_structure_get_uint64(s, "count", &count);
+        JsonObject* o = json_object_new();
+        json_object_set_string_member(o, "tee", tee.c_str());
+        json_object_set_int_member(o, "pid", s_int(s, "pid"));
+        json_object_set_double_member(o, "offsetMs", (double)s_int(s, "offset") / 1e6);
+        json_object_set_int_member(o, "count", (gint64)count);
+        JsonNode* n = json_node_new(JSON_NODE_OBJECT);
+        json_node_take_object(n, o);
+        runner().emit_plugin_event(OFF_CLOCK_EVENT, n);
+        return;
+    }
     if (std::strcmp(kind, "mrtsstamp-segment-warning") == 0 || std::strcmp(kind, "mrtsstamp-map-failed") == 0) {
         std::string why = s_str(s, "why");
         ipc::warning(fmt("egress %s: %s — the house-clock stamp cannot be mapped onto running time, so consumers "

@@ -114,6 +114,7 @@ struct DataWait {
 struct UdpSilence {
     gint64 since_us = -1;   // -1 = receiving (or never timed out)
     std::atomic<bool> silent{false};
+    std::atomic<gint64> last_data_us{-1};   // the probe's last buffer, -1 = none yet
     std::vector<Probe> probes;
     gint64 restart_ms = 0;
 };
@@ -275,6 +276,7 @@ gboolean udp_resumed_idle(gpointer user) {
 GstPadProbeReturn udp_buffer_cb(GstPad*, GstPadProbeInfo*, gpointer user) {
     auto* holder = static_cast<std::shared_ptr<UdpSilence>*>(user);
     std::shared_ptr<UdpSilence>& st = *holder;
+    st->last_data_us.store(g_get_monotonic_time());
     if (st->silent.exchange(false)) g_idle_add(udp_resumed_idle, new std::shared_ptr<UdpSilence>(st));
     return GST_PAD_PROBE_OK;
 }
@@ -363,7 +365,7 @@ void forget_sources_in(GstElement* bin) {
         g_idle_add(data_arrived_idle, new std::shared_ptr<DataWait>(dw));
 }
 
-void on_udp_timeout(const std::string& src_name) {
+void on_udp_timeout(const std::string& src_name, guint64 timeout_ns) {
     std::shared_ptr<UdpSilence> st = g_udp;
     gint64 now_us = g_get_monotonic_time();
     if (!st) {
@@ -373,6 +375,10 @@ void on_udp_timeout(const std::string& src_name) {
         runner().fail_pipeline(ev);
         return;
     }
+    // udpsrc posts only after a whole timeout without data, so data within half
+    // of one came after this message was posted: met late, it is no silence.
+    gint64 last_us = st->last_data_us.load();
+    if (last_us >= 0 && (now_us - last_us) * 2000 < (gint64)timeout_ns) return;
     if (!st->silent.load()) {
         st->silent.store(true);
         st->since_us = now_us;

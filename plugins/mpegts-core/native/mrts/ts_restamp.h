@@ -53,6 +53,9 @@ class RestampCore {
     // B-185: the longest a program's packets wait for its next PCR: three of the 100 ms PCR intervals
     // ISO 13818-1 allows, and under the gate's 0.4-0.7 s audio lead, so what waited leaves in time.
     static constexpr int64_t HOLD_NS = 300000000;
+    // B-203: a duplicate is rewritten as its original only this soon after it and on the same
+    // timeline (no relock between); later it is removed, as a copy may be.
+    static constexpr int64_t DUP_RECENT_NS = 500000000;
 
     struct Range {
         const uint8_t* data;
@@ -172,6 +175,8 @@ class RestampCore {
         bool seen_payload = false, prev_kept = false;
         bool prev_cont = false;           // the last kept payload packet continued a split header
         int64_t pts33 = -1, dts33 = -1;   // the open PES's rewrite, for a duplicate
+        int64_t copy_h = 0;               // the last payload packet's arrival, and its program's
+        uint32_t copy_relocks = 0;        // relocks by then: what a duplicate of it must match (B-203)
         int64_t held_h = 0;
         bool held_di = false;
         std::vector<uint8_t> held_af;     // adaptation-only packets behind the held header
@@ -199,6 +204,7 @@ class RestampCore {
         uint32_t wpcr_epoch = 0;          // ... and the epoch it was mapped on (0: regenerated, fixed)
         int64_t pcr_off27 = 0;            // written - source: a PCR off the PCR PID follows it
         int64_t pending_leap = 0;
+        uint32_t relocks = 0;             // those that may move the timeline (not an envelope step)
         uint64_t gaps = 0, dropped_pes = 0;
         int64_t gap_ns = 0, dropped_ns = 0;
         // B-185: armed by an outage or a leap, discontinuity or external relock (until OUTAGE_NS of PCR

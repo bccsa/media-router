@@ -79,6 +79,8 @@ export class ModuleLifecycle {
         mediaRouter.setConsumerRestartCallback((id) =>
             this.connectionApplier.reapplyModuleConnections(id, true),
         );
+        // A connection waiting for its producer runs under the lifecycle lock (B-194).
+        mediaRouter.setWaitingScheduler((task) => void this.serialize(task));
     }
 
     /**

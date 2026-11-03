@@ -90,7 +90,7 @@ ELEM = ("section", "collection", "pad-added", "no-more-pads", "pad-removed", "ms
 # The comparison's rules, one per allowlist entry (demux_parity_allow.json says why each holds).
 RULES = ("timestamps", "sections-place", "pmt-same-version", "psi-repeat-cc", "cc-warning",
          "cc-loss-discont", "cc-loss-next-pes", "jump-gap", "sparse-gaps", "truncated-last-pes",
-         "tag-memory", "own-messages", "pmt-continuation", "cc-repeat", "marker-gaps",
+         "tag-memory", "own-messages", "pmt-continuation", "marker-gaps",
          "discont-drain", "discont-pending", "discont-flag", "psi-repeat-discont")
 
 _failures = []
@@ -155,16 +155,16 @@ def arrival(points, off):
 
 
 class Facts:
-    """What the recording shows, for the rules: CC losses per PID, the PES starts that repeat
-    their PID's last CC with other bytes, each PMT PID's sections in order (version, CRC) and how
-    many of them span two packets or more, and per PID the last PES when the recording's end cuts
-    it short (the size and crc32 of the payload tsdemux pushes at EOS)."""
+    """What the recording shows, for the rules: CC losses per PID, each PMT PID's sections in
+    order (version, CRC) and how many of them span two packets or more, and per PID the last PES
+    when the recording's end cuts it short (the size and crc32 of the payload tsdemux pushes at
+    EOS)."""
 
     def __init__(self, data):
         pkts = list(ts_psi.iter_packets(data))
         self.pmt_pids = set(ts_psi.parse_pat(iter(pkts)).values())
-        self.losses, self.repeats, self.pmts, self.pmt_split, self.truncated = {}, {}, {}, {}, {}
-        cc, last, pes, sec, parts = {}, {}, {}, {}, {}
+        self.losses, self.pmts, self.pmt_split, self.truncated = {}, {}, {}, {}
+        cc, pes, sec, parts = {}, {}, {}, {}
         for pkt in pkts:
             pid = ts_psi.ts_pid(pkt)
             if pid == 0x1FFF:
@@ -176,9 +176,7 @@ class Facts:
                 if prev is not None and not flagged and c not in ((prev + 1) & 15, prev):
                     self.losses[pid] = self.losses.get(pid, 0) + 1
                     pes[pid] = sec[pid] = None
-                elif c == prev and not flagged and ts_psi.ts_pusi(pkt) and pkt != last.get(pid):
-                    self.repeats[pid] = self.repeats.get(pid, 0) + 1
-                cc[pid], last[pid] = c, pkt
+                cc[pid] = c
             off = ts_psi.payload_offset(pkt)
             if not ts_psi.ts_has_payload(pkt) or off >= PKT:
                 continue
@@ -538,8 +536,7 @@ class Compare:
         sparse = bool(starts and starts[0][3][1] & SPARSE)
         pid = int(pad.rsplit("_", 1)[1], 16)
         budget = self.facts.losses.get(pid, 0)   # a CC loss explains one DISCONT
-        repeats = self.facts.repeats.get(pid, 0)
-        drained, moved, end = set(), set(), len(self.ref.inputs)
+        drained, end = set(), len(self.ref.inputs)
         common_r, common_o = set(), set()
         sm = difflib.SequenceMatcher(None, [b[2:4] for b in rb], [b[2:4] for b in ob],
                                      autojunk=False)
@@ -555,10 +552,6 @@ class Compare:
                 elif rba[i] in self.dis and rba[i] not in drained:
                     drained.add(rba[i])                     # its drain at a DISCONT input
                     self.allow("discont-drain")
-                elif repeats > 0:
-                    repeats -= 1
-                    moved.add(j1)                           # the pad's DISCONT moves to the next
-                    self.allow("cc-repeat")
                 else:
                     self.fail(f"{pad}: buffer {i} in tsdemux only ({rb[i][2:5]}, input "
                               f"{rba[i]})")
@@ -623,8 +616,8 @@ class Compare:
                     self.allow("discont-flag")              # its flush flags every pad
                 else:
                     self.fail(f"{pad}: buffer {j} DISCONT in tsdemux only")
-            elif j in jumps or j in moved:
-                pass                                      # counted with its GAP or repeat
+            elif j in jumps:
+                pass                                      # counted with its GAP
             elif budget > 0:
                 budget -= 1
                 self.allow("cc-loss-discont")

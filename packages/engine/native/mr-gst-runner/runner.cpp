@@ -102,6 +102,34 @@ gboolean playing_timeout_cb(gpointer) {
     return G_SOURCE_REMOVE;
 }
 
+/** The drain's EOS. Before PLAYING each source gets it under its own state lock, as
+ *  gst_bin_send_event sends it, but not under the pipeline's: its async change to PLAYING
+ *  needs that lock to free a source thread parked in a sink's preroll (B-202). */
+bool send_drain_eos(GstElement* pipe, bool playing) {
+    if (playing || !GST_IS_BIN(pipe)) return gst_element_send_event(pipe, gst_event_new_eos());
+    GstEvent* eos = gst_event_new_eos();
+    bool sent = true;
+    GstIterator* it = gst_bin_iterate_sources(GST_BIN(pipe));
+    GValue item = G_VALUE_INIT;
+    for (bool done = false; !done;) {
+        switch (gst_iterator_next(it, &item)) {
+            case GST_ITERATOR_OK:
+                sent &= gst_element_send_event(GST_ELEMENT(g_value_get_object(&item)), gst_event_ref(eos)) != FALSE;
+                g_value_reset(&item);
+                break;
+            case GST_ITERATOR_RESYNC:
+                gst_iterator_resync(it);
+                sent = true;
+                break;
+            default: done = true; break;
+        }
+    }
+    g_value_unset(&item);
+    gst_iterator_free(it);
+    gst_event_unref(eos);
+    return sent;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -163,7 +191,7 @@ bool Runner::eos_drain(GstElement* pipe, bool errored) {
     gint64 deadline_us = g_get_monotonic_time() + (gint64)EOS_DRAIN_TIMEOUT_MS * 1000;
     // An errored pipeline cannot carry a pipeline-level EOS (its source task
     // is already stopped): push EOS straight into the gated decoder instead.
-    if (errored || !gst_element_send_event(pipe, gst_event_new_eos())) return drain_decoder_branch(deadline_us);
+    if (errored || !send_drain_eos(pipe, state == GST_STATE_PLAYING)) return drain_decoder_branch(deadline_us);
 
     GstBus* bus = gst_element_get_bus(pipe);
     gint64 left_us = std::max<gint64>(0, deadline_us - g_get_monotonic_time());
@@ -187,6 +215,8 @@ bool Runner::eos_drain(GstElement* pipe, bool errored) {
 
 void Runner::teardown_pipeline(GstElement* pipe, bool drain, bool errored) {
     if (!pipe) return;
+    // Before the drain: a relaunched producer publishes its edges at once (B-190).
+    bus::release_paths();
     gate::stop();
     // `drain_on_stop` (eosDrain:false) applies to EVERY teardown path, not
     // only the stop command — the watchdog and gate failures reach here too.
@@ -552,7 +582,9 @@ void Runner::on_bus_message(GstMessage* msg) {
             } else if (std::strcmp(name, "level") == 0) {
                 handle_level_message(s);
             } else if (std::strcmp(name, "GstUDPSrcTimeout") == 0) {
-                gate::on_udp_timeout(src_name ? src_name : "udpsrc");
+                guint64 timeout_ns = 0;
+                gst_structure_get_uint64(s, "timeout", &timeout_ns);
+                gate::on_udp_timeout(src_name ? src_name : "udpsrc", timeout_ns);
             }
             break;
         }

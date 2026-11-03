@@ -160,7 +160,13 @@ export class EnginePatchRouter {
                             ),
                         )
                         .then((connId) => {
-                            log.info({ connectionId: connId }, 'Live connect');
+                            // A connection whose producer is not up yet only waits (B-194).
+                            log.info(
+                                { connectionId: connId },
+                                this.mediaRouter.isConnectionWaiting(connId)
+                                    ? 'Live connect waits for its producer'
+                                    : 'Live connect',
+                            );
                         })
                         .catch((err) => log.error({ err }, 'Live connect failed'));
                 }

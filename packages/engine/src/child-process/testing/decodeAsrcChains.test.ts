@@ -4,6 +4,8 @@ import { AudioDecoderModule } from '../../../../../plugins/audio-decoder/engine/
 import { AudioOutput302mModule } from '../../../../../plugins/audio-output-302m/engine/AudioOutput302mModule.js';
 import { AudioTranscoderModule } from '../../../../../plugins/audio-transcoder/engine/AudioTranscoderModule.js';
 import { AsrcWatches } from '../../plugins/asrcWatches.js';
+import { launchWith } from '../busSocketGate.js';
+import type { RunnerStartOptions } from '../PythonProcess.js';
 
 /**
  * The consumer strings gst_decode_asrc_chain_test.py runs (house-clock WI-P3-9 + WI-P3-15,
@@ -42,7 +44,8 @@ function aes67(): string {
     return built!.pipeline;
 }
 
-/** audio-output-302m with `n` sources at D = 300 ms: the single-source arm or the mixer arm. */
+/** audio-output-302m with `n` sources at D = 300 ms: the single-source arm or the mixer arm, its
+ *  live inputs (B-192) linked in as the runner host launches it with every one there. */
 function audioOutput302m(n: number): string {
     const m = new AudioOutput302mModule() as unknown as Record<string, unknown>;
     const sources = Array.from({ length: n }, (_, i) => source(`in${i}`, 40410 + i));
@@ -58,7 +61,8 @@ function audioOutput302m(n: number): string {
     m.setStatusData = vi.fn();
     const built = (m.buildPipeline as (c: unknown) => Built)({ device: 'alsa_output.test' });
     expect(built).not.toBeNull();
-    return built!.pipeline;
+    const opts = built as unknown as RunnerStartOptions;
+    return opts.liveInputs?.length ? launchWith(opts, opts.liveInputs).pipeline : opts.pipeline;
 }
 
 /** audio-decoder at D = 300 ms on one edge, its decoder branch picked by the probed `codec`. */

@@ -246,7 +246,8 @@ export class TsSplitterModule extends GstPluginBase {
         const msg = this.controller?.handleLine(line);
         if (!msg) return;
         dispatchRunnerEvent(msg, {
-            onPluginEvent: (channel, payload) => this.onPluginEvent(channel, payload),
+            // Through the base, as a runner's: it logs the stamp guard's episodes (B-203).
+            onPluginEvent: (channel, payload) => this.dispatchPluginEvent(channel, payload),
             // Input silence is source-side, not a module failure — same
             // semantics as the gst path's bus_stall warning.
             onInputStalled: (ms) =>

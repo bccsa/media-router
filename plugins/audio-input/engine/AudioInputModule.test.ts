@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { ModuleInstance } from '@media-router/engine';
 import { AudioInputModule } from './AudioInputModule.js';
 
 /**
@@ -34,6 +35,11 @@ function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; s
             unloadedModuleIds.push(id);
         }),
         releaseAll: vi.fn(async () => {}),
+        /** The PipeWire daemon (pactl's cookie); a test sets a new one for a restart. */
+        cookie: 'a1',
+        daemonInstance(): string | null {
+            return this.cookie;
+        },
     };
 }
 
@@ -121,7 +127,7 @@ describe('AudioInputModule hot-plug recovery', () => {
         pw.setPresent(false);
         await tickWatchdog(module);
 
-        expect(pw.unloadModule).toHaveBeenCalledWith(remapId);
+        expect(pw.unloadModule).toHaveBeenCalledWith(remapId, 'MR_PW_mic-test-001');
         expect(pw.unloadedModuleIds).toContain(remapId);
         await module.onStop();
     });
@@ -137,6 +143,97 @@ describe('AudioInputModule hot-plug recovery', () => {
         await tickWatchdog(module);
 
         expect(pw.loadRemapSource).toHaveBeenCalledTimes(2);
+        await module.onStop();
+    });
+});
+
+describe('AudioInputModule: a restart applies a re-picked device (B-191)', () => {
+    const OLD = 'alsa_input.usb-Shure_MVX2U';
+    const NEW = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic1__source';
+
+    /** The module under the engine's ModuleInstance on a graph of `present` devices. `repick`
+     *  is a settings patch, then what Restart does to the instance. */
+    function underEngine(present: Set<string>) {
+        const { module, pw, services, config } = createModule(true);
+        pw.hasDevice.mockImplementation((name: string) => present.has(name));
+        pw.getDeviceInfo.mockImplementation((name: string) =>
+            present.has(name) ? { channels: 1, sampleRate: 48000 } : null,
+        );
+        // The PipeWire latency poll reads the real graph: not wanted here.
+        vi.spyOn((module as any).timing, 'watchPipeWire').mockImplementation(() => {});
+        const instance = new ModuleInstance('mic-test-001', 'audio-input', module, config, {
+            ...services,
+            mediaRouter: { releaseAllBusChannelsFor: vi.fn() } as any,
+            processManager: { releaseAll: vi.fn(async () => {}) } as any,
+        });
+        const repick = async (device: string) => {
+            await instance.applyConfigUpdate({ device });
+            await instance.stop();
+            await instance.start();
+        };
+        /** The device of each remap-source loaded so far. */
+        const remapped = () => pw.loadRemapSource.mock.calls.map((c: unknown[]) => c[1]);
+        return { module: module as any, instance, repick, remapped };
+    }
+
+    it('a running input remaps and watches the re-picked device after Restart', async () => {
+        const { module, instance, repick, remapped } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        await repick(NEW);
+        expect(remapped()).toEqual([OLD, NEW]);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('an input waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, repick, remapped } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await tickWatchdog(module);
+        expect(remapped()).toEqual([]);
+        present.add(NEW);
+        await tickWatchdog(module);
+        expect(remapped()).toEqual([NEW]);
+        await instance.stop();
+    });
+});
+
+describe('AudioInputModule after a PipeWire restart (B-195)', () => {
+    it('its meter stream is the PipeWire stream it declares', () => {
+        const module = new AudioInputModule() as any;
+        module.services = { instanceId: 'mic-test-001' };
+        const desc = module.buildPipeline({ channels: 1 });
+        expect(desc.pipeline).toMatch(/^pulsesrc name=capture device=MR_PW_mic-test-001 /);
+        expect(desc.pipeWireElements).toEqual(['capture']);
+    });
+
+    it('rebuilds the remap-source and re-links its consumers; the old ID is unloaded by name only', async () => {
+        const { module, pw, services, config } = createModule(true);
+        const reexec = vi.fn(async () => {});
+        services.mediaRouter = { reexecuteOutgoingPwLinks: reexec } as any;
+        await module.onInit(config, services);
+        await module.onStart();
+        const first = await pw.loadRemapSource.mock.results[0].value;
+
+        pw.cookie = 'b2'; // the source and every pw-link out of it went with the old daemon
+        await tickWatchdog(module);
+        expect(pw.unloadModule).toHaveBeenCalledWith(first, 'MR_PW_mic-test-001');
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error: 'PipeWire restarted — rebuilding the stream once PipeWire and the device are back',
+        });
+        await tickWatchdog(module);
+        expect(pw.loadRemapSource).toHaveBeenCalledTimes(2);
+        expect(reexec).toHaveBeenCalledWith('mic-test-001');
+        expect(module.getState().health).toBe('ok');
         await module.onStop();
     });
 });

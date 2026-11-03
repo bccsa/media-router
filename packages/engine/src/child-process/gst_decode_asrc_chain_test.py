@@ -192,7 +192,8 @@ if not os.path.exists(_TEST_SO):
 else:
     Gst.Plugin.load_file(_TEST_SO)
     _tmp = tempfile.mkdtemp(prefix="decode-asrc-")
-    for _arm, _branches in (("aout1", ()), ("aout2", ("mixin_asrc0", "mixin_asrc1"))):
+    # From two sources each branch is a live input (B-192), its ASRC named by its connection.
+    for _arm, _branches in (("aout1", ()), ("aout2", ("mixin_asrc_df99eb", "mixin_asrc_df9858"))):
         print(f"\n--- audio-output-302m, {_arm}: on the house clock into mrtestaudiosink 40 ppm fast ---")
         _p = Gst.parse_launch(on_device(on_file(PIPELINES[_arm], rebased(_FIXTURE, _tmp, f"{_arm}.ts"))))
         house_clock(_p)

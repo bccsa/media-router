@@ -34,11 +34,11 @@ export interface DeviceDetection {
  * Initial probe at module init. Returns whatever PipeWire reports plus
  * any config updates and a health warning when info is missing.
  */
-export function detectDeviceFormat(
+export async function detectDeviceFormat(
     pipeWire: PipeWireManager | undefined,
     deviceName: string,
     config: { channels?: number; sampleRate?: number },
-): DeviceDetection {
+): Promise<DeviceDetection> {
     const empty: DeviceDetection = {
         detected: { channels: null, sampleRate: null },
         configUpdates: {},
@@ -46,7 +46,7 @@ export function detectDeviceFormat(
     };
     if (!pipeWire || !deviceName) return empty;
 
-    const info = pipeWire.getDeviceInfo(deviceName);
+    const info = await pipeWire.getDeviceInfo(deviceName);
     if (!info) {
         return {
             detected: { channels: null, sampleRate: null },
@@ -82,16 +82,16 @@ export function detectDeviceFormat(
  * state so callers can hold onto it as their authoritative `detectedX`
  * fields.
  */
-export function resolveDeviceFormat(
+export async function resolveDeviceFormat(
     pipeWire: PipeWireManager | undefined,
     deviceName: string,
     prior: DeviceFormatState,
     config: { channels?: number; sampleRate?: number },
     role: 'input' | 'output',
-): { channels: number; rate: number; detected: DeviceFormatState } {
-    const resolved = tryResolveDeviceFormat(pipeWire, deviceName, prior, config);
+): Promise<{ channels: number; rate: number; detected: DeviceFormatState }> {
+    const resolved = await tryResolveDeviceFormat(pipeWire, deviceName, prior, config);
     if (!resolved.channels || resolved.channels <= 0) {
-        const hint = role === 'input' ? ' Re-pick the device once it\'s no longer suspended.' : '';
+        const hint = role === 'input' ? " Re-pick the device once it's no longer suspended." : '';
         throw new Error(
             `Cannot start audio ${role} "${deviceName}": channel count is unknown.${hint}`,
         );
@@ -112,15 +112,15 @@ export function resolveDeviceFormat(
  * Used by the device-reconnect path where a missing format isn't fatal —
  * the caller logs and skips the rebuild until the next reconnect event.
  */
-export function tryResolveDeviceFormat(
+export async function tryResolveDeviceFormat(
     pipeWire: PipeWireManager | undefined,
     deviceName: string,
     prior: DeviceFormatState,
     config: { channels?: number; sampleRate?: number },
-): { channels: number | null; rate: number | null; detected: DeviceFormatState } {
+): Promise<{ channels: number | null; rate: number | null; detected: DeviceFormatState }> {
     const detected: DeviceFormatState = { ...prior };
     if (pipeWire) {
-        const info = pipeWire.getDeviceInfo(deviceName);
+        const info = await pipeWire.getDeviceInfo(deviceName);
         if (info?.channels) detected.channels = info.channels;
         if (info?.sampleRate) detected.sampleRate = info.sampleRate;
     }

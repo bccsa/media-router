@@ -53,6 +53,7 @@ describe('N1Mixer302mModule.getLiveInputBranch (#787)', () => {
     it('a wired source on in-<i> gets a branch into that input fan-in', () => {
         const { module } = makeModule([mkSource('in-1', 0), mkSource('in-1', 1)]);
         module.config = { pairCount: 3, channels: 2 };
+        module.buildPipeline(module.config); // the start's build: in-1 has its fan-in
         const b = module.getLiveInputBranch('in-1', 'c-in-1-1');
         expect(b).toMatchObject({ element: 'inmix1' });
         expect(b.name).toMatch(/^inmix1_in_[0-9a-f]{6}$/);
@@ -60,28 +61,55 @@ describe('N1Mixer302mModule.getLiveInputBranch (#787)', () => {
         // The helper's live branch: mrtsdemux, then the watchdog into inmix1's pace group.
         expect(b).toEqual(liveMixInputBranch('inmix1', mkSource('in-1', 1), { channels: 2 }));
         expect(b.description).toMatch(/ ! mralignwatch name=inmix1_aw_[0-9a-f]{6} aligner=inmix1 /);
-        // The same bin name the start-time pipeline gives that source.
-        expect(module.buildPipeline(module.config)!.pipeline).toContain(`( name=${b.name} `);
+        // The same bin name the start's live inputs give that source (B-197).
+        expect(module.buildPipeline(module.config)!.liveInputs.map((l: any) => l.name)).toContain(
+            b.name,
+        );
     });
 
     it('the branch converts to the configured mix width', () => {
         const { module } = makeModule([mkSource('in-1', 0), mkSource('in-1', 1)]);
         module.config = { pairCount: 3, channels: 8 };
+        module.buildPipeline(module.config);
         const b = module.getLiveInputBranch('in-1', 'c-in-1-1');
         expect(b).toEqual(liveMixInputBranch('inmix1', mkSource('in-1', 1), { channels: 8 }));
         expect(b.description).toContain(' ! audio/x-raw,rate=48000,channels=8 ! mralignwatch ');
-        expect(module.buildPipeline(module.config)!.pipeline).toContain(
-            `( name=${b.name} ${b.description} ) ! inmix1.sink_1`,
-        );
+        expect(module.buildPipeline(module.config)!.liveInputs).toContainEqual(b);
     });
 
     it('a source already gone (remove) still names its branch, without a description', () => {
         const { module } = makeModule([mkSource('in-0', 0)]);
         module.config = { pairCount: 2 };
+        module.buildPipeline(module.config);
         expect(module.getLiveInputBranch('in-0', 'c-gone')).toEqual({
             element: 'inmix0',
             name: expect.stringMatching(/^inmix0_in_/),
         });
+    });
+
+    it('no branch for an input without a fan-in in the running pipeline: the engine restarts the mixer into one (B-196, MR-027)', () => {
+        // .103: N1 In 2 wired to in-1 while the mixer ran in-0 alone; the add was refused and
+        // the mixer never rebuilt, so out-0 (fed by in-1, in-2) never came.
+        const sources = [mkSource('in-0', 0)];
+        const { module } = makeModule(sources);
+        module.config = { pairCount: 3 };
+        module.buildPipeline(module.config);
+        expect(module.getLiveInputBranch('in-0', 'c-in-0-0')).toMatchObject({ element: 'inmix0' });
+        sources.push(mkSource('in-1', 1));
+        expect(module.getLiveInputBranch('in-1', 'c-in-1-1')).toBeNull();
+
+        // A refresh (a runner is up) leaves them as launched; the next start's build takes in-1.
+        module.childProcess = {};
+        module.buildPipeline(module.config);
+        expect(module.getLiveInputBranch('in-1', 'c-in-1-1')).toBeNull();
+        module.childProcess = null;
+        module.buildPipeline(module.config);
+        expect(module.getLiveInputBranch('in-1', 'c-in-1-1')).toMatchObject({ element: 'inmix1' });
+
+        // A start with no source left launches nothing: no branch anywhere.
+        sources.length = 0;
+        module.buildPipeline(module.config);
+        expect(module.getLiveInputBranch('in-0', 'c-in-0-0')).toBeNull();
     });
 
     it('declines ports that are not inputs or lie past pairCount', () => {
@@ -166,7 +194,10 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         // One source per input still builds the input fan-in (live inputs, #787).
         expect(desc!.pipeline).toContain('audiomixer name=inmix0 latency=0');
         expect(desc!.pipeline).toContain('capsfilter name=inmix0_out ');
-        expect(desc!.pipeline).toContain('mralignwatch name=inmix1_aw_');
+        // Its sources are live inputs, started with those that run (B-197).
+        expect(desc!.pipeline).not.toContain('unixfdsrc');
+        expect(desc!.liveInputs.map((b: any) => b.element)).toEqual(['inmix0', 'inmix1']);
+        expect(desc!.liveInputs[1].description).toContain('mralignwatch name=inmix1_aw_');
         expect(desc!.pipeline).toContain(
             'audiomixer name=omix0 latency=0 start-time-selection=first',
         );

@@ -134,6 +134,77 @@ describe('MediaRouter.getRoutePlayoutHead', () => {
     });
 });
 
+/** .108 (MR-003): an Audio Output (302M) mixing a mic chain (Mixer) and an SRT chain
+ *  (transcoder), its edges made in `order`. */
+async function mixRoute(order: Array<'mic' | 'srt'>, srtConfig: Record<string, unknown> = {}) {
+    const g = busGraph(
+        { mic: {}, mixer: {}, srt: srtConfig, transcoder: {}, 'audio-output-302m': {} },
+        ['mixer', 'transcoder'],
+    );
+    await g.wire('mic', 'mixer');
+    await g.wire('srt', 'transcoder');
+    for (const leg of order) {
+        await g.wire(
+            leg === 'mic' ? 'mixer' : 'transcoder',
+            'audio-output-302m',
+            leg === 'mic' ? 'in' : 'in-b',
+        );
+    }
+    g.router.setPlayoutReanchor(true, 60);
+    return g;
+}
+
+describe('B-197: a module with several bus inputs presents at the largest D among their routes', () => {
+    it('a declared D on one route wins, in either edge order', async () => {
+        for (const order of [
+            ['mic', 'srt'],
+            ['srt', 'mic'],
+        ] as Array<Array<'mic' | 'srt'>>) {
+            const g = await mixRoute(order, { playoutOffsetMs: 800 });
+            expect(g.router.getRoutePlayoutHead('audio-output-302m')?.headId).toBe('srt');
+            expect(legD(g.router, 'audio-output-302m')).toBe(800);
+        }
+    });
+
+    it("a raise on one route stays this output's D when its edges are made again in the other order (a restart)", async () => {
+        const g = await mixRoute(['srt', 'mic']);
+        await g.router.requestPlayoutRaise('audio-output-302m', undefined, req(1_200));
+        const raised = legD(g.router, 'audio-output-302m');
+        expect(raised).toBeGreaterThan(1_200);
+        expect(g.router.getRoutePlayoutHead('audio-output-302m')?.headId).toBe('srt');
+        // The restart re-applies the profile's order: the Mixer's edge first.
+        for (const c of g.router.getModuleConnections('audio-output-302m')) {
+            await g.router.removeConnection(c.id, true);
+        }
+        await g.wire('mixer', 'audio-output-302m', 'in');
+        await g.wire('transcoder', 'audio-output-302m', 'in-b');
+        expect(g.router.getRoutePlayoutHead('audio-output-302m')?.headId).toBe('srt');
+        expect(legD(g.router, 'audio-output-302m')).toBe(raised);
+        // Its next raise lands on top of that D, on the same head.
+        vi.advanceTimersByTime(REANCHOR_SETTLE_MS + 1);
+        await g.router.requestPlayoutRaise('audio-output-302m', undefined, req(100));
+        expect(legD(g.router, 'audio-output-302m')).toBeGreaterThan(raised + 100);
+        expect(g.router.getRoutePlayoutRaiseMs('mixer')).toBe(0);
+    });
+
+    it("asked for one port, the head of that port's route only", async () => {
+        const g = busGraph({ a: { playoutOffsetMs: 300 }, b: { playoutOffsetMs: 800 }, mux: {} });
+        await g.wire('a', 'mux', 'in');
+        await g.wire('b', 'mux', 'in-b');
+        expect(g.router.getRoutePlayoutHead('mux', 'in')?.headId).toBe('a');
+        expect(g.router.getRoutePlayoutOffsetMs('mux', 'in')).toBe(300);
+        expect(g.router.getRoutePlayoutHead('mux', 'in-b')?.headId).toBe('b');
+        expect(g.router.getRoutePlayoutOffsetMs('mux', 'in-b')).toBe(800);
+        expect(g.router.getRoutePlayoutHead('mux')?.headId).toBe('b');
+    });
+
+    it('one input: the head of its route, as before (through a transparent producer, first input)', async () => {
+        const g = await mixRoute(['mic']);
+        expect(g.router.getRoutePlayoutHead('audio-output-302m')?.headId).toBe('mic');
+        expect(legD(g.router, 'audio-output-302m')).toBe(60);
+    });
+});
+
 describe('MediaRouter.requestPlayoutRaise', () => {
     it('raises the HEAD, and both legs of the route see it', async () => {
         const g = await splitRoute();

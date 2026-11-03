@@ -5,12 +5,25 @@ import {
     buildAsrc,
     buildLatenessTap,
     pulsePinnedStreamProps,
+    type LiveInputBranch,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { buildAudioMixInput, mixInputDemuxes } from '@media-router/plugin-audio-302m-core';
-import { SINK_BUFFER_US, SLAVE_METHOD_CUSTOM, audio302mTsOffsetNs } from './audio302mTiming.js';
+import {
+    buildAudioMixInput,
+    buildLiveMixInput,
+    liveInputBranchFor,
+    mixInputDemuxes,
+    type AudioMixSource,
+} from '@media-router/plugin-audio-302m-core';
+import {
+    SINK_BUFFER_US,
+    SINK_DECLARED_LATENCY_MS,
+    SLAVE_METHOD_CUSTOM,
+    audio302mTsOffsetNs,
+} from './audio302mTiming.js';
 import { buildOutputPlacement } from './outputPlacement.js';
+import { SilentOutputWatch } from './silentOutputWatch.js';
 import { TimelineSettleRestart } from './timelineSettleRestart.js';
 
 /** Answers LATENCY live (gstidentity.c: `live || sync`), so the sink adds its ring behind the
@@ -19,6 +32,10 @@ import { TimelineSettleRestart } from './timelineSettleRestart.js';
 const LIVE_UPSTREAM = 'identity name=live_upstream sync=true';
 /** The output ASRC: the device term, with one source its decode term too (house-clock WI-P3-15). */
 const OUT_ASRC = 'outasrc';
+
+const INPUT_PORT_ID = 'audio-in';
+/** The fan-in's name prefix: `buildAudioMixInput`'s default, so one source keeps its string. */
+const MIXER = 'mixin';
 
 /**
  * Audio Output (302M) plugin.
@@ -54,17 +71,29 @@ const OUT_ASRC = 'outasrc';
  * non-default range onto the device's full width upstream of the sink; the
  * sink element and its timing properties are untouched by placement.
  *
+ * SOURCES. From two, each is a live input (`liveInputs`, B-192): the runner starts with
+ * those that run, the others join as they start, one that goes away costs its own input.
+ * One source plays direct (ADR-0008 rule 3) and restarts with its wiring, as before.
+ *
  * - Volume/mute: gst `volume` element (single attenuation point).
  * - VU: in-pipeline `level` element (post-volume = what is being played;
  *   measures the N-channel mix, not the device-wide spread).
  * - Device hot-plug: base-class device watchdog stops/starts the pipeline.
+ * - A lost PipeWire stream (`sink` failed: PipeWire restarted or stopped) is rebuilt by that
+ *   watchdog once PipeWire and the device are back, not restarted in a loop meanwhile (B-195).
  * - NEVER a default device (broadcast rule): unconfigured device = health
  *   error, no pipeline.
+ * - Plays nothing for 5 s (its mixer delivers no audio, or all of it past its playout time):
+ *   a warning, not ok; a stalled mixer is relaunched once (B-197).
  */
 export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
 
     private deviceName = '';
+    /** The device's channel count, read before each start: `buildPipeline` cannot wait (B-200). */
+    private deviceChannels: number | null = null;
+    /** The pipeline launched is the mixer arm (two sources or more), not the direct one. */
+    private mixerLaunched = false;
     /** The fan-in's demuxes and the connection each decodes, from the last build (WI-P3-6). */
     private demuxes = new Map<string, string>();
 
@@ -77,6 +106,18 @@ export class AudioOutput302mModule extends GstPluginBase {
     /** FF9: relaunch this pipeline once its source settles after a rebase or stall-resume. */
     private readonly settleRestart = new TimelineSettleRestart({
         pipeline: () => this.childProcess,
+        log: () => this.log,
+    });
+    private readonly silent = new SilentOutputWatch({
+        pipeline: () => this.childProcess,
+        playing: () => this.childProcess?.isRunning === true,
+        mixes: () => this.mixerLaunched,
+        sinkLateness: () => this.getTimingSummary()?.output,
+        playoutBudgetMs: () =>
+            audio302mTsOffsetNs(this.services, this.config) / 1_000_000 + SINK_DECLARED_LATENCY_MS,
+        warn: (text) => {
+            if (text === null || this.error !== text) this.setPlaysNothing(text);
+        },
         log: () => this.log,
     });
 
@@ -92,7 +133,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         // Device not enumerated yet → defer to the watchdog (throwing here
         // would prevent the watchdog from starting; hot-plug would then only
         // recover on an engine restart — same rationale as audio-output).
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -100,18 +141,21 @@ export class AudioOutput302mModule extends GstPluginBase {
             this.startDeviceWatchdog(false);
             return;
         }
+        await this.readDeviceChannels();
         await super.onStart();
         this.startDeviceWatchdog();
     }
 
     async onStop(): Promise<void> {
         this.settleRestart.cancel();
+        this.silent.stop();
         await this.stopDeviceWatchdog();
         await super.onStop();
     }
 
     async onDestroy(): Promise<void> {
         this.settleRestart.cancel();
+        this.silent.stop();
         await super.onDestroy();
     }
 
@@ -123,20 +167,43 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected setVuData(data: number[]): void {
         super.setVuData(data);
         this.settleRestart.onVu(data);
+        if (data.length) this.silent.onVu();
     }
 
     /** Every PLAYING is a fresh pipeline (no rebase pad offset): nothing left to relaunch. */
     protected onPipelinePlaying(): void {
         this.settleRestart.cancel();
+        this.silent.onPlaying();
     }
 
     protected getWatchedDeviceName(): string | null {
         return this.deviceName || null;
     }
 
+    /** The 302M sources wired to Audio In. */
+    private sources(): AudioMixSource[] {
+        const router = this.services?.mediaRouter;
+        const instanceId = this.services?.instanceId ?? '';
+        if (!router) return [];
+        return router.getModuleBusSources(instanceId).filter((s) => s.sinkPortId === INPUT_PORT_ID);
+    }
+
+    /** Live input add, remove and join on Audio In, from two sources on: one plays direct, and
+     *  a second wired to the direct pipeline restarts it into the mixer (B-194). */
+    getLiveInputBranch(sinkPortId: string, connectionId: string): LiveInputBranch | null {
+        if (sinkPortId !== INPUT_PORT_ID || !this.mixerLaunched) return null;
+        const sources = this.sources();
+        if (sources.length < 2) return null;
+        const source = sources.find((s) => s.connectionId === connectionId);
+        return liveInputBranchFor(MIXER, connectionId, source, {
+            channels: (this.config.channels as number) ?? 2,
+        });
+    }
+
     /** Device unplugged — tear down the pipeline (pulsesink is gone). */
     protected async onDeviceDisconnected(): Promise<void> {
         this.settleRestart.cancel();
+        this.silent.stop();
         try {
             await super.onStop();
         } catch {
@@ -146,7 +213,13 @@ export class AudioOutput302mModule extends GstPluginBase {
 
     /** Device returned — rebuild the pipeline. */
     protected async onDeviceReconnected(): Promise<void> {
+        await this.readDeviceChannels();
         await super.onStart();
+    }
+
+    private async readDeviceChannels(): Promise<void> {
+        const info = await this.services?.pipeWire?.getDeviceInfo(this.deviceName);
+        this.deviceChannels = info?.channels ?? null;
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -177,9 +250,10 @@ export class AudioOutput302mModule extends GstPluginBase {
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
-        const router = this.services?.mediaRouter;
-        const instanceId = this.services?.instanceId ?? '';
-        if (!router) return null;
+        // With no runner yet this is a start's build, the pipeline that runs; a refresh has one.
+        const launch = !this.childProcess;
+        if (launch) this.mixerLaunched = false;
+        if (!this.services?.mediaRouter) return null;
 
         const device = (config.device as string) ?? '';
         if (!device) {
@@ -188,9 +262,7 @@ export class AudioOutput302mModule extends GstPluginBase {
             return null;
         }
 
-        const sources = router
-            .getModuleBusSources(instanceId)
-            .filter((s) => s.sinkPortId === 'audio-in');
+        const sources = this.sources();
         if (sources.length === 0) {
             this.setHealth('warning', 'No 302M sources connected');
             return null;
@@ -200,7 +272,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const channels = (config.channels as number) ?? 2;
         const firstChannel = Math.max(1, Math.trunc(Number(config.firstChannel ?? 1)) || 1);
-        const deviceChannels = this.services?.pipeWire?.getDeviceInfo(device)?.channels ?? null;
+        const deviceChannels = this.deviceChannels;
 
         const placement = buildOutputPlacement({ device, channels, firstChannel, deviceChannels });
         if (placement.error !== undefined) {
@@ -208,12 +280,22 @@ export class AudioOutput302mModule extends GstPluginBase {
             return null;
         }
 
-        // One source: its branch leaves the decode term to outasrc, one resampler (OQ-23). A
-        // mixer's branches each match their own source; outasrc is then the device term alone.
+        // One source: the direct branch, its decode term left to outasrc, one resampler (OQ-23).
+        // Several: the mixer, its inputs apart for the runner to start with those that run (B-192),
+        // each branch matching its own source's clock; outasrc is then the device term alone.
         const single = sources.length === 1;
-        const mixIn = { sources, channels, branchAsrc: false };
-        const { fragment, continuationName } = buildAudioMixInput(mixIn);
+        const mixIn = {
+            sources,
+            channels,
+            mixerName: MIXER,
+            branchAsrc: false,
+            liveInputs: !single,
+        };
+        const { fragment, continuationName, inputs } = single
+            ? { ...buildAudioMixInput(mixIn), inputs: undefined }
+            : buildLiveMixInput(mixIn);
         this.demuxes = mixInputDemuxes(mixIn);
+        if (launch) this.mixerLaunched = !single;
         const tsOffsetNs = audio302mTsOffsetNs(this.services, config);
         const outAsrc = buildAsrc({
             name: OUT_ASRC,
@@ -258,10 +340,12 @@ export class AudioOutput302mModule extends GstPluginBase {
 
         return {
             pipeline,
+            ...(inputs ? { liveInputs: inputs } : {}),
             restartOnError: true,
             // Audio only, nothing to drain; and the mixer arm's aligners hold every EOS
             // (hold-on-eos), so a drain would wait out its 6 s timeout on each stop or rebuild.
             eosDrain: false,
+            pipeWireElements: ['sink'],
             timingSink: { element: 'sink', kind: 'audio' },
             // The latency ratchet guard of this `sync=true` leg (backlogShed.ts), read and shed at
             // outasrc's input, the last pad on content time: after it the PTS run on the device's

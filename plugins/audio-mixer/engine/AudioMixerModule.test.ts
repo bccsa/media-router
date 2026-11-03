@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MediaRouter } from '@media-router/engine';
+import { MediaRouter, liveInputLaunchText, type LiveInputBranch } from '@media-router/engine';
 import { AudioMixerModule } from './AudioMixerModule.js';
+
+/** The description as the runner launches it with every source there (B-197: live inputs). */
+const launched = (d: { pipeline: string; liveInputs?: LiveInputBranch[] }) =>
+    [d.pipeline, ...(d.liveInputs ?? []).map((b, i) => liveInputLaunchText(b, i))].join(' ');
 
 function makeModule(sourceCount = 0, opts: { busPort?: number | null } = {}) {
     const module = new AudioMixerModule() as any;
@@ -46,7 +50,10 @@ describe('AudioMixerModule.buildPipeline', () => {
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('audiomixer name=mixin');
-        expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(3);
+        // Every source a live input: the runner starts with those that run (B-197).
+        expect(desc!.liveInputs).toHaveLength(3);
+        expect(desc!.pipeline).not.toContain('unixfdsrc');
+        expect(launched(desc!).match(/! mixin\./g)).toHaveLength(3);
         expect(desc!.pipeline).toContain('avenc_s302m');
         expect(desc!.pipeline).toContain('tee name=busout_41000');
         expect(desc!.restartOnError).toBe(true);
@@ -104,7 +111,7 @@ describe('AudioMixerModule.getLiveInputBranch (#787)', () => {
         expect(b.name).toMatch(/^mixin_in_[0-9a-f]{6}$/);
         expect(b.description).toContain('unixfdsrc socket-path=/tmp/mr-bus-40101-x.sock');
         // The same name the start-time pipeline gives that source's bin.
-        expect(module.buildPipeline({})!.pipeline).toContain(`( name=${b.name} `);
+        expect(launched(module.buildPipeline({})!)).toContain(`( name=${b.name} `);
     });
 
     it('an edge that is already gone (remove) still names its branch, without a description', () => {
@@ -161,14 +168,14 @@ describe('AudioMixerModule: the start pace from the producers (WI-P2-13)', () =>
         module.services = { instanceId: 'amx-1', mediaRouter: router };
         module.setHealth = vi.fn();
         module.setStatusData = vi.fn();
-        const pipeline: string = module.buildPipeline({}).pipeline;
+        const pipeline: string = launched(module.buildPipeline({}));
         expect(pipeline.match(/seed-lateness=\d+/g)).toEqual(['seed-lateness=48250000']);
         const seeded = router
             .getModuleBusSources('amx-1')
             .find((s) => s.sourceModuleId === 'enc-a')!;
-        // On the branch of that edge, the one a live re-add sends too.
+        // A start's; the branch a live re-add sends has none (B-197).
         const branch = module.getLiveInputBranch('audio-in', seeded.connectionId);
-        expect(branch.description).toMatch(/ seed-lateness=48250000$/);
-        expect(pipeline).toContain(branch.description);
+        expect(branch.description).not.toContain('seed-lateness');
+        expect(pipeline).toContain(`${branch.description} seed-lateness=48250000`);
     });
 });

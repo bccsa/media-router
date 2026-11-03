@@ -254,6 +254,78 @@ describe('LatenessReporter', () => {
     });
 });
 
+describe('LatenessReporter: an output off the house clock (B-203, MR-033)', () => {
+    it('10 s or more off is a warning while it lasts; 1 h and more stays hidden from the numbers', () => {
+        const onHidden = vi.fn();
+        const r = new LatenessReporter({ intervalMs: 2000, onHidden });
+        r.onEvent('mrlateness:lat_busout_40000', win(40), 0);
+        expect(r.offClockWarning(0)).toBeNull();
+        // The gate's input egress at 08:51Z: a frozen floor 15,742.9 s ahead of the clock.
+        r.onEvent('mrlateness:lat_busout_40000', win(-15_742_882.866), 2000);
+        expect(r.offClockWarning(2000)).toBe(
+            'Output timing off the house clock by 4 h 22 min (ahead)',
+        );
+        expect(r.summary(2000).output).toBeUndefined();
+        expect(onHidden).toHaveBeenCalledTimes(1);
+        // ... and at 12:20Z, under the 1 h guard: shown as it reads, and still the warning.
+        r.onEvent('mrlateness:lat_busout_40000', win(-3_235_933), 4000);
+        expect(r.summary(4000).output?.meanMs).toBe(-3_235_933);
+        expect(r.offClockWarning(4000)).toBe(
+            'Output timing off the house clock by 53 min 55 s (ahead)',
+        );
+        // Back on the clock: gone at once.
+        r.onEvent('mrlateness:lat_busout_40000', win(48), 6000);
+        expect(r.offClockWarning(6000)).toBeNull();
+    });
+
+    it('the bound: 9.99 s is none, 10 s is; behind as ahead; the worst output named', () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_busout_40001', win(-9_990));
+        r.onEvent('mrlateness:lat_render', win(9_999));
+        expect(r.offClockWarning()).toBeNull();
+        r.onEvent('mrlateness:lat_render', win(10_000));
+        expect(r.offClockWarning()).toBe('Output timing off the house clock by 10.0 s (behind)');
+        // FRA-Master01's N-1 outputs at 12:30Z (MR-034): 159 s behind beats the render's 10 s.
+        r.onEvent('mrlateness:lat_busout_40002', win(159_093));
+        expect(r.offClockWarning()).toBe(
+            'Output timing off the house clock by 2 min 39 s (behind)',
+        );
+        r.onEvent('mrlateness:lat_egress', win(-20_000));
+        expect(r.offClockWarning()).toBe(
+            'Output timing off the house clock by 2 min 39 s (behind)',
+        );
+    });
+
+    it("inputs never warn: what a module reads is its source's output", () => {
+        const r = new LatenessReporter();
+        r.onEvent('mrlateness:lat_busin_41000_aaaaaa', win(-13_156_104));
+        r.onEvent('mrlateness:lat_busin', win(30_000));
+        expect(r.offClockWarning()).toBeNull();
+    });
+
+    it("a sidecar window counts as a tap's: hidden at 1 h, a warning at 10 s", () => {
+        const r = new LatenessReporter();
+        r.addWindow('lat_busout_40017', {
+            count: 50,
+            meanMs: -15_742_882,
+            minMs: -15_742_900,
+            maxMs: -15_742_800,
+        });
+        expect(r.summary().output).toBeUndefined();
+        expect(r.offClockWarning()).toBe('Output timing off the house clock by 4 h 22 min (ahead)');
+    });
+
+    it('goes when the output goes quiet, and with a reset', () => {
+        const r = new LatenessReporter({ intervalMs: 2000 });
+        r.onEvent('mrlateness:lat_busout_40000', win(-12_000), 0);
+        expect(r.offClockWarning(6000)).toBe('Output timing off the house clock by 12.0 s (ahead)');
+        expect(r.offClockWarning(6001)).toBeNull();
+        r.onEvent('mrlateness:lat_busout_40000', win(-12_000), 7000);
+        r.reset();
+        expect(r.offClockWarning(7000)).toBeNull();
+    });
+});
+
 type AwState = 'waiting' | 'present' | 'absent';
 interface AwOpts {
     reason?: string;
@@ -309,7 +381,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         const r = fanIn();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { latenessMs: 40 }), 0);
         r.onEvent('mralignwatch:mixin_aw_2', aw('c2', 'present', { latenessMs: 140 }), 0);
-        expect(r.alignerWarnings(0)).toEqual({ absent: null, full: null });
+        expect(r.alignerWarnings(0)).toEqual({ absent: null, full: null, reanchored: null });
 
         const gone = aw('c2', 'absent', { reason: 'state', wMs: 312.4, absences: 1 });
         expect(r.onAligner('mralignwatch:mixin_aw_2', gone, 100)).toEqual({
@@ -319,6 +391,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.alignerWarnings(100)).toEqual({
             absent: 'Input enc-b (audio-in) silent for 312 ms — continuing without it',
             full: null,
+            reanchored: null,
         });
         expect(r.summary(100).inputs.find((i) => i.tap === 'lat_busin_2')).toMatchObject({
             label: 'enc-b (audio-in)',
@@ -333,6 +406,61 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.onAligner('mralignwatch:mixin_aw_2', back, 2000)?.changed).toBe(true);
         expect(r.alignerWarnings(2000).absent).toBeNull();
         expect(r.summary(2000).inputs.map((i) => i.state)).toEqual(['present', 'present']);
+    });
+
+    it('an input re-anchored past its pace ceiling stays present, its warning says by how much (B-205)', () => {
+        const r = fanIn();
+        r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { latenessMs: 40 }), 0);
+        const moved = {
+            ...aw('c2', 'present', { reason: 'reanchored', latenessMs: 3 }),
+            anchor: 402_500 * MS,
+            'anchor-was': 0,
+            'pace-ceiling': 4000 * MS,
+        };
+        expect(r.onAligner('mralignwatch:mixin_aw_2', moved, 100)).toMatchObject({
+            changed: true,
+            events: [
+                {
+                    kind: 'reanchored',
+                    anchorMs: 402_500,
+                    wasMs: 0,
+                    ceilingMs: 4000,
+                    label: 'enc-b (audio-in)',
+                },
+            ],
+        });
+        r.onEvent('mralignwatch:mixin_aw_3', aw('c3', 'absent', { wMs: 2000 }), 100);
+        expect(r.alignerWarnings(100)).toEqual({
+            absent: 'Input enc-c (audio-in) silent for 2000 ms — continuing without it',
+            full: null,
+            reanchored:
+                'Input enc-b (audio-in) re-anchored by +6 min 42 s (late) — past the 4 s pace ceiling',
+        });
+        expect(r.summary(100).inputs.find((i) => i.tap === 'lat_busin_2')?.state).toBe('present');
+        // Its clear: the warning goes.
+        r.onEvent(
+            'mralignwatch:mixin_aw_2',
+            {
+                ...aw('c2', 'present', { reason: 'reanchored' }),
+                anchor: 0,
+                'anchor-was': 402_500 * MS,
+            },
+            200,
+        );
+        expect(r.alignerWarnings(200).reanchored).toBeNull();
+    });
+
+    it('a re-anchored internal stage is named once, however many links it feeds; ahead says so', () => {
+        const r = new LatenessReporter({ alignerInput: () => null });
+        for (const o of ['omix0', 'omix1'])
+            r.onEvent(
+                `mralignwatch:${o}_aw_in0`,
+                { ...aw('in0', 'present', { aligner: o }), anchor: -8000 * MS },
+                0,
+            );
+        expect(r.alignerWarnings(0).reanchored).toBe(
+            'Input in0 re-anchored by -8.0 s (ahead) — past the 4 s pace ceiling',
+        );
     });
 
     it('one warning names every absent input; it clears only when all are back', () => {
@@ -596,6 +724,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.alignerWarnings()).toEqual({
             absent: null,
             full: 'Input in3 queue full — upstream held',
+            reanchored: null,
         });
     });
 
@@ -678,7 +807,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         const r = fanIn();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'absent'));
         r.reset();
-        expect(r.alignerWarnings()).toEqual({ absent: null, full: null });
+        expect(r.alignerWarnings()).toEqual({ absent: null, full: null, reanchored: null });
         expect(r.summary().inputs).toEqual([]);
     });
 });

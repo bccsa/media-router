@@ -4,7 +4,7 @@ import type { EngineState } from '@/stores/engines';
 import { engineClockIndicator } from './engineClock';
 
 const SYNCED: TimeSyncState = {
-    source: 'ptp',
+    source: 'chrony',
     synced: true,
     traceable: true,
     taiOffsetS: 37,
@@ -17,6 +17,9 @@ const SYNCED: TimeSyncState = {
     epochReason: 'sync',
     sidecar: true,
 };
+/** A locked PTP box as the field has it (MR-031): linuxptp never sets the kernel's esterror. */
+const PTP: Partial<TimeSyncState> = { source: 'ptp', estErrorUs: 16_000_000, maxErrorUs: 0 };
+const SLAVE = { portState: 'SLAVE', offsetNs: -812, pathDelayNs: 41_231 };
 
 function engine(timeSync: Partial<TimeSyncState>, features = ['house-clock']): EngineState {
     return {
@@ -40,12 +43,12 @@ describe('engineClockIndicator', () => {
         const c = engineClockIndicator(engine({}))!;
         expect(c.level).toBe('ok');
         expect(c.detail).toBe(
-            'Time traceable · source ptp · error ±250 µs · TAI−UTC 37 s · ' +
+            'Time traceable · source chrony · error ±250 µs · TAI−UTC 37 s · ' +
                 'epoch #2 (sync) at 2026-10-13T08:00:00.000Z',
         );
     });
 
-    it("prefers chrony's own error estimate and shows its reference", () => {
+    it("prefers chrony's own error estimate and shows its reference, as before B-198", () => {
         const c = engineClockIndicator(
             engine({
                 source: 'chrony',
@@ -57,8 +60,48 @@ describe('engineClockIndicator', () => {
                 },
             }),
         )!;
-        expect(c.detail).toContain('error ±2.6 ms');
-        expect(c.detail).toContain('ref ntp1.example.org (stratum 2)');
+        expect(c.detail).toBe(
+            'Time traceable · source chrony · error ±2.6 ms · TAI−UTC 37 s · ' +
+                'ref ntp1.example.org (stratum 2) · epoch #2 (sync) at 2026-10-13T08:00:00.000Z',
+        );
+    });
+
+    it("a PTP box shows PTP's offset from its master, not the kernel's unset 16 s", () => {
+        const c = engineClockIndicator(engine({ ...PTP, ptp: SLAVE }))!;
+        expect(c.level).toBe('ok');
+        expect(c.detail).toBe(
+            'Time traceable · source ptp · ' +
+                'error ±812 ns (PTP offset from master, path delay 41.2 µs) · TAI−UTC 37 s · ' +
+                'epoch #2 (sync) at 2026-10-13T08:00:00.000Z',
+        );
+    });
+
+    it('a PTP box without a PTP figure shows none, whatever the kernel holds', () => {
+        // An older engine, or ptp4l gave no answer.
+        expect(engineClockIndicator(engine(PTP))!.detail).toContain(
+            '· error n/a (PTP) · TAI−UTC 37 s ·',
+        );
+        // A slave-only box whose master went: ptp4l answers, its port follows no master.
+        expect(
+            engineClockIndicator(engine({ ...PTP, ptp: { portState: 'LISTENING' } }))!.detail,
+        ).toContain('· error n/a (PTP port LISTENING) ·');
+        // chrony's last figure, left in the kernel when PTP took the clock over, is not PTP's.
+        expect(engineClockIndicator(engine({ ...PTP, estErrorUs: 2600 }))!.detail).toContain(
+            '· error n/a (PTP) ·',
+        );
+        for (const ptp of [undefined, SLAVE, { portState: 'LISTENING' }])
+            expect(engineClockIndicator(engine({ ...PTP, ptp }))!.detail).not.toMatch(
+                /16000|16\.0 s/,
+            );
+    });
+
+    it("no daemon's figure: the kernel's, n/a while it is still the unset 16 s", () => {
+        expect(engineClockIndicator(engine({ source: 'none' }))!.detail).toContain(
+            '· error ±250 µs ·',
+        );
+        expect(
+            engineClockIndicator(engine({ source: 'none', estErrorUs: 16_000_000 }))!.detail,
+        ).toContain('· error n/a · TAI−UTC');
     });
 
     it('red with a reason when mr-clockstate is missing', () => {

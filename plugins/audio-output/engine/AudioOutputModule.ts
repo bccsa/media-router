@@ -43,7 +43,7 @@ export class AudioOutputModule extends GstPluginBase {
         await super.onInit(config, services);
         this.deviceName = (config.device as string) ?? '';
 
-        const det = detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
+        const det = await detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
             channels: config.channels as number | undefined,
             sampleRate: config.sampleRate as number | undefined,
         });
@@ -62,7 +62,7 @@ export class AudioOutputModule extends GstPluginBase {
         // Throwing here would prevent the watchdog from starting at all,
         // leaving hot-plug undetected — the module would only recover on
         // an engine restart.
-        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
             this.setHealth(
                 'warning',
                 `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
@@ -71,7 +71,7 @@ export class AudioOutputModule extends GstPluginBase {
             return;
         }
 
-        const { channels, rate, detected } = resolveDeviceFormat(
+        const { channels, rate, detected } = await resolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
             { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
@@ -103,10 +103,11 @@ export class AudioOutputModule extends GstPluginBase {
         }
         // The disconnect path bypasses `ModuleInstance.stop`'s `releaseAll`,
         // so unload here. Otherwise the next `loadRemapSink` (on reconnect)
-        // would collide on `sink_name=MR_PW_<id>`.
+        // would collide on `sink_name=MR_PW_<id>`. By name: after a PipeWire
+        // restart the old ID can be another module's (B-195).
         if (this.paModuleId !== null && this.services?.pipeWire) {
             try {
-                await this.services.pipeWire.unloadModule(this.paModuleId);
+                await this.services.pipeWire.unloadModule(this.paModuleId, this.pwNodeName);
             } catch {
                 /* ignore — best-effort cleanup */
             }
@@ -116,7 +117,7 @@ export class AudioOutputModule extends GstPluginBase {
 
     /** Base-class hook: device returned — rebuild the remap-sink then restart the pipeline. */
     protected async onDeviceReconnected(): Promise<void> {
-        const resolved = tryResolveDeviceFormat(
+        const resolved = await tryResolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
             { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
@@ -199,13 +200,14 @@ export class AudioOutputModule extends GstPluginBase {
         // these two sources is guaranteed to be set by the time we get here.
         const channels = (config.channels as number | undefined) ?? this.detectedChannels!;
         const pipeline = [
-            `pulsesrc device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
+            `pulsesrc name=capture device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
             'audioconvert',
             `audio/x-raw,channels=${channels}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
             'fakesink sync=false',
         ].join(' ! ');
 
-        return { pipeline };
+        // A failed meter stream is a lost PipeWire stream: the watchdog rebuilds it all (B-195).
+        return { pipeline, pipeWireElements: ['capture'] };
     }
 }

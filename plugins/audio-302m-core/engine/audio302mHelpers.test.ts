@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { buildBusSrc, buildRestamp, quoteGstString, shortHash } from '@media-router/engine';
+import {
+    buildBusSrc,
+    buildRestamp,
+    liveInputLaunchText,
+    quoteGstString,
+    shortHash,
+} from '@media-router/engine';
 import {
     alignedMixer,
     buildAudioMixInput,
+    buildLiveMixInput,
     build302mEncodeBranch,
     build302mMixBranch,
     liveAsrcName,
@@ -84,6 +91,30 @@ describe('buildAudioMixInput — the three arms, snapshot', () => {
         expect(continuationName).toBe('mixin_out');
     });
 
+    it('live inputs apart (B-192): the mixer alone, one branch per source; rendered, the live arm', () => {
+        for (const sources of [
+            [SRC],
+            [SRC, SRC2],
+            [SRC, SRC2, { port: 40003, connectionId: 'c3' }],
+        ]) {
+            for (const channels of [2, 8]) {
+                const { fragment, continuationName, inputs } = buildLiveMixInput({
+                    sources,
+                    channels,
+                });
+                const caps = `audio/x-raw,rate=48000,channels=${channels}`;
+                expect(fragment).toBe(alignedMixer({ name: 'mixin', caps, outName: 'mixin_out' }));
+                expect(continuationName).toBe('mixin_out');
+                expect(inputs).toEqual(
+                    sources.map((s) => liveMixInputBranch('mixin', s, { channels })),
+                );
+                expect(
+                    [fragment, ...inputs.map((b, i) => liveInputLaunchText(b, i))].join(' '),
+                ).toBe(buildAudioMixInput({ sources, channels, liveInputs: true }).fragment);
+            }
+        }
+    });
+
     it('no sources: the aligned mixer alone', () => {
         const { fragment, continuationName } = buildAudioMixInput({ sources: [] });
         expect(fragment).toBe(alignedMixer({ name: 'mixin', caps: CAPS2, outName: 'mixin_out' }));
@@ -142,6 +173,8 @@ describe('helper strings carry none of the replaced mechanisms', () => {
                     out.push(buildAudioMixInput({ sources, liveInputs, channels }).fragment);
                 }
             }
+            const apart = buildLiveMixInput({ sources: SOURCES.slice(0, n), channels: 8 });
+            out.push(apart.fragment, ...apart.inputs.map((b) => b.description!));
         }
         for (const s of SOURCES) {
             out.push(build302mMixBranch(s, { mixerName: 'm', demuxName: 'd', asrcName: 'a' }));
@@ -246,6 +279,7 @@ describe('helper strings carry none of the replaced mechanisms', () => {
             'build302mEncodeBranch',
             'build302mMixBranch',
             'buildAudioMixInput',
+            'buildLiveMixInput',
             'channelRange',
             'liveAsrcName',
             'liveDemuxName',
@@ -334,6 +368,17 @@ describe('build302mMixBranch — the watchdog in front of the aggregator', () =>
         }
         // One source, no watchdog: nothing to seed.
         expect(buildAudioMixInput({ sources: [s] }).fragment).not.toContain('seed-lateness');
+    });
+
+    it("a start's live input carries the seed; a branch added to a running mix carries none (B-197)", () => {
+        const s = { ...SRC, seedLatenessMs: 400 };
+        // .108: a dark source re-linked with its producer's last transient held every input back.
+        expect(buildLiveMixInput({ sources: [s] }).inputs[0].description).toMatch(
+            / seed-lateness=400000000$/,
+        );
+        const live = liveInputBranchFor('mixin', s.connectionId, s);
+        expect(live.description).not.toContain('seed-lateness');
+        expect(live).toEqual(liveMixInputBranch('mixin', { ...s, seedLatenessMs: undefined }));
     });
 });
 

@@ -483,10 +483,14 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   clock indicator (green traceable, amber waiting or synced-but-TAI-unset,
   red unsynced) with the detail (source, error, TAI−UTC, chrony reference,
   epoch number, reason and time) in its tooltip
-  (`packages/manager-ui/src/utils/engineClock.ts`). On the sidebar card the
-  tooltip is a teleported `MrHelpTip`, because the sidebar scrolls
-  (ADR-0022): hover or focus opens it, a click pins it without following the
-  row's link.
+  (`packages/manager-ui/src/utils/engineClock.ts`). The error is chrony's
+  estimate; under PTP it is ptp4l's own offset from its master (`pmc` over
+  ptp4l's read-only socket, `packages/engine/src/clock/ptpStatus.ts`,
+  `TimeSyncState.ptp`), else none; elsewhere the kernel's esterror, never
+  its unset 16 s, which linuxptp leaves as it is (B-198, 2026-11-02). On the
+  sidebar card the tooltip is a teleported `MrHelpTip`, because the sidebar
+  scrolls (ADR-0022): hover or focus opens it, a click pins it without
+  following the row's link.
 - **`aes67-output` is the only reader of E in Phase 0.** Its RTP
   `timestamp-offset` is `rtpTimestampOffset(eNs)` (`aes67Helpers.ts`, the
   same integer arithmetic the deleted `aes67_clock.py` ran); it claims the

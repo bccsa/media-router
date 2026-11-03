@@ -51,8 +51,11 @@ gint64 bytes_total(GstElement* el);
 /** True for the element's bus message names (`mrtsstamp-*`). */
 bool is_stamper_message(const char* structure_name);
 
+/** offClock.ts STAMP_OFF_CLOCK_EVENT: an egress stamp guard's episode, for the module (B-203). */
+constexpr const char* OFF_CLOCK_EVENT = "stamp_off_clock";
+
 /** One element bus message as the python runner reports it: the identity log line, or the
- *  segment / map warning. */
+ *  segment / map warning; and, the native runner only, an off-clock episode as a plugin event. */
 void handle_message(const char* src_name, const char* kind, const GstStructure* s);
 
 }  // namespace mr::stamper

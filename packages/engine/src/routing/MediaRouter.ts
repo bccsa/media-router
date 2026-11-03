@@ -12,9 +12,9 @@ import { PortRegistry, type PortEdge } from './PortRegistry.js';
 import { ConnectionExecutor } from './ConnectionExecutor.js';
 import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
 import { PcmAudioExecutor } from './PcmAudioExecutor.js';
-import { MpegTsBusExecutor } from './MpegTsBusExecutor.js';
+import { BusChannelPending, MpegTsBusExecutor } from './MpegTsBusExecutor.js';
 import { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
-import { busEdgeSocketPath } from '../plugins/busHelpers.js';
+import { busEdgeSocketPath, busSocketPort } from '../plugins/busHelpers.js';
 import {
     DEFAULT_PLAYOUT_OFFSET_MS,
     PLAYOUT_OFFSET_KEY,
@@ -28,6 +28,16 @@ const log = createLogger('MediaRouter');
 /** The playout offset a module declares in its config, if any (a route head). */
 const declaredPlayoutOffsetMs = (m: ModuleInstance | undefined): number | undefined =>
     parsePlayoutOffsetMs(m?.config?.[PLAYOUT_OFFSET_KEY]);
+
+/** How long a connection waits for its producer before the router checks on it, once (B-196). */
+const WAIT_CHECK_MS = 10_000;
+
+/** A module that runs a pipeline: a launched gst child, or a native producer's own fan-out. */
+function runsPipeline(m: ModuleInstance | undefined): boolean {
+    if (!m?.running) return false;
+    const child = m.getChildProcess?.();
+    return child ? child.pipelineLaunchedAt !== undefined : !!m.getBusAttachTarget?.();
+}
 
 /**
  * Stream types carried on the inter-module bus (unixfd fan-out).
@@ -96,12 +106,26 @@ function outputLatenessMs(s: ModuleTimingSummary | undefined, port: number): num
 export class MediaRouter {
     private connections = new Map<string, Connection>();
     private handles = new Map<string, ActiveHandle>();
+    /** Bus connections whose producer has no channel yet, by id: each runs when its producer's
+     *  channel is assigned, however late (B-194), or at its sink's next start if the sink was
+     *  stopped then (B-196). Never in `connections` meanwhile. */
+    private readonly waiting = new Map<string, Connection>();
+    /** The one check of each wait, `waitCheckMs` after it began (B-196). */
+    private readonly waitChecks = new Map<string, NodeJS.Timeout>();
+    /** Waits whose run is queued (one each; it reads the state when it runs). */
+    private readonly wokenPending = new Set<string>();
+    /** Runs a woken wait. ModuleLifecycle hands its lock in; alone, one at a time. */
+    private runWoken: (task: () => Promise<void>) => void = (task) => {
+        this.wokenChain = this.wokenChain.then(task, task);
+    };
+    private wokenChain: Promise<void> = Promise.resolve();
     private executor: ConnectionExecutor | null = null;
     /** The bus executor, kept for its live-branch verbs (channel-map replace). */
     private busExecutor: MpegTsBusExecutor | null = null;
     private moduleGetter: ((id: string) => ModuleInstance | undefined) | null = null;
     /** Display names for warning texts (the Engine passes its resolver). */
     private displayName: (id: string) => string = (id) => id;
+    private connLabel: (conn: Connection) => string = makeConnLabel();
     /** Runtime raise per route head (ADR-0005 2026-10-08) — memory only. */
     private readonly playoutRaises = new PlayoutRaises({
         head: (moduleId, sinkPortId) => this.getRoutePlayoutHead(moduleId, sinkPortId),
@@ -125,7 +149,18 @@ export class MediaRouter {
      */
     readonly streamExecutors = new StreamTypeExecutorRegistry();
 
+    constructor(private readonly waitCheckMs = WAIT_CHECK_MS) {
+        // The event a waiting connection runs on: its producer's channel assigned (B-194).
+        this.busChannels.onAcquired((owner) => this.wakeWaiting(owner));
+    }
+
     // --- Setup ---
+
+    /** How a woken wait runs: `ModuleLifecycle` passes its lock, so none runs inside a start,
+     *  restart or engine start, nor two into one sink at once. */
+    setWaitingScheduler(run: (task: () => Promise<void>) => void): void {
+        this.runWoken = run;
+    }
 
     /**
      * Optional hook invoked after `MpegTsBusExecutor` restarts a consumer
@@ -187,6 +222,7 @@ export class MediaRouter {
         this.moduleGetter = moduleGetter;
         if (displayNameResolver) this.displayName = displayNameResolver;
         const connLabel = makeConnLabel(displayNameResolver);
+        this.connLabel = connLabel;
         const resolveProducerPort = (moduleId: string, portId?: string) =>
             this.busChannels.get(this.channelKey(moduleId, portId)) ??
             this.busChannels.get(moduleId);
@@ -213,8 +249,10 @@ export class MediaRouter {
         this.streamExecutors.register(busExecutor, ['audio/302m']);
         this.busExecutor = busExecutor;
         // A producer back at PLAYING re-links one branch on a live-input
-        // aggregator instead of relaunching the consumer.
+        // aggregator instead of relaunching the consumer, and a branch the
+        // aggregator runs without joins once its producer plays (B-192).
         this.busFanout.setLiveRelink((conn) => busExecutor.relinkLiveInput(conn));
+        this.busFanout.setLiveRejoin((conn) => busExecutor.rejoinLiveInput(conn));
         this.executor = new ConnectionExecutor(this.streamExecutors);
     }
 
@@ -226,6 +264,13 @@ export class MediaRouter {
 
     async unregisterPorts(moduleId: string): Promise<void> {
         this.portRegistry.unregister(moduleId);
+        // Its waits go with its ports: a start re-applies its connections.
+        for (const [id, conn] of this.waiting) {
+            if (conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId) {
+                this.waiting.delete(id);
+                this.clearWaitCheck(id);
+            }
+        }
         // Snapshot keys — removeConnection mutates this.connections during iteration
         const toRemove = Array.from(this.connections.entries())
             .filter(
@@ -254,6 +299,9 @@ export class MediaRouter {
         sinkPortId: string,
         channelMap?: ChannelMapEntry[],
     ): Promise<string> {
+        const connId = `${sourceModuleId}:${sourcePortId}-${sinkModuleId}:${sinkPortId}`;
+        // Every attempt decides afresh: applied, waiting again, or failed.
+        const wasWaiting = this.waiting.delete(connId);
         const sourcePort = this.portRegistry.get(sourceModuleId, sourcePortId);
         const sinkPort = this.portRegistry.get(sinkModuleId, sinkPortId);
 
@@ -268,8 +316,6 @@ export class MediaRouter {
 
         const compat = this.portRegistry.validateCompatibility(sourcePort, sinkPort);
         if (!compat.compatible) throw new Error(`Incompatible ports: ${compat.reason}`);
-
-        const connId = `${sourceModuleId}:${sourcePortId}-${sinkModuleId}:${sinkPortId}`;
 
         // If this exact connection already exists, skip (idempotent). This must
         // run BEFORE the maxConnections check: a re-apply of an existing edge
@@ -333,13 +379,14 @@ export class MediaRouter {
                     );
                 }
             } catch (err) {
-                // Execution threw — remove the zombie connection and re-throw
-                // so callers (e.g. ConnectionApplier.connectWithRetry) see
-                // the failure and can retry. Without re-throw, transient
-                // startup races (encoder not yet started → no UDP port)
-                // turned into silently-orphaned decoders that needed manual
-                // restart to recover.
+                // Execution threw — remove the zombie connection. A producer without its
+                // channel yet is waited for; anything else is re-thrown for the caller's
+                // retry (ConnectionApplier.connectWithRetry), never an orphaned sink.
                 this.connections.delete(connId);
+                if (err instanceof BusChannelPending) {
+                    this.waitForProducer(conn, !wasWaiting);
+                    return connId;
+                }
                 log.error({ err, connectionId: connId }, 'Failed to execute connection — removed');
                 throw err;
             }
@@ -348,9 +395,137 @@ export class MediaRouter {
         return connId;
     }
 
+    /** True while the connection waits for its producer's bus channel (B-194). */
+    isConnectionWaiting(connId: string): boolean {
+        return this.waiting.has(connId);
+    }
+
+    /** The channel port of a connection's producer output, if assigned. */
+    private producerPort(conn: Connection): number | undefined {
+        return (
+            this.busChannels.get(this.channelKey(conn.sourceModuleId, conn.sourcePortId)) ??
+            this.busChannels.get(conn.sourceModuleId)
+        );
+    }
+
+    /** Hold `conn` until its producer's channel is assigned: one info line as it starts waiting,
+     *  and one check `waitCheckMs` later. */
+    private waitForProducer(conn: Connection, announce: boolean): void {
+        this.waiting.set(conn.id, conn);
+        if (announce) {
+            log.info(
+                { connectionId: conn.id },
+                `Connection ${this.connLabel(conn)} waits for ${this.displayName(conn.sourceModuleId)}: its output is not up yet`,
+            );
+            this.clearWaitCheck(conn.id);
+            // It runs where a woken wait runs: behind any lifecycle operation, and any run, queued.
+            const check = setTimeout(
+                () => this.runWoken(async () => this.checkWait(conn.id, check)),
+                this.waitCheckMs,
+            );
+            check.unref?.();
+            this.waitChecks.set(conn.id, check);
+        }
+        // The channel may have come while this attempt ran.
+        if (this.producerPort(conn) !== undefined) this.scheduleWaiting(conn.id);
+    }
+
+    private clearWaitCheck(connId: string): void {
+        clearTimeout(this.waitChecks.get(connId));
+        this.waitChecks.delete(connId);
+    }
+
+    /** A wait still on after `waitCheckMs`, into a running sink: a producer up with its channel
+     *  (its wake missed) gets it run now; one that runs but has no channel for this output is
+     *  named. One warning. */
+    private checkWait(connId: string, check: NodeJS.Timeout): void {
+        if (this.waitChecks.get(connId) !== check) return;
+        this.waitChecks.delete(connId);
+        const conn = this.waiting.get(connId);
+        // Ended, its run queued, or its sink stopped (that sink's start runs it).
+        if (!conn || this.wokenPending.has(connId)) return;
+        if (!this.moduleGetter?.(conn.sinkModuleId)?.running) return;
+        if (this.producerPort(conn) !== undefined) {
+            log.warn(
+                { connectionId: connId },
+                `Connection ${this.connLabel(conn)} still waits with ${this.displayName(conn.sourceModuleId)} up — applying it now`,
+            );
+            this.scheduleWaiting(connId);
+        } else if (runsPipeline(this.moduleGetter?.(conn.sourceModuleId))) {
+            log.warn(
+                { connectionId: connId, port: conn.sourcePortId },
+                `Connection ${this.connLabel(conn)} still waits for ${this.displayName(conn.sourceModuleId)}: it runs, but its output ${conn.sourcePortId} is not up`,
+            );
+        }
+    }
+
+    /** A channel was assigned: the waits on it run once the producer's build that took it is done. */
+    private wakeWaiting(owner: string): void {
+        for (const conn of this.waiting.values()) {
+            if (
+                owner === conn.sourceModuleId ||
+                owner === this.channelKey(conn.sourceModuleId, conn.sourcePortId)
+            ) {
+                this.scheduleWaiting(conn.id);
+            }
+        }
+    }
+
+    /** A module started, by any path (lifecycle, a consumer restart, a re-enable): the waits
+     *  into it whose producer is up run, also one skipped while it was stopped (B-196). */
+    noteModuleStarted(moduleId: string): void {
+        for (const conn of this.waiting.values()) {
+            if (conn.sinkModuleId === moduleId && this.producerPort(conn) !== undefined) {
+                this.scheduleWaiting(conn.id);
+            }
+        }
+    }
+
+    private scheduleWaiting(connId: string): void {
+        if (this.wokenPending.has(connId)) return;
+        this.wokenPending.add(connId);
+        setImmediate(() =>
+            this.runWoken(() => {
+                this.wokenPending.delete(connId);
+                return this.applyWaiting(connId);
+            }),
+        );
+    }
+
+    private async applyWaiting(connId: string): Promise<void> {
+        const conn = this.waiting.get(connId);
+        // Applied or dropped meanwhile, or the channel gone again (its next assignment wakes it).
+        if (!conn || this.producerPort(conn) === undefined) return;
+        // A sink stopped meanwhile (disabled, or restarting outside the lifecycle) gets it at its
+        // next start (`noteModuleStarted`); never started from here.
+        if (!this.moduleGetter?.(conn.sinkModuleId)?.running) return;
+        try {
+            await this.createConnection(
+                conn.sourceModuleId,
+                conn.sourcePortId,
+                conn.sinkModuleId,
+                conn.sinkPortId,
+                conn.channelMap,
+            );
+            if (this.connections.has(connId)) {
+                log.info(
+                    { connectionId: connId },
+                    `Connected ${this.connLabel(conn)}: its producer is up`,
+                );
+            }
+        } catch (err) {
+            log.warn(
+                { connectionId: connId, err: err instanceof Error ? err.message : String(err) },
+                `Connection ${this.connLabel(conn)} not applied`,
+            );
+        }
+    }
+
     async removeConnection(connId: string, skipModuleRestart = false): Promise<boolean> {
+        const waited = this.waiting.delete(connId);
+        this.clearWaitCheck(connId);
         const conn = this.connections.get(connId);
-        const existed = this.connections.delete(connId);
+        const existed = this.connections.delete(connId) || waited;
         const handle = this.handles.get(connId);
         if (handle && this.executor) {
             await this.executor.teardown(handle, conn, skipModuleRestart);
@@ -403,8 +578,17 @@ export class MediaRouter {
      * every module reporting running.
      */
     async reexecuteIncomingPwLinks(moduleId: string): Promise<void> {
+        await this.reexecutePwLinks((c) => c.sinkModuleId === moduleId);
+    }
+
+    /** The same for the pw-link edges OUT of `moduleId`: a capture's rebuilt remap-source (B-195). */
+    async reexecuteOutgoingPwLinks(moduleId: string): Promise<void> {
+        await this.reexecutePwLinks((c) => c.sourceModuleId === moduleId);
+    }
+
+    private async reexecutePwLinks(touches: (c: Connection) => boolean): Promise<void> {
         const conns = this.getConnections().filter(
-            (c) => c.sinkModuleId === moduleId && this.handles.get(c.id)?.type === 'pw-link',
+            (c) => touches(c) && this.handles.get(c.id)?.type === 'pw-link',
         );
         for (const conn of conns) {
             const handle = this.handles.get(conn.id);
@@ -427,8 +611,12 @@ export class MediaRouter {
     }
 
     async updateChannelMap(connId: string, channelMap?: ChannelMapEntry[]): Promise<void> {
+        // A waiting connection takes the map with it when it runs.
+        const waiting = this.waiting.get(connId);
+        if (waiting) waiting.channelMap = channelMap?.length ? channelMap : undefined;
         const conn = this.connections.get(connId);
         if (!conn) {
+            if (waiting) return;
             log.warn({ connectionId: connId }, 'Cannot update channel map — connection not found');
             return;
         }
@@ -467,6 +655,8 @@ export class MediaRouter {
     }
 
     async removeAllConnections(skipModuleRestart = false): Promise<void> {
+        this.waiting.clear();
+        for (const id of [...this.waitChecks.keys()]) this.clearWaitCheck(id);
         for (const connId of Array.from(this.connections.keys())) {
             await this.removeConnection(connId, skipModuleRestart);
         }
@@ -530,6 +720,20 @@ export class MediaRouter {
         return this.portRegistry.getConnectionCount(moduleId, portId, this.connections.values());
     }
 
+    /** A module's display name, for status texts (its id when it has none). */
+    moduleName(id: string): string {
+        return this.displayName(id);
+    }
+
+    /** The module whose bus channel a socket path is on: its holder, else its last (a stale
+     *  gate's socket, the connection gone). Undefined for a path no channel names. */
+    busSocketProducer(socketPath: string): string | undefined {
+        const port = busSocketPort(socketPath);
+        const owner = port === undefined ? undefined : this.busChannels.ownerOf(port);
+        // The owner key is `moduleId` or `moduleId:portId` (module ids hold no colon).
+        return owner?.split(':')[0];
+    }
+
     getModuleBusSource(
         moduleId: string,
         sinkPortId?: string,
@@ -582,30 +786,35 @@ export class MediaRouter {
     // by a conflict rule between two independently trimmed sinks, which is the
     // failure mode decision 4 rejects.
 
-    /**
-     * The route head feeding `moduleId`: the nearest bus producer upstream that
-     * declares a playout offset, else the top-most producer (no bus input of
-     * its own). Read straight off the stored configs, so an edit is visible
-     * without a restart. `undefined` for a module with no bus source.
-     */
+    /** The route head feeding `moduleId` (nearest declaring producer upstream, else the top-most;
+     *  off the stored configs). Several bus inputs: the head of the largest offset, raise included,
+     *  among their routes, whatever the edge order, so a restart keeps it (B-197). */
     getRoutePlayoutHead(moduleId: string, sinkPortId?: string): PlayoutHead | undefined {
-        const seen = new Set<string>([moduleId]);
-        let source = this.getModuleBusSource(moduleId, sinkPortId);
+        let best: { head: PlayoutHead; ms: number } | undefined;
+        for (const conn of this.connections.values()) {
+            if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
+            if (sinkPortId !== undefined && conn.sinkPortId !== sinkPortId) continue;
+            const head = this.routeHeadFrom(conn.sourceModuleId, moduleId);
+            const ms = head ? this.playoutRaises.offsetMs(head) : -Infinity;
+            if (head && (!best || ms > best.ms)) best = { head, ms };
+        }
+        return best?.head;
+    }
+
+    /** The head of the route through `producerId` (one input of `consumerId`). */
+    private routeHeadFrom(producerId: string, consumerId: string): PlayoutHead | undefined {
+        const seen = new Set<string>([consumerId]);
+        let id: string | undefined = producerId;
         let top: string | undefined;
-        while (source && !seen.has(source.sourceModuleId)) {
-            const producerId = source.sourceModuleId;
-            seen.add(producerId);
-            top = producerId;
-            const declared = declaredPlayoutOffsetMs(this.moduleGetter?.(producerId));
-            if (declared !== undefined) {
-                return {
-                    headId: producerId,
-                    label: this.displayName(producerId),
-                    declaredMs: declared,
-                };
+        while (id !== undefined && !seen.has(id)) {
+            seen.add(id);
+            top = id;
+            const declaredMs = declaredPlayoutOffsetMs(this.moduleGetter?.(id));
+            if (declaredMs !== undefined) {
+                return { headId: id, label: this.displayName(id), declaredMs };
             }
             // Transparent (nothing or nonsense declared): follow its first bus input.
-            source = this.getModuleBusSource(producerId);
+            id = this.getModuleBusSource(id)?.sourceModuleId;
         }
         return top === undefined ? undefined : { headId: top, label: this.displayName(top) };
     }
@@ -709,12 +918,15 @@ export class MediaRouter {
     }
 
     /**
-     * A producer reached PLAYING — (re)attach its per-consumer bus fan-out
+     * A module reached PLAYING — (re)attach its per-consumer bus fan-out
      * branches. Called by `GstPluginBase` on every PLAYING edge so a runner
      * respawn (which rebuilds the tee with no branches) is healed. No-op on UDP.
+     * As a consumer, it takes the live inputs it runs without whose producers
+     * already play (B-192).
      */
     onProducerPlaying(moduleId: string): void {
         this.busFanout?.reattachProducer(moduleId);
+        this.busFanout?.rejoinLostInputs(moduleId);
     }
 
     /** Resolve every connected bus-carried source (muxed/mpegts or audio/302m)

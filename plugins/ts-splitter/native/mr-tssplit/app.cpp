@@ -151,6 +151,13 @@ int64_t App::stamp_for(Output& o, const uint8_t* data, size_t len) {
     const int64_t now = mrbus::mono_ns();
     const int64_t pts = identity_.stamp(data, len, now, o.pid);
     o.lateness.add(now - pts);
+    // B-203: an episode of this output's stamps off the house clock, once; the module warns.
+    mrts::IdentityStamp::OffClock off;
+    if (identity_.take_episode(o.pid, &off))
+        emit("{\"event\":\"plugin_event\",\"channel\":\"stamp_off_clock\",\"payload\":{\"tee\":\"" +
+             json_escape(o.tee) + "\",\"pid\":" + std::to_string(off.pid) +
+             ",\"offsetMs\":" + json_double((double)off.offset_ns / 1e6) +
+             ",\"count\":" + std::to_string(off.count) + "}}");
     return pts;
 }
 

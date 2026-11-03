@@ -10,6 +10,8 @@ nothing. Now:
     no error, no teardown, later timeouts are silent themselves;
   - the first packet back emits `input_resumed` (once), and a later silence
     starts a fresh `input_silent`;
+  - a timeout posted before the packets came back, which the main loop meets
+    only after them, is no new silence (not a second silence and resume);
   - `udpSilenceRestartMs` (mpegts-ip-input sets it for MULTICAST only) turns a
     silence past that bound into the old `udp_timeout` error → restart path;
   - stop clears the watch.
@@ -68,6 +70,31 @@ def spin(seconds):
         time.sleep(0.005)
 
 
+def spin_until(pred, seconds):
+    ctx = GLib.MainContext.default()
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        ctx.iteration(False)
+        if pred():
+            return True
+        time.sleep(0.005)
+    return pred()
+
+
+def wait_until(pred, seconds):
+    """Poll `pred` WITHOUT running the main loop: bus messages queue meanwhile."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.002)
+    return pred()
+
+
+def count(events, name):
+    return sum(1 for e in events if e["event"] == name)
+
+
 def free_port():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("127.0.0.1", 0))
@@ -119,6 +146,58 @@ check("still no error", not any(e["event"] == "error" for e in events))
 runner.handle_stop()
 check("stop clears the silence watch", runner.source_gate.udp_silence is None)
 
+print("\n--- a timeout posted before the packets come back and met after them is no new silence ---")
+# The main loop is held while udpsrc posts a timeout and the packets then pass the source's
+# probes, so that timeout reaches the loop after the data every time (above: a race of < 1 ms).
+CYCLES = 5
+events = collect_events()
+port = free_port()
+runner.handle_start({"pipeline": f"udpsrc name=netsrc port={port} timeout={TIMEOUT_NS} {CAPS} ! fakesink sync=false"})
+posted = []                          # when udpsrc posted each timeout (its streaming thread)
+buffers = [0]                        # buffers past the runner's probes (this probe comes after theirs)
+
+
+def on_sync_message(_bus, msg):
+    if msg.get_structure().get_name() == "GstUDPSrcTimeout":
+        posted.append(time.monotonic())
+
+
+def on_buffer(_pad, _info):
+    buffers[0] += 1
+    return Gst.PadProbeReturn.OK
+
+
+bus = runner.pipeline.get_bus()
+bus.enable_sync_message_emission()
+bus.connect("sync-message::element", on_sync_message)
+runner.pipeline.get_by_name("netsrc").get_static_pad("src").add_probe(
+    Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST, on_buffer)
+reported = held_ok = no_silence = resumed_once = quiet = 0
+for _ in range(CYCLES):
+    n = count(events, "input_silent")
+    reported += spin_until(lambda: count(events, "input_silent") > n, 2.0)   # this round's silence
+    held = time.monotonic()
+    queued = wait_until(lambda: any(t > held for t in posted), 2.0)         # posted, not met yet
+    seen, silent0, resumed0 = buffers[0], count(events, "input_silent"), count(events, "input_resumed")
+    send_ts_packet(port)
+    held_ok += queued and wait_until(lambda: buffers[0] > seen, 2.0)
+    spin(0.1)                        # the loop meets that timeout now, after the packets
+    no_silence += count(events, "input_silent") == silent0
+    resumed_once += count(events, "input_resumed") == resumed0 + 1
+    send_ts_packet(port)
+    spin(0.1)
+    quiet += count(events, "input_resumed") == resumed0 + 1
+n = count(events, "input_silent")
+reported += spin_until(lambda: count(events, "input_silent") > n, 2.0)
+check(f"a timeout was posted while the loop was held and the packets passed after it: {held_ok} of {CYCLES}",
+      held_ok == CYCLES)
+check(f"met after those packets it is no new silence: {no_silence} of {CYCLES}", no_silence == CYCLES)
+check(f"the packets resume once: {resumed_once} of {CYCLES}", resumed_once == CYCLES)
+check(f"and a later packet does not resume again: {quiet} of {CYCLES}", quiet == CYCLES)
+check(f"each silence after the data is still reported: {reported} of {CYCLES + 1}", reported == CYCLES + 1)
+check("no error", count(events, "error") == 0)
+runner.handle_stop()
+
 print("\n--- a multicast-style restart bound turns long silence into the old udp_timeout error ---")
 events = collect_events()
 port = free_port()
@@ -138,6 +217,7 @@ print("\n--- a pipeline without udpsrc arms nothing ---")
 events = collect_events()
 runner.handle_start({"pipeline": "audiotestsrc is-live=true ! fakesink sync=false"})
 check("no udp silence watch for a non-udp head", runner.source_gate.udp_silence is None)
+# Stopped at once, while still going to PLAYING: the EOS drain no longer deadlocks there (B-202).
 runner.handle_stop()
 
 if _failures:

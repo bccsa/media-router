@@ -62,6 +62,10 @@ export function _resetCodecClassifiersForTests(): void {
  * Runs a short `gst-launch` pipeline with `-v` and parses the negotiated
  * caps from `tsdemux`. Codec identification is delegated to the registered
  * classifiers — see `registerCodecClassifier`.
+ *
+ * Logs nothing per run: the caller reports what the result means, once per change (B-201).
+ * A warning per miss from a transcoder re-probing an idle source every 10 s pushed real errors
+ * out of the engine's 1000-line log within minutes.
  */
 export function probeMpegTsStream(
     port: number,
@@ -92,8 +96,6 @@ export function probeMpegTsStream(
             'fakesink',
         ];
 
-        log.info({ port, socket: unixSocket }, 'Probing MPEG-TS stream');
-
         let resolved = false;
         const child = execFile(
             'gst-launch-1.0',
@@ -109,19 +111,8 @@ export function probeMpegTsStream(
 
                 const output = (stdout ?? '') + (stderr ?? '');
                 const rawCaps = selectAudioCaps(output);
-
-                if (!rawCaps) {
-                    log.warn({ port }, 'No audio caps detected');
-                    resolve({ codec: 'unknown', rawCaps: '' });
-                    return;
-                }
-
-                const result = classifyCaps(rawCaps);
-                log.info(
-                    { port, codec: result.codec, channels: result.channels, rawCaps },
-                    'Detected codec',
-                );
-                resolve(result);
+                // No audio caps: an idle or absent source (or none in the first 50 buffers).
+                resolve(rawCaps ? classifyCaps(rawCaps) : { codec: 'unknown', rawCaps: '' });
             },
         );
 

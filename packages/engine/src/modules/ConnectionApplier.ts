@@ -115,13 +115,11 @@ export class ConnectionApplier {
      * Ordered-apply connections are sorted so a connection `A.out → B.in`
      * runs before `B.out → C.in`, because applying `A.out → B.in` is what
      * triggers B's pipeline to start and assign B's output ports. Without
-     * this ordering, the child connection fails with "no assigned port yet"
-     * (see `ConnectionExecutor.executeUdp`) and the per-connection retry
-     * can't recover because the unblocker is queued behind it in storage
-     * order. This bit the mpegts-demuxer chain: srt-input → demuxer →
-     * decoder applied the demuxer→decoder leg before srt-input→demuxer, and
-     * the decoder stayed stuck on "no encoder connected" until manual
-     * restart.
+     * this ordering the child connection found no assigned port yet and,
+     * the unblocker queued behind it in storage order, was dropped after its
+     * retries (the mpegts-demuxer chain: srt-input → demuxer → decoder, the
+     * decoder stuck on "no encoder connected" until a manual restart). It now
+     * waits for B's port (B-194); the order still saves the wait.
      */
     async applyConnections(
         connections: StoredConnection[],
@@ -212,13 +210,15 @@ export class ConnectionApplier {
 
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                await this.mediaRouter.createConnection(
+                const connId = await this.mediaRouter.createConnection(
                     conn.sourceModuleId,
                     conn.sourcePortId,
                     conn.sinkModuleId,
                     conn.sinkPortId,
                     conn.channelMap,
                 );
+                // Its producer has no output yet: the router runs it when it has (B-194).
+                if (this.mediaRouter.isConnectionWaiting?.(connId)) return;
                 log.info(
                     {
                         source: `${conn.sourceModuleId}:${conn.sourcePortId}`,

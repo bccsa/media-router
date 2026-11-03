@@ -29,6 +29,8 @@ function makeModule(opts: { busPort?: number | null; deviceChannels?: number | n
             : {}),
     };
     module.config = {};
+    // What a start reads before it builds (B-200): the build itself asks PipeWire nothing.
+    module.deviceChannels = opts.deviceChannels ?? null;
     module.log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
     const setHealth = vi.fn();
     module.setHealth = setHealth;
@@ -84,7 +86,7 @@ describe('AudioInput302mModule.buildPipeline', () => {
         // pipewiresrc, never pulsesrc: pipewire-pulse cannot create wide record streams. 16
         // buffers behind the stream, not the 2 PipeWire 1.6 would give it (B-180).
         expect(desc!.pipeline).toContain(
-            'pipewiresrc target-object=alsa_input.usb-mic min-buffers=16 stream-properties=',
+            'pipewiresrc name=capture target-object=alsa_input.usb-mic min-buffers=16 stream-properties=',
         );
         expect(desc!.pipeline).not.toContain('pulsesrc');
         // #736 pins, the node on the runner's RT data loop (B-88), not live (the driver's cycle
@@ -105,6 +107,9 @@ describe('AudioInput302mModule.buildPipeline', () => {
             'mpegtsmux latency=0 alignment=7 ! mrtsrestamp name=restamp clock-mode=fixed offset-ns=0 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! mrlateness name=lat_busout_41000 reference=running-time ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc!.restartOnError).toBe(true);
+        // Its stream is `capture` (B-195), and an audio-only producer stops without a drain.
+        expect(desc!.pipeWireElements).toEqual(['capture']);
+        expect(desc!.eosDrain).toBe(false);
         expect(module.linkPlan).toEqual({
             streamNode: 'MR_PW_ain-1',
             direction: 'capture',
@@ -126,7 +131,7 @@ describe('AudioInput302mModule.buildPipeline', () => {
         const desc = module.buildPipeline({ device: DEV, channels: 8, firstChannel: 9 });
         expect(desc).not.toBeNull();
         const p: string = desc!.pipeline;
-        expect(p).toContain(`pipewiresrc target-object=${DEV}`);
+        expect(p).toContain(`pipewiresrc name=capture target-object=${DEV}`);
         // Never the whole device any more — 8 ports, not 48; an 8×8 identity, not a 48×8 pick.
         expect(p).toMatch(
             /! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x0 ! audioconvert mix-matrix="<[^"]*>" ! audio\/x-raw,channels=8,channel-mask=\(bitmask\)0x63f ! volume name=vol/,
@@ -728,5 +733,111 @@ describe('AudioInput302mModule on house time (WI-P1-11)', () => {
             { 'mrasrc-event': oob },
             'mrasrc-event ratio-out-of-bounds',
         );
+    });
+});
+
+// --- A restart applies a re-picked device (B-191) ----------------------------------------------
+
+/** Mic 1's device before and after it was re-picked in the field (MR-002). */
+const OLD = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__ssl2_mono_in_S2_0_0__source';
+const NEW = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic2__source';
+
+/** The module under the engine's ModuleInstance on a graph of `present` devices; `built` holds
+ *  each pipeline it starts. `repick` is a settings patch, then what Restart does to the instance.
+ *  PipeWire answers as the engine's does, a turn later; its devices are `width` wide. */
+function underEngine(present: Set<string>, width = 1, settings: Record<string, unknown> = {}) {
+    const built: string[] = [];
+    vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
+        built.push(this.buildPipeline(this.config)?.pipeline ?? '');
+    });
+    const module = new AudioInput302mModule() as any;
+    module.linkDeps = fakeDeps(2, 2);
+    const services = {
+        instanceId: 'ain-1',
+        pipeWire: {
+            hasDevice: async (name: string) => present.has(name),
+            getDeviceInfo: async () => ({ channels: width, sampleRate: 48000 }),
+            releaseAll: vi.fn(async () => {}),
+        },
+        mediaRouter: {
+            assignBusChannel: () => ({ port: 41000 }),
+            releaseAllBusChannelsFor: vi.fn(),
+        },
+        processManager: { releaseAll: vi.fn(async () => {}) },
+        deviceProviders: {},
+    } as any;
+    const config = { device: OLD, channels: 1, ...settings };
+    const instance = new ModuleInstance('ain-1', 'audio-input-302m', module, config, services);
+    const repick = async (device: string) => {
+        await instance.applyConfigUpdate({ device });
+        await instance.stop();
+        await instance.start();
+    };
+    return { module, instance, built, repick };
+}
+
+describe('AudioInput302mModule: a restart applies a re-picked device (B-191)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('a start reads the device width before the build, which cannot wait for PipeWire (B-200)', async () => {
+        const { module, instance } = underEngine(new Set([OLD]), 48, {
+            channels: 8,
+            firstChannel: 9,
+        });
+        await instance.start();
+        expect(module.getState().statusData.input).toMatchObject({
+            firstChannel: 9,
+            lastChannel: 16,
+            deviceChannels: 48,
+        });
+        await instance.stop();
+    });
+
+    it('a device that comes after the start: its width is read before that first build (B-200)', async () => {
+        const present = new Set<string>();
+        const { module, instance, built } = underEngine(present, 48, {
+            channels: 8,
+            firstChannel: 9,
+        });
+        await instance.start();
+        expect(built).toEqual([]);
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(module.getState().statusData.input).toMatchObject({ deviceChannels: 48 });
+        await instance.stop();
+    });
+
+    it('a running capture captures and watches the re-picked device after Restart', async () => {
+        const { module, instance, built, repick } = underEngine(new Set([OLD, NEW]));
+        await instance.start();
+        expect(built[0]).toContain(`pipewiresrc name=capture target-object=${OLD} `);
+        await repick(NEW);
+        expect(built).toHaveLength(2);
+        expect(built[1]).toContain(`pipewiresrc name=capture target-object=${NEW} `);
+        expect(module.linkPlan.deviceNode).toBe(NEW);
+        expect(module.getWatchedDeviceName()).toBe(NEW);
+        await instance.stop();
+    });
+
+    it('a capture waiting for hot-plug waits for the re-picked device after Restart', async () => {
+        const present = new Set<string>();
+        const { module, instance, built, repick } = underEngine(present);
+        await instance.start();
+        expect(module.getState().error).toBe(
+            `Audio device "${OLD}" not connected — waiting for hot-plug`,
+        );
+        await repick(NEW);
+        expect(module.getState().error).toBe(
+            `Audio device "${NEW}" not connected — waiting for hot-plug`,
+        );
+        present.add(OLD);
+        await module.deviceWatchdog.tick();
+        expect(built).toEqual([]);
+        present.add(NEW);
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(built[0]).toContain(`pipewiresrc name=capture target-object=${NEW} `);
+        await instance.stop();
     });
 });

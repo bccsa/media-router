@@ -339,12 +339,60 @@ std::vector<Buf> scenario(uint64_t seed, Tally& t) {
 constexpr int CORPUS = 300;     // scenarios, seeds 1000..1299
 constexpr size_t HEAD = 32;     // stamps kept literally, for a readable diff
 
-// Every stamp of the corpus and each stream's first() in one checksum.
+// The rule before B-203's guard, the one the corpus was recorded from: every timing PES times
+// its buffer and the floor has no bound. Kept here only to show the record still holds for it.
+struct Unguarded {
+    struct St {
+        int timing_pid = -1;
+        bool stamped = false;
+        int64_t floor = 0;
+        bool has_first = false;
+        int first_pid = 0;
+        int64_t first_stamp = 0, first_pts = 0;
+    };
+    std::map<int, St> streams;
+    int64_t stamp(const uint8_t* data, size_t len, int64_t now, int stream) {
+        St& st = streams[stream];
+        for (size_t off = 0; st.timing_pid < 0 && off + PKT <= len; off += PKT)
+            if (data[off] == SYNC_BYTE && read_pcr(data + off) >= 0) st.timing_pid = ts_pid(data + off);
+        bool any = false, timing = false;
+        int64_t s = 0;
+        for (size_t off = 0; off + PKT <= len; off += PKT) {
+            const uint8_t* pkt = data + off;
+            if (pkt[0] != SYNC_BYTE || !ts_pusi(pkt) || !ts_has_payload(pkt)) continue;
+            const int at = payload_offset(pkt);
+            PesHeader h;
+            if (at >= PKT || !parse_pes_header(pkt + at, PKT - at, &h) || h.pts < 0) continue;
+            any = true;
+            const int pid = ts_pid(pkt);
+            if (!timing_pes(pkt, pid, st.timing_pid)) continue;
+            timing = true;
+            s = house_from_mux_pts(h.pts, now);
+            if (!st.has_first) {
+                st.has_first = true;
+                st.first_pid = pid;
+                st.first_stamp = s;
+                st.first_pts = h.pts;
+            }
+            break;
+        }
+        if (!timing) s = (any || !st.stamped) ? now : st.floor;
+        if (s < st.floor) s = st.floor;
+        st.floor = s;
+        st.stamped = true;
+        return s;
+    }
+};
+
+// Every stamp of the corpus and each stream's first() in one checksum, under IdentityStamp and
+// under the unguarded rule, and where the two differ: only from a stream's first off-clock PES.
 struct CorpusRun {
-    uint64_t sum = 0;
+    uint64_t sum = 0, sum_unguarded = 0;
     std::vector<int64_t> head;
     Tally t;
     long at_arrival = 0, repeated = 0, moved = 0;   // stamp == house_now, == the last, neither
+    long differ = 0, differ_before_off = 0, off_streams = 0;
+    uint64_t off_events = 0;
 };
 
 void fold_first(Fnv& f, bool has, int pid, int64_t stamp, int64_t pts) {
@@ -357,18 +405,25 @@ void fold_first(Fnv& f, bool has, int pid, int64_t stamp, int64_t pts) {
 
 CorpusRun run_corpus() {
     CorpusRun r;
-    Fnv f;
+    Fnv f, u;
     for (int c = 0; c < CORPUS; c++) {
         IdentityStamp id;
+        Unguarded un;
         std::map<int, int64_t> last;
         for (const Buf& b : scenario(1000 + c, r.t)) {
             const int64_t s = id.stamp(b.data.data(), b.data.size(), b.now, b.stream);
+            const int64_t su = un.stamp(b.data.data(), b.data.size(), b.now, b.stream);
+            if (s != su) {
+                r.differ++;
+                r.differ_before_off += id.off_clock(b.stream) == 0;
+            }
             const auto it = last.find(b.stream);
             if (it != last.end() && s == it->second) r.repeated++;
             else if (s == b.now) r.at_arrival++;
             else r.moved++;
             last[b.stream] = s;
             f.add(s);
+            u.add(su);
             if (r.head.size() < HEAD) r.head.push_back(s);
         }
         for (const auto& kv : last) {
@@ -376,9 +431,14 @@ CorpusRun run_corpus() {
             int64_t fs = 0, fp = 0;
             const bool has = id.first(kv.first, &pid, &fs, &fp);
             fold_first(f, has, pid, fs, fp);
+            const Unguarded::St& us = un.streams[kv.first];
+            fold_first(u, us.has_first, us.first_pid, us.first_stamp, us.first_pts);
+            r.off_streams += id.off_clock(kv.first) > 0;
+            r.off_events += id.off_clock(kv.first);
         }
     }
     r.sum = f.h;
+    r.sum_unguarded = u.h;
     return r;
 }
 
@@ -709,6 +769,7 @@ int main() {
         378174570744444, 378174541744444, 378174552744444, 378174552744444, 378174603744444,
         378174570744444, 378174372744444};
     const uint64_t CORPUS_SUM = 0x047423b83c74b0a7ULL;
+    const uint64_t CORPUS_SUM_B203 = 0xdd81f13eb5fbd702ULL;   // recorded at B-203's build
     auto run = [](IdentityStamp& id, const std::vector<std::pair<int64_t, Bytes>>& bufs) {
         std::vector<int64_t> out;
         for (const auto& b : bufs) out.push_back(stamp_of(id, b.second, b.first));
@@ -747,8 +808,19 @@ int main() {
         CHECK("identity: ... and every outcome: identity, arrival, the last stamp held",
               r.moved > 5000 && r.at_arrival > 1000 && r.repeated > 1000);
         CHECK("identity: the corpus's first stamps, as recorded", r.head == CORPUS_HEAD);
-        CHECK("identity: the whole corpus and every stream's first(), as recorded",
-              r.sum == CORPUS_SUM);
+        CHECK("identity: the whole corpus and every stream's first(), as recorded, under the rule it was "
+              "recorded from (no off-clock guard)",
+              r.sum_unguarded == CORPUS_SUM);
+        // B-203: one stream's content stepped 10.5 s ahead of the clock (seed 1108's last 7 buffers):
+        // those PES time nothing, the stream stays at its floor 7.6 s ahead instead of rising to them.
+        std::printf("  corpus under the guard: %ld stamps differ (%ld before an off-clock PES), %ld streams"
+                    " off the clock, %llu events; checksum %016llx\n",
+                    r.differ, r.differ_before_off, r.off_streams, (unsigned long long)r.off_events,
+                    (unsigned long long)r.sum);
+        CHECK("identity (B-203): the guard changes only what follows a stream's first off-clock PES: 7 stamps "
+              "of one stream, 6 PES",
+              r.differ == 7 && r.differ_before_off == 0 && r.off_streams == 1 && r.off_events == 6);
+        CHECK("identity (B-203): the whole corpus under the guard, as recorded", r.sum == CORPUS_SUM_B203);
     }
 
     // Per stream: its own timing PID, first record and floor.
@@ -896,6 +968,97 @@ int main() {
         c.reset();
         CHECK("reset(): the PCR carrier goes: its private PES is stamped at arrival again",
               stamp_of(c, pes(0x101, P(H + 40 * MS), 0xBD), H + 50 * MS) == H + 50 * MS);
+    }
+
+    // --- the off-clock guard (B-203, MR-033) -----------------------------------------------
+    {
+        // The field's case: the PES before a 79,700.835 s outage, left on its old PTS, read
+        // nearest now one 2^33 wrap on, 15,742.883 s ahead. It neither stamps nor raises the floor.
+        const int64_t H0 = 200000 * S, OUT = 79700835 * 1000000LL;
+        const int64_t WRAP = pts90k_to_ns(PTS_WRAP);
+        IdentityStamp id;
+        const int64_t before = stamp_of(id, pes(0x100, P(H0 - 940 * MS)), H0 - 1 * S);
+        const int64_t leaked = stamp_of(id, pes(0x100, P(H0 - 1 * S - OUT)), H0);
+        const int64_t next = stamp_of(id, pes(0x100, P(H0 + 80 * MS)), H0 + 20 * MS);
+        const int64_t later = stamp_of(id, pes(0x100, P(H0 + 100 * MS)), H0 + 40 * MS);
+        IdentityStamp::OffClock e;
+        const bool told = id.take_episode(0, &e);
+        CHECK("off clock: a PES 4.37 h ahead stamps its buffer at house now, the floor stays",
+              before == H0 - 940 * MS && leaked == H0 && next == H0 + 80 * MS && later == H0 + 100 * MS);
+        CHECK("off clock: ... counted once, one episode naming its PID and how far ahead it read",
+              id.off_clock(0) == 1 && told && e.pid == 0x100 && e.count == 1 &&
+                  e.offset_ns - (WRAP - OUT - 1 * S) > -12 * 1000 && e.offset_ns - (WRAP - OUT - 1 * S) < 12 * 1000 &&
+                  !id.take_episode(0, &e));
+        int pid = 0;
+        int64_t fs = 0, fp = 0;
+        IdentityStamp f;
+        stamp_of(f, pes(0x100, P(H0 + 2 * 3600 * S)), H0);
+        const bool none = !f.first(0, &pid, &fs, &fp);
+        stamp_of(f, pes(0x100, P(H0 + 100 * MS)), H0 + 10 * MS);
+        CHECK("off clock: such a PES is never the stream's first() either",
+              none && f.first(0, &pid, &fs, &fp) && fs == H0 + 100 * MS);
+    }
+    {
+        // The bounds: 10 s ahead and 1 h behind still time a buffer; past them a PES times nothing.
+        const int64_t T = 50000 * S;
+        IdentityStamp a, b, c, d;
+        const int64_t in_ahead = stamp_of(a, pes(0x100, P(T + 9990 * MS)), T);
+        const int64_t out_ahead = stamp_of(b, pes(0x100, P(T + 10020 * MS)), T);
+        const int64_t in_behind = stamp_of(c, pes(0x100, P(T - 3599 * S)), T);
+        const int64_t out_behind = stamp_of(d, pes(0x100, P(T - 3601 * S)), T);
+        CHECK("off clock: 9.99 s ahead and 59 min 59 s behind time the buffer",
+              in_ahead == T + 9990 * MS && in_behind == T - 3599 * S && a.off_clock(0) == 0 &&
+                  c.off_clock(0) == 0);
+        CHECK("off clock: 10.02 s ahead and 1 h 0 min 1 s behind stamp it at house now, counted",
+              out_ahead == T && out_behind == T && b.off_clock(0) == 1 && d.off_clock(0) == 1);
+        IdentityStamp m;
+        const Bytes two = cat({pes(0x100, P(T + 20 * S)), pes(0x101, P(T + 120 * MS), 0xC0)});
+        CHECK("off clock: the next timing PES in the buffer times it instead",
+              stamp_of(m, two, T) == T + 120 * MS && m.off_clock(0) == 1);
+    }
+    {
+        // A floor ahead of house now (the clock went back) drops to it, as an episode of its own.
+        const int64_t T = 30000 * S;
+        IdentityStamp id;
+        const int64_t s1 = stamp_of(id, pes(0x100, P(T + 5 * S)), T);
+        const int64_t s2 = stamp_of(id, null_pkt(), T - 20 * S);
+        const int64_t s3 = stamp_of(id, pes(0x100, P(T - 19940 * MS)), T - 19990 * MS);
+        IdentityStamp::OffClock e;
+        CHECK("off clock: a floor 25 s ahead resets to house now; the next PES stamps exactly",
+              s1 == T + 5 * S && s2 == T - 20 * S && s3 == T - 19940 * MS);
+        CHECK("off clock: ... one episode, PID -1, the floor's 25 s",
+              id.take_episode(0, &e) && e.pid == -1 && e.offset_ns == 25 * S && e.count == 1 &&
+                  id.off_clock(0) == 1);
+        IdentityStamp k;
+        stamp_of(k, pes(0x100, P(T + 9 * S)), T);
+        CHECK("off clock: a floor within 10 s stays (the 9 s ahead PES it came from times on)",
+              stamp_of(k, null_pkt(), T + 10 * MS) == T + 9 * S && k.off_clock(0) == 0);
+    }
+    {
+        // Episodes: one per run of off-clock PES, a new one after 10 s without; per stream.
+        const int64_t T = 70000 * S;
+        IdentityStamp id;
+        auto off = [&](int64_t now, int stream) { stamp_of(id, pes(0x100, P(now + 3600 * S)), now, stream); };
+        auto good = [&](int64_t now, int stream) { stamp_of(id, pes(0x100, P(now + 50 * MS)), now, stream); };
+        IdentityStamp::OffClock e;
+        off(T, 1);
+        const bool first = id.take_episode(1, &e) && e.count == 1;
+        good(T + 1 * S, 1);
+        off(T + 2 * S, 1);
+        good(T + 3 * S, 1);
+        off(T + 12 * S, 1);
+        const bool quiet = !id.take_episode(1, &e);
+        good(T + 13 * S, 1);
+        off(T + 22500 * MS, 1);
+        const bool again = id.take_episode(1, &e) && e.count == 4 && !id.take_episode(1, &e);
+        off(T + 22600 * MS, 2);
+        const bool other = id.take_episode(2, &e) && e.count == 1 && id.off_clock(1) == 4;
+        CHECK("off clock: one episode while off-clock PES come within 10 s of each other", first && quiet);
+        CHECK("off clock: a new one after 10 s without, the count running on", again);
+        CHECK("off clock: streams apart", other);
+        id.reset();
+        CHECK("off clock: reset() forgets counts and episodes",
+              id.off_clock(1) == 0 && !id.take_episode(1, &e) && !id.take_episode(2, &e));
     }
 
     return test_summary("ts_house");
