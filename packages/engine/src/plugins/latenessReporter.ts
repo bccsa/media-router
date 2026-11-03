@@ -10,8 +10,8 @@ import type {
 import {
     ALIGNER_EVENT,
     AlignerWatches,
-    beyondText,
     PACE_CEILING_MS,
+    reanchorText,
     type AlignerEvent,
     type AlignerInputRef,
     type AlignerWatch,
@@ -73,6 +73,8 @@ export type LabelledAlignerEvent = AlignerEvent & { label: string };
 export interface AlignerWarnings {
     absent: string | null;
     full: string | null;
+    /** Inputs re-anchored past their aligner's pace ceiling (B-205). */
+    reanchored: string | null;
 }
 
 /** One input on display: its key (a tap, or `mralignwatch:<label>`), place and label, the
@@ -342,19 +344,14 @@ export class LatenessReporter {
         };
     }
 
-    /** The warning texts: every absent input with its W, or how far past its aligner's pace
-     *  ceiling it is (B-204); every input whose queue is full. */
+    /** The warning texts: every absent input with its W; every input whose queue is full; every
+     *  input re-anchored past its aligner's pace ceiling, by how much (B-205). */
     alignerWarnings(now = Date.now()): AlignerWarnings {
         this.expire(now);
         const { rows, internal } = this.inputRows();
         const absent = rows
             .filter((r) => r.state === 'absent')
             .map((r) => {
-                const out = r.watches.find((x) => x.report.beyond);
-                if (out) {
-                    const { latenessMs, paceCeilingMs } = out.report;
-                    return beyondText(r.label, latenessMs, paceCeilingMs ?? PACE_CEILING_MS);
-                }
                 const w = r.watches.filter((x) => x.report.state === 'absent');
                 // Its watches report on (a quiet tap): silent for as long as a tap takes to go stale.
                 const limitMs = w.length
@@ -366,9 +363,30 @@ export class LatenessReporter {
             ...rows.filter((r) => r.watches.some((w) => w.full)).map((r) => r.label),
             ...internal.filter((w) => w.full).map((w) => w.ref.input),
         ].map((label) => `Input ${label} queue full — upstream held`);
+        // An input's routes share one anchor once moved (the group's); the furthest stands.
+        const moved = (watches: AlignerWatch[]): AlignerWatch | undefined => {
+            let out: AlignerWatch | undefined;
+            for (const w of watches) {
+                const a = Math.abs(w.report.anchorMs ?? 0);
+                if (a > 0 && (!out || a > Math.abs(out.report.anchorMs ?? 0))) out = w;
+            }
+            return out;
+        };
+        const byInput = new Map<string, AlignerWatch[]>();
+        for (const r of rows) byInput.set(r.label, r.watches);
+        // An internal stage's links (one per output mix) name one input once.
+        for (const w of internal)
+            byInput.set(w.ref.input, [...(byInput.get(w.ref.input) ?? []), w]);
+        const reanchored = [...byInput]
+            .map(([label, watches]) => ({ label, w: moved(watches) }))
+            .filter((x): x is { label: string; w: AlignerWatch } => x.w !== undefined)
+            .map(({ label, w }) =>
+                reanchorText(label, w.report.anchorMs!, w.report.paceCeilingMs ?? PACE_CEILING_MS),
+            );
         return {
             absent: absent.length ? absent.join('; ') : null,
             full: full.length ? full.join('; ') : null,
+            reanchored: reanchored.length ? reanchored.join('; ') : null,
         };
     }
 

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { AlignerWatches, beyondText, parseAlignerPayload } from './alignerWatches.js';
+import {
+    AlignerWatches,
+    parseAlignerPayload,
+    reanchorEventText,
+    reanchorText,
+} from './alignerWatches.js';
 
 const MS = 1_000_000;
 const payload = (o: Record<string, unknown> = {}) => ({
@@ -48,51 +53,78 @@ describe('parseAlignerPayload: the slew and the fall (B-80, B-82)', () => {
     });
 });
 
-describe('past the pace ceiling (B-204)', () => {
-    it('reads beyond and pace-ceiling; absent when not sent', () => {
+describe('re-anchored past the pace ceiling (B-205)', () => {
+    it('reads anchor, anchor-was and pace-ceiling; absent when not sent', () => {
         const r = parseAlignerPayload(
-            payload({ state: 'absent', beyond: true, 'pace-ceiling': 4000 * MS }),
+            payload({
+                reason: 'reanchored',
+                anchor: 157_124 * MS,
+                'anchor-was': 0,
+                'pace-ceiling': 4000 * MS,
+            }),
         );
-        expect(r).toMatchObject({ state: 'absent', beyond: true, paceCeilingMs: 4000 });
-        expect(parseAlignerPayload(payload())?.beyond).toBeUndefined();
-        expect(parseAlignerPayload(payload({ beyond: false }))?.beyond).toBe(false);
-    });
-
-    it('a beyond report is one event with its lateness and the ceiling; the interval after none', () => {
-        const w = new AlignerWatches();
-        const out = payload({
-            reason: 'beyond',
-            input: 'audio-1',
-            aligner: 'mux',
-            state: 'absent',
-            lateness: 157_124 * MS,
-            beyond: true,
-            'pace-ceiling': 4000 * MS,
+        expect(r).toMatchObject({
+            state: 'present',
+            anchorMs: 157_124,
+            anchorWasMs: 0,
+            paceCeilingMs: 4000,
         });
-        expect(w.take('aw_257', out, 0)?.events).toEqual([
-            {
-                kind: 'beyond',
-                watch: { name: 'aw_257', aligner: 'mux', input: 'audio-1' },
-                latenessMs: 157_124,
-                ceilingMs: 4000,
-            },
-        ]);
-        const again = { ...out, reason: 'interval' };
-        expect(w.take('aw_257', again, 1000)?.events).toEqual([]);
+        expect(parseAlignerPayload(payload())?.anchorMs).toBeUndefined();
+        expect(parseAlignerPayload(payload({ anchor: -8000 * MS }))?.anchorMs).toBe(-8000);
     });
 
-    it('says how far: minutes and seconds, 1 h or more (clamped), or ahead of the clock', () => {
-        expect(beyondText('vv-en (audio-1)', 157_124, 4000)).toBe(
-            'Input vv-en (audio-1) 2 min 37 s late, past the 4 s pace ceiling — continuing without it',
+    it('a reanchored report is one event with its anchor, the one before and the ceiling; a move is a change', () => {
+        const w = new AlignerWatches();
+        const base = { input: 'audio-1', aligner: 'mux', 'pace-ceiling': 4000 * MS };
+        expect(w.take('aw_257', payload({ ...base, anchor: 0 }), 0)?.changed).toBe(true);
+        const moved = payload({
+            ...base,
+            reason: 'reanchored',
+            anchor: 157_124 * MS,
+            'anchor-was': 0,
+        });
+        expect(w.take('aw_257', moved, 100)).toEqual({
+            changed: true,
+            events: [
+                {
+                    kind: 'reanchored',
+                    watch: { name: 'aw_257', aligner: 'mux', input: 'audio-1' },
+                    anchorMs: 157_124,
+                    wasMs: 0,
+                    ceilingMs: 4000,
+                },
+            ],
+        });
+        const again = payload({ ...base, anchor: 157_124 * MS });
+        expect(w.take('aw_257', again, 1100)).toEqual({ changed: false, events: [] });
+        const cleared = payload({
+            ...base,
+            reason: 'reanchored',
+            anchor: 0,
+            'anchor-was': 157_124 * MS,
+        });
+        expect(w.take('aw_257', cleared, 2100)).toMatchObject({
+            changed: true,
+            events: [{ kind: 'reanchored', anchorMs: 0, wasMs: 157_124 }],
+        });
+    });
+
+    it('says by how much and which way, hours too; its clear and a move within its episode', () => {
+        expect(reanchorText('vv-en (audio-1)', 157_124, 4000)).toBe(
+            'Input vv-en (audio-1) re-anchored by +2 min 37 s (late) — past the 4 s pace ceiling',
         );
-        expect(beyondText('a', 4_100, 4000)).toBe(
-            'Input a 4.1 s late, past the 4 s pace ceiling — continuing without it',
+        expect(reanchorText('a', -8_000, 4000)).toBe(
+            'Input a re-anchored by -8.0 s (ahead) — past the 4 s pace ceiling',
         );
-        expect(beyondText('a', 3_600_000, 4000)).toBe(
-            'Input a 1 h or more late, past the 4 s pace ceiling — continuing without it',
+        expect(reanchorText('a', 22 * 3_600_000, 4000)).toBe(
+            'Input a re-anchored by +22 h 0 min (late) — past the 4 s pace ceiling',
         );
-        expect(beyondText('a', -3_600_000, 4000)).toBe(
-            'Input a 1 h or more ahead of the house clock — continuing without it',
+        expect(reanchorEventText('a', 157_124, 0, 4000)).toBe(reanchorText('a', 157_124, 4000));
+        expect(reanchorEventText('a', 0, 157_124, 4000)).toBe(
+            'Input a back on the house clock: its re-anchor by +2 min 37 s (late) cleared',
+        );
+        expect(reanchorEventText('a', 300_000, 157_124, 4000)).toBe(
+            'Input a re-anchored by +5 min 0 s (late) — past the 4 s pace ceiling (was +2 min 37 s (late))',
         );
     });
 });

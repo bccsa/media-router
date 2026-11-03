@@ -48,9 +48,15 @@ type OwnedWarning =
     | 'input-absent'
     | 'aligner-full'
     | 'plays-nothing'
+    | 'input-reanchored'
     | 'off-clock';
-/** The timing warnings, one health text among them (WI-P2-13, B-203). */
-const TIMING_WARNINGS: OwnedWarning[] = ['input-absent', 'aligner-full', 'off-clock'];
+/** The timing warnings, one health text among them (WI-P2-13, B-203, B-205). */
+const TIMING_WARNINGS: OwnedWarning[] = [
+    'input-absent',
+    'aligner-full',
+    'input-reanchored',
+    'off-clock',
+];
 import { pulsePinnedStreamProps } from './pulseStreamProps.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 import {
@@ -102,7 +108,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.services?.instanceId
                 ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
                 : [],
-        alignerWarnings: (absent, full) => this.onAlignerWarnings(absent, full),
+        alignerWarnings: (absent, full, reanchored) =>
+            this.onAlignerWarnings(absent, full, reanchored),
         offClock: (text) => this.onOffClock(text),
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
@@ -524,16 +531,23 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     private readonly timingTexts: {
         absent: string | null;
         full: string | null;
+        reanchored: string | null;
         offClock: string | null;
     } = {
         absent: null,
         full: null,
+        reanchored: null,
         offClock: null,
     };
 
-    private onAlignerWarnings(absent: string | null, full: string | null): void {
+    private onAlignerWarnings(
+        absent: string | null,
+        full: string | null,
+        reanchored: string | null,
+    ): void {
         this.timingTexts.absent = absent;
         this.timingTexts.full = full;
+        this.timingTexts.reanchored = reanchored;
         this.showTimingWarnings();
     }
 
@@ -543,12 +557,14 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.showTimingWarnings();
     }
 
-    /** The aligners' warnings (WI-P2-13) and an output off the house clock (B-203) as one health
-     *  text, taken only over ok or our own (ADR-0010 rule 2): another writer's or an error stands
-     *  until it clears. Withdrawn when none stands. */
+    /** The aligners' warnings (WI-P2-13, B-205) and an output off the house clock (B-203) as one
+     *  health text, taken only over ok or our own (ADR-0010 rule 2): another writer's or an error
+     *  stands until it clears. Withdrawn when none stands. */
     private showTimingWarnings(): void {
-        const { absent, full, offClock } = this.timingTexts;
-        const text = [absent, full, offClock].filter((t): t is string => t !== null).join('; ');
+        const { absent, full, reanchored, offClock } = this.timingTexts;
+        const text = [absent, full, reanchored, offClock]
+            .filter((t): t is string => t !== null)
+            .join('; ');
         const ours = this.ownedWarning !== null && TIMING_WARNINGS.includes(this.ownedWarning);
         if (!text) {
             for (const kind of TIMING_WARNINGS) this.clearOwnWarning(kind);
@@ -557,7 +573,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (!ours && this.health !== 'ok') return;
         if (ours && this.health === 'warning' && this.error === text) return;
         this.ownWarning(
-            absent !== null ? 'input-absent' : full !== null ? 'aligner-full' : 'off-clock',
+            absent !== null
+                ? 'input-absent'
+                : full !== null
+                  ? 'aligner-full'
+                  : reanchored !== null
+                    ? 'input-reanchored'
+                    : 'off-clock',
             text,
         );
     }

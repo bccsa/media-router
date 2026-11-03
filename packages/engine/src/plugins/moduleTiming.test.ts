@@ -517,11 +517,12 @@ describe('aligner inputs (WI-P2-13)', () => {
             awMsg(A.connectionId, 'present', { reason: 'interval' }),
         );
         expect(host.emit).toHaveBeenCalledTimes(1);
-        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null);
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null, null);
         t.onEvent('mralignwatch:mixin_aw_a', awMsg(A.connectionId, 'absent', { absences: 1 }));
         expect(host.emit).toHaveBeenCalledTimes(2);
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(
             'Input enc-a (audio-in) silent for 100 ms — continuing without it',
+            null,
             null,
         );
         expect(t.publication.data['timing-in-1']).toMatchObject({ state: 'absent', absences: 1 });
@@ -535,7 +536,7 @@ describe('aligner inputs (WI-P2-13)', () => {
         vi.advanceTimersByTime(2000);
         expect(host.alignerWarnings).toHaveBeenCalledTimes(1);
         t.stop(false);
-        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null);
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null, null);
     });
 
     it("the engine's rule: a watch labelled with a connection id joins its edge's tap row", () => {
@@ -655,38 +656,50 @@ describe('aligner inputs (WI-P2-13)', () => {
         t.stop(false);
     });
 
-    it('an input past the pace ceiling is one warn line naming it and how late (B-204)', () => {
+    it('a re-anchor is one warn line naming the input and the offset, its clear one info line; the health text while it stands (B-205)', () => {
         const { t, host } = make();
-        t.onEvent('mralignwatch:mixin_aw_b', {
-            ...awMsg(B.connectionId, 'absent', { reason: 'beyond', absences: 1 }),
-            lateness: 402_500 * MS,
-            beyond: true,
+        const moved = (anchorMs: number, wasMs: number, reason = 'reanchored') => ({
+            ...awMsg(B.connectionId, 'present', { reason }),
+            anchor: anchorMs * MS,
+            'anchor-was': wasMs * MS,
             'pace-ceiling': 4000 * MS,
         });
+        const text =
+            'Input enc-b (audio-in) re-anchored by +6 min 42 s (late) — past the 4 s pace ceiling';
+        t.onEvent('mralignwatch:mixin_aw_b', moved(402_500, 0));
         expect(host.log).toHaveBeenCalledWith(
             'warn',
             {
-                alignerBeyond: {
+                alignerReanchored: {
                     name: 'mixin_aw_b',
                     aligner: 'mixin',
                     input: B.connectionId,
-                    latenessMs: 402_500,
+                    anchorMs: 402_500,
+                    wasMs: 0,
                     ceilingMs: 4000,
                 },
             },
-            'Input enc-b (audio-in) 6 min 42 s late, past the 4 s pace ceiling — continuing without it',
+            text,
         );
-        expect(host.alignerWarnings).toHaveBeenLastCalledWith(
-            'Input enc-b (audio-in) 6 min 42 s late, past the 4 s pace ceiling — continuing without it',
-            null,
-        );
-        t.onEvent('mralignwatch:mixin_aw_b', {
-            ...awMsg(B.connectionId, 'absent', { reason: 'interval', absences: 1 }),
-            lateness: 402_500 * MS,
-            beyond: true,
-            'pace-ceiling': 4000 * MS,
-        });
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null, text);
+        // Its reports while it stands: no more lines.
+        t.onEvent('mralignwatch:mixin_aw_b', moved(402_500, 0, 'interval'));
         expect(host.log).toHaveBeenCalledTimes(1);
+        // A move within its episode informs; its clear informs and withdraws the text.
+        t.onEvent('mralignwatch:mixin_aw_b', moved(410_000, 402_500));
+        expect(host.log).toHaveBeenLastCalledWith(
+            'info',
+            expect.anything(),
+            'Input enc-b (audio-in) re-anchored by +6 min 50 s (late) — past the 4 s pace ceiling (was +6 min 42 s (late))',
+        );
+        t.onEvent('mralignwatch:mixin_aw_b', moved(0, 410_000));
+        expect(host.log).toHaveBeenLastCalledWith(
+            'info',
+            expect.anything(),
+            'Input enc-b (audio-in) back on the house clock: its re-anchor by +6 min 50 s (late) cleared',
+        );
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null, null);
+        expect(host.log).toHaveBeenCalledTimes(3);
         t.stop(false);
     });
 
@@ -716,6 +729,7 @@ describe('aligner inputs (WI-P2-13)', () => {
         expect(s.waitingFor).toBe('enc-b (audio-in)');
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(
             'Input enc-b (audio-in) silent for 100 ms — continuing without it',
+            null,
             null,
         );
         expect(host.wired).toHaveBeenCalledWith(
@@ -757,6 +771,7 @@ describe('aligner inputs (WI-P2-13)', () => {
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(
             'Input enc-a (input-0) silent for 6000 ms — continuing without it',
             null,
+            null,
         );
         // Before its first window a tap is not quiet: a fresh run shows the route present; nor is
         // one hidden as off the house timeline.
@@ -781,10 +796,11 @@ describe('aligner inputs (WI-P2-13)', () => {
         expect(host.alignerWarnings).toHaveBeenLastCalledWith(
             expect.stringContaining('enc-b (audio-in)'),
             null,
+            null,
         );
         sources.pop(); // the operator removed the dead input
         t.tick();
-        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null);
+        expect(host.alignerWarnings).toHaveBeenLastCalledWith(null, null, null);
         expect(t.summary()!.inputs).toEqual([]);
         t.stop(false);
     });

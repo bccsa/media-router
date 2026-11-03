@@ -51,8 +51,8 @@ class ArrivalRhythm {
 // A member's lateness: the median over wall time of its last second, each stretch between two
 // arrivals at its midpoint, leaving out those over which it fell (a backlog draining, at any
 // speed). It goes into the pace only while a third of the window counts and it is not falling.
-// Past the ceiling, or 1 h or more ahead, the member is `beyond`: its lateness goes into no pace,
-// its peaks leave the window and its aligner treats it as absent (B-204).
+// Steadily past the ceiling either way, the member is re-anchored (B-205): its `anchor` moves its
+// content to the present, its aligner times what it sends past it, and its peaks leave the window.
 class PaceGroup {
   public:
     using Member = uint64_t;
@@ -66,11 +66,12 @@ class PaceGroup {
         bool started = false;
         int64_t pace_at(int64_t now_ns) const;
     };
-    // A skip down that a call applied: its member reports it (B-82). `beyond`: after observe or
-    // raise, the member's state (B-204).
+    // A skip down that a call applied: its member reports it (B-82). After observe or raise, the
+    // member's anchor; `reanchored`: this call moved it (B-205).
     struct Event {
         int64_t fell_ns = 0;
-        bool beyond = false;
+        int64_t anchor_ns = 0;
+        bool reanchored = false;
     };
     static constexpr int64_t WINDOW_NS = 1000000000;   // a member's lateness: over its last 1 s
     // It counts toward the pace once its stretches span half the second: the first arrivals of
@@ -81,10 +82,14 @@ class PaceGroup {
     // Past +-1 h a PTS is garbage: a sample is clamped there for the shown lateness only.
     static constexpr int64_t LATENESS_LIMIT_NS = 3600LL * 1000000000LL;
     // The most a pace can be (B-204): 1 s under the aligner's 5 s queue, so an input on time is
-    // never held past its queue. A member later than this is `beyond`; it comes back at or under
-    // the ceiling less BEYOND_BACK_NS, so one that hovers there does not flap.
+    // never held past its queue. A member steadily later than this, or earlier, is re-anchored.
     static constexpr int64_t PACE_CEILING_NS = 4LL * 1000000000LL;
-    static constexpr int64_t BEYOND_BACK_NS = 1000000000;
+    // An anchor clears once the member's lateness off it is within this of the house timeline, and
+    // a new one takes another member's within this (B-205): 1 s under the ceiling, so one that
+    // hovers there does not flap.
+    static constexpr int64_t ANCHOR_BAND_NS = PACE_CEILING_NS - 1000000000;
+    // The furthest an anchor goes (73 years): sums of two never overflow.
+    static constexpr int64_t ANCHOR_LIMIT_NS = 1LL << 61;
     // RISE_RATE 0.5: once the group runs, a ns of wall time lifts the pace half a ns (B-80).
     static constexpr int64_t RISE_DIV = 2;
     // The window: three buckets of fall_after / 2 on the group's clock, the open one the last.
@@ -105,13 +110,13 @@ class PaceGroup {
     void join(Member m, int64_t seed_ns, int64_t now_ns = -1);
     // The target from the members that remain; the fall follows at once, and reports nothing.
     void leave(Member m, int64_t now_ns = -1);
-    // An arrival. `fresh` starts a run (after waiting, an absence or a flush): no stretch
-    // reaches back to the member's previous arrival. The lateness enters the window when it
-    // counts; from a member not `gapped` it lifts the pace at once (its data is waited for).
-    // `held`: the member's aligner held its upstream since its last arrival, so this lateness
-    // carries the group's own hold: it is shown, but no stretch reaches it or leaves it (B-204).
+    // An arrival, its lateness off the member's anchor. `fresh` starts a run (after waiting, an
+    // absence or a flush): no stretch reaches back. It enters the window when it counts; from a
+    // member not `gapped` it lifts the pace at once. `held`: late by our own hold, so in no stretch
+    // (B-204). `anchor_min`: the least anchor a move back keeps what it queued with (B-205).
     void observe(Member m, int64_t now_ns, int64_t lateness_ns, bool fresh = false,
-                 bool gapped = false, Event* ev = nullptr, bool held = false);
+                 bool gapped = false, Event* ev = nullptr, bool held = false,
+                 int64_t anchor_min = NONE);
     // A late sparse cue's lateness enters the member's window (C-3); over the ceiling it does not.
     void raise(Member m, int64_t pace_ns, int64_t now_ns = -1, Event* ev = nullptr);
     // Time alone: the buckets rotate when due, and a due skip falls.
@@ -135,12 +140,13 @@ class PaceGroup {
     bool need(Member m, int64_t* out) const;
     // The member's peak over its window; false while it holds none.
     bool peak(Member m, int64_t* out) const;
-    // The member is past the ceiling or off the clock (B-204); false for a stranger.
-    bool beyond(Member m) const;
+    // The member's anchor (B-205): what its content is moved by, later when > 0; 0 for a stranger.
+    int64_t anchor(Member m) const;
     size_t size() const { return members_.size(); }
 
-  private:
     static constexpr int64_t NONE = INT64_MIN;
+
+  private:
     struct Stretch {
         int64_t end;   // the arrival that closed it
         int64_t len;
@@ -167,9 +173,16 @@ class PaceGroup {
         bool has_need = false;
         int64_t need = 0;    // the last level that counted
         int64_t peaks[BUCKETS] = {NONE, NONE, NONE};   // the window's, oldest first
-        bool beyond = false;
+        int64_t anchor = 0;
     };
     static bool falling(const State& s, int64_t now_ns);
+    static int64_t recent(const State& s, int64_t now_ns);
+    // The anchor a member re-anchored at `raw` (its lateness off the house timeline) takes: `raw`,
+    // or `anchor_min` within the band, then the nearest other member's anchor within the band.
+    int64_t anchor_for(Member m, int64_t raw, int64_t anchor_min) const;
+    // The member's anchor moves to `a`: its stretches and need go (they read the old one), and
+    // its level is read off the new one.
+    static void move_anchor(State& s, int64_t raw, int64_t a);
     // The group's clock moved to `now_ns`; the time a call works at, -1 before any.
     int64_t advance(int64_t now_ns);
     void rotate();
@@ -217,8 +230,8 @@ class PaceRegistry {
         int64_t pace_ns = 0;
         int64_t target_ns = 0;
         bool has_lateness = false;
-        int64_t lateness_ns = 0;   // this member's
-        bool beyond = false;       // ...and whether it is past the ceiling
+        int64_t lateness_ns = 0;   // this member's, off its anchor
+        int64_t anchor_ns = 0;     // ...and that anchor (B-205)
         size_t members = 0;
     };
 
@@ -229,7 +242,8 @@ class PaceRegistry {
                     int64_t fall_after_ns = PaceGroup::FALL_AFTER_NS, int64_t now_ns = -1);
     void leave(Membership* m, int64_t now_ns = -1);   // and clears it; a second call is a no-op
     void observe(const Membership& m, int64_t now_ns, int64_t lateness_ns, bool fresh = false,
-                 bool gapped = false, PaceGroup::Event* ev = nullptr, bool held = false);
+                 bool gapped = false, PaceGroup::Event* ev = nullptr, bool held = false,
+                 int64_t anchor_min = PaceGroup::NONE);
     void raise(const Membership& m, int64_t pace_ns, int64_t now_ns = -1,
                PaceGroup::Event* ev = nullptr);
     void tick(const Membership& m, int64_t now_ns, PaceGroup::Event* ev = nullptr);

@@ -5,7 +5,7 @@ import type { ModuleTimingSummary } from '@media-router/shared-types';
 import type { PipelineDescription, TimingInputRef, TimingSink } from './PluginModule.js';
 import { readNodeLatency } from '../audio/pipeWireLatency.js';
 import { latInName, shortHash } from './busHelpers.js';
-import { beyondText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
+import { reanchorEventText, type AlignerInputRef, type AlignerWatchRef } from './alignerWatches.js';
 import {
     LatenessReporter,
     type LabelledAlignerEvent,
@@ -77,7 +77,7 @@ export interface ModuleTimingHost {
     getProperty(element: string, property: string): Promise<unknown>;
     busSources(): BusSourceRef[];
     /** The aligners' warning texts, null where none stands: on a change and every tick. */
-    alignerWarnings?(absent: string | null, full: string | null): void;
+    alignerWarnings?(absent: string | null, full: string | null, reanchored: string | null): void;
     /** An output 10 s or more off the house clock (B-203), null when none: every tick. */
     offClock?(text: string | null): void;
     /** An aligner event, as a line in the module's log. */
@@ -248,7 +248,7 @@ export class ModuleTiming {
         const had = visible(this.pub);
         this.pub = EMPTY;
         this.last = null;
-        this.host.alignerWarnings?.(null, null);
+        this.host.alignerWarnings?.(null, null, null);
         this.host.offClock?.(null);
         if (emit && had) this.host.emit();
     }
@@ -274,7 +274,7 @@ export class ModuleTiming {
     private syncWarnings(now = Date.now()): void {
         if (this.host.alignerWarnings) {
             const w = this.reporter.alignerWarnings(now);
-            this.host.alignerWarnings(w.absent, w.full);
+            this.host.alignerWarnings(w.absent, w.full, w.reanchored);
         }
         this.host.offClock?.(this.reporter.offClockWarning(now));
     }
@@ -328,12 +328,23 @@ export class ModuleTiming {
             );
             return;
         }
-        if (e.kind === 'beyond') {
-            const latenessMs = Math.round(e.latenessMs);
+        if (e.kind === 'reanchored') {
+            // One warning an episode, at its anchor; a move within it and its clear inform.
+            const anchorMs = Math.round(e.anchorMs);
+            const wasMs = Math.round(e.wasMs);
             this.host.log?.(
-                'warn',
-                { alignerBeyond: { name, aligner, input, latenessMs, ceilingMs: e.ceilingMs } },
-                beyondText(e.label, e.latenessMs, e.ceilingMs),
+                e.wasMs === 0 && e.anchorMs !== 0 ? 'warn' : 'info',
+                {
+                    alignerReanchored: {
+                        name,
+                        aligner,
+                        input,
+                        anchorMs,
+                        wasMs,
+                        ceilingMs: e.ceilingMs,
+                    },
+                },
+                reanchorEventText(e.label, e.anchorMs, e.wasMs, e.ceilingMs),
             );
             return;
         }

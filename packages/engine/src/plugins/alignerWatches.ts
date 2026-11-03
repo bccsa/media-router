@@ -1,6 +1,6 @@
 // The aligner inputs' `mralignwatch` reports (house-clock WI-P2-13): state, pace, W, absences
 // and stale discards, on a change and every second, kept per element. LatenessReporter maps them
-// to the module's inputs; the rejoin, late-cue, pace-fell and beyond events go to the module's log.
+// to the module's inputs; the rejoin, late-cue, pace-fell and re-anchor events go to its log.
 import type { AlignerInputState } from '@media-router/shared-types';
 import { offsetText } from './offClock.js';
 
@@ -42,8 +42,10 @@ export interface AlignerReport {
     /** `reason=pace-fell`: by how much, and the window every input was steady under it. */
     fellMs?: number;
     fallAfterMs?: number;
-    /** Past the pace ceiling or off the clock: absent for its aligner (B-204). */
-    beyond?: boolean;
+    /** What the input is re-anchored by, steadily past the pace ceiling: later when > 0 (B-205). */
+    anchorMs?: number;
+    /** `reason=reanchored`: its anchor before that move. */
+    anchorWasMs?: number;
     /** The most a pace can be (B-204). */
     paceCeilingMs?: number;
 }
@@ -53,20 +55,37 @@ export type AlignerEvent =
     | { kind: 'rejoin'; watch: AlignerWatchRef; absentMs: number; discardedMs: number }
     | { kind: 'late-cue'; watch: AlignerWatchRef; cueLatenessMs: number; raisedMs: number }
     | { kind: 'pace-fell'; watch: AlignerWatchRef; fellMs: number; fallAfterMs: number }
-    | { kind: 'beyond'; watch: AlignerWatchRef; latenessMs: number; ceilingMs: number };
+    | {
+          kind: 'reanchored';
+          watch: AlignerWatchRef;
+          anchorMs: number;
+          wasMs: number;
+          ceilingMs: number;
+      };
 
 /** The ceiling when a report names none (the element's PACE_CEILING_NS). */
 export const PACE_CEILING_MS = 4000;
 
-/** An input past its aligner's pace ceiling or off the clock (B-204), as health and log say it.
- *  Its lateness is shown clamped to 1 h. */
-export function beyondText(label: string, latenessMs: number, ceilingMs: number): string {
-    const far = Math.abs(latenessMs) >= 3_600_000 ? '1 h or more' : offsetText(latenessMs);
-    const where =
-        latenessMs < 0
-            ? `${far} ahead of the house clock`
-            : `${far} late, past the ${ceilingMs / 1000} s pace ceiling`;
-    return `Input ${label} ${where} — continuing without it`;
+/** An anchor as the operator reads it: `+2 min 37 s (late)`, `-8.0 s (ahead)`. */
+const anchorText = (anchorMs: number): string =>
+    `${anchorMs < 0 ? '-' : '+'}${offsetText(anchorMs)} (${anchorMs < 0 ? 'ahead' : 'late'})`;
+
+/** An input re-anchored past its aligner's pace ceiling (B-205), as health and log say it. */
+export function reanchorText(label: string, anchorMs: number, ceilingMs: number): string {
+    return `Input ${label} re-anchored by ${anchorText(anchorMs)} — past the ${ceilingMs / 1000} s pace ceiling`;
+}
+
+/** The log line of a move: a new anchor's warning, a move within its episode, or its clear. */
+export function reanchorEventText(
+    label: string,
+    anchorMs: number,
+    wasMs: number,
+    ceilingMs: number,
+): string {
+    if (anchorMs === 0)
+        return `Input ${label} back on the house clock: its re-anchor by ${anchorText(wasMs)} cleared`;
+    const text = reanchorText(label, anchorMs, ceilingMs);
+    return wasMs === 0 ? text : `${text} (was ${anchorText(wasMs)})`;
 }
 
 export interface AlignerWatch {
@@ -113,7 +132,8 @@ export function parseAlignerPayload(payload: unknown): AlignerReport | null {
         levelBytes: num('level-bytes'),
     };
     if ('pace-target' in p) report.paceTargetMs = num('pace-target') / NS_PER_MS;
-    if ('beyond' in p) report.beyond = p.beyond === true;
+    if ('anchor' in p) report.anchorMs = num('anchor') / NS_PER_MS;
+    if ('anchor-was' in p) report.anchorWasMs = num('anchor-was') / NS_PER_MS;
     if ('pace-ceiling' in p) report.paceCeilingMs = num('pace-ceiling') / NS_PER_MS;
     if (report.reason === 'late-cue') report.cueLatenessMs = num('cue-lateness') / NS_PER_MS;
     if (report.reason === 'pace-fell') {
@@ -131,8 +151,8 @@ function restarted(prev: AlignerReport, r: AlignerReport): boolean {
 export class AlignerWatches {
     private readonly entries = new Map<string, Entry>();
 
-    /** One report from element `name`: whether a state or a full episode changed, and the
-     *  events it completes. Null when the payload is no report. */
+    /** One report from element `name`: whether a state, a full episode or an anchor changed,
+     *  and the events it completes. Null when the payload is no report. */
     take(
         name: string,
         payload: unknown,
@@ -193,16 +213,18 @@ export class AlignerWatches {
                 fallAfterMs: r.fallAfterMs ?? 0,
             });
         }
-        if (r.reason === 'beyond') {
+        if (r.reason === 'reanchored') {
             events.push({
-                kind: 'beyond',
+                kind: 'reanchored',
                 watch: ref,
-                latenessMs: r.latenessMs,
+                anchorMs: r.anchorMs ?? 0,
+                wasMs: r.anchorWasMs ?? 0,
                 ceilingMs: r.paceCeilingMs ?? PACE_CEILING_MS,
             });
         }
         this.entries.set(name, e);
-        return { changed: was !== r.state || (prev?.full ?? false) !== e.full, events };
+        const moved = (prev?.report.anchorMs ?? 0) !== (r.anchorMs ?? 0);
+        return { changed: was !== r.state || (prev?.full ?? false) !== e.full || moved, events };
     }
 
     /** A rejoin's discard has settled, or the input left again: its one event. */

@@ -381,7 +381,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         const r = fanIn();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { latenessMs: 40 }), 0);
         r.onEvent('mralignwatch:mixin_aw_2', aw('c2', 'present', { latenessMs: 140 }), 0);
-        expect(r.alignerWarnings(0)).toEqual({ absent: null, full: null });
+        expect(r.alignerWarnings(0)).toEqual({ absent: null, full: null, reanchored: null });
 
         const gone = aw('c2', 'absent', { reason: 'state', wMs: 312.4, absences: 1 });
         expect(r.onAligner('mralignwatch:mixin_aw_2', gone, 100)).toEqual({
@@ -391,6 +391,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.alignerWarnings(100)).toEqual({
             absent: 'Input enc-b (audio-in) silent for 312 ms — continuing without it',
             full: null,
+            reanchored: null,
         });
         expect(r.summary(100).inputs.find((i) => i.tap === 'lat_busin_2')).toMatchObject({
             label: 'enc-b (audio-in)',
@@ -407,34 +408,59 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.summary(2000).inputs.map((i) => i.state)).toEqual(['present', 'present']);
     });
 
-    it('an input past its pace ceiling: its warning says how late, not silent (B-204)', () => {
+    it('an input re-anchored past its pace ceiling stays present, its warning says by how much (B-205)', () => {
         const r = fanIn();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'present', { latenessMs: 40 }), 0);
-        const out = {
-            ...aw('c2', 'absent', { reason: 'beyond', latenessMs: 402_500, absences: 1 }),
-            beyond: true,
+        const moved = {
+            ...aw('c2', 'present', { reason: 'reanchored', latenessMs: 3 }),
+            anchor: 402_500 * MS,
+            'anchor-was': 0,
             'pace-ceiling': 4000 * MS,
         };
-        expect(r.onAligner('mralignwatch:mixin_aw_2', out, 100)).toMatchObject({
+        expect(r.onAligner('mralignwatch:mixin_aw_2', moved, 100)).toMatchObject({
             changed: true,
             events: [
-                { kind: 'beyond', latenessMs: 402_500, ceilingMs: 4000, label: 'enc-b (audio-in)' },
+                {
+                    kind: 'reanchored',
+                    anchorMs: 402_500,
+                    wasMs: 0,
+                    ceilingMs: 4000,
+                    label: 'enc-b (audio-in)',
+                },
             ],
         });
         r.onEvent('mralignwatch:mixin_aw_3', aw('c3', 'absent', { wMs: 2000 }), 100);
-        expect(r.alignerWarnings(100).absent).toBe(
-            'Input enc-b (audio-in) 6 min 42 s late, past the 4 s pace ceiling — continuing without it; ' +
-                'Input enc-c (audio-in) silent for 2000 ms — continuing without it',
-        );
-        expect(r.summary(100).inputs.find((i) => i.tap === 'lat_busin_2')?.state).toBe('absent');
-        // Back under it: a rejoin, the warning gone.
+        expect(r.alignerWarnings(100)).toEqual({
+            absent: 'Input enc-c (audio-in) silent for 2000 ms — continuing without it',
+            full: null,
+            reanchored:
+                'Input enc-b (audio-in) re-anchored by +6 min 42 s (late) — past the 4 s pace ceiling',
+        });
+        expect(r.summary(100).inputs.find((i) => i.tap === 'lat_busin_2')?.state).toBe('present');
+        // Its clear: the warning goes.
         r.onEvent(
             'mralignwatch:mixin_aw_2',
-            aw('c2', 'present', { latenessMs: 60, absences: 1 }),
+            {
+                ...aw('c2', 'present', { reason: 'reanchored' }),
+                anchor: 0,
+                'anchor-was': 402_500 * MS,
+            },
             200,
         );
-        r.onEvent('mralignwatch:mixin_aw_3', aw('c3', 'present'), 200);
-        expect(r.alignerWarnings(200).absent).toBeNull();
+        expect(r.alignerWarnings(200).reanchored).toBeNull();
+    });
+
+    it('a re-anchored internal stage is named once, however many links it feeds; ahead says so', () => {
+        const r = new LatenessReporter({ alignerInput: () => null });
+        for (const o of ['omix0', 'omix1'])
+            r.onEvent(
+                `mralignwatch:${o}_aw_in0`,
+                { ...aw('in0', 'present', { aligner: o }), anchor: -8000 * MS },
+                0,
+            );
+        expect(r.alignerWarnings(0).reanchored).toBe(
+            'Input in0 re-anchored by -8.0 s (ahead) — past the 4 s pace ceiling',
+        );
     });
 
     it('one warning names every absent input; it clears only when all are back', () => {
@@ -698,6 +724,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         expect(r.alignerWarnings()).toEqual({
             absent: null,
             full: 'Input in3 queue full — upstream held',
+            reanchored: null,
         });
     });
 
@@ -780,7 +807,7 @@ describe('LatenessReporter: aligner inputs (WI-P2-13)', () => {
         const r = fanIn();
         r.onEvent('mralignwatch:mixin_aw_1', aw('c1', 'absent'));
         r.reset();
-        expect(r.alignerWarnings()).toEqual({ absent: null, full: null });
+        expect(r.alignerWarnings()).toEqual({ absent: null, full: null, reanchored: null });
         expect(r.summary().inputs).toEqual([]);
     });
 });

@@ -575,9 +575,10 @@ elements" below do not start.
   v2.0.0.100 FRA-Master01's N-1 mixers took the delay of SCC returns that came
   back 7 minutes late, kept it for hours, and its 'VV' muxer sent nothing for
   three hours (2 Nov). Fixed: a mixer or muxer delays its inputs by at most 4 s;
-  an input later than that is left out, with "Input … late, past the 4 s pace
-  ceiling — continuing without it", until it is back under 3 s, and the others
-  go on.
+  an input steadily later or earlier than that is re-anchored: it plays late,
+  with one warning, "Input … re-anchored by +2 min 37 s (late) — past the 4 s
+  pace ceiling", shown as the module's warning while it lasts, and the others go
+  on. Once it is back within 3 s of the house clock it rejoins on time.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
