@@ -8,3 +8,4 @@ mr-gst-runner/tests/bus_edges_thread_test
 mr-gst-runner/tests/source_gate_udp_test
 mr-gst-runner/tests/stamper_message_test
 mr-gst-runner/tests/branch_retime_test
+mr-gst-runner/tests/bus_inputs_kept_pad_test

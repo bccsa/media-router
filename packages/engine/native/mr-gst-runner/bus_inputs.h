@@ -11,16 +11,18 @@
 
 namespace mr::inputs {
 
-/** `{element, name, description}` → bin linked to a request pad. Idempotent. */
+/** `{element, name, description}` → bin linked to the aggregator's kept last pad, else a new
+ *  request pad. Idempotent. */
 void handle_bus_input_add(JsonObject* data);
 
-/** `{element, name}` → bin stopped, unlinked, dropped. Idempotent. */
+/** `{element, name}` → bin stopped, unlinked, dropped; its pad released, or kept when it is a
+ *  running aggregator's last (B-208). Idempotent. */
 void handle_bus_input_remove(JsonObject* data);
 
-/** The start payload's `liveInputBranches` (replaces the set). */
+/** The start payload's `liveInputBranches` (replaces the set; no pad is kept from before). */
 void declare(JsonArray* names);
 
-/** Pipeline stop: forget every branch name. */
+/** Pipeline stop: forget every branch name, free every kept pad. */
 void clear();
 
 /** Whether `name` is a live input branch bin. */

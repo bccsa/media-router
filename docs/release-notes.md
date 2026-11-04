@@ -600,6 +600,17 @@ elements" below do not start.
   its device too late says "Plays nothing: every buffer reaches the sink …"
   within about a second, and once it plays on time a raise it asked for
   shows in its status instead of as a warning.
+- **An Audio Mixer whose only input drops at a profile switch keeps its
+  timing.** On the 3 November test an Audio Mixer fed only by an N-1 Audio
+  Mixer (302M) restarted its output from zero, the box's boot time, after a
+  profile switch and raced at about 49 times real time: silent, its timing
+  hours off the box's clock, and twice more than a minute late. GStreamer's
+  audio mixer, left for an instant with no input at all, starts again from
+  zero, and the input's sender restarting at that moment was enough. Up to
+  v2.0.0.100 the same could happen unseen: the mixer went silent with its
+  health ok. Fixed: a mixer keeps its last input's connection while that
+  input is away, and the input takes it again when it is back; a mixer with
+  other inputs lets the lost one go as before.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

@@ -6,9 +6,11 @@ branch bins (`sources_by_factory` enters declared bins only,
 `forget_sources_in` releases a leaving branch's heads).
 
 Also the python twins of protocol cases L (live input branches), aligner-absent (plan ch. 6
-part 7.3), the B-74 join chain (B-80) and the fall (B-82): `live_aligned_case`,
-`aligner_absent_case`, `aligner_join_chain_case` and `aligner_fall_case`, which
-native_runner_protocol_test.py runs on the native runner.
+part 7.3), the B-74 join chain (B-80), the fall (B-82) and the kept last pad (B-208):
+`live_aligned_case`, `aligner_absent_case`, `aligner_join_chain_case`, `aligner_fall_case` and
+`last_pad_case`, which native_runner_protocol_test.py runs on the native runner. B-208's
+deterministic cases (the race, a kept pad's stale data, a pad never taken) run here in process;
+tests/bus_inputs_kept_pad_test.cpp runs them on the native runner's code.
 
 Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run:  python3 gst_live_inputs_test.py
@@ -17,6 +19,7 @@ import importlib.util
 import os
 import re
 import sys
+import threading
 import time
 
 try:
@@ -79,6 +82,7 @@ def with_pipeline():
     runner.pipeline = Gst.parse_launch(MIXER)
     runner._live_input_branches.clear()
     runner._live_input_branches.add("mixin_in_a")
+    runner._kept_agg_pads.clear()
     source_gate.live_branches = runner._live_input_branches
     runner.pipeline.set_state(Gst.State.PLAYING)
     runner.pipeline.get_state(2 * Gst.SECOND)
@@ -109,22 +113,40 @@ def test_add_remove():
         runner.handle_bus_input_add({"id": "a3", "element": "nope", "name": "mixin_in_c", "description": branch})
         check("unknown aggregator -> command_error", cap.errors and cap.errors[-1][0] == "a3")
 
-        runner.handle_bus_input_remove({"id": "r1", "element": "mixin", "name": "mixin_in_b"})
-        check("remove -> bus_input_remove_done", cap.last("bus_input_remove_done").get("id") == "r1")
-        check("removed bin is gone", runner.pipeline.get_by_name("mixin_in_b") is None)
-        check("removed bin is untracked", "mixin_in_b" not in runner._live_input_branches)
-        check("mixer released the request pad", mixer.get_static_pad("sink_1") is None)
+        # A start-time bin's src pad is the parser's ghost<N>, not "src": a non-live mixer
+        # would wait forever on a request pad left behind beside another input.
+        runner.handle_bus_input_remove({"id": "r1", "element": "mixin", "name": "mixin_in_a"})
+        check("removing the start-time bin -> done",
+              cap.last("bus_input_remove_done").get("id") == "r1")
+        check("removed bin is gone and untracked", runner.pipeline.get_by_name("mixin_in_a") is None
+              and "mixin_in_a" not in runner._live_input_branches)
+        check("mixer released the start-time bin's request pad beside another input (2 -> 1)",
+              mixer.get_static_pad("sink_0") is None and mixer.numsinkpads == 1
+              and not runner._kept_agg_pads)
 
-        runner.handle_bus_input_remove({"id": "r2", "element": "mixin", "name": "mixin_in_b"})
+        runner.handle_bus_input_remove({"id": "r2", "element": "mixin", "name": "mixin_in_a"})
         check("removing a gone branch is a no-op done", cap.last("bus_input_remove_done").get("id") == "r2")
 
-        # A start-time bin's src pad is the parser's ghost<N>, not "src": a non-live mixer
-        # would wait forever on a request pad left behind.
-        runner.handle_bus_input_remove({"id": "r3", "element": "mixin", "name": "mixin_in_a"})
-        check("removing the start-time bin -> done",
-              cap.last("bus_input_remove_done").get("id") == "r3")
-        check("mixer released the start-time bin's request pad",
-              mixer.get_static_pad("sink_0") is None)
+        # B-208: the last input's pad stays for the next add; an aggregator left with no sink
+        # pad can restart its output at running time 0.
+        sink1 = mixer.get_static_pad("sink_1")
+        runner.handle_bus_input_remove({"id": "r3", "element": "mixin", "name": "mixin_in_b"})
+        check("removing the last branch -> done, the bin gone and untracked",
+              cap.last("bus_input_remove_done").get("id") == "r3"
+              and runner.pipeline.get_by_name("mixin_in_b") is None
+              and "mixin_in_b" not in runner._live_input_branches)
+        check("the mixer keeps its last request pad, unlinked, for the next add (B-208)",
+              sink1 is not None and mixer.numsinkpads == 1 and sink1.get_peer() is None
+              and runner._kept_agg_pads.get("mixin") is sink1)
+        runner.handle_bus_input_add({"id": "a5", "element": "mixin", "name": "mixin_in_v",
+                                     "description": "capsfilter caps=video/x-raw"})
+        check("an add whose branch cannot link -> command_error, its bin gone, the pad still kept",
+              cap.errors and cap.errors[-1][0] == "a5" and runner.pipeline.get_by_name("mixin_in_v") is None
+              and runner._kept_agg_pads.get("mixin") is sink1 and mixer.numsinkpads == 1)
+        runner.handle_bus_input_add({"id": "a4", "element": "mixin", "name": "mixin_in_c", "description": branch})
+        check("the next add takes the kept pad: still one sink pad, sink_1 linked, none kept",
+              cap.last("bus_input_add_done").get("id") == "a4" and mixer.numsinkpads == 1
+              and sink1.get_peer() is not None and not runner._kept_agg_pads)
 
         _ret, state, _pending = runner.pipeline.get_state(0)
         check("pipeline still PLAYING after add/remove", state == Gst.State.PLAYING)
@@ -142,8 +164,9 @@ def test_containment_helpers():
         check("live branch ancestor of an element inside the bin", runner._live_branch_ancestor(src) == "mixin_in_a")
         check("no ancestor for a top-level element", runner._live_branch_ancestor(runner.pipeline.get_by_name("mixin")) is None)
         check("drop_branch takes the bin out", runner._drop_live_branch("mixin_in_a") is True)
-        check("drop_branch releases the start-time bin's request pad",
-              runner.pipeline.get_by_name("mixin").get_static_pad("sink_0") is None)
+        sink0 = runner.pipeline.get_by_name("mixin").get_static_pad("sink_0")
+        check("drop_branch keeps the mixer's last request pad (the start-time bin's), unlinked (B-208)",
+              sink0 is not None and sink0.get_peer() is None and runner._kept_agg_pads.get("mixin") is sink0)
         check("dropped bin gone + untracked",
               runner.pipeline.get_by_name("mixin_in_a") is None and "mixin_in_a" not in runner._live_input_branches)
         check("drop of an unknown branch is False", runner._drop_live_branch("mixin_in_a") is False)
@@ -177,6 +200,233 @@ def test_gate_sees_declared_bins_only():
     check("forget_sources_in fires data_arrived when the last head leaves", dw["fired"] is True)
     source_gate.data_wait = None
     source_gate.live_branches = set()
+
+
+_PCM = Gst.Caps.from_string("audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved")
+_BLOCK = 10 * Gst.MSECOND
+_SAMPLE = Gst.SECOND // 48000 + 1
+
+
+class _KeptPadMixer:
+    """B-208 in process: the runner's own live-input code on an Audio Mixer's aggregator (latency
+    0, start-time-selection first, non-live) on the house clock, base_time 0. Its branches are
+    identity bins fed from pads of the test's own; its outputs kept as (wall, pts, duration).
+    `hold` ('caps' or 'buffer'): its src thread waits at its first such push until `release()`."""
+
+    def __init__(self, hold=None):
+        self.cap = Capture()
+        runner.emit_event = self.cap.event
+        runner.emit_command_error = self.cap.error
+        self.clock = Gst.SystemClock.obtain()
+        self.clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+        pipe = Gst.parse_launch("audiomixer name=mixin latency=0 start-time-selection=first"
+                                f" ! capsfilter caps={CAPS} ! fakesink sync=false async=false"
+                                "  ( name=mixin_in_a identity name=a_id ) ! mixin.sink_0")
+        pipe.use_clock(self.clock)
+        pipe.set_start_time(Gst.CLOCK_TIME_NONE)
+        pipe.set_base_time(0)
+        runner.pipeline = pipe
+        runner._live_input_branches.clear()
+        runner._live_input_branches.add("mixin_in_a")
+        runner._kept_agg_pads.clear()
+        source_gate.live_branches = runner._live_input_branches
+        self.mixin = pipe.get_by_name("mixin")
+        self.outs = []
+        self.hold = hold
+        self.held, self._go = threading.Event(), threading.Event()
+        self.mixin.get_static_pad("src").add_probe(
+            Gst.PadProbeType.BUFFER | Gst.PadProbeType.EVENT_DOWNSTREAM, self._on_src)
+        pipe.set_state(Gst.State.PLAYING)
+        pipe.get_state(2 * Gst.SECOND)
+
+    def now(self):
+        return self.clock.get_time()
+
+    def grid(self):
+        return self.now() // _BLOCK * _BLOCK
+
+    def _on_src(self, _pad, info):
+        is_buf = bool(info.type & Gst.PadProbeType.BUFFER)
+        if is_buf and len(self.outs) < 5000:    # a runaway makes thousands a second
+            b = info.get_buffer()
+            self.outs.append((self.now(), b.pts, b.duration))
+        kind = "buffer" if is_buf else ("caps" if info.get_event().type == Gst.EventType.CAPS else None)
+        if kind is not None and kind == self.hold:
+            self.hold = None
+            self.held.set()
+            self._go.wait(5)
+        return Gst.PadProbeReturn.OK
+
+    def release(self):
+        self._go.set()
+
+    def head(self, element, tag):
+        """A pad of the test's own on `element`'s sink pad, its stream started."""
+        src = Gst.Pad.new(f"feed_{tag}", Gst.PadDirection.SRC)
+        src.set_active(True)
+        assert src.link(runner.pipeline.get_by_name(element).get_static_pad("sink")) == Gst.PadLinkReturn.OK
+        seg = Gst.Segment()
+        seg.init(Gst.Format.TIME)
+        for ev in (Gst.Event.new_stream_start(tag), Gst.Event.new_caps(_PCM), Gst.Event.new_segment(seg)):
+            src.push_event(ev)
+        return src
+
+    @staticmethod
+    def block(pts, duration=_BLOCK):
+        b = Gst.Buffer.new_wrapped(bytes(duration * 48000 // Gst.SECOND * 4))
+        b.pts, b.duration = pts, duration
+        return b
+
+    def add(self, name):
+        """bus_input_add of an identity branch `<name>_id` on the running mixer; its done event."""
+        runner.handle_bus_input_add({"id": name, "element": "mixin", "name": f"mixin_in_{name}",
+                                     "description": f"identity name={name}_id"})
+        done = self.cap.last("bus_input_add_done")
+        return done if done is not None and done.get("id") == name else None
+
+    def feed(self, src, seconds=0.6):
+        """10 ms blocks at house time on `src` in real time, from a thread (a mixer that runs away
+        never takes one: the push blocks); that window's outputs: count, worst |PTS - house| in s
+        and rate x real time."""
+        stop = threading.Event()
+
+        def run():
+            t = self.grid()
+            while not stop.is_set():
+                while self.now() < t and not stop.is_set():
+                    time.sleep(0.001)
+                if stop.is_set() or src.push(self.block(t)) != Gst.FlowReturn.OK:
+                    break
+                t += _BLOCK
+        t0 = self.now()
+        threading.Thread(target=run, daemon=True).start()
+        time.sleep(seconds)
+        t1 = self.now()
+        stop.set()
+        outs = [o for o in list(self.outs) if t0 <= o[0] < t1]
+        played = sum(d for _w, _p, d in outs if 0 < d < Gst.SECOND)
+        worst = max((abs(p - w) for w, p, _d in outs), default=None)
+        return {"n": len(outs), "worst_s": None if worst is None else round(worst / 1e9, 3),
+                "rate": round(played / (t1 - t0), 2)}
+
+    def breaks(self):
+        """[(output index, ns)] where an output does not start where the one before it ended."""
+        o = list(self.outs)
+        return [(i + 1, b[1] - (a[1] + a[2])) for i, (a, b) in enumerate(zip(o, o[1:]))
+                if abs(b[1] - (a[1] + a[2])) > _SAMPLE]
+
+    def close(self):
+        self._go.set()
+        teardown()
+
+
+def _on_house_time(r):
+    return r["n"] > 0 and r["worst_s"] is not None and r["worst_s"] < 1.0 and r["rate"] <= 1.5
+
+
+def test_kept_pad_race():
+    """B-208, deterministic: the race MR-046 met. The mixer's first buffer, at house time, on its
+    only pad; its src thread held in its first negotiation while the branch is dropped as a lost
+    live input; then a branch added on the running mixer brings data at house time. The drop keeps
+    the pad, the add takes it, the mix stays on house time. A release there (the old drop) restarts
+    the mix at running time 0 (gst_audioaggregator_last_pad_test.py's R)."""
+    m = _KeptPadMixer(hold="caps")
+    try:
+        a = m.head("a_id", "a")
+        threading.Thread(target=a.push, args=(m.block(m.grid()),), daemon=True).start()
+        check("kept-pad race: the mixer took its first buffer, its first negotiation held", m.held.wait(5))
+        sink0 = m.mixin.get_static_pad("sink_0")
+        check("kept-pad race: the branch dropped as a lost input", runner._drop_live_branch("mixin_in_a"))
+        check("kept-pad race: its pad kept, unlinked, the mixer's only sink pad",
+              runner._kept_agg_pads.get("mixin") is sink0 and sink0.get_peer() is None
+              and m.mixin.numsinkpads == 1)
+        m.release()
+        time.sleep(0.05)
+        done = m.add("b")
+        check("kept-pad race: the next add takes the kept pad (sink_0 linked, one sink pad, none kept)",
+              done is not None and sink0.get_peer() is not None and m.mixin.numsinkpads == 1
+              and not runner._kept_agg_pads)
+        r = m.feed(m.head("b_id", "b"))
+        check(f"kept-pad race: the mix stays on house time, within 1 s at 1.5x real time or less ({r})",
+              _on_house_time(r))
+    finally:
+        m.close()
+
+
+def test_kept_pad_stale_data():
+    """B-208 (d): the kept pad still holds what the old branch sent last, 5 ms of a 15 ms buffer
+    being mixed and a 20 ms GAP behind it, when the next branch takes it 100 ms later: the mix goes
+    on from where it was, each output starting where the one before it ended, on house time."""
+    m = _KeptPadMixer(hold="buffer")
+    try:
+        a = m.head("a_id", "a")
+        x = m.grid()
+        threading.Thread(target=a.push, args=(m.block(x, 15 * Gst.MSECOND),), daemon=True).start()
+        check("kept-pad stale data: the mixer held in its first 10 ms output of a 15 ms buffer",
+              m.held.wait(5))
+        a.push_event(Gst.Event.new_gap(x + 15 * Gst.MSECOND, 20 * Gst.MSECOND))
+        runner._drop_live_branch("mixin_in_a")
+        sink0 = m.mixin.get_static_pad("sink_0")
+        check("kept-pad stale data: the pad kept with the partial buffer and the GAP on it",
+              runner._kept_agg_pads.get("mixin") is sink0 and m.mixin.numsinkpads == 1)
+        m.release()
+        time.sleep(0.1)
+        t_add = m.now()
+        held_to = max((p + d for _w, p, d in m.outs), default=x) - x
+        done = m.add("b")
+        r = m.feed(m.head("b_id", "b"))
+        after = next(((p - x) for w, p, _d in m.outs if w >= t_add), None)
+        # The mixer sends whole 10 ms blocks: what the pad kept is out up to the last full one.
+        check(f"kept-pad stale data: what the kept pad held was mixed before the add, from the first"
+              f" buffer on ({held_to / 1e6} ms of the old 35 ms)",
+              m.outs and m.outs[0][1] == x and 20 * Gst.MSECOND <= held_to <= 35 * Gst.MSECOND)
+        check(f"kept-pad stale data: the add takes the kept pad and the mix goes on where it was, each"
+              f" output where the one before it ended (first after the add at {after and after / 1e6}"
+              f" ms; breaks {m.breaks()[:3]})",
+              done is not None and after == held_to and not m.breaks())
+        check(f"kept-pad stale data: on house time, within 1 s at 1.5x real time or less ({r})",
+              _on_house_time(r))
+    finally:
+        m.close()
+
+
+def test_kept_pad_never_taken():
+    """B-208 (c): a branch never added back. The mixer waits on its kept pad: nothing mixed past
+    what it had, no error, still PLAYING; the stop frees the pad."""
+    m = _KeptPadMixer()
+    try:
+        a = m.head("a_id", "a")
+        stop = threading.Event()
+
+        def run():
+            t = m.grid()
+            while not stop.is_set() and a.push(m.block(t)) == Gst.FlowReturn.OK:
+                t += _BLOCK
+                while m.now() < t and not stop.is_set():
+                    time.sleep(0.001)
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        time.sleep(0.3)
+        stop.set()
+        th.join(2)
+        runner._drop_live_branch("mixin_in_a")
+        n = len(m.outs)
+        time.sleep(0.4)
+        _ret, state, _pending = runner.pipeline.get_state(0)
+        check(f"kept-pad never taken: the mixer waits on its kept pad, nothing mixed after the drop "
+              f"({len(m.outs) - n} outputs), no error, still PLAYING",
+              len(m.outs) - n <= 1 and m.cap.last("error") is None and state == Gst.State.PLAYING
+              and m.mixin.numsinkpads == 1 and "mixin" in runner._kept_agg_pads)
+        runner._drain_on_stop = False
+        try:
+            runner.handle_stop()
+        finally:
+            runner._drain_on_stop = True
+        check("kept-pad never taken: the stop frees the kept pad and stops the pipeline",
+              not runner._kept_agg_pads and m.cap.last("state_change") is not None
+              and m.cap.last("state_change").get("state") == "null")
+    finally:
+        m.close()
 
 
 def _rig():
@@ -717,14 +967,197 @@ def aligner_fall_case(argv, tag, check):
     check(f"aligner-fall {tag}: no error, exit 0 ({[e.get('message') for e in errors][:2]}, rc {rc})",
           not errors and rc == 0)
 
+_FIXTURE_BRANCH = re.compile(r" \( name=(\S+) (.*?) \) ! mixin\.(sink_\d+)")
+
+
+def _fixture_branches(pipeline):
+    """[(bin name, description, mixer pad)] of a fixture mixer's start-time sources."""
+    return _FIXTURE_BRANCH.findall(pipeline)
+
+
+def _one_source(cmd):
+    """audio-mixer's start `cmd` (mixer2's) less its second source: one source, still through the
+    fan-in aggregator, which the module builds for one source too."""
+    (n0, _d0, _p0), (n1, d1, p1) = _fixture_branches(cmd["start"]["pipeline"])
+    start = dict(cmd["start"], liveInputBranches=[n0],
+                 pipeline=cmd["start"]["pipeline"].replace(f" ( name={n1} {d1} ) ! mixin.{p1}", ""))
+    return dict(cmd, start=start)
+
+
+def _pad_there(r, pad):
+    """Whether the running mixer has `pad`: track_throughput finds it or says 'Pad not found'."""
+    got = r.request({"cmd": "track_throughput", "element": "mixin", "pad": pad}, "tracking")
+    return None if got is None else got[1].get("event") == "tracking"
+
+
+def last_pad_case(argv, tag, check):
+    """B-208 through `argv`'s runner, on audio-mixer's own start (fixtures/aligner/pipelines.json's
+    mixer2): (a) with one source, its producer dies and is back 300 ms later, re-added as the engine
+    does it (bus_input_remove, then bus_input_add): the mixer keeps that pad, the add takes it, and
+    the egress stays on house time; (b) with two, one dies: its pad is released and its re-add gets a
+    new one, as before; (c) with one that never comes back: the mixer waits, no error, stops at once."""
+    rig = _rig()
+    if rig is None:
+        return
+    cmd0 = rig.pipelines()["mixer2"]
+    seconds, lose, back = 7.0, 3.0, 3.3
+    c = {n: rig.Content(seed) for n, seed in (("in0", 111), ("in1", 112))}
+
+    def run(kind):
+        d = rig.SocketDir()
+        cmd = rig.on_socket_dir(cmd0, d.path)
+        if kind != "two":
+            cmd = _one_source(cmd)
+        branches = _fixture_branches(cmd["start"]["pipeline"])
+        gone = "in1" if kind == "two" else "in0"
+        name, desc, _pad = branches[1] if kind == "two" else branches[0]
+        prods = {n: rig.Producer(n, [d.sock(n)], content=c[n], stop_s=seconds)
+                 for n in (("in0", "in1") if kind == "two" else ("in0",))}
+        again = None if kind == "never" else rig.Producer(gone, [d.sock(gone)], content=c[gone],
+                                                          start_s=back - 0.2, stop_s=seconds)
+        feeds = dict(prods, **({"again": again} if again else {}))
+        r = cons = None
+        got = {"name": name}
+        try:
+            got["t0"] = t0 = rig.prepare(feeds.values())
+            for p in prods.values():
+                p.listen()
+            rig.until(t0 - 700 * rig.MS)        # start the module just before its producers' data
+            r = got["r"] = rig.Runner(argv, env=cmd.get("env"))
+            got["playing"] = r.start(cmd["start"]) is not None
+            r.attach("busout_41011", d.sock("out"))
+            cons = got["cons"] = rig.Consumer(d.sock("out"))
+            cons.start()
+            rig.go(prods.values())
+            rig.until(t0 + int(lose * 1e9))
+            prods[gone].stop()
+            lost = r.wait(lambda e: e.get("event") == "input_branch_lost" and e.get("name") == name,
+                          timeout=3)
+            got["lost_t"] = lost and lost[0]
+            got["after_loss"] = {p: _pad_there(r, p) for p in ("sink_0", "sink_1")}
+            if again is not None:
+                rig.until(t0 + int((back - 0.25) * 1e9))
+                if os.path.exists(d.sock(gone)):
+                    os.unlink(d.sock(gone))
+                again.listen()
+                again.begin()
+                rig.until(t0 + int(back * 1e9))
+                r.request({"cmd": "bus_input_remove", "element": "mixin", "name": name},
+                          "bus_input_remove_done")
+                got["add"] = r.request({"cmd": "bus_input_add", "element": "mixin", "name": name,
+                                        "description": desc}, "bus_input_add_done")
+                got["add_t"] = rig.now_ns()
+                got["after_add"] = {p: _pad_there(r, p) for p in ("sink_0", "sink_1", "sink_2")}
+            for p in feeds.values():
+                p.join(30)
+            rig.until(t0 + int(seconds * 1e9))
+            time.sleep(0.5)
+            got["errors"] = r.errors()
+            t_stop = time.monotonic()
+            got["rc"] = r.stop()
+            got["took"] = time.monotonic() - t_stop
+        finally:
+            for p in feeds.values():
+                p.stop()
+            if r is not None:
+                r.kill()
+            if cons is not None:
+                cons.stop()
+            d.close()
+        return feeds, got
+
+    def logged(got, text):
+        return any(text in line for line in got["r"].logs)
+
+    def egress(got):
+        """The mix PID's PES as (arrival, house time of its PTS): `PES - 1 h`, near its arrival."""
+        pes = rig.pes_of(got["cons"].records)
+        pid = max(pes, key=lambda k: len(pes[k])) if pes else None
+        return [(e["arrival"], rig.unwrap(e["pts"], e["arrival"])) for e in pes.get(pid, [])
+                if e["pts"] is not None]
+
+    kept = "live input: last pad of mixin kept for the next add (sink_0)"
+    # (a) one source, back 300 ms later.
+    got = _attempts(rig, f"last-pad {tag} (a)", lambda: run("one"), check)
+    if got is not None:
+        t0, add_t = got["t0"], got.get("add_t") or 0
+        check(f"last-pad {tag} (a): one source's producer dies: input_branch_lost, the mixer keeps "
+              f"that pad, sink_0, as its only one ({got['after_loss']})",
+              got["playing"] and got["lost_t"] is not None and logged(got, kept)
+              and got["after_loss"] == {"sink_0": True, "sink_1": False})
+        check(f"last-pad {tag} (a): the re-add takes the kept pad: no new pad ({got.get('after_add')})",
+              (got.get("add") or (0, {}))[1].get("event") == "bus_input_add_done"
+              and logged(got, f"bus_input_add: {got['name']} -> mixin on its kept pad sink_0")
+              and got.get("after_add") == {"sink_0": True, "sink_1": False, "sink_2": False})
+        pes = egress(got)
+        off = [(h - a) / 1e6 for a, h in pes if a >= add_t]
+        back_steps = [i for i, (x, y) in enumerate(zip(pes, pes[1:])) if y[1] <= x[1]]
+        check(f"last-pad {tag} (a): after the re-add every egress PES within 1 s of house time "
+              f"({len(off)} PES, first {off and round(off[0], 1)} ms, worst "
+              f"{off and round(max(off, key=abs), 1)} ms), and no PTS ever steps back ({back_steps[:3]})",
+              off and max(abs(o) for o in off) < 1000 and not back_steps)
+        pcm = _mix_of(rig, got["cons"].records, t0)
+        end_ns = t0 + int((seconds - 0.5) * 1e9)
+        miss = _missing(rig, pcm, c["in0"], t0 + 500 * rig.MS, t0 + int((lose - 0.2) * 1e9))
+        lag, _g = pcm.best_lag(c["in0"], rig.sample_of(add_t + 300 * rig.MS), rig.sample_of(end_ns))
+        miss += _missing(rig, pcm, c["in0"], add_t + 300 * rig.MS, end_ns, lag=lag)
+        # A source re-added to a running mixer lands a sample early, new pad or kept (not B-208's).
+        check(f"last-pad {tag} (a): the source in the mix at its content time before the loss and, "
+              f"within a sample, from 300 ms after the re-add (lag {lag}, missing {miss[:3]})",
+              abs(lag) <= 1 and not miss)
+        check(f"last-pad {tag} (a): no error, exit 0 ({[e.get('message') for e in got['errors']][:2]}, "
+              f"rc {got['rc']})", not got["errors"] and got["rc"] == 0)
+    # (b) two sources, one dies and is back.
+    got = _attempts(rig, f"last-pad {tag} (b)", lambda: run("two"), check)
+    if got is not None:
+        t0, add_t = got["t0"], got.get("add_t") or 0
+        check(f"last-pad {tag} (b): of two sources one dies: its pad is released, nothing kept "
+              f"({got['after_loss']})",
+              got["playing"] and got["lost_t"] is not None and not logged(got, "kept for the next add")
+              and got["after_loss"] == {"sink_0": True, "sink_1": False})
+        check(f"last-pad {tag} (b): its re-add gets a new pad, sink_2 ({got.get('after_add')})",
+              (got.get("add") or (0, {}))[1].get("event") == "bus_input_add_done"
+              and logged(got, f"bus_input_add: {got['name']} -> mixin")
+              and not logged(got, "on its kept pad")
+              and got.get("after_add") == {"sink_0": True, "sink_1": False, "sink_2": True})
+        pcm = _mix_of(rig, got["cons"].records, t0)
+        lo_ns, end_ns = t0 + 500 * rig.MS, t0 + int((seconds - 0.5) * 1e9)
+        miss0 = _missing(rig, pcm, c["in0"], lo_ns, end_ns)
+        lag, _g = pcm.best_lag(c["in1"], rig.sample_of(add_t + 300 * rig.MS), rig.sample_of(end_ns))
+        miss1 = _missing(rig, pcm, c["in1"], add_t + 300 * rig.MS, end_ns, lag=lag)
+        check(f"last-pad {tag} (b): the other source in every block throughout, the returned one, within "
+              f"a sample, from 300 ms after its re-add (holes "
+              f"{pcm.holes(rig.sample_of(lo_ns), rig.sample_of(end_ns))[:3]}, lag {lag}, missing "
+              f"{miss0[:3]} / {miss1[:3]})",
+              not pcm.holes(rig.sample_of(lo_ns), rig.sample_of(end_ns)) and not miss0 and abs(lag) <= 1
+              and not miss1)
+        check(f"last-pad {tag} (b): no error, exit 0 ({[e.get('message') for e in got['errors']][:2]}, "
+              f"rc {got['rc']})", not got["errors"] and got["rc"] == 0)
+    # (c) one source that never comes back.
+    got = _attempts(rig, f"last-pad {tag} (c)", lambda: run("never"), check)
+    if got is not None:
+        late = [a for a, _h in egress(got) if got["lost_t"] and a > got["lost_t"] + 10**9]
+        check(f"last-pad {tag} (c): one source's producer dies for good: the mixer keeps its pad and "
+              f"waits, nothing out of it a second after the loss ({len(late)} PES)",
+              got["playing"] and got["lost_t"] is not None and logged(got, kept)
+              and got["after_loss"] == {"sink_0": True, "sink_1": False} and not late)
+        check(f"last-pad {tag} (c): no error, exits 0 at once ({[e.get('message') for e in got['errors']][:2]},"
+              f" rc {got['rc']}, {got['took']:.1f} s)",
+              not got["errors"] and got["rc"] == 0 and got["took"] < 3.0)
+
+
 if __name__ == "__main__":
     test_add_remove()
     test_containment_helpers()
     test_gate_sees_declared_bins_only()
+    test_kept_pad_race()
+    test_kept_pad_stale_data()
+    test_kept_pad_never_taken()
     live_aligned_case(_PY_RUNNER, "py", check)
     aligner_absent_case(_PY_RUNNER, "py", check)
     aligner_join_chain_case(_PY_RUNNER, "py", check)
     aligner_fall_case(_PY_RUNNER, "py", check)
+    last_pad_case(_PY_RUNNER, "py", check)
 
     if _failures:
         print(f"\n{len(_failures)} FAILED: {_failures}")

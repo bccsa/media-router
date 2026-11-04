@@ -1429,6 +1429,15 @@ def test_live_remove_start_time_branch():
             r.kill()
 
 
+def test_last_pad():
+    """B-208, native (gst_live_inputs_test.py runs it on the python runner): a running mixer keeps
+    its last input's pad when that input's producer dies, and the re-add takes it, the egress on
+    house time; of two inputs the lost one's pad is released as before; one never back, it waits."""
+    sys.path.insert(0, _HERE)
+    from gst_live_inputs_test import last_pad_case
+    last_pad_case([_BIN], "native", check)
+
+
 def test_transform_producer_align():
     """`alignBranchesToStamps.transformProducer` on BOTH runners over the real
     protocol: a stamped SPTS whose video PES lead the PCR by ~1.1 s
@@ -3095,6 +3104,7 @@ test_aligner_absent()
 test_aligner_join_chain()
 test_aligner_fall()
 test_live_remove_start_time_branch()
+test_last_pad()
 test_transform_producer_align()
 test_cue_pads_retime()
 test_mux_aligners_sparse()
