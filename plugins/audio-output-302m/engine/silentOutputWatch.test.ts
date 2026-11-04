@@ -13,6 +13,7 @@ function rig(opts: { mixes?: boolean } = {}) {
     const state = {
         playing: true,
         mixes: opts.mixes ?? true,
+        held: false,
         warning: null as string | null,
     };
     const restartPipeline = vi.fn(async () => {});
@@ -21,6 +22,7 @@ function rig(opts: { mixes?: boolean } = {}) {
         pipeline: () => ({ restartPipeline }),
         playing: () => state.playing,
         mixes: () => state.mixes,
+        held: () => state.held,
         warn: (text) => {
             state.warning = text;
         },
@@ -89,6 +91,25 @@ describe('SilentOutputWatch (B-197)', () => {
         r.watch.onPlayout(true, -20);
         expect(r.state.warning).toBeNull();
         expect(r.log.info).toHaveBeenCalledWith({}, 'Plays again');
+    });
+
+    it('B-210: a held raise is how the sink plays, not silence: the late reason goes, a stall still counts', () => {
+        const r = rig();
+        r.watch.onPlaying();
+        r.deliver(400);
+        r.watch.onPlayout(false, 88);
+        expect(r.state.warning).toBe(
+            'Plays nothing: every buffer reaches the sink 88 ms past its playout time',
+        );
+        // The route's raise did not change it: held. The sink plays at its own pace.
+        r.state.held = true;
+        r.watch.refresh();
+        expect(r.state.warning).toBeNull();
+        r.deliver(5_000);
+        expect(r.state.warning).toBeNull();
+        // A mixer that stops delivering is silence, held or not.
+        vi.advanceTimersByTime(NO_READING_MS + SILENT_OUTPUT_MS + 1000);
+        expect(r.state.warning).toBe('Plays nothing: its mixer delivers no audio — relaunched');
     });
 
     it("one source played direct: late is still said (only its silence is the source's)", () => {

@@ -5,7 +5,7 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
-import type { PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
+import type { PlayoutLegOffset, PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
 import type { HouseClock } from '../clock/HouseClock.js';
 
 /**
@@ -134,12 +134,15 @@ export interface PluginModule {
     /**
      * This module's route raise changed (ADR-0005 2026-10-08): the head gets
      * its record (`null` = cleared); a leg that asked gets one with
-     * `raiseMs: 0` when an edit of the head's D reset it. `GstPluginBase`
-     * implements both ends (warning, status section, head badge).
+     * `raiseMs: 0` when an edit of the head's D, or its decay (B-210), reset it.
+     * `GstPluginBase` implements both ends (warning, status section, head badge).
      */
     onRoutePlayoutRaised?(raise: PlayoutRaise | null): void;
-    /** A leg below this route head rebased itself onto an implausible timeline. */
-    onRoutePlayoutRebased?(note: PlayoutRebaseNote): void;
+    /** A leg below this route head rebased itself onto an implausible timeline, or
+     *  re-anchored on its own past the route's reach (`null`: that is over, B-210). */
+    onRoutePlayoutRebased?(note: PlayoutRebaseNote | null): void;
+    /** This leg's own re-anchor past its route's reach (`null`: cleared, B-210). */
+    onPlayoutLegOffset?(offset: PlayoutLegOffset | null): void;
     /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */

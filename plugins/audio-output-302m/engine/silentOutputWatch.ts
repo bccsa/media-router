@@ -22,6 +22,9 @@ export interface SilentOutputHost {
     /** It runs the mixer: its aligners gap a dark input, so no audio at all is its own stall.
      *  One source plays direct: no audio is that source's silence (FF9 has its resume). */
     mixes(): boolean;
+    /** Its route's raise is held (B-210): a raise did not change its lateness, so its sink plays
+     *  at its own pace and the runner's miss is that pace, not silence. */
+    held?(): boolean;
     /** The module's warning (null: withdrawn). */
     warn(text: string | null): void;
     log(): {
@@ -79,6 +82,11 @@ export class SilentOutputWatch {
         this.tick();
     }
 
+    /** Judge again now (the route's raise became held, or no longer is). */
+    refresh(): void {
+        this.tick();
+    }
+
     /** Stop, destroy, device gone: nothing runs, nothing to say. */
     stop(): void {
         if (this.timer) clearInterval(this.timer);
@@ -94,7 +102,7 @@ export class SilentOutputWatch {
         if (this.host.mixes() && at - (this.lastVuAt ?? this.playingAt) >= NO_READING_MS) {
             return { reason: 'its mixer delivers no audio', stalled: true };
         }
-        if (this.playout?.playing === false) {
+        if (this.playout?.playing === false && !this.host.held?.()) {
             const late = Math.round(this.playout.lateMs);
             return {
                 reason: `every buffer reaches the sink ${late} ms past its playout time`,

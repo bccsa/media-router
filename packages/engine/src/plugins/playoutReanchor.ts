@@ -14,6 +14,10 @@ import { MAX_PLAYOUT_OFFSET_MS } from './playoutOffset.js';
  * (|lateness| > 10 s) is never a budget problem: the runner re-anchors THAT leg
  * itself (`{kind:"rebase"}`) and both ends warn.
  *
+ * B-210: a raise that did not help (the leg's next excess the same) is `held`; a
+ * late timeline past what the route can still be raised re-anchors that leg alone
+ * by its own offset; both come back down once the legs arrive on time again.
+ *
  * The numbers live here once; `backlogShedConfig` carries them to the runners.
  * The operator-facing text is `playoutReanchorText.ts`.
  */
@@ -38,6 +42,10 @@ export const REANCHOR_SETTLE_MS = 2_000;
 export const REBASE_HOLD_MS = 3_000;
 /** At most one rebase per leg per this long. */
 export const REBASE_COOLDOWN_MS = 60_000;
+/** A raise comes back down once every leg that asked has arrived inside the configured D this long. */
+export const DECAY_HOLD_MS = 60_000;
+/** A leg's own re-anchor clears once it arrives inside its D this long (the aligner's clear, B-205). */
+export const LEG_OFFSET_CLEAR_MS = 3_000;
 
 /** Status section and badge ids, on the head and on the leg alike. */
 export const PLAYOUT_SECTION = 'playout';
@@ -95,6 +103,19 @@ export interface PlayoutRaise {
         holdMs: number;
     };
     atCeiling: boolean;
+    /** A leg whose excess this raise did not change: no further raise for it (B-210). */
+    held?: { moduleId: string; label: string; excessMs: number; since: number };
+}
+
+/** A leg late past what its route can be raised, re-anchored on its own (B-210). */
+export interface PlayoutLegOffset {
+    headId: string;
+    /** Added to this leg's ts-offset on top of its route's D. */
+    offsetMs: number;
+    since: number;
+    excessMs: number;
+    /** What its head was told, and shows again after a restart. */
+    note: PlayoutRebaseNote;
 }
 
 /** A leg below this head rebased itself (passed to the head, not stored). */
@@ -148,11 +169,35 @@ export function readReanchorRequest(payload: unknown): ReanchorEvent | null {
     return null;
 }
 
-export type RaiseOffer = { raiseToMs: number } | 'covered' | 'ceiling';
+/** `legMs`: the leg's own re-anchor, its route not raised; `held`: a raise cannot help it. */
+export type RaiseOffer = { raiseToMs: number } | { legMs: number } | 'covered' | 'ceiling' | 'held';
 
 /** The most a route on `baseMs` may be raised: the headroom, within the offset ceiling. */
 export function raiseCapMs(baseMs: number): number {
     return Math.max(0, Math.min(REANCHOR_HEADROOM_MS, MAX_PLAYOUT_OFFSET_MS - baseMs));
+}
+
+/** A cause of `backlog` only for a queue the standing raise did not fill (B-210). */
+export function judgeCause(
+    req: Pick<ReanchorRaiseRequest, 'cause' | 'queuedMs'>,
+    standingMs: number,
+): ReanchorCause {
+    return req.cause === 'backlog' && req.queuedMs - standingMs < REANCHOR_TOLERANCE_MS
+        ? 'timeline'
+        : req.cause;
+}
+
+/** What one leg's earlier requests left on its head (`PlayoutRaises`). */
+export interface LegHistory {
+    /** The excess of this leg's request that last raised the route, and when it landed. */
+    landedForMs?: number;
+    landedAt?: number;
+    /** The excess a landed raise did not change: requests within the tolerance are held. */
+    heldAtMs?: number;
+    /** Its own re-anchor, ms (0 when none). */
+    ownMs?: number;
+    /** Its content itself arrives later than the configured D (its last lateness report). */
+    lateContent?: boolean;
 }
 
 /**
@@ -166,23 +211,41 @@ export class RouteReanchor {
     constructor(private readonly now: () => number = () => Date.now()) {}
 
     offer(
-        req: Pick<ReanchorRaiseRequest, 'excessMs'>,
+        req: Pick<ReanchorRaiseRequest, 'excessMs'> & { cause?: ReanchorCause },
         baseMs: number,
         currentRaiseMs: number,
+        leg: LegHistory = {},
     ): RaiseOffer {
-        const cap = raiseCapMs(baseMs);
-        if (currentRaiseMs >= cap) return 'ceiling';
         const t = this.now();
-        if (this.lastRaiseAt !== undefined && t - this.lastRaiseAt < REANCHOR_SETTLE_MS) {
-            return 'covered';
+        const settling =
+            this.lastRaiseAt !== undefined && t - this.lastRaiseAt < REANCHOR_SETTLE_MS;
+        // The leg's next request after its raise landed measured that raise; held once, it stays so.
+        const measured =
+            leg.landedAt !== undefined && t - leg.landedAt <= REANCHOR_HOLD_MS + REANCHOR_SETTLE_MS;
+        const ref = leg.heldAtMs ?? (measured ? leg.landedForMs : undefined);
+        if (
+            !settling &&
+            ref !== undefined &&
+            Math.abs(req.excessMs - ref) <= REANCHOR_TOLERANCE_MS
+        ) {
+            return 'held';
         }
-        const needed = Math.max(0, req.excessMs) + REANCHOR_MARGIN_MS;
+        const cap = raiseCapMs(baseMs);
+        const needed =
+            Math.ceil((Math.max(0, req.excessMs) + REANCHOR_MARGIN_MS) / REANCHOR_STEP_MS) *
+            REANCHOR_STEP_MS;
+        const own = leg.ownMs ?? 0;
+        // A late timeline the route cannot reach (its content itself late): never the route to
+        // its cap, the leg on its own. Content on time is a lateness at the sink: raised, then held.
+        const beyond = own > 0 || currentRaiseMs + needed > cap;
+        if (req.cause === 'timeline' && leg.lateContent === true && beyond) {
+            if (settling) return 'covered';
+            const room = Math.max(0, MAX_PLAYOUT_OFFSET_MS - baseMs - currentRaiseMs);
+            return own >= room ? 'ceiling' : { legMs: Math.min(room, own + needed) };
+        }
+        if (currentRaiseMs >= cap) return 'ceiling';
+        if (settling) return 'covered';
         this.lastRaiseAt = t;
-        return {
-            raiseToMs: Math.min(
-                cap,
-                currentRaiseMs + Math.ceil(needed / REANCHOR_STEP_MS) * REANCHOR_STEP_MS,
-            ),
-        };
+        return { raiseToMs: Math.min(cap, currentRaiseMs + needed) };
     }
 }

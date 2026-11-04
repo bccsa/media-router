@@ -10,7 +10,11 @@ import type {
 } from '../child-process/UnixFdFanoutController.js';
 import type { LiveInputBranch } from '../plugins/PluginModule.js';
 import { PLAYOUT_OFFSET_KEY } from '../plugins/playoutOffset.js';
-import type { PlayoutRaise, PlayoutRebaseNote } from '../plugins/playoutReanchor.js';
+import type {
+    PlayoutLegOffset,
+    PlayoutRaise,
+    PlayoutRebaseNote,
+} from '../plugins/playoutReanchor.js';
 
 const log = createLogger('ModuleInstance');
 
@@ -316,9 +320,14 @@ export class ModuleInstance extends EventEmitter {
         this.plugin.onRoutePlayoutRaised?.(raise);
     }
 
-    /** A leg below this route head rebased itself. */
-    notifyRoutePlayoutRebased(note: PlayoutRebaseNote): void {
+    /** A leg below this route head rebased itself (`null`: that is over, B-210). */
+    notifyRoutePlayoutRebased(note: PlayoutRebaseNote | null): void {
         this.plugin.onRoutePlayoutRebased?.(note);
+    }
+
+    /** This leg's own re-anchor past its route's reach (`null`: cleared, B-210). */
+    notifyPlayoutLegOffset(offset: PlayoutLegOffset | null): void {
+        this.plugin.onPlayoutLegOffset?.(offset);
     }
 
     /** Get PipeWire node names for audio routing (single-port modules). */

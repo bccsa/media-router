@@ -21,7 +21,8 @@
  * and which D cannot know about.
  *
  * The engine may RAISE a route's D at runtime, never drop against it (ADR-0005
- * 2026-10-08, `playoutReanchor.ts`): that overlay is added here, capped at MAX.
+ * 2026-10-08, `playoutReanchor.ts`): that overlay is added here, capped at MAX,
+ * and so is a leg's own re-anchor past what its route can be raised (B-210).
  */
 
 /** Engine-wide default playout offset when nothing else says otherwise (ADR-0005 decision 4; lowered from the original ~300 ms to 60 ms on 2026-09-03 after measured LAN arrival jitter of -19/+14 ms p10/p90 — see the decision-4 amendment). */
@@ -78,6 +79,8 @@ export interface PlayoutOffsetRouteSource {
     getRoutePlayoutOffsetMs(consumerModuleId: string, sinkPortId?: string): number | undefined;
     /** The engine's runtime raise on that route's head, in ms (0 when none). */
     getRoutePlayoutRaiseMs(consumerModuleId: string, sinkPortId?: string): number;
+    /** The consumer's own re-anchor past its route's reach, in ms (0 when none, B-210). */
+    getPlayoutLegOffsetMs(consumerModuleId: string): number;
 }
 
 /** The slice of `ModuleServices` the resolution reads. */
@@ -100,7 +103,7 @@ export interface PlayoutOffsetOptions {
 
 /**
  * The one definition of a presentation sink's `ts-offset`, in milliseconds:
- * `min(base + raise, MAX_PLAYOUT_OFFSET_MS) + trim`.
+ * `min(base + raise + own, MAX_PLAYOUT_OFFSET_MS) + trim`.
  *
  * Both consumer legs of a route call THIS — not their own arithmetic — which is
  * what makes "the same route resolves to the same D on every leg" a property of
@@ -121,16 +124,13 @@ export function effectivePlayoutOffsetMs(
         parsePlayoutOffsetMs(routeOverride) ??
         parsePlayoutOffsetMs(services?.playoutOffsetMs) ??
         DEFAULT_PLAYOUT_OFFSET_MS;
-    // The runtime re-anchor overlay on the same head (0 when none).
-    const raise = services?.instanceId
-        ? Number(
-              services.mediaRouter?.getRoutePlayoutRaiseMs?.(
-                  services.instanceId,
-                  opts.sinkPortId,
-              ) ?? 0,
-          )
-        : 0;
-    return Math.min(base + (raise > 0 ? raise : 0), MAX_PLAYOUT_OFFSET_MS) + trim;
+    // The runtime re-anchor overlay on the same head (0 when none), and this leg's own (B-210).
+    const id = services?.instanceId;
+    const router = services?.mediaRouter;
+    const raise = id ? Number(router?.getRoutePlayoutRaiseMs?.(id, opts.sinkPortId) ?? 0) : 0;
+    const own = id ? Number(router?.getPlayoutLegOffsetMs?.(id) ?? 0) : 0;
+    const over = (raise > 0 ? raise : 0) + (own > 0 ? own : 0);
+    return Math.min(base + over, MAX_PLAYOUT_OFFSET_MS) + trim;
 }
 
 /** `effectivePlayoutOffsetMs` in nanoseconds — the unit `ts-offset` takes. */

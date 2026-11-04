@@ -614,6 +614,24 @@ elements" below do not start.
   health ok. Fixed: a mixer keeps its last input's connection while that
   input is away, and the input takes it again when it is back; a mixer with
   other inputs lets the lost one go as before.
+- **A route's automatic playout raise comes back down, and one that cannot
+  help is not repeated.** On FRA01 (2 and 3 November) the Audio Output (302M)
+  played 2 s behind the box's clock for good: its sound reached its device
+  late, and the engine raised the route's playout offset again every 15 s up
+  to its 2 s limit, though each raise only moved the output later as well.
+  Nothing ever took the raise back, and after a module or profile restart
+  nothing showed it. Fixed: a raise that does not change how late an output
+  plays is not repeated ("Plays … ms late at its device: a larger playout
+  offset cannot help …"). Once the outputs that asked for a raise have
+  received their sound on time for 60 s, the route goes back to its own
+  Playout Offset in one step, skipping the held sound whose time has passed,
+  with one line in the log. An output whose source is later than its route
+  can be raised (a source seconds behind the box's clock) is re-anchored on its
+  own: it plays late, out of lipsync with the route's other outputs, and says
+  so, until its source is on time again. The route head and the output show a
+  raise that stands, with the configured and raised offsets and since when,
+  also after a restart. An edit of the head's Playout Offset still clears a
+  raise at once.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream

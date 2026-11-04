@@ -81,7 +81,8 @@ const MIXER = 'mixin';
  *   error, no pipeline.
  * - Plays nothing (its mixer delivers no audio for 5 s, or the runner's playout watch sees every
  *   buffer miss the sink for 1 s): a warning, not ok; a stalled mixer is relaunched once (B-197,
- *   B-206). A launch skips what its inputs deliver from before it plays (B-206).
+ *   B-206). A launch skips what its inputs deliver from before it plays (B-206). A miss that a
+ *   raise of its route did not change is how its sink plays, held, not silence (B-210).
  */
 export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
@@ -100,6 +101,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         pipeline: () => this.childProcess,
         playing: () => this.childProcess?.isRunning === true,
         mixes: () => this.mixerLaunched,
+        held: () => this.playoutHeld(),
         warn: (text) => {
             if (text === null || this.error !== text) this.setPlaysNothing(text);
         },
@@ -173,6 +175,11 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected onPipelinePlaying(): void {
         this.settleRestart.cancel();
         this.silent.onPlaying();
+    }
+
+    /** A held raise (B-210): the watch's miss is the sink's own pace, not "Plays nothing". */
+    protected onPlayoutHeldChanged(): void {
+        this.silent.refresh();
     }
 
     protected getWatchedDeviceName(): string | null {

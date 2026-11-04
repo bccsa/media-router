@@ -3085,6 +3085,124 @@ def test_playout_watch():
     finally:
         r.kill()
 
+# --------------------------------------------------------------------------- RA: a raise that cannot help (B-210)
+_RA_SHED = {"element": "lag", "sink": "sink", "keyframeAligned": False, "toleranceMs": 250, "holdMs": 5000,
+            "cooldownMs": 60000, "sanityMs": 10000, "onLateness": "reanchor", "reanchorToleranceMs": 40,
+            "reanchorHoldMs": 600, "reanchorRetryMs": 1500, "rebaseHoldMs": 3000, "rebaseCooldownMs": 60000,
+            "missWatchMs": 1000}
+
+
+def test_reanchor_sink_paced():
+    """RA (B-210, MR-044): what the engine's ratchet guard and decay rest on, over the real
+    protocol. RA 1: a sink that takes each buffer `delta` after its due time and whose placement
+    follows its ts-offset (`identity name=lag sync=true` running D + delta, ahead of a paced
+    fakesink at D; both moved together, as the engine's fan-out moves a real sink): its request
+    after a landed raise reads the same excess, one hold after the landing; unanswered (held), it
+    asks again on the retry, the same. RA 2: a late timeline (the sink's budget short): once a
+    raise covers it, it asks nothing more. RA 3: a raise taken back in one step on an on-time leg
+    (the decay): no request, no rebase, never missing, and it keeps playing."""
+    def start(lag_ms, sink_ms, element="lag"):
+        r = RunnerProc()
+        r.wait_event(ev_is("ready"))
+        lag = f" ! identity name=lag sync=true ts-offset={int(lag_ms * 1e6)}" if lag_ms is not None else ""
+        r.send({"cmd": "start", "eosDrain": False,
+                "pipeline": "audiotestsrc is-live=true samplesperbuffer=480"
+                            f" ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! level{lag}"
+                            f" ! fakesink name=sink sync=true ts-offset={int(sink_ms * 1e6)} max-lateness=-1",
+                "backlogShed": dict(_RA_SHED, element=element)})
+        return r
+
+    def raises(r):
+        # Each event stamped when first seen (polled every 20 ms): when the runner asked.
+        r.pump()
+        now = time.monotonic()
+        for e in r.events:
+            e.setdefault("_t", now)
+        return [(e["_t"], e["payload"]) for e in r.events if e.get("event") == "plugin_event"
+                and e.get("channel") == "playout_reanchor" and e["payload"].get("kind") == "raise"]
+
+    def wait_raises(r, n, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            got = raises(r)
+            if len(got) >= n:
+                return got
+            time.sleep(0.02)
+        return raises(r)
+
+    def ts_offset(r, element, ms):
+        r.send({"cmd": "set_property", "id": f"o-{element}", "element": element, "property": "ts-offset",
+                "value": int(ms * 1e6)})
+
+    runs = []
+    try:
+        # RA 1. D 60 ms, the sink 300 ms behind its due time whatever D is.
+        d, delta = 60, 300
+        r1 = start(d + delta, d)
+        runs.append(r1)
+        first = wait_raises(r1, 1, 6.0)
+        e1 = first[0][1].get("excessMs", 0) if first else 0
+        check(f"RA 1 a sink-paced leg asks for a raise ({e1} ms past its budget)",
+              len(first) == 1 and delta - 120 < e1 < delta + 30)
+        # The engine raises by its step (ceil20(excess + 40)) and the sink's placement moves with it.
+        raise_ms = -(-int(e1 + 40) // 20) * 20
+        ts_offset(r1, "sink", d + raise_ms)
+        ts_offset(r1, "lag", d + raise_ms + delta)
+        landed = time.monotonic()
+        second = wait_raises(r1, 2, 6.0)
+        took = second[1][0] - landed if len(second) >= 2 else 99
+        e2 = second[1][1].get("excessMs", 0) if len(second) >= 2 else 0
+        check(f"RA 1 after the raise landed it asks again one hold later ({took:.2f} s) with the same "
+              f"excess ({e1} -> {e2} ms): what the engine holds",
+              len(second) >= 2 and took < 0.6 + 1.0 and abs(e2 - e1) <= 40
+              and second[1][1].get("budgetMs", 0) > first[0][1].get("budgetMs", 0) + raise_ms - 1)
+        # Held: D stays. The runner asks again only on its retry, the same excess.
+        third = wait_raises(r1, 3, 6.0)
+        gap = third[2][0] - second[1][0] if len(third) >= 3 else 0
+        e3 = third[2][1].get("excessMs", 0) if len(third) >= 3 else 0
+        check(f"RA 1 unanswered, it re-asks on the retry ({gap:.2f} s), still {e3} ms: held again",
+              len(third) >= 3 and 1.3 <= gap <= 2.8 and abs(e3 - e1) <= 40)
+        r1.kill()
+
+        # RA 2. A budget 250 ms short with nothing queued: a raise covers it, nothing more is asked.
+        r2 = start(None, -250, element="sink")
+        runs.append(r2)
+        got = wait_raises(r2, 1, 6.0)
+        e = got[0][1].get("excessMs", 0) if got else 0
+        check(f"RA 2 a late timeline asks ({e} ms, {got[0][1].get('cause') if got else None})",
+              len(got) == 1 and 170 < e < 290 and got[0][1].get("cause") == "timeline")
+        ts_offset(r2, "sink", -250 + -(-int(e + 40) // 20) * 20)
+        time.sleep(3.5)
+        check(f"RA 2 the raise covered it: no further request ({len(raises(r2))})", len(raises(r2)) == 1)
+        r2.kill()
+
+        # RA 3. On time at 60 ms, a raise to 560 ms, then back to 60 ms in one step (the decay).
+        r3 = start(None, 60, element="sink")
+        runs.append(r3)
+        check("RA 3 reaches PLAYING", r3.wait_event(ev_is("state_change", state="playing")) is not None)
+        time.sleep(1.0)
+        ts_offset(r3, "sink", 560)
+        time.sleep(1.5)
+        r3.pump()
+        vu0 = sum(1 for e in r3.events if e.get("event") == "vu_data")
+        ts_offset(r3, "sink", 60)
+        time.sleep(3.0)
+        r3.pump()
+        vu1 = sum(1 for e in r3.events if e.get("event") == "vu_data")
+        missing = [e["payload"] for e in r3.events if e.get("channel") == "playout_watch"
+                   and e["payload"].get("playing") is False]
+        rebases = [e for e in r3.events if e.get("channel") == "playout_reanchor"
+                   and e["payload"].get("kind") == "rebase"]
+        check(f"RA 3 the step down asks nothing, rebases nothing, never misses ({len(raises(r3))}, "
+              f"{len(rebases)}, {missing})", not raises(r3) and not rebases and not missing)
+        # The runner forwards the meter about once a second (case N 6's count).
+        check(f"RA 3 and it keeps playing through it (vu_data {vu0} -> {vu1})", vu1 - vu0 >= 2)
+        check("RA no lifecycle error", not any(r.has_event(ev_is("error")) for r in runs))
+    finally:
+        for r in runs:
+            r.kill()
+
+
 test_plain_pipeline()
 test_identity_egress()
 test_stamper_missing()
@@ -3123,6 +3241,7 @@ test_stop_while_starting()
 test_catch_up()
 test_catch_up_backlog()
 test_playout_watch()
+test_reanchor_sink_paced()
 
 if _failures:
     print(f"\n{len(_failures)} FAILED: {_failures}")

@@ -58,16 +58,18 @@ const source = (i: number) => ({
     socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
 });
 
-async function started(sources: number) {
+async function started(sources: number, router: Record<string, unknown> = {}) {
     h.FakeChildProcess.instances = [];
     const module = new AudioOutput302mModule();
     await module.onInit({ device: 'alsa_output.usb-KTMicro' }, {
         instanceId: 'aout-1',
+        playoutOffsetMs: 60,
         mediaRouter: {
             getModuleBusSources: vi.fn(() => Array.from({ length: sources }, (_, i) => source(i))),
             getModuleConnections: vi.fn(() => []),
             onProducerPlaying: vi.fn(),
             moduleName: (id: string) => `Module ${id}`,
+            ...router,
         },
     } as unknown as ModuleServices);
     const log = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -167,6 +169,65 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
                 'before it played, never played late',
         );
         expect(module.getState().health).toBe('ok');
+        await module.onStop();
+    });
+
+    it('B-210: a raise that did not help is held: the sink plays at its pace, the held warning, not "Plays nothing"', async () => {
+        const route = {
+            getRoutePlayoutHead: vi.fn(() => ({
+                headId: 'srt',
+                label: 'SRT -> MUL',
+                declaredMs: 60,
+            })),
+            getRoutePlayoutOffsetMs: vi.fn(() => 60),
+            getRoutePlayoutRaiseMs: vi.fn(() => 140),
+            requestPlayoutRaise: vi.fn(async () => 'held'),
+        };
+        const { module, child } = await started(2, route);
+        child.emit('vuData', { peak: [-18, -18] });
+        child.emit('pluginEvent', {
+            channel: 'playout_watch',
+            payload: { element: 'sink', playing: false, lateMs: 88, budgetMs: 200 },
+        });
+        expect(module.getState().error).toBe(
+            'Plays nothing: every buffer reaches the sink 88 ms past its playout time',
+        );
+        child.emit('pluginEvent', {
+            channel: 'playout_reanchor',
+            payload: {
+                kind: 'raise',
+                element: 'sink',
+                excessMs: 88,
+                worstMs: 95,
+                cause: 'backlog',
+                queuedMs: 400,
+                budgetMs: 200,
+                tsOffsetMs: 100,
+                latencyMs: 100,
+                holdMs: 15000,
+            },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error:
+                'Plays 88 ms late at its device: a larger playout offset cannot help, so route ' +
+                'head SRT -> MUL is held at 200 ms; nothing dropped.',
+        });
+        await module.onStop();
+    });
+
+    it("B-210: re-anchored on its own, its sink's ts-offset carries that offset on top of D", async () => {
+        const route = {
+            getRoutePlayoutOffsetMs: vi.fn(() => 60),
+            getRoutePlayoutRaiseMs: vi.fn(() => 0),
+            getPlayoutLegOffsetMs: vi.fn(() => 4940),
+        };
+        const { module, child } = await started(2, route);
+        const set = vi.spyOn(child, 'setProperty');
+        await module.onRoutePlayoutOffsetChanged();
+        // D 60 + its own 4940, less the ring the sink declares (100 ms).
+        expect(set).toHaveBeenCalledWith('sink', 'ts-offset', 4_900_000_000);
         await module.onStop();
     });
 

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
+    DECAY_HOLD_MS,
+    LEG_OFFSET_CLEAR_MS,
     REANCHOR_HEADROOM_MS,
     REANCHOR_HOLD_MS,
     REANCHOR_MARGIN_MS,
@@ -12,12 +14,19 @@ import {
     REBASE_COOLDOWN_MS,
     REBASE_HOLD_MS,
     RouteReanchor,
+    judgeCause,
     raiseCapMs,
     readReanchorRequest,
     type PlayoutRaise,
 } from './playoutReanchor.js';
 import {
     ceilingWarning,
+    decayText,
+    headPlayoutStatus,
+    heldWarningLeg,
+    legClearText,
+    legPlayoutStatus,
+    legReanchorWarning,
     raiseWarningHead,
     raiseWarningLeg,
     reanchorBadge,
@@ -103,6 +112,153 @@ describe('RouteReanchor.offer — the raise arithmetic', () => {
         const r = new RouteReanchor(clock().now);
         r.offer({ excessMs: 3_000 }, 300, 0);
         expect(r.offer({ excessMs: 50 }, 300, REANCHOR_HEADROOM_MS)).toBe('ceiling');
+    });
+});
+
+describe('RouteReanchor.offer — a raise that did not help is held (B-210, MR-044)', () => {
+    /** A sink-paced leg: its excess sits downstream of the probe, so a raise moves its
+     *  placement and its budget alike and the next request reads the same excess. */
+    it('the next request after its raise landed, the same excess: held, D kept', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        expect(r.offer({ excessMs: 88 }, 60, 0)).toEqual({ raiseToMs: 140 });
+        const landed = { landedForMs: 88, landedAt: c.t };
+        // The runner asks again one hold after its budget moved.
+        c.t += REANCHOR_HOLD_MS + 100;
+        expect(r.offer({ excessMs: 88 + REANCHOR_TOLERANCE_MS }, 60, 140, landed)).toBe('held');
+        expect(r.offer({ excessMs: 88 - REANCHOR_TOLERANCE_MS }, 60, 140, landed)).toBe('held');
+    });
+
+    it('a falling excess raises as today: the raise helped, more is needed', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        r.offer({ excessMs: 300 }, 60, 0);
+        c.t += REANCHOR_HOLD_MS + 100;
+        expect(
+            r.offer({ excessMs: 300 - REANCHOR_TOLERANCE_MS - 1 }, 60, 340, {
+                landedForMs: 300,
+                landedAt: 1_000,
+            }),
+        ).toEqual({ raiseToMs: 340 + 300 });
+    });
+
+    it('a rising excess may raise again', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        r.offer({ excessMs: 100 }, 60, 0);
+        c.t += REANCHOR_HOLD_MS + 100;
+        expect(r.offer({ excessMs: 141 }, 60, 140, { landedForMs: 100, landedAt: 1_000 })).toEqual({
+            raiseToMs: 140 + 200,
+        });
+    });
+
+    it('a request long after the raise is a new episode, not its measurement', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        r.offer({ excessMs: 88 }, 60, 0);
+        c.t += REANCHOR_HOLD_MS + REANCHOR_SETTLE_MS + 1;
+        expect(r.offer({ excessMs: 88 }, 60, 140, { landedForMs: 88, landedAt: 1_000 })).toEqual({
+            raiseToMs: 280,
+        });
+    });
+
+    it('held once it stays held, also with no raise standing (it came down)', () => {
+        const r = new RouteReanchor(clock().now);
+        expect(r.offer({ excessMs: 120 }, 60, 0, { heldAtMs: 100 })).toBe('held');
+        expect(r.offer({ excessMs: 141 }, 60, 0, { heldAtMs: 100 })).toEqual({ raiseToMs: 200 });
+    });
+
+    it('at the cap the same excess is held, not the ceiling: a larger offset cannot help', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        expect(r.offer({ excessMs: 4_400 }, 60, 0)).toEqual({ raiseToMs: REANCHOR_HEADROOM_MS });
+        c.t += REANCHOR_HOLD_MS + 100;
+        const landed = { landedForMs: 4_400, landedAt: 1_000 };
+        expect(r.offer({ excessMs: 4_410 }, 60, REANCHOR_HEADROOM_MS, landed)).toBe('held');
+    });
+
+    it('inside the settle window it is covered, never held (measured against the old budget)', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        r.offer({ excessMs: 88 }, 60, 0);
+        c.t += 1;
+        expect(r.offer({ excessMs: 88 }, 60, 140, { landedForMs: 88, landedAt: 1_000 })).toBe(
+            'covered',
+        );
+    });
+});
+
+describe('RouteReanchor.offer — a late timeline past the route reach (B-210)', () => {
+    /** Its content itself arrives late (its bus-ingress taps, its aligners' pace). */
+    const late = { lateContent: true };
+
+    it('re-anchors the leg alone: the route is not raised to its cap for it', () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        // A source 5 s behind at 1x, on a route that can take 2 s at most.
+        expect(r.offer({ excessMs: 4_900, cause: 'timeline' }, 60, 0, late)).toEqual({
+            legMs: 4_940,
+        });
+        // No route raise was made: no settle window opened for the next request.
+        c.t += 1;
+        expect(r.offer({ excessMs: 100, cause: 'timeline' }, 60, 0)).toEqual({ raiseToMs: 140 });
+    });
+
+    it('content on time is a lateness at the sink: the route raised (then held), never the leg alone', () => {
+        const r = new RouteReanchor(clock().now);
+        expect(r.offer({ excessMs: 4_400, cause: 'timeline' }, 60, 0)).toEqual({
+            raiseToMs: REANCHOR_HEADROOM_MS,
+        });
+        expect(
+            new RouteReanchor(clock().now).offer({ excessMs: 4_400, cause: 'timeline' }, 60, 0, {
+                lateContent: false,
+            }),
+        ).toEqual({ raiseToMs: REANCHOR_HEADROOM_MS });
+    });
+
+    it('what the route can still take it takes; the rest of a backlog as today', () => {
+        const r = new RouteReanchor(clock().now);
+        expect(r.offer({ excessMs: 500, cause: 'timeline' }, 60, 1_000, late)).toEqual({
+            raiseToMs: 1_540,
+        });
+        // A raise absorbs a backlog (its excess falls), so a backlog may still take the cap.
+        expect(
+            new RouteReanchor(clock().now).offer(
+                { excessMs: 4_900, cause: 'backlog' },
+                60,
+                0,
+                late,
+            ),
+        ).toEqual({ raiseToMs: REANCHOR_HEADROOM_MS });
+    });
+
+    it('a leg on its own takes more on its own, up to the offset ceiling, then ceiling', () => {
+        const r = new RouteReanchor(clock().now);
+        expect(
+            r.offer({ excessMs: 100, cause: 'timeline' }, 60, 0, { ...late, ownMs: 2_000 }),
+        ).toEqual({ legMs: 2_140 });
+        expect(r.offer({ excessMs: 20_000, cause: 'timeline' }, 60, 0, late)).toEqual({
+            legMs: 9_940,
+        });
+        expect(
+            r.offer({ excessMs: 500, cause: 'timeline' }, 60, 0, { ...late, ownMs: 9_940 }),
+        ).toBe('ceiling');
+    });
+
+    it("inside the settle window of another leg's raise it is covered", () => {
+        const c = clock(1_000);
+        const r = new RouteReanchor(c.now);
+        r.offer({ excessMs: 100 }, 60, 0);
+        expect(r.offer({ excessMs: 4_900, cause: 'timeline' }, 60, 140, late)).toBe('covered');
+    });
+});
+
+describe('judgeCause — a queue the raises filled is not backlog (B-210)', () => {
+    it('backlog only past the standing raise', () => {
+        expect(judgeCause({ cause: 'backlog', queuedMs: 2_090 }, 1_900)).toBe('backlog');
+        expect(judgeCause({ cause: 'backlog', queuedMs: 1_930 }, 1_900)).toBe('timeline');
+        expect(judgeCause({ cause: 'backlog', queuedMs: 400 }, 0)).toBe('backlog');
+        expect(judgeCause({ cause: 'timeline', queuedMs: 0 }, 0)).toBe('timeline');
     });
 });
 
@@ -251,6 +407,82 @@ describe('warning texts (exact, ADR-0005 2026-10-08)', () => {
     });
 });
 
+describe('B-210 texts (exact)', () => {
+    it('held, on the leg', () => {
+        expect(heldWarningLeg(88.4, 'SRT -> MUL', 200)).toBe(
+            'Plays 88 ms late at its device: a larger playout offset cannot help, so route head ' +
+                'SRT -> MUL is held at 200 ms; nothing dropped.',
+        );
+    });
+
+    it('a leg re-anchored on its own', () => {
+        expect(legReanchorWarning({ excessMs: 4_900, holdMs: 15_000 }, 4_940, 'SRT -> MUL')).toBe(
+            'Arrived 4900 ms past the playout budget for 15 s, more than route head SRT -> MUL can ' +
+                'be raised: re-anchored this output on its own by +4940 ms. Lipsync with other ' +
+                'outputs of SRT -> MUL is NOT guaranteed until its source is back on time; nothing dropped.',
+        );
+    });
+
+    it('the INFO lines of a step down name the head, the step and what is skipped', () => {
+        expect(decayText('SRT -> MUL', 60, 1_940)).toBe(
+            'Playout re-anchor: SRT -> MUL back to its configured 60 ms, down 1940 ms in one step: ' +
+                'the outputs that asked arrived on time for 60 s; about 1940 ms of held content ' +
+                'skipped at each, its time passed',
+        );
+        expect(legClearText('Audio Out', 'SRT -> MUL', 4_940)).toBe(
+            "Playout re-anchor: Audio Out back on route head SRT -> MUL's playout offset, down " +
+                '4940 ms in one step: its source arrives on time again; about 4940 ms of held ' +
+                'content skipped, its time passed',
+        );
+    });
+
+    const raise: PlayoutRaise = {
+        headId: 'srt-1',
+        baseMs: 60,
+        raiseMs: 140,
+        since: Date.UTC(2026, 10, 2, 17, 32, 49),
+        lastRaiseAt: Date.UTC(2026, 10, 2, 17, 32, 49),
+        requests: 3,
+        lastBy: {
+            moduleId: 'aout',
+            label: 'Audio Out',
+            element: 'sink',
+            cause: 'timeline',
+            excessMs: 88,
+            queuedMs: 0,
+            holdMs: 15_000,
+        },
+        atCeiling: false,
+        held: { moduleId: 'aout', label: 'Audio Out', excessMs: 90, since: 0 },
+    };
+
+    it('the head says it is held, in its reason and its badge', () => {
+        expect(headPlayoutStatus(raise, null, 60).reason).toBe(
+            'hop transit or late timeline — held: a larger offset cannot help Audio Out',
+        );
+        expect(reanchorBadge(raise).text).toBe('re-anchored +140 ms, held');
+    });
+
+    it('the leg section: configured, raised to, since when (also with no request, a restart)', () => {
+        expect(
+            legPlayoutStatus(null, {
+                headLabel: 'SRT -> MUL',
+                configuredMs: 60,
+                raisedToMs: 2_060,
+                since: Date.UTC(2026, 10, 2, 17, 32, 49),
+            }),
+        ).toEqual({
+            budget: null,
+            lateBy: null,
+            cause: null,
+            head: 'SRT -> MUL',
+            configured: 60,
+            raisedTo: 2_060,
+            since: '2026-11-02T17:32:49Z',
+        });
+    });
+});
+
 describe('the numbers, pinned across the process boundary', () => {
     it('are the amendment’s', () => {
         expect([
@@ -264,6 +496,10 @@ describe('the numbers, pinned across the process boundary', () => {
             REBASE_HOLD_MS,
             REBASE_COOLDOWN_MS,
         ]).toEqual([40, 15_000, 30_000, 20, 40, 2_000, 2_000, 3_000, 60_000]);
+    });
+
+    it("B-210: a raise comes down after 60 s on time, a leg's own re-anchor after 3 s", () => {
+        expect([DECAY_HOLD_MS, LEG_OFFSET_CLEAR_MS]).toEqual([60_000, 3_000]);
     });
 
     it('match the runner policy’s own fallbacks (backlog_shed.py)', () => {

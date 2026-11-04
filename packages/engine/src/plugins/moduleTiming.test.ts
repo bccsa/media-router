@@ -35,6 +35,27 @@ describe('ModuleTiming', () => {
         setLatenessTapAvailable(true);
     });
 
+    it('B-210: each tick hands the host the content lateness before D (arrival, not render)', () => {
+        vi.useFakeTimers();
+        const contentLateness = vi.fn();
+        const t = new ModuleTiming({
+            emit: vi.fn(),
+            getProperty: async () => undefined,
+            busSources: () => [],
+            contentLateness,
+        });
+        t.start({ pipeline: 'unixfdsrc ! fakesink' });
+        expect(contentLateness).toHaveBeenLastCalledWith(null);
+        t.onEvent('mrlateness:lat_busin', win(12));
+        t.onEvent('mrlateness:lat_render', win(1_960));
+        vi.advanceTimersByTime(2000);
+        expect(contentLateness).toHaveBeenLastCalledWith(12);
+        t.stop();
+        const calls = contentLateness.mock.calls.length;
+        vi.advanceTimersByTime(10_000);
+        expect(contentLateness.mock.calls.length).toBe(calls);
+    });
+
     it('emits state only when the display changes (R-P0-6)', () => {
         vi.useFakeTimers();
         const emit = vi.fn();

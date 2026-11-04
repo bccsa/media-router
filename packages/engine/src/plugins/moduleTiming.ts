@@ -87,6 +87,9 @@ export interface ModuleTimingHost {
     /** The edge stands in the module's stored graph, whether or not it is applied now (its
      *  producer disabled, stopped or restarting): its input keeps its row (B-93). */
     wired?(source: BusSourceRef): boolean;
+    /** Every tick: the content's lateness before any playout offset, null without a reading
+     *  (`LatenessReporter.contentLatenessMs`, B-210). */
+    contentLateness?(lateMs: number | null): void;
 }
 
 const EMPTY: TimingPublication = { sections: [], data: {}, badge: null };
@@ -256,6 +259,7 @@ export class ModuleTiming {
     tick(now = Date.now()): void {
         if (this.sink && ++this.ticks % SINK_READ_EVERY === 0) void this.readSink();
         this.publish(now);
+        this.host.contentLateness?.(this.reporter.contentLatenessMs(now));
     }
 
     /** The display when it changed (≥ 1 ms or a row), then the warnings. */
