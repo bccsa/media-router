@@ -29,6 +29,8 @@ export type EndpointLookup = (key: string) => { port: number; address: string } 
 export class ReliableDelivery {
     private waitingAck = new Map<number, ReturnType<typeof setTimeout>>();
     private ackToCopies = new Map<number, SentCopy[]>();
+    /** Called on the message's ACK; never on a give-up or a destroy. */
+    private onAcked = new Map<number, () => void>();
     private ackCounter = 0;
 
     constructor(
@@ -48,8 +50,9 @@ export class ReliableDelivery {
     }
 
     /** Start tracking a sent guaranteed message (schedules the fallback resend). */
-    track(ackID: number, copies: SentCopy[], topic: string | undefined): void {
+    track(ackID: number, copies: SentCopy[], topic: string | undefined, onAck?: () => void): void {
         this.ackToCopies.set(ackID, copies);
+        if (onAck) this.onAcked.set(ackID, onAck);
         this.scheduleResend(ackID, topic, 0);
     }
 
@@ -59,6 +62,9 @@ export class ReliableDelivery {
         if (timer) clearTimeout(timer);
         this.waitingAck.delete(ackID);
         this.releaseCopies(ackID);
+        const onAck = this.onAcked.get(ackID);
+        this.onAcked.delete(ackID);
+        onAck?.();
     }
 
     private releaseCopies(ackID: number): void {
@@ -72,6 +78,7 @@ export class ReliableDelivery {
         if (attempt >= MAX_RESEND) {
             this.waitingAck.delete(ackID);
             this.releaseCopies(ackID);
+            this.onAcked.delete(ackID);
             this.onAckTimeout({ topic, ackID });
             return;
         }
@@ -92,6 +99,7 @@ export class ReliableDelivery {
     destroy(): void {
         for (const timer of this.waitingAck.values()) clearTimeout(timer);
         this.waitingAck.clear();
+        this.onAcked.clear();
         for (const ackID of [...this.ackToCopies.keys()]) this.releaseCopies(ackID);
     }
 }

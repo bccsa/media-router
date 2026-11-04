@@ -113,6 +113,28 @@ describe('ReliableDelivery', () => {
         rd.destroy();
     });
 
+    it('calls onAck once on the ACK; never on a give-up or a destroy', () => {
+        vi.useFakeTimers();
+        const { copy } = fakeTransport();
+        const rd = new ReliableDelivery(() => ({ port: 1, address: 'a' }), () => {}, () => false);
+        const [acked, givenUp, destroyed] = [vi.fn(), vi.fn(), vi.fn()];
+        const a = rd.nextAckId();
+        rd.track(a, copy(1), 't', acked);
+        rd.ack(a);
+        rd.ack(a);
+        expect(acked).toHaveBeenCalledTimes(1);
+        const b = rd.nextAckId();
+        rd.track(b, copy(2), 't', givenUp);
+        vi.advanceTimersByTime(60000);
+        rd.ack(b);
+        expect(givenUp).not.toHaveBeenCalled();
+        const c = rd.nextAckId();
+        rd.track(c, copy(3), 't', destroyed);
+        rd.destroy();
+        rd.ack(c);
+        expect(destroyed).not.toHaveBeenCalled();
+    });
+
     it('uses the injected ackID source when given', () => {
         let n = 100;
         const rd = new ReliableDelivery(() => undefined, () => {}, () => false, () => ++n);

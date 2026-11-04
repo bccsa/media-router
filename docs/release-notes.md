@@ -624,6 +624,24 @@ elements" below do not start.
   module whose check of the encoders, decoders or 302M support on the box did
   not finish checks again when it starts, instead of going without them until
   the engine restarts.
+- **Changes made on a box's own dashboard now show at once on the manager
+  (#857).** From v2.0.0.93 to v2.0.0.100, after a short break in a box's link
+  to the manager (about 5 to 8 s, or a break in the manager-to-box direction
+  only, which the manager does not notice), every change made on the box
+  itself stayed on the box: on its own dashboards and its Local Control
+  Panel, Start and Stop, an interlock's mutes and what modules update by
+  themselves. The manager's dashboards and routing editor kept the old
+  values, a reload did not help, and it lasted until the box next reconnected
+  for real, which could take hours; a Start sent from the manager could then
+  undo a Stop made on the box. Fixed: after such a break these changes reach
+  the manager within about a second, also those made during the break and in
+  the seconds before the box noticed it, and the manager keeps them. Changes
+  made on the manager reach the box as before. When you update: a box that is
+  in that state now holds its changes only in memory, and the update
+  restarts its engine with the manager's values. Before updating a box,
+  compare its dashboards with the manager's and set again on the manager what
+  differs, or restart the manager first: every box then reconnects and sends
+  what it held.
 - **An audio volume above 150 % set with a wider Volume Range now survives an
   engine restart.** On Audio Input (302M) and Audio Output (302M), and on the
   deprecated Audio Input, Audio Output, Audio Encoder and Audio Decoder, a

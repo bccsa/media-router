@@ -51,6 +51,60 @@ describe('Client', () => {
         expect(calls.length).toBe(2);
     });
 
+    it('connected says resumed only when every path was down and the server kept the session', () => {
+        client = new Client({
+            clientId: 'engine-1',
+            paths: [
+                { host: '127.0.0.1', port: 3000 },
+                { host: '127.0.0.1', port: 3001 },
+            ],
+            encryptionKey: 'secret',
+        });
+        const links: Array<{ resumed: boolean }> = [];
+        client.on('connected', (link) => links.push(link));
+        const [a, b] = client['pathStates'];
+        /** The server's handshake reply on a path, naming its session. */
+        const handshake = (ps: typeof a, session: string) => {
+            ps.socket.socketID = session;
+            ps.socket.emit('connected');
+        };
+        handshake(a, 's1');
+        handshake(b, 's1');
+        // Path a re-handshakes while b carries the session: not a resume.
+        a.connected = false;
+        handshake(a, 's1');
+        // Every path down, then back on the same session, then on a new one.
+        a.connected = b.connected = false;
+        handshake(a, 's1');
+        a.connected = false;
+        handshake(a, 's2');
+        expect(links.map((l) => l.resumed)).toEqual([false, false, false, true, false]);
+    });
+
+    it('a guaranteed send on two paths calls onAck once, on the first ACK', () => {
+        client = new Client({
+            clientId: 'engine-1',
+            paths: [
+                { host: '127.0.0.1', port: 3000 },
+                { host: '127.0.0.1', port: 3001 },
+            ],
+            encryptionKey: 'secret',
+        });
+        const acks: Array<() => void> = [];
+        for (const ps of client['pathStates']) {
+            ps.connected = true;
+            vi.spyOn(ps.socket, 'send').mockImplementation((_t, _m, opts) => {
+                if (opts?.onAck) acks.push(opts.onAck);
+            });
+        }
+        const onAck = vi.fn();
+        client.send('patch', { ops: [] }, { guaranteeDelivery: true, onAck });
+        expect(acks).toHaveLength(2);
+        acks[1]();
+        acks[0]();
+        expect(onAck).toHaveBeenCalledTimes(1);
+    });
+
     it('destroy() is silent — emits neither disconnected nor pathDown', () => {
         // ManagerConnection rebuilds the Client inside createClient(); if
         // destroy() leaked a 'disconnected' event, the reconnect handler would

@@ -241,7 +241,8 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     ctx.managerConnection.on('pathUp', onLinkChange);
     ctx.managerConnection.on('pathDown', onLinkChange);
 
-    ctx.managerConnection.on('connected', () => {
+    ctx.managerConnection.on('connected', (link?: { resumed?: boolean }) => {
+        const resumed = link?.resumed === true;
         onLinkChange();
         // Best-effort: this handshake triggers manager-driven auto-start, but
         // it re-sends on the 10s heartbeat below — a dropped packet delays the
@@ -263,7 +264,9 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         ctx.managerConnection.send('capabilities', ctx.pluginSchemas(), {
             guaranteeDelivery: true,
         });
-        states.connected();
+        // The manager kept the session, so it pushes no config: the journal goes up now (#857).
+        if (resumed) ctx.localChanges.resumed();
+        states.connected(resumed);
         if (stateResyncTimer) clearInterval(stateResyncTimer);
         stateResyncTimer = setInterval(() => {
             states.heartbeat();

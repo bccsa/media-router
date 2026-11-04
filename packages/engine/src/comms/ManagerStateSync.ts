@@ -30,6 +30,8 @@ export class ManagerStateSync {
     private readonly patches: StatePatchBatcher;
     private readonly differ = new RuntimeDiffer();
     private patchMode = false;
+    /** This session's `hello` offered patches; a kept session gets no new one. */
+    private offered = false;
     private beats = 0;
 
     constructor(
@@ -57,7 +59,7 @@ export class ManagerStateSync {
     hello(hello: unknown): void {
         const features = (hello as { features?: unknown } | null)?.features;
         if (!Array.isArray(features) || !features.includes('statePatch')) return;
-        this.patchMode = true;
+        this.patchMode = this.offered = true;
         this.snapshot();
     }
 
@@ -68,7 +70,10 @@ export class ManagerStateSync {
         if (lean) this.link.sendState(lean);
     }
 
-    connected(): void {
+    /** `resumed`: on the session the manager kept, whose `hello` still holds (#857). */
+    connected(resumed = false): void {
+        if (resumed) this.patchMode = this.offered;
+        else this.offered = this.patchMode;
         this.beats = 0;
         this.snapshot();
     }
