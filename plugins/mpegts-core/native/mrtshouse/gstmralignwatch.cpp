@@ -105,6 +105,8 @@ struct Item {
     gint64 start = 0;       // running time of the decode time (DTS, else PTS)
     gint64 end = 0;         // start + duration
     gint64 lateness = 0;    // at arrival
+    gint64 arrived = 0;     // when (clocked): a held start's bound counts from here (B-209)
+    gint64 anchor = 0;      // the anchor its times include, moved with them: it leaves under it
     guint64 bytes = 0;
     bool late = false;      // sparse: ended before the horizon at arrival, forwarded anyway
     QueryWait* wait = nullptr;
@@ -133,7 +135,8 @@ struct Snap {
 struct Run {
     std::deque<Item> fifo;
     guint64 level_bytes = 0;
-    gint64 tail_end = 0;            // the latest end of a timed item taken in
+    gint64 tail_end = 0;            // the latest end of timed data taken in since none was queued
+    guint gap_items = 0;            // GAPs queued: holes, which the level leaves out (B-209)
     mrts::ArrivalRhythm rhythm;
     mrts::GapPlanner planner;
     PaceRegistry::Membership member;
@@ -245,6 +248,8 @@ static GstStaticPadTemplate aw_src_tmpl =
 
 static void aw_loop(gpointer data);
 static bool aw_gapped(const Run& r);
+static bool aw_paced_gaps(const Run& r);
+static gint64 aw_piece(const Run& r);
 
 /* --- time ------------------------------------------------------------------------------- */
 
@@ -305,16 +310,32 @@ static bool aw_list_times(const GstSegment* seg, GstBufferList* l, gint64 off, g
 
 /* --- levels ----------------------------------------------------------------------------- */
 
-/* From the horizon at the earliest: a GAP reaching back past it (a hole over a silence longer than
- * max-size-time) goes out clipped there, so that span is not queued time (B-187). */
+/* Data, not an event: what holds content, and queued time. */
+static bool aw_data(const Item& it) { return it.kind == Kind::buffer || it.kind == Kind::list; }
+
+/* A GAP on the timeline: the only timed event. */
+static bool aw_gap_item(const Item& it) { return it.timed && it.kind == Kind::event; }
+
+/* Under the lock: the first timed data queued. */
+static const Item* aw_first_data(const Run& r) {
+    for (const Item& it : r.fifo)
+        if (it.timed && aw_data(it)) return &it;
+    return nullptr;
+}
+
+/* Timed data, from the horizon at the earliest (what reaches back past it goes out clipped there,
+ * B-187): a queued GAP is a hole, no time, between data or past it (B-209). */
 static guint64 aw_level_time(const Run& r) {
-    for (const Item& it : r.fifo) {
-        if (!it.timed) continue;
-        const gint64 from = r.planner.has_horizon() ? std::max(it.start, r.planner.horizon_ns())
-                                                    : it.start;
-        return (guint64)std::max<gint64>(r.tail_end - from, 0);
-    }
-    return 0;
+    const Item* d = aw_first_data(r);
+    if (!d) return 0;
+    const gint64 from = r.planner.has_horizon() ? std::max(d->start, r.planner.horizon_ns())
+                                                : d->start;
+    gint64 level = r.tail_end - from;
+    if (r.gap_items)
+        for (const Item& g : r.fifo)
+            if (aw_gap_item(g))
+                level -= std::max<gint64>(std::min(g.end, r.tail_end) - std::max(g.start, from), 0);
+    return (guint64)std::max<gint64>(level, 0);
 }
 
 /* Full at the limits; `div` 2: at half of them, where a full episode ends. */
@@ -466,6 +487,7 @@ static void aw_flush_fifo(GstMrAlignWatch* self) {
     for (Item& it : r.fifo) aw_item_free(it);
     r.fifo.clear();
     r.level_bytes = 0;
+    r.gap_items = 0;
     r.full_episode = false;
     g_cond_broadcast(&self->item_removed);
 }
@@ -484,7 +506,9 @@ static void aw_enqueue(GstMrAlignWatch* self, Item&& it, gint64 pace) {
     Run& r = *self->run;
     const bool was_empty = r.fifo.empty();
     const bool armed = r.sleeping && it.timed && it.start + pace - RELEASE_SLACK_NS >= r.wake_at;
-    if (it.timed) r.tail_end = std::max(r.fifo.empty() ? it.end : r.tail_end, it.end);
+    if (it.timed && aw_data(it))
+        r.tail_end = aw_first_data(r) ? std::max(r.tail_end, it.end) : it.end;
+    if (aw_gap_item(it)) r.gap_items++;
     r.level_bytes += it.bytes;
     r.fifo.push_back(std::move(it));
     if (was_empty && !armed) aw_wake(self);
@@ -495,6 +519,7 @@ static void aw_enqueue(GstMrAlignWatch* self, Item&& it, gint64 pace) {
 static void aw_dequeued(GstMrAlignWatch* self, const Item& it) {
     Run& r = *self->run;
     r.level_bytes -= std::min(r.level_bytes, it.bytes);
+    if (aw_gap_item(it) && r.gap_items) r.gap_items--;
     if (r.full_episode && !aw_full(self, 2)) r.full_episode = false;
     if (r.upstream_blocked) g_cond_broadcast(&self->item_removed);
 }
@@ -539,7 +564,9 @@ static bool aw_moves(const Item& q, gint64 delta) {
     return delta > 0 ? q.lateness > CEILING_NS : q.lateness < -CEILING_NS;
 }
 
+/* Its anchor moves with its times, so it leaves under the segment they were placed by (B-209). */
 static void aw_shift(Item& q, gint64 delta) {
+    q.anchor += delta;
     q.start += delta;
     q.end += delta;
     q.lateness -= delta;
@@ -550,27 +577,27 @@ static const gint64 PLACE_WAIT_NS = 2 * GST_SECOND;
 
 /* Under the lock: data or a GAP later than the ceiling with nothing out yet: no aggregator starts
  * on it (that far back) while its group re-anchors it, ungapped (a gap would place it); at most
- * PLACE_WAIT_NS, as a drain never moves and a query behind it must not wait for ever. */
+ * PLACE_WAIT_NS from its arrival, a long GAP's too (B-209): a drain never moves, a query waits. */
 static bool aw_unplaced(const Run& r, const Item& it, gint64 now) {
     return it.timed && it.lateness > CEILING_NS && !r.sparse && !r.planner.has_horizon() &&
-           now < it.start + it.lateness + PLACE_WAIT_NS;
+           now < it.arrived + PLACE_WAIT_NS;
 }
 
-/* Under the lock: the least anchor a move back in time can take with what this input queued past
- * the ceiling (and `cur`, being taken) kept: its first such item lands at the horizon, or after
- * what it queued before it (B-205). NONE: nothing it queued can end behind what went out. */
+/* Under the lock: the least anchor a move back in time can take with the data this input queued
+ * past the ceiling (and `cur`) kept: the first lands at the horizon, or after the data queued
+ * before it; a GAP keeps nothing (B-205, B-209). NONE: nothing can end behind what went out. */
 static gint64 aw_anchor_min(const Run& r, const Item* cur) {
     gint64 after = r.planner.has_horizon() ? r.planner.horizon_ns() : G_MININT64;
     const Item* head = nullptr;
     for (const Item& q : r.fifo) {
-        if (!q.timed) continue;
+        if (!q.timed || !aw_data(q)) continue;
         if (q.lateness < -CEILING_NS) {
             head = &q;
             break;
         }
         after = std::max(after, q.end);
     }
-    if (!head && cur && cur->timed && cur->lateness < -CEILING_NS) head = cur;
+    if (!head && cur && cur->timed && aw_data(*cur) && cur->lateness < -CEILING_NS) head = cur;
     if (!head || after == G_MININT64) return mrts::PaceGroup::NONE;
     return r.anchor + (after - head->start);
 }
@@ -589,7 +616,7 @@ static void aw_reanchor(GstMrAlignWatch* self, gint64 anchor, guint* pending, It
         if (!q.timed) continue;
         if (!moving && aw_moves(q, delta)) moving = true;
         if (moving) aw_shift(q, delta);
-        tail = std::max(tail, q.end);
+        if (aw_data(q)) tail = std::max(tail, q.end);
     }
     if (tail != G_MININT64) r.tail_end = tail;
     if (cur && cur->timed) aw_shift(*cur, delta);   // timed as what comes next
@@ -695,6 +722,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
     Item it;
     it.kind = is_list ? Kind::list : Kind::buffer;
     it.obj = obj;
+    it.anchor = r.anchor;
     it.timed = is_list ? aw_list_times(&r.in_segment, GST_BUFFER_LIST_CAST(obj), r.anchor,
                                        &it.start, &it.end)
                        : aw_buffer_times(&r.in_segment, GST_BUFFER_CAST(obj), r.anchor,
@@ -702,6 +730,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
     gint64 now = 0;
     const bool clocked = aw_now(self, &now);
     if (clocked) {
+        it.arrived = now;
         if (it.timed) it.lateness = now - it.start;
         aw_arrival(self, now, &pending);
     } else if (r.state != AwState::present) {
@@ -714,14 +743,15 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         r.catching_up = true;
 
     if (r.sparse) {
-        /* A cue its gaps already passed: forwarded at its own PTS, the pace raised (C-3). */
+        /* Observed first, as data: a move of the anchor places it (B-209). Then a cue its gaps
+         * already passed: forwarded at its own PTS, the pace raised (C-3). */
+        if (clocked && it.timed) aw_observe(self, now, it.lateness, &pending, &it);
         if (it.timed && r.planner.stale(it.start, it.end)) {
             it.late = true;
             mrts::PaceGroup::Event ev;
             PaceRegistry::global().raise(r.member, it.lateness, clocked ? now : -1, &ev);
             aw_fell(self, ev, &pending);
         }
-        if (clocked && it.timed) aw_observe(self, now, it.lateness, &pending, &it);
     } else if (is_list) {
         /* The one drop (R21), member by member: what ends before the horizon. */
         GstBufferList* l = GST_BUFFER_LIST_CAST(obj);
@@ -747,6 +777,7 @@ static GstFlowReturn aw_take_data(GstMrAlignWatch* self, GstMiniObject* obj, boo
         it.obj = GST_MINI_OBJECT_CAST(l);
         if (dropped) {
             r.discont = true;
+            it.anchor = r.anchor;   // as observed: the anchor may have moved
             it.timed = aw_list_times(&r.in_segment, l, r.anchor, &it.start, &it.end);
             if (it.timed && clocked) it.lateness = now - it.start;
         }
@@ -861,6 +892,7 @@ static gboolean aw_take_event(GstMrAlignWatch* self, GstEvent* event) {
     Item it;
     it.kind = Kind::event;
     it.obj = GST_MINI_OBJECT_CAST(event);
+    it.anchor = r.anchor;
     gint64 pace = 0;   // a GAP's, for the armed check
     switch (type) {
         case GST_EVENT_STREAM_START:
@@ -887,7 +919,10 @@ static gboolean aw_take_event(GstMrAlignWatch* self, GstEvent* event) {
                 it.end = it.start + (GST_CLOCK_TIME_IS_VALID(dur) ? (gint64)dur : 0);
                 it.lateness = now - it.end;   // the gap's end: when what follows is due
             }
-            if (clocked) aw_arrival(self, now, &pending);
+            if (clocked) {
+                it.arrived = now;
+                aw_arrival(self, now, &pending);
+            }
             if (r.sparse) {
                 if (pending) snap = aw_snap(self);
                 g_mutex_unlock(&self->lock);
@@ -1347,14 +1382,26 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
                 }
                 const gint64 start = h ? std::max(it.start, r.planner.horizon_ns()) : it.start;
                 const gint64 h0 = h ? r.planner.horizon_ns() : start;
-                const gint64 anchor = r.anchor;
-                r.planner.emitted(it.end);
+                const gint64 anchor = it.anchor;
+                /* Toward an audio aggregator no further than house now, a piece at least: the rest
+                 * of a hole still ahead waits at the head, so no mixer renders it early (B-209). */
+                gint64 end = it.end;
+                if (clocked && aw_paced_gaps(r))
+                    end = std::min(end, std::max(start + aw_piece(r), now + RELEASE_SLACK_NS));
+                if (end < it.end) {
+                    Item rest = it;
+                    rest.obj = GST_MINI_OBJECT_CAST(gst_event_ref(ev));
+                    rest.start = end;
+                    r.fifo.push_front(std::move(rest));
+                    r.gap_items++;
+                }
+                r.planner.emitted(end);
                 r.gaps++;
                 r.discont = true;
                 g_mutex_unlock(&self->lock);
                 gst_event_unref(ev);
-                const gint64 fade = aw_push_fade(self, h0, it.end - h0, anchor);
-                aw_push_gap(self, std::max(start, h0 + fade), it.end, anchor);
+                const gint64 fade = aw_push_fade(self, h0, end - h0, anchor);
+                aw_push_gap(self, std::max(start, h0 + fade), end, anchor);
                 g_mutex_lock(&self->lock);
                 if (fade) r.fades++;
                 return;
@@ -1457,8 +1504,9 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
     if (it.timed) {
         r.planner.emitted(it.end);
         /* Kept timed data from a present input: caught up, its gaps end (B-80). What an absent
-         * one still had queued is no catch-up. */
-        if (r.state != AwState::absent) r.catching_up = false;
+         * one still had queued is no catch-up, nor a move's unmoved prefix (B-209): the gaps
+         * fill on to its moved content. */
+        if (r.state != AwState::absent && it.anchor == r.anchor) r.catching_up = false;
     }
     /* It came ahead of its release by more than the slack: the next is armed for (B-79). */
     r.ahead = it.timed && it.end > it.start && it.lateness < r.pace - RELEASE_SLACK_NS;
@@ -1467,7 +1515,8 @@ static void aw_release(GstMrAlignWatch* self, gint64 now, bool clocked, guint* p
     const gsize skip =
         pcm && discont && has_h && it.timed && it.start < h0 ? aw_frames(r, h0 - it.start) : 0;
     gint64 t0 = now;
-    const gint64 anchor = r.anchor;
+    /* Under its own anchor: a move's unmoved prefix keeps the segment it was placed by (B-209). */
+    const gint64 anchor = it.anchor;
     g_mutex_unlock(&self->lock);
     aw_sync_segment(self, anchor);
     guint fades = 0;
@@ -1607,7 +1656,7 @@ static gint64 aw_deadline(GstMrAlignWatch* self, gint64 now) {
     if (!r.fifo.empty()) {
         const Item& h = r.fifo.front();
         if (!h.timed) return now;   // it came in while we posted: due at once
-        at = std::min(at, aw_unplaced(r, h, now) ? h.start + h.lateness + PLACE_WAIT_NS
+        at = std::min(at, aw_unplaced(r, h, now) ? h.arrived + PLACE_WAIT_NS
                                                   : h.start + r.pace - RELEASE_SLACK_NS);
     }
     /* Silence stops while the sink thread is held in us and the queue keeps the pace; its unblock

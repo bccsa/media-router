@@ -584,7 +584,10 @@ elements" below do not start.
   an input steadily later or earlier than that is re-anchored: it plays late,
   with one warning, "Input … re-anchored by +2 min 37 s (late) — past the 4 s
   pace ceiling", shown as the module's warning while it lasts, and the others go
-  on. Once it is back within 3 s of the house clock it rejoins on time.
+  on. Once it is back within 3 s of the house clock it rejoins on time. An
+  input whose timing jumps, an Ingest Offset set or removed or a late input
+  back on time at once, stays in its mixes: it goes quiet for about half a
+  second while the mixer measures the jump, and the mixes it feeds never stall.
 - **An Audio Output (302M) plays on time again right after a PipeWire
   restart.** On the 3 November test one of 12 PipeWire restarts left an
   Audio Output (302M) silent for about 16 s after its stream came back, with

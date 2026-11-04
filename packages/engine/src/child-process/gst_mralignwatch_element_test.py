@@ -2379,6 +2379,281 @@ check("held hole: both inputs' buffers all written at their PTS, EOS, no error",
       and eos and not r.errors)
 r.stop()
 
+# B-209 (MR-045, the .103 test box 3 Nov): an N-1 input's stamps jumped 8 s on, the demux's GAP over
+# the hole first; its fan-in released the GAP whole, its mixer ran 8 s ahead, B-205's move then put the
+# input's audio behind that, and every link released under the anchor of the moment stalled the mixes.
+LEAD = 100 * MS   # each input arrives this much before its content time, as the box's did
+
+
+def _n1_jump(jump, late=0, at_ms=3000, secs=16):
+    """n1Mixer302mPipeline.ts's matrix for 3 inputs on the house clock, each LEAD early; input 1 starts
+    `late` behind and from content at_ms its content is `jump` on, the demux's GAP over the hole first.
+    {"t0", "msgs" [(t, element, reason, state, anchor)], "outs" {o: [(t, pts, ms, values)]}, "in1"}."""
+    n, mix = 3, "audiomixer latency=0 start-time-selection=first"
+    d = [f"{mix} name=inmix{i} ! capsfilter caps={caps} ! tee name=in{i}t" for i in range(n)]
+    d += [f"{mix} name=omix{o} ! fakesink name=out{o} sync=false async=false" for o in range(n)]
+    d += [f"in{i}t. ! mralignwatch aligner=omix{o} input=in{i} silence-floor=500000000"
+          f" name=omix{o}_aw{i} ! omix{o}." for o in range(n) for i in range(n) if i != o]
+    d += [f"appsrc name=src{i} is-live=true format=time max-bytes=0 caps={caps} ! mralignwatch"
+          f" name=inmix{i}_aw aligner=inmix{i} input=c{i} hold-on-eos=true ! inmix{i}."
+          for i in range(n)]
+    p = Gst.parse_launch(" ".join(d))
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    p.use_clock(clock)
+    p.set_start_time(NONE)
+    p.set_base_time(0)
+    lock, res = threading.Lock(), {"msgs": [], "outs": {o: [] for o in range(n)}, "in1": []}
+
+    def on_msg(_bus, m):
+        s = m.get_structure()
+        if m.type == Gst.MessageType.ELEMENT and s is not None and s.get_name() == "mralignwatch":
+            with lock:
+                res["msgs"].append((clock.get_time(), m.src.get_name(), s.get_string("reason"),
+                                    s.get_string("state"), s.get_value("anchor")))
+        return Gst.BusSyncReply.DROP
+
+    def out(o):
+        def probe(_pad, info):
+            b, t = info.get_buffer(), clock.get_time()
+            v = array.array("h", b.extract_dup(0, b.get_size()))
+            with lock:
+                res["outs"][o].append((t, b.pts, len(v) // 2 * 1000 // RATE, frozenset(v)))
+            return Gst.PadProbeReturn.OK
+        return probe
+
+    def fan_in(_pad, info):
+        with lock:
+            res["in1"].append((clock.get_time(), info.get_buffer().pts))
+        return Gst.PadProbeReturn.OK
+
+    for o in range(n):
+        p.get_by_name(f"out{o}").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, out(o))
+    p.get_by_name("inmix1").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, fan_in)
+    p.get_bus().set_sync_handler(on_msg)
+    p.set_state(Gst.State.PLAYING)
+    t0 = res["t0"] = clock.get_time() // (10 * MS) * (10 * MS) + 300 * MS
+    kj = at_ms // 10
+
+    def feed(i):
+        def go():
+            for k in range(secs * 100):
+                at, pts = t0 + k * 10 * MS - LEAD, t0 + k * 10 * MS
+                if i == 1:
+                    pts += (jump if k >= kj else 0) - late
+                    if k == kj:   # mrtsdemux's jump rule: the hole from what it emitted, then the PES
+                        while clock.get_time() < at:
+                            time.sleep(0.001)
+                        p.get_by_name("src1").send_event(
+                            Gst.Event.new_gap(t0 + kj * 10 * MS - late, jump))
+                _n1_push(p, clock, f"src{i}", at, pts, VAL[i])
+            p.get_by_name(f"src{i}").emit("end-of-stream")
+        return go
+
+    _n1_run(p, [feed(i) for i in range(n)])
+    res["end"] = t0 + (secs - 1) * S
+    res["props"] = {e: {k: p.get_by_name(e).get_property(k)
+                        for k in ("anchor", "stale-time", "full-count")}
+                    for e in ("inmix1_aw", "omix0_aw1", "omix2_aw1")}
+    p.set_state(Gst.State.NULL)
+    return res
+
+
+def _n1_report(res, from_ms):
+    """What the checks read off a _n1_jump run, from content from_ms to its end."""
+    t0, end = res["t0"], res["end"]
+    lo = t0 + from_ms * MS
+    moves = [a for t, e, reason, _s, a in res["msgs"] if e == "inmix1_aw" and reason == "reanchored"]
+    links = [(e, reason, st) for t, e, reason, st, _a in res["msgs"] if e.startswith("omix") and t < end
+             and (reason == "reanchored" or st == "absent")]
+    # Input 1 in mix o: a block whose samples hold the others' sum with its value (o != 1).
+    missing = {o: sum(ms for _t, pts, ms, vs in res["outs"][o] if lo <= pts < end and
+                      sum(VAL[i] for i in range(3) if i != o) not in vs) for o in (0, 2)}
+    late = max(((t - pts, round((pts - t0) / S, 2)) for o in range(3)
+                for t, pts, _ms, _v in res["outs"][o] if lo <= pts < end), default=(None, None))
+    ahead = max((pts - t for t, pts in res["in1"] if pts < end), default=None)
+    return moves, links, missing, late, ahead
+
+
+print("\n--- audiomixer: (N1) the N-1 matrix, one input's stamps 8 s on with the demux's GAP: no loss ---")
+res = _n1_jump(8 * S)
+moves, links, missing, late, ahead = _n1_report(res, 2000)
+pr = res["props"]["inmix1_aw"]
+check(f"jump on: its fan-in never ran ahead of house time, a block at most ({in_ms(ahead)} ms; MR-045 "
+      f"5011 ms), its queue never full (full-count {pr['full-count']})",
+      ahead is not None and ahead <= 10 * MS + 5 * MS and pr["full-count"] == 0)
+check(f"jump on: re-anchored once at its input sum, back by the jump less the half second it took "
+      f"to tell ({[in_ms(m) for m in moves]} ms), nothing stale ({in_ms(pr['stale-time'])} ms)",
+      len(moves) == 1 and -8 * S < moves[0] <= -6500 * MS and pr["anchor"] == moves[0]
+      and pr["stale-time"] == 0)
+check(f"jump on: no mix's link re-anchored or absent ({links}); the input out of its mixes no longer "
+      f"than that half second ({missing} ms); every mix on time (latest {in_ms(late[0])} ms, content "
+      f"{late[1]} s)",
+      not links and all(v < 1000 + SLACK / MS for v in missing.values()) and late[0] is not None
+      and late[0] < 100 * MS + SLACK)
+
+print("\n--- audiomixer: (N2) the N-1 matrix, an input re-anchored 10 s late back on time: cleared ---")
+# The offset removed: its stamps snap 10 s on, the demux's GAP first; its anchor clears. The half
+# second its group takes to tell is behind the gaps (the clear's catch-up), and nothing more.
+res = _n1_jump(10 * S, late=10 * S)
+moves, links, missing, late, ahead = _n1_report(res, 2000)
+pr = res["props"]["inmix1_aw"]
+check(f"back on time: re-anchored late, then cleared ({[in_ms(m) for m in moves]} ms); only the "
+      f"clear's catch-up stale ({in_ms(pr['stale-time'])} ms, MR-045 9900), never ahead "
+      f"({in_ms(ahead)} ms)", len(moves) == 2 and 9 * S <= moves[0] <= 10 * S and moves[1] == 0
+      and pr["anchor"] == 0 and pr["stale-time"] < 600 * MS + SLACK
+      and ahead is not None and ahead <= 15 * MS)
+check(f"back on time: no mix's link re-anchored or absent ({links}); the input out of its mixes for "
+      f"that catch-up at most ({missing} ms); every mix on time (latest {in_ms(late[0])} ms, content "
+      f"{late[1]} s)",
+      not links and all(v < 1000 + SLACK / MS for v in missing.values()) and late[0] is not None
+      and late[0] < 100 * MS + SLACK)
+
+print("\n--- audiomixer: (N3) the same at 25 s late (MR-034's return): the loss stays the catch-up ---")
+res = _n1_jump(25 * S, late=25 * S)
+moves, links, missing, late, ahead = _n1_report(res, 2000)
+pr = res["props"]["inmix1_aw"]
+check(f"25 s back on time: re-anchored, cleared ({[in_ms(m) for m in moves]} ms), stale "
+      f"{in_ms(pr['stale-time'])} ms (MR-045: the anchor's 24.9 s), out of its mixes {missing} ms, "
+      f"no link moved or absent ({links}), every mix on time (latest {in_ms(late[0])} ms, content "
+      f"{late[1]} s)",
+      len(moves) == 2 and moves[1] == 0 and pr["stale-time"] < 600 * MS + SLACK and not links
+      and all(v < 1000 + SLACK / MS for v in missing.values()) and late[0] is not None
+      and late[0] < 100 * MS + SLACK)
+
+print("\n--- mpegtsmux: (N4) a move keeps the prefix it queued at its own PTS: only the suffix moves ---")
+# Input 1 1.5 s late holds 1.5 s of input 0 queued when input 0's stamps jump 6 s back: what it queued
+# before leaves at its own PTS, under the segment it was placed by; only what came past the ceiling
+# moves, under the new anchor (B-205's suffix rule, B-209). The half second to tell is the catch-up.
+r = Rig("mpegtsmux", [{}, {}])
+
+
+def _jump_back(i, n, at_k, by):
+    def go():
+        for k in range(n):
+            r.sleep_until(r.at(k * 10))
+            r.push(i, k, pts=r.at(k * 10) - (by if k >= at_k else 0))
+    return go
+
+
+r.run({0: [("call", _jump_back(0, 800, 400, 6 * S)), ("eos",)], 1: [("rt", 0, 800, 1500), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None, 8.0)
+moves = _moves(r, 0)
+a = moves[0][0] if moves else 0
+own, _m = _placed(r, 0, range(400), lambda k: r.at(k * 10), 0)
+_o, moved = _placed(r, 0, range(400, 800), lambda k: r.at(k * 10) - 6 * S, a)
+stale = r.prop(0, "stale-buffers")
+gap = out_gap(r, 4000, 7000)
+check(f"jump back under a pace: re-anchored once, by its 6 s ({[in_ms(m) for m, _w in moves]} ms); "
+      f"all 400 it sent before, the 1.5 s queued then included, at their own PTS ({len(own)})",
+      len(moves) == 1 and 6 * S <= a <= 6 * S + SLACK and own == list(range(400)))
+check(f"jump back under a pace: what came after the move written moved by its anchor ({len(moved)}), "
+      f"the half second it took to tell behind the gaps ({stale} stale), nothing else lost; the "
+      f"other input's all at their PTS; the mux never waits on that hole: gapped until the moved "
+      f"content goes out (longest wait {in_ms(gap)} ms, content 4-7 s); EOS, no error",
+      moved == list(range(800 - len(moved), 800)) and len(moved) + stale == 400 and stale <= 80
+      and r.pes_ok(1, range(800)) and gap is not None and gap <= 300 * MS and eos and not r.errors)
+r.stop()
+
+print("\n--- audiomixer: (N4b) a jump on under a pace, the demux's GAP first: nothing missing ---")
+# The same pace, input 0 8 s on with the GAP over the hole: its group tells the jump while its prefix
+# still plays, the content after it moves back to right after that prefix, and the mix never misses
+# it: the GAP is no queued time (no full queue to hold it up), and the prefix keeps its own anchor.
+r = Rig("audiomixer", [{}, {}])
+
+
+def _jump_on(i, n, at_k, by):
+    def go():
+        for k in range(n):
+            r.sleep_until(r.at(k * 10) - LEAD)
+            if k == at_k:
+                r.srcs[i].send_event(Gst.Event.new_gap(r.at(at_k * 10), by))
+            r.push(i, k, pts=r.at(k * 10) + (by if k >= at_k else 0))
+    return go
+
+
+r.run({0: [("call", _jump_on(0, 800, 400, 8 * S)), ("eos",)], 1: [("rt", 0, 800, 1500), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None, 8.0)
+moves = _moves(r, 0)
+lv = r.levels(8000)
+check(f"jump on under a pace: re-anchored once, back by the jump to the ms "
+      f"({[in_ms(m) for m, _w in moves]} ms); none stale ({r.prop(0, 'stale-buffers')}), its queue "
+      f"never full ({r.prop(0, 'full-count')})",
+      len(moves) == 1 and abs(moves[0][0] + 8 * S) <= MS and r.prop(0, "stale-buffers") == 0
+      and r.prop(0, "full-count") == 0)
+check(f"jump on under a pace: both inputs in every block of the 8 s mix (got {lv}); the mixer's "
+      f"longest wait {in_ms(out_gap(r, 3000, 7000))} ms; EOS, no error",
+      lv == [(0, 8000, VAL[0] + VAL[1])] and out_gap(r, 3000, 7000) <= 20 * MS + SLACK
+      and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (B1e) 157 s behind, a 3 s GAP its first item: held at the start as data is ---")
+# A route that starts inside a reported hole: the start hold's 2 s counts from the GAP's arrival, not
+# from its start plus a lateness read off its end (B-209), so the GAP waits for the placement too.
+r = Rig("mpegtsmux", [{}, {}])
+
+
+def _behind_after_gap(i, n, late, hole):
+    def go():
+        for k in range(n):
+            r.sleep_until(r.at(k * 10))
+            if k == 0:
+                r.srcs[i].send_event(Gst.Event.new_gap(r.at(0) - late - hole, hole))
+            r.push(i, k, pts=r.at(k * 10) - late)
+    return go
+
+
+r.run({0: [("rt", 0, 300, 0), ("eos",)],
+       1: [("call", _behind_after_gap(1, 300, 157 * S, 3 * S)), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+moves = _moves(r, 1)
+a = moves[0][0] if moves else 0
+own, moved = _placed(r, 1, range(300), lambda k: r.at(k * 10) - 157 * S, a)
+check(f"a GAP first, 157 s behind: one `reanchored` message ({[in_ms(m) for m, _w in moves]} ms); all "
+      f"300 of its buffers moved by it ({len(moved)}), none at its own time ({len(own)}), none stale "
+      f"({r.prop(1, 'stale-buffers')}); the other's all written; EOS, no error",
+      len(moves) == 1 and 0 <= a - 157 * S <= SLACK and moved == list(range(300)) and not own
+      and r.prop(1, "stale-buffers") == 0 and r.pes_ok(0, range(300)) and eos and not r.errors)
+r.stop()
+
+print("\n--- mpegtsmux: (8c) sparse, 20 s behind: re-anchored, no cue it placed reads behind the gaps ---")
+# Its cues before the move are behind the gaps, forwarded at their own PTS with a message each; the
+# cue that moves it is judged after the move (B-209), as data is, so it reads in time.
+r = Rig("mpegtsmux", [{}, {"caps": None, "chain": f"capsfilter caps={KLV}", "props": {"sparse": True}}])
+
+
+def _cue(k):
+    return b"\x06\x0e\x2b\x34" + k.to_bytes(2, "big")
+
+
+def _cues_behind(i, n, late):
+    def go():
+        r.srcs[i].set_property("caps", Gst.Caps.from_string(KLV))
+        for k in range(0, n, 10):   # a cue every 100 ms
+            r.sleep_until(r.at(k * 10))
+            r.push(i, k, data=_cue(k), pts=r.at(k * 10) - late)
+    return go
+
+
+r.run({0: [("rt", 0, 400, 0), ("eos",)], 1: [("call", _cues_behind(1, 400, 20 * S)), ("eos",)]})
+eos = r.wait(lambda: r.eos_at is not None)
+moves = _moves(r, 1)
+a = moves[0][0] if moves else 0
+with r.lock:
+    late = [f for _t, src, f in r.msgs if src == "aw1" and f["reason"] == "late-cue"]
+got = {d: t for t, d in r.pes().get(PID0 + 1, [])}
+own = [k for k in range(0, 400, 10) if got.get(_cue(k)) == pts90(r.at(k * 10) - 20 * S)]
+moved = [k for k in range(0, 400, 10) if got.get(_cue(k)) == pts90(r.at(k * 10) - 20 * S + a)]
+check(f"sparse 20 s behind: one `reanchored` message ({[in_ms(m) for m, _w in moves]} ms); each cue "
+      f"before it behind the gaps by about 20 s ({[round(f['cue-behind'] / S, 1) for f in late]} s), "
+      f"none from the move on", len(moves) == 1 and 0 <= a - 20 * S <= SLACK and late
+      and len(late) == len(own) and all(f["cue-behind"] > 15 * S for f in late))
+check(f"sparse 20 s behind: every cue written, those before the move at their own PTS ({len(own)}), "
+      f"the rest moved by its anchor ({len(moved)}); the other's all written; EOS, no error",
+      own == list(range(0, 10 * len(own), 10)) and len(own) + len(moved) == 40
+      and r.pes_ok(0, range(400)) and eos and not r.errors)
+r.stop()
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILURE(S) in gst_mralignwatch_element_test.py")
