@@ -27,9 +27,10 @@ Demux mode (the default, WI-P3-2; register B-123), each case numbered as p3-2's 
   5. Opus caps equal tsdemux's, decoded sample counts equal through opusdec (clipping meta);
   6. `media=video`: one pad, `pes` counts video only;  7. bus gap markers from the sidecar
      (syn-gap-marker, and the restamp's in bus-ingest-relock-gap and bus-pmt-change);
-  8. a 2 h-off fixture: not-house-time once per PID; 8b. B-149: back from 13.3 h and 20 h
-     away (mrts_cli rebase, the clock moved on) on house time in both modes, a lone stale PES
-     dropped with one not-house-time;  9. the stream collection and the event
+  8. a 2 h-off fixture: not-house-time once per PID, each PID in the report's off-house;
+     8b. B-149: back from 13.3 h and 20 h away (mrts_cli rebase, the clock moved on) on house
+     time in both modes, a lone stale PES dropped with one stale not-house-time, counted in
+     pes-dropped-stale, its PID not off house time;  9. the stream collection and the event
      order per pad equal tsdemux's (the section messages' place excepted, S14);
   10. MPEG-2 ADTS: caps mpegversion=2 before the first buffer;  11. KLV caps and SPARSE;
   12. `media=audio` on a video-only stream: no-stream after 2 s;  13. the select cases above;
@@ -326,7 +327,8 @@ _f = Gst.ElementFactory.find("mrtsdemux")
 check("mrtsdemux is in libgstmrtshouse.so at rank NONE",
       _f is not None and _f.get_rank() == Gst.Rank.NONE and _f.get_plugin_name() == "mrtshouse")
 _el = Gst.ElementFactory.make("mrtsdemux", None)
-_ro = ["pid", "pes", "gaps", "markers", "markers-dropped", "unknown-streams", "generation"]
+_ro = ["pid", "pes", "gaps", "markers", "markers-dropped", "unknown-streams", "generation",
+       "pes-dropped-stale"]
 _rw = ["select", "program-number", "media", "sparse-gap-lag", "max-pes-bytes"]
 check("defaults: no select (demux mode), every media class, a 500 ms sparse lag, 32 MiB PES, "
       "program-number -1, pid and generation -1, counters 0",
@@ -335,7 +337,7 @@ check("defaults: no select (demux mode), every media class, a 500 ms sparse lag,
       and _el.get_property("sparse-gap-lag") == 500 * MS
       and _el.get_property("max-pes-bytes") == 32 << 20
       and _el.get_property("pid") == -1 and _el.get_property("generation") == -1
-      and all(_el.get_property(p) == 0 for p in _ro[1:6]))
+      and all(_el.get_property(p) == 0 for p in _ro[1:6] + _ro[7:]))
 check("the settings apply at a start (MUTABLE_READY); pid, generation and the counters are "
       "read-only",
       all(_el.find_property(p).flags & Gst.PARAM_MUTABLE_READY for p in _rw)
@@ -1275,11 +1277,16 @@ for name in ("syn-adts-mpeg2", "cap-mux-align7-aac-opus"):
     h = replay_fixture(name, running=house_of(data) + 2 * HOUR)
     nh = h.messages("not-house-time")
     pids = sorted(p["pid"] for ln in demux_lines(name) if "plan" in ln for p in ln["plan"]["pads"])
-    check(f"{name}: one not-house-time per PID, 2 h behind "
+    check(f"{name}: one not-house-time per PID, 2 h behind, none stale "
           f"({[(m['pid'], m['offset-ms']) for m in nh]})",
           sorted(m["pid"] for m in nh) == pids
-          and all(abs(m["offset-ms"] + 2 * 3600_000) < 60_000 for m in nh)
+          and all(abs(m["offset-ms"] + 2 * 3600_000) < 60_000 and m.get("stale") is False for m in nh)
           and len(h.pushes(h.pads()[0])) > 0)
+    last = h.messages("interval")[-1:]
+    check(f"{name}: the EOS report lists every PID off house time, no PES dropped as stale "
+          f"({[(m.get('off-house'), m.get('pes-dropped-stale')) for m in last]})",
+          len(last) == 1 and sorted(int(p) for p in last[0].get("off-house", "").split(",") if p) == pids
+          and last[0].get("pes-dropped-stale") == 0)
     h.stop()
 
 # --- 8b. B-149: back from an outage on house time; a lone stale PES dropped ------------------
@@ -1382,6 +1389,16 @@ def ahead_437(nh):
             and 4.3 * HOUR // MS < nh[0]["offset-ms"] < 4.45 * HOUR // MS)
 
 
+def stale_report(hh):
+    """The stale message, the EOS report's off-house PIDs and stale count, the property."""
+    hh.eos()
+    last = hh.messages("interval")[-1:]
+    prop = hh.el.find_property("pes-dropped-stale")
+    return ([m.get("stale") for m in hh.messages("not-house-time")],
+            [(m.get("off-house"), m.get("pes-dropped-stale")) for m in last],
+            hh.el.get_property("pes-dropped-stale") if prop else None)
+
+
 h = Harness(running=DAY30 - 500 * MS)
 h.chunks(_st.data(), 1316)
 _sb, _nh = h.bufs(), h.messages("not-house-time")
@@ -1389,6 +1406,9 @@ check(f"select mode: a lone stale PES 22.14 h old dropped, the next buffer DISCO
       f"not-house-time about 4.37 h ahead ({[(m['pid'], m['offset-ms']) for m in _nh]})",
       [x[1] for x in _sb] == _want and is_discont(_sb[50]) and not is_discont(_sb[51])
       and ahead_437(_nh))
+_rep = stale_report(h)
+check(f"select mode: that not-house-time is stale, the EOS report counts one PES dropped as stale and "
+      f"lists no PID off house time, pes-dropped-stale 1 ({_rep})", _rep == ([True], [("", 1)], 1))
 h.stop()
 h = DemuxHarness(running=DAY30 - 500 * MS)
 h.chunks(_st.data(), 1316)
@@ -1396,6 +1416,8 @@ _pd, _nh = [g[3][0] for g in h.pushes("audio_0_0041")], h.messages("not-house-ti
 check(f"demux mode: the same, on audio_0_0041 ({[(m['pid'], m['offset-ms']) for m in _nh]})",
       [x[0] for x in _pd] == _want and bool(_pd[50][2] & DISCONT) and not _pd[51][2] & DISCONT
       and ahead_437(_nh))
+_rep = stale_report(h)
+check(f"demux mode: the same stale message, report and count ({_rep})", _rep == ([True], [("", 1)], 1))
 h.stop()
 
 # --- 9. the stream collection and the event order, as tsdemux --------------------------------

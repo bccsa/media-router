@@ -34,7 +34,7 @@ export type OutputPlacement =
  * the last device channel it lands on, and not the device's full width: on an
  * X32 a mono output on channel 3 is a 3-channel stream, not a 48-channel one
  * (each pulse stream costs pipewire-pulse two scratch buffers per channel,
- * measured 10.9.16.50 2026-09-15). Unlike the capture side this stays on
+ * measured on ZA-SCC-AES50 2026-09-15). Unlike the capture side this stays on
  * WirePlumber's auto-link: pipewire-pulse never attaches a sink to a stream
  * with `node.autoconnect=false`, and pulsesink then cannot reach PLAYING.
  *

@@ -126,7 +126,7 @@ the one device port linked to both stream inputs; a range past the device leaves
 the extra inputs unlinked (silence). The output's DEFAULT range (≤ 2 from
 channel 1) still keeps the legacy positioned stream, byte-identical.
 
-**Why.** Measured on 10.9.16.50 (ZA-SCC-AES50, X32 via KT-USB 48 in / 48 out,
+**Why.** Measured on ZA-SCC-AES50 (X32 via KT-USB 48 in / 48 out,
 PipeWire 1.6.3, 2026-09-15): nine stereo inputs each captured 32 channels, so
 the daemon carried 288 capture links (+ 97 for three 32-wide mono outputs); the
 daemon's client-node bookkeeping cost ~2 MB per linked port (674 kB `struct mix`

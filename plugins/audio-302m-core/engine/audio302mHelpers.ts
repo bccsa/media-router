@@ -308,7 +308,7 @@ export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchO
  *   (audio-output-302m).
  * - `start-time-selection=first`: the output starts at the first input's running
  *   time. The default `zero` starts at running time 0, BOOT under base_time=0, and
- *   the mixer would first emit the box's uptime as silence (10.9.16.111,
+ *   the mixer would first emit the box's uptime as silence (ZA-SCC-FRA01,
  *   2026-09-08: 13 min of dead Audio Out after a restart). Non-live, the
  *   aggregator takes the earliest first buffer of all its pads (WI-P2-6).
  *

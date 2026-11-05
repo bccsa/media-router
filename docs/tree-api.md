@@ -41,8 +41,8 @@ running profile's list as JSON (ADR-0026).
 
 ```js
 import { io } from 'socket.io-client';
-const socket = io('http://10.9.16.103:8080', { auth: { proto: 1 }, transports: ['websocket'] });
-// a router: io('http://10.9.16.103:8081', { path: '/tree', auth: { proto: 1 } })
+const socket = io('http://<box>:8080', { auth: { proto: 1 }, transports: ['websocket'] });
+// a router: io('http://<box>:8081', { path: '/tree', auth: { proto: 1 } })
 ```
 
 A client on another version is refused before it connects. It receives a
@@ -589,7 +589,7 @@ and can't be written. Status descriptors come from the manifest's
 ```js
 import { io } from 'socket.io-client';
 
-const s = io('http://10.9.16.103:8080', { auth: { proto: 1 }, transports: ['websocket'] });
+const s = io('http://<box>:8080', { auth: { proto: 1 }, transports: ['websocket'] });
 const base = '/engines/local/modules/audio-mixer-n1out03';
 let writeId = 0;
 
@@ -612,7 +612,7 @@ function setVolume(v) {
 **The same, straight from the router** (keeps working without a manager):
 
 ```js
-const r = io('http://10.9.16.103:8081', { path: '/tree', auth: { proto: 1 }, transports: ['websocket'] });
+const r = io('http://<box>:8081', { path: '/tree', auth: { proto: 1 }, transports: ['websocket'] });
 // paths drop the /engines/<id> prefix: /modules/audio-mixer-n1out03/settings/volume, /meta/modules/…
 ```
 
@@ -627,11 +627,11 @@ repo or an installed media-router). It talks to `http://127.0.0.1:8080` unless
 `--url` says otherwise; add `--path /tree` for a router:
 
 ```
-node tools/tree-cli/mr_tree.js --url http://10.9.16.103:8080 get /engines/+/info
+node tools/tree-cli/mr_tree.js --url http://<box>:8080 get /engines/+/info
 node tools/tree-cli/mr_tree.js sub /engines/local/modules/+/vu --secs 10
 node tools/tree-cli/mr_tree.js write /engines/local/modules/m1/settings/volume 90
 node tools/tree-cli/mr_tree.js call /engines/local/modules/m1 restart
-node tools/tree-cli/mr_tree.js --url http://10.9.16.103:8081 --path /tree get /info
+node tools/tree-cli/mr_tree.js --url http://<box>:8081 --path /tree get /info
 ```
 
 **Inside the manager UI:**

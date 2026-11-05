@@ -21,7 +21,7 @@ import { TimelineSettleRestart } from './timelineSettleRestart.js';
  *
  * A live GStreamer sink renders at `running-time + ts-offset + latency`, where
  * `latency` is the pipeline's min latency from the LATENCY query — for an audio
- * sink essentially its ring. Measured on the 10.9.16.103 USB DAC (PipeWire 1.6,
+ * sink essentially its ring. Measured on the Pi 5 test box's USB DAC (PipeWire 1.6,
  * GStreamer 1.28): 151.3 ms at a 200 ms ring, 101.3 ms at 100 ms, 71.3 ms at
  * 50 ms. The video leg's `waylandsink` declares ~20 ms, so a leg that ignores
  * this presents that much behind the picture on the SAME D — which is what
@@ -53,7 +53,7 @@ const SINK_DECLARED_LATENCY_MS = 100;
  * NEVER NEGATIVE: a D smaller than the ring clamps to 0. Audio cannot be
  * presented before it arrives (`max-lateness=-1` then plays it on arrival), and
  * the backlog shedder reads this very `ts-offset` as the leg's budget, so a
- * negative value makes every buffer read as retained backlog — field, .103,
+ * negative value makes every buffer read as retained backlog — field, the Pi 5 test box,
  * 2026-09-03: a −1700 ms sink offset had the shedder drop ~10 s of audio
  * chasing a phantom 1943 ms backlog.
  *

@@ -2,7 +2,7 @@
 // Makes its own demo dashboards and deletes them after. Crops the manager's header bar (it shows
 // the box's address and build) and crops dialogs to the dialog.
 //
-//   MR_HOST=10.9.16.103 CHROMIUM=/usr/lib/chromium/chromium node tools/manual-shots/dashboards.js
+//   MR_HOST=<box address> CHROMIUM=/usr/lib/chromium/chromium node tools/manual-shots/dashboards.js
 //
 // Needs `puppeteer-core` (npm i puppeteer-core in this folder) and a Chromium.
 'use strict';

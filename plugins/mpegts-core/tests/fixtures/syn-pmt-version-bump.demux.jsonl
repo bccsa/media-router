@@ -583,4 +583,4 @@
 {"unit":{"pad":"video_2_0100","pts":1007920000000,"dts":1007920000000,"dur":null,"len":1326,"crc32":"3ec84016","discont":false}}
 {"unit":{"pad":"audio_2_0101","pts":1007978666667,"dts":1007978666667,"dur":null,"len":362,"crc32":"5f8268fb","discont":false}}
 {"unit":{"pad":"video_2_0100","pts":1007960000000,"dts":1007960000000,"dur":null,"len":3000,"crc32":"4e9d097d","discont":false}}
-{"counters":{"pes":575,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":2}}
+{"counters":{"pes":575,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"pesDroppedStale":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":2}}

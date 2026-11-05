@@ -43,6 +43,7 @@ enum {
     PROP_MARKERS_DROPPED,
     PROP_UNKNOWN_STREAMS,
     PROP_GENERATION,
+    PROP_PES_DROPPED_STALE,
 };
 
 /* The `mrtsdemux` message's cadence, in running time. */
@@ -103,7 +104,7 @@ struct _GstMrtsDemux {
 
     /* Read-only properties: written by the streaming thread, read from any. */
     std::atomic<gint> pid, generation;
-    std::atomic<guint64> pes, gaps, markers, markers_dropped, unknown_streams;
+    std::atomic<guint64> pes, gaps, markers, markers_dropped, unknown_streams, pes_dropped_stale;
     MrtsHouseCommon common;
 };
 
@@ -203,13 +204,19 @@ static void post_not_house_time(GstMrtsDemux* self, const DemuxEvent& e) {
                            "time; its producer writes no house time", e.pid, (gint64)e.offset_ms);
     GstStructure* s = demux_message(self, "not-house-time");
     gst_structure_set(s, "pid", G_TYPE_INT, e.pid, "offset-ms", G_TYPE_INT64, (gint64)e.offset_ms,
-                      NULL);
+                      "stale", G_TYPE_BOOLEAN, (gboolean)e.stale, NULL);
     demux_post(self, s);
 }
 
 static std::string joined(const std::vector<std::string>& names) {
     std::string s;
     for (const std::string& n : names) s += (s.empty() ? "" : ",") + n;
+    return s;
+}
+
+static std::string joined(const std::vector<int>& pids) {
+    std::string s;
+    for (int p : pids) s += (s.empty() ? "" : ",") + std::to_string(p);
     return s;
 }
 
@@ -224,6 +231,7 @@ static void demux_report(GstMrtsDemux* self, gboolean have_now, gint64 now, gboo
     self->markers.store(c.markers, std::memory_order_relaxed);
     self->markers_dropped.store(c.markers_dropped, std::memory_order_relaxed);
     self->unknown_streams.store(c.unknown_streams, std::memory_order_relaxed);
+    self->pes_dropped_stale.store(c.pes_dropped_stale, std::memory_order_relaxed);
     MrtsHouseCounters k;   // no header rewrite here: header-spans stays 0
     k.desync_bytes = c.desync_bytes;
     k.cc_lost = c.cc_lost;
@@ -243,17 +251,21 @@ static void demux_report(GstMrtsDemux* self, gboolean have_now, gint64 now, gboo
         if (now - self->report_at < REPORT_NS) return;
     }
     if (have_now) self->report_at = now;
+    /* `off-house`: the PIDs whose last placed PES is off house time; the engine clears its
+     * not-house-time warning by it (p3-21). */
     GstStructure* s = demux_message(self, "interval");
     gst_structure_set(s, "pes", G_TYPE_UINT64, (guint64)c.pes, "gaps", G_TYPE_UINT64,
                       (guint64)c.gaps, "cc-lost", G_TYPE_UINT64, (guint64)c.cc_lost, "markers",
                       G_TYPE_UINT64, (guint64)c.markers, "markers-dropped", G_TYPE_UINT64,
                       (guint64)c.markers_dropped, "pes-dropped-cc", G_TYPE_UINT64,
-                      (guint64)c.pes_dropped_cc, "pes-no-pts", G_TYPE_UINT64,
+                      (guint64)c.pes_dropped_cc, "pes-dropped-stale", G_TYPE_UINT64,
+                      (guint64)c.pes_dropped_stale, "pes-no-pts", G_TYPE_UINT64,
                       (guint64)c.pes_no_pts, "desync-bytes", G_TYPE_UINT64,
                       (guint64)c.desync_bytes, "unknown-streams", G_TYPE_UINT64,
                       (guint64)c.unknown_streams, "frame-ns", G_TYPE_INT64,
                       (gint64)self->core->frame_ns(), "generation", G_TYPE_INT, c.generation,
-                      "pads", G_TYPE_STRING, joined(self->core->pads()).c_str(), NULL);
+                      "pads", G_TYPE_STRING, joined(self->core->pads()).c_str(), "off-house",
+                      G_TYPE_STRING, joined(self->core->off_house_pids()).c_str(), NULL);
     demux_post(self, s);
 }
 
@@ -970,6 +982,7 @@ static gboolean demux_start(GstMrtsDemux* self) {
     self->markers.store(0, std::memory_order_relaxed);
     self->markers_dropped.store(0, std::memory_order_relaxed);
     self->unknown_streams.store(0, std::memory_order_relaxed);
+    self->pes_dropped_stale.store(0, std::memory_order_relaxed);
     self->common.reset();
     return TRUE;
 }
@@ -1107,6 +1120,9 @@ static void demux_get_property(GObject* object, guint prop_id, GValue* value, GP
         case PROP_UNKNOWN_STREAMS:
             g_value_set_uint64(value, self->unknown_streams.load(std::memory_order_relaxed));
             break;
+        case PROP_PES_DROPPED_STALE:
+            g_value_set_uint64(value, self->pes_dropped_stale.load(std::memory_order_relaxed));
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -1140,6 +1156,7 @@ static void gst_mrtsdemux_init(GstMrtsDemux* self) {
     new (&self->markers) std::atomic<guint64>(0);
     new (&self->markers_dropped) std::atomic<guint64>(0);
     new (&self->unknown_streams) std::atomic<guint64>(0);
+    new (&self->pes_dropped_stale) std::atomic<guint64>(0);
     self->select = NULL;
     self->program_number = -1;
     self->media = g_strdup(MEDIA_ALL);
@@ -1260,6 +1277,12 @@ static void gst_mrtsdemux_class_init(GstMrtsDemuxClass* klass) {
         g_param_spec_uint64("unknown-streams", "Unknown streams",
                             "Demux mode: streams of `media` without a pad (no caps for their "
                             "type), once per PID per program, since the start (OQ-27).",
+                            0, G_MAXUINT64, 0, ro));
+    g_object_class_install_property(
+        gobject_class, PROP_PES_DROPPED_STALE,
+        g_param_spec_uint64("pes-dropped-stale", "PES dropped as stale",
+                            "PES far off house time on a stream on it, dropped as stale since "
+                            "the start (B-149).",
                             0, G_MAXUINT64, 0, ro));
     /* After our own: the common ids are clear of these (MrtsHouseCommon::PROP_BASE). */
     MrtsHouseCommon::install(gobject_class);

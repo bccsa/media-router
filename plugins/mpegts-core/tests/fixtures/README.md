@@ -46,7 +46,9 @@ adts, opus or klv; `{"unit":{pad,pts,dts,dur,len,crc32,discont}}` per PES, `crc3
 `dur` from a 302M header, else null; `{"gap":{pad,pts,dur,reason}}`, `reason` jump, marker or
 sparse; `{"gone":{gen}}`; `{"unknown":{pid,type,reg,gen}}`, `reg` the registration's four
 characters; `{"nothouse":{pid,offsetMs,stale}}` once per episode off house time, `stale` when that PES
-was dropped (B-149); `{"nostream":{}}`; then the `{"counters":{...}}` line.
+was dropped (B-149); `{"nostream":{}}`; then the `{"counters":{...}}` line, which since p3-21
+also counts `pesDroppedStale` (every expectation regenerated for it: 0 but `syn-source-restart`'s 3,
+nothing else moved).
 
 Reviewed by hand on 2026-10-26 (B-121): every plan's pad names and caps, in order, are stock
 tsdemux 1.28.2's at pad-added on every fixture but one, `syn-mpts-two-programs`, whose AVC to HEVC

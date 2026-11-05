@@ -12,7 +12,7 @@ rollback to python.
 
 ## Why
 
-Measured on a 2 GB Pi 5 (10.9.16.50, 36 audio-matrix runners, 2026-09-16),
+Measured on a 2 GB Pi 5 (ZA-SCC-AES50, 36 audio-matrix runners, 2026-09-16),
 the same launch string run three ways, anonymous memory per process:
 
 | Class | C `gst-launch` | minimal python | python runner | live runner |

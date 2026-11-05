@@ -73,7 +73,7 @@ describe('GstPluginBase backlog-shed logging', () => {
         module.deliver(BACKLOG_SHED_EVENT, { ...recovered, outcome: 'awaiting_keyframe' });
         expect(log.warn.mock.calls[1][1]).toContain('holding for the next keyframe');
         // A late TIMELINE with empty queues: over budget, nothing parked upstream,
-        // so dropping would return nothing (10.9.16.103, 2026-09-08).
+        // so dropping would return nothing (the Pi 5 test box, 2026-09-08).
         module.deliver(BACKLOG_SHED_EVENT, { element: 'vpdec', outcome: 'timeline', budgetMs: 300, excessBeforeMs: 480 });
         expect(log.warn.mock.calls[2][1]).toContain('nothing queued upstream');
         expect(log.warn.mock.calls[2][1]).toContain('nothing shed');

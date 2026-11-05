@@ -401,4 +401,4 @@
 {"unit":{"pad":"audio_0_0101","pts":1007953500000,"dts":1007953500000,"dur":null,"len":1955,"crc32":"417c084e","discont":false}}
 {"unit":{"pad":"audio_0_0101","pts":1007993500000,"dts":1007993500000,"dur":null,"len":1255,"crc32":"2f85353a","discont":false}}
 {"unit":{"pad":"video_0_0100","pts":1007920000000,"dts":1007880000000,"dur":null,"len":2192,"crc32":"d45a119a","discont":false}}
-{"counters":{"pes":400,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}
+{"counters":{"pes":400,"gaps":0,"markers":0,"markersDropped":0,"pesNoPts":0,"desyncBytes":0,"ccLost":0,"pesOversize":0,"pesDroppedCc":0,"pesDroppedStale":0,"psiUnsupported":0,"dtsDiscarded":0,"unknownStreams":0,"generation":0}}

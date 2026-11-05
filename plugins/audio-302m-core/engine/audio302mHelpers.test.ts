@@ -443,7 +443,7 @@ describe('buildAudioMixInput — mixer arm', () => {
     it('anchors the output timeline at the first input (never at running time 0)', () => {
         // Default `zero` + the base_time=0 house clock = the mixer starts at
         // BOOT and races the box's uptime as silence before consuming a sample
-        // (10.9.16.111, 2026-09-08: 13 min of dead Audio Out after a restart).
+        // (ZA-SCC-FRA01, 2026-09-08: 13 min of dead Audio Out after a restart).
         const { fragment } = buildAudioMixInput({ sources: [SRC, SRC2] });
         expect(fragment).toMatch(/^audiomixer name=mixin [^!]*\bstart-time-selection=first\b/);
     });

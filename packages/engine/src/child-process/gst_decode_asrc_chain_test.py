@@ -205,6 +205,8 @@ else:
         _p.set_state(Gst.State.NULL)
         check(f"{_arm}: the real string plays into the device sink without an error ({_errors[:1]}; "
               f"{_sink['renders']} renders)", not _errors and _sink["renders"] > 100)
+        # A house-rate source reads mode device with or without bypass-below-ppm, so only the
+        # vitest snapshot pins aout1's decode term on outasrc (p3-9's carry).
         check(f"{_arm}: outasrc follows the sink it names through the chain: mode {_out.get('mode')}, "
               f"{_out.get('device-pairs')} pairs from its custom-slaving callback",
               _out.get("mode") == "device" and (_out.get("device-pairs") or 0) > 20)

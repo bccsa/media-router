@@ -418,7 +418,7 @@ Corrections to the above, found while building the producer side:
   house time.
 - The gst probe is armed **lazily, per tee, on that tee's first consumer edge**
   (and disarmed on its last) rather than on every `busout_*` tee at start.
-  Measured on the Pi 400 at 10.9.1.42 (2026-08-12): the eager version cost
+  Measured on a Pi 400 (2026-08-12): the eager version cost
   +2984 cgroup ticks/min, of which +2471 was ONE producer whose egress tee had
   no edges at all — an enabled-but-unrouted rist-input, stamping buffers nobody
   read. Lazy arming takes that term to zero (−18 / −10 / −19 ticks/min across
@@ -450,7 +450,7 @@ Corrections to the above, found while building the producer side:
   Superseded by [[0029]] (Phase 2): the probe is deleted; without the plugin an
   egress runs unstamped and the module carries the rule-6 alarm, in both
   runners. `mrtsstamp` 3.0.0 wraps `mrts::IdentityStamp`.
-- Measured on the same Pi 400 (10.9.1.42, 2026-08-12), 7 paired arms, 120 s
+- Measured on the same Pi 400 (2026-08-12), 7 paired arms, 120 s
   settle + 60 s restart-free window each, on the routed producer (srt-input →
   mr-tssplit). Delta is against the mean of the two neighbouring legacy arms,
   then corrected by the same delta on the *unrouted* rist-input, which the lazy
@@ -660,7 +660,7 @@ same fixture asserting the same integers.
 - **Amendment 2026-09-14 (#751): the 10 ppm dead-band is gone; the rate is held
   in ppb.** The floor ("a slope under 10 ppm is noise, under a second a day")
   was the field failure in slow motion: SCC's French route read 2.5 s after
-  ~44 h. Measured on the French master (10.9.16.22, 23 h up), every stamped
+  ~44 h. Measured on the French master (ZA-SCC-FRA-Master01, 23 h up), every stamped
   egress had walked its post-slew margin by 0.2–0.5 s since the servo engaged,
   and the residual slopes all sat at |5–7| ppm — the integrator had stopped
   just under the floor and held that rate for ever, or never engaged at all on
@@ -878,7 +878,7 @@ through (a decode + device ASRC re-anchors its labels once the jump holds,
 B-127). The shedder, the re-anchor and the raise stay until Phase 4 deletes
 them with D.
 
-A fault the contract CREATED, found in the field on a Pi 400 (10.9.1.42) ~16 h
+A fault the contract CREATED, found in the field on a Pi 400 ~16 h
 after Stage 3a shipped: 50 fps decoded (codec IRQ ~100/s), 2.5 fps on the glass
 (`vc4 crtc` IRQ 2.2/s). The picture had decayed over hours with every module
 reporting healthy.
@@ -1147,7 +1147,7 @@ path ([[0008]]) — `audio-transcoder → audio-output-302m`, the fleet's actual
 headphone/monitor leg — was still free-running, and the field showed exactly the
 failure decision 1 exists to remove.
 
-- **Field, 10.9.16.103 (RIST → mr-tssplit → video-player + audio-transcoder →
+- **Field, the Pi 5 test box (RIST → mr-tssplit → video-player + audio-transcoder →
   audio-output-302m).** Measured with a passive second fan-out client on the
   splitter's two edges and the transcoder's 302M edge (20 s, house clock pinned
   the runner's way): video buffers arrive 24 ms after their stamp, audio 40 ms;
@@ -1333,7 +1333,7 @@ OUTPUT segment at running time 0 — which is BOOT — while its live inputs arr
 stamped at the house clock (the box's uptime ahead), so the mixer must emit that
 whole uptime as silence before it reaches a sample it can pass, and until it
 does the input pads hold, the branch queue fills and the leaky bus queue drains
-the feed on the floor. Measured on 10.9.16.111 (2026-09-08): a 938 s gap still
+the feed on the floor. Measured on ZA-SCC-FRA01 (2026-09-08): a 938 s gap still
 silent at +204 s after an engine restart; a producer arm's egress stamps a
 constant −900 s behind house once it caught up. Every 302M aggregation point
 (`pacedMixer`, so the input fan-in and the n1-mixer feature mixers both) now
@@ -1385,7 +1385,7 @@ re-anchor.
   units in two of three incarnations and were left un-anchored (audio ~1.3 s
   ahead), and each transcoder egress re-anchored every ~11 s with −0.10 to
   −0.21 s jumps (the late-level tier chasing a transit that is not an
-  error). On 10.9.1.211 the audio-transcoder's anchor dropped the HLS
+  error). On ZA-SCC-TECH01 the audio-transcoder's anchor dropped the HLS
   player's 2 s delivery lead, so the 302M leg played on arrival while the
   video leg paced; a private-stream (s302m, stream_id 0xBD) egress with the
   conditioner off never learned its PCR PID and was stamped at arrival

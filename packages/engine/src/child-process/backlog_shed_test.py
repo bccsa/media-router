@@ -90,7 +90,7 @@ verdicts, _ = feed(p, 250.0, 0.0, 5_000)
 check("lateness exactly at tolerance never sheds", verdicts == [])
 
 # --- nothing queued: a late timeline is refused, not shed ---------------------
-# The 10.9.16.103 case (2026-09-08): every buffer ~500 ms over budget for
+# The Pi 5 test box's case (2026-09-08): every buffer ~500 ms over budget for
 # seconds, queues empty. Dropping cannot return anything, so the policy must
 # say "timeline" once, restart its hold, and never offer a shed while the
 # queues stay empty — and offer one the moment they hold a backlog.

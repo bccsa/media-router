@@ -2,9 +2,9 @@
  * The subtitle carrier: one WebVTT cue block wrapped in a SMPTE 336M-style
  * KLV triplet, carried as a `meta/x-klv,parsed=true` PES in MPEG-TS
  * (stream_type 0x06 + KLVA registration — what `mpegtsmux` writes and
- * `tsdemux` exposes natively on gst 1.28). See
+ * `mrtsdemux` exposes natively, as `tsdemux` 1.28 does). See
  * docs/subtitles-teletext-vtt-plan.md, decision S1, for why this carrier and
- * not a private "VTT " PES (tsdemux creates no pad for it) or DVB-sub.
+ * not a private "VTT " PES (neither demux creates a pad for it) or DVB-sub.
  *
  * Wire layout of the KLV value (UTF-8):
  *

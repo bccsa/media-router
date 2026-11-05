@@ -60,7 +60,7 @@ export const SINK_DECLARED_LATENCY_MS = 100;
  * nothing: the buffers are simply "late" and `max-lateness=-1` plays them on
  * arrival. And the backlog shedder reads this very `ts-offset` as the leg's
  * budget (`lateness = now − rt − ts_offset`), so a negative value makes every
- * buffer read as retained backlog — field, 10.9.16.103, 2026-09-03 11:28:53:
+ * buffer read as retained backlog — field, the Pi 5 test box, 2026-09-03 11:28:53:
  * the trim slider at −2000 ms put the sink at −1700 ms, the shedder saw a
  * "1943 ms backlog" and dropped 458 buffers (~10 s of audio) chasing it.
  *

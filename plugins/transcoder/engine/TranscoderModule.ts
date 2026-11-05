@@ -6,8 +6,7 @@ import {
     SPEED_PRESETS,
     ThroughputPoller,
     bitrateBadge,
-    latInName,
-    shortHash,
+    busSrcTapName,
     type AlignerInputRef,
     type AlignerWatchRef,
     type CodecId,
@@ -69,13 +68,13 @@ export class TranscoderModule extends GstPluginBase {
         return renderDemuxInput(element, { demux: DEMUX_NAME, port: 'mpegts-in' });
     }
 
-    /** The burn-in's watches join their inputs' rows (the tap `buildTsUdpInput` gives an edge's
-     *  source), or name nothing while that edge is gone; other labels: the engine's rule. */
+    /** The burn-in's watches join their inputs' rows (`busSrcTapName`, an edge's bus source's
+     *  tap), or name nothing while that edge is gone; other labels: the engine's rule. */
     protected alignerInputOf(watch: AlignerWatchRef): AlignerInputRef | undefined {
         const port = BURNIN_INPUT_PORTS[watch.input];
         if (watch.aligner !== BURNIN_ALIGNER || !port) return undefined;
         const s = this.services?.mediaRouter?.getModuleBusSource(this.services.instanceId, port);
-        return s ? { tap: latInName(`${s.port}_${shortHash(s.socketPath)}`) } : null;
+        return s ? { tap: busSrcTapName({ port: s.port, socketPath: s.socketPath }) } : null;
     }
 
     /** Bus-egress tee names captured at build time (`busout_<port>`), one per rendition. */

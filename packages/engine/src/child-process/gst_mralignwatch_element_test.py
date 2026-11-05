@@ -36,7 +36,17 @@ absence fades out, (F2) a rejoin fades in from the horizon, (F3) a forwarded GAP
 (F4) a joiner's entry, (F5) the fade before a forwarded EOS, (F7) a hole in the data, (F8) the
 formats and channel counts, (F9) a fade-in over short buffers, (F10) a tail under 1 ms, (F11) no
 fade after a discard with sound before; (F6) nothing fades toward mpegtsmux.
-Skips (exit 0) without GStreamer, the elements or the built plugin."""
+Skips (exit 0) without GStreamer, the elements or the built plugin.
+
+Known load-sensitive checks (real-time feeds against wall-clock bounds; on the 4-core dev Pi each
+passes alone at load under 2 and has failed only with other suites running; no bound changed):
+  - (3) rejoin, "the second's backlog is stale" (80 <= stale <= 101): 102 buffers in 15 recorded
+    runs, 105 and 117 once each, 101 in 287 (the dev Pi's logs, counted 2026-11-05);
+  - (2g) "hole: the block after it out at the pace" 124.3 ms over its 5 ms, (2j) "forward jump ...
+    re-anchored once" 0.0 ms, (11b) "dark joiner: the pace untouched" 6.0 ms against 5 ms: one run
+    at c66bd957 whose load peaked at 4.6, 289/0 alone after;
+  - (N3) "25 s back on time": the latest mix 458.7 ms against 180 ms (100 ms + SLACK) in Phase 3's
+    m8 gate, its load 0.42 -> 3.35 over the suite's last 1.5 min; 20.8 ms alone."""
 import array
 import math
 import os

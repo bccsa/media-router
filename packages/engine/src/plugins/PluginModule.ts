@@ -295,7 +295,7 @@ export interface PipelineDescription {
      *  runner): the outage it was down for, never let into its mix. See `CatchUpConfig`. */
     catchUp?: CatchUpConfig;
     /**
-     * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
+     * Rules for linking sometimes-pads (mrtsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a
      * named element in the pipeline and instantiates one fresh branch per
      * matched pad — capped by the length of `branches`. See `PadLinkRule`.
@@ -303,10 +303,10 @@ export interface PipelineDescription {
     linkOnPadAdded?: PadLinkRule[];
     /**
      * When true, the runner attaches a `queue ! appsink` to every `meta/x-klv`
-     * pad a `tsdemux` exposes, parses the payload off it, and reports the raw
+     * pad the demux exposes, parses the payload off it, and reports the raw
      * bytes on the `stream:names` plugin-event channel (mpegts demuxer in-band
      * name channel, Phase 2). The mandatory `queue` is the Phase 0 finding — an
-     * appsink straight on a tsdemux pad back-pressures the streaming loop and
+     * appsink straight on a demux pad back-pressures the streaming loop and
      * stalls the whole TS. Off by default; only the demuxer sets it. Per plan
      * D6 the reader never affects routing or pipeline health.
      */
@@ -673,8 +673,8 @@ export interface PadLinkRule {
     /**
      * Optional — `'none'` skips the codec parser the runner injects in front of
      * each branch and, for H.264/H.265 pads, declares `alignment=au` instead
-     * (tsdemux already emits one whole PES = one access unit per buffer on this
-     * bus, ADR-0011). Saves one frame of latency per branch — the parser can
+     * (the demux, `mrtsdemux`, emits one whole PES = one access unit per buffer
+     * on this bus, ADR-0011). Saves one frame of latency per branch — the parser can
      * only close an AU when the next one starts — at the cost of the parser's
      * SPS/PPS re-emission before every IDR. Opt-in per module; the source must
      * repeat its parameter sets in-band. Default `'auto'`.

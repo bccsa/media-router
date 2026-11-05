@@ -228,8 +228,9 @@ elements" below do not start.
   not demuxed". An input that carries none of the streams the module takes
   says so too ("Input <name> carries no 302M audio stream" on the 302M
   modules). None of these drops anything but a stale PES (below); each goes
-  at the input's next program change or a restart, and the last also once
-  the stream is there. 302M inputs now give the house-time warning too.
+  at the input's next program change or a restart, the house-time warning
+  also once the input is back on house time, and the last once the stream
+  is there. 302M inputs now give the house-time warning too.
 - **An input back from an outage of any length plays at its own time.**
   Whatever an input sends on house time after an outage or a source
   restart lands on the box's timeline at its own time, with a gap over the
@@ -238,9 +239,11 @@ elements" below do not start.
 - **A stale packet far off house time is dropped.** One PES far off house
   time among an input's current ones, such as a copy from before an outage
   (the gate's 'vMix 720 -> 2001' input sent one on 2 November), is dropped
-  with the warning above instead of moving that input's timing 4 h 22 min
-  ahead. A stream that moves off house time as a whole loses its first
-  packet there and plays on, with the warning.
+  instead of moving that input's timing 4 h 22 min ahead; the module says
+  "Input <name>: a PES <n> s off house time was dropped as stale" for 10 s.
+  A stream that moves off house time as a whole loses its first packet
+  there (on video usually the key frame after its source restarted, so up
+  to a group of pictures) and plays on, with the house-time warning.
 
 **Audio follows its clocks (Phase 3)**
 

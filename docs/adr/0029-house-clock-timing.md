@@ -123,7 +123,8 @@ current model is frozen, §13.1 Q2). Phase 0 built the measuring instrument.
 `CLOCK_REALTIME` whenever the ptp4l port is not UNCALIBRATED or SLAVE, the
 only states in which linuxptp writes it, and the box announces traceable NTP
 time only while chrony is synchronised. While a better grandmaster wins,
-linuxptp steers the box as before. Slave-only boxes are unchanged.
+linuxptp steers the box as before. Slave-only boxes were unchanged until
+MR-048b (below): one with no master hands its clock to NTP.
 
 **Why.** Nothing disciplined a grandmaster: GATE01 ran 0.2–0.3 s off
 UTC after 9.7 days, undisciplined since boot (design §10.1), and the domain
@@ -151,8 +152,12 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   frequency once (`sys_generic.c` `SYS_Generic_Finalise`) and never zeroes
   TAI. The table, per state and mode, is the plan's WI-P0-2b.
 - **`mr-ptp-owner` hands the clock over by port state.**
-  `media-router-ptp-owner.service` (`mr-ptp-owner.py`, WantedBy and BindsTo
-  `media-router-ptp4l.service`) stops chronyd (`systemctl stop --no-block`)
+  `media-router-ptp-owner.service` (`mr-ptp-owner.py`, started with
+  `media-router-ptp4l.service` by its `WantedBy=`; since MR-048, Yocto
+  6a26b2aa, `Requisite=` and `StopPropagatedFrom=` it in place of
+  `BindsTo=`, so it runs only while ptp4l does, stops and restarts with it
+  and never starts it; phc2sys is `Requisite=` ptp4l, which `Wants=`
+  phc2sys) stops chronyd (`systemctl stop --no-block`)
   the moment a pushed PORT_DATA_SET says UNCALIBRATED or SLAVE, and starts
   it again once the port has been in another state for max(2 s,
   (announceReceiptTimeout + 1) · 2^logAnnounceInterval): 8 s for AES67, 2 s
@@ -171,8 +176,17 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
 - **An unanswered port state keeps the last decision.** No PORT_DATA_SET
   for 12 s logs a warning and changes nothing: ptp4l is single-threaded, so
   one that answers nothing steers nothing, and revoking would strip a
-  grandmaster of its discipline; if ptp4l died, BindsTo stops the watcher.
-  Engineering choice, open to the owner's veto.
+  grandmaster of its discipline; if ptp4l died, `StopPropagatedFrom=` stops
+  the watcher. Engineering choice, open to the owner's veto.
+- **A slave-only box without a master runs on NTP** (MR-048b, Yocto
+  7347a244, 2026-11-05, the owner's: "when the master comes back, go to ptp
+  again"). With no usable PTP lock for 120 s, at boot or later,
+  `mr-ptp-owner` hands the clock to chrony, and back once a master's lock
+  has held 30 s: each hand-over one ptp4l restart, its marker
+  `/run/media-router-ptp/ntp-fallback` read by the setup script, which
+  grants chronyd the token on the fallback while linuxptp writes no clock.
+  The marker lives in `/run`, so a reboot starts on PTP. The engine's time
+  source reads `chrony` on the fallback and `ptp` after the return (below).
 - **A grandmaster's boot: chrony first, one step, then ptp4l.** The setup
   script (ptp4l's `ExecStartPre`) removes the token and stops chronyd on a
   slave-only box. On a master-capable box it writes the token; if chronyd
@@ -183,7 +197,8 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   Without NTP it logs `WARNING: no NTP sync after 30 s — ptp4l starts
   anyway; the grandmaster announces not traceable until chrony syncs` and
   ptp4l starts. When chronyd already runs (a Device Manager save, a ptp4l
-  restart) there is no wait and no step. ptp4l's `TimeoutStartSec` is 120 s.
+  restart) there is no wait and no step. ptp4l's `TimeoutStartSec` is 120 s
+  (180 s since MR-048, whose setup first waits up to 60 s for the link).
   Engineering decision, open to the owner's veto.
 - **What a grandmaster announces.** `GRANDMASTER_SETTINGS_NP` is SET only
   when it differs from ptp4l's GET, with all 11 values in `pmc_common.c`'s
@@ -462,16 +477,21 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   `chrony` when chronyd is active, else `ptp` when ptp4l is, else `none`
   (`clockSource.ts`). chronyd wins because on a PTP box it runs only while
   it owns the clock: on a master-capable box as grandmaster, where chronyd
-  disciplines the clock ptp4l serves, or during the setup script's boot
-  wait. A revoked chronyd reads `deactivating`, so the owner is already
-  `ptp` while it stops. On `chrony` the poll also reads `chronyc -c
+  disciplines the clock ptp4l serves, during the setup script's boot wait,
+  or on a slave-only box's NTP fallback (MR-048b). A revoked chronyd reads
+  `deactivating`, so the owner is already `ptp` while it stops. On `chrony`
+  the poll also reads `chronyc -c
   tracking`, so a grandmaster shows chrony's reference and error. A step's
   poll can overlap the periodic one; an older answer never overwrites a
   newer one. `TimeSyncSource` (`packages/shared-types/src/timeSync.ts`, no
-  type change) therefore means: `chrony`, also on a PTP grandmaster;
-  `ptp`, linuxptp steers (slave-only boxes, and a master-capable box while
-  it follows a better grandmaster); `none`, neither daemon runs. Each
-  (re-)latch names the source known when its sample arrives.
+  type change) therefore means: `chrony`, also on a PTP grandmaster and on a
+  slave-only box with no master for 2 minutes, until a master's lock has
+  held 30 s (MR-048b); `ptp`, linuxptp steers (slave-only boxes following a
+  master, and a master-capable box while it follows a better grandmaster);
+  `none`, neither daemon runs (the second of a hand-over's restart). The
+  engine re-epochs only when E steps (more than 1 ms), so a fallback at boot
+  or a return more than 1 s off gives one `step`, a change of source alone
+  none. Each (re-)latch names the source known when its sample arrives.
   `mr-clockstate` writes the post-step sample right after the step line,
   before that line's poll answers, so the re-latch of a handover's step can
   still name the previous owner; `/system/timeSync.source` follows within
@@ -637,9 +657,10 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
 - The PTP page is the **Time** page (`/time`; `/ptp` redirects; OQ-9). A
   Clock card shows the owner (`chrony` when chronyd is active, else `ptp`
   when `ptp.env` exists and ptp4l is active, else `none`; on a PTP box
-  chronyd runs only while it owns the clock, as grandmaster or during the
-  setup script's boot wait, and the card then reads "chrony (NTP), served
-  over PTP"), synced, estimated and maximum error, frequency, leap state,
+  chronyd runs only while it owns the clock: as grandmaster or during the
+  setup script's boot wait, the card then reading "chrony (NTP), served
+  over PTP", or on a slave-only box's NTP fallback, MR-048b), synced,
+  estimated and maximum error, frequency, leap state,
   the kernel TAI−UTC in red with "kernel TAI offset not set — CLOCK_TAI
   equals UTC" when 0, chrony's tracking and sources, and the **NTP
   servers** list. The kernel view is `mr-clockstate --once`; synced is
@@ -2678,7 +2699,7 @@ twins, and the input stall watch end to end; the settings `mixLatencyMs`
   gone), `hls-pipe-runner.ts` ("unixfd-fanout sidecar"), and hls-player's
   missing-binary error, which still suggests `pnpm build`.
 
-## Phase 3 (built 2026-10-26 to 2026-11-02, device rounds pending) — the formula demux on every consumer; branch alignment, retime and K recovery deleted
+## Phase 3 (built 2026-10-26 to 2026-11-05; DEV-P3a and the short soak ran, DEV-P3b and V13 pending) — the formula demux on every consumer; branch alignment, retime and K recovery deleted
 
 After Phase 3 every bus consumer reads time from the bytes. Each access unit
 leaves its demux, `mrtsdemux`, at `ceil(unwrap(PES PTS) − 1 h)` on a segment
@@ -2692,14 +2713,18 @@ slaving (§8; OQ-23, C-6, C-7). The burn-in waits for late cues in a pace
 group instead of a fixed hold (OQ-24). The 19 build items (WI-P3-1 to
 WI-P3-18, with WI-P3-1 and WI-P3-3 in two halves and WI-P3-9 and WI-P3-15 as
 one) were built code only, in seven workflows on the dev Pi 5 with GStreamer
-1.28.2 (W4 to W6 in three parallel clones, merged after, with the release
-line's fixes up to v2.0.0.100 carried in); the device rounds DEV-P3a,
-DEV-P3b and DEV-P3c (V1 to V13, plan chapter 7 part 11) are still to run. On
-the boxes only the capture lane (p3cap, the five bus recordings) and the
-Phase 2 baselines (p3base) ran, in DEV4a (2026-10-27). The plan's register
-(chapter 15.4, rows B-120 to B-149) holds the same records with their work
-items; B-120 is the build plan and its 40 corrections of chapter 7 (S1 to
-S40).
+1.28.2 (W4 to W6 in three parallel clones, merged after), then p3-16b's
+shared bus demux (2026-11-03) and W9's B-148 and B-149 (2026-11-05), with
+the release line's fixes up to v2.0.0.101 and c34 (B-212) carried in. On the
+boxes: the capture lane (p3cap, the five bus recordings) and the Phase 2
+baselines (p3base) in DEV4a (2026-10-27); DEV-P3a on the Pi 4 test box
+(2026-11-03: the ASRC bench, V5 to V7, V11), whose V7 faults B-148 fixed;
+and DEV-P3s, the owner's 2 h soak across the bus PTS wrap in place of
+DEV-P3c's 24 h one (2026-11-03, both test boxes: V10 to V12). DEV-P3b, V13
+and V7 again are still to run (Open at the end, below). The plan's register
+(chapter 15.4, rows B-120 to B-149, and B-213 for the phase review's fixes)
+holds the same records with their work items; B-120 is the build plan and
+its 40 corrections of chapter 7 (S1 to S40).
 
 ### The formula demux (WI-P3-1, WI-P3-2; plan part 4.1)
 
@@ -2745,7 +2770,11 @@ S40).
   came back a wrap (95,443.718 s) behind house time and stayed there, and
   one stale PES 22.14 h old (MR-033's copy) landed 4.37 h ahead behind a
   4.4 h GAP; 33 bits cannot tell those apart, so house time is the
-  reference wherever a stream is on it.
+  reference wherever a stream is on it. The cost, open to the owner's veto
+  (B-149): the first PES of a stream on house time that moves more than 60
+  s off it is dropped, the next PES deciding; on a video pad that is
+  usually the IDR after its producer restarted on another clock, so such a
+  restart can lose up to a GOP of decodable video, not one PES.
 - **Two modes, one element** (`gstmrtsdemux.cpp`). **Demux mode** is the
   default (no `select`): tsdemux 1.28.2's four SOMETIMES templates (`video`,
   `audio`, `private`, `subpicture`) with their caps sets, a pad per stream
@@ -2760,7 +2789,8 @@ S40).
   `sparse-gap-lag` (500 ms), `max-pes-bytes` (32 MiB, R9); `select` and
   `media` change only in NULL or READY. Read-only: `pid` (select mode),
   `generation` (−1 before a plan), `pes`, `gaps`, `markers`,
-  `markers-dropped`, `unknown-streams`, and the plugin's `abi` and counters.
+  `markers-dropped`, `unknown-streams`, `pes-dropped-stale` (p3-21), and the
+  plugin's `abi` and counters.
   Chapter 7's `gap-threshold` and `unwrap-reference` were not built (B-122,
   S6), and the strings carry no `latency` or `ignore-pcr`. LATENCY is
   upstream's, SEEKING is answered not seekable, and the pads' flows are
@@ -2838,12 +2868,15 @@ S40).
   `generation`, `pads`); `program` at each plan (`generation`, `pcr-pid`,
   `pads`); `unknown-stream` once per PID per generation for a stream of
   `media` with no row (`pid`, `stream-type`, `registration`);
-  `not-house-time` once per episode in both modes (`pid`, `offset-ms`;
-  B-149): an episode opens at a PES more than 60 s from house now that is a
-  pad's first, stale or another jump, and closes after 10 s of house time
-  with no PES off it (`EPISODE_QUIET_NS`); `no-stream` when a plan has no
-  pad, by select mode's 2 s rule (E16). Both runners forward it unsubscribed
-  as `mrtsdemux:<element>`.
+  `not-house-time` once per episode in both modes (`pid`, `offset-ms`, and
+  `stale` when that PES was dropped; B-149, p3-21): an episode opens at a PES
+  more than 60 s from house now that is a pad's first, stale or another
+  jump, and closes after 10 s of house time with no PES off it
+  (`EPISODE_QUIET_NS`); `no-stream` when a plan has no pad, by select mode's
+  2 s rule (E16). Since p3-21 `interval` also carries `pes-dropped-stale`
+  and `off-house`, the PIDs whose last placed PES is off house time, which
+  the engine's warning follows (below). Both runners forward it
+  unsubscribed as `mrtsdemux:<element>`.
 - **No stand-in**, as in Phase 2: a start description naming `mrtsdemux` is
   refused without `libgstmrtshouse.so`, with the rule-6 alarm, and since
   Phase 3 that is every bus consumer that demuxes (below). The plugin now
@@ -2875,27 +2908,32 @@ S40).
   packets (B-144); 183 checks.
 - **The allowlist**
   (`plugins/mpegts-core/tests/fixtures/demux_parity_allow.json`) has
-  nineteen entries, each one rule of the comparison with its reason in the
+  eighteen entries, each one rule of the comparison with its reason in the
   1.28.2 source, and each used by the run (an unused one fails it):
   `timestamps` (the formula against tsdemux's PCR skew: the point of the
   element), `sections-place` (S14), `pmt-same-version` and
   `pmt-continuation` (tsdemux's section filter), `psi-repeat-cc` and
   `psi-repeat-discont` (it re-posts a PAT or PMT after a CC loss or a
-  DISCONT input), `cc-warning`, `cc-loss-discont`, `cc-loss-next-pes` and
-  `cc-repeat` (continuity: tsdemux warns at each mismatch and loses a PES
-  that starts at it, where `mrtsdemux` counts, flags the next unit DISCONT
-  and keeps that PES, and `CcTracker` drops a repeated counter as the one
-  duplicate ISO 13818-1 allows), `jump-gap`, `sparse-gaps` and `marker-gaps`
+  DISCONT input), `cc-warning`, `cc-loss-discont` and `cc-loss-next-pes`
+  (continuity: tsdemux warns at each mismatch and loses a PES that starts
+  at it, where `mrtsdemux` counts, flags the next unit DISCONT and keeps
+  that PES), `jump-gap`, `sparse-gaps` and `marker-gaps`
   (the gap rules above), `truncated-last-pes`, `tag-memory` (`mrtsdemux`'s
   Opus packets are regions of the PES buffer), `own-messages`, and
   `discont-drain`, `discont-flag` and `discont-pending` (tsdemux's flush at
   a DISCONT input: it pushes each open PES cut, which `mrtsdemux` drops; it
   flags every pad, where a marker flags only its PIDs'; and it drops the
   units it holds for a PCR, which `mrtsdemux` delivers). Its `measuredEqual`
-  list holds seven behaviours that needed no entry (the SEGMENT, tsdemux's
+  list holds eight behaviours that need no entry (the SEGMENT, tsdemux's
   SDT, EIT and TDT messages, buffers before the first PCR, timestamp-driven
-  DISCONTs, a list's pieces, pads outside part 4.2, the re-plan order), and
-  the synthetic `syn-*` fixtures stay out of it (S28).
+  DISCONTs, a list's pieces, pads outside part 4.2, the re-plan order, and
+  a PES whose first packet repeats its PID's last counter on other bytes:
+  p3-3b's `cc-repeat` entry until B-203's `CcTracker`, carried in by m6,
+  took a repeat for the duplicate ISO 13818-1 allows only on the same bytes,
+  so `mrtsdemux` now counts such a repeat a loss and keeps the PES, as
+  tsdemux does; m6 ported that rule into the reference and regenerated
+  `bus-pmt-change`'s expectations, 496 PES to 508), and the synthetic
+  `syn-*` fixtures stay out of it (S28).
 - **Bus recordings are raw TS plus a sidecar** `<name>.bus.jsonl` (each bus
   buffer's offset, length, PTS, DTS, duration and flags), not GDP (S25,
   E15): the same information, dumpable as any TS and rebased by the TS rule
@@ -2921,8 +2959,9 @@ S40).
 ### ASRC at decode and at outputs (WI-P3-5; plan part 4.4)
 
 - **One element, four modes** (`mrasrc`, S17), one resampler each: capture
-  (`bypass-below-ppm` 0 and no `device-sink`: Phase 1 unchanged, its run
-  checksum `432e8439f253974f` too), decode (`bypass-below-ppm` above 0, at
+  (`bypass-below-ppm` 0 and no `device-sink`: Phase 1's servo, its run
+  checksum `432e8439f253974f` at p3-5, with the release line's cycle input
+  below), decode (`bypass-below-ppm` above 0, at
   most 1,000), device (`device-sink` set with `bypass-below-ppm` 0: the
   device term alone, no lock of the source) and decode + device (both: one
   ratio, the product of the two terms, OQ-23). `mrasrc-stats` gains `mode`
@@ -2934,6 +2973,17 @@ S40).
   `mrts::AsrcServo` and `AsrcDeviceLock` port it rule for rule, and
   `asrc_bypass_ref_test.py` replays the same call sequences through it and
   `mrts_cli asrc`, line for line (B-125).
+- **Cycle input at a capture** (B-180, B-181: the release line, carried in by
+  m1/m2 and m5). With `cycle-input` (a `pipewiresrc` capture: one buffer per
+  graph cycle, stamped with the cycle's time) whole cycles missing at a
+  steady size, or a rise of the stamps past the lock's step (50 ms, a driver
+  restarted after a loss), are a gap of their length: the output jumps those
+  frames (DISCONT, `mrasrc-event` `gap` with `reason` `lost-cycle` or
+  `lost-time` and `lost-frames`), the lock keeping its line and rate; a fall
+  that undoes one at once is reverted (`gap` `reverted`). A cycle-size
+  change moves only the stamps (`shift`, `cycle-size`). Neither relocks.
+  `mrasrc-stats` counts them (`gaps`, `lost-frames`). Capture mode only;
+  AES67 Input sets no `cycle-input`.
 - **The decode lock** (`asrc_decode_lock_config`, S16) is the capture lock
   with a 10-bucket first fit, since a demux's PTS carry no arrival jitter.
   The prototype's sweep (1 h each: 48 kHz exact, 44.1 kHz quantised, MP2,
@@ -3107,7 +3157,15 @@ carries a timing declaration, and the field is gone (below).
   moved to the ASRC's input (`element: 'outasrc'`, `'asrc'`), the last pad
   on content time: after the device term the PTS are device-time labels that
   ramp at the device's rate, so a reading at the sink's pad would raise the
-  route's D for a slow DAC (B-127, B-128).
+  route's D for a slow DAC (B-127, B-128). FF9 stays on both too (B-184, the
+  release line's, carried in by m3 against B-164's "not ported"): each leg
+  relaunches its own pipeline once its source timeline settles, armed by
+  the shedder's rebase (now read at the ASRC's input) or by the first VU
+  reading after a stall of 5 s or more, pushed back by an `implausible`
+  report, run after 10 s without either, at most once a minute, until
+  Phase 4 deletes it with the shedder (p4-7, p4-8, p4-11). Its cost here:
+  one relaunch, 58 ms to 0.5 s of silence, after an outage the device
+  timeline now bridges (B-148).
 - **video-player**: `… ! tee name=vp_ts ! mrtsdemux name=vpdemux media=video
   ! [capsfilter caps="video/x-h26x" !] queue …` on every rung, `decodebin3`
   included: the video only (Q18), so a source that lists its audio first
@@ -3221,13 +3279,18 @@ carries a timing declaration, and the field is gone (below).
   or errored module): `demux-unknown-stream` (`Input <n>: PID 0x0123: stream
   type 0x06 with no known descriptor is not demuxed`),
   `input-not-house-time` (`Input <n> is <x> s off house time — its producer
-  does not stamp house time`), `input-no-stream` (`Input <n> carries no
-  audio stream`, the kind from `select` or `media`) and `asrc-out-of-bounds`
-  (`… past the ASRC's 1000 ppm — check the source's sample rate`). Each
-  clears at the demux's next generation, a module start, a respawn or 6 s of
-  quiet; `no-stream` also once a report finds the stream; out-of-bounds once
-  a stats report has the source locked below 900 ppm, the element's own
-  hysteresis. None of them drops anything.
+  does not stamp house time`; for a PES dropped as stale, `Input <n>: a PES
+  <x> s off house time was dropped as stale`, p3-21), `input-no-stream`
+  (`Input <n> carries no audio stream`, the kind from `select` or `media`)
+  and `asrc-out-of-bounds` (`… past the ASRC's 1000 ppm — check the source's
+  sample rate`). Each clears at the demux's next generation, a module start,
+  a respawn or 6 s of quiet; `no-stream` also once a report finds the
+  stream; `not-house-time` once a report's `off-house` no longer lists its
+  PID (back on house time), a stale drop's after 10 s unless the report
+  lists its PID, which then means its stream left house time and takes the
+  producer's words (p3-21); out-of-bounds once a stats report has the
+  source locked below 900 ppm, the element's own hysteresis. A warning
+  drops nothing; the demux drops the stale PES.
 - **Protocol.** `plugins/mpegts-core/tests/fixtures/forwarded-messages.json`
   holds one forwarded payload per reason and kind as both runners forward
   them; the engine's tests feed it through the readers, and the protocol
@@ -3262,7 +3325,7 @@ carries a timing declaration, and the field is gone (below).
 ### Tests
 
 - **Protocol cases in both runners** (`native_runner_protocol_test.py`,
-  661 checks; the subtitle bridge's cases on the Python runner):
+  777 checks at p3-21; the subtitle bridge's cases on the Python runner):
   `presentation-formula` (E: every buffer a 302M presentation leg's sink
   syncs on at its PES PTS − 1 h, ceil to the ns), `transform-formula` (M:
   the transcoder's shape on `bus-occ-ingest` and `syn-gap-marker`, 0 ticks
@@ -3400,43 +3463,69 @@ reference (OQ-1); nothing at runtime imports `ts_timeline`.
 
 ### Open at the end of the build
 
-- **The device rounds** (plan chapter 7 part 11), none run on a Phase 3
-  build yet: DEV-P3a (V5 to V7 and the ASRC bench), DEV-P3b (V1 to V4, V8,
-  V9) and DEV-P3c (the 24 h soak across uptime 25.51 h, where `MONO + 1 h ≡
-  0 mod 2^33`: V10 to V13). Their criteria as the rows correct them: V1's
-  audio transcoder by S40 per stretch of continuous input (B-129, B-142), V3
-  with `mrasrc`'s 0.667 ms added (S37), V5's sample count against the offset
-  held from the engage, V8 on the Pi 4 player and the Pi 5 transcoder
-  against p3base (B-144), V7's device numbers read with the caveat below.
-- **The phase review follows this pass**: a Fable review of every Phase 3
-  item against chapter 7 and the build plan, then its fixes (p3-21), one
-  commit.
+- **The device rounds** (plan chapter 7 part 11). Ran, on builds before the
+  one that ships: **DEV-P3a** on the Pi 4 test box (2026-11-03, build
+  c6038d39, W1 to W7 without p3-16b): the ASRC bench PASS (8 engaged stereo
+  paths at quality 4: S16LE 7.43 %, S32LE 20.86 %, F32LE 20.02 % of one
+  core, under WI-P3-5's 25 %); V5 PASS (the foreign source engaged by the
+  phase rule 20.6 s after its stream's probe, 120,000 Opus AUs on their
+  ladder at 0 ticks, the house source bypassed throughout; another house-fed
+  decoder engaged, B-148's lost-time fault); V6 PARTIAL (the foreign path's
+  RTP within a sample of house time for 40 min and the house path's mixer
+  ladder at 0 ticks, but one 868-sample (18.1 ms) step of the house path's
+  RTP offset, at the second of the mixer's Phase 2 pace fall, "Pace fell by
+  36 ms"; the planned rig, an SRT input into the mixer, not run: its port
+  takes `audio/302m` only); V7 FAIL (no skew ever asked, but render lateness
+  raised to the 2 s ceiling and an implausible device ppm, under a load of 9
+  to 13: the faults B-148 fixed on the dev Pi, not re-run on a sound card);
+  V11 PASS. **DEV-P3s**, the owner's 2 h soak across the bus PTS wrap in
+  place of DEV-P3c's 24 h one (3 Nov: "do a 2 hour soak test?"; the wrap
+  about 19:45Z that day, both test boxes, the m6 build c8539135): V10 PASS
+  (no PES PTS step, no not-house-time, no gap or relaunch, no timing step
+  over 1 ms at the wrap; `pes_diff` across a re-encode PARTIAL by
+  construction, the ladder holding), V11 PASS, V12 PASS. **Still to run** on
+  the v2.0.0.102 candidate, for the orchestrator and the owner: DEV-P3b (V1
+  to V4, V8, V9; V9's muxer half fails until it is built, below), V13 (the
+  rollback) and V7 again after B-148; nothing built since m6 (p3-16b, the
+  v2.0.0.101 fixes, W9, c34, p3-21) has been on a box. Their criteria as the
+  rows correct them: V1's audio transcoder by S40 per stretch of continuous
+  input (B-129, B-142), its Opus pads checked by `pes_formula.sh`'s join of
+  a packet to its PES by PTS (p3-21), V3 with `mrasrc`'s 0.667 ms added
+  (S37), V5's sample count against the offset held from the engage, V8 on
+  the Pi 4 player and the Pi 5 transcoder against p3base (B-144), V7's
+  device numbers read with the caveat below.
+- **The phase review** (2026-11-05): a Fable review of every Phase 3 item
+  against chapter 7 and the build plan, adversarially verified, and its
+  fixes (p3-21, row B-213), one commit.
 - **p3-16b, the shared bus demux helper (B-145), is built** (2026-11-03, on
   the carried line): `buildBusDemux` in busHelpers.ts builds the segment
   `buildBusSrc ! queue ! mrtsdemux …` for nine consumers, every string
-  byte-identical. The live-input branches (`buildLiveMixInput`) still build
-  their own (p3-21).
+  byte-identical; every 302M fan-in arm, the live-input branches included,
+  decodes through it (`decode302m`).
 - **For the orchestrator** (recorded in their rows): neither `mux_routing`
   form routes a re-planned program's pads, so after a codec switch or a PCR
   PID change an input's new pads are sunk and V9's "muxer re-plans" fails
   until it is built (B-123, B-134: options a hook keyed by the pad's
-  generation, a rebuild on a program change, or documenting it); `CcTracker`
-  takes a repeated counter for a duplicate without comparing bytes and keeps
-  its counters across a bus DISCONT, so a restarted sender's first PES can
-  be lost, and the restamp puts no video marker on the bus at a relock
-  (B-132); the player's video pad, re-added by a program change that keeps
+  generation, a rebuild on a program change, or documenting it); the
+  restamp puts no video marker on the bus at a relock (B-132; its
+  `CcTracker` half is closed by B-203, carried in by m6: a repeat on other
+  bytes is a loss, and the counters `DemuxCore` keeps across a bus DISCONT
+  count one CC loss per PID whose counter does not continue, never a lost
+  PES); the player's video pad, re-added by a program change that keeps
   the codec, stays unlinked until a rebuild (B-133); `buildTsRechunk`'s
   `tsparse` keeps its DISCONT rule, so ADR-0011's re-slice holds only
   between DISCONTs (B-144); a stopping transcoder clears its egress stamper
   before the EOS drain, so its last frames carry non-house stamps (B-139).
 - **For the owner**: the first burnt-in cue after a start drawn late, and
   the option of seeding the cue watch from the Subtitles In producer's
-  output lateness, not built (B-139); the engineering choices of rows B-120
-  to B-147, each recorded for the veto. Phase 4's p4-4a measured this
-  phase's `AsrcDeviceLock` 5–20 ppm off on real `pulsesink` clocks, a short
-  fit after a DISCONT able to replace a good rate (125–286 ppm off); Phase
-  4's p4-4b replaces it with a timer-read device term, so DEV-P3a's V7 is
-  judged with that in mind.
+  output lateness, not built (B-139); the stale-PES rule's cost (B-149,
+  above: a producer that restarts off house time can lose up to a GOP of
+  video); the engineering choices of rows B-120 to B-149 and B-213, each
+  recorded for the veto. Phase 4's p4-4a measured this phase's
+  `AsrcDeviceLock` 5–20 ppm off on real `pulsesink` clocks, a short fit
+  after a DISCONT able to replace a good rate (125–286 ppm off); Phase 4's
+  p4-4b replaces it with a timer-read device term, so V7's device numbers
+  are judged with that in mind.
 - **Producer-side gap signalling for sparse producers** (§11.5 item 10),
   which Phase 2 deferred to this phase's demux, is not built: no chapter 7
   item planned it. `mrtsdemux` gives sparse pads gaps from program time,
@@ -3446,15 +3535,9 @@ reference (OQ-1); nothing at runtime imports `ts_timeline`.
   no bus consumer runs `tsdemux` (MpegTsProbe's codec probe aside), so
   nothing drains and flushes at a marker's DISCONT; every reader keys on
   GAP.
-- **Comments that still name a deleted mechanism** wait for a code change:
-  `PluginModule.ts` (`parser: 'none'`: "tsdemux already emits one whole
-  PES"), `gst-pipeline-runner.py` (the same sentence, its parser table's
-  "tsdemux already emits muxer-ready caps", the "spliced here, before
-  PLAYING" comment whose referent went with the align block, and "the same
-  seam the stamper's ts_timeline uses"), the native runner's `pad_link.cpp`
-  (the parser table's tsdemux), `tsHelpers.ts`'s header ("every plugin that
-  builds tsdemux / mpegtsmux chains"), the player's `pipelines.ts`
-  (`sync=false` called "the live SRT/RIST default", the default being the
-  paced sink since B-133), and the frozen `py/ts_timeline.py` and
-  `ts_timeline_test.py`, whose pointers name `ts_timeline.cpp` and its test
-  (`timing_pes` is in `ts_house.cpp`, its cases in `ts_house_test.cpp`).
+- **The comments that still named a deleted mechanism** (the parser
+  bypass's "tsdemux already emits one whole PES", the runners' parser
+  tables and pad-link notes, the "spliced here" and "same seam" comments,
+  `tsHelpers.ts`'s and `busHelpers.ts`'s tsdemux, the player's `sync=false`
+  "default", the frozen `ts_timeline` reference's pointers, plugins/README's
+  pad-link examples on `tsparse ! tsdemux`) were reworded by p3-21.

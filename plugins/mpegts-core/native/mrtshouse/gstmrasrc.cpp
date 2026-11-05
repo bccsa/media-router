@@ -1,10 +1,6 @@
-/* mrasrc (plan ch. 5 WI-P1-8, part 4.5; ch. 7 WI-P3-5, part 4.4): mrts::AsrcServo locks the input frame
- * count to the buffer PTS and commands GstAudioResampler's ratio: a house-rate counter, PTS_out(m) = T0 +
- * m / out_rate. Modes (S17): capture; decode (`bypass-below-ppm`: passed unchanged until the source is
- * measured off house time); device (`device-sink`: the sink's clock in the ratio; with decode, the product).
- * Capture with cycle-input (a pipewiresrc, B-180): lost cycles, and the time a restarted driver lost
- * (B-181), jump the output by their length, no relock. B-148: decode modes take an unflagged PTS hole as
- * lost time and a step back as a break; device mode keeps its labels on the device timeline across a break. */
+/* mrasrc (WI-P1-8, WI-P3-5): mrts::AsrcServo commands GstAudioResampler's ratio, a house-rate counter
+ * PTS_out(m) = T0 + m / out_rate; modes capture (cycle-input: B-180, B-181), decode (`bypass-below-ppm`),
+ * device (`device-sink`) and both (S17), with B-148's breaks; plugins/README.md's mrasrc paragraphs. */
 #include <gst/audio/gstaudiobasesink.h>
 #include <gst/base/gstbasetransform.h>
 

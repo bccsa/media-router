@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Cuts a full `pw-dump` to the objects pipeWireLatency.ts reads and the links between them;
-usage: IN OUT. pw-dump-fleet.json: `pw-dump` on 10.9.16.22 (Pi 5, PipeWire 1.6.3), 2026-10-13 12:42,
+usage: IN OUT. pw-dump-fleet.json: `pw-dump` on ZA-SCC-FRA-Master01 (Pi 5, PipeWire 1.6.3), 2026-10-13 12:42,
 1826560 bytes, sha256 f84535d8cb97871cc4fc6c5ca35d2fd2b6c29cfcb58dd938f94ff3f48edc9b4a."""
 import json
 import sys

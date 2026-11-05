@@ -120,7 +120,7 @@ export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts
     // stream that runs consistently late — a producer stamp anchor a few hundred
     // ms early, a delivery path that slowed after start — is then not "late but
     // smooth" but ONE frame per 2 × lateness, and past ~250 ms nothing reaches
-    // the display at all while the pipeline stays PLAYING (10.9.16.103,
+    // the display at all while the pipeline stays PLAYING (the Pi 5 test box,
     // 2026-09-08: 50 fps in, no renderWatch update for 9151 s). `max-lateness`
     // below already bounds how late a frame may still render; the decoder must
     // not be asked to drop on top of it. There is no setting for this any more
@@ -139,8 +139,8 @@ export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts
     // (50-80 ms ≪ 1 s) but caps unbounded lag from sustained decode shortfall.
     // QoS stays off so the decoder isn't asked to drop per-frame — drops only
     // happen at the sink, only when a buffer is genuinely 1 s late.
-    // `sync=false` (the live SRT/RIST default) has no clock anchor, so the
-    // basesink's late-drop logic doesn't apply — leave it unspecified.
+    // `sync=false` (the unpaced sink, opt-in since B-133 made the paced one the
+    // default) has no clock anchor, so the basesink's late-drop logic doesn't apply.
     const syncClause = sync ? ' sync=true max-lateness=1000000000' : ' sync=false';
     // Lip-sync trim — only meaningful with sync=true (a non-syncing sink
     // ignores timing). `autovideosink` is a bin, not a basesink, so it has no

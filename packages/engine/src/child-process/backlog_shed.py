@@ -11,7 +11,7 @@ it. The legacy `sync=false` sink had no such problem — it presented on arrival
 so it gulped any backlog at max speed and drained itself, which is the (now
 falsified) assumption the video leg's queue sizing was written against.
 
-Field, 10.9.1.42 (Pi 400, 2026-08-13/14): retained latency climbed over ~16 h
+Field, a Pi 400 (2026-08-13/14): retained latency climbed over ~16 h
 until buffers reached `videoconvert`/`waylandsink` late enough for QoS to drop
 almost all of them — decoder still running at 50 fps (codec IRQ ~100/s), glass
 at 2.5 fps (`vc4 crtc` IRQ 2.2/s). A live `ts-offset` bump of +1 s restored
@@ -219,7 +219,7 @@ class BacklogShedPolicy:
     WHY `queued_ms` DECIDES. Lateness alone cannot tell a retained backlog from
     a late TIMELINE. A backlog is data parked in the leg's queues: dropping it
     returns it at I/O speed. A late timeline is a producer stamping behind
-    real time (field, 10.9.16.103 2026-09-08: a gateway mux rewound ~1 s, the
+    real time (field, the Pi 5 test box 2026-09-08: a gateway mux rewound ~1 s, the
     ingest stamper re-anchors only after its own 10 s late hold, and for those
     seconds every buffer reached the decoder ~500 ms "late" with the queues
     EMPTY). Shedding on that drops every frame — nothing dropped makes the

@@ -139,7 +139,8 @@ class DemuxCore {
     struct Counters {
         uint64_t pes = 0, gaps = 0, markers = 0, markers_dropped = 0, pes_no_pts = 0;
         uint64_t desync_bytes = 0, cc_lost = 0, pes_oversize = 0, pes_dropped_cc = 0,
-                 psi_unsupported_sections = 0, dts_discarded = 0, unknown_streams = 0;
+                 pes_dropped_stale = 0, psi_unsupported_sections = 0, dts_discarded = 0,
+                 unknown_streams = 0;
         int generation = -1;              // the planned program's, -1 none
     };
 
@@ -170,6 +171,7 @@ class DemuxCore {
     int64_t frame_ns() const { return select_ ? one_.frame() : -1; }
     int64_t program_time_ns() const { return have_pt_ ? pt_ : -1; }
     std::vector<std::string> pads() const;                   // the live pads, plan order
+    std::vector<int> off_house_pids() const;  // pads whose last placed PES was off house time
     std::vector<int> selected_pids() const { return pes_.selected(); }
     Counters counters() const;
 

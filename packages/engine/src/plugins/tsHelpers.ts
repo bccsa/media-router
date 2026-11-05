@@ -1,5 +1,5 @@
 /**
- * Shared MPEG-TS pipeline helpers used by every plugin that builds tsdemux /
+ * Shared MPEG-TS pipeline helpers used by every plugin that builds mrtsdemux /
  * mpegtsmux chains (muxer, demuxer, future remux plugins).
  *
  * Centralises three host-machine assumptions:
