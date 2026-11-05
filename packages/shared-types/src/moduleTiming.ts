@@ -28,6 +28,9 @@ export interface ClockCorrection {
     /** The source clock against house time (ppm, positive when fast) while the ASRC resamples
      *  it; absent while its buffers pass at house rate. */
     sourcePpm?: number;
+    /** It resamples before the source's rate is measured (a phase engage in its lock's first
+     *  seconds, B-148); no sourcePpm then. */
+    measuring?: true;
 }
 
 export interface ModuleTimingInput {

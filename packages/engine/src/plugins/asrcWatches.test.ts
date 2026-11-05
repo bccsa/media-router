@@ -12,7 +12,7 @@ import { buildAsrc } from './ingestTiming.js';
 import { launchElements } from './launchElements.js';
 
 // `mrasrc-stats` and `mrasrc-event` as gstmrasrc.cpp posts them (WI-P3-5's fields).
-const stats = (mode: string, o: Record<string, number | string> = {}) => ({
+const stats = (mode: string, o: Record<string, number | string | boolean> = {}) => ({
     state: 'locked',
     'ratio-ppb': 0,
     'phase-err-ns': 0,
@@ -26,7 +26,7 @@ const stats = (mode: string, o: Record<string, number | string> = {}) => ({
     'device-ppb': 0,
     ...o,
 });
-const event = (kind: string, o: Record<string, number | string> = {}) => ({
+const event = (kind: string, o: Record<string, number | string | boolean> = {}) => ({
     kind,
     reason: '',
     'house-ns': 1_000_000_000,
@@ -177,6 +177,39 @@ describe('AsrcWatches', () => {
         });
     });
 
+    it('an engage before the rate is measured: its phase for the log, `measuring` until a fit (B-148)', () => {
+        const w = watches();
+        const early = event('engaged', {
+            reason: 'phase',
+            'source-ppb': 0,
+            'phase-ns': -1_023_000,
+            'rate-known': false,
+        });
+        const r = w.take('mrasrc-event', 'dasrc', early, 0)!;
+        expect(r.event).toMatchObject({ kind: 'engaged', reason: 'phase', offMs: 1.023 });
+        expect(r.event!.sourcePpm).toBeUndefined();
+        w.take('mrasrc-stats', 'dasrc', stats('decode', { 'rate-known': false }), 1000);
+        expect(one(w, 'dasrc')).toEqual({ name: 'dasrc', correction: { measuring: true } });
+        w.take('mrasrc-stats', 'outasrc', stats('decode+device', { 'rate-known': false }), 1000);
+        expect(one(w, 'outasrc')!.correction).toEqual({ measuring: true });
+        w.take(
+            'mrasrc-stats',
+            'dasrc',
+            stats('decode', { 'source-ppb': 40_000, 'rate-known': true }),
+            2000,
+        );
+        expect(one(w, 'dasrc')).toEqual({ name: 'dasrc', correction: { sourcePpm: 40 } });
+        // Bypassed with no rate yet is no correction at all; a ratio engage always has its rate.
+        w.take('mrasrc-stats', 'dasrc', stats('bypass', { 'rate-known': false }), 3000);
+        expect(one(w, 'dasrc')).toEqual({ name: 'dasrc', correction: {} });
+        const ratio = event('engaged', {
+            reason: 'ratio',
+            'source-ppb': 3_000,
+            'rate-known': true,
+        });
+        expect(w.take('mrasrc-event', 'dasrc', ratio, 4)!.event).toMatchObject({ sourcePpm: 3 });
+    });
+
     it('expires an ASRC that stopped reporting; a configure forgets the old run', () => {
         const w = watches();
         w.take('mrasrc-stats', 'dasrc', stats('bypass'), 0);
@@ -195,6 +228,7 @@ describe('the texts', () => {
         expect(clockCorrectionText({})).toBe('none (house rate)');
         expect(clockCorrectionText({ sourcePpm: 23.4 })).toBe('+23.4 ppm (source)');
         expect(clockCorrectionText({ sourcePpm: -0.3 })).toBe('−0.3 ppm (source)');
+        expect(clockCorrectionText({ measuring: true })).toBe('measuring');
     });
 
     it("the rate of a lock's epsilon is the stats' own (asrc_rate_of)", () => {
@@ -227,7 +261,7 @@ describe('the forwarded messages as recorded (forwarded-messages.json)', () => {
         w.take('mrasrc-stats', 'outasrc', stats, 0);
         expect(one(w, 'outasrc')).toEqual({ name: 'outasrc', correction: {}, devicePpm: 0 });
         const events = fixture['mrasrc-event'];
-        for (const kind of ['device-relock', 'engaged', 'relock']) {
+        for (const kind of ['device-relock', 'device-resync', 'engaged', 'relock', 'gap']) {
             expect(w.take('mrasrc-event', 'outasrc', events[kind], 1)!.event!.kind).toBe(kind);
         }
         expect(w.take('mrasrc-event', 'outasrc', events.engaged, 1)!.event!.sourcePpm).toBe(3);
@@ -237,5 +271,7 @@ describe('the forwarded messages as recorded (forwarded-messages.json)', () => {
         expect(one(w, 'outasrc')!.outOfBoundsPpm).toBeCloseTo(1300, 1);
         w.take('mrasrc-stats', 'outasrc', { ...stats, mode: 'decode+device', state: 'locked' }, 2);
         expect(one(w, 'outasrc')!.outOfBoundsPpm).toBeUndefined();
+        // The device term alone has no source lock: its rate-known is false, and engaged it would measure.
+        expect(one(w, 'outasrc')!.correction).toEqual({ measuring: true });
     });
 });

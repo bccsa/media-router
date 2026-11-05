@@ -14,7 +14,8 @@ testing/decodeAsrcChains.test.ts). Here each runs with its bus sources reading a
     skew, and in the mixer arm each branch's decode `mrasrc` passes its house-rate input;
   - audio-decoder (WI-P3-10), each decoder branch on a recording of its codec, the same way: the
     first audio stream plays (an input listing its video first too), the decoder's PCM (avdec_aac's
-    planar) reaches `asrc` interleaved through `audioconvert`, and `asrc` follows the sink;
+    planar) reaches `asrc` interleaved through `audioconvert`, and `asrc` follows the sink (opusdec's
+    pre-skip stamping is one lost-time gap, B-148);
   - audio-transcoder (WI-P3-12), each decoder branch on a recording of its codec, its renditions
     into files: `asrc` passes a house-rate decode untouched, and each rendition's PES PTS meet S40
     (the first AU exact, Opus 0 ticks, AAC a tick under its ladder at most, 302M at its PCM's
@@ -321,9 +322,14 @@ else:
               f"({[(n, e['kind']) for n, e in _r['events']]})",
               _r["asrc"].get("mode") == "device" and (_r["asrc"].get("device-pairs") or 0) > 20
               and not [e for _, e in _r["events"] if e["kind"] == "engaged"])
+        # B-148: a lost-time gap's DISCONT places the next buffer by its label, one resync each. opusdec stamps
+        # the two buffers after its 6.5 ms pre-skip that much early, so tp-opus-51's third PES PTS is such a hole.
+        _gaps = [e for _, e in _r["events"] if e["kind"] == "gap"]
         check(f"{_key}: the sink is never asked to skew ({_r['sink']['calibrations']} calibration changes, "
-              f"{_r['sink']['resyncs']} resyncs)",
-              _r["sink"]["calibrations"] == 0 and _r["sink"]["resyncs"] == 0)
+              f"{_r['sink']['resyncs']} resyncs: one per lost-time gap, {[e['lost-frames'] for e in _gaps]} frames)",
+              _r["sink"]["calibrations"] == 0 and _r["sink"]["resyncs"] == len(_gaps)
+              and all(e["reason"] == "lost-time" for e in _gaps)
+              and [e["lost-frames"] for e in _gaps] == ([312] if _key == "adec_opus" else []))
 
     # Why `media=audio`: without it decodebin takes whatever comes first, here the video, and the
     # chain fails, as the decoder did on tsdemux (OQ-28).

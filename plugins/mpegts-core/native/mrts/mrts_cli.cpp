@@ -1630,7 +1630,9 @@ const char kAsrcUsage[] =
     "    b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command\n"
     "    o K / t K                                        produced(K) / tail_produced(K)\n"
     "    g                                                end_epoch(); prints its result\n"
-    "    d ITIME ETIME [READ] / x                         the device lock: a pair / a discontinuity\n"
+    "    d ITIME ETIME [READ]                             the device lock: a pair\n"
+    "    x [WHY]                                          a sink discontinuity (GstAudioBaseSinkDiscontReason,\n"
+    "                                                     2 flush by default); a recalibration tells the servo\n"
     "    p                                                prints the stats and the device lock\n";
 
 int asrc_main(int argc, char** argv) {
@@ -1685,17 +1687,18 @@ int asrc_main(int argc, char** argv) {
             const AsrcServo::Command c = sv->push(v[1], (uint32_t)v[2], v[3] != 0, v[4]);
             const AsrcServo::Stats s = sv->stats();
             std::snprintf(line, sizeof line,
-                          "b %llu %s in=%d out=%d relock=%d skip=%u pass=%d engage=%d drain=%d t0=%lld m=%llu "
-                          "phase=%lld ratio=%lld src=%lld\n",
+                          "b %llu %s in=%d out=%d relock=%d skip=%u pass=%d engage=%d drain=%d gap=%d t0=%lld "
+                          "m=%llu phase=%lld ratio=%lld src=%lld\n",
                           (unsigned long long)n++, asrc_mode_name(s.mode), c.in_rate, c.out_rate, (int)c.relock,
-                          c.skip, (int)c.pass, (int)c.engage, (int)c.drain, (long long)sv->t0(),
+                          c.skip, (int)c.pass, (int)c.engage, (int)c.drain, (int)c.gap, (long long)sv->t0(),
                           (unsigned long long)sv->epoch_frames(), (long long)s.phase_err_ns,
                           (long long)s.ratio_ppb, (long long)s.source_ppb);
             out += line;
             for (const AsrcEvent& e : sv->take_events()) {
-                std::snprintf(line, sizeof line, "e %s %s %lld %lld %lld %lld\n", asrc_event_name(e.kind),
+                std::snprintf(line, sizeof line, "e %s %s %lld %lld %lld %lld %lld %d\n", asrc_event_name(e.kind),
                               e.reason && *e.reason ? e.reason : "-", (long long)e.house_ns, (long long)e.value,
-                              (long long)e.dropped_ns, (long long)e.phase_ns);
+                              (long long)e.dropped_ns, (long long)e.phase_ns, (long long)e.lost_frames,
+                              (int)e.rate_known);
                 out += line;
             }
         } else if (k == "o" && f.size() == 2) {
@@ -1708,19 +1711,27 @@ int asrc_main(int argc, char** argv) {
             out += line;
         } else if (k == "d" && (f.size() == 3 || f.size() == 4)) {
             dev->feed(v[1], v[2], f.size() == 4 ? v[3] : 0);
-        } else if (k == "x" && f.size() == 1) {
-            dev->discont();
+        } else if (k == "x" && f.size() <= 2) {
+            const int64_t why = f.size() == 2 ? v[1] : (int64_t)AsrcDeviceLock::Discont::flush;
+            if (why < 1 || why > 5) {
+                std::fprintf(stderr, "mrts_cli asrc: line %zu: no such discontinuity: %lld\n", lineno, (long long)why);
+                return 2;
+            }
+            if (dev->discont((AsrcDeviceLock::Discont)why)) sv->device_recalibrated();
         } else if (k == "p" && f.size() == 1) {
             const AsrcServo::Stats s = sv->stats();
             std::snprintf(line, sizeof line,
                           "p state=%s ratio-ppb=%lld phase-err-ns=%lld relocks=%llu in-frames=%llu out-frames=%llu "
-                          "discont-in=%llu dropped-frames=%llu mode=%s source-ppb=%lld dev-ppb=%lld dev-rate=%lld "
-                          "dev-locked=%d\n",
+                          "discont-in=%llu dropped-frames=%llu mode=%s source-ppb=%lld gaps=%llu lost-frames=%lld "
+                          "rate-known=%d dev-ppb=%lld dev-rate=%lld dev-locked=%d dev-relocks=%llu "
+                          "dev-alignments=%llu\n",
                           asrc_state_name(s.state), (long long)s.ratio_ppb, (long long)s.phase_err_ns,
                           (unsigned long long)s.relocks, (unsigned long long)s.in_frames,
                           (unsigned long long)s.out_frames, (unsigned long long)s.discont_in,
                           (unsigned long long)s.dropped_frames, asrc_mode_name(s.mode), (long long)s.source_ppb,
-                          (long long)dev->ppb(), (long long)dev->rate_ppb(), (int)dev->locked());
+                          (unsigned long long)s.gaps, (long long)s.lost_frames, (int)s.rate_known,
+                          (long long)dev->ppb(), (long long)dev->rate_ppb(), (int)dev->locked(),
+                          (unsigned long long)dev->relocks(), (unsigned long long)dev->alignments());
             out += line;
         } else {
             std::fprintf(stderr, "mrts_cli asrc: line %zu: unknown line\n", lineno);

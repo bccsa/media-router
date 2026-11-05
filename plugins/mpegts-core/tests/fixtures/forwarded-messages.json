@@ -1,5 +1,5 @@
 {
-  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the mrasrc events but device-relock are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0).",
+  "about": "The mrtsdemux and mrasrc messages as both runners forward them, unsubscribed, as `<structure>:<element>` plugin events (plan ch. 7 WI-P3-6, register B-126): one payload per reason or kind. The engine's demuxWatches and asrcWatches tests read these; native_runner_protocol_test.py's mrtsdemux-messages and mrasrc-device cases hold every payload the runners forward to its entry's fields and their types. Recorded 2026-10-27 on the dev Pi from those two cases (both runners gave the same payloads); no-stream and the mrasrc events but device-relock are as gstmrtsdemux.cpp and gstmrasrc.cpp post them, with values of a real run's kind; mrasrc-stats' gaps and lost-frames (B-180) were added when the capture fix line was carried in, as a run without cycle-input posts them (0). B-148 added mrasrc-stats' rate-known and device-resyncs, the engaged event's rate-known, and the device-resync and decode lost-time gap events, as gstmrasrc.cpp posts them (a device-only run's rate-known is false: it has no source lock).",
   "mrtsdemux": {
     "interval": {
       "cc-lost": 0,
@@ -58,6 +58,7 @@
   },
   "mrasrc-stats": {
     "device-ppb": 0,
+    "device-resyncs": 0,
     "discont-in": 0,
     "dropped-frames": 0,
     "gaps": 0,
@@ -66,6 +67,7 @@
     "mode": "device",
     "out-frames": 97248,
     "phase-err-ns": 0,
+    "rate-known": false,
     "ratio-ppb": 0,
     "relocks": 0,
     "source-ppb": 0,
@@ -77,10 +79,16 @@
       "kind": "device-relock",
       "reason": "sync-latency"
     },
+    "device-resync": {
+      "house-ns": 3335600002325885,
+      "kind": "device-resync",
+      "reason": "alignment"
+    },
     "engaged": {
       "house-ns": 3335517352325885,
       "kind": "engaged",
       "phase-ns": 41250,
+      "rate-known": true,
       "reason": "ratio",
       "source-ppb": 3000
     },
@@ -90,6 +98,14 @@
       "jump-ns": 512000000,
       "kind": "relock",
       "reason": "gap"
+    },
+    "gap": {
+      "dropped-ns": 0,
+      "house-ns": 3335610023658552,
+      "jump-ns": 21333333,
+      "kind": "gap",
+      "lost-frames": 1024,
+      "reason": "lost-time"
     },
     "ratio-out-of-bounds": {
       "fit-ppb": -1298312,

@@ -35,7 +35,8 @@ Python reference, on the fixture, regenerated from the plugin's directory with `
 py/demux_core.py tests/fixtures/<name>.ts [--bus tests/fixtures/<name>.bus.jsonl] [--program N] >
 tests/fixtures/<name>[.pN].demux.jsonl` and held to it by `py/demux_core_test.py` (case 16). The
 replay runs at the recording's own house time (its first PES - 1 h, the one clock reading for every
-feed) in 1316-byte feeds (any chunking gives the same lines), every media class exposed; where a
+feed; a recording past 60 s drifts off it, which is no jump, B-149: `cap-klv-sparse`) in 1316-byte
+feeds (any chunking gives the same lines), every media class exposed; where a
 sidecar exists, a GAP buffer is a marker and a DISCONT flag is kept. One JSON object a line, times
 in ns: `{"section":{table,pid,version,len,crc32}}` when a new PAT or a changed PMT of the program
 parses; `{"plan":{gen,program,pcrPid,pads:[{pad,pid,type,caps,sparse,lang,post}]}}` when the
@@ -44,7 +45,8 @@ from 0 and its low 4 bits in the pad names, `lang` the ISO 639-2 code tsdemux ta
 adts, opus or klv; `{"unit":{pad,pts,dts,dur,len,crc32,discont}}` per PES, `crc32` of its payload,
 `dur` from a 302M header, else null; `{"gap":{pad,pts,dur,reason}}`, `reason` jump, marker or
 sparse; `{"gone":{gen}}`; `{"unknown":{pid,type,reg,gen}}`, `reg` the registration's four
-characters; `{"nothouse":{pid,offsetMs}}`; `{"nostream":{}}`; then the `{"counters":{...}}` line.
+characters; `{"nothouse":{pid,offsetMs,stale}}` once per episode off house time, `stale` when that PES
+was dropped (B-149); `{"nostream":{}}`; then the `{"counters":{...}}` line.
 
 Reviewed by hand on 2026-10-26 (B-121): every plan's pad names and caps, in order, are stock
 tsdemux 1.28.2's at pad-added on every fixture but one, `syn-mpts-two-programs`, whose AVC to HEVC
@@ -62,7 +64,9 @@ AAC pad, none on video (520 ms) or teletext; `syn-gap-marker` its two marker gap
 pad's horizon, the last video PES before the hole (unbounded, ended by the next PUSI) before its
 gap; `syn-video-hole-1s` one 1.205 s jump on video, none for its 1-, 2- and 5-frame holes;
 `cap-mux-align7-aac-opus`, `cap-cc-loss` and `syn-foreign-clock-aac` two jumps of about 80 ms on
-the AAC pad, the gate source's own 100 ms steps; `syn-source-restart` its +3 h jump on each pad;
+the AAC pad, the gate source's own 100 ms steps; `syn-source-restart` its +3 h jump on each pad,
+the first PES after it on each pad dropped as stale (B-149: the pad was on house time; a `nothouse`
+each, `stale` true);
 sparse gaps behind program time on the teletext, DVB subtitle and ID3 pads. The five `bus-*`
 recordings were reviewed the same way on 2026-10-28 (B-132): their pads and caps are tsdemux's,
 in order, on all five (46 on `bus-pmt-change`, both programs); every unit is its dump's PES but
@@ -99,6 +103,8 @@ B-126): the engine's `demuxWatches` and `asrcWatches` tests read them, and the e
 cases to its entry's fields and their types, so a field the element renames fails there before
 the engine reads it wrong. Recorded on the dev Pi from those two cases (2026-10-27); the entries no
 run of theirs posts (no-stream, the mrasrc events but device-relock) are as the elements post them.
+B-148 added `mrasrc-stats`' `rate-known` and `device-resyncs`, the engage's `rate-known` and the
+`device-resync` and lost-time `gap` events.
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

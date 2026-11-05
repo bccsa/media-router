@@ -1,6 +1,6 @@
 // asrc_servo: the ASRC phase servo (WI-P1-8, portable part; WI-P3-5's decode bypass, device term and
-// product ratio, as py/asrc_bypass_ref_test.py holds them). A synthetic capture or decode runs through a
-// model of GstAudioResampler's frame accounting against each output frame's capture or content time.
+// product ratio, B-148's device timeline and lost time, as py/asrc_bypass_ref_test.py holds them). A synthetic
+// capture or decode runs through a model of GstAudioResampler's frame accounting against each output's content time.
 // Integer-only, so the printed checksums compare across machines. `--sweep N` prints seed statistics.
 #include <algorithm>
 #include <climits>
@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "../asrc_servo.h"
@@ -1327,6 +1328,10 @@ class Driver {
         return c;
     }
     void device_pair(int64_t itime, int64_t etime, int64_t read = 0) { dev.feed(itime, etime, read); }
+    // A sink discontinuity; a recalibration tells the servo before the next push, as the element does.
+    void device_discont(AsrcDeviceLock::Discont why) {
+        if (dev.discont(why)) sv.device_recalibrated();
+    }
     void gap() {
         if (sv.end_epoch()) drain();
     }
@@ -1348,7 +1353,7 @@ class Driver {
         }
         ratios.push_back(sv.stats().ratio_ppb);
         g_dec.add(c.in_rate);
-        g_dec.add((int64_t)c.pass * 4 + c.engage * 2 + c.relock);
+        g_dec.add((int64_t)c.gap * 8 + c.pass * 4 + c.engage * 2 + c.relock);
         if (c.drain) drain();
         if (c.relock) passed_ = 0;
         if (c.engage) {
@@ -1384,7 +1389,7 @@ class Driver {
         pos += d * SUB * rs->in() / rs->out();   // the first kept output: d outputs on
         const int64_t label = sv.next_pts();
         sv.produced((uint32_t)(k - d));
-        if (k - d) outputs.push_back({label, sv.next_pts(), k - d, c.relock, pos, i});
+        if (k - d) outputs.push_back({label, sv.next_pts(), k - d, c.relock || c.gap, pos, i});
         g_dec.add(label);
         g_dec.add(k - d);
         n_ += frames;
@@ -1726,10 +1731,18 @@ void test_device_only() {
         else contiguous = contiguous && d.outputs[i - 1].end == d.outputs[i].label;
     }
     const auto rel = d.of(AsrcEvent::Kind::relock);
-    std::snprintf(name, sizeof name, "labels: a contiguous counter from the first PTS, re-anchored at the GAP alone "
-                  "(%zu relock(s); %zu epochs from the PTS)", rel.size(), starts.size());
+    // B-148: what the first epoch's outputs ran up on the device timeline, each frame -eps_dev / 48 kHz.
+    int64_t ran = 0;
+    for (size_t i = 0; starts.size() == 2 && i < starts[1]; i++)
+        ran -= d.outputs[i].frames * d.dppbs[d.outputs[i].buf >= 0 ? d.outputs[i].buf : 2499];
+    ran = floor_div(ran, 48000);
+    const int64_t off = starts.size() == 2 ? d.outputs[starts[1]].label - d.pts[2500] : 0;
+    std::snprintf(name, sizeof name, "labels: a contiguous counter from the first PTS, relocked at the GAP alone (%zu "
+                  "relock(s); %zu epochs), the second on the device timeline: the GAP buffer's PTS %+.3f ms, what the "
+                  "first epoch's outputs ran up (%+.3f ms: 40 ppm from the device lock's first fit) within 1 us",
+                  rel.size(), starts.size(), off / 1e6, ran / 1e6);
     CHECK(name, rel.size() == 1 && !std::strcmp(rel[0].second.reason, "gap") && starts.size() == 2 && contiguous &&
-                    d.outputs[starts[0]].label == d.pts[0] && d.outputs[starts[1]].label == d.pts[2500]);
+                    d.outputs[starts[0]].label == d.pts[0] && iabs(off - ran) <= US && off > MS);
 }
 
 // A sink's readings every 21 ms: etime, then itime read up to 2 us later, 1 in 50 after a preemption
@@ -1784,6 +1797,513 @@ void test_device_lock() {
     std::snprintf(name, sizeof name, "the re-read matters: worst rate error 15-30 s %lld ppb with it, %lld ppb at etime "
                   "alone", (long long)worst[0], (long long)worst[1]);
     CHECK(name, worst[0] <= 50 && worst[1] > 100);
+}
+
+// --- B-148: the device timeline across a break, lost time, the decode bound, the engage's rate ----------
+// py/asrc_bypass_ref_test.py's B-148 cases, the same scenarios (its random draws differ: the checks hold either).
+
+int64_t ceil_div(int64_t a, int64_t b) { return -floor_div(-a, b); }
+
+struct Continuity {
+    std::unique_ptr<Driver> d;
+    std::vector<int64_t> pts, gaps;   // each push's PTS; the content gaps (ns) at the breaks
+    int64_t recal_out = -1;           // the output the recalibration meets
+};
+
+// A house-rate source into decode + device (bypassed), the device dev_ppb fast; at each of breaks_s it loses `lost`
+// frames, then a DISCONT buffer or a GAP; the sink's pairs exact or up to jitter_us late; a sync-latency
+// recalibration at recal_s (< 0: none).
+Continuity continuity_run(int64_t dev_ppb, int64_t secs, const std::vector<int64_t>& breaks_s, bool gap,
+                          int64_t jitter_us, int64_t lost = 1024, int64_t recal_s = -1) {
+    Continuity r;
+    r.d.reset(new Driver(48000, 48000, 500, true));
+    Driver& d = *r.d;
+    Lcg g(1);
+    int64_t n = 0;
+    size_t bi = 0;
+    while (n * S / 48000 < secs * S) {
+        const bool brk = bi < breaks_s.size() && n * S / 48000 >= breaks_s[bi] * S;
+        if (brk) {
+            r.gaps.push_back(lost * S / 48000);
+            n += lost;
+            bi++;
+            if (gap) d.gap();
+        }
+        const int64_t t = T0 + n * S / 48000;
+        if (recal_s >= 0 && r.recal_out < 0 && t - T0 >= recal_s * S) {
+            d.device_discont(AsrcDeviceLock::Discont::sync_latency);
+            r.recal_out = (int64_t)d.outputs.size();
+        }
+        const int64_t e = t - T0;
+        d.device_pair(e + floor_div(e * dev_ppb, S) - (jitter_us ? (int64_t)(g.next() % (uint32_t)(jitter_us * US)) : 0), e);
+        d.push(t, 1024, n == 0 || (brk && !gap));
+        r.pts.push_back(t);
+        n += 1024;
+    }
+    return r;
+}
+
+// Each output against the sink, which never skews (C-6): from its calibration (the first output, or the first
+// after a recalibration) it plays label L at house L_cal + (L - L_cal) / (1 + the device's rate). (content time
+// - T0, that playout less its content time) per output, those within 2 filter lengths of a break left out.
+std::vector<std::pair<int64_t, int64_t>> playout(const Continuity& r, int64_t dev_ppb, int64_t frames = 1024) {
+    const Driver& d = *r.d;
+    const int64_t near = 2 * ModelResampler::TAPS * SUB, per = frames * S / 48000;
+    std::vector<int64_t> breaks;
+    for (size_t b = 1; b < r.pts.size(); b++)
+        if (iabs(r.pts[b] - r.pts[b - 1] - per) > 1) breaks.push_back((int64_t)b * frames * SUB);
+    std::vector<std::pair<int64_t, int64_t>> out;
+    int64_t cal = d.outputs.empty() ? 0 : d.outputs[0].label;
+    for (size_t j = 0; j < d.outputs.size(); j++) {
+        const DOut& o = d.outputs[j];
+        if ((int64_t)j == r.recal_out) cal = o.label;
+        bool skip = o.pos < near;
+        for (int64_t x : breaks) skip = skip || iabs(o.pos - x) < near;
+        if (skip) continue;
+        const int64_t b = std::min<int64_t>(floor_div(o.pos, SUB * frames), (int64_t)r.pts.size() - 1);
+        const int64_t c = r.pts[b] + floor_div((o.pos - b * frames * SUB) * S, SUB * 48000);
+        __int128 num = (__int128)(o.label - cal) * S, den = S + dev_ppb;
+        __int128 q = num / den;
+        if (num % den != 0 && (num < 0) != (den < 0)) q -= 1;
+        out.push_back({c - T0, cal + (int64_t)q - c});
+    }
+    return out;
+}
+
+// The playout's range from `from_s` on, against its first value there (or against `ref` when given).
+bool playout_range(const std::vector<std::pair<int64_t, int64_t>>& p, int64_t from_s, int64_t to_s, int64_t* lo,
+                   int64_t* hi, int64_t* first) {
+    bool have = false;
+    *lo = INT64_MAX;
+    *hi = INT64_MIN;
+    for (const auto& x : p) {
+        if (x.first < from_s * S || x.first >= to_s * S) continue;
+        if (!have) *first = x.second;
+        have = true;
+        *lo = std::min(*lo, x.second);
+        *hi = std::max(*hi, x.second);
+    }
+    return have;
+}
+
+void test_device_continuity() {
+    std::printf("\n  B-148: the labels stay on the device timeline across a DISCONT or a GAP\n");
+    struct Row {
+        const char* name;
+        int64_t dev;
+        bool gap;
+        int64_t jit;
+    };
+    for (const Row& w : {Row{"-136 ppm, a DISCONT every 300 s, exact pairs", -136000, false, 0},
+                         Row{"+136 ppm, a DISCONT every 300 s, pairs 2 ms late at random", 136000, false, 2000},
+                         Row{"-136 ppm, a GAP every 300 s, pairs 2 ms late at random", -136000, true, 2000},
+                         Row{"+136 ppm, a GAP every 300 s, exact pairs", 136000, true, 0}}) {
+        const Continuity r = continuity_run(w.dev, 1800, {300, 600, 900, 1200, 1500}, w.gap, w.jit);
+        const auto rel = r.d->of(AsrcEvent::Kind::relock);
+        bool ok = rel.size() == 5 && r.gaps.size() == 5;
+        int64_t jlo = INT64_MAX, jhi = INT64_MIN;
+        for (size_t i = 0; ok && i < rel.size(); i++) {
+            const int64_t j = rel[i].second.value - r.gaps[i];
+            jlo = std::min(jlo, j);
+            jhi = std::max(jhi, j);
+            ok = ok && !std::strcmp(rel[i].second.reason, w.gap ? "gap" : "discont");
+        }
+        int64_t lo, hi, ref;
+        const bool have = playout_range(playout(r, w.dev), 60, 1800, &lo, &hi, &ref);
+        char name[400];
+        std::snprintf(name, sizeof name, "%s, 30 min: %zu relocks (%s), each jump the content gap within 0.1 ms "
+                      "(%+.3f .. %+.3f us off it); the playout less its content time within 1 ms of its value at 60 s "
+                      "(%+.3f .. %+.3f ms; before B-148 each relock added 40.8 ms)", w.name, rel.size(),
+                      w.gap ? "gap" : "discont", jlo / 1e3, jhi / 1e3, (lo - ref) / 1e6, (hi - ref) / 1e6);
+        CHECK(name, ok && iabs(jlo) <= 100 * US && iabs(jhi) <= 100 * US && have && iabs(lo - ref) <= MS &&
+                        iabs(hi - ref) <= MS);
+    }
+    {   // DEV-P3a's V7 shape: one DISCONT after 20 min (section 5 predicted 163 ms more than the gap before B-148)
+        const Continuity r = continuity_run(-136000, 1500, {1200}, false, 0);
+        const auto rel = r.d->of(AsrcEvent::Kind::relock);
+        int64_t lo, hi, ref;
+        const bool have = playout_range(playout(r, -136000), 60, 1500, &lo, &hi, &ref);
+        char name[300];
+        std::snprintf(name, sizeof name, "-136 ppm, one DISCONT after 20 min: the jump the gap (%+.3f us off it), the "
+                      "playout flat (%+.3f .. %+.3f ms)", rel.empty() ? 0.0 : (rel[0].second.value - r.gaps[0]) / 1e3,
+                      (lo - ref) / 1e6, (hi - ref) / 1e6);
+        CHECK(name, rel.size() == 1 && iabs(rel[0].second.value - r.gaps[0]) <= 100 * US && have &&
+                        iabs(lo - ref) <= MS && iabs(hi - ref) <= MS);
+    }
+    {
+        const Continuity r = continuity_run(-136000, 600, {300}, false, 0, 60 * 48000);
+        const auto rel = r.d->of(AsrcEvent::Kind::relock);
+        const int64_t dev_gap = r.gaps[0] + floor_div(r.gaps[0] * -136000, S);   // the outage in device time
+        int64_t lo, hi, ref;
+        const bool have = playout_range(playout(r, -136000), 60, 600, &lo, &hi, &ref);
+        char name[300];
+        std::snprintf(name, sizeof name, "a 60 s outage at -136 ppm: the jump %.6f s, the outage in device time (%.6f s; "
+                      "%+.3f us off it, the house span 8.16 ms more); the playout flat (%+.3f .. %+.3f ms)",
+                      rel.empty() ? 0.0 : rel[0].second.value / 1e9, dev_gap / 1e9,
+                      rel.empty() ? 0.0 : (rel[0].second.value - dev_gap) / 1e3, (lo - ref) / 1e6, (hi - ref) / 1e6);
+        CHECK(name, rel.size() == 1 && iabs(rel[0].second.value - dev_gap) <= 100 * US && have &&
+                        iabs(lo - ref) <= MS && iabs(hi - ref) <= MS);
+    }
+    {
+        const Continuity r = continuity_run(-136000, 450, {300}, false, 0, 1024, 150);
+        const auto p = playout(r, -136000);
+        int64_t mlo, mhi, mref, llo, lhi, lref;
+        const bool hm = playout_range(p, 155, 300, &mlo, &mhi, &mref), hl = playout_range(p, 305, 450, &llo, &lhi, &lref);
+        char name[400];
+        std::snprintf(name, sizeof name, "a sync-latency recalibration at 150 s: the open epoch keeps its labels "
+                      "(%+.3f .. %+.3f ms against the recalibrated sink), and the next epoch carries only what ran up "
+                      "since: the playout on its content time again after the DISCONT (%+.3f .. %+.3f ms)", mlo / 1e6,
+                      mhi / 1e6, llo / 1e6, lhi / 1e6);
+        CHECK(name, r.recal_out >= 0 && hm && hl && mhi - mlo <= MS && mlo < -10 * MS && iabs(llo) <= MS &&
+                        iabs(lhi) <= MS);
+    }
+}
+
+void test_device_alignment() {
+    std::printf("\n  B-148: an alignment resync keeps the device lock; a recalibration is the servo's\n");
+    using D = AsrcDeviceLock::Discont;
+    AsrcDeviceLock dl;
+    const D all[5] = {D::new_caps, D::flush, D::sync_latency, D::alignment, D::device_failure};
+    bool got[5];
+    for (int i = 0; i < 5; i++) got[i] = dl.discont(all[i]);
+    char name[400];
+    std::snprintf(name, sizeof name, "the reasons: new-caps, sync-latency and device-failure relock and say the sink "
+                  "recalibrated, flush relocks only, alignment is counted only (%d%d%d%d%d; relocks %llu, alignments "
+                  "%llu)", got[0], got[1], got[2], got[3], got[4], (unsigned long long)dl.relocks(),
+                  (unsigned long long)dl.alignments());
+    CHECK(name, got[0] && !got[1] && got[2] && !got[3] && got[4] && dl.relocks() == 4 && dl.alignments() == 1);
+    struct R {
+        int64_t worst;
+        int fit_n;
+        uint64_t relocks, alignments;
+    } rows[2];
+    for (int k = 0; k < 2; k++) {
+        AsrcDeviceLock l;
+        Lcg g(4);
+        int64_t next = 60 * S, worst = 0;
+        for (int64_t t = 0; t < 300 * S; t += 21333333) {
+            if (t >= next) {
+                l.discont(k == 0 ? D::alignment : D::flush);
+                next += 16 * S;
+            }
+            l.feed(t + floor_div(t * -136000, S) - (int64_t)(g.next() % (uint32_t)MS), t);
+            if (t >= 120 * S && l.lock().has_fit()) worst = std::max(worst, iabs(l.rate_ppb() + 136000));
+        }
+        rows[k] = {worst, l.lock().fit_n(), l.relocks(), l.alignments()};
+    }
+    const R& a = rows[0];
+    const R& f = rows[1];
+    std::snprintf(name, sizeof name, "-136 ppm, pairs 1 ms late at random, an alignment resync every 16 s from 60 s: "
+                  "the lock kept, its fit window whole (%d buckets at 300 s, %llu relocks, %llu alignments), the rate "
+                  "within 3 ppm from 120 s (%.3f ppm off; each a relock as before B-148: %d buckets, %.3f ppm)",
+                  a.fit_n, (unsigned long long)a.relocks, (unsigned long long)a.alignments, a.worst / 1e3, f.fit_n,
+                  f.worst / 1e3);
+    CHECK(name, a.relocks == 0 && a.alignments == 15 && a.fit_n >= 200 && a.worst <= 3000 && f.relocks == 15 &&
+                    f.fit_n < 16);
+}
+
+void test_device_slip() {
+    std::printf("\n  B-148: a device slip under the 50 ms step is rate for minutes (the known limit, WI-P4-4)\n");
+    bool ok = true;
+    std::string rows;
+    const int64_t true_eps = floor_div(136000 * S, S - 136000);   // house = (1 + eps) device: 136 ppm slow
+    for (int64_t slip_ms : {21LL, 40LL, 49LL}) {
+        AsrcDeviceLock dl;
+        Lcg g((uint64_t)slip_ms);
+        int64_t integ = 0, peak = 0, back = -1;
+        for (int64_t t = 0; t < 1800 * S; t += 20 * MS) {
+            dl.feed(t - floor_div(t * 136000, S) - (t >= 600 * S ? slip_ms * MS : 0) - (int64_t)(g.next() % (uint32_t)MS), t);
+            if (t < 600 * S) continue;
+            integ += floor_div((dl.ppb() - true_eps) * 20 * MS, S);   // the phase the rate term moves the labels by
+            const int64_t off = iabs(dl.rate_ppb() + 136000);
+            peak = std::max(peak, off);
+            if (back < 0 && t >= 660 * S && off <= 5000) back = t;
+            if (back >= 0 && off > 5000) back = -1;
+        }
+        char row[120];
+        std::snprintf(row, sizeof row, "%s(%lld ms: %llu relocks, peak %.0f ppm, phase %.1f ms, settled %.0f s)",
+                      rows.empty() ? "" : ", ", (long long)slip_ms, (unsigned long long)dl.relocks(), peak / 1e3,
+                      integ / 1e6, back >= 0 ? (back - 600 * S) / 1e9 : -1.0);
+        rows += row;
+        ok = ok && dl.relocks() == 0 && iabs(integ - slip_ms * MS) <= slip_ms * MS / 10 && back >= 0 &&
+             back - 600 * S <= 900 * S;
+    }
+    char name[600];
+    std::snprintf(name, sizeof name, "-136 ppm, pairs 1 ms late at random, one slip of 21/40/49 ms at 600 s: no relock, "
+                  "a rate excursion whose phase is the slip within 10 %%, back within 5 ppm in under 15 min (%s)",
+                  rows.c_str());
+    CHECK(name, ok);
+}
+
+struct Step {
+    int64_t at_s, ticks;
+};
+
+// A house-rate decode as opusdec gives it: `frames`-frame buffers whose PTS are 90 kHz ticks (1800 per 960
+// frames) ceil'd to ns; holes and back: unflagged steps forward and back. With `device`, the device term at
+// dev_ppb from exact pairs.
+std::unique_ptr<Driver> decode_ticks_run(int64_t secs, const std::vector<Step>& holes, const std::vector<Step>& back,
+                                         bool device = false, int64_t dev_ppb = -136000, int64_t frames = 960) {
+    std::unique_ptr<Driver> d(new Driver(48000, 48000, 500, device));
+    const int64_t per = frames * 90000 / 48000;
+    std::vector<std::pair<int64_t, int64_t>> steps;
+    for (const Step& h : holes) steps.push_back({h.at_s * 48000 / frames, h.ticks});
+    for (const Step& b : back) steps.push_back({b.at_s * 48000 / frames, -b.ticks});
+    std::sort(steps.begin(), steps.end());
+    int64_t tick = 450000LL * 90000;
+    const int64_t first = ceil_div(tick * 100000, 9);
+    size_t si = 0;
+    for (int64_t k = 0; k < secs * 48000 / frames; k++) {
+        while (si < steps.size() && k >= steps[si].first) tick += steps[si++].second;
+        const int64_t t = ceil_div(tick * 100000, 9);
+        if (device) {
+            const int64_t e = t - first;
+            d->device_pair(e + floor_div(e * dev_ppb, S), e);
+        }
+        d->push(t, (uint32_t)frames, k == 0);
+        tick += per;
+    }
+    return d;
+}
+
+void test_lost_time() {
+    std::printf("\n  B-148: decode modes, an unflagged hole is lost time, a step back a break\n");
+    char name[700];
+    for (bool device : {false, true}) {
+        bool ok = true;
+        std::string rows;
+        for (int64_t at : {15LL, 30LL, 60LL, 120LL, 300LL}) {
+            const auto d = decode_ticks_run(900, {{at, 1920}}, {}, device);
+            const auto g = d->of(AsrcEvent::Kind::gap);
+            const AsrcServo::Stats st = d->sv.stats();
+            char row[100];
+            std::snprintf(row, sizeof row, "%s%lld s: %zu engages, %zu gaps of %lld, %+.3f ppm", rows.empty() ? "" : "; ",
+                          (long long)at, d->of(AsrcEvent::Kind::engaged).size(), g.size(),
+                          g.empty() ? 0LL : (long long)g[0].second.lost_frames, st.source_ppb / 1e3);
+            rows += row;
+            ok = ok && d->of(AsrcEvent::Kind::engaged).empty() && g.size() == 1 &&
+                 !std::strcmp(g[0].second.reason, "lost-time") && g[0].second.lost_frames == 1024 &&
+                 iabs(st.source_ppb) <= 500 && st.relocks == 0;
+        }
+        std::snprintf(name, sizeof name, "%s: one 21.333 ms hole at 15/30/60/120/300 s of 900 s: no engage, one "
+                      "lost-time gap of 1024 frames each, the source at house rate within 0.5 ppm, no relock (%s)",
+                      device ? "decode + device" : "decode", rows.c_str());
+        CHECK(name, ok);
+    }
+    {
+        const auto d = decode_ticks_run(900, {{15, 1920}, {30, 1920}, {60, 1920}}, {}, true);
+        size_t disc = 0;
+        for (size_t i = 1; i < d->outputs.size(); i++) disc += d->outputs[i].discont;
+        std::snprintf(name, sizeof name, "decode + device, three holes at 15/30/60 s: no engage, three gaps, each its next "
+                      "output DISCONT (%zu, %zu, %zu), mode %s", d->of(AsrcEvent::Kind::engaged).size(),
+                      d->of(AsrcEvent::Kind::gap).size(), disc, asrc_mode_name(d->sv.mode()));
+        CHECK(name, d->of(AsrcEvent::Kind::engaged).empty() && d->of(AsrcEvent::Kind::gap).size() == 3 && disc == 3 &&
+                        d->sv.mode() == AsrcServo::Mode::device);
+    }
+    {
+        bool ok = true;
+        std::string rows;
+        const int64_t want[3] = {64, 256, 480};
+        int i = 0;
+        for (int64_t ticks : {120LL, 480LL, 900LL}) {   // 1.333, 5.333, 10 ms
+            const auto d = decode_ticks_run(600, {{120, ticks}}, {});
+            const auto g = d->of(AsrcEvent::Kind::gap);
+            char row[80];
+            std::snprintf(row, sizeof row, "%s%.3f ms: %zu engages, %zu gaps of %lld", rows.empty() ? "" : "; ",
+                          ticks / 90.0, d->of(AsrcEvent::Kind::engaged).size(), g.size(),
+                          g.empty() ? 0LL : (long long)g[0].second.lost_frames);
+            rows += row;
+            ok = ok && d->of(AsrcEvent::Kind::engaged).empty() && g.size() == 1 && g[0].second.lost_frames == want[i++];
+        }
+        std::snprintf(name, sizeof name, "holes of 1.333/5.333/10 ms at 120 s: no engage, one gap of their frames each "
+                      "(%s)", rows.c_str());
+        CHECK(name, ok);
+    }
+    {
+        bool ok = true;
+        std::string rows;
+        for (int64_t ticks : {1919LL, 1921LL}) {   // a tick off 1024 frames, 10 s into the epoch
+            const auto d = decode_ticks_run(120, {{10, ticks}}, {});
+            const auto g = d->of(AsrcEvent::Kind::gap);
+            const int64_t phase = d->sv.stats().phase_err_ns, want = ticks * 100000 / 9;
+            char row[120];
+            std::snprintf(row, sizeof row, "%s%lld ticks: %zu engages, %zu gaps of %lld frames jumping %lld ns, phase "
+                          "%lld ns", rows.empty() ? "" : "; ", (long long)ticks, d->of(AsrcEvent::Kind::engaged).size(),
+                          g.size(), g.empty() ? 0LL : (long long)g[0].second.lost_frames,
+                          g.empty() ? 0LL : (long long)g[0].second.value, (long long)phase);
+            rows += row;
+            ok = ok && d->of(AsrcEvent::Kind::engaged).empty() && g.size() == 1 && iabs(g[0].second.value - want) <= 2 &&
+                 iabs(phase) <= 2;
+        }
+        std::snprintf(name, sizeof name, "holes a tick off 1024 frames 10 s into the epoch: no engage, the labels jump the "
+                      "PTS hole to the ns and the phase stays (%s; on whole frames alone 9.7 us reached the lock, a ratio "
+                      "engage at 0.55 ppm)", rows.c_str());
+        CHECK(name, ok);
+    }
+    {
+        const auto d = decode_ticks_run(600, {{120, 45}}, {});
+        const auto e = d->of(AsrcEvent::Kind::engaged);
+        std::snprintf(name, sizeof name, "a 0.5 ms hole stays the lock's (inside the bound; the known limit): no gap, %s "
+                      "%+.2f ppm", e.empty() ? "never engaged" : e[0].second.reason,
+                      e.empty() ? 0.0 : e[0].second.value / 1e3);
+        CHECK(name, d->of(AsrcEvent::Kind::gap).empty());
+    }
+    {
+        const auto d = decode_ticks_run(600, {}, {{120, 1890}});
+        const auto rel = d->of(AsrcEvent::Kind::relock);
+        std::snprintf(name, sizeof name, "a 21 ms step back at 120 s: one relock '%s' (%.3f ms), measured afresh, no "
+                      "engage, mode %s", rel.empty() ? "" : rel[0].second.reason,
+                      rel.empty() ? 0.0 : rel[0].second.value / 1e6, asrc_mode_name(d->sv.mode()));
+        CHECK(name, rel.size() == 1 && !std::strcmp(rel[0].second.reason, "jump") &&
+                        d->of(AsrcEvent::Kind::engaged).empty() && d->sv.mode() == AsrcServo::Mode::bypass);
+    }
+    {
+        bool ok = true;
+        std::string rows;
+        for (int64_t ppb : {88000000LL, -50000000LL}) {   // 44.1 kHz content labelled 48 kHz; 5 % slow
+            Driver d(48000, 48000, 500, false);
+            feed(d, 48000, 1024, ppb, 60, no_stop, no_pairs);
+            const AsrcServo::Stats st = d.sv.stats();
+            char row[80];
+            std::snprintf(row, sizeof row, "%s%+.1f %%: %llu gaps, %llu relocks", rows.empty() ? "" : "; ", ppb / 1e7,
+                          (unsigned long long)st.gaps, (unsigned long long)st.relocks);
+            rows += row;
+            ok = ok && st.gaps == 0 && st.relocks == 0;
+        }
+        std::snprintf(name, sizeof name, "a source past the bound on every buffer (%s): its steps are a rate, the lock's, "
+                      "as before B-148: no lost time, no break", rows.c_str());
+        CHECK(name, ok);
+    }
+}
+
+// The DEV-P3a v7dec sequence (house-engage-replay/replay.cpp): v5hx's Opus egress, AU 0 at these ticks, +1920/
+// +1919-tick steps where Mic A lost a cycle (rec/v5ana.txt; the fifth from mA's journal).
+constexpr int64_t V5HX_AU0 = 40562937132LL;
+const int64_t V5HX_STEPS[5][2] = {{5526, 1920}, {6037, 1920}, {17084, 1920}, {93796, 1919}, {125956, 1920}};
+
+void test_v7dec_replay() {
+    std::printf("\n  B-148: DEV-P3a's v7dec, replayed (the five lost Mic A cycles behind the Opus hop)\n");
+    for (bool device : {true, false}) {
+        Driver d(48000, 48000, 500, device);
+        int64_t first = 0;
+        for (int64_t k = -690; k <= 128000; k++) {
+            int64_t tick = V5HX_AU0 + k * 1800;
+            for (const auto& s : V5HX_STEPS)
+                if (k >= s[0]) tick += s[1];
+            const int64_t t = ceil_div(tick * 100000, 9);
+            if (k == -690) first = t;
+            if (device) {
+                const int64_t e = t - first;
+                d.device_pair(e + floor_div(e * -140000, S), e);
+            }
+            d.push(t, 960, k == -690);
+        }
+        const auto g = d.of(AsrcEvent::Kind::gap);
+        std::string fr;
+        bool want = g.size() == 5;
+        const int64_t lost[5] = {1024, 1024, 1024, 1023, 1024};
+        for (size_t i = 0; i < g.size(); i++) {
+            fr += (i ? "," : "") + std::to_string(g[i].second.lost_frames);
+            want = want && i < 5 && g[i].second.lost_frames == lost[i];
+        }
+        char name[400];
+        std::snprintf(name, sizeof name, "%s: AUs -690..128000, %zu engages (before B-148: one, ratio -65.0 ppm at AU "
+                      "6908), %zu gaps of [%s] frames, %llu relocks, mode %s", device ? "decode + device" : "decode",
+                      d.of(AsrcEvent::Kind::engaged).size(), g.size(), fr.c_str(),
+                      (unsigned long long)d.sv.stats().relocks, asrc_mode_name(d.sv.mode()));
+        CHECK(name, d.of(AsrcEvent::Kind::engaged).empty() && want && d.sv.stats().relocks == 0);
+    }
+}
+
+void test_foreign_pes() {
+    std::printf("\n  B-148: a foreign source in PES of several AUs still engages at its rate\n");
+    Driver d(48000, 48000, 500, false);
+    for (int64_t k = 0; k < 60 * 48000 / 1024; k++) {   // +40 ppm, 8 AUs per PES interpolated inside it
+        const int64_t p = (k / 8) * 8, c = p * 1024 * S / 48000;
+        const int64_t h = (int64_t)((__int128)c * S / (S + 40000));
+        d.push(ceil_div(floor_div((T0 + h) * 9, 100000) * 100000, 9) + (k - p) * 1024 * S / 48000, 1024, k == 0);
+    }
+    int64_t at = 0;
+    const char* why = "";
+    AsrcEvent e{};
+    const bool ok = engaged_at(d, &at, &why, &e);
+    char name[300];
+    std::snprintf(name, sizeof name, "+40 ppm, 8 AUs per PES: engages within 30 s (%.2f s, %s, source %+.2f ppm), no lost "
+                  "time (%zu gaps)", at / 1e9, why, e.value / 1e3, d.of(AsrcEvent::Kind::gap).size());
+    CHECK(name, ok && at <= 30 * S && d.of(AsrcEvent::Kind::gap).empty() && iabs(d.sv.stats().source_ppb - 40000) <= 2000);
+}
+
+void test_decode_bounds() {
+    std::printf("\n  B-148: decode ratio-out-of-bounds: locked, past the bound for 30 s of PTS\n");
+    struct Row {
+        const char* name;
+        int64_t ppm;     // the PTS this much long (+) or short (-) ...
+        int64_t secs;    // ... for this long from the start, then house rate
+    };
+    char name[300];
+    for (const Row& w : {Row{"a first 10-bucket fit at -1800 ppm (the PTS 1800 ppm short for 10 s)", -1800, 10},
+                         Row{"a 20 s 2000 ppm excursion from the start", 2000, 20}}) {
+        Driver d(48000, 48000, 500, false);
+        int64_t first = 0;
+        bool have = false;
+        for (int64_t k = 0; k < 120 * 48000 / 1024; k++) {
+            const int64_t c = k * 1024 * S / 48000, cut = w.secs * S;
+            const int64_t h = c < cut ? c * (1000000 + w.ppm) / 1000000 : cut * (1000000 + w.ppm) / 1000000 + c - cut;
+            d.push(formula_pts(T0 + h), 1024, k == 0);
+            if (!have && d.sv.lock().has_fit()) {
+                have = true;
+                first = d.sv.lock().fit_ppb();
+            }
+        }
+        std::snprintf(name, sizeof name, "%s: no out-of-bounds (the first fit %+.1f ppm; before B-148 raised at once)",
+                      w.name, first / 1e3);
+        CHECK(name, have && iabs(first) > 1000000 && d.of(AsrcEvent::Kind::ratio_out_of_bounds).empty());
+    }
+    std::string rows;
+    bool ok = true;
+    for (int64_t ppb : {1500000LL, 5000000LL}) {
+        Driver d(48000, 48000, 500, false);
+        feed(d, 48000, 1024, ppb, 120, no_stop, no_pairs);
+        const auto o = d.of(AsrcEvent::Kind::ratio_out_of_bounds);
+        char row[80];
+        std::snprintf(row, sizeof row, "%s%+.0f ppm at %.2f s", rows.empty() ? "" : ", ", ppb / 1e3,
+                      o.empty() ? -1.0 : (o[0].second.house_ns - T0) / 1e9);
+        rows += row;
+        ok = ok && o.size() == 1 && o[0].second.house_ns - T0 <= 60 * S && iabs(o[0].second.value + ppb) <= ppb / 50;
+    }
+    std::snprintf(name, sizeof name, "sources 1500 and 5000 ppm fast: out of bounds within 60 s (%s; the 5000 ppm one "
+                  "steps its envelope every 22 s, so no 30-bucket fit ever forms)", rows.c_str());
+    CHECK(name, ok);
+}
+
+void test_engage_rate_known() {
+    std::printf("\n  B-148: an engage says whether the lock had measured the rate\n");
+    char name[300];
+    {
+        Driver d(48000, 48000, 500, false);
+        feed(d, 48000, 1024, 300000, 20, [](const Driver& x) { return !x.of(AsrcEvent::Kind::engaged).empty(); },
+             no_pairs);
+        int64_t at = 0;
+        const char* why = "";
+        AsrcEvent e{};
+        const bool ok = engaged_at(d, &at, &why, &e);
+        std::snprintf(name, sizeof name, "+300 ppm: a phase engage at %.2f s before the first fit: rate not measured "
+                      "(%d; source %+.1f ppm), stats rate-known %d", at / 1e9, (int)e.rate_known, e.value / 1e3,
+                      (int)d.sv.stats().rate_known);
+        CHECK(name, ok && !std::strcmp(why, "phase") && !e.rate_known && !d.sv.stats().rate_known);
+    }
+    {
+        Driver d(48000, 48000, 500, false);
+        feed(d, 48000, 1024, 3000, 60, [](const Driver& x) { return !x.of(AsrcEvent::Kind::engaged).empty(); },
+             no_pairs);
+        int64_t at = 0;
+        const char* why = "";
+        AsrcEvent e{};
+        const bool ok = engaged_at(d, &at, &why, &e);
+        std::snprintf(name, sizeof name, "+3 ppm: a ratio engage (%.2f s): rate measured (%d), stats rate-known %d",
+                      at / 1e9, (int)e.rate_known, (int)d.sv.stats().rate_known);
+        CHECK(name, ok && !std::strcmp(why, "ratio") && e.rate_known && d.sv.stats().rate_known);
+    }
 }
 
 int sweep(int n) {
@@ -1850,5 +2370,13 @@ int main(int argc, char** argv) {
     test_device_only();
     test_device_lock();
     std::printf("\n  CHECKSUM asrc_decode %016llx (compare across machines)\n", (unsigned long long)g_dec.h);
+    test_device_continuity();
+    test_device_alignment();
+    test_device_slip();
+    test_lost_time();
+    test_v7dec_replay();
+    test_foreign_pes();
+    test_decode_bounds();
+    test_engage_rate_known();
     return test_summary("asrc_servo");
 }

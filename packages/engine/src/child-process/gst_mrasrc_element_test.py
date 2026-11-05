@@ -360,13 +360,14 @@ check("out-rate: 0 (the input's rate) by default, 0..768000; quality 4 by defaul
 _st = _el.find_property("stats")
 _s0 = _el.get_property("stats")
 STATS_FIELDS = ["state", "ratio-ppb", "phase-err-ns", "relocks", "in-frames", "out-frames",
-                "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb"]
-COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k != "mode"]
-check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, every count 0",
+                "discont-in", "dropped-frames", "gaps", "lost-frames", "mode", "source-ppb", "device-ppb",
+                "rate-known", "device-resyncs"]
+COUNT_FIELDS = [k for k in STATS_FIELDS[1:] if k not in ("mode", "rate-known")]
+check("stats is read-only; a fresh element's: mrasrc-stats, acquiring, mode capture, no rate, every count 0",
       not _st.flags & GObject.ParamFlags.WRITABLE and _s0.get_name() == "mrasrc-stats"
       and [_s0.nth_field_name(i) for i in range(_s0.n_fields())] == STATS_FIELDS
       and _s0.get_value("state") == "acquiring" and _s0.get_value("mode") == "capture"
-      and all(_s0.get_value(k) == 0 for k in COUNT_FIELDS))
+      and _s0.get_value("rate-known") is False and all(_s0.get_value(k) == 0 for k in COUNT_FIELDS))
 _bp, _ds = _el.find_property("bypass-below-ppm"), _el.find_property("device-sink")
 check("bypass-below-ppm: 0 (capture) by default, 0..1000; device-sink: \"\" by default; both apply at "
       "a start (WI-P3-5)",
@@ -686,10 +687,11 @@ posts = h.messages("mrasrc-stats")
 _gaps = [b["out-frames"] - a["out-frames"] for a, b in zip(posts, posts[1:-1])]
 check(f"mrasrc-stats every 2 s of output ({len(posts)} posts, {sorted(set(_gaps))} frames "
       "apart) and once more at EOS", len(posts) == 6 and all(abs(g - 2 * FS) <= BUF for g in _gaps))
-check("each carries part 10's fields and WI-P3-5's mode and clocks, in order and typed (capture: "
-      "mode capture, no device)",
+check("each carries part 10's fields, WI-P3-5's mode and clocks and B-148's rate-known and device "
+      "resyncs, in order and typed (capture: mode capture, no device)",
       all(list(p) == STATS_FIELDS and isinstance(p["state"], str) and p["mode"] == "capture"
-          and all(isinstance(p[k], int) for k in COUNT_FIELDS) and p["device-ppb"] == 0 for p in posts))
+          and all(isinstance(p[k], int) for k in COUNT_FIELDS) and isinstance(p["rate-known"], bool)
+          and p["device-ppb"] == 0 and p["device-resyncs"] == 0 for p in posts))
 _ev = h.messages("mrasrc-event")
 check(f"mrasrc-event relock: kind, reason, house-ns, jump-ns, dropped-ns "
       f"({sorted(_ev[0]) if _ev else []})",
@@ -1091,12 +1093,17 @@ for fx, caps, dec in (("tp-hevc-aac.ts", "audio/mpeg", "aacparse ! avdec_aac"),
 if _have:
     # Found (B-125): this recording's AAC timeline steps back 14-18 ms inside its segments (B-121's
     # 100 ms steps are its two gaps); within 7.6 s no rule engages, and each gap measures afresh.
+    # B-148: each unflagged step back is a break too ('jump'), measured afresh.
     pes, din, dout, ain, aout, events, stats, err = decode_chain(os.path.join(_FX, "cap-mux-align7-aac-opus.ts"),
                                                                  "audio/mpeg", "aacparse ! avdec_aac")
     rel = [e for e in events if e["kind"] == "relock"]
+    _gaps = [e for e in rel if e["reason"] == "discont"]
+    _backs = [e for e in rel if e["reason"] == "jump"]
     check(f"avdec_aac on cap-mux-align7's AAC: each of its two gaps measures afresh, a relock on the DISCONT after "
-          f"it ({[(e['reason'], round(e['jump-ns'] / MS, 1)) for e in rel]} ms), passed unchanged throughout",
-          err is None and len(rel) == 2 and all(e["reason"] == "discont" and e["jump-ns"] > 0 for e in rel)
+          f"it, and each of its three 14-18 ms steps back a break ({[(e['reason'], round(e['jump-ns'] / MS, 1)) for e in rel]} "
+          f"ms), passed unchanged throughout",
+          err is None and len(_gaps) == 2 and all(e["jump-ns"] > 0 for e in _gaps) and len(_backs) == 3
+          and all(-19 * MS < e["jump-ns"] < -13 * MS for e in _backs) and len(rel) == 5
           and stats.get("mode") == "bypass" and aout == ain)
 
 print("\n--- a 35 s AAC encode at house rate stays bypassed; the same respaced 40 ppm engages ---")
@@ -1136,29 +1143,107 @@ else:
 
     shutil.rmtree(_tmp, ignore_errors=True)
 
+print("\n--- B-148: an Opus encode whose source lost a cycle (perfect-timestamp, a 1024-sample DISCONT hole) ---")
+_opus = all(Gst.ElementFactory.find(e) for e in ("opusenc", "mpegtsmux", "opusdec"))
+if not _opus:
+    print("SKIP the Opus hole — opusenc, mpegtsmux or opusdec unavailable")
+else:
+    import tempfile
+
+    _tmp = tempfile.mkdtemp(prefix="mrasrc-hole-")
+    _hole = os.path.join(_tmp, "hole.ts")
+    # A house capture into the audio transcoder's encoder: the capture lost one 1024-frame cycle at 10 s and
+    # flagged the next buffer DISCONT; opusenc restarts its count there, and nothing marks the hole after it.
+    _p = Gst.parse_launch("appsrc name=src format=time ! audioconvert ! opusenc perfect-timestamp=true ! "
+                          f"mpegtsmux ! filesink location={_hole}")
+    _src = _p.get_by_name("src")
+    _hc = Capture(channels=2, fmt="S16LE")
+    _src.set_property("caps", Gst.Caps.from_string(_hc.caps()))
+    _p.set_state(Gst.State.PLAYING)
+    _i, _skip = 0, False
+    while _i < 30 * FS:
+        if not _skip and _i >= 10 * FS:
+            _i += BUF
+            _skip = True
+            _disc = True
+        else:
+            _disc = _i == 0
+        _b = Gst.Buffer.new_wrapped(_hc.render(_i, BUF))
+        _b.pts = _i * S // FS
+        _b.duration = BUF * S // FS
+        if _disc:
+            _b.set_flags(Gst.BufferFlags.DISCONT)
+        _src.emit("push-buffer", _b)
+        _i += BUF
+    _src.emit("end-of-stream")
+    _p.get_bus().timed_pop_filtered(60 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    _p.set_state(Gst.State.NULL)
+    pes, din, dout, ain, aout, events, stats, err = decode_chain(_hole, "audio/x-opus", "opusdec")
+    _g = [e for e in events if e["kind"] == "gap"]
+    check(f"mrtsdemux, opusdec and mrasrc bypass-below-ppm=0.5 over 30 s: no engage ({[e['kind'] for e in events]}), "
+          f"one lost-time gap of {[e['lost-frames'] for e in _g]} frames (the 1024 lost, the PES clock's tick short of "
+          f"them; before B-148 the hole was read as a source rate and engaged), mode {stats.get('mode')}, every buffer "
+          f"passed",
+          err is None and not [e for e in events if e["kind"] == "engaged"] and len(_g) == 1
+          and _g[0]["reason"] == "lost-time" and 64 <= _g[0]["lost-frames"] <= 1024 and stats.get("mode") == "bypass"
+          and stats.get("gaps") == 1 and aout == ain and len(ain) > 1400)
+    import shutil
+
+    shutil.rmtree(_tmp, ignore_errors=True)
+
 # --- WI-P3-5: device mode ----------------------------------------------------------------------
 _TEST_SO = os.path.join(os.path.dirname(_SO), "tests", "libgstmrtest.so")
-# 10 min of house time in 5 min: a faster clock magnifies the scheduling noise the fill shows.
+# 10 min of house time in 5 min: a faster clock magnifies the scheduling noise the fill shows. B-148: a
+# lost 1024-frame cycle (DISCONT after it) every 60 s and one 140 ms ts-offset step at 20 s, the fill
+# windows from 30 s (settle-ns), after the step's alignment resync.
 _SPEED, _DEV_S = 2, 610
-print(f"\n--- device mode: mrtestaudiosink 40 ppm fast, a {_SPEED}x clock, {_DEV_S - 10} s past the settle ---")
+print(f"\n--- device mode: mrtestaudiosink 40 ppm fast, a {_SPEED}x clock, {_DEV_S - 30} s past the settle; a lost "
+      "cycle every 60 s, a 140 ms ts-offset step at 20 s ---")
 if not os.path.exists(_TEST_SO):
     print(f"SKIP device mode — {_TEST_SO} not built (make -C plugins/mpegts-core/native/mrtshouse test)")
 else:
+    import threading
+
     Gst.Plugin.load_file(_TEST_SO)
     _clk = GObject.new(GObject.type_from_name("MrTestClock"))
     _clk.set_property("speed", _SPEED)
     _p = Gst.parse_launch(
-        "audiotestsrc is-live=true samplesperbuffer=1024 wave=sine freq=1000 ! "
-        "audio/x-raw,format=F32LE,rate=48000,channels=2 ! mrasrc name=asrc device-sink=sink ! "
+        "appsrc name=src format=time block=true max-bytes=65536 ! mrasrc name=asrc device-sink=sink ! "
         "mrtestaudiosink name=sink ppm=40 device-ns=1000000000 slave-method=custom sync=true buffer-time=2000000 "
-        "latency-time=20000")
+        "latency-time=20000 settle-ns=30000000000")
     _p.use_clock(_clk)
+    _src = _p.get_by_name("src")
+    _dc = Capture(channels=2)
+    _src.set_property("caps", Gst.Caps.from_string(_dc.caps()))
+    _stop = threading.Event()
+
+    def _feed_device():
+        i, next_hole = 0, 60 * FS
+        while not _stop.is_set():   # the sink's ring paces the pushes
+            disc = i == 0
+            if i >= next_hole:      # a lost cycle: 1024 frames never come, the next buffer DISCONT
+                i += BUF
+                next_hole += 60 * FS
+                disc = True
+            b = Gst.Buffer.new_wrapped(_dc.render(i, BUF))
+            b.pts = _dc.capture_ns(i) - H0
+            if disc:
+                b.set_flags(Gst.BufferFlags.DISCONT)
+            if _src.emit("push-buffer", b) != Gst.FlowReturn.OK:
+                break
+            i += BUF
+
     _bus = _p.get_bus()
     _p.set_state(Gst.State.PLAYING)
+    _th = threading.Thread(target=_feed_device, daemon=True)
+    _th.start()
     _sink, _asrc = _p.get_by_name("sink"), _p.get_by_name("asrc")
     _start = _clk.get_time()
-    _dev_events, _errors = [], []
+    _dev_events, _errors, _stepped = [], [], False
     while _clk.get_time() - _start < _DEV_S * S:
+        if not _stepped and _clk.get_time() - _start >= 20 * S:
+            _sink.set_property("ts-offset", 140 * MS)   # a presentation offset raised under the running sink
+            _stepped = True
         m = _bus.timed_pop(200 * Gst.MSECOND)
         if m is None:
             continue
@@ -1171,30 +1256,42 @@ else:
     _f = {k: _sink.get_property(k) for k in ("fill-first-ns", "fill-min-ns", "fill-max-ns", "fill-p05-ns",
                                               "fill-p95-ns", "fill-last-ns", "resyncs", "calibrations",
                                               "underruns", "renders")}
+    _stop.set()
     _p.set_state(Gst.State.NULL)
+    _holes = [e for e in _dev_events if e["kind"] == "relock"]
     check(f"the sink never asked to skew: its clock's calibration unchanged after the first render "
-          f"({_f['calibrations']} changes in {_f['renders']} renders); no resync, no underrun "
-          f"({_f['resyncs']}, {_f['underruns']})",
-          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and _f["resyncs"] == 0
-          and _f["underruns"] == 0)
+          f"({_f['calibrations']} changes in {_f['renders']} renders); no underrun ({_f['underruns']}); one resync per "
+          f"lost cycle's DISCONT and one for the ts-offset step ({_f['resyncs']} for {len(_holes)} relocks)",
+          not _errors and _f["renders"] > 25000 and _f["calibrations"] == 0 and _f["underruns"] == 0
+          and len(_holes) == 10 and _f["resyncs"] == len(_holes) + 1)
     _rel = {k: (_f[f"fill-{k}-ns"] - _f["fill-first-ns"]) / MS for k in ("p05", "p95", "last", "min", "max")}
     # Each 5 s window keeps its top fill, its most punctual render's: a producer held late reads low,
     # never high. The 5th to 95th percentile and the last window show the fill; the extremes, windows
     # starved throughout.
-    check(f"the ring's fill held within +-2 ms of its first settled value over {_DEV_S - 10} s of house time: "
-          f"5 s windows' tops p05 {_rel['p05']:+.3f}, p95 {_rel['p95']:+.3f}, the last {_rel['last']:+.3f} ms around "
-          f"{_f['fill-first-ns'] / MS:.1f} ms (extremes {_rel['min']:+.3f} .. {_rel['max']:+.3f}; 40 ppm uncorrected "
-          f"drains 24 ms; load {os.getloadavg()[0]:.1f}: a starved producer dips the fill)",
+    check(f"the ring's fill held within +-2 ms of its first settled value over {_DEV_S - 30} s of house time and "
+          f"{len(_holes)} lost cycles: 5 s windows' tops p05 {_rel['p05']:+.3f}, p95 {_rel['p95']:+.3f}, the last "
+          f"{_rel['last']:+.3f} ms around {_f['fill-first-ns'] / MS:.1f} ms (extremes {_rel['min']:+.3f} .. "
+          f"{_rel['max']:+.3f}; 40 ppm uncorrected drains 24 ms, a relock on house time 2.4 ms each before B-148; "
+          f"load {os.getloadavg()[0]:.1f}: a starved producer dips the fill)",
           all(abs(_rel[k]) <= 2 for k in ("p05", "p95", "last")))
+    _jumps = [round((e["jump-ns"] - BUF * S // FS) / US, 1) for e in _holes]
+    check(f"each lost cycle's relock jumps its 21.333 ms on the device timeline (off it by {min(_jumps, default=0)} .. "
+          f"{max(_jumps, default=0)} us: the drained tail's last frame, and 40 ppm of 21.333 ms; before B-148 2.4 ms "
+          f"more each)", bool(_jumps) and all(e["reason"] == "discont" for e in _holes)
+          and max(abs(j) for j in _jumps) <= 50)
     check(f"mrasrc-stats: mode device, the device lock locked at {_st.get('device-ppb', 0) / 1000:+.3f} ppm (+40), "
-          f"the ratio its term ({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), {_st.get('device-pairs', 0)} pairs, no source "
-          "lock", _st.get("mode") == "device" and _st.get("state") == "locked"
+          f"the ratio its term ({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm), {_st.get('device-pairs', 0)} pairs, one "
+          f"alignment resync ({_st.get('device-resyncs')}), no source lock",
+          _st.get("mode") == "device" and _st.get("state") == "locked"
           and abs(_st.get("device-ppb", 0) - 40000) <= 100 and abs(_st.get("ratio-ppb", 0) - 40000) <= 200
-          and _st.get("device-pairs", 0) > 20000 and _st.get("source-ppb") == 0)
+          and _st.get("device-pairs", 0) > 20000 and _st.get("source-ppb") == 0 and _st.get("device-resyncs") == 1
+          and _st.get("rate-known") is False)
     _reasons = [e["reason"] for e in _dev_events if e["kind"] == "device-relock"]
-    check(f"device relocks only at the start, from the sink's own calibration ({_reasons})",
-          set(_reasons) <= {"new-caps", "sync-latency"} and "sync-latency" in _reasons
-          and not [e for e in _dev_events if e["kind"] != "device-relock"])
+    _resync = [e["reason"] for e in _dev_events if e["kind"] == "device-resync"]
+    check(f"device relocks only at the start, from the sink's own calibration ({_reasons}); the ts-offset step's "
+          f"alignment resync keeps the device lock ({_resync}; a relock before B-148)",
+          set(_reasons) <= {"new-caps", "sync-latency"} and "sync-latency" in _reasons and _resync == ["alignment"]
+          and not [e for e in _dev_events if e["kind"] not in ("device-relock", "device-resync", "relock")])
 
 print("\n--- decode and device together: a source 40 ppm fast into a device 20 ppm slow (2x clock, 90 s) ---")
 if os.path.exists(_TEST_SO):
@@ -1238,6 +1335,9 @@ if os.path.exists(_TEST_SO):
     _stop.set()
     _p.set_state(Gst.State.NULL)
     _eng = [e for e in _ev if e["kind"] == "engaged"]
+    check(f"the engage says whether the rate was measured ({[(e['reason'], e.get('rate-known')) for e in _eng]}: a "
+          f"ratio engage always is, B-148)", bool(_eng) and all(isinstance(e.get("rate-known"), bool) for e in _eng)
+          and all(e["rate-known"] for e in _eng if e["reason"] == "ratio"))
     check(f"engaged ({[e['reason'] for e in _eng]}, source {_eng[0]['source-ppb'] / 1000 if _eng else 0:+.2f} ppm), then "
           f"mode {_st.get('mode')}: the source term and the device term ({_st.get('device-ppb', 0) / 1000:+.3f} ppm) "
           f"in one ratio ({_st.get('ratio-ppb', 0) / 1000:+.3f} ppm: -40 + -20 within 1 ppm, 65 s after the engage), "

@@ -3,7 +3,8 @@
  * m / out_rate. Modes (S17): capture; decode (`bypass-below-ppm`: passed unchanged until the source is
  * measured off house time); device (`device-sink`: the sink's clock in the ratio; with decode, the product).
  * Capture with cycle-input (a pipewiresrc, B-180): lost cycles, and the time a restarted driver lost
- * (B-181), jump the output by their length, no relock. */
+ * (B-181), jump the output by their length, no relock. B-148: decode modes take an unflagged PTS hole as
+ * lost time and a step back as a break; device mode keeps its labels on the device timeline across a break. */
 #include <gst/audio/gstaudiobasesink.h>
 #include <gst/base/gstbasetransform.h>
 
@@ -59,8 +60,9 @@ struct AsrcDeviceTerm {
     AsrcDeviceLock lock;
     std::atomic<int64_t> eps_ppb{0}, rate_ppb{0};
     std::atomic<bool> locked{false};
-    std::atomic<uint64_t> pairs{0}, relocks{0};
+    std::atomic<uint64_t> pairs{0}, relocks{0}, resyncs{0};
     std::atomic<int> last_reason{0};
+    std::atomic<bool> recalibrated{false};   // the sink's clock recalibrated: the servo is told at its next push
 };
 
 static const gchar* asrc_discont_name(int reason) {
@@ -76,14 +78,25 @@ static const gchar* asrc_discont_name(int reason) {
 
 /* Each callback: (etime, itime), house and device time since the sink's calibration, and how
  * long after etime's read the house clock reads now, after itime's read (AsrcDeviceLock::feed).
- * The resampler follows the device, so the sink is never asked to skew (C-6). */
+ * The resampler follows the device, so the sink is never asked to skew (C-6). A discontinuity is the
+ * device lock's (AsrcDeviceLock::discont): an alignment resync only counted (B-148). */
 static void asrc_slaving_cb(GstAudioBaseSink* sink, GstClockTime etime, GstClockTime itime,
                             GstClockTimeDiff* requested_skew,
                             GstAudioBaseSinkDiscontReason reason, gpointer data) {
     AsrcDeviceTerm* t = static_cast<AsrcDeviceTerm*>(data);
     if (reason != GST_AUDIO_BASE_SINK_DISCONT_REASON_NO_DISCONT) {
+        using D = AsrcDeviceLock::Discont;
+        const D why = reason == GST_AUDIO_BASE_SINK_DISCONT_REASON_NEW_CAPS         ? D::new_caps
+                      : reason == GST_AUDIO_BASE_SINK_DISCONT_REASON_SYNC_LATENCY   ? D::sync_latency
+                      : reason == GST_AUDIO_BASE_SINK_DISCONT_REASON_ALIGNMENT      ? D::alignment
+                      : reason == GST_AUDIO_BASE_SINK_DISCONT_REASON_DEVICE_FAILURE ? D::device_failure
+                                                                                    : D::flush;
         std::lock_guard<std::mutex> g(t->mu);
-        t->lock.discont();
+        if (t->lock.discont(why)) t->recalibrated.store(true);
+        if (why == D::alignment) {
+            t->resyncs.fetch_add(1);
+            return;
+        }
         t->locked.store(false);
         t->last_reason.store((int)reason);
         t->relocks.fetch_add(1);
@@ -121,6 +134,7 @@ struct _GstMrAsrc {
     AsrcDeviceTerm* term;
     GstAudioBaseSink* sink;   // a ref, to take the callback back
     uint64_t term_relocks;    // the term's relocks the events have told
+    uint64_t term_resyncs;    // ... and its alignment resyncs
     gboolean device_only;     // the device term alone (bypass-below-ppm 0): no source lock
 
     /* Streaming state: set_caps, the transform and the serialized events, all on the streaming
@@ -167,8 +181,9 @@ static void asrc_post(GstMrAsrc* self, GstStructure* s) {
 }
 
 /* Part 10's mrasrc-stats fields, from the servo (a fresh one before any buffer), then WI-P3-5's
- * mode and the two clocks against house time (ppb, positive fast; 0 where none is measured). The
- * device term alone has no source lock: its state is the device lock's. */
+ * mode and the two clocks against house time (ppb, positive fast; 0 where none is measured), whether
+ * the source's rate is measured and the device's alignment resyncs (B-148). The device term alone has
+ * no source lock: its state is the device lock's. */
 static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, const AsrcDeviceTerm* t,
                                           bool device_only) {
     const gchar* state = t && device_only ? (t->locked.load() ? "locked" : "acquiring")
@@ -182,7 +197,8 @@ static GstStructure* asrc_stats_structure(const AsrcServo::Stats& s, const AsrcD
         G_TYPE_UINT64, (guint64)s.gaps, "lost-frames", G_TYPE_INT64, (gint64)s.lost_frames, "mode",
         G_TYPE_STRING, mrts::asrc_mode_name(s.mode), "source-ppb", G_TYPE_INT64,
         (gint64)s.source_ppb, "device-ppb", G_TYPE_INT64, (gint64)(t ? t->rate_ppb.load() : 0),
-        NULL);
+        "rate-known", G_TYPE_BOOLEAN, (gboolean)s.rate_known, "device-resyncs", G_TYPE_UINT64,
+        (guint64)(t ? t->resyncs.load() : 0), NULL);
 }
 
 /* The message, then the snapshot: the message's fields plus the run's configuration. */
@@ -221,7 +237,8 @@ static void asrc_report(GstMrAsrc* self, gboolean force) {
 
 /* mrasrc-event at once: a relock (its new T0, the output PTS jump, the input dropped as overlap); a
  * gap's jump and the frames lost; a stamp shift; a device rate fit past the ratio clamp; an engage
- * (the source's rate, the phase it reached); a device relock (a sink discontinuity), its reason. */
+ * (the source's rate, whether measured, the phase it reached); a device relock (a sink discontinuity),
+ * its reason; a sink's alignment resync, the device lock kept (B-148). */
 static void asrc_post_events(GstMrAsrc* self, gint64 house_ns) {
     for (const AsrcEvent& e : self->servo->take_events()) {
         const gchar* kind = mrts::asrc_event_name(e.kind);
@@ -236,9 +253,11 @@ static void asrc_post_events(GstMrAsrc* self, gint64 house_ns) {
                             (gint64)e.house_ns, (gint64)e.value, (gint64)e.dropped_ns);
         } else if (e.kind == AsrcEvent::Kind::engaged) {
             gst_structure_set(s, "source-ppb", G_TYPE_INT64, (gint64)e.value, "phase-ns",
-                              G_TYPE_INT64, (gint64)e.phase_ns, NULL);
-            GST_INFO_OBJECT(self, "engaged (%s): source %+" G_GINT64_FORMAT " ppb, phase %+"
-                            G_GINT64_FORMAT " ns", e.reason, (gint64)e.value, (gint64)e.phase_ns);
+                              G_TYPE_INT64, (gint64)e.phase_ns, "rate-known", G_TYPE_BOOLEAN,
+                              (gboolean)e.rate_known, NULL);
+            GST_INFO_OBJECT(self, "engaged (%s): source %+" G_GINT64_FORMAT " ppb%s, phase %+"
+                            G_GINT64_FORMAT " ns", e.reason, (gint64)e.value,
+                            e.rate_known ? "" : " (not measured yet)", (gint64)e.phase_ns);
         } else if (e.kind == AsrcEvent::Kind::gap) {
             gst_structure_set(s, "jump-ns", G_TYPE_INT64, (gint64)e.value, "dropped-ns",
                               G_TYPE_INT64, (gint64)e.dropped_ns, "lost-frames", G_TYPE_INT64,
@@ -265,6 +284,14 @@ static void asrc_post_events(GstMrAsrc* self, gint64 house_ns) {
         asrc_post(self, gst_structure_new("mrasrc-event", "kind", G_TYPE_STRING, "device-relock",
                                           "reason", G_TYPE_STRING, why, "house-ns", G_TYPE_INT64,
                                           house_ns, NULL));
+    }
+    const uint64_t a = t ? t->resyncs.load() : 0;
+    if (t && a != self->term_resyncs) {
+        self->term_resyncs = a;
+        GST_INFO_OBJECT(self, "device resync (alignment): the device lock kept");
+        asrc_post(self, gst_structure_new("mrasrc-event", "kind", G_TYPE_STRING, "device-resync",
+                                          "reason", G_TYPE_STRING, "alignment", "house-ns",
+                                          G_TYPE_INT64, house_ns, NULL));
     }
 }
 
@@ -486,7 +513,7 @@ static gboolean asrc_install_device(GstMrAsrc* self) {
     AsrcDeviceTerm* t = new AsrcDeviceTerm();
     gst_audio_base_sink_set_custom_slaving_callback(GST_AUDIO_BASE_SINK(el), asrc_slaving_cb, t, NULL);
     self->term = t;
-    self->term_relocks = 0;
+    self->term_relocks = self->term_resyncs = 0;
     self->sink = GST_AUDIO_BASE_SINK(el);
     GST_INFO_OBJECT(self, "device-sink %s: following its clock (custom slaving)", name);
     g_free(name);
@@ -644,6 +671,8 @@ static GstFlowReturn asrc_prepare_output_buffer(GstBaseTransform* trans, GstBuff
     const gint64 pts = asrc_input_pts(self, in, frames);
     const gboolean discont = GST_BUFFER_IS_DISCONT(in);
     self->buffers++;
+    // The sink recalibrated since the last push: the device offset restarts here (B-148).
+    if (self->term && self->term->recalibrated.exchange(false)) self->servo->device_recalibrated();
     // Decode and device modes: the epoch ends before a DISCONT buffer, the tail out first.
     if (discont && self->started && self->servo->end_epoch()) asrc_drain_tail(self);
     self->started = TRUE;
@@ -943,7 +972,7 @@ static void gst_mrasrc_init(GstMrAsrc* self) {
     self->device_sink = NULL;
     self->term = NULL;
     self->sink = NULL;
-    self->term_relocks = 0;
+    self->term_relocks = self->term_resyncs = 0;
     self->device_only = FALSE;
     gst_audio_info_init(&self->in_info);
     gst_audio_info_init(&self->out_info);
@@ -1006,8 +1035,9 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
         g_param_spec_boxed("stats", "Stats",
                            "The last mrasrc-stats post (state, ratio-ppb, phase-err-ns, relocks, "
                            "in-frames, out-frames, discont-in, dropped-frames, gaps, lost-frames, "
-                           "mode, source-ppb, device-ppb) with the run's format, channels, in-rate, "
-                           "out-rate, delay-frames, buffers, resampler-updates and device-pairs.",
+                           "mode, source-ppb, device-ppb, rate-known, device-resyncs) with the run's "
+                           "format, channels, in-rate, out-rate, delay-frames, buffers, "
+                           "resampler-updates and device-pairs.",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
@@ -1016,8 +1046,9 @@ static void gst_mrasrc_class_init(GstMrAsrcClass* klass) {
                             "Decode mode when above 0: buffers pass unchanged while the source's "
                             "clock measures within this many ppm of house time and its phase "
                             "within 1 ms, resampled to house rate from the buffer that crosses "
-                            "either until a DISCONT or GAP. 0: capture mode, or with device-sink "
-                            "the device term alone. Applies at the next start or caps change.",
+                            "either until a DISCONT, a GAP or a step back of the PTS; a PTS hole "
+                            "is lost time. 0: capture mode, or with device-sink the device term "
+                            "alone. Applies at the next start or caps change.",
                             0.0, BYPASS_MAX_PPM, 0.0, at_start));
     g_object_class_install_property(
         gobject_class, PROP_DEVICE_SINK,

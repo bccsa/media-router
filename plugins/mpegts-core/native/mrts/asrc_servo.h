@@ -1,5 +1,5 @@
-// The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5), py/asrc_bypass_ref.py ported rule for
-// rule (OQ-1, S30): ClockLock on input frame index against buffer PTS gives the source rate; a phase servo
+// The ASRC (plan ch. 5 part 4.5, WI-P1-8; ch. 7 part 4.4, WI-P3-5, B-148), py/asrc_bypass_ref.py ported rule
+// for rule (OQ-1, S30): ClockLock on input frame index against buffer PTS gives the source rate; a phase servo
 // commands the resampler so the output is a house-rate counter, PTS_out(m) = T0 + m / out_rate. Integer-only.
 #pragma once
 #include <cstdint>
@@ -41,8 +41,8 @@ struct AsrcEvent {
     // gap: lost cycles or time, the output jumps their length; shift: the stamps moved, the samples did not.
     enum class Kind { relock, ratio_out_of_bounds, engaged, gap, shift };
     Kind kind;
-    // relock: "discont" or "envelope-step" (decode and device modes also "gap"); engaged: "ratio"
-    // or "phase"; gap: "lost-cycle", "lost-time" or "reverted"; shift: "cycle-size"; static, "" otherwise.
+    // relock: "discont" or "envelope-step" (decode and device modes also "gap"; decode "jump", B-148); engaged:
+    // "ratio" or "phase"; gap: "lost-cycle", "lost-time" or "reverted"; shift: "cycle-size"; static, "" otherwise.
     const char* reason;
     int64_t house_ns;     // relock: the new T0; gap: the next output's PTS; else the buffer's PTS
     // relock, gap: the output PTS jump (ns); out of bounds: the device rate fit (ppb); engaged: the
@@ -51,6 +51,7 @@ struct AsrcEvent {
     int64_t dropped_ns = 0;   // relock, a reverted gap: input dropped as overlap with what already left
     int64_t phase_ns = 0;     // engaged: the bypass phase at the engage
     int64_t lost_frames = 0;  // gap: input frames lost (negative when reverted)
+    bool rate_known = false;  // engaged: the lock had measured the rate (a phase engage may come first, B-148)
 };
 
 const char* asrc_event_name(AsrcEvent::Kind k);
@@ -63,6 +64,8 @@ int64_t asrc_rate_of(int64_t eps_ppb);
 // the resampler is never reset; what it holds back is a new T0's first output. Steering only
 // moves the ratio; a relock onto a floor below the last output drops that overlap. With
 // cycle_input lost cycles or time jump the output and a stamp shift moves nothing; the lock keeps its line.
+// B-148: decode modes take an unflagged PTS hole as lost time and a step back as a break; device mode keeps
+// its labels on the device timeline across a break (a new epoch at the last label end plus the gap).
 class AsrcServo {
   public:
     // The lock's phase. Its lost needs a tick without samples, and the servo only
@@ -90,11 +93,12 @@ class AsrcServo {
         uint64_t in_frames = 0, out_frames = 0;
         uint64_t discont_in = 0;    // DISCONT flags after the first buffer
         uint64_t dropped_frames = 0;   // input frames skipped as relock overlap
-        uint64_t gaps = 0;          // cycle_input: gaps the output jumped (lost cycles or time)
+        uint64_t gaps = 0;          // cycle_input, decode modes: gaps the output jumped (lost cycles or time)
         int64_t lost_frames = 0;    // ... the input frames they lost (reverted ones taken back)
         Mode mode = Mode::capture;
         int64_t source_ppb = 0;     // the source clock against house (asrc_rate_of); 0 without a lock
         int64_t decode_ppb = 0;     // the decode term of ratio_ppb (ε_cmd); ratio_ppb without a device term
+        bool rate_known = false;    // the lock has measured the source's rate (a fit since its relock)
     };
 
     // A relock drops at most this much: a fall past it is no capture-latency change,
@@ -103,9 +107,12 @@ class AsrcServo {
     // cycle_input: a gap is whole cycles to within this, or an eighth of a cycle when that is
     // less: the jitter of a driver's wakeup, never a share of a cycle (B-180).
     static constexpr int64_t CYCLE_TOL_NS = 2000000;
-    // cycle_input: the longest loss the output jumps at once (every product stays in 64 bits); a
-    // longer one is the lock's.
+    // cycle_input, decode modes: the longest loss the output jumps at once (every product stays in
+    // 64 bits); a longer one is the lock's.
     static constexpr int64_t LOST_MAX_NS = 1000 * DROP_MAX_NS;
+    // Decode modes (B-148): a fit past the ratio bound this long while locked before ratio-out-of-bounds:
+    // a relock's first short fit and an upstream slew are no source's rate.
+    static constexpr int64_t OOB_HOLD_NS = 30 * DROP_MAX_NS;
 
     // Rates in Hz, clamped to [1000, 768000] so every product fits 64 bits.
     AsrcServo(int32_t in_hz, int32_t out_hz, const AsrcServoConfig& cfg = AsrcServoConfig());
@@ -124,6 +131,9 @@ class AsrcServo {
     bool end_epoch();
     int64_t tail_pts_at(uint64_t k) const;
     void tail_produced(uint32_t frames);
+    // Device mode: the sink recalibrated its clock (new caps, sync latency, a device failure). The device
+    // offset a new epoch carries restarts from the next output (B-148); the open epoch keeps its labels.
+    void device_recalibrated();
 
     int64_t t0() const { return t0_; }
     uint64_t epoch_frames() const { return m_; }   // m: output frames since T0
@@ -139,7 +149,12 @@ class AsrcServo {
 
   private:
     int64_t next_pos2() const;   // input position of the next output, in half frames
+    int64_t pos_ns(int64_t h2) const;   // an input position as the lock's time: with lost_res_
     int64_t house_pts() const;   // the house-rate counter's label of the next output
+    int64_t label_next() const;  // the next output's label, the drained tail's end after end_epoch()
+    int64_t offset_at(int64_t h) const;
+    int64_t content_step(int64_t pts_ns);
+    void house_advance(uint32_t frames);
     int64_t frames_over(int64_t ns) const;
     int64_t measure_phase() const;
     int64_t ratio_ppb() const;
@@ -151,7 +166,7 @@ class AsrcServo {
     void check_bounds(int64_t h);
     bool check_cycle(int64_t pts_ns, uint32_t frames, int64_t dur_ns);
     int64_t frames_in(int64_t ns) const;
-    void lose(int64_t frames, bool whole);
+    void lose(int64_t frames, bool whole, int64_t res_ns = 0);
     bool fits(int64_t dur_ns, uint32_t frames) const;
 
     AsrcServoConfig cfg_;
@@ -162,6 +177,7 @@ class AsrcServo {
     int64_t delay_ = 0;
     int64_t n_in_ = 0;           // input frames pushed
     int64_t lost_ = 0;           // input frames lost between buffers: counted on the input position
+    int64_t lost_res_ = 0;       // decode modes: lost time's remainder under a frame (ns), on it too (B-148)
     int64_t drop_left_ = 0;      // of the overlap, frames still to skip
     uint64_t dropped_ = 0;       // frames skipped so far
     uint64_t n_out_ = 0;         // output frames produced
@@ -177,6 +193,11 @@ class AsrcServo {
     int64_t phase_err_ = 0;
     uint64_t relocks_ = 0, discont_in_ = 0, gaps_ = 0;
     bool oob_ = false;           // out-of-bounds raised and not yet back inside
+    bool past_ = false;          // decode: the fit past the bound while locked, since oob_since_
+    int64_t oob_since_ = 0;
+    bool cont_ = false;          // decode: the last buffer continued its predecessor within the lost-time bound
+    // Device mode (B-148): labels minus house time at T0, and that offset at the sink's last calibration.
+    int64_t t0_dev_ = 0, cal_off_ = 0;
     bool engaged_ = false;       // decode mode: the decode term commands the ratio
     bool passing_ = false;       // ... bypassed at equal rates without a device term: no resampler
     bool over_ = false;          // |ε| past the bound while locked, since over_since_
@@ -184,8 +205,8 @@ class AsrcServo {
     bool ended_ = false;         // end_epoch() since the last push
     int64_t tail_t0_ = 0;
     uint64_t tail_m_ = 0;
-    // cycle_input: the last buffer as its source stamped it, the stamps' shift so far, and the
-    // last gap while its next buffer may still show it was a late stamp (cycle_ = 0: none).
+    // The last buffer as its source stamped it (decode modes: content_step); cycle_input: the stamps'
+    // shift so far, and the last gap while its next buffer may still show it was a late stamp (cycle_ = 0: none).
     int64_t last_pts_ = 0, shift_ = 0;
     uint32_t last_frames_ = 0;
     int64_t cycle_ = 0, cycle_gap_ = 0;
@@ -199,27 +220,34 @@ const char* asrc_state_name(AsrcServo::State s);
 const char* asrc_mode_name(AsrcServo::Mode m);
 
 // The device term (WI-P3-5): a ClockLock on a sink's custom-slaving (itime, etime) pairs, device
-// time against house time. A sink discontinuity relocks it, keeping the rate. Not thread-safe.
+// time against house time. A sink discontinuity relocks it, keeping the rate; an alignment resync is
+// counted only (B-148). Not thread-safe.
 class AsrcDeviceLock {
   public:
     // The sink's first callback after its calibration reads the device before its ring runs
     // (measured up to 0.33 ms early): the pairs of a (re)lock's first this much are left out.
     static constexpr int64_t SETTLE_NS = 100000000;
+    // The sink's discontinuities, as GstAudioBaseSinkDiscontReason numbers them.
+    enum class Discont { new_caps = 1, flush = 2, sync_latency = 3, alignment = 4, device_failure = 5 };
     explicit AsrcDeviceLock(const ClockLockConfig& cfg = asrc_decode_lock_config());
     // read_ns: house time from etime's read to the caller's re-read after itime's. The sink reads
     // etime, then itime, so a preemption between them makes a pair early, which the lower envelope
     // would follow; at the re-read, the latest instant itime can have been read, every pair is late.
     void feed(int64_t itime_ns, int64_t etime_ns, int64_t read_ns = 0);
-    void discont();
+    // An alignment resync moves neither clock: counted, the lock and its fit window kept. Any other
+    // relocks, keeping the rate. True when the sink recalibrated (new caps, sync latency, a device
+    // failure): AsrcServo::device_recalibrated().
+    bool discont(Discont why = Discont::flush);
     int64_t ppb() const { return lock_.ppb(); }   // ε: house = (1 + ε) device time
     int64_t rate_ppb() const { return asrc_rate_of(lock_.ppb()); }
     bool locked() const { return lock_.phase() == ClockLock::Phase::locked; }
     uint64_t relocks() const { return relocks_; }
+    uint64_t alignments() const { return alignments_; }
     const ClockLock& lock() const { return lock_; }
 
   private:
     ClockLock lock_;
-    uint64_t relocks_ = 0;
+    uint64_t relocks_ = 0, alignments_ = 0;
     bool have_first_ = false;
     int64_t first_ns_ = 0;   // the house time of the (re)lock's first pair
 };

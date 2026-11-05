@@ -159,9 +159,9 @@ function values(s: ModuleTimingSummary): Map<string, number | string> {
     put('render', s.renderMs);
     put('pw', s.pipeWireLatencyMs);
     put('proc', s.processingLatencyMs);
-    // ppm in tenths, its display step; a correction's `none` is a value of its own.
+    // ppm in tenths, its display step; a correction's `none` and `measuring` are values of their own.
     const tenths = (c: ClockCorrection | undefined): number | string | undefined =>
-        c && (c.sourcePpm === undefined ? 'none' : c.sourcePpm * 10);
+        c && (c.measuring ? 'measuring' : c.sourcePpm === undefined ? 'none' : c.sourcePpm * 10);
     put('cc', tenths(s.clockCorrection));
     put('deviceClock', s.deviceClockPpm === undefined ? undefined : s.deviceClockPpm * 10);
     for (const i of s.inputs) {

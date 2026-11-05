@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -1525,7 +1526,7 @@ void test_select() {
     DemuxCore d1(sel_cfg()), d2(sel_cfg());
     const auto o1 = run(d1, data, 100 * SEC, 77), o2 = run(d2, data, 100 * SEC);
     CHECK("12 select: walk: 77-byte feeds and garbage give one feed's units, 3 bytes resynced",
-          lines(o1) == lines(o2) && o1.size() == 6 && d1.counters().desync_bytes == 3);
+          lines(o1) == lines(o2) && of(o1, K::unit).size() == 6 && d1.counters().desync_bytes == 3);
     select_formula();
     select_seed();
     select_wrap();
@@ -1796,6 +1797,340 @@ void test_expectations() {
     CHECK("16 every fixture has its .demux.jsonl", every);
 }
 
+// --- 17 house time across an outage, stale PES (B-149) ---------------------------------------------
+
+constexpr int64_t DAYS30 = 30LL * 86400 * 90000;   // house ticks: a box up a month, past many wraps
+constexpr int64_t LEAD = 27000;                     // a PCR 300 ms ahead: program time follows it
+
+// A PCR on PID_A, LEAD ahead of PES PTS `pes90` (any unwrap).
+void pcr_after(Ts& t, int64_t pes90) {
+    uint8_t p[PKT];
+    build_pcr_packet(PID_A, fmod_(pes90 + LEAD, WRAP) * 300, t.last_cc(PID_A), p);
+    t.b.insert(t.b.end(), p, p + PKT);
+}
+
+// Frames `first`..`first + n - 1` of 302M from house tick `start`, 20 ms apart, a PCR after each fifth.
+void frames(Ts& t, int64_t start, int first, int n, bool pcr = false) {
+    for (int k = first; k < first + n; k++) {
+        t.frame(start + k * TICKS_20MS);
+        if (pcr && k % 5 == 4) pcr_after(t, start + k * TICKS_20MS + BASE);
+    }
+}
+
+using Units = std::vector<std::pair<int64_t, bool>>;   // each unit's PTS and DISCONT
+
+Units units(const std::vector<Ev>& out) {
+    Units u;
+    for (const Ev* e : of(out, K::unit)) u.push_back({e->pts_ns, e->discont});
+    return u;
+}
+
+bool steady(const Units& us) {                       // every unit 20 ms after the one before it
+    for (size_t i = 1; i < us.size(); i++)
+        if (us[i].first - us[i - 1].first != 20 * MS) return false;
+    return true;
+}
+
+using NotHouse = std::vector<std::tuple<int, int64_t, bool>>;
+
+NotHouse nothouse_of(const std::vector<Ev>& out) {
+    NotHouse n;
+    for (const Ev* e : of(out, K::not_house_time)) n.emplace_back(e->pid, e->offset_ms, e->stale);
+    return n;
+}
+
+struct Outage {
+    bool ok;
+    int64_t program_time, t1;
+};
+
+// 50 frames at house 30 days, `away` ticks of nothing, 50 more (PSI first): the source's CC and PTS
+// going on (or a new source, CC from 0), on house time; each part fed at its end.
+Outage outage(bool select, int64_t away, bool restarted, bool discont = true) {
+    const int64_t t0 = DAYS30;
+    Ts a, fresh;
+    a.psi_302m();
+    frames(a, t0, 0, 50, true);
+    DemuxCore d(select ? sel_cfg() : DemuxCore::Config());
+    std::vector<Ev> before, out;
+    d.feed(a.b.data(), a.b.size(), false, ceil_ns(t0 + 50 * TICKS_20MS), before);
+    const int64_t t1 = t0 + 50 * TICKS_20MS + away;
+    Ts& b = restarted ? fresh : a;
+    const size_t mark = b.b.size();
+    b.psi_302m();
+    frames(b, t1, 0, 50, true);
+    d.feed(b.b.data() + mark, b.b.size() - mark, discont, ceil_ns(t1 + 50 * TICKS_20MS), out);
+    Units want;
+    for (int k = 0; k < 50; k++) want.push_back({ceil_ns(t1 + k * TICKS_20MS), k == 0});
+    const auto gaps = of(out, K::gap);
+    const int64_t h0 = ceil_ns(t0 + 50 * TICKS_20MS);
+    const bool gap = gaps.size() == 1 && gaps[0]->pts_ns == h0 && gaps[0]->dur_ns == ceil_ns(t1) - h0 &&
+                     std::string(gaps[0]->reason) == "jump";
+    return {units(out) == want && gap && of(out, K::not_house_time).empty(), d.program_time_ns(), t1};
+}
+
+struct Piece {
+    Bytes b;
+    int64_t tick;                                    // its arrival, house ticks
+};
+
+// Each piece fed 5 ms after its tick: a clock that moves with the stream.
+std::vector<Ev> paced(DemuxCore& d, const std::vector<Piece>& pieces, int discont_at = -1) {
+    std::vector<Ev> out;
+    for (size_t i = 0; i < pieces.size(); i++)
+        d.feed(pieces[i].b.data(), pieces[i].b.size(), (int)i == discont_at, ceil_ns(pieces[i].tick) + 5 * MS,
+               out);
+    return out;
+}
+
+// The PSI, then n 2 ms frames every 20 ms from house tick t0: frame k carries PES PTS pts(k) (default
+// its own) and arrives at late(k) (default on time), a PCR LEAD ahead of it after each fifth.
+std::vector<Piece> stream(int64_t t0, int n, std::function<int64_t(int)> pts = nullptr,
+                          std::function<int64_t(int)> late = nullptr, bool pcr = false) {
+    Ts t;
+    t.psi_302m();
+    std::vector<Piece> pieces{{t.b, t0}};
+    for (int k = 0; k < n; k++) {
+        const size_t at = t.b.size();
+        const int64_t tick = t0 + k * TICKS_20MS, p = pts ? pts(k) : tick + BASE;
+        t.pes(PID_A, fmod_(p, WRAP), s302m(96));
+        if (pcr && k % 5 == 4) pcr_after(t, p);
+        pieces.push_back({Bytes(t.b.begin() + (long)at, t.b.end()), late ? late(k) : tick});
+    }
+    return pieces;
+}
+
+int64_t ms_of(int64_t d) { return d / MS; }          // toward 0
+
+void test_outage() {
+    const int64_t H133 = 4309200000LL, H20 = 6480000000LL, H2214 = 7173360000LL;   // 13.3, 20, 22.14 h
+    const int64_t H2 = 2 * 3600 * 90000LL, H3 = 3 * 3600 * 90000LL, t0 = DAYS30;
+    auto both = [&](int64_t away, bool restarted, bool discont) {
+        return outage(false, away, restarted, discont).ok && outage(true, away, restarted, discont).ok;
+    };
+    CHECK("17 an outage of 13.3 h, the source's PTS going on: every unit after it at its house time, "
+          "one GAP over it, no warning (demux and select)",
+          both(H133, false, true));
+    CHECK("17 an outage of 20 h, the source's PTS going on: every unit after it at its house time, "
+          "one GAP over it, no warning (demux and select)",
+          both(H20, false, true));
+    CHECK("17 an outage of 13.3 h, the source restarted (PSI again, CC from 0): every unit after it at "
+          "its house time, one GAP over it, no warning (demux and select)",
+          both(H133, true, true));
+    CHECK("17 an outage of 20 h, the source restarted: every unit after it at its house time, one GAP "
+          "over it, no warning (demux and select)",
+          both(H20, true, true));
+    CHECK("17 an outage of 20 h with no bus DISCONT: every unit after it at its house time, one GAP "
+          "over it (demux and select)",
+          both(H20, false, false));
+    bool pt = true;
+    for (bool discont : {true, false}) {
+        const Outage o = outage(false, H20, false, discont);
+        pt &= o.program_time == pts90k_to_ns(o.t1 + 49 * TICKS_20MS + LEAD);
+    }
+    CHECK("17 after an outage of 20 h, with a bus DISCONT or none, program time is the PCR's on the "
+          "house clock",
+          pt);
+    // b2: one PES 22.14 h old in place of frame 50, then a real 5 s hole.
+    for (bool select : {false, true}) {
+        Ts t, u;
+        t.psi_302m();
+        frames(t, t0, 0, 50);
+        t.pes(PID_A, fmod_(t0 + 50 * TICKS_20MS - H2214 + BASE, WRAP), s302m(960));
+        frames(t, t0, 51, 49);
+        DemuxCore d(select ? sel_cfg() : DemuxCore::Config());
+        const int64_t now = ceil_ns(t0 + 100 * TICKS_20MS);
+        std::vector<Ev> out, later;
+        d.feed(t.b.data(), t.b.size(), false, now, out);
+        u.cc = t.cc;
+        frames(u, t0, 350, 10);
+        d.feed(u.b.data(), u.b.size(), false, ceil_ns(t0 + 360 * TICKS_20MS), later);
+        Units want;
+        for (int k = 0; k < 100; k++)
+            if (k != 50) want.push_back({ceil_ns(t0 + k * TICKS_20MS), k == 0 || k == 51});
+        const int64_t off = ms_of(ceil_ns(t0 + 50 * TICKS_20MS - H2214 + WRAP) - now);
+        const auto hole = of(later, K::gap);
+        const std::string mode = select ? "select" : "demux";
+        CHECK((std::string("17 a lone stale PES 22.14 h old among current ones (") + mode +
+               str("): dropped, one not-house-time (stale, %+lld ms), the next unit DISCONT at its house time, "
+                   "no GAP; a later 5 s hole gapped",
+                   off))
+                  .c_str(),
+              units(out) == want && nothouse_of(out) == NotHouse{{PID_A, off, true}} && of(out, K::gap).empty() &&
+                  hole.size() == 1 && hole[0]->pts_ns == ceil_ns(t0 + 100 * TICKS_20MS) &&
+                  hole[0]->dur_ns == 250 * 20 * MS);
+    }
+    {
+        // MR-033: after a 22.14 h outage the source's first PES carries its last PES's PTS again.
+        Ts a;
+        a.psi_302m();
+        frames(a, t0, 0, 50);
+        DemuxCore d;
+        std::vector<Ev> before, out;
+        d.feed(a.b.data(), a.b.size(), false, ceil_ns(t0 + 50 * TICKS_20MS), before);
+        const int64_t t1 = t0 + 50 * TICKS_20MS + H2214;
+        const size_t mark = a.b.size();
+        a.pes(PID_A, fmod_(t0 + 49 * TICKS_20MS + BASE, WRAP), s302m(960));
+        frames(a, t1, 0, 10);
+        const int64_t now = ceil_ns(t1 + 10 * TICKS_20MS);
+        d.feed(a.b.data() + mark, a.b.size() - mark, true, now, out);
+        const int64_t off = ms_of(ceil_ns(t0 + 49 * TICKS_20MS + WRAP) - now);
+        Units want;
+        for (int k = 0; k < 10; k++) want.push_back({ceil_ns(t1 + k * TICKS_20MS), k == 0});
+        CHECK(str("17 MR-033's copy after a 22.14 h outage (the last PES's PTS again): dropped, one "
+                  "not-house-time (stale, %+lld ms), the next unit at its house time after one GAP",
+                  off)
+                  .c_str(),
+              units(out) == want && nothouse_of(out) == NotHouse{{PID_A, off, true}} &&
+                  of(out, K::gap).size() == 1);
+    }
+    {
+        Ts a;
+        a.psi_302m();
+        frames(a, t0, 0, 50);
+        a.pes(PID_A, fmod_(t0 + 50 * TICKS_20MS - H2 + BASE, WRAP), s302m(960));
+        frames(a, t0, 51, 9);
+        DemuxCore d;
+        std::vector<Ev> out;
+        d.feed(a.b.data(), a.b.size(), false, ceil_ns(t0 + 60 * TICKS_20MS), out);
+        const int64_t off = ms_of(ceil_ns(t0 + 50 * TICKS_20MS - H2) - ceil_ns(t0 + 60 * TICKS_20MS));
+        CHECK("17 a stale PES 2 h old: dropped, one not-house-time (stale, its age)",
+              of(out, K::unit).size() == 59 && nothouse_of(out) == NotHouse{{PID_A, off, true}});
+    }
+    {
+        Ts a;
+        a.psi_302m();
+        frames(a, t0, 0, 50);
+        for (int i = 0; i < 2; i++) a.pes(PID_A, fmod_(t0 + 50 * TICKS_20MS - H2214 + BASE, WRAP), s302m(960));
+        frames(a, t0, 52, 8);
+        DemuxCore d;
+        std::vector<Ev> out;
+        d.feed(a.b.data(), a.b.size(), false, ceil_ns(t0 + 60 * TICKS_20MS), out);
+        CHECK("17 the same stale PES twice in a row: both dropped, one not-house-time",
+              of(out, K::unit).size() == 58 && of(out, K::not_house_time).size() == 1 && of(out, K::gap).empty());
+    }
+    {
+        // Episodes: two stale PES 5 s apart warn once, 15 s apart twice (10 s quiet closes one).
+        std::vector<std::pair<size_t, size_t>> counts;
+        for (int second : {300, 800}) {
+            DemuxCore d;
+            const auto out = paced(d, stream(t0, 1000, [&](int k) {
+                                       return t0 + k * TICKS_20MS + BASE - (k == 50 || k == second ? H2214 : 0);
+                                   }));
+            counts.push_back({of(out, K::not_house_time).size(), of(out, K::unit).size()});
+        }
+        CHECK("17 episodes: two stale PES 5 s apart warn once, 15 s apart twice; both dropped",
+              counts == std::vector<std::pair<size_t, size_t>>{{1, 998}, {2, 998}});
+    }
+    {
+        // A stream that leaves house time: its PTS 3 h on from frame 50, arriving on time.
+        DemuxCore d;
+        const auto out =
+            paced(d, stream(t0, 100, [&](int k) { return t0 + k * TICKS_20MS + BASE + (k >= 50 ? H3 : 0); }));
+        const Units us = units(out);
+        const NotHouse nh = nothouse_of(out);
+        CHECK("17 a stream that jumps 3 h off house time: its first PES there dropped, the rest at +3 h, "
+              "one not-house-time (stale)",
+              us.size() == 99 && us[50] == std::make_pair(ceil_ns(t0 + 51 * TICKS_20MS + H3), true) &&
+                  nh.size() == 1 && std::get<0>(nh[0]) == PID_A && std::get<2>(nh[0]) &&
+                  std::get<1>(nh[0]) > 3 * 3600 * 1000 - 1000);
+    }
+    {
+        // A source paused 2 h: its PTS go on from its last, arriving 2 h late from frame 50.
+        DemuxCore d;
+        const auto out =
+            paced(d, stream(t0, 100, nullptr, [&](int k) { return t0 + k * TICKS_20MS + (k >= 50 ? H2 : 0); }));
+        const Units us = units(out);
+        std::vector<int64_t> got, own_time;
+        for (const auto& p : us) got.push_back(p.first);
+        for (int k = 0; k < 100; k++)
+            if (k != 50) own_time.push_back(ceil_ns(t0 + k * TICKS_20MS));
+        const NotHouse nh = nothouse_of(out);
+        CHECK("17 a source paused 2 h, its PTS going on from its last: its first PES after dropped, the "
+              "rest at their own time, one not-house-time (stale)",
+              us.size() == 99 && us[50] == std::make_pair(ceil_ns(t0 + 51 * TICKS_20MS), true) &&
+                  got == own_time && nh.size() == 1 && std::get<0>(nh[0]) == PID_A && std::get<2>(nh[0]) &&
+                  of(out, K::gap).empty());
+    }
+    {
+        // The 33-bit wrap on a clock that moves with the stream: house time at the PES field's second wrap.
+        const int64_t w2 = 2 * WRAP - BASE;
+        std::vector<bool> good;
+        for (bool select : {false, true}) {
+            DemuxCore d(select ? sel_cfg() : DemuxCore::Config());
+            const auto out = paced(d, stream(w2 - 50 * TICKS_20MS, 100));
+            Units want;
+            for (int k = 0; k < 100; k++) want.push_back({ceil_ns(w2 + (k - 50) * TICKS_20MS), k == 0});
+            good.push_back(units(out) == want && of(out, K::gap).empty() && of(out, K::not_house_time).empty());
+        }
+        const Bytes& a7 = fixture("cap-mux-align7-aac-opus");
+        const int64_t first = ns_to_pts90k(first_pes_house_ns(a7.data(), a7.size()));
+        const Run ref = replay("cap-mux-align7-aac-opus");
+        const int64_t shift = w2 - 2 * 90000 - first;
+        const Bytes data = shifted(a7, shift);
+        DemuxCore d;
+        std::vector<Ev> out;
+        int64_t now = ceil_ns(w2 - 2 * 90000);
+        for (size_t at = 0; at < data.size(); at += 1316) {
+            std::vector<Ev> fresh;
+            d.feed(data.data() + at, std::min<size_t>(1316, data.size() - at), false, now, fresh);
+            for (const Ev* u : of(fresh, K::unit)) now = std::max(now, u->pts_ns + 5 * MS);
+            for (Ev& e : fresh) out.push_back(std::move(e));
+        }
+        d.drain(out);
+        std::vector<std::pair<int, int64_t>> got, want;
+        for (const Ev* u : of(out, K::unit)) got.push_back({u->pid, u->pts_ns});
+        for (const Ev* u : of(ref.ev, K::unit)) want.push_back({u->pid, ceil_ns(u->pts_u + shift - BASE)});
+        good.push_back(got == want && of(out, K::gap).size() == of(ref.ev, K::gap).size() &&
+                       of(out, K::not_house_time).empty());
+        CHECK("17 the 33-bit wrap crossed on a clock that moves with the stream (hand-built in demux and "
+              "select, cap-mux-align7-aac-opus rebased onto it): every unit at its PES - 1 h, no new GAP, "
+              "no warning",
+              good == std::vector<bool>{true, true, true});
+    }
+    {
+        // Without a clock a bus DISCONT keeps the unwrap (the PES field wraps right after it).
+        const auto pieces = stream(WRAP - BASE - 20 * TICKS_20MS, 40);
+        DemuxCore d;
+        std::vector<Ev> out;
+        for (size_t i = 0; i < pieces.size(); i++)
+            d.feed(pieces[i].b.data(), pieces[i].b.size(), i == 21, -1, out);
+        const Units us = units(out);
+        CHECK("17 without a clock a bus DISCONT keeps the unwrap: every step 20 ms across it and the "
+              "wrap, no warning",
+              us.size() == 40 && steady(us) && of(out, K::not_house_time).empty());
+    }
+    {
+        // A stream 2 h behind house time, a bus DISCONT in it.
+        DemuxCore d;
+        const auto out = paced(d, stream(t0, 100, nullptr, [&](int k) { return t0 + k * TICKS_20MS + H2; }), 51);
+        const Units us = units(out);
+        const NotHouse nh = nothouse_of(out);
+        CHECK("17 a stream 2 h off house time across a bus DISCONT: one not-house-time (not stale), its "
+              "units continuous",
+              us.size() == 100 && steady(us) && nh.size() == 1 && std::get<0>(nh[0]) == PID_A &&
+                  !std::get<2>(nh[0]));
+    }
+    {
+        const int64_t behind = 10 * 3600 * 90000LL;
+        const auto pieces =
+            stream(t0, 100, [&](int k) { return t0 + k * TICKS_20MS + BASE + (k >= 50 ? H20 : 0); },
+                   [&](int k) { return t0 + k * TICKS_20MS + behind + (k >= 50 ? H20 : 0); }, true);
+        DemuxCore d;
+        const Units us = units(paced(d, pieces, 51));
+        CHECK("17 a stream 10 h behind house time back from a 20 h outage (bus DISCONT): its units and its "
+              "PCR 10 h behind house now again, not a wrap off",
+              us.size() == 100 && us[50] == std::make_pair(ceil_ns(t0 + 50 * TICKS_20MS + H20), true) &&
+                  d.program_time_ns() == pts90k_to_ns(t0 + 99 * TICKS_20MS + H20 + LEAD));
+    }
+    {
+        const Run r = replay("cap-klv-sparse");
+        CHECK("17 cap-klv-sparse (180 s) at one clock reading, past 60 s off it from its 61st second: no PES "
+              "dropped, no warning (a drift is no jump)",
+              of(r.ev, K::not_house_time).empty() && r.k.pes == 247);
+    }
+}
+
 }  // namespace
 
 int main(int, char** argv) {
@@ -1823,5 +2158,6 @@ int main(int, char** argv) {
     test_sparse_pcr();
     test_au_post();
     test_expectations();
+    test_outage();
     return test_summary("demux_core");
 }

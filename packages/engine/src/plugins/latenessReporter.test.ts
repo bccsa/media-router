@@ -823,7 +823,7 @@ describe('LatenessReporter: demuxes and consumer ASRCs (WI-P3-6)', () => {
         generation: 0,
         ...o,
     });
-    const st = (mode: string, o: Record<string, number> = {}) => ({
+    const st = (mode: string, o: Record<string, number | boolean> = {}) => ({
         state: 'locked',
         mode,
         relocks: 0,
@@ -917,6 +917,9 @@ describe('LatenessReporter: demuxes and consumer ASRCs (WI-P3-6)', () => {
         expect(s.inputs.map((i) => i.clockCorrection)).toEqual([{ sourcePpm: 23.4 }, undefined]);
         // An ASRC whose row is not on display shows on the module's.
         expect(s.clockCorrection).toEqual({});
+        // One engaged before its rate is measured (B-148): measuring, unless another has a rate.
+        r.onEvent('mrasrc-stats:gone', st('decode', { 'rate-known': false }), 1000);
+        expect(r.summary(1000).clockCorrection).toEqual({ measuring: true });
         expect(s.deviceClockPpm).toBe(-12.1);
         // A capture ASRC shows nowhere (its ingest card's).
         const ingest = new LatenessReporter();

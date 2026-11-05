@@ -685,7 +685,7 @@ def test_select():
     d1, d2 = sel(), sel()
     o1, o2 = run(d1, data, 100 * SEC, 77), run(d2, data, 100 * SEC)
     check("12 select: walk: 77-byte feeds and garbage give one feed's units, 3 bytes resynced",
-          lines(o1) == lines(o2) and len(o1) == 6 and d1.counters()["desyncBytes"] == 3)
+          lines(o1) == lines(o2) and len(of(o1, "unit")) == 6 and d1.counters()["desyncBytes"] == 3)
     for part in (_select_formula, _select_seed, _select_wrap, _select_jump, _select_cc_loss,
                  _select_spacing_across_markers, _select_markers, _select_no_stream,
                  _select_programs_and_pid_change, _select_discont_drain_flush, _select_no_pts):
@@ -1293,11 +1293,254 @@ def test_expectations():
     check("16 every fixture has its .demux.jsonl", all(n + ".demux.jsonl" in files for n in names))
 
 
+# --- 17 house time across an outage, stale PES (B-149) ----------------------------------------------
+
+DAYS30 = 30 * 86400 * 90000                       # house ticks: a box up a month, past many wraps
+LEAD = 27000                                      # a PCR 300 ms ahead: program time follows it
+
+
+def _frames(t, start, first, n, frames=960, pcr=False):
+    """Frames `first`..`first + n - 1` of 302M from house tick `start`, 20 ms apart, a PCR after
+    each fifth."""
+    for k in range(first, first + n):
+        t.frame(start + k * TICKS_20MS, frames)
+        if pcr and k % 5 == 4:
+            t.b += ts_psi.build_pcr_packet(PID_A, ((start + k * TICKS_20MS + LEAD + BASE) % WRAP) * 300,
+                                           t.last_cc(PID_A))
+
+
+def _units(out):
+    return [(u["pts"], u["discont"]) for u in of(out, "unit")]
+
+
+def _steady(us):
+    """Every unit 20 ms after the one before it."""
+    return all(b - a == 20 * MS for (a, _), (b, _) in zip(us, us[1:]))
+
+
+def _outage(select, away, restarted, discont=True):
+    """50 frames at house 30 days, `away` ticks of nothing, 50 more (PSI first): the source's CC
+    and PTS going on (or a new source, CC from 0), on house time; each part fed at its end."""
+    t0 = DAYS30
+    a = Ts()
+    a.psi_302m()
+    _frames(a, t0, 0, 50, pcr=True)
+    d = sel() if select else dc.DemuxCore()
+    d.feed(bytes(a.b), False, ceil_ns(t0 + 50 * TICKS_20MS))
+    t1 = t0 + 50 * TICKS_20MS + away
+    b = Ts() if restarted else a
+    mark = len(b.b)
+    b.psi_302m()
+    _frames(b, t1, 0, 50, pcr=True)
+    out = d.feed(bytes(b.b[mark:]), discont, ceil_ns(t1 + 50 * TICKS_20MS))
+    want = [(ceil_ns(t1 + k * TICKS_20MS), k == 0) for k in range(50)]
+    gaps = [(g["pts"], g["dur"], g["reason"]) for g in of(out, "gap")]
+    gap = [(ceil_ns(t0 + 50 * TICKS_20MS), ceil_ns(t1) - ceil_ns(t0 + 50 * TICKS_20MS), "jump")]
+    return _units(out) == want and gaps == gap and not of(out, "nothouse"), d, t1
+
+
+def _paced(d, pieces, discont_at=-1):
+    """Each (bytes, house tick) piece fed 5 ms after its tick: a clock that moves with the stream."""
+    out = []
+    for i, (b, tick) in enumerate(pieces):
+        out += d.feed(b, i == discont_at, ceil_ns(tick) + 5 * MS)
+    return out
+
+
+def _stream(t0, n, pts=None, late=None, pcr=False):
+    """(bytes, arrival tick) per PES: the PSI, then n 2 ms frames every 20 ms from house tick t0;
+    frame k carries PES PTS pts(k) (default its own) and arrives at late(k) (default on time), a
+    PCR LEAD ahead of it after each fifth."""
+    t = Ts()
+    t.psi_302m()
+    pieces = [(bytes(t.b), t0)]
+    for k in range(n):
+        at, tick = len(t.b), t0 + k * TICKS_20MS
+        p = pts(k) if pts else tick + BASE
+        t.pes(PID_A, p % WRAP, s302m(96))
+        if pcr and k % 5 == 4:
+            t.b += ts_psi.build_pcr_packet(PID_A, ((p + LEAD) % WRAP) * 300, t.last_cc(PID_A))
+        pieces.append((bytes(t.b[at:]), late(k) if late else tick))
+    return pieces
+
+
+def _nothouse(out):
+    return [(e["pid"], e["offsetMs"], e["stale"]) for e in of(out, "nothouse")]
+
+
+def _ms(d):
+    return d // MS if d >= 0 else -(-d // MS)
+
+
+def test_outage():
+    H133, H20, H2214 = 4309200000, 6480000000, 7173360000      # 13.3 h, 20 h, 22.14 h in ticks
+    ok = {}
+    for name, away, restarted in (("13.3 h", H133, False), ("20 h", H20, False),
+                                  ("13.3 h", H133, True), ("20 h", H20, True)):
+        ok[(name, restarted)] = all(_outage(select, away, restarted)[0] for select in (False, True))
+    check("17 an outage of 13.3 h, the source's PTS going on: every unit after it at its house time, "
+          "one GAP over it, no warning (demux and select)", ok[("13.3 h", False)])
+    check("17 an outage of 20 h, the source's PTS going on: every unit after it at its house time, "
+          "one GAP over it, no warning (demux and select)", ok[("20 h", False)])
+    check("17 an outage of 13.3 h, the source restarted (PSI again, CC from 0): every unit after it at "
+          "its house time, one GAP over it, no warning (demux and select)", ok[("13.3 h", True)])
+    check("17 an outage of 20 h, the source restarted: every unit after it at its house time, one GAP "
+          "over it, no warning (demux and select)", ok[("20 h", True)])
+    check("17 an outage of 20 h with no bus DISCONT: every unit after it at its house time, one GAP "
+          "over it (demux and select)", all(_outage(s, H20, False, False)[0] for s in (False, True)))
+    pt = []
+    for discont in (True, False):
+        _, d, t1 = _outage(False, H20, False, discont)
+        pt.append(d.program_time_ns() == dc.pts90k_to_ns(t1 + 49 * TICKS_20MS + LEAD))
+    check("17 after an outage of 20 h, with a bus DISCONT or none, program time is the PCR's on the "
+          "house clock", pt == [True, True])
+    # b2: one PES 22.14 h old in place of frame 50, then a real 5 s hole.
+    t0 = DAYS30
+    for select in (False, True):
+        t = Ts()
+        t.psi_302m()
+        _frames(t, t0, 0, 50)
+        t.pes(PID_A, (t0 + 50 * TICKS_20MS - H2214 + BASE) % WRAP, s302m(960))
+        _frames(t, t0, 51, 49)
+        d = sel() if select else dc.DemuxCore()
+        now = ceil_ns(t0 + 100 * TICKS_20MS)
+        out = d.feed(bytes(t.b), False, now)
+        u = Ts()
+        u.cc = dict(t.cc)
+        _frames(u, t0, 350, 10)
+        later = d.feed(bytes(u.b), False, ceil_ns(t0 + 360 * TICKS_20MS))
+        want = [(ceil_ns(t0 + k * TICKS_20MS), k in (0, 51)) for k in range(100) if k != 50]
+        off = _ms(ceil_ns(t0 + 50 * TICKS_20MS - H2214 + WRAP) - now)
+        hole = [(g["pts"], g["dur"]) for g in of(later, "gap")]
+        check("17 a lone stale PES 22.14 h old among current ones (%s): dropped, one not-house-time "
+              "(stale, %+d ms), the next unit DISCONT at its house time, no GAP; a later 5 s hole "
+              "gapped" % ("select" if select else "demux", off),
+              _units(out) == want and _nothouse(out) == [(PID_A, off, True)] and not of(out, "gap")
+              and hole == [(ceil_ns(t0 + 100 * TICKS_20MS), 250 * 20 * MS)])
+    # MR-033: after a 22.14 h outage the source's first PES carries its last PES's PTS again.
+    a = Ts()
+    a.psi_302m()
+    _frames(a, t0, 0, 50)
+    d = dc.DemuxCore()
+    d.feed(bytes(a.b), False, ceil_ns(t0 + 50 * TICKS_20MS))
+    t1 = t0 + 50 * TICKS_20MS + H2214
+    mark = len(a.b)
+    a.pes(PID_A, (t0 + 49 * TICKS_20MS + BASE) % WRAP, s302m(960))
+    _frames(a, t1, 0, 10)
+    now = ceil_ns(t1 + 10 * TICKS_20MS)
+    out = d.feed(bytes(a.b[mark:]), True, now)
+    off = _ms(ceil_ns(t0 + 49 * TICKS_20MS + WRAP) - now)
+    check("17 MR-033's copy after a 22.14 h outage (the last PES's PTS again): dropped, one "
+          "not-house-time (stale, %+d ms), the next unit at its house time after one GAP" % off,
+          _units(out) == [(ceil_ns(t1 + k * TICKS_20MS), k == 0) for k in range(10)] and
+          _nothouse(out) == [(PID_A, off, True)] and len(of(out, "gap")) == 1)
+    a = Ts()
+    a.psi_302m()
+    _frames(a, t0, 0, 50)
+    a.pes(PID_A, (t0 + 50 * TICKS_20MS - 2 * 3600 * 90000 + BASE) % WRAP, s302m(960))
+    _frames(a, t0, 51, 9)
+    out = dc.DemuxCore().feed(bytes(a.b), False, ceil_ns(t0 + 60 * TICKS_20MS))
+    check("17 a stale PES 2 h old: dropped, one not-house-time (stale, its age)",
+          len(of(out, "unit")) == 59 and _nothouse(out) ==
+          [(PID_A, _ms(ceil_ns(t0 + 50 * TICKS_20MS - 2 * 3600 * 90000) - ceil_ns(t0 + 60 * TICKS_20MS)),
+            True)])
+    a = Ts()
+    a.psi_302m()
+    _frames(a, t0, 0, 50)
+    for _ in range(2):
+        a.pes(PID_A, (t0 + 50 * TICKS_20MS - H2214 + BASE) % WRAP, s302m(960))
+    _frames(a, t0, 52, 8)
+    out = dc.DemuxCore().feed(bytes(a.b), False, ceil_ns(t0 + 60 * TICKS_20MS))
+    check("17 the same stale PES twice in a row: both dropped, one not-house-time",
+          len(of(out, "unit")) == 58 and len(of(out, "nothouse")) == 1 and not of(out, "gap"))
+    # Episodes: two stale PES 5 s apart warn once, 15 s apart twice (10 s quiet closes one).
+    counts = []
+    for second in (300, 800):
+        old = {50, second}
+        out = _paced(dc.DemuxCore(), _stream(t0, 1000, pts=lambda k: t0 + k * TICKS_20MS + BASE -
+                                             (H2214 if k in old else 0)))
+        counts.append((len(of(out, "nothouse")), len(of(out, "unit"))))
+    check("17 episodes: two stale PES 5 s apart warn once, 15 s apart twice; both dropped",
+          counts == [(1, 998), (2, 998)])
+    # A stream that leaves house time: its PTS 3 h on from frame 50, arriving on time.
+    out = _paced(dc.DemuxCore(), _stream(t0, 100, pts=lambda k: t0 + k * TICKS_20MS + BASE +
+                                         (3 * 3600 * 90000 if k >= 50 else 0)))
+    us = _units(out)
+    check("17 a stream that jumps 3 h off house time: its first PES there dropped, the rest at +3 h, "
+          "one not-house-time (stale)",
+          len(us) == 99 and us[50] == (ceil_ns(t0 + 51 * TICKS_20MS + 3 * 3600 * 90000), True) and
+          [(p, s) for p, _, s in _nothouse(out)] == [(PID_A, True)] and
+          _nothouse(out)[0][1] > 3 * 3600 * 1000 - 1000)
+    # A source paused 2 h: its PTS go on from its last, arriving 2 h late from frame 50.
+    out = _paced(dc.DemuxCore(), _stream(t0, 100, late=lambda k: t0 + k * TICKS_20MS +
+                                         (2 * 3600 * 90000 if k >= 50 else 0)))
+    us = _units(out)
+    own_time = [ceil_ns(t0 + k * TICKS_20MS) for k in range(100) if k != 50]
+    check("17 a source paused 2 h, its PTS going on from its last: its first PES after dropped, the "
+          "rest at their own time, one not-house-time (stale)",
+          len(us) == 99 and us[50] == (ceil_ns(t0 + 51 * TICKS_20MS), True) and
+          [p for p, _ in us] == own_time and [(p, s) for p, _, s in _nothouse(out)] == [(PID_A, True)]
+          and not of(out, "gap"))
+    # The 33-bit wrap on a clock that moves with the stream: house time at the PES field's second wrap.
+    w2 = 2 * WRAP - BASE
+    good = []
+    for select in (False, True):
+        out = _paced(sel() if select else dc.DemuxCore(), _stream(w2 - 50 * TICKS_20MS, 100))
+        good.append(_units(out) == [(ceil_ns(w2 + (k - 50) * TICKS_20MS), k == 0) for k in range(100)]
+                    and not of(out, "gap") and not of(out, "nothouse"))
+    own = dc.first_pes_house_ns(fixture("cap-mux-align7-aac-opus"))
+    first = dc.ns_to_pts90k(own)
+    ref, _ = replay("cap-mux-align7-aac-opus")
+    data = _shifted(fixture("cap-mux-align7-aac-opus"), w2 - 2 * 90000 - first)
+    d, out, now = dc.DemuxCore(), [], ceil_ns(w2 - 2 * 90000)
+    for at in range(0, len(data), 1316):
+        new = d.feed(data[at:at + 1316], False, now)
+        out += new
+        now = max([now] + [u["pts"] + 5 * MS for u in of(new, "unit")])
+    out += d.drain()
+    shift = w2 - 2 * 90000 - first
+    good.append([(u.pid, u["pts"]) for u in of(out, "unit")] ==
+                [(u.pid, ceil_ns(u.raw[2] + shift - BASE)) for u in of(ref, "unit")] and
+                len(of(out, "gap")) == len(of(ref, "gap")) and not of(out, "nothouse"))
+    check("17 the 33-bit wrap crossed on a clock that moves with the stream (hand-built in demux and "
+          "select, cap-mux-align7-aac-opus rebased onto it): every unit at its PES - 1 h, no new GAP, "
+          "no warning", good == [True, True, True])
+    # Without a clock a bus DISCONT keeps the unwrap (the PES field wraps right after it).
+    pieces = _stream(WRAP - BASE - 20 * TICKS_20MS, 40)
+    d = dc.DemuxCore()
+    out = []
+    for i, (b, _) in enumerate(pieces):
+        out += d.feed(b, i == 21, -1)
+    us = _units(out)
+    check("17 without a clock a bus DISCONT keeps the unwrap: every step 20 ms across it and the "
+          "wrap, no warning", len(us) == 40 and _steady(us) and not of(out, "nothouse"))
+    # A stream 2 h behind house time, a bus DISCONT in it.
+    out = _paced(dc.DemuxCore(), _stream(t0, 100, late=lambda k: t0 + k * TICKS_20MS + 2 * 3600 * 90000),
+                 discont_at=51)
+    us = _units(out)
+    check("17 a stream 2 h off house time across a bus DISCONT: one not-house-time (not stale), its "
+          "units continuous", len(us) == 100 and _steady(us) and
+          [(p, s) for p, _, s in _nothouse(out)] == [(PID_A, False)])
+    behind = 10 * 3600 * 90000
+    pieces = _stream(t0, 100, late=lambda k: t0 + k * TICKS_20MS + behind + (H20 if k >= 50 else 0),
+                     pts=lambda k: t0 + k * TICKS_20MS + BASE + (H20 if k >= 50 else 0), pcr=True)
+    d = dc.DemuxCore()
+    us = _units(_paced(d, pieces, discont_at=51))
+    check("17 a stream 10 h behind house time back from a 20 h outage (bus DISCONT): its units and its "
+          "PCR 10 h behind house now again, not a wrap off",
+          len(us) == 100 and us[50] == (ceil_ns(t0 + 50 * TICKS_20MS + H20), True) and
+          d.program_time_ns() == dc.pts90k_to_ns(t0 + 99 * TICKS_20MS + H20 + LEAD))
+    ev, core = replay("cap-klv-sparse")
+    check("17 cap-klv-sparse (180 s) at one clock reading, past 60 s off it from its 61st second: no PES "
+          "dropped, no warning (a drift is no jump)",
+          not of(ev, "nothouse") and core.counters()["pes"] == 247)
+
+
 def main():
     for test in (test_classify, test_pad_name, test_wrap, test_chunking, test_no_pts, test_gap_500ms,
                  test_gap_marker, test_video_hole, test_pmt_change, test_formula,
                  test_unknown_not_house, test_select, test_media, test_sparse_pcr, test_au_post,
-                 test_expectations):
+                 test_expectations, test_outage):
         test()
     if _failures:
         print(f"\n{_failures} FAILURE(S) in demux_core")

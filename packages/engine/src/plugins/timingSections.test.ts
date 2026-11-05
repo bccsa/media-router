@@ -415,6 +415,9 @@ describe('timingPublication: demux and ASRC rows (WI-P3-6)', () => {
         expect(timingPublication({ ...s, deviceClockPpm: 40 }).data.timing.deviceClock).toBe(
             '+40.0 ppm',
         );
+        // Engaged before the rate is measured (B-148).
+        const early = timingPublication({ ...s, clockCorrection: { measuring: true } });
+        expect(early.data.timing.clockCorrection).toBe('measuring');
     });
 
     it('timingChanged: 0.1 ppm, an engage, a PES/s or a counter is a change; less is not', () => {
@@ -426,6 +429,7 @@ describe('timingPublication: demux and ASRC rows (WI-P3-6)', () => {
         expect(timingChanged(s, at({ deviceClockPpm: -12.15 }))).toBe(false);
         expect(timingChanged(s, at({ deviceClockPpm: -12.2 }))).toBe(true);
         expect(timingChanged(s, at({ clockCorrection: {} }))).toBe(true);
+        expect(timingChanged(s, at({ clockCorrection: { measuring: true } }))).toBe(true);
         expect(timingChanged(s, at({}, { clockCorrection: { sourcePpm: 23.5 } }))).toBe(false);
         expect(timingChanged(s, at({}, { clockCorrection: { sourcePpm: 23.6 } }))).toBe(true);
         expect(timingChanged(s, at({}, { demux: { ...demux, pesPerS: 47.5 } }))).toBe(false);

@@ -82,6 +82,8 @@ class ClockLock {
     int64_t ppb() const;                        // ε applied
     bool has_fit() const { return fit_valid_; }
     int64_t fit_ppb() const { return fit_ppb_; }  // last raw fit, unclamped (validator)
+    int fit_n() const { return fit_n_; }           // ... and its buckets
+    bool rate_known() const { return rate_known_; }   // ε from a fit, or kept by relock
     Residual residual() const;
     // β travel since the phase became locked: how far the minimum delay wandered.
     int64_t offset_drift_ns() const { return locked_ ? travel_ns_ - travel_at_lock_ : 0; }
@@ -153,6 +155,7 @@ class ClockLock {
     int64_t rate_known_h_ = 0;
     bool fit_valid_ = false;
     int64_t fit_ppb_ = 0;
+    int fit_n_ = 0;
     int64_t epoch_h_ = 0;
     bool locked_ = false;
     bool run_ = false;                // buckets past step_ns since run_start_h_
