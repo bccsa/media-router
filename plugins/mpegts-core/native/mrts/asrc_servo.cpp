@@ -16,6 +16,11 @@ int64_t floor_div(int64_t a, int64_t b) {
 
 int64_t clamp64(int64_t v, int64_t lo, int64_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+__int128 floor_div128(__int128 a, __int128 b) {
+    const __int128 q = a / b;
+    return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q;
+}
+
 int64_t iabs(int64_t v) { return v < 0 ? -v : v; }
 
 int64_t sat_sub(int64_t a, int64_t b) {
@@ -58,6 +63,14 @@ ClockLockConfig asrc_lock_config() {
 ClockLockConfig asrc_decode_lock_config() {
     ClockLockConfig c = asrc_lock_config();
     c.rate_buckets_min = 10;
+    return c;
+}
+
+ClockLockConfig asrc_device_lock_config() {
+    ClockLockConfig c = asrc_lock_config();
+    c.rate_buckets_max = 1000;
+    c.rate_tau_ns = 1200 * E9;
+    c.slew_track_ppm = 1000;
     return c;
 }
 
@@ -544,30 +557,201 @@ std::vector<AsrcEvent> AsrcServo::take_events() {
     return out;
 }
 
-AsrcDeviceLock::AsrcDeviceLock(const ClockLockConfig& cfg) : lock_(cfg) {}
+// --- the device term (py/asrc_device_ref.py's DeviceTerm and RenderLateness, B-165/B-166) -----------------
 
-// A step of the device clock against house (a sink that skipped) moves the lock onto its floor,
-// keeping the rate: only the rate is used.
-void AsrcDeviceLock::feed(int64_t itime_ns, int64_t etime_ns, int64_t read_ns) {
-    const int64_t h = etime_ns + std::max<int64_t>(read_ns, 0);
-    if (!have_first_) {
-        have_first_ = true;
-        first_ns_ = h;
+const char* asrc_device_event_name(AsrcDeviceEvent::Kind k) {
+    switch (k) {
+        case AsrcDeviceEvent::Kind::relock_device: return "relock-device";
+        case AsrcDeviceEvent::Kind::device_stalled: return "device-stalled";
+        case AsrcDeviceEvent::Kind::device_resumed: return "device-resumed";
     }
-    if (h - first_ns_ < SETTLE_NS) return;
-    lock_.feed(itime_ns, h);
-    if (lock_.envelope_step()) lock_.step_to_floor();
+    return "";
 }
 
-bool AsrcDeviceLock::discont(Discont why) {
-    if (why == Discont::alignment) {
-        alignments_++;
-        return false;
+const char* asrc_device_lock_state_name(AsrcDeviceTerm::LockState s) {
+    switch (s) {
+        case AsrcDeviceTerm::LockState::idle: return "idle";
+        case AsrcDeviceTerm::LockState::settle: return "settle";
+        case AsrcDeviceTerm::LockState::acquiring: return "acquiring";
+        case AsrcDeviceTerm::LockState::locked: return "locked";
+        case AsrcDeviceTerm::LockState::lost: return "lost";
     }
+    return "";
+}
+
+int64_t asrc_device_ratio(int64_t eps_in_ppb, int64_t eps_dev_ppb, int64_t max_ppm) {
+    const __int128 num = (__int128)(E9 + eps_in_ppb) * E9, den = E9 + eps_dev_ppb;
+    const __int128 q = (2 * num + den) / (2 * den);   // both positive: floor
+    const int64_t lim = max_ppm * 1000;
+    return clamp64((int64_t)(q - E9), -lim, lim);
+}
+
+AsrcDeviceTerm::AsrcDeviceTerm(const AsrcDeviceConfig& cfg) : cfg_(cfg), lock_(cfg.lock) {
+    wait_frames_ = cfg_.waiting_ns * cfg_.rate_hz / E9;
+    resume_frames_ = cfg_.resume_ns * cfg_.rate_hz / E9;
+}
+
+void AsrcDeviceTerm::start(int64_t mono, std::vector<AsrcDeviceEvent>* events) {
+    if (rendering_) return;
+    rendering_ = true;
+    have_prev_ = moved_ = false;
+    beyond_ = 0;
+    if (!epoch_) return;
     lock_.relock(true);
-    relocks_++;
-    have_first_ = false;
-    return why != Discont::flush;
+    relocks_restart_++;
+    recal_ = true;
+    events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::relock_device, "restart", mono, 0});
+}
+
+void AsrcDeviceTerm::stop(int64_t) {
+    rendering_ = false;
+    have_prev_ = stalled_ = waiting_ = have_taken_ = false;
+}
+
+void AsrcDeviceTerm::relock_step(int64_t mono, int64_t step_ns, std::vector<AsrcDeviceEvent>* events) {
+    lock_.relock(true);
+    relocks_step_++;
+    recal_ = true;
+    events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::relock_device, "step", mono, step_ns});
+    moved_ = true;
+    moved_at_ = mono;
+    beyond_ = 0;
+}
+
+bool AsrcDeviceTerm::take_recalibrated() {
+    const bool r = recal_;
+    recal_ = false;
+    return r;
+}
+
+// A flat read is never fed: a clock that stalls must not read as a slow device. The lock starts settle_ns
+// after the clock first moves (and after a relock); a fed read past relock_ns relock_samples times in a
+// row, or the lock's own envelope step, is a step of the device's clock.
+void AsrcDeviceTerm::clock(int64_t dev, int64_t mono, std::vector<AsrcDeviceEvent>* events) {
+    const bool had = have_prev_;
+    const int64_t pdev = prev_dev_, pmono = prev_mono_;
+    have_prev_ = true;
+    prev_dev_ = dev;
+    prev_mono_ = mono;
+    if (!had) return;
+    const int64_t dd = dev - pdev, dm = mono - pmono;
+    if (dm <= 0 || dd * cfg_.flat_den <= dm) {
+        flat_ns_ += std::max<int64_t>(dm, 0);
+        return;
+    }
+    if (!moved_) {
+        moved_ = true;
+        moved_at_ = mono;
+        return;
+    }
+    if (mono - moved_at_ < cfg_.settle_ns) return;
+    if (lock_.started()) {
+        const int64_t r = mono - lock_.house_of(dev);
+        if (r > cfg_.relock_ns || r < -cfg_.relock_ns) {
+            if (++beyond_ >= cfg_.relock_samples) relock_step(mono, r, events);
+            return;
+        }
+        beyond_ = 0;
+    }
+    lock_.feed(dev, mono);
+    epoch_ = true;
+    fed_++;
+    if (lock_.envelope_step()) relock_step(mono, lock_.step_size_ns(), events);
+}
+
+// Device stall (the owner's Q2, skip and resume live), read on the render: stalled once the sink took nothing
+// for stall_ns while frames waited past waiting_ns; then a flush every probe_ns, and resumed once it took past
+// an empty ring since the last flush, with one more flush. What the flushes discard is dropped.
+bool AsrcDeviceTerm::render(int64_t mono, int64_t pushed, int64_t taken, std::vector<AsrcDeviceEvent>* events) {
+    const bool had = have_taken_;
+    const int64_t prev = taken_prev_;
+    have_taken_ = true;
+    taken_prev_ = taken;
+    const int64_t pending = pushed - taken - discarded_;
+    bool flush = false;
+    if (!stalled_) {
+        if (!had || taken > prev || pending <= wait_frames_) {
+            waiting_ = false;
+        } else if (!waiting_) {
+            waiting_ = true;
+            wait_since_ = mono;
+        } else if (mono - wait_since_ >= cfg_.stall_ns) {
+            stalled_ = true;
+            stalls_++;
+            events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_stalled, "", mono, pending});
+            flush = true;
+        }
+    } else if (taken - taken_at_flush_ > resume_frames_) {
+        stalled_ = waiting_ = false;
+        events->push_back(AsrcDeviceEvent{AsrcDeviceEvent::Kind::device_resumed, "", mono, dropped_ + pending});
+        flush = true;
+    } else if (mono - flush_at_ >= cfg_.probe_ns) {
+        // What the sink took since the last flush sat in a ring the stopped device never read.
+        dropped_ += taken - taken_at_flush_;
+        flush = true;
+    }
+    if (flush) {
+        dropped_ += pending;
+        discarded_ += pending;
+        flush_at_ = mono;
+        taken_at_flush_ = taken;
+        flushes_++;
+    }
+    return flush;
+}
+
+bool AsrcDeviceTerm::sample(int64_t dev_ns, int64_t mono_ns, int64_t pushed, int64_t rendered,
+                            std::vector<AsrcDeviceEvent>* events) {
+    if (!rendering_) return false;   // read only between start() and stop()
+    clock(dev_ns, mono_ns, events);
+    const bool flush = pushed >= 0 && rendered >= 0 && render(mono_ns, pushed, rendered, events);
+    lock_.tick(mono_ns);
+    return flush;
+}
+
+int64_t AsrcDeviceTerm::device_ppb() const { return lock_.rate_known() ? lock_.ppb() : 0; }
+
+int64_t AsrcDeviceTerm::ratio_ppb(int64_t eps_in_ppb) const {
+    return asrc_device_ratio(eps_in_ppb, device_ppb(), cfg_.ratio_max_ppm);
+}
+
+AsrcDeviceTerm::LockState AsrcDeviceTerm::lock_state() const {
+    if (!rendering_ || !moved_) return LockState::idle;
+    if (!lock_.started()) return LockState::settle;
+    switch (lock_.phase()) {
+        case ClockLock::Phase::locked: return LockState::locked;
+        case ClockLock::Phase::lost: return LockState::lost;
+        default: return LockState::acquiring;
+    }
+}
+
+AsrcDeviceTerm::Stats AsrcDeviceTerm::stats() const {
+    Stats s;
+    s.device_ppb = device_ppb();
+    s.device_rate_ppb = asrc_rate_of(s.device_ppb);
+    s.relocks_restart = relocks_restart_;
+    s.relocks_step = relocks_step_;
+    s.device_stalls = stalls_;
+    s.dropped = dropped_;
+    s.flushes = flushes_;
+    s.flat_ns = flat_ns_;
+    s.fed = fed_;
+    return s;
+}
+
+void AsrcRenderLateness::rendered(int64_t write_pos, int64_t frames, int64_t pts_ns) {
+    if (!map_.empty() && write_pos < map_.back().write_pos + map_.back().frames)
+        map_.clear();   // the ring started again (a restart) or was written over
+    map_.push_back(Seg{write_pos, frames, pts_ns});
+}
+
+bool AsrcRenderLateness::at(int64_t now_ns, int64_t dev_ns, int64_t* lateness_ns) {
+    const int64_t pos = (int64_t)floor_div128((__int128)dev_ns * rate_, E9);
+    while (!map_.empty() && map_.front().write_pos + map_.front().frames <= pos) map_.pop_front();
+    if (map_.empty() || map_.front().write_pos > pos) return false;
+    const Seg& s = map_.front();
+    *lateness_ns = now_ns - (s.pts + (int64_t)floor_div128((__int128)(pos - s.write_pos) * E9, rate_));
+    return true;
 }
 
 }  // namespace mrts

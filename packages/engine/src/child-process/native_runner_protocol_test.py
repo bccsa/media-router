@@ -2898,8 +2898,8 @@ def test_video_leg_formula():
               f"same times", n > 0 and a[:n] == b[:n])
 
 
-# --------------------------------------------------------------------------- mrasrc-device (WI-P3-5)
-_SKEW_LINE = re.compile(r"custom slaving requested skew ([+-]?)(\d+):(\d\d):(\d\d)\.(\d{9})")
+# --------------------------------------------------------------------------- mrasrc-device (WI-P3-5, B-166)
+_SLAVING_LINE = re.compile(r"custom slaving|after slaving|we are slaved")   # audiobasesink's, sync=true only
 
 
 def _pulse_null_sink():
@@ -2912,78 +2912,91 @@ def _pulse_null_sink():
     return next((n for n in names if "null" in n), None) if out.returncode == 0 else None
 
 
+def _mrasrc_device_run(tag, argv, env, pipeline, seconds, actions=()):
+    """One runner on `pipeline` for `seconds`: its mrasrc stats and events (forwarded unsubscribed), the
+    snapshot, whether it played without an error and exited 0, and its log lines."""
+    r = RunnerProc(argv, env=env)
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": pipeline, "useStdioForData": False, "linkOnPadAdded": [],
+                "decoderThreadType": "auto"})
+        playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+        t0 = time.monotonic()
+        todo = sorted(actions)
+        while time.monotonic() - t0 < seconds:
+            while todo and time.monotonic() - t0 >= todo[0][0]:
+                r.send(todo.pop(0)[1])
+            r.pump()
+            time.sleep(0.1)
+        r.send({"cmd": "get_stats", "id": "as1", "element": "asrc"})
+        st = r.wait_event(ev_is("stats", id="as1"))
+        snap = (st or {}).get("data") or {}
+        error = r.has_event(ev_is("error"))
+        code = r.stop_and_wait()
+    finally:
+        r.kill()
+    stats = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
+             and ev.get("channel") == "mrasrc-stats:asrc"]
+    events = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
+              and ev.get("channel") == "mrasrc-event:asrc"]
+    return stats, events, snap, playing and not error and code == 0, r.logs
+
+
 def test_mrasrc_device():
-    """mrasrc-device (WI-P3-5), both runners: `audiotestsrc ! mrasrc device-sink=sink ! pulsesink
-    name=sink slave-method=custom` on a null sink (tests/libgstmrtest.so's mrtestaudiosink without
-    one): the sink's custom-slaving callback is set and never asks a skew (audiobasesink's own lines),
-    and mrasrc-stats shows mode device with the device lock fed. No busReports: both runners forward
-    the ASRC's messages unsubscribed, in the shape the engine reads (WI-P3-6, S19)."""
+    """mrasrc-device (WI-P3-5, B-166), both runners: `audiotestsrc ! mrasrc device-sink=sink ! <sink sync=false>`
+    on a PulseAudio null sink (tests/libgstmrtest.so's mrtestaudiosink without one): no slaving at all (the
+    sink's render never reaches it), mrasrc-stats mode device, the device term reading the sink's clock on its
+    timer. Then mrtestaudiosink behind the outputs' prefill, stopped 3 s by its `stall-ms`: device-stalled,
+    device-resumed, the pipeline playing on. Both runners forward the ASRC's messages unsubscribed, in the
+    shape the engine reads (WI-P3-6, S19)."""
     null = _pulse_null_sink() if Gst.ElementFactory.find("pulsesink") else None
     env = {"GST_DEBUG": "audiobasesink:5", "GST_DEBUG_NO_COLOR": "1"}
-    tmp = None
-    if null:
-        sink = f"pulsesink name=sink device={null} slave-method=custom provide-clock=false sync=true"
-    else:
-        test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
-        if not os.path.exists(os.path.join(test_dir, "libgstmrtest.so")):
-            print("SKIP mrasrc-device — no PulseAudio null sink and tests/libgstmrtest.so not built")
-            return
-        tmp = tempfile.mkdtemp(prefix="mrtest-")   # its own registry: the user's stays as it is
-        env.update(GST_PLUGIN_PATH=os.environ.get("GST_PLUGIN_PATH", "") + ":" + test_dir,
-                   GST_REGISTRY=os.path.join(tmp, "registry.bin"))
-        sink = "mrtestaudiosink name=sink slave-method=custom sync=true"
+    test_dir = os.path.join(_PLUGINS, "mpegts-core", "native", "mrtshouse", "tests")
+    have_test = os.path.exists(os.path.join(test_dir, "libgstmrtest.so"))
+    if not null and not have_test:
+        print("SKIP mrasrc-device — no PulseAudio null sink and tests/libgstmrtest.so not built")
+        return
+    tmp = tempfile.mkdtemp(prefix="mrtest-")   # its own registry: the user's stays as it is
+    test_env = dict(env, GST_PLUGIN_PATH=os.environ.get("GST_PLUGIN_PATH", "") + ":" + test_dir,
+                    GST_REGISTRY=os.path.join(tmp, "registry.bin"))
+    sink = (f"pulsesink name=sink device={null} provide-clock=false sync=false" if null
+            else "mrtestaudiosink name=sink sync=false")
     print(f"  mrasrc-device into {sink.split()[0]}{' ' + null if null else ''}")
-    pipeline = ("audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
-                f"mrasrc name=asrc device-sink=sink ! {sink}")
+    src = "audiotestsrc is-live=true samplesperbuffer=1024 ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! "
+    shapes = _engine_shapes()
     seen = {}
     for tag, argv in (("native", None), ("python", _PY_RUNNER)):
-        r = RunnerProc(argv, env=env)
-        try:
-            r.wait_event(ev_is("ready"))
-            r.send({"cmd": "start", "pipeline": pipeline, "useStdioForData": False, "linkOnPadAdded": [],
-                    "decoderThreadType": "auto"})
-            playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
-            # Two stats posts (every 2 s of labels), not a fixed sleep: a loaded box posts late.
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and sum(
-                    ev.get("channel") == "mrasrc-stats:asrc" for ev in r.events) < 2:
-                r.pump()
-                time.sleep(0.1)
-            r.send({"cmd": "get_stats", "id": "as1", "element": "asrc"})
-            st = r.wait_event(ev_is("stats", id="as1"))
-            snap = (st or {}).get("data") or {}
-            error = r.has_event(ev_is("error"))
-            code = r.stop_and_wait()
-        finally:
-            r.kill()
-        skews = [m for line in r.logs for m in [_SKEW_LINE.search(line)] if m]
-        nonzero = [m.group(0) for m in skews if any(int(g) for g in m.groups()[1:])]
-        unset = sum("no custom slaving callback set" in line for line in r.logs)
-        stats = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
-                 and ev.get("channel") == "mrasrc-stats:asrc"]
-        events = [ev["payload"] for ev in r.events if ev.get("event") == "plugin_event"
-                  and ev.get("channel") == "mrasrc-event:asrc"]
-        check(f"mrasrc-device {tag}: reaches PLAYING, no error, exits 0", playing and not error and code == 0)
-        check(f"mrasrc-device {tag}: the sink's callback set and never asked a skew ({len(skews)} callbacks, "
-              f"{len(nonzero)} with a skew, {unset} without a callback)", len(skews) > 50 and not nonzero and not unset)
+        stats, events, snap, ok, logs = _mrasrc_device_run(
+            tag, argv, env if null else test_env, f"{src}mrasrc name=asrc device-sink=sink ! {sink}", 4.5)
+        slaving = [line for line in logs if _SLAVING_LINE.search(line)]
+        check(f"mrasrc-device {tag}: reaches PLAYING, no error, exits 0", ok)
+        check(f"mrasrc-device {tag}: no slaving of any kind on the sync=false sink ({len(slaving)} lines)", not slaving)
         check(f"mrasrc-device {tag}: mrasrc-stats mode device in every post ({len(stats)}; "
-              f"{sorted({s.get('mode') for s in stats})}), the device lock fed ({snap.get('device-pairs')} pairs)",
-              len(stats) >= 2 and all(s.get("mode") == "device" for s in stats)
-              and (snap.get("device-pairs") or 0) > 50 and snap.get("mode") == "device")
-        reasons = sorted({e.get("reason") for e in events if e.get("kind") == "device-relock"})
-        check(f"mrasrc-device {tag}: device relocks only from the sink's start ({reasons})",
-              "sync-latency" in reasons and set(reasons) <= {"new-caps", "sync-latency"}
-              and all(e.get("kind") == "device-relock" for e in events))
-        shapes = _engine_shapes()
-        off = [p for p in stats if _shape(p) != _shape(shapes["mrasrc-stats"])]
-        off += _off_shape(events, shapes["mrasrc-event"], "kind")
-        check(f"mrasrc-device {tag}: forwarded unsubscribed, in the engine's shape ({len(stats)} stats, "
-              f"{len(events)} events; off: {off[:1]})", bool(stats and events) and not off)
-        seen[tag] = (sorted({s.get("mode") for s in stats}), reasons)
-    if tmp:
-        shutil.rmtree(tmp, ignore_errors=True)
+              f"{sorted({s.get('mode') for s in stats})}), the sink's clock read on the timer ({snap.get('device-reads')} "
+              "reads)", len(stats) >= 2 and all(s.get("mode") == "device" for s in stats)
+              and (snap.get("device-reads") or 0) > 20 and snap.get("mode") == "device")
+        off = [p for p in stats if _shape(p) != _shape(shapes["mrasrc-stats"])] + _off_shape(events, shapes["mrasrc-event"], "kind")
+        check(f"mrasrc-device {tag}: forwarded unsubscribed, in the engine's shape ({len(stats)} stats, {len(events)} "
+              f"events; off: {off[:1]})", bool(stats) and not off)
+        seen[tag] = (sorted({s.get("mode") for s in stats}), sorted({e.get("kind") for e in events}))
+    if have_test:
+        prefill = ("queue name=prefill min-threshold-time=40000000 max-size-time=1000000000 max-size-buffers=0 "
+                   "max-size-bytes=0")
+        stall = {"cmd": "set_property", "id": "st1", "element": "sink", "property": "stall-ms", "value": 3000}
+        for tag, argv in (("native", None), ("python", _PY_RUNNER)):
+            stats, events, snap, ok, logs = _mrasrc_device_run(
+                tag, argv, test_env, f"{src}mrasrc name=asrc device-sink=sink ! {prefill} ! mrtestaudiosink "
+                "name=sink sync=false buffer-time=100000 latency-time=10000", 8.5, actions=((3.0, stall),))
+            kinds = [e.get("kind") for e in events]
+            off = [p for p in stats if _shape(p) != _shape(shapes["mrasrc-stats"])] + _off_shape(events, shapes["mrasrc-event"], "kind")
+            check(f"mrasrc-device {tag}: a 3 s device stall behind the prefill: device-stalled, then device-resumed "
+                  f"({kinds}), played on and exits 0, in the engine's shape (off: {off[:1]})",
+                  ok and kinds == ["device-stalled", "device-resumed"] and not off
+                  and (snap.get("device-stalls") or 0) == 1)
+            seen[tag] = seen.get(tag, ()) + (kinds,)
+    shutil.rmtree(tmp, ignore_errors=True)
     if len(seen) == 2:
-        check(f"mrasrc-device: both runners forward the same modes and device relocks ({seen['native']})",
+        check(f"mrasrc-device: both runners forward the same modes and events ({seen['native']})",
               seen["native"] == seen["python"])
 
 

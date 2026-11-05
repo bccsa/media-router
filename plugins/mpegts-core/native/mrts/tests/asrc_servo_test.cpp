@@ -1,9 +1,9 @@
-// asrc_servo: the ASRC phase servo (WI-P1-8, portable part; WI-P3-5's decode bypass, device term and
-// product ratio, B-148's device timeline and lost time, as py/asrc_bypass_ref_test.py holds them). A synthetic
-// capture or decode runs through a model of GstAudioResampler's frame accounting against each output's content time.
-// Integer-only, so the printed checksums compare across machines. `--sweep N` prints seed statistics.
+// asrc_servo: the ASRC phase servo (WI-P1-8; WI-P3-5 and B-148 as py/asrc_bypass_ref_test.py holds them) through a
+// model of GstAudioResampler's frame accounting, and the device term on its timer (WI-P4-4, B-166) as
+// py/asrc_device_ref_test.py holds it. Integer-only servo checksums; `--sweep N` prints seed statistics.
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1327,17 +1327,27 @@ class Driver {
         c.device = device;
         return c;
     }
-    void device_pair(int64_t itime, int64_t etime, int64_t read = 0) { dev.feed(itime, etime, read); }
-    // A sink discontinuity; a recalibration tells the servo before the next push, as the element does.
-    void device_discont(AsrcDeviceLock::Discont why) {
-        if (dev.discont(why)) sv.device_recalibrated();
+    // A timer read of the device sink's clock, the term started at the first; a relock-device tells the
+    // servo before its next push, as the element does (B-148's A1).
+    void device_sample(int64_t dev_ns, int64_t mono) {
+        std::vector<AsrcDeviceEvent> ev;
+        if (!term.rendering()) term.start(mono, &ev);
+        term.sample(dev_ns, mono, -1, -1, &ev);
+        if (term.take_recalibrated()) sv.device_recalibrated();
+    }
+    // The sink's ring released and acquired again (a caps change, a restart): the term relocks.
+    void device_restart(int64_t mono) {
+        std::vector<AsrcDeviceEvent> ev;
+        term.stop(mono);
+        term.start(mono, &ev);
+        if (term.take_recalibrated()) sv.device_recalibrated();
     }
     void gap() {
         if (sv.end_epoch()) drain();
     }
     AsrcServo::Command push(int64_t pts, uint32_t frames, bool discont) {
         if (discont && !cmds.empty()) gap();   // the element ends the epoch before a DISCONT buffer
-        const int64_t dppb = sv.config().device ? dev.ppb() : 0;
+        const int64_t dppb = sv.config().device ? term.device_ppb() : 0;
         const AsrcServo::Command c = sv.push(pts, frames, discont, dppb);
         if (locked_at < 0 && sv.lock().phase() == ClockLock::Phase::locked) locked_at = pts;
         const int64_t i = (int64_t)cmds.size();
@@ -1403,7 +1413,7 @@ class Driver {
     }
 
     AsrcServo sv;
-    AsrcDeviceLock dev;
+    AsrcDeviceTerm term;
     std::vector<DOut> outputs;
     std::vector<AsrcServo::Command> cmds;
     std::vector<int64_t> pts, dppbs, ratios;
@@ -1450,13 +1460,28 @@ int64_t feed(Driver& d, int64_t fs, int64_t frame, int64_t ppb, int64_t secs, St
 auto no_stop = [](const Driver&) { return false; };
 auto no_pairs = [](Driver&, int64_t) {};
 
-// A sink's custom-slaving readings: device time fast by ppb.
-auto device_pairs(int64_t ppb) {
-    return [ppb](Driver& d, int64_t t) {
-        const int64_t e = t - T0;
-        if (e >= 0) d.device_pair(e + (int64_t)((__int128)e * ppb / S), e);
-    };
-}
+// A device sink's clock fast by ppb, read on the term's timer every 100 ms of house time from `start`, each
+// house read up to jitter_us late at random; after a restart it counts from 0. From step_at it reads step_ns on.
+struct DeviceClock {
+    int64_t ppb, jitter_us;
+    Lcg g;
+    int64_t next, origin;
+    int64_t step_at = INT64_MAX, step_ns = 0;
+    explicit DeviceClock(int64_t p, int64_t jit = 0, uint64_t seed = 1, int64_t start = T0)
+        : ppb(p), jitter_us(jit), g(seed), next(start), origin(start) {}
+    void operator()(Driver& d, int64_t t) {   // the reads due by house time t
+        for (; next <= t; next += 100 * MS) {
+            const int64_t e = next - origin;
+            const int64_t late = jitter_us ? (int64_t)(g.next() % (uint32_t)(jitter_us * US)) : 0;
+            d.device_sample(e + floor_div(e * ppb, S) + (next >= step_at ? step_ns : 0), next + late);
+        }
+    }
+    void restart(Driver& d, int64_t t) {   // the sink's ring acquired again at house time t
+        (*this)(d, t);
+        d.device_restart(t);
+        origin = t;
+    }
+};
 
 bool engaged_at(const Driver& d, int64_t* at, const char** why, AsrcEvent* ev) {
     const auto e = d.of(AsrcEvent::Kind::engaged);
@@ -1677,7 +1702,7 @@ void test_decode_composite() {
     for (const auto& cb : combos) {
         const int64_t src = cb[0], devp = cb[1];
         Driver d(48000, 48000, 500, true);
-        feed(d, 48000, 1024, src, 60, no_stop, device_pairs(devp));
+        feed(d, 48000, 1024, src, 60, no_stop, DeviceClock(devp));
         const AsrcServo::Stats st = d.sv.stats();
         const int64_t dppb = d.dppbs.back(), dec = st.decode_ppb, total = st.ratio_ppb;
         const int64_t exact = floor_div((S + dec) * S + (S + dppb) / 2, S + dppb) - S;
@@ -1701,12 +1726,12 @@ void test_decode_composite() {
 void test_device_only() {
     std::printf("\n  bypass-below-ppm 0 with device-sink: the device term alone (S17)\n");
     Driver d(48000, 48000, 0, true);
-    auto pairs = device_pairs(40000);
+    DeviceClock pairs(40000);
     Lcg g(5);
-    for (int64_t k = 0; k < 4000; k++) {   // PTS with 1 ms of jitter: nothing locks to them
+    for (int64_t k = 0; k < 6000; k++) {   // PTS with 1 ms of jitter: nothing locks to them
         const int64_t t = T0 + k * 1024 * S / 48000;
         pairs(d, t);
-        if (k == 2500) d.gap();
+        if (k == 4500) d.gap();   // 96 s: 51 s past the device term's first fit (its 15 s settle, 30 buckets)
         d.push(t + (int64_t)(g.next() % (uint32_t)MS), 1024, k == 0);
     }
     const AsrcServo::Stats st = d.sv.stats();
@@ -1734,69 +1759,15 @@ void test_device_only() {
     // B-148: what the first epoch's outputs ran up on the device timeline, each frame -eps_dev / 48 kHz.
     int64_t ran = 0;
     for (size_t i = 0; starts.size() == 2 && i < starts[1]; i++)
-        ran -= d.outputs[i].frames * d.dppbs[d.outputs[i].buf >= 0 ? d.outputs[i].buf : 2499];
+        ran -= d.outputs[i].frames * d.dppbs[d.outputs[i].buf >= 0 ? d.outputs[i].buf : 4499];
     ran = floor_div(ran, 48000);
-    const int64_t off = starts.size() == 2 ? d.outputs[starts[1]].label - d.pts[2500] : 0;
+    const int64_t off = starts.size() == 2 ? d.outputs[starts[1]].label - d.pts[4500] : 0;
     std::snprintf(name, sizeof name, "labels: a contiguous counter from the first PTS, relocked at the GAP alone (%zu "
                   "relock(s); %zu epochs), the second on the device timeline: the GAP buffer's PTS %+.3f ms, what the "
-                  "first epoch's outputs ran up (%+.3f ms: 40 ppm from the device lock's first fit) within 1 us",
+                  "first epoch's outputs ran up (%+.3f ms: 40 ppm from the device term's first fit) within 1 us",
                   rel.size(), starts.size(), off / 1e6, ran / 1e6);
     CHECK(name, rel.size() == 1 && !std::strcmp(rel[0].second.reason, "gap") && starts.size() == 2 && contiguous &&
                     d.outputs[starts[0]].label == d.pts[0] && iabs(off - ran) <= US && off > MS);
-}
-
-// A sink's readings every 21 ms: etime, then itime read up to 2 us later, 1 in 50 after a preemption
-// of up to `preempt` ns; read the caller's re-read after them. The first reads the device early.
-struct Reading {
-    int64_t itime, etime, read;
-};
-std::vector<Reading> device_readings(int64_t ppm, int64_t secs, uint64_t seed, int64_t preempt, int64_t first_early) {
-    Lcg g(seed);
-    std::vector<Reading> out;
-    for (int64_t t = 0; t < secs * S; t += 21333333) {
-        int64_t lag = (int64_t)(g.next() % (uint32_t)(2 * US));
-        if (preempt && g.next() % 50 == 0) lag += (int64_t)(g.next() % (uint32_t)preempt);
-        const int64_t ti = t + lag;   // house time of itime's read
-        const int64_t itime = ti + ti * ppm / 1000000 + (t == 0 ? first_early : 0);
-        out.push_back({itime, t, lag + (int64_t)(g.next() % (uint32_t)(2 * US))});
-    }
-    return out;
-}
-
-void test_device_lock() {
-    std::printf("\n  the device lock on (itime, etime)\n");
-    for (int64_t ppm : {40LL, -40LL}) {
-        AsrcDeviceLock dl;
-        int64_t first_fit = -1;
-        for (const Reading& r : device_readings(ppm, 120, (uint64_t)(ppm + 100), 500 * US, 330 * US)) {
-            dl.feed(r.itime, r.etime, r.read);
-            if (first_fit < 0 && dl.lock().has_fit()) first_fit = r.etime;
-        }
-        char name[240];
-        std::snprintf(name, sizeof name, "device %+lld ppm, 1 in 50 readings preempted up to 0.5 ms, the first 0.33 ms "
-                      "early: first fit at %.1f s, rate %+.4f ppm at 120 s (within 0.01 ppm), locked", (long long)ppm,
-                      first_fit / 1e9, dl.rate_ppb() / 1e3);
-        CHECK(name, iabs(dl.rate_ppb() - ppm * 1000) <= 10 && dl.locked() && first_fit >= 0 && first_fit <= 12 * S);
-        const int64_t before = dl.ppb();
-        dl.discont();
-        std::snprintf(name, sizeof name, "device %+lld ppm: a sink discontinuity relocks it, keeping the rate "
-                      "(%lld -> %lld ppb)", (long long)ppm, (long long)before, (long long)dl.ppb());
-        CHECK(name, dl.ppb() == before && dl.relocks() == 1 && !dl.locked());
-        g_dec.add(before);
-    }
-    // The re-read's own effect: the same readings at their etime.
-    int64_t worst[2] = {0, 0};
-    for (int k = 0; k < 2; k++) {
-        AsrcDeviceLock dl;
-        for (const Reading& r : device_readings(40, 30, 7, 500 * US, 330 * US)) {
-            dl.feed(r.itime, r.etime, k == 0 ? r.read : 0);
-            if (r.etime >= 15 * S && dl.lock().has_fit()) worst[k] = std::max(worst[k], iabs(dl.rate_ppb() - 40000));
-        }
-    }
-    char name[200];
-    std::snprintf(name, sizeof name, "the re-read matters: worst rate error 15-30 s %lld ppb with it, %lld ppb at etime "
-                  "alone", (long long)worst[0], (long long)worst[1]);
-    CHECK(name, worst[0] <= 50 && worst[1] > 100);
 }
 
 // --- B-148: the device timeline across a break, lost time, the decode bound, the engage's rate ----------
@@ -1807,18 +1778,18 @@ int64_t ceil_div(int64_t a, int64_t b) { return -floor_div(-a, b); }
 struct Continuity {
     std::unique_ptr<Driver> d;
     std::vector<int64_t> pts, gaps;   // each push's PTS; the content gaps (ns) at the breaks
-    int64_t recal_out = -1;           // the output the recalibration meets
+    int64_t recal_out = -1;           // the output the restart meets
 };
 
-// A house-rate source into decode + device (bypassed), the device dev_ppb fast; at each of breaks_s it loses `lost`
-// frames, then a DISCONT buffer or a GAP; the sink's pairs exact or up to jitter_us late; a sync-latency
-// recalibration at recal_s (< 0: none).
+// A house-rate source into decode + device (bypassed), the device dev_ppb fast and read on the term's timer, exact
+// or up to jitter_us late; at each of breaks_s it loses `lost` frames, then a DISCONT buffer or a GAP; the sink's
+// ring acquired again at recal_s (< 0: none): the term relocks, the servo told.
 Continuity continuity_run(int64_t dev_ppb, int64_t secs, const std::vector<int64_t>& breaks_s, bool gap,
                           int64_t jitter_us, int64_t lost = 1024, int64_t recal_s = -1) {
     Continuity r;
     r.d.reset(new Driver(48000, 48000, 500, true));
     Driver& d = *r.d;
-    Lcg g(1);
+    DeviceClock clock(dev_ppb, jitter_us);
     int64_t n = 0;
     size_t bi = 0;
     while (n * S / 48000 < secs * S) {
@@ -1831,11 +1802,10 @@ Continuity continuity_run(int64_t dev_ppb, int64_t secs, const std::vector<int64
         }
         const int64_t t = T0 + n * S / 48000;
         if (recal_s >= 0 && r.recal_out < 0 && t - T0 >= recal_s * S) {
-            d.device_discont(AsrcDeviceLock::Discont::sync_latency);
+            clock.restart(d, t);
             r.recal_out = (int64_t)d.outputs.size();
         }
-        const int64_t e = t - T0;
-        d.device_pair(e + floor_div(e * dev_ppb, S) - (jitter_us ? (int64_t)(g.next() % (uint32_t)(jitter_us * US)) : 0), e);
+        clock(d, t);
         d.push(t, 1024, n == 0 || (brk && !gap));
         r.pts.push_back(t);
         n += 1024;
@@ -1894,10 +1864,10 @@ void test_device_continuity() {
         bool gap;
         int64_t jit;
     };
-    for (const Row& w : {Row{"-136 ppm, a DISCONT every 300 s, exact pairs", -136000, false, 0},
-                         Row{"+136 ppm, a DISCONT every 300 s, pairs 2 ms late at random", 136000, false, 2000},
-                         Row{"-136 ppm, a GAP every 300 s, pairs 2 ms late at random", -136000, true, 2000},
-                         Row{"+136 ppm, a GAP every 300 s, exact pairs", 136000, true, 0}}) {
+    for (const Row& w : {Row{"-136 ppm, a DISCONT every 300 s, exact reads", -136000, false, 0},
+                         Row{"+136 ppm, a DISCONT every 300 s, reads 2 ms late at random", 136000, false, 2000},
+                         Row{"-136 ppm, a GAP every 300 s, reads 2 ms late at random", -136000, true, 2000},
+                         Row{"+136 ppm, a GAP every 300 s, exact reads", 136000, true, 0}}) {
         const Continuity r = continuity_run(w.dev, 1800, {300, 600, 900, 1200, 1500}, w.gap, w.jit);
         const auto rel = r.d->of(AsrcEvent::Kind::relock);
         bool ok = rel.size() == 5 && r.gaps.size() == 5;
@@ -1950,89 +1920,13 @@ void test_device_continuity() {
         int64_t mlo, mhi, mref, llo, lhi, lref;
         const bool hm = playout_range(p, 155, 300, &mlo, &mhi, &mref), hl = playout_range(p, 305, 450, &llo, &lhi, &lref);
         char name[400];
-        std::snprintf(name, sizeof name, "a sync-latency recalibration at 150 s: the open epoch keeps its labels "
-                      "(%+.3f .. %+.3f ms against the recalibrated sink), and the next epoch carries only what ran up "
+        std::snprintf(name, sizeof name, "the sink's ring acquired again at 150 s (a relock-device restart): the open "
+                      "epoch keeps its labels (%+.3f .. %+.3f ms against the restarted sink), and the next epoch carries only what ran up "
                       "since: the playout on its content time again after the DISCONT (%+.3f .. %+.3f ms)", mlo / 1e6,
                       mhi / 1e6, llo / 1e6, lhi / 1e6);
         CHECK(name, r.recal_out >= 0 && hm && hl && mhi - mlo <= MS && mlo < -10 * MS && iabs(llo) <= MS &&
                         iabs(lhi) <= MS);
     }
-}
-
-void test_device_alignment() {
-    std::printf("\n  B-148: an alignment resync keeps the device lock; a recalibration is the servo's\n");
-    using D = AsrcDeviceLock::Discont;
-    AsrcDeviceLock dl;
-    const D all[5] = {D::new_caps, D::flush, D::sync_latency, D::alignment, D::device_failure};
-    bool got[5];
-    for (int i = 0; i < 5; i++) got[i] = dl.discont(all[i]);
-    char name[400];
-    std::snprintf(name, sizeof name, "the reasons: new-caps, sync-latency and device-failure relock and say the sink "
-                  "recalibrated, flush relocks only, alignment is counted only (%d%d%d%d%d; relocks %llu, alignments "
-                  "%llu)", got[0], got[1], got[2], got[3], got[4], (unsigned long long)dl.relocks(),
-                  (unsigned long long)dl.alignments());
-    CHECK(name, got[0] && !got[1] && got[2] && !got[3] && got[4] && dl.relocks() == 4 && dl.alignments() == 1);
-    struct R {
-        int64_t worst;
-        int fit_n;
-        uint64_t relocks, alignments;
-    } rows[2];
-    for (int k = 0; k < 2; k++) {
-        AsrcDeviceLock l;
-        Lcg g(4);
-        int64_t next = 60 * S, worst = 0;
-        for (int64_t t = 0; t < 300 * S; t += 21333333) {
-            if (t >= next) {
-                l.discont(k == 0 ? D::alignment : D::flush);
-                next += 16 * S;
-            }
-            l.feed(t + floor_div(t * -136000, S) - (int64_t)(g.next() % (uint32_t)MS), t);
-            if (t >= 120 * S && l.lock().has_fit()) worst = std::max(worst, iabs(l.rate_ppb() + 136000));
-        }
-        rows[k] = {worst, l.lock().fit_n(), l.relocks(), l.alignments()};
-    }
-    const R& a = rows[0];
-    const R& f = rows[1];
-    std::snprintf(name, sizeof name, "-136 ppm, pairs 1 ms late at random, an alignment resync every 16 s from 60 s: "
-                  "the lock kept, its fit window whole (%d buckets at 300 s, %llu relocks, %llu alignments), the rate "
-                  "within 3 ppm from 120 s (%.3f ppm off; each a relock as before B-148: %d buckets, %.3f ppm)",
-                  a.fit_n, (unsigned long long)a.relocks, (unsigned long long)a.alignments, a.worst / 1e3, f.fit_n,
-                  f.worst / 1e3);
-    CHECK(name, a.relocks == 0 && a.alignments == 15 && a.fit_n >= 200 && a.worst <= 3000 && f.relocks == 15 &&
-                    f.fit_n < 16);
-}
-
-void test_device_slip() {
-    std::printf("\n  B-148: a device slip under the 50 ms step is rate for minutes (the known limit, WI-P4-4)\n");
-    bool ok = true;
-    std::string rows;
-    const int64_t true_eps = floor_div(136000 * S, S - 136000);   // house = (1 + eps) device: 136 ppm slow
-    for (int64_t slip_ms : {21LL, 40LL, 49LL}) {
-        AsrcDeviceLock dl;
-        Lcg g((uint64_t)slip_ms);
-        int64_t integ = 0, peak = 0, back = -1;
-        for (int64_t t = 0; t < 1800 * S; t += 20 * MS) {
-            dl.feed(t - floor_div(t * 136000, S) - (t >= 600 * S ? slip_ms * MS : 0) - (int64_t)(g.next() % (uint32_t)MS), t);
-            if (t < 600 * S) continue;
-            integ += floor_div((dl.ppb() - true_eps) * 20 * MS, S);   // the phase the rate term moves the labels by
-            const int64_t off = iabs(dl.rate_ppb() + 136000);
-            peak = std::max(peak, off);
-            if (back < 0 && t >= 660 * S && off <= 5000) back = t;
-            if (back >= 0 && off > 5000) back = -1;
-        }
-        char row[120];
-        std::snprintf(row, sizeof row, "%s(%lld ms: %llu relocks, peak %.0f ppm, phase %.1f ms, settled %.0f s)",
-                      rows.empty() ? "" : ", ", (long long)slip_ms, (unsigned long long)dl.relocks(), peak / 1e3,
-                      integ / 1e6, back >= 0 ? (back - 600 * S) / 1e9 : -1.0);
-        rows += row;
-        ok = ok && dl.relocks() == 0 && iabs(integ - slip_ms * MS) <= slip_ms * MS / 10 && back >= 0 &&
-             back - 600 * S <= 900 * S;
-    }
-    char name[600];
-    std::snprintf(name, sizeof name, "-136 ppm, pairs 1 ms late at random, one slip of 21/40/49 ms at 600 s: no relock, "
-                  "a rate excursion whose phase is the slip within 10 %%, back within 5 ppm in under 15 min (%s)",
-                  rows.c_str());
-    CHECK(name, ok);
 }
 
 struct Step {
@@ -2041,7 +1935,7 @@ struct Step {
 
 // A house-rate decode as opusdec gives it: `frames`-frame buffers whose PTS are 90 kHz ticks (1800 per 960
 // frames) ceil'd to ns; holes and back: unflagged steps forward and back. With `device`, the device term at
-// dev_ppb from exact pairs.
+// dev_ppb from exact timer reads.
 std::unique_ptr<Driver> decode_ticks_run(int64_t secs, const std::vector<Step>& holes, const std::vector<Step>& back,
                                          bool device = false, int64_t dev_ppb = -136000, int64_t frames = 960) {
     std::unique_ptr<Driver> d(new Driver(48000, 48000, 500, device));
@@ -2051,15 +1945,12 @@ std::unique_ptr<Driver> decode_ticks_run(int64_t secs, const std::vector<Step>& 
     for (const Step& b : back) steps.push_back({b.at_s * 48000 / frames, -b.ticks});
     std::sort(steps.begin(), steps.end());
     int64_t tick = 450000LL * 90000;
-    const int64_t first = ceil_div(tick * 100000, 9);
+    DeviceClock clock(dev_ppb, 0, 1, ceil_div(tick * 100000, 9));
     size_t si = 0;
     for (int64_t k = 0; k < secs * 48000 / frames; k++) {
         while (si < steps.size() && k >= steps[si].first) tick += steps[si++].second;
         const int64_t t = ceil_div(tick * 100000, 9);
-        if (device) {
-            const int64_t e = t - first;
-            d->device_pair(e + floor_div(e * dev_ppb, S), e);
-        }
+        if (device) clock(*d, t);
         d->push(t, (uint32_t)frames, k == 0);
         tick += per;
     }
@@ -2070,12 +1961,23 @@ void test_lost_time() {
     std::printf("\n  B-148: decode modes, an unflagged hole is lost time, a step back a break\n");
     char name[700];
     for (bool device : {false, true}) {
-        bool ok = true;
-        std::string rows;
+        bool ok = true, labels_ok = true;
+        std::string rows, labels;
         for (int64_t at : {15LL, 30LL, 60LL, 120LL, 300LL}) {
             const auto d = decode_ticks_run(900, {{at, 1920}}, {}, device);
             const auto g = d->of(AsrcEvent::Kind::gap);
             const AsrcServo::Stats st = d->sv.stats();
+            // The labels jump the PTS hole less the device's drift over it (the p3-22 review's M9).
+            for (const auto& e : g) {
+                const size_t i = (size_t)e.first;
+                const int64_t hole = d->pts[i] - d->pts[i - 1] - 960 * S / 48000, dv = d->dppbs[i];
+                const int64_t off = e.second.value - (hole - floor_div(hole * dv, S + dv));
+                char lab[60];
+                std::snprintf(lab, sizeof lab, "%s(%lld, %lld, %lld)", labels.empty() ? "" : ", ", (long long)at,
+                              (long long)dv, (long long)off);
+                labels += lab;
+                labels_ok = labels_ok && iabs(off) <= US && (!device || at < 60 || dv != 0);
+            }
             char row[100];
             std::snprintf(row, sizeof row, "%s%lld s: %zu engages, %zu gaps of %lld, %+.3f ppm", rows.empty() ? "" : "; ",
                           (long long)at, d->of(AsrcEvent::Kind::engaged).size(), g.size(),
@@ -2089,6 +1991,9 @@ void test_lost_time() {
                       "lost-time gap of 1024 frames each, the source at house rate within 0.5 ppm, no relock (%s)",
                       device ? "decode + device" : "decode", rows.c_str());
         CHECK(name, ok);
+        std::snprintf(name, sizeof name, "%s: each gap's labels jump the hole less the device's drift over it within "
+                      "1 us ((s, device eps ppb, ns off): %s)", device ? "decode + device" : "decode", labels.c_str());
+        CHECK(name, labels_ok && !labels.empty());
     }
     {
         const auto d = decode_ticks_run(900, {{15, 1920}, {30, 1920}, {60, 1920}}, {}, true);
@@ -2185,17 +2090,14 @@ void test_v7dec_replay() {
     std::printf("\n  B-148: DEV-P3a's v7dec, replayed (the five lost Mic A cycles behind the Opus hop)\n");
     for (bool device : {true, false}) {
         Driver d(48000, 48000, 500, device);
-        int64_t first = 0;
+        std::unique_ptr<DeviceClock> clock;
         for (int64_t k = -690; k <= 128000; k++) {
             int64_t tick = V5HX_AU0 + k * 1800;
             for (const auto& s : V5HX_STEPS)
                 if (k >= s[0]) tick += s[1];
             const int64_t t = ceil_div(tick * 100000, 9);
-            if (k == -690) first = t;
-            if (device) {
-                const int64_t e = t - first;
-                d.device_pair(e + floor_div(e * -140000, S), e);
-            }
+            if (!clock) clock.reset(new DeviceClock(-140000, 0, 1, t));
+            if (device) (*clock)(d, t);
             d.push(t, 960, k == -690);
         }
         const auto g = d.of(AsrcEvent::Kind::gap);
@@ -2306,6 +2208,1084 @@ void test_engage_rate_known() {
     }
 }
 
+// --- the device term on its timer (WI-P4-4, B-165/B-166): py/asrc_device_ref_test.py's cases, one for one -----
+// Same names, order and random draws (PyRandom), so each prints the reference's numbers; the recorded clocks are
+// DEV-P4a's (tests/fixtures/clock; MRTS_FIXTURES overrides the fixture directory).
+
+std::string g_fixtures;
+constexpr int64_t TICK = 100 * MS;
+constexpr int64_t DFS = 48000;   // the modelled output's rate
+const char* const TRACES[4] = {"sink-clock-pi4-hdmi.jsonl", "sink-clock-pi4-kt.jsonl", "sink-clock-pi4-null.jsonl",
+                               "sink-clock-pi5-null.jsonl"};
+
+// Python's random.Random(seed): MT19937 seeded by init_by_array, randrange by getrandbits with rejection, random()
+// on 53 bits. These cases draw what py/asrc_device_ref_test.py draws, so they print its numbers.
+class PyRandom {
+  public:
+    explicit PyRandom(uint32_t seed) {
+        mt_[0] = 19650218U;
+        for (uint32_t i = 1; i < N; i++) mt_[i] = 1812433253U * (mt_[i - 1] ^ (mt_[i - 1] >> 30)) + i;
+        uint32_t i = 1;
+        for (uint32_t k = N; k; k--) {   // init_by_array with the one-word key {seed}
+            mt_[i] = (mt_[i] ^ ((mt_[i - 1] ^ (mt_[i - 1] >> 30)) * 1664525U)) + seed;
+            if (++i >= N) {
+                mt_[0] = mt_[N - 1];
+                i = 1;
+            }
+        }
+        for (uint32_t k = N - 1; k; k--) {
+            mt_[i] = (mt_[i] ^ ((mt_[i - 1] ^ (mt_[i - 1] >> 30)) * 1566083941U)) - i;
+            if (++i >= N) {
+                mt_[0] = mt_[N - 1];
+                i = 1;
+            }
+        }
+        mt_[0] = 0x80000000U;
+    }
+    uint32_t next32() {
+        if (index_ >= N) {
+            for (uint32_t k = 0; k < N; k++) {
+                const uint32_t y = (mt_[k] & 0x80000000U) | (mt_[(k + 1) % N] & 0x7fffffffU);
+                mt_[k] = mt_[(k + 397) % N] ^ (y >> 1) ^ (y & 1U ? 0x9908b0dfU : 0U);
+            }
+            index_ = 0;
+        }
+        uint32_t y = mt_[index_++];
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c5680U;
+        y ^= (y << 15) & 0xefc60000U;
+        return y ^ (y >> 18);
+    }
+    int64_t below(int64_t n) {   // randrange(0, n), n < 2^32
+        int k = 0;
+        while ((n >> k) > 0) k++;
+        uint32_t r = next32() >> (32 - k);
+        while (r >= n) r = next32() >> (32 - k);
+        return r;
+    }
+    double random() {
+        const uint32_t a = next32() >> 5, b = next32() >> 6;
+        return (a * 67108864.0 + b) * (1.0 / 9007199254740992.0);
+    }
+
+  private:
+    static constexpr uint32_t N = 624;
+    uint32_t mt_[N];
+    uint32_t index_ = N;
+};
+
+// A read pair's house read late by a preemption: under 0.2 ms in 9 reads of 10, under 5 ms in the tenth.
+int64_t preempted(PyRandom& g) { return g.random() < 0.9 ? g.below(200000) : g.below(5 * MS); }
+int64_t uniform5(PyRandom& g) { return g.below(5 * MS); }
+int64_t no_jitter(PyRandom&) { return 0; }
+
+double device_rate_ppm(const AsrcDeviceTerm& t) { return asrc_rate_of(t.device_ppb()) / 1e3; }
+
+// A synthetic device running `ppm` fast, read every 100 ms from house0; from step_at_s on it reads step_ns
+// further. Returns the house time reached.
+template <typename Jitter, typename OnSample>
+int64_t feed_clock(AsrcDeviceTerm& t, int64_t seconds, int64_t ppm, Jitter jitter, uint64_t seed, OnSample on,
+                   int64_t house0 = 1000 * S, int64_t step_at_s = -1, int64_t step_ns = 0) {
+    PyRandom g((uint32_t)seed);
+    const int64_t k1 = seconds * 10;
+    for (int64_t k = 0; k < k1; k++) {
+        const int64_t h = k * TICK;
+        int64_t dev = h + floor_div(h * ppm, 1000000);
+        if (step_at_s >= 0 && h >= step_at_s * S) dev += step_ns;
+        std::vector<AsrcDeviceEvent> ev;
+        t.sample(dev, house0 + h + jitter(g), -1, -1, &ev);
+        on(h, ev);
+    }
+    return house0 + k1 * TICK;
+}
+auto no_on = [](int64_t, const std::vector<AsrcDeviceEvent>&) {};
+
+// --- the recorded clocks ----------------------------------------------------------------------------
+
+struct TraceLine {
+    bool read = false;   // a clock line the sink had rendered by
+    int64_t mono = 0, clock = 0;
+    std::string event;   // "hole", "restart", ...
+    int64_t ms = 0;
+};
+
+bool line_int(const std::string& l, const char* key, int64_t* v) {
+    const std::string k = std::string("\"") + key + "\":";
+    size_t p = l.find(k);
+    if (p == std::string::npos) return false;
+    p += k.size();
+    while (p < l.size() && l[p] == ' ') p++;
+    char* end = nullptr;
+    const long long x = std::strtoll(l.c_str() + p, &end, 10);
+    if (end == l.c_str() + p) return false;
+    *v = x;
+    return true;
+}
+
+std::string line_str(const std::string& l, const char* key) {
+    const std::string k = std::string("\"") + key + "\": \"";
+    const size_t p = l.find(k);
+    if (p == std::string::npos) return "";
+    const size_t e = l.find('"', p + k.size());
+    return l.substr(p + k.size(), e - p - k.size());
+}
+
+std::vector<TraceLine> load_trace(const char* name) {
+    std::vector<TraceLine> out;
+    std::FILE* f = std::fopen((g_fixtures + "/clock/" + name).c_str(), "rb");
+    if (!f) return out;
+    char buf[4096];
+    while (std::fgets(buf, sizeof buf, f)) {
+        const std::string l = buf;
+        TraceLine t;
+        int64_t next = -1;
+        if (line_int(l, "clock_ns", &t.clock)) {
+            line_int(l, "mono_ns", &t.mono);
+            line_int(l, "next_sample", &next);
+            t.read = next >= 0;
+            if (!t.read) continue;
+        } else {
+            t.event = line_str(l, "event");
+            if (t.event.empty()) continue;
+            line_int(l, "mono_ns", &t.mono);
+            line_int(l, "ms", &t.ms);
+        }
+        out.push_back(t);
+    }
+    std::fclose(f);
+    return out;
+}
+
+// The trace's own long-run slope: device against house time by least squares, one intercept per stream
+// (before and after the restart), 20 s after each start left out.
+double trace_slope_ppm(const std::vector<TraceLine>& lines) {
+    std::vector<std::vector<std::pair<int64_t, int64_t>>> streams(1);
+    for (const TraceLine& o : lines) {
+        if (o.event == "restart") streams.emplace_back();
+        else if (o.read) streams.back().push_back({o.mono, o.clock});
+    }
+    double sxx = 0, sxy = 0;
+    for (const auto& st : streams) {
+        std::vector<std::pair<int64_t, int64_t>> pts;
+        for (const auto& x : st)
+            if (x.first - st[0].first >= 20 * S) pts.push_back(x);
+        double mx = 0, my = 0;
+        for (const auto& x : pts) {
+            mx += (double)x.first;
+            my += (double)(x.second - x.first);
+        }
+        mx /= pts.size();
+        my /= pts.size();
+        for (const auto& x : pts) {
+            sxx += ((double)x.first - mx) * ((double)x.first - mx);
+            sxy += ((double)x.first - mx) * ((double)(x.second - x.first) - my);
+        }
+    }
+    return sxy / sxx * 1e6;
+}
+
+struct Row {
+    double s, dev_ppm, ratio_ppm;
+};
+struct TraceEvent {
+    std::string kind;
+    double s;
+    std::string reason;
+};
+struct Replay {
+    std::unique_ptr<AsrcDeviceTerm> t;
+    std::vector<Row> rows;
+    std::vector<TraceEvent> events;
+    std::vector<TraceLine> lines;
+};
+
+// The term on a recorded clock, as the element runs it: reads from the first rendered sample, stop() at the
+// restart; s from the first rendered sample.
+const Replay& replay_trace(const char* name) {
+    static std::vector<std::pair<std::string, std::unique_ptr<Replay>>> cache;
+    for (const auto& c : cache)
+        if (c.first == name) return *c.second;
+    std::unique_ptr<Replay> r(new Replay);
+    r->lines = load_trace(name);
+    r->t.reset(new AsrcDeviceTerm());
+    AsrcDeviceTerm& t = *r->t;
+    bool have0 = false;
+    int64_t t0 = 0;
+    for (const TraceLine& o : r->lines) {
+        if (o.event == "restart") {
+            t.stop(o.mono);
+            r->events.push_back({"restart", (o.mono - t0) / 1e9, ""});
+            continue;
+        }
+        if (!o.read) continue;
+        if (!have0) {
+            have0 = true;
+            t0 = o.mono;
+        }
+        std::vector<AsrcDeviceEvent> ev;
+        if (!t.rendering()) t.start(o.mono, &ev);
+        t.sample(o.clock, o.mono, -1, -1, &ev);
+        for (const AsrcDeviceEvent& e : ev) r->events.push_back({asrc_device_event_name(e.kind), (o.mono - t0) / 1e9, e.reason});
+        r->rows.push_back({(o.mono - t0) / 1e9, device_rate_ppm(t), t.ratio_ppb() / 1e3});
+    }
+    cache.emplace_back(name, std::move(r));
+    return *cache.back().second;
+}
+
+// The trace's holes (s from the first rendered sample, ms).
+std::vector<std::pair<double, int64_t>> trace_holes(const std::vector<TraceLine>& lines) {
+    std::vector<std::pair<double, int64_t>> out;
+    bool have0 = false;
+    int64_t t0 = 0;
+    for (const TraceLine& o : lines) {
+        if (o.read && !have0) {
+            have0 = true;
+            t0 = o.mono;
+        }
+        if (o.event == "hole" && have0) out.push_back({(o.mono - t0) / 1e9, o.ms});
+    }
+    return out;
+}
+
+// --- the modelled path --------------------------------------------------------------------------------
+
+// The clock reading (ns) of a position read: the least ns that floors back to it.
+int64_t dev_of(int64_t pos) { return floor_div(pos * S + DFS - 1, DFS); }
+
+struct Span {
+    int64_t at, len;   // ns
+    bool running;      // a device stall's clock runs on
+};
+
+// An output's path at 10 ms steps (asrc_device_ref_test.py's Path): a live input at house rate (PTS =
+// arrival - 100 ms), mrasrc at the term's ratio, the prefill (40 ms min threshold, 1 s max), the sink's ring
+// (100 ms) and its device, which reads the ring at its own rate. The sink writes each buffer at the base
+// sink's next position, realigned to the next playable one when behind; the device's server drops what
+// lands behind its read index. Its clock is the position read, `lag` behind the read index.
+class Path {
+  public:
+    static constexpr int64_t STEP = 10 * MS, N_IN = 480, LAT = 100 * MS;
+    struct Seg {
+        int64_t w, n, pts, lost_below;
+    };
+    struct Log {
+        int64_t ts;
+        bool has_truth;
+        int64_t truth;
+        bool has_acc;
+        int64_t acc, ratio;
+        bool flush;
+    };
+    struct Ev {
+        std::string kind;
+        int64_t ts;
+        std::string reason;
+    };
+
+    Path(AsrcDeviceTerm& t, int64_t ppm, int64_t (*jitter)(PyRandom&), uint64_t seed, int64_t lag_ms = 0,
+         int64_t ahead_ms = 15, int64_t stale_ms = -1, int64_t resync_ms = 0)
+        : term(t), ppm_(ppm), jitter_(jitter), g_((uint32_t)seed), lag_(lag_ms * DFS / 1000), ahead_(ahead_ms * DFS / 1000),
+          stale_ms_(stale_ms), resync_ms_(resync_ms), acc(DFS) {}
+
+    void run(int64_t seconds_x10) {   // tenths of a second
+        for (int64_t i = 0; i < seconds_x10 * 10; i++) step();
+    }
+
+    // FLUSH_START/STOP from mrasrc: the prefill and the ring's unread part discarded.
+    void flush() {
+        flushed += prefill_level_;
+        prefill_.clear();
+        prefill_level_ = 0;
+        std::deque<Seg> keep;
+        for (Seg s : segs_) {
+            const int64_t lo = std::max({s.w, s.lost_below, read_pos_});
+            flushed += std::max<int64_t>(s.w + s.n - lo, 0);
+            if (s.w < read_pos_) {
+                s.n = std::min(s.n, read_pos_ - s.w);
+                keep.push_back(s);
+            }
+        }
+        segs_ = keep;
+        next_sample_ = -1;
+        acc.flush();
+    }
+
+    int64_t queued() const {   // ours not yet read: the prefill and the ring ahead of the read index
+        int64_t q = prefill_level_;
+        for (const Seg& s : segs_) q += std::max<int64_t>(s.w + s.n - std::max({s.w, s.lost_below, read_pos_}), 0);
+        return q;
+    }
+
+    std::vector<Span> holes, istalls, dstalls;
+    std::vector<std::pair<int64_t, int64_t>> steps;   // (ts, ns): the device clock steps
+    AsrcDeviceTerm& term;
+    int64_t produced = 0, heard_ours = 0, flushed = 0;
+    std::vector<Log> log;
+    std::vector<Ev> events;
+
+  private:
+    int64_t house() const { return 1000 * S + k_ * STEP; }
+    static const Span* in(const std::vector<Span>& spans, int64_t t) {
+        for (const Span& s : spans)
+            if (s.at <= t && t < s.at + s.len) return &s;
+        return nullptr;
+    }
+    // The read index as the base sink knows it: stale after an underflow on the Pi 5.
+    int64_t sink_read(int64_t now) {
+        if (stale_ms_ < 0 || (!uf_ && !resync_)) return read_pos_;
+        if (resync_ && now >= resync_at_) {
+            resync_ = false;
+            return read_pos_;
+        }
+        const int64_t want = now - stale_ms_ * MS;
+        int64_t old = read_pos_;
+        for (auto it = read_hist_.rbegin(); it != read_hist_.rend(); ++it)
+            if (it->first <= want) {
+                old = it->second;
+                break;
+            }
+        return old;
+    }
+    void write(int64_t pts, int64_t n, int64_t now) {
+        int64_t w = next_sample_;
+        const int64_t sr = sink_read(now);
+        if (w < 0 || w < sr) w = sr + ahead_;   // the next playable position
+        if (uf_ && stale_ms_ >= 0) {
+            resync_ = true;
+            resync_at_ = now + resync_ms_ * MS;
+        }
+        uf_ = false;
+        segs_.push_back(Seg{w, n, pts, read_pos_});
+        next_sample_ = w + n;
+        acc.rendered(w, n, pts);
+        running_ = true;
+    }
+    bool heard(int64_t pos, int64_t* pts) const {
+        for (const Seg& s : segs_)
+            if (s.w <= pos && pos < s.w + s.n) {
+                if (pos < s.lost_below) return false;
+                *pts = s.pts + floor_div((pos - s.w) * S, DFS);
+                return true;
+            }
+        return false;
+    }
+
+    void step() {
+        const int64_t now = house(), ts = k_ * STEP;
+        // input: a hole loses its content upstream; a stall holds it and delivers it at once after
+        const std::pair<int64_t, int64_t> arrival{now - LAT, N_IN};
+        if (in(holes, ts)) {
+        } else if (in(istalls, ts)) {
+            delayed_.push_back(arrival);
+        } else {
+            for (const auto& d : delayed_) upstream_.push_back(d);
+            delayed_.clear();
+            upstream_.push_back(arrival);
+        }
+        // mrasrc
+        const int64_t r = term.rendering() ? term.ratio_ppb() : 0;
+        while (!upstream_.empty()) {
+            const int64_t pts = upstream_.front().first, n = upstream_.front().second;
+            const int64_t total = n * (S + r) + carry_, out = floor_div(total, S);
+            if (prefill_level_ + out > DFS) break;   // the prefill is full: the push blocks
+            upstream_.pop_front();
+            carry_ = total - out * S;
+            prefill_.push_back({pts, out});
+            prefill_level_ += out;
+            pushed_ += out;
+            produced += out;
+        }
+        // the prefill to the sink, while the ring has room
+        while (!prefill_.empty() && prefill_level_ >= DFS * 40 / 1000) {
+            const int64_t pts = prefill_.front().first, n = prefill_.front().second;
+            const int64_t end = next_sample_ >= 0 ? next_sample_ : read_pos_;
+            if (running_ && end + n - read_pos_ > DFS / 10) break;
+            prefill_.pop_front();
+            prefill_level_ -= n;
+            taken_ += n;
+            if (!term.rendering()) {
+                std::vector<AsrcDeviceEvent> ev;
+                term.start(now, &ev);
+                for (const AsrcDeviceEvent& e : ev) events.push_back({asrc_device_event_name(e.kind), ts, e.reason});
+            }
+            write(pts, n, now);
+        }
+        // the device
+        const Span* dstall = in(dstalls, ts);
+        if (running_ && !dstall) {
+            const int64_t total = N_IN * (1000000 + ppm_) + read_frac_, adv = floor_div(total, 1000000);
+            read_frac_ = total - adv * 1000000;
+            for (const Seg& s : segs_) {
+                const int64_t lo = std::max({s.w, s.lost_below, read_pos_}), hi = std::min(s.w + s.n, read_pos_ + adv);
+                if (hi > lo) heard_ours += hi - lo;
+            }
+            if (next_sample_ >= 0 && read_pos_ <= next_sample_ && next_sample_ < read_pos_ + adv) uf_ = true;
+            read_pos_ += adv;
+            while (!segs_.empty() && segs_.front().w + segs_.front().n <= read_pos_ - DFS) segs_.pop_front();
+        }
+        read_hist_.push_back({now, read_pos_});
+        while (!read_hist_.empty() && read_hist_.front().first < now - S) read_hist_.pop_front();
+        // the device clock: the position read, lag behind; held after a stall it ran through
+        const int64_t truth = running_ ? std::max<int64_t>(read_pos_ - lag_, 0) : 0;
+        if (dstall && dstall->running) {
+            clock_pos_ += floor_div(N_IN * (1000000 + ppm_), 1000000);
+            held_ = true;
+            clock_held_ = clock_pos_;
+        } else if (held_ && truth < clock_held_) {
+            clock_pos_ = clock_held_;
+        } else {
+            held_ = false;
+            clock_pos_ = truth;
+        }
+        k_++;
+        if (k_ % 10 == 0 && term.rendering()) tick(now + STEP, ts + STEP);
+    }
+
+    void tick(int64_t now, int64_t ts) {
+        int64_t step_ns = 0;
+        for (const auto& s : steps)
+            if (s.first <= ts) step_ns += s.second;
+        const int64_t dev = dev_of(clock_pos_) + step_ns, mono = now + jitter_(g_);
+        std::vector<AsrcDeviceEvent> ev;
+        const bool fl = term.sample(dev, mono, pushed_, taken_, &ev);
+        for (const AsrcDeviceEvent& e : ev) events.push_back({asrc_device_event_name(e.kind), ts, e.reason});
+        if (fl) flush();
+        int64_t tp = 0, a = 0;
+        const bool ht = running_ && heard(read_pos_ - lag_, &tp);
+        const bool ha = acc.at(now, dev_of(clock_pos_), &a);
+        log.push_back(Log{ts, ht, now - tp, ha, a, term.ratio_ppb(), fl});
+    }
+
+    int64_t ppm_;
+    int64_t (*jitter_)(PyRandom&);
+    PyRandom g_;
+    int64_t k_ = 0;
+    std::deque<std::pair<int64_t, int64_t>> upstream_;
+    std::vector<std::pair<int64_t, int64_t>> delayed_;
+    int64_t carry_ = 0;
+    std::deque<std::pair<int64_t, int64_t>> prefill_;
+    int64_t prefill_level_ = 0, pushed_ = 0, taken_ = 0;
+    std::deque<Seg> segs_;
+    int64_t next_sample_ = -1, read_pos_ = 0, read_frac_ = 0;
+    bool running_ = false;
+    int64_t lag_, ahead_, stale_ms_, resync_ms_;
+    std::deque<std::pair<int64_t, int64_t>> read_hist_;
+    bool uf_ = false, resync_ = false;
+    int64_t resync_at_ = 0;
+    int64_t clock_pos_ = 0, clock_held_ = 0;
+    bool held_ = false;
+  public:
+    AsrcRenderLateness acc;
+};
+
+// The truth lateness's range over [a, b) s.
+bool lateness_at(const Path& p, int64_t a_s, int64_t b_s, int64_t* lo, int64_t* hi) {
+    bool have = false;
+    for (const Path::Log& x : p.log) {
+        if (x.ts < a_s * S || x.ts >= b_s * S || !x.has_truth) continue;
+        *lo = have ? std::min(*lo, x.truth) : x.truth;
+        *hi = have ? std::max(*hi, x.truth) : x.truth;
+        have = true;
+    }
+    return have;
+}
+
+// --- the cases -----------------------------------------------------------------------------------------
+
+void test_dev_lock_port() {
+    std::printf("\n  the device term on its timer (WI-P4-4, B-166): py/asrc_device_ref_test.py's cases\n");
+    const ClockLockConfig c = asrc_device_lock_config(), a = asrc_lock_config();
+    CHECK("1: device lock = the capture lock's 50 ms two-sided step, no backlog rule, the window at its clamp (1000 "
+          "buckets), a 1200 s loop, a fit taken at once only past the ratio clamp",
+          c.step_ns == 50 * MS && c.step_falls && c.backlog_ns == 0 && c.step_fall_hold_ns == 0 &&
+              c.rate_buckets_max == 1000 && c.rate_tau_ns == 1200 * S && c.slew_track_ppm == 1000 &&
+              c.bucket_ns == a.bucket_ns && c.rate_buckets_min == a.rate_buckets_min &&
+              c.offset_buckets == a.offset_buckets && c.rate_max_ppm == a.rate_max_ppm && c.step_hold_ns == a.step_hold_ns);
+    const AsrcDeviceConfig d;
+    CHECK("1: term constants: 100 ms reads, 15 s settle, 50 ms x 2 relock, flat under 1/10, stall 1 s with 100 ms "
+          "waiting, probe 500 ms, resume past 200 ms, +-1000 ppm",
+          d.sample_ns == 100 * MS && d.settle_ns == 15 * S && d.relock_ns == 50 * MS && d.relock_samples == 2 &&
+              d.flat_den == 10 && d.stall_ns == S && d.waiting_ns == 100 * MS && d.probe_ns == 500 * MS &&
+              d.resume_ns == 200 * MS && d.ratio_max_ppm == 1000);
+    AsrcDeviceTerm t;
+    std::vector<AsrcDeviceEvent> ev;
+    t.start(0, &ev);
+    feed_clock(t, 600, 80, no_jitter, 1, no_on);
+    CHECK("1: a clean +80 ppm clock: the lock's eps -80 ppm to 0.01 ppm in 600 s (device rate +80)",
+          std::abs(device_rate_ppm(t) - 80) < 0.01 && t.lock().phase() == ClockLock::Phase::locked);
+}
+
+void test_dev_ratio() {
+    CHECK("2: house-rate input on a device 135 ppm slow (eps_dev +135.018 ppm): -135 ppm",
+          asrc_device_ratio(0, 135018, 1000) == -135000);
+    CHECK("2: the product with a foreign input clock: (1 + 50e-6) / (1 - 30e-6) - 1 = +80.0024 ppm",
+          asrc_device_ratio(50000, -30000, 1000) == 80002);
+    CHECK("2: clamped at +-1000 ppm",
+          asrc_device_ratio(0, -1500000, 1000) == 1000000 && asrc_device_ratio(0, 1500000, 1000) == -1000000);
+    CHECK("2: rate_of: the device's own rate from eps (eps +135.018 ppm -> -135 ppm)",
+          asrc_rate_of(135018) == -135000 && asrc_rate_of(0) == 0);
+    {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        feed_clock(t, 20, 300, no_jitter, 1, no_on);
+        CHECK("2: eps_dev 0 until the lock has a rate (20 s in: settling and acquiring)",
+              t.device_ppb() == 0 && t.ratio_ppb(40000) == 40000);
+    }
+    AsrcDeviceTerm t;
+    std::vector<AsrcDeviceEvent> ev;
+    t.start(0, &ev);
+    feed_clock(t, 300, 80, preempted, 2, no_on);
+    bool ok = true;
+    std::string got;
+    for (int64_t e : {-50000LL, -1000LL, 0LL, 2500LL, 50000LL}) {
+        const int64_t r = t.ratio_ppb(e);
+        const double want = ((1 + e * 1e-9) * (1 + 80e-6) - 1) * 1e9;
+        ok = ok && std::abs(r - want) < 50 && r == asrc_device_ratio(e, t.device_ppb(), 1000);
+        got += (got.empty() ? "" : ", ") + std::to_string(r);
+    }
+    char name[200];
+    std::snprintf(name, sizeof name, "2: eps_in as a series on a device 80 ppm fast: each ratio the product to 0.05 ppm "
+                  "(%s ppb)", got.c_str());
+    CHECK(name, ok);
+}
+
+void test_dev_jitter() {
+    double worst_p = 0, worst_u120 = 0, worst_u200 = 0;
+    for (uint64_t seed = 0; seed < 10; seed++) {
+        double errs[300] = {0};
+        {
+            AsrcDeviceTerm t;
+            std::vector<AsrcDeviceEvent> ev;
+            t.start(0, &ev);
+            feed_clock(t, 200, 80, preempted, seed,
+                       [&](int64_t h, const std::vector<AsrcDeviceEvent>&) { errs[h / S] = t.ratio_ppb() / 1e3 - 80; });
+            for (int s = 120; s < 200; s++) worst_p = std::max(worst_p, std::abs(errs[s]));
+        }
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        feed_clock(t, 300, 80, uniform5, seed,
+                   [&](int64_t h, const std::vector<AsrcDeviceEvent>&) { errs[h / S] = t.ratio_ppb() / 1e3 - 80; });
+        for (int s = 120; s < 300; s++) worst_u120 = std::max(worst_u120, std::abs(errs[s]));
+        for (int s = 200; s < 300; s++) worst_u200 = std::max(worst_u200, std::abs(errs[s]));
+    }
+    char name[300];
+    std::snprintf(name, sizeof name, "3: +80 ppm, reads preempted up to 5 ms (9 in 10 under 0.2 ms), 10 seeds: the ratio "
+                  "within 1 ppm of the device from 120 s (worst %.3f ppm)", worst_p);
+    CHECK(name, worst_p < 1.0);
+    std::snprintf(name, sizeof name, "3: reads late by U[0, 5 ms), 10 seeds: within 3 ppm from 120 s (worst %.2f), 1 ppm "
+                  "from 200 s (worst %.2f): 105 fitted buckets after the settle hold 1.3 ppm sd there", worst_u120,
+                  worst_u200);
+    CHECK(name, worst_u120 < 3.0 && worst_u200 < 1.0);
+}
+
+void test_dev_fill_1h() {
+    double worst = 0;
+    for (uint64_t seed = 0; seed < 2; seed++) {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        double fill = 0, lo = 0, hi = 0;
+        feed_clock(t, 3600, 80, preempted, seed, [&](int64_t, const std::vector<AsrcDeviceEvent>&) {
+            fill += (t.ratio_ppb() / 1e3 - 80) * 1e-6 * TICK / MS;   // ms
+            lo = std::min(lo, fill);
+            hi = std::max(hi, fill);
+        });
+        worst = std::max(worst, hi - lo);
+    }
+    char name[200];
+    std::snprintf(name, sizeof name, "4: +80 ppm, 1 h, 2 seeds: fill excursion %.2f ms < 5 ms (the 45 s at eps 0 hold 3.6 "
+                  "of it)", worst);
+    CHECK(name, worst < 5.0);
+}
+
+void test_dev_input_stall() {
+    for (const char* kind : {"stall", "hole"}) {
+        AsrcDeviceTerm t;
+        Path p(t, 80, preempted, 5);
+        (std::strcmp(kind, "stall") ? p.holes : p.istalls).push_back({300 * S, 2 * S, false});
+        p.run(3000);
+        int64_t lo = 0, hi = 0, lo2 = 0, hi2 = 0;
+        lateness_at(p, 290, 300, &lo, &hi);
+        p.run(620);
+        int64_t at = 0, moved = 0;
+        bool any_flush = false;
+        for (const Path::Log& x : p.log)
+            if (x.ts < 300 * S) at = x.ratio;
+        for (const Path::Log& x : p.log) {
+            if (x.ts >= 300 * S) moved = std::max(moved, iabs(x.ratio - at));
+            any_flush = any_flush || x.flush;
+        }
+        char name[300];
+        std::snprintf(name, sizeof name, "5: a 2 s input %s at 300 s: the ratio moves %.3f ppm over it and the minute "
+                      "after (< 0.5)", kind, moved / 1e3);
+        CHECK(name, moved < 500);
+        CHECK("5: ... no relock, no device stall, no flush: the ring ran dry for the input, not the device",
+              p.events.empty() && !any_flush);
+        lateness_at(p, 310, 362, &lo2, &hi2);
+        const int64_t want = std::strcmp(kind, "stall") ? 0 : 2000 * MS;
+        std::snprintf(name, sizeof name, "5: ... render lateness %+.1f ms after it (%.1f..%.1f, before %.1f..%.1f): %s",
+                      (hi2 - hi) / 1e6, lo2 / 1e6, hi2 / 1e6, lo / 1e6, hi / 1e6,
+                      std::strcmp(kind, "stall") ? "the content after the hole plays live" : "the backlog stays until a gap");
+        CHECK(name, iabs(hi2 - hi - want) < 30 * MS && iabs(lo2 - lo - want) < 30 * MS);
+    }
+}
+
+void test_dev_step() {
+    char name[300];
+    for (int64_t step : {100 * MS, -100 * MS}) {
+        AsrcDeviceTerm t, t2;
+        std::vector<AsrcDeviceEvent> ev, all;
+        t.start(0, &ev);
+        feed_clock(t, 400, 80, preempted, 6,
+                   [&](int64_t, const std::vector<AsrcDeviceEvent>& e) { all.insert(all.end(), e.begin(), e.end()); },
+                   1000 * S, 300, step);
+        t2.start(0, &ev);
+        feed_clock(t2, 400, 80, preempted, 6, no_on);
+        std::snprintf(name, sizeof name, "6: a %+lld ms step at 300 s: one relock-device, reason step, %s",
+                      (long long)(step / MS), all.empty() ? "none" : "at 300.1-300.3 s");
+        CHECK(name, all.size() == 1 && !std::strcmp(all[0].reason, "step") && all[0].at - 1000 * S >= 300 * S &&
+                        all[0].at - 1000 * S <= 300 * S + 3 * TICK);
+        const double kept = std::abs(device_rate_ppm(t) - device_rate_ppm(t2));
+        std::snprintf(name, sizeof name, "6: ... the rate kept: %.3f ppm from the run without the step (< 0.5)", kept);
+        CHECK(name, kept < 0.5);
+    }
+    {   // The step's relock settles again as a start does (p4-4a's review): nothing fed for 15 s after it.
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        int64_t relock_at = -1, held_fed = -1, settled_at = -1;
+        bool held = true;
+        feed_clock(t, 400, 80, preempted, 6,
+                   [&](int64_t h, const std::vector<AsrcDeviceEvent>& e) {
+                       for (const AsrcDeviceEvent& x : e) relock_at = x.at - 1000 * S;
+                       if (relock_at < 0 || h < relock_at) return;
+                       const bool settle = t.lock_state() == AsrcDeviceTerm::LockState::settle;
+                       if (h < relock_at + 15 * S - TICK) {
+                           if (held_fed < 0) held_fed = (int64_t)t.stats().fed;
+                           held = held && settle && (int64_t)t.stats().fed == held_fed;
+                       }
+                       if (!settle && settled_at < 0) settled_at = h;
+                   },
+                   1000 * S, 300, 100 * MS);
+        std::snprintf(name, sizeof name, "6: the step's relock settles 15 s as a start does: lock_state() settle and "
+                      "nothing fed from it (%.1f s) for %.1f s", relock_at / 1e9, (settled_at - relock_at) / 1e9);
+        CHECK(name, relock_at >= 0 && held && settled_at >= 0 && settled_at - relock_at >= 15 * S &&
+                        settled_at - relock_at <= 15 * S + 2 * TICK);
+    }
+    {   // PyRandom draws what Python's random.Random draws.
+        PyRandom r5(5), r0(0);
+        const int64_t a = r5.below(200000), b = r5.below(200000), c = r5.below(200000);
+        const double x = r5.random();
+        CHECK("6: the cases' random draws are Python's (random.Random(5): 163289, 66963, 194455, 0.358535...)",
+              a == 163289 && b == 66963 && c == 194455 && std::abs(x - 0.35853551175589526) < 1e-15 &&
+                  r5.below(5 * MS) == 4446296 && r0.next32() == 3626764237U);
+    }
+    {   // relock_samples = 2: one read 60 ms late is no step, and it is not fed.
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        PyRandom g(16);
+        uint64_t fed[3] = {0, 0, 0};
+        for (int64_t k = 0; k < 3000; k++) {
+            const int64_t h = k * TICK, late = k == 2000 ? 60 * MS : preempted(g);
+            t.sample(h + floor_div(h * 80, 1000000), 1000 * S + h + late, -1, -1, &ev);
+            if (k >= 1999 && k <= 2001) fed[k - 1999] = t.stats().fed;
+        }
+        const AsrcDeviceTerm::Stats st = t.stats();
+        std::snprintf(name, sizeof name, "6: one read 60 ms late at 200 s: no relock-device (%llu, %llu), the read not "
+                      "fed (fed %llu -> %llu), the next one fed (%llu)", (unsigned long long)st.relocks_restart,
+                      (unsigned long long)st.relocks_step, (unsigned long long)fed[0], (unsigned long long)fed[1],
+                      (unsigned long long)fed[2]);
+        CHECK(name, st.relocks_restart == 0 && st.relocks_step == 0 && fed[1] == fed[0] && fed[2] == fed[1] + 1);
+    }
+}
+
+void test_dev_traces() {
+    for (const char* name : TRACES) {
+        const Replay& r = replay_trace(name);
+        const double slope = trace_slope_ppm(r.lines);
+        std::vector<const TraceEvent*> relocks;
+        double restart_at = -1;
+        for (const TraceEvent& e : r.events) {
+            if (e.kind == "relock-device") relocks.push_back(&e);
+            if (e.kind == "restart" && restart_at < 0) restart_at = e.s;
+        }
+        char text[300];
+        std::snprintf(text, sizeof text, "7: %s: one relock-device, reason restart, at the restart; no step, no flat "
+                      "sample", name);
+        CHECK(text, relocks.size() == 1 && relocks[0]->reason == "restart" && r.t->stats().flat_ns == 0 &&
+                        std::abs(relocks[0]->s - restart_at) < 1.0);
+        double late = 0;
+        for (const Row& w : r.rows)
+            if (w.s >= 1000) late = std::max(late, std::abs(w.dev_ppm - slope));
+        std::snprintf(text, sizeof text, "7: %s: from 1000 s the device rate within 1 ppm of the trace's own slope "
+                      "%+.3f ppm (worst %.2f)", name, slope, late);
+        CHECK(text, !r.rows.empty() && late < 1.0);
+        double fill = 0, lo = 0, hi = 0;
+        for (size_t i = 1; i < r.rows.size(); i++) {
+            fill += (r.rows[i].ratio_ppm - slope) * 1e-6 * (r.rows[i].s - r.rows[i - 1].s) * 1000;
+            lo = std::min(lo, fill);
+            hi = std::max(hi, fill);
+        }
+        std::snprintf(text, sizeof text, "7: %s: the fill drifts %.1f ms (the ratio's error against the slope, "
+                      "integrated; < 8)", name, hi - lo);
+        CHECK(text, hi - lo < 8.0);
+    }
+}
+
+void test_dev_trace_underrun() {
+    for (const char* name : TRACES) {
+        const Replay& r = replay_trace(name);
+        const auto holes = trace_holes(r.lines);
+        bool ok_fed = !holes.empty();
+        double under = -1;
+        for (const auto& h : holes) {
+            int64_t near = 0;
+            for (const Row& w : r.rows) near += w.s >= h.first - 5 && w.s <= h.first + h.second / 1000.0 + 5;
+            ok_fed = ok_fed && near >= (int64_t)((10 + h.second / 1000.0) * 10) - 2;
+            if (h.second == 1000) under = h.first;
+        }
+        double at_u = 0, move = 0;
+        bool have = false;
+        for (const Row& w : r.rows) {
+            if (!have && w.s >= under) {
+                have = true;
+                at_u = w.ratio_ppm;
+            }
+            if (have && w.s <= under + 30) move = std::max(move, std::abs(w.ratio_ppm - at_u));
+        }
+        bool step = false;
+        for (const TraceEvent& e : r.events) step = step || (e.kind == "relock-device" && e.reason == "step");
+        char text[300];
+        std::snprintf(text, sizeof text, "8: %s: through the 300 ms hole and the 1 s underrun every sample read, no "
+                      "relock, no flat sample; the ratio moves %.3f ppm in the 30 s after the underrun (< 0.5)", name, move);
+        CHECK(text, ok_fed && have && r.t->stats().flat_ns == 0 && !step && move < 0.5);
+    }
+}
+
+void test_dev_clock_stall_underrun() {
+    for (const bool catches : {true, false}) {
+        AsrcDeviceTerm t, t2;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(0, &ev);
+        PyRandom g(9);
+        for (int64_t k = 0; k < 4000; k++) {
+            const int64_t h = k * TICK, dev = h + h * 80 / 1000000;
+            int64_t frozen = 0;   // flat 1 s at each minute from 120 s on
+            for (int64_t m = 120; m < 400; m += 60)
+                if (h >= m * S) {
+                    frozen += h >= (m + 1) * S ? S : h - m * S;
+                    if (catches && h >= (m + 1) * S) frozen -= S;
+                }
+            t.sample(dev - frozen, 1000 * S + h + preempted(g), -1, -1, &ev);
+        }
+        t2.start(0, &ev);
+        feed_clock(t2, 400, 80, preempted, 9, no_on);
+        const AsrcDeviceTerm::Stats st = t.stats();
+        const uint64_t relocks = st.relocks_restart + st.relocks_step, want = catches ? 0 : 5;
+        const double off = std::abs(device_rate_ppm(t) - device_rate_ppm(t2));
+        char name[300];
+        std::snprintf(name, sizeof name, "9: a clock flat 1 s in each of 5 underruns, then it %s: %llu relocks (want "
+                      "%llu), the rate %.3f ppm from the clean run (< 0.5), flat %.1f s never fed",
+                      catches ? "catches up" : "resumes behind", (unsigned long long)relocks, (unsigned long long)want,
+                      off, st.flat_ns / 1e9);
+        CHECK(name, relocks == want && off < 0.5 && st.flat_ns >= 4 * S);
+    }
+}
+
+void test_dev_start_and_restart() {
+    char name[300];
+    {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        const bool fl = t.sample(0, 1000 * S, -1, -1, &ev);
+        CHECK("10: no read before the first rendered buffer (sample() before start() does nothing)",
+              !fl && ev.empty() && !t.rendering() && t.stats().fed == 0 && t.stats().flat_ns == 0 &&
+                  !t.lock().started());
+    }
+    {
+        const Replay& r = replay_trace(TRACES[0]);
+        size_t rendered = 0;
+        for (const TraceLine& o : r.lines) rendered += o.read;
+        std::snprintf(name, sizeof name, "10: the replay reads only rendered samples (%zu of the clock lines; none with "
+                      "next_sample -1)", r.rows.size());
+        CHECK(name, r.rows.size() == rendered && rendered > 20000);
+    }
+    {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(1000 * S, &ev);
+        int64_t first_moved = -1, first_fed = -1;
+        feed_clock(t, 40, 0, no_jitter, 1, [&](int64_t h, const std::vector<AsrcDeviceEvent>&) {
+            const AsrcDeviceTerm::LockState s = t.lock_state();
+            if (first_moved < 0 && s != AsrcDeviceTerm::LockState::idle) first_moved = h;
+            if (first_fed < 0 && s != AsrcDeviceTerm::LockState::idle && s != AsrcDeviceTerm::LockState::settle)
+                first_fed = h;
+        });
+        std::snprintf(name, sizeof name, "10: the lock begins 15 s after the clock first moves (moved %.1f s, fed %.1f s)",
+                      first_moved / 1e9, first_fed / 1e9);
+        CHECK(name, first_moved >= 0 && first_fed >= 0 && iabs(first_fed - first_moved - 15 * S) < 150 * MS);
+    }
+    {
+        AsrcDeviceTerm t;
+        std::vector<AsrcDeviceEvent> ev;
+        t.start(1000 * S, &ev);
+        const int64_t end = feed_clock(t, 300, -135, preempted, 10, no_on);
+        const int64_t kept = t.device_ppb();
+        t.stop(end);
+        std::vector<AsrcDeviceEvent> rs;
+        t.start(end + 300 * MS, &rs);
+        PyRandom g(11);
+        for (int64_t k = 0; k < 3000; k++) {   // the stream's clock from 0 again, 300 ms later
+            const int64_t h = k * TICK;
+            t.sample(h - h * 135 / 1000000, end + 300 * MS + h + preempted(g), -1, -1, &ev);
+        }
+        const AsrcDeviceTerm::Stats st = t.stats();
+        std::snprintf(name, sizeof name, "10: a restart (the clock from 0): one relock-device, reason restart, the rate kept "
+                      "(%.3f ppm after 300 s)", iabs(t.device_ppb() - kept) / 1e3);
+        CHECK(name, rs.size() == 1 && !std::strcmp(rs[0].reason, "restart") && st.relocks_restart == 1 &&
+                        st.relocks_step == 0 && iabs(t.device_ppb() - kept) < 500);
+    }
+    // Restarts along a recorded clock: the post-restart short fits never replace the rate kept.
+    std::vector<std::pair<int64_t, int64_t>> samples;
+    for (const TraceLine& o : load_trace("sink-clock-pi4-kt.jsonl")) {
+        if (o.event == "restart") break;
+        if (o.read) samples.push_back({o.mono, o.clock});
+    }
+    if (samples.empty()) {
+        CHECK("10: the recorded KT USB clock loads", false);
+        return;
+    }
+    const int64_t m0 = samples[0].first;
+    auto run = [&](int64_t restart_at, int64_t until) {
+        AsrcDeviceTerm tr;
+        std::vector<AsrcDeviceEvent> ev;
+        tr.start(m0, &ev);
+        std::vector<std::pair<int64_t, double>> out;
+        bool done = restart_at < 0;
+        for (const auto& x : samples) {
+            if (x.first - m0 >= until * S) break;
+            if (!done && x.first - m0 >= restart_at * S) {
+                tr.stop(x.first);
+                tr.start(x.first, &ev);
+                done = true;
+            }
+            tr.sample(x.second, x.first, -1, -1, &ev);
+            out.push_back({x.first - m0, device_rate_ppm(tr)});
+        }
+        return out;
+    };
+    const auto base = run(-1, 1500);
+    for (int64_t at : {120LL, 1200LL}) {
+        const auto rows = run(at, at + 300);
+        double worst = 0;
+        for (size_t i = 0; i < rows.size() && i < base.size(); i++)
+            if (rows[i].first >= at * S && rows[i].first < (at + 300) * S)
+                worst = std::max(worst, std::abs(rows[i].second - base[i].second));
+        std::snprintf(name, sizeof name, "10: a restart at %lld s on the recorded KT USB clock: the rate within %d ppm of "
+                      "the run without it for the 300 s after (worst %.2f)", (long long)at, at == 120 ? 50 : 2, worst);
+        CHECK(name, worst < (at == 120 ? 50 : 2));
+    }
+}
+
+struct StallCase {
+    std::unique_ptr<AsrcDeviceTerm> t;
+    std::unique_ptr<Path> p;
+    std::vector<Path::Ev> stalled, resumed;
+    int64_t lost = 0, lo0 = 0, hi0 = 0, lo1 = 0, hi1 = 0;
+};
+
+StallCase stall_case(bool running) {
+    StallCase c;
+    c.t.reset(new AsrcDeviceTerm());
+    c.p.reset(new Path(*c.t, -135, preempted, 12));
+    Path& p = *c.p;
+    p.dstalls.push_back({300 * S, 3 * S, running});
+    p.run(3000);
+    lateness_at(p, 280, 300, &c.lo0, &c.hi0);
+    const int64_t produced0 = p.produced, heard0 = p.heard_ours, queued0 = p.queued();
+    p.run(600);
+    for (const Path::Ev& e : p.events) {
+        if (e.ts < 300 * S) continue;
+        if (e.kind == "device-stalled") c.stalled.push_back(e);
+        if (e.kind == "device-resumed") c.resumed.push_back(e);
+    }
+    c.lost = (p.produced - produced0) + queued0 - (p.heard_ours - heard0) - p.queued();
+    lateness_at(p, 305, 360, &c.lo1, &c.hi1);
+    return c;
+}
+
+void stall_checks(const StallCase& c, const char* n, bool split) {
+    char name[300];
+    std::snprintf(name, sizeof name, "%s: device-stalled once, 1.0-1.4 s after the device stopped (%.2f s)", n,
+                  c.stalled.empty() ? -1.0 : (c.stalled[0].ts - 300 * S) / 1e9);
+    CHECK(name, c.stalled.size() == 1 && c.stalled[0].ts - 300 * S >= S && c.stalled[0].ts - 300 * S <= 1400 * MS);
+    std::snprintf(name, sizeof name, "%s: device-resumed once, within 0.6 s of its return (%.2f s)", n,
+                  c.resumed.empty() ? -1.0 : (c.resumed[0].ts - 303 * S) / 1e9);
+    CHECK(name, c.resumed.size() == 1 && c.resumed[0].ts >= 303 * S && c.resumed[0].ts - 303 * S <= 600 * MS);
+    const int64_t dropped = c.t->stats().dropped;
+    const bool lost_ok = c.lost >= 3 * DFS && c.lost <= 36 * DFS / 10, counted = iabs(dropped - c.lost) <= DFS / 4;
+    if (split) {
+        std::snprintf(name, sizeof name, "%s: input dropped for the stall's length: %.2f s of content never played "
+                      "(3.0-3.6)", n, (double)c.lost / DFS);
+        CHECK(name, lost_ok);
+        std::snprintf(name, sizeof name, "%s: ... counted: dropped %.2f s, within the two ring contents the element "
+                      "cannot see", n, (double)dropped / DFS);
+        CHECK(name, counted);
+    } else {
+        std::snprintf(name, sizeof name, "%s: input dropped for the stall's length: %.2f s never played (3.0-3.6); "
+                      "counted %.2f s", n, (double)c.lost / DFS, (double)dropped / DFS);
+        CHECK(name, lost_ok && counted);
+    }
+    std::snprintf(name, sizeof name, "%s: resume live: render lateness after it %.1f..%.1f ms, before %.1f..%.1f", n,
+                  c.lo1 / 1e6, c.hi1 / 1e6, c.lo0 / 1e6, c.hi0 / 1e6);
+    CHECK(name, iabs(c.hi1 - c.hi0) < 30 * MS && iabs(c.lo1 - c.lo0) < 30 * MS);
+}
+
+void test_dev_stall_clock_stopped() {
+    const StallCase c = stall_case(false);
+    stall_checks(c, "11", true);
+    const AsrcDeviceTerm::Stats st = c.t->stats();
+    char name[300];
+    std::snprintf(name, sizeof name, "11: the clock stopped with it: flat samples never fed, one relock-device (step) on "
+                  "its return, the rate kept (%.2f ppm)", device_rate_ppm(*c.t));
+    CHECK(name, st.flat_ns >= 2 * S && st.relocks_step == 1 && std::abs(device_rate_ppm(*c.t) + 135) < 1.0);
+}
+
+void test_dev_stall_clock_running() {
+    const StallCase c = stall_case(true);
+    stall_checks(c, "12", false);
+    const AsrcDeviceTerm::Stats st = c.t->stats();
+    char name[300];
+    std::snprintf(name, sizeof name, "12: the clock held after the return (it ran ahead): one relock-device (step), the "
+                  "rate kept (%.2f ppm; flat %.1f s)", device_rate_ppm(*c.t), st.flat_ns / 1e9);
+    CHECK(name, st.relocks_step == 1 && std::abs(device_rate_ppm(*c.t) + 135) < 1.0);
+    AsrcDeviceTerm t2;
+    Path p2(t2, -135, preempted, 12);
+    p2.run(3300);
+    bool quiet = true;
+    for (const Path::Ev& e : p2.events) quiet = quiet && e.kind != "device-stalled" && e.kind != "device-resumed";
+    for (const Path::Log& x : p2.log) quiet = quiet && !x.flush;
+    CHECK("12: a device that keeps reading (a suspended null sink runs on a timer): no stall, no flush", quiet);
+}
+
+void test_dev_render_lateness_ring() {
+    char name[400];
+    {
+        AsrcDeviceTerm t;
+        Path p(t, -135, no_jitter, 13);
+        p.run(1200);
+        int64_t worst = 0;
+        for (const Path::Log& x : p.log)
+            if (x.has_truth && x.has_acc && x.ts > 2 * S) worst = std::max(worst, iabs(x.acc - x.truth));
+        std::snprintf(name, sizeof name, "13: steady: the accounting within 1 ms of the ring at every read (worst %.3f ms)",
+                      worst / 1e6);
+        CHECK(name, worst < MS);
+    }
+    for (const bool stale : {false, true}) {
+        AsrcDeviceTerm t;
+        Path p(t, -135, no_jitter, 13, 0, 15, stale ? 44 : -1, 120);
+        p.holes.push_back({60 * S, 300 * MS, false});
+        p.run(700);
+        int64_t worst = 0, silent = 0, wrong = 0;
+        for (const Path::Log& x : p.log) {
+            if (x.ts <= 2 * S) continue;
+            if (x.has_truth && x.has_acc) worst = std::max(worst, iabs(x.acc - x.truth));
+            wrong += x.has_truth != x.has_acc;
+            silent += !x.has_truth;
+        }
+        std::snprintf(name, sizeof name, "13: 13-hole-%s: within 1 ms wherever a sample is heard (worst %.3f ms), silence "
+                      "where the ring plays none (%lld reads silent, %lld disagree)", stale ? "stale" : "fresh",
+                      worst / 1e6, (long long)silent, (long long)wrong);
+        CHECK(name, worst < MS && wrong == 0);
+    }
+    {
+        AsrcDeviceTerm t;
+        Path p(t, 0, no_jitter, 13, 0, 15, 44, 120);
+        p.holes.push_back({60 * S, 300 * MS, false});
+        p.run(700);
+        const double lost_ms = (p.produced - p.heard_ours - p.queued() - p.flushed) * 1000.0 / DFS;
+        std::snprintf(name, sizeof name, "13: the modelled realign on a read index 44 ms stale drops %.0f ms of writes "
+                      "after a 300 ms hole (DEV-P4a case 6 on the Pi 5: 100-127 ms)", lost_ms);
+        CHECK(name, lost_ms >= 90 && lost_ms <= 130);
+    }
+    {
+        AsrcDeviceTerm t;
+        Path p(t, 0, no_jitter, 13, 40, 15, 44, 120);
+        p.holes.push_back({60 * S, 300 * MS, false});
+        p.run(700);
+        std::vector<int64_t> wrong;
+        for (const Path::Log& x : p.log)
+            if (x.ts > 2 * S && (x.has_truth != x.has_acc || (x.has_truth && iabs(x.acc - x.truth) >= MS)))
+                wrong.push_back(x.ts);
+        bool in = !wrong.empty();
+        for (int64_t w : wrong) in = in && w >= 60300 * MS && w <= 60600 * MS;
+        std::snprintf(name, sizeof name, "13: with the clock 40 ms behind the read index (the Pi 5's configured sink "
+                      "latency), the writes the server dropped between the two read as heard at %zu reads, all in the "
+                      "0.3 s after the hole (%.2f s): the limit no clock can see", wrong.size(),
+                      wrong.empty() ? 0.0 : wrong[0] / 1e9);
+        CHECK(name, in);
+    }
+}
+
+// Case 14 is the replay format's (mrts_cli asrc-device; asrc_device_parity_test.py holds it line for line): its
+// substance here, on the class.
+void test_dev_replay_format() {
+    AsrcDeviceConfig c;
+    c.settle_ns = S;
+    AsrcDeviceTerm t(c);
+    std::vector<AsrcDeviceEvent> ev;
+    t.start(0, &ev);
+    bool idle_first = false, ratios = true;
+    for (int64_t k = 0; k < 40; k++) {
+        t.sample(k * TICK, 10 * S + k * TICK, 0, 0, &ev);
+        if (k == 0) idle_first = t.lock_state() == AsrcDeviceTerm::LockState::idle;
+        ratios = ratios && t.ratio_ppb(1000 * k) == 1000 * k;
+    }
+    CHECK("14: the first read's lock state is idle (one read: the clock not yet moved)", idle_first);
+    t.stop(5 * S);
+    std::vector<AsrcDeviceEvent> rs;
+    t.start(6 * S, &rs);
+    CHECK("14: the restart's event (relock-device, restart, at its start), then its recalibration",
+          rs.size() == 1 && rs[0].kind == AsrcDeviceEvent::Kind::relock_device && !std::strcmp(rs[0].reason, "restart") &&
+              rs[0].at == 6 * S && t.take_recalibrated() && !t.take_recalibrated());
+    CHECK("14: the names: relock-device, device-stalled, device-resumed; idle, settle, acquiring, locked, lost",
+          !std::strcmp(asrc_device_event_name(AsrcDeviceEvent::Kind::relock_device), "relock-device") &&
+              !std::strcmp(asrc_device_event_name(AsrcDeviceEvent::Kind::device_stalled), "device-stalled") &&
+              !std::strcmp(asrc_device_event_name(AsrcDeviceEvent::Kind::device_resumed), "device-resumed") &&
+              !std::strcmp(asrc_device_lock_state_name(AsrcDeviceTerm::LockState::settle), "settle") &&
+              !std::strcmp(asrc_device_lock_state_name(AsrcDeviceTerm::LockState::lost), "lost"));
+    CHECK("14: a read's eps_in is the ratio's (no device rate yet: the ratio is eps_in)", ratios);
+}
+
+void test_dev_recalibrated() {
+    std::vector<AsrcDeviceEvent> ev;
+    AsrcDeviceTerm clean;
+    clean.start(0, &ev);
+    feed_clock(clean, 400, -136, preempted, 15, no_on);
+    const bool told_clean = clean.take_recalibrated();
+    AsrcDeviceTerm t;
+    t.start(0, &ev);
+    std::vector<std::pair<int64_t, bool>> told;
+    const int64_t end = feed_clock(
+        t, 400, -136, preempted, 15,
+        [&](int64_t h, const std::vector<AsrcDeviceEvent>& e) {
+            if (t.take_recalibrated()) told.push_back({h, !e.empty()});
+        },
+        1000 * S, 300, -100 * MS);
+    t.stop(end);
+    std::vector<AsrcDeviceEvent> rs;
+    t.start(end + 300 * MS, &rs);
+    const bool first = t.take_recalibrated(), again = t.take_recalibrated();
+    char name[300];
+    std::snprintf(name, sizeof name, "15: a clean run tells nothing (%d); a step relock tells once, at its sample (%zu, at "
+                  "%.1f s); a restart tells once (%d, then %d)", (int)told_clean, told.size(),
+                  told.empty() ? -1.0 : told[0].first / 1e9, (int)first, (int)again);
+    CHECK(name, !told_clean && told.size() == 1 && told[0].second && rs.size() == 1 && first && !again);
+}
+
 int sweep(int n) {
     std::printf("sweep: %d seeds x 3600 s per device rate, 1024-frame buffers, 1 ms jitter; |e| in us\n", n);
     for (int64_t ppb : {0LL, 50000LL, -50000LL, 500000LL, -500000LL}) {
@@ -2346,6 +3326,13 @@ int sweep(int n) {
 
 int main(int argc, char** argv) {
     if (argc == 3 && !std::strcmp(argv[1], "--sweep")) return sweep(std::atoi(argv[2]));
+    if (const char* e = std::getenv("MRTS_FIXTURES")) {
+        g_fixtures = e;
+    } else {
+        const std::string a = argv[0];
+        const size_t slash = a.rfind('/');
+        g_fixtures = (slash == std::string::npos ? std::string(".") : a.substr(0, slash)) + "/../../../tests/fixtures";
+    }
     test_basics();
     test_lock_and_hour();
     test_xrun();
@@ -2368,15 +3355,27 @@ int main(int argc, char** argv) {
     test_decode_breaks();
     test_decode_composite();
     test_device_only();
-    test_device_lock();
     std::printf("\n  CHECKSUM asrc_decode %016llx (compare across machines)\n", (unsigned long long)g_dec.h);
     test_device_continuity();
-    test_device_alignment();
-    test_device_slip();
     test_lost_time();
     test_v7dec_replay();
     test_foreign_pes();
     test_decode_bounds();
     test_engage_rate_known();
+    test_dev_lock_port();
+    test_dev_ratio();
+    test_dev_jitter();
+    test_dev_fill_1h();
+    test_dev_input_stall();
+    test_dev_step();
+    test_dev_traces();
+    test_dev_trace_underrun();
+    test_dev_clock_stall_underrun();
+    test_dev_start_and_restart();
+    test_dev_stall_clock_stopped();
+    test_dev_stall_clock_running();
+    test_dev_render_lateness_ring();
+    test_dev_replay_format();
+    test_dev_recalibrated();
     return test_summary("asrc_servo");
 }

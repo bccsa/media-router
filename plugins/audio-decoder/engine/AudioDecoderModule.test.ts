@@ -24,7 +24,7 @@ function decodeString(decoder: string): string {
         `${BUS_IN} ! mrtsdemux name=addemux media=audio ! queue leaky=0 max-size-time=300000000 max-size-buffers=0 max-size-bytes=0 ! ${decoder}` +
         ' ! audioconvert ! mrlateness name=lat_render reference=running-time ! mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink' +
         ' ! audioconvert ! volume name=vol volume=1.00 ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-        ' ! pulsesink name=sink device=MR_PW_dec-1 sync=true provide-clock=false slave-method=3 processing-deadline=100000000 buffer-time=100000 ts-offset=200000000 max-lateness=-1' +
+        ' ! pulsesink name=sink device=MR_PW_dec-1 sync=false provide-clock=false processing-deadline=100000000 buffer-time=100000 ts-offset=200000000 max-lateness=-1' +
         ' stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true"'
     );
 }
@@ -248,13 +248,13 @@ describe('AudioDecoderModule playout offset', () => {
         expect(desc.pipeline).not.toContain('audioresample');
     });
 
-    it('presents sync=true with the never-silent guard, whatever the stored mode flags say', () => {
+    it('runs sync=false (B-166) with the never-silent guard, whatever the stored mode flags say', () => {
         // sync=false would ignore ts-offset outright and leave this leg
         // arrival-anchored while the video leg paced off the house clock.
         const { module } = makeModule({ playoutOffsetMs: 300 });
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain(
-            'pulsesink name=sink device=MR_PW_dec-1 sync=true provide-clock=false',
+            'pulsesink name=sink device=MR_PW_dec-1 sync=false provide-clock=false',
         );
         // Render lateness before the ASRC, where PTS is still content time (part 4.4): after its
         // device term the PTS are device-time labels.
@@ -268,23 +268,22 @@ describe('AudioDecoderModule playout offset', () => {
         // Stored legacy modes are ignored: the paced ring is pinned.
         for (const stored of [{ sinkBufferMs: 80 }, { lowLatencySync: true, syncOffsetMs: 0 }]) {
             const p = module.buildPipeline(stored)!.pipeline;
-            expect(p).toContain('sync=true provide-clock=false');
+            expect(p).toContain('sync=false provide-clock=false');
             expect(p).toContain('buffer-time=100000');
             expect(p).toContain('ts-offset=200000000');
         }
     });
 
-    it("follows the sink's clock through the ASRC's custom slaving, never skew", () => {
-        // House-clock part 4.4 (C-6): `asrc` reads the sink's clock through its custom-slaving
-        // callback and resamples by the product of that and its source's term, so the sink is never
-        // asked to skew and no sample is dropped or repeated for drift.
+    it("follows the sink's clock through the ASRC on a timer: the sink sync=false, no slave-method (B-166)", () => {
+        // House-clock part 4.4 (C-6), ch. 8 WI-P4-4: `asrc` reads the sink's clock on a timer and
+        // resamples by the product of that and its source's term, so the sink is never asked to skew
+        // and no sample is dropped or repeated for drift.
         const { module } = makeModule({ playoutOffsetMs: 300 });
         module.probeResult = { codec: 'opus' };
         const p = module.buildPipeline({})!.pipeline;
         expect(p).toContain('mrasrc name=asrc bypass-below-ppm=0.5 device-sink=sink !');
-        expect(p).toContain('pulsesink name=sink device=MR_PW_dec-1 ');
-        expect(p).toContain(' slave-method=3 ');
-        expect(p).not.toMatch(/slave-method=[^3]/);
+        expect(p).toContain('pulsesink name=sink device=MR_PW_dec-1 sync=false ');
+        expect(p).not.toContain('slave-method');
         expect(p.match(/\bmrasrc /g)).toHaveLength(1);
     });
 
@@ -347,43 +346,14 @@ describe('AudioDecoderModule playout offset', () => {
         expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 440_000_000);
     });
 
-    it("arms the backlog shedder at the ASRC's input against the sink's budget, without keyframe alignment", () => {
-        // The latency ratchet guard (backlogShed.ts). This leg's
-        // `max-lateness=-1` makes the ratchet quieter than the video leg's, not
-        // absent: the sink refuses to drop late buffers, so retained latency
-        // shows up as lipsync drift against the video leg of the SAME route.
-        // The shed point is `asrc`'s input, the last pad on content time: after its device
-        // term the PTS are device-time labels, which drift with the device (B-127).
-        const { module } = makeModule({ playoutOffsetMs: 300 });
-        expect(module.buildPipeline({})!.backlogShed).toMatchObject({
-            element: 'asrc',
-            sink: 'sink',
-            keyframeAligned: false,
-        });
-    });
-
-    // Never drop on lateness (ADR-0005 amendment 2026-10-08): with the engine's
-    // re-anchor switch on, the same shed point asks the runner to RAISE the
-    // route's D instead; off (MR_PLAYOUT_REANCHOR=0) the config is as before.
-    it('re-anchor on: the shedder config carries onLateness and the five numbers', () => {
-        const { module } = makeModule({ playoutOffsetMs: 300 });
-        module.services.playoutReanchor = true;
-        expect(module.buildPipeline({})!.backlogShed).toMatchObject({
-            element: 'asrc',
-            sink: 'sink',
-            keyframeAligned: false,
-            onLateness: 'reanchor',
-            reanchorToleranceMs: 40,
-            reanchorHoldMs: 15000,
-            reanchorRetryMs: 30000,
-            rebaseHoldMs: 3000,
-            rebaseCooldownMs: 60000,
-        });
-    });
-
-    it('re-anchor off: none of the re-anchor keys', () => {
-        const { module } = makeModule({ playoutOffsetMs: 300 });
-        expect(module.buildPipeline({})!.backlogShed).not.toHaveProperty('onLateness');
+    it('no backlog shedder, re-anchor on or off (B-166): on its sync=false sink the budget reads no latency', () => {
+        for (const reanchor of [true, false]) {
+            const { module } = makeModule({ playoutOffsetMs: 300 });
+            module.services.playoutReanchor = reanchor;
+            const desc = module.buildPipeline({})!;
+            expect(desc.backlogShed).toBeUndefined();
+            expect(desc.pipeline).toContain('pulsesink name=sink device=MR_PW_dec-1 sync=false ');
+        }
     });
 });
 

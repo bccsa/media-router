@@ -222,13 +222,12 @@ class Driver:
         self.seq = [f"cfg {in_hz} {out_hz} {bypass_ppb} {int(device)} {ModelResampler.DELAY}"
                     + (f" {first_fit}" if first_fit else "")]
         lockcfg = ar.asrc_decode_lock_config() if bypass_ppb > 0 else ar.asrc_lock_config()
-        devcfg = ar.asrc_decode_lock_config()
         if first_fit:
-            lockcfg.rate_buckets_min = devcfg.rate_buckets_min = first_fit
+            lockcfg.rate_buckets_min = first_fit
         self.sv = ar.AsrcServo(in_hz, out_hz, ar.AsrcServoConfig(lock=lockcfg, bypass_ppb=bypass_ppb,
                                                                    device=device))
         self.sv.set_delay(ModelResampler.DELAY)
-        self.dev = ar.AsrcDeviceLock(devcfg)
+        self.term = ar.DeviceTerm()   # the device sink's clock on a 100 ms timer (B-166)
         self.rs = None
         self.base = 0          # global input index of the resampler's position 0
         self.cur = 0
@@ -243,16 +242,15 @@ class Driver:
         self.ratios = []
         self.locked_at = None  # the PTS of the first buffer the lock was locked after
 
-    def device_pair(self, itime, etime, read_ns=0):
-        self.seq.append(f"d {itime} {etime} {read_ns}")
-        self.dev.feed(itime, etime, read_ns)
+    def device_sample(self, dev, mono):
+        """A timer read of the device sink's clock; a relock-device tells the servo (B-148's A1)."""
+        self.seq.append(f"s {dev} {mono}")
+        ar.device_sample(self.term, self.sv, dev, mono)
 
-    def device_discont(self, why=None):
-        """A sink discontinuity (GstAudioBaseSinkDiscontReason, flush by default); a recalibration
-        tells the servo before the next push, as the element does."""
-        self.seq.append("x" if why is None else f"x {why}")
-        if self.dev.discont(why):
-            self.sv.device_recalibrated()
+    def device_restart(self, mono):
+        """The sink's ring released and acquired again: the term relocks, the servo told."""
+        self.seq.append(f"r {mono}")
+        ar.device_restart(self.term, self.sv, mono)
 
     def _drain(self):
         if self.rs is not None:
@@ -275,7 +273,7 @@ class Driver:
     def push(self, pts, frames, discont):
         if discont and self.cmds:   # the element ends the epoch before a DISCONT buffer
             self.gap()
-        dppb = self.dev.ppb() if self.sv.cfg.device else 0
+        dppb = self.term.device_ppb() if self.sv.cfg.device else 0
         self.seq.append(f"b {pts} {frames} {int(discont)} {dppb}")
         c = self.sv.push(pts, frames, discont, dppb)
         i = len(self.cmds)
@@ -369,15 +367,33 @@ def feed(drv, fs, frame, ppb, secs, t0=T0, start=0, every=0, stop=None, pairs=No
     return k * frame
 
 
-def device_pairs(ppb, jitter_us=0, seed=1):
-    """A sink's custom-slaving readings: device time fast by ppb, up to jitter_us late."""
-    rnd = random.Random(seed)
+TICK = 100 * MS   # the device term's timer
 
-    def pairs(drv, t):
-        e = t - T0
-        if e >= 0:
-            drv.device_pair(e + e * ppb // S - (rnd.randrange(jitter_us * US) if jitter_us else 0), e)
-    return pairs
+
+class DeviceClock:
+    """A device sink's clock fast by ppb, read on the term's timer every 100 ms of house time from
+    `start`, each house read up to jitter_us late at random; after a restart it counts from 0. `step`:
+    (house time, ns) from which the clock reads that much further on (a device that skipped)."""
+
+    def __init__(self, ppb, jitter_us=0, seed=1, start=T0, step=None):
+        self.ppb, self.jitter_us, self.step = ppb, jitter_us, step
+        self.rnd = random.Random(seed)
+        self.next = self.origin = start
+
+    def __call__(self, drv, t):
+        """The reads due by house time t."""
+        while self.next <= t:
+            e = self.next - self.origin
+            late = self.rnd.randrange(self.jitter_us * US) if self.jitter_us else 0
+            jump = self.step[1] if self.step and self.next >= self.step[0] else 0
+            drv.device_sample(e + e * self.ppb // S + jump, self.next + late)
+            self.next += TICK
+
+    def restart(self, drv, t):
+        """The sink's ring acquired again at house time t: its clock from 0."""
+        self(drv, t)
+        drv.device_restart(t)
+        self.origin = t
 
 
 def engaged_at(drv, t0=T0):
@@ -535,7 +551,7 @@ def test_composite():
     print("\n--- one resampler: the commanded ratio is the decode term times the device term ---")
     for src, dev in ((500000, -300000), (-500000, 300000), (40000, -40000), (-800000, -150000)):
         drv = Driver(48000, 48000, 500, device=True)
-        feed(drv, 48000, 1024, src, 60, pairs=device_pairs(dev))
+        feed(drv, 48000, 1024, src, 60, pairs=DeviceClock(dev))
         sv = drv.sv
         dppb = sv.dev_ppb
         exact = ((S + sv.eps_cmd) * S + (S + dppb) // 2) // (S + dppb) - S
@@ -555,12 +571,12 @@ def test_composite():
 def test_device_only():
     print("\n--- bypass-below-ppm 0 with device-sink: the device term alone (S17) ---")
     drv = Driver(48000, 48000, 0, device=True)
-    pairs = device_pairs(40000)
+    pairs = DeviceClock(40000)
     rnd = random.Random(5)
-    for k in range(4000):   # PTS with 1 ms of jitter: nothing locks to them
+    for k in range(6000):   # PTS with 1 ms of jitter: nothing locks to them
         t = T0 + k * 1024 * S // 48000
         pairs(drv, t)
-        if k == 2500:
+        if k == 4500:   # 96 s: 51 s past the device term's first fit (its 15 s settle and 30 buckets)
             drv.gap()
         drv.push(t + rnd.randrange(MS), 1024, k == 0)
     st = drv.stats()
@@ -583,61 +599,13 @@ def test_device_only():
     contiguous = all(a.end == b.label for e in epochs for a, b in zip(e, e[1:]))
     rel = [(e.reason) for _, e in drv.relocks()]
     # B-148: what the first epoch's outputs ran up on the device timeline, each frame -eps_dev / 48 kHz.
-    ran = sum(o.frames * -(drv.dppbs[o.buf if o.buf >= 0 else 2499]) for o in epochs[0]) // 48000
-    off = epochs[1][0].label - drv.pts[2500] if len(epochs) == 2 else 0
+    ran = sum(o.frames * -(drv.dppbs[o.buf if o.buf >= 0 else 4499]) for o in epochs[0]) // 48000
+    off = epochs[1][0].label - drv.pts[4500] if len(epochs) == 2 else 0
     check(f"labels: a contiguous counter from the first PTS, relocked at the GAP alone ({rel}; {len(epochs)} "
           f"epochs), the second on the device timeline: the GAP buffer's PTS {off / MS:+.3f} ms, what the first "
-          f"epoch's outputs ran up ({ran / MS:+.3f} ms: 40 ppm from the device lock's first fit) within 1 us",
+          f"epoch's outputs ran up ({ran / MS:+.3f} ms: 40 ppm from the device term's first fit) within 1 us",
           rel == ["gap"] and len(epochs) == 2 and contiguous and epochs[0][0].label == drv.pts[0]
           and abs(off - ran) <= US and off > MS)
-
-
-def device_readings(ppm, secs, seed, preempt=0, first_early_ns=0):
-    """A sink's readings every 21 ms: etime, then itime read up to 2 us later, 1 in 50 after a
-    preemption of up to `preempt` ns; read_ns the caller's re-read after them. The first reads
-    the device `first_early_ns` early (the sink's ring not yet running)."""
-    rnd = random.Random(seed)
-    out, t = [], 0
-    while t < secs * S:
-        lag = rnd.randrange(2 * US) + (rnd.randrange(preempt) if preempt and rnd.randrange(50) == 0 else 0)
-        ti = t + lag   # house time of itime's read
-        itime = ti + ti * ppm // 1000000 + (first_early_ns if t == 0 else 0)
-        out.append((itime, t, lag + rnd.randrange(2 * US)))
-        t += 21333333
-    return out
-
-
-def test_device_lock():
-    print("\n--- the device lock on (itime, etime) ---")
-    for ppm in (40, -40):
-        dl = ar.AsrcDeviceLock()
-        first_fit = None
-        for itime, etime, read in device_readings(ppm, 120, ppm, preempt=500 * US, first_early_ns=330 * US):
-            dl.feed(itime, etime, read)
-            if first_fit is None and dl.lock.has_fit():
-                first_fit = etime
-        check(f"device {ppm:+d} ppm, 1 in 50 readings preempted up to 0.5 ms, the first 0.33 ms early: first fit at "
-              f"{first_fit / S:.1f} s, rate {dl.rate_ppb() / 1000:+.4f} ppm at 120 s (within 0.01 ppm), locked",
-              abs(dl.rate_ppb() - ppm * 1000) <= 10 and dl.locked() and first_fit <= 12 * S)
-        before = dl.ppb()
-        dl.discont()
-        check(f"device {ppm:+d} ppm: a sink discontinuity relocks it, keeping the rate ({before} -> {dl.ppb()} ppb)",
-              dl.ppb() == before and dl.relocks == 1 and not dl.locked())
-    # Each rule's own effect: the pairs at their etime (no re-read), and the first one kept.
-    rows = []
-    for name, use_read, settle in (("both", True, True), ("no re-read", False, True), ("first pair kept", True, False)):
-        dl = ar.AsrcDeviceLock()
-        if not settle:
-            dl.SETTLE_NS = 0
-        rates = []
-        for itime, etime, read in device_readings(40, 30, 7, preempt=500 * US, first_early_ns=330 * US):
-            dl.feed(itime, etime, read if use_read else 0)
-            if etime >= 15 * S and dl.lock.has_fit():
-                rates.append(dl.rate_ppb())
-        rows.append((name, max(abs(r - 40000) for r in rates)))
-    check(f"the re-read and the settle each matter: worst rate error 15-30 s {rows} ppb (the rules together within "
-          "0.05 ppm, either alone left out past 0.1)",
-          rows[0][1] <= 50 and rows[1][1] > 100 and rows[2][1] > 100)
 
 
 # --- B-148: the device timeline across a break, lost time, the decode bound, the engage's rate --------
@@ -646,11 +614,12 @@ HOLE = 1024   # a lost PipeWire cycle at 48 kHz: 21.333 ms
 
 
 def continuity_run(dev_ppb, secs, breaks_s, kind="discont", jitter_us=0, seed=1, lost=HOLE, recal_s=None):
-    """A house-rate source into decode + device (bypassed), the device dev_ppb fast; at each of breaks_s it
-    loses `lost` frames, then a DISCONT buffer or a GAP; pairs exact or up to jitter_us late; a sync-latency
-    recalibration at recal_s. Returns the driver, the PTS, the content gaps and the output the recalibration meets."""
+    """A house-rate source into decode + device (bypassed), the device dev_ppb fast, its clock read on the
+    term's timer exact or up to jitter_us late; at each of breaks_s it loses `lost` frames, then a DISCONT
+    buffer or a GAP; the sink's ring acquired again at recal_s (the term relocks, the servo told). Returns
+    the driver, the PTS, the content gaps and the output the restart meets."""
     drv = Driver(48000, 48000, 500, device=True)
-    rnd = random.Random(seed)
+    clock = DeviceClock(dev_ppb, jitter_us, seed)
     n, pts, gaps, recal_out, bi = 0, [], [], None, 0
     while n * S // 48000 < secs * S:
         brk = bi < len(breaks_s) and n * S // 48000 >= breaks_s[bi] * S
@@ -662,10 +631,9 @@ def continuity_run(dev_ppb, secs, breaks_s, kind="discont", jitter_us=0, seed=1,
                 drv.gap()
         t = T0 + n * S // 48000
         if recal_s is not None and recal_out is None and t - T0 >= recal_s * S:
-            drv.device_discont(ar.AsrcDeviceLock.SYNC_LATENCY)
+            clock.restart(drv, t)
             recal_out = len(drv.outputs)
-        e = t - T0
-        drv.device_pair(e + e * dev_ppb // S - (rnd.randrange(jitter_us * US) if jitter_us else 0), e)
+        clock(drv, t)
         drv.push(t, 1024, n == 0 or (brk and kind == "discont"))
         pts.append(t)
         n += 1024
@@ -693,10 +661,10 @@ def playout(drv, pts, dev_ppb, recal_out=None, frames=1024):
 
 def test_device_continuity():
     print("\n--- B-148: the labels stay on the device timeline across a DISCONT or a GAP ---")
-    rows = (("-136 ppm, a DISCONT every 300 s, exact pairs", -136000, "discont", 0),
-            ("+136 ppm, a DISCONT every 300 s, pairs 2 ms late at random", 136000, "discont", 2000),
-            ("-136 ppm, a GAP every 300 s, pairs 2 ms late at random", -136000, "gap", 2000),
-            ("+136 ppm, a GAP every 300 s, exact pairs", 136000, "gap", 0))
+    rows = (("-136 ppm, a DISCONT every 300 s, exact reads", -136000, "discont", 0),
+            ("+136 ppm, a DISCONT every 300 s, reads 2 ms late at random", 136000, "discont", 2000),
+            ("-136 ppm, a GAP every 300 s, reads 2 ms late at random", -136000, "gap", 2000),
+            ("+136 ppm, a GAP every 300 s, exact reads", 136000, "gap", 0))
     for name, dev, kind, jit in rows:
         drv, pts, gaps, _ = continuity_run(dev, 1800, list(range(300, 1800, 300)), kind, jit)
         rel = [e for _, e in drv.relocks()]
@@ -721,81 +689,20 @@ def test_device_continuity():
     p = playout(drv, pts, -136000, recal_out=at)
     mid = [d for t, d in p if 155 * S <= t < 300 * S]
     late = [d for t, d in p if t >= 305 * S]
-    check(f"a sync-latency recalibration at 150 s: the open epoch keeps its labels ({min(mid) / MS:+.3f} .. "
-          f"{max(mid) / MS:+.3f} ms against the recalibrated sink), and the next epoch carries only what ran up "
+    check(f"the sink's ring acquired again at 150 s (a relock-device restart): the open epoch keeps its labels "
+          f"({min(mid) / MS:+.3f} .. {max(mid) / MS:+.3f} ms against the restarted sink), and the next epoch carries only what ran up "
           f"since: the playout on its content time again after the DISCONT ({min(late) / MS:+.3f} .. "
           f"{max(late) / MS:+.3f} ms)",
           at is not None and max(mid) - min(mid) <= MS and min(mid) < -10 * MS
           and max(abs(d) for d in late) <= MS)
 
 
-def alignment_readings(rate_ppb, secs, seed, late_us):
-    """A sink's readings every 21.333 ms: device time fast by rate_ppb, each up to late_us late."""
-    rnd = random.Random(seed)
-    out, t = [], 0
-    while t < secs * S:
-        out.append((t + t * rate_ppb // S - rnd.randrange(late_us * US), t))
-        t += 21333333
-    return out
-
-
-def test_device_alignment():
-    print("\n--- B-148: an alignment resync keeps the device lock; a recalibration is the servo's ---")
-    dl = ar.AsrcDeviceLock()
-    got = [(why, dl.discont(why)) for why in (dl.NEW_CAPS, dl.FLUSH, dl.SYNC_LATENCY, dl.ALIGNMENT, dl.DEVICE_FAILURE)]
-    check(f"the reasons: new-caps, sync-latency and device-failure relock and say the sink recalibrated, flush "
-          f"relocks only, alignment is counted only ({got}; relocks {dl.relocks}, alignments {dl.alignments})",
-          [r for _, r in got] == [True, False, True, False, True] and dl.relocks == 4 and dl.alignments == 1)
-    rows = []
-    for why in (ar.AsrcDeviceLock.ALIGNMENT, ar.AsrcDeviceLock.FLUSH):
-        dl = ar.AsrcDeviceLock()
-        nxt, worst = 60 * S, 0
-        for itime, etime in alignment_readings(-136000, 300, 4, 1000):
-            if etime >= nxt:
-                dl.discont(why)
-                nxt += 16 * S
-            dl.feed(itime, etime)
-            if etime >= 120 * S and dl.lock.has_fit():
-                worst = max(worst, abs(dl.rate_ppb() + 136000))
-        rows.append((why, worst, dl.lock.fit_n, dl.relocks, dl.alignments))
-    a, f = rows
-    check(f"-136 ppm, pairs 1 ms late at random, an alignment resync every 16 s from 60 s: the lock kept, its fit "
-          f"window whole ({a[2]} buckets at 300 s, {a[3]} relocks, {a[4]} alignments), the rate within 3 ppm from "
-          f"120 s ({a[1] / 1000:.3f} ppm off; each a relock as before B-148: {f[2]} buckets, {f[1] / 1000:.3f} ppm)",
-          a[3] == 0 and a[4] == 15 and a[2] >= 200 and a[1] <= 3000 and f[3] == 15 and f[2] < 16)
-
-
-def test_device_slip():
-    print("\n--- B-148: a device slip under the 50 ms step is rate for minutes (the known limit, WI-P4-4) ---")
-    rows = []
-    for slip_ms in (21, 40, 49):
-        dl = ar.AsrcDeviceLock()
-        rnd = random.Random(slip_ms)
-        integ, peak, back, t = 0, 0, None, 0
-        true_eps = 136000 * S // (S - 136000)   # house = (1 + eps) device: the device 136 ppm slow
-        while t < 1800 * S:
-            itime = t - t * 136000 // S - (slip_ms * MS if t >= 600 * S else 0) - rnd.randrange(MS)
-            dl.feed(itime, t)
-            if t >= 600 * S:
-                integ += (dl.ppb() - true_eps) * 20 * MS // S   # the phase the rate term moves the labels by
-                peak = max(peak, abs(dl.rate_ppb() + 136000))
-                if back is None and t >= 660 * S and abs(dl.rate_ppb() + 136000) <= 5000:
-                    back = t
-                if back is not None and abs(dl.rate_ppb() + 136000) > 5000:
-                    back = None
-            t += 20 * MS
-        rows.append((slip_ms, dl.relocks, round(peak / 1000), round(integ / MS, 1), (back - 600 * S) / S if back else None))
-    check(f"-136 ppm, pairs 1 ms late at random, one slip of 21/40/49 ms at 600 s: no relock, a rate excursion whose "
-          f"phase is the slip within 10 %, back within 5 ppm in under 15 min ({rows}: ms, relocks, peak ppm, phase "
-          f"ms, s to settle)",
-          all(r == 0 and abs(i - ms) <= ms / 10 and b is not None and b <= 900 for ms, r, _, i, b in rows))
-
-
 def decode_ticks_run(secs, holes=(), back=(), device=False, dev_ppb=-136000, frames=960, ppb=0):
     """A house-rate decode as opusdec gives it: `frames`-frame buffers whose PTS are 90 kHz ticks
     (1800 per 960 frames) ceil'd to ns; `holes` and `back`: (s, ticks) unflagged steps forward and back.
-    With `device`, the device term at dev_ppb from exact pairs. Returns the driver."""
+    With `device`, the device term at dev_ppb from exact timer reads. Returns the driver."""
     drv = Driver(48000, 48000, 500, device=device)
+    clock = DeviceClock(dev_ppb, start=ceil_div(450000 * 90000 * 100000, 9)) if device else None
     per = frames * 90000 // 48000
     steps = sorted([(s * 48000 // frames, tk) for s, tk in holes] + [(s * 48000 // frames, -tk) for s, tk in back])
     tick, si = 450000 * 90000, 0
@@ -804,9 +711,8 @@ def decode_ticks_run(secs, holes=(), back=(), device=False, dev_ppb=-136000, fra
             tick += steps[si][1]
             si += 1
         t = ceil_div(tick * 100000, 9)
-        if device:
-            e = t - ceil_div(450000 * 90000 * 100000, 9)
-            drv.device_pair(e + e * dev_ppb // S, e)
+        if clock:
+            clock(drv, t)
         drv.push(t, frames, k == 0)
         tick += per
     return drv
@@ -820,18 +726,26 @@ def test_lost_time():
     print("\n--- B-148: decode modes, an unflagged hole is lost time, a step back a break ---")
     for device in (False, True):
         mode = "decode + device" if device else "decode"
-        res = []
+        res, labels = [], []
         for at in (15, 30, 60, 120, 300):
             drv = decode_ticks_run(900, holes=[(at, 1920)], device=device)
             st = drv.stats()
             g = gaps_of(drv)
             res.append((at, len(drv.engages()), [(e.reason, e.lost_frames, round(e.value / MS, 3)) for e in g],
                         st["source-ppb"], st["relocks"]))
+            # The labels jump the PTS hole less the device's drift over it (the review's M9).
+            for i, e in drv.events:
+                if e.kind == "gap":
+                    d = drv.pts[i] - drv.pts[i - 1] - 960 * S // 48000
+                    labels.append((at, drv.dppbs[i], e.value - (d - ar.drift_over(d, drv.dppbs[i]))))
         check(f"{mode}: one 21.333 ms hole at 15/30/60/120/300 s of 900 s: no engage, one lost-time gap of 1024 "
               f"frames each, the source at house rate within 0.5 ppm, no relock "
               f"({[(a, e, g, s) for a, e, g, s, _ in res]})",
               all(e == 0 and len(g) == 1 and g[0][0] == "lost-time" and g[0][1] == 1024 and abs(s) <= 500 and r == 0
                   for _, e, g, s, r in res))
+        check(f"{mode}: each gap's labels jump the hole less the device's drift over it within 1 us ((s, device "
+              f"eps ppb, ns off): {labels})", len(labels) == 5 and all(abs(x) <= US for _, _, x in labels)
+              and (not device or all(dv != 0 for at, dv, _ in labels if at >= 60)))
     drv = decode_ticks_run(900, holes=[(15, 1920), (30, 1920), (60, 1920)], device=True)
     out = [o for o in drv.outputs[1:] if o.discont]
     check(f"decode + device, three holes at 15/30/60 s: no engage, three gaps, each its next output DISCONT "
@@ -882,14 +796,13 @@ V5HX_STEPS = ((5526, 1920), (6037, 1920), (17084, 1920), (93796, 1919), (125956,
 
 def v7dec_run(first, last, device=True, dev_ppb=-140000):
     drv = Driver(48000, 48000, 500, device=device)
-    t_first = None
+    clock = None
     for k in range(first, last + 1):
         tick = V5HX_AU0 + k * 1800 + sum(tk for au, tk in V5HX_STEPS if k >= au)
         t = ceil_div(tick * 100000, 9)
-        t_first = t if t_first is None else t_first
         if device:
-            e = t - t_first
-            drv.device_pair(e + e * dev_ppb // S, e)
+            clock = clock or DeviceClock(dev_ppb, start=t)
+            clock(drv, t)
         drv.push(t, 960, k == first)
     return drv
 
@@ -1050,24 +963,23 @@ def parity_sequences():
     feed(drv, 44100, 1024, 25000, 40, every=300)
     out.append(("44.1 -> 48 kHz conversion, +25 ppm", drv.seq))
     drv = Driver(48000, 48000, 500, device=True)
-    t = 0
-    for k in range(2400):
-        drv.device_pair(t + t * 40 // 1000000 - (k * 7919 % 400) * US, t, (k * 104729 % 9) * US)
-        t += 21333333
-        drv.push(formula_pts(source_time(H0, 48000, -60000, k * 1024)), 1024, k == 0)
-        if k == 1200:
-            drv.device_discont()
+    clock = DeviceClock(40000, jitter_us=400, seed=3, start=H0)
+    for k in range(4000):   # 85 s: the device term's first fit at 45 s, its ring acquired again at 64 s
+        t = source_time(H0, 48000, -60000, k * 1024)
+        if k == 3000:
+            clock.restart(drv, t)
+        clock(drv, t)
+        drv.push(formula_pts(t), 1024, k == 0)
         if k % 300 == 0:
             drv.stats()
-    out.append(("decode + device, -60 ppm source, +40 ppm device", drv.seq))
+    out.append(("decode + device, -60 ppm source, +40 ppm device, a restart", drv.seq))
     drv = Driver(48000, 48000, 0, device=True)
-    t = 0
-    for k in range(1500):
-        drv.device_pair(t - t * 30 // 1000000 + (300 * US if k % 97 == 0 else 0), t, 300 * US if k % 97 == 0 else 2 * US)
-        t += 21333333
-        if k == 700:
+    clock = DeviceClock(-30000, jitter_us=300, seed=4, start=H0)
+    for k in range(3500):
+        clock(drv, H0 + k * 21333333)
+        if k == 2700:
             drv.gap()
-        drv.push(H0 + k * 21333333 + (k * 37 % 50) * US, 1024, k == 0 or k == 1100)
+        drv.push(H0 + k * 21333333 + (k * 37 % 50) * US, 1024, k == 0 or k == 3100)
         if k % 250 == 0:
             drv.stats()
     out.append(("device alone, -30 ppm device, a GAP and a DISCONT", drv.seq))
@@ -1093,53 +1005,49 @@ def parity_sequences():
 
 
 def b148_sequences():
-    """B-148's rules: the device timeline across breaks, a recalibration, an alignment, lost time, a
+    """B-148's rules: the device timeline across breaks and the device term's relocks, lost time, a
     step back, the out-of-bounds hold, an engage before the rate is measured."""
     out = []
     drv = Driver(48000, 48000, 500, device=True)
+    clock = DeviceClock(-136000)
     n = 0
-    for k in range(4200):   # 90 s, a device 136 ppm slow
+    for k in range(7000):   # 149 s, a device 136 ppm slow (the term's first fit at 45 s)
         disc = k == 0
-        if k in (700, 2200):   # lost cycles, DISCONT after
+        if k in (3000, 5000):   # lost cycles, DISCONT after
             n += 1024
             disc = True
-        if k == 1400:          # a lost cycle, a GAP
+        if k == 4000:          # a lost cycle, a GAP
             n += 1024
             drv.gap()
-        if k in (1000, 2600):  # unflagged 1.333 ms: lost time
+        if k in (3500, 5500):  # unflagged 1.333 ms: lost time
             n += 64
-        t = T0 + n * S // 48000 + 900 * US * min(max(k - 3000, 0), 67)   # a +60 ms drift: an envelope step
-        e = t - T0
-        drv.device_pair(e + e * -136000 // S, e)
-        if k == 1800:
-            drv.device_discont(ar.AsrcDeviceLock.SYNC_LATENCY)
-        if k == 2400:
-            drv.device_discont(ar.AsrcDeviceLock.ALIGNMENT)
-        drv.push(t, 1024, disc)
+        h = T0 + n * S // 48000
+        if k == 4500:          # the sink's ring acquired again: a relock-device restart
+            clock.restart(drv, h)
+        clock(drv, h)
+        drv.push(h + 900 * US * min(max(k - 6000, 0), 67), 1024, disc)   # a +60 ms drift: an envelope step
         n += 1024
         if k % 300 == 0:
             drv.stats()
-    out.append(("B-148 decode + device, 136 ppm slow: DISCONTs, a GAP, lost time, an envelope step, a "
-                "recalibration, an alignment", drv.seq))
+    out.append(("B-148 decode + device, 136 ppm slow: DISCONTs, a GAP, lost time, an envelope step, a restart",
+                drv.seq))
     drv = Driver(48000, 48000, 0, device=True)
+    clock = DeviceClock(136000, step=(T0 + 90 * S, 100 * MS))
     n = 0
-    for k in range(2500):   # 53 s, the device term alone
+    for k in range(5600):   # 119 s, the device term alone
         disc = k == 0
-        if k in (800, 1600):
+        if k in (2400, 3600, 5000):
             n += 1024
             disc = True
-        t = T0 + n * S // 48000
-        e = t - T0
-        drv.device_pair(e + e * 136000 // S, e)
-        if k == 650:   # past the device lock's first fit: an offset to keep
-            drv.device_discont(ar.AsrcDeviceLock.FLUSH)
-        if k == 1200:
-            drv.device_discont(ar.AsrcDeviceLock.NEW_CAPS)
-        drv.push(t, 1024, disc)
+        h = T0 + n * S // 48000
+        if k == 3000:   # past the term's first fit: an offset to keep
+            clock.restart(drv, h)
+        clock(drv, h)   # from 90 s the device clock 100 ms on: a relock-device step
+        drv.push(h, 1024, disc)
         n += 1024
         if k % 250 == 0:
             drv.stats()
-    out.append(("B-148 device alone, 136 ppm fast: DISCONTs, a flush, a new-caps recalibration", drv.seq))
+    out.append(("B-148 device alone, 136 ppm fast: DISCONTs, a restart, a device clock step", drv.seq))
     drv = Driver(48000, 48000, 500)
     tick = 450000 * 90000
     for k in range(3000):   # 60 s of 960-frame buffers on 90 kHz ticks
@@ -1194,8 +1102,6 @@ REF_MUTANTS = [
      "            self.m = self.mh = self.mh_frac = 0\n            self.start2 = 2"),
     ("passing at a rate conversion", "        self.engaged = False\n        self.passing = self.decode and not self.cfg.device and "
      "self.in_hz == self.out_hz\n", "        self.engaged = False\n        self.passing = self.decode and not self.cfg.device\n"),
-    ("the device pair at etime", "        h = etime + max(read_ns, 0)\n", "        h = etime\n"),
-    ("no settle", "        if h - self.first < self.SETTLE_NS:\n            return\n", "        if False:\n            return\n"),
     ("rate_of truncates", "    return floor_div(-2 * e * E9 + E9 + e, 2 * (E9 + e))\n", "    return floor_div(-e * E9, E9 + e)\n"),
     # B-148's rules.
     ("the gap at the house ratio", "    return floor_div(g * eps_ppb, E9 + eps_ppb)\n", "    return 0\n"),
@@ -1204,8 +1110,6 @@ REF_MUTANTS = [
     ("a recalibration keeps the offset", "            self.cal_off = sat_sub(self._label_next(), self._house_pts())\n",
      "            pass\n"),
     ("the drained tail not in the house end", "        if self.ended:   # drained", "        if False:   # drained"),
-    ("an alignment relocks", "        if why == self.ALIGNMENT:\n", "        if False:\n"),
-    ("a flush recalibrates", "        return why != self.FLUSH\n", "        return True\n"),
     ("the lost-time bound 2 ms", "        bound = max(self.cfg.bypass_phase_ns, span // 500)\n",
      "        bound = max(2 * self.cfg.bypass_phase_ns, span // 500)\n"),
     ("a step back no break", "        return d if cont and (bound < d <= self.LOST_MAX_NS or d < -bound) else 0\n",
@@ -1220,6 +1124,10 @@ REF_MUTANTS = [
     ("a step judged after a step", "        return d if cont and (bound", "        return d if (bound"),
     ("an engage says the rate is known", "phase_ns=phase, rate_known=self.lock.rate_known))",
      "phase_ns=phase, rate_known=True))"),
+    # B-166: the device term on its timer tells the servo of each relock-device.
+    ("a relock-device leaves the servo's offset", "    if term.take_recalibrated():\n        sv.device_recalibrated()\n",
+     "    if term.take_recalibrated():\n        pass\n"),
+    ("a restart not stopped first", "    term.stop(mono)\n    term.start(mono)\n", "    term.start(mono)\n"),
 ]
 
 
@@ -1283,10 +1191,7 @@ if __name__ == "__main__":
     test_breaks()
     test_composite()
     test_device_only()
-    test_device_lock()
     test_device_continuity()
-    test_device_alignment()
-    test_device_slip()
     test_lost_time()
     test_v7dec_replay()
     test_foreign_pes()

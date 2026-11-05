@@ -199,6 +199,7 @@ class ClockLock:
         self.rate_known_h = 0
         self.fit_valid = False
         self.fit_ppb_ = 0
+        self.fit_n_ = 0
         self.epoch_h = 0
         self.locked = False
         self.run = self.run_fall = False
@@ -219,6 +220,9 @@ class ClockLock:
 
     def fit_ppb(self):
         return self.fit_ppb_
+
+    def fit_n(self):
+        return self.fit_n_
 
     def has_fit(self):
         return self.fit_valid
@@ -471,6 +475,7 @@ class ClockLock:
             f, n = fitted
             self.fit_valid = True
             self.fit_ppb_ = f
+            self.fit_n_ = n
             lim = c.rate_max_ppm * 1000
             fc = clamp(f, -lim, lim)
             gap = fc - self.eps_ppb()

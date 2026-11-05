@@ -1,7 +1,6 @@
 import {
     DECODE_BYPASS_PPM,
     GstPluginBase,
-    backlogShedConfig,
     buildAsrc,
     buildBusDemux,
     buildLatenessTap,
@@ -52,8 +51,8 @@ const SINK_DECLARED_LATENCY_MS = 100;
  *
  * NEVER NEGATIVE: a D smaller than the ring clamps to 0. Audio cannot be
  * presented before it arrives (`max-lateness=-1` then plays it on arrival), and
- * the backlog shedder reads this very `ts-offset` as the leg's budget, so a
- * negative value makes every buffer read as retained backlog — field, .103,
+ * the backlog shedder read this very `ts-offset` as the leg's budget until B-166, so a
+ * negative value made every buffer read as retained backlog — field, .103,
  * 2026-09-03: a −1700 ms sink offset had the shedder drop ~10 s of audio
  * chasing a phantom 1943 ms backlog.
  *
@@ -78,13 +77,6 @@ export function audioTsOffsetNs(
     );
 }
 
-/**
- * `pulsesink slave-method` (GstAudioBaseSink): 3 = custom. The ASRC follows the sink's clock
- * through its custom-slaving callback and never asks it to skew, so no samples are dropped or
- * repeated for drift (house-clock part 4.4). Never set it without that ASRC.
- */
-const SLAVE_METHOD_CUSTOM = 3;
-
 /** `name=` of this leg's demux: its counters on the module's input. */
 const DEMUX_NAME = 'addemux';
 /** `name=` of this leg's ASRC: the source's clock term and the sink's, one resampler (OQ-23). */
@@ -97,11 +89,11 @@ const ASRC_NAME = 'asrc';
  * probes the stream to detect the codec, then builds the appropriate
  * decode pipeline for its first audio stream. Outputs PCM to a named null-sink.
  *
- * Under the time-sync contract (ADR-0005) this module's sink presents against
- * the house clock: `sync=true` and `ts-offset` = the route's playout offset D.
+ * Under the time-sync contract (ADR-0005) this module's sink takes `ts-offset` = the route's
+ * playout offset D; since B-166 it runs `sync=false`, so that offset times nothing until D goes.
  *
  * CLOCKS (house-clock part 4.4). `asrc` resamples a source on a clock of its own to house rate
- * where it is decoded, and follows the null sink's clock through the sink's custom slaving: one
+ * where it is decoded, and follows the null sink's clock, read on a timer (B-166): one
  * resampler for both terms (OQ-23), and the sink never drops or repeats samples for drift.
  */
 export class AudioDecoderModule extends GstPluginBase {
@@ -287,8 +279,8 @@ export class AudioDecoderModule extends GstPluginBase {
                 break; // fallback for unknown
         }
 
-        // Presents at `stamped-time + D` (ADR-0005); `max-lateness=-1` drains a late timeline
-        // rather than going silent. Custom slaving: `asrc` follows the sink, which never skews.
+        // `max-lateness=-1` drains a late timeline rather than going silent; `asrc` follows the
+        // sink's clock on a timer (B-166), so the sink never skews.
         const sinkTiming = ` ts-offset=${audioTsOffsetNs(this.services, config)} max-lateness=-1`;
 
         const parts = [
@@ -326,7 +318,7 @@ export class AudioDecoderModule extends GstPluginBase {
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
             // The DAC ring is CONTRACT_SINK_BUFFER_US (see there). `name=sink`
             // is what the live playout-offset push and `asrc`'s device term target.
-            `pulsesink name=sink device=${this.pwNodeName} sync=true provide-clock=false slave-method=${SLAVE_METHOD_CUSTOM} processing-deadline=100000000 buffer-time=${CONTRACT_SINK_BUFFER_US}${sinkTiming} ${pulsePinnedStreamProps()}`,
+            `pulsesink name=sink device=${this.pwNodeName} sync=false provide-clock=false processing-deadline=100000000 buffer-time=${CONTRACT_SINK_BUFFER_US}${sinkTiming} ${pulsePinnedStreamProps()}`,
         ];
         const pipeline = parts.filter((p) => p).join(' ! ');
 
@@ -334,21 +326,8 @@ export class AudioDecoderModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             timingSink: { element: 'sink', kind: 'audio' },
-            // Backlog shedder — the latency ratchet guard on this `sync=true`
-            // leg (see backlogShed.ts). `max-lateness=-1` makes this leg's
-            // ratchet quieter than the video leg's, never absent — the sink
-            // refuses to drop late buffers, so retained latency shows up as
-            // lipsync drift against the video leg of the same route rather than
-            // as dropped frames.
-            //
-            // Read and shed at `asrc`'s input, the last pad on content time: after its device
-            // term the PTS are device-time labels (part 4.4, B-127). Whole PCM buffers, not
-            // keyframe-aligned, nothing cut; at most one click a minute, for the route's D.
-            backlogShed: backlogShedConfig(this.services, {
-                element: ASRC_NAME,
-                sink: 'sink',
-                keyframeAligned: false,
-            }),
+            // No backlog shedder (B-166): on this `sync=false` sink its budget, ts-offset plus the
+            // sink's latency, reads no latency, so every buffer would read late by its upstream's.
         };
     }
 }

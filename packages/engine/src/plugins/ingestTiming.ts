@@ -113,8 +113,8 @@ export interface AsrcOptions {
     /** Decode mode above 0 (WI-P3-5): buffers pass unchanged while their source measures within
      *  this many ppm of house time; resampled once it does not. Unset or 0: capture mode. */
     bypassBelowPpm?: number;
-    /** The `GstAudioBaseSink` downstream (with `slave-method=custom`) whose clock the output
-     *  follows; with no bypass, that device term alone (S17). */
+    /** The `GstAudioBaseSink` downstream (run `sync=false`) whose clock the output follows, read on
+     *  a timer (B-166); with no bypass, that device term alone (S17). */
     deviceSink?: string;
     /** A `pipewiresrc` capture, one buffer per graph cycle, so lost cycles are a gap and no
      *  relock (B-180); capture mode only. */

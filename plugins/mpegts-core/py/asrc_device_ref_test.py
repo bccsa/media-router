@@ -78,6 +78,26 @@ def term(case, **kw):
     return Recorded(case, ad.device_term_config(**kw) if kw else None)
 
 
+class RecordedLateness(ad.RenderLateness):
+    """A RenderLateness that writes each call to the trace file, after its term's config line."""
+
+    def _rec(self, obj):
+        if _trace is not None:
+            _trace.write(json.dumps(obj, separators=(",", ":")) + "\n")
+
+    def rendered(self, write_pos, n, pts_ns):
+        self._rec({"op": "rendered", "write_pos": write_pos, "n": n, "pts": pts_ns})
+        super().rendered(write_pos, n, pts_ns)
+
+    def flush(self):
+        self._rec({"op": "flush"})
+        super().flush()
+
+    def at(self, now_ns, dev_ns):
+        self._rec({"op": "lateness", "now": now_ns, "dev": dev_ns})
+        return super().at(now_ns, dev_ns)
+
+
 def preempted(rnd):
     """A read pair's house read late by a preemption: under 0.2 ms in 9 reads of 10, under 5 ms
     in the tenth (the timer thread preempted between its two reads)."""
@@ -224,7 +244,7 @@ class Path:
         self.holes, self.istalls, self.dstalls, self.steps = [], [], [], []
         self.clock_pos = 0
         self.clock_held = None
-        self.acc = ad.RenderLateness(FS)
+        self.acc = RecordedLateness(FS)
         self.log = []                # per tick: (s, truth lateness, accounting, ratio ppb, flush)
         self.events = []
 
@@ -259,7 +279,7 @@ class Path:
         self.uf_at = None
         self.segs.append([w, n, pts, self.read_pos])
         self.next_sample = w + n
-        self.acc.rendered(w, n, pts, heard_pos=self.clock_pos)
+        self.acc.rendered(w, n, pts)
         if not self.running:
             self.running = True
 
@@ -524,6 +544,37 @@ def test_device_step():
               300 * SEC <= relocks[0]["at"] - 1000 * SEC <= 300 * SEC + 3 * TICK)
         check("6: ... the rate kept: %.3f ppm from the run without the step (< 0.5)" %
               abs(device_rate_ppm(t) - device_rate_ppm(t2)), abs(device_rate_ppm(t) - device_rate_ppm(t2)) < 0.5)
+    # The step's relock settles again as a start does (p4-4a's review): nothing fed for 15 s after it.
+    t = term("6-step-settle")
+    t.start(0)
+    rows, evs = [], []
+
+    def note(h, ev):
+        evs.extend(ev)
+        rows.append((h, t.lock_state(), t.fed))
+    feed_clock(t, 400, 80, preempted, 6, step=(300, 100 * MS), on_sample=note)
+    at = [e["at"] - 1000 * SEC for e in evs if e["event"] == "relock-device"]
+    after = [r for r in rows if at and r[0] >= at[0]]
+    settled = [r for r in after if r[1] != "settle"]
+    held = [r for r in after if r[0] < at[0] + 15 * SEC - TICK]
+    check("6: the step's relock settles 15 s as a start does: lock_state() settle and nothing fed from it "
+          "(%.1f s) for %.1f s" % (at[0] / SEC if at else -1, (settled[0][0] - at[0]) / SEC if settled else -1),
+          len(at) == 1 and bool(held) and all(r[1] == "settle" and r[2] == held[0][2] for r in held)
+          and bool(settled) and 15 * SEC <= settled[0][0] - at[0] <= 15 * SEC + 2 * TICK)
+    # relock_samples = 2: one read 60 ms late is no step, and it is not fed.
+    t = term("6-one-late-read")
+    t.start(0)
+    rnd = random.Random(16)
+    fed_at = {}
+    for k in range(3000):
+        h = k * TICK
+        late = 60 * MS if k == 2000 else preempted(rnd)
+        t.sample(h + h * 80 // 1000000, 1000 * SEC + h + late)
+        fed_at[k] = t.fed
+    check("6: one read 60 ms late at 200 s: no relock-device (%s), the read not fed (fed %d -> %d), the next "
+          "one fed (%d)" % (t.relocks, fed_at[1999], fed_at[2000], fed_at[2001]),
+          t.relocks == {"restart": 0, "step": 0} and fed_at[2000] == fed_at[1999]
+          and fed_at[2001] == fed_at[2000] + 1)
 
 
 def test_traces():
@@ -784,18 +835,39 @@ def test_replay_format():
     first = json.loads(out[0])
     check("14: one line per sample, keys in order", list(first) == ["mono", "lock", "dev_ppb", "ratio_ppb",
                                                                   "stalled", "flush"] and first["lock"] == "idle")
-    check("14: the restart's event line, then the summary", json.loads(out[-2]) == {
-        "event": "relock-device", "reason": "restart", "at": 6 * SEC} and "summary" in json.loads(out[-1]))
+    check("14: the restart's event line, its recalibration, then the summary", json.loads(out[-3]) == {
+        "event": "relock-device", "reason": "restart", "at": 6 * SEC} and json.loads(out[-2]) == {"recalibrated": 1}
+          and "summary" in json.loads(out[-1]))
     check("14: compact separators", all(", " not in x and ": " not in x for x in out))
     ratios = [json.loads(x)["ratio_ppb"] for x in out if x.startswith('{"mono"')]
     check("14: a sample's in_ppb is the ratio's eps_in (no device rate yet: the ratio is eps_in)",
           ratios == [1000 * k for k in range(40)])
 
 
+def test_recalibrated():
+    """15. Every relock-device tells the servo the device recalibrated (B-148's A1 on the timer)."""
+    t = term("15-clean")
+    t.start(0)
+    feed_clock(t, 400, -136, preempted, 15)
+    clean = t.take_recalibrated()
+    t = term("15-step")
+    t.start(0)
+    seen = []
+    end = feed_clock(t, 400, -136, preempted, 15, step=(300, -100 * MS),
+                     on_sample=lambda h, ev: seen.append((h, bool(ev), t.take_recalibrated())))
+    told = [(h, ev) for h, ev, r in seen if r]
+    t.stop(end)
+    restart = t.start(end + 300 * MS)
+    first, again = t.take_recalibrated(), t.take_recalibrated()
+    check("15: a clean run tells nothing (%s); a step relock tells once, at its sample (%s); a restart tells "
+          "once (%s, then %s)" % (clean, [(round(h / SEC, 1), ev) for h, ev in told], first, again),
+          not clean and len(told) == 1 and told[0][1] and len(restart) == 1 and first and not again)
+
+
 CASES = (test_lock_port, test_ratio, test_jitter, test_fill_1h, test_input_stall, test_device_step,
          test_traces, test_trace_underrun, test_clock_stall_underrun, test_start_and_restart,
          test_device_stall_clock_stopped, test_device_stall_clock_running, test_render_lateness_ring,
-         test_replay_format)
+         test_replay_format, test_recalibrated)
 
 # (name, the case it must fail, file, [(text, its replacement), ...]). The first four are the brief's.
 MUTANTS = (
@@ -841,6 +913,14 @@ MUTANTS = (
        "        self.count = getattr(self, 'count', write_pos)\n"
        "        self.map.append((self.count, n, pts_ns))\n"
        "        self.count += n")]),
+    # p4-4b: the three cases p4-4a's review found missing, and the device timeline's recalibration.
+    ("a step relock settles no more", 6, "asrc_device_ref.py",
+     [("\"step_ns\": step_ns})\n        self.moved_at = mono\n",
+       "\"step_ns\": step_ns})\n        self.moved_at = mono - self.cfg.settle_ns\n")]),
+    ("one read past the threshold relocks", 6, "asrc_device_ref.py",
+     [("        self.relock_samples = 2 ", "        self.relock_samples = 1 ")]),
+    ("a step relock leaves the servo's offset", 15, "asrc_device_ref.py",
+     [("        self.relocks[\"step\"] += 1\n        self.recal = True\n", "        self.relocks[\"step\"] += 1\n")]),
 )
 
 

@@ -1,6 +1,6 @@
-/* libgstmrtest.so (plan ch. 7 WI-P3-5, S18; reused by ch. 8 WI-P4-4), test-only, never installed.
- * mrtestaudiosink: a device `ppm` off the pipeline clock holding `device-ns`; the ring's fill, resyncs, the
- * provided clock's calibration changes. MrTestClock: `speed` times real time, its waits in its own time. */
+/* libgstmrtest.so (plan ch. 7 WI-P3-5, S18; ch. 8 WI-P4-4), test-only, never installed. mrtestaudiosink: a device
+ * `ppm` off the pipeline clock holding `device-ns`, its own clock, a `stall-ms` that stops it; the ring's fill,
+ * resyncs, calibration changes. MrTestClock: `speed` times real time, its waits in its own time. */
 #include <gst/audio/audio.h>
 #include <gst/gst.h>
 
@@ -133,7 +133,8 @@ struct _MrTestAudioSink {
     guint64 device_ns;          /* the device's own buffer; 0: one segment */
 
     /* The device, under the lock: it plays at rate x (1 + ppm 1e-6) frames per clock second from
-     * its first write; written counts the frames handed to it, which hold one segment. */
+     * its first write; written counts the frames handed to it, which hold one segment. A stall
+     * [stall_at, stall_end) plays nothing; stalled_ns sums the stalls since the device started. */
     GMutex lock;
     gint rate, bpf;
     guint64 seg_frames;
@@ -144,6 +145,9 @@ struct _MrTestAudioSink {
     gboolean have_ring;
     GstClockID wait_id;
     guint64 underruns;
+    guint stall_ms;
+    GstClockTime stall_at, stall_end, stalled_ns;
+    gint64 clock_held;          /* the device clock's last reading (frames): it never goes back */
 
     /* Measured on render, the streaming thread; read by get_property. A render held late (a starved
      * producer) reads the fill low, never high: each window of WIN_NS of clock time keeps its top. */
@@ -176,6 +180,7 @@ enum {
     SINK_PROP_RESYNCS,
     SINK_PROP_CALIBRATIONS,
     SINK_PROP_UNDERRUNS,
+    SINK_PROP_STALL,
 };
 
 G_DEFINE_TYPE(MrTestAudioSink, mr_test_audio_sink, GST_TYPE_AUDIO_SINK)
@@ -196,14 +201,49 @@ static gint64 top_percentile(MrTestAudioSink* self, guint p) {
     return v[(self->ntops - 1) * p / 100];
 }
 
-/* Frames the device has played by clock time `now` (lock held). */
-static guint64 device_played(MrTestAudioSink* self, GstClockTime now) {
-    if (!self->playing || now <= self->t_start) return 0;
-    const gdouble f = (gdouble)(now - self->t_start) * self->rate * (1.0 + self->ppm * 1e-6) / 1e9;
-    return (guint64)f;
+/* A finished stall joins stalled_ns (lock held); a stall is never before the device started. */
+static void stall_fold(MrTestAudioSink* self, GstClockTime now) {
+    if (self->stall_end > self->stall_at && now >= self->stall_end) {
+        self->stalled_ns += self->stall_end - self->stall_at;
+        self->stall_at = self->stall_end = 0;
+    }
 }
 
+/* Device time by clock time `now`: what it played (a stall's part left out), or with `running` what its clock
+ * counted (it runs on through a stall, as pulsesink's did across a removed node). Lock held. */
+static guint64 device_frames(MrTestAudioSink* self, GstClockTime now, gboolean running) {
+    stall_fold(self, now);
+    if (!self->playing || now <= self->t_start + self->stalled_ns) return 0;
+    GstClockTime t = now - self->t_start - self->stalled_ns;
+    if (!running && self->stall_end > self->stall_at && now > self->stall_at) t -= MIN(now - self->stall_at, t);
+    return (guint64)((gdouble)t * self->rate * (1.0 + self->ppm * 1e-6) / 1e9);
+}
+
+/* Frames the device has played by clock time `now` (lock held). */
+static guint64 device_played(MrTestAudioSink* self, GstClockTime now) { return device_frames(self, now, FALSE); }
+
 static GstClock* sink_clock(MrTestAudioSink* self) { return gst_element_get_clock(GST_ELEMENT(self)); }
+
+/* The provided clock (as pulsesink provides its own): the sample the device's clock is at, in the frame of the
+ * base sink's write positions, at ppm off the pipeline clock; after a stall it holds until the play head passes. */
+static GstClockTime mr_test_device_time(GstClock* clock G_GNUC_UNUSED, gpointer data) {
+    MrTestAudioSink* self = MR_TEST_AUDIO_SINK(data);
+    GstClock* pc = sink_clock(self);
+    if (!pc) return GST_CLOCK_TIME_NONE;
+    const GstClockTime now = gst_clock_get_time(pc);
+    gst_object_unref(pc);
+    GstAudioRingBuffer* rb = GST_AUDIO_BASE_SINK(self)->ringbuffer;
+    g_mutex_lock(&self->lock);
+    GstClockTime t = GST_CLOCK_TIME_NONE;
+    if (self->have_ring && self->rate > 0 && rb) {
+        gint64 f = self->ring_at + (gint64)device_frames(self, now, TRUE) - (gint64)rb->segbase * rb->samples_per_seg;
+        if (f < self->clock_held) f = self->clock_held;
+        self->clock_held = f;
+        t = (GstClockTime)(MAX(f, 0) * GST_SECOND / self->rate);
+    }
+    g_mutex_unlock(&self->lock);
+    return t;
+}
 
 static gboolean mr_test_open(GstAudioSink* sink G_GNUC_UNUSED) { return TRUE; }
 static gboolean mr_test_close(GstAudioSink* sink G_GNUC_UNUSED) { return TRUE; }
@@ -220,12 +260,14 @@ static gboolean mr_test_prepare(GstAudioSink* sink, GstAudioRingBufferSpec* spec
     self->playing = FALSE;
     self->written = 0;
     self->have_ring = FALSE;
+    self->stall_at = self->stall_end = self->stalled_ns = 0;
+    self->clock_held = 0;   /* a new ring: the device's clock from 0 */
     g_mutex_unlock(&self->lock);
     return TRUE;
 }
 
-/* One segment to the device: wait until it has room, as a device's write blocks. A device that
- * found nothing to play skipped ahead (an underrun). */
+/* One segment to the device: wait until it has room, as a device's write blocks (a stalled one until the
+ * stall ends). A device that found nothing to play skipped ahead (an underrun). */
 static gint mr_test_write(GstAudioSink* sink, gpointer data G_GNUC_UNUSED, guint length) {
     MrTestAudioSink* self = MR_TEST_AUDIO_SINK(sink);
     GstClock* clock = sink_clock(self);
@@ -233,10 +275,13 @@ static gint mr_test_write(GstAudioSink* sink, gpointer data G_GNUC_UNUSED, guint
     g_mutex_lock(&self->lock);
     const guint64 frames = length / self->bpf;
     GstClockTime now = gst_clock_get_time(clock);
-    if (!self->playing) {
+    if (!self->playing) {   /* the device starts again: a stall still to run counts from now */
         self->playing = TRUE;
         self->t_start = now;
         self->written = 0;
+        self->stalled_ns = 0;
+        if (self->stall_end > now) self->stall_at = MAX(self->stall_at, now);
+        else self->stall_at = self->stall_end = 0;
     }
     const guint64 played = device_played(self, now);
     if (self->written < played) {
@@ -248,16 +293,19 @@ static gint mr_test_write(GstAudioSink* sink, gpointer data G_GNUC_UNUSED, guint
                     (gint64)self->written;
     self->have_ring = TRUE;
     const guint64 need = self->written + frames > self->seg_frames ? self->written + frames - self->seg_frames : 0;
-    if (need > played) {
-        const GstClockTime at = self->t_start + (GstClockTime)((gdouble)need * 1e9 /
-                                                                ((gdouble)self->rate * (1.0 + self->ppm * 1e-6))) + 1;
+    while (self->playing && need > device_played(self, now)) {
+        GstClockTime at = self->t_start + self->stalled_ns +
+                          (GstClockTime)((gdouble)need * 1e9 / ((gdouble)self->rate * (1.0 + self->ppm * 1e-6))) + 1;
+        if (self->stall_end > self->stall_at && now < self->stall_end) at = self->stall_end;
         GstClockID id = gst_clock_new_single_shot_id(clock, at);
         self->wait_id = id;
         g_mutex_unlock(&self->lock);
-        gst_clock_id_wait(id, NULL);
+        const GstClockReturn r = gst_clock_id_wait(id, NULL);
         g_mutex_lock(&self->lock);
         self->wait_id = NULL;
         gst_clock_id_unref(id);
+        if (r == GST_CLOCK_UNSCHEDULED) break;
+        now = gst_clock_get_time(clock);
     }
     self->written += frames;
     g_mutex_unlock(&self->lock);
@@ -367,6 +415,22 @@ static void mr_test_sink_set_property(GObject* object, guint id, const GValue* v
             break;
         case SINK_PROP_SETTLE: self->settle_ns = g_value_get_uint64(v); break;
         case SINK_PROP_DEVICE: self->device_ns = g_value_get_uint64(v); break;
+        case SINK_PROP_STALL: {   /* the device stops consuming now, for this many ms of clock time */
+            GstClock* clock = sink_clock(self);
+            g_mutex_lock(&self->lock);
+            self->stall_ms = g_value_get_uint(v);
+            if (clock) {
+                const GstClockTime now = gst_clock_get_time(clock);
+                stall_fold(self, now);
+                if (self->playing && self->stall_end > self->stall_at && now > self->stall_at)
+                    self->stalled_ns += now - self->stall_at;   /* a stall under way: its part so far */
+                self->stall_at = now;
+                self->stall_end = now + (GstClockTime)self->stall_ms * GST_MSECOND;
+            }
+            g_mutex_unlock(&self->lock);
+            if (clock) gst_object_unref(clock);
+            break;
+        }
         default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, ps); break;
     }
 }
@@ -388,6 +452,7 @@ static void mr_test_sink_get_property(GObject* object, guint id, GValue* v, GPar
         case SINK_PROP_RESYNCS: g_value_set_uint64(v, self->resyncs); break;
         case SINK_PROP_CALIBRATIONS: g_value_set_uint64(v, self->calibrations); break;
         case SINK_PROP_UNDERRUNS: g_value_set_uint64(v, self->underruns); break;
+        case SINK_PROP_STALL: g_value_set_uint(v, self->stall_ms); break;
         default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, ps); break;
     }
 }
@@ -402,6 +467,9 @@ static void mr_test_audio_sink_init(MrTestAudioSink* self) {
     self->ppm = 0.0;
     self->settle_ns = 10 * GST_SECOND;
     self->first_render = GST_CLOCK_TIME_NONE;
+    GstAudioBaseSink* abs = GST_AUDIO_BASE_SINK(self);
+    if (abs->provided_clock) gst_object_unref(abs->provided_clock);
+    abs->provided_clock = gst_audio_clock_new("MrTestAudioSinkClock", mr_test_device_time, self, NULL);
 }
 
 static void mr_test_audio_sink_class_init(MrTestAudioSinkClass* klass) {
@@ -471,6 +539,11 @@ static void mr_test_audio_sink_class_init(MrTestAudioSinkClass* klass) {
     g_object_class_install_property(
         o, SINK_PROP_UNDERRUNS, g_param_spec_uint64("underruns", "Underruns", "Writes that found the device "
                                                     "ahead of what it had.", 0, G_MAXUINT64, 0, ro));
+    g_object_class_install_property(
+        o, SINK_PROP_STALL, g_param_spec_uint("stall-ms", "Stall", "Setting it stops the device consuming for this "
+                                              "many ms of clock time from now (its writes block, its clock runs "
+                                              "on, then holds until the play head passes it).",
+                                              0, 3600000, 0, rw));
     gst_element_class_add_static_pad_template(
         e, &(GstStaticPadTemplate)GST_STATIC_PAD_TEMPLATE(
                "sink", GST_PAD_SINK, GST_PAD_ALWAYS,

@@ -9,13 +9,14 @@ testing/decodeAsrcChains.test.ts). Here each runs with its bus sources reading a
   - aes67-output: a house-rate 302M programme passes the decode `mrasrc` untouched (mode bypass,
     the same buffers), and nothing engages;
   - audio-output-302m, both arms, on the house clock into tests/libgstmrtest.so's
-    `mrtestaudiosink` (40 ppm fast) in place of `pulsesink`: `outasrc` follows the sink by name
-    through the chain (mode device, its custom-slaving callback fed), the sink is never asked to
-    skew, and in the mixer arm each branch's decode `mrasrc` passes its house-rate input;
+    `mrtestaudiosink` (40 ppm fast) in place of `pulsesink`, `sync=false` as the module sets it:
+    `outasrc` follows the sink by name through the chain (mode device, the sink's clock read on its
+    timer, B-166), the sink is never asked to skew, and in the mixer arm each branch's decode
+    `mrasrc` passes its house-rate input;
   - audio-decoder (WI-P3-10), each decoder branch on a recording of its codec, the same way: the
     first audio stream plays (an input listing its video first too), the decoder's PCM (avdec_aac's
     planar) reaches `asrc` interleaved through `audioconvert`, and `asrc` follows the sink (opusdec's
-    pre-skip stamping is one lost-time gap, B-148);
+    pre-skip stamping is one lost-time gap, B-148, which the sync=false sink writes on through);
   - audio-transcoder (WI-P3-12), each decoder branch on a recording of its codec, its renditions
     into files: `asrc` passes a house-rate decode untouched, and each rendition's PES PTS meet S40
     (the first AU exact, Opus 0 ticks, AAC a tick under its ladder at most, 302M at its PCM's
@@ -135,6 +136,16 @@ def run(pipe, secs=None):
     return events, errors, eos
 
 
+def run_settled(pipe, sink, secs, start=1.5):
+    """run() for `secs`, the sink's write-position jumps read at `start` s and at the end: a
+    sync=false ring starts before the first write, so one realign may come with the first renders
+    (no prefill until p4-8 and p4-7, B-166); none may come after."""
+    e1, x1, eos = run(pipe, secs=start)
+    first = sink.get_property("resyncs")
+    e2, x2, eos2 = ([], [], eos) if eos or x1 else run(pipe, secs=secs - start)
+    return e1 + e2, x1 + x2, eos2, first
+
+
 # The running time the device cases start at. A file source prerolls, so the demux meets its first
 # PES with no clock and unwraps it in its own 33-bit epoch (B-14's seed): at house 1000 s that epoch
 # is the clock's whatever the box's uptime (a bus's unixfdsrc is live: there the clock comes first).
@@ -198,7 +209,7 @@ else:
         print(f"\n--- audio-output-302m, {_arm}: on the house clock into mrtestaudiosink 40 ppm fast ---")
         _p = Gst.parse_launch(on_device(on_file(PIPELINES[_arm], rebased(_FIXTURE, _tmp, f"{_arm}.ts"))))
         house_clock(_p)
-        _events, _errors, _eos = run(_p, secs=5.0)
+        _events, _errors, _eos, _first = run_settled(_p, _p.get_by_name("sink"), 5.0)
         _out = sdict(_p.get_by_name("outasrc").get_property("stats"))
         _br = {n: sdict(_p.get_by_name(n).get_property("stats")) for n in _branches}
         _sink = {k: _p.get_by_name("sink").get_property(k) for k in ("renders", "calibrations", "resyncs")}
@@ -206,10 +217,12 @@ else:
         check(f"{_arm}: the real string plays into the device sink without an error ({_errors[:1]}; "
               f"{_sink['renders']} renders)", not _errors and _sink["renders"] > 100)
         check(f"{_arm}: outasrc follows the sink it names through the chain: mode {_out.get('mode')}, "
-              f"{_out.get('device-pairs')} pairs from its custom-slaving callback",
-              _out.get("mode") == "device" and (_out.get("device-pairs") or 0) > 20)
-        check(f"{_arm}: the sink is never asked to skew ({_sink['calibrations']} calibration changes, "
-              f"{_sink['resyncs']} resyncs)", _sink["calibrations"] == 0 and _sink["resyncs"] == 0)
+              f"{_out.get('device-reads')} reads of its clock on the timer",
+              _out.get("mode") == "device" and (_out.get("device-reads") or 0) > 20)
+        check(f"{_arm}: the sink is never asked to skew and its write position never jumps after the start "
+              f"({_sink['calibrations']} calibration changes; resyncs {_first} at the start, "
+              f"{_sink['resyncs'] - _first} after)",
+              _sink["calibrations"] == 0 and _first <= 1 and _sink["resyncs"] == _first)
         check(f"{_arm}: nothing engaged ({[(n, e['kind']) for n, e in _events]})",
               not [e for _, e in _events if e["kind"] == "engaged"])
         if _br:
@@ -264,7 +277,7 @@ def adec_run(desc, path, secs=4.0):
 
     sinkpad = p.get_by_name("sink").get_static_pad("sink")
     sinkpad.add_probe(Gst.PadProbeType.BUFFER, count)
-    events, errors, _eos = run(p, secs=secs)
+    events, errors, _eos, first = run_settled(p, p.get_by_name("sink"), secs)
     caps = sinkpad.get_current_caps()
     info = GstAudio.AudioInfo.new_from_caps(caps) if caps else None
     asrc = p.get_by_name("asrc")
@@ -276,6 +289,7 @@ def adec_run(desc, path, secs=4.0):
         "dec_out": {e.get_factory().get_name(): _caps_of(e.get_static_pad("src")) for e in _elements(p)
                     if e.get_factory() and "Decoder/Audio" in (e.get_factory().get_metadata("klass") or "")},
         "sink": {k: p.get_by_name("sink").get_property(k) for k in ("renders", "calibrations", "resyncs")},
+        "first_resyncs": first,
         "played_s": played[0] / info.bpf / info.rate if info else 0.0,
     }
     p.set_state(Gst.State.NULL)
@@ -297,12 +311,12 @@ else:
         _desc = PIPELINES[_key]
         print(f"\n--- audio-decoder, {_key}: {_fx} through its real string into mrtestaudiosink ---")
         check(f"{_key}: the first audio stream from mrtsdemux, the decoder, audioconvert, the render tap, "
-              f"then the one ASRC on the sink (no tsdemux, no audioresample, custom slaving)",
+              f"then the one ASRC on the sink (no tsdemux, no audioresample; the sink sync=false, no slave-method)",
               " ! mrtsdemux name=addemux media=audio ! " in _desc
               and re.search(r" ! audioconvert ! mrlateness name=lat_render \S+ ! mrasrc name=asrc "
                             r"bypass-below-ppm=0\.5 device-sink=sink ! audioconvert ! ", _desc) is not None
               and not re.search(r"\btsdemux\b", _desc) and "audioresample" not in _desc
-              and " slave-method=3 " in _desc)
+              and " sync=false " in _desc and "slave-method" not in _desc)
         _r = adec_run(_desc, os.path.join(_FIX, _fx))
         if "parse" in _r:
             check(f"{_key}: the string parses ({_r['parse']})", False)
@@ -318,16 +332,18 @@ else:
               _layout(_in) == "interleaved"
               and _layout(_out) == ("non-interleaved" if _planar else "interleaved"))
         check(f"{_key}: the ASRC follows the sink (mode {_r['asrc'].get('mode')}, "
-              f"{_r['asrc'].get('device-pairs')} pairs from its custom-slaving callback), nothing engaged "
+              f"{_r['asrc'].get('device-reads')} reads of its clock on the timer), nothing engaged "
               f"({[(n, e['kind']) for n, e in _r['events']]})",
-              _r["asrc"].get("mode") == "device" and (_r["asrc"].get("device-pairs") or 0) > 20
+              _r["asrc"].get("mode") == "device" and (_r["asrc"].get("device-reads") or 0) > 20
               and not [e for _, e in _r["events"] if e["kind"] == "engaged"])
-        # B-148: a lost-time gap's DISCONT places the next buffer by its label, one resync each. opusdec stamps
-        # the two buffers after its 6.5 ms pre-skip that much early, so tp-opus-51's third PES PTS is such a hole.
+        # B-148: opusdec stamps the two buffers after its 6.5 ms pre-skip that much early, so tp-opus-51's third PES
+        # PTS is a lost-time gap; the sync=false sink writes on through its DISCONT (B-166: no resync).
         _gaps = [e for _, e in _r["events"] if e["kind"] == "gap"]
-        check(f"{_key}: the sink is never asked to skew ({_r['sink']['calibrations']} calibration changes, "
-              f"{_r['sink']['resyncs']} resyncs: one per lost-time gap, {[e['lost-frames'] for e in _gaps]} frames)",
-              _r["sink"]["calibrations"] == 0 and _r["sink"]["resyncs"] == len(_gaps)
+        check(f"{_key}: the sink is never asked to skew and writes on ({_r['sink']['calibrations']} calibration "
+              f"changes; resyncs {_r['first_resyncs']} at the start, {_r['sink']['resyncs'] - _r['first_resyncs']} "
+              f"after; lost-time gaps {[e['lost-frames'] for e in _gaps]} frames)",
+              _r["sink"]["calibrations"] == 0 and _r["first_resyncs"] <= 1
+              and _r["sink"]["resyncs"] == _r["first_resyncs"]
               and all(e["reason"] == "lost-time" for e in _gaps)
               and [e["lost-frames"] for e in _gaps] == ([312] if _key == "adec_opus" else []))
 

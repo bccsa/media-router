@@ -3,8 +3,9 @@
 how the one ASRC of an audio output follows its device once the sink runs sync=false, what it does
 when the device stops taking data (Q2: skip, resume live), and its render lateness. Built first
 here (p4-4a) on the sink clocks DEV-P4a recorded (../tests/fixtures/clock/); p4-4b ports it into
-mrts::AsrcServo and mrasrc with parity, the lock being mrts::ClockLock itself (clock_lock.py is its
-exact port). A reference only: nothing loads it at runtime (ADR-0029 choice 1, plan OQ-1).
+mrts::AsrcDeviceTerm and mrts::AsrcRenderLateness (asrc_servo.h) for mrasrc, held to it by
+asrc_device_parity_test.py, the lock being mrts::ClockLock itself (clock_lock.py is its exact port).
+A reference only: nothing loads it at runtime (ADR-0029 choice 1, plan OQ-1).
 
 Evidence. Every sample_ns (100 ms) a timer reads the device sink's provided clock (pulsesink's is
 pa_stream_get_time, the stream time of the sample at the device), then CLOCK_MONOTONIC (house
@@ -57,9 +58,13 @@ render, less its samples, so a realign (an underflow, a flush) moves the map wit
 plan's out_pushed - fill: after a 300 ms hole on the Pi 5 test box the base sink realigns its next
 write on a read index 29-53 ms stale, the server drops 100-127 ms of writes behind its read index,
 then the base sink realigns 40 ms ahead (DEV-P4a case 6); a count of pushed samples stays that far
-off after every such hole. A buffer written wholly behind the device's position is never heard and
-stays out of the map; where the clock lags the server's read index (a device's own latency), the
-writes the server drops between the two cannot be told from the clock.
+off after every such hole. A buffer written wholly behind the device's position is never heard: the
+read drops it before it looks the position up; where the clock lags the server's read index (a
+device's own latency), the writes the server drops between the two cannot be told from the clock.
+The device timeline (B-148's A1, p4-4b): every relock-device tells the servo the device recalibrated
+(take_recalibrated(), asrc_bypass_ref.AsrcServo.device_recalibrated at its next push): a restart is a
+caps change or a ring released and acquired again, a step the device's clock jumping (a device
+failure). A sync=false sink has no sync latency to recalibrate on.
 
 API:
     term = DeviceTerm(device_term_config())
@@ -67,8 +72,9 @@ API:
     term.stop(mono_ns)                 the ring released
     term.sample(dev_ns, mono_ns, pushed=None, rendered=None) -> (events, flush)
     term.ratio_ppb(eps_in_ppb=0), term.device_ppb(), term.lock_state(), term.stats()
+    term.take_recalibrated()           a relock-device since the last call
     acc = RenderLateness(rate_hz)
-    acc.rendered(write_pos, n, pts_ns, heard_pos=None); acc.flush(); acc.at(now_ns, dev_ns) -> ns|None
+    acc.rendered(write_pos, n, pts_ns); acc.flush(); acc.at(now_ns, dev_ns) -> ns|None
 Run as a script it replays a recorded clock or a call sequence (the format p4-4b's
 `mrts_cli asrc-device` reads):
     asrc_device_ref.py seq.jsonl|-
@@ -76,9 +82,12 @@ In: tools/output-check/sink_clock_trace.py's lines (a sample with next_sample >=
 start() before the first after a stop(); a "restart" event is stop(); other lines are ignored), or
 ops: {"op":"config", <DeviceTermConfig fields>, "lock":{<ClockLockConfig fields>}} starts a new
 term (other keys are labels), {"op":"start","mono":ns}, {"op":"stop","mono":ns},
-{"op":"sample","dev":ns,"mono":ns[,"pushed":n,"rendered":n][,"in_ppb":ppb]}. Out, compact, keys in
+{"op":"sample","dev":ns,"mono":ns[,"pushed":n,"rendered":n][,"in_ppb":ppb]}; and the term's
+RenderLateness (rate_hz's): {"op":"rendered","write_pos":n,"n":n,"pts":ns}, {"op":"flush"},
+{"op":"lateness","now":ns,"dev":ns}, which prints {"lateness":ns|null}. Out, compact, keys in
 this order: each event {"event":kind,...}; per sample {"mono":ns,"lock":state,"dev_ppb":ppb,
-"ratio_ppb":ppb,"stalled":0|1,"flush":0|1}; at each term's end {"summary":{stats}}.
+"ratio_ppb":ppb,"stalled":0|1,"flush":0|1}, or {"refused":...} for one before start(); after the
+events of a call that relocked, {"recalibrated":1}; at each term's end {"summary":{stats}}. p4-4b's `mrts_cli asrc-device` prints the same lines (asrc_device_parity_test.py).
 """
 import json
 import sys
@@ -166,6 +175,7 @@ class DeviceTerm:
         self.epoch = False          # the lock was fed since the term began
         self.beyond = 0             # fed samples in a row past relock_ns
         self.relocks = {"restart": 0, "step": 0}
+        self.recal = False          # a relock since take_recalibrated() last read it
         self.flat_ns = 0
         self.fed = 0
         # the stall rule
@@ -195,6 +205,7 @@ class DeviceTerm:
             return []
         self.lock.relock(True)
         self.relocks["restart"] += 1
+        self.recal = True
         return [{"event": "relock-device", "reason": "restart", "at": mono}]
 
     def stop(self, mono):
@@ -208,9 +219,16 @@ class DeviceTerm:
     def _relock(self, mono, step_ns, events):
         self.lock.relock(True)
         self.relocks["step"] += 1
+        self.recal = True
         events.append({"event": "relock-device", "reason": "step", "at": mono, "step_ns": step_ns})
         self.moved_at = mono
         self.beyond = 0
+
+    def take_recalibrated(self):
+        """Whether a relock-device came since the last call: the servo's device timeline takes its
+        offset afresh from the next output (AsrcServo.device_recalibrated, B-148's A1)."""
+        recal, self.recal = self.recal, False
+        return recal
 
     def _clock(self, dev, mono, events):
         c = self.cfg
@@ -320,11 +338,9 @@ class RenderLateness:
     def flush(self):
         self.map = []
 
-    def rendered(self, write_pos, n, pts_ns, heard_pos=None):
+    def rendered(self, write_pos, n, pts_ns):
         if self.map and write_pos < self.map[-1][0] + self.map[-1][1]:
             self.map = []   # the ring started again (a restart) or was written over
-        if heard_pos is not None and write_pos + n <= heard_pos:
-            return          # wholly behind the device: never heard
         self.map.append((write_pos, n, pts_ns))
 
     def at(self, now_ns, dev_ns):
@@ -357,8 +373,13 @@ def config_of(op):
     return c
 
 
+def _recalibrated(term, out):
+    if term.take_recalibrated():
+        out.append(_line({"recalibrated": 1}))
+
+
 def replay(lines):
-    out, term = [], None
+    out, term, acc = [], None, None
     for raw in lines:
         if not raw.strip():
             continue
@@ -368,11 +389,23 @@ def replay(lines):
             if term is not None:
                 out.append(_line({"summary": term.stats()}))
             term = DeviceTerm(config_of(o))
+            acc = RenderLateness(term.cfg.rate_hz)
             continue
         if term is None:
             term = DeviceTerm()
+            acc = RenderLateness(term.cfg.rate_hz)
+        if op == "rendered":
+            acc.rendered(o["write_pos"], o["n"], o["pts"])
+            continue
+        if op == "flush":
+            acc.flush()
+            continue
+        if op == "lateness":
+            out.append(_line({"lateness": acc.at(o["now"], o["dev"])}))
+            continue
         if op == "start":
             out.extend(_line(e) for e in term.start(o["mono"]))
+            _recalibrated(term, out)
             continue
         if op == "stop":
             term.stop(o["mono"])
@@ -386,12 +419,18 @@ def replay(lines):
             dev, mono, in_ppb, pushed, rendered = o["clock_ns"], o["mono_ns"], 0, None, None
             if not term.rendering:
                 out.extend(_line(e) for e in term.start(mono))
+                _recalibrated(term, out)
         else:
             if o.get("event") == "restart":
                 term.stop(o["mono_ns"])
             continue
-        events, flush = term.sample(dev, mono, pushed, rendered)
+        try:
+            events, flush = term.sample(dev, mono, pushed, rendered)
+        except RuntimeError:   # no read before the first rendered buffer
+            out.append(_line({"refused": "sample before start"}))
+            continue
         out.extend(_line(e) for e in events)
+        _recalibrated(term, out)
         out.append(_line({"mono": mono, "lock": term.lock_state(), "dev_ppb": term.device_ppb(),
                           "ratio_ppb": term.ratio_ppb(in_ppb), "stalled": int(term.stalled),
                           "flush": int(flush)}))

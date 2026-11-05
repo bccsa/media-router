@@ -168,11 +168,11 @@ describe('AsrcWatches', () => {
                 sourcePpm: 3,
             },
         });
-        const relock = event('device-relock', { reason: 'sync-latency' });
+        const relock = event('relock-device', { reason: 'restart', 'step-ns': 0 });
         expect(w.take('mrasrc-event', 'outasrc', relock, 0)!.event).toEqual({
             name: 'outasrc',
-            kind: 'device-relock',
-            reason: 'sync-latency',
+            kind: 'relock-device',
+            reason: 'restart',
             payload: relock,
         });
     });
@@ -216,7 +216,7 @@ describe('AsrcWatches', () => {
         w.expire(6001, 6000);
         expect(w.list()).toEqual([]);
         w.configure('audiotestsrc ! fakesink');
-        expect(w.take('mrasrc-event', 'outasrc', event('device-relock'), 0)).toBeNull();
+        expect(w.take('mrasrc-event', 'outasrc', event('relock-device'), 0)).toBeNull();
     });
 });
 
@@ -261,7 +261,14 @@ describe('the forwarded messages as recorded (forwarded-messages.json)', () => {
         w.take('mrasrc-stats', 'outasrc', stats, 0);
         expect(one(w, 'outasrc')).toEqual({ name: 'outasrc', correction: {}, devicePpm: 0 });
         const events = fixture['mrasrc-event'];
-        for (const kind of ['device-relock', 'device-resync', 'engaged', 'relock', 'gap']) {
+        for (const kind of [
+            'relock-device',
+            'device-stalled',
+            'device-resumed',
+            'engaged',
+            'relock',
+            'gap',
+        ]) {
             expect(w.take('mrasrc-event', 'outasrc', events[kind], 1)!.event!.kind).toBe(kind);
         }
         expect(w.take('mrasrc-event', 'outasrc', events.engaged, 1)!.event!.sourcePpm).toBe(3);

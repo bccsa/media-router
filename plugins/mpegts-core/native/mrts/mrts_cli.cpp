@@ -9,6 +9,7 @@
 //                           [--bus in.bus.jsonl]
 //        mrts_cli asrc seq.txt|-
 //        mrts_cli pace seq.jsonl|-
+//        mrts_cli asrc-device seq.jsonl|-
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -1623,7 +1624,7 @@ int demux_main(int argc, char** argv) {
     return 0;
 }
 
-// --- asrc: a call sequence through mrts::AsrcServo and AsrcDeviceLock (WI-P3-5) -----------
+// --- asrc: a call sequence through mrts::AsrcServo and its device term (WI-P3-5, B-166) -----
 
 const char kAsrcUsage[] =
     "usage: mrts_cli asrc seq.txt|-\n"
@@ -1632,10 +1633,14 @@ const char kAsrcUsage[] =
     "    b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command\n"
     "    o K / t K                                        produced(K) / tail_produced(K)\n"
     "    g                                                end_epoch(); prints its result\n"
-    "    d ITIME ETIME [READ]                             the device lock: a pair\n"
-    "    x [WHY]                                          a sink discontinuity (GstAudioBaseSinkDiscontReason,\n"
-    "                                                     2 flush by default); a recalibration tells the servo\n"
-    "    p                                                prints the stats and the device lock\n";
+    "    s DEV MONO                                       a timer read of the device sink's clock\n"
+    "    r MONO                                           the sink's ring acquired again: a restart\n"
+    "    p                                                prints the stats and the device term\n";
+
+// The element's glue: a relock-device tells the servo before its next push (B-148's A1).
+void device_recalibrate(AsrcDeviceTerm* term, AsrcServo* sv) {
+    if (term->take_recalibrated()) sv->device_recalibrated();
+}
 
 int asrc_main(int argc, char** argv) {
     if (argc != 2) return std::fputs(kAsrcUsage, stderr), 2;
@@ -1645,7 +1650,8 @@ int asrc_main(int argc, char** argv) {
         return 1;
     }
     std::unique_ptr<AsrcServo> sv;
-    std::unique_ptr<AsrcDeviceLock> dev;
+    std::unique_ptr<AsrcDeviceTerm> term;
+    std::vector<AsrcDeviceEvent> devents;
     std::string out;
     char line[512];
     uint64_t n = 0;
@@ -1678,13 +1684,12 @@ int asrc_main(int argc, char** argv) {
         if (k == "cfg" && f.size() >= 6) {
             AsrcServoConfig c;
             c.lock = v[3] > 0 ? asrc_decode_lock_config() : asrc_lock_config();
-            ClockLockConfig dc = asrc_decode_lock_config();
-            if (f.size() > 6) c.lock.rate_buckets_min = dc.rate_buckets_min = (int)v[6];
+            if (f.size() > 6) c.lock.rate_buckets_min = (int)v[6];
             c.bypass_ppb = v[3];
             c.device = v[4] != 0;
             sv.reset(new AsrcServo((int32_t)v[1], (int32_t)v[2], c));
             sv->set_delay((uint32_t)v[5]);
-            dev.reset(new AsrcDeviceLock(dc));
+            term.reset(new AsrcDeviceTerm());
         } else if (k == "b" && f.size() == 5) {
             const AsrcServo::Command c = sv->push(v[1], (uint32_t)v[2], v[3] != 0, v[4]);
             const AsrcServo::Stats s = sv->stats();
@@ -1711,29 +1716,30 @@ int asrc_main(int argc, char** argv) {
             const bool drain = sv->end_epoch();
             std::snprintf(line, sizeof line, "g %d %lld\n", (int)drain, (long long)sv->tail_pts_at(0));
             out += line;
-        } else if (k == "d" && (f.size() == 3 || f.size() == 4)) {
-            dev->feed(v[1], v[2], f.size() == 4 ? v[3] : 0);
-        } else if (k == "x" && f.size() <= 2) {
-            const int64_t why = f.size() == 2 ? v[1] : (int64_t)AsrcDeviceLock::Discont::flush;
-            if (why < 1 || why > 5) {
-                std::fprintf(stderr, "mrts_cli asrc: line %zu: no such discontinuity: %lld\n", lineno, (long long)why);
-                return 2;
-            }
-            if (dev->discont((AsrcDeviceLock::Discont)why)) sv->device_recalibrated();
+        } else if (k == "s" && f.size() == 3) {
+            if (!term->rendering()) term->start(v[2], &devents);
+            term->sample(v[1], v[2], -1, -1, &devents);
+            device_recalibrate(term.get(), sv.get());
+            devents.clear();
+        } else if (k == "r" && f.size() == 2) {
+            term->stop(v[1]);
+            term->start(v[1], &devents);
+            device_recalibrate(term.get(), sv.get());
+            devents.clear();
         } else if (k == "p" && f.size() == 1) {
             const AsrcServo::Stats s = sv->stats();
             std::snprintf(line, sizeof line,
                           "p state=%s ratio-ppb=%lld phase-err-ns=%lld relocks=%llu in-frames=%llu out-frames=%llu "
                           "discont-in=%llu dropped-frames=%llu mode=%s source-ppb=%lld gaps=%llu lost-frames=%lld "
-                          "rate-known=%d dev-ppb=%lld dev-rate=%lld dev-locked=%d dev-relocks=%llu "
-                          "dev-alignments=%llu\n",
+                          "rate-known=%d dev-ppb=%lld dev-rate=%lld dev-lock=%s dev-relocks=%llu\n",
                           asrc_state_name(s.state), (long long)s.ratio_ppb, (long long)s.phase_err_ns,
                           (unsigned long long)s.relocks, (unsigned long long)s.in_frames,
                           (unsigned long long)s.out_frames, (unsigned long long)s.discont_in,
                           (unsigned long long)s.dropped_frames, asrc_mode_name(s.mode), (long long)s.source_ppb,
                           (unsigned long long)s.gaps, (long long)s.lost_frames, (int)s.rate_known,
-                          (long long)dev->ppb(), (long long)dev->rate_ppb(), (int)dev->locked(),
-                          (unsigned long long)dev->relocks(), (unsigned long long)dev->alignments());
+                          (long long)term->device_ppb(), (long long)asrc_rate_of(term->device_ppb()),
+                          asrc_device_lock_state_name(term->lock_state()),
+                          (unsigned long long)(term->stats().relocks_restart + term->stats().relocks_step));
             out += line;
         } else {
             std::fprintf(stderr, "mrts_cli asrc: line %zu: unknown line\n", lineno);
@@ -1891,6 +1897,194 @@ int pace_main(int argc, char** argv) {
     return rc;
 }
 
+// --- asrc-device: the device term (WI-P4-4, B-166), py/asrc_device_ref.py's replay format ------
+
+// A config line's fields onto the term's configuration (other keys are labels).
+bool device_config(const Json& op, AsrcDeviceConfig* c, std::string* err) {
+    struct F {
+        const char* key;
+        int64_t* v;
+    };
+    int64_t relock_samples = c->relock_samples;
+    const F term[] = {{"sample_ns", &c->sample_ns},   {"settle_ns", &c->settle_ns}, {"relock_ns", &c->relock_ns},
+                      {"relock_samples", &relock_samples}, {"flat_den", &c->flat_den}, {"stall_ns", &c->stall_ns},
+                      {"waiting_ns", &c->waiting_ns}, {"probe_ns", &c->probe_ns},   {"resume_ns", &c->resume_ns},
+                      {"rate_hz", &c->rate_hz},       {"ratio_max_ppm", &c->ratio_max_ppm}};
+    for (const F& f : term)
+        if (op.get(f.key) && !op_i64(op, f.key, f.v, err)) return false;
+    c->relock_samples = (int)relock_samples;
+    const Json* lk = op.get("lock");
+    if (!lk) return true;
+    if (lk->type != Json::Type::object) return *err = "\"lock\" must be an object", false;
+    ClockLockConfig& l = c->lock;
+    int64_t bmin = l.rate_buckets_min, bmax = l.rate_buckets_max, mads = l.rate_refit_mads, obuck = l.offset_buckets;
+    const F lock[] = {{"bucket_ns", &l.bucket_ns},         {"rate_buckets_min", &bmin},
+                      {"rate_buckets_max", &bmax},         {"rate_tau_ns", &l.rate_tau_ns},
+                      {"rate_warn_ppm", &l.rate_warn_ppm}, {"rate_max_ppm", &l.rate_max_ppm},
+                      {"rate_refit_mads", &mads},          {"offset_buckets", &obuck},
+                      {"slew_acquire_ppm", &l.slew_acquire_ppm}, {"acquire_ns", &l.acquire_ns},
+                      {"slew_track_ppm", &l.slew_track_ppm}, {"step_ns", &l.step_ns},
+                      {"step_hold_ns", &l.step_hold_ns},   {"backlog_ns", &l.backlog_ns},
+                      {"step_fall_hold_ns", &l.step_fall_hold_ns}, {"lost_ns", &l.lost_ns},
+                      {"residual_window_ns", &l.residual_window_ns}};
+    for (const F& f : lock)
+        if (lk->get(f.key) && !op_i64(*lk, f.key, f.v, err)) return false;
+    l.rate_buckets_min = (int)bmin;
+    l.rate_buckets_max = (int)bmax;
+    l.rate_refit_mads = (int)mads;
+    l.offset_buckets = (int)obuck;
+    if (lk->get("step_falls") && !op_flag(*lk, "step_falls", &l.step_falls, err)) return false;
+    if (l.backlog_ns != 0 || l.step_fall_hold_ns != 0) return *err = "the device lock has no backlog rule", false;
+    return true;
+}
+
+void print_device_events(const std::vector<AsrcDeviceEvent>& events) {
+    for (const AsrcDeviceEvent& e : events) {
+        if (e.kind == AsrcDeviceEvent::Kind::relock_device && !std::strcmp(e.reason, "restart"))
+            std::printf("{\"event\":\"relock-device\",\"reason\":\"restart\",\"at\":%lld}\n", (long long)e.at);
+        else if (e.kind == AsrcDeviceEvent::Kind::relock_device)
+            std::printf("{\"event\":\"relock-device\",\"reason\":\"%s\",\"at\":%lld,\"step_ns\":%lld}\n", e.reason,
+                        (long long)e.at, (long long)e.value);
+        else
+            std::printf("{\"event\":\"%s\",\"at\":%lld,\"%s\":%lld}\n", asrc_device_event_name(e.kind),
+                        (long long)e.at, e.kind == AsrcDeviceEvent::Kind::device_stalled ? "pending" : "dropped",
+                        (long long)e.value);
+    }
+}
+
+// After a call's events: a relock-device tells the servo (B-148's A1).
+void print_recalibrated(AsrcDeviceTerm* t) {
+    if (t->take_recalibrated()) std::printf("{\"recalibrated\":1}\n");
+}
+
+void print_device_summary(const AsrcDeviceTerm& t) {
+    const AsrcDeviceTerm::Stats s = t.stats();
+    std::printf("{\"summary\":{\"device_ppb\":%lld,\"device_rate_ppb\":%lld,\"relocks_restart\":%llu,"
+                "\"relocks_step\":%llu,\"device_stalls\":%llu,\"dropped\":%lld,\"flushes\":%llu,\"flat_ns\":%lld,"
+                "\"fed\":%llu}}\n",
+                (long long)s.device_ppb, (long long)s.device_rate_ppb, (unsigned long long)s.relocks_restart,
+                (unsigned long long)s.relocks_step, (unsigned long long)s.device_stalls, (long long)s.dropped,
+                (unsigned long long)s.flushes, (long long)s.flat_ns, (unsigned long long)s.fed);
+}
+
+// One line: an op, or a recorded clock's (tools/output-check/sink_clock_trace.py); the lines it prints are
+// asrc_device_ref.py's replay(), byte for byte.
+bool device_op(const Json& o, std::unique_ptr<AsrcDeviceTerm>* term, std::unique_ptr<AsrcRenderLateness>* acc,
+               std::string* err) {
+    const Json* opj = o.get("op");
+    const std::string op = opj && opj->type == Json::Type::string ? opj->s : "";
+    if (op == "config") {
+        if (*term) print_device_summary(**term);
+        AsrcDeviceConfig c;
+        if (!device_config(o, &c, err)) return false;
+        term->reset(new AsrcDeviceTerm(c));
+        acc->reset(new AsrcRenderLateness(c.rate_hz));
+        return true;
+    }
+    if (!*term) {
+        term->reset(new AsrcDeviceTerm());
+        acc->reset(new AsrcRenderLateness((*term)->config().rate_hz));
+    }
+    AsrcDeviceTerm& t = **term;
+    if (op == "rendered") {
+        int64_t w = 0, n = 0, pts = 0;
+        if (!op_i64(o, "write_pos", &w, err) || !op_i64(o, "n", &n, err) || !op_i64(o, "pts", &pts, err)) return false;
+        (*acc)->rendered(w, n, pts);
+        return true;
+    }
+    if (op == "flush") {
+        (*acc)->flush();
+        return true;
+    }
+    if (op == "lateness") {
+        int64_t now = 0, dev = 0, late = 0;
+        if (!op_i64(o, "now", &now, err) || !op_i64(o, "dev", &dev, err)) return false;
+        if ((*acc)->at(now, dev, &late)) std::printf("{\"lateness\":%lld}\n", (long long)late);
+        else std::printf("{\"lateness\":null}\n");
+        return true;
+    }
+    std::vector<AsrcDeviceEvent> events;
+    int64_t dev = 0, mono = 0, in_ppb = 0, pushed = -1, rendered = -1;
+    if (op == "start" || op == "stop") {
+        if (!op_i64(o, "mono", &mono, err)) return false;
+        if (op == "start") t.start(mono, &events);
+        else t.stop(mono);
+        print_device_events(events);
+        if (op == "start") print_recalibrated(&t);
+        return true;
+    }
+    if (op == "sample") {
+        if (!t.rendering()) {
+            std::printf("{\"refused\":\"sample before start\"}\n");
+            return true;
+        }
+        if (!op_i64(o, "dev", &dev, err) || !op_i64(o, "mono", &mono, err)) return false;
+        if (o.get("in_ppb") && !op_i64(o, "in_ppb", &in_ppb, err)) return false;
+        if (o.get("pushed") && (!op_i64(o, "pushed", &pushed, err) || !op_i64(o, "rendered", &rendered, err)))
+            return false;
+    } else if (!op.empty()) {
+        return *err = "unknown op \"" + op + "\"", false;
+    } else if (o.get("clock_ns")) {
+        int64_t next = -1;
+        if (o.get("next_sample") && !op_i64(o, "next_sample", &next, err)) return false;
+        if (next < 0) return true;   // nothing rendered yet: never read
+        if (!op_i64(o, "clock_ns", &dev, err) || !op_i64(o, "mono_ns", &mono, err)) return false;
+        if (!t.rendering()) {
+            t.start(mono, &events);
+            print_device_events(events);
+            print_recalibrated(&t);
+            events.clear();
+        }
+    } else {
+        const Json* ev = o.get("event");
+        if (ev && ev->type == Json::Type::string && ev->s == "restart") {
+            if (!op_i64(o, "mono_ns", &mono, err)) return false;
+            t.stop(mono);
+        }
+        return true;
+    }
+    const bool flush = t.sample(dev, mono, pushed, rendered, &events);
+    print_device_events(events);
+    print_recalibrated(&t);
+    std::printf("{\"mono\":%lld,\"lock\":\"%s\",\"dev_ppb\":%lld,\"ratio_ppb\":%lld,\"stalled\":%d,\"flush\":%d}\n",
+                (long long)mono, asrc_device_lock_state_name(t.lock_state()), (long long)t.device_ppb(),
+                (long long)t.ratio_ppb(in_ppb), (int)t.stalled(), (int)flush);
+    return true;
+}
+
+int asrc_device_main(int argc, char** argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: mrts_cli asrc-device seq.jsonl|-\n");
+        return 2;
+    }
+    std::string text, err;
+    if (!read_file(argv[1], &text)) {
+        std::perror(argv[1]);
+        return 1;
+    }
+    static char out[1 << 16];
+    std::setvbuf(stdout, out, _IOFBF, sizeof out);
+    std::unique_ptr<AsrcDeviceTerm> term;
+    std::unique_ptr<AsrcRenderLateness> acc;
+    size_t at = 0, lineno = 0;
+    while (at < text.size()) {
+        size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string line = text.substr(at, nl - at);
+        at = nl + 1;
+        lineno++;
+        if (line.find_first_not_of(" \t\r") == std::string::npos) continue;
+        Json o;
+        if (!parse_json(line, &o, &err) || !device_op(o, &term, &acc, &err)) {
+            std::fflush(stdout);
+            std::fprintf(stderr, "mrts_cli: %s:%zu: %s\n", argv[1], lineno, err.c_str());
+            return 1;
+        }
+    }
+    if (term) print_device_summary(*term);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1902,6 +2096,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "demux") == 0) return demux_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "asrc") == 0) return asrc_main(argc - 1, argv + 1);
     if (argc > 1 && std::strcmp(argv[1], "pace") == 0) return pace_main(argc - 1, argv + 1);
+    if (argc > 1 && std::strcmp(argv[1], "asrc-device") == 0) return asrc_device_main(argc - 1, argv + 1);
     std::fprintf(stderr,
                  "usage: mrts_cli dump [--chunk N] [--program N] input.ts\n"
                  "       mrts_cli trace2jsonl input.stct\n"
@@ -1912,6 +2107,7 @@ int main(int argc, char** argv) {
                  "       mrts_cli demux in.ts [--chunk N] [--media M] [--select CAPS] [--program P] "
                  "[--house-ns T] [--bus in.bus.jsonl]\n"
                  "       mrts_cli asrc seq.txt|-\n"
-                 "       mrts_cli pace seq.jsonl|-\n");
+                 "       mrts_cli pace seq.jsonl|-\n"
+                 "       mrts_cli asrc-device seq.jsonl|-\n");
     return 2;
 }

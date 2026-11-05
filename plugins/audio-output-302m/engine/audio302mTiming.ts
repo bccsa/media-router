@@ -11,16 +11,8 @@ import { effectivePlayoutOffsetNs, type PlayoutOffsetServices } from '@media-rou
  */
 
 /**
- * `pulsesink slave-method` (GstAudioBaseSink): 3 = custom. The output ASRC (`outasrc`) follows the
- * device's clock through the sink's custom-slaving callback and never asks it to skew, so no
- * samples are dropped or repeated for drift (house-clock part 4.4). Never set it without that ASRC.
- */
-export const SLAVE_METHOD_CUSTOM = 3;
-
-/**
- * `pulsesink buffer-time` (µs) under the contract — the same 100 ms paced ring
+ * `pulsesink buffer-time` (µs) under the contract — the same 100 ms ring
  * the audio-decoder floors at (a 50 ms ring xrunned audibly on a field Pi 4).
- * With `sync=true` the ring is scheduling margin, not standing latency.
  */
 export const SINK_BUFFER_US = 100_000;
 

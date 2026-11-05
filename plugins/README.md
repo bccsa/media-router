@@ -2097,9 +2097,9 @@ below). It has no stand-in: a module whose start description names it does
 not start on a box without `libgstmrtshouse.so`. A PCM decode that may come
 from a source on another clock ends in `buildAsrc({ bypassBelowPpm:
 DECODE_BYPASS_PPM })` (through `audioconvert` from a planar decoder such as
-`avdec_aac`), and an audio output's sink takes the device term
-(`deviceSink`) with `slave-method=custom`; "The restamp and ASRC elements"
-below has the rules.
+`avdec_aac`), and an audio output's sink, run `sync=false`, takes the device
+term (`deviceSink`, its clock read on a timer, B-166); "The restamp and ASRC
+elements" below has the rules.
 
 ### The time-sync contract (identity-stamped bus timing)
 
@@ -2352,9 +2352,10 @@ live one alone. `backlogShedConfig({ watchPlayout: true })` sets
 `BacklogShedConfig.missWatchMs` (`PLAYOUT_MISS_MS`, 1000): every buffer past
 the budget + `reanchorToleranceMs` that long reports `playout_watch`
 `{ playing: false, lateMs, budgetMs }`, 200 ms in budget `{ playing: true }`,
-on a change only (`readPlayoutWatch`). Audio Output (302M) sets both, its
-catch-up on its inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names
-one), so the stale TS goes in the thread that reads the socket, undecoded; the
+on a change only (`readPlayoutWatch`). Audio Output (302M) sets the catch-up,
+on its inputs' ingress taps (`LAT_IN_PREFIX`; `busSrcTapName` names one), so
+the stale TS goes in the thread that reads the socket, undecoded; since B-166
+its sink runs `sync=false` and it arms no shedder, so no playout watch. The
 python runner ignores both.
 
 **Where stamper lines come from (debugging).** Each armed egress logs two
@@ -2575,28 +2576,32 @@ what follows is measured afresh. An unflagged PTS hole past 1 ms (or 2000 ppm
 of the last buffer's span) is lost time, the output jumping it (`gap`
 `lost-time`), and a step back past it a break (`relock` `jump`), each judged
 after a buffer that continued its own (B-148). With `device-sink=<name>` the named
-`GstAudioBaseSink` downstream, which must run `slave-method=custom` (else an
-error naming it at READY to PAUSED), reports its clock through its custom
-slaving callback and is never asked to skew; the ratio carries that device
-term, times the decode term when both are set (one resampler), and the
-output counter runs on from the first PTS on the device timeline: a break's
-new epoch starts at the last label end plus the gap at the device ratio, the
-offset restarting when the sink recalibrates (B-148).
+`GstAudioBaseSink` downstream (else an error naming it at READY to PAUSED),
+run `sync=false`, is followed on its own clock: a timer reads it every 100 ms
+from the first buffer the sink renders, never while it starts, and the ratio
+carries that device term, times the decode term when both are set (one
+resampler); the sink is never asked to skew. A device that stops taking
+samples (1 s with more than 100 ms waiting) is flushed and skipped, and plays
+live again once it takes (`device-stalled`, `device-resumed`; the owner's
+Q2). The output counter runs on from the first PTS on the device timeline: a
+break's new epoch starts at the last label end plus the gap at the device
+ratio, the offset restarting at each `relock-device` (B-148, B-166).
 `bypass-below-ppm=0` with `device-sink` is the device term alone.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
-time, positive when fast), `rate-known` and `device-resyncs`; `mrasrc-event`
-gains `engaged` (`reason` ratio or phase, `source-ppb`, `phase-ns`,
-`rate-known`), `device-relock` (`reason`, the sink's discontinuity) and
-`device-resync` (an alignment resync, the device lock kept; B-148). A decode +
+time, positive when fast), `rate-known`, `device-relocks`, `device-stalls`
+and `render-lateness-ns` (house time less the content time of the sample at
+the device, 0 while unknown); `mrasrc-event` gains `engaged` (`reason` ratio
+or phase, `source-ppb`, `phase-ns`, `rate-known`), `relock-device` (`reason`
+restart or step, `step-ns`), `device-stalled` (`pending-frames`) and
+`device-resumed` (`dropped-frames`; B-166). A decode +
 device element whose source still passes reports
 mode `device`, so read its decode term from `bypass-below-ppm`, not from
 `mode`. The element answers LATENCY with its filter's lookahead, 32 frames
 (0.667 ms at 48 kHz) at the default quality, passing or not. Its stand-in
-(`audioresample`) drops `bypass-below-ppm` and `device-sink`, so a sink left
-on `slave-method=custom` behind it would not be slaved at all; the
-consumers that use these modes all name `mrtsdemux`, which has no stand-in,
-so they never run that way.
+(`audioresample`) drops `bypass-below-ppm` and `device-sink`, so the sink
+behind it would follow no device; the consumers that use these modes all
+name `mrtsdemux`, which has no stand-in, so they never run that way.
 
 **Debugging.** Record a trace on a running ingest with `trace-location`
 (≤ 2 MB is about 15 min) and replay it off the box with

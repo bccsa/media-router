@@ -34,7 +34,8 @@ by DEV-P4a on 2026-10-27 with `tools/output-check/sink_clock_trace.py` (3600 s, 
 buffer-time=100000`): the sink's provided clock against CLOCK_MONOTONIC, a line per 100 ms
 (`mono_ns`, `clock_ns`, `delay_ns`, `next_sample`) and a line per event (the start, the two holes,
 the restart). Each is its recording's first lines byte for byte, cut at 2 MB about 300 s after
-the restart; `py/asrc_device_ref_test.py` replays them.
+the restart; `py/asrc_device_ref_test.py` and `native/mrts/tests/asrc_servo_test` replay them, and
+`py/asrc_device_parity_test.py` through `mrts_cli asrc-device` too (B-166).
 
 Each `<name>.demux.jsonl` (and `syn-mpts-two-programs.p2.demux.jsonl`, program 2) is Phase 3's
 expectation (ch. 7 WI-P3-1, register B-121): the events of `py/demux_core.py`, `mrts::DemuxCore`'s
@@ -109,9 +110,12 @@ B-126): the engine's `demuxWatches` and `asrcWatches` tests read them, and the e
 `native_runner_protocol_test.py` holds every payload of its mrtsdemux-messages and mrasrc-device
 cases to its entry's fields and their types, so a field the element renames fails there before
 the engine reads it wrong. Recorded on the dev Pi from those two cases (2026-10-27); the entries no
-run of theirs posts (no-stream, the mrasrc events but device-relock) are as the elements post them.
-B-148 added `mrasrc-stats`' `rate-known` and `device-resyncs`, the engage's `rate-known` and the
-`device-resync` and lost-time `gap` events.
+run of theirs posts (no-stream, the servo's mrasrc events) are as the elements post them.
+B-148 added `mrasrc-stats`' `rate-known`, the engage's `rate-known` and the lost-time `gap` event.
+B-166 replaced the custom-slaving `device-relock` and `device-resync` events and `device-resyncs` with
+the timer term's `relock-device`, `device-stalled` and `device-resumed` events and `mrasrc-stats`'
+`device-relocks`, `device-stalls` and `render-lateness-ns` (a run on `mrtestaudiosink` `sync=false`
+with a 3 s stall and a restart).
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|
