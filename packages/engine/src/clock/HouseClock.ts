@@ -36,7 +36,7 @@ export interface HouseClockOptions {
     /** Path to mr-clockstate, or null when it is not built/installed. */
     resolveBinary?: () => string | null;
     exec?: ExecStdout;
-    /** Reads ptp4l's status.env (its domain); tests stub it. */
+    /** Reads ptp4l's status.env (its domain, the NTP fallback); tests stub it. */
     readText?: ReadText;
     startWaitMs?: number;
     sourcePollMs?: number;
@@ -61,6 +61,8 @@ export class HouseClock extends EventEmitter {
     private source: TimeSyncSource = 'none';
     private chrony: ChronyTracking | undefined;
     private ptp: PtpClockState | undefined;
+    /** status.env's, as of the last poll; undefined without the file. */
+    private ntpFallback: boolean | undefined;
     // A step's poll can overlap the periodic one: an older answer never overwrites a newer one.
     private pollSeq = 0;
     private sourceSeq = 0;
@@ -172,6 +174,7 @@ export class HouseClock extends EventEmitter {
             sidecar: this.sidecar,
             ...(this.chrony ? { chrony: this.chrony } : {}),
             ...(this.ptp ? { ptp: this.ptp } : {}),
+            ...(this.ntpFallback !== undefined ? { ntpFallback: this.ntpFallback } : {}),
         };
     }
 
@@ -321,14 +324,15 @@ export class HouseClock extends EventEmitter {
     private async pollSource(readPtp = true): Promise<void> {
         const seq = ++this.pollSeq;
         try {
-            const { source, chrony, ptp } = await pollClockSource(this.opts.exec, {
+            const { source, chrony, ptp, ntpFallback } = await pollClockSource(this.opts.exec, {
                 readPtp,
                 readText: this.opts.readText,
             });
             if (seq < this.sourceSeq) return;
             this.sourceSeq = seq;
-            const changed = source !== this.source;
+            const changed = source !== this.source || ntpFallback !== this.ntpFallback;
             this.source = source;
+            this.ntpFallback = ntpFallback;
             this.chrony = chrony;
             this.ptp = seq > this.ptpStaleUpTo ? ptp : undefined;
             if (readPtp && source === 'ptp') this.notePtpAnswer(!!ptp);

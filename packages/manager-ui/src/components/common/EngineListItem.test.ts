@@ -215,6 +215,30 @@ describe('EngineListItem', () => {
             wrapper.unmount();
         });
 
+        it('a slave-only PTP box on the NTP fallback says so in the tooltip', async () => {
+            const wrapper = mount(EngineListItem, {
+                props: {
+                    engine: makeEngine({
+                        features: ['house-clock'],
+                        system: {
+                            cpu: 1,
+                            mem: 2,
+                            temp: 40,
+                            timeSync: { ...base, ntpFallback: true },
+                        },
+                    }),
+                },
+                global: { plugins: [withRouter()] },
+            });
+            await wrapper.find('[role="button"]').trigger('mouseenter');
+            const tip = document.body.querySelector('[role="tooltip"]')?.textContent ?? '';
+            expect(tip).toContain(
+                'Time traceable · No PTP master: on internet time (NTP) · error ±800 µs',
+            );
+            expect(tip).not.toContain('source');
+            wrapper.unmount();
+        });
+
         it('shows nothing for an older engine without the house-clock feature', () => {
             expect(clockOf({}, ['dashboards', 'interlocks']).exists()).toBe(false);
             const noStats = mount(EngineListItem, {

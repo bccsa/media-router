@@ -6,9 +6,11 @@ import {
     PTP_STATUS_ENV,
     parsePmcBlocks,
     parsePtpClock,
+    parsePtpStatusEnv,
     pmcArgs,
     ptpDomain,
     readPtpClock,
+    readPtpStatusEnv,
 } from './ptpStatus.js';
 
 // PORT_DATA_SET is the Device Manager's verbatim capture of a slaved box (PMC_SLAVE in its
@@ -149,6 +151,59 @@ describe('ptpDomain', () => {
     });
 });
 
+/** status.env as media-router-ptp-setup.sh (Yocto 608ef45c) wrote it through its own test
+ *  harness: a slave-only box, software timestamping, at the start that applied the fallback. */
+const FALLBACK_ENV =
+    'PTP_INTERFACE=lo\nPTP_PROFILE=aes67\nPTP_DOMAIN=0\nPTP_PRIORITY1=200\nPTP_SLAVE_ONLY=1\n' +
+    'PTP_TIMESTAMPING=software\nPTP_TIMESTAMPING_DETECTED=software\nPTP_PHC=\nPTP_NTP_FALLBACK=1\n';
+const withKeys = (keys: Record<string, string | null>) =>
+    Object.entries(keys).reduce(
+        (env, [key, value]) =>
+            value === null
+                ? env.replace(new RegExp(`^${key}=.*\n`, 'm'), '')
+                : env.replace(new RegExp(`^${key}=.*$`, 'm'), `${key}=${value}`),
+        FALLBACK_ENV,
+    );
+
+describe('parsePtpStatusEnv', () => {
+    it('the NTP fallback is a slave-only box whose ptp4l start applied it: both markers', () => {
+        expect(parsePtpStatusEnv(FALLBACK_ENV)).toEqual({ domain: 0, ntpFallback: true });
+        // The return's start, as the setup writes it.
+        expect(parsePtpStatusEnv(withKeys({ PTP_NTP_FALLBACK: '0' })).ntpFallback).toBe(false);
+        // A master-capable box never falls back: the setup voids a marker there.
+        expect(parsePtpStatusEnv(withKeys({ PTP_SLAVE_ONLY: '0' })).ntpFallback).toBe(false);
+        expect(
+            parsePtpStatusEnv(withKeys({ PTP_DOMAIN: '127', PTP_PROFILE: 'smpte-2059-2' })),
+        ).toEqual({ domain: 127, ntpFallback: true });
+    });
+
+    it("a missing or empty key reads as the setup's default 0", () => {
+        // A setup older than the fallback (before Yocto 7347a244) writes no PTP_NTP_FALLBACK.
+        expect(parsePtpStatusEnv(withKeys({ PTP_NTP_FALLBACK: null })).ntpFallback).toBe(false);
+        expect(parsePtpStatusEnv(withKeys({ PTP_SLAVE_ONLY: null })).ntpFallback).toBe(false);
+        expect(parsePtpStatusEnv(withKeys({ PTP_SLAVE_ONLY: '' })).ntpFallback).toBe(false);
+        expect(parsePtpStatusEnv(withKeys({ PTP_NTP_FALLBACK: '' })).ntpFallback).toBe(false);
+        expect(parsePtpStatusEnv('X_PTP_SLAVE_ONLY=1\nX_PTP_NTP_FALLBACK=1\n')).toEqual({
+            domain: 0,
+            ntpFallback: false,
+        });
+        expect(parsePtpStatusEnv('')).toEqual({ domain: 0, ntpFallback: false });
+    });
+});
+
+describe('readPtpStatusEnv', () => {
+    it('reads status.env once; null when there is none (no PTP, or before its first start)', async () => {
+        const read = vi.fn(async () => FALLBACK_ENV);
+        expect(await readPtpStatusEnv(read)).toEqual({ domain: 0, ntpFallback: true });
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(read).toHaveBeenCalledWith(PTP_STATUS_ENV);
+        const missing = async (): Promise<string> => {
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        };
+        expect(await readPtpStatusEnv(missing)).toBeNull();
+    });
+});
+
 describe('pmcArgs', () => {
     it("asks the read-only socket in ptp4l's domain, replies to a socket the engine may bind", () => {
         expect(pmcArgs(127, '/run/user/1001/mr-pmc-1-1')).toEqual([
@@ -171,17 +226,15 @@ describe('pmcArgs', () => {
 describe('readPtpClock', () => {
     afterEach(() => vi.unstubAllEnvs());
 
-    it("runs pmc in status.env's domain, each run with its own reply socket", async () => {
+    it('runs pmc in the domain given, each run with its own reply socket', async () => {
         vi.stubEnv('XDG_RUNTIME_DIR', '/run/user/1001');
         const exec = vi.fn(async () => SLAVE);
-        const read = vi.fn(async () => 'PTP_DOMAIN=127\n');
-        expect(await readPtpClock(exec, read)).toEqual({
+        expect(await readPtpClock(exec, 127)).toEqual({
             portState: 'SLAVE',
             offsetNs: -812,
             pathDelayNs: 41_231,
         });
-        await readPtpClock(exec, read);
-        expect(read).toHaveBeenCalledWith(PTP_STATUS_ENV);
+        await readPtpClock(exec, 127);
         const calls = exec.mock.calls as unknown as Array<[string, string[]]>;
         expect(calls.map(([cmd]) => cmd)).toEqual([PMC, PMC]);
         const replies = calls.map(([, args]) => args[args.indexOf('-i') + 1]);
@@ -190,13 +243,10 @@ describe('readPtpClock', () => {
         expect(calls[0][1].slice(3, 5)).toEqual(['-d', '127']);
     });
 
-    it('no status.env yet: domain 0; no runtime dir: the temp dir; no answer: null', async () => {
+    it('no runtime dir: the temp dir; no answer: null', async () => {
         vi.stubEnv('XDG_RUNTIME_DIR', '');
         const exec = vi.fn(async () => 'sending: GET PORT_DATA_SET\n');
-        const read = async () => {
-            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-        };
-        expect(await readPtpClock(exec, read)).toBeNull();
+        expect(await readPtpClock(exec, 0)).toBeNull();
         const args = (exec.mock.calls as unknown as Array<[string, string[]]>)[0][1];
         expect(args.slice(3, 5)).toEqual(['-d', '0']);
         expect(args[args.indexOf('-i') + 1].startsWith(`${tmpdir()}/mr-pmc-`)).toBe(true);

@@ -95,6 +95,39 @@ describe('engineClockIndicator', () => {
             );
     });
 
+    it("a slave-only PTP box on the NTP fallback says so, in the Device Manager's words", () => {
+        const chrony = {
+            reference: 'ntp1.example.org',
+            stratum: 2,
+            estErrorUs: 2600,
+            leap: 'Normal',
+        };
+        const c = engineClockIndicator(engine({ source: 'chrony', chrony, ntpFallback: true }))!;
+        expect(c.level).toBe('ok');
+        expect(c.detail).toBe(
+            'Time traceable · No PTP master: on internet time (NTP) · error ±2.6 ms · ' +
+                'TAI−UTC 37 s · ref ntp1.example.org (stratum 2) · ' +
+                'epoch #2 (sync) at 2026-10-13T08:00:00.000Z',
+        );
+        // Whoever the last poll found running: the box's ptp4l start applied NTP.
+        expect(
+            engineClockIndicator(engine({ source: 'none', ntpFallback: true }))!.detail,
+        ).toContain('Time traceable · No PTP master: on internet time (NTP) · error');
+    });
+
+    it('every other engine keeps its plain source', () => {
+        // A PTP box on PTP, a grandmaster on chrony (status.env, no fallback).
+        expect(
+            engineClockIndicator(engine({ ...PTP, ptp: SLAVE, ntpFallback: false }))!.detail,
+        ).toContain('Time traceable · source ptp · error');
+        expect(engineClockIndicator(engine({ ntpFallback: false }))!.detail).toContain(
+            'Time traceable · source chrony · error',
+        );
+        // A box without PTP, or an engine from before the field.
+        for (const t of [{}, PTP, { source: 'none' as const }])
+            expect(engineClockIndicator(engine(t))!.detail).not.toContain('No PTP master');
+    });
+
     it("no daemon's figure: the kernel's, n/a while it is still the unset 16 s", () => {
         expect(engineClockIndicator(engine({ source: 'none' }))!.detail).toContain(
             '· error ±250 µs ·',

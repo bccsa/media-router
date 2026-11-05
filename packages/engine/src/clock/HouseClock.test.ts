@@ -491,6 +491,72 @@ describe("HouseClock's error figure (B-198)", () => {
     });
 });
 
+/** status.env on a slave-only box: ptp4l's last start applied the NTP fallback, or not. */
+const slaveOnlyEnv = (fallback: 0 | 1) =>
+    `PTP_DOMAIN=0\nPTP_SLAVE_ONLY=1\nPTP_NTP_FALLBACK=${fallback}\n`;
+
+describe("HouseClock on a slave-only box's NTP fallback (B-215)", () => {
+    let clock: HouseClock | null = null;
+    afterEach(async () => {
+        await clock?.stop();
+        clock = null;
+        vi.useRealTimers();
+    });
+
+    it('its state says so while chrony holds the clock, and no more after the return', async () => {
+        vi.useFakeTimers();
+        let env = slaveOnlyEnv(1);
+        let units = 'active\nactive\n'; // chronyd holds the clock, ptp4l runs free
+        const h = fakeSidecar({
+            exec: async (cmd) => (cmd === 'systemctl' ? units : ''),
+            readText: async () => env,
+        });
+        clock = h.clock;
+        h.clock.start();
+        await vi.advanceTimersByTimeAsync(0);
+        h.emit(line());
+        expect(h.clock.state()).toMatchObject({ source: 'chrony', ntpFallback: true });
+        // The return: its ptp4l start applied PTP and stopped chronyd; the slew moves E < 1 ms.
+        env = slaveOnlyEnv(0);
+        units = 'inactive\nactive\n';
+        await vi.advanceTimersByTimeAsync(10_000);
+        h.emit(line({ eNs: E0 + 300_000n }));
+        expect(h.clock.state()).toMatchObject({ source: 'ptp', ntpFallback: false });
+        expect(decisions(h.epochs)).toEqual([[1, 'start', true]]);
+    });
+
+    it('a change of the fallback alone is a state change', async () => {
+        vi.useFakeTimers();
+        // The fallback's start runs chronyd before it writes status.env.
+        let env = slaveOnlyEnv(0);
+        const h = fakeSidecar({ readText: async () => env });
+        clock = h.clock;
+        h.clock.start();
+        await vi.advanceTimersByTimeAsync(0);
+        h.emit(line());
+        expect(h.states.at(-1)).toMatchObject({ source: 'chrony', ntpFallback: false });
+        const seen = h.states.length;
+        env = slaveOnlyEnv(1);
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.states).toHaveLength(seen + 1);
+        expect(h.states.at(-1)).toMatchObject({ source: 'chrony', ntpFallback: true });
+    });
+
+    it('no field on a box without status.env', async () => {
+        const h = fakeSidecar({
+            readText: async () => {
+                throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+            },
+        });
+        clock = h.clock;
+        h.clock.start();
+        h.emit(line());
+        await polled();
+        expect(h.clock.state().source).toBe('chrony');
+        expect(h.clock.state()).not.toHaveProperty('ntpFallback');
+    });
+});
+
 /** The .50 captures (fixtures/PROVENANCE.md), one line at a time through the sidecar's stdout. */
 describe('HouseClock replaying field captures', () => {
     let clock: HouseClock | null = null;

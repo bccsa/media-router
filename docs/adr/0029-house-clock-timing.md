@@ -179,14 +179,43 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   grandmaster of its discipline; if ptp4l died, `StopPropagatedFrom=` stops
   the watcher. Engineering choice, open to the owner's veto.
 - **A slave-only box without a master runs on NTP** (MR-048b, Yocto
-  7347a244, 2026-11-05, the owner's: "when the master comes back, go to ptp
-  again"). With no usable PTP lock for 120 s, at boot or later,
-  `mr-ptp-owner` hands the clock to chrony, and back once a master's lock
-  has held 30 s: each hand-over one ptp4l restart, its marker
-  `/run/media-router-ptp/ntp-fallback` read by the setup script, which
-  grants chronyd the token on the fallback while linuxptp writes no clock.
-  The marker lives in `/run`, so a reboot starts on PTP. The engine's time
-  source reads `chrony` on the fallback and `ptp` after the return (below).
+  7347a244 and 608ef45c, 2026-11-05; the owner's: "yes it should siwthc to
+  ntc, but when the master comes back, go to ptp again"). The hand-over:
+  - **To NTP** after 120 s without a usable PTP lock, counted from PTP's
+    start (each ptp4l start: at boot, or after a Device Manager save that
+    changes a PTP setting) or, once a master has been lost, from its last
+    lock. `mr-ptp-owner` judges a GET TIME_STATUS_NP every 5 s: a usable
+    lock is a port that follows a master (SLAVE, or UNCALIBRATED while
+    ptp4l runs free), syncs arriving and an offset that moved at most 1 ms
+    since the last reading.
+  - **Back to PTP** once a master's lock has held steady for 30 s unbroken
+    (five of AES67's 6 s announce timeouts); any break starts the 30 s
+    again, so a master that comes and goes hands nothing over.
+  - **One ptp4l restart and one journal line per hand-over.** The watcher
+    writes or removes the marker `/run/media-router-ptp/ntp-fallback`, logs
+    `fallback: no PTP master for 120 s (port LISTENING) - chrony (NTP)
+    takes the clock` or `return: port SLAVE, offset steady within 1 ms for
+    30 s - PTP takes the clock back from chrony`, and restarts ptp4l, whose
+    setup script applies it: on the fallback chronyd gets the token while
+    linuxptp writes no system clock; at the return chronyd stops before
+    ptp4l starts, and an offset under 1 s is slewed. The marker lives in
+    `/run`, so a reboot starts on PTP.
+  - **The engine re-epochs only on a step over 1 ms** (below): a fallback
+    at boot, on an image-date clock, or a return more than 1 s off gives
+    one `step`; a fallback after a lost master, or a return within 1 s,
+    gives none. Its time source reads `chrony` on the fallback and `ptp`
+    after the return, and its time-sync state says why (`ntpFallback`,
+    B-215).
+- **`status.env` says what was decided; only the setup writes it.** At
+  every ptp4l start the setup script decides what applies (the marker
+  counts only on a slave-only box; a master-capable one voids it) and
+  writes `/run/media-router-ptp/status.env` (0644): the interface, profile,
+  domain, priority, `PTP_SLAVE_ONLY=0|1`, the timestamping and PHC and,
+  last, `PTP_NTP_FALLBACK=0|1`. `mr-ptp-owner` re-reads it at every ptp4l start:
+  a new watcher starts with ptp4l, and one that outlived a restart follows
+  that start's file before its next decision (MR-048c). The engine and the
+  Device Manager only read it, never write it: the engine once a source
+  poll (below), the Device Manager for its PTP page.
 - **A grandmaster's boot: chrony first, one step, then ptp4l.** The setup
   script (ptp4l's `ExecStartPre`) removes the token and stops chronyd on a
   slave-only box. On a master-capable box it writes the token; if chronyd
@@ -495,7 +524,13 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   `mr-clockstate` writes the post-step sample right after the step line,
   before that line's poll answers, so the re-latch of a handover's step can
   still name the previous owner; `/system/timeSync.source` follows within
-  the poll's round trip.
+  the poll's round trip. Each poll also reads `status.env` once
+  (`ptpStatus.ts` `readPtpStatusEnv`), the read that gives pmc its domain:
+  `TimeSyncState.ntpFallback` is true while it says `PTP_SLAVE_ONLY=1` and
+  `PTP_NTP_FALLBACK=1`, false on any other PTP box, and absent on a box
+  without the file (B-215, 2026-11-06). A missing key reads 0, the setup's
+  default, so a setup older than the fallback reads as no fallback. No new
+  poll and no privilege: the file is 0644 in `/run`.
 - **Where it shows.** `SystemStats.timeSync` (`packages/shared-types/src/timeSync.ts`:
   source, synced, traceable, TAI−UTC, errors, frequency, wait, epoch seq,
   reason and ISO time, E as a string) goes to `/system/timeSync` in the
@@ -504,7 +539,10 @@ before ptp4l) and a management path that carries the PTP domain (`pmc -d`,
   clock indicator (green traceable, amber waiting or synced-but-TAI-unset,
   red unsynced) with the detail (source, error, TAI−UTC, chrony reference,
   epoch number, reason and time) in its tooltip
-  (`packages/manager-ui/src/utils/engineClock.ts`). The error is chrony's
+  (`packages/manager-ui/src/utils/engineClock.ts`). For an engine whose
+  `ntpFallback` is set the tooltip says "No PTP master: on internet time
+  (NTP)", the Device Manager's words, in place of its source; every other
+  engine shows its source (B-215). The error is chrony's
   estimate; under PTP it is ptp4l's own offset from its master (`pmc` over
   ptp4l's read-only socket, `packages/engine/src/clock/ptpStatus.ts`,
   `TimeSyncState.ptp`), else none; elsewhere the kernel's esterror, never

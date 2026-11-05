@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import type { ChronyTracking, PtpClockState, TimeSyncSource } from '@media-router/shared-types';
-import { readPtpClock, type ReadText } from './ptpStatus.js';
+import { readPtpClock, readPtpStatusEnv, type ReadText } from './ptpStatus.js';
 
 /** Runs a command and returns its stdout, also on a non-zero exit (`is-active` exits 3). */
 export type ExecStdout = (cmd: string, args: string[]) => Promise<string>;
@@ -16,7 +16,8 @@ const UNITS = ['chronyd.service', 'media-router-ptp4l.service'];
 export function sourceFromUnits(stdout: string): TimeSyncSource {
     const [chrony, ptp] = stdout.split('\n').map((l) => l.trim());
     // On a PTP box chronyd runs only while it owns the clock (a master-capable box as
-    // grandmaster, or the boot wait), so chronyd active means chrony.
+    // grandmaster, the boot wait, or a slave-only box on the NTP fallback), so chronyd active
+    // means chrony.
     if (chrony === 'active') return 'chrony';
     if (ptp === 'active') return 'ptp';
     return 'none';
@@ -35,18 +36,32 @@ export function parseChronyTracking(csv: string): ChronyTracking | null {
     return { reference: f[1] || f[0], stratum: num(2), estErrorUs, leap: f[13] };
 }
 
+export interface ClockSourcePoll {
+    source: TimeSyncSource;
+    chrony?: ChronyTracking;
+    ptp?: PtpClockState;
+    /** From status.env, read once a poll (it gives pmc its domain too); absent without it. */
+    ntpFallback?: boolean;
+}
+
 /** One poll: who owns the clock, and that daemon's own view (chrony's tracking, ptp4l's offset).
  *  Read-only, unprivileged. `readPtp: false` leaves ptp4l out. */
 export async function pollClockSource(
     exec: ExecStdout = execStdout,
     opts: { readPtp?: boolean; readText?: ReadText } = {},
-): Promise<{ source: TimeSyncSource; chrony?: ChronyTracking; ptp?: PtpClockState }> {
-    const source = sourceFromUnits(await exec('systemctl', ['is-active', ...UNITS]));
-    if (source === 'ptp') {
-        const ptp = opts.readPtp === false ? null : await readPtpClock(exec, opts.readText);
-        return ptp ? { source, ptp } : { source };
+): Promise<ClockSourcePoll> {
+    const [units, env] = await Promise.all([
+        exec('systemctl', ['is-active', ...UNITS]),
+        readPtpStatusEnv(opts.readText),
+    ]);
+    const poll: ClockSourcePoll = { source: sourceFromUnits(units) };
+    if (env) poll.ntpFallback = env.ntpFallback;
+    if (poll.source === 'ptp' && opts.readPtp !== false) {
+        const ptp = await readPtpClock(exec, env?.domain ?? 0);
+        if (ptp) poll.ptp = ptp;
+    } else if (poll.source === 'chrony') {
+        const chrony = parseChronyTracking(await exec('chronyc', ['-c', 'tracking']));
+        if (chrony) poll.chrony = chrony;
     }
-    if (source !== 'chrony') return { source };
-    const chrony = parseChronyTracking(await exec('chronyc', ['-c', 'tracking']));
-    return chrony ? { source, chrony } : { source };
+    return poll;
 }

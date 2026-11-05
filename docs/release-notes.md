@@ -692,6 +692,13 @@ elements" below do not start.
   PTP's offset from its master ("error ±812 ns (PTP offset from master, path
   delay 41.2 µs)") or "error n/a (PTP)", as do the engine's epoch log lines.
   Chrony boxes are unchanged; the Device Manager's Time page still shows 16 s.
+- **A PTP box that has lost its grandmaster says so in the manager.** With
+  this release's image a box set to "Never become grandmaster" runs on
+  internet time (NTP) after 2 minutes without a PTP master, and goes back to
+  PTP once a grandmaster's lock has held for 30 s. The manager showed such a
+  box as "source chrony", like any NTP box; its clock help text now reads
+  "No PTP master: on internet time (NTP)", as the Device Manager's PTP page
+  does. Every other box shows its source as before.
 - **No stray PulseAudio takes the sound cards while PipeWire is down.** Up to
   v2.0.0.100 the engine could start a PulseAudio of its own while PipeWire was
   stopped; it took the sound cards (outputs played through it, a mic failed,
