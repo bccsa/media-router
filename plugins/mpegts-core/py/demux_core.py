@@ -5,7 +5,10 @@ ports rule for rule (OQ-1, ADR-0029 S0 choice 1, B-55). Nothing loads it at runt
 
 Every PES leaves at PTS = ceil((unwrap(PES PTS) - 1 h) x 100000 / 9) ns, DTS likewise (S12): the
 first PES of a pad unwrapped nearest house now + 1 h (B-14), every later one nearest the pad's
-previous, a DTS nearest its own PTS; the bus stamps are never read. Pads are named and capped as
+previous, a DTS nearest its own PTS; the bus stamps are never read. With a clock (B-149) a bus
+DISCONT re-seeds every unwrap from house now, a pad on house time reads each PES nearest house
+now, and a PES there that jumps more than 60 s off house time is dropped as stale;
+not-house-time is once per episode, in both modes. Pads are named and capped as
 tsdemux 1.28.2 names and caps them (part 4.2); a program is new only when its PCR PID or its (PID,
 stream type) list changes, tsdemux's rule (S13). Gaps: a hole in an audio pad of more than two
 frames, in a video pad of 1 s or more (S5, B-89), the frame learned from a video pad's DTS (B-122);
@@ -833,7 +836,7 @@ class _Pad:
     """One output pad's stream state; select mode's one pad keeps its horizon across PIDs."""
     __slots__ = ("name", "pid", "stype", "es", "cls", "sparse", "s302m", "uw", "emitted", "discont",
                  "have_horizon", "horizon", "have_last", "clean", "last_t", "spacings",
-                 "next_spacing", "house_checked")
+                 "next_spacing", "house", "episode", "episode_at", "have_prev", "prev_t", "prev_off")
 
     def __init__(self, name, pid, stype, es):
         self.name, self.pid, self.stype, self.es = name, pid, stype, es
@@ -846,7 +849,11 @@ class _Pad:
         self.last_t = 0                           # the last spacing time: DTS on video, else PTS
         self.spacings = []
         self.next_spacing = 0
-        self.house_checked = False
+        # B-149: its last placed PES "on" or "off" house time (None: not known), its off-house
+        # episode (open, the house now of its last off PES), its previous PES's PTS and offset.
+        self.house = None
+        self.episode, self.episode_at = False, 0
+        self.have_prev, self.prev_t, self.prev_off = False, 0, 0
 
     def frame(self):
         """The upper median of its last 8 clean spacings in decode order (a video pad's DTS, else
@@ -867,6 +874,8 @@ class _Pad:
         self.have_last = self.clean = False
         self.spacings = []
         self.next_spacing = 0
+        self.house = None
+        self.episode = self.have_prev = False
 
 
 Program = namedtuple("Program", "gen pmt pads")
@@ -880,7 +889,8 @@ class DemuxCore:
     SPACING_WINDOW = 8
     SPACING_MAX_NS = SEC                          # a longer PES spacing is no frame
     VIDEO_HOLE_NS = SEC                           # B-89: a video hole is a gap from 1 s
-    NOT_HOUSE_NS = 60 * SEC
+    NOT_HOUSE_NS = 60 * SEC                       # a PES this far from house now is off it
+    EPISODE_QUIET_NS = 10 * SEC                   # B-149: an off-house episode ends this quiet
     WAITING, FOUND, MISSING = "waiting", "found", "missing"
 
     def __init__(self, cfg=None):
@@ -902,6 +912,7 @@ class DemuxCore:
         self._program = None                      # demux mode: the planned program
         self._pads = {}                           # PID -> _Pad of the planned program
         self._pcr_uw = Unwrapper()
+        self._pcr_house = False                   # B-149: the last PCR sat on house time
         self._have_pt = False                     # program time: newest PCR or non-sparse end
         self._pt = 0
         self._one = None                          # select mode's pad, the stream's PID on it
@@ -919,12 +930,17 @@ class DemuxCore:
         out = []
         self._now = house_now_ns
         if bus_discont:
-            # No packet joins across, the open PES are dropped, every pad's next unit is DISCONT.
+            # No packet joins across, the open PES are dropped, every pad's next unit is DISCONT;
+            # with a clock every unwrap re-seeds from house time, however long the outage (B-149).
             self._walker.reset()
             self._pes.reset()
             for pad in self._live_pads():
                 pad.discont = True
                 pad.clean = False
+                if self._now >= 0:
+                    pad.uw.reset()
+            if self._now >= 0:
+                self._pcr_uw.reset()
         for pkt in self._walker.feed(data):
             self._on_packet(parse_packet(pkt), out)
         if self._state == self.MISSING and not self._warned and self._now >= 0:
@@ -991,6 +1007,7 @@ class DemuxCore:
             pad.have_horizon = pad.emitted = pad.discont = False
             pad.horizon = 0
         self._pcr_uw.reset()
+        self._pcr_house = False
         self._have_pt = False
         self._pt = 0
 
@@ -1148,6 +1165,7 @@ class DemuxCore:
             if pad.sparse and self._have_pt:
                 pad.have_horizon, pad.horizon = True, self._pt
         self._pcr_uw = Unwrapper()
+        self._pcr_house = False
         self._program = Program(gen, pmt, pads)
         out.append(Event("plan", {"gen": gen, "program": pmt.program_number, "pcrPid": pmt.pcr_pid,
                                   "pads": [{"pad": p.name, "pid": p.pid, "type": p.stype,
@@ -1165,14 +1183,24 @@ class DemuxCore:
         else:
             self._missing()
 
+    def _seed(self, own):
+        """B-14's unwrapped seed: house now + 1 h, never folded to 33 bits; `own` without a clock."""
+        return ns_to_pts90k(self._now) + MUX_CLOCK_BASE_90K if self._now >= 0 else own
+
+    def _off_house(self, t):
+        return abs(t - self._now) > self.NOT_HOUSE_NS
+
     def _on_pcr(self, v, out):
         pcr = read_pcr(v.p)
         if pcr < 0:
             return
         base = pcr // 300
-        seed = ns_to_pts90k(self._now) + MUX_CLOCK_BASE_90K if self._now >= 0 else base
-        base_u = self._pcr_uw.feed(base, seed)
-        self._advance(pcr27_to_ns((base_u - MUX_CLOCK_BASE_90K) * 300 + pcr % 300), out)
+        if self._now >= 0 and self._pcr_house:
+            self._pcr_uw.reset()                  # B-149: on house time, read nearest house now
+        base_u = self._pcr_uw.feed(base, self._seed(base))
+        t = pcr27_to_ns((base_u - MUX_CLOCK_BASE_90K) * 300 + pcr % 300)
+        self._pcr_house = self._now >= 0 and not self._off_house(t)
+        self._advance(t, out)
 
     def _advance(self, t, out):
         """Program time on to t (B-86: a sparse PCR is valid, so units move it too); each sparse pad
@@ -1199,6 +1227,40 @@ class DemuxCore:
         pad.have_horizon, pad.horizon = True, end
         pad.discont = True
 
+    def _on_house(self, pad, pts33, pts_u, out):
+        """B-149: None for a stale PES, dropped. A pad on house time reads each PES nearest house now;
+        off it by NOT_HOUSE_NS and as far from the previous PES's offset (or on its PTS), a PES is
+        stale there and elsewhere an episode's start (one nothouse). Drifting off is neither."""
+        def ns(x):
+            return pts90k_to_ns_ceil(x - MUX_CLOCK_BASE_90K)
+        u = pts_u                                 # nearest the previous PES, else the seed
+        if pad.house == "on":
+            house_u = hr.unwrap_near(pts33, self._seed(pts33))
+            if not self._off_house(ns(house_u)):
+                u = house_u
+        t = ns(u)
+        d = t - self._now
+        off = abs(d) > self.NOT_HOUSE_NS
+        near_prev = pad.have_prev and abs(d - pad.prev_off) <= self.NOT_HOUSE_NS
+        stale = off and pad.house == "on" and not (near_prev and t != pad.prev_t)
+        if pad.episode and self._now - pad.episode_at > self.EPISODE_QUIET_NS:
+            pad.episode = False
+        if off and not pad.episode and (stale or not near_prev):
+            out.append(Event("nothouse", {"pid": pad.pid, "offsetMs": d // 1000000 if d >= 0
+                                          else -(-d // 1000000), "stale": stale}, pid=pad.pid))
+            pad.episode = True
+        if off and pad.episode:
+            pad.episode_at = self._now
+        pad.have_prev, pad.prev_t, pad.prev_off = True, t, d
+        if stale:
+            pad.discont, pad.clean = True, False
+            return None
+        pad.house = "off" if off else "on"
+        if u != pts_u:                            # the unwrap goes on from the house reading
+            pad.uw.reset()
+            pad.uw.feed(pts33, u)
+        return u
+
     def _on_unit(self, pad, u, out):
         dur = -1
         if pad.s302m:
@@ -1208,9 +1270,11 @@ class DemuxCore:
         pts = dts = -1
         raw = None
         if u.hdr.pts >= 0:
-            # B-14: the seed is the unwrapped house time + 1 h, never folded to 33 bits.
-            seed = ns_to_pts90k(self._now) + MUX_CLOCK_BASE_90K if self._now >= 0 else u.hdr.pts
-            pts_u = pad.uw.feed(u.hdr.pts, seed)
+            pts_u = pad.uw.feed(u.hdr.pts, self._seed(u.hdr.pts))
+            if self._now >= 0:
+                pts_u = self._on_house(pad, u.hdr.pts, pts_u, out)
+                if pts_u is None:
+                    return                        # a stale PES: dropped
             dts_u = pad.uw.feed_dts(u.hdr.dts, pts_u)
             pts = pts90k_to_ns_ceil(pts_u - MUX_CLOCK_BASE_90K)
             dts = pts if dts_u is None else pts90k_to_ns_ceil(dts_u - MUX_CLOCK_BASE_90K)
@@ -1224,12 +1288,6 @@ class DemuxCore:
             pad.emitted = True
             pad.discont = pad.clean = False
             return
-        if not self._select and not pad.house_checked:
-            pad.house_checked = True
-            if self._now >= 0 and abs(pts - self._now) > self.NOT_HOUSE_NS:
-                d = pts - self._now
-                out.append(Event("nothouse", {"pid": pad.pid, "offsetMs": d // 1000000 if d >= 0
-                                              else -(-d // 1000000)}, pid=pad.pid))
         frame = pad.frame()
         clean = pad.have_last and pad.clean and not u.discont
         if not pad.sparse and pad.have_last and pad.have_horizon and frame > 0:

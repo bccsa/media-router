@@ -27,7 +27,9 @@ Demux mode (the default, WI-P3-2; register B-123), each case numbered as p3-2's 
   5. Opus caps equal tsdemux's, decoded sample counts equal through opusdec (clipping meta);
   6. `media=video`: one pad, `pes` counts video only;  7. bus gap markers from the sidecar
      (syn-gap-marker, and the restamp's in bus-ingest-relock-gap and bus-pmt-change);
-  8. a 2 h-off fixture: not-house-time once per PID;  9. the stream collection and the event
+  8. a 2 h-off fixture: not-house-time once per PID; 8b. B-149: back from 13.3 h and 20 h
+     away (mrts_cli rebase, the clock moved on) on house time in both modes, a lone stale PES
+     dropped with one not-house-time;  9. the stream collection and the event
      order per pad equal tsdemux's (the section messages' place excepted, S14);
   10. MPEG-2 ADTS: caps mpegversion=2 before the first buffer;  11. KLV caps and SPARSE;
   12. `media=audio` on a video-only stream: no-stream after 2 s;  13. the select cases above;
@@ -38,8 +40,10 @@ Demux mode (the default, WI-P3-2; register B-123), each case numbered as p3-2's 
 Skips (exit 0) without GStreamer, the built plugin, or gst-libav's s302m codec."""
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -1047,10 +1051,16 @@ for name in _names:
     counters = next(ln["counters"] for ln in lines if "counters" in ln)
     removed = [e for e in h.log if e[0] == "pad-removed"]
     gone_pads = sum(len(plans[i]["pads"]) for i in range(len(plans) - 1))
+    # B-149: syn-source-restart's +3 h jump; this clock moves on by the run's few ms.
+    nh_want = [(ln["nothouse"]["pid"], ln["nothouse"]["offsetMs"]) for ln in lines if "nothouse" in ln]
+    nh_got = [(m["pid"], m["offset-ms"]) for m in h.messages("not-house-time")]
     check(f"{name}: unknown-stream once per PID per program, the old program's pads removed, "
-          f"no warning or error ({got_u}, {len(removed)} removed)",
+          f"not-house-time as DemuxCore's, no other warning or error ({got_u}, "
+          f"{len(removed)} removed)",
           got_u == unknown and len(removed) == gone_pads and not h.errors
-          and not h.messages("not-house-time") and not h.messages("no-stream")
+          and [p for p, _ in nh_got] == [p for p, _ in nh_want]
+          and all(abs(a[1] - b[1]) < 1000 for a, b in zip(nh_got, nh_want))
+          and not h.messages("no-stream")
           and h.el.get_property("pes") == counters["pes"]
           and h.el.get_property("gaps") == counters["gaps"]
           and h.el.get_property("generation") == counters["generation"]
@@ -1271,6 +1281,122 @@ for name in ("syn-adts-mpeg2", "cap-mux-align7-aac-opus"):
           and all(abs(m["offset-ms"] + 2 * 3600_000) < 60_000 for m in nh)
           and len(h.pushes(h.pads()[0])) > 0)
     h.stop()
+
+# --- 8b. B-149: back from an outage on house time; a lone stale PES dropped ------------------
+print("\n--- 8b. an input back from 13.3 h and 20 h away, a lone stale PES (B-149) ---")
+_CLI = os.path.join(fx.ROOT, "plugins", "mpegts-core", "native", "mrts", "mrts_cli")
+DAY30 = 30 * 86400 * S
+
+
+def rebased(name, to_ns, tmp):
+    """Fixture `name` moved by mrts_cli rebase so its first PES is house time `to_ns`."""
+    out = os.path.join(tmp, f"{name}.{to_ns}.ts")
+    subprocess.run([_CLI, "rebase", os.path.join(FIX, name + ".ts"), out, "--to-ns", str(to_ns)],
+                   check=True, capture_output=True)
+    with open(out, "rb") as f:
+        return f.read()
+
+
+def jump_clock(el, by_ns):
+    """The element's running time on by `by_ns`: house time went on while nothing came."""
+    el.set_base_time(el.get_base_time() - by_ns)
+
+
+def house_near(data, ref_ns):
+    """house_of(data) in house ticks, unwrapped nearest house time `ref_ns`."""
+    t, ref = house_of(data) * 9 // 100_000, ref_ns * 9 // 100_000
+    return t + (ref - t + PTS_WRAP // 2) // PTS_WRAP * PTS_WRAP
+
+
+def outage_pair(name, away_h, tmp):
+    """`name` at house 30 days and again `away_h` later (mrts_cli rebase): both, the first's house
+    time and the ticks between them."""
+    a = rebased(name, DAY30, tmp)
+    b = rebased(name, DAY30 + int(away_h * HOUR), tmp)
+    ta, tb = house_near(a, DAY30), house_near(b, DAY30 + int(away_h * HOUR))
+    return a, b, pts90k_to_ns(ta), tb - ta
+
+
+def moved(pts_ns, ticks):
+    """A unit's PTS had its PES come `ticks` later (the formula's ceil)."""
+    return pts90k_to_ns(pts_ns * 9 // 100_000 + ticks)
+
+
+_tmp = tempfile.mkdtemp(prefix="mrtsdemux-b149.")
+try:
+    for away_h in (13.3, 20):
+        a, b, house, dt = outage_pair("cap-mux-align7-aac-opus", away_h, _tmp)
+        h = DemuxHarness(running=house)
+        h.chunks(a, 1316)
+        pa = {n: [g[3][0][0] for g in h.pushes(n)] for n in h.pads()}
+        jump_clock(h.el, pts90k_to_ns(dt))
+        h.push(b[:1316], flags=DISCONT)
+        h.chunks(b[1316:], 1316)
+        bad = []
+        for n, was in pa.items():
+            got = h.pushes(n)[len(was):]
+            gaps = [e[3] for e in h.events(n, "gap") if e[3][1] > pts90k_to_ns(dt) - 60 * S]
+            at = [g[3][0][0] for g in got]
+            if at != [moved(x, dt) for x in was] or not got[0][3][0][2] & DISCONT:
+                bad.append((n, "units"))
+            elif len(gaps) != 1 or gaps[0][0] + gaps[0][1] != got[0][3][0][0]:
+                bad.append((n, "gap", gaps))
+        check(f"demux mode, cap-mux-align7-aac-opus at house 30 days back from {away_h} h away "
+              f"(mrts_cli rebase, the clock moved on, a bus DISCONT): every unit at its house time, "
+              f"DISCONT, one GAP over the outage, no not-house-time {bad[:2]}",
+              len(pa) == 2 and min(min(v) for v in pa.values()) > DAY30 - 60 * S and not bad
+              and not h.messages("not-house-time") and not h.errors)
+        h.stop()
+        a, b, house, dt = outage_pair("cap-302m-bssd", away_h, _tmp)
+        h = Harness(running=house)
+        h.chunks(a, 1316)
+        was = [x[1] for x in h.bufs()]
+        jump_clock(h.el, pts90k_to_ns(dt))
+        h.push(b[:1316], flags=Gst.BufferFlags.DISCONT)
+        h.chunks(b[1316:], 1316)
+        got = h.bufs()[len(was):]
+        gaps = [g for g in h.of("gap") if g[2] > pts90k_to_ns(dt) - 60 * S]
+        check(f"select mode, cap-302m-bssd at house 30 days back from {away_h} h away: every unit at "
+              f"its house time, DISCONT, one GAP over the outage, no not-house-time "
+              f"({len(got)} of {len(was)})",
+              was and was[0] > DAY30 - 60 * S and [x[1] for x in got] == [moved(x, dt) for x in was]
+              and is_discont(got[0]) and len(gaps) == 1 and gaps[0][1] + gaps[0][2] == got[0][1]
+              and not h.messages("not-house-time") and not h.errors)
+        h.stop()
+finally:
+    shutil.rmtree(_tmp, ignore_errors=True)
+# One PES 22.14 h old in place of frame 50 among current ones, in both modes.
+_t0 = DAY30 * 9 // 100_000
+_st = Ts().psi_302m()
+for k in range(100):
+    if k == 50:
+        _st.pes(PID_A, (_t0 + 50 * TICKS - 7_173_360_000 + MUX_90K) % PTS_WRAP, s302m(960))
+    else:
+        _st.frame(_t0 + k * TICKS)
+_want = [pts90k_to_ns(_t0 + k * TICKS) for k in range(100) if k != 50]
+
+
+def ahead_437(nh):
+    """One not-house-time on PID_A, about 4.37 h ahead: 22.14 h back read a wrap on."""
+    return (len(nh) == 1 and nh[0]["pid"] == PID_A
+            and 4.3 * HOUR // MS < nh[0]["offset-ms"] < 4.45 * HOUR // MS)
+
+
+h = Harness(running=DAY30 - 500 * MS)
+h.chunks(_st.data(), 1316)
+_sb, _nh = h.bufs(), h.messages("not-house-time")
+check(f"select mode: a lone stale PES 22.14 h old dropped, the next buffer DISCONT, one "
+      f"not-house-time about 4.37 h ahead ({[(m['pid'], m['offset-ms']) for m in _nh]})",
+      [x[1] for x in _sb] == _want and is_discont(_sb[50]) and not is_discont(_sb[51])
+      and ahead_437(_nh))
+h.stop()
+h = DemuxHarness(running=DAY30 - 500 * MS)
+h.chunks(_st.data(), 1316)
+_pd, _nh = [g[3][0] for g in h.pushes("audio_0_0041")], h.messages("not-house-time")
+check(f"demux mode: the same, on audio_0_0041 ({[(m['pid'], m['offset-ms']) for m in _nh]})",
+      [x[0] for x in _pd] == _want and bool(_pd[50][2] & DISCONT) and not _pd[51][2] & DISCONT
+      and ahead_437(_nh))
+h.stop()
 
 # --- 9. the stream collection and the event order, as tsdemux --------------------------------
 print("\n--- 9. the collection message before the pads; each pad's events as tsdemux's ---")

@@ -2,8 +2,10 @@
 // B-122): every PES of the program's elementary streams on the formula timeline, PTS =
 // ceil((unwrap(PES PTS) - 1 h) x 100000 / 9) ns, DTS likewise; pads named and capped as
 // tsdemux 1.28.2 names and caps them; GAP events for holes, bus gap markers and sparse pads.
-// With `select` set it is Phase 2's select mode (one stream, one pad). GStreamer-free:
-// mrtsdemux is its element. py/demux_core.py is the reference it ports rule for rule (OQ-1).
+// With a clock a bus DISCONT re-seeds every unwrap from house time and a pad on house time
+// drops a stale PES far off it (B-149). With `select` set it is Phase 2's select mode (one
+// stream, one pad). GStreamer-free: mrtsdemux is its element. py/demux_core.py is the reference
+// it ports rule for rule (OQ-1).
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -111,7 +113,8 @@ struct DemuxEvent {
     std::vector<DemuxPad> pads;           // plan
     int stream_type = -1;                 // unknown
     uint32_t reg = 0;                     // unknown
-    int64_t offset_ms = 0;                // not_house_time: first PTS - house now, toward 0
+    int64_t offset_ms = 0;                // not_house_time: the PES's PTS - house now, toward 0
+    bool stale = false;                   // not_house_time: that PES was dropped as stale (B-149)
 };
 
 class DemuxCore {
@@ -121,7 +124,8 @@ class DemuxCore {
     static constexpr int SPACING_WINDOW = 8;                // the frame: their upper median
     static constexpr int64_t SPACING_MAX_NS = 1000000000;   // a longer spacing is no frame
     static constexpr int64_t VIDEO_HOLE_NS = 1000000000;    // B-89: a video hole from 1 s
-    static constexpr int64_t NOT_HOUSE_NS = 60000000000LL;  // a first PTS this far from now
+    static constexpr int64_t NOT_HOUSE_NS = 60000000000LL;  // a PES this far from now is off it
+    static constexpr int64_t EPISODE_QUIET_NS = 10000000000LL;  // B-149: an episode ends this quiet
 
     struct Config {
         int program = -1;                 // -1: the PAT's first
@@ -145,7 +149,8 @@ class DemuxCore {
     DemuxCore();
     explicit DemuxCore(const Config& cfg);   // an unselectable `select` matches no stream
     // One bus buffer, any chunking. `house_now_ns`: clock - base time, < 0 without a clock (a
-    // first PES then seeds on itself). `bus_discont`: bytes may be missing before it.
+    // first PES then seeds on itself). `bus_discont`: bytes may be missing before it; with a
+    // clock every unwrap re-seeds from house time (B-149).
     void feed(const uint8_t* d, size_t n, bool bus_discont, int64_t house_now_ns,
               std::vector<DemuxEvent>& out);
     // A gap-marker buffer (OQ-12): whole packets, `end_ns` its PTS as running time (< 0:
@@ -182,7 +187,11 @@ class DemuxCore {
         int64_t last_t = 0;                         // the last spacing time: DTS on video, else PTS
         int64_t spacings[SPACING_WINDOW] = {};
         int n_spacings = 0, next_spacing = 0;
-        bool house_checked = false;
+        // B-149: its last placed PES on or off house time, its off-house episode (open, the house
+        // now of its last off PES), its previous PES's PTS and offset from house now.
+        enum class House { unknown, on, off } house = House::unknown;
+        bool episode = false, have_prev = false;
+        int64_t episode_at = 0, prev_t = 0, prev_off = 0;
         int64_t frame() const;                      // the upper median, -1 before two
         void learn(int64_t spacing);
         void forget_stream();
@@ -202,6 +211,8 @@ class DemuxCore {
     void on_unit(Pad& pad, PesUnit& u, std::vector<DemuxEvent>& out);
     void unit(Pad& pad, PesUnit& u, int64_t pts, int64_t dts, int64_t dur, bool discont,
               int64_t pts_u, int64_t dts_u, std::vector<DemuxEvent>& out);
+    bool on_house(Pad& pad, int64_t pts33, int64_t* pts_u, std::vector<DemuxEvent>& out);
+    bool off_house(int64_t t) const { return t - now_ > NOT_HOUSE_NS || now_ - t > NOT_HOUSE_NS; }
     int64_t seed(int64_t own) const;            // B-14's unwrapped seed, `own` without a clock
 
     Config cfg_;
@@ -225,6 +236,7 @@ class DemuxCore {
     std::vector<Pad> pads_;
     int16_t pad_index_[8192];
     Unwrapper pcr_uw_;
+    bool pcr_house_ = false;                    // B-149: the last PCR sat on house time
     bool have_pt_ = false;                      // program time: the newest PCR or non-sparse end
     int64_t pt_ = 0;
     Pad one_;                                   // select mode's pad, the stream's PID on it

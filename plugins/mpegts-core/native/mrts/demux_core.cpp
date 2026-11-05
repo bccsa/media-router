@@ -419,6 +419,8 @@ void DemuxCore::Pad::forget_stream() {
     uw.reset();
     have_last = clean = false;
     n_spacings = next_spacing = 0;
+    house = House::unknown;
+    episode = have_prev = false;
 }
 
 bool DemuxCore::selectable(const std::string& select) {
@@ -466,20 +468,21 @@ void DemuxCore::feed(const uint8_t* d, size_t n, bool bus_discont, int64_t house
                      std::vector<DemuxEvent>& out) {
     now_ = house_now_ns;
     if (bus_discont) {
-        // No packet joins across, the open PES are dropped, every pad's next unit is DISCONT.
+        // No packet joins across, the open PES are dropped, every pad's next unit is DISCONT;
+        // with a clock every unwrap re-seeds from house time, however long the outage (B-149).
         walker_.reset();
         pes_.reset();
+        auto cut = [&](Pad& p) {
+            p.discont = true;
+            p.clean = false;
+            if (now_ >= 0) p.uw.reset();
+        };
         if (select_) {
-            if (one_.pid >= 0) {
-                one_.discont = true;
-                one_.clean = false;
-            }
+            if (one_.pid >= 0) cut(one_);
         } else {
-            for (Pad& p : pads_) {
-                p.discont = true;
-                p.clean = false;
-            }
+            for (Pad& p : pads_) cut(p);
         }
+        if (now_ >= 0) pcr_uw_.reset();
     }
     walker_.feed(d, n, [&](const PacketView& v) { on_packet(v, out); });
     if (state_ != State::missing || warned_ || now_ < 0) return;
@@ -640,6 +643,7 @@ void DemuxCore::on_pmt(const Pmt& pmt, std::vector<DemuxEvent>& out) {
         }
     }
     pcr_uw_ = Unwrapper();
+    pcr_house_ = false;
     have_program_ = true;
     program_gen_ = gen;
     program_pmt_ = pmt;
@@ -670,8 +674,11 @@ void DemuxCore::on_pcr(const PacketView& v, std::vector<DemuxEvent>& out) {
     const int64_t pcr = read_pcr(v.p);
     if (pcr < 0) return;
     const int64_t base = pcr / 300;
+    if (now_ >= 0 && pcr_house_) pcr_uw_.reset();   // B-149: on house time, read nearest house now
     const int64_t base_u = pcr_uw_.feed(base, seed(base));
-    advance(pcr27_to_ns((base_u - MUX_CLOCK_BASE_90K) * 300 + pcr % 300), out);
+    const int64_t t = pcr27_to_ns((base_u - MUX_CLOCK_BASE_90K) * 300 + pcr % 300);
+    pcr_house_ = now_ >= 0 && !off_house(t);
+    advance(t, out);
 }
 
 void DemuxCore::advance(int64_t t, std::vector<DemuxEvent>& out) {
@@ -735,6 +742,49 @@ void DemuxCore::unit(Pad& pad, PesUnit& u, int64_t pts, int64_t dts, int64_t dur
     out.push_back(std::move(e));
 }
 
+bool DemuxCore::on_house(Pad& pad, int64_t pts33, int64_t* pts_u, std::vector<DemuxEvent>& out) {
+    // B-149: false for a stale PES, dropped. A pad on house time reads each PES nearest house now;
+    // off it by NOT_HOUSE_NS and as far from the previous PES's offset (or on its PTS), a PES is
+    // stale there and elsewhere an episode's start (one warning). Drifting off is neither.
+    const auto ns = [](int64_t u) { return pts90k_to_ns_ceil(u - MUX_CLOCK_BASE_90K); };
+    int64_t u = *pts_u;                         // nearest the previous PES, else the seed
+    if (pad.house == Pad::House::on) {
+        const int64_t house_u = unwrap_near(pts33, seed(pts33));
+        if (!off_house(ns(house_u))) u = house_u;
+    }
+    const int64_t t = ns(u), d = t - now_;
+    const bool off = off_house(t);
+    const bool near_prev = pad.have_prev && d - pad.prev_off <= NOT_HOUSE_NS &&
+                           pad.prev_off - d <= NOT_HOUSE_NS;
+    const bool stale = off && pad.house == Pad::House::on && !(near_prev && t != pad.prev_t);
+    if (pad.episode && now_ - pad.episode_at > EPISODE_QUIET_NS) pad.episode = false;
+    if (off && !pad.episode && (stale || !near_prev)) {
+        DemuxEvent e;
+        e.kind = DemuxEvent::Kind::not_house_time;
+        e.pid = pad.pid;
+        e.offset_ms = d / 1000000;              // toward 0
+        e.stale = stale;
+        out.push_back(std::move(e));
+        pad.episode = true;
+    }
+    if (off && pad.episode) pad.episode_at = now_;
+    pad.have_prev = true;
+    pad.prev_t = t;
+    pad.prev_off = d;
+    if (stale) {
+        pad.discont = true;
+        pad.clean = false;
+        return false;
+    }
+    pad.house = off ? Pad::House::off : Pad::House::on;
+    if (u != *pts_u) {                          // the unwrap goes on from the house reading
+        pad.uw.reset();
+        pad.uw.feed(pts33, u);
+        *pts_u = u;
+    }
+    return true;
+}
+
 void DemuxCore::on_unit(Pad& pad, PesUnit& u, std::vector<DemuxEvent>& out) {
     int64_t dur = -1;
     if (pad.s302m) {
@@ -744,6 +794,7 @@ void DemuxCore::on_unit(Pad& pad, PesUnit& u, std::vector<DemuxEvent>& out) {
     int64_t pts = -1, dts = -1, pts_u = Unwrapper::NO_DTS, dts_u = Unwrapper::NO_DTS;
     if (u.hdr.pts >= 0) {
         pts_u = pad.uw.feed(u.hdr.pts, seed(u.hdr.pts));
+        if (now_ >= 0 && !on_house(pad, u.hdr.pts, &pts_u, out)) return;   // a stale PES: dropped
         dts_u = pad.uw.feed_dts(u.hdr.dts, pts_u);
         pts = pts90k_to_ns_ceil(pts_u - MUX_CLOCK_BASE_90K);
         dts = dts_u == Unwrapper::NO_DTS ? pts : pts90k_to_ns_ceil(dts_u - MUX_CLOCK_BASE_90K);
@@ -756,16 +807,6 @@ void DemuxCore::on_unit(Pad& pad, PesUnit& u, std::vector<DemuxEvent>& out) {
         pad.emitted = true;
         pad.discont = pad.clean = false;
         return;
-    }
-    if (!select_ && !pad.house_checked) {
-        pad.house_checked = true;
-        if (now_ >= 0 && (pts - now_ > NOT_HOUSE_NS || now_ - pts > NOT_HOUSE_NS)) {
-            DemuxEvent e;
-            e.kind = DemuxEvent::Kind::not_house_time;
-            e.pid = pad.pid;
-            e.offset_ms = (pts - now_) / 1000000;  // toward 0
-            out.push_back(std::move(e));
-        }
     }
     const int64_t frame = pad.frame();
     const bool clean = pad.have_last && pad.clean && !u.discont;
@@ -848,6 +889,7 @@ void DemuxCore::flush() {
     else
         for (Pad& p : pads_) reset(p);
     pcr_uw_.reset();
+    pcr_house_ = false;
     have_pt_ = false;
     pt_ = 0;
 }
@@ -943,7 +985,8 @@ std::string demux_jsonl(const DemuxEvent& e) {
             return "{\"unknown\":{\"pid\":" + pid + ",\"type\":" + std::to_string(e.stream_type) + ",\"reg\":" +
                    pyjson(reg_text(e.reg)) + ",\"gen\":" + std::to_string(e.generation) + "}}";
         case K::not_house_time:
-            return "{\"nothouse\":{\"pid\":" + pid + ",\"offsetMs\":" + std::to_string(e.offset_ms) + "}}";
+            return "{\"nothouse\":{\"pid\":" + pid + ",\"offsetMs\":" + std::to_string(e.offset_ms) +
+                   ",\"stale\":" + (e.stale ? "true" : "false") + "}}";
         default:
             return "{\"nostream\":{}}";
     }

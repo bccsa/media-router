@@ -193,6 +193,20 @@ static GstStructure* demux_message(GstMrtsDemux* self, const gchar* reason) {
     return s;
 }
 
+/* B-149: a PES off house time, once per episode, in both modes; `stale`: it was dropped. */
+static void post_not_house_time(GstMrtsDemux* self, const DemuxEvent& e) {
+    if (e.stale)
+        GST_WARNING_OBJECT(self, "PID 0x%04x: a PES %" G_GINT64_FORMAT " ms from house time on a "
+                           "stream on house time, dropped as stale", e.pid, (gint64)e.offset_ms);
+    else
+        GST_WARNING_OBJECT(self, "PID 0x%04x: its PTS are %" G_GINT64_FORMAT " ms from house "
+                           "time; its producer writes no house time", e.pid, (gint64)e.offset_ms);
+    GstStructure* s = demux_message(self, "not-house-time");
+    gst_structure_set(s, "pid", G_TYPE_INT, e.pid, "offset-ms", G_TYPE_INT64, (gint64)e.offset_ms,
+                      NULL);
+    demux_post(self, s);
+}
+
 static std::string joined(const std::vector<std::string>& names) {
     std::string s;
     for (const std::string& n : names) s += (s.empty() ? "" : ",") + n;
@@ -327,6 +341,9 @@ static GstFlowReturn select_push_outs(GstMrtsDemux* self) {
                 demux_push_head(self);
                 gst_pad_push_event(self->srcpad, gst_event_new_gap((GstClockTime)o.pts_ns,
                                                                    (GstClockTime)o.dur_ns));
+                break;
+            case DemuxEvent::Kind::not_house_time:
+                post_not_house_time(self, o);
                 break;
             case DemuxEvent::Kind::no_stream:
                 GST_WARNING_OBJECT(self, "no stream matches select within 2 s of the PMT");
@@ -716,16 +733,9 @@ static GstFlowReturn pads_push_outs(GstMrtsDemux* self) {
                 demux_post(self, s);
                 break;
             }
-            case DemuxEvent::Kind::not_house_time: {
-                GST_WARNING_OBJECT(self, "PID 0x%04x: its first PTS is %" G_GINT64_FORMAT
-                                   " ms from house time; its producer writes no house time",
-                                   e.pid, (gint64)e.offset_ms);
-                GstStructure* s = demux_message(self, "not-house-time");
-                gst_structure_set(s, "pid", G_TYPE_INT, e.pid, "offset-ms", G_TYPE_INT64,
-                                  (gint64)e.offset_ms, NULL);
-                demux_post(self, s);
+            case DemuxEvent::Kind::not_house_time:
+                post_not_house_time(self, e);
                 break;
-            }
             case DemuxEvent::Kind::no_stream:
                 GST_WARNING_OBJECT(self, "no stream of `media` within 2 s of the PMT");
                 demux_post(self, demux_message(self, "no-stream"));

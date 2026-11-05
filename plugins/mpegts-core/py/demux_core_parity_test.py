@@ -11,11 +11,15 @@ WI-P3-1, register B-121, B-122; B-55's pattern).
    timing, PMT changes of every kind, a moved PMT PID, 18 programs in a row, CC loss and
    duplicates, bus DISCONT, garbage, the 33-bit wrap, B-frames, unbounded, PTS-less, malformed
    and split-header PES, sparse streams, teletext beside a BSSD registration, gap markers, other
-   house times and configurations), each through its bus sidecar. No-stream needs a moving
-   clock, which a replay at one house time has not: the suites' cases 12 and 13 hold it.
+   house times and configurations, and B-149's shapes at their end: a stale PES, a stream that
+   leaves house time or drifts past 60 s off it, one 10 h off it back 20 h on across a bus
+   DISCONT), each through its bus sidecar. No-stream needs a moving clock, which a replay at one
+   house time has not: the suites' cases 12 and 13 hold it.
 3. The reference's mutants (p3-1a's, its review's and this item's): each applied to a copy of
    demux_core.py, run on the inputs of 2 (the recordings at 1,316 bytes and through their
    sidecar, the random programs) until one differs from the C++; every one must be caught.
+   B-149's rules that need a moving clock (the house reading, an episode's quiet, the PCR's
+   re-seed) are the suites' case 17.
 
 The C++ side is built here as `make test` builds it. Run:  python3 demux_core_parity_test.py
 """
@@ -401,6 +405,7 @@ class Program:
                          ([ts_packet(0x1FF2, self.cc_next(0x1FF2), False, d[184 + i:368 + i])
                            for i in range(0, len(d) - 184, 184)]))
         self.config()
+        self.house_shapes(end)
 
     def change(self, kind, streams):
         r = self.r
@@ -518,6 +523,39 @@ class Program:
         if self.second and r.chance(400):
             self.cfg["program"] = 2 if self.number != 2 else 3
 
+    def house_shapes(self, end):
+        """B-149's shapes after the content, drawn last so a program without one is as it was: a
+        stale PES (now and then twice, or after a bus DISCONT), a stream that leaves house time, a
+        drift past 60 s, and a stream 10 h off house time that comes back 20 h on (a DISCONT)."""
+        r = self.r
+        live = [s for s in self.live_streams if s.frame]
+        if not live:
+            return
+        s = r.pick(live)
+        f = dc.pts90k_to_ns(s.frame)
+        kind = r.pick(("stale", "stale", "leave", "drift", "far", None, None, None))
+        if kind == "stale":
+            if r.chance(400):
+                self.add(end, "discont", None)
+            age = r.pick((2 * 3600, 13 * 3600 + 1080, 79704)) * SEC
+            for _ in range(2 if r.chance(300) else 1):   # twice: the same PTS again, a copy
+                self.pes(s, end, end - age)
+            for k in range(1, 4):
+                self.pes(s, end + k * f, end + k * f)
+        elif kind == "leave":
+            jump = r.pick((3 * 3600, -2 * 3600, 20 * 3600)) * SEC
+            for k in range(4):
+                self.pes(s, end + k * f, end + k * f + jump)
+        elif kind == "drift":
+            self.pes(s, end, end + 50 * SEC)
+            self.pes(s, end + f, end + f + 70 * SEC)
+        elif kind == "far":
+            self.cfg["house_ns"] = self.t0 + 10 * 3600 * SEC
+            s = next((x for x in live if x.pid == self.pcr_pid), s)
+            self.add(end + 20 * 3600 * SEC - 1, "discont", None)
+            for k in range(4):
+                self.pes(s, end + 20 * 3600 * SEC + k * f, end + 20 * 3600 * SEC + k * f)
+
     # --- the recording ---
 
     def write(self, ts_path, bus_path):
@@ -539,7 +577,11 @@ class Program:
             buf, flags = [], 0
 
         size = 1 + r.below(40)
-        for t, _, kind, payload in sorted(self.items):
+        for t, _, kind, payload in sorted(self.items, key=lambda i: (i[0], i[1])):
+            if kind == "discont":                 # an outage: the next buffer DISCONT
+                close()
+                flags = 64
+                continue
             if kind == "marker":
                 close()
                 pkts, end_ns = payload
@@ -675,6 +717,24 @@ MUTANTS = [
     ("a bus DISCONT keeps the open PES",
      "            self._walker.reset()\n            self._pes.reset()\n            for pad in self._live_pads():",
      "            self._walker.reset()\n            for pad in self._live_pads():"),
+    ("B-149: no re-seed at a bus DISCONT",
+     "                if self._now >= 0:\n                    pad.uw.reset()\n",
+     ""),
+    ("B-149: a stale PES placed",
+     "        if stale:\n            pad.discont, pad.clean = True, False\n            return None\n",
+     ""),
+    ("B-149: no DISCONT after a stale PES",
+     "            pad.discont, pad.clean = True, False\n            return None",
+     "            pad.clean = False\n            return None"),
+    ("B-149: a copy of the stale PES taken for its stream",
+     "not (near_prev and t != pad.prev_t)",
+     "not near_prev"),
+    ("B-149: a drift off house time warns",
+     "        if off and not pad.episode and (stale or not near_prev):",
+     "        if off and not pad.episode:"),
+    ("B-149: not-house-time in demux mode only",
+     "            if self._now >= 0:\n                pts_u = self._on_house(pad, u.hdr.pts, pts_u, out)",
+     "            if self._now >= 0 and not self._select:\n                pts_u = self._on_house(pad, u.hdr.pts, pts_u, out)"),
 ]
 
 

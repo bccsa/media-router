@@ -2662,7 +2662,7 @@ line's fixes up to v2.0.0.100 carried in); the device rounds DEV-P3a,
 DEV-P3b and DEV-P3c (V1 to V13, plan chapter 7 part 11) are still to run. On
 the boxes only the capture lane (p3cap, the five bus recordings) and the
 Phase 2 baselines (p3base) ran, in DEV4a (2026-10-27). The plan's register
-(chapter 15.4, rows B-120 to B-147) holds the same records with their work
+(chapter 15.4, rows B-120 to B-149) holds the same records with their work
 items; B-120 is the build plan and its 40 corrections of chapter 7 (S1 to
 S40).
 
@@ -2692,6 +2692,25 @@ S40).
   moved up by 1 ns. A PES without PTS, or before house time 0, leaves
   untimed. The bus stamps are never read for time; without a clock (a file
   source prerolling in a test) the first PES seeds on itself.
+- **House time across an outage (B-149).** With a clock, a bus DISCONT
+  re-seeds every pad's `Unwrapper` and the PCR's from house now, however long
+  the outage, and a pad whose last placed PES sat within 60 s of house now
+  (`NOT_HOUSE_NS`) reads each PES nearest house now, the PCR likewise: for
+  continuous input and across the 33-bit wrap that is the previous PES's
+  reading, and after a silence of half a wrap (13.25 h) or more, a DISCONT or
+  none, the right one. On such a pad a PES more than 60 s off house time
+  whose offset from house now moves more than 60 s from the previous PES's,
+  or that repeats its PTS, is stale: dropped, nothing learned but the
+  unwrap, the next unit DISCONT, the jump rule gapping the hole past its
+  bound. One that keeps the previous offset plays at its own reading: the
+  next PES of a stream that left house time (its first there dropped), a
+  source that paused its PTS, a long recording replayed at one clock
+  reading. A pad off house time unwraps nearest its previous PES as before.
+  Found by the m6 merge's probe (B-149): an input away more than 13.25 h
+  came back a wrap (95,443.718 s) behind house time and stayed there, and
+  one stale PES 22.14 h old (MR-033's copy) landed 4.37 h ahead behind a
+  4.4 h GAP; 33 bits cannot tell those apart, so house time is the
+  reference wherever a stream is on it.
 - **Two modes, one element** (`gstmrtsdemux.cpp`). **Demux mode** is the
   default (no `select`): tsdemux 1.28.2's four SOMETIMES templates (`video`,
   `audio`, `private`, `subpicture`) with their caps sets, a pad per stream
@@ -2784,10 +2803,12 @@ S40).
   `generation`, `pads`); `program` at each plan (`generation`, `pcr-pid`,
   `pads`); `unknown-stream` once per PID per generation for a stream of
   `media` with no row (`pid`, `stream-type`, `registration`);
-  `not-house-time` at a pad's first timed unit more than 60 s from house now
-  (`pid`, `offset-ms`; demux mode); `no-stream` when a plan has no pad, by
-  select mode's 2 s rule (E16). Both runners forward it unsubscribed as
-  `mrtsdemux:<element>`.
+  `not-house-time` once per episode in both modes (`pid`, `offset-ms`;
+  B-149): an episode opens at a PES more than 60 s from house now that is a
+  pad's first, stale or another jump, and closes after 10 s of house time
+  with no PES off it (`EPISODE_QUIET_NS`); `no-stream` when a plan has no
+  pad, by select mode's 2 s rule (E16). Both runners forward it unsubscribed
+  as `mrtsdemux:<element>`.
 - **No stand-in**, as in Phase 2: a start description naming `mrtsdemux` is
   refused without `libgstmrtshouse.so`, with the rule-6 alarm, and since
   Phase 3 that is every bus consumer that demuxes (below). The plugin now
