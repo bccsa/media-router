@@ -13,7 +13,7 @@ import {
     type PatchOp,
 } from '@media-router/shared-types';
 import { Manager } from '../../../../manager/src/Manager.js';
-import { startRouter, until } from './routerRig.js';
+import { startRouter, until, type RigPlugin } from './routerRig.js';
 
 export { sleep } from './routerRig.js';
 
@@ -26,6 +26,13 @@ const output = (displayName: string, settings: Record<string, unknown>) => ({
     settings: { volumeMax: 150, ...settings },
 });
 
+/** The profile the manager stores; by default three audio outputs, two of them an interlock. */
+export interface RigProfile {
+    modules: Record<string, unknown>;
+    /** Real modules on the router over these plugins (routerRig's startRouter). */
+    plugins?: Record<string, RigPlugin>;
+}
+
 function open(url: string, opts: Parameters<typeof io>[1] = {}): Promise<IoSocket> {
     const socket = io(url, { transports: ['websocket'], reconnection: false, ...opts });
     return new Promise((resolve, reject) => {
@@ -36,29 +43,37 @@ function open(url: string, opts: Parameters<typeof io>[1] = {}): Promise<IoSocke
 const request = (socket: IoSocket, event: string, payload: unknown): Promise<any> =>
     new Promise((resolve) => socket.emit(event, payload, resolve));
 
-export async function managerRig() {
+export async function managerRig(profile?: RigProfile) {
     const manager = new Manager({ httpPort: 0, dgramPort: 0, dbPath: ':memory:' });
     const m = manager as any;
     m.configStore.createEngine(ENGINE, 'Router One', 'pw');
     m.configStore.createProfile(ENGINE, PROFILE, {
-        modules: {
+        modules: profile?.modules ?? {
             m1: output('Out', { volume: 80 }),
             a: output('A', { audioEnabled: false }),
             b: output('B', { audioEnabled: true }),
         },
         connections: [],
-        interlocks: [{ id: 'ilk1', name: 'Language', members: ['a', 'b'] }],
+        interlocks: profile ? [] : [{ id: 'ilk1', name: 'Language', members: ['a', 'b'] }],
         running: true,
     });
     m.configStore.setActiveProfile(ENGINE, PROFILE);
     m.engineManager.refreshEncryptionKeys();
     await manager.start();
     const server = m.engineManager.server;
-    const router = await startRouter(ENGINE, server.udpListeners[0].udpSocket.address().port);
+    const router = await startRouter(
+        ENGINE,
+        server.udpListeners[0].udpSocket.address().port,
+        profile?.plugins,
+    );
+    const moduleIds = Object.keys(router.config().modules ?? {});
 
     const auth = { proto: TREE_PROTOCOL };
     const routerDash = await open(router.url, { path: ROUTER_TREE_PATH, auth });
     const lcp = await open(router.url);
+    /** Every op the LCP got, in order. */
+    const lcpOps: PatchOp[] = [];
+    lcp.on('configUpdate', (ops: PatchOp[]) => lcpOps.push(...ops));
     const managerDash = await open(
         `http://127.0.0.1:${(m.httpServer.address() as AddressInfo).port}`,
         { auth },
@@ -73,9 +88,13 @@ export async function managerRig() {
         }
     });
     const enginePath = (p: string) => `/engines/${ENGINE}${p}`;
-    const patterns = ['/modules/m1', '/modules/a', '/modules/b', '/info'].map(enginePath);
+    const patterns = [...moduleIds.map((id) => `/modules/${id}`), '/info'].map(enginePath);
     for (const op of (await request(managerDash, 'sub', { patterns })).data.ops)
         applyTreeOp(mirror, op);
+    /** Every op a router dashboard on the modules got, in order. */
+    const routerSeen: PatchOp[] = [];
+    routerDash.on('tree', (frame: { ops: PatchOp[] }) => routerSeen.push(...frame.ops));
+    await request(routerDash, 'sub', { patterns: moduleIds.map((id) => `/modules/${id}`) });
 
     let writeId = 0;
     const rig = {
@@ -96,6 +115,15 @@ export async function managerRig() {
         /** What the manager dashboard shows at an engine-relative path. */
         shown: (p: string) => getAt(mirror, splitPath(enginePath(p))),
         seen,
+        routerSeen,
+        /** What a router dashboard opened now reads at `p`. */
+        async routerRead(p: string) {
+            const view: Record<string, unknown> = {};
+            for (const op of (await request(routerDash, 'sub', { patterns: [p] })).data.ops)
+                applyTreeOp(view, op);
+            return getAt(view, splitPath(p));
+        },
+        lcpOps,
         /** Resolves once the manager dashboard shows `value` at `p`, at most `ms` after the call. */
         shows: (p: string, value: unknown, ms = 1000) =>
             until(
@@ -128,6 +156,33 @@ export async function managerRig() {
         async newSession() {
             const before = router.pushes();
             server.sockets.get(server.clientToSocket.get(ENGINE)).destroy();
+            await until(
+                'the connect push of a new session',
+                10_000,
+                () => router.pushes() > before,
+            );
+        },
+        /**
+         * A full outage both sides see, then the real reconnect (#857's F2 drill): every packet
+         * lost both ways, the router gives the link up and the manager the session; `during`
+         * runs then; the link comes back on a new session with its connect push.
+         */
+        async outage(during: () => Promise<void> = async () => {}) {
+            const client = (router.mc as any).client;
+            const cut = [
+                vi.spyOn(client, 'onPacket').mockImplementation(() => {}),
+                vi.spyOn(server, 'onPacket').mockImplementation(() => {}),
+            ];
+            for (const ps of client.pathStates) ps.socket.disconnect();
+            server.sockets.get(server.clientToSocket.get(ENGINE)).destroy();
+            await until(
+                'the router offline on the manager',
+                1000,
+                () => !m.engineManager.isEngineOnline(ENGINE),
+            );
+            await during();
+            const before = router.pushes();
+            for (const spy of cut) spy.mockRestore();
             await until(
                 'the connect push of a new session',
                 10_000,

@@ -1,4 +1,5 @@
 import { applyJsonPatch, createLogger, diffConfig, GRAPH_KEYS, interlockRepairs, type PatchOp } from '@media-router/shared-types';
+import { asStarted } from '../modules/startSettings.js';
 import type { ConfigPush, LocalChanges } from './LocalChanges.js';
 
 const log = createLogger('ConfigPush');
@@ -16,6 +17,8 @@ export interface ConfigPushDeps {
     broadcastConfig: (config: Obj) => void;
     /** Rebuild every module from the current config. */
     restartAll: () => void;
+    /** Each plugin's config schema on this host. */
+    schemas: () => Record<string, unknown>;
 }
 
 /**
@@ -23,8 +26,9 @@ export interface ConfigPushDeps {
  * router is running is merged with its outage journal and only the
  * difference is applied to the running modules — live values at once,
  * modules and connections added or removed, non-live settings flagged
- * pendingRestart. Anything else replaces the config; a profile switched
- * during an outage rebuilds the modules.
+ * pendingRestart. Both configs are compared as their modules start, so the
+ * defaults a start filled in here are no difference (MR-035). Anything else
+ * replaces the config; a profile switched during an outage rebuilds the modules.
  */
 export function applyConfigPush(deps: ConfigPushDeps, raw: Obj): void {
     const { _push, ...pushed } = raw as Obj & { _push?: ConfigPush };
@@ -40,7 +44,8 @@ export function applyConfigPush(deps: ConfigPushDeps, raw: Obj): void {
     const profileSwitched = reconnect && runningProfile !== undefined && _push?.profile !== runningProfile;
 
     if (current && reconnect && !profileSwitched && deps.isRunning()) {
-        const ops = diffConfig(current, config);
+        const schemas = deps.schemas();
+        const ops = diffConfig(asStarted(current, schemas), asStarted(config, schemas));
         if (ops.length > 0) {
             const paths = ops.slice(0, 20).map((o) => `${o.op} ${o.path}`);
             log.info({ opCount: ops.length, paths }, 'Reconnect: applying the difference to the running modules');

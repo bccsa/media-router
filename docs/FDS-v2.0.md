@@ -1739,8 +1739,10 @@ Router dashboards (§6.4) do not use this protocol: they are clients of the rout
 - **Reconnect:** a `connect` push of the running profile is merged with the
   journal (the on-site value wins). Entries for modules or connections the
   manager no longer has are dropped and logged. Only the difference is
-  applied, through the engine patch router: live values at once, modules and
-  connections added or removed, non-live settings flagged `pendingRestart`.
+  applied, both configs taken as their modules start (the defaults a start
+  filled in are no difference, MR-035), through the engine patch router: live
+  values at once, modules and connections added or removed, non-live settings
+  flagged `pendingRestart`.
   The journal is then replayed to the manager. A Start/Stop made during the
   outage rides the connect handshake (`engineRunningState { localChange }`)
   and the manager adopts it. A profile switched during the outage rebuilds

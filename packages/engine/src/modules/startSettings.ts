@@ -3,6 +3,7 @@ import { settingMaximum } from '@media-router/shared-types';
 
 const ajv = new Ajv({ allErrors: true, useDefaults: true, strict: false });
 
+type Obj = Record<string, unknown>;
 type SchemaProps = Record<string, Record<string, unknown>>;
 
 /** ajv keywords whose error a start fixes by bringing the value to `params.limit`. */
@@ -84,4 +85,29 @@ export function checkStartSettings(
         }
     }
     return fixes;
+}
+
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * `config` with each module's settings as its start runs them: the check above on a copy, so the
+ * defaults (an array item's too) and fixes a start writes into the stored settings are no
+ * difference between two configs (MR-035). Modules of a plugin without a schema stay as they are.
+ */
+export function asStarted(config: Obj, schemas: Obj): Obj {
+    if (!isObj(config.modules)) return config;
+    const modules: Obj = {};
+    for (const [id, mod] of Object.entries(config.modules)) {
+        modules[id] = mod;
+        const schema = isObj(mod) ? schemas[mod.pluginId as string] : undefined;
+        if (!isObj(mod) || !isObj(schema) || !isObj(mod.settings)) continue;
+        try {
+            const settings = structuredClone(mod.settings);
+            checkStartSettings(schema, settings);
+            modules[id] = { ...mod, settings };
+        } catch {
+            // A schema ajv cannot compile fails that module's start, never the push comparing here.
+        }
+    }
+    return { ...config, modules };
 }
