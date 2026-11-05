@@ -51,6 +51,12 @@
   the router noticed the drop is not lost. A replay the manager already had
   is harmless: on-site ops are leaf values and id-path removes. Engine only;
   no manager or protocol change, so deploy order does not matter.
+- **The difference is taken as the modules start (amended 2026-11-05,
+  MR-035).** A module's start fills each setting the manager never stored
+  with its schema default in the router's own config, and the manager never
+  hears of it. A connect push compares both configs as their modules start
+  (the start's check on a copy of each), so such a default is no difference:
+  no remove, no 'restart pending', no live re-apply. Engine only.
 
 ## Why
 

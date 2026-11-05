@@ -808,6 +808,20 @@ elements" below do not start.
   compare its dashboards with the manager's and set again on the manager what
   differs, or restart the manager first: every box then reconnects and sends
   what it held.
+- **A box's reconnect to the manager no longer shows a false "Restart
+  pending", nor takes away the settings its modules run with.** A module
+  runs each setting the manager never stored at its default (Ingest Offset,
+  Per-PID Trim and Smoothing Cooldown on the inputs, among others). Each time
+  a box reconnected to the manager after an outage, it dropped those
+  settings again from its modules, its own dashboards and its Local Control
+  Panel (about 20 on FRA-Master01 on 2 November), and a module with a list
+  setting whose entries lacked a field (a RIST Input's links, a transcoder's
+  renditions) could show "Restart pending" with nothing to apply. Streams ran
+  on unchanged, but a restart for that badge was a needless interruption.
+  Fixed: a reconnect applies only what was really changed, on the manager or
+  on the box, during the outage; the modules keep their defaults, the box's
+  dashboards keep showing them, and "Restart pending" means a change waits
+  for a restart.
 - **An audio volume above 150 % set with a wider Volume Range now survives an
   engine restart.** On Audio Input (302M) and Audio Output (302M), and on the
   deprecated Audio Input, Audio Output, Audio Encoder and Audio Decoder, a

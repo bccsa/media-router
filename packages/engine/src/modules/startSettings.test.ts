@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkStartSettings } from './startSettings.js';
+import { asStarted, checkStartSettings } from './startSettings.js';
 
 const SCHEMA = {
     type: 'object',
@@ -53,5 +53,59 @@ describe('checkStartSettings (B-103)', () => {
             reset: [],
         });
         expect(settings.label).toBe('x');
+    });
+});
+
+describe('asStarted (MR-035)', () => {
+    const ITEMS = {
+        type: 'object',
+        properties: {
+            links: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        port: { type: 'number' },
+                        weight: { type: 'number', default: 50 },
+                    },
+                },
+            },
+        },
+    };
+
+    it("gives each module's settings as its start runs them, on a copy", () => {
+        const config = {
+            modules: {
+                a: { pluginId: 'p', displayName: 'A', settings: { gain: -50, label: 'x' } },
+                b: { pluginId: 'q', settings: { links: [{ port: 5004 }] } },
+                c: { pluginId: 'unknown', settings: { level: 900 } },
+                d: { pluginId: 'p' },
+            },
+            connections: [{ id: 'c1' }],
+            running: true,
+        };
+        const before = structuredClone(config);
+        const view = asStarted(config, { p: SCHEMA, q: ITEMS });
+        expect(view.modules).toEqual({
+            a: {
+                pluginId: 'p',
+                displayName: 'A',
+                settings: { gain: -20, label: 'x', batchMs: 5, range: 150, level: 100, stepMs: 3 },
+            },
+            b: { pluginId: 'q', settings: { links: [{ port: 5004, weight: 50 }] } },
+            c: config.modules.c,
+            d: config.modules.d,
+        });
+        expect(view.connections).toBe(config.connections);
+        expect(view.running).toBe(true);
+        // The stored settings are what a start fills, never the view.
+        expect(config).toEqual(before);
+    });
+
+    it('takes a config without modules as it is, and a module whose schema ajv cannot compile', () => {
+        const config = { running: false };
+        expect(asStarted(config, { p: SCHEMA })).toBe(config);
+        const broken = { modules: { a: { pluginId: 'p', settings: { gain: -50 } } } };
+        expect(asStarted(broken, { p: { type: 'nonsense' } }).modules).toEqual(broken.modules);
     });
 });

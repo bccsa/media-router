@@ -141,6 +141,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
                 applyOps: (ops) => ctx.enginePatchRouter.onPatch('manager', 'manager', ops),
                 broadcastConfig: (c) => ctx.localServer.configChanged([{ op: 'replace', path: '/', value: c }]),
                 restartAll: () => ctx.commandDispatcher.dispatch({ command: 'start' }),
+                schemas: ctx.pluginSchemas,
             },
             config as Record<string, unknown>,
         );
