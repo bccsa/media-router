@@ -21,33 +21,44 @@ export type OutputPlacement =
       }
     | { fragment?: undefined; error: string };
 
+/** The pinned mix relabelled unpositioned, samples untouched: audioconvert refuses a positioned
+ *  input into an unpositioned output of the same width, matrix or not (B-214). */
+const UNPOSITION = 'capssetter caps="audio/x-raw,channel-mask=(bitmask)0x0"';
+
 /**
  * Place an N-channel mix on device channels `firstChannel..firstChannel+N-1`.
  *
  * Playback mirror of the 302M input's capture shape (ADR-0014): PipeWire links
  * ports by channel POSITION, and a stream of ≤ 8 channels is given default
  * positions (FL, FR, …) that never match a multichannel card's AUX-named
- * ports — so a positioned 8-channel stream reaches two outputs. An
- * unpositioned stream (`channel-mask=0x0`) links port-for-port in index order
- * instead, whatever its width. So the mix is spread with an `audioconvert
- * mix-matrix` onto a stream exactly `lastChannel` wide — wide enough to reach
- * the last device channel it lands on, and not the device's full width: on an
- * X32 a mono output on channel 3 is a 3-channel stream, not a 48-channel one
- * (each pulse stream costs pipewire-pulse two scratch buffers per channel,
- * measured on ZA-SCC-AES50 2026-09-15). Unlike the capture side this stays on
- * WirePlumber's auto-link: pipewire-pulse never attaches a sink to a stream
- * with `node.autoconnect=false`, and pulsesink then cannot reach PLAYING.
+ * ports — so a positioned stream reaches two outputs, a mono one included
+ * (MR-052). An unpositioned stream (`channel-mask=0x0`) links port-for-port
+ * in index order instead, whatever its width. So the mix is spread with an
+ * explicit `audioconvert mix-matrix` onto a stream exactly `lastChannel` wide
+ * — wide enough to reach the last device channel it lands on, and not the
+ * device's full width: on an X32 a mono output on channel 3 is a 3-channel
+ * stream, not a 48-channel one (each pulse stream costs pipewire-pulse two
+ * scratch buffers per channel, measured on ZA-SCC-AES50 2026-09-15). A stream
+ * is at least 2 wide: GStreamer reads one channel with a 0 mask as MONO, so a
+ * mono output on channel 1 is channel 1 of a 2-wide stream, channel 2 silent.
+ * Unlike the capture side this stays on WirePlumber's auto-link: pipewire-pulse
+ * never attaches a sink to a stream with `node.autoconnect=false`, and
+ * pulsesink then cannot reach PLAYING.
  *
- * The DEFAULT range — stereo or mono from channel 1 — deliberately keeps the
- * legacy positioned stream: every existing profile's pipeline string stays
- * byte-identical, and FL/FR on a stereo DAC is exactly right there.
+ * Only the DEFAULT range — stereo or mono from channel 1 — on a device of 2
+ * channels or fewer keeps the legacy positioned stream: there FL/FR is right,
+ * and every translation station's SSL 2 output keeps its string byte-identical.
+ * A device of unknown width keeps it too (B-214): its default range plays on
+ * any stereo device as before instead of failing, and a width read at the next
+ * start places it.
  */
 export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
     const channels = Math.max(1, Math.min(8, Math.trunc(o.channels) || 2));
     const firstChannel = Math.max(1, Math.trunc(o.firstChannel) || 1);
     const lastChannel = firstChannel - 1 + channels;
 
-    if (firstChannel === 1 && channels <= 2) return { fragment: null };
+    const narrow = o.deviceChannels === null || o.deviceChannels <= 2;
+    if (firstChannel === 1 && channels <= 2 && narrow) return { fragment: null };
 
     const deviceWidth = o.deviceChannels ?? 0;
     if (deviceWidth <= 0) {
@@ -66,16 +77,17 @@ export function buildOutputPlacement(o: OutputPlacementOpts): OutputPlacement {
         };
     }
 
-    // As wide as the last channel used, unpositioned → PipeWire links
-    // port-for-port in index order; the matrix parks the mix at its columns.
-    const width = lastChannel;
-    const wide = `audio/x-raw,channels=${width},channel-mask=(bitmask)0x0`;
-    if (firstChannel === 1 && channels === width) {
-        return { fragment: `audioconvert ! ${wide}` };
-    }
+    // Unpositioned, as wide as the last channel used (2 at least) → PipeWire links port-for-port
+    // in index order; the matrix parks the mix at its columns, every other column silent.
+    const width = Math.max(lastChannel, 2);
     const place: ChannelMapEntry[] = Array.from({ length: channels }, (_, i) => ({
         srcChannel: i,
         dstChannel: firstChannel - 1 + i,
     }));
-    return { fragment: `audioconvert${mixMatrixClause(place, channels, width)} ! ${wide}` };
+    return {
+        fragment:
+            (channels > 1 ? `${UNPOSITION} ! ` : '') +
+            `audioconvert${mixMatrixClause(place, channels, width)}` +
+            ` ! audio/x-raw,channels=${width},channel-mask=(bitmask)0x0`,
+    };
 }

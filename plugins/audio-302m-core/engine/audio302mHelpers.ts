@@ -10,7 +10,9 @@ import {
     type ChannelMapEntry,
     type LiveInputBranch,
 } from '@media-router/engine';
+import { DEFAULT_LAYOUT_MASK } from './channelLayout.js';
 import { mixMatrixClause } from './channelMapMatrix.js';
+import { default302mChannelMap } from './defaultChannelMap.js';
 
 /**
  * SMPTE-302M (PCM-in-MPEG-TS) pipeline helpers — the PTS-preserving audio
@@ -109,6 +111,14 @@ export function alignedMixer(opts: AlignedMixerOpts): string {
     );
 }
 
+/** A mix's caps: 48 kHz at its width, its layout pinned to GStreamer's default for that width, so
+ *  a placement downstream cannot drag it unpositioned and zero every input (MR-056). One channel
+ *  is mono whatever its mask: no pin. */
+function mixCaps(channels: number, pinnedLayout: boolean | undefined): string {
+    const mask = pinnedLayout ? DEFAULT_LAYOUT_MASK[channels] : undefined;
+    return `audio/x-raw,rate=48000,channels=${channels}${mask ? `,channel-mask=(bitmask)${mask}` : ''}`;
+}
+
 export interface AudioMixInputOpts {
     sources: AudioMixSource[];
     /** Output channel count of the mix (inputs are converted). Default 2. */
@@ -130,6 +140,9 @@ export interface AudioMixInputOpts {
      *  caller's own `mrasrc` after the continuation, one resampler (audio-output-302m, OQ-23).
      *  A mixer-arm branch always keeps its own: each source's clock is matched before the mix. */
     branchAsrc?: boolean;
+    /** Pin the mix's layout (`mixCaps`), each input brought to it by an explicit matrix: its map, or
+     *  the default (`default302mChannelMap`). Default off: other callers' strings unchanged. */
+    pinnedLayout?: boolean;
 }
 
 /**
@@ -150,6 +163,8 @@ export interface MixInputBranchOpts {
     demuxName: string;
     /** `name=` of the branch's decode `mrasrc`. */
     asrcName: string;
+    /** The mix's layout is pinned (`AudioMixInputOpts.pinnedLayout`). */
+    pinnedLayout?: boolean;
 }
 
 /** `name=` of a live-input branch's mrtsdemux — keyed by the connection like
@@ -234,6 +249,7 @@ function decode302m(
     demuxName: string,
     channels: number,
     asrcName: string | null,
+    pinnedLayout?: boolean,
 ): string {
     const demux = buildBusDemux({
         port: source.port,
@@ -241,14 +257,15 @@ function decode302m(
         name: demuxName,
         select: 'audio/x-smpte-302m',
     });
-    // Per-connection channel mapping on THIS branch's audioconvert.
-    const matrix = source.channelMap?.length
-        ? mixMatrixClause(
-              source.channelMap,
-              normalize302mChannels(source.sourceChannels ?? 2),
-              channels,
-          )
-        : '';
+    // Per-connection channel mapping on THIS branch's audioconvert; into a pinned mix, the
+    // default map for an unmapped source (MR-053).
+    const wire = normalize302mChannels(source.sourceChannels ?? 2);
+    const map = source.channelMap?.length
+        ? source.channelMap
+        : pinnedLayout && channels > 1
+          ? default302mChannelMap(wire, channels)
+          : undefined;
+    const matrix = map ? mixMatrixClause(map, wire, channels) : '';
     // avdec_s302m's interleaved S16LE/S32LE meets mrasrc's caps: no audioconvert before it.
     const asrc = asrcName
         ? ` ! ${buildAsrc({ name: asrcName, bypassBelowPpm: DECODE_BYPASS_PPM, outRate: 48000 })}`
@@ -272,8 +289,8 @@ function alignWatch(mixerName: string, source: AudioMixSource): string {
 export function build302mMixBranch(source: AudioMixSource, opts: MixInputBranchOpts): string {
     const channels = opts.channels ?? 2;
     return (
-        `${decode302m(source, opts.demuxName, channels, opts.asrcName)}` +
-        ` ! audio/x-raw,rate=48000,channels=${channels}` +
+        `${decode302m(source, opts.demuxName, channels, opts.asrcName, opts.pinnedLayout)}` +
+        ` ! ${mixCaps(channels, opts.pinnedLayout)}` +
         ` ! ${alignWatch(opts.mixerName, source)}`
     );
 }
@@ -331,7 +348,8 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     const mixerName = opts.mixerName ?? 'mixin';
     const live = opts.liveInputs === true;
     const outName = `${mixerName}_out`;
-    const caps = `audio/x-raw,rate=48000,channels=${channels}`;
+    const pinnedLayout = opts.pinnedLayout;
+    const caps = mixCaps(channels, pinnedLayout);
 
     if (opts.sources.length === 1 && !live) {
         // The output caps sit on the terminal capsfilter (the queue is
@@ -342,7 +360,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         const asrcName =
             opts.branchAsrc === false ? null : branchAsrcName(mixerName, 0, opts.sources[0], false);
         const fragment =
-            `${decode302m(opts.sources[0], demuxName, channels, asrcName)}` +
+            `${decode302m(opts.sources[0], demuxName, channels, asrcName, pinnedLayout)}` +
             ` ! queue leaky=0 max-size-time=${queueNs} max-size-buffers=0 max-size-bytes=0` +
             ` ! capsfilter name=${outName} caps="${caps}"`;
         return { fragment, continuationName: outName };
@@ -351,7 +369,12 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     // Live-input mode: each branch is a named bin on an explicit request pad,
     // the exact string a hot add sends — so a later live remove finds it.
     if (live) {
-        const parts = buildLiveMixInput({ sources: opts.sources, channels, mixerName });
+        const parts = buildLiveMixInput({
+            sources: opts.sources,
+            channels,
+            mixerName,
+            pinnedLayout,
+        });
         const branches = parts.inputs.map((b, i) => liveInputLaunchText(b, i));
         return { fragment: [parts.fragment, ...branches].join(' '), continuationName: outName };
     }
@@ -363,7 +386,13 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     const branches = opts.sources.map((s, i) => {
         const demuxName = branchDemuxName(mixerName, i, s, false);
         const asrcName = branchAsrcName(mixerName, i, s, false);
-        const branch = build302mMixBranch(s, { channels, mixerName, demuxName, asrcName });
+        const branch = build302mMixBranch(s, {
+            channels,
+            mixerName,
+            demuxName,
+            asrcName,
+            pinnedLayout,
+        });
         return `${branch} ! ${mixerName}.`;
     });
 
@@ -395,15 +424,18 @@ export function buildLiveMixInput(opts: {
     channels?: number;
     /** Name prefix, as `AudioMixInputOpts.mixerName`. Default 'mixin'. */
     mixerName?: string;
+    /** As `AudioMixInputOpts.pinnedLayout`. */
+    pinnedLayout?: boolean;
 }): { fragment: string; continuationName: string; inputs: LiveInputBranch[] } {
     const channels = opts.channels ?? 2;
     const mixerName = opts.mixerName ?? 'mixin';
     const outName = `${mixerName}_out`;
-    const caps = `audio/x-raw,rate=48000,channels=${channels}`;
+    const caps = mixCaps(channels, opts.pinnedLayout);
+    const branch = { channels, pinnedLayout: opts.pinnedLayout };
     return {
         fragment: alignedMixer({ name: mixerName, caps, outName }),
         continuationName: outName,
-        inputs: opts.sources.map((s) => liveMixInputBranch(mixerName, s, { channels })),
+        inputs: opts.sources.map((s) => liveMixInputBranch(mixerName, s, branch)),
     };
 }
 

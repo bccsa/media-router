@@ -72,9 +72,11 @@ const MIXER = 'mixin';
  *
  * CHANNEL PLACEMENT. `channels` is the mix width (1–8), `firstChannel` where
  * on the device it lands (X32 outputs 1–32 = four instances at 8 from
- * 1/9/17/25). `buildOutputPlacement` (outputPlacement.ts, ADR-0014) spreads a
- * non-default range onto the device's full width upstream of the sink; the
- * sink element and its timing properties are untouched by placement.
+ * 1/9/17/25). `buildOutputPlacement` (outputPlacement.ts, ADR-0014) spreads
+ * every range but a stereo device's default onto an unpositioned stream by an
+ * explicit matrix, upstream of the sink; such a mix has its layout pinned
+ * and an unmapped source gets the default map (B-214). The sink element and
+ * its timing properties are untouched by placement.
  *
  * SOURCES. From two, each is a live input (`liveInputs`, B-192): the runner starts with
  * those that run, the others join as they start, one that goes away costs its own input.
@@ -101,6 +103,8 @@ export class AudioOutput302mModule extends GstPluginBase {
     private deviceChannels: number | null = null;
     /** The pipeline launched is the mixer arm (two sources or more), not the direct one. */
     private mixerLaunched = false;
+    /** The launched mix's width and layout: a live branch is built to match it (B-214). */
+    private launchedMix = { channels: 2, pinnedLayout: false };
     /** The fan-in's demuxes and the connection each decodes, from the last build (WI-P3-6). */
     private demuxes = new Map<string, string>();
 
@@ -219,9 +223,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         const sources = this.sources();
         if (sources.length < 2) return null;
         const source = sources.find((s) => s.connectionId === connectionId);
-        return liveInputBranchFor(MIXER, connectionId, source, {
-            channels: (this.config.channels as number) ?? 2,
-        });
+        return liveInputBranchFor(MIXER, connectionId, source, this.launchedMix);
     }
 
     /** Device unplugged — tear down the pipeline (pulsesink is gone). */
@@ -309,19 +311,25 @@ export class AudioOutput302mModule extends GstPluginBase {
         // One source: the direct branch, its decode term left to outasrc, one resampler (OQ-23).
         // Several: the mixer, its inputs apart for the runner to start with those that run (B-192),
         // each branch matching its own source's clock; outasrc is then the device term alone.
+        // A placed mix has its layout pinned, every input matrixed onto it (MR-056, B-214).
         const single = sources.length === 1;
+        const pinnedLayout = placement.fragment !== null;
         const mixIn = {
             sources,
             channels,
             mixerName: MIXER,
             branchAsrc: false,
             liveInputs: !single,
+            pinnedLayout,
         };
         const { fragment, continuationName, inputs } = single
             ? { ...buildAudioMixInput(mixIn), inputs: undefined }
             : buildLiveMixInput(mixIn);
         this.demuxes = mixInputDemuxes(mixIn);
-        if (launch) this.mixerLaunched = !single;
+        if (launch) {
+            this.mixerLaunched = !single;
+            this.launchedMix = { channels, pinnedLayout };
+        }
         const outAsrc = buildAsrc({
             name: OUT_ASRC,
             deviceSink: 'sink',

@@ -106,7 +106,9 @@ Two deliberate differences from the capture side:
 
 `plugins/audio-output-302m/engine/outputPlacement.ts` holds the rule; the same
 helper is the obvious fit for `audio-decoder` (the other `pulsesink`
-presentation leg) if it ever needs placement.
+presentation leg) if it ever needs placement. (Amended 2026-11-06 by B-214,
+below: only a stereo device's default range keeps the legacy stream, and the
+mix keeps one channel layout.)
 
 ## Amendment (2026-09-15): explicit port links replace whole-device capture
 
@@ -124,7 +126,10 @@ object ids are allocation order and re-shuffle) and linked by object id.
 `capture_AUX8 → input_1`, `capture_AUX9 → input_2`, nothing else. Dual-mono is
 the one device port linked to both stream inputs; a range past the device leaves
 the extra inputs unlinked (silence). The output's DEFAULT range (≤ 2 from
-channel 1) still keeps the legacy positioned stream, byte-identical.
+channel 1) still keeps the legacy positioned stream, byte-identical (on a device
+of 2 channels or fewer only since B-214, below). The output itself stays on
+WirePlumber's auto-link (outputPlacement.ts says why), with a stream as wide as
+its last channel (2 at least, B-214).
 
 **Why.** Measured on ZA-SCC-AES50 (X32 via KT-USB 48 in / 48 out,
 PipeWire 1.6.3, 2026-09-15): nine stereo inputs each captured 32 channels, so
@@ -144,6 +149,87 @@ UCM-split SSL 2 mono sources) indexes in channel order. If a stream never
 exposes its ports the module warns ("did not appear") instead of playing the
 wrong channels.
 
+## Amendment (2026-11-06, B-214): the mix keeps one layout; only a stereo device's default keeps the legacy stream
+
+Found on ZA-SCC-AES50 (KT-USB, v2.0.0.101), 5 Nov: the four Master feeds did
+not reach the desk's AES50 channels 1-4 (MR-052, MR-053, MR-054, MR-056).
+
+**What was wrong.**
+
+- *An output of 3 to 8 channels from channel 1 played pure silence (MR-056).*
+  Its placement was `audioconvert ! audio/x-raw,channels=N,channel-mask=0x0`,
+  and that unpositioned preference reached the `audiomixer`, whose caps carried
+  no mask. Each input came positioned (`avdec_s302m` gives FL FR, quad and 5.1
+  for 2, 4 and 6 channels, and leaves 8 unpositioned), and GStreamer's channel
+  mixer takes a positioned input to an unpositioned output of the same width
+  with an all-zero matrix. With one unmapped source there was no data at all:
+  `GstAudioConverter` refuses a width change into or out of an unpositioned
+  layout without a matrix.
+- *A mono or stereo output on channel 1 of a multichannel card took the legacy
+  shortcut (MR-052)*, a positioned stream, which WirePlumber puts on the card's
+  first two AUX ports: a mono output on channel 1 also played on channel 2.
+- *An unmapped source* got no matrix and played where GStreamer's position
+  rules put it, and the editor showed nothing for it (MR-053).
+
+**The rules now** (`outputPlacement.ts`, `audio302mHelpers.ts`):
+
+- Only the default range (mono or stereo from channel 1) on a device of 2
+  channels or fewer, or of unknown width, keeps the legacy positioned stream,
+  its string byte-identical (every translation station's SSL 2). Unknown width:
+  that range plays as it always did on a stereo device rather than failing,
+  and the next start reads the width; any other range is refused as before.
+- Every other range is placed by an explicit matrix onto an unpositioned stream
+  as wide as its last channel and at least 2 wide: GStreamer reads one channel
+  with a 0 mask as MONO, so a mono output on channel 1 is channel 1 of a 2-wide
+  stream, its channel 2 silent.
+- A placed mix of 2 channels or more pins its layout: the mixer's caps (or the
+  single-source arm's terminal caps) and every branch's caps carry GStreamer's
+  default layout for the width (`DEFAULT_LAYOUT_MASK`: 0x3, 0xb, 0x33, 0x37,
+  0x3f, 0x13f, 0xc3f), and every input reaches it through an explicit matrix in
+  its branch `audioconvert`: its channel map, or the default map. The placement
+  then relabels the mix unpositioned with `capssetter` (samples untouched), so
+  its matrix always starts from an unpositioned mix: `audioconvert` refuses to
+  fixate a positioned input into an unpositioned output of the same width,
+  matrix or not ("Invalid downstream channel-mask with too few bits set"). A
+  mono mix is mono whatever its mask: no pin, no relabel, no default matrix.
+- The default map (`default302mChannelMap`, MR-053) is where an unmapped source
+  played before, measured on b9c24948 and read off GStreamer's own channel
+  mixer: from the wire's layout into the mix's default layout. It is GStreamer's
+  surround conversion, not channel for channel: a stereo source in a 4-channel
+  mix plays on channels 1 and 2 and on 3 and 4 at -6 dB; in a mix of 3 or of 5
+  to 8 channels its two channels drop to -6 or -3 dB and the others get centre,
+  LFE, rear or side fills. Equal widths, and an 8-channel wire (which played
+  into an 8-channel mix only), go channel for channel. The manager's
+  channel-map editor shows this map, marked as the default, on a 302M
+  connection with no map.
+
+**Bench** (dev Pi, GStreamer 1.28.2, the module's own launch text with its
+ingress swapped for local 302M tones and the sink for a level meter):
+
+| Shape | b9c24948 | Mix pinned unpositioned | As built |
+|---|---|---|---|
+| 4 from 1, 4 sources mapped 1:1 | -350 dB on all four | plays | -15.05 dB on each, its own |
+| 4 from 1, 1 unmapped stereo source | no data (refused) | plays | 1, 2 at unity; 3, 4 at -6 dB |
+| 2 from 1 or 3, 2 sources | from 3 plays; from 1 the legacy stream | stalls (not negotiated) | plays |
+| mono on 1 of a 32-channel card | a mono stream (MR-052) | channel 1 of a 2-wide stream | the same |
+
+The middle column is the other way considered (the mix pinned unpositioned,
+every input brought to it by its matrix): it fails wherever a source's wire is
+as wide as the mix, a stereo source in a stereo mix among them. Both halves of
+the built way are needed: without the pin the relabel alone leaves a mix of two
+or more sources from channel 1 silent, and without the relabel a mix placed at
+its own width gets no data.
+
+**Strings.** Unchanged: the default range on a device of 2 channels or fewer or
+of unknown width, and a mono output on any channel past the first. Changed: a
+mono or stereo output on channel 1 of a wider device (placed now), and every
+placed mix of 2 channels or more (the pinned caps, the default matrices, the
+relabel). Compared over every width and first
+channel on devices of unknown width, 1, 2, 4 and 32 channels.
+
+**Not taken:** requiring a channel map on every source of an output wider than
+2 (the owner's alternative in MR-053); the default stays for the owner's veto.
+
 ## References
 
 - `plugins/audio-302m-core/engine/audio302mHelpers.ts` — `build302mEncodeBranch`,
@@ -152,7 +238,10 @@ wrong channels.
 - `plugins/audio-input-302m/engine/AudioInput302mModule.ts` — the capture shape
   and `getBusStreamChannels`; its class comment carries the measurements.
 - `plugins/audio-output-302m/engine/outputPlacement.ts` — the playback
-  placement (addendum above).
+  placement (addendum above, amended by B-214).
+- `plugins/audio-302m-core/engine/defaultChannelMap.ts` — where an unmapped
+  source plays (B-214); `packages/manager-ui/src/utils/channelMapDefault.ts`
+  mirrors it for the channel-map editor.
 - `packages/engine/src/plugins/PluginModule.ts` — `getBusStreamChannels`;
   `packages/engine/src/routing/MediaRouter.ts` — `getModuleBusSources`.
 - `docs/TodoNotes.md` — "302M input captured only X32 inputs 1–2 of 32" (2026-09-05).

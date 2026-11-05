@@ -662,6 +662,20 @@ elements" below do not start.
   when it sends again. An output that plays nothing now shows
   "Plays nothing: …" within 8 seconds instead of ok, and the Audio Mixer and
   N-1 Audio Mixer (302M) also start with the sources that run.
+- **An Audio Output (302M) plays each source on its own channels of a
+  multichannel card.** Up to v2.0.0.101 an output of 3 to 8 channels from
+  channel 1 (a desk's channels 1-4, say) played pure silence while it showed
+  ok, and a mono output on channel 1 of a card with more than two channels
+  also played on channel 2. Fixed: every range plays on exactly its channels,
+  and each source where its channel map puts it. A source with no channel map
+  plays where an unmapped source always played in the outputs that worked,
+  which in an output wider than stereo is not channel for channel: a stereo
+  source in a 4-channel output plays on channels 1 and 2, and at half level
+  (-6 dB) on 3 and 4. The connection's Channel Map
+  now shows that default, marked as such, with each line's level. Give every
+  source of a multichannel output its own map (Input 1 to Output 1, say) to
+  have it play on that one channel. A mono or stereo output on a device of two
+  channels (an SSL 2) is unchanged.
 - **Audio inputs capture again by themselves after PipeWire restarts.** Up to
   v2.0.0.100, after the Device Manager restarted PipeWire (Apply with a new
   buffer setting, or Restart PipeWire), an Audio Input (302M) stayed "ok" and
