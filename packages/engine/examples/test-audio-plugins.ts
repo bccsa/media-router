@@ -18,8 +18,14 @@ async function main() {
 
     // 1. List audio devices
     const pw = new PipeWireManager();
-    const devices = await pw.listDevices();
-    console.log('Audio devices:', devices.length ? devices : '(none — using test source instead)');
+    const listing = await pw.deviceListing();
+    if (listing.stale !== null)
+        console.log(`Audio devices: ${listing.stale.reason}`, listing.devices);
+    else
+        console.log(
+            'Audio devices:',
+            listing.devices.length ? listing.devices : '(none — using test source instead)',
+        );
 
     // 2. Test AudioEncoder pipeline
     // Since we may not have a real audio source, use audiotestsrc instead of pulsesrc

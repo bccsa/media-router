@@ -478,3 +478,61 @@ describe('DeviceWatchdog: a listing that waits for PipeWire (B-200)', () => {
         await wd.stop();
     });
 });
+
+describe('DeviceWatchdog: no answer from PipeWire is an unknown device (B-207)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    /** `answer`: the device's presence as PipeWire lists it; null while it gives no answer. */
+    function unknownWatchdog() {
+        const pw = { answer: null as boolean | null };
+        const made = makeWatchdog({
+            pipeWire: {
+                hasDevice: () => pw.answer,
+                daemonInstance: () => (pw.answer === null ? null : 'a1'),
+                isAvailable: () => pw.answer !== null,
+            },
+        });
+        return { ...made, pw };
+    }
+
+    it('running: unknown is no unplug, for as long as it lasts', async () => {
+        const { wd, pw, onDisconnect, onHealthChange } = unknownWatchdog();
+        pw.answer = true;
+        wd.start();
+        await wd.tick();
+        pw.answer = null;
+        for (let i = 0; i < 10; i++) await wd.tick();
+        expect(onDisconnect).not.toHaveBeenCalled();
+        expect(onHealthChange).not.toHaveBeenCalled();
+        expect(wd.isConnected()).toBe(true);
+        await wd.stop();
+    });
+
+    it('waiting: unknown starts nothing and says nothing; PipeWire listing it starts the module', async () => {
+        const { wd, pw, onReconnect, onHealthChange } = unknownWatchdog();
+        wd.start(false); // a start that found no answer
+        for (let i = 0; i < 10; i++) await wd.tick();
+        expect(onReconnect).not.toHaveBeenCalled();
+        expect(onHealthChange).not.toHaveBeenCalled();
+        pw.answer = true;
+        await wd.tick();
+        expect(onReconnect).toHaveBeenCalledOnce();
+        expect(onHealthChange).toHaveBeenLastCalledWith('ok');
+        await wd.stop();
+    });
+
+    it('waiting: a listing that says present while PipeWire gives no answer starts nothing', async () => {
+        const { wd, onReconnect } = makeWatchdog({
+            pipeWire: {
+                hasDevice: () => true,
+                daemonInstance: () => 'a1',
+                isAvailable: () => false,
+            },
+        });
+        wd.start(false);
+        for (let i = 0; i < 5; i++) await wd.tick();
+        expect(onReconnect).not.toHaveBeenCalled();
+        await wd.stop();
+    });
+});

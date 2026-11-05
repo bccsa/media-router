@@ -4,6 +4,7 @@
 
 #include "gates.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -26,6 +27,8 @@ constexpr double BUDGET_EPSILON_MS = 0.5;
 // No sample for this long is an input gap: every hold restarts on its far side
 // (backlog_shed.py GAP_RESET_MS).
 constexpr double GAP_RESET_MS = 1000.0;
+// The playout watch (B-206): in budget this long after a miss (or a start) is playing again.
+constexpr double PLAYOUT_PLAY_MS = 200.0;
 
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
 std::string fmt(const char* f, ...) {
@@ -276,6 +279,11 @@ struct State {
     std::atomic<bool> raise_pending{false};
     int rebases = 0;
     gint64 segment_offset = 0;
+    // Playout watch (`missWatchMs`): the sink presents on time or misses, said on a change.
+    double miss_watch_ms = 0;
+    int playout = 0;   // 0 not known yet, 1 on time, -1 missing
+    bool has_late_since = false, has_ok_since = false, has_watched = false;
+    double late_since = 0, late_floor = 0, ok_since = 0, watched_at = 0;
 };
 
 std::shared_ptr<State> g_state;
@@ -495,6 +503,53 @@ void request_raise(State& st, double budget_ms, double now_ms) {
     emit_reanchor(o);
 }
 
+gboolean emit_playout_idle(gpointer node) {
+    runner().emit_plugin_event("playout_watch", static_cast<JsonNode*>(node));
+    return G_SOURCE_REMOVE;
+}
+
+void emit_playout(State& st, bool playing, double late_ms, double budget_ms) {
+    JsonObject* o = json_object_new();
+    json_object_set_string_member(o, "element", st.element.c_str());
+    json_object_set_boolean_member(o, "playing", playing);
+    json_object_set_double_member(o, "lateMs", round1(late_ms));
+    json_object_set_double_member(o, "budgetMs", round1(budget_ms));
+    JsonNode* n = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(n, o);
+    g_idle_add(emit_playout_idle, n);
+}
+
+/** Every buffer past budget + tolerance for `miss_watch_ms` is a sink that plays nothing; in
+ *  budget for PLAYOUT_PLAY_MS it plays. An input gap restarts both streaks. */
+void watch_playout(State& st, double late_ms, double budget_ms, double now_ms) {
+    if (st.has_watched && now_ms - st.watched_at >= GAP_RESET_MS) st.has_late_since = st.has_ok_since = false;
+    st.has_watched = true;
+    st.watched_at = now_ms;
+    if (late_ms > st.policy.reanchor_tolerance_ms) {
+        st.has_ok_since = false;
+        if (!st.has_late_since) {
+            st.has_late_since = true;
+            st.late_since = now_ms;
+            st.late_floor = late_ms;
+        }
+        st.late_floor = std::min(st.late_floor, late_ms);
+        if (st.playout != -1 && now_ms - st.late_since >= st.miss_watch_ms) {
+            st.playout = -1;
+            emit_playout(st, false, st.late_floor, budget_ms);
+        }
+        return;
+    }
+    st.has_late_since = false;
+    if (!st.has_ok_since) {
+        st.has_ok_since = true;
+        st.ok_since = now_ms;
+    }
+    if (st.playout != 1 && now_ms - st.ok_since >= PLAYOUT_PLAY_MS) {
+        st.playout = 1;
+        emit_playout(st, true, late_ms, budget_ms);
+    }
+}
+
 /** Re-anchor THIS leg onto arrival + D with one offset on the shed pad.
  *  In-thread: the segment re-send rides the stream lock this probe holds, so
  *  nothing is flushed and no buffer is lost. */
@@ -563,6 +618,7 @@ GstPadProbeReturn probe_cb(GstPad* pad, GstPadProbeInfo* info, gpointer user) {
     st.has_win_min.store(true);
     // A raise landed (or D was edited): the streak restarts against it.
     if (st.reanchor && st.policy.budget_moved(budget_ms)) st.raise_pending.store(false);
+    if (st.miss_watch_ms > 0) watch_playout(st, late_ms, budget_ms, now_ms);
 
     if (st.shedding) {
         bool at_budget = late_ms <= 0.0;
@@ -680,6 +736,7 @@ bool start(GstElement* pipe, JsonObject* cfg) {
     st->policy.retry_ms = (double)json_get_int(cfg, "reanchorRetryMs", 30000);
     st->policy.rebase_hold_ms = (double)json_get_int(cfg, "rebaseHoldMs", 3000);
     st->policy.rebase_cooldown_ms = (double)json_get_int(cfg, "rebaseCooldownMs", 60000);
+    st->miss_watch_ms = (double)json_get_int(cfg, "missWatchMs", 0);
     st->keyframe_aligned = json_get_bool(cfg, "keyframeAligned", true);
     st->stall.enabled = st->keyframe_aligned;   // audio legs are not watched
     st->out_pad = gst_element_get_static_pad(el, "src");

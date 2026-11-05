@@ -655,7 +655,13 @@ elements" below do not start.
   stopped for up to 10 s every 2 s, its UI, API and modules with it. Fixed: the
   engine asks for the audio devices without waiting on the answer, no module
   takes a missing answer for an unplugged device, and all recovers when
-  PipeWire answers again.
+  PipeWire answers again. Meanwhile, and while PipeWire is not running, the
+  device pickers keep the devices PipeWire listed last, each marked "PipeWire
+  not answering since …" (or "not running since …"), instead of going empty as
+  if the box had none; before PipeWire's first answer the picker says "No
+  answer: …". A module started meanwhile says "PipeWire is not answering —
+  starting once PipeWire and the device are back" and starts by itself once
+  PipeWire answers.
 - **An Audio Transcoder with no source says so once.** Up to v2.0.0.100 it
   logged "No audio caps detected" every 10 s while its source sent nothing,
   pushing real errors out of the box's log within minutes. Fixed: it logs the
@@ -680,7 +686,54 @@ elements" below do not start.
   an input steadily later or earlier than that is re-anchored: it plays late,
   with one warning, "Input … re-anchored by +2 min 37 s (late) — past the 4 s
   pace ceiling", shown as the module's warning while it lasts, and the others go
-  on. Once it is back within 3 s of the house clock it rejoins on time.
+  on. Once it is back within 3 s of the house clock it rejoins on time. An
+  input whose timing jumps, an Ingest Offset set or removed or a late input
+  back on time at once, stays in its mixes: it goes quiet for about half a
+  second while the mixer measures the jump, and the mixes it feeds never stall.
+- **An Audio Output (302M) plays on time again right after a PipeWire
+  restart.** On the 3 November test one of 12 PipeWire restarts left an
+  Audio Output (302M) silent for about 16 s after its stream came back, with
+  its health ok for most of it, and then playing about 1.6 s late until its
+  route was reset, the warning "Arrived … past the playout budget …" coming
+  back at every later restart; a 60 s PipeWire outage on 1 November did the
+  same. Its mix took what the Audio Mixer sent all at once when its mics came
+  back, the seconds it had missed, as its first sound, and stayed that far
+  behind. Fixed: an output skips what its sources send from before it starts
+  playing, says so once in its log ("Caught up at the start: skipped 7.6 s of
+  Mixer …"), and plays at its own playout offset; a source that really is
+  late still raises its route, as before. An output whose sound all reaches
+  its device too late says "Plays nothing: every buffer reaches the sink …"
+  within about a second, and once it plays on time a raise it asked for
+  shows in its status instead of as a warning.
+- **An Audio Mixer whose only input drops at a profile switch keeps its
+  timing.** On the 3 November test an Audio Mixer fed only by an N-1 Audio
+  Mixer (302M) restarted its output from zero, the box's boot time, after a
+  profile switch and raced at about 49 times real time: silent, its timing
+  hours off the box's clock, and twice more than a minute late. GStreamer's
+  audio mixer, left for an instant with no input at all, starts again from
+  zero, and the input's sender restarting at that moment was enough. Up to
+  v2.0.0.100 the same could happen unseen: the mixer went silent with its
+  health ok. Fixed: a mixer keeps its last input's connection while that
+  input is away, and the input takes it again when it is back; a mixer with
+  other inputs lets the lost one go as before.
+- **A route's automatic playout raise comes back down, and one that cannot
+  help is not repeated.** On FRA01 (2 and 3 November) the Audio Output (302M)
+  played 2 s behind the box's clock for good: its sound reached its device
+  late, and the engine raised the route's playout offset again every 15 s up
+  to its 2 s limit, though each raise only moved the output later as well.
+  Nothing ever took the raise back, and after a module or profile restart
+  nothing showed it. Fixed: a raise that does not change how late an output
+  plays is not repeated ("Plays … ms late at its device: a larger playout
+  offset cannot help …"). Once the outputs that asked for a raise have
+  received their sound on time for 60 s, the route goes back to its own
+  Playout Offset in one step, skipping the held sound whose time has passed,
+  with one line in the log. An output whose source is later than its route
+  can be raised (a source seconds behind the box's clock) is re-anchored on its
+  own: it plays late, out of lipsync with the route's other outputs, and says
+  so, until its source is on time again. The route head and the output show a
+  raise that stands, with the configured and raised offsets and since when,
+  also after a restart. An edit of the head's Playout Offset still clears a
+  raise at once.
 - **A stream that pauses for more than 5 s no longer loses its first packet
   when it resumes.** When a stream between two modules went quiet for more
   than 5 seconds and then came back in a burst (a subtitle or data stream
@@ -705,6 +758,24 @@ elements" below do not start.
   module whose check of the encoders, decoders or 302M support on the box did
   not finish checks again when it starts, instead of going without them until
   the engine restarts.
+- **Changes made on a box's own dashboard now show at once on the manager
+  (#857).** From v2.0.0.93 to v2.0.0.100, after a short break in a box's link
+  to the manager (about 5 to 8 s, or a break in the manager-to-box direction
+  only, which the manager does not notice), every change made on the box
+  itself stayed on the box: on its own dashboards and its Local Control
+  Panel, Start and Stop, an interlock's mutes and what modules update by
+  themselves. The manager's dashboards and routing editor kept the old
+  values, a reload did not help, and it lasted until the box next reconnected
+  for real, which could take hours; a Start sent from the manager could then
+  undo a Stop made on the box. Fixed: after such a break these changes reach
+  the manager within about a second, also those made during the break and in
+  the seconds before the box noticed it, and the manager keeps them. Changes
+  made on the manager reach the box as before. When you update: a box that is
+  in that state now holds its changes only in memory, and the update
+  restarts its engine with the manager's values. Before updating a box,
+  compare its dashboards with the manager's and set again on the manager what
+  differs, or restart the manager first: every box then reconnects and sends
+  what it held.
 - **An audio volume above 150 % set with a wider Volume Range now survives an
   engine restart.** On Audio Input (302M) and Audio Output (302M), and on the
   deprecated Audio Input, Audio Output, Audio Encoder and Audio Decoder, a

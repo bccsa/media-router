@@ -1,12 +1,14 @@
-// A stand-in for pactl, first on PATH (B-200): it answers from files, answers late, or hangs as
-// pactl does when pipewire-pulse accepts the call and never answers.
+// A stand-in for pactl, first on PATH (B-200): it answers from files, answers late, hangs as
+// pactl does when pipewire-pulse accepts the call and never answers, or fails at once as it does
+// when PipeWire is not running (B-207).
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-/** `hang`: no answer, and on SIGTERM an exit 0 with no output, as pactl's own handler does. */
-export type FakePactlMode = 'answer' | 'late' | 'hang';
+/** `hang`: no answer, and on SIGTERM an exit 0 with no output, as pactl's own handler does.
+ *  `fail`: pactl's own words and exit status when nothing listens on the socket. */
+export type FakePactlMode = 'answer' | 'late' | 'hang' | 'fail';
 
 // The mode is read before the call is logged: a test that sees the call knows its mode.
 const SCRIPT = `#!/bin/sh
@@ -20,6 +22,9 @@ hang)
     wait $!
     exit 0 ;;
 late) sleep "$(cat "$d/lateS")" ;;
+fail)
+    echo 'Connection failure: Connection refused' >&2
+    exit 1 ;;
 esac
 case "$1 $2" in
 'list sources') cat "$d/sources" ;;

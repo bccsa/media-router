@@ -1,4 +1,5 @@
 import type { Device } from '@media-router/shared-types';
+import type { AudioDevice } from '../audio/PipeWireManager.js';
 import type { EngineServices } from '../plugins/PluginModule.js';
 
 export interface PipeWireDeviceProviderOptions {
@@ -23,6 +24,10 @@ export interface PipeWireDeviceProviderOptions {
  * hardware sink not at unity gain is reset, so a device is corrected as soon
  * as it is enumerated and again if something (WirePlumber restore, alsamixer)
  * pulls it back down. See `SinkVolumeNormalizer`.
+ *
+ * While PipeWire gives no answer the list is its last answer, each device marked
+ * (`meta.stale`, and its label) with why and since when; with no device to mark, one
+ * nameless entry says so (B-207). Never an empty list, which would read as none.
  */
 export function registerPipeWireDeviceProvider(
     services: EngineServices,
@@ -33,24 +38,44 @@ export function registerPipeWireDeviceProvider(
         type,
         pollMs,
         list: async () => {
-            const devices = await services.pipeWire.listDevices();
-            if (direction === 'sink') services.pipeWire.normalizeSinkVolumes(devices);
-            return devices
-                .filter((d) => d.direction === direction)
-                .map(
-                    (d): Device => ({
-                        name: d.name,
-                        label: `${d.description || d.name} (${d.channels ?? '?'}ch, ${d.sampleRate ?? '?'}Hz)`,
-                        // Deliberately no volume here — the registry diffs this
-                        // JSON to decide when to emit `deviceList`, and a
-                        // fluctuating volume would spam the manager.
-                        meta: {
-                            direction: d.direction,
-                            channels: d.channels,
-                            sampleRate: d.sampleRate,
-                        },
-                    }),
-                );
+            const listing = await services.pipeWire.deviceListing();
+            const devices = (listing.devices ?? []).filter((d) => d.direction === direction);
+            if (listing.stale === null) {
+                if (direction === 'sink') services.pipeWire.normalizeSinkVolumes(listing.devices);
+                return devices.map((d) => entry(d));
+            }
+            const stale = { reason: listing.stale.reason, since: isoSecond(listing.stale.since) };
+            if (devices.length > 0) return devices.map((d) => entry(d, stale));
+            const lead = listing.devices ? "No device in PipeWire's last list —" : 'No answer:';
+            return [{ name: '', label: `${lead} ${staleText(stale)}`, meta: { stale } }];
         },
     });
+}
+
+/** Why a list is PipeWire's last answer: `reason` and since when (ISO 8601, to the second). */
+interface StaleMark {
+    reason: string;
+    since: string;
+}
+
+const isoSecond = (epochMs: number): string =>
+    new Date(epochMs).toISOString().replace(/\.\d+Z$/, 'Z');
+const staleText = (stale: StaleMark): string => `${stale.reason} since ${stale.since}`;
+
+/** One device as the dropdown lists it; a stale one carries why in its label and `meta.stale`. */
+function entry(d: AudioDevice, stale?: StaleMark): Device {
+    const label = `${d.description || d.name} (${d.channels ?? '?'}ch, ${d.sampleRate ?? '?'}Hz)`;
+    return {
+        name: d.name,
+        label: stale ? `${label} — ${staleText(stale)}` : label,
+        // Deliberately no volume here — the registry diffs this
+        // JSON to decide when to emit `deviceList`, and a
+        // fluctuating volume would spam the manager.
+        meta: {
+            direction: d.direction,
+            channels: d.channels,
+            sampleRate: d.sampleRate,
+            ...(stale && { stale }),
+        },
+    };
 }

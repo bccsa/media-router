@@ -1,10 +1,14 @@
 import {
+    CATCH_UP_EVENT,
     DECODE_BYPASS_PPM,
     GstPluginBase,
+    LAT_IN_PREFIX,
+    PLAYOUT_WATCH_EVENT,
     backlogShedConfig,
     buildAsrc,
     buildLatenessTap,
     pulsePinnedStreamProps,
+    readPlayoutWatch,
     type LiveInputBranch,
     type ModuleServices,
     type PipelineDescription,
@@ -18,10 +22,11 @@ import {
 } from '@media-router/plugin-audio-302m-core';
 import {
     SINK_BUFFER_US,
-    SINK_DECLARED_LATENCY_MS,
     SLAVE_METHOD_CUSTOM,
     audio302mTsOffsetNs,
+    seedsWithin,
 } from './audio302mTiming.js';
+import { launchCatchUpText } from './launchCatchUp.js';
 import { buildOutputPlacement } from './outputPlacement.js';
 import { SilentOutputWatch } from './silentOutputWatch.js';
 import { TimelineSettleRestart } from './timelineSettleRestart.js';
@@ -83,8 +88,10 @@ const MIXER = 'mixin';
  *   watchdog once PipeWire and the device are back, not restarted in a loop meanwhile (B-195).
  * - NEVER a default device (broadcast rule): unconfigured device = health
  *   error, no pipeline.
- * - Plays nothing for 5 s (its mixer delivers no audio, or all of it past its playout time):
- *   a warning, not ok; a stalled mixer is relaunched once (B-197).
+ * - Plays nothing (its mixer delivers no audio for 5 s, or the runner's playout watch sees every
+ *   buffer miss the sink for 1 s): a warning, not ok; a stalled mixer is relaunched once (B-197,
+ *   B-206). A launch skips what its inputs deliver from before it plays (B-206). A miss that a
+ *   raise of its route did not change is how its sink plays, held, not silence (B-210).
  */
 export class AudioOutput302mModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled', 'lipSyncMs'];
@@ -112,9 +119,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         pipeline: () => this.childProcess,
         playing: () => this.childProcess?.isRunning === true,
         mixes: () => this.mixerLaunched,
-        sinkLateness: () => this.getTimingSummary()?.output,
-        playoutBudgetMs: () =>
-            audio302mTsOffsetNs(this.services, this.config) / 1_000_000 + SINK_DECLARED_LATENCY_MS,
+        held: () => this.playoutHeld(),
         warn: (text) => {
             if (text === null || this.error !== text) this.setPlaysNothing(text);
         },
@@ -130,17 +135,10 @@ export class AudioOutput302mModule extends GstPluginBase {
         if (!this.deviceName) {
             throw new Error('No audio device configured');
         }
-        // Device not enumerated yet → defer to the watchdog (throwing here
-        // would prevent the watchdog from starting; hot-plug would then only
+        // Device not enumerated yet, or no answer from PipeWire → defer to the watchdog
+        // (throwing here would prevent the watchdog from starting; hot-plug would then only
         // recover on an engine restart — same rationale as audio-output).
-        if (this.services?.pipeWire && !(await this.services.pipeWire.hasDevice(this.deviceName))) {
-            this.setHealth(
-                'warning',
-                `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
-            );
-            this.startDeviceWatchdog(false);
-            return;
-        }
+        if (await this.startWaitsForDevice(this.deviceName)) return;
         await this.readDeviceChannels();
         await super.onStart();
         this.startDeviceWatchdog();
@@ -161,6 +159,27 @@ export class AudioOutput302mModule extends GstPluginBase {
 
     protected onPluginEvent(channel: string, payload: unknown): void {
         this.settleRestart.onPluginEvent(channel, payload);
+        if (channel === PLAYOUT_WATCH_EVENT) this.onPlayoutWatch(payload);
+        else if (channel === CATCH_UP_EVENT) this.logCatchUp(payload);
+    }
+
+    /** The runner's playout watch (B-206): on time again settles a raise first, so the warning
+     *  "Plays nothing" stood over is not posted again when it withdraws. */
+    private onPlayoutWatch(payload: unknown): void {
+        const watch = readPlayoutWatch(payload);
+        if (!watch) return;
+        if (watch.playing) this.notePlayoutOnTime();
+        this.silent.onPlayout(watch.playing, watch.lateMs);
+    }
+
+    /** One INFO line per launch that skipped its inputs' backlog (B-206). */
+    private logCatchUp(payload: unknown): void {
+        const router = this.services?.mediaRouter;
+        const text = launchCatchUpText(payload, {
+            sources: this.sources(),
+            name: (id) => router?.moduleName?.(id) ?? id,
+        });
+        if (text) this.log.info({ catchUp: payload }, text);
     }
 
     /** Every reading feeds the stall-resume check: the time-sync contract is always on. */
@@ -174,6 +193,11 @@ export class AudioOutput302mModule extends GstPluginBase {
     protected onPipelinePlaying(): void {
         this.settleRestart.cancel();
         this.silent.onPlaying();
+    }
+
+    /** A held raise (B-210): the watch's miss is the sink's own pace, not "Plays nothing". */
+    protected onPlayoutHeldChanged(): void {
+        this.silent.refresh();
     }
 
     protected getWatchedDeviceName(): string | null {
@@ -262,7 +286,9 @@ export class AudioOutput302mModule extends GstPluginBase {
             return null;
         }
 
-        const sources = this.sources();
+        // Seeds held to the ts-offset: one read off a producer's outage burst is stale (B-206).
+        const tsOffsetNs = audio302mTsOffsetNs(this.services, config);
+        const sources = seedsWithin(this.sources(), tsOffsetNs / 1_000_000);
         if (sources.length === 0) {
             this.setHealth('warning', 'No 302M sources connected');
             return null;
@@ -296,7 +322,6 @@ export class AudioOutput302mModule extends GstPluginBase {
             : buildLiveMixInput(mixIn);
         this.demuxes = mixInputDemuxes(mixIn);
         if (launch) this.mixerLaunched = !single;
-        const tsOffsetNs = audio302mTsOffsetNs(this.services, config);
         const outAsrc = buildAsrc({
             name: OUT_ASRC,
             deviceSink: 'sink',
@@ -341,6 +366,9 @@ export class AudioOutput302mModule extends GstPluginBase {
         return {
             pipeline,
             ...(inputs ? { liveInputs: inputs } : {}),
+            // What an input delivers from before this launch plays is its outage, skipped as TS at
+            // each input's ingress tap: never decoded, never in the mix or its pace (B-206).
+            catchUp: { prefix: LAT_IN_PREFIX },
             restartOnError: true,
             // Audio only, nothing to drain; and the mixer arm's aligners hold every EOS
             // (hold-on-eos), so a drain would wait out its 6 s timeout on each stop or rebuild.
@@ -354,6 +382,7 @@ export class AudioOutput302mModule extends GstPluginBase {
                 element: OUT_ASRC,
                 sink: 'sink',
                 keyframeAligned: false,
+                watchPlayout: true,
             }),
         };
     }

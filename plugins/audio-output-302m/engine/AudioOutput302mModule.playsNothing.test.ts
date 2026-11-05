@@ -45,7 +45,7 @@ vi.mock(
     }),
 );
 
-import type { ModuleServices } from '@media-router/engine';
+import { busSrcTapName, type ModuleServices } from '@media-router/engine';
 import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 
 const source = (i: number) => ({
@@ -58,21 +58,26 @@ const source = (i: number) => ({
     socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
 });
 
-async function started(sources: number) {
+async function started(sources: number, router: Record<string, unknown> = {}) {
     h.FakeChildProcess.instances = [];
     const module = new AudioOutput302mModule();
     await module.onInit({ device: 'alsa_output.usb-KTMicro' }, {
         instanceId: 'aout-1',
+        playoutOffsetMs: 60,
         mediaRouter: {
             getModuleBusSources: vi.fn(() => Array.from({ length: sources }, (_, i) => source(i))),
             getModuleConnections: vi.fn(() => []),
             onProducerPlaying: vi.fn(),
+            moduleName: (id: string) => `Module ${id}`,
+            ...router,
         },
     } as unknown as ModuleServices);
+    const log = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    (module as unknown as { log: unknown }).log = log;
     await module.onStart();
     const child = h.FakeChildProcess.instances.at(-1)!;
     child.emit('stateChange', { state: 'playing' });
-    return { module, child };
+    return { module, child, log };
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -113,6 +118,116 @@ describe('Audio Output (302M) that plays nothing (B-197)', () => {
             'Plays nothing: its mixer delivers no audio — relaunched',
         );
         expect(child.restartPipeline).toHaveBeenCalledTimes(1);
+        await module.onStop();
+    });
+
+    it('B-206: every buffer past its playout time is said the moment the runner reports it, and withdrawn when it plays', async () => {
+        const { module, child } = await started(2);
+        child.emit('vuData', { peak: [-18, -18] });
+        child.emit('pluginEvent', {
+            channel: 'playout_watch',
+            payload: { element: 'sink', playing: false, lateMs: 1555.3, budgetMs: 90 },
+        });
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error: 'Plays nothing: every buffer reaches the sink 1555 ms past its playout time',
+        });
+        expect(child.restartPipeline).not.toHaveBeenCalled();
+        child.emit('pluginEvent', {
+            channel: 'playout_watch',
+            payload: { element: 'sink', playing: true, lateMs: -12, budgetMs: 90 },
+        });
+        expect(module.getState().health).toBe('ok');
+        await module.onStop();
+    });
+
+    it("B-206: a launch that skipped its inputs' backlog says so in one INFO line, by producer", async () => {
+        const { module, child, log } = await started(2);
+        child.emit('pluginEvent', {
+            channel: 'catch_up',
+            payload: {
+                inputs: [
+                    { element: busSrcTapName(source(1)), skippedMs: 234.7, buffers: 11 },
+                    { element: busSrcTapName(source(0)), skippedMs: 5220, buffers: 502 },
+                ],
+                skippedMs: 5220,
+            },
+        });
+        // A launch that dropped one TS buffer (no span) logs nothing.
+        child.emit('pluginEvent', {
+            channel: 'catch_up',
+            payload: {
+                inputs: [{ element: busSrcTapName(source(0)), skippedMs: 0, buffers: 1 }],
+                skippedMs: 0,
+            },
+        });
+        const lines = log.info.mock.calls.filter((c) => String(c[1]).startsWith('Caught up'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0][0]).toHaveProperty('catchUp');
+        expect(lines[0][1]).toBe(
+            'Caught up at the start: skipped 5.2 s of Module src-0, 235 ms of Module src-1 from ' +
+                'before it played, never played late',
+        );
+        expect(module.getState().health).toBe('ok');
+        await module.onStop();
+    });
+
+    it('B-210: a raise that did not help is held: the sink plays at its pace, the held warning, not "Plays nothing"', async () => {
+        const route = {
+            getRoutePlayoutHead: vi.fn(() => ({
+                headId: 'srt',
+                label: 'SRT -> MUL',
+                declaredMs: 60,
+            })),
+            getRoutePlayoutOffsetMs: vi.fn(() => 60),
+            getRoutePlayoutRaiseMs: vi.fn(() => 140),
+            requestPlayoutRaise: vi.fn(async () => 'held'),
+        };
+        const { module, child } = await started(2, route);
+        child.emit('vuData', { peak: [-18, -18] });
+        child.emit('pluginEvent', {
+            channel: 'playout_watch',
+            payload: { element: 'sink', playing: false, lateMs: 88, budgetMs: 200 },
+        });
+        expect(module.getState().error).toBe(
+            'Plays nothing: every buffer reaches the sink 88 ms past its playout time',
+        );
+        child.emit('pluginEvent', {
+            channel: 'playout_reanchor',
+            payload: {
+                kind: 'raise',
+                element: 'sink',
+                excessMs: 88,
+                worstMs: 95,
+                cause: 'backlog',
+                queuedMs: 400,
+                budgetMs: 200,
+                tsOffsetMs: 100,
+                latencyMs: 100,
+                holdMs: 15000,
+            },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(module.getState()).toMatchObject({
+            health: 'warning',
+            error:
+                'Plays 88 ms late at its device: a larger playout offset cannot help, so route ' +
+                'head SRT -> MUL is held at 200 ms; nothing dropped.',
+        });
+        await module.onStop();
+    });
+
+    it("B-210: re-anchored on its own, its sink's ts-offset carries that offset on top of D", async () => {
+        const route = {
+            getRoutePlayoutOffsetMs: vi.fn(() => 60),
+            getRoutePlayoutRaiseMs: vi.fn(() => 0),
+            getPlayoutLegOffsetMs: vi.fn(() => 4940),
+        };
+        const { module, child } = await started(2, route);
+        const set = vi.spyOn(child, 'setProperty');
+        await module.onRoutePlayoutOffsetChanged();
+        // D 60 + its own 4940, less the ring the sink declares (100 ms).
+        expect(set).toHaveBeenCalledWith('sink', 'ts-offset', 4_900_000_000);
         await module.onStop();
     });
 

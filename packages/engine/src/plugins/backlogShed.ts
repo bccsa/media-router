@@ -91,6 +91,22 @@ export const BACKLOG_SHED_COOLDOWN_MS = 60_000;
  */
 export const BACKLOG_SHED_SANITY_MS = 10_000;
 
+/** The playout watch's channel (B-206): the runner says when a leg's sink starts or stops
+ *  missing its playout, `{ playing, lateMs, budgetMs }`, on a change only. */
+export const PLAYOUT_WATCH_EVENT = 'playout_watch';
+
+/** Every buffer past the leg's budget (+ the re-anchor tolerance) this long is a sink that plays
+ *  nothing; the runner says it plays again after 200 ms in budget. */
+export const PLAYOUT_MISS_MS = 1_000;
+
+/** A `playout_watch` payload; null for anything malformed. */
+export function readPlayoutWatch(payload: unknown): { playing: boolean; lateMs: number } | null {
+    const p = (payload ?? {}) as Record<string, unknown>;
+    if (typeof p.playing !== 'boolean') return null;
+    const late = Number(p.lateMs);
+    return { playing: p.playing, lateMs: Number.isFinite(late) ? late : 0 };
+}
+
 /** The slice of `ModuleServices` the gate reads. */
 export interface BacklogShedServices {
     /** Re-anchor instead of shed (`EngineServices.playoutReanchor`). */
@@ -127,6 +143,8 @@ export interface BacklogShedOptions {
      * the first buffer inside budget.
      */
     keyframeAligned: boolean;
+    /** Report the sink's playout on each change (`PLAYOUT_WATCH_EVENT`, native runner). */
+    watchPlayout?: boolean;
 }
 
 /** The `backlogShed` runner config for a clock-paced consumer leg. */
@@ -142,6 +160,7 @@ export function backlogShedConfig(
         holdMs: BACKLOG_SHED_HOLD_MS,
         cooldownMs: BACKLOG_SHED_COOLDOWN_MS,
         sanityMs: BACKLOG_SHED_SANITY_MS,
+        ...(opts.watchPlayout ? { missWatchMs: PLAYOUT_MISS_MS } : {}),
         // Absent = shed, byte for byte (the MR_PLAYOUT_REANCHOR=0 path).
         ...(services?.playoutReanchor === true
             ? {

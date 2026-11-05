@@ -2,12 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { detectDeviceFormat, resolveDeviceFormat, tryResolveDeviceFormat } from './deviceFormat.js';
 import type { PipeWireManager } from './PipeWireManager.js';
 
+/** `answers` false: PipeWire gives no answer, so every device is unknown (B-207). */
 function fakePipeWire(
     devices: Record<string, { channels?: number; sampleRate?: number } | null>,
+    answers = true,
 ): PipeWireManager {
     return {
         async getDeviceInfo(name: string) {
-            return name in devices ? devices[name] : null;
+            return answers && name in devices ? devices[name] : null;
+        },
+        async hasDevice(name: string) {
+            return answers ? name in devices : null;
         },
     } as unknown as PipeWireManager;
 }
@@ -31,6 +36,16 @@ describe('detectDeviceFormat', () => {
         const r = await detectDeviceFormat(pw, 'missing-mic', {});
         expect(r.detected).toEqual({ channels: null, sampleRate: null });
         expect(r.healthWarning).toMatch(/missing-mic.*not found/);
+    });
+
+    it('no answer from PipeWire: no detection and no "not found", the device is unknown (B-207)', async () => {
+        const pw = fakePipeWire({ mic: { channels: 1, sampleRate: 48000 } }, false);
+        const r = await detectDeviceFormat(pw, 'mic', { channels: 2 });
+        expect(r).toEqual({
+            detected: { channels: null, sampleRate: null },
+            configUpdates: {},
+            healthWarning: null,
+        });
     });
 
     it('emits configUpdates for both fields when probed values differ from saved config', async () => {

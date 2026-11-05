@@ -1734,7 +1734,8 @@ Router dashboards (§6.4) do not use this protocol: they are clients of the rout
 - **Local changes:** operator writes (LCP, router tree), plugin auto-writes,
   self-stop, dynamic ports and local Start/Stop go to the manager with
   guaranteed delivery. While the link is down, or until the connect push is
-  merged, they are kept in an in-memory journal, latest op per path.
+  merged, they are kept in an in-memory journal, latest op per path; what
+  the manager had not acked when the link dropped goes back into it.
 - **Reconnect:** a `connect` push of the running profile is merged with the
   journal (the on-site value wins). Entries for modules or connections the
   manager no longer has are dropped and logged. Only the difference is
@@ -1745,6 +1746,11 @@ Router dashboards (§6.4) do not use this protocol: they are clients of the rout
   and the manager adopts it. A profile switched during the outage rebuilds
   the modules. An activation, a stopped router or a first boot replace the
   config as before.
+- **Link back on the kept session:** a drop the router noticed and the
+  manager did not (dgram-comms `connected { resumed: true }`) gets no
+  `hello` and no connect push: the journal goes up at once, the router goes
+  live and keeps `statePatch` (#857). A session that dropped before its own
+  push was merged still waits for it.
 - **No saved config:** a restarted router waits for the manager and starts
   from its config.
 

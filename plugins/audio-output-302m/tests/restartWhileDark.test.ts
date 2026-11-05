@@ -9,22 +9,8 @@ import { join } from 'node:path';
  *  Audio Mixer), the SRT leg's tone (a relay in the Audio Transcoder's shape) on the right.
  *  Skipped, saying why, without PipeWire, an element, the plugin or the runner. */
 
-import {
-    GstPluginBase,
-    buildBusSink,
-    buildBusSrc,
-    type ModuleServices,
-    type PipelineDescription,
-} from '@media-router/engine';
-import { build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
-// The engine's own copies: the lifecycle takes its router and manager, and this plugin does not
-// depend on shared-types.
+// The engine's own copy: this plugin does not depend on shared-types.
 import { setLogTap } from '../../../packages/shared-types/src/index.js';
-import { PipeWireManager } from '../../../packages/engine/src/audio/PipeWireManager.js';
-import { ModuleLifecycle } from '../../../packages/engine/src/modules/ModuleLifecycle.js';
-import { ModuleManager } from '../../../packages/engine/src/modules/ModuleManager.js';
-import type { PluginModule } from '../../../packages/engine/src/plugins/PluginModule.js';
-import { MediaRouter } from '../../../packages/engine/src/routing/MediaRouter.js';
 import {
     MonitorRecorder,
     PrivatePipeWire,
@@ -33,8 +19,7 @@ import {
     sleep,
     until,
 } from '../../../packages/engine/src/audio/testing/privatePipeWire.js';
-import { AudioMixerModule } from '../../audio-mixer/engine/AudioMixerModule.js';
-import { AudioOutput302mModule } from '../engine/AudioOutput302mModule.js';
+import { engine as rigEngine, type Rig } from './mixRig.js';
 
 const SINK = 'c20_spk';
 const L = 0;
@@ -59,197 +44,8 @@ const skip = existsSync(TIMING_PLUGIN)
     ? realPipeWireSkip(ELEMENTS, registry)
     : 'the timing plugin is not built (libgstmrtshouse.so)';
 
-/** A tone on one channel of a stereo 302M stream; `dark` (a valve) is a sender stopped. */
-class TonePlugin extends GstPluginBase {
-    private dark = false;
-    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
-        await super.onInit(config, services);
-        this.dark = config.dark === true;
-    }
-    async onStart(): Promise<void> {
-        // A capture whose device comes up late (MR-005): no channel until it does.
-        const lateMs = Number(this.config.lateMs ?? 0);
-        this.config.lateMs = 0;
-        if (lateMs > 0) setTimeout(() => void super.onStart(), lateMs);
-        else await super.onStart();
-    }
-    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
-        const id = this.services!.instanceId;
-        const ep = this.services!.mediaRouter!.assignBusChannel(id, 'audio-out')!;
-        const [l, r] = config.right === true ? [0, 1] : [1, 0];
-        return {
-            pipeline:
-                `audiotestsrc is-live=true wave=sine freq=${Number(config.freq)} volume=0.25` +
-                ' ! audio/x-raw,rate=48000,channels=1' +
-                ` ! audioconvert mix-matrix="<<(float)${l}.0>, <(float)${r}.0>>"` +
-                ` ! audio/x-raw,channels=2 ! valve name=dark drop=${this.dark}` +
-                ` ! ${build302mEncodeBranch()} ! ${buildBusSink(ep.port)}`,
-            restartOnError: true,
-            eosDrain: false,
-        };
-    }
-    async setDark(dark: boolean): Promise<void> {
-        this.dark = dark;
-        await this.childProcess?.setProperty('dark', 'drop', dark);
-    }
-    /** Its pipeline down for `ms`, then back on its channel: an SRT read that failed (.108). */
-    async outage(ms: number): Promise<void> {
-        const child = this.childProcess;
-        const desc = this.buildPipeline(this.config);
-        if (!child || !desc) return;
-        await child.stop();
-        setTimeout(() => void child.start(desc), ms);
-    }
-}
-
-/** The Audio Transcoder's shape: 302M in, decoded, 302M out; nothing in, nothing out. `delayMs`:
- *  a leg that late; `chunkMs`: its output in chunks (an SRT leg's rhythm); `reportMs`: what its
- *  egress window last read (.108: a transient after the SRT leg's last burst). */
-class RelayPlugin extends GstPluginBase {
-    reportMs: number | null = null;
-    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
-        const router = this.services!.mediaRouter!;
-        const id = this.services!.instanceId;
-        const s = router.getModuleBusSources(id).find((x) => x.sinkPortId === 'audio-in');
-        if (!s) return null;
-        const ep = router.assignBusChannel(id, 'audio-out')!;
-        const delayNs = Number(config.delayMs ?? 0) * 1_000_000;
-        const chunkMs = Number(config.chunkMs ?? 0);
-        return {
-            pipeline:
-                `${buildBusSrc({ port: s.port, socketPath: s.socketPath })}` +
-                ' ! mrtsdemux select=audio/x-smpte-302m ! avdec_s302m ! audioconvert' +
-                ' ! audio/x-raw,rate=48000,channels=2' +
-                (chunkMs ? ` ! audiobuffersplit output-buffer-duration=${chunkMs}/1000` : '') +
-                (delayNs
-                    ? ` ! queue max-size-time=${delayNs + 2_000_000_000} max-size-buffers=0` +
-                      ` max-size-bytes=0 min-threshold-time=${delayNs}`
-                    : '') +
-                ` ! ${build302mEncodeBranch()} ! ${buildBusSink(ep.port)}`,
-            restartOnError: true,
-            eosDrain: false,
-        };
-    }
-    getTimingSummary() {
-        const s = super.getTimingSummary();
-        if (this.reportMs === null) return s;
-        const w = { meanMs: this.reportMs, minMs: this.reportMs, maxMs: this.reportMs };
-        return { ...(s ?? { inputs: [], instrument: true }), output: w };
-    }
-    runner() {
-        return this.childProcess;
-    }
-}
-
-const port = (id: string, direction: 'input' | 'output') => ({
-    id,
-    direction,
-    streamType: 'audio/302m',
-    maxConnections: -1,
-});
-const LOADER: Record<string, { ModuleClass: new () => PluginModule; manifest: object }> = {
-    tone: {
-        ModuleClass: TonePlugin as unknown as new () => PluginModule,
-        manifest: { ports: [port('audio-out', 'output')] },
-    },
-    relay: {
-        ModuleClass: RelayPlugin as unknown as new () => PluginModule,
-        manifest: { ports: [port('audio-in', 'input'), port('audio-out', 'output')] },
-    },
-    'audio-mixer': {
-        ModuleClass: AudioMixerModule as unknown as new () => PluginModule,
-        manifest: { ports: [port('audio-in', 'input'), port('audio-out', 'output')] },
-    },
-    'audio-output-302m': {
-        ModuleClass: AudioOutput302mModule as unknown as new () => PluginModule,
-        manifest: { ports: [port('audio-in', 'input')] },
-    },
-};
-const edge = (src: string, sink: string) => ({
-    id: `${src}:audio-out-${sink}:audio-in`,
-    sourceModuleId: src,
-    sourcePortId: 'audio-out',
-    sinkModuleId: sink,
-    sinkPortId: 'audio-in',
-});
-
-interface Rig {
-    /** The SRT leg's route declares this D (its head's `playoutOffsetMs`). */
-    srtOffsetMs?: number;
-    relay?: { delayMs?: number; chunkMs?: number };
-    /** The mics' channels come this late at the start (their edge to the Mixer waits). */
-    micsLateMs?: number;
-    /** The SRT leg into the Audio Mixer, not into the output. */
-    srtIntoMixer?: boolean;
-}
-
-/** The .108 rig: Mic A and B (997, 1499 Hz) into the Mixer, SRT in (440 Hz) into its transcoder,
- *  both into the Audio Output (302M); engine D 60 ms, re-anchor on, as the engine starts them. */
-function engine(rig: Rig = {}) {
-    const mod = (pluginId: string, displayName: string, settings: Record<string, unknown>) => ({
-        pluginId,
-        displayName,
-        enabled: true,
-        settings,
-    });
-    const late = rig.micsLateMs ?? 0;
-    const config: Record<string, unknown> = {
-        modules: {
-            micA: mod('tone', 'Mic A', { freq: 997, lateMs: late }),
-            micB: mod('tone', 'Mic B', { freq: 1499, lateMs: late }),
-            mix: mod('audio-mixer', 'Mixer', { channels: 2 }),
-            srtin: mod('tone', 'SRT in', {
-                freq: 440,
-                right: true,
-                ...(rig.srtOffsetMs ? { playoutOffsetMs: rig.srtOffsetMs } : {}),
-            }),
-            srtxc: mod('relay', 'SRT transcoder', { ...rig.relay }),
-            out: mod('audio-output-302m', 'Audio Output', { device: SINK, channels: 2 }),
-        },
-        // The profile's order: the Mixer's edge before the SRT leg's.
-        connections: [
-            edge('micA', 'mix'),
-            edge('micB', 'mix'),
-            edge('srtin', 'srtxc'),
-            ...(rig.srtIntoMixer
-                ? [edge('srtxc', 'mix'), edge('mix', 'out')]
-                : [edge('mix', 'out'), edge('srtxc', 'out')]),
-        ],
-    };
-    const loader = { get: (id: string) => LOADER[id], settle: async () => {} } as any;
-    const pipeWire = new PipeWireManager();
-    const processManager = { releaseAll: async () => {} } as any;
-    const router = new MediaRouter();
-    router.setPlayoutReanchor(true, 60);
-    const modules = new ModuleManager(
-        loader,
-        pipeWire,
-        router,
-        processManager,
-        {} as any,
-        60,
-        true,
-    );
-    router.setDependencies(
-        pipeWire,
-        (id) => modules.get(id),
-        (id) => (config.modules as any)[id]?.displayName ?? id,
-    );
-    router.setStoredConnectionsProvider(() => config.connections as any);
-    const lifecycle = new ModuleLifecycle(modules, router, pipeWire, () => config, loader);
-    const plugin = <T>(id: string) => modules.get(id)!.getPlugin() as unknown as T;
-    return {
-        router,
-        lifecycle,
-        modules,
-        srtin: () => plugin<TonePlugin>('srtin'),
-        srtxc: () => plugin<RelayPlugin>('srtxc'),
-        out: () => plugin<AudioOutput302mModule>('out'),
-        /** The output's pipeline launch: it changes with every relaunch. */
-        outLaunch: () => plugin<AudioOutput302mModule>('out').getChildProcess()?.pipelineLaunchedAt,
-        head: () => router.getRoutePlayoutHead('out')?.headId,
-    };
-}
+/** The .108 rig on this test's sink (`mixRig.ts`). */
+const engine = (rig: Omit<Rig, 'sink'> = {}) => rigEngine({ sink: SINK, ...rig });
 
 describe.skipIf(skip !== null)(
     'Audio Output (302M) restarted while a source is dark (B-197)',
@@ -268,7 +64,6 @@ describe.skipIf(skip !== null)(
         const soundsWithin = (ch: 0 | 1, budgetMs: number) => until(() => sounds(ch), budgetMs);
 
         beforeAll(async () => {
-            AudioMixerModule.setS302mSupported(true);
             pw = new PrivatePipeWire({ sinks: [SINK] });
             pw.enter(registry);
             savedBusDir = process.env.MR_BUS_SOCKET_DIR;

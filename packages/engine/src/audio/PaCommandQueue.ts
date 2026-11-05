@@ -3,6 +3,9 @@ import { execFile } from 'child_process';
 /** How long one pactl call may wait for PipeWire's answer. */
 export const PACTL_TIMEOUT_MS = 5000;
 
+/** A pactl call PipeWire did not answer within the timeout, told apart from one that failed (B-207). */
+export class PactlNoAnswer extends Error {}
+
 /**
  * Rate-limited command queue for PulseAudio/PipeWire `pactl` commands.
  *
@@ -78,10 +81,13 @@ export class PaCommandQueue {
                 },
                 (err, stdout, stderr) => {
                     if (!err) return resolve(stdout.trim());
-                    const why = err.killed
-                        ? `no answer within ${this.timeoutMs} ms`
-                        : stderr?.trim() || err.message;
-                    reject(new Error(`pactl command failed: pactl ${args.join(' ')}\n${why}`));
+                    const failed = `pactl command failed: pactl ${args.join(' ')}\n`;
+                    if (err.killed) {
+                        return reject(
+                            new PactlNoAnswer(`${failed}no answer within ${this.timeoutMs} ms`),
+                        );
+                    }
+                    reject(new Error(failed + (stderr?.trim() || err.message)));
                 },
             );
         });

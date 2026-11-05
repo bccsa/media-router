@@ -20,7 +20,7 @@ Usage:
 
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst, GLib
+from gi.repository import Gst, GLib, GObject
 # GstApp is only needed by the LEGACY python RIST sender drain (`rist` runner
 # config, try_pull_sample()), and it must be loaded BEFORE any pipeline is
 # parsed: PyGObject types an element's wrapper when it is first seen, and an
@@ -170,6 +170,10 @@ _drain_on_stop = True
 # minus removes): an error inside one is contained — the branch is dropped
 # and `input_branch_lost` reported, the pipeline keeps running.
 _live_input_branches = set()
+# A running aggregator's last sink pad, unlinked and kept by aggregator name until
+# the next add takes it (B-208): GstAudioAggregator left with no sink pad can
+# aggregate once over none and restart its output at running time 0.
+_kept_agg_pads = {}
 
 
 def _drain_decoder_branch(deadline):
@@ -1450,6 +1454,7 @@ def handle_start(data):
     # Drain opt-out for audio-only bus producers; absent = drain.
     _drain_on_stop = data.get("eosDrain", True) is not False
     _live_input_branches.clear()
+    _kept_agg_pads.clear()
     _live_input_branches.update(str(n) for n in (data.get("liveInputBranches") or []) if n)
     source_gate.live_branches = _live_input_branches
     _klv_garbage_warned.clear()
@@ -1612,6 +1617,7 @@ def handle_stop(data=None):
     source_gate.stop()
     _clear_pending_bus_attaches()
     _live_input_branches.clear()
+    _kept_agg_pads.clear()
     gst_bus_stamper.clear()
     _clear_runner_hooks()
     _stop_rist()
@@ -2680,10 +2686,25 @@ def _branch_src_pad(bin_):
     return pad if res == Gst.IteratorResult.OK else None
 
 
+def _is_aggregator(el):
+    """A GstAggregator (audiomixer, mpegtsmux, ...), by GType name: no GstBase typelib needed."""
+    try:
+        return el.__gtype__.is_a(GObject.type_from_name("GstAggregator"))
+    except RuntimeError:            # no aggregator class registered yet
+        return False
+
+
+def _take_kept_pad(agg):
+    """The kept pad of `agg` while it is still one of its sink pads, else None."""
+    pad = _kept_agg_pads.pop(agg.get_name(), None)
+    return pad if pad is not None and pad.get_parent() is agg else None
+
+
 def _remove_live_bin(bin_, agg=None):
     """Stop the branch (the pushing side — NULL ends its thread; no pad probe,
     one on its own src pad would deadlock the NULL join), unlink it, release
-    the aggregator's request pad (`agg` when given must own it), drop the bin."""
+    the aggregator's request pad (`agg` when given must own it) or keep it when
+    it is the aggregator's last, drop the bin."""
     # Its heads leave the data wait first: neither pending first-data nor a
     # polled socket may fire for a branch that is being taken away.
     source_gate.forget_sources_in(bin_)
@@ -2695,7 +2716,13 @@ def _remove_live_bin(bin_, agg=None):
     if agg_pad is not None:
         owner = agg_pad.get_parent()
         if isinstance(owner, Gst.Element) and (agg is None or owner is agg):
-            owner.release_request_pad(agg_pad)
+            name = owner.get_name()
+            if _is_aggregator(owner) and owner.numsinkpads <= 1 and name not in _kept_agg_pads:
+                _kept_agg_pads[name] = agg_pad
+                sys.stderr.write(f"[gst-runner.py] live input: last pad of {name} kept for the next add "
+                                 f"({agg_pad.get_name()})\n")
+            else:
+                owner.release_request_pad(agg_pad)
     parent = bin_.get_parent()
     if isinstance(parent, Gst.Bin):
         parent.remove(bin_)
@@ -2774,14 +2801,21 @@ def handle_bus_input_add(data):
     if not isinstance(parent, Gst.Bin):
         parent = pipeline
     parent.add(bin_)
-    agg_pad = agg.request_pad_simple("sink_%u")
+    # The aggregator's kept last pad first (B-208), else a new request pad.
+    agg_pad = _take_kept_pad(agg)
+    kept = agg_pad is not None
+    if agg_pad is None:
+        agg_pad = agg.request_pad_simple("sink_%u")
     if agg_pad is None:
         parent.remove(bin_)
         emit_command_error(req_id, f"bus_input_add: no request pad on '{element}'")
         return
     link = ghost.link(agg_pad)
     if link != Gst.PadLinkReturn.OK:
-        agg.release_request_pad(agg_pad)
+        if kept:
+            _kept_agg_pads[agg.get_name()] = agg_pad     # still its last pad: kept for the next add
+        else:
+            agg.release_request_pad(agg_pad)
         parent.remove(bin_)
         emit_command_error(req_id, f"bus_input_add: link failed ({link})")
         return
@@ -2789,7 +2823,8 @@ def handle_bus_input_add(data):
     # PLAYING, and its sticky events need the peer to exist.
     bin_.sync_state_with_parent()
     _live_input_branches.add(name)
-    sys.stderr.write(f"[gst-runner.py] bus_input_add: {name} -> {element}\n")
+    on_kept = f" on its kept pad {agg_pad.get_name()}" if kept else ""
+    sys.stderr.write(f"[gst-runner.py] bus_input_add: {name} -> {element}{on_kept}\n")
     emit_event({"event": "bus_input_add_done", "id": req_id, "name": name})
 
 

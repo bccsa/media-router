@@ -74,8 +74,8 @@ describe.skipIf(fake === null)(
             fake!.mode('hang');
             const before = fake!.calls().length;
             const providers = setInterval(() => {
-                void pw.listDevices();
-                void pw.listDevices();
+                void pw.deviceListing();
+                void pw.deviceListing();
             }, 100);
             const lateMs = await worstTimerLatenessMs(2500);
             await vi.waitFor(() => expect(pw.isAvailable()).toBe(false), { timeout: 3000 });

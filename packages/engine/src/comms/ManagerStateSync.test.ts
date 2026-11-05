@@ -69,6 +69,33 @@ describe('ManagerStateSync', () => {
         expect(link.sendState).toHaveBeenCalledTimes(1);
     });
 
+    it('a session the manager kept keeps patch mode: no new hello comes; a new session waits for its own (#857)', () => {
+        const { link, sync, patches } = setup();
+        sync.connected();
+        sync.hello({ features: ['statePatch'] });
+        sync.disconnected();
+        sync.connected(true);
+        link.sendState.mockClear();
+        sync.stateChange('m1', state('error'));
+        vi.advanceTimersByTime(250);
+        expect(patches().map((m) => m.seq)).toEqual([1]);
+        expect(link.sendState).not.toHaveBeenCalled();
+        sync.disconnected();
+        sync.connected(false);
+        link.sendState.mockClear();
+        sync.stateChange('m1', state('warning'));
+        vi.advanceTimersByTime(250);
+        expect(link.sendState).toHaveBeenCalledTimes(1);
+        // That new session never sent a hello: a resume of it stays on whole states.
+        sync.disconnected();
+        sync.connected(true);
+        link.sendState.mockClear();
+        sync.stateChange('m1', state('error'));
+        vi.advanceTimersByTime(250);
+        expect(link.sendState).toHaveBeenCalledTimes(1);
+        expect(patches().map((m) => m.seq)).toEqual([1]);
+    });
+
     it('a dropped module is forgotten by the diff and the batch', () => {
         const { link, sync } = setup({});
         sync.stateChange('m1', state('ok'));

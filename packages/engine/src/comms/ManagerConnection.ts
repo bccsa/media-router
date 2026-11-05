@@ -11,7 +11,8 @@ const log = createLogger('ManagerConnection');
  * Emits:
  *   - 'config' (config) — manager pushed a config update
  *   - 'command' (command) — manager sent a command
- *   - 'connected' — connected to manager
+ *   - 'connected' ({ resumed }) — connected to manager; `resumed`: on the session
+ *     the manager kept through the drop, so no hello and no config push follow
  *   - 'disconnected' — lost connection to manager
  *   - 'pathUp' / 'pathDown' (index) — one of the profile's paths changed state
  */
@@ -108,7 +109,8 @@ export class ManagerConnection extends EventEmitter {
             }
         }, ManagerConnection.CONNECT_WINDOW_MS);
 
-        this.client.on('connected', () => {
+        this.client.on('connected', (link?: { resumed?: boolean }) => {
+            const resumed = link?.resumed === true;
             if (this.connectTimeout) {
                 clearTimeout(this.connectTimeout);
                 this.connectTimeout = null;
@@ -119,8 +121,11 @@ export class ManagerConnection extends EventEmitter {
             // connection. A flapping link (connected 10s, dead again) must keep
             // escalating its delays, not restart from 3s every cycle.
             this.backoff.markStable();
-            log.info('Connected to manager');
-            this.emit('connected');
+            log.info(
+                { resumed },
+                resumed ? 'Connected to manager (session kept)' : 'Connected to manager',
+            );
+            this.emit('connected', { resumed });
         });
 
         this.client.on('disconnected', () => {
@@ -201,8 +206,12 @@ export class ManagerConnection extends EventEmitter {
         if (wasConnected) this.emit('disconnected');
     }
 
-    /** Send a message to the manager. */
-    send(topic: string, message: unknown, options?: { guaranteeDelivery?: boolean }): void {
+    /** Send a message to the manager; `onAck` runs once on its ACK (guaranteed only). */
+    send(
+        topic: string,
+        message: unknown,
+        options?: { guaranteeDelivery?: boolean; onAck?: () => void },
+    ): void {
         this.client?.send(topic, message, options);
     }
 

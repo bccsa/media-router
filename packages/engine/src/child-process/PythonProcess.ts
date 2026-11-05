@@ -8,6 +8,7 @@ import type {
     RenderWatchRunnerConfig,
     KeyframeGateConfig,
     BacklogShedConfig,
+    CatchUpConfig,
     LiveInputBranch,
 } from '../plugins/PluginModule.js';
 import { pluginPythonPaths, pluginsRoot } from './nativeBinaries.js';
@@ -66,6 +67,8 @@ export interface RunnerStartOptions {
     /** `PipelineDescription.liveInputs`: the runner host launches with the ones that are there
      *  (`waitForLiveInputs`) and never sends the field itself. */
     liveInputs?: LiveInputBranch[];
+    /** A launch's catch-up — `PipelineDescription.catchUp` (native runner; python ignores it). */
+    catchUp?: CatchUpConfig;
 }
 
 export interface PythonProcessOptions {

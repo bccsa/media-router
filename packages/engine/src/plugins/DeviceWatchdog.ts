@@ -13,8 +13,9 @@ import {
  * a `{ hasDevice: () => boolean }` stub without the full PipeWireManager.
  */
 export interface DeviceWatchdogPipeWire {
-    /** Is the device listed? Asked without blocking (B-200); stubs may answer at once. */
-    hasDevice(name: string): Promise<boolean> | boolean;
+    /** Is the device listed? Asked without blocking (B-200); stubs may answer at once. Null:
+     *  PipeWire gives no answer, so the device is unknown, never gone (B-207). */
+    hasDevice(name: string): Promise<boolean | null> | boolean | null;
     /** The PipeWire daemon's identity: changes when PipeWire restarts; null while unknown. */
     daemonInstance?(): Promise<string | null> | string | null;
     /** False while PipeWire does not answer: the device list is then unknown, not empty. */
@@ -191,10 +192,10 @@ export class DeviceWatchdog {
         if (!deviceName) return;
         const pw = this.opts.pipeWire;
         // Asked together. A listing that waits is no answer yet: this tick changes nothing until
-        // it settles, and a timed-out one is unknown, not an unplug (B-200).
+        // it settles, and a timed-out one is unknown, not an unplug (B-200, B-207).
         const listing = Promise.resolve(pw.hasDevice(deviceName)).then((present) => ({
             present,
-            answered: pw.isAvailable?.() !== false, // this listing's, as it settles
+            answered: present !== null && pw.isAvailable?.() !== false, // this listing's, as it settles
         }));
         const [{ present, answered }, current] = await Promise.all([listing, this.daemon()]);
 
@@ -202,7 +203,7 @@ export class DeviceWatchdog {
             // First: right after a restart the device is often not listed yet, and is no unplug.
             if (this.restarted(current)) return this.disconnectLost(PIPEWIRE_RESTARTED);
             // A list nobody answers is unknown, not an unplug: a dead stream reports itself.
-            if (!present && answered) {
+            if (present === false && answered) {
                 this.connected = false;
                 this.opts.onHealthChange('error', 'Device disconnected');
                 this.opts.onClear?.();
@@ -222,7 +223,8 @@ export class DeviceWatchdog {
             const leftMs = Math.max(0, this.loss.notBefore - Date.now());
             this.opts.onHealthChange('warning', lossWarning(PIPEWIRE_RESTARTED, leftMs));
         }
-        if (!present || (this.loss && Date.now() < this.loss.notBefore)) return;
+        // Only PipeWire's own answer starts a rebuild, never a list it gave before it stopped.
+        if (!present || !answered || (this.loss && Date.now() < this.loss.notBefore)) return;
         // Only flip `connected` after a successful reconnect — a throw
         // leaves it false so the next tick retries (e.g. the device
         // returned but format wasn't probeable yet).

@@ -313,7 +313,7 @@ describe('wireEngineEvents — LCP lifecycle commands', () => {
             expect(stubs.managerConnection.send).toHaveBeenCalledWith(
                 'lcpEngineCommand',
                 { command: action },
-                { guaranteeDelivery: true },
+                expect.objectContaining({ guaranteeDelivery: true }),
             );
         },
     );
@@ -539,7 +539,7 @@ describe('wireEngineEvents — outage and reconnect (ADR-0025)', () => {
         stubs.managerConnection.isConnected = true;
         stubs.managerConnection.emit('connected');
         stubs.managerConnection.emit('config', push(100));
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith('patch', { ops: [op] }, { guaranteeDelivery: true });
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('patch', { ops: [op] }, expect.objectContaining({ guaranteeDelivery: true }));
     });
 
     it('a reconnect push goes to the patch router as a difference, not a swap', () => {
@@ -550,5 +550,65 @@ describe('wireEngineEvents — outage and reconnect (ADR-0025)', () => {
             { op: 'replace', path: '/modules/m1/settings/volume', value: 80 },
         ]);
         expect(ctx.setCurrentConfig).not.toHaveBeenCalled();
+    });
+});
+
+describe('wireEngineEvents — the manager link back on the session the manager kept (#857)', () => {
+    let stubs: Stubs;
+    let ctx: EngineEventContext;
+    const vol = (value: number) => ({ op: 'replace' as const, path: '/modules/m1/settings/volume', value });
+    const push = { modules: { m1: { settings: {} } }, _push: { reason: 'connect', profile: 'p' } };
+    const patches = () => stubs.managerConnection.send.mock.calls.filter(([t]) => t === 'patch').map(([, m]) => m);
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        stubs = makeStubs();
+        ctx = makeCtx(stubs);
+        wireEngineEvents(ctx);
+        stubs.managerConnection.isConnected = true;
+        stubs.managerConnection.emit('connected', { resumed: false });
+        stubs.managerConnection.emit('config', push);
+    });
+
+    afterEach(() => {
+        stubs.managerConnection.emit('disconnected');
+        vi.useRealTimers();
+    });
+
+    it('no push comes: what was journaled goes up and local changes are sent live again', () => {
+        stubs.managerConnection.emit('disconnected');
+        ctx.localChanges.config([vol(40)]);
+        stubs.managerConnection.emit('connected', { resumed: true });
+        expect(patches()).toEqual([{ ops: [vol(40)] }]);
+        ctx.localChanges.config([vol(30)]);
+        expect(patches()).toEqual([{ ops: [vol(40)] }, { ops: [vol(30)] }]);
+    });
+
+    it('a change sent just before the drop and never acked goes up again', () => {
+        ctx.localChanges.config([vol(40)]);
+        stubs.managerConnection.emit('disconnected');
+        stubs.managerConnection.emit('connected', { resumed: true });
+        expect(patches()).toEqual([{ ops: [vol(40)] }, { ops: [vol(40)] }]);
+    });
+
+    it('a new session still waits for its connect push', () => {
+        stubs.managerConnection.emit('disconnected');
+        ctx.localChanges.config([vol(40)]);
+        stubs.managerConnection.emit('connected', { resumed: false });
+        expect(patches()).toEqual([]);
+        stubs.managerConnection.emit('config', push);
+        expect(patches()).toEqual([{ ops: [vol(40)] }]);
+    });
+
+    it('keeps statePatch mode: the hello of the kept session still holds', () => {
+        stubs.moduleManager.getAllStates.mockReturnValue({ 'mod-1': { running: true, health: 'ok' } });
+        stubs.managerConnection.emit('hello', { features: ['statePatch'] });
+        stubs.managerConnection.emit('disconnected');
+        stubs.managerConnection.emit('connected', { resumed: true });
+        stubs.managerConnection.sendState.mockClear();
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'warning' });
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.send.mock.calls.filter(([t]) => t === 'statePatch')).toHaveLength(1);
+        expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
     });
 });

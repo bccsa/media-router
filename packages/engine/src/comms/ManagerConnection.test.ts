@@ -124,6 +124,23 @@ describe('ManagerConnection', () => {
         expect(spy).toHaveBeenCalled();
     });
 
+    it('says whether the link came back on the session the manager kept (#857)', () => {
+        const spy = vi.fn();
+        conn.on('connected', spy);
+        conn.connect(testProfile);
+        clientInstances[0].emit('connected', { resumed: false });
+        clientInstances[0].emit('disconnected');
+        clientInstances[0].emit('connected', { resumed: true });
+        expect(spy.mock.calls).toEqual([[{ resumed: false }], [{ resumed: true }]]);
+    });
+
+    it('hands the ack callback to the client', () => {
+        conn.connect(testProfile);
+        const onAck = vi.fn();
+        conn.send('patch', { ops: [] }, { guaranteeDelivery: true, onAck });
+        expect(mockSend).toHaveBeenCalledWith('patch', { ops: [] }, { guaranteeDelivery: true, onAck });
+    });
+
     it('sets isConnected to false on disconnected event', () => {
         conn.connect(testProfile);
         clientInstances[0].emit('connected');

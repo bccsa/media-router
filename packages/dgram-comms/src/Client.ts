@@ -65,7 +65,9 @@ export function resolveInterfaceAddress(
  *
  * Emits:
  *   - `data` (topic, message) — received application message (deduped)
- *   - `connected` — at least one path connected
+ *   - `connected` ({ resumed }) — a path connected; `resumed`: every path had
+ *     been down and the server answered on the session it kept, so it saw no
+ *     new connection and sends nothing a new session gets
  *   - `disconnected` — all paths disconnected
  *   - `pathDown` (index) — a specific path went down
  *   - `pathUp` (index) — a specific path came back
@@ -97,6 +99,9 @@ export class Client extends EventEmitter {
      * can silently eat the new session's messages.
      */
     private readonly sessionNonce = crypto.randomUUID();
+
+    /** The server's id for this client's session (its socketID) from the last handshake. */
+    private sessionId: string | undefined;
 
     /** Whether at least one path is connected. */
     get connected(): boolean {
@@ -227,12 +232,18 @@ export class Client extends EventEmitter {
         socket.on('connected', () => {
             const cur = this.pathStates[index];
             if (!cur || cur.connected) return; // already-connected guard
+            // Every path was down and the server re-acked the session it kept (#857).
+            const resumed =
+                !this.connected &&
+                this.sessionId !== undefined &&
+                socket.socketID === this.sessionId;
+            this.sessionId = socket.socketID;
             cur.connected = true;
             if (!cur.alive) {
                 cur.alive = true;
                 this.emit('pathUp', index);
             }
-            this.emit('connected');
+            this.emit('connected', { resumed });
         });
 
         // Forward data events. Retransmit dedup happens by messageId in the
@@ -309,17 +320,31 @@ export class Client extends EventEmitter {
     }
 
     /**
-     * Send a message to the server on ALL paths.
+     * Send a message to the server on ALL paths. `onAck` runs once, on the
+     * first path's ACK of a guaranteed message; never when every copy is lost.
      */
-    send(topic: string, message: unknown, options: { guaranteeDelivery?: boolean } = {}): void {
+    send(
+        topic: string,
+        message: unknown,
+        options: { guaranteeDelivery?: boolean; onAck?: () => void } = {},
+    ): void {
         if (this.destroyed) return;
         // One sequence number per logical message, shared across every path
         // copy so the server dedups the bonded duplicates by identity.
         this.seq += 1;
         const seq = this.seq;
+        const { onAck } = options;
+        let acked = false;
+        const once = onAck
+            ? () => {
+                  if (acked) return;
+                  acked = true;
+                  onAck();
+              }
+            : undefined;
         for (const ps of this.pathStates) {
             if (ps.connected) {
-                ps.socket.send(topic, message, { ...options, seq });
+                ps.socket.send(topic, message, { ...options, seq, onAck: once });
             }
         }
     }

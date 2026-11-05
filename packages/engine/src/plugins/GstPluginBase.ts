@@ -12,6 +12,7 @@ import { PIPEWIRE_LOST_KIND } from '../child-process/GstRunner.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
+import { START_WAITS_FOR_PIPEWIRE } from './pipeWireLoss.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import { QUEUE_SHED_EVENT } from './tsHelpers.js';
@@ -23,6 +24,7 @@ import {
 } from './playoutOffset.js';
 import {
     PLAYOUT_REANCHOR_EVENT,
+    type PlayoutLegOffset,
     type PlayoutRaise,
     type PlayoutRebaseNote,
 } from './playoutReanchor.js';
@@ -123,6 +125,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         log: (level, obj, msg) =>
             level === 'warn' ? this.log.warn(obj, msg) : this.log.info(obj, msg),
         alignerInput: (watch) => this.alignerInputOf(watch),
+        contentLateness: (lateMs) => this.playout.onContentLateness(lateMs),
         wired: (s) => {
             const id = this.services?.instanceId;
             const router = this.services?.mediaRouter;
@@ -470,6 +473,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // incarnation left behind — without this the stale text rides along
         // with health='ok' forever ("healthy but shows an old error").
         this.markHealthy();
+        // A standing re-anchor shows from the start, on a new instance too (B-210).
+        this.playout.reassert();
         this.emit('stateChange', this.getState());
 
         // For data-mode pipelines with a null-sink, start a separate VU metering process
@@ -1016,6 +1021,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.clearOwnWarning('reanchor');
             this.clearOwnWarning('rebase');
         },
+        heldChanged: (held) => this.onPlayoutHeldChanged(held),
     });
 
     /** Head: this route's raise (`null` = cleared). Leg: its route's raise reset to 0. */
@@ -1023,9 +1029,32 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.playout.onRouteRaised(raise);
     }
 
-    /** Head: a leg below it rebased itself — a producer timeline fault. */
-    onRoutePlayoutRebased(note: PlayoutRebaseNote): void {
+    /** Head: a leg below it rebased itself — a producer timeline fault (`null`: over). */
+    onRoutePlayoutRebased(note: PlayoutRebaseNote | null): void {
         this.playout.onRouteRebased(note);
+    }
+
+    /** Leg: its own re-anchor past its route's reach (`null`: cleared, B-210). */
+    onPlayoutLegOffset(offset: PlayoutLegOffset | null): void {
+        this.playout.onLegOffset(offset);
+    }
+
+    /** A raise could not help this leg (B-210): its sink's lateness is how it plays, not silence. */
+    protected playoutHeld(): boolean {
+        return this.playout.held();
+    }
+
+    /** The leg's raise became held, or no longer is: a module that watches its sink re-reads. */
+    protected onPlayoutHeldChanged(_held: boolean): void {
+        /* subclass hook */
+    }
+
+    /** A leg whose sink plays on time again (B-206): a raise it asked for stands as its section,
+     *  and what its warning stood over shows again (lost inputs, the aligners'). */
+    protected notePlayoutOnTime(): void {
+        this.playout.onPlayoutOnTime();
+        this.showLostInputs();
+        this.timing.reassertWarnings();
     }
 
     /** Taken only over `ok` or our own re-anchor/rebase text (ADR-0010 rule 2). */
@@ -1264,6 +1293,26 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             onClear: () => this.setVuData([]),
         });
         this.deviceWatchdog.start(initiallyConnected);
+    }
+
+    /**
+     * A start's device check: true when the start must wait for `device`, not listed ("waiting for
+     * hot-plug") or no answer from PipeWire (B-207: unknown, never gone); the watchdog then starts
+     * the module once it is listed. False when it is listed, or there is no PipeWire to ask.
+     */
+    protected async startWaitsForDevice(device: string): Promise<boolean> {
+        const listed = this.services?.pipeWire
+            ? await this.services.pipeWire.hasDevice(device)
+            : true;
+        if (listed) return false;
+        this.setHealth(
+            'warning',
+            listed === null
+                ? START_WAITS_FOR_PIPEWIRE
+                : `Audio device "${device}" not connected — waiting for hot-plug`,
+        );
+        this.startDeviceWatchdog(false);
+        return true;
     }
 
     /**

@@ -193,6 +193,17 @@ describe('effectivePlayoutOffsetMs — the re-anchor raise overlay', () => {
         expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, -50) })).toBe(300);
         expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: raised(300, Number.NaN) })).toBe(300);
     });
+
+    it('B-210: a leg re-anchored on its own adds its offset, under the same cap', () => {
+        const own = (ms: number) => ({ ...raised(300, 0), getPlayoutLegOffsetMs: vi.fn(() => ms) });
+        const router = own(4_940);
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: router })).toBe(5_240);
+        expect(router.getPlayoutLegOffsetMs).toHaveBeenCalledWith('m1');
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: own(12_000) }, { trimMs: 10 })).toBe(
+            MAX_PLAYOUT_OFFSET_MS + 10,
+        );
+        expect(effectivePlayoutOffsetMs({ ...on, mediaRouter: own(Number.NaN) })).toBe(300);
+    });
 });
 
 describe('effectivePlayoutOffsetNs', () => {

@@ -60,6 +60,17 @@ function makeModule(
 
 beforeEach(() => vi.clearAllMocks());
 
+/** One bus source as `getModuleBusSources` gives it. */
+const source = (i: number) => ({
+    port: 40100 + i,
+    connectionId: `c-${i}`,
+    sourceModuleId: `src-${i}`,
+    sourcePortId: 'out-0',
+    sinkPortId: 'audio-in',
+    streamType: 'audio/302m',
+    socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
+});
+
 describe('AudioOutput302mModule.buildPipeline', () => {
     it('never plays to a default device — unconfigured device is a health error', () => {
         const { module, setHealth } = makeModule({ sources: 1 });
@@ -270,6 +281,55 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         const { module } = makeModule({ sources: 1, playout: { playoutOffsetMs: 300 } });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.backlogShed).not.toHaveProperty('onLateness');
+    });
+});
+
+describe('AudioOutput302mModule: a launch plays at its own D, whatever its sources went through (B-206)', () => {
+    it('the runner skips what each input delivers from before the launch plays, as TS at its ingress tap, both arms', () => {
+        const mixed = makeModule({ sources: 2 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(mixed!.catchUp).toEqual({ prefix: 'lat_busin' });
+        // Every input of the launch (and of a live add) has its tap under that prefix, before
+        // its ingress queue: the TS is dropped in the thread that reads the socket.
+        const taps = launched(mixed!).match(
+            /unixfdsrc [^!]+! mrlateness name=lat_busin_\S+ reference=house ! queue/g,
+        );
+        expect(taps).toHaveLength(2);
+        const direct = makeModule({ sources: 1 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(direct!.catchUp).toEqual({ prefix: 'lat_busin' });
+        expect(direct!.pipeline).toContain('mrlateness name=lat_busin_');
+    });
+
+    it('its shed probe watches the playout: the sink missing for a second is reported', () => {
+        const desc = makeModule({ sources: 2 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(desc!.backlogShed!.missWatchMs).toBe(1000);
+    });
+
+    it('a seed past its ts-offset (a producer read during its own outage burst) starts there: the sink keeps its ring', () => {
+        const { module } = makeModule({ sources: 2, playout: { playoutOffsetMs: 300 } });
+        module.services.mediaRouter.getModuleBusSources = vi.fn(() => [
+            { ...source(0), seedLatenessMs: 4300 },
+            { ...source(1), seedLatenessMs: 50 },
+        ]);
+        const text = launched(module.buildPipeline({ device: 'alsa_output.usb-foo' })!);
+        // D 300: ts-offset 200 (the 100 ms the sink declares cancelled).
+        expect(text).toContain('seed-lateness=200000000');
+        expect(text).toContain('seed-lateness=50000000');
+        expect(text).not.toContain('seed-lateness=4300000000');
+        // At the default D 60 the ts-offset is 0: no seed starts the pace past the sink.
+        const d60 = makeModule({ sources: 2, playout: { playoutOffsetMs: 60 } }).module;
+        d60.services.mediaRouter.getModuleBusSources = vi.fn(() => [
+            { ...source(0), seedLatenessMs: 45 },
+            source(1),
+        ]);
+        expect(launched(d60.buildPipeline({ device: 'alsa_output.usb-foo' })!)).toContain(
+            'seed-lateness=0 ',
+        );
     });
 });
 
@@ -538,8 +598,14 @@ const NEW = 'alsa_output.usb-Solid_State_Logic_SSL_2-00.HiFi__Line__sink';
 
 /** The module under the engine's ModuleInstance on a graph of `present` devices, one source
  *  wired; `built` holds each pipeline it starts. `repick` is a settings patch, then Restart.
- *  PipeWire answers as the engine's does, a turn later; its devices are `width` wide. */
-function underEngine(present: Set<string>, width = 2, settings: Record<string, unknown> = {}) {
+ *  PipeWire answers as the engine's does, a turn later, unless `pw.answers` is false (B-207);
+ *  its devices are `width` wide. */
+function underEngine(
+    present: Set<string>,
+    width = 2,
+    settings: Record<string, unknown> = {},
+    pw = { answers: true },
+) {
     const built: string[] = [];
     vi.spyOn(GstPluginBase.prototype, 'onStart').mockImplementation(async function (this: any) {
         built.push(this.buildPipeline(this.config)?.pipeline ?? '');
@@ -557,8 +623,8 @@ function underEngine(present: Set<string>, width = 2, settings: Record<string, u
     const services = {
         instanceId: 'aout-1',
         pipeWire: {
-            hasDevice: async (name: string) => present.has(name),
-            getDeviceInfo: async () => ({ channels: width, sampleRate: 48000 }),
+            hasDevice: async (name: string) => (pw.answers ? present.has(name) : null),
+            getDeviceInfo: async () => (pw.answers ? { channels: width, sampleRate: 48000 } : null),
             releaseAll: vi.fn(async () => {}),
         },
         mediaRouter: { getModuleBusSources: () => [source], releaseAllBusChannelsFor: vi.fn() },
@@ -637,6 +703,40 @@ describe('AudioOutput302mModule: a restart applies a re-picked device (B-191)', 
         await module.deviceWatchdog.tick();
         expect(built).toHaveLength(1);
         expect(built[0]).toContain(`pulsesink name=sink device=${NEW} `);
+        await instance.stop();
+    });
+});
+
+describe('AudioOutput302mModule while PipeWire gives no answer (B-207, MR-042)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('a start waits for PipeWire, never for hot-plug, and plays once PipeWire lists the device', async () => {
+        const pw = { answers: false };
+        const { module, instance, built } = underEngine(new Set([OLD]), 2, {}, pw);
+        await instance.start();
+        expect(built).toEqual([]);
+        expect(module.getState().error).toBe(
+            'PipeWire is not answering — starting once PipeWire and the device are back',
+        );
+        await module.deviceWatchdog.tick();
+        expect(built).toEqual([]);
+        pw.answers = true;
+        await module.deviceWatchdog.tick();
+        expect(built).toHaveLength(1);
+        expect(built[0]).toContain(`pulsesink name=sink device=${OLD} `);
+        await instance.stop();
+    });
+
+    it('a running output is not stopped by a device check with no answer', async () => {
+        const pw = { answers: true };
+        const { module, instance, built } = underEngine(new Set([OLD]), 2, {}, pw);
+        const lost = vi.spyOn(module, 'onDeviceDisconnected');
+        await instance.start();
+        pw.answers = false;
+        for (let i = 0; i < 5; i++) await module.deviceWatchdog.tick();
+        expect(lost).not.toHaveBeenCalled();
+        expect(module.deviceWatchdog.isConnected()).toBe(true);
+        expect(built).toHaveLength(1);
         await instance.stop();
     });
 });

@@ -1,5 +1,8 @@
 #include "bus_inputs.h"
 
+#include <gst/base/gstaggregator.h>
+
+#include <map>
 #include <set>
 #include <string>
 
@@ -15,6 +18,39 @@ namespace {
 
 /** Live branch bins: the start payload's list plus adds, minus removes/drops. */
 std::set<std::string> g_live;
+
+/** A running aggregator's last sink pad, unlinked and kept by aggregator name until the next add
+ *  takes it (B-208): GstAudioAggregator left with no sink pad can aggregate once over none and
+ *  restart its output at running time 0. */
+std::map<std::string, GstPad*> g_kept;
+
+/** Whether `el` is an aggregator with one sink pad left (the one being taken off). */
+bool is_last_aggregator_pad(GstElement* el) {
+    if (!GST_IS_AGGREGATOR(el)) return false;
+    GST_OBJECT_LOCK(el);
+    const bool last = el->numsinkpads <= 1;
+    GST_OBJECT_UNLOCK(el);
+    return last;
+}
+
+/** The kept pad of `agg` (owned ref) while it is still one of its sink pads; null otherwise. */
+GstPad* take_kept(GstElement* agg) {
+    auto it = g_kept.find(GST_OBJECT_NAME(agg));
+    if (it == g_kept.end()) return nullptr;
+    GstPad* pad = it->second;
+    g_kept.erase(it);
+    GstObject* owner = gst_pad_get_parent(pad);
+    const bool ours = owner == GST_OBJECT(agg);
+    if (owner) gst_object_unref(owner);
+    if (ours) return pad;
+    gst_object_unref(pad);
+    return nullptr;
+}
+
+void drop_kept() {
+    for (auto& kv : g_kept) gst_object_unref(kv.second);
+    g_kept.clear();
+}
 
 /** Free a bin that was never added to a parent (parse result is floating). */
 void drop_floating(GstElement* bin) {
@@ -47,7 +83,7 @@ GstPad* branch_src_pad(GstElement* bin) {
  * Stop the branch (the pushing side — NULL ends its thread; no pad probe,
  * one on its own src pad would deadlock the NULL join), unlink it, release
  * the aggregator's request pad (found through the link; `agg` when given
- * must own it), drop the bin.
+ * must own it) or keep it when it is the aggregator's last, drop the bin.
  */
 void remove_bin(GstElement* bin, GstElement* agg_or_null) {
     gate::forget_sources_in(bin);
@@ -58,8 +94,16 @@ void remove_bin(GstElement* bin, GstElement* agg_or_null) {
     if (src) gst_object_unref(src);
     if (agg_pad) {
         GstObject* owner = gst_pad_get_parent(agg_pad);
-        if (owner && GST_IS_ELEMENT(owner) && (!agg_or_null || owner == GST_OBJECT(agg_or_null)))
-            gst_element_release_request_pad(GST_ELEMENT(owner), agg_pad);
+        if (owner && GST_IS_ELEMENT(owner) && (!agg_or_null || owner == GST_OBJECT(agg_or_null))) {
+            GstElement* agg = GST_ELEMENT(owner);
+            if (is_last_aggregator_pad(agg) && !g_kept.count(GST_OBJECT_NAME(agg))) {
+                g_kept[GST_OBJECT_NAME(agg)] = GST_PAD(gst_object_ref(agg_pad));
+                ipc::log(std::string("live input: last pad of ") + GST_OBJECT_NAME(agg) +
+                         " kept for the next add (" + GST_OBJECT_NAME(agg_pad) + ")");
+            } else {
+                gst_element_release_request_pad(agg, agg_pad);
+            }
+        }
         if (owner) gst_object_unref(owner);
         gst_object_unref(agg_pad);
     }
@@ -72,6 +116,7 @@ void remove_bin(GstElement* bin, GstElement* agg_or_null) {
 
 void declare(JsonArray* names) {
     g_live.clear();
+    drop_kept();
     if (!names) return;
     guint n = json_array_get_length(names);
     for (guint i = 0; i < n; i++) {
@@ -80,7 +125,10 @@ void declare(JsonArray* names) {
     }
 }
 
-void clear() { g_live.clear(); }
+void clear() {
+    g_live.clear();
+    drop_kept();
+}
 
 bool is_live_branch(const std::string& name) { return g_live.count(name) > 0; }
 
@@ -172,7 +220,10 @@ void handle_bus_input_add(JsonObject* data) {
     GstBin* parent = parent_obj && GST_IS_BIN(parent_obj) ? GST_BIN(parent_obj) : GST_BIN(r.pipeline);
     gst_bin_add(parent, bin);  // sinks the floating ref
 
-    GstPad* agg_pad = gst_element_request_pad_simple(agg, "sink_%u");
+    // The aggregator's kept last pad first (B-208), else a new request pad.
+    GstPad* agg_pad = take_kept(agg);
+    const bool kept = agg_pad != nullptr;
+    if (!agg_pad) agg_pad = gst_element_request_pad_simple(agg, "sink_%u");
     if (!agg_pad) {
         gst_bin_remove(parent, bin);
         if (parent_obj) gst_object_unref(parent_obj);
@@ -182,14 +233,19 @@ void handle_bus_input_add(JsonObject* data) {
     }
     GstPadLinkReturn lr = gst_pad_link(ghost, agg_pad);
     if (lr != GST_PAD_LINK_OK) {
-        gst_element_release_request_pad(agg, agg_pad);
-        gst_object_unref(agg_pad);
+        if (kept) {
+            g_kept[GST_OBJECT_NAME(agg)] = agg_pad;   // still its last pad: kept for the next add
+        } else {
+            gst_element_release_request_pad(agg, agg_pad);
+            gst_object_unref(agg_pad);
+        }
         gst_bin_remove(parent, bin);
         if (parent_obj) gst_object_unref(parent_obj);
         gst_object_unref(agg);
         ipc::command_error(req_id, "bus_input_add: link failed (" + std::to_string((int)lr) + ")");
         return;
     }
+    const std::string pad_name = GST_OBJECT_NAME(agg_pad);
     gst_object_unref(agg_pad);
     if (parent_obj) gst_object_unref(parent_obj);
     gst_object_unref(agg);
@@ -197,7 +253,7 @@ void handle_bus_input_add(JsonObject* data) {
     // Link first, then run: a source-headed branch pushes as soon as it plays.
     gst_element_sync_state_with_parent(bin);
     g_live.insert(name);
-    ipc::log("bus_input_add: " + name + " -> " + element);
+    ipc::log("bus_input_add: " + name + " -> " + element + (kept ? " on its kept pad " + pad_name : ""));
     emit_done("bus_input_add_done", name, req_id);
 }
 

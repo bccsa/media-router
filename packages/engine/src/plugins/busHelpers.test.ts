@@ -11,6 +11,7 @@ import {
     busEdgeSocketPath,
     busIngestSocketPath,
     busSocketPort,
+    busSrcTapName,
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
     quoteGstString,
@@ -438,6 +439,17 @@ describe('bus lateness taps', () => {
         const b = buildBusSrc({ port: 40001, socketPath: busEdgeSocketPath(40001, 'b') });
         const tap = (f: string) => /mrlateness name=(\S+)/.exec(f)?.[1];
         expect(tap(a)).not.toBe(tap(b));
+    });
+
+    it("names a source's tap as buildBusSrc does, so a runner probe finds each input by it (B-206)", () => {
+        const tap = (f: string) => /mrlateness name=(\S+)/.exec(f)?.[1];
+        for (const opts of [
+            { port: 40001, socketPath: busEdgeSocketPath(40001, 'a') },
+            { port: 40002 },
+            { port: 40003, name: 'busin_2' },
+        ]) {
+            expect(busSrcTapName(opts)).toBe(tap(buildBusSrc(opts)));
+        }
     });
 
     it('omits every tap when the instrument is missing, so the pipeline still parses', () => {

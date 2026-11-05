@@ -34,6 +34,23 @@
   `PatchRouter` like any edit, never a rebuild, so restart-required settings
   stay pending (UR-MGR-006c). Old routers apply it too: they already take
   manager patches. `diffConfig` lives in shared-types for both ends.
+- **A link back on the session the manager kept (amended 2026-11-04, #857).**
+  A router gives its link up after about 5 s of silence, the manager only
+  after about 8 s (the client-first keepalive asymmetry, ADR-0023), so a
+  shorter drop, or one in the manager-to-router direction only, ends on the
+  session the manager kept: it sees no new connection, and no `hello` and no
+  connect push follow. The router knows it from dgram-comms (`connected { resumed }`:
+  every path was down and the server re-acked the session it held). It then
+  sends its journal up at once and goes live, and keeps `statePatch`; a
+  session that dropped before its own push was merged still waits for it.
+  Before this the router waited for a push that never came and journaled
+  every on-site change until the next real reconnect, and the manager's
+  dashboards and routing editor stayed on the old values. A change the
+  manager had not acked when the link dropped goes back into the journal
+  (guaranteed sends take an ack callback), so one made in the seconds before
+  the router noticed the drop is not lost. A replay the manager already had
+  is harmless: on-site ops are leaf values and id-path removes. Engine only;
+  no manager or protocol change, so deploy order does not matter.
 
 ## Why
 

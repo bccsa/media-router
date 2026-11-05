@@ -22,7 +22,10 @@ vi.mock('@/composables/usePatch', () => ({
 import ModuleSettingsPanel from './ModuleSettingsPanel.vue';
 import MrHelpTip from '@/components/common/MrHelpTip.vue';
 import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
+import MrSelect from '@/components/common/MrSelect.vue';
+import { useDeviceStore } from '@/stores/devices';
 import { useEngineStore } from '@/stores/engines';
+import { useSocketStore } from '@/stores/socket';
 
 /**
  * Seed one engine holding one module. No `configSchema` on purpose: that keeps
@@ -1354,5 +1357,68 @@ describe('ModuleSettingsPanel — Save sends only what changed (B-107)', () => {
         await save(wrapper);
 
         expect(mockModuleSettings).not.toHaveBeenCalled();
+    });
+});
+
+describe('ModuleSettingsPanel — the device picker while PipeWire gives no answer (B-207)', () => {
+    const MIC = 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic1__source';
+    const SINCE = 'PipeWire not answering since 2026-11-03T09:01:00Z';
+    const stale = { reason: 'PipeWire not answering', since: '2026-11-03T09:01:00Z' };
+
+    beforeEach(() => {
+        setActivePinia(createPinia());
+        vi.spyOn(useSocketStore(), 'subscribe').mockReturnValue(() => {});
+        useEngineStore().addEngine({
+            engine_id: 'eng-1',
+            display_name: 'Test Engine',
+            modules: {
+                'mic-1': {
+                    pluginId: 'audio-input-302m',
+                    displayName: 'Mic 1',
+                    configSchema: {
+                        type: 'object',
+                        properties: {
+                            device: {
+                                type: 'string',
+                                title: 'Device',
+                                'x-deviceType': 'audio-source',
+                            },
+                        },
+                    },
+                    settings: { device: MIC },
+                },
+            },
+        });
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    const pickerOptions = (wrapper: VueWrapper) => wrapper.getComponent(MrSelect).props('options');
+
+    it('a stale list is the last one, as the engine labels it: the picker keeps it as it is', () => {
+        const label = `SSL 2 Mic 1 (1ch, 48000Hz) — ${SINCE}`;
+        useDeviceStore().set('eng-1', 'audio-source', [
+            { name: MIC, label, meta: { direction: 'source', stale } },
+        ]);
+        expect(pickerOptions(mountPanel('mic-1'))).toEqual([
+            { value: '', label: 'No device selected', group: undefined },
+            { value: MIC, label, group: undefined },
+        ]);
+    });
+
+    it('a list with no device, only the note "No answer": the note heads the options, is no choice, and names why the device is not listed', () => {
+        const note = `No answer: ${SINCE}`;
+        useDeviceStore().set('eng-1', 'audio-source', [{ name: '', label: note, meta: { stale } }]);
+        expect(pickerOptions(mountPanel('mic-1'))).toEqual([
+            { value: '', label: 'No device selected', group: note },
+            { value: MIC, label: `${MIC} (${note})`, group: note },
+        ]);
+    });
+
+    it('an answered list without the device: Disconnected, as before', () => {
+        useDeviceStore().set('eng-1', 'audio-source', []);
+        expect(pickerOptions(mountPanel('mic-1'))).toEqual([
+            { value: '', label: 'No device selected', group: undefined },
+            { value: MIC, label: `${MIC} (Disconnected)`, group: undefined },
+        ]);
     });
 });

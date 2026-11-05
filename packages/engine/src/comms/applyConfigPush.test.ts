@@ -41,7 +41,7 @@ describe('applyConfigPush', () => {
         expect(link.send).toHaveBeenCalledWith(
             'patch',
             { ops: [{ op: 'replace', path: '/modules/m1/settings/volume', value: 60 }] },
-            { guaranteeDelivery: true },
+            expect.objectContaining({ guaranteeDelivery: true }),
         );
     });
 
@@ -86,7 +86,7 @@ describe('applyConfigPush', () => {
         expect(link.send).toHaveBeenCalledWith(
             'patch',
             { ops: [{ op: 'replace', path: '/modules/b/settings/audioEnabled', value: false }] },
-            { guaranteeDelivery: true },
+            expect.objectContaining({ guaranteeDelivery: true }),
         );
     });
 });

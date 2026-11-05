@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { PaCommandQueue } from './PaCommandQueue.js';
+import { PaCommandQueue, PactlNoAnswer } from './PaCommandQueue.js';
 import { installFakePactl } from './testing/fakePactl.js';
 
 // B-200: pactl as a child that never blocks the event loop, against a stand-in first on PATH.
@@ -37,6 +37,7 @@ describe.skipIf(fake === null)('PaCommandQueue: pactl never blocks the engine (B
         expect(r.error?.message).toBe(
             'pactl command failed: pactl list sources\nno answer within 600 ms',
         );
+        expect(r.error).toBeInstanceOf(PactlNoAnswer);
         expect(r.tookMs).toBeGreaterThanOrEqual(590);
         // A synchronous call would hold every timer for the whole 600 ms.
         expect(r.ticks).toBeGreaterThanOrEqual(10);
@@ -48,6 +49,17 @@ describe.skipIf(fake === null)('PaCommandQueue: pactl never blocks the engine (B
         fake!.mode('hang');
         const pa = new PaCommandQueue(0, 300);
         await expect(pa.execImmediateAsync(['info'])).rejects.toThrow(/no answer within 300 ms/);
+    });
+
+    it('PipeWire not running: pactl fails at once with its own words, a failure, not no answer (B-207)', async () => {
+        fake!.mode('fail');
+        const pa = new PaCommandQueue(0, 3000);
+        const r = await whileTicking(() => pa.execImmediateAsync(['list', 'sources']));
+        expect(r.error?.message).toBe(
+            'pactl command failed: pactl list sources\nConnection failure: Connection refused',
+        );
+        expect(r.error).not.toBeInstanceOf(PactlNoAnswer);
+        expect(r.tookMs).toBeLessThan(2000);
     });
 
     it('a late answer inside the timeout is the answer, and timers fire meanwhile', async () => {

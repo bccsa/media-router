@@ -12,7 +12,8 @@
 // decoder's output (flush, then bus ERROR). `onLateness: "reanchor"` (ADR-0005
 // 2026-10-08) never drops: it asks the engine to raise D (`playout_reanchor`)
 // and rebases an implausible leg in-thread. Events, log lines and every
-// number are the python's.
+// number are the python's. `missWatchMs` (B-206, native only) adds a playout
+// watch: `playout_watch` {playing} each time the sink starts or stops missing.
 #pragma once
 
 #include <gst/gst.h>

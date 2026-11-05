@@ -48,6 +48,8 @@ export async function detectDeviceFormat(
 
     const info = await pipeWire.getDeviceInfo(deviceName);
     if (!info) {
+        // No answer from PipeWire says nothing of the device (B-207): the start says why it waits.
+        if ((await pipeWire.hasDevice(deviceName)) === null) return empty;
         return {
             detected: { channels: null, sampleRate: null },
             configUpdates: {},

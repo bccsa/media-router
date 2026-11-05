@@ -228,7 +228,8 @@ export class Socket extends EventEmitter {
      * Send a message to the remote side (every live endpoint).
      * @param topic Application-level topic string.
      * @param message Arbitrary JSON-serialisable payload.
-     * @param options `guaranteeDelivery` to enable ACK/retry.
+     * @param options `guaranteeDelivery` to enable ACK/retry; `onAck` runs on its ACK,
+     *   never when it is given up or this socket dies.
      */
     send(
         topic: string | null,
@@ -239,6 +240,7 @@ export class Socket extends EventEmitter {
             ackID?: number;
             /** Shared sequence number (set by the multi-path Client so every path copy dedups as one). */
             seq?: number;
+            onAck?: () => void;
         } = {},
     ): void {
         if (this.destroyed) {
@@ -275,6 +277,7 @@ export class Socket extends EventEmitter {
             guaranteeDelivery?: boolean;
             ackID?: number;
             seq?: number;
+            onAck?: () => void;
         },
         only?: Endpoint,
     ): void {
@@ -333,7 +336,7 @@ export class Socket extends EventEmitter {
         }));
 
         if (reliable && options.ackID !== undefined) {
-            this.reliable.track(options.ackID, copies, topic ?? undefined);
+            this.reliable.track(options.ackID, copies, topic ?? undefined, options.onAck);
         }
     }
 

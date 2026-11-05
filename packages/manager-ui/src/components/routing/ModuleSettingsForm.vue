@@ -21,6 +21,7 @@ const engineStore = useEngineStore();
 interface DeviceOption {
     value: string;
     label: string;
+    group?: string;
 }
 
 const props = defineProps<{

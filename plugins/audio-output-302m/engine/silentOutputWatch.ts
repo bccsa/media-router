@@ -1,13 +1,11 @@
-// B-197: an output that plays nothing never shows ok. After SILENT_OUTPUT_MS a warning that
-// stays until it plays again: its mixer delivers no audio (relaunched once), or every buffer
-// reaches the sink past its playout time (the ring skips it; the route's re-anchor raises D).
+// B-197: an output that plays nothing never shows ok. Its mixer delivers no audio (said after
+// SILENT_OUTPUT_MS, relaunched once), or every buffer reaches the sink past its playout time (the
+// ring skips it; said as soon as the runner's playout watch reports it, B-206) — until it plays.
 
-/** How long an output may play nothing before it says so (c18's capture stall is 4 s). */
+/** How long a mix may deliver no audio before it says so (c18's capture stall is 4 s). */
 export const SILENT_OUTPUT_MS = 5_000;
 /** No meter reading for this long is no audio: the runner re-sends one at least every second. */
 export const NO_READING_MS = 1_500;
-/** Past its playout time by more than this, a buffer is skipped whole (REANCHOR_TOLERANCE_MS). */
-export const LATE_SLACK_MS = 40;
 /** At most one relaunch per this long, whatever the episodes. */
 export const SILENT_RELAUNCH_GAP_MS = 60_000;
 const TICK_MS = 1_000;
@@ -24,10 +22,9 @@ export interface SilentOutputHost {
     /** It runs the mixer: its aligners gap a dark input, so no audio at all is its own stall.
      *  One source plays direct: no audio is that source's silence (FF9 has its resume). */
     mixes(): boolean;
-    /** The lateness window at the sink's input (ms); undefined while that tap reads nothing. */
-    sinkLateness(): { minMs: number } | undefined;
-    /** The latest a buffer may reach the sink and still play: ts-offset + its latency (ms). */
-    playoutBudgetMs(): number;
+    /** Its route's raise is held (B-210): a raise did not change its lateness, so its sink plays
+     *  at its own pace and the runner's miss is that pace, not silence. */
+    held?(): boolean;
     /** The module's warning (null: withdrawn). */
     warn(text: string | null): void;
     log(): {
@@ -47,7 +44,10 @@ export class SilentOutputWatch {
     private timer: ReturnType<typeof setInterval> | null = null;
     private playingAt = 0;
     private lastVuAt: number | undefined;
-    /** Since when nothing plays, this launch; undefined while it plays. */
+    /** The runner's last playout verdict; a relaunch keeps it until its own (a late sink is not
+     *  said to play again before the runner sees it in budget). Null until it said. */
+    private playout: { playing: boolean; lateMs: number } | null = null;
+    /** Since when the mix delivers no audio, this launch; undefined while it does. */
     private silentSince: number | undefined;
     /** The open episode's warning text: it outlives the relaunch, until the output plays. */
     private episode: { text: string; relaunched: boolean } | null = null;
@@ -75,11 +75,24 @@ export class SilentOutputWatch {
         this.lastVuAt = this.now();
     }
 
+    /** The runner's playout watch (`playout_watch`): the sink missed its playout for a second, or
+     *  plays on time again. Said at once (B-206: within 3 s, never ok between). */
+    onPlayout(playing: boolean, lateMs: number): void {
+        this.playout = { playing, lateMs };
+        this.tick();
+    }
+
+    /** Judge again now (the route's raise became held, or no longer is). */
+    refresh(): void {
+        this.tick();
+    }
+
     /** Stop, destroy, device gone: nothing runs, nothing to say. */
     stop(): void {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
         this.silentSince = undefined;
+        this.playout = null;
         if (this.episode) this.host.warn(null);
         this.episode = null;
     }
@@ -89,11 +102,12 @@ export class SilentOutputWatch {
         if (this.host.mixes() && at - (this.lastVuAt ?? this.playingAt) >= NO_READING_MS) {
             return { reason: 'its mixer delivers no audio', stalled: true };
         }
-        const late = this.host.sinkLateness();
-        const pastMs = late ? late.minMs - this.host.playoutBudgetMs() : 0;
-        if (pastMs > LATE_SLACK_MS) {
-            const reason = `every buffer reaches the sink ${Math.round(pastMs)} ms past its playout time`;
-            return { reason, stalled: false };
+        if (this.playout?.playing === false && !this.host.held?.()) {
+            const late = Math.round(this.playout.lateMs);
+            return {
+                reason: `every buffer reaches the sink ${late} ms past its playout time`,
+                stalled: false,
+            };
         }
         return this.lastVuAt !== undefined ? 'plays' : null;
     }
@@ -110,8 +124,9 @@ export class SilentOutputWatch {
             }
             return;
         }
+        // A stalled mix gets SILENT_OUTPUT_MS; a late sink is said at once (the runner held it).
         this.silentSince ??= at;
-        if (at - this.silentSince < SILENT_OUTPUT_MS) return;
+        if (silence.stalled && at - this.silentSince < SILENT_OUTPUT_MS) return;
         const relaunched = this.episode?.relaunched ?? false;
         const relaunch =
             silence.stalled && !relaunched && at - this.lastRelaunchAt >= SILENT_RELAUNCH_GAP_MS;

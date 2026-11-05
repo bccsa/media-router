@@ -20,8 +20,18 @@ import {
     PLAYOUT_OFFSET_KEY,
     parsePlayoutOffsetMs,
 } from '../plugins/playoutOffset.js';
-import type { ReanchorRaiseRequest, ReanchorRebaseReport } from '../plugins/playoutReanchor.js';
-import { PlayoutRaises, type PlayoutHead } from './PlayoutRaises.js';
+import type {
+    PlayoutRaise,
+    PlayoutRebaseNote,
+    ReanchorRaiseRequest,
+    ReanchorRebaseReport,
+} from '../plugins/playoutReanchor.js';
+import {
+    PlayoutRaises,
+    type PlayoutHead,
+    type PlayoutLegView,
+    type PlayoutRaiseOutcome,
+} from './PlayoutRaises.js';
 
 const log = createLogger('MediaRouter');
 
@@ -840,18 +850,55 @@ export class MediaRouter {
         return this.playoutRaises.raiseMs(moduleId, sinkPortId);
     }
 
+    /** `moduleId`'s own re-anchor on top of its route's D, in ms (0 when none, B-210). */
+    getPlayoutLegOffsetMs(moduleId: string): number {
+        return this.playoutRaises.legOffsetMs(moduleId);
+    }
+
+    /** The raise `headId` carries (null when none): what a restarted head shows (B-210). */
+    getHeadPlayoutRaise(headId: string): PlayoutRaise | null {
+        return this.playoutRaises.headRaise(headId);
+    }
+
+    /** A leg below `headId` re-anchored on its own (null when none): what a restarted head
+     *  shows of it (B-210). */
+    getHeadPlayoutNote(headId: string): PlayoutRebaseNote | null {
+        return this.playoutRaises.headNote(headId);
+    }
+
+    /** What `moduleId` sees of its route's re-anchor: what a restarted leg shows (B-210). */
+    getLegPlayout(moduleId: string, sinkPortId?: string): PlayoutLegView | null {
+        return this.playoutRaises.legView(moduleId, sinkPortId);
+    }
+
     /**
      * A leg below `moduleId`'s route head asks for more budget. Raised ⇒ every
      * consumer of the head re-pushes D (incl. through transparent producers),
      * then the head is told. `covered` = a raise landed inside the settle
-     * window; `ceiling` = the headroom is spent (alarm only); `off` = disabled.
+     * window; `ceiling` = the headroom is spent (alarm only); `held` = the leg's
+     * last raise did not change its lateness, so none can; `leg` = late past
+     * what the route can be raised, it re-anchored on its own (B-210); `off` = disabled.
      */
     requestPlayoutRaise(
         moduleId: string,
         sinkPortId: string | undefined,
         req: ReanchorRaiseRequest,
-    ): Promise<'raised' | 'covered' | 'ceiling' | 'off'> {
+    ): Promise<PlayoutRaiseOutcome> {
         return this.playoutRaises.request(moduleId, sinkPortId, req);
+    }
+
+    /** A leg's content lateness without D, each timing tick (null: no reading, B-210). */
+    notePlayoutLateness(
+        moduleId: string,
+        sinkPortId: string | undefined,
+        lateMs: number | null,
+    ): void {
+        this.playoutRaises.noteLateness(moduleId, sinkPortId, lateMs);
+    }
+
+    /** A leg's sink plays on time again: a hold on it is over (B-210). */
+    notePlayoutOnTime(moduleId: string): void {
+        this.playoutRaises.notePlayingOnTime(moduleId);
     }
 
     /**

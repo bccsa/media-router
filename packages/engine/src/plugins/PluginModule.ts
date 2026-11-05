@@ -5,7 +5,7 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
-import type { PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
+import type { PlayoutLegOffset, PlayoutRaise, PlayoutRebaseNote } from './playoutReanchor.js';
 import type { HouseClock } from '../clock/HouseClock.js';
 
 /**
@@ -134,12 +134,15 @@ export interface PluginModule {
     /**
      * This module's route raise changed (ADR-0005 2026-10-08): the head gets
      * its record (`null` = cleared); a leg that asked gets one with
-     * `raiseMs: 0` when an edit of the head's D reset it. `GstPluginBase`
-     * implements both ends (warning, status section, head badge).
+     * `raiseMs: 0` when an edit of the head's D, or its decay (B-210), reset it.
+     * `GstPluginBase` implements both ends (warning, status section, head badge).
      */
     onRoutePlayoutRaised?(raise: PlayoutRaise | null): void;
-    /** A leg below this route head rebased itself onto an implausible timeline. */
-    onRoutePlayoutRebased?(note: PlayoutRebaseNote): void;
+    /** A leg below this route head rebased itself onto an implausible timeline, or
+     *  re-anchored on its own past the route's reach (`null`: that is over, B-210). */
+    onRoutePlayoutRebased?(note: PlayoutRebaseNote | null): void;
+    /** This leg's own re-anchor past its route's reach (`null`: cleared, B-210). */
+    onPlayoutLegOffset?(offset: PlayoutLegOffset | null): void;
     /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
@@ -288,6 +291,9 @@ export interface PipelineDescription {
      *  launches with the ones whose sockets accept, the engine adds the others as their producers
      *  play. Name each in `getLiveInputBranch` too (the live verbs and the containment use it). */
     liveInputs?: LiveInputBranch[];
+    /** A launch skips what its inputs deliver stamped before it first plays (B-206, native
+     *  runner): the outage it was down for, never let into its mix. See `CatchUpConfig`. */
+    catchUp?: CatchUpConfig;
     /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a
@@ -567,6 +573,16 @@ export interface BacklogShedConfig {
     reanchorRetryMs?: number;
     rebaseHoldMs?: number;
     rebaseCooldownMs?: number;
+    /** Playout watch (B-206, native runner): every buffer past budget for this long reports the
+     *  sink missing, `playout_watch` {playing:false}; in budget again, {playing:true}. */
+    missWatchMs?: number;
+}
+
+/** See PipelineDescription.catchUp. */
+export interface CatchUpConfig {
+    /** Name prefix of the elements whose SINK pad carries one input's content time into the
+     *  mix (live branches added later included); the launch's first buffer there is its start. */
+    prefix: string;
 }
 
 /** librist runner config — see PipelineDescription.rist. */
