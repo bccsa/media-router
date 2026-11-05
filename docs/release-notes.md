@@ -261,6 +261,26 @@ elements" below do not start.
   rate a rendition does not take, so an Opus rendition of a 44.1 kHz source
   now starts (it failed with a negotiation error before). Its timing popup
   shows **Clock correction**.
+- **An output keeps its place against its sound card when its input
+  breaks.** When the audio into Audio Output (302M) or Audio Decoder breaks
+  (a capture's lost cycle, an outage, a source restart), what follows plays
+  one gap later on the card's clock. Before, each break added the card's
+  drift since the last one to the output's delay: about 40 ms per five
+  minutes on a card running 136 ppm slow, more the longer it ran. A raised
+  presentation offset no longer restarts the **Device clock** measurement.
+- **A short hole in a stream on the box's clock is a hole, not a clock.**
+  When a capture upstream loses a few milliseconds behind an Opus or AAC
+  encode, the decoders after it play on past the hole and resample nothing;
+  before, they read the hole as a slow source clock and resampled for
+  minutes ("Source clock −65.0 ppm" on a stream from this box). The log
+  says `mrasrc-event gap (lost-time)`.
+- **"measuring", not "0.0 ppm".** A decode that starts resampling before its
+  source's clock is measured shows **Clock correction** "measuring", and the
+  log says "Source timeline 1.0 ms off its sample count: resampling (rate
+  not measured yet)".
+- **Fewer false source-clock warnings.** "Source clock … past the ASRC's
+  1000 ppm" now waits until the measurement has stayed past it for 30 s, so
+  a network input's re-measurement after a restart no longer raises it.
 
 **Behaviour changes (Phase 3)**
 

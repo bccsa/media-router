@@ -50,8 +50,10 @@ export interface AsrcLogEvent {
     kind: string;
     reason: string;
     payload: Record<string, unknown>;
-    /** `engaged`: the source's rate (ppm, positive fast). */
+    /** `engaged`: the source's rate (ppm, positive fast), once measured. */
     sourcePpm?: number;
+    /** `engaged` before the rate is measured (B-148): how far the PTS ran off the sample count (ms). */
+    offMs?: number;
 }
 
 interface Entry {
@@ -62,6 +64,8 @@ interface Entry {
     devicePpb: number;
     inFrames: number;
     relocks: number;
+    /** The lock has measured the source's rate (`rate-known`; true where a run does not say). */
+    rateKnown: boolean;
     /** The out-of-bounds fit as a rate (ppb), while it stands. */
     outOfBoundsPpb?: number;
 }
@@ -110,7 +114,11 @@ export class AsrcWatches {
         const e = this.entries.get(name);
         const kind = str(p, 'kind');
         const event: AsrcLogEvent = { name, kind, reason: str(p, 'reason'), payload: p };
-        if (kind === 'engaged') event.sourcePpm = num(p, 'source-ppb') / 1000;
+        if (kind === 'engaged' && p['rate-known'] === false) {
+            event.offMs = Math.abs(num(p, 'phase-ns')) / 1e6;
+        } else if (kind === 'engaged') {
+            event.sourcePpm = num(p, 'source-ppb') / 1000;
+        }
         if (kind !== 'ratio-out-of-bounds' || !e) return { changed: false, event };
         const was = e.outOfBoundsPpb;
         e.outOfBoundsPpb = ratePpbOf(num(p, 'fit-ppb'));
@@ -133,6 +141,7 @@ export class AsrcWatches {
             devicePpb: num(p, 'device-ppb'),
             inFrames,
             relocks,
+            rateKnown: p['rate-known'] !== false,
             ...(old && !again && old.outOfBoundsPpb !== undefined
                 ? { outOfBoundsPpb: old.outOfBoundsPpb }
                 : {}),
@@ -160,7 +169,14 @@ export class AsrcWatches {
                 engaged ||
                 e.mode === 'bypass' ||
                 (e.mode === 'device' && this.configs.get(name)?.decode);
-            if (decode) w.correction = engaged ? { sourcePpm: e.sourcePpb / 1000 } : {};
+            // Engaged before the rate is measured (B-148): `measuring`, not a 0.0 ppm source.
+            if (decode && engaged) {
+                w.correction = e.rateKnown
+                    ? { sourcePpm: e.sourcePpb / 1000 }
+                    : { measuring: true };
+            } else if (decode) {
+                w.correction = {};
+            }
             if (e.mode === 'device' || e.mode === 'decode+device') w.devicePpm = e.devicePpb / 1000;
             if (e.outOfBoundsPpb !== undefined) w.outOfBoundsPpm = e.outOfBoundsPpb / 1000;
             out.push(w);
@@ -189,7 +205,9 @@ export function signedPpm(ppm: number): string {
     return `${sign}${(Math.abs(tenths) / 10).toFixed(1)} ppm`;
 }
 
-/** A row's text: `none (house rate)`, or the source's rate while it is rate-matched. */
+/** A row's text: `none (house rate)`, the source's rate while it is rate-matched, or `measuring`
+ *  while it resamples before that rate is measured. */
 export function clockCorrectionText(c: ClockCorrection): string {
+    if (c.measuring) return 'measuring';
     return c.sourcePpm === undefined ? 'none (house rate)' : `${signedPpm(c.sourcePpm)} (source)`;
 }

@@ -2903,15 +2903,37 @@ S40).
   rate, and the next buffer opens an epoch at its PTS (`relock`). An
   envelope step (the timeline moved, not the content) re-anchors the labels
   on the lock's new floor and keeps the resampler.
+- **Unflagged steps are content time (B-148).** Decode modes hold each
+  buffer's PTS against the end of the last. Past the bound, max(1 ms, 2000
+  ppm of the last buffer's span: an upstream mapping's acquire slew across
+  it), and after a buffer that continued its own, a hole is lost time
+  (`gap` `lost-time`: the input position moves on by its frames, so the lock
+  sees no step; the output jumps it, DISCONT on resampled output, the same
+  epoch) and a step back a break (`relock` `jump`). A source off its rate
+  past the bound steps on every buffer, so none is judged: the lock's, as
+  before. Why: on DEV-P3a a capture's lost PipeWire cycle reached a decoder
+  as an unflagged 21.33 ms hole, the transcoder's `opusenc
+  perfect-timestamp` restarting its count at the DISCONT and the demux
+  flagging only holes past two frames, and the lock read it as a source
+  clock (engaged at −65 and −342 ppm on a house-rate stream).
 - **The device term** (§8, C-6). At READY→PAUSED the element `device-sink`
   names downstream must be a `GstAudioBaseSink` with `slave-method=custom`
   (3), else an error naming it. Its custom-slaving callback feeds
   `AsrcDeviceLock` (on the decode lock's configuration) and always answers
   `requested_skew` 0, so the sink never drops or inserts a sample. The
-  output counter runs on from the first PTS, re-anchored at a DISCONT or a
-  GAP: device-time labels, which a `sync=true` sink needs until Phase 4. A
-  sink discontinuity relocks the device lock, keeping its rate
-  (`device-relock` with its reason). Two rules came from building it: the
+  output counter runs on from the first PTS on the device timeline, which a
+  `sync=true` sink on a fixed calibration needs until Phase 4: a new epoch
+  starts at the last content's label end plus the gap at the device ratio,
+  so a relock jumps the content gap (B-148; re-anchored on house PTS, each
+  relock had added the device's drift since the last to the playout,
+  DEV-P3a's +115, +75 and +325 ms on a card 136 ppm slow). The offset
+  restarts when the sink recalibrates (new caps, sync latency, a device
+  failure: the callback flags it, the servo takes it at its next push), the
+  open epoch keeping its labels. A sink discontinuity relocks the device
+  lock, keeping its rate (`device-relock` with its reason), but an
+  alignment resync (a moved presentation offset) moves neither clock: it is
+  counted (`device-resync`, `device-resyncs`), the lock and its fit window
+  kept (B-148). Two rules came from building it: the
   callback reads the house clock again and places each pair there, the
   latest instant the sink's `itime` can have been read, so a pair is never
   early (one 0.48 ms early held the rate 6 ppm off for a minute); and a
@@ -2919,6 +2941,31 @@ S40).
   after its calibration reads the device up to 0.33 ms early). On the same
   readings either rule left out leaves the rate 11–14 ppm off at 15–30 s;
   with both, within 0.04 ppm.
+- **Out of bounds, decode (B-148).** `ratio-out-of-bounds` once the fit has
+  stayed past the clamp for 30 s of PTS while locked: a relock's first
+  10-bucket fit (DEV-P3a's −1051.6 ppm) and an upstream acquisition slew
+  shorter than that raise nothing; a source 1500 ppm fast raises at 45 s,
+  one 5000 ppm fast at 52 s. Not on a 30-bucket fit as the fix plan had it:
+  a source past the clamp steps the lock's envelope every 50 ms of excess,
+  cutting its fit back, so one past about 3500 ppm would never warn.
+- **The engage's rate (B-148).** The `engaged` event and `mrasrc-stats`
+  carry `rate-known`. A phase engage in the lock's first seconds has none,
+  so the engine words it as the timeline ("Source timeline 1.0 ms off its
+  sample count: resampling (rate not measured yet)") and its row reads
+  `measuring`, not a 0.0 ppm source.
+- **Known limits (B-148).** A hole of 1 ms or less stays the lock's (a
+  ratio engage of a few ppm half a minute on). PES of half a second or more
+  split into AU buffers under an upstream acquisition slew step past 1 ms
+  at their boundaries: lost time (the rate read low) or, falling, breaks.
+  Decoded PTS jittering past about ±0.5 ms read as holes and breaks (none
+  seen: the bus carries content time). The gate's AAC as `cap-mux-align7`
+  holds it steps back 14–18 ms unflagged: a `jump` relock each. `opusdec`
+  stamps the two buffers after its 6.5 ms pre-skip that much early, so an
+  Opus stream's third buffer meets a 6.5 ms hole: one lost-time gap at its
+  start (on a device path, one DISCONT the sink places by label). A device
+  slip under the 50 ms step is rate for minutes, the rate term returning
+  its phase (WI-P4-4). A recalibration mid-run leaves the open epoch's
+  labels as they are.
 - **Interleaved caps (S15).** `mrasrc` takes S16LE, S32LE and F32LE
   interleaved; `avdec_aac` gives planar F32LE, so the audio decoder's and
   the audio transcoder's branches put `audioconvert` before it, while the
@@ -2945,7 +2992,8 @@ S40).
 | Decode lock's first fit | 10 buckets (`rate_buckets_min`; the capture lock's 30) |
 | Priming at an engage | the last 64 passed frames |
 | Phase steering | τ = 10 s (`phase_tau_ns`) |
-| Ratio clamp | ±1,000 ppm (`ratio_max_ppm`); past it `ratio-out-of-bounds` |
+| Ratio clamp | ±1,000 ppm (`ratio_max_ppm`); past it `ratio-out-of-bounds` (decode: held 30 s while locked, `OOB_HOLD_NS`) |
+| Lost-time bound (decode) | max(1 ms, 2000 ppm of the last buffer's span), judged after a buffer that continued its own (B-148) |
 | Device lock | pairs at the house clock read after the callback; the first 100 ms after a (re)lock left out (`SETTLE_NS`) |
 
 ### The consumers on the formula (WI-P3-7 to WI-P3-15, WI-P3-18)
@@ -3093,8 +3141,9 @@ carries a timing declaration, and the field is gone (below).
 - **Rows** (shared types `DemuxCounters`, `ClockCorrection`): per input,
   Demux rate (PES/s over the last 10 s of reports), Demux gaps (holes: a
   jump or a marker), Demux CC lost (packets) and Demux unknown streams (the
-  current program's); Clock correction, `none (house rate)` or `+23.4 ppm
-  (source)`, on the input row of an ASRC placed on one, else on the `timing`
+  current program's); Clock correction, `none (house rate)`, `+23.4 ppm
+  (source)` or `measuring` (engaged before its rate is measured, B-148), on
+  the input row of an ASRC placed on one, else on the `timing`
   section; Device clock (`−12.1 ppm`) on the `timing` section. The ASRC's
   terms are read off the description at start (`bypass-below-ppm` > 0 a
   decode term, `device-sink` a device term), since `mode` reads `device` for
@@ -3108,7 +3157,9 @@ carries a timing declaration, and the field is gone (below).
   subtitle renderers `subdemux` to Subtitles In (`renderDemuxInput`).
 - **Log lines.** A program after the first (generation > 0): `Input <n>:
   program changed (generation g)`; a consumer ASRC's engage: `Input <n>:
-  source clock +x ppm: resampling`; `ratio-out-of-bounds` at warn.
+  source clock +x ppm: resampling`, or before its rate is measured `Input
+  <n>: source timeline 1.0 ms off its sample count: resampling (rate not
+  measured yet)` (B-148); `ratio-out-of-bounds` at warn.
 - **Warnings**, owned by the module in one health text with the aligners'
   (taken only over ok or its own text, ADR-0010 rule 2, never over a stopped
   or errored module): `demux-unknown-stream` (`Input <n>: PID 0x0123: stream

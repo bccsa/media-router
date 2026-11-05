@@ -99,6 +99,8 @@ B-126): the engine's `demuxWatches` and `asrcWatches` tests read them, and the e
 cases to its entry's fields and their types, so a field the element renames fails there before
 the engine reads it wrong. Recorded on the dev Pi from those two cases (2026-10-27); the entries no
 run of theirs posts (no-stream, the mrasrc events but device-relock) are as the elements post them.
+B-148 added `mrasrc-stats`' `rate-known` and `device-resyncs`, the engage's `rate-known` and the
+`device-resync` and lost-time `gap` events.
 
 | Fixture | Source (recorded 2026-10-16 unless dated) | What it holds |
 |---|---|---|

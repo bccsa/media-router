@@ -13,9 +13,11 @@ behaviour it keeps bit for bit. Phase 3 adds, by configuration:
     counter from the buffer's PTS when it was passing (the element primes its resampler with the
     passed history). Engaged until a DISCONT or a GAP: then measured afresh, the resampler's tail
     drained first. An envelope step moves the timeline, not the content: labels re-anchored.
+    An unflagged PTS hole past the bound is lost time, a step back past it a break (B-148).
   - device (`device`): the commanded ratio is the decode term times the device term
     (1 + eps_dev, from AsrcDeviceLock on the sink's (itime, etime) pairs); the output counter is
-    contiguous from the first PTS, re-anchored where the content breaks (device-time labels).
+    contiguous from the first PTS and stays on the device timeline across a break: a new epoch
+    starts at the last content's label end plus the gap at the device ratio (B-148).
   - bypass_ppb = 0 with the device term: the device term alone, no lock (S17).
 
 asrc_bypass_ref_test.py holds the cases tests/asrc_servo_test.cpp ports, and replays this module
@@ -231,6 +233,7 @@ class ClockLock:
         self.rate_known_h = 0
         self.fit_valid = False
         self.fit_ppb_ = 0
+        self.fit_n = 0          # the last fit's points
         self.epoch_h = 0
         self.locked = False
         self.run = self.run_fall = False
@@ -457,6 +460,7 @@ class ClockLock:
                 f, n = r
                 self.fit_valid = True
                 self.fit_ppb_ = f
+                self.fit_n = n
                 lim = c.rate_max_ppm * 1000
                 fc = clamp(f, -lim, lim)
                 gap = fc - self.eps_ppb()
@@ -546,6 +550,12 @@ def rate_of(eps_ppb):
     return floor_div(-2 * e * E9 + E9 + e, 2 * (E9 + e))
 
 
+def drift_over(g, eps_ppb):
+    """g ns of house time on a clock whose lock reads eps (house = (1 + eps) x its time): how far
+    that clock's time falls behind house time, floor(g eps / (1 + eps)) (B-148)."""
+    return floor_div(g * eps_ppb, E9 + eps_ppb)
+
+
 class AsrcServoConfig:
     def __init__(self, **kw):
         self.lock = asrc_lock_config()
@@ -566,23 +576,28 @@ def decode_servo_config(bypass_ppb, device=False):
 
 
 class AsrcEvent:
-    RELOCK, OUT_OF_BOUNDS, ENGAGED = "relock", "ratio-out-of-bounds", "engaged"
+    RELOCK, OUT_OF_BOUNDS, ENGAGED, GAP = "relock", "ratio-out-of-bounds", "engaged", "gap"
 
-    def __init__(self, kind, reason, house_ns, value, dropped_ns=0, phase_ns=0):
+    def __init__(self, kind, reason, house_ns, value, dropped_ns=0, phase_ns=0, lost_frames=0,
+                 rate_known=False):
         self.kind, self.reason, self.house_ns, self.value = kind, reason, house_ns, value
         self.dropped_ns, self.phase_ns = dropped_ns, phase_ns
+        self.lost_frames = lost_frames   # gap: input frames lost
+        self.rate_known = rate_known     # engaged: the lock had a measured rate (B-148)
 
 
 class Command:
-    __slots__ = ("in_rate", "out_rate", "relock", "skip", "pass_", "engage", "drain")
+    __slots__ = ("in_rate", "out_rate", "relock", "skip", "pass_", "engage", "drain", "gap")
 
     def __init__(self, in_rate, out_rate, relock=False, skip=0):
         self.in_rate, self.out_rate, self.relock, self.skip = in_rate, out_rate, relock, skip
-        self.pass_ = self.engage = self.drain = False
+        self.pass_ = self.engage = self.drain = self.gap = False
 
 
 class AsrcServo:
     DROP_MAX_NS = E9
+    LOST_MAX_NS = 1000 * E9   # the longest hole the output jumps at once
+    OOB_HOLD_NS = 30 * E9     # decode: a fit past the bound this long while locked, before the event (B-148)
     MODES = ("capture", "bypass", "decode", "device", "decode+device")
 
     def __init__(self, in_hz, out_hz, cfg=None):
@@ -600,6 +615,8 @@ class AsrcServo:
         self.started = False
         self.delay = 0
         self.n_in = 0
+        self.lost = 0          # input frames lost between buffers: counted on the input position
+        self.lost_res = 0      # decode modes: lost time's remainder under a frame (ns), on it too (B-148)
         self.drop_left = 0
         self.dropped = 0
         self.n_out = 0
@@ -611,7 +628,7 @@ class AsrcServo:
         self.eps_cmd = 0
         self.dev_ppb = 0       # the device eps the last command carried
         self.phase_err = 0
-        self.relocks = self.discont_in = 0
+        self.relocks = self.discont_in = self.gaps = 0
         self.oob = False
         self.events = []
         # Phase 3: decode and device modes.
@@ -620,6 +637,13 @@ class AsrcServo:
         self.over_since = None
         self.ended = False     # end_epoch(): the next push opens an epoch
         self.tail_t0 = self.tail_m = 0
+        self.last_pts = self.last_frames = 0   # the last buffer: its PTS and frames
+        # B-148: device mode, labels minus house time at T0, and that offset at the sink's last
+        # calibration; decode, the PTS since which the fit has been past the bound while locked, and
+        # whether the last buffer continued its predecessor within the lost-time bound.
+        self.t0_dev = self.cal_off = 0
+        self.oob_since = None
+        self.cont = False
 
     # Phase 1's accounting ---------------------------------------------------------------------
     def set_delay(self, frames):
@@ -637,12 +661,16 @@ class AsrcServo:
     def _house_pts(self):
         """The house-rate counter's label of the next output: next_pts() unless a device term
         moves the output off house rate."""
-        return self.t0 + half_frames_ns(2 * self.mh, self.out_hz) + self.mh_frac // self.out_hz
+        return self.t0 - self.t0_dev + half_frames_ns(2 * self.mh, self.out_hz) + self.mh_frac // self.out_hz
+
+    def _pos_ns(self, h2):
+        """An input position in half frames as the lock's time: with lost time's remainder."""
+        return half_frames_ns(h2, self.in_hz) + self.lost_res
 
     def _next_pos2(self):
         if self.passing:
-            return 2 * self.n_in
-        return max(2 * (self.n_in + self.drop_left - self.delay) - 1, self.start2)
+            return 2 * (self.n_in + self.lost)
+        return max(2 * (self.n_in + self.lost + self.drop_left - self.delay) - 1, self.start2)
 
     def _frames_over(self, ns):
         return clamp(ns, 0, self.DROP_MAX_NS) * self.in_hz // (E9 + self.lock.ppb())
@@ -650,8 +678,7 @@ class AsrcServo:
     def _measure_phase(self):
         if not self.has_lock:
             return 0
-        return sat_sub(self.lock.house_of(half_frames_ns(self._next_pos2(), self.in_hz)),
-                       self._house_pts())
+        return sat_sub(self.lock.house_of(self._pos_ns(self._next_pos2())), self._house_pts())
 
     def _in_rate(self):
         num = self.in_hz * 1000 * (E9 + self.dev_ppb)
@@ -692,12 +719,22 @@ class AsrcServo:
         self.events.append(AsrcEvent(AsrcEvent.RELOCK, why, self.t0, self.t0 - end, first - at))
 
     def _check_bounds(self, h):
+        """Judged on the device rate fit, not on eps_cmd. Decode modes (B-148): past the bound while
+        locked for OOB_HOLD_NS of PTS; no fit length, as a source past the clamp keeps cutting it."""
         if not self.lock.has_fit():
             return
         f = self.lock.fit_ppb()
         af = -f if f < 0 else f
         lim = self.cfg.ratio_max_ppm * 1000
-        if not self.oob and af > lim:
+        past = af > lim
+        if self.decode:
+            if past and self.lock.phase() == ClockLock.LOCKED:
+                if self.oob_since is None:
+                    self.oob_since = h
+            else:
+                self.oob_since = None
+            past = self.oob_since is not None and h - self.oob_since >= self.OOB_HOLD_NS
+        if not self.oob and past:
             self.oob = True
             self.events.append(AsrcEvent(AsrcEvent.OUT_OF_BOUNDS, "", h, f))
         elif self.oob and af < lim - lim // 10:
@@ -721,17 +758,43 @@ class AsrcServo:
     def tail_produced(self, frames):
         self.tail_m += frames
         self.n_out += frames
+        if self.ended:   # drained before the next push: the house end counts it (B-148)
+            self._house_advance(frames)
+
+    def device_recalibrated(self):
+        """The sink recalibrated its clock (new caps, sync latency, a device failure): the device
+        offset a new epoch carries restarts from the next output (B-148); the open epoch keeps
+        its labels."""
+        if self.cfg.device:
+            self.cal_off = sat_sub(self._label_next(), self._house_pts())
+
+    def _label_next(self):
+        return self.tail_pts_at(0) if self.ended else self.next_pts()
+
+    def _offset_at(self, h):
+        """Device mode: labels minus house time for an epoch whose first output's content is at
+        house time h: what ran up since the sink's calibration, less the device's drift over the
+        gap from the last content's end (B-148). 0 without the device term."""
+        if not self.cfg.device:
+            return 0
+        hend = self._house_pts()
+        off = sat_sub(sat_sub(self._label_next(), hend), self.cal_off)
+        return sat_sub(off, drift_over(sat_sub(h, hend), self.dev_ppb))
 
     def _new_epoch(self, pts, why):
-        """Decode and device modes: measured afresh from this buffer, labels from its PTS. The
-        jump is against the end of what left, the drained tail included."""
+        """Decode and device modes: measured afresh from this buffer, labels from its PTS (on the device
+        timeline with the device term); the jump against the end of what left, the drained tail included."""
         end = self.tail_pts_at(0)
+        off = self._offset_at(pts)
         self.engaged = False
         self.over_since = None
+        self.oob_since = None
+        self.cont = False
         self.passing = self.decode and not self.cfg.device and self.in_hz == self.out_hz
-        self.start2 = 2 * self.n_in
+        self.start2 = 2 * (self.n_in + self.lost)
         self.m = self.mh = self.mh_frac = 0
-        self.t0 = pts
+        self.t0_dev, self.cal_off = off, 0
+        self.t0 = sat_add(pts, off)
         self.drop_left = 0
         if self.has_lock:
             self.lock.relock(False)
@@ -742,9 +805,13 @@ class AsrcServo:
         """Decode modes, an envelope step: labels from where the lock now puts the next output
         (passing: this PTS), the bypass or engaged state kept, nothing drained."""
         end = self.next_pts()
-        self.start2 = self._next_pos2()
+        start2 = self._next_pos2()
+        h = pts if self.passing else self.lock.house_of(self._pos_ns(start2))
+        off = self._offset_at(h)
+        self.start2 = start2
         self.m = self.mh = self.mh_frac = 0
-        self.t0 = pts if self.passing else self.lock.house_of(half_frames_ns(self.start2, self.in_hz))
+        self.t0_dev, self.cal_off = off, 0
+        self.t0 = sat_add(h, off)
         self.over_since = None
         self.relocks += 1
         self.events.append(AsrcEvent(AsrcEvent.RELOCK, "envelope-step", self.t0, self.t0 - end))
@@ -753,7 +820,7 @@ class AsrcServo:
         self.engaged = True
         self.over_since = None
         self.events.append(AsrcEvent(AsrcEvent.ENGAGED, why, pts, rate_of(self.lock.ppb()),
-                                     phase_ns=phase))
+                                     phase_ns=phase, rate_known=self.lock.rate_known))
         if self.passing:
             # The caller primes its resampler with what passed: its next output is this
             # buffer's first frame, labelled with its PTS.
@@ -761,15 +828,49 @@ class AsrcServo:
             cmd.engage = True
             self.t0 = pts
             self.m = self.mh = self.mh_frac = 0
-            self.start2 = 2 * self.n_in
+            self.start2 = 2 * (self.n_in + self.lost)
+
+    def _frames_in(self, ns):
+        """Lost time in input frames, to the nearest at the nominal rate."""
+        return (2 * clamp(ns, 0, self.LOST_MAX_NS) * self.in_hz + E9) // (2 * E9)
+
+    def _lose(self, frames, res=0):
+        """Decode modes, lost time (B-148): the input position moves on by its frames and its part under a
+        frame (res, ns), so the lock sees no step; the labels jump them, at the device ratio with the device term."""
+        self.lost += frames
+        self.lost_res += res
+        frm = self.next_pts()
+        jump = (2 * frames * self.out_hz + self.in_hz) // (2 * self.in_hz)
+        self.m += jump
+        self.mh += jump
+        self.t0 += res
+        if self.cfg.device:
+            dr = drift_over(half_frames_ns(2 * jump, self.out_hz) + res, self.dev_ppb)
+            self.t0 -= dr
+            self.t0_dev -= dr
+        self.gaps += 1
+        nxt = self.next_pts()
+        self.events.append(AsrcEvent(AsrcEvent.GAP, "lost-time", nxt, nxt - frm, lost_frames=frames))
+
+    def _content_step(self, pts_ns):
+        """Decode modes (B-148): this buffer's PTS against the last one's end past the bound (1 ms, or an
+        upstream acquire slew's 2000 ppm of the last span), after a buffer that continued its own: up
+        to LOST_MAX_NS lost time, back a break, else 0. A source off its rate steps every buffer."""
+        if not self.decode or self.last_frames == 0:
+            return 0
+        span = half_frames_ns(2 * self.last_frames, self.in_hz)
+        d = sat_sub(pts_ns, sat_add(self.last_pts, span))
+        bound = max(self.cfg.bypass_phase_ns, span // 500)
+        cont, self.cont = self.cont, -bound <= d <= bound
+        return d if cont and (bound < d <= self.LOST_MAX_NS or d < -bound) else 0
 
     def push(self, pts_ns, frames, discont, device_ppb=0):
         """Per buffer, before resampling: the command. `device_ppb`: the device lock's eps,
         read by the caller from AsrcDeviceLock (0 without a device term)."""
         lim = self.cfg.ratio_max_ppm * 1000
         self.dev_ppb = clamp(device_ppb, -lim, lim) if self.cfg.device else 0
-        sigma = half_frames_ns(2 * self.n_in, self.in_hz)
-        relocked = drain = False
+        sigma = self._pos_ns(2 * (self.n_in + self.lost))
+        relocked = drain = gapped = False
         if self.capture:
             if not self.started:
                 self.started = True
@@ -789,10 +890,11 @@ class AsrcServo:
                     self._open_epoch(why)
                     relocked = True
         else:
+            step = self._content_step(pts_ns) if self.started and not (discont or self.ended) else 0
             if not self.started:
                 self.started = True
                 self.t0 = pts_ns
-                self.start2 = 2 * self.n_in
+                self.start2 = 2 * (self.n_in + self.lost)
                 if self.has_lock:
                     self.lock.feed(sigma, pts_ns)
             elif discont or self.ended:
@@ -804,8 +906,22 @@ class AsrcServo:
                 if self.has_lock:
                     self.lock.feed(sigma, pts_ns)
                 relocked = True
-            elif self.has_lock:
+            elif step < 0:
+                # B-148: the content time stepped back past the bound, unflagged: a break.
+                drain = self.end_epoch()
+                self._new_epoch(pts_ns, "jump")
                 self.lock.feed(sigma, pts_ns)
+                relocked = True
+            elif self.has_lock:
+                if step > 0:
+                    # B-148: a hole past the bound, unflagged: lost content time, the output
+                    # jumping it (DISCONT on resampled output, same epoch), its part under a frame too.
+                    lost = self._frames_in(step)
+                    span = (half_frames_ns(2 * (self.n_in + self.lost + lost), self.in_hz)
+                            - half_frames_ns(2 * (self.n_in + self.lost), self.in_hz))
+                    self._lose(lost, step - span)
+                    gapped = True
+                self.lock.feed(self._pos_ns(2 * (self.n_in + self.lost)), pts_ns)
                 if self.lock.envelope_step():
                     # The timeline stepped, the content did not: the lock onto the new floor,
                     # the labels re-anchored on it, the resampler kept.
@@ -813,11 +929,14 @@ class AsrcServo:
                     self._step_epoch(pts_ns)
                     relocked = True
             self.ended = False
+        if frames > 0:
+            self.last_pts, self.last_frames = pts_ns, frames
         if self.has_lock:
             self._check_bounds(pts_ns)
         self.phase_err = self._measure_phase()
         cmd = Command(0, self.out_hz * 1000, relocked, 0)
         cmd.drain = drain
+        cmd.gap = gapped and not relocked
         if self.decode and not self.engaged:
             eps = self.lock.ppb()
             if self.lock.phase() == ClockLock.LOCKED and abs(eps) > self.cfg.bypass_ppb:
@@ -845,12 +964,16 @@ class AsrcServo:
         cmd.pass_ = self.passing
         return cmd
 
-    def produced(self, frames):
-        self.n_out += frames
-        self.m += frames
+    def _house_advance(self, frames):
+        """House-rate frames: each output frame is 1 + eps_dev of them."""
         f = self.mh_frac + frames * self.dev_ppb
         self.mh += frames + floor_div(f, E9)
         self.mh_frac = f - floor_div(f, E9) * E9
+
+    def produced(self, frames):
+        self.n_out += frames
+        self.m += frames
+        self._house_advance(frames)
         self.phase_err = self._measure_phase()
 
     def stats(self):
@@ -859,6 +982,8 @@ class AsrcServo:
             "relocks": self.relocks, "in-frames": self.n_in, "out-frames": self.n_out,
             "discont-in": self.discont_in, "dropped-frames": self.dropped, "mode": self.mode(),
             "source-ppb": rate_of(self.lock.ppb()) if self.has_lock else 0,
+            "gaps": self.gaps, "lost-frames": self.lost,
+            "rate-known": int(self.has_lock and self.lock.rate_known),
         }
 
     def take_events(self):
@@ -868,17 +993,21 @@ class AsrcServo:
 
 class AsrcDeviceLock:
     """The device term: a ClockLock on the sink's custom-slaving (itime, etime) pairs, device
-    time against house time. A sink discontinuity relocks it, keeping the rate. The sink reads
-    etime, then itime, so a preemption between them makes a pair early, which the lower envelope
-    would follow: read_ns, from etime's read to the caller's re-read after itime's, moves the pair
-    to that re-read, the latest instant itime can have been read, so every pair is late. The
-    sink's first callback after its calibration reads the device before its ring runs (measured
-    up to 0.33 ms early): a (re)lock's first SETTLE_NS of pairs are left out."""
+    time against house time. A sink discontinuity relocks it, keeping the rate; an alignment
+    resync is counted only (B-148). The sink reads etime, then itime, so a preemption between
+    them makes a pair early, which the lower envelope would follow: read_ns, from etime's read to
+    the caller's re-read after itime's, moves the pair to that re-read, the latest instant itime
+    can have been read, so every pair is late. The sink's first callback after its calibration
+    reads the device before its ring runs (measured up to 0.33 ms early): a (re)lock's first
+    SETTLE_NS of pairs are left out."""
     SETTLE_NS = 100000000
+    # The sink's discontinuities as GstAudioBaseSinkDiscontReason numbers them.
+    NEW_CAPS, FLUSH, SYNC_LATENCY, ALIGNMENT, DEVICE_FAILURE = 1, 2, 3, 4, 5
 
     def __init__(self, cfg=None):
         self.lock = ClockLock(cfg or asrc_decode_lock_config())
         self.relocks = 0
+        self.alignments = 0
         self.first = None   # the house time of the (re)lock's first pair
 
     def feed(self, itime, etime, read_ns=0):
@@ -891,10 +1020,17 @@ class AsrcDeviceLock:
         if self.lock.envelope_step():
             self.lock.step_to_floor()
 
-    def discont(self):
+    def discont(self, why=None):
+        """A sink discontinuity (FLUSH by default): an alignment resync is counted, the lock kept; any other
+        relocks, keeping the rate. True when the sink recalibrated: AsrcServo.device_recalibrated()."""
+        why = self.FLUSH if why is None else why
+        if why == self.ALIGNMENT:
+            self.alignments += 1
+            return False
         self.lock.relock(True)
         self.relocks += 1
         self.first = None
+        return why != self.FLUSH
 
     def ppb(self):
         return self.lock.ppb()
@@ -911,14 +1047,15 @@ class AsrcDeviceLock:
 def _cmd_line(i, sv, c):
     return (f"b {i} {sv.mode()} in={c.in_rate} out={c.out_rate} relock={int(c.relock)} "
             f"skip={c.skip} pass={int(c.pass_)} engage={int(c.engage)} drain={int(c.drain)} "
-            f"t0={sv.t0} m={sv.m} phase={sv.phase_err} ratio={sv._ratio_ppb()} "
+            f"gap={int(c.gap)} t0={sv.t0} m={sv.m} phase={sv.phase_err} ratio={sv._ratio_ppb()} "
             f"src={rate_of(sv.lock.ppb()) if sv.has_lock else 0}")
 
 
 def _event_lines(sv):
     out = []
     for e in sv.take_events():
-        out.append(f"e {e.kind} {e.reason or '-'} {e.house_ns} {e.value} {e.dropped_ns} {e.phase_ns}")
+        out.append(f"e {e.kind} {e.reason or '-'} {e.house_ns} {e.value} {e.dropped_ns} {e.phase_ns} "
+                   f"{e.lost_frames} {int(e.rate_known)}")
     return out
 
 
@@ -928,7 +1065,9 @@ def replay(lines):
       b PTS FRAMES DISCONT DEV_PPB                     push(); prints the command
       o K / t K                                        produced(K) / tail_produced(K)
       g                                                end_epoch(); prints its result
-      d ITIME ETIME [READ] / x                         the device lock: a pair / a discontinuity
+      d ITIME ETIME [READ]                             the device lock: a pair
+      x [WHY]                                          a sink discontinuity (GstAudioBaseSinkDiscontReason,
+                                                       2 flush by default); a recalibration tells the servo
       p                                                prints the stats and the device lock"""
     out, sv, dev, n = [], None, None, 0
     for raw in lines:
@@ -959,11 +1098,13 @@ def replay(lines):
         elif f[0] == "d":
             dev.feed(int(f[1]), int(f[2]), int(f[3]) if len(f) > 3 else 0)
         elif f[0] == "x":
-            dev.discont()
+            if dev.discont(int(f[1]) if len(f) > 1 else None):
+                sv.device_recalibrated()
         elif f[0] == "p":
             s = sv.stats()
             out.append("p " + " ".join(f"{k}={s[k]}" for k in s)
-                       + f" dev-ppb={dev.ppb()} dev-rate={dev.rate_ppb()} dev-locked={int(dev.locked())}")
+                       + f" dev-ppb={dev.ppb()} dev-rate={dev.rate_ppb()} dev-locked={int(dev.locked())}"
+                       + f" dev-relocks={dev.relocks} dev-alignments={dev.alignments}")
         else:
             raise ValueError(f"unknown line: {raw!r}")
     return out

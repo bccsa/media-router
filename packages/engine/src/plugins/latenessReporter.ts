@@ -129,12 +129,12 @@ function sumDemux(watches: DemuxWatch[]): DemuxCounters | undefined {
     };
 }
 
-/** Several decode terms in one place: the largest correction, else none. */
+/** Several decode terms in one place: the largest correction, else one still measuring, else none. */
 function mergeCorrection(watches: AsrcWatch[]): ClockCorrection | undefined {
     const c = watches.flatMap((w) => (w.correction ? [w.correction] : []));
     if (!c.length) return undefined;
     const engaged = c.filter((x) => x.sourcePpm !== undefined);
-    if (!engaged.length) return {};
+    if (!engaged.length) return c.some((x) => x.measuring) ? { measuring: true } : {};
     return engaged.reduce((a, b) => (Math.abs(b.sourcePpm!) > Math.abs(a.sourcePpm!) ? b : a));
 }
 

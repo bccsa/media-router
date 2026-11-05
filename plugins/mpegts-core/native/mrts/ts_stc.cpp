@@ -348,6 +348,7 @@ void ClockLock::close_bucket(int64_t sigma_now, int64_t house_now) {
     if (!wait && fit(&f, &n)) {
         fit_valid_ = true;
         fit_ppb_ = f;
+        fit_n_ = n;
         const int64_t lim = cfg_.rate_max_ppm * 1000;
         const int64_t fc = clamp64(f, -lim, lim);
         const int64_t gap = fc - eps_ppb();

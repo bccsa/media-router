@@ -24,10 +24,24 @@ int64_t sat_sub(int64_t a, int64_t b) {
     return a - b;
 }
 
+int64_t sat_add(int64_t a, int64_t b) {
+    if (b > 0 && a > INT64_MAX - b) return INT64_MAX;
+    if (b < 0 && a < INT64_MIN - b) return INT64_MIN;
+    return a + b;
+}
+
 // floor(h * 1e9 / (2 * hz)): a position in half frames as ns, without forming h * 1e9.
 int64_t half_frames_ns(int64_t h, int64_t hz) {
     const int64_t d = 2 * hz, q = floor_div(h, d);
     return q * E9 + (h - q * d) * E9 / d;
+}
+
+// g ns of house time on a clock whose lock reads e (house = (1 + e) x its time): how far that clock
+// falls behind house time, floor(g e / (1 + e)), split so no product leaves 64 bits (|e| <= 1e8).
+int64_t drift_over(int64_t g, int64_t e) {
+    const int64_t d = E9 + e, q = floor_div(g, E9), r = g - q * E9;
+    const int64_t c = q * e, qc = floor_div(c, d);
+    return qc * E9 + floor_div((c - qc * d) * E9 + r * e, d);
 }
 
 }  // namespace
@@ -104,14 +118,39 @@ int64_t AsrcServo::tail_pts_at(uint64_t k) const {
 
 // The device term runs the output off house rate; its label of the next output is next_pts().
 int64_t AsrcServo::house_pts() const {
-    return t0_ + half_frames_ns(2 * (int64_t)mh_, out_hz_) + mh_frac_ / out_hz_;
+    return t0_ - t0_dev_ + half_frames_ns(2 * (int64_t)mh_, out_hz_) + mh_frac_ / out_hz_;
+}
+
+int64_t AsrcServo::label_next() const { return ended_ ? tail_pts_at(0) : next_pts(); }
+
+int64_t AsrcServo::pos_ns(int64_t h2) const { return half_frames_ns(h2, in_hz_) + lost_res_; }
+
+// Device mode: labels minus house time for an epoch whose first output's content is at house time h:
+// what ran up since the sink's calibration, less the device's drift over the gap from the last
+// content's end (B-148). 0 without the device term.
+int64_t AsrcServo::offset_at(int64_t h) const {
+    if (!cfg_.device) return 0;
+    const int64_t hend = house_pts();
+    const int64_t off = sat_sub(sat_sub(label_next(), hend), cal_off_);
+    return sat_sub(off, drift_over(sat_sub(h, hend), dev_ppb_));
+}
+
+void AsrcServo::device_recalibrated() {
+    if (cfg_.device) cal_off_ = sat_sub(label_next(), house_pts());
+}
+
+// House-rate frames: each output frame is 1 + ε_dev of them.
+void AsrcServo::house_advance(uint32_t frames) {
+    const int64_t f = mh_frac_ + (int64_t)frames * dev_ppb_;
+    mh_ += (uint64_t)((int64_t)frames + floor_div(f, E9));
+    mh_frac_ = f - floor_div(f, E9) * E9;
 }
 
 // The resampler emits every output its input allows, so the next one sits within a frame
 // of N - delay: its mean, N - delay - 1/2 (GStreamer's cubic table centres it 1/8 frame
 // earlier still, 2.6 us at 48 kHz). Before the first output it is the epoch's first.
 int64_t AsrcServo::next_pos2() const {
-    if (passing_) return 2 * n_in_;   // no resampler: the next buffer's first frame
+    if (passing_) return 2 * (n_in_ + lost_);   // no resampler: the next buffer's first frame
     // A drop still to come counts as made: the frames held back before it are the splice.
     return std::max(2 * (n_in_ + lost_ + drop_left_ - delay_) - 1, start2_);
 }
@@ -124,7 +163,7 @@ int64_t AsrcServo::frames_over(int64_t ns) const {
 
 int64_t AsrcServo::measure_phase() const {
     if (!has_lock_) return 0;
-    return sat_sub(lock_.house_of(half_frames_ns(next_pos2(), in_hz_)), house_pts());
+    return sat_sub(lock_.house_of(pos_ns(next_pos2())), house_pts());
 }
 
 // The commanded out/in against nominal, minus 1: the decode term times the device term.
@@ -173,11 +212,24 @@ void AsrcServo::open_epoch(const char* why) {
 }
 
 // Judged on the device rate fit, not on ε_cmd: acquisition and a relock's catch-up
-// clamp ε_cmd for a while with the device well inside the range.
+// clamp ε_cmd for a while with the device well inside the range. Decode modes: past the bound
+// while locked for OOB_HOLD_NS (B-148); no fit length, as a source past the clamp keeps cutting it.
 void AsrcServo::check_bounds(int64_t h) {
     if (!lock_.has_fit()) return;
     const int64_t f = lock_.fit_ppb(), af = f < 0 ? -f : f, lim = cfg_.ratio_max_ppm * 1000;
-    if (!oob_ && af > lim) {
+    bool past = af > lim;
+    if (decode_) {
+        if (past && lock_.phase() == ClockLock::Phase::locked) {
+            if (!past_) {
+                past_ = true;
+                oob_since_ = h;
+            }
+        } else {
+            past_ = false;
+        }
+        past = past_ && h - oob_since_ >= OOB_HOLD_NS;
+    }
+    if (!oob_ && past) {
         oob_ = true;
         events_.push_back(AsrcEvent{AsrcEvent::Kind::ratio_out_of_bounds, "", h, f});
     } else if (oob_ && af < lim - lim / 10) {
@@ -196,18 +248,22 @@ bool AsrcServo::end_epoch() {
 void AsrcServo::tail_produced(uint32_t frames) {
     tail_m_ += frames;
     n_out_ += frames;
+    if (ended_) house_advance(frames);   // drained before the next push: the house end counts it (B-148)
 }
 
-// Decode and device modes: measured afresh from this buffer, labels from its PTS. The jump is
-// against the end of what left, the drained tail included (it may be negative here).
+// Decode and device modes: measured afresh from this buffer, labels from its PTS (on the device
+// timeline with the device term). The jump is against the end of what left, the drained tail
+// included (it may be negative here).
 void AsrcServo::new_epoch(int64_t pts, const char* why) {
-    const int64_t end = tail_pts_at(0);
-    engaged_ = over_ = false;
+    const int64_t end = tail_pts_at(0), off = offset_at(pts);
+    engaged_ = over_ = past_ = cont_ = false;
     passing_ = decode_ && !cfg_.device && in_hz_ == out_hz_;
-    start2_ = 2 * n_in_;
+    start2_ = 2 * (n_in_ + lost_);
     m_ = mh_ = 0;
     mh_frac_ = 0;
-    t0_ = pts;
+    t0_dev_ = off;
+    cal_off_ = 0;
+    t0_ = sat_add(pts, off);
     drop_left_ = 0;
     if (has_lock_) lock_.relock(false);
     relocks_++;
@@ -217,11 +273,14 @@ void AsrcServo::new_epoch(int64_t pts, const char* why) {
 // Decode modes, an envelope step: labels from where the lock now puts the next output (passing:
 // this PTS), the bypass or engaged state kept, nothing drained.
 void AsrcServo::step_epoch(int64_t pts) {
-    const int64_t end = next_pts();
-    start2_ = next_pos2();
+    const int64_t end = next_pts(), start2 = next_pos2();
+    const int64_t h = passing_ ? pts : lock_.house_of(pos_ns(start2)), off = offset_at(h);
+    start2_ = start2;
     m_ = mh_ = 0;
     mh_frac_ = 0;
-    t0_ = passing_ ? pts : lock_.house_of(half_frames_ns(start2_, in_hz_));
+    t0_dev_ = off;
+    cal_off_ = 0;
+    t0_ = sat_add(h, off);
     over_ = false;
     relocks_++;
     events_.push_back(AsrcEvent{AsrcEvent::Kind::relock, "envelope-step", t0_, t0_ - end});
@@ -232,6 +291,7 @@ void AsrcServo::engage(int64_t pts, const char* why, Command* cmd) {
     over_ = false;
     AsrcEvent e{AsrcEvent::Kind::engaged, why, pts, asrc_rate_of(lock_.ppb())};
     e.phase_ns = phase_err_;
+    e.rate_known = lock_.rate_known();
     events_.push_back(e);
     if (!passing_) return;
     // The caller primes its resampler with what passed: its next output is this buffer's
@@ -241,7 +301,7 @@ void AsrcServo::engage(int64_t pts, const char* why, Command* cmd) {
     t0_ = pts;
     m_ = mh_ = 0;
     mh_frac_ = 0;
-    start2_ = 2 * n_in_;
+    start2_ = 2 * (n_in_ + lost_);
 }
 
 // Lost time in input frames, to the nearest at the nominal rate: every capture of a driver loses
@@ -253,19 +313,39 @@ int64_t AsrcServo::frames_in(int64_t ns) const {
 // Lost cycles or time: the input position moves on by them, so the lock sees no step. Lost cycles
 // jump the output their length on the lock's line, keeping the phase (B-180); lost time its frames
 // at the nominal rate, the same in every capture of a driver, the phase servo taking the rest (B-181).
-void AsrcServo::lose(int64_t frames, bool whole) {
+void AsrcServo::lose(int64_t frames, bool whole, int64_t res_ns) {
     const int64_t before = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_));
     lost_ += frames;
+    lost_res_ += res_ns;
     const int64_t span = lock_.house_of(half_frames_ns(2 * (n_in_ + lost_), in_hz_)) - before;
     const int64_t from = next_pts();
     const uint64_t jump = whole ? (uint64_t)((clamp64(span, 0, 2 * LOST_MAX_NS) * out_hz_ + E9 / 2) / E9)
                                 : (uint64_t)((2 * frames * out_hz_ + in_hz_) / (2 * in_hz_));
     m_ += jump;
     mh_ += jump;   // the phase reads the house-rate counter: capture mode's is m_ itself
+    t0_ += res_ns;   // decode modes: the hole's part under a frame too (B-148)
+    if (cfg_.device) {   // the labels shift by the device's drift over the hole, the house counter not
+        const int64_t dr = drift_over(half_frames_ns(2 * (int64_t)jump, out_hz_) + res_ns, dev_ppb_);
+        t0_ -= dr;
+        t0_dev_ -= dr;
+    }
     gaps_++;
     AsrcEvent e{AsrcEvent::Kind::gap, whole ? "lost-cycle" : "lost-time", next_pts(), next_pts() - from};
     e.lost_frames = frames;
     events_.push_back(e);
+}
+
+// Decode modes (B-148): this buffer's PTS against the last one's end past the bound (the phase bound, or an
+// upstream acquire slew's 2000 ppm of the last span), after a buffer that continued its own: up to LOST_MAX_NS
+// lost time, back a break, else 0. A source off its rate past the bound steps every buffer: the lock's.
+int64_t AsrcServo::content_step(int64_t pts_ns) {
+    if (!decode_ || last_frames_ == 0) return 0;
+    const int64_t span = half_frames_ns(2 * (int64_t)last_frames_, in_hz_);
+    const int64_t d = sat_sub(pts_ns, sat_add(last_pts_, span));
+    const int64_t bound = std::max(cfg_.bypass_phase_ns, span / 500);
+    const bool cont = cont_;
+    cont_ = d >= -bound && d <= bound;
+    return cont && ((d > bound && d <= LOST_MAX_NS) || d < -bound) ? d : 0;
 }
 
 // The duration a source stamped fits the frames to a frame; none (< 0) fits.
@@ -318,7 +398,8 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
                                    int64_t dur_ns) {
     const int64_t lim = cfg_.ratio_max_ppm * 1000;
     dev_ppb_ = cfg_.device ? clamp64(device_ppb, -lim, lim) : 0;
-    const int64_t sigma = half_frames_ns(2 * n_in_, in_hz_);
+    const int64_t sigma = pos_ns(2 * (n_in_ + lost_));
+    const int64_t step = !capture_ && started_ && !discont && !ended_ ? content_step(pts_ns) : 0;
     bool relocked = false, drain = false, gapped = false;
     if (capture_) {
         if (!started_) {   // a first buffer's DISCONT is no discontinuity
@@ -351,7 +432,7 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
     } else if (!started_) {
         started_ = true;
         t0_ = pts_ns;
-        start2_ = 2 * n_in_;
+        start2_ = 2 * (n_in_ + lost_);
         if (has_lock_) lock_.feed(sigma, pts_ns);
     } else if (discont || ended_) {
         // The content breaks: measured afresh, labels from this PTS.
@@ -360,8 +441,23 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
         new_epoch(pts_ns, discont ? "discont" : "gap");
         if (has_lock_) lock_.feed(sigma, pts_ns);
         relocked = true;
-    } else if (has_lock_) {
+    } else if (step < 0) {
+        // B-148: the content time stepped back past the bound, unflagged: a break.
+        drain = end_epoch();
+        new_epoch(pts_ns, "jump");
         lock_.feed(sigma, pts_ns);
+        relocked = true;
+    } else if (has_lock_) {
+        if (step > 0) {
+            // B-148: a hole past the bound, unflagged: lost content time, the output jumping it
+            // (DISCONT on resampled output, same epoch), its part under a frame too.
+            const int64_t lost = frames_in(step);
+            const int64_t span = half_frames_ns(2 * (n_in_ + lost_ + lost), in_hz_) -
+                                 half_frames_ns(2 * (n_in_ + lost_), in_hz_);
+            lose(lost, false, step - span);
+            gapped = true;
+        }
+        lock_.feed(pos_ns(2 * (n_in_ + lost_)), pts_ns);
         if (lock_.envelope_step()) {
             // The timeline stepped, the content did not: the lock onto the new floor, the labels
             // re-anchored on it, the resampler kept.
@@ -419,10 +515,7 @@ AsrcServo::Command AsrcServo::push(int64_t pts_ns, uint32_t frames, bool discont
 void AsrcServo::produced(uint32_t frames) {
     n_out_ += frames;
     m_ += frames;
-    // House-rate frames: each output frame is 1 + ε_dev of them.
-    const int64_t f = mh_frac_ + (int64_t)frames * dev_ppb_;
-    mh_ += (uint64_t)((int64_t)frames + floor_div(f, E9));
-    mh_frac_ = f - floor_div(f, E9) * E9;
+    house_advance(frames);
     phase_err_ = measure_phase();
 }
 
@@ -441,6 +534,7 @@ AsrcServo::Stats AsrcServo::stats() const {
     s.mode = mode();
     s.source_ppb = has_lock_ ? asrc_rate_of(lock_.ppb()) : 0;
     s.decode_ppb = eps_cmd_;
+    s.rate_known = has_lock_ && lock_.rate_known();
     return s;
 }
 
@@ -465,10 +559,15 @@ void AsrcDeviceLock::feed(int64_t itime_ns, int64_t etime_ns, int64_t read_ns) {
     if (lock_.envelope_step()) lock_.step_to_floor();
 }
 
-void AsrcDeviceLock::discont() {
+bool AsrcDeviceLock::discont(Discont why) {
+    if (why == Discont::alignment) {
+        alignments_++;
+        return false;
+    }
     lock_.relock(true);
     relocks_++;
     have_first_ = false;
+    return why != Discont::flush;
 }
 
 }  // namespace mrts

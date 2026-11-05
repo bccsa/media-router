@@ -2255,7 +2255,8 @@ fleet has numbers); the aligners' `input-absent` and `aligner-full` warnings
   and each new program after the first is a log line, `Input <n>: program
   changed (generation g)`. A decode ASRC adds Clock correction: `none (house
   rate)` while its buffers pass, `+23.4 ppm (source)` once it resamples
-  (positive when the source runs fast), on its input's section where each
+  (positive when the source runs fast), `measuring` while it resamples before
+  that rate is measured (B-148), on its input's section where each
   input has its own (the 302M fan-ins) and on the `timing` section otherwise;
   an ASRC with a device term adds Device clock (`−12.1 ppm`) to the `timing`
   section, and an engage is logged as `source clock +x ppm: resampling`. The
@@ -2548,18 +2549,25 @@ and the phase within 1 ms. Past the bound for 10 s, or past the phase, it
 engages from that buffer: a house-rate counter from its PTS, the resampler
 primed with what passed, so nothing is dropped or repeated (`mrasrc-event`
 `engaged`). A DISCONT or GAP ends it: the resampler's tail leaves first, and
-what follows is measured afresh. With `device-sink=<name>` the named
+what follows is measured afresh. An unflagged PTS hole past 1 ms (or 2000 ppm
+of the last buffer's span) is lost time, the output jumping it (`gap`
+`lost-time`), and a step back past it a break (`relock` `jump`), each judged
+after a buffer that continued its own (B-148). With `device-sink=<name>` the named
 `GstAudioBaseSink` downstream, which must run `slave-method=custom` (else an
 error naming it at READY to PAUSED), reports its clock through its custom
 slaving callback and is never asked to skew; the ratio carries that device
 term, times the decode term when both are set (one resampler), and the
-output counter runs on from the first PTS, re-anchored at a DISCONT or GAP.
+output counter runs on from the first PTS on the device timeline: a break's
+new epoch starts at the last label end plus the gap at the device ratio, the
+offset restarting when the sink recalibrates (B-148).
 `bypass-below-ppm=0` with `device-sink` is the device term alone.
 `mrasrc-stats` gains `mode` (`capture`, `bypass`, `decode`, `device`,
 `decode+device`), `source-ppb` and `device-ppb` (each clock against house
-time, positive when fast); `mrasrc-event` gains `engaged` (`reason` ratio or
-phase, `source-ppb`, `phase-ns`) and `device-relock` (`reason`, the sink's
-discontinuity). A decode + device element whose source still passes reports
+time, positive when fast), `rate-known` and `device-resyncs`; `mrasrc-event`
+gains `engaged` (`reason` ratio or phase, `source-ppb`, `phase-ns`,
+`rate-known`), `device-relock` (`reason`, the sink's discontinuity) and
+`device-resync` (an alignment resync, the device lock kept; B-148). A decode +
+device element whose source still passes reports
 mode `device`, so read its decode term from `bypass-below-ppm`, not from
 `mode`. The element answers LATENCY with its filter's lookahead, 32 frames
 (0.667 ms at 48 kHz) at the default quality, passing or not. Its stand-in

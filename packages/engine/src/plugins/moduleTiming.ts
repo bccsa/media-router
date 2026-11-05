@@ -425,13 +425,17 @@ export class ModuleTiming {
             );
             return;
         }
-        const { kind, reason, payload, sourcePpm } = e.event;
+        const { kind, reason, payload, sourcePpm, offMs } = e.event;
         const who = e.label ? `Input ${e.label}: ` : '';
         const source = e.label ? `${who}source clock` : 'Source clock';
+        const timeline = e.label ? `${who}source timeline` : 'Source timeline';
+        // An engage before the rate is measured is no 0.0 ppm source (B-148).
         const text =
-            kind === 'engaged' && sourcePpm !== undefined
-                ? `${source} ${signedPpm(sourcePpm)}: resampling`
-                : `${who}mrasrc-event ${kind}${reason ? ` (${reason})` : ''}`;
+            kind === 'engaged' && offMs !== undefined
+                ? `${timeline} ${offMs.toFixed(1)} ms off its sample count: resampling (rate not measured yet)`
+                : kind === 'engaged' && sourcePpm !== undefined
+                  ? `${source} ${signedPpm(sourcePpm)}: resampling`
+                  : `${who}mrasrc-event ${kind}${reason ? ` (${reason})` : ''}`;
         this.host.log?.(
             kind === 'ratio-out-of-bounds' ? 'warn' : 'info',
             { asrcEvent: { name: e.event.name, ...payload } },

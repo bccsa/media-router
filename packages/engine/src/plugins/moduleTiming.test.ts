@@ -998,4 +998,31 @@ describe('demuxes and consumer ASRCs (WI-P3-6)', () => {
         ]);
         t.stop(false);
     });
+
+    it('an engage before the rate is measured is worded as the timeline, and reads measuring (B-148)', () => {
+        const { t, host } = make(
+            [A],
+            undefined,
+            'avdec_aac ! mrasrc name=asrc bypass-below-ppm=0.5 ! fakesink',
+        );
+        const early = {
+            kind: 'engaged',
+            reason: 'phase',
+            'source-ppb': 0,
+            'phase-ns': -1_023_000,
+            'rate-known': false,
+        };
+        expect(t.onEvent('mrasrc-event:asrc', early)).toBe(false);
+        expect(host.log).toHaveBeenCalledWith(
+            'info',
+            { asrcEvent: { name: 'asrc', ...early } },
+            'Source timeline 1.0 ms off its sample count: resampling (rate not measured yet)',
+        );
+        const stats = { mode: 'decode', state: 'acquiring', 'rate-known': false, 'in-frames': 10 };
+        expect(t.onEvent('mrasrc-stats:asrc', stats)).toBe(false);
+        t.tick();
+        expect(t.summary()).toMatchObject({ clockCorrection: { measuring: true } });
+        expect(t.publication.data.timing).toMatchObject({ clockCorrection: 'measuring' });
+        t.stop(false);
+    });
 });
