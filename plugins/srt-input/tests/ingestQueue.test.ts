@@ -69,7 +69,7 @@ describe.skipIf(!HAVE_INGEST_QUEUE_RIG)('SrtInputModule under a high-bitrate fee
         expect(r.heldLevelBytes).toBeGreaterThan(4_000_000 - 1316);
         expect(r.maxLevelBytes).toBeLessThanOrEqual(4_000_000 + 1316);
         expect(r.lost).toBeGreaterThan((0.9 * (stallBacklogBytes(r) - 4_000_000)) / 1316);
-        // One overrun per buffer shed, what the runner counts (shed_watch.cpp); one more if the
+        // One overrun per buffer shed, what the runners count (queue_watch.cpp); one more if the
         // stall ended while the last was signalled, as the queue then found room.
         expect(r.overruns - r.lost).toBeGreaterThanOrEqual(0);
         expect(r.overruns - r.lost).toBeLessThanOrEqual(1);

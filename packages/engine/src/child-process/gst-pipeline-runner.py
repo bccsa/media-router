@@ -314,6 +314,8 @@ def _teardown_pipeline(pipe, drain=True, errored=False):
     if drain and _drain_on_stop:
         _eos_drain(pipe, errored=errored)
     pipe.set_state(Gst.State.NULL)
+    # No streaming thread is left to meet a queue full: the last episode's count is final.
+    _clear_queue_watch()
 
 
 def _cancel_playing_watchdog():
@@ -874,6 +876,265 @@ def _install_decoder_thread_hook(pipe, thread_type="auto"):
         f"(cpu={_DECODER_MAX_THREADS} thread-type={thread_type})\n"
     )
     sys.stderr.flush()
+
+
+# --------------------------------------------------------------------------- no-late-drop (B-170)
+# House-clock P11 in the runner: no element drops a buffer for being late, including those a bin
+# plugs (a decodebin3 rung, an overlay bin). Always on. Twin: mr-gst-runner no_late_drop.cpp.
+def _is_a(element, type_name):
+    """Whether `element` is a `type_name`: none is before a loaded library registers that type."""
+    try:
+        return GObject.type_is_a(element.__gtype__, GObject.type_from_name(type_name))
+    except RuntimeError:
+        return False
+
+
+def _has_bool(element, prop):
+    spec = element.find_property(prop)
+    return (spec is not None and spec.value_type == GObject.TYPE_BOOLEAN
+            and bool(spec.flags & GObject.ParamFlags.WRITABLE))
+
+
+def _no_late_drop(element):
+    """Turn off what drops a late buffer on `element`: a GstBaseSink's `qos` and `max-lateness`, a
+    decoder's or a GstBaseTransform's `qos`. What it changed ("vc qos→false"), or ""."""
+    changed = []
+    if _is_a(element, "GstBaseSink"):
+        if element.get_property("qos"):
+            element.set_property("qos", False)
+            changed.append("qos→false")
+        if element.get_property("max-lateness") != -1:
+            element.set_property("max-lateness", -1)
+            changed.append("max-lateness→-1")
+    elif (any(_is_a(element, t) for t in ("GstBaseTransform", "GstVideoDecoder", "GstAudioDecoder"))
+          and _has_bool(element, "qos")):
+        if element.get_property("qos"):
+            element.set_property("qos", False)
+            changed.append("qos→false")
+    return f"{element.get_name()} {', '.join(changed)}" if changed else ""
+
+
+def _install_no_late_drop(pipe):
+    """Before PLAYING: every element of `pipe` (one log line), and each one added later (one line
+    each that changed)."""
+    changed = []
+    it = pipe.iterate_recurse()
+    while True:
+        result, element = it.next()
+        if result == Gst.IteratorResult.OK:
+            c = _no_late_drop(element)
+            if c:
+                changed.append(c)
+        elif result == Gst.IteratorResult.RESYNC:
+            it.resync()
+        else:
+            break
+    sys.stderr.write(f"[gst-runner.py] no-late-drop: {', '.join(changed) or 'nothing to change'}\n")
+    sys.stderr.flush()
+
+    def added(_root, _bin, element):
+        c = _no_late_drop(element)
+        if c:
+            sys.stderr.write(f"[gst-runner.py] no-late-drop: {c}\n")
+            sys.stderr.flush()
+
+    pipe.connect("deep-element-added", added)
+
+
+# --------------------------------------------------------------------------- queue watch (B-170)
+# Every queue that drops at capacity (leaky) or holds an output's backlog (named below) counts
+# each buffer that meets it full (`overrun`); each episode is one `queue_overrun` plugin event
+# (B-182's rule). Twin: mr-gst-runner queue_watch.cpp.
+QUEUE_OVERRUN_EVENT = "queue_overrun"          # queueOverrun.ts QUEUE_OVERRUN_EVENT
+WATCHED_QUEUE_NAMES = ("vp_esq", "ad_esq", "prefill")   # queueOverrun.ts: watched though not leaky
+_QUEUE_QUIET_MS = 1000     # an episode ends after this long without an overrun
+_QUEUE_LONG_MS = 10000     # one still open this long is reported as it stands, then at its end
+_QUEUE_TICK_MS = 250
+_FOREVER = 1 << 62         # a `now` past every bound: the episode ends now
+_queue_watch_lock = threading.Lock()     # the list and the state below
+_queue_watches = []
+_queue_watch = {"pipe": None, "tick": None, "added": 0, "removed": 0}
+
+
+class _QueueWatch:
+    """One watched queue: the streaming thread that meets it full writes the counts, the main loop
+    owns the episode."""
+
+    def __init__(self, queue, leaky):
+        self.queue, self.name, self.leaky = queue, queue.get_name(), leaky
+        self.overruns = self.first_us = self.last_us = 0
+        self.level_us = self.level_ns = self.level_bytes = 0
+        self.removed = False                 # left the pipeline: its episode ends at the next tick
+        self.open = self.long_reported = False
+        self.base = self.opened_us = 0
+        self.input = None                    # the first unixfdsrc upstream when it opened
+        self.handler = queue.connect("overrun", self._on_overrun)
+
+    def _on_overrun(self, queue):
+        now = GLib.get_monotonic_time()
+        if not self.first_us:
+            self.first_us = now
+        self.last_us = now
+        # The level it was full at, read at most once a second: the queue's lock is free while
+        # it emits the signal.
+        if now - self.level_us >= 1_000_000:
+            self.level_us = now
+            self.level_ns = queue.get_property("current-level-time")
+            self.level_bytes = queue.get_property("current-level-bytes")
+        self.overruns += 1
+
+
+def _feeding_pad(sink):
+    """The src pad feeding `sink` across ghost pads, or None."""
+    peer = sink.get_peer()
+    for _ in range(16):
+        if peer is None:
+            return None
+        if isinstance(peer, Gst.GhostPad):            # a bin's src ghost: into the bin
+            peer = peer.get_target()
+        elif isinstance(peer, Gst.ProxyPad):          # the inside of a bin's sink ghost: out of it
+            ghost = peer.get_parent()
+            peer = ghost.get_peer() if isinstance(ghost, Gst.Pad) else None
+        else:
+            return peer
+    return None
+
+
+def _first_unixfdsrc(element, seen):
+    """The name of the first unixfdsrc upstream of `element`: depth first, its sink pads in turn."""
+    if element in seen or len(seen) >= 256:
+        return None
+    seen.add(element)
+    it = element.iterate_sink_pads()
+    while True:
+        result, pad = it.next()
+        if result == Gst.IteratorResult.OK:
+            src = _feeding_pad(pad)
+            up = src.get_parent_element() if src is not None else None
+            if up is not None:
+                factory = up.get_factory()
+                if factory is not None and factory.get_name() == "unixfdsrc":
+                    return up.get_name()
+                found = _first_unixfdsrc(up, seen)
+                if found:
+                    return found
+        elif result == Gst.IteratorResult.RESYNC:
+            it.resync()
+        else:
+            return None
+
+
+def _queue_overrun_report(w, total, last, ongoing):
+    """The episode so far: each buffer that met the queue full (leaky: pushed an older one out)."""
+    emit_plugin_event(QUEUE_OVERRUN_EVENT, {
+        "element": w.name, "input": w.input, "leaky": w.leaky,
+        "levelTimeMs": w.level_ns // 1_000_000, "levelBytes": w.level_bytes,
+        "overruns": total - w.base, "ms": (last - w.opened_us) // 1000,
+        "totalOverruns": total, "ongoing": ongoing})
+
+
+def _queue_watch_check(w, now):
+    """Open an episode on a new overrun; close it after _QUEUE_QUIET_MS without one (`now` past
+    every bound: close it now); one report while it is open past _QUEUE_LONG_MS."""
+    total, last = w.overruns, w.last_us
+    if not w.open:
+        if total == w.base:
+            return
+        w.open, w.long_reported = True, False
+        w.opened_us = w.first_us or last
+        w.input = _first_unixfdsrc(w.queue, set()) if w.queue is not None else None
+    if now - last >= _QUEUE_QUIET_MS * 1000:
+        _queue_overrun_report(w, total, last, False)
+        w.open, w.base, w.first_us = False, total, 0
+    elif not w.long_reported and now - w.opened_us >= _QUEUE_LONG_MS * 1000:
+        _queue_overrun_report(w, total, last, True)
+        w.long_reported = True
+
+
+def _queue_watch_tick():
+    now = GLib.get_monotonic_time()
+    with _queue_watch_lock:
+        live = list(_queue_watches)
+    gone = []
+    for w in live:
+        removed = w.removed                  # a queue that left the pipeline ends as at a stop
+        _queue_watch_check(w, _FOREVER if removed else now)
+        if removed:
+            gone.append(w)
+    if gone:
+        with _queue_watch_lock:
+            for w in gone:
+                _queue_watches.remove(w)
+                w.queue = None
+    return True
+
+
+def _queue_watched(element):
+    """The queue's `leaky` when the watch takes it (leaky, or one of the names), else None."""
+    factory = element.get_factory()
+    if factory is None or factory.get_name() != "queue":
+        return None
+    leaky = int(element.get_property("leaky"))
+    return leaky if leaky != 0 or element.get_name() in WATCHED_QUEUE_NAMES else None
+
+
+def _queue_watch_add(element):
+    """Any thread: a queue of the pipeline, at start or added later (an edge, a live input)."""
+    leaky = _queue_watched(element)
+    if leaky is None:
+        return
+    with _queue_watch_lock:
+        if _queue_watch["pipe"] is None or any(w.queue == element for w in _queue_watches):
+            return
+        _queue_watches.append(_QueueWatch(element, leaky))
+        if _queue_watch["tick"] is None:
+            _queue_watch["tick"] = GLib.timeout_add(_QUEUE_TICK_MS, _queue_watch_tick)
+
+
+def _queue_watch_removed(_root, _bin, element):
+    """Any thread: its queue left the pipeline, so no overrun comes after this."""
+    with _queue_watch_lock:
+        for w in _queue_watches:
+            if w.queue == element and not w.removed:
+                w.queue.disconnect(w.handler)
+                w.removed = True
+
+
+def _start_queue_watch(pipe):
+    """Before PLAYING: watch every such queue of `pipe`, and each one added to it later."""
+    _clear_queue_watch()
+    with _queue_watch_lock:
+        _queue_watch["pipe"] = pipe
+    it = pipe.iterate_recurse()
+    while True:
+        result, element = it.next()
+        if result == Gst.IteratorResult.OK:
+            _queue_watch_add(element)
+        elif result == Gst.IteratorResult.RESYNC:
+            it.resync()
+        else:
+            break
+    _queue_watch["added"] = pipe.connect("deep-element-added", lambda _r, _b, el: _queue_watch_add(el))
+    _queue_watch["removed"] = pipe.connect("deep-element-removed", _queue_watch_removed)
+
+
+def _clear_queue_watch():
+    """Once the pipeline is in NULL (no streaming thread left): report each open episode, forget."""
+    with _queue_watch_lock:
+        tick, pipe = _queue_watch["tick"], _queue_watch["pipe"]
+        handlers = (_queue_watch["added"], _queue_watch["removed"])
+        _queue_watch.update(pipe=None, tick=None, added=0, removed=0)
+        watches = list(_queue_watches)
+        _queue_watches.clear()
+    if tick is not None:
+        GLib.source_remove(tick)
+    if pipe is not None:
+        for handler in handlers:
+            pipe.disconnect(handler)
+    for w in watches:
+        _queue_watch_check(w, _FOREVER)
+        if not w.removed:
+            w.queue.disconnect(w.handler)
 
 
 # `parser: "none"` on a pad-link rule: skip the codec parser and instead DECLARE
@@ -1520,6 +1781,9 @@ def handle_start(data):
     # time), so we hook every avdec_* as it shows up — see the function for the
     # two-pronged tree-walk + `deep-element-added` strategy.
     _install_decoder_thread_hook(pipeline, decoder_thread_type)
+    # No element drops a late buffer (P11), and each queue that fills reports its episodes (B-170).
+    _install_no_late_drop(pipeline)
+    _start_queue_watch(pipeline)
 
     # Bus-message subscriptions (generic; e.g. the audio-dynamics ducker keys
     # its envelope off the sidechain `level` element).

@@ -182,6 +182,10 @@ export interface BusSrcOpts {
  * mid-stream, but a stall that long has already lost the data — corruption on
  * one branch beats a wedged graph.
  *
+ * It and the producer's fan-out branch stay `leaky=2` (OQ-30): a full one is a resource fault the
+ * runners' queue watch reports (`queue_overrun`, B-170), not a lateness drop, and a real backlog
+ * only on the image's queue, which starts its level afresh once drained (B-68).
+ *
  * The byte bound (5 s at 64 Mbit/s = 40 MB) is the timestamp-independent
  * backstop — see `queueBounds.ts`. Everything on the bus is compressed TS or
  * 302M, so a healthy edge never reaches it.

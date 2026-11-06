@@ -121,10 +121,8 @@ export function buildBackpressureQueue(bufferMs: number, maxBytes = 0): string {
     return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=${maxBytes}`;
 }
 
-/** `name=` of a network ingest's queue; the native runner reports the sheds of a queue so named. */
+/** `name=` of a network ingest's queue: the runners' queue watch reports its overruns (B-170). */
 export const INGEST_QUEUE_NAME = 'ingestq';
-/** The plugin event of one episode of that queue shedding (`shed_watch.cpp`). */
-export const QUEUE_SHED_EVENT = 'queue_shed';
 /** Its bound: this long at 64 Mbit/s, 800 ms at 40 Mbit/s (B-182). */
 export const INGEST_QUEUE_MS = 500;
 

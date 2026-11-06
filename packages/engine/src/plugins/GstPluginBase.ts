@@ -15,7 +15,7 @@ import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { START_WAITS_FOR_PIPEWIRE } from './pipeWireLoss.js';
 import { VuStallWatch } from './VuStallWatch.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
-import { QUEUE_SHED_EVENT } from './tsHelpers.js';
+import { QUEUE_OVERRUN_EVENT, queueOverrunText, type QueueOverrun } from './queueOverrun.js';
 import { STAMP_OFF_CLOCK_EVENT, stampOffClockText, type StampOffClock } from './offClock.js';
 import {
     DEFAULT_PLAYOUT_OFFSET_MS,
@@ -916,14 +916,19 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      * audio-decoder, any future presentation leg — see backlogShed.ts), so its
      * one line per episode has to exist for all of them without each one
      * remembering to write it. The subclass hook still gets the event and may
-     * do more with it. So are `queue_shed` (B-182) and `stamp_off_clock` (B-203).
+     * do more with it. So are `queue_overrun` (B-170) and `stamp_off_clock` (B-203).
      */
     protected dispatchPluginEvent(channel: string, payload: unknown): void {
         // Lateness windows, aligner reports and demux messages are the base class's alone
         // (WI-P0-9, WI-P2-13, WI-P3-6): no subclass hook. An ASRC's go on to it too.
         if (this.timing.onEvent(channel, payload)) return;
         if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
-        if (channel === QUEUE_SHED_EVENT) this.logQueueShed(payload);
+        if (channel === QUEUE_OVERRUN_EVENT) {
+            this.log.warn(
+                { queueOverrun: payload },
+                queueOverrunText((payload ?? {}) as QueueOverrun),
+            );
+        }
         if (channel === STAMP_OFF_CLOCK_EVENT) {
             this.log.warn(
                 { stampOffClock: payload },
@@ -976,23 +981,6 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.log.warn(
             { backlogShed: payload },
             'Backlog shed — retained latency returned to the playout budget',
-        );
-    }
-
-    /** One WARN line per episode of an ingest queue shedding (B-182): its output stopped
-     *  draining past the queue's bound, so each buffer that met it full pushed an older one out. */
-    private logQueueShed(payload: unknown): void {
-        const p = (payload ?? {}) as {
-            element?: string;
-            overruns?: number;
-            durationMs?: number;
-            ongoing?: boolean;
-        };
-        const still = p.ongoing ? ', still dropping' : '';
-        this.log.warn(
-            { queueShed: payload },
-            `Queue ${p.element ?? '?'} full: ${p.overruns ?? 0} buffers dropped in ` +
-                `${p.durationMs ?? 0} ms (its output stopped draining${still})`,
         );
     }
 

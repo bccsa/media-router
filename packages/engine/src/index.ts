@@ -228,8 +228,13 @@ export {
     buildBackpressureQueue,
     buildIngestQueue,
     INGEST_QUEUE_NAME,
-    QUEUE_SHED_EVENT,
 } from './plugins/tsHelpers.js';
+export {
+    QUEUE_OVERRUN_EVENT,
+    WATCHED_QUEUE_NAMES,
+    queueOverrunText,
+} from './plugins/queueOverrun.js';
+export type { QueueOverrun } from './plugins/queueOverrun.js';
 export { tsQueueByteCap } from './plugins/queueBounds.js';
 export { capsStreamInfo } from './plugins/streamCapsInfo.js';
 export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';

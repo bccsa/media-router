@@ -46,12 +46,16 @@ failure mode and the byte cap costs nothing on a healthy stream.
   40 MB cap of 1,316-byte buffers therefore pins about 125 MB, or about
   500 MB, not 40 MB. The fd count per edge is bounded the same way, by the
   consumer's 5 s ingress queue (plan chapter 15.4 B-91, measured 2026-10-22).
-  The producer also keeps each copy the consumer releases in its
-  unixfdsink's allocator pool, mapped, until that sink stops, so a stall's
-  high-water mark stays pinned for the edge's life, and
-  `vm.max_map_count` (65,530; the image does not set it) caps one producer
-  process at about 65,000 copies: the fifth stalled 30 Mbit/s edge at 5 s
-  passes it (measured 2026-10-22; plan 15.4 B-94, open).
+  The producer keeps each copy the consumer releases in its unixfdsink's
+  allocator pool, mapped, for reuse. On the image's GStreamer (meta-custom's
+  plugins-bad patch 0009) the pool gives a stall's copies back: it holds the
+  larger of 64 copies and twice the most in flight in the last 9 s, so the
+  copies stay 8–9 s after the consumer has caught up, for a stall that comes
+  back, and are then freed in under half a second; a stock unixfdsink keeps
+  them until it stops (plan 15.4 B-94). While a stall lasts its copies are in
+  flight and stay mapped: `vm.max_map_count` (65,530; the image does not set
+  it) caps one producer process at about 65,000 copies, which five 30 Mbit/s
+  edges stalled at 5 s at once pass (measured 2026-10-22).
 - The bus queues read a silence right only on the image's GStreamer (plan
   chapter 15.4 B-68). A stock `queue` keeps its src time at the last buffer
   out once it has drained, so the first buffer back after a silence longer

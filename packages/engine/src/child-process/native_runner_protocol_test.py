@@ -2243,6 +2243,9 @@ def test_bus_return():
             time.sleep(1.0)
             check(f"bus-return {tag}: no lifecycle error", not r.has_event(ev_is("error")))
             check(f"bus-return {tag}: exits 0 after stop", r.stop_and_wait() == 0)
+            # R (B-170): on the image's queue a silence is no backlog, so the watch sees none.
+            check(f"bus-return {tag} (R): its bus ingress and its edge queue report no queue_overrun "
+                  f"({_overruns(r)})", _overruns(r) == [])
         finally:
             consumer.set_state(Gst.State.NULL)
             feed.set_state(Gst.State.NULL)
@@ -2262,19 +2265,43 @@ def test_bus_return():
               len(off) == _RETURNS * (_PACED + _BACK) and max(off) <= 11112)
 
 
-# --------------------------------------------------------------------------- edge-stall-fds (B-68, B-91)
+# --------------------------------------------------------------------------- edge-stall-fds (B-68, B-91, B-94)
 def _fd_count(pid="self"):
     return len(os.listdir(f"/proc/{pid}/fd"))
 
 
+def _pss_shmem_kb(pid="self"):
+    """Exact (a page walk), unlike RssShmem in status: a per-CPU batched counter on 6.x."""
+    with open(f"/proc/{pid}/smaps_rollup") as f:
+        for line in f:
+            if line.startswith("Pss_Shmem:"):
+                return int(line.split()[1])
+    return -1
+
+
+# B-94: the image's unixfdsink gives a stall's copies back (meta-custom's plugins-bad patch 0009).
+_POOL_PATCH = ("meta-custom's gstreamer1.0-plugins-bad patch 0009 "
+               "(0009-unixfd-allocator-trim-the-pool-after-a-stall.patch)")
+_TRIM_RATE = 400            # buffers a second after the recovery: a steady edge, a handful in flight
+_TRIM_BATCH = 16            # 0009 frees at most this many copies at each release
+
+
+def _pool_patched():
+    """Whether this process's unixfdsink carries 0009: its allocator's class, made with the sink's
+    first copy, registers the "unixfdallocator" debug category only with the patch."""
+    return "unixfdallocator" in [c.get_name() for c in Gst.debug_get_all_categories()]
+
+
 def test_edge_stall_fds():
-    """edge-stall-fds (B-68, B-91), both runners: a bus input whose module stalls behind its
+    """edge-stall-fds (B-68, B-91, B-94), both runners: a bus input whose module stalls behind its
     ingress (`identity sleep-time=1000000`, a buffer a second), fed 1,316-byte buffers at the
     fleet's fastest edge rate (2,850 a second, a 30 Mbit/s relay), stamped at a rate. Each queued
     buffer is one fd in the runner and one in the feeder, and the ingress holds 5 s of the edge's
     own stream however much is fed: 14,250 buffers stamped 2,850 a second (34,000 fed, past the
     40 MB cap), 976 stamped 195 a second (16,000 fed). Bounded by bytes only it would hold up to
-    30,395 at any rate; by a count of 14,250, that count at 195 a second too."""
+    30,395 at any rate; by a count of 14,250, that count at 195 a second too. The queue watch
+    counts the ingress's overruns against its input. Then the module recovers, and with 0009 the
+    feeder's copies come back within the pool's window and the trim, and stay back (B-94)."""
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if hard != resource.RLIM_INFINITY and hard < 32768:
@@ -2307,13 +2334,13 @@ def test_edge_stall_fds():
             feed.set_state(Gst.State.PLAYING)
             src, step, t = feed.get_by_name("src"), Gst.SECOND // rate, time.monotonic_ns()
 
-            def push(k):
+            def push(k, per_s=2850, until=None):
                 # At 2,850 a second whatever the stamps: faster than its consumer, a stock unixfdsink
                 # blocks in a send under its lock, and the consumer's releases then block too.
                 nonlocal t
                 t0, done = time.monotonic(), 0
-                while done < k:
-                    due = min(k, 1 + int((time.monotonic() - t0) * 2850))
+                while done < k and not (until and until.is_set()):
+                    due = min(k, 1 + int((time.monotonic() - t0) * per_s))
                     for _ in range(due - done):
                         b = Gst.Buffer.new_wrapped(data)
                         b.pts = b.dts = t
@@ -2322,19 +2349,34 @@ def test_edge_stall_fds():
                     done = due
                     time.sleep(0.005)
 
+            def stall(us):
+                r.send({"cmd": "set_property", "id": f"stall{us}", "element": "stall",
+                        "property": "sleep-time", "value": us})
+                r.wait_event(lambda e: e.get("id") == f"stall{us}", timeout=5)
+
             time.sleep(0.3)
             r = RunnerProc(argv)
-            peak, stop = {}, threading.Event()
+            peak, stop, feeding = {}, threading.Event(), threading.Event()
+            base = {"runner": 0, "feeder": _fd_count()}
             try:
                 r.wait_event(ev_is("ready"), timeout=10)
                 # No EOS drain at the stop: behind the stalled module it would take hours.
                 r.send({"cmd": "start", "pipeline": f"{BUS_SRC.format(name='busin', socket=sock)}"
-                                                    " ! identity sleep-time=1000000 ! fakesink sync=false async=false",
+                                                    " ! identity name=stall ! fakesink sync=false async=false",
                         "eosDrain": False})
                 push(1)
-                check(f"{label}: the stalled input reaches PLAYING",
+                check(f"{label}: the input reaches PLAYING",
                       r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None)
-                base = {"runner": _fd_count(r.proc.pid), "feeder": _fd_count()}
+                # Steady: the edge flowing at its rate, as the feeder's pool holds it.
+                push(2850)
+                steady_rows = []
+                for _ in range(5):
+                    push(285)
+                    steady_rows.append((_fd_count(), _pss_shmem_kb()))
+                steady = {"fds": max(x[0] for x in steady_rows), "shmem": max(x[1] for x in steady_rows)}
+                patched = _pool_patched()
+                base = {"runner": _fd_count(r.proc.pid), "feeder": steady["fds"]}
+                stall(1000000)
 
                 def sample():
                     while not stop.is_set():
@@ -2356,10 +2398,50 @@ def test_edge_stall_fds():
                 check(f"{label}: {n} fed, the runner holds at most {held} + 64 more fds "
                       f"(+{peak.get('runner')}) and the feeder {held} + 300 (+{peak.get('feeder')})",
                       0 < peak.get("runner", 0) <= held + 64 and 0 < peak.get("feeder", 0) <= held + 300)
+                if not patched:
+                    print(f"SKIP {label}: the recovery read — this unixfdsink lacks {_POOL_PATCH}, so a "
+                          "stall's copies stay with the feeder until its sink stops (B-94)")
+                else:
+                    # The module recovers; the feeder goes on at a steady rate, its trims ride its releases.
+                    stall(0)
+                    feeder = threading.Thread(target=push, args=(10**9, _TRIM_RATE, feeding))
+                    feeder.start()
+                    t_drained, deadline = None, time.monotonic() + 15
+                    while t_drained is None and time.monotonic() < deadline:
+                        if _fd_count(r.proc.pid) <= base["runner"] + 64:
+                            t_drained = time.monotonic()
+                        time.sleep(0.05)
+                    high = peak.get("feeder", 0)            # copies over the steady edge's
+                    bound = 10.0 + max(0, high - 64) / (_TRIM_BATCH * _TRIM_RATE)
+                    rows, t_end = [], (t_drained or time.monotonic()) + bound + 2.0
+                    while t_drained is not None and time.monotonic() < t_end:
+                        rows.append((time.monotonic() - t_drained, _fd_count(), _pss_shmem_kb()))
+                        time.sleep(0.25)
+                    feeding.set()
+                    feeder.join()
+                    fd_cap, shm_cap = steady["fds"] + 64, steady["shmem"] + 2048
+                    ok = [x for x in rows if x[1] <= fd_cap and x[2] <= shm_cap]
+                    back = ok[0][0] if ok else None
+                    after = [x for x in rows if back is not None and x[0] >= back]
+                    check(f"{label}: the module recovers and the runner's ingress drains", t_drained is not None)
+                    check(f"{label}: the feeder's copies come back within {bound:.1f} s of the drain (10 s, and "
+                          f"{high} copies trimmed {_TRIM_BATCH} a release at {_TRIM_RATE}/s): fds <= steady "
+                          f"+ 64 and Pss_Shmem <= steady + 2 MiB at {back if back is None else round(back, 2)} s "
+                          f"(steady {steady}; last {rows[-1][1:] if rows else None})",
+                          back is not None and back <= bound)
+                    check(f"{label}: ...and stay there ({len(after)} reads to {bound + 2:.1f} s)",
+                          bool(after) and all(x[1] <= fd_cap and x[2] <= shm_cap for x in after))
                 check(f"{label}: no lifecycle error", not r.has_event(ev_is("error")))
                 check(f"{label}: exits 0 after stop", r.stop_and_wait() == 0)
+                # An episode still open at the stop is reported then (a stock sink's run never recovers).
+                ev = _overruns(r)
+                check(f"{label}: the stalled ingress's overruns count against its input ({len(ev)} events; "
+                      f"last {ev[-1] if ev else None})",
+                      bool(ev) and all(x.get("input") == "busin" and x.get("leaky") == 2 for x in ev)
+                      and 0.9 * (n - held) <= ev[-1].get("totalOverruns", 0) <= n)
             finally:
                 stop.set()
+                feeding.set()
                 r.kill()
                 feed.set_state(Gst.State.NULL)
                 shutil.rmtree(tmp, ignore_errors=True)
@@ -3911,72 +3993,253 @@ def test_transcode_formula():
 
 
 
-# --------------------------------------------------------------------------- IQ: ingest queue sheds
+# --------------------------------------------------------------------------- IQ: the queue watch's episodes
+def _overruns(r, element=None):
+    return [e["payload"] for e in r.events if e.get("event") == "plugin_event"
+            and e.get("channel") == "queue_overrun" and (element is None or e["payload"].get("element") == element)]
+
+
 def test_ingest_queue_sheds():
-    """IQ (B-182): the shed watch on queues named ingestq (tsHelpers.ts buildIngestQueue). A paced
-    feed into one and into a queue of another name, both stalled behind an identity: one
-    `queue_shed` per episode for ingestq alone, its overruns counted, a report once while one stays
-    open 10 s, and an episode open at the stop reported before the runner exits."""
+    """IQ (B-182, B-170), both runners: the queue watch's episode rule. Three paced feeds, each
+    stalled behind an identity: a leaky queue named ingestq (watched: leaky), a non-leaky one named
+    vp_esq (watched: its name) and a non-leaky one of another name (not watched). One
+    `queue_overrun` per episode for the watched two alone, its overruns counted, a report once
+    while one stays open 10 s, and the episodes open at the stop reported before the runner exits."""
     leaky = "leaky=2 max-size-time=0 max-size-buffers=0 max-size-bytes=19200"
-    pipe = ("audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
-            " ! tee name=t"
-            f" t. ! queue name=ingestq {leaky} ! identity name=stall ! fakesink sync=false async=false"
-            f" t. ! queue name=other {leaky} ! identity name=stall2 ! fakesink sync=false async=false")
-    r = RunnerProc()
-    sheds = lambda: [e["payload"] for e in r.events  # noqa: E731
-                     if e.get("event") == "plugin_event" and e.get("channel") == "queue_shed"]
+    held = "leaky=0 max-size-time=0 max-size-buffers=0 max-size-bytes=19200"
+    src = "audiotestsrc is-live=true samplesperbuffer=480 ! audio/x-raw,rate=48000,channels=2"
+    pipe = (f"{src} ! queue name=ingestq {leaky} ! identity name=stall ! fakesink sync=false async=false"
+            f" {src} ! queue name=vp_esq {held} ! identity name=stall2 ! fakesink sync=false async=false"
+            f" {src} ! queue name=other {held} ! identity name=stall3 ! fakesink sync=false async=false")
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        r = RunnerProc(argv)
 
-    def stall(us):
-        for el in ("stall", "stall2"):
-            r.send({"cmd": "set_property", "id": f"s{el}{us}", "element": el,
-                    "property": "sleep-time", "value": us})
+        def stall(us):
+            for el in ("stall", "stall2", "stall3"):
+                r.send({"cmd": "set_property", "id": f"s{el}{us}", "element": el,
+                        "property": "sleep-time", "value": us})
 
+        try:
+            r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+            check(f"IQ {tag} reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
+            time.sleep(1.5)
+            r.pump()
+            check(f"IQ {tag} a queue that keeps up reports nothing", _overruns(r) == [])
+            # Episode 1: 500 ms a buffer for 1.5 s (each queue holds 10 buffers of 10 ms).
+            stall(500000)
+            time.sleep(1.5)
+            stall(0)
+            first = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                                 and e["payload"].get("element") == "ingestq", timeout=4.0)
+            p = first["payload"] if first else {}
+            check(f"IQ {tag} one episode, one event, for the leaky queue (B-182 measured 138 overruns in "
+                  f"1,390 ms; {p})",
+                  p.get("leaky") == 2 and p.get("input") is None and p.get("ongoing") is False
+                  and p.get("overruns", 0) > 50 and p.get("totalOverruns") == p.get("overruns")
+                  and p.get("levelBytes") == 19200 and 1000 <= p.get("ms", 0) <= 2600)
+            time.sleep(1.5)
+            r.pump()
+            esq = _overruns(r, "vp_esq")
+            check(f"IQ {tag} the non-leaky vp_esq by its name, one event; nothing from the other queue, "
+                  f"nothing more once they drained ({esq}; {len(_overruns(r))} events)",
+                  len(esq) == 1 and esq[0].get("leaky") == 0 and esq[0].get("overruns", 0) >= 1
+                  and esq[0].get("ongoing") is False and esq[0].get("levelBytes") == 19200
+                  and _overruns(r, "other") == [] and len(_overruns(r)) == 2)
+            # Episode 2, open past 10 s: reported once as it stands, then at its end.
+            stall(500000)
+            long_ev = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                                   and e["payload"].get("element") == "ingestq" and e["payload"].get("ongoing"),
+                                   timeout=13.0)
+            lp = long_ev["payload"] if long_ev else {}
+            check(f"IQ {tag} an episode open 10 s is reported as it stands (B-182: at 10.1 s; {lp})",
+                  lp.get("ms", 0) >= 9000 and lp.get("overruns", 0) > 500)
+            stall(0)
+            end = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                               and e["payload"].get("element") == "ingestq" and e["payload"].get("ongoing") is False
+                               and e["payload"].get("totalOverruns", 0) > p.get("totalOverruns", 0), timeout=4.0)
+            ep = end["payload"] if end else {}
+            check(f"IQ {tag} ...and once more when it ends, the episode whole (B-182: 1,020 over 10.4 s; {ep})",
+                  ep.get("overruns", 0) >= lp.get("overruns", 1)
+                  and ep.get("totalOverruns") == p.get("totalOverruns", 0) + ep.get("overruns", 0))
+            time.sleep(1.5)
+            # The episodes still open at the stop: their counts go out before the runner exits.
+            stall(500000)
+            time.sleep(1.0)
+            r.pump()
+            n_before = len(_overruns(r))
+            code = r.stop_and_wait()
+            last = _overruns(r)[n_before:]
+            check(f"IQ {tag} the stop reports each open episode, once ({last})",
+                  code == 0 and sorted(x.get("element") for x in last) == ["ingestq", "vp_esq"]
+                  and all(x.get("overruns", 0) > 0 and x.get("ongoing") is False for x in last))
+            check(f"IQ {tag} nothing from the queue the watch does not take", _overruns(r, "other") == [])
+            check(f"IQ {tag} no error event", not r.has_event(ev_is("error")))
+        finally:
+            r.kill()
+
+
+# --------------------------------------------------------------------------- R: no-late-drop and the queue watch (B-170)
+_R_LINE = re.compile(r"^\[(?:mr-gst-runner|gst-runner\.py)\] no-late-drop: (.*)$")
+_R_DECODE = ("videotestsrc is-live=true ! video/x-raw,format=I420,width=320,height=240,framerate=25/1"
+             " ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=25 ! h264parse"
+             " ! decodebin3 name=dec ! videoconvert name=vc"
+             " ! fakesink name=sink sync=false qos=true max-lateness=20000000")
+
+
+def _r_hook_run(tag, argv):
+    """The hook on one runner: its lines, and each property read back over the RPC."""
+    r = RunnerProc(argv)
     try:
-        r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
-        check("IQ reaches PLAYING", r.wait_event(ev_is("state_change", state="playing")) is not None)
-        time.sleep(1.5)
-        r.pump()
-        check("IQ a queue that keeps up reports nothing", sheds() == [])
-        # Episode 1: 500 ms a buffer for 1.5 s (each queue holds 10 buffers of 10 ms).
-        stall(500000)
-        time.sleep(1.5)
-        stall(0)
-        first = r.wait_event(lambda e: e.get("channel") == "queue_shed", timeout=4.0)
-        p = first["payload"] if first else {}
-        check(f"IQ one episode, one event, for ingestq alone ({p})",
-              p.get("element") == "ingestq" and p.get("ongoing") is False
-              and p.get("overruns", 0) > 50 and p.get("totalOverruns") == p.get("overruns")
-              and p.get("maxSizeBytes") == 19200 and 1000 <= p.get("durationMs", 0) <= 2600)
-        time.sleep(1.5)
-        r.pump()
-        check(f"IQ nothing more once it drained ({len(sheds())} events)", len(sheds()) == 1)
-        # Episode 2, open past 10 s: reported once as it stands, then at its end.
-        stall(500000)
-        long_ev = r.wait_event(lambda e: e.get("channel") == "queue_shed" and e["payload"].get("ongoing"),
-                               timeout=13.0)
-        lp = long_ev["payload"] if long_ev else {}
-        check(f"IQ an episode open 10 s is reported as it stands ({lp})",
-              lp.get("element") == "ingestq" and lp.get("durationMs", 0) >= 9000
-              and lp.get("overruns", 0) > 500)
-        stall(0)
-        end = r.wait_event(lambda e: e.get("channel") == "queue_shed" and e["payload"].get("ongoing") is False
-                           and e["payload"].get("totalOverruns", 0) > p.get("totalOverruns", 0), timeout=4.0)
-        ep = end["payload"] if end else {}
-        check(f"IQ ...and once more when it ends, the episode whole ({ep})",
-              ep.get("overruns", 0) >= lp.get("overruns", 1)
-              and ep.get("totalOverruns") == p.get("totalOverruns", 0) + ep.get("overruns", 0))
-        # An episode still open at the stop: its count goes out before the runner exits.
-        stall(500000)
+        r.send({"cmd": "start", "pipeline": _R_DECODE, "eosDrain": False})
+        playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+        plugged = r.wait_log("decoder threads: avdec_h264 ", timeout=10)
+        r.wait_log("no-late-drop: avdec_h264", timeout=3)
+        lines = [m.group(1) for m in map(_R_LINE.match, r.logs) if m]
+        dec = next((ln.split()[0] for ln in lines[1:] if ln.startswith("avdec_h264")), "avdec_h264-0")
+        props = {(el, prop): _runner_prop(r, el, prop, f"r{tag}{el}{prop}")
+                 for el, prop in ((dec, "qos"), ("vc", "qos"), ("sink", "qos"), ("sink", "max-lateness"))}
         time.sleep(1.0)
-        n_before = len(sheds())
+        error = r.has_event(ev_is("error"))
         code = r.stop_and_wait()
-        last = sheds()[n_before:] if len(sheds()) > n_before else []
-        check(f"IQ the stop reports the open episode ({last})",
-              code == 0 and len(last) == 1 and last[0].get("overruns", 0) > 0
-              and last[0].get("ongoing") is False)
-        check("IQ no error event", not r.has_event(ev_is("error")))
+        return {"playing": playing, "plugged": plugged, "lines": lines, "dec": dec, "props": props,
+                "error": error, "code": code}
     finally:
         r.kill()
+
+
+def _r_watch_run(tag, argv):
+    """A queue leaky=2 max-size-buffers=2 behind a bus input (in a bin of its own, so the walk to it
+    crosses ghost pads), fed 200 buffers a second for 3 s and drained 50 a second."""
+    sys.path.insert(0, _HERE)
+    from gst_lateness_protocol_test import TS_CAPS
+    tmp = tempfile.mkdtemp(prefix="mrtest-")
+    sock = os.path.join(tmp, "in.sock")
+    feed = Gst.parse_launch(f'appsrc name=src format=time caps="{TS_CAPS}" ! unixfdsink socket-path={sock}'
+                            " sync=false async=false")
+    clock = Gst.SystemClock.obtain()
+    clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
+    feed.use_clock(clock)
+    feed.set_start_time(Gst.CLOCK_TIME_NONE)
+    feed.set_base_time(0)
+    feed.set_state(Gst.State.PLAYING)
+    src, data, t = feed.get_by_name("src"), bytes([0x47, 0x1F, 0xFF, 0x10] + [0xFF] * 184) * 7, time.monotonic_ns()
+    time.sleep(0.3)
+    r = RunnerProc(argv)
+    try:
+        r.send({"cmd": "start", "eosDrain": False,
+                "pipeline": f"unixfdsrc name=busin socket-path={sock} ! ( identity name=pass )"
+                            " ! queue name=rq leaky=2 max-size-buffers=2"
+                            " ! identity name=slow sleep-time=20000 ! fakesink sync=false async=false"})
+        b = Gst.Buffer.new_wrapped(data)
+        b.pts = b.dts = t
+        src.emit("push-buffer", b)
+        playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+        t0 = time.monotonic()
+        for k in range(600):
+            time.sleep(max(0.0, t0 + k / 200 - time.monotonic()))
+            b = Gst.Buffer.new_wrapped(data)
+            t += 5 * Gst.MSECOND
+            b.pts = b.dts = t
+            src.emit("push-buffer", b)
+        r.wait_event(lambda e: e.get("channel") == "queue_overrun", timeout=4.0)
+        time.sleep(2.5)                     # an episode would end in this time: none does
+        r.pump()
+        error = r.has_event(ev_is("error"))
+        code = r.stop_and_wait()
+        return {"playing": playing, "events": _overruns(r), "error": error, "code": code}
+    finally:
+        r.kill()
+        feed.set_state(Gst.State.NULL)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+_R_MIX = "audio/x-raw,rate=48000,channels=2"
+
+
+def _r_live_run(tag, argv):
+    """A live input added to a running mixer (an aligner's watch at its tail, as the modules build
+    them), its leaky queue drained at half its rate: the watch takes a queue added after the start,
+    and reports its open episode once the input is removed."""
+    src = f"audiotestsrc is-live=true samplesperbuffer=480 ! {_R_MIX}"
+    pipe = (f'audiomixer name=mixin latency=0 start-time-selection=first ! capsfilter caps="{_R_MIX}"'
+            f" ! fakesink sync=false  ( name=mixin_in_a {src}"
+            " ! mralignwatch name=aw_a aligner=mixin input=a hold-on-eos=true ) ! mixin.sink_0")
+    branch = (f"{src} ! queue name=liveq leaky=2 max-size-buffers=2 ! identity name=slowc sleep-time=20000"
+              " ! mralignwatch name=aw_c aligner=mixin input=c hold-on-eos=true")
+    r = RunnerProc(argv)
+    try:
+        r.wait_event(ev_is("ready"))
+        r.send({"cmd": "start", "pipeline": pipe, "eosDrain": False})
+        playing = r.wait_event(ev_is("state_change", state="playing"), timeout=10) is not None
+        r.send({"cmd": "bus_input_add", "id": "a1", "element": "mixin", "name": "mixin_in_c",
+                "description": branch})
+        added = r.wait_event(ev_is("bus_input_add_done", id="a1")) is not None
+        time.sleep(2.0)
+        r.pump()
+        before = _overruns(r, "liveq")
+        sent = time.monotonic()
+        r.send({"cmd": "bus_input_remove", "id": "r1", "element": "mixin", "name": "mixin_in_c"})
+        removed = r.wait_event(ev_is("bus_input_remove_done", id="r1")) is not None
+        ev = r.wait_event(lambda e: e.get("channel") == "queue_overrun"
+                          and e["payload"].get("element") == "liveq", timeout=3.0)
+        after_s = time.monotonic() - sent
+        time.sleep(1.5)
+        r.pump()
+        error = r.has_event(ev_is("error"))
+        code = r.stop_and_wait()
+        return {"ok": playing and added and removed, "before": before, "after_s": after_s,
+                "events": _overruns(r, "liveq"), "error": error, "code": code}
+    finally:
+        r.kill()
+
+
+def test_no_late_drop():
+    """R (WI-P4-5, B-170), both runners: the no-late-drop hook sets what drops a late buffer off on
+    every element, a decodebin3's plugged avdec_h264 included (read back over get_property), and
+    logs what it changed; the queue watch reports a leaky queue fed faster than drained, once an
+    episode (at most once a second), naming the bus input upstream of it."""
+    if Gst.ElementFactory.find("avdec_h264") is None or Gst.ElementFactory.find("x264enc") is None:
+        print("SKIP R — avdec_h264 or x264enc unavailable")
+        return
+    hooks = {}
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        h = hooks[tag] = _r_hook_run(tag, argv)
+        props = h["props"]
+        check(f"R {tag}: the decodebin3 pipeline plays and plugs avdec_h264", h["playing"] and h["plugged"])
+        check(f"R {tag}: one line at start lists what it changed ({h['lines'][:1]})",
+              h["lines"][:1] == ["sink qos→false, max-lateness→-1, vc qos→false"])
+        check(f"R {tag}: one more for the decoder decodebin3 plugged later ({h['lines'][1:]})",
+              h["lines"][1:] == [f"{h['dec']} qos→false"])
+        check(f"R {tag}: {h['dec']} (plugged by decodebin3) reads qos=false", props[(h["dec"], "qos")] is False)
+        check(f"R {tag}: the named videoconvert reads qos=false", props[("vc", "qos")] is False)
+        check(f"R {tag}: the sink reads qos=false, max-lateness=-1",
+              props[("sink", "qos")] is False and props[("sink", "max-lateness")] == -1)
+        check(f"R {tag}: no error, exits 0 after stop", not h["error"] and h["code"] == 0)
+    check("R the runners' start lines are one text (twinned)",
+          hooks["native"]["lines"][:1] == hooks["py"]["lines"][:1])
+    for tag, argv in (("native", None), ("py", _PY_ENV_RUNNER)):
+        w = _r_watch_run(tag, argv)
+        ev = w["events"]
+        p = ev[0] if ev else {}
+        check(f"R {tag}: a queue leaky=2 max-size-buffers=2 fed 200/s, drained 50/s for 3 s: one queue_overrun "
+              f"({len(ev)} events)", w["playing"] and len(ev) == 1)
+        check(f"R {tag}: ...naming its queue and the bus input upstream of it ({p})",
+              p.get("element") == "rq" and p.get("input") == "busin" and p.get("leaky") == 2
+              and p.get("levelBytes") == 2 * 1316 and p.get("ongoing") is False)
+        check(f"R {tag}: ...its overruns counted over the episode ({p.get('overruns')} in {p.get('ms')} ms)",
+              300 <= p.get("overruns", 0) <= 600 and p.get("totalOverruns") == p.get("overruns")
+              and 2000 <= p.get("ms", 0) <= 3600)
+        check(f"R {tag}: no error, exits 0 after stop", not w["error"] and w["code"] == 0)
+        lv = _r_live_run(tag, argv)
+        ev = lv["events"]
+        p = ev[0] if ev else {}
+        check(f"R {tag}: a live input added after the start: its leaky queue is watched, its episode open "
+              f"until the input is removed ({lv['before']} before)", lv["ok"] and lv["before"] == [])
+        check(f"R {tag}: ...then reported once, at the next tick, not a quiet second later ({len(ev)} events, "
+              f"{lv['after_s']:.2f} s after the remove; {p})",
+              len(ev) == 1 and lv["after_s"] < 0.9 and p.get("leaky") == 2 and p.get("input") is None
+              and p.get("overruns", 0) > 50 and p.get("ongoing") is False)
+        check(f"R {tag}: the mixer goes on: no error, exits 0 after stop", not lv["error"] and lv["code"] == 0)
 
 
 # --------------------------------------------------------------------------- TR: transcoder frame-rate conform (B-186)
@@ -4603,6 +4866,7 @@ test_ttx_formula()
 test_burnin_formula()
 test_transcode_formula()
 test_ingest_queue_sheds()
+test_no_late_drop()
 test_transcode_rate()
 test_stop_while_starting()
 test_catch_up()

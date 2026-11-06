@@ -11,7 +11,9 @@ import {
     latOutName,
 } from './busHelpers.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
-import { INGEST_QUEUE_NAME, QUEUE_SHED_EVENT, buildIngestQueue } from './tsHelpers.js';
+import { INGEST_QUEUE_NAME, buildIngestQueue } from './tsHelpers.js';
+import { QUEUE_OVERRUN_EVENT, WATCHED_QUEUE_NAMES } from './queueOverrun.js';
+import { OUTPUT_PREFILL_NAME } from './outputSink.js';
 
 /**
  * Cross-language contract pins between the TS bus helpers and the python
@@ -462,14 +464,126 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
     });
 });
 
-describe('the ingest queue ↔ mr-gst-runner shed watch (B-182)', () => {
-    const header = readFileSync(
-        join(__dirname, '..', '..', 'native', 'mr-gst-runner', 'shed_watch.h'),
-        'utf8',
-    );
-    it('the runner watches the queue the helper names, and reports on the channel the base logs', () => {
-        expect(header).toContain(`PREFIX = "${INGEST_QUEUE_NAME}"`);
-        expect(header).toContain(`EVENT = "${QUEUE_SHED_EVENT}"`);
+describe('the no-late-drop hook and the queue watch, in both runners (B-170)', () => {
+    const nativeDir = join(__dirname, '..', '..', 'native', 'mr-gst-runner');
+    const native = (f: string) => readFileSync(join(nativeDir, f), 'utf8');
+    const runnerCpp = native('runner.cpp');
+    const hookCpp = native('no_late_drop.cpp');
+    const watchH = native('queue_watch.h');
+    const watchCpp = native('queue_watch.cpp');
+    const repo = join(__dirname, '..', '..', '..', '..');
+
+    it('both install the hook and the watch before PLAYING, beside the decoder-thread hook', () => {
+        const cppHook = runnerCpp.indexOf('install_decoder_thread_hook(pipeline);');
+        expect(cppHook).toBeGreaterThan(0);
+        expect(runnerCpp.indexOf('no_late_drop::install(pipeline);')).toBeGreaterThan(cppHook);
+        expect(runnerCpp.indexOf('queue_watch::install(pipeline);')).toBeGreaterThan(cppHook);
+        expect(runnerCpp.indexOf('queue_watch::install(pipeline);')).toBeLessThan(
+            runnerCpp.indexOf('gst_element_set_state(pipeline, GST_STATE_PLAYING)'),
+        );
+        const pyHook = runnerSource.indexOf(
+            '    _install_decoder_thread_hook(pipeline, decoder_thread_type)',
+        );
+        expect(pyHook).toBeGreaterThan(0);
+        expect(runnerSource.indexOf('    _install_no_late_drop(pipeline)\n')).toBeGreaterThan(
+            pyHook,
+        );
+        expect(runnerSource.indexOf('    _start_queue_watch(pipeline)\n')).toBeGreaterThan(pyHook);
+        expect(runnerSource.indexOf('    _start_queue_watch(pipeline)\n')).toBeLessThan(
+            runnerSource.indexOf('ret = pipeline.set_state(Gst.State.PLAYING)'),
+        );
+        // An episode open at a stop is counted to its end: the watch clears once in NULL.
+        expect(runnerCpp).toMatch(/GST_STATE_NULL\);\n.*\n\s+queue_watch::clear\(\);/);
+        expect(runnerSource).toMatch(
+            /set_state\(Gst\.State\.NULL\)\n.*\n\s+_clear_queue_watch\(\)/,
+        );
+    });
+
+    it('the hook: the same elements, properties and log line in both, at start and on deep-element-added', () => {
+        for (const source of [hookCpp, runnerSource]) {
+            for (const type of ['GstVideoDecoder', 'GstAudioDecoder']) {
+                expect(source).toContain(`"${type}"`);
+            }
+            expect(source).toContain('no-late-drop: ');
+            expect(source).toContain('nothing to change');
+            expect(source).toContain('qos→false');
+            expect(source).toContain('max-lateness→-1');
+            expect(source).toContain('"deep-element-added"');
+        }
+        expect(hookCpp).toContain('GST_IS_BASE_SINK(el)');
+        expect(hookCpp).toContain('GST_IS_BASE_TRANSFORM(el)');
+        expect(runnerSource).toContain('_is_a(element, "GstBaseSink")');
+        expect(runnerSource).toContain(
+            '("GstBaseTransform", "GstVideoDecoder", "GstAudioDecoder")',
+        );
+    });
+
+    it('the watch: one event, one list of names and one episode rule in both', () => {
+        expect(watchH).toContain(`EVENT = "${QUEUE_OVERRUN_EVENT}";`);
+        expect(runnerSource).toContain(`QUEUE_OVERRUN_EVENT = "${QUEUE_OVERRUN_EVENT}"`);
+        const quoted = WATCHED_QUEUE_NAMES.map((n) => `"${n}"`).join(', ');
+        expect(watchH).toContain(`NAMES[] = {${quoted}};`);
+        expect(runnerSource).toContain(`WATCHED_QUEUE_NAMES = (${quoted})`);
+        for (const [cpp, py] of [
+            ['QUIET_MS = 1000;', '_QUEUE_QUIET_MS = 1000'],
+            ['LONG_MS = 10000;', '_QUEUE_LONG_MS = 10000'],
+            ['TICK_MS = 250;', '_QUEUE_TICK_MS = 250'],
+        ]) {
+            expect(watchH).toContain(cpp);
+            expect(runnerSource).toContain(py);
+        }
+        for (const source of [watchCpp, runnerSource]) {
+            expect(source).toContain('"overrun"');
+            expect(source).toContain('"deep-element-removed"');
+            expect(source).toContain('"unixfdsrc"');
+        }
+    });
+
+    it('both report the same payload fields', () => {
+        const cpp = [...watchCpp.matchAll(/json_object_set_\w+_member\(o, "(\w+)"/g)].map(
+            (m) => m[1],
+        );
+        const block = /emit_plugin_event\(QUEUE_OVERRUN_EVENT, \{([\s\S]*?)\}\)/.exec(
+            runnerSource,
+        )![1];
+        const py = [...block.matchAll(/"(\w+)":/g)].map((m) => m[1]);
+        const fields = [
+            'element',
+            'input',
+            'leaky',
+            'levelTimeMs',
+            'levelBytes',
+            'overruns',
+            'ms',
+            'totalOverruns',
+            'ongoing',
+        ];
+        expect(new Set(cpp)).toEqual(new Set(fields));
+        expect(py).toEqual(fields);
+    });
+
+    it('the named queues are the ones the modules build, and the ingest queue is leaky', () => {
+        expect(WATCHED_QUEUE_NAMES).toContain(OUTPUT_PREFILL_NAME);
+        const player = readFileSync(
+            join(repo, 'plugins', 'video-player', 'engine', 'helpers', 'pipelines.ts'),
+            'utf8',
+        );
+        expect(player).toContain("const VP_ES_QUEUE_NAME = 'vp_esq';");
+        const decoder = readFileSync(
+            join(repo, 'plugins', 'audio-decoder', 'engine', 'AudioDecoderModule.ts'),
+            'utf8',
+        );
+        expect(decoder).toContain(' ! queue name=ad_esq leaky=0 ');
+        expect(WATCHED_QUEUE_NAMES).toEqual(['vp_esq', 'ad_esq', 'prefill']);
         expect(buildIngestQueue()).toMatch(new RegExp(`^queue name=${INGEST_QUEUE_NAME} leaky=2 `));
+    });
+
+    it('B-182 shed watch is gone: one watch, one event', () => {
+        expect(existsSync(join(nativeDir, 'shed_watch.h'))).toBe(false);
+        expect(existsSync(join(nativeDir, 'shed_watch.cpp'))).toBe(false);
+        for (const source of [runnerCpp, runnerSource, native('Makefile')]) {
+            expect(source).not.toContain('shed_watch');
+            expect(source).not.toContain('queue_shed');
+        }
     });
 });
